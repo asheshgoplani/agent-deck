@@ -19,6 +19,7 @@ import (
 func TestB7_InboxDrainSelf_ResolvesFromInstanceEnv(t *testing.T) {
 	cliInboxTestHome(t)
 	self := "conductor-self-1777800000"
+	registerInboxDrainTarget(t, self)
 	t.Setenv("AGENTDECK_INSTANCE_ID", self)
 
 	if err := session.CommitToInbox(self, session.TransitionNotificationEvent{

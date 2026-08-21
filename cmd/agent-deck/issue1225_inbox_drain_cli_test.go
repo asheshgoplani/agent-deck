@@ -24,11 +24,26 @@ func cliInboxTestHome(t *testing.T) {
 	session.ResetInboxFingerprintCacheForTest()
 }
 
+func registerInboxDrainTarget(t *testing.T, id string) {
+	t.Helper()
+	storage, err := session.NewStorageWithProfile("")
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	inst := session.NewInstance("inbox-target", t.TempDir())
+	inst.ID = id
+	instances := []*session.Instance{inst}
+	if err := storage.SaveWithGroups(instances, session.NewGroupTreeWithGroups(instances, nil)); err != nil {
+		t.Fatalf("save inbox target: %v", err)
+	}
+}
+
 // Case 2 (idle parent drains on heartbeat): a committed completion is surfaced
 // by `inbox drain`, and a second drain finds nothing (exactly-once).
 func TestIssue1225_InboxDrainCLI_HeartbeatDeliversThenEmpty(t *testing.T) {
 	cliInboxTestHome(t)
 	parent := "conductor-cli-1777000200"
+	registerInboxDrainTarget(t, parent)
 	if err := session.CommitToInbox(parent, session.TransitionNotificationEvent{
 		ChildSessionID: "child-cli-1", ChildTitle: "fix-auth", Profile: "personal",
 		FromStatus: "running", ToStatus: "waiting",
@@ -58,6 +73,7 @@ func TestIssue1225_InboxDrainCLI_HeartbeatDeliversThenEmpty(t *testing.T) {
 func TestIssue1225_InboxDrainCLI_JSONShape(t *testing.T) {
 	cliInboxTestHome(t)
 	parent := "conductor-cli-1777000210"
+	registerInboxDrainTarget(t, parent)
 	if err := session.CommitToInbox(parent, session.TransitionNotificationEvent{
 		ChildSessionID: "child-cli-2", ChildTitle: "worker", Profile: "personal",
 		FromStatus: "running", ToStatus: "waiting", LastOutputHash: "h2", Timestamp: time.Now(),
@@ -81,6 +97,7 @@ func TestIssue1225_InboxDrainCLI_JSONShape(t *testing.T) {
 // Boundary: draining an empty inbox is not an error.
 func TestIssue1225_InboxDrainCLI_EmptyInbox(t *testing.T) {
 	cliInboxTestHome(t)
+	registerInboxDrainTarget(t, "conductor-cli-empty")
 	var buf bytes.Buffer
 	if err := runInbox(&buf, []string{"drain", "conductor-cli-empty"}); err != nil {
 		t.Fatalf("drain empty: %v", err)

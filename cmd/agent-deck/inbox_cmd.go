@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,8 +20,22 @@ import (
 func handleInbox(args []string) {
 	if err := runInbox(os.Stdout, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(inboxExitCode(err))
 	}
+}
+
+type inboxTargetNotFoundError struct{ identifier string }
+
+func (e *inboxTargetNotFoundError) Error() string {
+	return fmt.Sprintf("Error: inbox drain target %q could not be resolved. Nothing was drained; this is NOT an empty inbox.", e.identifier)
+}
+
+func inboxExitCode(err error) int {
+	var notFound *inboxTargetNotFoundError
+	if errors.As(err, &notFound) {
+		return 2
+	}
+	return 1
 }
 
 // runInbox is the testable seam — handleInbox wires it to os.Stdout/Stderr;
@@ -82,6 +97,10 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 		fs.Usage()
 		return err
 	}
+	sessionID, err = resolveInboxDrainSession(sessionID)
+	if err != nil {
+		return err
+	}
 
 	events, err := session.DrainInboxForParent(sessionID)
 	if err != nil {
@@ -98,6 +117,18 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 
 	printInboxEvents(stdout, events)
 	return nil
+}
+
+func resolveInboxDrainSession(identifier string) (string, error) {
+	_, instances, _, err := loadSessionData("")
+	if err != nil {
+		return "", err
+	}
+	inst, _, _ := ResolveSession(identifier, instances)
+	if inst == nil {
+		return "", &inboxTargetNotFoundError{identifier: identifier}
+	}
+	return inst.ID, nil
 }
 
 // resolveDrainTarget returns the session id to drain. With no positional arg,
