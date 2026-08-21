@@ -450,6 +450,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 
 	// Find orphaned worktrees (exist but no session points to them)
 	var orphanedWorktrees []vcs.Worktree
+	var protectedWorktrees []worktreeCleanupFacts
 	var cleanupBackend vcs.Backend
 
 	if backend, bErr := detectAndCreateBackend(cwd); bErr == nil {
@@ -462,15 +463,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 			// cleanup silently skips it forever.
 			sessionPaths := localSessionPaths(instances)
 
-			// Check each worktree (skip the first one which is usually the main repo)
-			for i, wt := range worktrees {
-				if i == 0 {
-					continue // Skip main repo
-				}
-				if !sessionPaths[wt.Path] {
-					orphanedWorktrees = append(orphanedWorktrees, wt)
-				}
-			}
+			orphanedWorktrees, protectedWorktrees = classifyUnregisteredWorktrees(worktrees, sessionPaths)
 		}
 	}
 
@@ -492,11 +485,16 @@ func handleWorktreeCleanup(profile string, args []string) {
 				"branch": wt.Branch,
 			})
 		}
+		protectedWorktreeData := make([]map[string]interface{}, 0, len(protectedWorktrees))
+		for _, facts := range protectedWorktrees {
+			protectedWorktreeData = append(protectedWorktreeData, facts.jsonData())
+		}
 
 		result := map[string]interface{}{
-			"orphaned_sessions":  orphanedSessionData,
-			"orphaned_worktrees": orphanedWorktreeData,
-			"dry_run":            !*force,
+			"orphaned_sessions":   orphanedSessionData,
+			"orphaned_worktrees":  orphanedWorktreeData,
+			"protected_worktrees": protectedWorktreeData,
+			"dry_run":             !*force,
 		}
 
 		out.Print("", result)
@@ -508,7 +506,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 
 	// Human-readable output
 	if !*jsonOutput {
-		if len(orphanedSessions) == 0 && len(orphanedWorktrees) == 0 {
+		if len(orphanedSessions) == 0 && len(orphanedWorktrees) == 0 && len(protectedWorktrees) == 0 {
 			fmt.Println("No orphans found. Everything is clean!")
 			return
 		}
@@ -525,6 +523,14 @@ func handleWorktreeCleanup(profile string, args []string) {
 			fmt.Println("Orphaned Worktrees (no session associated):")
 			for _, wt := range orphanedWorktrees {
 				fmt.Printf("  - %s (branch: %s)\n", FormatPath(wt.Path), wt.Branch)
+			}
+			fmt.Println()
+		}
+
+		if len(protectedWorktrees) > 0 {
+			fmt.Println("Protected Worktrees (not orphans; cleanup will not remove):")
+			for _, facts := range protectedWorktrees {
+				fmt.Printf("  - %s (branch: %s; %s)\n", FormatPath(facts.Worktree.Path), facts.Worktree.Branch, facts.summary())
 			}
 			fmt.Println()
 		}
