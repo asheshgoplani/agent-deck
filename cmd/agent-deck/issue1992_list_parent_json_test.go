@@ -41,25 +41,38 @@ func TestIssue1992_ListJSONCarriesChildParentLinkage(t *testing.T) {
 		t.Fatalf("parse child: %v\n%s", err, childOut)
 	}
 
-	listOut, stderr, code := runAgentDeck(t, home, "list", "--json")
-	if code != 0 {
-		t.Fatalf("list --json exit %d: %s", code, stderr)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "current profile", args: []string{"list", "--json"}},
+		{name: "all profiles", args: []string{"list", "--all", "--json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listOut, stderr, code := runAgentDeck(t, home, tc.args...)
+			if code != 0 {
+				t.Fatalf("%v exit %d: %s", tc.args, code, stderr)
+			}
+			var rows []map[string]any
+			if err := json.Unmarshal([]byte(listOut), &rows); err != nil {
+				t.Fatalf("parse %v: %v\n%s", tc.args, err, listOut)
+			}
+			for _, row := range rows {
+				if row["id"] != child.ID {
+					continue
+				}
+				// Keep these assertions separate: the current-profile and
+				// all-profile emitters each have independent assignments for
+				// both fields, and every one is a regression guard.
+				if got := row["parent_session_id"]; got != parent.ID {
+					t.Fatalf("%s child parent_session_id = %#v, want %q; row=%#v", tc.name, got, parent.ID, row)
+				}
+				if got := row["parent_project_path"]; got != parentPath {
+					t.Fatalf("%s child parent_project_path = %#v, want %q; row=%#v", tc.name, got, parentPath, row)
+				}
+				return
+			}
+			t.Fatalf("child %q missing from %v: %s", child.ID, tc.args, listOut)
+		})
 	}
-	var rows []map[string]any
-	if err := json.Unmarshal([]byte(listOut), &rows); err != nil {
-		t.Fatalf("parse list: %v\n%s", err, listOut)
-	}
-	for _, row := range rows {
-		if row["id"] != child.ID {
-			continue
-		}
-		if got := row["parent_session_id"]; got != parent.ID {
-			t.Fatalf("child parent_session_id = %#v, want %q; row=%#v", got, parent.ID, row)
-		}
-		if got := row["parent_project_path"]; got != parentPath {
-			t.Fatalf("child parent_project_path = %#v, want %q; row=%#v", got, parentPath, row)
-		}
-		return
-	}
-	t.Fatalf("child %q missing from list: %s", child.ID, listOut)
 }
