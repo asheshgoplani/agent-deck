@@ -2271,7 +2271,7 @@ func handleList(profile string, args []string) {
 			}
 			if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
 				sj.ModelID = modelInfo.ModelID
-				sj.Model = modelInfo.Model
+				sj.Model = modelInfo.ModelID
 				sj.ModelVersion = modelInfo.Version
 			}
 			sessions[i] = sj
@@ -2849,7 +2849,7 @@ func handleStatus(profile string, args []string) {
 				}
 				if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
 					sj.ModelID = modelInfo.ModelID
-					sj.Model = modelInfo.Model
+					sj.Model = modelInfo.ModelID
 					sj.ModelVersion = modelInfo.Version
 				}
 				resp.Sessions = append(resp.Sessions, sj)

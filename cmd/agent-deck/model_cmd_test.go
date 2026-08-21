@@ -54,7 +54,7 @@ func TestAddModelFlagPersistsAndSurfacesInStatus(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &addResp); err != nil {
 		t.Fatalf("parse add response: %v\nstdout: %s", err, stdout)
 	}
-	if addResp.ModelID != "gpt-5.5" || addResp.Model != "GPT" || addResp.ModelVersion != "5.5" {
+	if addResp.ModelID != "gpt-5.5" || addResp.Model != "gpt-5.5" || addResp.ModelVersion != "5.5" {
 		t.Fatalf("add model fields = id:%q model:%q version:%q", addResp.ModelID, addResp.Model, addResp.ModelVersion)
 	}
 
@@ -70,8 +70,32 @@ func TestAddModelFlagPersistsAndSurfacesInStatus(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &showResp); err != nil {
 		t.Fatalf("parse show response: %v\nstdout: %s", err, stdout)
 	}
-	if showResp.ModelID != "gpt-5.5" || showResp.Model != "GPT" || showResp.ModelVersion != "5.5" {
+	if showResp.ModelID != "gpt-5.5" || showResp.Model != "gpt-5.5" || showResp.ModelVersion != "5.5" {
 		t.Fatalf("show model fields = id:%q model:%q version:%q", showResp.ModelID, showResp.Model, showResp.ModelVersion)
+	}
+
+	stdout, stderr, code = runAgentDeck(t, home, "list", "--json")
+	if code != 0 {
+		t.Fatalf("agent-deck list --json failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var listResp []struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &listResp); err != nil {
+		t.Fatalf("parse list response: %v\nstdout: %s", err, stdout)
+	}
+	foundList := false
+	for _, sess := range listResp {
+		if sess.ID == addResp.ID {
+			foundList = true
+			if sess.Model != "gpt-5.5" {
+				t.Fatalf("list JSON leaked display model %q, want raw gpt-5.5", sess.Model)
+			}
+		}
+	}
+	if !foundList {
+		t.Fatalf("list --json did not include added session; response: %s", stdout)
 	}
 
 	stdout, stderr, code = runAgentDeck(t, home, "status", "--json", "--verbose")
@@ -95,7 +119,7 @@ func TestAddModelFlagPersistsAndSurfacesInStatus(t *testing.T) {
 			continue
 		}
 		found = true
-		if sess.ModelID != "gpt-5.5" || sess.Model != "GPT" || sess.ModelVersion != "5.5" {
+		if sess.ModelID != "gpt-5.5" || sess.Model != "gpt-5.5" || sess.ModelVersion != "5.5" {
 			t.Fatalf("status model fields = id:%q model:%q version:%q", sess.ModelID, sess.Model, sess.ModelVersion)
 		}
 	}
@@ -149,7 +173,7 @@ func TestSessionSetModelPersists(t *testing.T) {
 
 	// Switch the model — the operator's choice we want to survive restart.
 	stdout, stderr, code = runAgentDeck(t, home,
-		"session", "set", "--json", addResp.ID, "model", "opus",
+		"session", "set", "--json", addResp.ID, "model", "gpt-5.5",
 	)
 	if code != 0 {
 		t.Fatalf(
@@ -166,12 +190,13 @@ func TestSessionSetModelPersists(t *testing.T) {
 	}
 	var showResp struct {
 		ModelID string `json:"model_id"`
+		Model   string `json:"model"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &showResp); err != nil {
 		t.Fatalf("parse show response: %v\nstdout: %s", err, stdout)
 	}
-	if showResp.ModelID != "opus" {
-		t.Errorf("session set model did not persist opus; model_id = %q\nshow: %s", showResp.ModelID, stdout)
+	if showResp.ModelID != "gpt-5.5" || showResp.Model != "gpt-5.5" {
+		t.Errorf("session set model did not round-trip raw gpt-5.5; model_id = %q model = %q\nshow: %s", showResp.ModelID, showResp.Model, stdout)
 	}
 
 	// Re-set to a different model: the new choice must replace the old one.

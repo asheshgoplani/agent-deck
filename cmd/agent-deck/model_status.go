@@ -19,9 +19,9 @@ func addModelInfoJSON(target map[string]interface{}, info session.ModelInfo) {
 		return
 	}
 	target["model_id"] = info.ModelID
-	if info.Model != "" {
-		target["model"] = info.Model
-	}
+	// JSON is a data surface: return the exact persisted override. Family names
+	// such as "GPT" are presentation labels and belong in human output only.
+	target["model"] = info.ModelID
 	if info.Version != "" {
 		target["model_version"] = info.Version
 	}
