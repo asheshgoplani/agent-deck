@@ -24,7 +24,13 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 3. **Evidence.** For behavior changes, show real output: a terminal capture, logs, or before/after behavior. Mock-only proof is not enough for changes users will feel.
 4. **The human need behind the diff.** The single highest-signal thing you can write is one real sentence about what you were doing when you hit this. It is what separates a real fix from a speculative one, and it is the first thing a reviewer reads.
 5. **A filled-in PR template.** Problem, why, user impact, evidence, disclosure. It takes five minutes and it is what the validation pipeline reads first.
-6. **Perf evidence when you touch hot paths.** If your change affects `list`, `status`, `session output`, startup, or the tmux layer, include simple before/after timing evidence (even `time agent-deck list` runs). Regressions need a stated justification.
+6. **Acceptance gates for a feature or a user-visible fix.** Tests prove functions;
+   they do not prove that anybody pressed the key. For anything a user will see, run the
+   six gates and commit the artifacts — see [`docs/SIXGATE.md`](docs/SIXGATE.md) and the
+   [`six-gates` skill](skills/six-gates/SKILL.md). The merge bar is a clean dual review,
+   green CI, **and** `sixgate verdict <slug> --check` exiting 0. A worked example lives
+   in [`docs/gates/context-inspector/`](docs/gates/context-inspector/).
+7. **Perf evidence when you touch hot paths.** If your change affects `list`, `status`, `session output`, startup, or the tmux layer, include simple before/after timing evidence (even `time agent-deck list` runs). Regressions need a stated justification.
 
 ## Your first contribution
 
