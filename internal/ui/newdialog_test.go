@@ -2,6 +2,7 @@ package ui
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -602,6 +603,65 @@ func TestNewDialog_MalformedPathFix(t *testing.T) {
 				t.Errorf("GetValues() path = %q, want %q", path, tt.expected)
 			}
 		})
+	}
+}
+
+// TestNewDialog_TabShowsCompletionMatches: when Tab autocompletes a partial
+// path with multiple matches, the matches must be listed in the dropdown
+// (terminal-style menu completion) with the current one highlighted, and
+// repeated Tab must move the highlight through the list.
+func TestNewDialog_TabShowsCompletionMatches(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(200, 50)
+	d.Show()
+
+	tmpDir := t.TempDir()
+	subdirs := []string{"alpha", "amber", "apple"}
+	for _, sub := range subdirs {
+		if err := os.MkdirAll(filepath.Join(tmpDir, sub), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Focus the path field.
+	d.focusIndex = 2
+	d.updateFocus()
+	if d.currentTarget() != focusPath {
+		t.Fatalf("expected focusPath, got %v", d.currentTarget())
+	}
+
+	d.pathInput.SetValue(filepath.Join(tmpDir, "a"))
+	d.pathInput.SetCursor(len(d.pathInput.Value()))
+
+	// First Tab: completes to the first match and shows the match list.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	if !d.pathCycler.IsActive() {
+		t.Fatal("expected completion cycler to be active after Tab on partial path")
+	}
+	view := d.View()
+	for _, sub := range subdirs {
+		if !strings.Contains(view, sub) {
+			t.Errorf("completion list should show %q, view:\n%s", sub, view)
+		}
+	}
+	first := d.pathCycler.Matches()[0]
+	if !strings.Contains(view, "▶ "+first) {
+		t.Errorf("current match %q should be highlighted with ▶", first)
+	}
+
+	// Second Tab: cycles to the next match and moves the highlight.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	second := d.pathCycler.Matches()[1]
+	if got := d.pathInput.Value(); got != second {
+		t.Errorf("second Tab should complete to %q, got %q", second, got)
+	}
+	view = d.View()
+	if !strings.Contains(view, "▶ "+second) {
+		t.Errorf("after second Tab, %q should be highlighted with ▶", second)
+	}
+	if strings.Contains(view, "▶ "+first) {
+		t.Errorf("after second Tab, %q should no longer be highlighted", first)
 	}
 }
 

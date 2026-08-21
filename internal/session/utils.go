@@ -116,6 +116,20 @@ func (c *CompletionCycler) SetMatches(matches []string) {
 	c.index = -1
 }
 
+// Matches returns the current completion matches (nil when inactive).
+func (c *CompletionCycler) Matches() []string {
+	return c.matches
+}
+
+// Index returns the index of the currently selected match, or -1 when
+// inactive or before the first Next() call.
+func (c *CompletionCycler) Index() int {
+	if !c.IsActive() || c.index < 0 || c.index >= len(c.matches) {
+		return -1
+	}
+	return c.index
+}
+
 // Next returns the next match in the cycle.
 // Wraps around to the beginning if the end is reached.
 func (c *CompletionCycler) Next() string {

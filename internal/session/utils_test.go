@@ -119,3 +119,32 @@ func TestCompletionCycler(t *testing.T) {
 	assert.Equal(t, "/x", cycler.Next())
 	assert.Equal(t, "/x", cycler.Next())
 }
+
+func TestCompletionCycler_MatchesAndIndex(t *testing.T) {
+	cycler := &CompletionCycler{}
+
+	// Inactive cycler exposes no matches and no selection.
+	assert.Nil(t, cycler.Matches())
+	assert.Equal(t, -1, cycler.Index())
+
+	matches := []string{"/a", "/b", "/c"}
+	cycler.SetMatches(matches)
+
+	// Before the first Next(), nothing is selected yet.
+	assert.Equal(t, matches, cycler.Matches())
+	assert.Equal(t, -1, cycler.Index())
+
+	cycler.Next()
+	assert.Equal(t, 0, cycler.Index())
+	cycler.Next()
+	assert.Equal(t, 1, cycler.Index())
+
+	// Wrap around.
+	cycler.Next()
+	cycler.Next()
+	assert.Equal(t, 0, cycler.Index())
+
+	cycler.Reset()
+	assert.Nil(t, cycler.Matches())
+	assert.Equal(t, -1, cycler.Index())
+}
