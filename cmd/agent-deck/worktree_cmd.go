@@ -595,8 +595,22 @@ func handleWorktreeCleanup(profile string, args []string) {
 			fmt.Fprintf(os.Stderr, "Warning: no VCS backend for worktree removal\n")
 			break
 		}
-		if err := cleanupBackend.RemoveWorktree(wt.Path, false); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree %s: %v\n", wt.Path, err)
+		// Confirmation may wait indefinitely. Reload both registry ownership and
+		// repository state, then inspect the candidate again at the destructive
+		// boundary. --force authorizes removal; it never bypasses this gate.
+		removed, skipReason, removeErr := removeCleanupCandidate(cleanupBackend, wt, func() (map[string]bool, error) {
+			_, currentInstances, _, err := loadSessionData(profile)
+			if err != nil {
+				return nil, err
+			}
+			return localSessionPaths(currentInstances), nil
+		})
+		if !removed {
+			if removeErr != nil {
+				fmt.Printf("Skipped worktree: %s (%s: %v)\n", FormatPath(wt.Path), skipReason, removeErr)
+			} else {
+				fmt.Printf("Skipped worktree: %s (%s)\n", FormatPath(wt.Path), skipReason)
+			}
 			continue
 		}
 		removedWorktrees++

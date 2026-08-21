@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,8 +89,8 @@ func TestCleanupExcludesUnpushedCommit(t *testing.T) {
 	if pathsContain(orphans, unpushed) || !pathsContain(orphans, empty) {
 		t.Fatalf("orphans = %+v, must exclude %s and include %s", orphans, unpushed, empty)
 	}
-	if got := factsByPath(protected)[unpushed].Unpushed; got != 1 {
-		t.Fatalf("unpushed count = %d, want 1", got)
+	if got := factsByPath(protected)[unpushed].Unpushed; got == nil || *got != 1 {
+		t.Fatalf("unpushed count = %v, want 1", got)
 	}
 }
 
@@ -103,7 +104,7 @@ func TestCleanupExcludesUncommittedChanges(t *testing.T) {
 	if pathsContain(orphans, dirty) || !pathContainsFacts(protected, dirty) {
 		t.Fatalf("dirty worktree was not protected: orphans=%+v protected=%+v", orphans, protected)
 	}
-	if !factsByPath(protected)[dirty].Dirty {
+	if got := factsByPath(protected)[dirty].Dirty; got == nil || !*got {
 		t.Fatal("dirty fact was not surfaced")
 	}
 	if !pathsContain(orphans, empty) {
@@ -128,8 +129,140 @@ func TestCleanupExcludesLiveProcessCWDInside(t *testing.T) {
 	if len(orphans) != 1 || orphans[0].Path != empty {
 		t.Fatalf("orphans = %+v, want only %s", orphans, empty)
 	}
-	if got := factsByPath(protected)[busy].LivePID; got != cmd.Process.Pid {
-		t.Fatalf("live pid = %d, want %d", got, cmd.Process.Pid)
+	if got := factsByPath(protected)[busy].LivePID; got == nil || *got != cmd.Process.Pid {
+		t.Fatalf("live pid = %v, want %d", got, cmd.Process.Pid)
+	}
+}
+
+func TestCleanupSelfProbeHelper(t *testing.T) {
+	path := os.Getenv("AGENTDECK_TEST_SELF_CWD")
+	if path == "" {
+		return
+	}
+	if err := os.Chdir(path); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := processWithCWDInside(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid != os.Getpid() {
+		t.Fatalf("self cwd pid = %d, want %d", pid, os.Getpid())
+	}
+}
+
+// Regression for E1: cleanup itself is a live cwd-inside process and must veto
+// deleting the worktree from which it is directly executed.
+func TestCleanupExcludesOwnProcessCWD(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCleanupSelfProbeHelper$")
+	cmd.Env = append(os.Environ(), "AGENTDECK_TEST_SELF_CWD="+dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("self-cwd helper: %v\n%s", err, out)
+	}
+}
+
+// Regression for E2: a candidate that becomes busy during confirmation is
+// re-inspected and rejected at the removal boundary.
+func TestCleanupRevalidatesRealityBeforeRemoval(t *testing.T) {
+	_, _, busy, _, worktrees := cleanupFixture(t)
+	initial := inspectWorktreeForCleanup(worktrees[2])
+	if !initial.safeToRemove() {
+		t.Fatalf("initial candidate unexpectedly protected: %s", initial.summary())
+	}
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("cd %q && exec sleep 30", busy))
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	waitForFixtureCWD(t, cmd.Process.Pid, busy)
+	_, reason := revalidateCleanupCandidate(worktrees[2], worktrees, nil)
+	if !strings.Contains(reason, fmt.Sprintf("pid %d", cmd.Process.Pid)) {
+		t.Fatalf("revalidation reason = %q, want live pid", reason)
+	}
+}
+
+// Regression for E3: registry occupancy through a symlink is the same path as
+// Git's canonical worktree path.
+func TestCleanupCanonicalizesSymlinkOccupancy(t *testing.T) {
+	_, _, _, empty, worktrees := cleanupFixture(t)
+	link := filepath.Join(filepath.Dir(empty), "empty-link")
+	if err := os.Symlink(empty, link); err != nil {
+		t.Fatal(err)
+	}
+	orphans, _ := classifyUnregisteredWorktrees(worktrees, map[string]bool{link: true})
+	if pathsContain(orphans, empty) {
+		t.Fatalf("symlink-occupied worktree %s entered orphan set", empty)
+	}
+}
+
+// Regression for E4: fields after a failed probe were never observed and must
+// not be serialized or described as empty.
+func TestCleanupUnknownFactsAreNotEmpty(t *testing.T) {
+	facts := inspectWorktreeForCleanup(vcs.Worktree{Path: filepath.Join(t.TempDir(), "missing"), Branch: "gone"})
+	data := facts.jsonData()
+	for _, key := range []string{"unpushed", "dirty", "live_pid"} {
+		if _, exists := data[key]; exists {
+			t.Fatalf("unknown field %q serialized as known: %#v", key, data)
+		}
+	}
+	for _, want := range []string{"unpushed unknown", "dirty=unknown", "pid unknown"} {
+		if !strings.Contains(facts.summary(), want) {
+			t.Fatalf("summary %q missing %q", facts.summary(), want)
+		}
+	}
+}
+
+// Regression for E5: an inspection failure alone is a deletion veto. This
+// fails if the InspectErr predicate is removed from safeToRemove.
+func TestCleanupInspectionErrorFailsClosed(t *testing.T) {
+	zero := 0
+	clean := false
+	facts := worktreeCleanupFacts{Unpushed: &zero, Dirty: &clean, LivePID: &zero, InspectErr: fmt.Errorf("probe failed")}
+	if facts.safeToRemove() {
+		t.Fatal("inspection error was treated as permission to remove")
+	}
+}
+
+// Regression for E6: after another cleanup wins, the absent worktree is a
+// skipped candidate rather than a second successful removal.
+func TestCleanupConcurrentLoserSkipsMissingWorktree(t *testing.T) {
+	main, _, _, empty, worktrees := cleanupFixture(t)
+	backend, err := detectAndCreateBackend(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := worktrees[3]
+	type result struct {
+		removed bool
+		reason  string
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			removed, reason, err := removeCleanupCandidate(backend, candidate, func() (map[string]bool, error) { return nil, nil })
+			results <- result{removed: removed, reason: reason, err: err}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	removedCount := 0
+	loserReason := ""
+	for _, got := range []result{first, second} {
+		if got.err != nil {
+			t.Fatalf("concurrent cleanup error: %v (%s)", got.err, got.reason)
+		}
+		if got.removed {
+			removedCount++
+		} else {
+			loserReason = got.reason
+		}
+	}
+	if removedCount != 1 || loserReason != "no longer registered as a worktree" {
+		t.Fatalf("removed=%d loser reason=%q; both calls must not report success for %s", removedCount, loserReason, empty)
 	}
 }
 
