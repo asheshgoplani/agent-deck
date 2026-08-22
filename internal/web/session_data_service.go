@@ -53,6 +53,20 @@ type MenuGroup struct {
 	Expanded     bool   `json:"expanded"`
 	Order        int    `json:"order"`
 	SessionCount int    `json:"sessionCount"`
+	// DefaultPath is the group's EXPLICITLY configured default_path — the
+	// folder new sessions in this group start in. Empty (and omitted) when
+	// the user has not configured one; the client then derives its own
+	// fallback from the group's newest session.
+	//
+	// Read straight off the field. BuildMenuSnapshot's tree comes from
+	// NewGroupTreeWithGroups, which already normalizes this through the
+	// CACHED resolver (internal/session/groups.go:316-318 ->
+	// updateGroupDefaultPath). Do NOT call ExplicitDefaultPathForGroup or
+	// DefaultPathForGroup here: they run the uncached resolveGroupDefaultPath
+	// (os.Stat + up to 3 git subprocesses, ~21ms per group) and this builder
+	// runs on every /api/menu request AND every SSE menu event. See the
+	// header comment at internal/session/groups.go:1711-1731.
+	DefaultPath string `json:"defaultPath,omitempty"`
 }
 
 // MenuSession contains metadata for a session item.
