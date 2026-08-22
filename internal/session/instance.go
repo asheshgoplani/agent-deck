@@ -569,10 +569,11 @@ type Instance struct {
 	// UpdateStatus() acquires the write lock internally.
 	mu sync.RWMutex
 
-	// spawnGen supersedes stale fast-death watchers; spawnWatchers lets tests join
-	// them before restoring process-global filesystem environment.
-	spawnGen      atomic.Uint64
-	spawnWatchers sync.WaitGroup
+	// spawnGen is bumped on every Start/StartWithMessage/Stop so the fast-death
+	// watcher (#1580) can detect that a newer spawn or a deliberate stop has
+	// superseded it — race-free, without reading the mutex-guarded status fields
+	// from its own goroutine.
+	spawnGen atomic.Uint64
 
 	// spawnGenMu guards spawnGenWake. spawnGenWake lets a generation bump wake a
 	// running watchForFastDeath goroutine immediately instead of it only
