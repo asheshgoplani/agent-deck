@@ -3,6 +3,8 @@ package sessionhost
 import (
 	"os"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestMain isolates the package from the developer's real home directory.
@@ -13,6 +15,12 @@ import (
 // live session index, so the isolation is unconditional and covers every
 // variable that participates in path resolution.
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
 	dir, err := os.MkdirTemp("", "ctxinspect-sessionhost-home-")
 	if err != nil {
 		panic("sessionhost: cannot create isolated HOME for tests: " + err.Error())
@@ -31,7 +39,9 @@ func TestMain(m *testing.M) {
 			panic("sessionhost: cannot isolate " + k + ": " + err.Error())
 		}
 	}
+	cleanupTmux := testutil.IsolateTmuxSocket()
+	defer cleanupTmux()
 	code := m.Run()
 	_ = os.RemoveAll(dir)
-	os.Exit(code)
+	return code
 }

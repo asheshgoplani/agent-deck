@@ -495,6 +495,9 @@ func (a *Adapter) agentsMDCategory(req ctxinspect.Request, head *Head, est ctxin
 				Severity: ctxinspect.SeverityWarn,
 				Category: CategoryAgentsMD,
 			})
+			rep.AddCaveat("agents-md-file-unmatched",
+				fmt.Sprintf("%s did not match the injected block byte-for-byte, and the block still has unattributed text. Attribution is by exact bytes, so the file may have changed since this session started.", f.Path),
+				ctxinspect.SeverityWarn)
 		}
 
 		cat.Items = append(cat.Items, ctxinspect.Item{

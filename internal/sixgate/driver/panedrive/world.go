@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/sixgate/fixture"
 )
@@ -222,7 +223,7 @@ func LoadedWith(caseName, root string, v fixture.Variant) (*World, error) {
 
 // writeConfig writes the minimal user config a configured machine would have.
 func writeConfig(home string) error {
-	dir := filepath.Join(home, ".agent-deck")
+	dir := filepath.Join(home, "."+agentpaths.AppDirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

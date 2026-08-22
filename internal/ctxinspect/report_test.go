@@ -393,7 +393,7 @@ func TestValidateRejectsARedundantPotential(t *testing.T) {
 func TestValidateRejectsAvailableItemsThatClaimACost(t *testing.T) {
 	bad := pricedItem("a", 100)
 	bad.Load.State = Available
-	if err := anchoredReport(1000, bad).Validate(); err == nil || !strings.Contains(err.Error(), "certain zero") {
+	if err := anchoredReport(1000, bad).Validate(); err == nil || !strings.Contains(err.Error(), "positive cost") {
 		t.Fatalf("an available item that claims a cost must be rejected, got %v", err)
 	}
 }

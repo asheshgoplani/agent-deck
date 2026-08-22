@@ -223,7 +223,7 @@ func TestParseSessionJSONL_GapSampleIsCapped(t *testing.T) {
 func TestParseSessionJSONL_CleanTranscriptHasNoGaps(t *testing.T) {
 	path := writeAccountingTranscript(t,
 		assistantLine("claude-opus-4-7", 100, 10, 0, 0),
-		`{"type":"user","message":{"content":"hi"}}`,
+		`{"type":"user","message":{"content":[]}}`,
 	)
 
 	analytics, err := ParseSessionJSONL(path)

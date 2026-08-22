@@ -3,6 +3,8 @@ package claude
 import (
 	"os"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestMain isolates the package from the developer's real home directory.
@@ -14,6 +16,12 @@ import (
 // cannot reintroduce the hazard — and so the memory walk, which reads $HOME
 // while expanding "~", can never reach the real one.
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
 	dir, err := os.MkdirTemp("", "ctxinspect-claude-home-")
 	if err != nil {
 		panic("claude: cannot create isolated HOME for tests: " + err.Error())
@@ -31,9 +39,11 @@ func TestMain(m *testing.M) {
 			panic("claude: cannot isolate " + k + ": " + err.Error())
 		}
 	}
+	cleanupTmux := testutil.IsolateTmuxSocket()
+	defer cleanupTmux()
 	code := m.Run()
 	_ = os.RemoveAll(dir)
-	os.Exit(code)
+	return code
 }
 
 // emptyEnv is an environment probe that reports nothing set. Tests use it so a
