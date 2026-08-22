@@ -9,6 +9,7 @@
 // data (e.g. RightRail Usage card) fall back to "no data" placeholders.
 import { computed } from '@preact/signals'
 import { sessionsSignal, sessionCostsSignal } from './state.js'
+import { sidebarFilterSignal, groupExpandedSignal, statusFiltersSignal } from './uiState.js'
 
 // kind heuristic from session metadata (no API field today).
 // `tool` is `claude|codex|gemini|shell|webhook|...`; treat anything not in
@@ -125,4 +126,42 @@ export const menuModelSignal = computed(() => {
   const byGroup = {}
   for (const s of sessions) (byGroup[s.group] ||= []).push(s)
   return { groups, sessions, byGroup }
+})
+
+// A group with no explicit entry in the collapse map is open. Mirrors the
+// predicate Sidebar.js used before this map was lifted into a signal.
+export function isGroupOpen(expandedMap, path) {
+  return (expandedMap || {})[path] !== false
+}
+
+// Row-level filter predicate shared by the sidebar and keyboard nav.
+// `filter` must already be lowercased and trimmed.
+export function sessionMatches(s, filter, statuses) {
+  if (statuses && statuses.length && !statuses.includes(s.status)) return false
+  if (!filter) return true
+  const hay = (s.title || '') + ' ' + (s.group || '') + ' ' + (s.path || '') +
+              ' ' + (s.tool || '') + ' ' + (s.branch || '')
+  return hay.toLowerCase().includes(filter)
+}
+
+// The sidebar's rendered row order, group headers included. Single source of
+// truth: the Sidebar renders from it and keyboard navigation walks it, so the
+// two can never disagree about what is on screen.
+export const sidebarRowsSignal = computed(() => {
+  const { groups, byGroup } = menuModelSignal.value
+  const filter = (sidebarFilterSignal.value || '').trim().toLowerCase()
+  const statuses = statusFiltersSignal.value
+  const expandedMap = groupExpandedSignal.value
+
+  const rows = []
+  for (const g of groups) {
+    const members = (byGroup[g.path] || []).filter((s) => sessionMatches(s, filter, statuses))
+    // A text filter hides groups with nothing to show; a status chip does not.
+    if (filter && members.length === 0) continue
+    rows.push({ type: 'group', key: 'g:' + g.path, path: g.path, group: g, memberCount: members.length })
+    if (isGroupOpen(expandedMap, g.path)) {
+      for (const s of members) rows.push({ type: 'session', key: 's:' + s.id, id: s.id, session: s })
+    }
+  }
+  return rows
 })

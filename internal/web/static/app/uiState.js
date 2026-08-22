@@ -81,3 +81,21 @@ effect(() => {
   document.body.dataset.density = densitySignal.value
   document.body.dataset.rail = railSignal.value
 })
+
+// Sidebar `/ filter` text. Lifted out of Sidebar.js local useState so
+// dataModel's sidebarRowsSignal — and therefore keyboard navigation — sees
+// the same filter the user is looking at. Session-scoped (not persisted),
+// matching the previous useState behavior.
+export const sidebarFilterSignal = signal('')
+
+// Group collapse map: { [groupPath]: boolean }. Only groups the user has
+// explicitly toggled appear here; an absent entry means open, which is
+// exactly the predicate Sidebar.js used before (`expanded[p] !== false`).
+//
+// Persisted so collapse survives a reload — the TUI persists it to SQLite,
+// and there is no web API to write it server-side (PATCH /api/groups/{path}
+// accepts only {name}). The server's own `expanded` field is deliberately
+// NOT honored: nothing can write it back from the browser, so respecting it
+// would make TUI collapse leak into the web one-way.
+export const groupExpandedSignal = signal(loadJSON('agentdeck.groupExpanded', {}))
+persist(groupExpandedSignal, 'agentdeck.groupExpanded')
