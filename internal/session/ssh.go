@@ -539,26 +539,27 @@ func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotifi
 
 // FetchWriterStatus asks the remote whether anything is recording transitions
 // there. It is a SEPARATE call rather than a field on the export, so a remote
-// too old to know the command degrades to "unknown" instead of failing the whole
-// drain — the export's array contract is unchanged and older hosts keep working.
-//
-// Unknown is reported honestly rather than assumed healthy: this exists because
-// an empty result was being read as "all caught up", and swapping one silent
-// assumption for another would not be a fix.
-func (r *SSHRunner) FetchWriterStatus(ctx context.Context) (WriterStatus, bool) {
+// too old to know the command is an error: after records have been fetched, a
+// drain cannot distinguish an old binary from a host that stopped answering
+// between the export and this independent liveness probe. Callers must fail
+// closed rather than commit a completion-shaped partial export.
+func (r *SSHRunner) FetchWriterStatus(ctx context.Context) (WriterStatus, error) {
 	output, err := r.Run(ctx, "inbox", "writer-status", "--json")
 	if err != nil {
-		return WriterStatus{}, false
+		return WriterStatus{}, fmt.Errorf("writer-status command failed: %w", err)
 	}
 	trimmed := bytes.TrimSpace(output)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return WriterStatus{}, false
+	if len(trimmed) == 0 {
+		return WriterStatus{}, fmt.Errorf("writer-status command returned no output")
+	}
+	if trimmed[0] != '{' {
+		return WriterStatus{}, fmt.Errorf("writer-status command did not return a JSON object: %s", firstLineOf(trimmed))
 	}
 	var status WriterStatus
 	if err := json.Unmarshal(trimmed, &status); err != nil {
-		return WriterStatus{}, false
+		return WriterStatus{}, fmt.Errorf("writer-status command returned corrupt JSON: %w", err)
 	}
-	return status, true
+	return status, nil
 }
 
 // firstLineOf trims a remote reply to its first line, bounded, so an error

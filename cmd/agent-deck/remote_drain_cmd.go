@@ -67,7 +67,7 @@ type remoteRecordFetcher func(ctx context.Context, name string, rc session.Remot
 // there. A package-level seam rather than a parameter so the existing drain
 // tests keep their signature; they leave it at the real implementation and are
 // unaffected because an unreachable stub host simply reports "unknown".
-var remoteWriterProbe = func(ctx context.Context, rc session.RemoteConfig, name string) (session.WriterStatus, bool) {
+var remoteWriterProbe = func(ctx context.Context, rc session.RemoteConfig, name string) (session.WriterStatus, error) {
 	runner := session.NewSSHRunner(name, rc)
 	return runner.FetchWriterStatus(ctx)
 }
@@ -128,8 +128,8 @@ type remoteDrainResult struct {
 	Duplicates      int    `json:"duplicates"`
 	Unknown         int    `json:"unknown"`
 	// Writer reports whether the remote had anything recording transitions.
-	// Absent means the remote is too old to answer, which is reported as
-	// unknown rather than assumed healthy.
+	// It is present on every successful drain; an absent/invalid probe response
+	// fails the drain before a result can be emitted.
 	Writer  *session.WriterStatus                 `json:"writer,omitempty"`
 	Records []session.TransitionNotificationEvent `json:"records"`
 }
@@ -187,11 +187,12 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 
 	records, err := fetch(context.Background(), name, rc)
 
-	// Probed regardless of the fetch outcome and reported only where it changes
-	// the reading. nil means the remote could not answer — treated as unknown,
-	// never as healthy.
+	// Probe after the fetch. Its success is part of the drain transaction: the
+	// export and writer status are separate SSH calls, so a missing answer here
+	// can mean the host stalled after returning a partial export.
 	var writer *session.WriterStatus
-	if ws, ok := remoteWriterProbe(context.Background(), rc, name); ok {
+	ws, writerProbeErr := remoteWriterProbe(context.Background(), rc, name)
+	if writerProbeErr == nil {
 		writer = &ws
 	}
 	if err != nil {
@@ -200,6 +201,12 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		// host that answered "I cannot read my own records" (review P2c). The
 		// underlying error above says which.
 		fmt.Fprintln(stderr, "Nothing was pulled. This is a FAILED drain, NOT an empty inbox.")
+		return drainExitUnreachable
+	}
+	if writerProbeErr != nil {
+		fmt.Fprintf(stderr, "UNVERIFIED: remote '%s' (%s) writer-status probe failed after records were fetched.\n", name, rc.Host)
+		fmt.Fprintf(stderr, "Probe failure: %v\n", writerProbeErr)
+		fmt.Fprintln(stderr, "The remote may have stalled mid-drain; no fetched record was classified as finished or written locally.")
 		return drainExitUnreachable
 	}
 	if writer != nil && !writer.Running {
