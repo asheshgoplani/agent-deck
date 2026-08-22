@@ -635,11 +635,11 @@ func TestConductorHeartbeatScript_StatusParsingHandlesWhitespace(t *testing.T) {
 	}
 }
 
-// TestConductorHeartbeatScript_InjectsHeartbeatRules verifies parity with
-// conductor/bridge.py (PR #218): the OS heartbeat must also resolve and inline
-// HEARTBEAT_RULES.md so rules survive context compaction regardless of which
-// heartbeat mechanism is active.
-func TestConductorHeartbeatScript_InjectsHeartbeatRules(t *testing.T) {
+// TestConductorHeartbeatScript_ReferencesHeartbeatRules verifies that the OS
+// heartbeat resolves HEARTBEAT_RULES.md but sends only its stable path. Sending
+// the file contents every tick replays avoidable prompt tokens and invalidates
+// the cache prefix whenever a rule changes.
+func TestConductorHeartbeatScript_ReferencesHeartbeatRules(t *testing.T) {
 	if !strings.Contains(conductorHeartbeatScript, "HEARTBEAT_RULES.md") {
 		t.Fatal("heartbeat script should reference HEARTBEAT_RULES.md")
 	}
@@ -655,12 +655,59 @@ func TestConductorHeartbeatScript_InjectsHeartbeatRules(t *testing.T) {
 	if !strings.Contains(conductorHeartbeatScript, "/.agent-deck/conductor/HEARTBEAT_RULES.md") {
 		t.Fatal("heartbeat script should fall back to the legacy global HEARTBEAT_RULES.md")
 	}
+	if strings.Contains(conductorHeartbeatScript, `cat "$RULES_FILE"`) ||
+		strings.Contains(conductorHeartbeatScript, `RULES=$(cat`) {
+		t.Fatal("heartbeat script must reference the rules path, not inline its contents")
+	}
+	if !strings.Contains(conductorHeartbeatScript, `Read heartbeat rules from $RULES_FILE.`) {
+		t.Fatal("heartbeat message should tell the conductor which rules path to read")
+	}
 	// The rendered (not raw) script should carry the bridge-style prefix so the
 	// idle-pause matcher (IsConductorHeartbeatMessage) can recognise heartbeat
 	// messages emitted by this OS-level heartbeat path.
 	rendered := renderConductorHeartbeatScript("alpha", "default")
 	if !strings.Contains(rendered, ConductorBridgeHeartbeatPrefix) {
 		t.Fatalf("rendered heartbeat script should emit %q prefix (matches bridge.py)", ConductorBridgeHeartbeatPrefix)
+	}
+}
+
+func TestConductorInstructionsUseCompactTriageAndBlockingWait(t *testing.T) {
+	for name, template := range map[string]string{
+		"claude/codex": conductorPerNameClaudeMDTemplate,
+		"hermes":       conductorPerNameHermesMDTemplate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(template, `status --json`) {
+				t.Fatal("startup must triage with compact status JSON")
+			}
+			if strings.Contains(template, `Run `+"`"+`agent-deck -p {PROFILE} list --json`+"`"+` to know what sessions exist`) {
+				t.Fatal("startup must not fetch the full session list for triage")
+			}
+		})
+	}
+	if !strings.Contains(conductorSharedClaudeMDTemplate, `session children --follow --until-done`) {
+		t.Fatal("conductor instructions must replace polling turns with the blocking child stream")
+	}
+	if !strings.Contains(conductorSharedClaudeMDTemplate, `never for status triage or polling`) {
+		t.Fatal("full list JSON must be explicitly excluded from triage")
+	}
+}
+
+func TestConductorBridgeReferencesHeartbeatRulesWithoutInlining(t *testing.T) {
+	heartbeatStart := strings.Index(conductorBridgePy, "# Reference HEARTBEAT_RULES.md by path")
+	if heartbeatStart < 0 {
+		t.Fatal("bridge heartbeat should document path-only rules delivery")
+	}
+	heartbeatEnd := strings.Index(conductorBridgePy[heartbeatStart:], "# Run pre-heartbeat hook")
+	if heartbeatEnd < 0 {
+		t.Fatal("bridge heartbeat rules block boundary not found")
+	}
+	block := conductorBridgePy[heartbeatStart : heartbeatStart+heartbeatEnd]
+	if strings.Contains(block, ".read_text(") {
+		t.Fatal("bridge heartbeat must not inline HEARTBEAT_RULES.md contents")
+	}
+	if !strings.Contains(block, "Read heartbeat rules from {rules_path_ref}.") {
+		t.Fatal("bridge heartbeat should send the resolved rules path")
 	}
 }
 

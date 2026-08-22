@@ -15,8 +15,9 @@ Each conductor has its own identity in its subdirectory and its own policy in PO
 ### Status & Listing
 | Command | Description |
 |---------|-------------|
-| ` + "`" + `agent-deck -p <PROFILE> status --json` + "`" + ` | Get counts: ` + "`" + `{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}` + "`" + ` |
-| ` + "`" + `agent-deck -p <PROFILE> list --json` + "`" + ` | List all sessions with details (id, title, path, tool, status, group) |
+| ` + "`" + `agent-deck -p <PROFILE> status --json` + "`" + ` | **Always triage with this compact count summary first:** ` + "`" + `{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}` + "`" + ` |
+| ` + "`" + `agent-deck -p <PROFILE> list --json` + "`" + ` | Expensive full inventory; use only when the user explicitly needs details for every profile session, never for status triage or polling |
+| ` + "`" + `agent-deck -p <PROFILE> session children --follow --until-done` + "`" + ` | Block in one shell call while children run; emits every waiting/error transition and exits when all children are terminal |
 | ` + "`" + `agent-deck -p <PROFILE> session show --json <id_or_title>` + "`" + ` | Full details for one session |
 
 ### Reading Session Output
@@ -77,6 +78,8 @@ into your pane. The drain marks records consumed (exactly-once effects) and prin
 them; act on each before composing your status. Your Stop hook drains the same queue
 automatically at each turn boundary, so this heartbeat drain is the idle-conductor
 fallback — together they guarantee no completion is missed whether you are busy or idle.
+
+For child work still in flight, wait with one blocking ` + "`" + `agent-deck -p <PROFILE> session children --follow --until-done` + "`" + ` call. Do not spend turns repeatedly calling ` + "`" + `list --json` + "`" + ` or ` + "`" + `session children --json` + "`" + `.
 
 **Your heartbeat response format:**
 
@@ -305,7 +308,7 @@ When you first start (or after a restart):
 1. Read ` + "`" + `./state.json` + "`" + ` if it exists (restore context)
 2. Read ` + "`" + `./LEARNINGS.md` + "`" + ` and ` + "`" + `../LEARNINGS.md` + "`" + ` if they exist (review past patterns)
 3. Run ` + "`" + `agent-deck -p {PROFILE} status --json` + "`" + ` to get the current state
-4. Run ` + "`" + `agent-deck -p {PROFILE} list --json` + "`" + ` to know what sessions exist
+4. Only if the compact counts require action, inspect the affected child through ` + "`" + `session children` + "`" + `/` + "`" + `session show` + "`" + `; never use ` + "`" + `list --json` + "`" + ` for triage
 5. Log startup in ` + "`" + `./task-log.md` + "`" + `
 6. If any sessions are in error state (NOT stopped), try to restart them. Sessions in "stopped" status were intentionally closed by the user and must NOT be restarted.
 7. Reply: "Conductor {NAME} ({PROFILE}) online. N sessions tracked (X running, Y waiting)."
@@ -403,7 +406,7 @@ When you first start (or after a restart):
 1. Read ` + "`" + `./state.json` + "`" + ` if it exists (restore context)
 2. Read ` + "`" + `./LEARNINGS.md` + "`" + ` and ` + "`" + `../LEARNINGS.md` + "`" + ` if they exist (review past patterns)
 3. Run ` + "`" + `agent-deck -p {PROFILE} status --json` + "`" + ` to get the current state
-4. Run ` + "`" + `agent-deck -p {PROFILE} list --json` + "`" + ` to know what sessions exist
+4. Only if the compact counts require action, inspect the affected child through ` + "`" + `session children` + "`" + `/` + "`" + `session show` + "`" + `; never use ` + "`" + `list --json` + "`" + ` for triage
 5. Run ` + "`" + `hermes kanban list --status blocked --json` + "`" + ` to check for blocked tasks needing attention
 6. Log startup in ` + "`" + `./task-log.md` + "`" + `
 7. If any sessions are in error state (NOT stopped), try to restart them. Sessions in "stopped" status were intentionally closed by the user and must NOT be restarted.
