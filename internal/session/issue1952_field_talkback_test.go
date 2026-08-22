@@ -47,6 +47,7 @@ func TestFieldTalkback_OrdinarySessionWithNoSentinelIsRecorded(t *testing.T) {
 
 	inst := NewInstanceWithTool("ordinary", t.TempDir(), "claude")
 	inst.ID = "ord-1"
+	inst.ParentSessionID = "conductor-on-another-host"
 	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
 		t.Fatalf("SaveWithGroups: %v", err)
 	}
@@ -74,6 +75,7 @@ func TestFieldTalkback_FirstScanRecordsAnAlreadyParkedSession(t *testing.T) {
 
 	inst := NewInstanceWithTool("parked", t.TempDir(), "claude")
 	inst.ID = "parked-1"
+	inst.ParentSessionID = "conductor-on-another-host"
 	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
 		t.Fatalf("SaveWithGroups: %v", err)
 	}
@@ -96,6 +98,7 @@ func TestFieldTalkback_ParkedSessionRecordsOnlyOnce(t *testing.T) {
 
 	inst := NewInstanceWithTool("quiet", t.TempDir(), "claude")
 	inst.ID = "quiet-1"
+	inst.ParentSessionID = "conductor-on-another-host"
 	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
 		t.Fatalf("SaveWithGroups: %v", err)
 	}
