@@ -192,6 +192,24 @@ func TestRegistry_MatchTokenByPath(t *testing.T) {
 		{"agent relative", "./agent", "cursor"},
 		{"agent near-miss agent-deck", "agent-deck", "shell"},
 		{"agent path segment not basename", "/home/agent/bin/tool", "shell"},
+		// Only the executable field is basename-matched. Paths in argument
+		// position, VAR=value assignments, trailing slashes, and suffixed
+		// basenames must keep the pre-#2024 behaviour (shell / substring tool).
+		{"copilot arg path under pi home", "copilot --cwd /home/pi", "copilot"},
+		{"cursor arg path under pi home", "cursor --dir /home/pi", "cursor"},
+		{"crush arg path under pi home", "crush /home/pi", "crush"},
+		{"hermes arg path under agent home", "hermes --home /opt/agent", "hermes"},
+		{"cd pi home then bash", "cd /home/pi && bash", "shell"},
+		{"HOME assignment pi path", "HOME=/home/pi bash", "shell"},
+		{"VAR assignment pi path", "VAR=/x/pi cmd", "shell"},
+		{"ls arg path dsh", "ls /opt/dsh", "shell"},
+		{"cat arg path agent", "cat /usr/local/bin/agent", "shell"},
+		{"pi trailing slash", "pi/", "shell"},
+		{"pi trailing slash path", "/usr/local/bin/pi/", "shell"},
+		{"dsh suffixed basename", "dsh.sh", "shell"},
+		{"dsh suffixed basename path", "/usr/local/bin/dsh.sh", "shell"},
+		{"sudo prefix path", "sudo /usr/local/bin/dsh", "deepseek"},
+		{"env assignment then path", "env FOO=1 ./pi", "pi"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

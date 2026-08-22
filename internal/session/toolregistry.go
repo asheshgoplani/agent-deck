@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -240,6 +241,7 @@ func (r *Registry) Match(cmd string) string {
 
 	lower := strings.ToLower(cmd)
 	fields := strings.Fields(lower)
+	exe := executableField(fields)
 	for _, name := range r.order {
 		bt := r.builtins[name]
 		for _, sub := range bt.detectSubstrings {
@@ -247,19 +249,34 @@ func (r *Registry) Match(cmd string) string {
 				return name
 			}
 		}
-		// Token match compares the basename of each whitespace field so that
-		// "/usr/local/bin/dsh" and "./pi" match like the bare command, while
-		// "/home/pi/bin/tool" does not (only the basename is compared, never an
-		// intermediate path segment).
+		// Token match: every field is compared whole, and the executable field
+		// is additionally compared by basename so "/usr/local/bin/dsh" and
+		// "./pi" match like the bare command (#2024). Only the executable
+		// position gets basename treatment — argument paths such as
+		// "copilot --cwd /home/pi" must not flip detection.
 		for _, tok := range bt.detectTokens {
-			for _, f := range fields {
-				if filepath.Base(f) == tok {
-					return name
-				}
+			if slices.Contains(fields, tok) || exe == tok {
+				return name
 			}
 		}
 	}
 	return "shell"
+}
+
+// executableField returns the basename of the field in executable position,
+// skipping leading "env"/"sudo" wrappers and VAR=value assignments. A field
+// ending in "/" is a directory, not an executable, and yields "".
+func executableField(fields []string) string {
+	for _, f := range fields {
+		if f == "env" || f == "sudo" || strings.Contains(f, "=") {
+			continue
+		}
+		if strings.HasSuffix(f, "/") {
+			return ""
+		}
+		return filepath.Base(f)
+	}
+	return ""
 }
 
 // CustomNames returns the sorted names of user-defined tools (built-in shadows
