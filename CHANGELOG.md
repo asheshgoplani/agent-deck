@@ -63,7 +63,7 @@ Stability and correctness release: 30 commits, 21 pull requests and 19 closed is
 
 - Remote sessions reorder with shift+up/down ([#1875](https://github.com/asheshgoplani/agent-deck/issues/1875), [#1898](https://github.com/asheshgoplani/agent-deck/pull/1898)); remote group headers collapse ([#1874](https://github.com/asheshgoplani/agent-deck/pull/1874)) and descendants of collapsed ancestors stay hidden ([#1878](https://github.com/asheshgoplani/agent-deck/issues/1878), [#1899](https://github.com/asheshgoplani/agent-deck/pull/1899)).
 - The composer never submits content not attributable to the operator ([#1777](https://github.com/asheshgoplani/agent-deck/issues/1777), [#1778](https://github.com/asheshgoplani/agent-deck/pull/1778)).
-- Web link-opening honors a trusted-domains allowlist ([#1682](https://github.com/asheshgoplani/agent-deck/pull/1682)).
+- Web link-opening honors a trusted-domains allowlist, with an explicit `confirm_link_open` toggle ([#1758](https://github.com/asheshgoplani/agent-deck/pull/1758), closes [#1682](https://github.com/asheshgoplani/agent-deck/issues/1682)).
 
 ### Changed
 
