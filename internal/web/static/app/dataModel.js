@@ -8,7 +8,7 @@
 // so the design renders without inventing data. Components that need richer
 // data (e.g. RightRail Usage card) fall back to "no data" placeholders.
 import { computed } from '@preact/signals'
-import { sessionsSignal, sessionCostsSignal } from './state.js'
+import { sessionsSignal, sessionCostsSignal, selectedIdSignal, selectedGroupSignal } from './state.js'
 import { sidebarFilterSignal, groupExpandedSignal, statusFiltersSignal } from './uiState.js'
 
 // kind heuristic from session metadata (no API field today).
@@ -211,4 +211,50 @@ export function groupStats(groupPath) {
       .filter((b) => counts[b.id] > 0)
       .map((b) => ({ id: b.id, glyph: b.glyph, count: counts[b.id], label: b.label })),
   }
+}
+
+// Epoch millis for a session's createdAt; -Infinity when absent or unparsable
+// so a session with no timestamp never wins "newest".
+function createdAtMillis(s) {
+  const t = Date.parse(s.createdAt || '')
+  return Number.isNaN(t) ? -Infinity : t
+}
+
+// Defaults for a new session created in `groupPath`.
+//
+// Mirrors the TUI's quick-create (internal/ui/home.go:12325-12350): the folder
+// comes from the group's configured default_path and falls back to the group's
+// newest session path; the tool and model are inherited from the most recently
+// CREATED session in the group. Everything is derived client-side, so no
+// per-group tool/model schema is needed.
+export function groupCreateDefaults(groupPath) {
+  const blank = { groupPath: '', groupName: '', defaultPath: '', tool: '', modelId: '' }
+  if (!groupPath) return blank
+
+  const { groups, byGroup } = menuModelSignal.value
+  const group = groups.find(g => g.path === groupPath)
+  if (!group) return blank
+
+  let newest = null
+  for (const s of (byGroup[groupPath] || [])) {
+    if (!newest || createdAtMillis(s) > createdAtMillis(newest)) newest = s
+  }
+
+  return {
+    groupPath: group.path,
+    groupName: group.name,
+    defaultPath: group.defaultPath || (newest ? newest.path : '') || '',
+    tool: (newest && newest.tool) || '',
+    modelId: (newest && newest.modelId) || '',
+  }
+}
+
+// The group implied by the current selection: an explicitly selected group,
+// else the selected session's group, else none.
+export function currentGroupPath() {
+  if (selectedGroupSignal.value) return selectedGroupSignal.value
+  const id = selectedIdSignal.value
+  if (!id) return ''
+  const s = (menuModelSignal.value.sessions || []).find(x => x.id === id)
+  return s ? s.group : ''
 }
