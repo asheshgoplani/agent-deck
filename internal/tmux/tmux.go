@@ -28,6 +28,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 	dark "github.com/thiagokokada/dark-mode-go"
 )
 
@@ -818,9 +819,9 @@ func detectToolFromCommand(command string) string {
 		return ""
 	}
 
-	fields := strings.Fields(cmdLower)
-	if len(fields) > 0 {
-		base := filepath.Base(fields[0])
+	fields, valid := shellwords.Split(cmdLower)
+	if valid {
+		base := shellwords.ExecutableBase(fields)
 		switch base {
 		case "claude":
 			return "claude"

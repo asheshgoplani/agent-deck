@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
 
 // Registry is the unified, in-memory view of every tool agent-deck knows about:
@@ -240,8 +241,11 @@ func (r *Registry) Match(cmd string) string {
 	}
 
 	lower := strings.ToLower(cmd)
-	fields := strings.Fields(lower)
-	exe := executableField(fields)
+	fields, valid := shellwords.Split(lower)
+	exe := ""
+	if valid {
+		exe = shellwords.ExecutableBase(fields)
+	}
 	for _, name := range r.order {
 		bt := r.builtins[name]
 		for _, sub := range bt.detectSubstrings {
@@ -261,22 +265,6 @@ func (r *Registry) Match(cmd string) string {
 		}
 	}
 	return "shell"
-}
-
-// executableField returns the basename of the field in executable position,
-// skipping leading "env"/"sudo" wrappers and VAR=value assignments. A field
-// ending in "/" is a directory, not an executable, and yields "".
-func executableField(fields []string) string {
-	for _, f := range fields {
-		if f == "env" || f == "sudo" || strings.Contains(f, "=") {
-			continue
-		}
-		if strings.HasSuffix(f, "/") {
-			return ""
-		}
-		return filepath.Base(f)
-	}
-	return ""
 }
 
 // CustomNames returns the sorted names of user-defined tools (built-in shadows

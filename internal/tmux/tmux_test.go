@@ -641,6 +641,10 @@ func TestDetectToolFromCommand(t *testing.T) {
 		{name: "cursor", command: "cursor agent", want: "cursor"},
 		{name: "standalone agent", command: "agent", want: "cursor"},
 		{name: "standalone agent flags", command: "agent --continue", want: "cursor"},
+		{name: "double-quoted path with spaces", command: `"/opt/AI Tools/pi" --profile dev`, want: "pi"},
+		{name: "single-quoted path with spaces", command: `'/opt/AI Tools/dsh' --profile dev`, want: "deepseek"},
+		{name: "backslash-escaped path with spaces", command: `/opt/AI\ Tools/agent --continue`, want: "cursor"},
+		{name: "env prefix and spaced executable", command: `env PROFILE='team dev' "/opt/AI Tools/pi" --profile dev`, want: "pi"},
 		{name: "shell command", command: "npm run dev", want: ""},
 		{name: "empty", command: "", want: ""},
 	}
