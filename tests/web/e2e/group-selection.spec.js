@@ -169,4 +169,18 @@ test.describe('group selection', () => {
 
     await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('work')
   })
+
+  test('n after keyboard-navigating to a group prefills from that group', async ({ page }) => {
+    await page.locator('body').click()
+
+    // Keyboard only -- no click on the group row. Rendered order puts the
+    // `work` header first, so a single j focuses it.
+    await page.keyboard.press('j')
+    await expect(page.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+
+    await page.keyboard.press('n')
+
+    await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('work')
+    await expect(page.locator('.dialog input').nth(1)).toHaveValue('/srv/work')
+  })
 })
