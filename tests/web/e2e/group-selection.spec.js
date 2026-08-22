@@ -200,4 +200,113 @@ test.describe('group selection', () => {
     await page.reload()
     await expect(page.locator('[data-testid="group-stats-panel"]')).toHaveAttribute('data-group-path', 'work/innotrade', { timeout: 5000 })
   })
+
+  // Final-review finding #1: Tab became a global keyboard trap whenever a
+  // group was selected. The old guard exempted only INPUT/TEXTAREA/SELECT/
+  // contenteditable, so once focus landed on a <button> (any button,
+  // anywhere on the page) the next Tab press was swallowed by the group
+  // toggle instead of advancing focus -- including inside an open dialog.
+  test('Tab does not trap focus or toggle the group behind an open dialog', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▾')
+
+    await page.locator('[data-testid="group-new-session-btn"]').click()
+    await expect(page.locator('.overlay .dialog')).toBeVisible()
+
+    // Focus a <button> inside the dialog -- e.target on the next keydown is
+    // then a button, not an exempted form control.
+    const toolBtn = page.locator('.dialog .seg-btn').first()
+    await toolBtn.focus()
+    await expect(toolBtn).toBeFocused()
+
+    await page.keyboard.press('Tab')
+
+    // Focus must advance off the button rather than staying pinned to it.
+    await expect(toolBtn).not.toBeFocused()
+    // The dialog stays open and the group behind it stays expanded -- proof
+    // the keystroke was not silently consumed by the group toggle.
+    await expect(page.locator('.overlay .dialog')).toBeVisible()
+    await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▾')
+  })
+
+  // Once a Service Worker is active, its own fetch() calls originate outside
+  // the page's network stack, so page.route() cannot see or mock them (see
+  // session-actions-ui.spec.js's identical note on the canFork /api/menu
+  // test). Scoped to just this test so it stays deterministic without
+  // disabling the SW for the rest of the file.
+  test.describe('settings picker-tools override (SW blocked for deterministic routing)', () => {
+    test.use({ serviceWorkers: 'block' })
+
+    // Final-review finding #2: the dialog seeded a tool from the group's
+    // newest session even when an operator-restricted picker (hidden_tools /
+    // show_only_installed_tools) does not show it -- no button appeared
+    // selected, yet submit silently posted the hidden tool anyway.
+    test('the new-session dialog never seeds a tool the picker hides', async ({ page }) => {
+      // Mirrors tool-visibility.spec.js's GET /api/settings -> picker-UI
+      // pattern, but forces a restricted pickerTools so the seed (group
+      // "work"'s newest session, sess-002, uses claude) is provably not shown.
+      await page.route('**/api/settings', async (route) => {
+        const response = await route.fetch()
+        const body = await response.json()
+        body.pickerTools = ['codex', 'shell']
+        await route.fulfill({ response, json: body })
+      })
+
+      await page.goto('/')
+      await expect(page.locator('.sess')).toHaveCount(4, { timeout: 5000 })
+
+      await page.locator('[data-testid="group-head-work"] .name').click()
+      await page.keyboard.press('n')
+      await expect(page.locator('.overlay .dialog')).toBeVisible()
+
+      const shown = (await page.locator('.dialog .seg-row .seg-btn').allTextContents()).map((t) => t.trim())
+      expect(shown).toEqual(['ChatGPT', 'shell'])
+
+      // Exactly one button reflects the actual selection, and it must be a
+      // shown tool -- never the hidden `claude` the group would otherwise seed.
+      const selected = page.locator('.dialog .seg-btn.on')
+      await expect(selected).toHaveCount(1)
+      await expect(selected).toHaveText('ChatGPT')
+
+      // Submitting must post the tool the picker actually shows. Intercept
+      // and fulfill POST /api/sessions ourselves (rather than letting it hit
+      // the shared fixture) so this test does not leave a stray session
+      // behind for the other tests in this file, none of which reset the
+      // fixture between tests.
+      let posted = null
+      await page.route('**/api/sessions', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue()
+        posted = route.request().postDataJSON()
+        await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'fake-finding2-repro' }) })
+      })
+      await page.locator('.dialog input').first().fill('finding2-repro')
+      await page.locator('.dialog button[type=submit]').click()
+      await expect(page.locator('.overlay .dialog')).toHaveCount(0)
+      expect(posted?.tool).toBe('codex')
+    })
+  })
+
+  // Final-review finding #3: a group that vanishes while selected (deleted
+  // in the TUI, a stale /g/{path} URL/reload) left the stats panel rendering
+  // fabricated "0 sessions" with a working create button -- groupCreateDefaults
+  // returns the blank context for an unknown group, so that button silently
+  // created in the default group instead of the one shown on screen.
+  test('a stale group selection offers no create button and no fabricated stats', async ({ page }) => {
+    // Cold navigation to /g/does-not-exist would otherwise leave the main
+    // area on the persisted-independent "fleet" tab; select a real group
+    // first (persists activeTabSignal='terminal') so the repro matches the
+    // real scenario -- selected in the browser, then the group disappears.
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await expect(page.locator('[data-testid="group-stats-panel"]')).toBeVisible()
+
+    await page.goto('/g/does-not-exist')
+
+    const panel = page.locator('[data-testid="group-stats-panel"]')
+    await expect(panel).toBeVisible({ timeout: 5000 })
+    await expect(panel).toContainText('does-not-exist')
+    await expect(page.locator('[data-testid="group-stats-missing"]')).toBeVisible()
+
+    await expect(page.locator('[data-testid="group-stats-total"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="group-new-session-btn"]')).toHaveCount(0)
+  })
 })

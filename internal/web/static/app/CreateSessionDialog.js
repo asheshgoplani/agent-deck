@@ -117,11 +117,20 @@ export function CreateSessionDialog() {
   const [submitting, setSubmitting] = useState(false)
   const [seededFor, setSeededFor] = useState(null)
 
+  // Tools actually offered by the picker (operator-filtered via hidden_tools /
+  // show_only_installed_tools). Computed before the seeding effect below so
+  // the seed can be checked against it — see next comment.
+  const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
+
   // Re-seed when the dialog opens for a different group. Keyed on groupPath so
   // SSE-driven re-renders never stomp edits the user is in the middle of, and
   // reopening on another group does not inherit the previous group's values.
   if (open && seededFor !== ctx.groupPath) {
-    const seedTool = ctx.tool || 'claude'
+    // Only seed a tool the picker actually shows: an operator-hidden tool
+    // (e.g. `claude` filtered via hidden_tools) must never seed a selection
+    // no button reflects, which used to submit an invisible/wrong tool on
+    // create (review finding #2). Fall back to the first shown tool.
+    const seedTool = shownTools.includes(ctx.tool) ? ctx.tool : shownTools[0]
     setTool(seedTool)
     setPath(ctx.defaultPath || '')
     // Only prefill a model the catalog recognizes: an unknown id would render
@@ -176,7 +185,6 @@ export function CreateSessionDialog() {
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
   const reasoningEfforts = reasoningEffortsForTool(tool)
-  const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 

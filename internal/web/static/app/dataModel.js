@@ -134,6 +134,16 @@ export function isGroupOpen(expandedMap, path) {
   return (expandedMap || {})[path] !== false
 }
 
+// Flip a group's collapsed/expanded state. The single implementation behind
+// every collapse-toggle call site (Sidebar's chevron click, AppShell's Tab
+// and Enter keyboard handlers, and setGroupOpen's force-to-value case) —
+// those four used to reimplement this spread three times byte-identically,
+// which is how the Tab-key overlay bug (review finding #1) slipped into
+// only one of the copies (review finding #7).
+export function toggleGroupOpen(path) {
+  groupExpandedSignal.value = { ...groupExpandedSignal.value, [path]: !isGroupOpen(groupExpandedSignal.value, path) }
+}
+
 // Row-level filter predicate shared by the sidebar and keyboard nav.
 // `filter` must already be lowercased and trimmed.
 export function sessionMatches(s, filter, statuses) {

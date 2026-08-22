@@ -8,7 +8,7 @@
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
 import { Icon, ICONS, Dot, kindSigil } from './icons.js'
-import { menuModelSignal, sidebarRowsSignal, isGroupOpen, openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
+import { menuModelSignal, sidebarRowsSignal, isGroupOpen, toggleGroupOpen, openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
 import {
   selectedIdSignal, selectedGroupSignal, selectSession, selectGroup,
   mutationsEnabledSignal, confirmDialogSignal,
@@ -163,9 +163,7 @@ export function Sidebar() {
     const cur = statusFiltersSignal.value
     statusFiltersSignal.value = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]
   }
-  const toggleGroup = (p) => {
-    groupExpandedSignal.value = { ...groupExpandedSignal.value, [p]: !isGroupOpen(groupExpandedSignal.value, p) }
-  }
+  const toggleGroup = (p) => toggleGroupOpen(p)
   const onSelect = (id) => {
     selectSession(id)
     activeTabSignal.value = 'terminal'

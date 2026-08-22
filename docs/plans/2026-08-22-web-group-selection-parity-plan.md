@@ -165,7 +165,7 @@ In `internal/web/session_data_service.go`, add to `MenuGroup` (after `SessionCou
 //
 // Read straight off the field. BuildMenuSnapshot's tree comes from
 // NewGroupTreeWithGroups, which already normalizes this through the
-// CACHED resolver (internal/session/groups.go:316-318 ->
+// CACHED resolver (internal/session/groups.go:386-388 ->
 // updateGroupDefaultPath). Do NOT call ExplicitDefaultPathForGroup or
 // DefaultPathForGroup here: they run the uncached resolveGroupDefaultPath
 // (os.Stat + up to 3 git subprocesses, ~21ms per group) and this builder

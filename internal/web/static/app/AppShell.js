@@ -26,12 +26,12 @@ import { McpPane } from './panes/McpPane.js'
 import { SkillsPane } from './panes/SkillsPane.js'
 import { Icon, ICONS } from './icons.js'
 import {
-  menuModelSignal, sidebarRowsSignal, isGroupOpen,
+  menuModelSignal, sidebarRowsSignal, isGroupOpen, toggleGroupOpen,
   openCreateSessionForGroup, currentGroupPath,
 } from './dataModel.js'
 import {
   selectedIdSignal, selectedGroupSignal, selectSession, selectGroup, createSessionDialogSignal, confirmDialogSignal,
-  groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
+  groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal, editSessionDialogSignal, toastHistoryOpenSignal,
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
   hiddenToolsSignal, pickerToolsSignal,
@@ -263,12 +263,15 @@ export function AppShell() {
 
     // Collapse/expand the focused group. Mirrors the TUI's h/left and
     // l/right/tab (internal/ui/home.go:999, :8786). No-op unless a group is
-    // actually selected.
+    // actually selected. Routes through the shared toggleGroupOpen (review
+    // finding #7) — a toggle is equivalent to a forced set here because the
+    // current state is checked first, so this keeps its own "did a group
+    // exist to act on" return value that ArrowLeft/ArrowRight rely on for
+    // preventDefault.
     const setGroupOpen = (open) => {
       const p = selectedGroupSignal.value
       if (!p) return false
-      if (isGroupOpen(groupExpandedSignal.value, p) === open) return true
-      groupExpandedSignal.value = { ...groupExpandedSignal.value, [p]: open }
+      if (isGroupOpen(groupExpandedSignal.value, p) !== open) toggleGroupOpen(p)
       return true
     }
 
@@ -283,10 +286,28 @@ export function AppShell() {
       tweaksOpenSignal.value = false
       shortcutsOverlaySignal.value = false
       createSessionDialogSignal.value = null
+      editSessionDialogSignal.value = null
       confirmDialogSignal.value = null
       groupNameDialogSignal.value = null
       infoDrawerOpenSignal.value = false
+      toastHistoryOpenSignal.value = false
     }
+    // Every overlay/modal signal closeAllModals resets, kept as one list so
+    // this predicate and closeAllModals cannot drift apart (review finding
+    // #1). Anything here must block keyboard shortcuts — like the group
+    // Tab-toggle below — that would otherwise fire invisibly behind an open
+    // dialog.
+    const anyOverlayOpen = () => !!(
+      paletteOpenSignal.value ||
+      tweaksOpenSignal.value ||
+      shortcutsOverlaySignal.value ||
+      createSessionDialogSignal.value ||
+      editSessionDialogSignal.value ||
+      confirmDialogSignal.value ||
+      groupNameDialogSignal.value ||
+      infoDrawerOpenSignal.value ||
+      toastHistoryOpenSignal.value
+    )
     const onKey = (e) => {
       const t = e.target
       const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
@@ -330,23 +351,20 @@ export function AppShell() {
         if (setGroupOpen(false)) e.preventDefault()
       } else if (e.key === 'ArrowRight' || e.key === 'l') {
         if (setGroupOpen(true)) e.preventDefault()
-      } else if (e.key === 'Tab' && selectedGroupSignal.value) {
+      } else if (e.key === 'Tab' && !e.shiftKey && selectedGroupSignal.value && !anyOverlayOpen()) {
         // Tab toggles the focused group, matching the TUI. Guarded on an
-        // actual group selection so normal focus traversal is untouched.
+        // actual group selection so normal focus traversal is untouched —
+        // and, critically, on no modal/overlay being open: otherwise this
+        // swallowed Tab (and, before the shiftKey check, Shift+Tab too)
+        // everywhere on the page the instant a group was selected, trapping
+        // keyboard focus behind any open dialog (review finding #1).
+        // Shift+Tab is left to the browser unconditionally.
         e.preventDefault()
-        const p = selectedGroupSignal.value
-        groupExpandedSignal.value = {
-          ...groupExpandedSignal.value,
-          [p]: !isGroupOpen(groupExpandedSignal.value, p),
-        }
+        toggleGroupOpen(selectedGroupSignal.value)
       } else if (e.key === 'Enter') {
         if (selectedGroupSignal.value) {
           e.preventDefault()
-          const p = selectedGroupSignal.value
-          groupExpandedSignal.value = {
-            ...groupExpandedSignal.value,
-            [p]: !isGroupOpen(groupExpandedSignal.value, p),
-          }
+          toggleGroupOpen(selectedGroupSignal.value)
           return
         }
         const s = focusedSession()
