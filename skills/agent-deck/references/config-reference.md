@@ -300,6 +300,20 @@ hooks_enabled = false      # Disable automatic Cursor hook injection on TUI star
 | `env_file` | string | `""` | A .env file sourced for Cursor sessions only. See [Path Resolution](#path-resolution). |
 | `hooks_enabled` | bool | `true` | When `true`, TUI startup silently injects agent-deck lifecycle hooks into `~/.cursor/hooks.json` whenever the resolved Cursor CLI binary is on `PATH` (real-time status detection). Set `false` to durably opt out; `agent-deck cursor-hooks uninstall` writes this automatically so the uninstall survives TUI restarts (issue #1672). Re-enable with `agent-deck cursor-hooks install` or by removing the key. Mirrors `[claude] hooks_enabled`. |
 
+## [omp] Section
+
+Oh My Pi sessions use an instance-scoped session directory and resume automatically.
+
+```toml
+[omp]
+command = "omp"
+env_file = "~/.config/omp.env"
+default_model = "anthropic/claude-sonnet-4-6"
+approval_mode = "write" # always-ask | write | yolo
+```
+
+`default_model` is passed as `--model`; a model selected for an individual session takes precedence.
+
 ## [hermes] Section
 
 Hermes Agent CLI integration settings ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)).
@@ -422,7 +436,7 @@ branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-tit
 | `docker` | string | `"auto"` | Docker isolation for the fork: `"auto"` matches the parent (sandboxed parent → a fresh container; otherwise none), `"on"` always sandboxes, `"off"` never. |
 | `branch_prefix` | string | `"fork/"` | Prefix for the auto-suggested fork branch name. Applies to both quick fork and the `Shift+F` dialog. |
 
-> **Note:** Forking is supported across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) via each tool's native fork, in the TUI, CLI (`agent-deck session fork <id>`), and Web UI. The Web/API endpoint (`POST /api/sessions/{id}/fork`) performs a plain tool-native fork and does **not** apply these `[fork]` worktree/state/Docker defaults — those are TUI quick-fork/dialog scope. Codex forking requires a codex CLI with `codex fork <session-id>` support.
+> **Note:** Forking is supported across Claude, OpenCode, Pi, Codex, and Oh My Pi (and Codex-compatible custom tools) via each tool's native fork, in the TUI, CLI (`agent-deck session fork <id>`), and Web UI. The Web/API endpoint (`POST /api/sessions/{id}/fork`) performs a plain tool-native fork and does **not** apply these `[fork]` worktree/state/Docker defaults — those are TUI quick-fork/dialog scope. Codex forking requires a codex CLI with `codex fork <session-id>` support.
 
 ## [conductor] Section
 

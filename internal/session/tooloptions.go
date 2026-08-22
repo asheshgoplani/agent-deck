@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // ToolOptions is the interface for tool-specific launch options
@@ -316,6 +317,46 @@ func UnmarshalOpenCodeOptions(data json.RawMessage) (*OpenCodeOptions, error) {
 		return nil, err
 	}
 
+	return &opts, nil
+}
+
+// OMPOptions holds per-session launch options for Oh My Pi.
+type OMPOptions struct {
+	Model string `json:"model,omitempty"`
+}
+
+func (o *OMPOptions) ToolName() string { return "omp" }
+
+func (o *OMPOptions) ToArgs() []string {
+	if o == nil || strings.TrimSpace(o.Model) == "" {
+		return nil
+	}
+	return []string{"--model", strings.TrimSpace(o.Model)}
+}
+
+func NewOMPOptions(config *UserConfig) *OMPOptions {
+	opts := &OMPOptions{}
+	if config != nil {
+		opts.Model = config.OMP.DefaultModel
+	}
+	return opts
+}
+
+func UnmarshalOMPOptions(data json.RawMessage) (*OMPOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Tool != "omp" {
+		return nil, nil
+	}
+	var opts OMPOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
 	return &opts, nil
 }
 

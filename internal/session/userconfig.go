@@ -158,6 +158,9 @@ type UserConfig struct {
 	// DeepSeek defines DeepSeek Harness (`dsh`) integration settings
 	DeepSeek DeepSeekSettings `toml:"deepseek,omitempty"`
 
+	// OMP defines Oh My Pi (`omp`, github.com/can1357/oh-my-pi) integration settings
+	OMP OMPSettings `toml:"omp,omitempty"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree,omitempty"`
 
@@ -2116,6 +2119,34 @@ type DeepSeekSettings struct {
 	ExtraArgs []string `toml:"extra_args,omitempty"`
 }
 
+// OMPSettings defines Oh My Pi (`omp`) integration configuration.
+//
+// Binary: `omp` from npm @oh-my-pi/pi-coding-agent (github.com/can1357/oh-my-pi,
+// MIT, a fork of badlogic/pi-mono). Verified against v17.3.8. See
+// internal/session/omp.go for the full invocation grammar this block feeds.
+type OMPSettings struct {
+	// DefaultModel is passed as --model unless a session has its own override.
+	DefaultModel string `toml:"default_model,omitempty"`
+
+	// Command overrides the default binary/invocation for omp sessions.
+	// Supports flags (e.g., "omp --smol haiku"). Unlike buildCrushCommand's
+	// true passthrough, buildOMPCommand always appends --continue
+	// --session-dir (mirroring buildPiCommand) regardless of this value —
+	// there is no passthrough branch for omp/pi. Default: "omp"
+	Command string `toml:"command,omitempty"`
+
+	// EnvFile is a .env file specific to omp sessions, sourced before the
+	// `omp` command runs (like [gemini].env_file). This is where an
+	// ANTHROPIC_API_KEY/OPENAI_API_KEY belongs when it should not live in
+	// the user's shell.
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// ApprovalMode maps directly to omp's `--approval-mode` flag
+	// ("always-ask", "write", or "yolo"). Empty (default) omits the flag
+	// entirely, so omp uses its own configured default.
+	ApprovalMode string `toml:"approval_mode,omitempty"`
+}
+
 // CursorSettings defines Cursor Agent CLI integration configuration (Issue #1672).
 type CursorSettings struct {
 	// Command overrides the default binary/invocation for Cursor sessions.
@@ -3707,6 +3738,10 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "omp":
+		if config.OMP.Command != "" {
+			return config.OMP.Command
+		}
 	case "deepseek":
 		// The tool is named for the vendor; the binary it launches is `dsh`.
 		// Returning the tool name here (the default tail of this function)
@@ -3757,6 +3792,8 @@ func GetToolIcon(toolName string) string {
 		return "🐋"
 	case "pi":
 		return "π"
+	case "omp":
+		return "⌥"
 	case "shell":
 		return "🐚"
 	default:
