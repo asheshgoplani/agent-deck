@@ -4525,7 +4525,8 @@ func handleSessionOutput(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	response.Content, truncatedLines := tailOutputLines(response.Content, *lines)
+	trimmedContent, truncatedLines := tailOutputLines(response.Content, *lines)
+	response.Content = trimmedContent
 
 	// Copy to clipboard mode
 	if *copyFlag {
