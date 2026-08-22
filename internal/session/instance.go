@@ -8987,8 +8987,24 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// GetClaudeCommandForInstance never sees (see its doc comment). Without
 	// this, resume falls back to the literal "claude" binary and bypasses
 	// the wrapper script that sets up gateway env vars.
+	//
+	// The --fork-session / --session-id exclusions reuse the same predicate
+	// adoptExplicitClaudeSessionID uses for the same discrimination: a fork
+	// target's Command holds the whole compound fork command (cd '<path>' &&
+	// ... exec claude --session-id "<uuid>" --resume <parent-id> --fork-session)
+	// baked by buildClaudeForkCommandForTarget and persisted to disk. The
+	// IsForkAwaitingStart sentinel that routes the first Start() around this
+	// function is transient (json:"-"), so it is gone after the first start —
+	// a subsequent Restart() reaches here with that compound string in Command.
+	// Treating it as a custom command splices it in as the claude binary:
+	// --fork-session and the parent's id come back (double-counting the parent
+	// conversation) and the pane dies with `exec: cd: not found` (exit 127)
+	// because the string starts with `exec cd`. Same shape as the #1830
+	// finding, one path over.
 	claudeCmd := GetClaudeCommandForInstance(i)
-	customCommand := i.Command != "" && i.Command != "claude"
+	customCommand := i.Command != "" && i.Command != "claude" &&
+		!commandHasToken(i.Command, "--fork-session") &&
+		!commandHasToken(i.Command, "--session-id")
 	if customCommand {
 		claudeCmd = i.Command
 	}

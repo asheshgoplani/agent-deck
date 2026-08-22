@@ -134,6 +134,46 @@ func startDispatchHonorsForkSentinel() bool {
 	return earlyIdx[0] < resumeIdx[0]
 }
 
+// TestRegression_ForkSecondStartDoesNotReuseForkCommandAsCustomCommand pins the
+// review finding on PR #1984: buildClaudeResumeCommand's per-session custom
+// command precedence (i.Command != "" && i.Command != "claude") also fires on a
+// fork target's SECOND start. CreateForkedInstanceWithOptions stores the whole
+// pre-built fork command in Command:
+//
+//	cd '<path>' && export ...; exec claude --session-id "<fork-uuid>" --resume <parent-id> --fork-session ...
+//
+// and IsForkAwaitingStart (the sentinel that routes the first start around
+// buildClaudeResumeCommand) is transient (json:"-"), so it is gone after the
+// first Start(). A subsequent Restart() takes the normal resume path, where the
+// compound string is mistaken for a per-session custom command and spliced in
+// as the claude binary. The parent's id and --fork-session come back
+// (double-counting the parent conversation) and the pane dies with
+// `exec: cd: not found` (exit 127) because the string starts with `exec cd`.
+// This is the same shape as the #1830 finding, one path over.
+//
+// Setup mirrors the first Start(): consumeForkStartCommand clears
+// IsForkAwaitingStart but leaves Command holding the compound string on disk.
+func TestRegression_ForkSecondStartDoesNotReuseForkCommandAsCustomCommand(t *testing.T) {
+	parent := NewInstanceWithTool("parent", "/tmp", "claude")
+	parent.ClaudeSessionID = "parent-abc-123"
+	parent.ClaudeDetectedAt = time.Now()
+
+	forked, _, err := parent.CreateForkedInstance("forked-second-start", "")
+	require.NoError(t, err, "CreateForkedInstance should succeed")
+
+	// Simulate the first Start() consuming the sentinel: IsForkAwaitingStart
+	// is cleared (transient, not persisted) but Command retains the compound
+	// fork string — the on-disk shape a Restart() sees.
+	forked.IsForkAwaitingStart = false
+
+	cmd := forked.buildClaudeResumeCommand()
+
+	require.NotContains(t, cmd, "--fork-session",
+		"second start of a forked session must not re-emit --fork-session (double-counts the parent conversation)")
+	require.NotContains(t, cmd, "parent-abc-123",
+		"second start of a forked session must not re-reference the parent's conversation id")
+}
+
 func TestCodexForkStartDispatchConsumesAwaitingStart(t *testing.T) {
 	requireCodexForkStartGuard(t, "Start")
 	requireCodexForkStartGuard(t, "StartWithMessage")

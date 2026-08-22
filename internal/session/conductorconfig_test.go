@@ -487,19 +487,26 @@ config_dir = %q
 }
 
 // TestBuildClaudeResumeCommand_CustomCommand verifies that a per-session
-// custom command (i.Command from `launch -c <wrapper>`) is used on the
-// resume path, not the literal "claude" binary. Also checks that the
-// CLAUDE_CONFIG_DIR export IS present for a per-session custom command
-// (the F3 gate does not apply), while a config-level alias suppresses it.
+// custom command (i.Command from `launch -c <wrapper>`) is used on the resume
+// path, not the literal "claude" binary. The first case pins the actual F3
+// gate delta this PR introduces: when BOTH a per-session custom command AND a
+// config-level alias are present, the per-session command overrides the alias
+// AND the CLAUDE_CONFIG_DIR export is present (before this PR, the alias
+// suppressed the export). The second case confirms a config-level alias with
+// the default Command still suppresses the export.
 func TestBuildClaudeResumeCommand_CustomCommand(t *testing.T) {
 	tmpHome := setupConductorTest(t)
 	configDir := filepath.Join(tmpHome, "claude-config")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
+	// Config carries BOTH a config_dir and a config-level alias (cdw). This
+	// is the combination the F3 gate delta turns on: the per-session custom
+	// command must override the alias and still export CLAUDE_CONFIG_DIR.
 	writeConductorConfig(t, tmpHome, fmt.Sprintf(`
 [conductors.foo.claude]
 config_dir = %q
+command = "cdw"
 `, configDir))
 	projectPath := filepath.Join(tmpHome, "project")
 	if err := os.MkdirAll(projectPath, 0o755); err != nil {
@@ -519,7 +526,10 @@ config_dir = %q
 		t.Fatalf("write jsonl: %v", err)
 	}
 
-	// --- Per-session custom command: used on resume, CLAUDE_CONFIG_DIR exported ---
+	// --- Case 1: per-session custom command overrides config-level alias ---
+	// Before this PR: claudeCmd resolved to "cdw" (alias), F3 gate suppressed
+	// the export. After: claudeCmd = i.Command, F3 gate does not apply, export
+	// is present. This is the delta the PR deliberately introduces.
 	inst := NewInstanceWithGroupAndTool("conductor-foo", projectPath, "conductor", "claude")
 	inst.ClaudeSessionID = sessionID
 	inst.Command = "/tmp/wrapper.sh"
@@ -528,8 +538,8 @@ config_dir = %q
 	if !strings.Contains(cmd, "/tmp/wrapper.sh") {
 		t.Errorf("resume should use per-session custom command /tmp/wrapper.sh; got %q", cmd)
 	}
-	if strings.Contains(cmd, " claude ") || strings.HasSuffix(cmd, " claude") {
-		t.Errorf("resume should not use literal claude binary; got %q", cmd)
+	if strings.Contains(cmd, "cdw") {
+		t.Errorf("per-session custom command must override config-level alias cdw; got %q", cmd)
 	}
 	// F3 gate does not apply for per-session custom commands — the export
 	// should be present, matching buildClaudeCommandWithMessage's custom branch.
@@ -541,15 +551,10 @@ config_dir = %q
 		t.Errorf("resume should contain --resume %s; got %q", sessionID, cmd)
 	}
 
-	// --- Config-level alias: used on resume, CLAUDE_CONFIG_DIR suppressed ---
-	writeConductorConfig(t, tmpHome, fmt.Sprintf(`
-[conductors.foo.claude]
-config_dir = %q
-command = "cdw"
-`, configDir))
+	// --- Case 2: config-level alias with default Command suppresses export ---
 	inst2 := NewInstanceWithGroupAndTool("conductor-foo", projectPath, "conductor", "claude")
 	inst2.ClaudeSessionID = sessionID
-	inst2.Command = "claude" // default command — exercises the config-level alias path
+	inst2.Command = "claude" // default — exercises the config-level alias path
 
 	cmd2 := inst2.buildClaudeResumeCommand()
 	if !strings.Contains(cmd2, "cdw") {
