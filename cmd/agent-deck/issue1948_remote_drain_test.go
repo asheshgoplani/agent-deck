@@ -31,6 +31,11 @@ func drainTestHome(t *testing.T) {
 	t.Setenv("AGENT_DECK_HOME", "")
 	t.Setenv("AGENT_DECK_PROFILE", "")
 	session.ResetInboxFingerprintCacheForTest()
+	oldProbe := remoteWriterProbe
+	remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, error) {
+		return session.WriterStatus{Running: true}, nil
+	}
+	t.Cleanup(func() { remoteWriterProbe = oldProbe })
 }
 
 // registerDrainTarget keeps these remote-drain integration tests aligned with
@@ -125,9 +130,9 @@ func TestIssue2038_RemoteDrainRefusesTargetBeforeRemoteIO(t *testing.T) {
 			}, nil)
 			probeCalls := 0
 			oldProbe := remoteWriterProbe
-			remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, bool) {
+			remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, error) {
 				probeCalls++
-				return session.WriterStatus{Running: true}, true
+				return session.WriterStatus{Running: true}, nil
 			}
 			t.Cleanup(func() { remoteWriterProbe = oldProbe })
 
@@ -156,8 +161,8 @@ func TestIssue1952_RemoteDrainStalledWriterNeverReportsFinished(t *testing.T) {
 		remoteCompletion("remote-child", "looks complete in a partial reply", time.Now()),
 	}, nil)
 	oldProbe := remoteWriterProbe
-	remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, bool) {
-		return session.WriterStatus{Detail: "fake remote stopped responding mid-drain"}, true
+	remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, error) {
+		return session.WriterStatus{Detail: "fake remote stopped responding mid-drain"}, nil
 	}
 	t.Cleanup(func() { remoteWriterProbe = oldProbe })
 
@@ -174,6 +179,45 @@ func TestIssue1952_RemoteDrainStalledWriterNeverReportsFinished(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "finished") || session.InboxHasPending(conductor) {
 		t.Fatalf("stalled partial reply was classified or written as finished: stdout=%s", stdout.String())
+	}
+}
+
+func TestIssue1952_RemoteDrainFailedWriterProbeNeverReportsFinished(t *testing.T) {
+	for _, failure := range []struct{ name, message string }{
+		{name: "command error", message: "writer-status command failed: ssh disconnected"},
+		{name: "empty output", message: "writer-status command returned no output"},
+		{name: "corrupt JSON", message: "writer-status command returned corrupt JSON"},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			drainTestHome(t)
+			configureRemote(t, "boxb", "worker@box-b")
+			const conductor = "conductor-unverified"
+			registerDrainTarget(t, conductor)
+			fetch, calls := stubFetch([]session.TransitionNotificationEvent{
+				remoteCompletion("remote-child", "looks complete in a partial reply", time.Now()),
+			}, nil)
+			remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, error) {
+				return session.WriterStatus{}, errors.New(failure.message)
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := runRemoteDrain(&stdout, &stderr, []string{"--into", conductor, "boxb"}, fetch)
+			if code != drainExitUnreachable {
+				t.Fatalf("exit=%d, want %d; stderr=%s", code, drainExitUnreachable, stderr.String())
+			}
+			if *calls != 1 {
+				t.Fatalf("fetch calls=%d, want 1", *calls)
+			}
+			if !strings.Contains(stderr.String(), "UNVERIFIED") || !strings.Contains(stderr.String(), "writer-status probe failed") {
+				t.Fatalf("probe failure is not explicit: %s", stderr.String())
+			}
+			if !strings.Contains(stderr.String(), failure.message) {
+				t.Fatalf("probe failure shape is missing: %s", stderr.String())
+			}
+			if stdout.Len() != 0 || session.InboxHasPending(conductor) {
+				t.Fatalf("partial reply was printed or written: stdout=%s", stdout.String())
+			}
+		})
 	}
 }
 
