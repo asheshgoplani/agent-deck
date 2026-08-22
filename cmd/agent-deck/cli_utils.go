@@ -175,6 +175,18 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 	return append(flags, positional...)
 }
 
+// helpRequested reports whether an argument list contains a conventional help
+// token. Mutating or long-running dispatchers must check this before parsing or
+// interpreting positional arguments so asking for help is always read-only.
+func helpRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "help" || arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {

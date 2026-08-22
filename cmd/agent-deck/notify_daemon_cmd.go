@@ -29,6 +29,10 @@ func handleNotifyDaemon(args []string) {
 		fmt.Println()
 		fmt.Println("Run status-driven transition notification daemon.")
 	}
+	if helpRequested(args) {
+		fs.Usage()
+		return
+	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)

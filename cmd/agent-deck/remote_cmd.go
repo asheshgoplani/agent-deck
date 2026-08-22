@@ -20,6 +20,10 @@ func handleRemote(profile string, args []string) {
 		printRemoteUsage()
 		return
 	}
+	if helpRequested(args) {
+		printRemoteUsage()
+		return
+	}
 
 	switch args[0] {
 	case "add":

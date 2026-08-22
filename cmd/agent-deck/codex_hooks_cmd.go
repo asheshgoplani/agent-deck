@@ -304,7 +304,7 @@ func handleCodexHooks(args []string) {
 
 	// A help request anywhere in the argument list must print usage and exit
 	// without side effects (#1993).
-	if hooksHelpRequested(args) {
+	if helpRequested(args) {
 		printCodexHooksUsage(os.Stdout)
 		return
 	}

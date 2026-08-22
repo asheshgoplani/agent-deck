@@ -1,147 +1,54 @@
-# Issue #2045 results
+# Issue #2025 results
 
 ## Reproduction
 
-Reproduced on current `origin/main` at `47bb2103` in a `golang:1.25`
-container. The regression test `TestIssue2045LaunchHelpOffersNamedAccountSlot`
-failed because `agent-deck launch --help` had no `--account` option. The test
-`TestIssue2045AccountsListsConfiguredSlots` failed because the unknown
-`accounts` command fell through to TUI startup and exited with `Error: tmux not
-found` instead of listing the two configured slots.
+Reproduced on current `main` at `47bb2103` in `golang:1.25`, using executable-level subprocesses with isolated `HOME` and XDG directories.
+
+The new `TestIssue2025TrailingHelpIsReadOnly` failed before the fix for all four reported commands:
+
+- `deepseek sessions help` resolved `help` as `/src/cmd/agent-deck/help` and printed a sessions result instead of usage.
+- `remote add test example.invalid help` persisted the remote and attempted SSH installation.
+- `notify-daemon help` did not return within two seconds and entered the daemon path.
+- `creds-refresh --config-dir <fixture> help` did not return within two seconds and entered the credential refresh loop.
 
 ## Root cause
 
-- `cmd/agent-deck/launch_cmd.go:124` had no account flag, and the instance
-  construction path near `cmd/agent-deck/launch_cmd.go:441` therefore never
-  copied a selected slot into `Instance.Account`. The existing start-time
-  resolver already consumes that field, so the missing launch wiring was the
-  gap.
-- The top-level command switch in `cmd/agent-deck/main.go:334` had no
-  `accounts` route. Unknown commands continue into TUI startup, which explains
-  the unrelated tmux error seen in the reproduction.
+Help recognition was decentralized and inconsistent. The hook family had a shared predicate, but the other dispatchers interpreted arguments before applying the same consent boundary:
+
+- `cmd/agent-deck/deepseek_cmd.go:27` treated trailing bare `help` as a workspace positional.
+- `cmd/agent-deck/remote_cmd.go:18` dispatched `add` before recognizing trailing help, reaching config persistence and SSH setup.
+- `cmd/agent-deck/notify_daemon_cmd.go:23` let Go flag parsing leave bare `help` positional, then initialized logging and ran the daemon.
+- `cmd/agent-deck/creds_refresh_cmd.go:59` likewise parsed around bare `help`, resolved credentials, and ran the refresher.
+- The top-level command list was duplicated manually and had already drifted from the dispatch switch (`fleet`, `agents`, `agent`, and flag aliases were absent), so it could not safely drive exhaustive coverage.
 
 ## Fix
 
-- Added `launch --account <slot>` and persist the trimmed value on the new
-  instance before it is saved and started.
-- Added a read-only `accounts [--json]` command. It lists profiles with a
-  configured Claude `config_dir`, expands paths through the existing config
-  resolver, and sorts by slot name for deterministic human and JSON output.
-- Updated top-level help, README documentation, and the bundled agent-deck
-  skill/reference.
+- Promoted the hooks-only predicate to the shared `helpRequested` helper and applied it before parsing or dispatch in all four reported handlers.
+- Added explicit help usage for `creds-refresh`.
+- Converted the top-level list into `commandRegistry`, corrected its existing drift, and added an AST registry-vs-switch agreement test.
+- Added an executable enumeration test that probes `--help` and `-h` for every human-facing registered command in a sandboxed home. Protocol/version entry points that intentionally have no nested help surface are explicit exclusions. Bare `help` remains a legitimate data value on commands such as `launch`, so focused tests pin it only on dispatchers that define it as help.
+- The enumeration test also exposed and fixed unsafe flag-help handling in `mcp-proxy` and `debug-dump`, plus inconsistent help exits in `costs` and `inbox`.
+- Updated the DeepSeek documentation and the bundled `skills/agent-deck` CLI reference.
 
 ## Proof
 
-- PASS: `go test ./cmd/agent-deck -run "TestIssue2045" -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-- Both commands ran only in `golang:1.25` containers.
-- The full `go test ./cmd/agent-deck -count=1` suite was also attempted in the
-  stock Go container. It is not green there because tmux is absent; existing
-  tmux-dependent tests fail with `Error: tmux not found`, and the two existing
-  40 ms cold-start budgets also exceeded the shared-container timings. The
-  issue-specific tests pass in that same environment.
+Passing targeted container test:
+
+```text
+go test ./cmd/agent-deck -run '^(TestCommandRegistryMatchesMainDispatch|TestEveryRegisteredCommandHelpIsReadOnly|TestIssue2025TrailingHelpIsReadOnly)$' -count=1
+ok github.com/asheshgoplani/agent-deck/cmd/agent-deck
+```
+
+The four focused subprocess cases now return usage in under two seconds without creating config or daemon log files. The registry sweep checks every declared human-facing command in a fresh home and the AST test fails if a future switch case is not registered.
+
+Required repository proof passed in a Go 1.25 container (run as the checkout owner so Git VCS stamping accepts the bind mount):
+
+```text
+docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/go-build -e GOPATH=/tmp/go -v "$PWD:/src" -w /src golang:1.25 sh -c "go build ./... && go vet ./..."
+```
+
+The broader `cmd/agent-deck` suite was also attempted. Its issue-focused tests passed, while unrelated integration/performance tests require host facilities absent from the stock Go container (`tmux`, expected debug logging, and the host cold-start performance budget).
 
 ## Pull request
 
-https://github.com/asheshgoplani/agent-deck/pull/2053
-
-# PR #2053 round-2 review results
-
-## Finding: launch consumed the next flag as `--account`'s value
-
-### Reproduction
-
-On the pre-fix parent `4ccce635`, I applied only the new regression test and
-ran it in `golang:1.25`. The `launch` table case failed with:
-
-```text
-launch accepted a flag-shaped account value; output:
-    ✓ Launched session: agent-deck
-```
-
-This reproduces the review's exact `launch . --account --no-wait` scenario:
-the command reported success instead of rejecting the missing account name.
-The test also enumerates both session-creation commands with an `--account`
-surface (`add` and `launch`) so the existing sibling guard cannot silently
-diverge again.
-
-### Root cause
-
-`cmd/agent-deck/launch_cmd.go:167` proceeded to argument reordering and Go flag
-parsing without calling the shared `checkFlagValueNotFlag` guard. Go's flag
-parser therefore bound the registered `--no-wait` token as the string value of
-`--account`; account resolution then treated that unknown slot as a fallback.
-The sibling `add` command already invoked the guard on original argv at
-`cmd/agent-deck/main.go:1445`.
-
-### Fix
-
-`cmd/agent-deck/launch_cmd.go:167` now invokes `checkFlagValueNotFlag` before
-argument reordering, parsing, account fallback, state writes, or tmux launch.
-The shared guard recognizes that the following token is another flag from the
-same launch `FlagSet` and exits with an actionable error. The CLI reference now
-documents the required explicit account name and the `--account=<name>` escape
-hatch for an intentional dash-prefixed name.
-
-### Test and evidence
-
-- RED on `4ccce635`: `TestIssue2053AccountGuardCoversSessionCreationCommands/launch`
-  reported that launch accepted the malformed argv and launched a session.
-- GREEN on the fixed branch: both the `add` and `launch` enumeration cases
-  reject the malformed argv, name the swallowed flag, and prove that neither
-  state nor tmux side effects occurred.
-- PASS: `go test ./cmd/agent-deck -run 'TestIssue2053|TestIssue1923|TestIssue1928' -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-
-All Go commands above ran only in a `golang:1.25` container.
-
-# PR #2053 round-3 verification results
-
-## Blocking finding: launch account persistence had no effective test
-
-### Reproduction
-
-The verifier selectively removed the assignment at
-`cmd/agent-deck/launch_cmd.go:452-454` while retaining flag registration and
-parsing. The old help-only test remained green, proving it did not cover the
-user-visible persistence behavior.
-
-### Root cause
-
-`cmd/agent-deck/issue2045_accounts_cli_test.go:12` exercised only `launch
---help`; it never entered the creation path or inspected the saved
-`Instance.Account`. The production assignment itself is at
-`cmd/agent-deck/launch_cmd.go:452-454`.
-
-### Fix
-
-`TestIssue2045LaunchPersistsNamedAccountSlot` now configures the `work` Claude
-account, drives the real `launch` command through creation, start, and save with
-an isolated fake tmux executable, opens the isolated profile storage, and
-asserts that exactly one saved instance has `Account == "work"`.
-
-The test also contains the requested focused `RemoteSession` skip marker.
-`launch` creates a local session and has no remote target argument or
-RemoteSession dispatch branch, so remote runtime behavior is not applicable.
-
-### Revert-proof
-
-All commands below ran in `golang:1.25` containers with
-`GOFLAGS=-buildvcs=false` for the bind-mounted linked worktree.
-
-- GREEN with the production assignment present:
-  `TestIssue2045LaunchPersistsNamedAccountSlot` exited 0.
-- RED after replacing only `launch_cmd.go:452-454` with `_ = account`:
-  `issue2045_accounts_cli_test.go:55: persisted launch account = "", want work`.
-- The assignment was then restored before the final verification.
-- Final combined container command passed:
-  `go test ./cmd/agent-deck -run "TestIssue2045|TestIssue2053" -count=1 -v && go build ./... && go vet ./...`.
-
-### Preserved invariant
-
-The change is test-only and does not alter launch ordering, persistence, or
-concurrency behavior. The test reaches the existing targeted
-`InsertSessionAndVerify` path, so it verifies account persistence without
-replacing the bounded/concurrency-safe launch save mechanism. The existing
-missing-value test continues to prove fail-closed ordering: malformed
-`--account --no-wait` input is rejected before state or tmux side effects.
+Pending creation. The PR will include `Closes #2025` and credit reporter @asheshgoplani.
