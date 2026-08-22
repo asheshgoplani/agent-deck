@@ -630,6 +630,12 @@ func partTag(text string) string {
 	if !strings.HasPrefix(trimmed, "<") {
 		return ""
 	}
+	// XML-style names cannot start with a digit. Requiring the first byte to
+	// be a lower-case letter also keeps ordinary comparisons such as
+	// "<3 is a heart" from turning a user prompt into injected context.
+	if len(trimmed) < 2 || trimmed[1] < 'a' || trimmed[1] > 'z' {
+		return ""
+	}
 	for i := 1; i < len(trimmed); i++ {
 		c := trimmed[i]
 		if c == '>' || c == ' ' {

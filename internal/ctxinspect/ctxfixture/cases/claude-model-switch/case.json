@@ -15,7 +15,7 @@
     "anchor_tokens": 27008,
     "reconciles": true,
     "min_categories": 5,
-    "attributed_tokens": 802,
+    "attributed_tokens": 168,
     "estimate_tolerance_pct": 5,
     "caveats": [
       "anchor-warm-cache",

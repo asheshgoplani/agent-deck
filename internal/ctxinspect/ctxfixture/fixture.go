@@ -69,6 +69,12 @@ var FixedNow = time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 // redacted.
 const RootPlaceholder = "<FIXTURE_ROOT>"
 
+// RootKeyPlaceholder stands in for Claude Code's path-derived project key.
+// Claude replaces path separators with dashes when naming the auto-memory
+// directory, so replacing only the ordinary absolute path leaves the random
+// fixture parent embedded in golden documents.
+const RootKeyPlaceholder = "<FIXTURE_ROOT_KEY>"
+
 // Expect states what a case is supposed to prove, independently of what the
 // code currently produces.
 //
@@ -329,7 +335,11 @@ func Redact(text, root string) string {
 	if root == "" {
 		return text
 	}
-	out := strings.ReplaceAll(text, root, RootPlaceholder)
+	// Replace the derived form first: replacing the ordinary root would not
+	// touch it, but doing this first makes both forms deterministic.
+	rootKey := strings.ReplaceAll(root, "/", "-")
+	out := strings.ReplaceAll(text, rootKey, RootKeyPlaceholder)
+	out = strings.ReplaceAll(out, root, RootPlaceholder)
 	// A JSON document escapes nothing in a POSIX path, but a Windows-style
 	// separator would be escaped; normalize the slash form too so the same
 	// golden serves both.

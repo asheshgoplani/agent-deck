@@ -377,6 +377,9 @@ func (p *ContextPager) rowCount() int {
 
 // bodyHeight is the number of scrolling rows between the header and the footer.
 func (p *ContextPager) bodyHeight() int {
+	if p == nil {
+		return 1
+	}
 	h := p.height - contextChromeRows
 	if h < 1 {
 		h = 1
