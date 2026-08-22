@@ -78,3 +78,41 @@ describe('isGroupOpen', () => {
     expect(isGroupOpen({ work: false }, 'work')).toBe(false)
   })
 })
+
+// Status chips are multi-select and bucket the same way the group stats panel
+// does (statusBucket): `starting` counts as running, `queued` as idle. Before
+// this, sessionMatches did an exact `statuses.includes(s.status)`, so a
+// starting/queued session matched NO chip and vanished from the sidebar the
+// moment any filter was activated.
+describe('sessionMatches status bucketing', () => {
+  const sess = (status) => ({ title: 't', group: 'g', path: '/p', tool: 'claude', branch: '', status })
+
+  it('matches a chip on the session status itself', async () => {
+    const { sessionMatches } = await import(dataModelModulePath)
+    expect(sessionMatches(sess('stopped'), '', ['stopped'])).toBe(true)
+    expect(sessionMatches(sess('error'), '', ['error'])).toBe(true)
+    expect(sessionMatches(sess('idle'), '', ['idle'])).toBe(true)
+    expect(sessionMatches(sess('running'), '', ['running'])).toBe(true)
+    expect(sessionMatches(sess('waiting'), '', ['waiting'])).toBe(true)
+  })
+
+  it('folds starting into the running chip and queued into idle', async () => {
+    const { sessionMatches } = await import(dataModelModulePath)
+    expect(sessionMatches(sess('starting'), '', ['running'])).toBe(true)
+    expect(sessionMatches(sess('queued'), '', ['idle'])).toBe(true)
+  })
+
+  it('never lets a session match every chip', async () => {
+    const { sessionMatches } = await import(dataModelModulePath)
+    expect(sessionMatches(sess('starting'), '', ['idle'])).toBe(false)
+    expect(sessionMatches(sess('stopped'), '', ['running'])).toBe(false)
+    expect(sessionMatches(sess('error'), '', ['idle'])).toBe(false)
+  })
+
+  it('still matches everything when no chip is active', async () => {
+    const { sessionMatches } = await import(dataModelModulePath)
+    for (const st of ['running', 'waiting', 'idle', 'error', 'stopped', 'starting', 'queued']) {
+      expect(sessionMatches(sess(st), '', [])).toBe(true)
+    }
+  })
+})

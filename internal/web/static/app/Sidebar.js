@@ -22,11 +22,16 @@ import { apiFetch } from './api.js'
 import { addToast } from './Toast.js'
 import { formatRelativeTime } from './timeFmt.js'
 
+// One chip per status bucket, in the same fixed order and with the same
+// glyphs the group stats panel and the TUI use (GROUP_STATUS_BUCKETS /
+// internal/ui/home.go:19418-19444). `stopped` was missing entirely, so a
+// parked session could not be filtered for from the web at all.
 const STATUS_CHIPS = [
   { id: 'running', sym: '●' },
   { id: 'waiting', sym: '◐' },
-  { id: 'error',   sym: '✕' },
   { id: 'idle',    sym: '○' },
+  { id: 'stopped', sym: '■' },
+  { id: 'error',   sym: '✕' },
 ]
 
 const SHOW_COL_OPTIONS = [

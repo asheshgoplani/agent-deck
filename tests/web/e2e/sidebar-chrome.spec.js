@@ -135,6 +135,37 @@ test.describe('sidebar chrome', () => {
     await expect(page.locator('.sess')).toHaveCount(2)
   })
 
+  // The chip set mirrors the five status buckets the group panel uses. A
+  // `stopped` chip was missing entirely, so a parked session could not be
+  // filtered for from the web at all -- the TUI surfaces stopped with the same
+  // filled-square glyph.
+  test('stopped chip exists and filters to parked sessions', async ({ page }) => {
+    const chip = page.locator('[data-testid="status-chip-stopped"]')
+    await expect(chip).toHaveCount(1)
+    await expect(chip).toHaveText('■')
+
+    // No stopped sessions in the seed, so the chip alone yields an empty list.
+    await chip.click()
+    await expect(page.locator('.sess')).toHaveCount(0)
+    await chip.click()
+
+    // Park one for real through the same endpoint the Stop button uses, then
+    // restore it so sibling tests keep the 4-session seed.
+    await page.request.post('/api/sessions/sess-002/stop')
+    try {
+      await gotoSidebar(page)
+      await chip.click()
+      await expect(page.locator('.sess')).toHaveCount(1)
+      await expect(page.locator('.sess .tt')).toHaveText(['frontend'])
+    } finally {
+      await page.request.post('/api/sessions/sess-002/start')
+    }
+  })
+
+  test('chips sit in status-bucket order', async ({ page }) => {
+    await expect(page.locator('.side-filter .side-chip')).toHaveText(['●', '◐', '○', '■', '✕'])
+  })
+
   test('side-filter input filters rows by title and hides empty groups', async ({ page }) => {
     const input = page.locator('[data-testid="sidebar-filter-input"]')
     await input.fill('front')

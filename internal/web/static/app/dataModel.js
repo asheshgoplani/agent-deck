@@ -152,7 +152,12 @@ export function toggleGroupOpen(path) {
 // Row-level filter predicate shared by the sidebar and keyboard nav.
 // `filter` must already be lowercased and trimmed.
 export function sessionMatches(s, filter, statuses) {
-  if (statuses && statuses.length && !statuses.includes(s.status)) return false
+  // Compare on the BUCKET, not the raw status, so the chips agree with the
+  // group stats panel: `starting` counts as running and `queued` as idle.
+  // An exact `statuses.includes(s.status)` made those two match no chip at
+  // all, so a starting/queued session vanished from the sidebar as soon as
+  // any filter was activated.
+  if (statuses && statuses.length && !statuses.includes(statusBucket(s.status))) return false
   if (!filter) return true
   const hay = (s.title || '') + ' ' + (s.group || '') + ' ' + (s.path || '') +
               ' ' + (s.tool || '') + ' ' + (s.branch || '')
