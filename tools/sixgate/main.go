@@ -197,7 +197,23 @@ func resolveTree(repoFlag, gatesFlag, slug string) (artifact.Tree, error) {
 	if slug == "" {
 		return artifact.Tree{}, errors.New("a slug is required")
 	}
-	return artifact.NewTree(abs, gatesFlag, slug), nil
+	if slug == "." || slug == ".." || strings.ContainsAny(slug, `/\`) || filepath.IsAbs(slug) {
+		return artifact.Tree{}, fmt.Errorf("slug %q must be one path component", slug)
+	}
+	if filepath.IsAbs(gatesFlag) {
+		return artifact.Tree{}, fmt.Errorf("-gates-dir %q must be repository-relative", gatesFlag)
+	}
+	for _, part := range strings.FieldsFunc(gatesFlag, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return artifact.Tree{}, fmt.Errorf("-gates-dir %q must not contain ..", gatesFlag)
+		}
+	}
+	t := artifact.NewTree(abs, gatesFlag, slug)
+	rel, err := filepath.Rel(abs, filepath.Clean(t.Root()))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return artifact.Tree{}, fmt.Errorf("gate tree %q escapes repository %q", t.Root(), abs)
+	}
+	return t, nil
 }
 
 func findRepoRoot() (string, error) {

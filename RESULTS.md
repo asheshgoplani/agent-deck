@@ -1,147 +1,70 @@
-# Issue #2045 results
+# PR #2018 review-finding results
 
-## Reproduction
+## Finding 1 — `verdict --check` trusted cached gate statuses
 
-Reproduced on current `origin/main` at `47bb2103` in a `golang:1.25`
-container. The regression test `TestIssue2045LaunchHelpOffersNamedAccountSlot`
-failed because `agent-deck launch --help` had no `--account` option. The test
-`TestIssue2045AccountsListsConfiguredSlots` failed because the unknown
-`accounts` command fell through to TUI startup and exited with `Error: tmux not
-found` instead of listing the two configured slots.
+What was wrong: `artifact.Check` inspected only the statuses serialized in
+`VERDICT.json`. After a passing verdict was generated, a current G1, G2, G3, G4, or G5
+pass-signal artifact could be replaced with valid JSON containing `"pass": false` and
+the check would still succeed.
 
-## Root cause
+Reproducing test: `TestCheckRereadsEveryGatePassSignal` builds and writes a passing
+verdict, then independently changes each of the five on-disk pass signals to false.
+Before the fix, all five subtests failed because `Check` still reported success.
 
-- `cmd/agent-deck/launch_cmd.go:124` had no account flag, and the instance
-  construction path near `cmd/agent-deck/launch_cmd.go:441` therefore never
-  copied a selected slot into `Instance.Account`. The existing start-time
-  resolver already consumes that field, so the missing launch wiring was the
-  gap.
-- The top-level command switch in `cmd/agent-deck/main.go:334` had no
-  `accounts` route. Unknown commands continue into TUI startup, which explains
-  the unrelated tmux error seen in the reproduction.
+Fix: `Check` now iterates the canonical gate catalogue, calls `Tree.Inspect` for current
+presence, and calls `passSignal` again for every machine-verifiable gate. It still also
+rejects historical non-pass statuses recorded in the verdict. This addresses the root
+cause by making the evidence tree—not cached roll-up fields—the authority at check time.
 
-## Fix
+Proof: all G1–G5 mutation subtests pass in the container.
 
-- Added `launch --account <slot>` and persist the trimmed value on the new
-  instance before it is saved and started.
-- Added a read-only `accounts [--json]` command. It lists profiles with a
-  configured Claude `config_dir`, expands paths through the existing config
-  resolver, and sorts by slot name for deterministic human and JSON output.
-- Updated top-level help, README documentation, and the bundled agent-deck
-  skill/reference.
+## Finding 2 — slug and gate directory could escape the repository
 
-## Proof
+What was wrong: `resolveTree` accepted absolute `-gates-dir` values, parent traversal,
+and multi-component slugs. `scaffold` could consequently create `G0-script.yaml`
+outside the selected repository.
 
-- PASS: `go test ./cmd/agent-deck -run "TestIssue2045" -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-- Both commands ran only in `golang:1.25` containers.
-- The full `go test ./cmd/agent-deck -count=1` suite was also attempted in the
-  stock Go container. It is not green there because tmux is absent; existing
-  tmux-dependent tests fail with `Error: tmux not found`, and the two existing
-  40 ms cold-start budgets also exceeded the shared-container timings. The
-  issue-specific tests pass in that same environment.
+Reproducing tests: `TestScaffoldRejectsPathsOutsideRepository` exercises the concrete
+out-of-repository scaffold write, while `TestResolveTreeRejectsUnsafePathParts` covers
+absolute gate roots, `..`, slash-separated slugs, and backslash-separated slugs. Before
+the fix, scaffold returned success and every unsafe resolution case was accepted.
 
-## Pull request
+Fix: `resolveTree` now requires a slug to be exactly one path component, requires the
+gate root to be repository-relative and free of parent components, and performs a final
+cleaned containment check before returning a tree. Because all verbs resolve their tree
+through this function, unsafe paths are rejected before any read or write.
 
-https://github.com/asheshgoplani/agent-deck/pull/2053
+Proof: both path regression tests pass in the container and the scaffold test confirms
+that no escaped `G0-script.yaml` is created.
 
-# PR #2053 round-2 review results
+## Finding 3 — README claimed evidence that was not committed
 
-## Finding: launch consumed the next flag as `--account`'s value
+What was wrong: the context-inspector README called itself a completed six-gate example,
+advertised a successful `verdict --check`, and linked to absent evidence and verdict
+files.
 
-### Reproduction
+Reproducing test: `TestContextInspectorReadmeReferencesCommittedEvidence` checks local
+README links and requires every named machine-readable gate result and verdict whenever
+the document makes the original completion claim. Before the fix it reported the absent
+G1–G5 results and both verdict files.
 
-On the pre-fix parent `4ccce635`, I applied only the new regression test and
-ran it in `golang:1.25`. The `launch` table case failed with:
+Fix: the README now identifies itself as partial historical development notes, states
+that no verdict can be established, links only to files that are actually committed,
+and distinguishes declarations/resolutions from generated pass evidence. This fixes the
+underlying false claim rather than inventing a transcript after the fact.
 
-```text
-launch accepted a flag-shaped account value; output:
-    ✓ Launched session: agent-deck
-```
+Proof: the documentation regression test passes in the container.
 
-This reproduces the review's exact `launch . --account --no-wait` scenario:
-the command reported success instead of rejecting the missing account name.
-The test also enumerates both session-creation commands with an `--account`
-surface (`add` and `launch`) so the existing sibling guard cannot silently
-diverge again.
+## Container verification
 
-### Root cause
+- `go test ./internal/sixgate/... ./tools/sixgate` — PASS. These scoped packages do not
+  spawn tmux.
+- `go build ./... && go vet ./...` — PASS using `golang:1.25`.
+- Repository-wide `go test ./...` was intentionally not run because the repository has
+  tmux-spawning suites, which the task explicitly says to skip.
+- `go run ./tools/sixgate selfcheck` was also run. It has two pre-existing failures at
+  this PR head: the blank-detector negative corpus triggers its own blank/orphan-percent
+  rules, and the tmux identity scan flags the existing marker in `tools/sixgate/main.go`.
+  Neither failure is introduced or modified by these fixes.
 
-`cmd/agent-deck/launch_cmd.go:167` proceeded to argument reordering and Go flag
-parsing without calling the shared `checkFlagValueNotFlag` guard. Go's flag
-parser therefore bound the registered `--no-wait` token as the string value of
-`--account`; account resolution then treated that unknown slot as a fallback.
-The sibling `add` command already invoked the guard on original argv at
-`cmd/agent-deck/main.go:1445`.
-
-### Fix
-
-`cmd/agent-deck/launch_cmd.go:167` now invokes `checkFlagValueNotFlag` before
-argument reordering, parsing, account fallback, state writes, or tmux launch.
-The shared guard recognizes that the following token is another flag from the
-same launch `FlagSet` and exits with an actionable error. The CLI reference now
-documents the required explicit account name and the `--account=<name>` escape
-hatch for an intentional dash-prefixed name.
-
-### Test and evidence
-
-- RED on `4ccce635`: `TestIssue2053AccountGuardCoversSessionCreationCommands/launch`
-  reported that launch accepted the malformed argv and launched a session.
-- GREEN on the fixed branch: both the `add` and `launch` enumeration cases
-  reject the malformed argv, name the swallowed flag, and prove that neither
-  state nor tmux side effects occurred.
-- PASS: `go test ./cmd/agent-deck -run 'TestIssue2053|TestIssue1923|TestIssue1928' -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-
-All Go commands above ran only in a `golang:1.25` container.
-
-# PR #2053 round-3 verification results
-
-## Blocking finding: launch account persistence had no effective test
-
-### Reproduction
-
-The verifier selectively removed the assignment at
-`cmd/agent-deck/launch_cmd.go:452-454` while retaining flag registration and
-parsing. The old help-only test remained green, proving it did not cover the
-user-visible persistence behavior.
-
-### Root cause
-
-`cmd/agent-deck/issue2045_accounts_cli_test.go:12` exercised only `launch
---help`; it never entered the creation path or inspected the saved
-`Instance.Account`. The production assignment itself is at
-`cmd/agent-deck/launch_cmd.go:452-454`.
-
-### Fix
-
-`TestIssue2045LaunchPersistsNamedAccountSlot` now configures the `work` Claude
-account, drives the real `launch` command through creation, start, and save with
-an isolated fake tmux executable, opens the isolated profile storage, and
-asserts that exactly one saved instance has `Account == "work"`.
-
-The test also contains the requested focused `RemoteSession` skip marker.
-`launch` creates a local session and has no remote target argument or
-RemoteSession dispatch branch, so remote runtime behavior is not applicable.
-
-### Revert-proof
-
-All commands below ran in `golang:1.25` containers with
-`GOFLAGS=-buildvcs=false` for the bind-mounted linked worktree.
-
-- GREEN with the production assignment present:
-  `TestIssue2045LaunchPersistsNamedAccountSlot` exited 0.
-- RED after replacing only `launch_cmd.go:452-454` with `_ = account`:
-  `issue2045_accounts_cli_test.go:55: persisted launch account = "", want work`.
-- The assignment was then restored before the final verification.
-- Final combined container command passed:
-  `go test ./cmd/agent-deck -run "TestIssue2045|TestIssue2053" -count=1 -v && go build ./... && go vet ./...`.
-
-### Preserved invariant
-
-The change is test-only and does not alter launch ordering, persistence, or
-concurrency behavior. The test reaches the existing targeted
-`InsertSessionAndVerify` path, so it verifies account persistence without
-replacing the bounded/concurrency-safe launch save mechanism. The existing
-missing-value test continues to prove fail-closed ordering: malformed
-`--account --no-wait` input is rejected before state or tmux side effects.
+No tests were run on the host.

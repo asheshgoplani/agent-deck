@@ -434,6 +434,33 @@ func Check(t Tree, owns []string, couplings ...Coupling) (*CheckResult, error) {
 		res.Problems = append(res.Problems, VerdictMarkdownFile+" does not match "+VerdictJSONFile+": it was edited by hand, or written by a different tool version")
 	}
 
+	// The verdict records what the gates said when it was generated, but it is
+	// not current evidence. Re-inspect the canonical tree and re-read every
+	// on-disk pass signal so replacing or removing an artifact expires PASS.
+	for _, g := range Gates {
+		pres, inspectErr := t.Inspect(g)
+		if inspectErr != nil {
+			return nil, inspectErr
+		}
+		if !pres.Present {
+			res.Problems = append(res.Problems, fmt.Sprintf("gate %s %s is %s — no artifact: %s",
+				g.ID, g.Name, StatusMissing, strings.Join(pres.Missing, ", ")))
+			continue
+		}
+		if g.ID == G0 {
+			continue // G0 has no pass-signal file; the caller validates its script.
+		}
+		status, detail, signalErr := passSignal(t, g)
+		if signalErr != nil {
+			return nil, signalErr
+		}
+		if status != StatusPass {
+			res.Problems = append(res.Problems, fmt.Sprintf("gate %s %s is %s — %s", g.ID, g.Name, status, detail))
+		}
+	}
+
+	// Also reject a verdict that already recorded a non-pass. This preserves
+	// the historical reason even when the current artifact has since changed.
 	for _, g := range v.Gates {
 		if g.Status != StatusPass {
 			detail := g.Detail
