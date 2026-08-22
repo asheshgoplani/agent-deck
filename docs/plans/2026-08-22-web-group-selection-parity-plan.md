@@ -80,6 +80,7 @@ package web
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,22 +138,15 @@ func TestBuildMenuSnapshotGroupDefaultPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if got := string(blob); contains(got, "defaultPath") {
+	if got := string(blob); strings.Contains(got, "defaultPath") {
 		t.Errorf("unconfigured group serialized defaultPath key: %s", got)
 	}
 }
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && func() bool {
-		for i := 0; i+len(needle) <= len(haystack); i++ {
-			if haystack[i:i+len(needle)] == needle {
-				return true
-			}
-		}
-		return false
-	}()
-}
 ```
+
+Use `strings.Contains` — package `web` already defines a test helper named
+`contains` at `internal/web/issue1125_children_web_test.go:253`, and a second
+one in the same package would not compile.
 
 - [ ] **Step 2: Run test to verify it fails**
 
