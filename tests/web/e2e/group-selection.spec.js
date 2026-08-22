@@ -90,4 +90,26 @@ test.describe('group selection', () => {
     await page.locator('[data-testid="group-head-work"] .name').click()
     await expect(page.locator('[data-testid="right-rail"]')).toContainText('group selected')
   })
+
+  test('member rows show a sized status dot', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    const dot = page.locator('[data-testid="group-stats-panel"] .gs-row .dot').first()
+    await expect(dot).toBeVisible()
+    const box = await dot.boundingBox()
+    expect(box.width).toBeGreaterThan(0)
+    expect(box.height).toBeGreaterThan(0)
+
+    // The Dot component sets width/height as an inline style (icons.js), so
+    // the boundingBox checks above pass even with zero matching CSS rules --
+    // they only catch a display:none regression, not the missing-styling bug
+    // this test is meant to catch. Shape and color come ONLY from the
+    // .group-stats .gs-row .dot CSS rules, so assert those directly: an
+    // unstyled span has no border-radius and a transparent background.
+    const shape = await dot.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      return { borderRadius: cs.borderRadius, background: cs.backgroundColor }
+    })
+    expect(shape.borderRadius).not.toBe('0px')
+    expect(shape.background).not.toBe('rgba(0, 0, 0, 0)')
+  })
 })
