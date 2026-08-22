@@ -229,6 +229,10 @@ Closes [issue #602](https://github.com/asheshgoplani/agent-deck/issues/602).
 
 #### Switch a session's account on the fly
 
+For a new one-shot session, use `agent-deck launch . -c claude --account <name>`.
+Run `agent-deck accounts` (or `agent-deck accounts --json`) to list named slots
+configured under `[profiles.<name>.claude].config_dir`.
+
 `agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too.
 
 ### Session naming
