@@ -110,6 +110,8 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 |---------|---------|
 | `agent-deck` | Launch interactive TUI |
 | `agent-deck add -t "Name" -c claude /path` | Create session |
+| `agent-deck launch . -c claude --account <name>` | Create and start a session under a named account slot |
+| `agent-deck accounts [--json]` | List configured named account slots |
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
@@ -818,6 +820,12 @@ Move a session — conversation included — to a different Claude account (work
 **Commands:**
 
 ```bash
+# Inspect the account names available to add/launch/switch-account
+agent-deck accounts
+
+# Create and start a new session directly under one named account
+agent-deck launch . -c claude --account <account>
+
 # Full flow: stop → copy conversation into the target account → set account → restart with --resume
 agent-deck session switch-account <session> <account>
 
