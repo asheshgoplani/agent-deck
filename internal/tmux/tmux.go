@@ -1136,12 +1136,13 @@ type Session struct {
 	// option so a custom [display] title_format can render the group hierarchy
 	// in the outer terminal title. Empty when the session has no group. Kept in
 	// sync by the session layer (construction, reconnect, rename, regroup).
-	GroupPath    string
-	groupTitleMu sync.Mutex
-	Command      string
-	Created      time.Time
-	InstanceID   string // Agent-deck instance ID for hook callbacks
-	startupAt    time.Time
+	GroupPath       string
+	groupTitleMu    sync.Mutex
+	Command         string
+	Created         time.Time
+	InstanceID      string // Agent-deck instance ID for hook callbacks
+	startupAt       time.Time
+	startupTimedOut bool // terminal for this pane generation after #1892's deadline
 
 	// WorkDirIsPlaceholder marks a session whose local WorkDir is not where the
 	// work happens — today that means an SSH session, whose pane only runs an
@@ -1676,6 +1677,43 @@ func (s *Session) resetPromptNoBusyHoldLocked() {
 // MUST be called with s.mu held.
 func (s *Session) inStartupWindowLocked() bool {
 	return !s.startupAt.IsZero() && time.Since(s.startupAt) < startupStateWindow
+}
+
+// expireStartupHandover replaces an alive-but-unowned pane with an inert,
+// non-echoing recovery hold when the startup deadline expires. It is called
+// without s.mu held; claiming the flag prevents concurrent pollers from
+// respawning the pane more than once.
+func (s *Session) expireStartupHandover() bool {
+	s.mu.Lock()
+	if s.startupTimedOut {
+		s.mu.Unlock()
+		return true
+	}
+	if s.startupAt.IsZero() || time.Since(s.startupAt) < startupStateWindow {
+		s.mu.Unlock()
+		return false
+	}
+	s.startupTimedOut = true
+	s.startupAt = time.Time{}
+	s.lastStableStatus = "error"
+	s.mu.Unlock()
+
+	restartTarget := s.DisplayName
+	if strings.TrimSpace(restartTarget) == "" {
+		restartTarget = s.Name
+	}
+	message := fmt.Sprintf("Session startup timed out before the agent became interactive.\n\nRecovery: agent-deck session restart %s\n", shellescape.Quote(restartTarget))
+	hold := fmt.Sprintf("printf %%s %s; stty -echo 2>/dev/null || true; exec sleep 2147483647", shellescape.Quote(message))
+	wrapped, err := wrapRespawnCommand(hold)
+	if err == nil {
+		args := append([]string{"respawn-pane", "-k", "-t", s.Name + ":"}, wrapped...)
+		if output, respawnErr := s.tmuxCmd(args...).CombinedOutput(); respawnErr != nil {
+			statusLog.Warn("startup_timeout_hold_failed", slog.String("session", s.Name), slog.String("error", respawnErr.Error()), slog.String("output", string(output)))
+		}
+	} else {
+		statusLog.Warn("startup_timeout_hold_wrap_failed", slog.String("session", s.Name), slog.String("error", err.Error()))
+	}
+	return true
 }
 
 // SetCustomPatterns sets custom patterns for generic tool support
@@ -2397,6 +2435,7 @@ func (s *Session) Start(command string) error {
 	s.invalidateCache()
 	s.Created = time.Now()
 	s.startupAt = s.Created
+	s.startupTimedOut = false
 	s.mu.Lock()
 	s.lastStableStatus = "waiting"
 	s.stateTracker = nil
@@ -3751,6 +3790,7 @@ func (s *Session) RespawnPane(command string) error {
 	// Reset startup/status trackers so GetStatus can classify the fresh process correctly.
 	s.mu.Lock()
 	s.startupAt = time.Now()
+	s.startupTimedOut = false
 	s.lastStableStatus = "waiting"
 	s.stateTracker = nil
 	s.cachedPromptDetector = nil
@@ -4191,6 +4231,10 @@ func (s *Session) GetStatus() (string, error) {
 		s.mu.Unlock()
 		statusLog.Debug("pane_dead", slog.String("session", shortName))
 		return "inactive", nil
+	}
+
+	if s.expireStartupHandover() {
+		return "error", nil
 	}
 
 	// FAST PATH: Title-based state detection for Claude Code sessions.
@@ -5290,6 +5334,12 @@ func (s *Session) hasPromptIndicator(content string) bool {
 // redraws its input prompt below the banner, so prompt detection alone would
 // report "waiting" for a session that cannot make progress).
 func (s *Session) hasErrorBannerIndicator(content string) bool {
+	// Agent-deck's own startup hold is tool-neutral and survives process
+	// restarts in the pane contents. Recognize it before tool inference so a
+	// fresh CLI/TUI process reports the same error verdict (#1892).
+	if strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
+		return true
+	}
 	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
 	if tool == "" {
 		return false
