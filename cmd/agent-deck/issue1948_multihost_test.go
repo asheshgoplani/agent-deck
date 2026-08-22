@@ -46,6 +46,7 @@ func TestIssue1948R2_TwoHostsSameChildID_BothSurviveOneDrainWindow(t *testing.T)
 	configureRemote(t, "boxb", "worker@box-b")
 	configureRemote(t, "boxc", "worker@box-c")
 	conductor := "conductor-1948-multihost"
+	registerDrainTarget(t, conductor)
 
 	fetch := twoHostFetcher("nightly-build", time.Now())
 	for _, remote := range []string{"boxb", "boxc"} {
@@ -105,6 +106,7 @@ func TestIssue1948R2_TwoHostsSameChildID_SurviveSequentialDrains(t *testing.T) {
 	configureRemote(t, "boxb", "worker@box-b")
 	configureRemote(t, "boxc", "worker@box-c")
 	conductor := "conductor-1948-sequential"
+	registerDrainTarget(t, conductor)
 
 	fetch := sameOutcomeFetcher("nightly-build", time.Now())
 
@@ -175,6 +177,7 @@ func TestIssue1948R2_RemoteChildDoesNotCollideWithLocalChild(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-localclash"
+	registerDrainTarget(t, conductor)
 
 	// A local child of this conductor, committed the ordinary way.
 	if err := session.CommitToInbox(conductor, session.TransitionNotificationEvent{

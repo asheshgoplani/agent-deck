@@ -45,14 +45,16 @@ func reviewTestHome(t *testing.T, profile string) *Storage {
 	return storage
 }
 
-// parentlessWorker is the state a worker created on THIS host by a conductor on
-// another one is in: registered, running, and with no parent that can be
-// resolved here.
+// parentlessWorker models a worker created on THIS host by a conductor on
+// another one: the parent identity is retained, but cannot be resolved in this
+// host's registry. A truly parentless child remains an issue #805 orphan and is
+// intentionally excluded from the discovery ledger by #2039.
 func parentlessWorker(id, title string) *Instance {
 	return &Instance{
 		ID: id, Title: title, ProjectPath: "/tmp/" + id,
 		GroupPath: DefaultGroupPath, Tool: "claude",
 		Status: StatusWaiting, CreatedAt: time.Now(),
+		ParentSessionID: "conductor-on-another-host",
 	}
 }
 
@@ -81,9 +83,10 @@ func TestIssue1948P1_ParentlessStallIsDrainable(t *testing.T) {
 		LastOutputHash: "pane-hash-quota",
 		Timestamp:      time.Now(),
 	})
-	// Local delivery is still (correctly) impossible — there is no parent here.
-	if res.DeadLetterReason != deadLetterReasonOrphan {
-		t.Fatalf("expected the orphan classification to be unchanged, got %q", res.DeadLetterReason)
+	// The durable _unowned copy is a successful delivery under #2039; its stored
+	// record, rather than the success result, retains the resolution reason.
+	if res.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("expected the remote-parent record to commit, got %+v", res)
 	}
 
 	records, err := ExportPendingRecords()
@@ -98,6 +101,9 @@ func TestIssue1948P1_ParentlessStallIsDrainable(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatalf("a parentless session's stall must be drainable; export returned %+v", records)
+	}
+	if got.DeadLetterReason != deadLetterReasonParentMissing {
+		t.Fatalf("drainable record lost its remote-parent reason: %+v", *got)
 	}
 	if got.FromStatus != "running" || got.ToStatus != "waiting" {
 		t.Fatalf("the flip itself must survive: %+v", *got)
@@ -124,8 +130,8 @@ func TestIssue1948P1_ParentOnAnotherMachineIsDrainable(t *testing.T) {
 		ChildSessionID: child.ID, ChildTitle: child.Title, Profile: profile,
 		FromStatus: "running", ToStatus: "error", Timestamp: time.Now(),
 	})
-	if res.DeadLetterReason != deadLetterReasonParentMissing {
-		t.Fatalf("expected parent_removed, got %q", res.DeadLetterReason)
+	if res.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("expected the remote-parent record to commit, got %+v", res)
 	}
 
 	pending, err := ReadInboxEvents(UnownedInboxID)
@@ -134,6 +140,9 @@ func TestIssue1948P1_ParentOnAnotherMachineIsDrainable(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].ChildSessionID != child.ID {
 		t.Fatalf("a cross-machine parent link must leave a drainable record, got %+v", pending)
+	}
+	if pending[0].DeadLetterReason != deadLetterReasonParentMissing {
+		t.Fatalf("expected parent_removed on stored record, got %+v", pending[0])
 	}
 }
 
