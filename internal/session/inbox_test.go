@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,7 @@ func TestInbox_ReadAndTruncateReturnsThenEmpties(t *testing.T) {
 			Profile:         "_test",
 			FromStatus:      "running",
 			ToStatus:        "waiting",
+			LastOutputHash:  fmt.Sprintf("turn-%d", i),
 			Timestamp:       time.Now(),
 			TargetSessionID: parent,
 			TargetKind:      "parent",

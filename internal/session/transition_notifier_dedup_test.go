@@ -59,8 +59,10 @@ func TestDedup_InboxSameFingerprintOnce(t *testing.T) {
 		t.Fatalf("inbox dedup: expected 1 event after 5 writes of same fingerprint, got %d", len(got))
 	}
 
-	// A different timestamp must NOT dedup — that's a different logical event.
+	// A different turn must not dedup. Re-stamping the same event does not
+	// change its identity; the pane-content signal is what distinguishes turns.
 	ev2 := ev
+	ev2.LastOutputHash = "turn-advanced"
 	ev2.Timestamp = ts.Add(1 * time.Second)
 	if err := WriteInboxEvent(parent, ev); err != nil {
 		t.Fatalf("re-write same fp: %v", err)

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -104,6 +105,7 @@ func TestTransitionNotifier_SweepInboxByTuple_DropsMatching(t *testing.T) {
 			Profile:         "_test",
 			FromStatus:      from,
 			ToStatus:        to,
+			LastOutputHash:  fmt.Sprintf("%s-%s-%s-%s", child, from, to, ago),
 			Timestamp:       time.Now().Add(-ago),
 			TargetSessionID: parent,
 			TargetKind:      "parent",
@@ -112,7 +114,7 @@ func TestTransitionNotifier_SweepInboxByTuple_DropsMatching(t *testing.T) {
 	}
 	rows := []TransitionNotificationEvent{
 		mk("pepper", "running", "waiting", 3*time.Hour),
-		mk("pepper", "running", "waiting", 2*time.Hour), // duplicate tuple, different ts
+		mk("pepper", "running", "waiting", 2*time.Hour), // duplicate tuple, different turn
 		mk("pepper", "waiting", "running", 1*time.Hour), // SAME child, different tuple
 		mk("garlic", "running", "waiting", 1*time.Hour), // different child
 	}

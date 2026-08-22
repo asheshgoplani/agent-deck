@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,7 @@ func TestRm_SweepsConductorInboxes(t *testing.T) {
 			Profile:         "_test",
 			FromStatus:      "running",
 			ToStatus:        "waiting",
+			LastOutputHash:  fmt.Sprintf("turn-%d", idx),
 			Timestamp:       time.Now().Add(time.Duration(idx) * time.Second),
 			TargetSessionID: conductors[idx%len(conductors)],
 			TargetKind:      "conductor",

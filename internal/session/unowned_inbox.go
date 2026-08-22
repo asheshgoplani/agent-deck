@@ -1,7 +1,6 @@
 package session
 
 import (
-	"strconv"
 	"strings"
 )
 
@@ -34,11 +33,5 @@ func recordUnownedTransition(event TransitionNotificationEvent) (bool, error) {
 }
 
 func unownedTurnSignal(event TransitionNotificationEvent) string {
-	if signal := strings.TrimSpace(event.LastOutputHash); signal != "" {
-		return signal
-	}
-	if event.Kind == transitionKindFinished || event.Timestamp.IsZero() {
-		return ""
-	}
-	return "emit:" + strconv.FormatInt(event.Timestamp.UTC().UnixNano(), 10)
+	return strings.TrimSpace(event.LastOutputHash)
 }
