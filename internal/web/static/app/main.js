@@ -1,12 +1,11 @@
 // main.js -- Preact app entry point and full boot sequence
 // Handles: auth token extraction, SSE connection, route sync, service worker registration
 import { render, html } from 'htm/preact'
-import { App } from './App.js'
+import { App, applyPath } from './App.js'
 import { apiFetch } from './api.js'
 import {
   sessionsSignal,
   sessionsLoadedSignal,
-  selectedIdSignal,
   connectionSignal,
   authTokenSignal,
   commandCenterSignal,
@@ -157,22 +156,13 @@ export async function loadMenu() {
   }
 }
 
-// ---------- Route sync: URL -> selectedIdSignal ----------
+// ---------- Route sync: URL -> selection ----------
 
 export function applyRouteSelection() {
   const path = window.location.pathname || '/'
-  if (path.startsWith('/s/')) {
-    const raw = path.slice(3)
-    if (raw && !raw.includes('/')) {
-      try {
-        selectedIdSignal.value = decodeURIComponent(raw)
-      } catch (_) {
-        selectedIdSignal.value = null
-      }
-      return
-    }
-  }
-  // Don't force-clear selection at boot if no /s/ path; leave it null
+  // Don't force-clear at boot when the path is neither /s/ nor /g/.
+  if (path === '/') return
+  applyPath(path)
 }
 
 // ---------- Service worker registration ----------
