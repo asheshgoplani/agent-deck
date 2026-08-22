@@ -2,6 +2,56 @@
 
 Complete reference for all agent-deck CLI commands.
 
+This reference is checked against the v1.14.0 binary built from this tree. A command line below names every advertised top-level command; later sections give each command and flag on its own line. Commands marked internal are dispatched by the binary but intentionally omitted from the public root help.
+
+## Complete top-level command inventory
+
+- `agent-deck add` — create a session.
+- `agent-deck launch` — create, start, and optionally message a session.
+- `agent-deck try` — create or reuse an experiment session.
+- `agent-deck list` (`ls`) — list sessions.
+- `agent-deck remove` (`rm`) — remove a session.
+- `agent-deck rename` (`mv`) — rename a session.
+- `agent-deck status` — compact status summary; use `--json` for cheap automation.
+- `agent-deck session` — session lifecycle, metadata, output, children, and search.
+- `agent-deck fleet` — fleet-death detection and recovery.
+- `agent-deck mcp` — MCP attachment and server lifecycle.
+- `agent-deck plugin` — plugin attachment.
+- `agent-deck skill` — project skills and source registry.
+- `agent-deck codex-hooks` — Codex notification-hook integration.
+- `agent-deck gemini-hooks` — Gemini hook integration.
+- `agent-deck hermes-hooks` — Hermes hook integration.
+- `agent-deck cursor-hooks` — Cursor hook integration.
+- `agent-deck deepseek` — inspect DeepSeek Harness integration.
+- `agent-deck group` — group CRUD, movement, and ordering.
+- `agent-deck worktree` (`wt`) — worktree inspection, cleanup, trust, and finish.
+- `agent-deck web` — TUI plus web server.
+- The `remote` command manages registered remote instances.
+- `agent-deck conductor` — conductor setup and lifecycle.
+- `agent-deck agents` — list adopted agents.
+- `agent-deck agent` — adopt and inspect agent definitions.
+- `agent-deck telegram-doctor` — audit Telegram delivery ownership.
+- `agent-deck profile` — profile CRUD and default selection.
+- `agent-deck update` — check/install updates.
+- `agent-deck debug-dump` — persist the debug ring buffer.
+- `agent-deck migrate-paths` — copy legacy state into XDG paths.
+- `agent-deck uninstall` — uninstall agent-deck.
+- `agent-deck version` — print the version.
+- `agent-deck help` — print root help.
+- `agent-deck watcher` — watcher adapters (internal/public-but-unadvertised).
+- `agent-deck openclaw` (`oc`) — OpenClaw bridge (internal/public-but-unadvertised).
+- The unadvertised `costs` command imports, reports, and recomputes cost data.
+- `agent-deck inbox` — read/drain completion inboxes (internal/public-but-unadvertised).
+- `agent-deck feedback` — submit product feedback (internal/public-but-unadvertised).
+- `agent-deck hooks` — Claude hook integration (internal compatibility command).
+- Internal plumbing commands (`mcp-proxy`, `hook-handler`, `codex-notify`, `notify-daemon`, `run-task`, and `creds-refresh`) are intentionally not user-callable reference entries; another agent-deck surface owns their invocation.
+
+### Global flags
+
+- `-p, --profile <name>` — use the named local profile (default `default`).
+- `-g, --group <name>` — launch the TUI scoped to a group.
+- `--select <id|title>` — launch the TUI with a session selected without hiding other groups.
+
 ## Table of Contents
 
 - [Global Options](#global-options)
@@ -42,6 +92,7 @@ agent-deck add [path] [options]
 | `-c, --cmd` | Tool/command (claude, gemini, opencode, codex, custom) |
 | `--wrapper` | Wrapper command; use `{command}` placeholder |
 | `--parent` | Parent session (creates child) |
+| `--account <slot>` | Named account slot; resolves `[profiles.<slot>.claude].config_dir` |
 | `--no-parent` | Disable automatic parent linking |
 | `--mcp` | Attach MCP (repeatable) |
 | `--attach` | Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with `--ssh`/`--json`) |
@@ -295,6 +346,38 @@ agent-deck session output [id|title] [--json] [-q]
 ```
 
 Get the last response from a session. Transcript-backed extraction is tool-dependent; use `--pane` for a raw tmux capture when structured output is unavailable.
+
+- `--json` — emit structured output.
+- `-q, --quiet` — emit only the response body.
+- `--pane` — return raw tmux pane capture instead of transcript extraction.
+- `--max-lines <n>` — cap pane/output lines where supported by the built binary.
+- `--max-tokens <n>` — #2050 builds cap the agent-boundary payload, preserving head and tail and persisting the exact full output for recovery; this flag is not present in the v1.14.0 binary built from this branch.
+
+### session children
+
+- `--json` — emit the current child snapshot as JSON.
+- `--follow` — stream child state/completion events.
+- `--until-done` — with `--follow`, block until all selected children assert completion; prefer this to polling.
+
+### session search
+
+- `agent-deck session search <query>` — bounded content search across Claude sessions; prefer it to grepping transcript files.
+- `--json` — emit matches as JSON.
+- `--limit <n>` — cap returned matches.
+- `--path <path>` — constrain the workspace path where supported.
+
+## Inbox Commands
+
+### inbox drain
+
+`agent-deck inbox drain [--json] [<session-id>|self]` atomically reads completion events. With no target, it resolves the caller from session context. Full IDs resolve across profiles; titles and prefixes resolve only in the effective profile.
+
+- `--json` — emit the drained events as a JSON array.
+- Exit `0` — drain completed and no dead letters remain.
+- Exit `2` — target does not exist; nothing was drained.
+- Exit `3` — target is ambiguous; nothing was drained.
+- Exit `4` — drain ran, but dead-lettered events remain.
+- Exit `1` — usage, storage, or other drain failure.
 
 ### session set-parent / unset-parent
 

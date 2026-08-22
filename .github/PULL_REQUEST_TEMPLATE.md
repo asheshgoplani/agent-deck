@@ -36,6 +36,7 @@ Quote them. This is the first thing a reviewer reads. A one-liner is fine; "" is
 
 - [ ] Targeted diff: one problem, no unrelated changes
 - [ ] Tests added or updated for new behavior
+- [ ] skills/agent-deck updated if this changes a CLI flag/command, config key, TUI surface, status/substate, or safety rule
 - [ ] Test suite passes sandboxed: `HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...`
 - [ ] If this touches a hot path (list, status, session output, startup, tmux layer): before/after timing evidence included
 - [ ] CHANGELOG.md untouched (entries are added at landing)

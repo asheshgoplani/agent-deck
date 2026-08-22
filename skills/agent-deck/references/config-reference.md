@@ -27,6 +27,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[global_search] Section](#global_search-section)
 - [[notifications] Section](#notifications-section)
 - [[performance] Section](#performance-section)
+- [[system_stats] Section](#system_stats-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
 - [[mcps.*] Section](#mcps-section)
@@ -650,6 +651,25 @@ claim_polling = true   # Opt-in: dedupe status polling across concurrent instanc
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `claim_polling` | bool | `false` | When `true`, each session is actively polled (tmux status scan, live pipe attach) by exactly one instance instead of every open instance polling every session redundantly. Instances take ownership of sessions in their `-g` scope via a `session_claims` table in `state.db`, refreshing a heartbeat each sweep; a session with no live claim (owner heartbeat older than 15s, or no claim row at all) is up for grabs by the next instance that sees it in scope. Every 30s the elected primary instance additionally slow-polls **orphaned** sessions — those no scoped instance currently claims — so their statuses and notifications keep working even with no dedicated owner. Claims for sessions no longer present in the `instances` table (deleted, or archived-then-purged) are pruned periodically so the table cannot grow unbounded over a long-lived process. Default `false` preserves today's behavior: every instance polls every session it can see. |
+
+## [system_stats] Section
+
+Host-stat collection for the TUI status bar and empty-state preview. Remote dashboards use a bounded remote probe; these keys configure the local collector.
+
+```toml
+[system_stats]
+enabled = true
+refresh_seconds = 5
+format = "compact"
+show = ["cpu", "ram", "disk", "network"]
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Collect and render system statistics. |
+| `refresh_seconds` | int | `5` | Collection interval, clamped to 2–300 seconds. |
+| `format` | string | `"compact"` | `compact`, `full`, or `minimal`; unknown values fall back to `compact`. |
+| `show` | array | `["cpu", "ram", "disk", "network"]` | Ordered metrics. Valid values are `cpu`, `ram`, `disk`, `load`, `gpu`, and `network`. |
 
 ## Skills Registry (Outside config.toml)
 

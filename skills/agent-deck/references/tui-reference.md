@@ -4,6 +4,35 @@ Complete reference for agent-deck Terminal UI features.
 
 ## Keyboard Shortcuts
 
+### Configurable action map
+
+These are the defaults from `internal/ui/hotkeys.go`. Override them under `[hotkeys]`; an empty value unbinds an action. `switch_session` is deliberately unbound by default even though its suggested chord is `ctrl+s`.
+
+| Config key | Default | Action |
+|---|---|---|
+| `quit` | `q` (also Ctrl+C) | Quit |
+| `new_session` / `quick_create` | `n` / `N` | New / quick session |
+| `rename` | `r` | Rename selected row |
+| `restart` / `restart_fresh` | `R` / `T` | Restart / restart without the stored tool session |
+| `delete` / `close_session` | `d` / `D` | Delete / close session |
+| `archive_session` / `unarchive_session` / `view_archived` | `A` / Shift+U / `^` | Archive controls |
+| `undo_delete` | Ctrl+Z | Undo the last delete |
+| `move_to_group` | `M` | Move to group |
+| `mcp_manager` / `plugin_manager` / `skills_manager` | `m` / `L` / `s` | Open managers |
+| `toggle_preview` / `cycle_group_view` | `v` / `t` | Preview and group layout |
+| `mark_unread` / `quick_approve` / `prompt_session` | `u` / `a` / `o` | Session interaction |
+| `toggle_yolo` | `y` | Toggle supported tool autonomy mode |
+| `quick_fork` / `fork_with_options` | `f` / `F` | Fork |
+| `copy_output` / `copy_pane` / `send_output` | `c` / `V` / `x` | Copy/send output |
+| `exec_shell` / `open_shell_here` | `E` / `H` | Shell actions |
+| `edit_notes` / `edit_paths` / `edit_session` | `e` / `p` / `P` | Edit metadata |
+| `worktree_setup` / `worktree_finish` | `b` / `W` | Worktree actions |
+| `create_group` / `search` / `help` / `settings` | `g` / `/` / `?` / `S` | Global panels |
+| `import` / `reload` / `detach` | `i` / Ctrl+R / Ctrl+Q | Import, refresh, detach |
+| `watcher_panel` / `agents_panel` | `w` / Alt+A | Watchers / adopted agents |
+| `switch_session` | unbound (suggested Ctrl+S) | Attached-session switcher |
+| `scrollback` | PageUp | Attached-session scrollback pager |
+
 ### Navigation
 
 | Key | Action |
