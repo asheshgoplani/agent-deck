@@ -3002,8 +3002,10 @@ func (d *NewDialog) View() string {
 	} else if cur == focusModel {
 		if d.modelSuggestionActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Esc back │ ^S create"
+		} else if d.IsModelPickerOpen() {
+			helpText = "Type custom model ID │ Enter browse IDs │ Tab next │ Esc back │ ^S create"
 		} else {
-			helpText = "Type custom model ID │ Enter browse IDs │ Tab next │ ^S create"
+			helpText = "Type custom model ID │ Enter browse IDs │ Tab next │ Esc cancel │ ^S create"
 		}
 	} else if cur == focusReasoningEffort {
 		helpText = "←→/Space choose effort │ Tab next │ Enter/^S create │ Esc cancel"
@@ -3279,7 +3281,7 @@ func (d *NewDialog) renderModelSuggestionsDropdown() string {
 		}
 	}
 
-	footerText := " ↑/↓ navigate │ Space select │ Type custom "
+	footerText := " ↑/↓ navigate │ Space select │ Esc back "
 	if d.modelSuggestionActive {
 		footerText = " ↑/↓ navigate │ Space/Enter select │ Esc back "
 	}
