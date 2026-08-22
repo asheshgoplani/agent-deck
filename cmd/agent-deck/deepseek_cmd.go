@@ -29,6 +29,10 @@ func handleDeepSeek(args []string) {
 		printDeepSeekUsage(os.Stderr)
 		os.Exit(1)
 	}
+	if helpRequested(args) {
+		printDeepSeekUsage(os.Stdout)
+		return
+	}
 
 	sub := args[0]
 	rest := args[1:]
@@ -38,9 +42,6 @@ func handleDeepSeek(args []string) {
 		switch arg {
 		case "--json":
 			jsonOut = true
-		case "--help", "-h":
-			printDeepSeekUsage(os.Stdout)
-			return
 		default:
 			positional = append(positional, arg)
 		}

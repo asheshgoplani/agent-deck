@@ -14,6 +14,10 @@ import (
 const costsUsage = "Usage: agent-deck costs <sync|summary|recompute>"
 
 func handleCosts(profile string, args []string) {
+	if helpRequested(args) {
+		fmt.Println(costsUsage)
+		return
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, costsUsage)
 		os.Exit(1)

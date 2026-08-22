@@ -624,7 +624,7 @@ func handleHooks(args []string) {
 	// without side effects: an install triggered by `hooks install --help`
 	// would write to another tool's settings file from a command whose
 	// documented purpose in that invocation was to describe itself (#1993).
-	if hooksHelpRequested(args) {
+	if helpRequested(args) {
 		printClaudeHooksUsage(os.Stdout)
 		return
 	}
@@ -652,18 +652,6 @@ func printClaudeHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "  install      Install or upgrade agent-deck Claude Code hooks")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Claude Code hooks")
 	fmt.Fprintln(w, "  status       Show current hook install status")
-}
-
-// hooksHelpRequested reports whether any argument asks for help. Every hooks
-// handler runs this before dispatching so `... install --help` can never
-// reach an install path.
-func hooksHelpRequested(args []string) bool {
-	for _, a := range args {
-		if a == "--help" || a == "-h" || a == "help" {
-			return true
-		}
-	}
-	return false
 }
 
 func handleHooksInstall() {
