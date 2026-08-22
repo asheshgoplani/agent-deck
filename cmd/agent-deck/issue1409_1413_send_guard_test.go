@@ -37,8 +37,8 @@ func claudeComposer(text string) string {
 
 func TestSendWithRetryTarget_TypedNotSubmitted_ErrorsWithStatus(t *testing.T) {
 	const msg = "instruct the worker to re-run CI now"
-	// The composer holds the sent message for the whole budget: every check
-	// re-presses Enter, and exhaustion must classify the result as
+	// The composer holds the sent message for the whole budget: one recovery
+	// Enter is attempted, and exhaustion must classify the result as
 	// typed_not_submitted instead of silently succeeding (issue #1413).
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
@@ -56,9 +56,8 @@ func TestSendWithRetryTarget_TypedNotSubmitted_ErrorsWithStatus(t *testing.T) {
 	if !strings.Contains(err.Error(), "not submitted") {
 		t.Errorf("error should describe the unsubmitted state, got: %v", err)
 	}
-	// Bounded Enter retries: one per check while the unsent prompt is shown.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 6 {
-		t.Errorf("expected 6 bounded Enter retries, got %d", got)
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Errorf("expected exactly one bounded recovery Enter, got %d", got)
 	}
 }
 

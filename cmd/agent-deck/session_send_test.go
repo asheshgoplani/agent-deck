@@ -458,10 +458,9 @@ func TestSendWithRetryTarget_WaitingWithoutPasteMarker_ErrorsUnderVerifyDelivery
 	if !strings.Contains(err.Error(), "876") {
 		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
-	// State-machine guard: with aggressive early retry (retry < 5), all 4
-	// iterations nudge Enter even though the run ultimately errors.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
-		t.Fatalf("expected 4 aggressive early SendEnter calls for waiting-without-active state, got %d", got)
+	// The bounded loop may retry submission only once before failing loudly.
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected exactly one recovery Enter, got %d", got)
 	}
 }
 
@@ -495,8 +494,8 @@ func TestSendWithRetryTarget_RetriesOnUnsentPasteMarker(t *testing.T) {
 	if delivery != deliverySubmitted {
 		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, delivery)
 	}
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 5 {
-		t.Fatalf("expected 5 SendEnter calls while unsent marker persists, got %d", got)
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected exactly one recovery Enter while the marker persists, got %d", got)
 	}
 }
 
@@ -540,10 +539,10 @@ func TestSendWithRetryTarget_DetectsPasteMarkerAfterInitialWaiting(t *testing.T)
 	if err != nil {
 		t.Fatalf("verifyDelivery must accept paste-marker→active as evidence: %v", err)
 	}
-	// 2 calls: retry 0 fires early aggressive nudge (waiting, no active seen),
-	// retry 1 fires from paste marker detection.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 2 {
-		t.Fatalf("expected 2 SendEnter calls (1 early nudge + 1 paste marker), got %d", got)
+	// The early nudge consumes the one recovery allowance; the later marker
+	// cannot cause another Enter.
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected exactly one recovery Enter, got %d", got)
 	}
 }
 
@@ -603,10 +602,9 @@ func TestSendWithRetryTarget_AmbiguousStateFallback_ErrorsUnderVerifyDelivery(t 
 	if !strings.Contains(err.Error(), "876") {
 		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
-	// State-machine guard: ambiguous-state Enter budget is 4; all 4 retries
-	// nudge Enter even though the run errors at the end.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
-		t.Fatalf("expected 4 fallback SendEnter calls (increased budget), got %d", got)
+	// Ambiguous state still gets only one recovery Enter.
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected exactly one fallback Enter, got %d", got)
 	}
 }
 
@@ -644,12 +642,9 @@ func TestSendWithRetryTarget_AggressiveEarlyEnterNudge(t *testing.T) {
 	if !strings.Contains(err.Error(), "876") {
 		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
-	// First 5 retries (0-4): all nudge = 5 calls
-	// Retries 5-9: retry%2==0 means retries 6, 8 nudge = 2 calls
-	// Total: 5 + 2 = 7
-	// (retry 5 is not < 5 and 5%2 != 0; retry 7, 9 likewise skip.)
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 7 {
-		t.Fatalf("expected 7 SendEnter calls (5 early + 2 even), got %d", got)
+	// A long verification budget does not increase the recovery-Enter budget.
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected exactly one recovery Enter, got %d", got)
 	}
 }
 
@@ -671,9 +666,9 @@ func TestSendWithRetryTarget_IncreasedAmbiguousBudget(t *testing.T) {
 	if !strings.Contains(err.Error(), "876") {
 		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
-	// Retries 0, 1, 2, 3 are < 4 so SendEnter is called 4 times; retry 4 is not.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
-		t.Fatalf("expected 4 SendEnter calls for increased ambiguous budget, got %d", got)
+	// Ambiguous observations do not authorize repeated Enter presses.
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected exactly one recovery Enter for ambiguous state, got %d", got)
 	}
 }
 

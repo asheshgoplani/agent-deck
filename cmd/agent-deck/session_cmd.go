@@ -3018,6 +3018,7 @@ func defaultSendOptions() sendRetryOptions {
 	return sendRetryOptions{
 		maxRetries:     50,
 		checkDelay:     300 * time.Millisecond,
+		maxFullResends: -1,
 		verifyDelivery: true,
 	}
 }
@@ -3498,6 +3499,11 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// composer. Body text merely being visible is not the same thing and must
 	// not be treated as if it were.
 	sawUnsentMarker := false
+	// The submit-confirm contract permits exactly one semantic recovery Enter.
+	// Repeating Enter can accept dialogs or create empty follow-up turns, while
+	// retyping the body can duplicate a queued message. The body is injected
+	// once above; this flag makes the forced-Enter workaround bounded and safe.
+	recoveryEnterUsed := false
 	// Snippet of the message body to look for in captured pane content. Some
 	// TUI frameworks (and non-Claude tools) won't render a "[Pasted text …]"
 	// or "❯ <msg>" marker, so direct verbatim content is the only signal.
@@ -3552,7 +3558,9 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks = 0
-			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
+			if !recoveryEnterUsed && attrib.NudgeEnter(target, paneNow, tmux.StripANSI) {
+				recoveryEnterUsed = true
+			}
 			continue
 		}
 
@@ -3658,12 +3666,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 					continue
 				}
 
-				// We haven't observed any post-send activity yet. Nudge Enter
-				// aggressively in the early window (every iteration for first 5
-				// retries) then every 2nd iteration. This addresses bracketed
-				// paste timing failures that are most likely early on.
-				if retry < 5 || retry%2 == 0 {
-					attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
+				// We haven't observed post-send activity yet. Use the one
+				// recovery Enter only after attributable body evidence (or on
+				// the first empty-composer observation).
+				if !recoveryEnterUsed && (bodyInPaneNow || retry == 0) &&
+					attrib.NudgeEnter(target, paneNow, tmux.StripANSI) {
+					recoveryEnterUsed = true
 				}
 			}
 			continue
@@ -3671,11 +3679,10 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		waitingNoMarkerChecks = 0
 		waitingNoActivityChecks = 0
 
-		// Ambiguous state: keep a best-effort Enter retry budget.
-		// Increased from 2 to 4 because some TUI frameworks take longer
-		// to process and reflect state.
-		if retry < 4 {
-			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
+		// Ambiguous state: the contract still permits only one attributable
+		// recovery Enter across the entire bounded verification window.
+		if !recoveryEnterUsed && attrib.NudgeEnter(target, paneNow, tmux.StripANSI) {
+			recoveryEnterUsed = true
 		}
 	}
 
@@ -3868,7 +3875,11 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	}
 
 	sawBody := false
+	sawHeldComposer := false
+	recoveryEnterUsed := false
+	attrib := send.EnterAttribution{Message: message, OwnPasteMarker: baseline.paneOK && baseline.pasteMarkers == 0}
 	for i := 0; i < checks; i++ {
+		recoveryUsedBeforeObservation := recoveryEnterUsed
 		// Strongest signal first: an idle agent that starts working received
 		// what it started working on, which is submission, not just arrival.
 		if baseline.statusOK && !baseline.wasActive {
@@ -3877,7 +3888,11 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			}
 		}
 		if baseline.paneOK {
-			if n, markers, ok := paneArrivalObservation(target, message); ok {
+			if raw, captureErr := target.CapturePaneFresh(); captureErr == nil {
+				content := tmux.StripANSI(raw)
+				n := strings.Count(collapseWhitespace(content), token)
+				markers := send.ComposerPasteMarkerCount(raw, tmux.StripANSI)
+				held := send.HasUnsentComposerPrompt(content, message) || markers > baseline.pasteMarkers
 				if n > baseline.occurrences {
 					// Keep polling: the body is in, but the turn may still
 					// start within the budget and upgrade this to submitted.
@@ -3901,6 +3916,28 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 				// unsent bytes.
 				if markers > baseline.pasteMarkers {
 					sawBody = true
+				}
+				if held {
+					sawHeldComposer = true
+					if !recoveryEnterUsed && attrib.NudgeEnter(target, send.Captured(raw), tmux.StripANSI) {
+						recoveryEnterUsed = true
+					}
+				} else if sawHeldComposer {
+					// The attributable payload was observed in the composer and
+					// then cleared after the one recovery Enter: turn submission.
+					return deliverySubmitted, nil
+				}
+				// Codex-style panes do not always expose a parseable composer
+				// region. A newly visible attributable body is still enough to
+				// authorize the single forced-Enter recovery; it is never enough
+				// by itself to certify submission.
+				if sawBody && !recoveryEnterUsed && attrib.NudgeEnter(target, send.Captured(raw), tmux.StripANSI) {
+					recoveryEnterUsed = true
+				}
+				if recoveryUsedBeforeObservation && !held {
+					if draft, visible := send.CurrentComposerPrompt(content); visible && draft == "" {
+						return deliverySubmitted, nil
+					}
 				}
 			}
 		}
