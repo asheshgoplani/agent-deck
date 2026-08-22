@@ -35,7 +35,8 @@ type AgentsPanel struct {
 	// can show the RULES section the mockup and the prompt both call for.
 	rulesByAgent map[string][]string
 	// rules is the selected agent's rules, resolved at render time.
-	rules []string
+	rules     []string
+	loadError string
 }
 
 // agentPanelRow is one rendered line.
@@ -94,6 +95,7 @@ func (ap *AgentsPanel) SetView(view agents.View, now time.Time) {
 		return
 	}
 	ap.view = view
+	ap.loadError = ""
 	ap.now = now
 	ap.rows = ap.rows[:0]
 
@@ -117,6 +119,17 @@ func (ap *AgentsPanel) SetView(view agents.View, now time.Time) {
 	if len(ap.rows) > 0 && ap.rows[ap.cursor].isHeader {
 		ap.moveCursor(1)
 	}
+}
+
+// SetLoadError replaces fleet data with an explicit unknown/error state.
+func (ap *AgentsPanel) SetLoadError(err string, now time.Time) {
+	if ap == nil {
+		return
+	}
+	ap.view = agents.View{}
+	ap.rows = nil
+	ap.loadError = agents.SanitizeForDisplay(err)
+	ap.now = now
 }
 
 // SetRules supplies each agent's policy file names, keyed by agent name.
@@ -233,6 +246,9 @@ func (ap *AgentsPanel) renderList(width int) string {
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 
 	summary := fmt.Sprintf("%d agents", ap.view.TotalAgents)
+	if ap.loadError != "" {
+		summary = "status unknown"
+	}
 	if ap.view.NeedAttention > 0 {
 		summary += fmt.Sprintf(" · %d need attention", ap.view.NeedAttention)
 	}
@@ -242,6 +258,18 @@ func (ap *AgentsPanel) renderList(width int) string {
 	sb.WriteString("\n")
 	sb.WriteString(strings.Repeat("─", width))
 	sb.WriteString("\n")
+
+	if ap.loadError != "" {
+		alertStyle := lipgloss.NewStyle().Foreground(ColorRed).Bold(true)
+		sb.WriteString(alertStyle.Render("  ERROR: agents registry could not be loaded"))
+		sb.WriteString("\n")
+		sb.WriteString(dimStyle.Render("  " + truncateStr(ap.loadError, width-2)))
+		sb.WriteString("\n")
+		sb.WriteString(strings.Repeat("─", width))
+		sb.WriteString("\n")
+		sb.WriteString(dimStyle.Render("[Esc] Close"))
+		return sb.String()
+	}
 
 	if len(ap.rows) == 0 {
 		sb.WriteString(dimStyle.Render("  Nothing adopted yet."))

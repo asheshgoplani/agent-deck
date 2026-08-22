@@ -9283,7 +9283,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// is no panel to open and the key stays inert, so a zero-config deck
 		// is unchanged.
 		h.refreshAgentsPanel()
-		if !h.agentsPanel.HasAgents() {
+		if !h.agentsPanel.HasAgents() && h.agentsLoadError == "" {
 			return h, nil
 		}
 		h.agentsPanel.Show()

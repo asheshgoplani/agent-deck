@@ -333,7 +333,7 @@ func applyConductorBindings(post *Post, absDir, name string, opts Options, sourc
 	}
 
 	for _, unit := range findRelatedUnits(name, opts.UnitDirs) {
-		*sourcePaths = append(*sourcePaths, unit.Path)
+		*sourcePaths = append(*sourcePaths, launchSourcePaths(unit)...)
 		applyUnitToPost(post, unit)
 	}
 }
@@ -417,36 +417,50 @@ func dropPairedTimers(sources []*LaunchSource) []*LaunchSource {
 // triggers on the post.
 func applyUnitToPost(post *Post, unit *LaunchSource) {
 	base := sanitizeName(unit.Label)
+	scheduleSource := unit.ScheduleSource
+	if scheduleSource == "" {
+		scheduleSource = unit.Path
+	}
 	switch {
-	case unit.CalendarSpec != "":
+	case len(unit.CalendarSpecs) > 0 || unit.CalendarSpec != "":
 		// launchd already produced cron; systemd produces OnCalendar syntax,
 		// which only sometimes has an exact cron equivalent. A spec that
 		// cannot be converted is recorded verbatim as an opaque trigger so
 		// the row shows the real schedule text instead of a cron expression
 		// that would never parse.
-		trigger := Trigger{
-			Name: base + "-calendar", Type: TriggerCron, Schedule: unit.CalendarSpec,
-			Enabled: false, External: true, ExternalSource: unit.Path,
-			Deliver: fixedDeliveryFor(post.Spec.Role.Name),
+		specs := unit.CalendarSpecs
+		if len(specs) == 0 {
+			specs = []string{unit.CalendarSpec}
 		}
-		note := "the unit still owns this firing; agent-deck only displays it"
-		if unit.Kind == "systemd" {
-			if converted, ok := SystemdCalendarToCron(unit.CalendarSpec); ok {
-				trigger.Schedule = converted
-			} else {
-				trigger.Type = TriggerOpaque
-				note = "OnCalendar=" + unit.CalendarSpec + " has no exact cron equivalent; no next-due time is computed"
+		for i, spec := range specs {
+			name := base + "-calendar"
+			if len(specs) > 1 {
+				name = fmt.Sprintf("%s-calendar-%d", base, i+1)
 			}
+			trigger := Trigger{
+				Name: name, Type: TriggerCron, Schedule: spec,
+				Enabled: false, External: true, ExternalSource: scheduleSource,
+				Deliver: fixedDeliveryFor(post.Spec.Role.Name),
+			}
+			note := "the unit still owns this firing; agent-deck only displays it"
+			if unit.Kind == "systemd" {
+				if converted, ok := SystemdCalendarToCron(spec); ok {
+					trigger.Schedule = converted
+				} else {
+					trigger.Type = TriggerOpaque
+					note = "OnCalendar=" + spec + " has no exact cron equivalent; no next-due time is computed"
+				}
+			}
+			post.Spec.Triggers = append(post.Spec.Triggers, trigger)
+			post.AddEvidence("spec.triggers."+name, spec, scheduleSource, ConfidenceHigh, note)
 		}
-		post.Spec.Triggers = append(post.Spec.Triggers, trigger)
-		post.AddEvidence("spec.triggers."+base+"-calendar", unit.CalendarSpec, unit.Path, ConfidenceHigh, note)
 	case unit.IntervalSeconds > 0:
 		post.Spec.Triggers = append(post.Spec.Triggers, Trigger{
 			Name: base + "-interval", Type: TriggerCron, IntervalSeconds: unit.IntervalSeconds,
-			Enabled: false, External: true, ExternalSource: unit.Path,
+			Enabled: false, External: true, ExternalSource: scheduleSource,
 			Deliver: fixedDeliveryFor(post.Spec.Role.Name),
 		})
-		post.AddEvidence("spec.triggers."+base+"-interval", fmt.Sprintf("every %ds", unit.IntervalSeconds), unit.Path,
+		post.AddEvidence("spec.triggers."+base+"-interval", fmt.Sprintf("every %ds", unit.IntervalSeconds), scheduleSource,
 			ConfidenceHigh, "a poll cadence is not proof of the desired business cadence")
 	case unit.KeepAlive:
 		post.Spec.Triggers = append(post.Spec.Triggers, Trigger{
@@ -464,10 +478,10 @@ func applyUnitToPost(post *Post, unit *LaunchSource) {
 		post.Spec.Triggers = append(post.Spec.Triggers, Trigger{
 			Name: base + "-calendar", Type: TriggerOpaque,
 			Schedule: unit.RawScheduleText,
-			Enabled:  false, External: true, ExternalSource: unit.Path,
+			Enabled:  false, External: true, ExternalSource: scheduleSource,
 			Deliver: fixedDeliveryFor(post.Spec.Role.Name),
 		})
-		post.AddEvidence("spec.triggers."+base+"-calendar", unit.RawScheduleText, unit.Path, ConfidenceHigh,
+		post.AddEvidence("spec.triggers."+base+"-calendar", unit.RawScheduleText, scheduleSource, ConfidenceHigh,
 			"this fires on a schedule with no exact cron equivalent; no next-due time is computed")
 	}
 
@@ -488,6 +502,13 @@ func applyUnitToPost(post *Post, unit *LaunchSource) {
 	for _, warning := range unit.Warnings {
 		post.AddEvidence("source."+filepath.Base(unit.Path), "", unit.Path, ConfidenceLow, warning)
 	}
+}
+
+func launchSourcePaths(unit *LaunchSource) []string {
+	if len(unit.SourcePaths) > 0 {
+		return unit.SourcePaths
+	}
+	return []string{unit.Path}
 }
 
 // fixedDeliveryFor returns the fixed, locally declared delivery string for a
@@ -532,7 +553,8 @@ func adoptSystemd(path string, opts Options) (*Plan, error) {
 
 func planFromUnit(src *LaunchSource, opts Options) (*Plan, error) {
 	name := sanitizeName(src.Label)
-	plan := &Plan{Target: src.Path, TargetKind: src.Kind, SourcePaths: []string{src.Path}}
+	paths := launchSourcePaths(src)
+	plan := &Plan{Target: src.Path, TargetKind: src.Kind, SourcePaths: append([]string(nil), paths...)}
 
 	classified := ClassifyLaunchSource(src)
 	post := NewPost(name, postID(name, src.Path))
@@ -682,7 +704,7 @@ func adoptSession(target string, opts Options) (*Plan, error) {
 
 	sourcePaths := []string{}
 	for _, unit := range findRelatedUnits(name, opts.UnitDirs) {
-		sourcePaths = append(sourcePaths, unit.Path)
+		sourcePaths = append(sourcePaths, launchSourcePaths(unit)...)
 		applyUnitToPost(post, unit)
 	}
 	post.Spec.SourceFingerprint = FingerprintPaths(sourcePaths)
@@ -733,7 +755,7 @@ func (p *Plan) WriteTo(root string) ([]string, error) {
 		// Guard on the whole directory, not just agent.yaml. A directory that
 		// already holds role/INSTRUCTIONS.md or ADOPTION-REPORT.md but no
 		// agent.yaml would otherwise have those files silently overwritten —
-		// which matters most for --output, where the root is arbitrary.
+		// even if a caller supplies a pre-existing registry root.
 		if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
 			return written, fmt.Errorf("refusing to write definition %q: %s already exists and is not empty; "+
 				"remove it or adopt under a different name", def.Name, dir)

@@ -38,6 +38,10 @@ func (h *Home) refreshAgentsPanel() {
 		// A registry that cannot be read is reported, not swallowed: the
 		// alternative is a deck that silently claims the user has no agents.
 		h.agentsLoadError = err.Error()
+		h.agentsLoaded = true
+		h.agentsView = agents.View{}
+		h.agentBySession = nil
+		h.agentsPanel.SetLoadError(err.Error(), now)
 		// A registry we could not read is not a registry with agents in it.
 		// Leaving the previous value would keep advertising a surface whose
 		// data just failed to load.
@@ -139,7 +143,7 @@ func agentLedgerLookup(sessionID string) []agents.LedgerEntry {
 		})
 	}
 
-	if events, err := session.PeekInboxEvents(sessionID); err == nil {
+	if events, err := session.ReadInboxEventsForDisplay(sessionID); err == nil {
 		for _, event := range events {
 			title := event.ChildTitle
 			if title == "" {

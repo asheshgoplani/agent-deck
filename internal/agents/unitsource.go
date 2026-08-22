@@ -36,9 +36,18 @@ type LaunchSource struct {
 	// CalendarSpec is the source's own schedule spelling (a launchd
 	// StartCalendarInterval rendered to cron, or a systemd OnCalendar).
 	CalendarSpec string `json:"calendar_spec,omitempty"`
+	// CalendarSpecs preserves every repeated OnCalendar directive. systemd
+	// treats them as alternatives; collapsing to the last one lies about when
+	// the timer fires.
+	CalendarSpecs []string `json:"calendar_specs,omitempty"`
+	// SourcePaths lists every unit read to produce this observation.
+	SourcePaths []string `json:"source_paths,omitempty"`
 	// ScheduleKey names which systemd key produced IntervalSeconds, so a
 	// report can say where the cadence came from.
 	ScheduleKey string `json:"schedule_key,omitempty"`
+	// ScheduleSource is the timer/plist file that owns the schedule. It may
+	// differ from Path when a .service target loads its sibling .timer.
+	ScheduleSource string `json:"schedule_source,omitempty"`
 	// HasUnrepresentableSchedule marks a source that demonstrably fires on a
 	// schedule which has no exact cron equivalent. The trigger is still
 	// recorded — as opaque — so the fleet view never shows an agent with
@@ -425,12 +434,21 @@ func ParseSystemdUnit(path string) (*LaunchSource, error) {
 	}
 
 	src := &LaunchSource{
-		Kind:  "systemd",
-		Path:  path,
-		Label: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+		Kind:        "systemd",
+		Path:        path,
+		Label:       strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+		SourcePaths: []string{path},
 	}
 
 	service := sections["Service"]
+	if len(service) == 0 && strings.HasSuffix(path, ".timer") {
+		servicePath := strings.TrimSuffix(path, ".timer") + ".service"
+		if serviceSections, serviceErr := parseINI(servicePath); serviceErr == nil {
+			service = serviceSections["Service"]
+			src.SourcePaths = append(src.SourcePaths, servicePath)
+			src.Warnings = append(src.Warnings, "runtime read from paired service "+filepath.Base(servicePath))
+		}
+	}
 	// %h, %u and %U belong to the identity the unit RUNS AS. That is this
 	// process only for a user unit with no User= override. For a system unit,
 	// or one that sets User=, expanding with the adopting process's identity
@@ -469,15 +487,25 @@ func ParseSystemdUnit(path string) (*LaunchSource, error) {
 	src.EnvFiles = append(src.EnvFiles, service["EnvironmentFile"]...)
 
 	timerSection := sections["Timer"]
+	if len(timerSection) > 0 {
+		src.ScheduleSource = path
+	}
 	if len(timerSection) == 0 && strings.HasSuffix(path, ".service") {
 		timerPath := strings.TrimSuffix(path, ".service") + ".timer"
 		if timerSections, timerErr := parseINI(timerPath); timerErr == nil {
 			timerSection = timerSections["Timer"]
+			src.ScheduleSource = timerPath
+			src.SourcePaths = append(src.SourcePaths, timerPath)
 			src.Warnings = append(src.Warnings, "schedule read from paired timer "+filepath.Base(timerPath))
 		}
 	}
-	if onCalendar := firstValue(timerSection, "OnCalendar"); onCalendar != "" {
-		src.CalendarSpec = onCalendar
+	for _, onCalendar := range timerSection["OnCalendar"] {
+		if onCalendar = strings.TrimSpace(onCalendar); onCalendar != "" {
+			src.CalendarSpecs = append(src.CalendarSpecs, onCalendar)
+		}
+	}
+	if len(src.CalendarSpecs) > 0 {
+		src.CalendarSpec = src.CalendarSpecs[0]
 	}
 	// systemd has several monotonic cadence keys and a timer may set more
 	// than one. They are read in the order that best describes the repeating

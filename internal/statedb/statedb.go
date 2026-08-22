@@ -103,8 +103,9 @@ const SchemaVersion = 13
 // Thread-safe for concurrent use from multiple goroutines within one process.
 // Multiple OS processes can safely read/write via WAL mode + busy timeout.
 type StateDB struct {
-	db  *sql.DB
-	pid int
+	db       *sql.DB
+	pid      int
+	readOnly bool
 	// token identifies this StateDB's owning process instance for session
 	// claim ownership (see ClaimSessions). Raw PID alone is not a safe
 	// ownership key: after this process exits, the OS can recycle its PID for
@@ -352,8 +353,33 @@ func Open(dbPath string) (*StateDB, error) {
 	return &StateDB{db: db, pid: pid, path: dbPath, token: newOwnerToken(pid)}, nil
 }
 
+// OpenReadOnly opens an existing database without creating files, changing
+// pragmas, migrating schema, or checkpointing WAL state. It is intended for
+// product surfaces whose contract forbids every filesystem mutation.
+func OpenReadOnly(dbPath string) (*StateDB, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, err
+	}
+	// immutable=1 prevents SQLite from creating/updating WAL/SHM sidecars and
+	// is required by the byte-zero-effect contract of callers using this API.
+	dsn := "file:" + dbPath + "?mode=ro&immutable=1&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("statedb: open read-only: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("statedb: open read-only: %w", err)
+	}
+	pid := os.Getpid()
+	return &StateDB{db: db, pid: pid, path: dbPath, token: newOwnerToken(pid), readOnly: true}, nil
+}
+
 // Close checkpoints WAL and closes the database.
 func (s *StateDB) Close() error {
+	if s.readOnly {
+		return s.db.Close()
+	}
 	// Checkpoint WAL to merge it back into the main database file
 	_, _ = s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return s.db.Close()

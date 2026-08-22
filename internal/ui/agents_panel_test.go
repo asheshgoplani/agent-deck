@@ -47,6 +47,20 @@ func TestAgentsPanelEmptyRegistryHasNoAgents(t *testing.T) {
 	}
 }
 
+func TestAgentsPanelRendersRegistryLoadFailureAsUnknown(t *testing.T) {
+	ap := NewAgentsPanel()
+	ap.SetLoadError("permission denied", time.Now())
+	ap.Show()
+	ap.SetSize(100, 30)
+	out := ap.View()
+	if !strings.Contains(out, "ERROR: agents registry could not be loaded") || !strings.Contains(out, "permission denied") {
+		t.Fatalf("load failure rendered as empty instead of explicit error:\n%s", out)
+	}
+	if strings.Contains(out, "Nothing adopted yet") {
+		t.Fatalf("unknown registry rendered as zero agents:\n%s", out)
+	}
+}
+
 func testView() agents.View {
 	return agents.View{
 		TotalAgents: 2,

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -110,7 +109,6 @@ func printAgentUsage() {
 func handleAgentAdopt(profile string, args []string) {
 	fs := flag.NewFlagSet("agent adopt", flag.ExitOnError)
 	write := fs.Bool("write", false, "Write the generated definitions (default: dry run)")
-	output := fs.String("output", "", "Write definitions under this directory instead of the agents registry")
 	jsonOutput := fs.Bool("json", false, "Output the plan as JSON")
 	manager := fs.String("manager", "", "Post name that non-manager roles report to")
 	fs.Usage = func() {
@@ -175,13 +173,10 @@ func handleAgentAdopt(profile string, args []string) {
 		}
 	}
 
-	root := *output
-	if root == "" {
-		root, err = agents.Dir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+	root, err := agents.Dir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: create registry: %v\n", err)
@@ -542,7 +537,7 @@ func localMachineName() string {
 // authoritative for what a runtime is doing.
 func loadSessionStates(profile string) map[string]agents.SessionState {
 	states := map[string]agents.SessionState{}
-	storage, err := session.NewStorageWithProfile(profile)
+	storage, err := session.NewReadOnlyStorageWithProfile(profile)
 	if err != nil {
 		return states
 	}
@@ -561,7 +556,7 @@ func loadSessionStates(profile string) map[string]agents.SessionState {
 // loadAdoptSessions converts the local fleet into the shape the adoption
 // resolvers accept.
 func loadAdoptSessions(profile string) []agents.SessionInfo {
-	storage, err := session.NewStorageWithProfile(profile)
+	storage, err := session.NewReadOnlyStorageWithProfile(profile)
 	if err != nil {
 		return nil
 	}
@@ -646,7 +641,7 @@ func ledgerLookup() func(string) []agents.LedgerEntry {
 		}
 
 		// What its children reported to it.
-		if events, err := session.PeekInboxEvents(sessionID); err == nil {
+		if events, err := session.ReadInboxEventsForDisplay(sessionID); err == nil {
 			for _, event := range events {
 				title := event.ChildTitle
 				if title == "" {
@@ -665,11 +660,9 @@ func ledgerLookup() func(string) []agents.LedgerEntry {
 	}
 }
 
-// fetchRemoteAgents asks each configured remote for its agents.
-//
-// Link honesty is the point: a remote that does not answer is reported
-// UNCONFIRMED with the reason, never omitted (which would understate the
-// fleet) and never rendered as if its rows were current.
+// fetchRemoteAgents reports configured remotes from cached observations only.
+// Phase 1 has no refresh action, so a cache miss is explicit and this default
+// list path never starts a process or transport.
 func fetchRemoteAgents(skip bool) []agents.RemoteMachineData {
 	if skip {
 		return nil
@@ -685,40 +678,12 @@ func fetchRemoteAgents(skip bool) []agents.RemoteMachineData {
 	}
 	sort.Strings(names)
 
-	var result []agents.RemoteMachineData
+	result := make([]agents.RemoteMachineData, 0, len(names))
 	for _, name := range names {
 		rc := config.Remotes[name]
-		runner := session.NewSSHRunner(name, rc)
-		ctx, cancel := context.WithTimeout(context.Background(), rc.GetCommandTimeout())
-		out, runErr := runner.RunCommand(ctx, "agents", "--json", "--no-remote")
-		cancel()
-
-		if runErr != nil {
-			result = append(result, agents.RemoteMachineData{
-				Name: name, Link: agents.LinkUnconfirmed,
-				Detail: "could not reach " + rc.Host + ": " + runErr.Error(),
-			})
-			continue
-		}
-
-		var remoteView agents.View
-		if jsonErr := json.Unmarshal(out, &remoteView); jsonErr != nil {
-			result = append(result, agents.RemoteMachineData{
-				Name: name, Link: agents.LinkUnconfirmed,
-				Detail: "unreadable response from " + rc.Host + " (remote may predate agents support)",
-			})
-			continue
-		}
-
-		var rows []agents.AgentRow
-		for _, machine := range remoteView.Machines {
-			for _, row := range machine.Agents {
-				row.Machine = name
-				rows = append(rows, row)
-			}
-		}
 		result = append(result, agents.RemoteMachineData{
-			Name: name, Link: agents.LinkOK, Detail: "answered just now", Agents: rows,
+			Name: name, Link: agents.LinkUnconfirmed,
+			Detail: "no cached agents observation for " + rc.Host + "; phase 1 does not contact remotes",
 		})
 	}
 	return result

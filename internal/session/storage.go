@@ -283,6 +283,25 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 	}, nil
 }
 
+// NewReadOnlyStorageWithProfile opens an existing session database without
+// creating directories/files, migrating schema, changing SQLite journal
+// state, or checkpointing WAL files.
+func NewReadOnlyStorageWithProfile(profile string) (*Storage, error) {
+	effectiveProfile, err := ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, err
+	}
+	dbPath, err := GetDBPathForProfile(effectiveProfile)
+	if err != nil {
+		return nil, err
+	}
+	db, err := statedb.OpenReadOnly(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open state database read-only: %w", err)
+	}
+	return &Storage{db: db, dbPath: dbPath, profile: effectiveProfile}, nil
+}
+
 // Profile returns the profile name this storage is using
 func (s *Storage) Profile() string {
 	return s.profile

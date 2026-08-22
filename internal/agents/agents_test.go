@@ -111,6 +111,9 @@ OnUnitInactiveSec=5min
 	if src.ScheduleKey != "OnUnitInactiveSec" {
 		t.Errorf("ScheduleKey = %q, want OnUnitInactiveSec", src.ScheduleKey)
 	}
+	if src.ScheduleSource != filepath.Join(dir, "demo.timer") {
+		t.Errorf("ScheduleSource = %q, want sibling timer", src.ScheduleSource)
+	}
 	// Environment VALUES must never be captured.
 	if len(src.EnvKeys) != 1 || src.EnvKeys[0] != "API_TOKEN" {
 		t.Errorf("EnvKeys = %v, want [API_TOKEN]", src.EnvKeys)
@@ -120,6 +123,126 @@ OnUnitInactiveSec=5min
 			t.Fatal("an environment value leaked into the parsed unit")
 		}
 	}
+}
+
+func TestParseBareSystemdTimerReadsSiblingServiceRuntime(t *testing.T) {
+	dir := t.TempDir()
+	timer := filepath.Join(dir, "truth.timer")
+	service := filepath.Join(dir, "truth.service")
+	writeTestFile(t, timer, "[Timer]\nOnCalendar=*-*-* 03:15:00\n")
+	writeTestFile(t, service, "[Service]\nExecStart=/bin/echo hello\nEnvironment=TOKEN_NAME=discard-me\nWorkingDirectory=/srv/truth\nRestart=on-failure\n")
+
+	src, err := ParseSystemdUnit(timer)
+	if err != nil {
+		t.Fatalf("ParseSystemdUnit(timer): %v", err)
+	}
+	if src.Program != "/bin/echo" || src.WorkingDirectory != "/srv/truth" || src.RestartMode != "on-failure" {
+		t.Fatalf("bare timer lost sibling service runtime: %+v", src)
+	}
+	if len(src.EnvKeys) != 1 || src.EnvKeys[0] != "TOKEN_NAME" {
+		t.Fatalf("EnvKeys = %v, want names from sibling service", src.EnvKeys)
+	}
+	if len(src.SourcePaths) != 2 || src.SourcePaths[0] != timer || src.SourcePaths[1] != service {
+		t.Fatalf("SourcePaths = %v, want timer and sibling service", src.SourcePaths)
+	}
+}
+
+func TestAdoptSystemdPreservesEveryOnCalendar(t *testing.T) {
+	dir := t.TempDir()
+	timer := filepath.Join(dir, "many.timer")
+	writeTestFile(t, timer, "[Timer]\nOnCalendar=Mon *-*-* 09:00:00\nOnCalendar=Fri *-*-* 17:00:00\n")
+
+	plan, err := Adopt(Options{Target: timer, Machine: "testbox"})
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	triggers := plan.Definitions[0].Post.Spec.Triggers
+	if len(triggers) != 2 {
+		t.Fatalf("got %d triggers, want both OnCalendar directives: %+v", len(triggers), triggers)
+	}
+	if triggers[0].Schedule == triggers[1].Schedule {
+		t.Fatalf("distinct OnCalendar directives collapsed: %+v", triggers)
+	}
+}
+
+func TestBareTimerFingerprintTracksTimerEdits(t *testing.T) {
+	dir := t.TempDir()
+	timer := filepath.Join(dir, "fingerprint.timer")
+	service := filepath.Join(dir, "fingerprint.service")
+	writeTestFile(t, timer, "[Timer]\nOnCalendar=*-*-* 01:00:00\n")
+	writeTestFile(t, service, "[Service]\nExecStart=/bin/true\n")
+	first, err := Adopt(Options{Target: timer, Machine: "testbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	writeTestFile(t, timer, "[Timer]\nOnCalendar=*-*-* 02:00:00\n")
+	second, err := Adopt(Options{Target: timer, Machine: "testbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Definitions[0].Post.Spec.SourceFingerprint == second.Definitions[0].Post.Spec.SourceFingerprint {
+		t.Fatal("timer-only edit did not change source fingerprint")
+	}
+}
+
+func TestConfirmedAdoptionTreeDiffIsConfinedToDefinitionsStore(t *testing.T) {
+	parent := t.TempDir()
+	registry := filepath.Join(parent, "agents")
+	sentinel := filepath.Join(parent, "outside.txt")
+	writeTestFile(t, sentinel, "unchanged")
+	source := filepath.Join(parent, "source.service")
+	writeTestFile(t, source, "[Service]\nExecStart=/bin/true\n")
+	plan, err := Adopt(Options{Target: source, Machine: "testbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, parent)
+	if _, err := plan.WriteTo(registry); err != nil {
+		t.Fatal(err)
+	}
+	after := snapshotTree(t, parent)
+	for path, digest := range after {
+		if before[path] == digest {
+			continue
+		}
+		if path != "agents" && !strings.HasPrefix(path, "agents"+string(filepath.Separator)) {
+			t.Errorf("confirmed adoption changed path outside definitions store: %s", path)
+		}
+	}
+	for path := range before {
+		if _, exists := after[path]; !exists && path != "agents" && !strings.HasPrefix(path, "agents"+string(filepath.Separator)) {
+			t.Errorf("confirmed adoption removed path outside definitions store: %s", path)
+		}
+	}
+}
+
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			out[rel] = info.Mode().String()
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(body)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // A unit whose script merely lives under a path containing "agent-deck" is not
