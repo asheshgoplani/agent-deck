@@ -160,6 +160,15 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude -w feature/new -b -m \"Start work\"")
 	}
 
+	// Reject an omitted --account value before either reordering pass can bind
+	// the following flag as the account name. Besides swallowing that flag, an
+	// unknown account silently falls through to another credential source, so
+	// this check must happen before any launch or fallback resolution begins.
+	if err := checkFlagValueNotFlag(fs, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Reorder args: move path to end so flags are parsed correctly
 	args = reorderArgsForFlagParsing(args)
 
