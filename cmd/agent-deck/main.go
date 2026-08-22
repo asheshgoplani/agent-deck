@@ -52,10 +52,15 @@ const (
 // init sets up color profile for consistent terminal colors across environments
 func init() {
 	initColorProfile()
-	initUpdateSettings()
 }
 
-// initUpdateSettings configures update checking from user config
+// initUpdateSettings configures update checking from user config.
+//
+// Called from main(), NOT from package init(): it loads the user config,
+// which resolves an agent-deck path. Under `go test`, package init runs
+// before TestMain gets to call testutil.IsolateHome(), so an init-time load
+// resolved the developer's REAL config and tripped the agentpaths
+// unsandboxed-test warning on every run of this package (issue #2012).
 func initUpdateSettings() {
 	settings := session.GetUpdateSettings()
 	update.SetCheckInterval(settings.CheckIntervalHours)
@@ -215,6 +220,10 @@ func main() {
 	// whose launchd PATH omits Homebrew's /opt/homebrew/bin). Must run before any
 	// tmux probe below. No-op when tmux is already on PATH.
 	ensureTmuxOnPath()
+
+	// Configure update checking before any command path can reach an update
+	// check (printUpdateNotice, `update`, `version`). See the doc comment.
+	initUpdateSettings()
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
