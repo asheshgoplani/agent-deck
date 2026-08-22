@@ -167,12 +167,18 @@ func sanitizeInboxName(id string) string {
 // The #1225 drain path layers turn_fingerprint dedup on top for at-least-once
 // delivery with exactly-once effects (see inbox_consumer.go).
 func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) error {
+	_, err := WriteInboxEventIfNew(parentSessionID, event)
+	return err
+}
+
+// WriteInboxEventIfNew is WriteInboxEvent with the dedup decision exposed.
+func WriteInboxEventIfNew(parentSessionID string, event TransitionNotificationEvent) (bool, error) {
 	if strings.TrimSpace(parentSessionID) == "" {
-		return errors.New("inbox: empty parent session id")
+		return false, errors.New("inbox: empty parent session id")
 	}
 	path := InboxPathFor(parentSessionID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
 	}
 
 	fp := EventFingerprint(event)
@@ -189,7 +195,7 @@ func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) 
 		inboxFingerprintCache[path] = seen
 	}
 	if _, dup := seen[fp]; dup {
-		return nil
+		return false, nil
 	}
 
 	// Embed the fingerprint into the persisted JSON so on-disk state is
@@ -201,24 +207,24 @@ func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) 
 	}
 	line, err := json.Marshal(wireEvent{TransitionNotificationEvent: event, Fingerprint: fp})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {
-		return err
+		return false, err
 	}
 	// Audit B2: fsync the append so a crash after Write cannot lose a record the
 	// producer reported as committed.
 	if err := f.Sync(); err != nil {
-		return err
+		return false, err
 	}
 	seen[fp] = struct{}{}
-	return nil
+	return true, nil
 }
 
 // loadInboxFingerprintsLocked scans an existing inbox file and returns the
