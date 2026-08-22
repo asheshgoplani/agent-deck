@@ -37,6 +37,9 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Rename group | `internal/ui/home.go:6119` (`r` key, group) | PATCH `/api/groups/{path}` | `RenameGroup` | `handlers_groups_test.go` | Via GroupDialog |
 | Delete group | `internal/ui/home.go:6302` (`d` key, group) | DELETE `/api/groups/{path}` | `DeleteGroup` | `handlers_groups_test.go` | Moves children to default group |
 | Move session to group | `internal/ui/home.go:6028` (`M`/`shift+m`) | MISSING | N/A | N/A | TUI-only via GroupDialog move mode |
+| Select group | `internal/ui/home.go:8486` (`j`/`k` onto a group row) | N/A (client state) | N/A | `tests/web/e2e/group-selection.spec.js` | Sidebar group name selects; chevron collapses |
+| Group stats panel | `internal/ui/home.go:19382` (`renderGroupPreview`) | GET `/api/menu` | N/A | `tests/web/e2e/group-selection.spec.js` | Web folds starting→running, queued→idle; no worktree block |
+| New session in group (prefilled) | `internal/ui/home.go:9271` (`n`) + `:12325` (`N`) | POST `/api/sessions` `groupPath` | `CreateSession` | `handlers_sessions_test.go`, `group-selection.spec.js` | Folder from group `defaultPath`, tool from newest session in group |
 | **MCP MANAGEMENT** |
 | Attach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | POST `/api/sessions/{id}/mcps/{name}` | `MCPManager.Attach` | `handlers_mcps_test.go` | Body `{scope?}`; default scope=local; writes `.mcp.json` via session helpers |
 | Detach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | DELETE `/api/sessions/{id}/mcps/{name}` | `MCPManager.Detach` | `handlers_mcps_test.go` | Body `{scope?}`; scope auto-detected if omitted |
