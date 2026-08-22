@@ -13,6 +13,25 @@ export const archivedSessionsSignal = signal([])
 // Currently selected session ID
 export const selectedIdSignal = signal(null)
 
+// Currently selected group path, or null. MUTUALLY EXCLUSIVE with
+// selectedIdSignal: at most one of the two is non-null at any moment.
+//
+// Two signals rather than one { kind, id } union because selectedIdSignal is
+// referenced by 13 modules; a union rewrites all of them plus routing for no
+// user-visible gain. The invariant lives in the two setters below — always go
+// through them, never assign the raw signals from a component.
+export const selectedGroupSignal = signal(null)
+
+export function selectSession(id) {
+  selectedGroupSignal.value = null
+  selectedIdSignal.value = id
+}
+
+export function selectGroup(path) {
+  selectedIdSignal.value = null
+  selectedGroupSignal.value = path
+}
+
 // SSE connection state: 'connecting' | 'connected' | 'disconnected'
 export const connectionSignal = signal('connecting')
 

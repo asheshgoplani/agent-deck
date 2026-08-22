@@ -10,7 +10,7 @@ import { useState, useMemo } from 'preact/hooks'
 import { Icon, ICONS, Dot, kindSigil } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
 import {
-  selectedIdSignal, mutationsEnabledSignal, confirmDialogSignal,
+  selectedIdSignal, selectSession, mutationsEnabledSignal, confirmDialogSignal,
   createSessionDialogSignal, editSessionDialogSignal,
 } from './state.js'
 import { statusFiltersSignal, showColsSignal, activeTabSignal } from './uiState.js'
@@ -50,7 +50,7 @@ function doAction(action, s) {
       onConfirm: () => apiFetch('POST', `/api/sessions/${id}/archive`)
         .then(() => {
           if (selectedIdSignal.value === id) {
-            selectedIdSignal.value = null
+            selectSession(null)
             if (window.location.pathname.startsWith('/s/')) {
               history.replaceState(null, '', '/')
             }
@@ -164,7 +164,7 @@ export function Sidebar() {
   // "open", making the first click on a never-toggled group a silent no-op.
   const toggleGroup = (p) => setExpanded(s => ({ ...s, [p]: s[p] === false }))
   const onSelect = (id) => {
-    selectedIdSignal.value = id
+    selectSession(id)
     activeTabSignal.value = 'terminal'
   }
   const setShowCol = (id) => {
