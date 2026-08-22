@@ -25,7 +25,7 @@ import { SearchPane } from './panes/SearchPane.js'
 import { McpPane } from './panes/McpPane.js'
 import { SkillsPane } from './panes/SkillsPane.js'
 import { Icon, ICONS } from './icons.js'
-import { menuModelSignal } from './dataModel.js'
+import { menuModelSignal, openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
 import {
   selectedIdSignal, selectedGroupSignal, selectSession, createSessionDialogSignal, confirmDialogSignal,
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
@@ -104,7 +104,7 @@ function WorkHead() {
             : html`<button class="btn ghost" onClick=${() => action('start')}><${Icon} d=${ICONS.play} size=${12}/>Start</button>`}
           <button class="btn ghost" onClick=${() => action('restart')}><${Icon} d=${ICONS.restart} size=${12}/>Restart</button>
           ${session.canFork && html`<button class="btn" onClick=${() => action('fork')}><${Icon} d=${ICONS.fork} size=${12}/>Fork</button>`}
-          <button class="btn primary" onClick=${() => (createSessionDialogSignal.value = true)}>
+          <button class="btn primary" onClick=${() => openCreateSessionForGroup(session.group || '')}>
             <${Icon} d=${ICONS.plus} size=${12}/>New <span class="kbd">n</span>
           </button>
         </div>
@@ -251,7 +251,7 @@ export function AppShell() {
       paletteOpenSignal.value = false
       tweaksOpenSignal.value = false
       shortcutsOverlaySignal.value = false
-      createSessionDialogSignal.value = false
+      createSessionDialogSignal.value = null
       confirmDialogSignal.value = null
       groupNameDialogSignal.value = null
       infoDrawerOpenSignal.value = false
@@ -303,7 +303,7 @@ export function AppShell() {
           activeTabSignal.value = 'terminal'
         }
       } else if (e.key === 'n' && mutationsEnabledSignal.value) {
-        createSessionDialogSignal.value = true
+        openCreateSessionForGroup(currentGroupPath())
       } else if (e.key === 'r') {
         // Web has no session-rename API yet (matrix gap); surface the gap
         // honestly instead of silently no-op'ing.

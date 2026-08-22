@@ -8,11 +8,11 @@
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
 import { Icon, ICONS, Dot, kindSigil } from './icons.js'
-import { menuModelSignal, sidebarRowsSignal, isGroupOpen } from './dataModel.js'
+import { menuModelSignal, sidebarRowsSignal, isGroupOpen, openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
 import {
   selectedIdSignal, selectedGroupSignal, selectSession, selectGroup,
   mutationsEnabledSignal, confirmDialogSignal,
-  createSessionDialogSignal, editSessionDialogSignal,
+  editSessionDialogSignal,
 } from './state.js'
 import {
   statusFiltersSignal, showColsSignal, activeTabSignal,
@@ -201,7 +201,7 @@ export function Sidebar() {
         </div>
         ${mutationsEnabledSignal.value && html`
           <button class="icon-btn" title="New session (n)" aria-label="New session"
-                  onClick=${() => (createSessionDialogSignal.value = true)}>
+                  onClick=${() => openCreateSessionForGroup(currentGroupPath())}>
             <${Icon} d=${ICONS.plus}/>
           </button>
         `}

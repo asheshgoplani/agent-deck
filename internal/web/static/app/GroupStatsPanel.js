@@ -11,8 +11,8 @@
 //   - Direct members only — no subgroup rollup, matching the TUI preview.
 //   - No Repository/worktree block: per-branch dirty state is not on the wire.
 import { html } from 'htm/preact'
-import { menuModelSignal, groupStats } from './dataModel.js'
-import { selectSession } from './state.js'
+import { menuModelSignal, groupStats, openCreateSessionForGroup } from './dataModel.js'
+import { selectSession, mutationsEnabledSignal } from './state.js'
 import { activeTabSignal } from './uiState.js'
 import { Dot } from './icons.js'
 
@@ -33,6 +33,15 @@ export function GroupStatsPanel({ path }) {
         <span class="gs-folder" aria-hidden="true">📁</span>
         <span class="gs-name">${group ? group.name : path}</span>
       </div>
+
+      ${mutationsEnabledSignal.value && html`
+        <div class="gs-actions">
+          <button class="btn primary" data-testid="group-new-session-btn"
+                  onClick=${() => openCreateSessionForGroup(path)}>
+            New session in this group <span class="kbd">n</span>
+          </button>
+        </div>
+      `}
 
       <div class="gs-total" data-testid="group-stats-total">${stats.total} sessions</div>
 

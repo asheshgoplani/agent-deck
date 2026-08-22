@@ -112,4 +112,26 @@ test.describe('group selection', () => {
     expect(shape.borderRadius).not.toBe('0px')
     expect(shape.background).not.toBe('rgba(0, 0, 0, 0)')
   })
+
+  test('new session from a group prefills the group folder and tool', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await page.locator('[data-testid="group-new-session-btn"]').click()
+
+    // Fixture: group "work" has DefaultPath "/srv/work"; its newest session
+    // (sess-002 "frontend") uses claude.
+    await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('work')
+    await expect(page.locator('.dialog input').nth(1)).toHaveValue('/srv/work')
+    await expect(page.locator('.dialog .seg-btn.on')).toHaveText('claude')
+  })
+
+  test('a group with no configured folder falls back to its newest session path', async ({ page }) => {
+    await page.locator('[data-testid="group-head-personal"] .name').click()
+    await page.locator('[data-testid="group-new-session-btn"]').click()
+
+    // Fixture: "personal" has no DefaultPath; sess-004 "scratch" is its only
+    // session (ProjectPath "/home/dev/scratch", tool=shell), so the newest-
+    // session fallback supplies both the folder and the tool.
+    await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('personal')
+    await expect(page.locator('.dialog input').nth(1)).toHaveValue('/home/dev/scratch')
+  })
 })
