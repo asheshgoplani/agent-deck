@@ -17,8 +17,8 @@ import (
 // completions to (issue #1225). The bare form is the legacy raw read+truncate
 // (at-most-once); the `drain` subcommand is the durable consumer path. See
 // internal/session/inbox.go.
-func handleInbox(args []string) {
-	if err := runInbox(os.Stdout, args); err != nil {
+func handleInbox(profile string, args []string) {
+	if err := runInboxWithProfile(os.Stdout, args, profile); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(inboxExitCode(err))
 	}
@@ -62,8 +62,12 @@ func inboxExitCode(err error) int {
 //	                                       re-delivery via turn_fingerprint. This
 //	                                       is the conductor's heartbeat step.
 func runInbox(stdout io.Writer, args []string) error {
+	return runInboxWithProfile(stdout, args, "")
+}
+
+func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string) error {
 	if len(args) > 0 && args[0] == "drain" {
-		return runInboxDrain(stdout, args[1:])
+		return runInboxDrain(stdout, args[1:], explicitProfile)
 	}
 
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
@@ -95,7 +99,7 @@ func runInbox(stdout io.Writer, args []string) error {
 
 // runInboxDrain is the issue #1225 consumer path: exactly-once-per-turn,
 // last-wins-per-child. Used by the conductor heartbeat and any machine consumer.
-func runInboxDrain(stdout io.Writer, args []string) error {
+func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) error {
 	fs := flag.NewFlagSet("inbox drain", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the drained events as a JSON array")
 	fs.Usage = func() {
@@ -103,6 +107,7 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 		fmt.Fprintln(stdout, "With no id (or 'self'), drains the caller's own session.")
 		fmt.Fprintln(stdout, "Full session IDs resolve across all profiles; titles and shortened IDs")
 		fmt.Fprintln(stdout, "resolve only within the effective profile.")
+		fmt.Fprintln(stdout, "If a full ID exists in multiple profiles, qualify it with global -p/--profile.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
@@ -112,7 +117,7 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 		fs.Usage()
 		return err
 	}
-	sessionID, err = resolveInboxDrainSession(sessionID)
+	sessionID, err = resolveInboxDrainSessionInProfile(sessionID, explicitProfile)
 	if err != nil {
 		return err
 	}
@@ -135,14 +140,25 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 }
 
 func resolveInboxDrainSession(identifier string) (string, error) {
-	// A complete session ID is globally unique. Check exact IDs in every
-	// profile before applying the profile-local flexible resolver. Titles and
-	// shortened ID prefixes intentionally remain scoped to the effective
-	// profile, avoiding cross-profile ambiguity for ordinary shorthand.
+	return resolveInboxDrainSessionInProfile(identifier, "")
+}
+
+func resolveInboxDrainSessionInProfile(identifier, explicitProfile string) (string, error) {
+	// An explicit global -p/--profile qualifier is authoritative, including
+	// when corrupt/restored registries contain the same full ID elsewhere.
+	if explicitProfile != "" {
+		return resolveInboxDrainSessionLocally(identifier, explicitProfile)
+	}
+
+	// Check exact IDs in every profile before applying the profile-local
+	// flexible resolver. Do not assume registry uniqueness: draining is
+	// destructive, so duplicate full IDs must fail closed and name every
+	// profile that must be disambiguated.
 	profiles, err := session.ListProfiles()
 	if err != nil {
 		return "", fmt.Errorf("list profiles: %w", err)
 	}
+	var exactProfiles []string
 	for _, profile := range profiles {
 		_, profileInstances, _, loadErr := loadSessionData(profile)
 		if loadErr != nil {
@@ -150,12 +166,25 @@ func resolveInboxDrainSession(identifier string) (string, error) {
 		}
 		for _, inst := range profileInstances {
 			if inst.ID == identifier {
-				return inst.ID, nil
+				exactProfiles = append(exactProfiles, profile)
+				break
 			}
 		}
 	}
+	if len(exactProfiles) == 1 {
+		return identifier, nil
+	}
+	if len(exactProfiles) > 1 {
+		return "", &inboxTargetAmbiguousError{message: fmt.Sprintf(
+			"Full session ID %q exists in profiles %s. Use -p/--profile to choose one.",
+			identifier, strings.Join(exactProfiles, ", "))}
+	}
 
-	_, instances, _, err := loadSessionData("")
+	return resolveInboxDrainSessionLocally(identifier, "")
+}
+
+func resolveInboxDrainSessionLocally(identifier, profile string) (string, error) {
+	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		return "", err
 	}

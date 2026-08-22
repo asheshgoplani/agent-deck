@@ -397,7 +397,7 @@ func main() {
 			handleRunTask(args[1:])
 			return
 		case "inbox":
-			handleInbox(args[1:])
+			handleInbox(profile, args[1:])
 			return
 		case "feedback":
 			handleFeedback(args[1:])
