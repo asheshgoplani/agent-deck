@@ -70,7 +70,7 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 		},
 		Updates: session.UpdateSettings{
 			CheckEnabled: boolPtr(false),
-			AutoUpdate:   true,
+			AutoInstall:  true,
 		},
 		Logs: session.LogSettings{
 			MaxSizeMB:     20,
@@ -273,8 +273,8 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	if config.Updates.GetCheckEnabled() {
 		t.Error("CheckEnabled should be false")
 	}
-	if !config.Updates.AutoUpdate {
-		t.Error("AutoUpdate should be true")
+	if !config.Updates.AutoInstall {
+		t.Error("AutoInstall should be true")
 	}
 	if config.Logs.MaxSizeMB != 15 {
 		t.Errorf("MaxSizeMB: got %d, want 15", config.Logs.MaxSizeMB)

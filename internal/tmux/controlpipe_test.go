@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -167,6 +168,22 @@ func TestPipeManager_ConnectDisconnect(t *testing.T) {
 	pm.Disconnect(name)
 	assert.False(t, pm.IsConnected(name))
 	assert.Equal(t, 0, pm.ConnectedCount())
+}
+
+// Hazard-3 revert pin: simulated re-exec teardown must leave zero owned
+// control clients. The process has to be killed AND Wait-reaped before execve;
+// the unchanged parent PID makes the ordinary orphan sweep unable to help.
+func TestPipeManagerCloseBeforeReexecLeaksZeroControlClients(t *testing.T) {
+	name := createTestSessionStrict(t, "reexec-zero-leak")
+	pm := NewPipeManager(context.Background(), nil)
+	require.NoError(t, pm.Connect(name, ""))
+	pipe := pm.GetPipe(name)
+	require.NotNil(t, pipe)
+	pid := pipe.cmd.Process.Pid
+	pm.Close()
+	assert.Equal(t, 0, pm.ConnectedCount())
+	require.Eventually(t, func() bool { return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) }, time.Second, 10*time.Millisecond,
+		"tmux -C child still exists after simulated re-exec teardown")
 }
 
 func TestPipeManager_CapturePane(t *testing.T) {

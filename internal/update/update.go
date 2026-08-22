@@ -617,7 +617,46 @@ func PerformUpdate(downloadURL string) error {
 		return fmt.Errorf("failed to extract: %w", err)
 	}
 
-	return installSelfUpdateBinary(execPath, binaryData)
+	if err := installSelfUpdateBinary(execPath, binaryData); err != nil {
+		return err
+	}
+	status, err := RestartManagedServices()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		return err
+	}
+	fmt.Println(status)
+	return nil
+}
+
+// RollbackSelfUpdate restores the retained pre-update image after an exec or
+// first-health failure.
+func RollbackSelfUpdate(execPath string) error {
+	old := execPath + ".old"
+	if _, err := os.Stat(old); err != nil {
+		return err
+	}
+	failed := execPath + ".failed"
+	_ = os.Remove(failed)
+	if err := os.Rename(execPath, failed); err != nil {
+		return err
+	}
+	if err := os.Rename(old, execPath); err != nil {
+		_ = os.Rename(failed, execPath)
+		return err
+	}
+	_ = os.Remove(failed)
+	return nil
+}
+
+// AcknowledgeSelfUpdateHealth removes the rollback image once the new process
+// has initialized its config and state successfully.
+func AcknowledgeSelfUpdateHealth(execPath string) error {
+	err := os.Remove(execPath + ".old")
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 // PerformVerifiedUpdate downloads, verifies, extracts, and installs a release
@@ -639,7 +678,16 @@ func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
 		return fmt.Errorf("download/verify failed: %w", err)
 	}
 
-	return installSelfUpdateBinary(execPath, binaryData)
+	if err := installSelfUpdateBinary(execPath, binaryData); err != nil {
+		return err
+	}
+	status, err := RestartManagedServices()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		return err
+	}
+	fmt.Println(status)
+	return nil
 }
 
 func installSelfUpdateBinary(execPath string, binaryData []byte) error {
@@ -663,8 +711,9 @@ func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 		return fmt.Errorf("failed to install new binary: %w", err)
 	}
 
-	// Remove old binary
-	os.Remove(oldBinaryPath)
+	// Keep the old image through the new binary's first startup health
+	// acknowledgement. A later healthy launch removes it; an exec failure can
+	// atomically restore it. Do not delete it here.
 
 	// Invalidate update cache so the banner dismisses in any running TUI
 	InvalidateCache()

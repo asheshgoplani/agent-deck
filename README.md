@@ -1001,10 +1001,12 @@ and answer: How do I fork a session?
 
 ### Updates
 
-Agent Deck checks for updates automatically.
+Agent Deck checks for updates automatically; installing them is strictly opt-in.
 - Standalone/manual install: run `agent-deck update` to install.
 - Homebrew install: run `brew upgrade asheshgoplani/tap/agent-deck`.
-- Optional: set `auto_update = true` in [config.toml](skills/agent-deck/references/config-reference.md) for automatic update prompts.
+- Optional: set `[updates] auto_install = true` in [config.toml](skills/agent-deck/references/config-reference.md), or answer Yes to the first-run prompt `Enable automatic updates?`. Change it later with `updates.auto_install` in `config.toml`.
+
+Automatic standalone updates reuse `agent-deck update`'s verified atomic installer. A safe, idle TUI re-execs the new binary in place; if it is busy, a persistent footer names **F12** and it re-execs at the next safe moment. Selection and list scroll survive, live tmux sessions are unaffected by design, and a brief screen blink is expected. Open modals, half-typed filters/input, and in-flight operations are transient and never forced through a re-exec. Homebrew-managed binaries are refused because Homebrew owns their updates. Use `agent-deck update --auto-status` to inspect the setting and restart state.
 
 ## FAQ
 

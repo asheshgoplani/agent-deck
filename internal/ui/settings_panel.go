@@ -269,7 +269,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 
 	// Update settings
 	s.checkForUpdates = config.Updates.GetCheckEnabled()
-	s.autoUpdate = config.Updates.AutoUpdate
+	s.autoUpdate = config.Updates.GetAutoInstall()
 
 	// Log settings
 	s.logMaxSizeMB = config.Logs.MaxSizeMB
@@ -412,7 +412,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	// Update settings
 	checkForUpdates := s.checkForUpdates
 	config.Updates.CheckEnabled = &checkForUpdates
-	config.Updates.AutoUpdate = s.autoUpdate
+	config.Updates.AutoInstall = s.autoUpdate
 
 	// Log settings
 	config.Logs.MaxSizeMB = s.logMaxSizeMB
@@ -943,7 +943,7 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n")
 
-	line = s.renderCheckbox("Auto-install updates", s.autoUpdate)
+	line = s.renderCheckbox("Automatic updates (updates.auto_install)", s.autoUpdate)
 	if s.cursor == int(SettingAutoUpdate) {
 		line = highlightStyle.Render(line)
 	}

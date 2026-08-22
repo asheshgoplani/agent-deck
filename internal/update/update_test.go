@@ -428,6 +428,39 @@ func TestPerformVerifiedUpdate_MatchingChecksumInstalls(t *testing.T) {
 	assert.Equal(t, newBinary, installed)
 }
 
+// Revert pin: package-manager ownership is checked before any download or swap.
+func TestPerformVerifiedUpdateRefusesHomebrewManagedBinary(t *testing.T) {
+	orig := detectHomebrewManagedInstall
+	detectHomebrewManagedInstall = func() (string, string, bool, error) {
+		return "/opt/homebrew/Cellar/agent-deck/1.15.0/bin/agent-deck", "brew upgrade asheshgoplani/tap/agent-deck", true, nil
+	}
+	t.Cleanup(func() { detectHomebrewManagedInstall = orig })
+	err := PerformVerifiedUpdate(&Release{}, "darwin", "arm64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "homebrew-managed install detected")
+}
+
+func TestSelfUpdateRollbackAndHealthAcknowledgement(t *testing.T) {
+	t.Run("rollback restores retained image", func(t *testing.T) {
+		execPath := filepath.Join(t.TempDir(), "agent-deck")
+		require.NoError(t, os.WriteFile(execPath, []byte("old"), 0o755))
+		require.NoError(t, installSelfUpdateBinary(execPath, []byte("new")))
+		require.FileExists(t, execPath+".old")
+		require.NoError(t, RollbackSelfUpdate(execPath))
+		got, err := os.ReadFile(execPath)
+		require.NoError(t, err)
+		assert.Equal(t, "old", string(got))
+	})
+	t.Run("health acknowledgement removes rollback image", func(t *testing.T) {
+		execPath := filepath.Join(t.TempDir(), "agent-deck")
+		require.NoError(t, os.WriteFile(execPath, []byte("old"), 0o755))
+		require.NoError(t, installSelfUpdateBinary(execPath, []byte("new")))
+		require.NoError(t, AcknowledgeSelfUpdateHealth(execPath))
+		_, err := os.Stat(execPath + ".old")
+		require.True(t, os.IsNotExist(err))
+	})
+}
+
 func TestPerformVerifiedUpdate_MissingChecksumEntryLeavesBinaryUntouched(t *testing.T) {
 	oldBinary := []byte("old-agent-deck")
 	newBinary := []byte("new-agent-deck")

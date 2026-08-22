@@ -31,15 +31,17 @@ type SetupWizard struct {
 	claudeSettingsCursor int // 0=dangerous mode, 1=auto mode, 2=config dir
 
 	// Theme setting
-	selectedTheme int // 0=dark, 1=light
+	selectedTheme    int // 0=dark, 1=light
+	automaticUpdates *AutomaticUpdatePrompt
 }
 
 // Wizard steps
 const (
-	stepWelcome        = 0
-	stepToolSelection  = 1
-	stepClaudeSettings = 2
-	stepReady          = 3
+	stepWelcome          = 0
+	stepToolSelection    = 1
+	stepClaudeSettings   = 2
+	stepAutomaticUpdates = 3
+	stepReady            = 4
 )
 
 // NewSetupWizard creates a new setup wizard
@@ -60,6 +62,7 @@ func NewSetupWizard() *SetupWizard {
 		useDefaultConfigDir: true,
 		configDirInput:      configInput,
 		selectedTheme:       0, // Default to dark
+		automaticUpdates:    NewAutomaticUpdatePrompt(),
 	}
 }
 
@@ -101,9 +104,11 @@ func (w *SetupWizard) nextStep() {
 		if w.toolOptions[w.selectedTool] == "claude" {
 			w.currentStep = stepClaudeSettings
 		} else {
-			w.currentStep = stepReady
+			w.currentStep = stepAutomaticUpdates
 		}
 	case stepClaudeSettings:
+		w.currentStep = stepAutomaticUpdates
+	case stepAutomaticUpdates:
 		w.currentStep = stepReady
 	case stepReady:
 		// Don't go beyond Ready step
@@ -120,7 +125,8 @@ func (w *SetupWizard) prevStep() {
 	case stepClaudeSettings:
 		w.currentStep = stepToolSelection
 	case stepReady:
-		// Skip Claude settings if non-Claude tool selected
+		w.currentStep = stepAutomaticUpdates
+	case stepAutomaticUpdates:
 		if w.toolOptions[w.selectedTool] == "claude" {
 			w.currentStep = stepClaudeSettings
 		} else {
@@ -167,6 +173,7 @@ func (w *SetupWizard) GetConfig() *session.UserConfig {
 
 	config.Updates = session.UpdateSettings{
 		CheckIntervalHours: 24,
+		AutoInstall:        w.automaticUpdates.Enabled(),
 	}
 
 	// Set MCP pool settings based on platform
@@ -199,6 +206,12 @@ func (w *SetupWizard) Update(msg tea.Msg) (*SetupWizard, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if w.currentStep == stepAutomaticUpdates {
+			if handled := w.automaticUpdates.HandleKey(msg.String()); handled {
+				w.currentStep = stepReady
+				return w, nil
+			}
+		}
 		switch msg.String() {
 		case "enter":
 			if w.currentStep == stepReady {
@@ -210,8 +223,9 @@ func (w *SetupWizard) Update(msg tea.Msg) (*SetupWizard, tea.Cmd) {
 
 		case "esc", "backspace":
 			if w.currentStep == stepWelcome {
-				// On welcome step, Esc means "use defaults and skip wizard"
-				w.complete = true
+				// Defaults may skip the rest of setup, but first-run always asks
+				// the single automatic-update opt-in prompt.
+				w.currentStep = stepAutomaticUpdates
 				return w, nil
 			}
 			w.prevStep()
@@ -346,7 +360,7 @@ func (w *SetupWizard) View() string {
 	var content strings.Builder
 
 	// Step indicator
-	stepNames := []string{"Welcome", "Tool", "Claude", "Ready"}
+	stepNames := []string{"Welcome", "Tool", "Claude", "Updates", "Ready"}
 	var stepIndicators []string
 	for i, name := range stepNames {
 		if i == w.currentStep {
@@ -364,6 +378,8 @@ func (w *SetupWizard) View() string {
 	content.WriteString("\n\n")
 
 	switch w.currentStep {
+	case stepAutomaticUpdates:
+		content.WriteString(w.automaticUpdates.View(titleStyle, labelStyle, subtitleStyle))
 	case stepWelcome:
 		content.WriteString(titleStyle.Render("Welcome to Agent Deck!"))
 		content.WriteString("\n\n")

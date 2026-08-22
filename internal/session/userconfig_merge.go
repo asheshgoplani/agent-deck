@@ -56,11 +56,11 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	merged.Gemini.YoloMode = panel.Gemini.YoloMode
 	merged.Codex.YoloMode = panel.Codex.YoloMode
 
-	// ── Updates (panel manages CheckEnabled + AutoUpdate) ──────────────
+	// ── Updates (panel manages CheckEnabled + AutoInstall) ─────────────
 	if panel.Updates.CheckEnabled != nil {
 		merged.Updates.CheckEnabled = panel.Updates.CheckEnabled
 	}
-	merged.Updates.AutoUpdate = panel.Updates.AutoUpdate
+	merged.Updates.AutoInstall = panel.Updates.AutoInstall
 
 	// ── Logs (panel manages 3 fields; other Logs.* preserved) ──────────
 	merged.Logs.MaxSizeMB = panel.Logs.MaxSizeMB

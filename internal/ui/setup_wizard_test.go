@@ -122,7 +122,7 @@ func TestSetupWizard_IsComplete(t *testing.T) {
 	}
 
 	// Navigate to Ready step
-	wizard.currentStep = 3
+	wizard.currentStep = stepReady
 
 	// Still not complete until user confirms
 	if wizard.IsComplete() {
@@ -240,8 +240,8 @@ func TestSetupWizard_StepMaxBounds(t *testing.T) {
 
 	// Try to go beyond last step
 	wizard.nextStep()
-	if wizard.currentStep != 3 {
-		t.Errorf("Should stay at step 3: got %d", wizard.currentStep)
+	if wizard.currentStep != stepReady {
+		t.Errorf("Should stay at final step: got %d", wizard.currentStep)
 	}
 }
 
@@ -298,10 +298,11 @@ func TestSetupWizard_EscOnWelcomeCompletes(t *testing.T) {
 	wizard.Show()
 	wizard.SetSize(80, 24)
 
-	// Esc on welcome step should complete the wizard with defaults
+	// Esc on welcome skips ordinary setup but must still show the strictly
+	// opt-in automatic-update prompt.
 	wizard.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if !wizard.IsComplete() {
-		t.Error("Esc on welcome step should complete the wizard")
+	if wizard.IsComplete() || wizard.currentStep != stepAutomaticUpdates {
+		t.Error("Esc on welcome must route to the automatic-update prompt")
 	}
 
 	// Config should have sensible defaults

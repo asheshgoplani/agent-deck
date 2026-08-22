@@ -244,7 +244,7 @@ Additional resources:
 
 ### Updates
 
-Agent Deck checks for updates automatically. Run `agent-deck update` to install, or set `auto_update = true` in [config.toml](skills/agent-deck/references/config-reference.md) for automatic updates.
+Agent Deck checks for updates automatically. Run `agent-deck update` to install, or opt in with `[updates] auto_install = true`. Homebrew-managed installs are refused. A safe TUI re-execs in place; live tmux sessions are unaffected.
 
 ## FAQ
 
@@ -1040,7 +1040,7 @@ Auto-update settings.
 
 ```toml
 [updates]
-auto_update = false           # Auto-install updates
+auto_install = false          # Opt in to automatic verified installs
 check_enabled = true          # Check on startup
 check_interval_hours = 24     # Check frequency
 notify_in_cli = true          # Show in CLI commands
@@ -1048,7 +1048,7 @@ notify_in_cli = true          # Show in CLI commands
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `auto_update` | bool | `false` | Install updates without prompting. |
+| `auto_install` | bool | `false` | Strictly opt in to verified background installs and safe in-place TUI re-exec. Homebrew installs are refused. |
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |

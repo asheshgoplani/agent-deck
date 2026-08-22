@@ -1,0 +1,48 @@
+ ⟨ ○ │ ○ │ ○ ⟩  Agent Deck [_test]  no sessions                                                                                                          v0.0.0 
+  All    ● 0   ◐ 0   ○ 0   !@#& filter • 0 all • % open • ^ archived • t view                                                                                   
+ Updated to v1.15.0 — selection + list scroll restored; live tmux sessions were unaffected (brief screen blink is expected)                                     
+SESSIONS                                                 │ PREVIEW                                                                                              
+──────────────────────────────────────────────────────── │ ─────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⋮ +15 above                                            │ Session 21  ○ idle                                                                                   
+   ├─ ○ Session 14 shell                                 │ 📁 /tmp/TestAutoUpdateGauntletFrames1424281854/302                                                   
+   ├─ ○ Session 15 shell                                 │ ⏱ just now                                                                                           
+   ├─ ○ Session 16 shell                                 │  shell   TestAutoUpdateGauntletFrames1424281854                                                      
+   ├─ ○ Session 17 shell                                 │                                                                                                      
+   ├─ ○ Session 18 shell                                 │ ──────────────────────────────────────────── Output ────────────────────────────────────────────     
+   ├─ ○ Session 19 shell                                 │ Loading preview...                                                                                   
+   ├─ ○ Session 20 shell                                 │                                                                                                      
+  ▶├─ ○ Session 21 shell                                 │                                                                                                      
+   ├─ ○ Session 22 shell                                 │                                                                                                      
+   ├─ ○ Session 23 shell                                 │                                                                                                      
+   ├─ ○ Session 24 shell                                 │                                                                                                      
+   ├─ ○ Session 25 shell                                 │                                                                                                      
+   ├─ ○ Session 26 shell                                 │                                                                                                      
+   ├─ ○ Session 27 shell                                 │                                                                                                      
+   ├─ ○ Session 28 shell                                 │                                                                                                      
+   ├─ ○ Session 29 shell                                 │                                                                                                      
+   ├─ ○ Session 30 shell                                 │                                                                                                      
+   ├─ ○ Session 31 shell                                 │                                                                                                      
+   ├─ ○ Session 32 shell                                 │                                                                                                      
+   ├─ ○ Session 33 shell                                 │                                                                                                      
+   ├─ ○ Session 34 shell                                 │                                                                                                      
+   ├─ ○ Session 35 shell                                 │                                                                                                      
+   ├─ ○ Session 36 shell                                 │                                                                                                      
+   ├─ ○ Session 37 shell                                 │                                                                                                      
+   ├─ ○ Session 38 shell                                 │                                                                                                      
+   └─ ○ Session 39 shell                                 │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+                                                         │                                                                                                      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  H  Shell  c  Copy  V  Copy pane  x  Send │  r  Rename  M  Move  d  Delete  D  Close              

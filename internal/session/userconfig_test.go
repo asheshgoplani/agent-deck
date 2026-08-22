@@ -2283,7 +2283,7 @@ func TestSaveUserConfig_OmitsZeroValueFields(t *testing.T) {
 			BranchPrefix: &branchPrefix,
 		},
 		Updates: UpdateSettings{
-			AutoUpdate: false,
+			AutoInstall: false,
 		},
 		Feedback: FeedbackSettings{
 			Disabled: true,

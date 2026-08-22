@@ -466,7 +466,7 @@ Auto-update settings.
 
 ```toml
 [updates]
-auto_update = false           # Auto-install updates
+auto_install = false          # Opt in to verified background install + safe TUI re-exec
 check_enabled = true          # Check on startup
 check_interval_hours = 24     # Check frequency
 notify_in_cli = true          # Show in CLI commands
@@ -474,10 +474,12 @@ notify_in_cli = true          # Show in CLI commands
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `auto_update` | bool | `false` | Install updates without prompting. |
+| `auto_install` | bool | `false` | Strictly opt-in. Install verified standalone releases in the background through the existing `agent-deck update` path. Safe/idle TUIs re-exec in place; busy TUIs wait or accept **F12**. Homebrew-managed installs are refused. The first-run prompt uses the same setting and defaults to No. |
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
+
+Re-exec preserves selection and list scroll and does not disturb live tmux sessions. Expect a brief screen blink. Open modals, half-typed filter/input, preview scroll, and in-flight operations are transient and are not promised across the swap; re-exec waits until the shared safety guard permits it. Managed macOS launchd jobs are re-bootstrapped (`bootout` + `bootstrap`) after the binary swap to refresh BTM identity; failures are printed and logged. Running Linux systemd user services are restarted, or the updater explicitly reports that none were restarted.
 
 ## [interval_hooks.*] Section
 

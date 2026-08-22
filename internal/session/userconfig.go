@@ -1089,9 +1089,10 @@ type LogSettings struct {
 
 // UpdateSettings defines auto-update configuration
 type UpdateSettings struct {
-	// AutoUpdate automatically installs updates without prompting
+	// AutoInstall automatically installs verified standalone releases in the
+	// background. It is deliberately opt-in; the zero value is false.
 	// Default: false
-	AutoUpdate bool `toml:"auto_update,omitempty"`
+	AutoInstall bool `toml:"auto_install,omitempty"`
 
 	// CheckEnabled enables automatic update checks on startup
 	// Default: true (nil = true)
@@ -1105,6 +1106,11 @@ type UpdateSettings struct {
 	// Default: true (nil = true)
 	NotifyInCLI *bool `toml:"notify_in_cli,omitempty"`
 }
+
+// GetAutoInstall exists to make the opt-in gate conspicuous at call sites.
+// Never infer this value from check_enabled: checking is on by default, while
+// installation must remain strictly default-off.
+func (u UpdateSettings) GetAutoInstall() bool { return u.AutoInstall }
 
 // GetCheckEnabled returns whether update checks are enabled (default: true).
 func (u UpdateSettings) GetCheckEnabled() bool {

@@ -452,6 +452,9 @@ type Home struct {
 	// updateNudgeDismissed suppresses the >5-releases-behind nudge for
 	// the rest of the process. Reset on restart. Conductor task #45.
 	updateNudgeDismissed bool
+	autoUpdateVersion    string
+	autoUpdateErr        error
+	reexecRequested      bool
 
 	// Launching animation state (for newly created sessions)
 	launchingSessions    map[string]time.Time        // sessionID -> creation time
@@ -760,6 +763,7 @@ type uiState struct {
 	PreviewMode     int    `json:"preview_mode"`
 	StatusFilter    string `json:"status_filter,omitempty"`
 	GroupViewMode   int    `json:"group_view_mode,omitempty"`
+	ViewOffset      int    `json:"view_offset,omitempty"`
 	// Collapsed remote headers, keyed like Item.Path. Local group folds live in
 	// groupTree, which is persisted separately by saveGroupState; remote groups
 	// are synthetic UI rows and have no home there.
@@ -1282,7 +1286,9 @@ type openCodeDetectionCompleteMsg struct {
 }
 
 type updateCheckMsg struct {
-	info *update.UpdateInfo
+	info             *update.UpdateInfo
+	installedVersion string
+	err              error
 }
 
 type (
@@ -1613,6 +1619,10 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Restore persisted UI state (preview mode, status filter, cursor position)
 	h.loadUIState()
 	h.loadRemoteSessionsCache()
+	if updated := strings.TrimPrefix(os.Getenv("AGENTDECK_UPDATED"), "v"); updated != "" && updated == strings.TrimPrefix(Version, "v") {
+		h.maintenanceMsg = fmt.Sprintf("Updated to v%s — selection + list scroll restored; live tmux sessions were unaffected (brief screen blink is expected)", updated)
+		h.maintenanceMsgTime = time.Now()
+	}
 
 	// Apply default_filter from config if no filter was restored from persisted state.
 	// Auto-clears if no sessions match (handled in rebuildFlatItems).
@@ -3122,7 +3132,14 @@ func (h *Home) Init() tea.Cmd {
 func (h *Home) checkForUpdate() tea.Cmd {
 	return func() tea.Msg {
 		info, _ := update.CheckForUpdate(Version, false)
-		return updateCheckMsg{info: info}
+		if info == nil || !info.Available || !session.GetUpdateSettings().GetAutoInstall() || update.ReexecLoopGuard(info.LatestVersion) {
+			return updateCheckMsg{info: info}
+		}
+		info, err := update.AutoInstallAvailable(Version)
+		if err != nil {
+			return updateCheckMsg{info: info, err: err}
+		}
+		return updateCheckMsg{installedVersion: info.LatestVersion}
 	}
 }
 
@@ -6259,6 +6276,21 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateCheckMsg:
 		h.lastUpdateCheck = time.Now()
+		if msg.err != nil {
+			h.autoUpdateErr = msg.err
+			h.maintenanceMsg = "Automatic update failed: " + msg.err.Error()
+			uiLog.Error("automatic_update_failed", slog.String("error", msg.err.Error()))
+			return h, nil
+		}
+		if msg.installedVersion != "" {
+			h.autoUpdateVersion = msg.installedVersion
+			h.updateInfo = nil
+			if h.safeForUpdateReexec() {
+				return h.requestUpdateReexec()
+			}
+			h.maintenanceMsg = h.autoUpdateHint()
+			return h, nil
+		}
 		if msg.info != nil && !msg.info.Available {
 			// Update is no longer available (e.g., user updated via terminal) — dismiss banner
 			h.updateInfo = nil
@@ -7042,6 +7074,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case tickMsg:
+		if h.autoUpdateVersion != "" && h.safeForUpdateReexec() {
+			return h.requestUpdateReexec()
+		}
 		// Honor a pending `agent-deck session focus <id>` request from the CLI.
 		// A non-nil cmd means the request asked to --attach the session: open it
 		// now (same as Enter) and skip the rest of this tick's background work,
@@ -7213,10 +7248,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}()
 		}
 
-		// Periodic update re-check every 5 minutes to dismiss stale banner
-		// after the user updates agent-deck via terminal while TUI is running
+		// Poll the cache gate every five minutes. CheckForUpdate applies the
+		// configured release-feed cadence, so this stays cheap while ensuring a
+		// TUI that was current at startup can discover a later release.
 		const updateRecheckInterval = 5 * time.Minute
-		if h.updateInfo != nil && h.updateInfo.Available && time.Since(h.lastUpdateCheck) >= updateRecheckInterval {
+		if time.Since(h.lastUpdateCheck) >= updateRecheckInterval {
 			h.lastUpdateCheck = time.Now()
 			return h, tea.Batch(h.tick(), h.checkForUpdate())
 		}
@@ -8492,6 +8528,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
+	case "f12":
+		if h.autoUpdateVersion == "" {
+			return h, nil
+		}
+		if !h.safeForUpdateReexec() {
+			h.maintenanceMsg = h.autoUpdateHint()
+			return h, nil
+		}
+		return h.requestUpdateReexec()
 	case "q", "ctrl+c":
 		return h.tryQuit()
 
@@ -11744,6 +11789,7 @@ func (h *Home) saveUIStateErr() error {
 		PreviewMode:        int(h.previewMode),
 		StatusFilter:       string(h.statusFilter),
 		GroupViewMode:      int(h.groupViewMode),
+		ViewOffset:         h.viewOffset,
 		RemoteSessionOrder: h.remoteSessionOrder,
 	}
 
@@ -11841,7 +11887,56 @@ func (h *Home) loadUIState() {
 
 	// Defer cursor restoration until flatItems are populated
 	h.pendingCursorRestore = &state
+	h.viewOffset = max(0, state.ViewOffset)
 }
+
+const updateReexecKey = "F12"
+
+func (h *Home) autoUpdateHint() string {
+	return fmt.Sprintf("Updated to v%s — press %s to re-exec when safe (automatic at next idle); selection + list scroll survive, brief blink; transient input is not preserved; live tmux sessions are unaffected", h.autoUpdateVersion, updateReexecKey)
+}
+
+// safeForUpdateReexec is shared by the immediate, deferred, and manual tiers.
+// Live tmux sessions are server processes and remain unaffected by design.
+func (h *Home) safeForUpdateReexec() bool {
+	baseSafe := h.autoUpdateVersion != "" && !h.hasModalVisible() && !h.insertMode &&
+		!h.isAttaching.Load() && len(h.launchingSessions) == 0 && len(h.resumingSessions) == 0 &&
+		len(h.mcpLoadingSessions) == 0 && len(h.forkingSessions) == 0 &&
+		len(h.setupRunningSessions) == 0 && len(h.creatingSessions) == 0
+	if !baseSafe {
+		return false
+	}
+	// A draft lives in the tmux pane, not in Bubble Tea. Probe the selected
+	// pane fresh instead of trusting the preview cache; on probe failure remain
+	// conservative and keep the persistent hint. Re-exec never kills the tmux
+	// session, but it must not cross the explicit unsent-composer safety gate.
+	if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+		item := h.flatItems[h.cursor]
+		if item.Session != nil {
+			if ts := item.Session.GetTmuxSession(); ts != nil {
+				raw, err := ts.CapturePaneFresh()
+				if err != nil || send.ComposerHasDraft(raw, tmux.StripANSI) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func (h *Home) requestUpdateReexec() (tea.Model, tea.Cmd) {
+	if !h.safeForUpdateReexec() {
+		h.maintenanceMsg = h.autoUpdateHint()
+		return h, nil
+	}
+	h.saveUIState()
+	h.reexecRequested = true
+	return h, tea.Quit
+}
+
+// ReexecRequest is consumed by main only after Bubble Tea has stopped and
+// waited, so syscall.Exec always runs from the main goroutine.
+func (h *Home) ReexecRequest() (string, bool) { return h.autoUpdateVersion, h.reexecRequested }
 
 // createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
 func (h *Home) createSessionInGroupWithWorktreeAndOptions(

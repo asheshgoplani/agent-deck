@@ -98,7 +98,8 @@ func printUpdateNotice() {
 		info.CurrentVersion, info.LatestVersion)
 }
 
-// promptForUpdate checks for updates and prompts user if auto_update is enabled
+// promptForUpdate is retained for non-TUI callers; automatic installation is
+// owned by the running TUI so it can re-exec safely instead of asking at boot.
 func promptForUpdate() bool {
 	settings := session.GetUpdateSettings()
 	if !settings.GetCheckEnabled() {
@@ -110,40 +111,15 @@ func promptForUpdate() bool {
 		return false
 	}
 
-	// If auto_update is disabled, just show notification (don't prompt)
-	if !settings.AutoUpdate {
+	if !settings.GetAutoInstall() {
 		fmt.Fprintf(os.Stderr, "\n💡 Update available: v%s → v%s (run: agent-deck update)\n",
 			info.CurrentVersion, info.LatestVersion)
 		return false
 	}
 
-	// auto_update is enabled - prompt user
-	fmt.Printf("\n⬆ Update available: v%s → v%s\n", info.CurrentVersion, info.LatestVersion)
-	fmt.Print("Update now? [Y/n]: ")
-
-	var response string
-	_, _ = fmt.Scanln(&response)
-	response = strings.TrimSpace(strings.ToLower(response))
-
-	// Default to yes (empty or "y" or "yes")
-	if response != "" && response != "y" && response != "yes" {
-		fmt.Println("Skipped. Run 'agent-deck update' later.")
-		return false
-	}
-
-	fmt.Println()
-	release, err := update.FetchReleaseByTag(info.LatestVersion)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Update failed: failed to fetch release info: %v\n", err)
-		return false
-	}
-	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
-		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
-		return false
-	}
-
-	fmt.Println("Restart agent-deck to use the new version.")
-	return true
+	// The interactive TUI performs this asynchronously after it starts. Startup
+	// must never be blocked by the release feed or an update prompt.
+	return false
 }
 
 // initColorProfile configures lipgloss color profile based on terminal capabilities.
@@ -215,6 +191,23 @@ func initColorProfile() {
 }
 
 func main() {
+	// A retained .old with no successful re-exec sentinel means the replacement
+	// never reached its first health acknowledgement. Restore before doing work.
+	if os.Getenv("AGENTDECK_UPDATED") == "" {
+		if exe, err := resolvedExecutable(); err == nil {
+			if _, err := os.Stat(exe + ".old"); err == nil {
+				if err := update.RollbackSelfUpdate(exe); err != nil {
+					fmt.Fprintf(os.Stderr, "failed to roll back unacknowledged update: %v\n", err)
+					os.Exit(1)
+				}
+				update.SaveAutoState("rolled_back", "", "new binary did not reach its first startup health check")
+				if err := reexecSelf("rollback"); err != nil {
+					fmt.Fprintf(os.Stderr, "rolled back update but failed to start prior binary: %v\n", err)
+					os.Exit(1)
+				}
+			}
+		}
+	}
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
 	// whose launchd PATH omits Homebrew's /opt/homebrew/bin). Must run before any
@@ -495,16 +488,6 @@ func main() {
 	theme := session.ResolveTheme()
 	ui.InitTheme(theme)
 
-	// Check for updates and prompt user before launching TUI. Headless web
-	// mode (--no-tui) skips this — it's an interactive prompt that would
-	// hang a non-TTY process.
-	if !webHeadless {
-		if promptForUpdate() {
-			// Update was performed, exit so user can restart with new version
-			return
-		}
-	}
-
 	// Web parses its own flags and preflights during subcommand dispatch so
 	// help remains tmux-free and startup probes see the repaired PATH.
 	if !webEnabled {
@@ -676,6 +659,14 @@ func main() {
 
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
+	if updated := strings.TrimPrefix(os.Getenv("AGENTDECK_UPDATED"), "v"); updated != "" && updated == strings.TrimPrefix(Version, "v") {
+		if exe, err := resolvedExecutable(); err == nil {
+			if err := update.AcknowledgeSelfUpdateHealth(exe); err != nil {
+				logging.ForComponent("update").Warn("update_health_ack_failed", slog.String("error", err.Error()))
+			}
+			update.SaveAutoState("healthy", updated, "new binary passed first startup health check")
+		}
+	}
 	// Apply group scope if specified via --group / -g flag
 	if groupScope != "" {
 		normalizedGroup := normalizeGroupPath(groupScope)
@@ -969,6 +960,52 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+	if updatedVersion, requested := homeModel.ReexecRequest(); requested {
+		// Keep the teardown contract explicit even though tea.Quit caused Run to
+		// return: Quit + Wait guarantees the renderer/input goroutines are gone.
+		p.Quit()
+		p.Wait()
+		if err := prepareForExec(maintenanceCancel); err != nil {
+			fmt.Fprintf(os.Stderr, "automatic update installed, but re-exec preparation failed: %v\n", err)
+			os.Exit(1)
+		}
+		if err := reexecSelf(updatedVersion); err != nil {
+			exe, _ := resolvedExecutable()
+			_ = update.RollbackSelfUpdate(exe)
+			// exec failure must leave a usable terminal and never fall through.
+			ui.RestoreKittyKeyboard(os.Stdout)
+			ui.DisableModifyOtherKeys(os.Stdout)
+			fmt.Fprint(os.Stdout, "\x1b[?1000l\x1b[?2026l\x1b[r\x1b[0m")
+			fmt.Fprintf(os.Stderr, "automatic update re-exec failed; restored previous binary: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+// prepareForExec explicitly performs cleanup normally owned by defers. execve
+// never runs defers. Closing PipeManager kills and reaps every owned tmux -C
+// process group; live tmux sessions themselves are untouched by design.
+func prepareForExec(maintenanceCancel context.CancelFunc) error {
+	maintenanceCancel()
+	if runner := intervalhook.GetGlobal(); runner != nil {
+		runner.Stop()
+	}
+	if pm := tmux.GetPipeManager(); pm != nil {
+		pm.Close()
+		tmux.SetPipeManager(nil)
+	}
+	if db := statedb.GetGlobal(); db != nil {
+		if err := db.Close(); err != nil {
+			return fmt.Errorf("close state database: %w", err)
+		}
+		statedb.SetGlobal(nil)
+	}
+	ui.RestoreKittyKeyboard(os.Stdout)
+	ui.DisableModifyOtherKeys(os.Stdout)
+	fmt.Fprint(os.Stdout, "\x1b[?1000l\x1b[?2026l\x1b[r\x1b[0m")
+	_ = os.Stdout.Sync()
+	logging.Shutdown()
+	return nil
 }
 
 // globalFlagSubcommands lists every token that main()'s dispatch switch treats
@@ -3195,6 +3232,7 @@ func handleUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
+	autoStatus := fs.Bool("auto-status", false, "Show automatic-update setting and restart state")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck update [options]")
@@ -3207,11 +3245,38 @@ func handleUpdate(args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck update              # Check and install latest if available")
 		fmt.Println("  agent-deck update --check      # Only check, don't install")
+		fmt.Println("  agent-deck update --auto-status # Inspect opt-in and TUI re-exec state")
 		fmt.Println("  agent-deck update --version 1.7.3  # Install a specific version (may downgrade)")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+	if *autoStatus {
+		settings := session.GetUpdateSettings()
+		fmt.Printf("updates.auto_install: %t (default: false)\n", settings.GetAutoInstall())
+		if state, err := update.LoadAutoState(); err == nil {
+			fmt.Printf("state: %s", state.Status)
+			if state.Version != "" {
+				fmt.Printf(" v%s", strings.TrimPrefix(state.Version, "v"))
+			}
+			if state.Message != "" {
+				fmt.Printf(" — %s", state.Message)
+			}
+			fmt.Println()
+		}
+		if path, _, managed, err := update.DetectHomebrewManagedInstall(); err == nil && managed {
+			fmt.Printf("install: Homebrew-managed at %s; automatic install is refused (use brew upgrade)\n", path)
+		}
+		if storage, err := session.NewStorageWithProfile(""); err == nil && storage.GetDB() != nil {
+			defer storage.GetDB().Close()
+			if n, err := storage.GetDB().AliveInstanceCount(); err == nil && n > 0 {
+				fmt.Printf("restart: %d running TUI(s) detected; automatic installs re-exec in place at the next idle-safe moment (F12 requests it)\n", n)
+				return
+			}
+		}
+		fmt.Println("restart: no running TUI detected; no restart needed")
+		return
 	}
 
 	if strings.TrimSpace(*targetVersion) != "" {
@@ -3307,6 +3372,9 @@ func handleUpdate(args []string) {
 			fmt.Printf("Error installing update: %v\n", err)
 			os.Exit(1)
 		}
+		if exe, err := resolvedExecutable(); err == nil {
+			_ = update.AcknowledgeSelfUpdateHealth(exe)
+		}
 	}
 
 	// Update bridge.py if conductor is installed
@@ -3316,7 +3384,7 @@ func handleUpdate(args []string) {
 	}
 
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
-	fmt.Println("  Restart agent-deck to use the new version.")
+	printUpdateRestartTruth()
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
@@ -3397,6 +3465,9 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 		fmt.Printf("Error installing v%s: %v\n", targetVersion, err)
 		os.Exit(1)
 	}
+	if exe, err := resolvedExecutable(); err == nil {
+		_ = update.AcknowledgeSelfUpdateHealth(exe)
+	}
 
 	if err := update.UpdateBridgePy(); err != nil {
 		fmt.Printf("Warning: Failed to update bridge.py: %v\n", err)
@@ -3404,7 +3475,18 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	}
 
 	fmt.Printf("\n✓ Installed v%s\n", targetVersion)
-	fmt.Println("  Restart agent-deck to use this version.")
+	printUpdateRestartTruth()
+}
+
+func printUpdateRestartTruth() {
+	if storage, err := session.NewStorageWithProfile(""); err == nil && storage.GetDB() != nil {
+		defer storage.GetDB().Close()
+		if n, err := storage.GetDB().AliveInstanceCount(); err == nil && n > 0 {
+			fmt.Printf("  %d running TUI(s) detected; they re-exec in place automatically at the next idle-safe moment (F12 requests it).\n", n)
+			return
+		}
+	}
+	fmt.Println("  No running TUI detected; no restart needed.")
 }
 
 // brewRunner abstracts `brew <args...>` so tests can inject canned output
