@@ -30,10 +30,23 @@ func (e *inboxTargetNotFoundError) Error() string {
 	return fmt.Sprintf("Error: inbox drain target %q could not be resolved. Nothing was drained; this is NOT an empty inbox.", e.identifier)
 }
 
+type inboxTargetAmbiguousError struct{ message string }
+
+func (e *inboxTargetAmbiguousError) Error() string {
+	return "Error: inbox drain target is ambiguous. Nothing was drained.\n" + e.message
+}
+
+// inboxExitCode is the #1991 drain-resolution contract: 2 means the target
+// does not exist, 3 means the supplied title/prefix is ambiguous, and 1 is a
+// storage, usage, or drain failure. Resolution failures never drain events.
 func inboxExitCode(err error) int {
 	var notFound *inboxTargetNotFoundError
 	if errors.As(err, &notFound) {
 		return 2
+	}
+	var ambiguous *inboxTargetAmbiguousError
+	if errors.As(err, &ambiguous) {
+		return 3
 	}
 	return 1
 }
@@ -88,6 +101,8 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintln(stdout, "Usage: agent-deck inbox drain [--json] [<session-id>|self]")
 		fmt.Fprintln(stdout, "With no id (or 'self'), drains the caller's own session.")
+		fmt.Fprintln(stdout, "Full session IDs resolve across all profiles; titles and shortened IDs")
+		fmt.Fprintln(stdout, "resolve only within the effective profile.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
@@ -120,12 +135,35 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 }
 
 func resolveInboxDrainSession(identifier string) (string, error) {
+	// A complete session ID is globally unique. Check exact IDs in every
+	// profile before applying the profile-local flexible resolver. Titles and
+	// shortened ID prefixes intentionally remain scoped to the effective
+	// profile, avoiding cross-profile ambiguity for ordinary shorthand.
+	profiles, err := session.ListProfiles()
+	if err != nil {
+		return "", fmt.Errorf("list profiles: %w", err)
+	}
+	for _, profile := range profiles {
+		_, profileInstances, _, loadErr := loadSessionData(profile)
+		if loadErr != nil {
+			return "", fmt.Errorf("load profile %q: %w", profile, loadErr)
+		}
+		for _, inst := range profileInstances {
+			if inst.ID == identifier {
+				return inst.ID, nil
+			}
+		}
+	}
+
 	_, instances, _, err := loadSessionData("")
 	if err != nil {
 		return "", err
 	}
-	inst, _, _ := ResolveSession(identifier, instances)
+	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
+		if errCode == ErrCodeAmbiguous {
+			return "", &inboxTargetAmbiguousError{message: errMsg}
+		}
 		return "", &inboxTargetNotFoundError{identifier: identifier}
 	}
 	return inst.ID, nil
