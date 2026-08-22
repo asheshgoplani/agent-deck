@@ -1,0 +1,48 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                      ╭──────────────────────────────────────────────────╮
+                                                      │                                                  │
+                                                      │  Claude Code Hooks                               │
+                                                      │                                                  │
+                                                      │  Agent-deck can install Claude Code lifecycle    │
+                                                      │  hooks                                           │
+                                                      │  for real-time status detection (instant         │
+                                                      │  green/yellow/gray).                             │
+                                                      │                                                  │
+                                                      │  This writes to your Claude settings.json        │
+                                                      │  (preserves existing settings).                  │
+                                                      │  New/restarted sessions will use hooks;          │
+                                                      │  existing sessions continue unchanged.           │
+                                                      │  You can disable later with: hooks_enabled =     │
+                                                      │  false in config.toml                            │
+                                                      │                                                  │
+                                                      │                                                  │
+                                                      │      Install      ▸ Skip                         │
+                                                      │  y install · n skip · ←/→ navigate · Enter       │
+                                                      │  select · Esc                                    │
+                                                      │                                                  │
+                                                      ╰──────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+

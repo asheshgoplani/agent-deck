@@ -62,7 +62,7 @@ func TestUpdateNudge_DismissKeySuppressesBanner(t *testing.T) {
 
 	// Simulate pressing shift+U. The key handler must set the session
 	// dismiss flag.
-	h.handleUpdateNudgeDismiss(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
+	h.handleUpdateNudgeDismiss(tea.KeyMsg{Type: tea.KeyEsc})
 
 	if h.shouldRenderUpdateNudge() {
 		t.Fatalf("after dismiss: shouldRenderUpdateNudge must be false; nudge should stay hidden for the rest of the session")

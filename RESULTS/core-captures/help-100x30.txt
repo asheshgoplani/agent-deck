@@ -1,0 +1,30 @@
+         ╭────────────────────────────────────────────────────────────────────────────────╮
+         │                                                                                │
+         │  KEYBOARD SHORTCUTS                                                            │
+         │                                                                                │
+         │  QUICK START                                                                   │
+         │    Enter         Attach to selected session                                    │
+         │    R             Restart selected session                                      │
+         │    Ctrl+Q        Detach from session                                           │
+         │    ?             Open this help                                                │
+         │                                                                                │
+         │  NAVIGATION                                                                    │
+         │    j / Down      Move down                                                     │
+         │    k / Up        Move up                                                       │
+         │    Ctrl+u/d      Half page up/down                                             │
+         │    PgUp / PgDn   Half page up/down                                             │
+         │    Ctrl+f/b      Full page up/down                                             │
+         │    Home / End    Jump to first / last item                                     │
+         │    gg / G        Jump to top / global search                                   │
+         │    h / Left      Collapse / parent                                             │
+         │    l / Right     Expand / toggle                                               │
+         │    1-9           Jump to root group                                            │
+         │    Space         Jump mode                                                     │
+         │    Enter         Attach / toggle                                               │
+         │    Shift+Enter   Open session in new iTerm window (macOS)                      │
+         │  ▼ more below                                                                  │
+         │                                                                                │
+         │  j/k scroll • any other key to close                                           │
+         │                                                                                │
+         ╰────────────────────────────────────────────────────────────────────────────────╯
+

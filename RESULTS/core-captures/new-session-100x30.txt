@@ -1,0 +1,30 @@
+       │      cursor agent    hermes    deepseek                                            │
+       │                                                                                    │
+       │      Model ID:                                                                     │
+       │      > claude-sonnet-4-6                                                           │
+       │      Examples: claude-opus-5, claude-sonnet-5, claude-haiku-4-5                    │
+       │                                                                                    │
+       │      Reasoning effort: Tool default                                                │
+       │                                                                                    │
+       │      Path:                                                                         │
+       │      > /tmp/agent-deck-gauntlet.MBYqvL/fixture-home/projects/api                   │
+       │                                                                                    │
+       │      [ ] Create in worktree                                                        │
+       │      [ ] Run in Docker sandbox                                                     │
+       │                                                                                    │
+       │      [ ] Multi-repo mode                                                           │
+       │                                                                                    │
+       │    ─ Claude Options ─                                                              │
+       │      Session: (•) New  ( ) Continue  ( ) Resume                                    │
+       │      [ ] Skip permissions                                                          │
+       │      [ ] Auto mode                                                                 │
+       │      [ ] Chrome mode                                                               │
+       │      [ ] Teammate mode                                                             │
+       │        Extra args: > --agent reviewer --model opus                                 │
+       │        Start query: > initial prompt (not split on spaces)                         │
+       │                                                                                    │
+       │                                                                                    │
+       │    Tab next │ ↑↓ navigate │ ^S create │ Esc cancel                                 │
+       │                                                                                    │
+       │                                                                                    │
+       ╰────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,6 @@
+--- FAIL: TestAdvertisedOverviewBindingsHaveSingleMeaning (0.05s)
+    hotkeys_test.go:27: overview dispatches "shift+r" to both "dispatcher-clause@572229" and "dispatcher-clause@579513"
+    hotkeys_test.go:27: overview dispatches "R" to both "dispatcher-clause@572229" and "dispatcher-clause@579513"
+FAIL
+FAIL	github.com/asheshgoplani/agent-deck/internal/ui	0.084s
+FAIL

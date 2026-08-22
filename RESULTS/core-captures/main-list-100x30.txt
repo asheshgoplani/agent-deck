@@ -1,0 +1,30 @@
+ ⟨ ○ │ ○ │ ○ ⟩  Agent Deck  ✕ 3 error • ⚙ 0% │ ⛁ 22.0G/125.7G │ ▪ 195.7G/934.7G             v1.14.0
+  All    ● 0   ◐ 0   ○ 0   ✕ 3   !@#& filter • 0 all • % open • ^ archived • t view
+SESSIONS                            │ PREVIEW
+─────────────────────────────────── │ ──────────────────────────────────────────────────────────────
+  ▾ platform (2)                    │ 📁 platform
+   ├─ ✕ api-review shell            │
+   └─ ✕ incident-shell shell        │ 2 sessions
+2·▾ documentation (1)               │
+   └─ ✕ release-notes shell         │ ✕ 2 error
+                                    │
+                                    │ ──────────────────────── Sessions ────────────────────────
+                                    │   ✕ api-review shell
+                                    │   ✕ incident-shell shell
+                                    │
+                                    │ Tab toggle • r rename • d delete • g subgroup
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Group:  Tab  Toggle  n/N  New/Quick  g  Group │  r  Rename  d  Delete

@@ -6311,6 +6311,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionRestartedMsg:
+		delete(h.resumingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to restart remote session: %w", msg.err))
 			return h, nil
@@ -8469,16 +8470,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return h.tryQuit()
 
-	case "U":
+	case "esc":
 		// Dismiss the >5-releases-behind update nudge for this session.
-		// Only meaningful when the nudge is actually showing — otherwise
-		// fall through so other "U"-bound paths can handle it.
 		if h.shouldRenderUpdateNudge() {
 			h.handleUpdateNudgeDismiss(msg)
 			return h, nil
 		}
-
-	case "esc":
 		// Dismiss maintenance banner if visible
 		if h.maintenanceMsg != "" {
 			h.maintenanceMsg = ""
@@ -9699,6 +9696,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return h, h.restartSession(item.Session)
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				restartID := remoteRestartAnimationID(item.RemoteName, item.RemoteSession.ID)
+				if _, restarting := h.resumingSessions[restartID]; restarting {
+					h.setError(fmt.Errorf("remote session is restarting, please wait..."))
+					return h, nil
+				}
+				h.resumingSessions[restartID] = time.Now()
 				return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
@@ -9930,10 +9933,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case CostDashboardKey, "shift+4":
 		// Cost dashboard (when cost tracking is active).
-		if h.costStore != nil {
-			h.showCostDashboard = true
-			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
+		if h.costStore == nil {
+			h.setError(fmt.Errorf("Cost Dashboard unavailable: state database is missing; restart agent-deck with a writable config directory to enable it"))
+			return h, nil
 		}
+		h.showCostDashboard = true
+		h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
 		return h, nil
 
 	case FilterKeyError, "shift+7":
@@ -13542,6 +13547,10 @@ type remoteSessionRestartedMsg struct {
 	sessionID  string
 	title      string
 	err        error
+}
+
+func remoteRestartAnimationID(remoteName, sessionID string) string {
+	return "remote:" + remoteName + ":" + sessionID
 }
 
 type remoteSessionCreatedMsg struct {

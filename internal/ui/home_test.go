@@ -1487,6 +1487,17 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("restart should return a command")
 	}
+	restartID := remoteRestartAnimationID("myserver", "remote-123")
+	if _, ok := h.resumingSessions[restartID]; !ok {
+		t.Fatal("remote restart was not marked in flight")
+	}
+	_, second := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	if second != nil {
+		t.Fatal("second remote restart returned a command while first was in flight")
+	}
+	if h.err == nil || h.err.Error() != "remote session is restarting, please wait..." {
+		t.Fatalf("second remote restart feedback = %v", h.err)
+	}
 
 	msg := cmd()
 	restartMsg, ok := msg.(remoteSessionRestartedMsg)
@@ -1504,6 +1515,10 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	}
 	if restartMsg.err == nil {
 		t.Fatal("expected error when remote config is unavailable")
+	}
+	h.Update(restartMsg)
+	if _, ok := h.resumingSessions[restartID]; ok {
+		t.Fatal("remote restart remained in flight after completion")
 	}
 
 	_ = h
