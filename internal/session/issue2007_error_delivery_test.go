@@ -47,12 +47,18 @@ func TestIssue2007_UnresolvableParentAlsoLandsInUnownedLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	NewTransitionNotifier().NotifyTransition(TransitionNotificationEvent{
+	got := NewTransitionNotifier().NotifyTransition(TransitionNotificationEvent{
 		ChildSessionID: child.ID, ChildTitle: child.Title, Profile: profile,
 		FromStatus: "running", ToStatus: "error", Timestamp: now,
 	})
+	if got.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("durable _unowned append must report committed, got %+v", got)
+	}
 	events, err := ReadAndTruncateInbox(UnownedInboxID)
 	if err != nil || len(events) != 1 || events[0].ChildSessionID != child.ID {
 		t.Fatalf("unresolvable transition was not preserved in _unowned: events=%+v err=%v", events, err)
+	}
+	if events[0].DeadLetterReason != deadLetterReasonParentMissing {
+		t.Fatalf("_unowned record lost resolution reason: got %q want %q", events[0].DeadLetterReason, deadLetterReasonParentMissing)
 	}
 }

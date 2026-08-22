@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -133,6 +134,11 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	fileLock, err := AcquireConfigFileLock(path)
+	if err != nil {
+		return fmt.Errorf("lock inbox commit: %w", err)
+	}
+	defer fileLock.Release()
 
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
@@ -150,8 +156,8 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	return appendInboxLineLocked(path, event)
 }
 
-// appendInboxLineLocked marshals one event (with its EventFingerprint embedded)
-// and appends it as a JSONL line. Caller holds inboxWriteMu. Also refreshes the
+// appendInboxLineLocked marshals one event and atomically installs an old-or-new
+// complete inbox file. Caller holds inboxWriteMu. It also refreshes the
 // process-local fingerprint cache so WriteInboxEvent's dedup stays consistent.
 func appendInboxLineLocked(path string, event TransitionNotificationEvent) error {
 	fp := EventFingerprint(event)
@@ -159,19 +165,7 @@ func appendInboxLineLocked(path string, event TransitionNotificationEvent) error
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return err
-	}
-	// Audit B2: fsync the append before reporting success. CommitToInbox is the
-	// PRIMARY delivery path; without this a crash after Write returns but before
-	// the kernel flushes loses the record while the producer believes it
-	// committed. Completions are low-frequency, so the flush cost is negligible.
-	if err := f.Sync(); err != nil {
+	if err := atomicAppendInboxLineLocked(path, line); err != nil {
 		return err
 	}
 	seen, ok := inboxFingerprintCache[path]
@@ -344,7 +338,10 @@ func CountDeadLetterRecords() (int, error) {
 		scanner := bufio.NewScanner(f)
 		scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
 		for scanner.Scan() {
-			if _, err := decodeInboxLine(scanner.Bytes()); err == nil {
+			// Unknown/corrupt is still pending operator work. Counting every
+			// nonblank physical record prevents a truncated legacy append from
+			// making a non-empty ledger look clean (#1877).
+			if strings.TrimSpace(scanner.Text()) != "" {
 				count++
 			}
 		}
@@ -436,6 +433,7 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		// it in the reserved, drainable unowned ledger. Deliberate suppression
 		// and a removed child remain terminal drops.
 		if isUnownedReason(reason) {
+			event.DeadLetterReason = reason
 			written, err := recordUnownedTransition(event)
 			if err != nil {
 				return false, true, ""
@@ -445,10 +443,13 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 				event.DeliveryResult = transitionDeliveryCommitted
 				n.logEvent(event)
 			}
-			// Preserve the existing operator-visible terminal accounting as well;
-			// the important invariant is that dead-letter is no longer the only
-			// copy and the event is now drainable from _unowned.
-			return false, false, reason
+			// Keep the existing operator-visible forensic copy/missed-log for
+			// non-benign terminal reasons. The durable delivery result remains a
+			// success because _unowned is now the actionable copy.
+			n.terminalDrop(event, reason)
+			// A duplicate means the identical durable event already exists. Both a
+			// new append and that idempotent replay are successful commits.
+			return true, false, ""
 		}
 		return false, false, reason
 	}

@@ -45,3 +45,20 @@ func TestIssue1877_InboxDrainReportsDeadLettersAndIsNonZero(t *testing.T) {
 		t.Fatalf("drain must report non-zero dead-letter count, got %q", out.String())
 	}
 }
+
+func TestIssue1877_CorruptNonEmptyDeadLetterIsNotReportedClean(t *testing.T) {
+	cliInboxTestHome(t)
+	if err := os.MkdirAll(session.DeadLetterDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(session.DeadLetterPathFor("truncated-1877"), []byte(`{"child_session_id":"truncated`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := runInbox(&out, []string{"drain", "parent-corrupt-1877"})
+	var pending *deadLettersPendingError
+	if !errors.As(err, &pending) || pending.count != 1 || inboxExitCode(err) != 2 {
+		t.Fatalf("non-empty corrupt dead-letter must be loud: output=%q err=%v", out.String(), err)
+	}
+}
