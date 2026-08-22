@@ -194,11 +194,10 @@ func TestIssue1793_IdenticalMessageAlreadyOnScreen_IsNotEvidence(t *testing.T) {
 	}
 }
 
-// TestIssue1793_LargePayload_IdleAgentGoingActiveIsSubmitted: an agent that
-// was idle and starts working necessarily received what it is working on,
-// even if its TUI never echoes the body. That is the one signal here strong
-// enough to claim submission.
-func TestIssue1793_LargePayload_IdleAgentGoingActiveIsSubmitted(t *testing.T) {
+// TestIssue1793_LargePayload_StatusTransitionWithoutComposerEvidenceFails:
+// generic pane status is not correlated with this send. The composer is the
+// per-send oracle, so even waiting->active cannot certify a body never seen.
+func TestIssue1793_LargePayload_StatusTransitionWithoutComposerEvidenceFails(t *testing.T) {
 	msg := bigMessage(4095)
 	// Index 0 is the pre-send baseline: the agent was idle, so going active
 	// afterwards is a transition attributable to this send.
@@ -210,11 +209,11 @@ func TestIssue1793_LargePayload_IdleAgentGoingActiveIsSubmitted(t *testing.T) {
 	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
 		maxRetries: 4, checkDelay: 0,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("an unrelated status transition must not certify this send")
 	}
-	if delivery != deliverySubmitted {
-		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, delivery)
+	if delivery != deliveryNoEvidence {
+		t.Fatalf("delivery: want %q, got %q", deliveryNoEvidence, delivery)
 	}
 }
 

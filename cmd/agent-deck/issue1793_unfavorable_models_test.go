@@ -58,3 +58,37 @@ func TestIssue1793SubmitConfirmUnfavorableMatrix(t *testing.T) {
 		})
 	}
 }
+
+// These transcripts are the two round-2 review counterexamples.  Keep them
+// here verbatim enough to ensure the observer cannot again use pane status as
+// per-send evidence, or turn a stale composer frame into a duplicate submit.
+func TestIssue1793Round2ReviewTranscripts(t *testing.T) {
+	t.Run("late_initial_enter_never_gets_a_second_enter", func(t *testing.T) {
+		const msg = "REVIEW-NONCE-late-enter"
+		m := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{
+			"❯ \n", // baseline
+			"❯ " + msg + "\n",
+			"❯ " + msg + "\n", // independently fresh, but still stale
+			"GOT " + msg + "\n❯ \n",
+		}}
+		delivery, err := sendWithRetryTarget(m, msg, true, sendRetryOptions{maxRetries: 3})
+		if err != nil || delivery != deliverySubmitted {
+			t.Fatalf("delivery=%q err=%v", delivery, err)
+		}
+		if got := atomic.LoadInt32(&m.sendEnterCalls); got != 0 {
+			t.Fatalf("late initial acceptance received %d recovery Enters", got)
+		}
+	})
+
+	t.Run("already_busy_status_is_not_this_send", func(t *testing.T) {
+		const msg = "REVIEW-NONCE-busy-pane"
+		m := &mockSendRetryTarget{statuses: []string{"waiting", "active"}, panes: []string{
+			"BUSY old turn\n› \n", // baseline
+			"BUSY old turn\n› " + msg + "\n",
+		}}
+		delivery, err := sendWithRetryTarget(m, msg, true, sendRetryOptions{maxRetries: 1})
+		if err == nil || delivery != deliveryTyped {
+			t.Fatalf("status false-positive: delivery=%q err=%v", delivery, err)
+		}
+	})
+}

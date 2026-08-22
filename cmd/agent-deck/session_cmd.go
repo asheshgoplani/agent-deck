@@ -3411,19 +3411,13 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		opts.checkDelay = 0
 	}
 
-	// Baseline for the arrival check below, taken BEFORE the send. Neither
-	// signal the check uses means anything as a snapshot — only as a change:
-	//
-	//   - "the body is on screen": re-sending an identical message (a
+	// Baseline for the arrival check below, taken BEFORE the send. The body
+	// signal means nothing as a snapshot, only as a change: re-sending an
+	// identical message (a
 	//     heartbeat, an inbox nudge, a retry) would match the previous copy
 	//     still sitting in the pane and certify a send that vanished.
-	//   - "the agent is active": a pane that was ALREADY busy is still busy a
-	//     moment later whether or not it received anything.
-	//
-	// Both would hand back a success for a message that never arrived, which
-	// is the exact phantom this is here to kill. Only a transition away from
-	// this baseline counts. Costs one pane capture plus one status read, and
-	// only on the path that needs them.
+	// Only a transition away from this pane baseline counts. Generic status is
+	// deliberately excluded because it is not attributable to this send.
 	var arrivalBaseline sendArrivalBaseline
 	if skipVerify {
 		arrivalBaseline = captureArrivalBaseline(target, message)
@@ -3783,25 +3777,18 @@ type sendArrivalBaseline struct {
 	// multi-line send to a pane and kills the signal for every later one.
 	// Only "one more than before" is attributable to THIS send.
 	pasteMarkers int
-	// wasActive reports whether the agent was already working before the
-	// send, in which case "it is active now" proves nothing.
-	wasActive bool
-	// statusOK reports that the pre-send status read succeeded. Same reason:
-	// a failed read defaulting to "was not active" would turn a
-	// continuously-busy agent into a fake not-active-to-active transition.
-	statusOK bool
+	// totalPasteMarkers counts markers in the whole pane. Unlike pasteMarkers,
+	// this is used only to prove that a payload which left the composer is now
+	// present in transcript as accepted input.
+	totalPasteMarkers int
 }
 
-// captureArrivalBaseline snapshots the pane and status before a send. Each
-// signal records whether it was actually observed; a signal without a valid
-// baseline is disabled, never guessed.
+// captureArrivalBaseline snapshots the pane before a send. A signal without a
+// valid baseline is disabled, never guessed.
 func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
 	base := sendArrivalBaseline{}
-	if n, markers, ok := paneArrivalObservation(target, message); ok {
-		base.occurrences, base.pasteMarkers, base.paneOK = n, markers, true
-	}
-	if status, err := target.GetStatus(); err == nil {
-		base.wasActive, base.statusOK = status == "active", true
+	if n, markers, totalMarkers, ok := paneArrivalObservation(target, message); ok {
+		base.occurrences, base.pasteMarkers, base.totalPasteMarkers, base.paneOK = n, markers, totalMarkers, true
 	}
 	return base
 }
@@ -3809,17 +3796,10 @@ func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalB
 // verifyContentArrival confirms that message reached the target pane, for
 // tools whose TUI exposes no Claude-shaped submit signal (issue #1793).
 //
-// Evidence is a TRANSITION from the pre-send baseline, never a snapshot:
-// either a new copy of the body appearing in the pane, or the agent going
-// active when it was not active before the send — an idle agent that starts
-// working necessarily received what it started working on. An agent that was
-// already busy stays busy regardless, so that case proves nothing and is not
-// accepted.
-//
-// The two signals are not equal in strength, and the result says which one
-// was found. An idle agent going active is attributable to this send, so that
-// is deliverySubmitted. The body appearing is only deliveryTyped: bytes in a
-// composer are not an accepted turn — Enter can still have been swallowed,
+// Evidence is tied to this send's composer lifecycle, never generic pane
+// status: the attributable body must first be observed in the composer, then
+// leave it while appearing in transcript as accepted input. Merely appearing
+// in the composer is deliveryTyped: Enter can still have been swallowed,
 // which is the failure #1413 and #1793 are both about.
 //
 // The pane comparison is whitespace-insensitive because a pane wraps long
@@ -3876,55 +3856,10 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 
 	sawBody := false
 	sawHeldComposer := false
-	recoveryEnterUsed := false
-	attrib := send.EnterAttribution{Message: message, OwnPasteMarker: baseline.paneOK && baseline.pasteMarkers == 0}
-	// recoverPending performs the mandatory second observation immediately
-	// before the sole recovery Enter. The first Enter may already be queued
-	// while the terminal still paints an old composer frame; waiting one poll
-	// and re-reading gives that accepted event a chance to clear the body. It
-	// also makes the Enter dialog-safe: modal UI wins over all body evidence.
-	recoverPending := func() (submitted, pressed bool, err error) {
-		if opts.checkDelay > 0 {
-			time.Sleep(opts.checkDelay)
-		}
-		if baseline.statusOK && !baseline.wasActive {
-			if status, statusErr := target.GetStatus(); statusErr == nil && status == "active" {
-				return true, false, nil
-			}
-		}
-		raw, captureErr := target.CapturePaneFresh()
-		if captureErr != nil {
-			return false, false, nil
-		}
-		if send.PaneHasOpenDialog(raw, tmux.StripANSI) {
-			return false, false, fmt.Errorf(
-				"dialog open, not submitted: refusing to send recovery Enter into a picker or confirmation prompt (issue #1793)")
-		}
-		content := tmux.StripANSI(raw)
-		nowOccurrences := strings.Count(collapseWhitespace(content), token)
-		nowMarkers := send.ComposerPasteMarkerCount(raw, tmux.StripANSI)
-		stillHeld := send.HasUnsentComposerPrompt(content, message) || nowMarkers > baseline.pasteMarkers
-		bodyStillPresent := nowOccurrences > baseline.occurrences || nowMarkers > baseline.pasteMarkers
-		if sawHeldComposer && !stillHeld {
-			return true, false, nil
-		}
-		// Recovery is authorized only by a present-tense observation that our
-		// body remains pending. Its late disappearance means the original Enter
-		// won the race; absence or ambiguity fails loudly without another Enter.
-		if !bodyStillPresent {
-			return false, false, nil
-		}
-		return false, attrib.NudgeEnter(target, send.Captured(raw), tmux.StripANSI), nil
-	}
 	for i := 0; i < checks; i++ {
-		recoveryUsedBeforeObservation := recoveryEnterUsed
-		// Strongest signal first: an idle agent that starts working received
-		// what it started working on, which is submission, not just arrival.
-		if baseline.statusOK && !baseline.wasActive {
-			if status, err := target.GetStatus(); err == nil && status == "active" {
-				return deliverySubmitted, nil
-			}
-		}
+		// Status is intentionally not sampled here. It describes the pane's
+		// generic turn state, not this send, and an already-busy pane can produce
+		// an unrelated waiting->active transition.
 		if baseline.paneOK {
 			if raw, captureErr := target.CapturePaneFresh(); captureErr == nil {
 				if send.PaneHasOpenDialog(raw, tmux.StripANSI) {
@@ -3934,6 +3869,7 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 				content := tmux.StripANSI(raw)
 				n := strings.Count(collapseWhitespace(content), token)
 				markers := send.ComposerPasteMarkerCount(raw, tmux.StripANSI)
+				totalMarkers := send.CountPasteMarkers(content)
 				held := send.HasUnsentComposerPrompt(content, message) || markers > baseline.pasteMarkers
 				if n > baseline.occurrences {
 					// Keep polling: the body is in, but the turn may still
@@ -3961,41 +3897,12 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 				}
 				if held {
 					sawHeldComposer = true
-					if !recoveryEnterUsed {
-						submitted, pressed, recoveryErr := recoverPending()
-						if recoveryErr != nil {
-							return deliveryTyped, recoveryErr
-						}
-						if submitted {
-							return deliverySubmitted, nil
-						}
-						if pressed {
-							recoveryEnterUsed = true
-						}
-					}
 				} else if sawHeldComposer {
-					// The attributable payload was observed in the composer and
-					// then cleared after the one recovery Enter: turn submission.
-					return deliverySubmitted, nil
-				}
-				// Codex-style panes do not always expose a parseable composer
-				// region. A newly visible attributable body is still enough to
-				// authorize the single forced-Enter recovery; it is never enough
-				// by itself to certify submission.
-				if sawBody && !recoveryEnterUsed {
-					submitted, pressed, recoveryErr := recoverPending()
-					if recoveryErr != nil {
-						return deliveryTyped, recoveryErr
-					}
-					if submitted {
-						return deliverySubmitted, nil
-					}
-					if pressed {
-						recoveryEnterUsed = true
-					}
-				}
-				if recoveryUsedBeforeObservation && !held {
-					if draft, visible := send.CurrentComposerPrompt(content); visible && draft == "" {
+					// Per-send proof requires both halves in one pane sample: our
+					// payload left the composer and appeared as accepted input in
+					// transcript. A status change or an empty composer alone can
+					// belong to an older turn or a redraw.
+					if n > baseline.occurrences || totalMarkers > baseline.totalPasteMarkers {
 						return deliverySubmitted, nil
 					}
 				}
@@ -4097,18 +4004,18 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 // composer holding one more marker than before is unsubmitted payload.
 //
 // Both counts are raw observations; the caller compares them to its baseline.
-func paneArrivalObservation(target sendRetryTarget, message string) (int, int, bool) {
+func paneArrivalObservation(target sendRetryTarget, message string) (int, int, int, bool) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	raw, err := target.CapturePaneFresh()
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	content := tmux.StripANSI(raw)
 	return strings.Count(collapseWhitespace(content), token),
-		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), true
+		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), send.CountPasteMarkers(content), true
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives
