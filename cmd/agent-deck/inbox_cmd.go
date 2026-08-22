@@ -274,6 +274,9 @@ func resolveInboxDrainSessionInProfiles(identifier, effectiveProfile string, exp
 		return "", &inboxProfileCorruptError{profiles: loadFailures}
 	}
 	if len(exactIDs) == 1 {
+		if explicitlyQualified && exactIDs[0].profile != effectiveProfile {
+			return "", &inboxTargetNotFoundError{identifier: identifier}
+		}
 		return identifier, nil
 	}
 

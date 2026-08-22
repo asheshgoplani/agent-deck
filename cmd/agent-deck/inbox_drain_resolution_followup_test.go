@@ -171,6 +171,36 @@ func TestInboxDrain_FullIDResolvesAcrossProfiles(t *testing.T) {
 	}
 }
 
+// An explicit profile is a hard namespace boundary. Even a globally unique,
+// exact ID must not escape it: the caller asked to act only in "work".
+func TestInboxDrain_ExplicitProfileRejectsForeignExactIDWithoutDraining(t *testing.T) {
+	cliInboxTestHome(t)
+
+	target := session.NewInstance("personal-target", t.TempDir())
+	target.ID = "deadbeef-1777000320"
+	saveInboxResolutionSessions(t, "personal", target)
+	saveInboxResolutionSessions(t, "work")
+
+	if err := session.CommitToInbox(target.ID, session.TransitionNotificationEvent{ChildSessionID: "must-survive-profile-boundary"}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := runInboxWithProfile(&stdout, []string{"drain", target.ID}, "work")
+	if err == nil {
+		t.Fatalf("explicit work profile drained a personal session: %q", stdout.String())
+	}
+	if got := inboxExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (unresolved): %v", got, err)
+	}
+	if !strings.Contains(err.Error(), "could not be resolved") || !strings.Contains(err.Error(), "Nothing was drained") {
+		t.Fatalf("unresolved error lacks fail-closed contract: %v", err)
+	}
+	if !session.InboxHasPending(target.ID) {
+		t.Fatal("foreign-profile inbox was destructively drained")
+	}
+}
+
 func TestInboxDrain_AmbiguousPrefixPreservesDisambiguationAndExitCode(t *testing.T) {
 	cliInboxTestHome(t)
 	t.Setenv("AGENTDECK_PROFILE", "work")
