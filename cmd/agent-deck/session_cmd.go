@@ -3584,34 +3584,41 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// visible but the input handler wasn't ready, so sent keys were
 				// discarded. Clear stale input and re-send the full message.
 				//
-				// Only when nothing is there NOW. bodyInPaneNow is recomputed
-				// every iteration on purpose: "a resend would duplicate" is a
-				// claim about the present, and the latched sawDeliveryEvidence
-				// cannot carry it. That flag also latches on the composer
-				// merely HOLDING the message, which is the first step of the
-				// very TUI-init loss this recovery exists for — gating on it
-				// would suppress the recovery exactly when it is needed, and
-				// (because the same flag suppresses the #876 error at the end
-				// of the budget) report the lost message as delivered. Compare
+				// THE GATE: fire only when the body is not on screen right now.
+				// A recovery for a body that is already there can only
+				// duplicate it, and the Ctrl+C that precedes it interrupts
+				// whatever the target is doing meanwhile. bodyInPaneNow is
+				// recomputed every iteration on purpose: "a resend would
+				// duplicate" is a claim about the present, so it needs a
+				// present-tense signal.
+				//
+				// NOT sawDeliveryEvidence, which is the obvious candidate and
+				// is wrong. It latches, and one of its sources is the composer
+				// merely HOLDING the message — the first step of the very
+				// TUI-init loss this recovery exists for. Gating on it would
+				// suppress the recovery exactly when it is needed and then,
+				// because the same flag suppresses the #876 error at the end of
+				// the budget, report the lost message as delivered. Compare
 				// sawUnsentMarker, which is tracked separately for the same
-				// provenance reason. A recovery for a body that is on screen
-				// right now can only duplicate it. paneNow.OK is required for the
-				// same reason one level down: bodyInPaneNow is only assigned when
-				// the capture succeeded, so without this it would read false by
-				// ABSENCE of an observation rather than by an observation of
-				// absence, and a failed CapturePaneFresh would re-authorize the
-				// Ctrl+C against a target that is working fine. A destructive
-				// branch should need positive evidence, not silence. Meanwhile
-				// the
-				// Ctrl+C that precedes it interrupts whatever the target is
-				// doing. That is #1979: a busy target with the message queued
-				// and a target that never received it both fail to report
-				// "active" — they are indistinguishable BY STATUS ALONE, which is
-				// why this reaches for pane evidence instead. This branch fired
-				// on the busy target and destroyed in-flight
-				// work at exit 0. #479 established the same double-send on the
-				// --no-wait path, which noWaitSendOptions disables outright;
-				// this keeps the recovery for the case it was written for.
+				// provenance reason.
+				//
+				// paneNow.OK is required for a related reason one level down:
+				// bodyInPaneNow is only assigned when the capture succeeded, so
+				// without it the gate would read false by ABSENCE of an
+				// observation rather than by an observation of absence, and a
+				// failed CapturePaneFresh would re-authorize the Ctrl+C against
+				// a target that is working fine. A destructive branch should
+				// need positive evidence, not silence.
+				//
+				// History: #1979 is the busy target with the message already
+				// queued. It and a target that never received the message both
+				// fail to report "active" — they are indistinguishable BY
+				// STATUS ALONE, which is why this reaches for pane evidence
+				// instead. Ungated, the branch fired on the busy one and
+				// destroyed in-flight work at exit 0. #479 established the same
+				// double-send on the --no-wait path, which noWaitSendOptions
+				// disables outright; this keeps the recovery for the case it was
+				// written for.
 				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends &&
 					paneNow.OK && !bodyInPaneNow {
 					// The resend types the message and presses Enter, so it
