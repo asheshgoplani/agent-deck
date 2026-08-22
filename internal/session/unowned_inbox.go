@@ -12,7 +12,11 @@ const UnownedInboxID = "_unowned"
 
 func isUnownedReason(reason string) bool {
 	switch strings.TrimSpace(reason) {
-	case deadLetterReasonOrphan, deadLetterReasonParentMissing, deadLetterReasonUnresolvable:
+	// Deliberately parentless children keep the #805 warn-once-drop contract:
+	// every top-level session is an "orphan", and persisting all their
+	// transitions would fill the unowned ledger with events nobody owns.
+	// Only a parent that WAS named but cannot be resolved goes unowned.
+	case deadLetterReasonParentMissing, deadLetterReasonUnresolvable:
 		return true
 	default:
 		return false

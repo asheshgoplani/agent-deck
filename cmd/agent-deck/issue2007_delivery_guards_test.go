@@ -22,6 +22,10 @@ func TestIssue1877_AutoParentIdentityMustResolve(t *testing.T) {
 
 func TestIssue1877_InboxDrainReportsDeadLettersAndIsNonZero(t *testing.T) {
 	cliInboxTestHome(t)
+	// The #1991/#2030 resolution contract rejects unknown drain targets before
+	// any reporting runs, so the parent must exist for the dead-letter check
+	// to be reachable.
+	registerInboxDrainTarget(t, "parent-1877")
 	event := session.TransitionNotificationEvent{
 		ChildSessionID: "dead-child-1877", Profile: "default",
 		FromStatus: "running", ToStatus: "error", Timestamp: time.Now(),
