@@ -33,6 +33,17 @@ func drainTestHome(t *testing.T) {
 	session.ResetInboxFingerprintCacheForTest()
 }
 
+// registerDrainTarget keeps these remote-drain integration tests aligned with
+// the destructive drain resolver: a drain may only target a session that is
+// present in the registry. The fail-closed resolver added by #2038 deliberately
+// rejects the arbitrary IDs these tests used before that contract existed.
+func registerDrainTarget(t *testing.T, id string) {
+	t.Helper()
+	inst := session.NewInstance(id, t.TempDir())
+	inst.ID = id
+	saveInboxResolutionSessions(t, "default", inst)
+}
+
 // configureRemote writes a user config with one remote, as `remote add` would.
 func configureRemote(t *testing.T, name, host string) {
 	t.Helper()
@@ -75,6 +86,7 @@ func TestIssue1948_RemoteDrain_WritesRemoteCompletionIntoLocalInbox(t *testing.T
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-local"
+	registerDrainTarget(t, conductor)
 
 	fetch, _ := stubFetch([]session.TransitionNotificationEvent{
 		remoteCompletion("worker-on-b", "migration finished", time.Now()),
@@ -597,6 +609,7 @@ func TestIssue1948_RemoteDrain_JSONPinsUnknownFieldOnUnreadableLedger(t *testing
 func TestIssue1948_InboxExportCLI_EmitsArrayAndConsumesNothing(t *testing.T) {
 	drainTestHome(t)
 	parent := "parent-on-the-remote"
+	registerDrainTarget(t, parent)
 
 	if err := session.CommitToInbox(parent, session.TransitionNotificationEvent{
 		ChildSessionID: "worker-on-b", ChildTitle: "migrate", Profile: "default",
