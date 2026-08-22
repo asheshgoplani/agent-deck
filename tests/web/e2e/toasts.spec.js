@@ -74,16 +74,17 @@ test.describe('toast notifications', () => {
   })
 
   test('dismissed toasts appear in the history drawer, newest first', async ({ page }) => {
-    // Toast A: `r` with default focus (first session, "agent-deck") surfaces
-    // the rename-gap info toast. Dismiss it explicitly.
+    // Toast A: focus the first session explicitly (j×2 — the first j lands on
+    // the `work` group header) and fire the rename-gap info toast.
+    await page.keyboard.press('j')
+    await page.keyboard.press('j')
     await page.keyboard.press('r')
     const toastA = page.locator('[data-testid="toast"]', { hasText: 'Rename "agent-deck"' })
     await expect(toastA).toBeVisible({ timeout: 3000 })
     await toastA.locator('[data-testid="toast-dismiss"]').click()
     await expect(toastA).toHaveCount(0)
 
-    // Toast B: move focus to the second session ("frontend") and repeat.
-    await page.keyboard.press('j')
+    // Toast B: one more j → the second session ("frontend"). Repeat.
     await page.keyboard.press('j')
     await page.keyboard.press('r')
     const toastB = page.locator('[data-testid="toast"]', { hasText: 'Rename "frontend"' })
@@ -103,6 +104,11 @@ test.describe('toast notifications', () => {
   })
 
   test('expired (auto-dismissed) toasts also land in the history drawer', async ({ page }) => {
+    // Focus the first session explicitly (j×2 — the first j lands on the
+    // `work` group header; the `r` fallback to an implicit first session was
+    // removed once groups became selectable).
+    await page.keyboard.press('j')
+    await page.keyboard.press('j')
     await page.keyboard.press('r')
     const toast = page.locator('[data-testid="toast"]', { hasText: 'Rename "agent-deck"' })
     await expect(toast).toBeVisible({ timeout: 3000 })
@@ -116,6 +122,11 @@ test.describe('toast notifications', () => {
   })
 
   test('visible toast stack caps at 3', async ({ page }) => {
+    // Focus the first session explicitly (j×2) before firing the rapid `r`
+    // presses below — nothing is focused by default now that groups are
+    // selectable too.
+    await page.keyboard.press('j')
+    await page.keyboard.press('j')
     // 4 rapid `r` presses create 4 info toasts through the real keyboard
     // path; Toast.js evicts the oldest non-error so only 3 ever render.
     // (Exact eviction-order semantics are pinned in unit/toast.test.js.)

@@ -18,7 +18,7 @@ const MATRIX = loadMatrix()
 
 // Pinned row counts. If the matrix grows or shrinks, these MUST be updated
 // in the same PR — the failure is the point.
-const EXPECTED_ACTION_ROWS = 51
+const EXPECTED_ACTION_ROWS = 54
 // Probeable = MISSING rows that inferMissingProbe() maps to a URL. Decremented
 // as endpoints land and their matrix rows flip MISSING → Present:
 //   15 (PR-A #804) → 9 (#1124 skills+MCP, 6 closed) → 7 (#1129 Close + Undo
@@ -71,7 +71,12 @@ test.describe('parity: matrix structural invariants', () => {
   })
 
   test('every implemented action row has a parseable METHOD path', () => {
-    const broken = MATRIX.actions.filter((a) => !a.isMissing && !a.method)
+    // Rows that are genuinely implemented but need no server round-trip
+    // (pure client state, e.g. sidebar selection) document that with a
+    // leading "N/A" in the Web Endpoint column instead of a METHOD path.
+    const broken = MATRIX.actions.filter(
+      (a) => !a.isMissing && !a.method && !/^N\/A\b/i.test(a.webEndpoint),
+    )
     expect(broken, `unparseable matrix rows: ${broken.map((b) => b.action).join(', ')}`).toEqual([])
   })
 })

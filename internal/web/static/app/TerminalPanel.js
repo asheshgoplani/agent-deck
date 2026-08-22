@@ -2,12 +2,13 @@
 // Ports createTerminalUI, connectWS, installTerminalTouchScroll from app.js
 import { html } from 'htm/preact'
 import { useEffect, useRef, useCallback, useState } from 'preact/hooks'
-import { selectedIdSignal, authTokenSignal, wsStateSignal, readOnlySignal } from './state.js'
+import { selectedIdSignal, selectedGroupSignal, authTokenSignal, wsStateSignal, readOnlySignal } from './state.js'
 import { apiFetch } from './api.js'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
+import { GroupStatsPanel } from './GroupStatsPanel.js'
 import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
 import { createTerminalLinkHandler } from './terminalLinks.js'
@@ -74,6 +75,7 @@ export function TerminalPanel() {
   const containerRef = useRef(null)
   const ctxRef = useRef(null)  // { terminal, fitAddon, ws, resizeObserver, controller, decoder, reconnectTimer, reconnectAttempt, wsReconnectEnabled, terminalAttached }
   const sessionId = selectedIdSignal.value
+  const selectedGroup = selectedGroupSignal.value
   // #782: terminal-fatal errors (e.g. TMUX_SESSION_NOT_FOUND) render as a
   // banner overlay rather than a `[error:CODE]` line on every WS reconnect.
   // null when there's no fatal error; an object { code, message, hint }
@@ -413,6 +415,13 @@ export function TerminalPanel() {
       cleanup()
     }
   }, [sessionId, reconnectKey, cleanup])
+
+  // A selected GROUP takes over the main area, mirroring the TUI where the
+  // group preview replaces the session preview in the same pane. Placed after
+  // every hook so hook order stays stable across renders.
+  if (selectedGroup) {
+    return html`<${GroupStatsPanel} path=${selectedGroup}/>`
+  }
 
   if (!sessionId) {
     return html`<${EmptyStateDashboard} />`

@@ -13,6 +13,25 @@ export const archivedSessionsSignal = signal([])
 // Currently selected session ID
 export const selectedIdSignal = signal(null)
 
+// Currently selected group path, or null. MUTUALLY EXCLUSIVE with
+// selectedIdSignal: at most one of the two is non-null at any moment.
+//
+// Two signals rather than one { kind, id } union because selectedIdSignal is
+// referenced by 13 modules; a union rewrites all of them plus routing for no
+// user-visible gain. The invariant lives in the two setters below — always go
+// through them, never assign the raw signals from a component.
+export const selectedGroupSignal = signal(null)
+
+export function selectSession(id) {
+  selectedGroupSignal.value = null
+  selectedIdSignal.value = id
+}
+
+export function selectGroup(path) {
+  selectedIdSignal.value = null
+  selectedGroupSignal.value = path
+}
+
 // SSE connection state: 'connecting' | 'connected' | 'disconnected'
 export const connectionSignal = signal('connecting')
 
@@ -77,8 +96,12 @@ export { SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_DEFAULT, clampSideb
 export const focusedIdSignal = signal(null)
 
 // Dialog open/close signals (Phase 4: mutations)
-// createSessionDialogSignal: boolean (true = dialog open)
-export const createSessionDialogSignal = signal(false)
+// Create-session dialog. null = closed; otherwise the group context the
+// dialog seeds itself from:
+//   { groupPath, groupName, defaultPath, tool, modelId }
+// Open it through dataModel.openCreateSessionForGroup(), never by assigning
+// here — that helper is what fills the context.
+export const createSessionDialogSignal = signal(null)
 
 // confirmDialogSignal: null or { message: string, onConfirm: function }
 export const confirmDialogSignal = signal(null)

@@ -174,15 +174,29 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .side-list { flex: 1; overflow: auto; padding: 6px 0 10px; }
 .side-group-head {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px;
+  padding: 6px 12px 6px 10px;
   font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
   color: var(--muted); cursor: pointer; user-select: none;
   text-transform: uppercase;
+  border-left: 2px solid transparent;
 }
 .side-group-head:hover { color: var(--text); }
-.side-group-head .chev { font-size: 10px; width: 10px; }
+.side-group-head.sel {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  color: var(--text-hi);
+}
+.side-group-head .chev {
+  font-size: 10px; width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; margin: 0;
+  background: none; border: 0; border-radius: 2px;
+  color: inherit; font-family: inherit; cursor: pointer;
+}
+.side-group-head .chev:hover { background: rgba(255,255,255,0.08); }
 .side-group-head .name { flex: 1; }
 .side-group-head .badge { color: var(--muted); }
+.side-group-head.sel .badge { color: var(--accent); }
 .side-group-head.conductor .name { color: var(--tn-purple); }
 .side-group-head.watcher .name { color: var(--tn-cyan); }
 
@@ -219,16 +233,17 @@ body[data-rail="hidden"] .rightrail { display: none; }
    unstyled square-less span. Every session.Status value needs a rule here — an
    unmatched status silently renders an invisible dot. */
 .sess .dot,
-.sr .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-.sess .dot.running, .sr .dot.running { background: var(--status-running); box-shadow: 0 0 6px rgba(115,218,202,0.7); animation: pulse 2s ease-in-out infinite; }
-.sess .dot.waiting, .sr .dot.waiting { background: var(--status-waiting); box-shadow: 0 0 6px rgba(224,175,104,0.7); animation: pulse 1.2s ease-in-out infinite; }
-.sess .dot.error,   .sr .dot.error   { background: var(--status-error);   box-shadow: 0 0 6px rgba(247,118,142,0.7); }
-.sess .dot.idle,    .sr .dot.idle    { background: var(--status-idle); }
+.sr .dot,
+.group-stats .gs-row .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.sess .dot.running, .sr .dot.running, .group-stats .gs-row .dot.running { background: var(--status-running); box-shadow: 0 0 6px rgba(115,218,202,0.7); animation: pulse 2s ease-in-out infinite; }
+.sess .dot.waiting, .sr .dot.waiting, .group-stats .gs-row .dot.waiting { background: var(--status-waiting); box-shadow: 0 0 6px rgba(224,175,104,0.7); animation: pulse 1.2s ease-in-out infinite; }
+.sess .dot.error,   .sr .dot.error,   .group-stats .gs-row .dot.error   { background: var(--status-error);   box-shadow: 0 0 6px rgba(247,118,142,0.7); }
+.sess .dot.idle,    .sr .dot.idle,    .group-stats .gs-row .dot.idle    { background: var(--status-idle); }
 /* stopped/starting/queued had no rule and rendered invisible. The TUI paints a
    dim ■ for stopped (and archived rows are forced to it), so match that. */
-.sess .dot.stopped, .sr .dot.stopped { background: var(--status-stopped); }
-.sess .dot.starting, .sr .dot.starting { background: var(--status-start); animation: pulse 1.2s ease-in-out infinite; }
-.sess .dot.queued,  .sr .dot.queued  { background: var(--status-idle); opacity: 0.6; }
+.sess .dot.stopped, .sr .dot.stopped, .group-stats .gs-row .dot.stopped { background: var(--status-stopped); }
+.sess .dot.starting, .sr .dot.starting, .group-stats .gs-row .dot.starting { background: var(--status-start); animation: pulse 1.2s ease-in-out infinite; }
+.sess .dot.queued,  .sr .dot.queued,  .group-stats .gs-row .dot.queued  { background: var(--status-idle); opacity: 0.6; }
 
 .sess .meta { display: flex; align-items: center; gap: 6px; }
 .sess .tag {
@@ -631,6 +646,12 @@ body[data-rail="hidden"] .rightrail { display: none; }
   border-radius: var(--radius); padding: 7px 10px; font: inherit; font-size: 13px;
 }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); outline: 0; }
+
+.dialog .ro-value {
+  font-family: var(--mono); font-size: 12px; color: var(--text-hi);
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px;
+  background: rgba(255,255,255,0.02);
+}
 
 .seg-row { display: flex; gap: 2px; padding: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); width: fit-content; }
 .seg-btn { padding: 5px 12px; border-radius: 4px; background: transparent; border: 0; color: var(--text-dim); font-family: var(--mono); font-size: 11.5px; cursor: pointer; }
@@ -1138,4 +1159,54 @@ body[data-rail="hidden"] .rightrail { display: none; }
   .cc-input { bottom: 56px; }
   .cc { padding-bottom: 150px; }
   .cc-input select { max-width: 120px; }
+}
+
+/* Group stats panel (GroupStatsPanel.js) — shown in the main work area when
+   a group rather than a session is selected. */
+.group-stats {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: 22px 26px;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+}
+.group-stats .gs-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 16px; font-weight: 600; color: var(--tn-cyan);
+  margin-bottom: 14px;
+}
+.group-stats .gs-total {
+  font-size: 13px; font-weight: 600; color: var(--text-hi);
+  margin-bottom: 10px;
+}
+.group-stats .gs-fragments { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 16px; }
+.group-stats .gs-frag { white-space: nowrap; color: var(--muted); }
+.group-stats .gs-frag.running .gs-glyph { color: var(--tn-green); }
+.group-stats .gs-frag.waiting .gs-glyph { color: var(--tn-yellow); }
+.group-stats .gs-frag.idle    .gs-glyph { color: var(--text); }
+.group-stats .gs-frag.stopped .gs-glyph { color: var(--muted); }
+.group-stats .gs-frag.error   .gs-glyph { color: var(--tn-red); }
+.group-stats .gs-path { display: flex; gap: 10px; margin-bottom: 16px; min-width: 0; }
+.group-stats .gs-path .gs-k { color: var(--muted); }
+.group-stats .gs-path .gs-v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-stats .gs-divider {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 10px; letter-spacing: 0.1em; color: var(--muted);
+  margin: 18px 0 8px;
+}
+.group-stats .gs-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--border);
+}
+.group-stats .gs-empty { color: var(--muted); font-style: italic; padding: 4px 0; }
+.group-stats .gs-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px; border-radius: 3px; cursor: pointer;
+}
+.group-stats .gs-row:hover { background: rgba(255,255,255,0.03); }
+.group-stats .gs-title { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-stats .gs-tool { color: var(--tn-purple); opacity: 0.75; }
+.group-stats .gs-row.archived { opacity: 0.62; cursor: default; }
+.group-stats .gs-row.archived:hover { background: none; }
+.group-stats .gs-archived {
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); border: 1px solid var(--border);
+  border-radius: 3px; padding: 0 4px;
 }

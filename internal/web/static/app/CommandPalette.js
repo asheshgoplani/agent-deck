@@ -5,8 +5,8 @@
 import { html } from 'htm/preact'
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks'
 import { Icon, ICONS } from './icons.js'
-import { menuModelSignal } from './dataModel.js'
-import { selectedIdSignal, createSessionDialogSignal, infoDrawerOpenSignal, mutationsEnabledSignal, shortcutsOverlaySignal } from './state.js'
+import { menuModelSignal, openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
+import { selectSession, infoDrawerOpenSignal, mutationsEnabledSignal, shortcutsOverlaySignal } from './state.js'
 import { paletteOpenSignal, activeTabSignal, tweaksOpenSignal } from './uiState.js'
 
 export function CommandPalette() {
@@ -37,7 +37,7 @@ export function CommandPalette() {
       { id: 'cmd-settings',  sec: 'COMMANDS', label: 'Settings drawer', tool: 'S', run: () => { infoDrawerOpenSignal.value = true; close() } },
     ]
     if (mutationsEnabledSignal.value) {
-      list.unshift({ id: 'cmd-new', sec: 'COMMANDS', label: 'New session', tool: 'n', run: () => { createSessionDialogSignal.value = true; close() } })
+      list.unshift({ id: 'cmd-new', sec: 'COMMANDS', label: 'New session', tool: 'n', run: () => { openCreateSessionForGroup(currentGroupPath()); close() } })
     }
     return list
   }, [])
@@ -47,7 +47,7 @@ export function CommandPalette() {
     sec: 'SESSIONS',
     label: s.title,
     tool: s.tool || s.kind,
-    run: () => { selectedIdSignal.value = s.id; activeTabSignal.value = 'terminal'; close() },
+    run: () => { selectSession(s.id); activeTabSignal.value = 'terminal'; close() },
   }))
 
   const all = [...cmds, ...sessRows].filter(r => !q || r.label.toLowerCase().includes(q.toLowerCase()))
