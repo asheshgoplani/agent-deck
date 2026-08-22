@@ -60,40 +60,47 @@ test.describe('keyboard parity (#780)', () => {
     await expect(overlay).toHaveCount(0)
   })
 
-  test('j moves focus to the next session', async ({ page }) => {
+  test('j moves focus through group headers and sessions', async ({ page }) => {
     const titles = await page.locator('.sess .tt').allTextContents()
     test.skip(titles.length < 2, 'need at least two sessions for j to be observable')
-    // No session selected initially; first `j` selects the first session.
+
+    // Nothing selected initially. Rows are interleaved group headers and
+    // sessions, so the first `j` lands on the first GROUP header.
+    await page.keyboard.press('j')
+    await page.waitForSelector('.side-group-head.sel', { timeout: 2000 })
+
+    // The next `j` steps into that group's first session.
     await page.keyboard.press('j')
     await page.waitForSelector('.sess.sel', { timeout: 2000 })
     const first = await page.locator('.sess.sel .tt').textContent()
     expect(first).toBeTruthy()
-    // Second `j` should move to a different session.
+
+    // And again to the second session in the same group.
     await page.keyboard.press('j')
     await page.waitForFunction((prev) => {
       const sel = document.querySelector('.sess.sel .tt')
       return sel && sel.textContent && sel.textContent !== prev
     }, first, { timeout: 2000 })
-    const second = await page.locator('.sess.sel .tt').textContent()
-    expect(second).not.toBe(first)
+    expect(await page.locator('.sess.sel .tt').textContent()).not.toBe(first)
   })
 
-  test('k moves focus to the previous session', async ({ page }) => {
+  test('k moves focus back through the rendered rows', async ({ page }) => {
     const titles = await page.locator('.sess .tt').allTextContents()
     test.skip(titles.length < 2, 'need at least two sessions for k to be observable')
-    // Bootstrap: select first, then advance once with j so k has somewhere to go.
+
+    // Bootstrap: j×3 → group header, first session, second session.
+    await page.keyboard.press('j')
+    await page.keyboard.press('j')
     await page.keyboard.press('j')
     await page.waitForSelector('.sess.sel', { timeout: 2000 })
-    await page.keyboard.press('j')
-    await page.waitForTimeout(100)
     const before = await page.locator('.sess.sel .tt').textContent()
+
     await page.keyboard.press('k')
     await page.waitForFunction((prev) => {
       const sel = document.querySelector('.sess.sel .tt')
       return sel && sel.textContent && sel.textContent !== prev
     }, before, { timeout: 2000 })
-    const after = await page.locator('.sess.sel .tt').textContent()
-    expect(after).not.toBe(before)
+    expect(await page.locator('.sess.sel .tt').textContent()).not.toBe(before)
   })
 
   test('Enter opens the focused session (terminal tab active)', async ({ page }) => {
@@ -115,6 +122,13 @@ test.describe('keyboard parity (#780)', () => {
   })
 
   test('Shift+Enter opens session in new browser tab', async ({ page, context }) => {
+    // Focus a session explicitly first — nothing is focused by default now
+    // that group headers are also selectable (j×2: group header, then the
+    // first session).
+    await page.keyboard.press('j')
+    await page.keyboard.press('j')
+    await page.waitForSelector('.sess.sel', { timeout: 2000 })
+
     const pagePromise = context.waitForEvent('page', { timeout: 2000 }).catch(() => null)
     await page.keyboard.down('Shift')
     await page.keyboard.press('Enter')
@@ -133,6 +147,13 @@ test.describe('keyboard parity (#780)', () => {
   })
 
   test('r surfaces the rename-not-supported toast (web API gap)', async ({ page }) => {
+    // Focus a session explicitly first (j×2 — the first j lands on the
+    // `work` group header) — the `r` fallback to an implicit first session
+    // was removed once groups became selectable.
+    await page.keyboard.press('j')
+    await page.keyboard.press('j')
+    await page.waitForSelector('.sess.sel', { timeout: 2000 })
+
     await page.keyboard.press('r')
     // Toast container shows the info-level message.
     const toast = page.locator('.toast', { hasText: /rename/i }).first()
@@ -140,6 +161,12 @@ test.describe('keyboard parity (#780)', () => {
   })
 
   test('Shift+D opens the stop-session confirm dialog', async ({ page }) => {
+    // Focus a session explicitly first (j×2) — Shift+D no longer falls back
+    // to an implicit first session.
+    await page.keyboard.press('j')
+    await page.keyboard.press('j')
+    await page.waitForSelector('.sess.sel', { timeout: 2000 })
+
     await page.keyboard.down('Shift')
     await page.keyboard.press('D')
     await page.keyboard.up('Shift')

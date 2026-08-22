@@ -25,9 +25,12 @@ import { SearchPane } from './panes/SearchPane.js'
 import { McpPane } from './panes/McpPane.js'
 import { SkillsPane } from './panes/SkillsPane.js'
 import { Icon, ICONS } from './icons.js'
-import { menuModelSignal, openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
 import {
-  selectedIdSignal, selectedGroupSignal, selectSession, createSessionDialogSignal, confirmDialogSignal,
+  menuModelSignal, sidebarRowsSignal, isGroupOpen,
+  openCreateSessionForGroup, currentGroupPath,
+} from './dataModel.js'
+import {
+  selectedIdSignal, selectedGroupSignal, selectSession, selectGroup, createSessionDialogSignal, confirmDialogSignal,
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
@@ -36,7 +39,7 @@ import {
 } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
-  railSignal, profileSignal,
+  railSignal, profileSignal, groupExpandedSignal,
 } from './uiState.js'
 import { CreateSessionDialog } from './CreateSessionDialog.js'
 import { EditSessionDialog } from './EditSessionDialog.js'
@@ -224,28 +227,56 @@ export function AppShell() {
   // Guard: any key that isn't a modal-bound modifier combo must NOT fire
   // while the user is typing in an input/textarea/select/contenteditable.
   useEffect(() => {
-    // Navigate selectedIdSignal by `delta` (+1 or -1) through the flat
-    // session list from menuModelSignal. Stable across SSE updates because
-    // we resolve by ID, not by array index in a possibly-stale snapshot.
-    const moveFocus = (delta) => {
-      const sessions = (menuModelSignal.value?.sessions) || []
-      if (sessions.length === 0) return
-      const curId = selectedIdSignal.value
-      let idx = sessions.findIndex(s => s.id === curId)
-      if (idx === -1) idx = delta > 0 ? -1 : sessions.length
-      const next = sessions[Math.max(0, Math.min(sessions.length - 1, idx + delta))]
-      if (next) {
-        // Only change the selected id; do NOT switch to the terminal tab on
-        // j/k navigation. Activating the terminal hands focus to xterm.js,
-        // which swallows subsequent keypresses (issue #780 review).
-        // The TUI's `enter` key is what opens; j/k just moves focus.
-        selectSession(next.id)
+    // Scroll the newly selected row into view. Rows carry data-row-key
+    // matching sidebarRowsSignal keys (Sidebar.js).
+    const revealRow = (key) => {
+      const el = document.querySelector(`[data-row-key="${CSS.escape(key)}"]`)
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'nearest' })
       }
     }
+
+    // Move the selection by `delta` through the sidebar's RENDERED rows —
+    // group headers included, collapse state and filters honored. Walking
+    // the raw session array (the previous behavior) could land on a row
+    // hidden inside a collapsed group or filtered off screen.
+    const moveFocus = (delta) => {
+      const rows = sidebarRowsSignal.value
+      if (rows.length === 0) return
+
+      const groupPath = selectedGroupSignal.value
+      const sessionId = selectedIdSignal.value
+      let idx = -1
+      if (groupPath) idx = rows.findIndex(r => r.type === 'group' && r.path === groupPath)
+      else if (sessionId) idx = rows.findIndex(r => r.type === 'session' && r.id === sessionId)
+      if (idx === -1) idx = delta > 0 ? -1 : rows.length
+
+      const next = rows[Math.max(0, Math.min(rows.length - 1, idx + delta))]
+      if (!next) return
+      // Only move the selection; do NOT switch to the terminal tab. Activating
+      // the terminal hands focus to xterm.js, which swallows later keypresses
+      // (issue #780 review). Enter is what opens.
+      if (next.type === 'group') selectGroup(next.path)
+      else selectSession(next.id)
+      revealRow(next.key)
+    }
+
+    // Collapse/expand the focused group. Mirrors the TUI's h/left and
+    // l/right/tab (internal/ui/home.go:999, :8786). No-op unless a group is
+    // actually selected.
+    const setGroupOpen = (open) => {
+      const p = selectedGroupSignal.value
+      if (!p) return false
+      if (isGroupOpen(groupExpandedSignal.value, p) === open) return true
+      groupExpandedSignal.value = { ...groupExpandedSignal.value, [p]: open }
+      return true
+    }
+
     const focusedSession = () => {
       const sessions = (menuModelSignal.value?.sessions) || []
       const id = selectedIdSignal.value
-      return sessions.find(s => s.id === id) || sessions[0] || null
+      if (!id) return null
+      return sessions.find(s => s.id === id) || null
     }
     const closeAllModals = () => {
       paletteOpenSignal.value = false
@@ -291,11 +322,33 @@ export function AppShell() {
       } else if (e.key === '/') {
         e.preventDefault()
         document.querySelector('.side-filter input')?.focus()
-      } else if (e.key === 'j') {
+      } else if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault(); moveFocus(+1)
-      } else if (e.key === 'k') {
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault(); moveFocus(-1)
+      } else if (e.key === 'ArrowLeft' || e.key === 'h') {
+        if (setGroupOpen(false)) e.preventDefault()
+      } else if (e.key === 'ArrowRight' || e.key === 'l') {
+        if (setGroupOpen(true)) e.preventDefault()
+      } else if (e.key === 'Tab' && selectedGroupSignal.value) {
+        // Tab toggles the focused group, matching the TUI. Guarded on an
+        // actual group selection so normal focus traversal is untouched.
+        e.preventDefault()
+        const p = selectedGroupSignal.value
+        groupExpandedSignal.value = {
+          ...groupExpandedSignal.value,
+          [p]: !isGroupOpen(groupExpandedSignal.value, p),
+        }
       } else if (e.key === 'Enter') {
+        if (selectedGroupSignal.value) {
+          e.preventDefault()
+          const p = selectedGroupSignal.value
+          groupExpandedSignal.value = {
+            ...groupExpandedSignal.value,
+            [p]: !isGroupOpen(groupExpandedSignal.value, p),
+          }
+          return
+        }
         const s = focusedSession()
         if (s) {
           e.preventDefault()
@@ -303,6 +356,7 @@ export function AppShell() {
           activeTabSignal.value = 'terminal'
         }
       } else if (e.key === 'n' && mutationsEnabledSignal.value) {
+        e.preventDefault()
         openCreateSessionForGroup(currentGroupPath())
       } else if (e.key === 'r') {
         // Web has no session-rename API yet (matrix gap); surface the gap
