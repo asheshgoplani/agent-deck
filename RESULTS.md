@@ -1,5 +1,47 @@
 # PR #2018 review-finding results
 
+## CI blast-radius diagnosis
+
+The branch was first rebased from `02a6960` onto current main `1a4e608` and
+force-pushed as `4df717f`, before any workflow-specific repair. CI was allowed to
+finish on that exact rebased commit.
+
+| check | before rebase (`5a1eafb`) | after rebase (`4df717f`) | diagnosis |
+|---|---|---|---|
+| govulncheck | FAIL | FAIL | Package loading stopped on duplicate `truncateCell`; it was not a vulnerability finding. |
+| golangci-lint | FAIL | FAIL | Typecheck stopped on the same duplicate symbol. |
+| telegram-reliability | FAIL | FAIL | Targeted tests could not compile `cmd/agent-deck` because of the duplicate symbol; no Telegram assertion ran and no session leak was reported. |
+| Session persistence | FAIL | FAIL | The script's binary-build step hit the duplicate symbol; the separate persistence race suite passed. |
+| Go tests | cancelled after failure on the old run | FAIL | The rebased run found the duplicate symbol plus two independent `internal/ui` failures described below. |
+| Eval smoke | FAIL | FAIL | Binary-building evals hit the duplicate symbol; `internal/ui` independently found the same two UI failures. |
+
+Current main was green for govulncheck, lint, telegram reliability, and Go tests at
+`1a4e608`. The pre-fix PR head had already been red for Go tests, Eval smoke, and lint,
+and green for govulncheck, Telegram, and Session persistence. Rebasing removed none of
+the six failures: there was no stale-base-only failure to absorb or paper over. The
+common failure was instead a real integration defect: current main's `agents_cmd.go`
+carried a temporary local `truncateCell` specifically intended to be replaced by the
+context-inspector implementation when that branch arrived.
+
+Fixes after remeasurement:
+
+- Removed the temporary duplicate from `agents_cmd.go`; both agents and context output
+  now use the single context-inspector helper. This restores compilation at the root,
+  rather than changing five workflows independently.
+- Made `ContextPager.PageUp` and `PageDown` nil-safe, satisfying the existing
+  `TestContextPagerNilReceiverIsSafe` red-path test.
+- Corrected `TestVerifyTabAnchorBlockIsWrappedNotClipped` to inspect the indented value
+  rows it claims to govern. The old assertion stayed “inside” the block while complete
+  paginated views repeated intentionally clipped header/footer chrome, producing false
+  failures unrelated to the wrapped measured values.
+
+Proof after these repairs:
+
+- The two targeted UI regression tests pass.
+- `go build ./...` and `go vet ./...` pass.
+- Strict `govulncheck ./...` reaches analysis and reports zero reachable
+  vulnerabilities (one required module contains an unreachable vulnerability).
+
 ## Finding 1 — `verdict --check` trusted cached gate statuses
 
 What was wrong: `artifact.Check` inspected only the statuses serialized in

@@ -546,8 +546,17 @@ func (p *ContextPager) pageStep() int {
 
 // PageUp / PageDown scroll by a page, carrying the selection with them so the
 // cursor never falls off screen.
-func (p *ContextPager) PageUp()   { p.pageBy(-p.pageStep()) }
-func (p *ContextPager) PageDown() { p.pageBy(p.pageStep()) }
+func (p *ContextPager) PageUp() {
+	if p != nil {
+		p.pageBy(-p.pageStep())
+	}
+}
+
+func (p *ContextPager) PageDown() {
+	if p != nil {
+		p.pageBy(p.pageStep())
+	}
+}
 
 func (p *ContextPager) pageBy(delta int) {
 	s := p.current()

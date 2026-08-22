@@ -115,7 +115,10 @@ func TestVerifyTabAnchorBlockIsWrappedNotClipped(t *testing.T) {
 				case block && strings.Contains(line, "verdict:"):
 					block = false
 				}
-				if block && strings.Contains(line, "…") {
+				// View repeats header/footer chrome on every page. Those rows are
+				// intentionally clipped, but the value lines in this block are
+				// indented and must be wrapped in full.
+				if block && strings.HasPrefix(line, "    ") && strings.Contains(line, "…") {
 					t.Errorf("a line of the measured-figure block is clipped: %q", strings.TrimSpace(line))
 				}
 			}
