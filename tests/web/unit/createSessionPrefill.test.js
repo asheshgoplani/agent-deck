@@ -96,3 +96,37 @@ describe('currentGroupPath', () => {
     expect(currentGroupPath()).toBe('')
   })
 })
+
+describe('openCreateSessionForGroup', () => {
+  beforeEach(async () => {
+    const { sessionsSignal, createSessionDialogSignal } = await import(stateModulePath)
+    sessionsSignal.value = MENU
+    createSessionDialogSignal.value = null
+  })
+
+  it('opens the dialog carrying the group context', async () => {
+    const { createSessionDialogSignal } = await import(stateModulePath)
+    const { openCreateSessionForGroup } = await import(dataModelModulePath)
+
+    openCreateSessionForGroup('work')
+
+    expect(createSessionDialogSignal.value).toEqual({
+      groupPath: 'work',
+      groupName: 'work',
+      defaultPath: '/srv/work',
+      tool: 'codex',
+      modelId: 'gpt-5.5',
+    })
+  })
+
+  it('opens with a blank context when no group is implied', async () => {
+    const { createSessionDialogSignal } = await import(stateModulePath)
+    const { openCreateSessionForGroup } = await import(dataModelModulePath)
+
+    openCreateSessionForGroup('')
+
+    expect(createSessionDialogSignal.value).toEqual({
+      groupPath: '', groupName: '', defaultPath: '', tool: '', modelId: '',
+    })
+  })
+})

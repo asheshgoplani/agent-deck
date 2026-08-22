@@ -96,8 +96,12 @@ export { SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_DEFAULT, clampSideb
 export const focusedIdSignal = signal(null)
 
 // Dialog open/close signals (Phase 4: mutations)
-// createSessionDialogSignal: boolean (true = dialog open)
-export const createSessionDialogSignal = signal(false)
+// Create-session dialog. null = closed; otherwise the group context the
+// dialog seeds itself from:
+//   { groupPath, groupName, defaultPath, tool, modelId }
+// Open it through dataModel.openCreateSessionForGroup(), never by assigning
+// here — that helper is what fills the context.
+export const createSessionDialogSignal = signal(null)
 
 // confirmDialogSignal: null or { message: string, onConfirm: function }
 export const confirmDialogSignal = signal(null)

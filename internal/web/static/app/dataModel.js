@@ -8,7 +8,7 @@
 // so the design renders without inventing data. Components that need richer
 // data (e.g. RightRail Usage card) fall back to "no data" placeholders.
 import { computed } from '@preact/signals'
-import { sessionsSignal, sessionCostsSignal, selectedIdSignal, selectedGroupSignal } from './state.js'
+import { sessionsSignal, sessionCostsSignal, selectedIdSignal, selectedGroupSignal, createSessionDialogSignal } from './state.js'
 import { sidebarFilterSignal, groupExpandedSignal, statusFiltersSignal } from './uiState.js'
 
 // kind heuristic from session metadata (no API field today).
@@ -257,4 +257,10 @@ export function currentGroupPath() {
   if (!id) return ''
   const s = (menuModelSignal.value.sessions || []).find(x => x.id === id)
   return s ? s.group : ''
+}
+
+// The single entry point for opening the create-session dialog. Pass '' for
+// no group context (dialog opens blank, as it always did).
+export function openCreateSessionForGroup(groupPath) {
+  createSessionDialogSignal.value = groupCreateDefaults(groupPath)
 }
