@@ -1,0 +1,3282 @@
+{
+  "generated_at": "2026-08-22T21:31:16.852097+00:00",
+  "dimensions": {
+    "harness": [
+      "claude",
+      "codex",
+      "gemini"
+    ],
+    "state": [
+      "idle",
+      "mid-turn-busy",
+      "dialog-picker-open",
+      "composer-unsent",
+      "just-restarted",
+      "remote-ssh"
+    ],
+    "shape": [
+      "short",
+      "very-long",
+      "multiline",
+      "quotes-escapes-unicode",
+      "rapid-consecutive"
+    ],
+    "mode": [
+      "wait",
+      "stream",
+      "no-wait",
+      "inbox-talkback"
+    ]
+  },
+  "counts": {
+    "attempted": 360,
+    "unconfirmed": 360,
+    "retried": 0,
+    "duplicated": 96,
+    "lost": 264,
+    "passed": 0,
+    "failed": 360
+  },
+  "cells": [
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0001-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0002-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0003-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0004-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0005-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0006-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0007-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0008-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0009-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0010-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0011-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0012-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0013-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0014-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0015-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0016-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0017-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0018-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0019-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0020-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0021-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0022-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0023-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0024-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0025-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0026-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0027-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0028-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0029-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0030-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0031-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0032-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0033-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0034-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0035-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0036-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0037-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0038-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0039-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0040-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0041-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0042-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0043-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0044-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0045-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0046-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0047-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0048-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0049-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0050-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0051-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0052-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0053-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0054-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0055-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0056-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0057-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0058-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0059-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0060-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0061-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0062-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0063-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0064-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0065-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0066-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0067-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0068-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0069-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0070-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0071-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0072-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0073-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0074-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0075-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0076-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0077-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0078-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0079-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0080-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0081-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0082-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0083-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0084-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0085-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0086-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0087-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0088-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0089-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0090-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0091-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0092-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0093-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0094-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0095-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0096-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0097-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0098-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0099-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0100-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0101-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0102-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0103-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0104-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0105-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0106-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0107-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0108-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0109-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0110-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0111-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0112-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0113-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0114-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0115-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0116-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0117-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0118-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0119-claude"
+    },
+    {
+      "harness": "claude",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0120-claude"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0121-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0122-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0123-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0124-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0125-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0126-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0127-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0128-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0129-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0130-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0131-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0132-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0133-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0134-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0135-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0136-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0137-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0138-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0139-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0140-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0141-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0142-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0143-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0144-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0145-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0146-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0147-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0148-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0149-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0150-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0151-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0152-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0153-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0154-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0155-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0156-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0157-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0158-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0159-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0160-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0161-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0162-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0163-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0164-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0165-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0166-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0167-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0168-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0169-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0170-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0171-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0172-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0173-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0174-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0175-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0176-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0177-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0178-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0179-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0180-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0181-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0182-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0183-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0184-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0185-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0186-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0187-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0188-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0189-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0190-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0191-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0192-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0193-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0194-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0195-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0196-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0197-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0198-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0199-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0200-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0201-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0202-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0203-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0204-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0205-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0206-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0207-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0208-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0209-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0210-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0211-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0212-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0213-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0214-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0215-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0216-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0217-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0218-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0219-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0220-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0221-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0222-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0223-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0224-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0225-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0226-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0227-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0228-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0229-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0230-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0231-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0232-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0233-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0234-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0235-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0236-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0237-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0238-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0239-codex"
+    },
+    {
+      "harness": "codex",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0240-codex"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0241-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0242-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0243-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0244-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0245-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0246-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0247-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0248-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0249-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0250-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0251-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0252-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0253-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0254-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0255-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0256-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0257-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0258-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0259-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "idle",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0260-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0261-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0262-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0263-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0264-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0265-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0266-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0267-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0268-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0269-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0270-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0271-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0272-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0273-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0274-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0275-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0276-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0277-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0278-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0279-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "mid-turn-busy",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0280-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0281-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0282-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0283-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0284-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0285-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0286-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0287-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0288-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0289-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0290-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0291-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0292-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0293-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0294-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0295-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0296-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0297-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0298-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0299-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "dialog-picker-open",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0300-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0301-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0302-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0303-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0304-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0305-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0306-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0307-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0308-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0309-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0310-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0311-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0312-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0313-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0314-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0315-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0316-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0317-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0318-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0319-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "composer-unsent",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0320-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0321-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0322-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0323-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0324-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0325-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0326-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0327-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0328-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0329-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0330-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0331-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0332-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0333-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0334-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0335-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0336-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0337-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=True",
+      "nonce": "COMMS-0338-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0339-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "just-restarted",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=True",
+      "nonce": "COMMS-0340-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0341-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0342-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0343-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "short",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0344-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0345-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0346-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0347-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "very-long",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0348-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0349-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0350-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0351-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "multiline",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0352-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0353-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0] ordered=True reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0354-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0355-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "quotes-escapes-unicode",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=True counts=[3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0356-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0357-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "stream",
+      "pass": false,
+      "reason": "rc_ok=False counts=[0, 0, 0] ordered=False reply_owned=False state_confirmed=False",
+      "nonce": "COMMS-0358-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "no-wait",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0359-gemini"
+    },
+    {
+      "harness": "gemini",
+      "state": "remote-ssh",
+      "shape": "rapid-consecutive",
+      "mode": "inbox-talkback",
+      "pass": false,
+      "reason": "rc_ok=False counts=[3, 3, 3] ordered=True reply_owned=True state_confirmed=False",
+      "nonce": "COMMS-0360-gemini"
+    }
+  ]
+}

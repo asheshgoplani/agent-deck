@@ -1,0 +1,43 @@
+# Report-only while the communication matrix baseline is being established.
+# Red cells are uploaded as evidence and do not make this a required check yet.
+name: Eval communications matrix
+
+on:
+  schedule:
+    - cron: '17 5 * * 6'
+  pull_request:
+    paths:
+      - 'internal/tmux/**'
+      - 'internal/session/**'
+      - 'cmd/agent-deck/**'
+      - 'eval/comms/**'
+      - '.github/workflows/eval-comms.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  matrix-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Verify tmux
+        run: tmux -V
+      - name: Run report-only matrix
+        env:
+          GOTOOLCHAIN: go1.25.13
+        run: python3 eval/comms/run.py
+      - name: Upload matrix evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: comms-matrix
+          path: |
+            eval/comms/MATRIX.md
+            eval/comms/matrix.json
+            eval/comms/matrix.html
