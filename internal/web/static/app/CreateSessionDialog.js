@@ -206,8 +206,8 @@ export function CreateSessionDialog() {
             </div>
           `}
           <div class="field">
-            <label>TITLE</label>
-            <input autofocus required value=${title} onInput=${e => setTitle(e.target.value)} placeholder="my-session"/>
+            <label>NAME</label>
+            <input autofocus required value=${title} onInput=${e => setTitle(e.target.value)} placeholder="session-name"/>
           </div>
           <div class="field">
             <label>WORKING DIR</label>
