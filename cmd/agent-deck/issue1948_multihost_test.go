@@ -149,6 +149,7 @@ func TestIssue1948R2_StoredChildIDNamesItsHostAndDoesNotStack(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-scoped"
+	registerDrainTarget(t, conductor)
 
 	fetch := twoHostFetcher("nightly-build", time.Now())
 	var stdout, stderr bytes.Buffer
