@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,8 +16,84 @@ func saveInboxResolutionSessions(t *testing.T, profile string, instances ...*ses
 	if err != nil {
 		t.Fatalf("storage %q: %v", profile, err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 	if err := storage.SaveWithGroups(instances, session.NewGroupTreeWithGroups(instances, nil)); err != nil {
 		t.Fatalf("save profile %q: %v", profile, err)
+	}
+}
+
+func TestInboxDrain_FullIDAndLocalTitleCollisionRefusesWithoutDraining(t *testing.T) {
+	cliInboxTestHome(t)
+	t.Setenv("AGENTDECK_PROFILE", "work")
+
+	const targetID = "deadbeef-1777000300"
+	exact := session.NewInstance("remote-exact-id", t.TempDir())
+	exact.ID = targetID
+	localTitle := session.NewInstance(targetID, t.TempDir())
+	localTitle.ID = "cafefeed-1777000301"
+	saveInboxResolutionSessions(t, "personal", exact)
+	saveInboxResolutionSessions(t, "work", localTitle)
+
+	if err := session.CommitToInbox(targetID, session.TransitionNotificationEvent{ChildSessionID: "must-survive-title-collision"}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	var stdout bytes.Buffer
+	// The explicit profile is the reproducer: before the fix it bypassed the
+	// cross-profile exact-ID pass and ResolveSession chose this profile's title.
+	err := runInboxWithProfile(&stdout, []string{"drain", targetID}, "work")
+	if err == nil {
+		t.Fatalf("ID/title collision silently drained an inbox: %q", stdout.String())
+	}
+	if got := inboxExitCode(err); got != 3 {
+		t.Fatalf("exit code = %d, want 3 (ambiguous): %v", got, err)
+	}
+	for _, want := range []string{"remote-exact-id", targetID, localTitle.ID, "personal", "work", "Nothing was drained"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("collision error %q missing candidate detail %q", err, want)
+		}
+	}
+	if !session.InboxHasPending(targetID) {
+		t.Fatal("ambiguous ID/title collision destructively drained the target inbox")
+	}
+}
+
+func TestInboxDrain_CorruptProfileAbortsNamesProfileAndPreservesInbox(t *testing.T) {
+	cliInboxTestHome(t)
+	t.Setenv("AGENTDECK_PROFILE", "work")
+
+	target := session.NewInstance("healthy-target", t.TempDir())
+	target.ID = "deadbeef-1777000310"
+	saveInboxResolutionSessions(t, "work", target)
+
+	dbPath, err := session.GetDBPathForProfile("aaa-corrupt")
+	if err != nil {
+		t.Fatalf("corrupt profile path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		t.Fatalf("mkdir corrupt profile: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("this is not sqlite"), 0o600); err != nil {
+		t.Fatalf("write corrupt profile: %v", err)
+	}
+	if err := session.CommitToInbox(target.ID, session.TransitionNotificationEvent{ChildSessionID: "must-survive-corrupt-profile"}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err = runInbox(&stdout, []string{"drain", target.ID})
+	if err == nil {
+		t.Fatalf("corrupt profile was silently skipped: %q", stdout.String())
+	}
+	if got := inboxExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1 (storage failure): %v", got, err)
+	}
+	for _, want := range []string{"aaa-corrupt", "resolution aborted", "Nothing was drained"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("corrupt-profile error %q missing %q", err, want)
+		}
+	}
+	if !session.InboxHasPending(target.ID) {
+		t.Fatal("resolution failure on corrupt profile destructively drained the target inbox")
 	}
 }
 

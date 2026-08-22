@@ -36,6 +36,17 @@ func (e *inboxTargetAmbiguousError) Error() string {
 	return "Error: inbox drain target is ambiguous. Nothing was drained.\n" + e.message
 }
 
+type inboxProfileCorruptError struct {
+	profile string
+	err     error
+}
+
+func (e *inboxProfileCorruptError) Error() string {
+	return fmt.Sprintf("Error: inbox drain resolution aborted because profile %q could not be read: %v. Nothing was drained.", e.profile, e.err)
+}
+
+func (e *inboxProfileCorruptError) Unwrap() error { return e.err }
+
 // inboxExitCode is the #1991 drain-resolution contract: 2 means the target
 // does not exist, 3 means the supplied title/prefix is ambiguous, and 1 is a
 // storage, usage, or drain failure. Resolution failures never drain events.
@@ -144,12 +155,6 @@ func resolveInboxDrainSession(identifier string) (string, error) {
 }
 
 func resolveInboxDrainSessionInProfile(identifier, explicitProfile string) (string, error) {
-	// An explicit global -p/--profile qualifier is authoritative, including
-	// when corrupt/restored registries contain the same full ID elsewhere.
-	if explicitProfile != "" {
-		return resolveInboxDrainSessionLocally(identifier, explicitProfile)
-	}
-
 	// Check exact IDs in every profile before applying the profile-local
 	// flexible resolver. Do not assume registry uniqueness: draining is
 	// destructive, so duplicate full IDs must fail closed and name every
@@ -158,35 +163,90 @@ func resolveInboxDrainSessionInProfile(identifier, explicitProfile string) (stri
 	if err != nil {
 		return "", fmt.Errorf("list profiles: %w", err)
 	}
-	var exactProfiles []string
+	effectiveProfile := explicitProfile
+	if effectiveProfile == "" {
+		effectiveProfile, err = session.ResolveProfileForStorage("")
+		if err != nil {
+			return "", fmt.Errorf("resolve effective profile: %w", err)
+		}
+	}
+	return resolveInboxDrainSessionInProfiles(identifier, effectiveProfile, explicitProfile != "", profiles)
+}
+
+// resolveInboxDrainSessionInProfiles performs the destructive resolver's
+// global exact-ID pass while retaining title matches from the effective
+// profile. ResolveSession normally gives an exact title precedence over IDs;
+// that is convenient for non-destructive commands, but unsafe here when a
+// title is literally another session's full ID.
+func resolveInboxDrainSessionInProfiles(identifier, effectiveProfile string, explicitlyQualified bool, profiles []string) (string, error) {
+	type candidate struct {
+		profile string
+		inst    *session.Instance
+	}
+	var exactIDs, titleMatches []candidate
 	for _, profile := range profiles {
 		_, profileInstances, _, loadErr := loadSessionData(profile)
 		if loadErr != nil {
-			return "", fmt.Errorf("load profile %q: %w", profile, loadErr)
+			// Fail closed. Skipping an unreadable store could conceal another
+			// exact ID or a title collision and make the subsequent drain unsafe.
+			return "", &inboxProfileCorruptError{profile: profile, err: loadErr}
 		}
 		for _, inst := range profileInstances {
 			if inst.ID == identifier {
-				exactProfiles = append(exactProfiles, profile)
-				break
+				exactIDs = append(exactIDs, candidate{profile: profile, inst: inst})
+			}
+			if profile == effectiveProfile && inst.Title == identifier {
+				titleMatches = append(titleMatches, candidate{profile: profile, inst: inst})
 			}
 		}
 	}
-	if len(exactProfiles) == 1 {
+
+	var conflictingTitles []candidate
+	for _, title := range titleMatches {
+		if title.inst.ID != identifier {
+			conflictingTitles = append(conflictingTitles, title)
+		}
+	}
+	if len(exactIDs) > 0 && len(conflictingTitles) > 0 {
+		var named []string
+		for _, match := range append(exactIDs, conflictingTitles...) {
+			named = append(named, fmt.Sprintf("%s (%s, profile %q)", match.inst.Title, match.inst.ID, match.profile))
+		}
+		return "", &inboxTargetAmbiguousError{message: fmt.Sprintf(
+			"%q is both a full session ID and another session's exact title:\n  - %s\nRename the title or use -p/--profile only if it uniquely identifies the intended session.",
+			identifier, strings.Join(named, "\n  - "))}
+	}
+	if len(exactIDs) == 1 {
 		return identifier, nil
 	}
-	if len(exactProfiles) > 1 {
+	if len(exactIDs) > 1 {
+		if explicitlyQualified {
+			var qualified []candidate
+			for _, match := range exactIDs {
+				if match.profile == effectiveProfile {
+					qualified = append(qualified, match)
+				}
+			}
+			if len(qualified) == 1 {
+				return identifier, nil
+			}
+		}
+		var exactProfiles []string
+		for _, match := range exactIDs {
+			exactProfiles = append(exactProfiles, match.profile)
+		}
 		return "", &inboxTargetAmbiguousError{message: fmt.Sprintf(
 			"Full session ID %q exists in profiles %s. Use -p/--profile to choose one.",
 			identifier, strings.Join(exactProfiles, ", "))}
 	}
 
-	return resolveInboxDrainSessionLocally(identifier, "")
+	return resolveInboxDrainSessionLocally(identifier, effectiveProfile)
 }
 
 func resolveInboxDrainSessionLocally(identifier, profile string) (string, error) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
-		return "", err
+		return "", &inboxProfileCorruptError{profile: profile, err: err}
 	}
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
