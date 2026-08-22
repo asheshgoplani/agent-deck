@@ -190,6 +190,8 @@ func handleWorktreeTrustScripts(args []string) {
 func handleWorktreeList(profile string, args []string) {
 	fs := flag.NewFlagSet("worktree list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	limit := fs.Int("limit", 20, "Maximum worktrees to return (0 means all)")
+	full := fs.Bool("full", false, "Return all worktrees (equivalent to --limit 0)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck worktree list [options]")
@@ -202,6 +204,13 @@ func handleWorktreeList(profile string, args []string) {
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+	if *limit < 0 {
+		fmt.Println("Error: --limit must be non-negative")
+		os.Exit(1)
+	}
+	if *full {
+		*limit = 0
 	}
 
 	out := NewCLIOutput(*jsonOutput, false)
@@ -278,14 +287,24 @@ func handleWorktreeList(profile string, args []string) {
 
 		results = append(results, info)
 	}
+	totalResults := len(results)
+	truncated := *limit > 0 && len(results) > *limit
+	if truncated {
+		results = results[:*limit]
+	}
 
 	if *jsonOutput {
 		out.Print("", map[string]interface{}{
 			"repo_root": repoRoot,
 			"worktrees": results,
 			"count":     len(results),
+			"total":     totalResults,
+			"truncated": truncated,
 		})
 		return
+	}
+	if truncated {
+		fmt.Printf("\nShowing %d of %d worktrees (truncated; use --full)\n", len(results), totalResults)
 	}
 
 	// Human-readable output

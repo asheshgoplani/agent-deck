@@ -2253,6 +2253,10 @@ func handleList(profile string, args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
+	limit := fs.Int("limit", 20, "Maximum sessions to return (0 means all)")
+	full := fs.Bool("full", false, "Return all sessions (equivalent to --limit 0)")
+	fields := fs.String("fields", "", "Comma-separated JSON fields (for example id,title,status)")
+	pretty := fs.Bool("pretty", false, "Pretty-print JSON (JSON is minified by default)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
@@ -2276,6 +2280,13 @@ func handleList(profile string, args []string) {
 		handleListAllProfiles(*jsonOutput)
 		return
 	}
+	if *limit < 0 {
+		fmt.Println("Error: --limit must be non-negative")
+		os.Exit(1)
+	}
+	if *full {
+		*limit = 0
+	}
 	ensureTmuxInPathOrExit()
 
 	storage, err := session.NewStorageWithProfile(profile)
@@ -2293,6 +2304,12 @@ func handleList(profile string, args []string) {
 	if len(instances) == 0 {
 		fmt.Printf("No sessions found in profile '%s'.\n", storage.Profile())
 		return
+	}
+
+	totalInstances := len(instances)
+	truncated := *limit > 0 && len(instances) > *limit
+	if truncated {
+		instances = instances[:*limit]
 	}
 
 	if *jsonOutput {
@@ -2360,12 +2377,29 @@ func handleList(profile string, args []string) {
 			}
 			sessions[i] = sj
 		}
-		output, err := json.MarshalIndent(sessions, "", "  ")
+		var payload interface{} = sessions
+		if *fields != "" {
+			selected, selectErr := selectJSONFields(sessions, *fields)
+			if selectErr != nil {
+				fmt.Printf("Error: %v\n", selectErr)
+				os.Exit(1)
+			}
+			payload = selected
+		}
+		var output []byte
+		if *pretty {
+			output, err = json.MarshalIndent(payload, "", "  ")
+		} else {
+			output, err = json.Marshal(payload)
+		}
 		if err != nil {
 			fmt.Printf("Error: failed to format JSON output: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Println(string(output))
+		if truncated {
+			fmt.Fprintf(os.Stderr, "truncated: showing %d of %d sessions; use --full\n", len(instances), totalInstances)
+		}
 		return
 	}
 
@@ -2384,10 +2418,44 @@ func handleList(profile string, args []string) {
 		}
 		fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, idDisplay)
 	}
-	fmt.Printf("\nTotal: %d sessions\n", len(instances))
+	fmt.Printf("\nShowing: %d of %d sessions", len(instances), totalInstances)
+	if truncated {
+		fmt.Print(" (truncated; use --full)")
+	}
+	fmt.Println()
 
 	// Show update notice if available
 	printUpdateNotice()
+}
+
+func selectJSONFields(data interface{}, fieldsCSV string) ([]map[string]interface{}, error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	fields := strings.Split(fieldsCSV, ",")
+	for i := range fields {
+		fields[i] = strings.TrimSpace(fields[i])
+		if fields[i] == "" {
+			return nil, fmt.Errorf("--fields contains an empty field")
+		}
+	}
+	result := make([]map[string]interface{}, len(rows))
+	for i, row := range rows {
+		result[i] = make(map[string]interface{}, len(fields))
+		for _, field := range fields {
+			value, ok := row[field]
+			if !ok {
+				return nil, fmt.Errorf("unknown field %q", field)
+			}
+			result[i][field] = value
+		}
+	}
+	return result, nil
 }
 
 // handleListAllProfiles lists sessions from all profiles

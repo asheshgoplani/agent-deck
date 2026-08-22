@@ -4431,6 +4431,8 @@ func handleSessionOutput(profile string, args []string) {
 	// response". The local TUI preview uses capture-pane; remote sessions
 	// fetched via SSH need this same content to render claude-formatted output.
 	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (full UI with ANSI)")
+	lines := fs.Int("lines", 40, "Maximum output lines (0 means all)")
+	full := fs.Bool("full", false, "Return full output (equivalent to --lines 0)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -4443,6 +4445,13 @@ func handleSessionOutput(profile string, args []string) {
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+	if *lines < 0 {
+		fmt.Println("Error: --lines must be non-negative")
+		os.Exit(1)
+	}
+	if *full {
+		*lines = 0
 	}
 
 	identifier := fs.Arg(0)
@@ -4516,6 +4525,7 @@ func handleSessionOutput(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	response.Content, truncatedLines := tailOutputLines(response.Content, *lines)
 
 	// Copy to clipboard mode
 	if *copyFlag {
@@ -4543,6 +4553,9 @@ func handleSessionOutput(profile string, args []string) {
 	// Quiet mode: just print raw content
 	if quietMode {
 		fmt.Println(response.Content)
+		if truncatedLines > 0 {
+			fmt.Printf("--- truncated: %d earlier lines omitted; use --full ---\n", truncatedLines)
+		}
 		return
 	}
 
@@ -4555,6 +4568,11 @@ func handleSessionOutput(profile string, args []string) {
 		"role":          response.Role,
 		"content":       response.Content,
 		"timestamp":     response.Timestamp,
+		"truncated":     truncatedLines > 0,
+	}
+	if truncatedLines > 0 {
+		jsonData["omitted_lines"] = truncatedLines
+		jsonData["hint"] = "use --full for complete output"
 	}
 	// Add tool-specific conversation session ID
 	if response.SessionID != "" {
@@ -4576,8 +4594,23 @@ func handleSessionOutput(profile string, args []string) {
 	}
 	sb.WriteString("---\n")
 	sb.WriteString(response.Content)
+	if truncatedLines > 0 {
+		sb.WriteString(fmt.Sprintf("\n--- truncated: %d earlier lines omitted; use --full ---", truncatedLines))
+	}
 
 	out.Print(sb.String(), jsonData)
+}
+
+func tailOutputLines(content string, limit int) (string, int) {
+	if limit == 0 || content == "" {
+		return content, 0
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) <= limit {
+		return content, 0
+	}
+	omitted := len(lines) - limit
+	return strings.Join(lines[omitted:], "\n"), omitted
 }
 
 // handleSessionCurrent shows current session and profile (auto-detected)
