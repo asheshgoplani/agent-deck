@@ -92,13 +92,22 @@ func (i *Instance) buildOMPCommand(baseCommand string) string {
 	sessionDir := ompAgentDeckSessionDirExpr(i.ID)
 	quotedInstanceID := shellescape.Quote(i.ID)
 	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
+	modelFlag := ""
+	opts := i.GetOMPOptions()
+	if opts == nil {
+		config, _ := LoadUserConfig()
+		opts = NewOMPOptions(config)
+	}
+	if args := opts.ToArgs(); len(args) == 2 {
+		modelFlag = " --model " + shellescape.Quote(args[1])
+	}
 
 	return envPrefix + fmt.Sprintf(
 		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --continue --session-dir \"$session_dir\"%s",
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
-		cmd,
+		cmd+modelFlag,
 		ompApprovalModeFlag(),
 	)
 }

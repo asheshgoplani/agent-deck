@@ -10291,7 +10291,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || IsCodexCompatible(tool)
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || IsCodexCompatible(tool)
 }
 
 // ApplyLaunchModel stores a per-session model override in the tool-specific
@@ -10322,6 +10322,14 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 		}
 		opts.Model = model
 		return i.SetOpenCodeOptions(opts)
+	case i.Tool == "omp":
+		opts := i.GetOMPOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewOMPOptions(userConfig)
+		}
+		opts.Model = model
+		return i.SetOMPOptions(opts)
 	case IsCodexCompatible(i.Tool):
 		opts := i.GetCodexOptions()
 		if opts == nil {
@@ -10361,6 +10369,13 @@ func (i *Instance) ClearLaunchModel() error {
 		}
 		opts.Model = ""
 		return i.SetOpenCodeOptions(opts)
+	case i.Tool == "omp":
+		opts := i.GetOMPOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetOMPOptions(opts)
 	case IsCodexCompatible(i.Tool):
 		opts := i.GetCodexOptions()
 		if opts == nil {
@@ -11287,6 +11302,27 @@ func (i *Instance) GetOpenCodeOptions() *OpenCodeOptions {
 
 // SetOpenCodeOptions stores OpenCode-specific options
 func (i *Instance) SetOpenCodeOptions(opts *OpenCodeOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
+func (i *Instance) GetOMPOptions() *OMPOptions {
+	opts, err := UnmarshalOMPOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+func (i *Instance) SetOMPOptions(opts *OMPOptions) error {
 	if opts == nil {
 		i.ToolOptionsJSON = nil
 		return nil
