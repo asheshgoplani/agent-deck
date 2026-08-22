@@ -1203,3 +1203,10 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .group-stats .gs-row:hover { background: rgba(255,255,255,0.03); }
 .group-stats .gs-title { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-stats .gs-tool { color: var(--tn-purple); opacity: 0.75; }
+.group-stats .gs-row.archived { opacity: 0.62; cursor: default; }
+.group-stats .gs-row.archived:hover { background: none; }
+.group-stats .gs-archived {
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); border: 1px solid var(--border);
+  border-radius: 3px; padding: 0 4px;
+}
