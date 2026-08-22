@@ -76,9 +76,16 @@ func unreadableProfilesNote(failures []profileLoadError) string {
 	return fmt.Sprintf("\nUnreadable profiles encountered during resolution: %s.", strings.Join(profiles, ", "))
 }
 
-// inboxExitCode is the #1991 drain-resolution contract: 2 means the target
-// does not exist, 3 means the supplied title/prefix is ambiguous, and 1 is a
-// storage, usage, or drain failure. Resolution failures never drain events.
+type deadLettersPendingError struct{ count int }
+
+func (e *deadLettersPendingError) Error() string {
+	return fmt.Sprintf("inbox drain incomplete: %d dead-lettered event(s) require attention", e.count)
+}
+
+// inboxExitCode is the drain-resolution contract (#1991, extended): 2 means the
+// target does not exist, 3 means the supplied title/prefix is ambiguous, 4 means
+// the drain ran but dead-lettered events remain and require attention, and 1 is
+// a storage, usage, or drain failure. Resolution failures never drain events.
 func inboxExitCode(err error) int {
 	var notFound *inboxTargetNotFoundError
 	if errors.As(err, &notFound) {
@@ -87,6 +94,10 @@ func inboxExitCode(err error) int {
 	var ambiguous *inboxTargetAmbiguousError
 	if errors.As(err, &ambiguous) {
 		return 3
+	}
+	var pending *deadLettersPendingError
+	if errors.As(err, &pending) {
+		return 4
 	}
 	return 1
 }
@@ -172,10 +183,23 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 			events = []session.TransitionNotificationEvent{}
 		}
 		enc := json.NewEncoder(stdout)
-		return enc.Encode(events)
+		if err := enc.Encode(events); err != nil {
+			return err
+		}
+	} else {
+		printInboxEvents(stdout, events)
 	}
 
-	printInboxEvents(stdout, events)
+	deadLetters, err := session.CountDeadLetterRecords()
+	if err != nil {
+		return fmt.Errorf("count dead letters: %w", err)
+	}
+	if deadLetters > 0 {
+		if !*asJSON {
+			fmt.Fprintf(stdout, "WARNING: %d dead-lettered event(s) require attention.\n", deadLetters)
+		}
+		return &deadLettersPendingError{count: deadLetters}
+	}
 	return nil
 }
 

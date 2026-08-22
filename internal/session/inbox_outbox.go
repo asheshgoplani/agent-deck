@@ -321,6 +321,45 @@ func writeDeadLetter(event TransitionNotificationEvent) error {
 	return f.Sync()
 }
 
+// CountDeadLetterRecords returns the number of parseable records currently in
+// the dead-letter directory. Inbox drain uses this to avoid reporting a clean
+// state while undelivered events are parked out of sight.
+func CountDeadLetterRecords() (int, error) {
+	entries, err := os.ReadDir(DeadLetterDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(DeadLetterDir(), entry.Name()))
+		if err != nil {
+			return count, err
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
+		for scanner.Scan() {
+			if _, err := decodeInboxLine(scanner.Bytes()); err == nil {
+				count++
+			}
+		}
+		scanErr := scanner.Err()
+		closeErr := f.Close()
+		if scanErr != nil {
+			return count, scanErr
+		}
+		if closeErr != nil {
+			return count, closeErr
+		}
+	}
+	return count, nil
+}
+
 // --- unified producer commit (shared by interactive + one-shot) -------------
 
 // resolveParentIDForInbox loads the registry and applies the
@@ -393,6 +432,24 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		return false, true, ""
 	}
 	if parent == nil {
+		// Missing and non-live parents do not make the event disposable. Persist
+		// it in the reserved, drainable unowned ledger. Deliberate suppression
+		// and a removed child remain terminal drops.
+		if isUnownedReason(reason) {
+			written, err := recordUnownedTransition(event)
+			if err != nil {
+				return false, true, ""
+			}
+			if written {
+				event.TargetKind = "unowned"
+				event.DeliveryResult = transitionDeliveryCommitted
+				n.logEvent(event)
+			}
+			// Preserve the existing operator-visible terminal accounting as well;
+			// the important invariant is that dead-letter is no longer the only
+			// copy and the event is now drainable from _unowned.
+			return false, false, reason
+		}
 		return false, false, reason
 	}
 	parentID := parent.ID
