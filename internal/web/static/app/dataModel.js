@@ -165,3 +165,50 @@ export const sidebarRowsSignal = computed(() => {
   }
   return rows
 })
+
+// Status buckets for the group stats panel, in the TUI's fixed display order
+// with the TUI's glyphs (internal/ui/home.go:19418-19444).
+export const GROUP_STATUS_BUCKETS = [
+  { id: 'running', glyph: '●', label: 'running' },
+  { id: 'waiting', glyph: '◐', label: 'waiting' },
+  { id: 'idle',    glyph: '○', label: 'idle' },
+  { id: 'stopped', glyph: '■', label: 'stopped' },
+  { id: 'error',   glyph: '✕', label: 'error' },
+]
+
+// Map a session status onto one of the five display buckets.
+//
+// Deliberate divergence from the TUI: its five-case switch lets `starting`
+// and `queued` fall through UNCOUNTED, so its fragments can sum to less than
+// its own "N sessions" headline. We fold them in — and default anything
+// unrecognized to idle — so the breakdown always adds up.
+export function statusBucket(status) {
+  switch (status) {
+    case 'running':
+    case 'starting':
+      return 'running'
+    case 'waiting':
+      return 'waiting'
+    case 'stopped':
+      return 'stopped'
+    case 'error':
+      return 'error'
+    default:
+      return 'idle'
+  }
+}
+
+// Status breakdown for one group. Direct members only — no subgroup rollup,
+// matching the TUI preview pane (note MenuGroup.sessionCount from the server
+// DOES roll up, so do not use it here).
+export function groupStats(groupPath) {
+  const members = (menuModelSignal.value.byGroup[groupPath] || [])
+  const counts = { running: 0, waiting: 0, idle: 0, stopped: 0, error: 0 }
+  for (const s of members) counts[statusBucket(s.status)]++
+  return {
+    total: members.length,
+    fragments: GROUP_STATUS_BUCKETS
+      .filter((b) => counts[b.id] > 0)
+      .map((b) => ({ id: b.id, glyph: b.glyph, count: counts[b.id], label: b.label })),
+  }
+}
