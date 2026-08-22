@@ -291,6 +291,57 @@ func TestTaskWorker_ReplayUnacked_MissingParentKeepsOneFlatUnownedRecord(t *test
 	}
 }
 
+func TestTaskWorker_ReplayUnacked_CrossRestartDeadLetterAndMissedStayFlat(t *testing.T) {
+	profile := "_test-2007-cross-restart-terminal-dedup"
+	parentID := "parent-missing-2007-cross-restart"
+	childID := seedChildOnly(t, profile, parentID)
+	if err := WriteCompletionRecord(CompletionRecord{
+		ChildID: childID, Profile: profile, Title: "worker", Status: "ok",
+		Summary: "same parked completion across processes", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	replayFreshDaemon := func() {
+		d := NewTransitionDaemon()
+		d.ReplayUnackedCompletions(profile)
+		d.notifier.Flush()
+		d.notifier.Close()
+	}
+	replayFreshDaemon()
+
+	deadPath := DeadLetterPathFor(childID)
+	missedPath := transitionNotifierMissedPath()
+	firstDead, err := os.Stat(deadPath)
+	if err != nil {
+		t.Fatalf("first process did not persist dead-letter: %v", err)
+	}
+	firstMissed, err := os.Stat(missedPath)
+	if err != nil {
+		t.Fatalf("first process did not persist missed log: %v", err)
+	}
+
+	// A new daemon has empty process-local terminalSeen/missedSeen maps. The
+	// durable dead-letter fingerprint must nevertheless suppress both appends.
+	replayFreshDaemon()
+	secondDead, err := os.Stat(deadPath)
+	if err != nil {
+		t.Fatalf("second process lost dead-letter: %v", err)
+	}
+	secondMissed, err := os.Stat(missedPath)
+	if err != nil {
+		t.Fatalf("second process lost missed log: %v", err)
+	}
+	if secondDead.Size() != firstDead.Size() || secondMissed.Size() != firstMissed.Size() {
+		t.Fatalf("cross-restart replay grew durable files: dead %d->%d, missed %d->%d",
+			firstDead.Size(), secondDead.Size(), firstMissed.Size(), secondMissed.Size())
+	}
+	recs, err := ReadDeadLetter(childID)
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("cross-restart dead-letter records=%d, want 1 (err=%v)", len(recs), err)
+	}
+}
+
 // --- STEP 1: daemon never goes stale — version recycle guard ----------------
 
 func TestShouldRecycleForVersion(t *testing.T) {

@@ -29,3 +29,9 @@
 **Context**: What happens when agent-deck itself crashes while a vagrant session is running?
 **Decision**: No special handling needed. tmux session survives, VM survives, Claude survives. On restart, `ReconnectSessionLazy()` reconnects to existing tmux session. `HealthCheck()` confirms VM state on next poll.
 **Consequences**: Zero-effort recovery for agent-deck crashes. Only edge case: crash during `vagrant up` before Claude launches -- handled by restart flow detecting partial VM state.
+
+## 2026-08-22 - R4: Dead-letter file is the cross-restart dedup ledger
+
+**Context**: A fresh transition-daemon process has empty in-memory terminal and missed-log dedup maps, so replaying the same parked completion appended the same dead-letter record and missed-log entry on every restart.
+**Decision**: Use the stable event fingerprint already stored in the per-child dead-letter JSONL as the durable identity. Under a cross-process file lock, read-check-append the dead-letter record; append the missed-log entry only when that durable append is new.
+**Consequences**: Sequential daemon instances keep both files flat for the same completion. Distinct stable fingerprints still produce distinct forensic records, and no separate index can drift from the JSONL source of truth.

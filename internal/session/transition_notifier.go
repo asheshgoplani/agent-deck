@@ -224,8 +224,12 @@ func (n *TransitionNotifier) terminalDrop(event TransitionNotificationEvent, rea
 
 	event.DeadLetterReason = reason
 	event.Attempts = MaxUnresolvedAttempts // terminal: not a transient retry
-	n.logMissed(event, reason)
-	_ = writeDeadLetter(event)
+	// The durable dead-letter file, not terminalSeen, is the cross-process
+	// source of truth. Only the process that appends the stable fingerprint may
+	// append the corresponding missed-log line.
+	if appended, err := writeDeadLetter(event); err == nil && appended {
+		n.logMissed(event, reason)
+	}
 }
 
 // Close is retained for API compatibility with callers that defer cleanup of a

@@ -240,8 +240,13 @@ func (s *DeadLetterSink) RecordUnresolvable(event TransitionNotificationEvent) b
 	s.mu.Unlock()
 
 	event.Attempts = n
-	_ = writeDeadLetter(event)
-	s.writeMissedOnce(event)
+	appended, err := writeDeadLetter(event)
+	if err != nil {
+		return false
+	}
+	if appended {
+		s.writeMissedOnce(event)
+	}
 	return true
 }
 
@@ -288,31 +293,70 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 	}
 }
 
-// writeDeadLetter appends a record to the child's dead-letter JSONL file.
-func writeDeadLetter(event TransitionNotificationEvent) error {
+// writeDeadLetter durably appends a record to the child's dead-letter JSONL
+// file unless that stable event fingerprint is already present. The file is
+// the cross-restart dedup ledger; the file lock makes read-check-append atomic
+// across daemon processes. appended is true only for a newly installed record.
+func writeDeadLetter(event TransitionNotificationEvent) (appended bool, err error) {
 	path := DeadLetterPathFor(event.ChildSessionID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
+	}
+	fileLock, err := AcquireConfigFileLock(path)
+	if err != nil {
+		return false, fmt.Errorf("lock dead-letter: %w", err)
+	}
+	defer fileLock.Release()
+
+	fp := EventFingerprint(event)
+	if found, err := deadLetterContainsFingerprint(path, fp); err != nil {
+		return false, err
+	} else if found {
+		return false, nil
 	}
 	line, err := json.Marshal(inboxWireEvent{
 		TransitionNotificationEvent: event,
-		Fingerprint:                 EventFingerprint(event),
+		Fingerprint:                 fp,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {
-		return err
+		return false, err
 	}
 	// Audit B2: fsync the dead-letter append. Dead-letter is the operator's
 	// terminal forensic trail for an unresolvable completion; it must survive a
 	// crash, same as the primary inbox append.
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func deadLetterContainsFingerprint(path, fingerprint string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
+	for scanner.Scan() {
+		var wire inboxWireEvent
+		if json.Unmarshal(scanner.Bytes(), &wire) == nil && wire.Fingerprint == fingerprint {
+			return true, nil
+		}
+	}
+	return false, scanner.Err()
 }
 
 // CountDeadLetterRecords returns the number of unresolved records currently in
