@@ -1330,6 +1330,40 @@ func TestRenderSessionListEmptyWithUnboundPrimaryActions(t *testing.T) {
 	}
 }
 
+func TestRootEmptyStateIsSingleAndCompleteAtSupportedFirstRunSizes(t *testing.T) {
+	for _, size := range []struct {
+		width, height int
+	}{
+		{width: 100, height: 23},
+		{width: 160, height: 41},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			home := NewHome()
+			home.width = size.width
+			home.setHotkeys(resolveHotkeys(nil))
+
+			rendered := home.renderDualColumnLayout(size.height)
+			for _, want := range []string{
+				"No Sessions Yet",
+				"Get started by creating your first session",
+				"Press n to create a new session",
+				"Press i to import existing tmux sessions",
+				"Press g to create a group",
+			} {
+				if count := strings.Count(rendered, want); count != 1 {
+					t.Fatalf("empty-state text %q appears %d times, want exactly once\nrendered=%q", want, count, rendered)
+				}
+			}
+			if strings.Contains(rendered, "...") {
+				t.Fatalf("empty-state guidance must not be truncated\nrendered=%q", rendered)
+			}
+			if strings.Contains(rendered, "Ready to Go") || strings.Contains(rendered, "PREVIEW") {
+				t.Fatalf("root empty state must not render a duplicate preview message\nrendered=%q", rendered)
+			}
+		})
+	}
+}
+
 func TestSessionClosedMsgUsesConfiguredRestartHint(t *testing.T) {
 	home := NewHome()
 	home.storage = nil

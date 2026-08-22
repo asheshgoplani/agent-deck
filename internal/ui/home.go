@@ -15293,6 +15293,15 @@ func ensureExactWidth(content string, width int) string {
 func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	var b strings.Builder
 
+	// The root empty state is onboarding, not a list/preview selection state.
+	// Rendering it through both panes duplicates the same actions and forces the
+	// list copy through a narrow percentage-based width, where useful text is
+	// truncated even when the terminal as a whole has ample room. Give first-run
+	// guidance the full content area instead.
+	if len(h.flatItems) == 0 && h.groupScope == "" {
+		return h.renderRootEmptyState(h.width, contentHeight)
+	}
+
 	// Calculate panel widths from configurable split (issue #1092 — [ui] preview_pct)
 	// with chrome / min-width clamping (issue #1113) so the PREVIEW pane never
 	// shrinks below its title width.
@@ -15383,6 +15392,36 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	b.WriteString(mainContent)
 
 	return b.String()
+}
+
+// renderRootEmptyState renders the one onboarding message used when the deck
+// has no sessions. It intentionally occupies the complete layout instead of
+// being repeated independently in the session and preview panes.
+func (h *Home) renderRootEmptyState(width, height int) string {
+	hints := make([]string, 0, 3)
+	if key := h.actionKey(hotkeyNewSession); key != "" {
+		hints = append(hints, fmt.Sprintf("Press %s to create a new session", key))
+	}
+	if key := h.actionKey(hotkeyImport); key != "" {
+		hints = append(hints, fmt.Sprintf("Press %s to import existing tmux sessions", key))
+	}
+	if key := h.actionKey(hotkeyCreateGroup); key != "" {
+		hints = append(hints, fmt.Sprintf("Press %s to create a group", key))
+	}
+	if len(hints) == 0 {
+		hints = append(hints, "Create or import sessions to get started")
+	}
+
+	title := h.renderPanelTitle("GETTING STARTED", width)
+	content := renderEmptyStateResponsive(EmptyStateConfig{
+		Icon:     "⬡",
+		Title:    "No Sessions Yet",
+		Subtitle: "Get started by creating your first session",
+		Hints:    hints,
+	}, width, height-2)
+	content = lipgloss.PlaceHorizontal(width, lipgloss.Center, content)
+
+	return ensureExactHeight(title+"\n"+content, height)
 }
 
 // renderStackedLayout renders list above preview for medium terminals (50-79 cols)
