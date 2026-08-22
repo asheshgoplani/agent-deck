@@ -11,8 +11,8 @@
 //   - Direct members only — no subgroup rollup, matching the TUI preview.
 //   - No Repository/worktree block: per-branch dirty state is not on the wire.
 import { html } from 'htm/preact'
-import { menuModelSignal, groupStats, openCreateSessionForGroup } from './dataModel.js'
-import { selectSession, mutationsEnabledSignal } from './state.js'
+import { menuModelSignal, groupStats } from './dataModel.js'
+import { selectSession } from './state.js'
 import { activeTabSignal } from './uiState.js'
 import { Dot } from './icons.js'
 
@@ -22,11 +22,9 @@ export function GroupStatsPanel({ path }) {
 
   // The selected group can vanish out from under the panel — deleted in the
   // TUI while a browser tab has it selected, or a stale /g/{path} URL/reload
-  // for a group that was never real. groupCreateDefaults() returns the blank
-  // context for an unknown path, so a create button here would disagree with
-  // it and silently create in the default group instead (review finding #3).
-  // Render an honest "gone" state and offer no action rather than fabricate
-  // stats for a group that is not in the current menu snapshot.
+  // for a group that was never real. Say so rather than fabricating "0
+  // sessions" for a group that is not in the current menu snapshot, which
+  // reads identically to a real but empty group.
   if (!group) {
     return html`
       <div class="group-stats" data-testid="group-stats-panel" data-group-path=${path}>
@@ -53,15 +51,6 @@ export function GroupStatsPanel({ path }) {
         <span class="gs-folder" aria-hidden="true">📁</span>
         <span class="gs-name">${group.name}</span>
       </div>
-
-      ${mutationsEnabledSignal.value && html`
-        <div class="gs-actions">
-          <button class="btn primary" data-testid="group-new-session-btn"
-                  onClick=${() => openCreateSessionForGroup(path)}>
-            New session in this group <span class="kbd">n</span>
-          </button>
-        </div>
-      `}
 
       <div class="gs-total" data-testid="group-stats-total">${stats.total} sessions</div>
 

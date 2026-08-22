@@ -307,12 +307,20 @@ status fragments, then the session list as `glyph title tool` where clicking a
 row calls `selectSession(id)`. The Repository/worktree block (`home.go:19447`)
 is **out of scope** — `MenuSession.worktreeRepoRoot` is on the wire but the
 per-branch dirty state is not, and a half-populated block is worse than none.
-The TUI's hint footer is replaced by a single **New session in this group**
-button. The TUI also offers rename / delete / subgroup there; those stay out of
+The panel carries **no action buttons at all**. The TUI's group preview has no
+create button either — it ends in a hint footer naming keys — so a button here
+would be a web-only invention rather than parity. New-session-in-group is
+reached with `n`, exactly as in the TUI. Rename / delete / subgroup stay out of
 scope (see below) so this panel does not drag in dialog wiring.
 
-`WorkHead` (`AppShell.js:52-88`) gains a group branch rendering the breadcrumb
-and a "New" button bound to the group. Both `WorkHead` and `RightRail`
+This also removes a whole failure mode: a stale panel for a group deleted out
+from under it can no longer offer an action whose label ("in this group") is a
+lie. Pressing `n` there opens a dialog with no GROUP row, which is honest that
+the session will land in the default group.
+
+`WorkHead` (`AppShell.js:52-88`) gains a group branch rendering the breadcrumb.
+(An earlier draft also called for a "New" button there; per the no-web-only-
+affordances rule above, the group head carries the breadcrumb only.) Both `WorkHead` and `RightRail`
 (`RightRail.js:120-123`) must stop falling back to `sessions[0]` when
 `selectedGroupSignal` is set — otherwise an unrelated session's Stop/Restart
 controls render above the group stats.

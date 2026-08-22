@@ -115,18 +115,25 @@ test.describe('group selection', () => {
 
   test('new session from a group prefills the group folder and tool', async ({ page }) => {
     await page.locator('[data-testid="group-head-work"] .name').click()
-    await page.locator('[data-testid="group-new-session-btn"]').click()
+    await page.keyboard.press('n')
 
     // Fixture: group "work" has DefaultPath "/srv/work"; its newest session
     // (sess-002 "frontend") uses claude.
     await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('work')
     await expect(page.locator('.dialog input').nth(1)).toHaveValue('/srv/work')
     await expect(page.locator('.dialog .seg-btn.on')).toHaveText('claude')
+
+    // Field naming tracks the TUI's create dialog, which labels this "Name:"
+    // with placeholder "session-name" (internal/ui/newdialog.go:336,:2720) --
+    // NOT "Title"/"my-session". The TUI's *edit* dialog does say "Title"
+    // (edit_session_dialog.go:69), so the two genuinely differ; don't unify.
+    await expect(page.locator('.dialog .field:has(input) label').first()).toHaveText('NAME')
+    await expect(page.locator('.dialog input').first()).toHaveAttribute('placeholder', 'session-name')
   })
 
   test('a group with no configured folder falls back to its newest session path', async ({ page }) => {
     await page.locator('[data-testid="group-head-personal"] .name').click()
-    await page.locator('[data-testid="group-new-session-btn"]').click()
+    await page.keyboard.press('n')
 
     // Fixture: "personal" has no DefaultPath; sess-004 "scratch" is its only
     // session (ProjectPath "/home/dev/scratch", tool=shell), so the newest-
@@ -210,7 +217,7 @@ test.describe('group selection', () => {
     await page.locator('[data-testid="group-head-work"] .name').click()
     await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▾')
 
-    await page.locator('[data-testid="group-new-session-btn"]').click()
+    await page.keyboard.press('n')
     await expect(page.locator('.overlay .dialog')).toBeVisible()
 
     // Focus a <button> inside the dialog -- e.target on the next keydown is
@@ -307,6 +314,13 @@ test.describe('group selection', () => {
     await expect(page.locator('[data-testid="group-stats-missing"]')).toBeVisible()
 
     await expect(page.locator('[data-testid="group-stats-total"]')).toHaveCount(0)
-    await expect(page.locator('[data-testid="group-new-session-btn"]')).toHaveCount(0)
+
+    // `n` on a group that is no longer in the menu must not claim to create in
+    // it: groupCreateDefaults() returns the blank context for an unknown path,
+    // so the dialog opens with no GROUP row and omits groupPath -- honest about
+    // landing in the default group rather than silently lying about the target.
+    await page.keyboard.press('n')
+    await expect(page.locator('.overlay .dialog')).toBeVisible()
+    await expect(page.locator('[data-testid="create-session-group"]')).toHaveCount(0)
   })
 })

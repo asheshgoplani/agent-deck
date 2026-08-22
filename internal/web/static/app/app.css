@@ -1173,7 +1173,6 @@ body[data-rail="hidden"] .rightrail { display: none; }
   font-size: 16px; font-weight: 600; color: var(--tn-cyan);
   margin-bottom: 14px;
 }
-.group-stats .gs-actions { margin: 4px 0 18px; }
 .group-stats .gs-total {
   font-size: 13px; font-weight: 600; color: var(--text-hi);
   margin-bottom: 10px;
