@@ -1,0 +1,208 @@
+{
+  "harness": "codex",
+  "adapter": "codex",
+  "session_id": "00000000-0000-4000-8000-00000000c0de",
+  "project_path": "<FIXTURE_ROOT>/project",
+  "model": "gpt-5-codex",
+  "window": {
+    "tokens": 258400,
+    "source": "harness-reported",
+    "detail": "event_msg token_count: info.model_context_window"
+  },
+  "basis": "observed",
+  "categories": [
+    {
+      "name": "base-instructions",
+      "title": "base instructions",
+      "description": "the base system prompt Codex sends before anything else, exactly as it recorded it",
+      "items": [
+        {
+          "id": "base-instructions",
+          "label": "Codex base system prompt",
+          "detail": "11 characters, recorded verbatim by the harness",
+          "content": {
+            "provenance": "captured",
+            "kind": "markdown",
+            "text": "BASE PROMPT",
+            "chars": 11
+          },
+          "load": {
+            "state": "loaded",
+            "actual": {
+              "tokens": 5,
+              "provenance": "estimated",
+              "method": "chars/token calibrated on a Claude Code /context capture: 11 chars / 2.34 (markdown, ±8%, divisor measured on 62,591 chars of memory files against Claude Code's own count)",
+              "rel_err": 0.08,
+              "tokens_low": 5,
+              "tokens_high": 5
+            }
+          },
+          "origin": "harness-builtin",
+          "lever": {
+            "kind": "immovable",
+            "line_range": [
+              0,
+              0
+            ],
+            "why": "shipped inside the Codex binary; not configurable"
+          }
+        }
+      ]
+    },
+    {
+      "name": "developer-instructions",
+      "title": "developer instructions",
+      "description": "the instruction blocks Codex injects as developer messages, one row per block",
+      "items": [
+        {
+          "id": "block:permissions:0.0",
+          "label": "permissions and sandbox instructions",
+          "detail": "developer message · 44 characters",
+          "content": {
+            "provenance": "captured",
+            "kind": "markdown",
+            "text": "\u003cpermissions instructions\u003e\nFilesystem policy",
+            "chars": 44
+          },
+          "load": {
+            "state": "loaded",
+            "actual": {
+              "tokens": 19,
+              "provenance": "estimated",
+              "method": "chars/token calibrated on a Claude Code /context capture: 44 chars / 2.34 (markdown, ±8%, divisor measured on 62,591 chars of memory files against Claude Code's own count)",
+              "rel_err": 0.08,
+              "tokens_low": 17,
+              "tokens_high": 21
+            }
+          },
+          "origin": "harness-builtin",
+          "lever": {
+            "kind": "immovable",
+            "line_range": [
+              0,
+              0
+            ],
+            "why": "generated from the approval and sandbox policy this session was launched with"
+          }
+        }
+      ]
+    }
+  ],
+  "unaccounted": {
+    "id": "unaccounted",
+    "label": "system prompt + built-in tool schemas",
+    "detail": "unattributed remainder",
+    "content": {
+      "provenance": "absent",
+      "kind": "prose",
+      "chars": 0,
+      "note": "The harness did not record a cold-start prompt total for this session, so the size of anything we could not attribute cannot be derived."
+    },
+    "load": {
+      "state": "loaded",
+      "actual": {
+        "tokens": null,
+        "provenance": "unknown",
+        "reason": "no anchor to subtract from; the unattributed remainder is unknowable"
+      }
+    },
+    "origin": "harness-builtin",
+    "lever": {
+      "kind": "immovable",
+      "line_range": [
+        0,
+        0
+      ],
+      "why": "shipped inside the agent binary; not configurable"
+    }
+  },
+  "reconciliation": {
+    "status": "no-anchor",
+    "anchor": {
+      "tokens": null,
+      "provenance": "unknown",
+      "reason": "no provider-measured fixed-prefix total for this session"
+    },
+    "attributed": {
+      "tokens": 24,
+      "provenance": "estimated",
+      "method": "sum of attributed item costs",
+      "rel_err": 0.08,
+      "tokens_low": 22,
+      "tokens_high": 26
+    },
+    "unaccounted": {
+      "tokens": null,
+      "provenance": "unknown",
+      "reason": "no anchor to subtract from; the unattributed remainder is unknowable"
+    },
+    "message": "no provider-measured anchor: nothing to reconcile against, so the residual is unknown rather than zero"
+  },
+  "caveats": [
+    {
+      "code": "anchor-unavailable-resumed",
+      "message": "the first recorded turn does not measure a cold startup prefix (the first recorded accounting reports 200 cumulative prompt tokens against 100 for the turn, so this rollout's first turn is not the session's first turn), so no measured total is claimed and the unattributed remainder is reported as unknown.",
+      "severity": "warn"
+    },
+    {
+      "code": "residual-includes-turn-inputs",
+      "message": "the measured total covers the whole first request, so the unattributed remainder also contains this session's first typed message (25 characters across 1 block(s)) alongside the tool schemas.",
+      "severity": "info"
+    }
+  ],
+  "capabilities": {
+    "adapter": "codex",
+    "can_anchor": true,
+    "can_verbatim_system": true,
+    "categories": [
+      {
+        "name": "base-instructions",
+        "title": "base instructions",
+        "text": "captured",
+        "token": "estimated",
+        "note": "Codex records the base system prompt verbatim in the rollout's session_meta record, so it is readable in full; releases before roughly 0.10x recorded a session instructions string instead and are reported as such"
+      },
+      {
+        "name": "agents-md",
+        "title": "AGENTS.md",
+        "text": "captured",
+        "token": "estimated",
+        "note": "the merged block is captured verbatim and attributed back to individual files on disk by locating each file's bytes inside it; the share that could not be attributed is reported as its own row and as a match rate"
+      },
+      {
+        "name": "host-skills",
+        "title": "skills catalogue",
+        "text": "captured",
+        "token": "estimated",
+        "note": "the injected catalogue is split per skill; each skill's SKILL.md body is reported as potential cost, since it loads only when the skill is opened"
+      },
+      {
+        "name": "environments",
+        "title": "environment",
+        "text": "captured",
+        "token": "estimated",
+        "note": "the workspace, sandbox and approval description Codex injects for the session"
+      },
+      {
+        "name": "developer-instructions",
+        "title": "developer instructions",
+        "text": "captured",
+        "token": "estimated",
+        "note": "permissions, collaboration mode, apps, plugins and multi-agent blocks, one row per block as Codex injected it"
+      },
+      {
+        "name": "injected-context",
+        "title": "other injected blocks",
+        "text": "captured",
+        "token": "estimated",
+        "note": "recognised blocks this build has no dedicated category for; they are still priced from their verbatim text"
+      }
+    ],
+    "notes": [
+      "Tool schemas are negotiated over the wire and are never written to the rollout. They are the bulk of the unattributed remainder, which is measured by subtraction from the provider-reported total rather than guessed.",
+      "MCP servers are not given their own category: their instruction text is injected inside the blocks above and their schemas are inside the remainder, so a separate row would either double count or be an unknown that destroys the remainder for every report.",
+      "Per-item token figures are estimates; the first-turn total is provider-measured, so the remainder is obtained by subtraction."
+    ]
+  },
+  "generated_at": "2026-07-01T12:00:00Z"
+}

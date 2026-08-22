@@ -1,0 +1,27 @@
+{
+  "name": "claude-model-switch",
+  "description": "A session that booted on one model and switched to another two minutes in — the oracle finding of 2026-07-29. The header must name the CURRENT model, the window must be resolved from it (the fixture switches from a 200k model to a 1M one so a stale header also fails the window), the switch must be disclosed, and the anchor must keep measuring the boot turn.",
+  "tool": "claude",
+  "adapter": "claude",
+  "title": "fixture-model-switch",
+  "profile": "_fixture",
+  "session_id": "00000000-0000-4000-8000-000000005ec5",
+  "model": "claude-opus-4-5",
+  "project_path": "project",
+  "config_dir": "home/.claude",
+  "transcript": "home/.claude/transcripts/head.jsonl",
+  "expect": {
+    "anchored": true,
+    "anchor_tokens": 27008,
+    "reconciles": true,
+    "min_categories": 5,
+    "attributed_tokens": 168,
+    "estimate_tolerance_pct": 5,
+    "caveats": [
+      "anchor-warm-cache",
+      "residual-includes-turn-inputs",
+      "model-switched"
+    ],
+    "notes": "anchor_tokens is input 8 + cache_creation 24000 + cache_read 3000 from the BOOT turn (claude-opus-4-5). The two later claude-opus-4-7 turns are past the head boundary: they move the header's model and window, never the anchor or the inventory."
+  }
+}
