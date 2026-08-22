@@ -3,7 +3,6 @@ package session
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -40,37 +39,29 @@ func fieldDaemon(t *testing.T) *TransitionDaemon {
 	}
 }
 
-// The headline case: no sentinel, no hook status, no parent. Before the fix this
-// wrote nothing at all — WriteLedgerEntry was reachable only from
-// emitDoneSignals, which requires a ===AGENTDECK_DONE=== sentinel.
+// The headline case: no sentinel and no parent. It must be recorded as an
+// actionable transition, without fabricating a completion-ledger entry.
 func TestFieldTalkback_OrdinarySessionWithNoSentinelIsRecorded(t *testing.T) {
-	withFieldSandbox(t)
+	storage := reviewTestHome(t, "default")
 	d := fieldDaemon(t)
 
 	inst := NewInstanceWithTool("ordinary", t.TempDir(), "claude")
 	inst.ID = "ord-1"
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
 	byID := map[string]*Instance{inst.ID: inst}
 	statuses := map[string]string{inst.ID: string(StatusWaiting)}
 
 	d.recordTerminalTurns("default", byID, statuses, nil)
 
-	dir, err := CompletionLedgerDir()
-	if err != nil {
-		t.Fatalf("ledger dir: %v", err)
+	events, err := ReadInboxEvents(UnownedInboxID)
+	if err != nil || len(events) != 1 || events[0].ToStatus != string(StatusWaiting) {
+		t.Fatalf("ordinary waiting turn must produce one transition: events=%+v err=%v", events, err)
 	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 {
-		t.Fatalf("an ordinary session that finished a turn must produce a ledger entry without any sentinel; got %d entries", len(entries))
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
-	if err != nil {
-		t.Fatalf("read entry: %v", err)
-	}
-	// The status must be the observed one, never a fabricated "ok": nothing
-	// asserted an outcome here, and claiming one is how the old path came to
-	// report more than it knew.
-	if got := string(raw); !strings.Contains(got, `"status": "waiting"`) && !strings.Contains(got, `"status":"waiting"`) {
-		t.Errorf("ledger entry must carry the OBSERVED status, not an invented outcome:\n%s", got)
+	dir, _ := CompletionLedgerDir()
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("ordinary turn must not claim a sentinel completion; got %d ledger entries", len(entries))
 	}
 }
 
@@ -78,19 +69,21 @@ func TestFieldTalkback_OrdinarySessionWithNoSentinelIsRecorded(t *testing.T) {
 // terminal status the first time the daemon ever sees it, so there is no edge to
 // fire on. Recording must not depend on having observed it mid-`running`.
 func TestFieldTalkback_FirstScanRecordsAnAlreadyParkedSession(t *testing.T) {
-	withFieldSandbox(t)
+	storage := reviewTestHome(t, "default")
 	d := fieldDaemon(t)
 
 	inst := NewInstanceWithTool("parked", t.TempDir(), "claude")
 	inst.ID = "parked-1"
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
 	byID := map[string]*Instance{inst.ID: inst}
 	statuses := map[string]string{inst.ID: string(StatusWaiting)}
 
 	// No prior status map at all — this is the daemon's very first pass.
 	d.recordTerminalTurns("default", byID, statuses, nil)
 
-	dir, _ := CompletionLedgerDir()
-	if entries, _ := os.ReadDir(dir); len(entries) == 0 {
+	if events, _ := ReadInboxEvents(UnownedInboxID); len(events) == 0 {
 		t.Fatal("a session already parked at waiting on the first scan must still be recorded; suppressing it is exactly the field round-3 loss")
 	}
 }
@@ -98,21 +91,23 @@ func TestFieldTalkback_FirstScanRecordsAnAlreadyParkedSession(t *testing.T) {
 // Repeated polls of a session sitting still must not republish. The turn key is
 // status + transcript signal, so a parked session records once.
 func TestFieldTalkback_ParkedSessionRecordsOnlyOnce(t *testing.T) {
-	withFieldSandbox(t)
+	storage := reviewTestHome(t, "default")
 	d := fieldDaemon(t)
 
 	inst := NewInstanceWithTool("quiet", t.TempDir(), "claude")
 	inst.ID = "quiet-1"
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
 	byID := map[string]*Instance{inst.ID: inst}
 	statuses := map[string]string{inst.ID: string(StatusWaiting)}
 
 	for i := 0; i < 5; i++ {
 		d.recordTerminalTurns("default", byID, statuses, nil)
 	}
-	dir, _ := CompletionLedgerDir()
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 {
-		t.Fatalf("five polls of an unchanged session must produce one entry, got %d", len(entries))
+	events, _ := ReadInboxEvents(UnownedInboxID)
+	if len(events) != 1 {
+		t.Fatalf("five polls of an unchanged session must produce one entry, got %d", len(events))
 	}
 }
 

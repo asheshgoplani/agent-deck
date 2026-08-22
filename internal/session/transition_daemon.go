@@ -595,6 +595,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 // emitted produces an identical EventFingerprint here (same child, same
 // from=running, same to, same transcript signal), so WriteInboxEventIfNew
 // collapses the two — in the parent inbox and in the _unowned ledger alike.
+// Ordinary terminal observations are deliberately NOT completion-ledger entries:
+// only a sentinel asserts that a task finished. Mirroring a waiting transition
+// into that ledger changes its kind to "finished" during export.
 func (d *TransitionDaemon) recordTerminalTurns(
 	profile string,
 	byID map[string]*Instance,
@@ -624,8 +627,6 @@ func (d *TransitionDaemon) recordTerminalTurns(
 		if known && previous == key {
 			continue
 		}
-		seen[id] = key
-
 		// NOTE ON A SUPPRESSION THAT WAS TRIED AND REMOVED. A first observation
 		// with no transcript signal looks like a launch rather than a completion
 		// — a pane that has just come up sits at `idle` with nothing behind it,
@@ -638,9 +639,9 @@ func (d *TransitionDaemon) recordTerminalTurns(
 		// fix. No transition is skipped here.
 		_ = known
 
-		// Liveness is checked HERE, after the dedup, so the tmux probe costs
-		// nothing in steady state — it runs only for a turn we are about to
-		// record. A registry row for a long-dead session sits at `error`
+		// Liveness is checked only for a new candidate, so the tmux probe costs
+		// nothing in steady state after an eligible turn has been recorded. A
+		// registry row for a long-dead session sits at `error`
 		// indefinitely; recording that as a completed turn published 34 stale
 		// sessions on the first scan when this was first run against a real
 		// profile, which is how the check came to be here.
@@ -651,6 +652,11 @@ func (d *TransitionDaemon) recordTerminalTurns(
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
+		// Commit the dedup key only after the observation is eligible. A registry
+		// row can appear before its tmux session, and notification settings can be
+		// enabled while a turn remains parked; neither temporary rejection may
+		// permanently suppress that unchanged turn.
+		seen[id] = key
 
 		// FromStatus is stamped `running` rather than the observed previous
 		// status, matching what emitHookTransitionCandidates already does for
@@ -669,22 +675,6 @@ func (d *TransitionDaemon) recordTerminalTurns(
 			Substate:       string(inst.CachedSubstate()),
 		}
 		_ = d.notifier.NotifyTransition(event)
-
-		// The ledger entry a sentinel would have written, minus the sentinel.
-		// Status is the terminal status verbatim ("waiting"/"idle"/"error"),
-		// never "ok"/"fail" — a completed turn is not an asserted outcome, and
-		// conflating the two is how the previous version came to claim more than
-		// it knew. emitDoneSignals runs immediately after this and overwrites the
-		// entry with status/summary when a sentinel IS present, which is the
-		// enrichment path: present it improves the record, absent it changes
-		// nothing.
-		_ = WriteLedgerEntry(CompletionLedgerEntry{
-			ChildID:    id,
-			Profile:    profile,
-			Title:      inst.Title,
-			Status:     to,
-			FinishedAt: time.Now(),
-		})
 	}
 
 	// Instances that disappeared (stopped, removed) must not keep an entry, or a
