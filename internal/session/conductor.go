@@ -1295,12 +1295,7 @@ done
 
 MSG="{HEARTBEAT_PREFIX} Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention."
 if [ -n "$RULES_FILE" ]; then
-    RULES=$(cat "$RULES_FILE")
-    if [ -n "$RULES" ]; then
-        MSG="$MSG
-
-$RULES"
-    fi
+    MSG="$MSG Read heartbeat rules from $RULES_FILE."
 fi
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
