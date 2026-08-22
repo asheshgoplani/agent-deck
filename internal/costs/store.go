@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -58,6 +59,56 @@ func (s *Store) WriteCostEventTx(tx *sql.Tx, ev CostEvent) error {
 // TotalBySession returns aggregated costs for a session.
 func (s *Store) TotalBySession(sessionID string) (CostSummary, error) {
 	return s.querySum(`WHERE session_id = ?`, sessionID)
+}
+
+// TotalRange aggregates the half-open UTC range [from,to).
+func (s *Store) TotalRange(from, to time.Time) (CostSummary, error) {
+	return s.querySum(`WHERE timestamp >= ? AND timestamp < ?`, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339))
+}
+
+// Export returns deterministic token and cost aggregates for a half-open UTC range.
+func (s *Store) Export(from, to time.Time, by ExportGroup, profile string, pricer *Pricer) ([]ExportRow, error) {
+	var selectIdentity, groupBy, orderBy string
+	switch by {
+	case GroupBySession:
+		selectIdentity = `ce.session_id, COALESCE(i.title, ''), COALESCE(i.tool, ''), GROUP_CONCAT(DISTINCT ce.model), COALESCE(i.account, ''), ''`
+		groupBy, orderBy = `ce.session_id`, `MIN(ce.timestamp), ce.session_id`
+	case GroupByModel:
+		selectIdentity = `'','','',ce.model,'',''`
+		groupBy, orderBy = `ce.model`, `MIN(ce.timestamp), ce.model`
+	case GroupByDay:
+		selectIdentity = `'','','',GROUP_CONCAT(DISTINCT ce.model),'',date(ce.timestamp)`
+		groupBy, orderBy = `date(ce.timestamp)`, `date(ce.timestamp)`
+	default:
+		return nil, fmt.Errorf("invalid cost export grouping %q", by)
+	}
+	query := fmt.Sprintf(`SELECT %s, COUNT(*), SUM(ce.input_tokens), SUM(ce.output_tokens),
+		SUM(ce.cache_read_tokens), SUM(ce.cache_write_tokens), SUM(ce.cost_microdollars),
+		MIN(ce.timestamp), MAX(ce.timestamp)
+		FROM cost_events ce LEFT JOIN instances i ON ce.session_id=i.id
+		WHERE ce.timestamp >= ? AND ce.timestamp < ? GROUP BY %s ORDER BY %s`, selectIdentity, groupBy, orderBy)
+	rows, err := s.db.Query(query, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339))
+	if err != nil { return nil, err }
+	defer rows.Close()
+	result := make([]ExportRow, 0)
+	for rows.Next() {
+		var row ExportRow
+		var micro int64
+		var first, last string
+		if err := rows.Scan(&row.SessionID, &row.Title, &row.Tool, &row.Model, &row.Account, &row.Day,
+			&row.Events, &row.InputTokens, &row.OutputTokens, &row.CacheReadTokens, &row.CacheWriteTokens,
+			&micro, &first, &last); err != nil { return nil, err }
+		row.Profile = profile
+		row.FirstTimestamp, err = time.Parse(time.RFC3339, first)
+		if err != nil { return nil, fmt.Errorf("parse first timestamp %q: %w", first, err) }
+		row.LastTimestamp, err = time.Parse(time.RFC3339, last)
+		if err != nil { return nil, fmt.Errorf("parse last timestamp %q: %w", last, err) }
+		known := true
+		for _, model := range strings.Split(row.Model, ",") { if _, ok := pricer.GetPrice(model); !ok { known = false; break } }
+		if known { usd := float64(micro)/1_000_000; row.CostUSD = &usd }
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
 
 // TotalToday returns today's total costs.
