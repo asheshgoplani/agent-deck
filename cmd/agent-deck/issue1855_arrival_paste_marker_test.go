@@ -81,9 +81,8 @@ func TestIssue1855_CollapsedPasteMarkerIsArrivalEvidence_NotAnUnverifiedSuccess(
 // scrollback of an earlier one), not proof that this send arrived. Only a
 // marker that was not there before counts.
 //
-// This body's lines are all below arrivalSafeLineBytes, so the historical
-// best-effort contract applies and the correct outcome is deliveryUnverified
-// with no error (see TestIssue1793_SmallPayloadKeepsTheBestEffortContract).
+// This body's lines are all below arrivalSafeLineBytes, but an unconfirmed
+// send still fails; payload size does not weaken the submit contract.
 // The assertion that matters is the one against deliveryTyped: reaching that
 // would mean the stale marker had been counted as this send's arrival.
 func TestIssue1855_PreExistingPasteMarkerIsNotArrivalEvidence(t *testing.T) {
@@ -100,11 +99,8 @@ func TestIssue1855_PreExistingPasteMarkerIsNotArrivalEvidence(t *testing.T) {
 	if delivery == deliveryTyped {
 		t.Fatal("a paste marker that predates the send must not be counted as this send's arrival")
 	}
-	if err != nil {
-		t.Fatalf("small unmatched sends must stay best-effort, got error: %v", err)
-	}
-	if delivery != deliveryUnverified {
-		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, delivery)
+	if err == nil || delivery != deliveryNoEvidence {
+		t.Fatalf("delivery=%q err=%v, want loud unconfirmed failure", delivery, err)
 	}
 }
 

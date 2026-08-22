@@ -77,16 +77,13 @@ func TestSendWithRetryTarget_ReportsSubmittedOnActive(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_SkipVerifyReportsUnverified(t *testing.T) {
+func TestSendWithRetryTarget_SkipVerifyRequiresConfirmation(t *testing.T) {
 	mock := &mockSendRetryTarget{statuses: []string{"waiting"}, panes: []string{""}}
 	delivery, err := sendWithRetryTarget(mock, "hello", true, sendRetryOptions{
 		maxRetries: 2, checkDelay: 0,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if delivery != deliveryUnverified {
-		t.Fatalf("delivery status: want %q, got %q", deliveryUnverified, delivery)
+	if err == nil || delivery != deliveryNoEvidence {
+		t.Fatalf("delivery=%q err=%v, want loud unconfirmed failure", delivery, err)
 	}
 }
 
@@ -360,14 +357,14 @@ func TestExecuteSend_NonClaudeToolSkipsGuard(t *testing.T) {
 	}
 	tun := testGuardTuning(sendRetryOptions{maxRetries: 2, checkDelay: 0})
 	res, err := executeSend(mock, "codex", "run tests", false, tun)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("non-Claude send without a turn-start transition must fail")
 	}
 	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
 		t.Fatalf("non-Claude tool must not be composer-guarded, got %d Ctrl+C calls", got)
 	}
-	if res.delivery != deliveryUnverified {
-		t.Fatalf("delivery: want %q (non-Claude skips verify), got %q", deliveryUnverified, res.delivery)
+	if res.delivery != deliveryNoEvidence {
+		t.Fatalf("delivery: want %q, got %q", deliveryNoEvidence, res.delivery)
 	}
 }
 

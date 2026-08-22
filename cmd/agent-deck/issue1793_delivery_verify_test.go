@@ -244,12 +244,9 @@ func TestIssue1793_AlreadyActiveAgent_IsNotEvidenceOfArrival(t *testing.T) {
 	}
 }
 
-// TestIssue1793_SmallPayloadKeepsTheBestEffortContract: below the size where
-// canonical-buffer loss can happen, an unmatched pane is far more likely to be
-// a rendering quirk than a lost message. Those keep reporting `unverified`
-// rather than becoming a wall of new failures — the honesty fix must not turn
-// into a false-alarm generator.
-func TestIssue1793_SmallPayloadKeepsTheBestEffortContract(t *testing.T) {
+// An unconfirmed send is a failure regardless of payload size. Transport
+// success is not evidence that the agent accepted a turn.
+func TestIssue1793_SmallPayloadMustBeConfirmed(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
 		panes:    []string{"nothing of ours here\n"},
@@ -257,18 +254,14 @@ func TestIssue1793_SmallPayloadKeepsTheBestEffortContract(t *testing.T) {
 	delivery, err := sendWithRetryTarget(mock, "please re-run the integration suite", true, sendRetryOptions{
 		maxRetries: 4, checkDelay: 0,
 	})
-	if err != nil {
-		t.Fatalf("small unmatched sends must stay best-effort, got error: %v", err)
-	}
-	if delivery != deliveryUnverified {
-		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, delivery)
+	if err == nil || delivery != deliveryNoEvidence {
+		t.Fatalf("delivery=%q err=%v, want loud unconfirmed failure", delivery, err)
 	}
 }
 
 // TestIssue1793_UnverifiableMessageSaysSoInsteadOfGuessing: a message with no
 // distinctive token cannot be looked for at all. That is "verification
-// impossible", which must be reported as unverified — not silently upgraded
-// to success-with-evidence and not downgraded to a fabricated failure.
+// impossible", which must fail rather than becoming transport-only success.
 func TestIssue1793_UnverifiableMessageSaysSoInsteadOfGuessing(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
@@ -277,11 +270,8 @@ func TestIssue1793_UnverifiableMessageSaysSoInsteadOfGuessing(t *testing.T) {
 	delivery, err := sendWithRetryTarget(mock, "y", true, sendRetryOptions{
 		maxRetries: 4, checkDelay: 0,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if delivery != deliveryUnverified {
-		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, delivery)
+	if err == nil || delivery != deliveryNoEvidence {
+		t.Fatalf("delivery=%q err=%v, want loud unconfirmed failure", delivery, err)
 	}
 }
 
@@ -303,12 +293,8 @@ func TestIssue1793_LargeMultilinePayloadIsNotFailedForItsTotalSize(t *testing.T)
 	delivery, err := sendWithRetryTarget(mock, body, true, sendRetryOptions{
 		maxRetries: 4, checkDelay: 0,
 	})
-	if err != nil {
-		t.Fatalf("a %d-byte payload whose longest line is 79 bytes is deliverable and must not be "+
-			"reported as lost: %v", len(body), err)
-	}
-	if delivery != deliveryUnverified {
-		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, delivery)
+	if err == nil || delivery != deliveryNoEvidence {
+		t.Fatalf("delivery=%q err=%v, want loud unconfirmed failure", delivery, err)
 	}
 }
 

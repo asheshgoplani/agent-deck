@@ -2,6 +2,80 @@ package send
 
 import "strings"
 
+// PaneHasOpenDialog reports whether the live bottom-of-pane UI is a modal,
+// picker, or confirmation prompt. A bare Enter belongs to that UI, not to the
+// composer, so automated submit recovery must fail closed while one is open.
+//
+// Keep this detector deliberately structural. Claude commonly renders bracket
+// buttons or a numbered permission picker; Codex renders a selected numbered
+// row together with affirmative/negative choices. Looking only near the foot
+// of the pane prevents completed prompts in scrollback from blocking sends.
+func PaneHasOpenDialog(raw string, strip func(string) string) bool {
+	strip = orIdentity(strip)
+	lines := strings.Split(strip(raw), "\n")
+	if len(lines) > 40 {
+		lines = lines[len(lines)-40:]
+	}
+	bottom := strings.ToLower(strings.Join(lines, "\n"))
+
+	// Claude permission/confirmation dialogs and generic terminal pickers.
+	hasButtons := (strings.Contains(bottom, "[allow]") && strings.Contains(bottom, "[deny]")) ||
+		(strings.Contains(bottom, "[yes]") && strings.Contains(bottom, "[no]"))
+	hasQuestion := strings.Contains(bottom, "select permission") ||
+		strings.Contains(bottom, "would you like") ||
+		strings.Contains(bottom, "do you want to proceed") ||
+		strings.Contains(bottom, "allow this")
+	if hasButtons || (hasQuestion && strings.Contains(bottom, "confirm")) {
+		return true
+	}
+
+	// Codex approval overlays have a selected numbered option plus both an
+	// affirmative and negative numbered option. Its normal composer is `› `,
+	// never `› N.`.
+	hasSelectedNumber := false
+	hasYes, hasNo := false, false
+	for _, line := range lines {
+		line = strings.ToLower(strings.TrimSpace(line))
+		selected := strings.TrimSpace(strings.TrimPrefix(line, "›"))
+		if strings.HasPrefix(line, "›") && numberedDialogLine(selected) {
+			hasSelectedNumber = true
+		}
+		if numberedDialogOption(line, "yes") || numberedDialogOption(strings.TrimPrefix(line, "› "), "yes") {
+			hasYes = true
+		}
+		if numberedDialogOption(line, "no") || numberedDialogOption(strings.TrimPrefix(line, "› "), "no") {
+			hasNo = true
+		}
+	}
+	return hasSelectedNumber && hasYes && hasNo
+}
+
+func numberedDialogLine(line string) bool {
+	dot := strings.IndexByte(line, '.')
+	if dot < 1 {
+		return false
+	}
+	for _, r := range line[:dot] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func numberedDialogOption(line, word string) bool {
+	dot := strings.IndexByte(line, '.')
+	if dot < 1 {
+		return false
+	}
+	for _, r := range line[:dot] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return strings.HasPrefix(strings.TrimSpace(line[dot+1:]), word)
+}
+
 // EnterAttribution is the single chokepoint every automated bare-Enter press
 // must route through (issue #1777).
 //
@@ -113,6 +187,9 @@ func (a EnterAttribution) EnterWouldSubmitForeignDraft(c PaneCapture, strip func
 	}
 	strip = orIdentity(strip)
 	raw := c.Raw
+	if PaneHasOpenDialog(raw, strip) {
+		return true
+	}
 	draft, visible := ComposerDraft(raw, strip)
 	if !visible || draft == "" {
 		// Empty composer, suggestion, or placeholder: Enter submits nothing.

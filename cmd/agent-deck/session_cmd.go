@@ -3863,7 +3863,7 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 					"success for a send nothing can confirm",
 				longestLine)
 		}
-		return deliveryUnverified, nil
+		return deliveryNoEvidence, fmt.Errorf("send was not submitted: no turn-start transition could be confirmed (issue #1793)")
 	}
 
 	checks := opts.maxRetries
@@ -3878,6 +3878,44 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	sawHeldComposer := false
 	recoveryEnterUsed := false
 	attrib := send.EnterAttribution{Message: message, OwnPasteMarker: baseline.paneOK && baseline.pasteMarkers == 0}
+	// recoverPending performs the mandatory second observation immediately
+	// before the sole recovery Enter. The first Enter may already be queued
+	// while the terminal still paints an old composer frame; waiting one poll
+	// and re-reading gives that accepted event a chance to clear the body. It
+	// also makes the Enter dialog-safe: modal UI wins over all body evidence.
+	recoverPending := func() (submitted, pressed bool, err error) {
+		if opts.checkDelay > 0 {
+			time.Sleep(opts.checkDelay)
+		}
+		if baseline.statusOK && !baseline.wasActive {
+			if status, statusErr := target.GetStatus(); statusErr == nil && status == "active" {
+				return true, false, nil
+			}
+		}
+		raw, captureErr := target.CapturePaneFresh()
+		if captureErr != nil {
+			return false, false, nil
+		}
+		if send.PaneHasOpenDialog(raw, tmux.StripANSI) {
+			return false, false, fmt.Errorf(
+				"dialog open, not submitted: refusing to send recovery Enter into a picker or confirmation prompt (issue #1793)")
+		}
+		content := tmux.StripANSI(raw)
+		nowOccurrences := strings.Count(collapseWhitespace(content), token)
+		nowMarkers := send.ComposerPasteMarkerCount(raw, tmux.StripANSI)
+		stillHeld := send.HasUnsentComposerPrompt(content, message) || nowMarkers > baseline.pasteMarkers
+		bodyStillPresent := nowOccurrences > baseline.occurrences || nowMarkers > baseline.pasteMarkers
+		if sawHeldComposer && !stillHeld {
+			return true, false, nil
+		}
+		// Recovery is authorized only by a present-tense observation that our
+		// body remains pending. Its late disappearance means the original Enter
+		// won the race; absence or ambiguity fails loudly without another Enter.
+		if !bodyStillPresent {
+			return false, false, nil
+		}
+		return false, attrib.NudgeEnter(target, send.Captured(raw), tmux.StripANSI), nil
+	}
 	for i := 0; i < checks; i++ {
 		recoveryUsedBeforeObservation := recoveryEnterUsed
 		// Strongest signal first: an idle agent that starts working received
@@ -3889,6 +3927,10 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		}
 		if baseline.paneOK {
 			if raw, captureErr := target.CapturePaneFresh(); captureErr == nil {
+				if send.PaneHasOpenDialog(raw, tmux.StripANSI) {
+					return deliveryTyped, fmt.Errorf(
+						"dialog open, not submitted: refusing to send recovery Enter into a picker or confirmation prompt (issue #1793)")
+				}
 				content := tmux.StripANSI(raw)
 				n := strings.Count(collapseWhitespace(content), token)
 				markers := send.ComposerPasteMarkerCount(raw, tmux.StripANSI)
@@ -3919,8 +3961,17 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 				}
 				if held {
 					sawHeldComposer = true
-					if !recoveryEnterUsed && attrib.NudgeEnter(target, send.Captured(raw), tmux.StripANSI) {
-						recoveryEnterUsed = true
+					if !recoveryEnterUsed {
+						submitted, pressed, recoveryErr := recoverPending()
+						if recoveryErr != nil {
+							return deliveryTyped, recoveryErr
+						}
+						if submitted {
+							return deliverySubmitted, nil
+						}
+						if pressed {
+							recoveryEnterUsed = true
+						}
 					}
 				} else if sawHeldComposer {
 					// The attributable payload was observed in the composer and
@@ -3931,8 +3982,17 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 				// region. A newly visible attributable body is still enough to
 				// authorize the single forced-Enter recovery; it is never enough
 				// by itself to certify submission.
-				if sawBody && !recoveryEnterUsed && attrib.NudgeEnter(target, send.Captured(raw), tmux.StripANSI) {
-					recoveryEnterUsed = true
+				if sawBody && !recoveryEnterUsed {
+					submitted, pressed, recoveryErr := recoverPending()
+					if recoveryErr != nil {
+						return deliveryTyped, recoveryErr
+					}
+					if submitted {
+						return deliverySubmitted, nil
+					}
+					if pressed {
+						recoveryEnterUsed = true
+					}
 				}
 				if recoveryUsedBeforeObservation && !held {
 					if draft, visible := send.CurrentComposerPrompt(content); visible && draft == "" {
@@ -3967,7 +4027,8 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 				"reported as a failure rather than as an unverified success",
 			longestLine, checks)
 	}
-	return deliveryUnverified, nil
+	return deliveryNoEvidence, fmt.Errorf(
+		"send was not submitted: no turn-start transition was observed after %d checks (issue #1793)", checks)
 }
 
 // longestMessageLineBytes is the length of the longest line of message.

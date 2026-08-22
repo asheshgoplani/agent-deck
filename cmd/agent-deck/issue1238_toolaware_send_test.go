@@ -20,18 +20,17 @@ func nonClaudeShapedTarget() *mockSendRetryTarget {
 	return &mockSendRetryTarget{statuses: []string{"waiting"}, panes: []string{""}}
 }
 
-// TestSend_NonClaudeTool_NotReportedDropped is the issue #1238 regression: a
-// successful send to a non-Claude tool must NOT return the "dropped silently"
-// error, for every non-Claude tool — not just codex (#1205).
-func TestSend_NonClaudeTool_NotReportedDropped(t *testing.T) {
+// Non-Claude tools use the same confirmation contract: without a pane or
+// turn-start transition they fail loudly rather than claiming delivery.
+func TestSend_NonClaudeTool_UnconfirmedFails(t *testing.T) {
 	for _, tool := range []string{"codex", "codewhale", "gemini", "opencode"} {
 		t.Run(tool, func(t *testing.T) {
 			mock := nonClaudeShapedTarget()
 			_, err := sendWithRetryTarget(mock, "do the multi-line task please", skipClaudeDeliveryVerify(tool), sendRetryOptions{
 				maxRetries: 50, checkDelay: 0, verifyDelivery: true,
 			})
-			if err != nil {
-				t.Fatalf("%s: delivered send must not be reported dropped, got: %v", tool, err)
+			if err == nil {
+				t.Fatalf("%s: unconfirmed send returned success", tool)
 			}
 			if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
 				t.Fatalf("%s: expected exactly 1 atomic send, got %d", tool, got)

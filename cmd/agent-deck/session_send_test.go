@@ -408,9 +408,9 @@ func TestSendWithRetryTarget_SkipVerify(t *testing.T) {
 		statuses: []string{"waiting"},
 		panes:    []string{""},
 	}
-	_, err := sendWithRetryTarget(mock, "hello", true, sendRetryOptions{maxRetries: 4, checkDelay: 0})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	delivery, err := sendWithRetryTarget(mock, "hello", true, sendRetryOptions{maxRetries: 4, checkDelay: 0})
+	if err == nil || delivery != deliveryNoEvidence {
+		t.Fatalf("delivery=%q err=%v, want loud unconfirmed failure", delivery, err)
 	}
 	if atomic.LoadInt32(&mock.sendEnterCalls) != 0 {
 		t.Fatalf("expected 0 SendEnter calls, got %d", mock.sendEnterCalls)

@@ -55,10 +55,8 @@ func paneTranscriptMarkerPlusComposerMarker() string {
 // double-delivery class (#876), so this is the more dangerous of the two
 // directions.
 //
-// The honest answer for a pane that shows neither the body nor an unsubmitted
-// composer is deliveryUnverified with no error: the historical best-effort
-// contract for a body whose lines are all below arrivalSafeLineBytes
-// (see TestIssue1793_SmallPayloadKeepsTheBestEffortContract).
+// A pane that shows neither the body nor an unsubmitted composer cannot prove
+// a turn started, so it must fail loudly.
 func TestIssue1855_TranscriptMarkerWithEmptyComposerIsNotArrivalEvidence(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		// Busy before the send and busy after it: no attributable transition,
@@ -77,11 +75,8 @@ func TestIssue1855_TranscriptMarkerWithEmptyComposerIsNotArrivalEvidence(t *test
 	if delivery == deliveryTyped {
 		t.Fatal("issue #1855: a marker in the TRANSCRIPT above an empty composer is a submitted send, not unsent bytes; reporting it as typed fails a delivery that worked and invites a double send (#876)")
 	}
-	if err != nil {
-		t.Fatalf("small unmatched sends must stay best-effort, got error: %v", err)
-	}
-	if delivery != deliveryUnverified {
-		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, delivery)
+	if err == nil || delivery != deliveryNoEvidence {
+		t.Fatalf("delivery=%q err=%v, want loud unconfirmed failure", delivery, err)
 	}
 }
 

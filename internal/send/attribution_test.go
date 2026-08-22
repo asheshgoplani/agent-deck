@@ -168,6 +168,25 @@ func TestNudgeEnter_PressesOnlyWhenAttributable(t *testing.T) {
 	}
 }
 
+func TestPaneHasOpenDialogClaudeAndCodex(t *testing.T) {
+	tests := map[string]string{
+		"claude": "BUSY\nSelect permission [Allow] [Deny]\n",
+		"codex":  "Would you like to run the following command?\n› 1. Yes, proceed\n  2. No, and tell Codex what to do differently\n",
+	}
+	for name, dialog := range tests {
+		t.Run(name, func(t *testing.T) {
+			if !PaneHasOpenDialog(dialog, nil) {
+				t.Fatal("expected open dialog")
+			}
+			presses := 0
+			if (EnterAttribution{Message: "nonce"}).NudgeEnter(
+				enterPresserFunc(func() error { presses++; return nil }), Captured(dialog), nil) || presses != 0 {
+				t.Fatal("dialog must withhold recovery Enter")
+			}
+		})
+	}
+}
+
 type enterPresserFunc func() error
 
 func (f enterPresserFunc) SendEnter() error { return f() }
