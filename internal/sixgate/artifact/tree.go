@@ -72,7 +72,7 @@ var Gates = []GateSpec{
 		Requires: []string{ScriptFile},
 		Purpose:  "the journey written as literal keystrokes BEFORE building; if nobody can write it, the feature is undefined",
 	},
-	{
+	{ //nolint:gosec // pass-signal filenames are artifact paths, not credentials
 		ID: G1, Name: "DRIVE", Dir: "G1-drive",
 		Requires: []string{"*/transcript.md", "*/run.json", "*/*.screen.txt"}, PassSignal: "*/run.json",
 		Purpose: "something executed G0 end to end against the real built artifact and captured what a human would see",
@@ -87,7 +87,7 @@ var Gates = []GateSpec{
 		Requires: []string{"matrix.json", "matrix.md"}, PassSignal: "matrix.json",
 		Purpose: "every tool type, every session state, empty and enormous inputs, and a cold first run with no config",
 	},
-	{
+	{ //nolint:gosec // pass-signal filenames are artifact paths, not credentials
 		ID: G4, Name: "ORACLE", Dir: "G4-oracle",
 		Requires: []string{"parity.json", "parity.md"}, PassSignal: "parity.json",
 		Purpose: "every number compared against a source of truth the author did not write; unoracled figures must be labelled estimates on screen",

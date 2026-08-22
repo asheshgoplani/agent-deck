@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/sixgate/artifact"
 	"github.com/asheshgoplani/agent-deck/internal/sixgate/oracle"
 )
@@ -276,7 +277,7 @@ func runOracleCommand(argv []string, dir string) ([]byte, error) {
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv comes from the reviewed declaration, and there is no shell
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), collectEnvGuard+"=nested-collect")
+	cmd.Env = append(childenv.ForLaunch(""), collectEnvGuard+"=nested-collect")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

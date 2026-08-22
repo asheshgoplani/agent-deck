@@ -57,6 +57,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
@@ -345,12 +346,13 @@ func withinDir(dir, path string) bool {
 // drift: spawn and teardown cannot disagree about where the socket is, because
 // neither of them is reading a value anybody else can change.
 func pinnedEnv(tmpDir string, extra map[string]string) []string {
-	out := make([]string, 0, len(os.Environ())+len(extra)+1)
+	base := childenv.ForLaunch("")
+	out := make([]string, 0, len(base)+len(extra)+1)
 	overridden := make(map[string]bool, len(extra))
 	for k := range extra {
 		overridden[k] = true
 	}
-	for _, kv := range os.Environ() {
+	for _, kv := range base {
 		key, _, _ := strings.Cut(kv, "=")
 		if strings.HasPrefix(key, "TMUX") || overridden[key] {
 			continue
@@ -492,19 +494,6 @@ func (c *ctl) sendLiteral(target, text string) error {
 		return fmt.Errorf("sending literal %q: %w (%s)", text, err, stderr)
 	}
 	return nil
-}
-
-// alive reports whether a server is answering on OUR socket.
-func (c *ctl) alive() bool {
-	_, _, err := c.run("ls")
-	return err == nil
-}
-
-// hasSession reports whether the named session is still on our socket, which is
-// how the driver notices the TUI exited.
-func (c *ctl) hasSession(name string) bool {
-	_, _, err := c.run("has-session", "-t", name)
-	return err == nil
 }
 
 // teardown kills the server, sweeps the isolated directory, and then PROVES
