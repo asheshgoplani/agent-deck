@@ -254,6 +254,22 @@ through too, so nested groups can be indented like the TUI tree.
 
 ### D. Sidebar
 
+**Status chips.** The chip row carries one chip per status bucket, in the
+bucket order with the bucket glyphs: `● running`, `◐ waiting`, `○ idle`,
+`■ stopped`, `✕ error`. `stopped` was missing before, so a parked session
+could not be filtered for from the web at all.
+
+Chips match on the **bucket**, not the raw status, so they agree with the group
+stats panel: `starting` counts as running and `queued` as idle. The previous
+exact-match (`statuses.includes(s.status)`) meant a starting or queued session
+matched no chip and disappeared from the sidebar the moment any filter was
+activated.
+
+Chips filter the sidebar only. Archived sessions are not in the snapshot the
+sidebar renders, so no chip reaches them — the same as the TUI, whose list
+partitions archived out (`home.go:2470-2493`) before applying its status
+filter. The group stats panel is the one surface that shows archived sessions.
+
 The group head splits into two hit targets:
 
 ```js
