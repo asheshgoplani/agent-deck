@@ -431,6 +431,198 @@ def get_session_output(session: str, profile: str | None = None) -> str:
         return result.stdout.strip()
 
 
+def capture_pane(session: str, profile: str | None = None) -> str:
+    """Raw tmux pane capture for a session, via ``session output --pane``.
+
+    Unlike get_session_output (which returns the parsed "last response"), this
+    returns the live pane content WITH ANSI/SGR escapes preserved — the only
+    reliable way to see an open option-picker or the current composer contents.
+    Returns "" on any failure so callers fail OPEN (never block on an unknown
+    pane state).
+    """
+    result = run_cli(
+        "session", "output", session, "--pane", "--json", profile=profile, timeout=15
+    )
+    if result.returncode != 0:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+        return data.get("content") or ""
+    except json.JSONDecodeError:
+        # Legacy/quiet builds may print the raw pane directly.
+        return result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Interactive-state guard for automated sends (issue #1981)
+# ---------------------------------------------------------------------------
+#
+# A routine/heartbeat ``session send`` types text and presses Enter. When the
+# target Claude Code pane is mid-interaction, that Enter is destructive:
+#
+#   (a) an open AskUserQuestion option-picker resolves to its HIGHLIGHTED
+#       default — the model receives an answer the user never gave; and
+#   (b) a composer holding the user's half-typed input gets overwritten.
+#
+# Both states still report session status ``waiting`` (waiting fires on
+# AskUserQuestion / EnterPlanMode), so status alone cannot gate the send. The
+# helpers below inspect a raw pane capture and report whether an automated send
+# would clobber live interaction, so the caller can skip that cycle. Every
+# check fails OPEN: any capture/parse failure is treated as "safe to send".
+
+# Matches a full CSI escape sequence (used to strip ANSI for plain-text scans).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+# Matches only an SGR sequence and captures its parameters (for dim detection).
+_SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+
+# AskUserQuestion option-picker markers. The footer strings mirror the ones the
+# Go prompt detector already keys on ("Press Enter to select" / "Use arrow keys
+# to navigate"), so the two agree about what a picker looks like.
+_PICKER_OPTION_RE = re.compile(r"^\s*[❯>]?\s*(\d+)\.\s+(.+?)\s*$")
+_PICKER_TITLE_RE = re.compile(r"^\s*[☐☑☒◻◼▢]\s*(.+?)\s*$")
+_PICKER_FOOTER_RE = re.compile(r"enter to select|to navigate", re.I)
+_PICKER_FREETEXT_RE = re.compile(r"^type something\b", re.I)
+_PICKER_META_RES = (re.compile(r"^chat about this\b", re.I),)
+
+# Composer region markers: the hint line under the input box, and a box border
+# made of horizontal rules.
+_INPUT_FOOTER_RE = re.compile(r"⏵⏵|bypass permissions|esc to interrupt|shift\+tab", re.I)
+_BORDERISH = re.compile(r"^[│\s]*[─—-]{4,}")
+
+
+def _pane_has_open_picker(pane_text: str) -> bool:
+    """True if an AskUserQuestion option-picker is currently open in the pane.
+
+    Requires the picker footer PLUS two or more real numbered answer options
+    PLUS a checkbox-style title above them, so ordinary transcript prose that
+    merely mentions "enter to select" does not match. The "Type something"
+    free-text row and meta rows ("Chat about this") are not counted as answer
+    options.
+    """
+    lines = _ANSI_RE.sub("", pane_text).splitlines()
+    footer_idx = next((i for i, ln in enumerate(lines) if _PICKER_FOOTER_RE.search(ln)), None)
+    if footer_idx is None:
+        return False
+    real = 0
+    first_opt = None
+    for i in range(footer_idx):
+        m = _PICKER_OPTION_RE.match(lines[i])
+        if not m:
+            continue
+        if first_opt is None:
+            first_opt = i
+        label = m.group(2).strip()
+        if _PICKER_FREETEXT_RE.match(label) or any(p.match(label) for p in _PICKER_META_RES):
+            continue
+        real += 1
+    if real < 2 or first_opt is None:
+        return False
+    return any(_PICKER_TITLE_RE.match(lines[i]) for i in range(first_opt))
+
+
+def _post_prompt_is_ghost(raw_line: str) -> bool:
+    """True iff the composer body on this RAW (ansi-bearing) line has visible
+    text and ALL of it is DIM.
+
+    Claude Code renders a SUGGESTED (ghost) next prompt in the composer as
+    dim/faint text (SGR 2); a real user-typed draft is bright/default. A ghost
+    is clobberable (Claude offers one nearly every turn, so protecting them
+    would starve automated sends); a real draft is not. This errs toward False
+    (i.e. "not a ghost — protect it") the moment any visible char is non-dim,
+    so real user input is never mistaken for a ghost. SGR param "2" = faint-on;
+    "0"/"22"/empty = faint-off.
+    """
+    m = re.search(r"[❯>]", raw_line)
+    seg = raw_line[m.end():] if m else raw_line
+    dim = False
+    saw_visible = False
+    i = 0
+    n = len(seg)
+    while i < n:
+        if seg[i] == "\x1b":
+            sm = _SGR_RE.match(seg, i)
+            if sm:
+                params = sm.group(1)
+                for p in (params.split(";") if params else ["0"]):
+                    if p == "2":
+                        dim = True
+                    elif p in ("0", "22", ""):
+                        dim = False
+                i = sm.end()
+                continue
+            am = _ANSI_RE.match(seg, i)  # non-SGR CSI/escape → skip it
+            if am:
+                i = am.end()
+                continue
+        ch = seg[i]
+        if not ch.isspace() and ch not in ("│", "❯", ">"):
+            saw_visible = True
+            if not dim:
+                return False
+        i += 1
+    return saw_visible
+
+
+def _composer_has_unsent_draft(pane_text: str) -> bool:
+    """True if the live composer holds the user's unsent text (mid-typing) that
+    a routine send would clobber.
+
+    Walks up from the input footer to the ``❯`` prompt, stopping at the box
+    border; an empty prompt (``❯`` with nothing after it) is not a draft. A
+    Claude-suggested ghost draft (rendered dim, SGR 2) is NOT protected — only
+    real, non-dim user input counts (see _post_prompt_is_ghost).
+    """
+    raw_lines = pane_text.splitlines()
+    text = _ANSI_RE.sub("", pane_text)
+    lines = text.splitlines()  # index-aligned with raw_lines (SGR strip keeps line count)
+    fi = None
+    for i in range(len(lines) - 1, -1, -1):
+        if _INPUT_FOOTER_RE.search(lines[i]):
+            fi = i
+            break
+    if fi is None:
+        return False
+    bi = next((j for j in range(fi - 1, -1, -1) if _BORDERISH.match(lines[j])), None)
+    if bi is None:
+        return False
+    for j in range(bi - 1, max(-1, bi - 40), -1):
+        raw = lines[j].rstrip()
+        if _BORDERISH.match(raw):  # top border / titled bar → stop before the transcript
+            break
+        s = raw.strip().lstrip("│").strip()
+        starts = s[:1] in ("❯", ">")
+        body = s[1:].strip() if starts else s
+        if body:
+            rawline = raw_lines[j] if j < len(raw_lines) else ""
+            if _post_prompt_is_ghost(rawline):
+                # dim ghost suggestion — clobberable, not a real draft
+                if starts:
+                    break     # composer prompt line holds only a ghost → no real draft
+                continue      # a dim continuation line → keep scanning up
+            return True
+        if starts:  # reached an empty ❯ prompt → no draft
+            break
+    return False
+
+
+def _pane_blocks_automated_send(pane_text: str) -> str | None:
+    """Reason string if an automated send into this pane would disrupt live
+    interaction — an AskUserQuestion picker is open (the send's Enter selects
+    its default), or the composer holds the user's unsent draft (the send
+    clobbers it) — else None. Cheapest check first.
+
+    Pure and total: an empty or unparseable capture yields None (send allowed),
+    so callers fail OPEN.
+    """
+    if not pane_text:
+        return None
+    if _pane_has_open_picker(pane_text):
+        return "askuserquestion-picker-open"
+    if _composer_has_unsent_draft(pane_text):
+        return "composer-holds-unsent-input"
+    return None
+
+
 # Async callable type for reply notifications: (response_text: str) -> None
 ReplyCallback = Callable[[str], Coroutine[Any, Any, None]]
 
@@ -2888,6 +3080,33 @@ async def heartbeat_loop(
                     log.info(
                         "Heartbeat [%s]: conductor busy (%s), skipping this cycle",
                         name, conductor_status,
+                    )
+                    continue
+
+                # issue #1981: a routine send types text + Enter. If the pane is
+                # mid-interaction — an AskUserQuestion picker is open, or the
+                # composer holds the user's unsent draft — that Enter selects the
+                # picker default or clobbers the draft. Skip this cycle when the
+                # pane shows either. Fail OPEN: any capture/parse failure leaves
+                # block_reason None so the send still goes out (heartbeats are
+                # never permanently blocked). The capture runs in the executor so
+                # the blocking CLI call never freezes the event loop.
+                try:
+                    pane_text = await loop.run_in_executor(
+                        None,
+                        functools.partial(capture_pane, session_title, profile=profile),
+                    )
+                    block_reason = _pane_blocks_automated_send(pane_text)
+                except Exception as e:
+                    log.warning(
+                        "Heartbeat [%s]: interactive-state check failed (%s); allowing send",
+                        name, e,
+                    )
+                    block_reason = None
+                if block_reason:
+                    log.info(
+                        "Heartbeat [%s]: skipping this cycle — %s",
+                        name, block_reason,
                     )
                     continue
 
