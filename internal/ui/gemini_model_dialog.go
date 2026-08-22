@@ -33,6 +33,23 @@ type GeminiModelDialog struct {
 	current    string // Currently active model
 }
 
+// geminiModelVisibleRows is the list viewport after reserving the dialog's
+// title, separator, status/scroll indicators, primary action, border and
+// padding. Keeping this math separate makes the 100x30 contract testable.
+func geminiModelVisibleRows(height int) int {
+	if height <= 0 {
+		return 15
+	}
+	rows := height - 12
+	if rows < 3 {
+		rows = 3
+	}
+	if rows > 15 {
+		rows = 15
+	}
+	return rows
+}
+
 // NewGeminiModelDialog creates a new model selection dialog
 func NewGeminiModelDialog() *GeminiModelDialog {
 	return &GeminiModelDialog{}
@@ -173,13 +190,7 @@ func (d *GeminiModelDialog) View() string {
 	}
 
 	// Model list
-	maxVisible := 15
-	if d.height > 0 {
-		maxVisible = d.height/2 - 6
-		if maxVisible < 5 {
-			maxVisible = 5
-		}
-	}
+	maxVisible := geminiModelVisibleRows(d.height)
 
 	// Calculate scroll window
 	start := 0
@@ -213,9 +224,13 @@ func (d *GeminiModelDialog) View() string {
 		content.WriteString("\n")
 	}
 
-	if len(d.models) > maxVisible {
+	if start > 0 {
+		content.WriteString(dimStyle.Render("  ↑ more models"))
 		content.WriteString("\n")
-		content.WriteString(dimStyle.Render("  " + strings.Repeat(".", 3) + " scroll for more"))
+	}
+	if end < len(d.models) {
+		content.WriteString("\n")
+		content.WriteString(dimStyle.Render("  ↓ more models"))
 		content.WriteString("\n")
 	}
 

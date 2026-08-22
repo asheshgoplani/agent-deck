@@ -15680,7 +15680,7 @@ func (h *Home) renderHelpBarWidthAdaptive() string {
 	switch {
 	case h.width < 70:
 		return h.renderHelpBarMinimal()
-	case h.width < 100:
+	case h.width <= 100:
 		return h.renderHelpBarCompact()
 	default:
 		return h.renderHelpBarFull()
@@ -15871,6 +15871,13 @@ func (h *Home) renderHelpBarCompact() string {
 			if key := h.actionKey(hotkeyRestart); key != "" {
 				contextHints = append(contextHints, h.helpKeyShort(key, "Restart"))
 			}
+			// Skills is a primary selected-session action. Keep it ahead of the
+			// rarer optional actions so the width fitter retains it at 100 cols.
+			if item.Session != nil && session.SupportsProjectSkills(item.Session.Tool) {
+				if key := h.actionKey(hotkeySkillsManager); key != "" {
+					contextHints = append(contextHints, h.helpKeyShort(key, "Skills"))
+				}
+			}
 			if item.Session != nil && item.Session.CanRestartFresh() && restartFreshKey != "" {
 				contextHints = append(contextHints, h.helpKeyShort(restartFreshKey, "Fresh"))
 			}
@@ -15885,11 +15892,6 @@ func (h *Home) renderHelpBarCompact() string {
 				}
 				if key := h.actionKey(hotkeyTogglePreview); key != "" {
 					contextHints = append(contextHints, h.helpKeyShort(key, h.previewModeShort()))
-				}
-			}
-			if item.Session != nil && session.SupportsProjectSkills(item.Session.Tool) {
-				if key := h.actionKey(hotkeySkillsManager); key != "" {
-					contextHints = append(contextHints, h.helpKeyShort(key, "Skills"))
 				}
 			}
 			if key := h.actionKey(hotkeyCopyOutput); key != "" {
@@ -15945,12 +15947,13 @@ func (h *Home) renderHelpBarCompact() string {
 
 	leftPart := strings.Join(contextHints, " ")
 	rightPart := globalHints
-	padding := h.width - lipgloss.Width(leftPart) - lipgloss.Width(rightPart) - 4
-	if padding < 2 {
-		// Content too wide for one line — drop right part to avoid overflow
-		padding = 2
-		rightPart = ""
+	// Drop lowest-priority context hints as whole units. MaxWidth alone can
+	// truncate a label (notably "Skills") halfway through at exactly 100 cols.
+	for len(contextHints) > 0 && lipgloss.Width(leftPart)+lipgloss.Width(rightPart)+6 > h.width {
+		contextHints = contextHints[:len(contextHints)-1]
+		leftPart = strings.Join(contextHints, " ")
 	}
+	padding := max(2, h.width-lipgloss.Width(leftPart)-lipgloss.Width(rightPart)-4)
 
 	content := leftPart + sep + strings.Repeat(" ", padding) + rightPart
 

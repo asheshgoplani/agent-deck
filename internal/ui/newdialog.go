@@ -224,6 +224,82 @@ type NewDialog struct {
 	enterAdvances bool
 }
 
+// viewportDialogContent keeps the dialog's identity and primary action pinned
+// while scrolling the form body around the focused control.  Lip Gloss Place
+// does not clip oversized content, so without this an ordinary 100x30 terminal
+// loses both ends of the form (#896).
+func viewportDialogContent(content string, width, height int) string {
+	if width < 1 || height < 1 {
+		return content
+	}
+	wrapped := lipgloss.NewStyle().Width(width).Render(content)
+	lines := strings.Split(wrapped, "\n")
+	for len(lines) > 0 && strings.TrimSpace(stripAnsi(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) <= height {
+		return content
+	}
+	if len(lines) < 4 {
+		return strings.Join(lines, "\n")
+	}
+
+	// The title/group pair and the final action/help line are stable chrome.
+	headerEnd := min(2, len(lines)-1)
+	footer := lines[len(lines)-1]
+	bodyStart, bodyEnd := headerEnd, len(lines)-1
+	focus := bodyStart
+	for i := bodyStart; i < bodyEnd; i++ {
+		if strings.Contains(stripAnsi(lines[i]), "▶") {
+			focus = i
+			break
+		}
+	}
+
+	// Reserve both indicator rows initially. Unused indicators are returned to
+	// the body below, maximizing useful content near either edge.
+	budget := max(1, height-headerEnd-1-2)
+	start := focus - budget/2
+	if start < bodyStart {
+		start = bodyStart
+	}
+	end := start + budget
+	if end > bodyEnd {
+		end = bodyEnd
+		start = max(bodyStart, end-budget)
+	}
+	showUp, showDown := start > bodyStart, end < bodyEnd
+	used := headerEnd + (end - start) + 1
+	if showUp {
+		used++
+	}
+	if showDown {
+		used++
+	}
+	for used < height && start > bodyStart {
+		start--
+		used++
+		showUp = start > bodyStart
+	}
+	for used < height && end < bodyEnd {
+		end++
+		used++
+		showDown = end < bodyEnd
+	}
+
+	dim := lipgloss.NewStyle().Foreground(ColorComment)
+	visible := append([]string(nil), lines[:headerEnd]...)
+	if showUp {
+		visible = append(visible, dim.Render("  ↑ more fields"))
+	}
+	visible = append(visible, lines[start:end]...)
+	if showDown {
+		visible = append(visible, dim.Render("  ↓ more fields"))
+	}
+	visible = append(visible, footer)
+	return strings.Join(visible, "\n")
+}
+
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
 type dialogSnapshot struct {
 	name             string
@@ -2914,9 +2990,9 @@ func (d *NewDialog) View() string {
 		}
 	} else if cur == focusModel {
 		if d.modelSuggestionActive {
-			helpText = "↑/↓ navigate │ Space/Enter select │ Esc back │ Tab next"
+			helpText = "↑/↓ navigate │ Space/Enter select │ Esc back │ ^S create"
 		} else {
-			helpText = "Type custom model ID │ Enter browse known IDs │ Tab next"
+			helpText = "Type custom model ID │ Enter browse IDs │ Tab next │ ^S create"
 		}
 	} else if cur == focusReasoningEffort {
 		helpText = "←→/Space choose effort │ Tab next │ Enter/^S create │ Esc cancel"
@@ -2931,8 +3007,30 @@ func (d *NewDialog) View() string {
 	}
 	content.WriteString(helpStyle.Render(helpText))
 
+	// Border plus Padding(2, 4) consume six terminal rows. At constrained
+	// heights, viewport only the form body; wide/tall dialogs remain byte-for-
+	// byte on the original rendering path.
+	innerWidth := max(1, dialogWidth-8)
+	maxContentHeight := d.height - 6
+	fullContent := content.String()
+	viewported := viewportDialogContent(fullContent, innerWidth, maxContentHeight)
+
+	// Dropdown anchors are based on visual lines. Recompute them after the
+	// viewport has wrapped/scrolled so a picker follows its focused input.
+	if viewported != fullContent {
+		for i, line := range strings.Split(viewported, "\n") {
+			plain := stripAnsi(line)
+			if strings.Contains(plain, "▶ Model ID:") {
+				d.modelLineOffset = i + 3 // title margin + label + input
+			}
+			if strings.Contains(plain, "▶ Path:") {
+				d.suggestionsLineOffset = i + 3 // title margin + label + input
+			}
+		}
+	}
+
 	// Wrap in dialog box
-	dialog := dialogStyle.Render(content.String())
+	dialog := dialogStyle.Render(viewported)
 
 	// Center the dialog
 	placed := lipgloss.Place(
@@ -3018,6 +3116,9 @@ func (d *NewDialog) renderSuggestionsDropdown() string {
 
 	// Real suggestions below, with paginated scrolling around the selected one.
 	maxShow := 5
+	if d.height > 0 && d.height <= 30 {
+		maxShow = 3
+	}
 	total := len(d.pathSuggestions)
 	if total > 0 {
 		// Cursor 1..N maps to suggestions 0..N-1; -1 means "Type custom" is selected.
@@ -3116,6 +3217,11 @@ func (d *NewDialog) renderModelSuggestionsDropdown() string {
 	b.WriteString(style.Render(prefix + label))
 
 	maxShow := 6
+	if d.height > 0 && d.height <= 30 {
+		// Leave room for both the dropdown footer and the dialog's pinned
+		// create action; a six-row menu overwrote that action at 100x30.
+		maxShow = 3
+	}
 	total := len(d.modelSuggestions)
 	if total > 0 {
 		suggCursor := d.modelSuggestionCursor - 1
