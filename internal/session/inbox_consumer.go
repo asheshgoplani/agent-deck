@@ -315,7 +315,7 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 		if ledgerGeneration := consumedLedgerGeneration(consumed); generation <= ledgerGeneration {
 			generation = ledgerGeneration + 1
 		}
-		consumed[consumedLedgerGenerationKey] = int64(generation)
+		consumed[consumedLedgerGenerationKey] = int64(generation) // #nosec G115 -- generation increments by 1 per consume; reaching int64 overflow would need 2^63 consumed turns
 		if err := saveConsumedTurnsLocked(parentID, consumed); err != nil {
 			// Ledger not durable — leave the WAL in place so the next drain
 			// re-delivers rather than loses.
