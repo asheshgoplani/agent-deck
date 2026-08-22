@@ -27,6 +27,10 @@ Complete reference for all agent-deck CLI commands.
 -q, --quiet             Minimal output
 ```
 
+`--help` and `-h` are read-only on every human-facing command. Dispatchers
+that define bare `help` (including hooks, DeepSeek, remote, notify-daemon, and
+creds-refresh) also treat it as read-only wherever it appears.
+
 ## Basic Commands
 
 ### add - Create session

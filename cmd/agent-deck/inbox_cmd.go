@@ -18,6 +18,11 @@ import (
 // (at-most-once); the `drain` subcommand is the durable consumer path. See
 // internal/session/inbox.go.
 func handleInbox(profile string, args []string) {
+	if helpRequested(args) {
+		fmt.Fprintln(os.Stdout, "Usage: agent-deck inbox <session-id>")
+		fmt.Fprintln(os.Stdout, "       agent-deck inbox drain [--json] [<session-id>|self]")
+		return
+	}
 	if err := runInboxWithProfile(os.Stdout, args, profile); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(inboxExitCode(err))
