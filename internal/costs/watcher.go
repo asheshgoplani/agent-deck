@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -66,28 +65,34 @@ func (w *CostEventWatcher) EventCh() <-chan RawCostEvent {
 // Start begins watching for file events. Blocks until stopped.
 func (w *CostEventWatcher) Start() {
 	defer close(w.eventCh)
-	var mu sync.Mutex
 	pending := make(map[string]struct{})
 	var timer *time.Timer
+	var timerCh <-chan time.Time
 
 	processPending := func() {
-		mu.Lock()
 		files := make([]string, 0, len(pending))
 		for f := range pending {
 			files = append(files, f)
 		}
 		pending = make(map[string]struct{})
-		mu.Unlock()
 
 		for _, f := range files {
 			w.processFile(f)
 		}
 	}
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 
 	for {
 		select {
 		case <-w.ctx.Done():
 			return
+		case <-timerCh:
+			timerCh = nil
+			processPending()
 		case event, ok := <-w.watcher.Events:
 			if !ok {
 				return
@@ -98,14 +103,20 @@ func (w *CostEventWatcher) Start() {
 			if filepath.Ext(event.Name) != ".json" || strings.HasSuffix(event.Name, ".tmp") {
 				continue
 			}
-			mu.Lock()
 			pending[event.Name] = struct{}{}
-			mu.Unlock()
 
-			if timer != nil {
-				timer.Stop()
+			if timer == nil {
+				timer = time.NewTimer(100 * time.Millisecond)
+			} else {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(100 * time.Millisecond)
 			}
-			timer = time.AfterFunc(100*time.Millisecond, processPending)
+			timerCh = timer.C
 		case <-w.watcher.Errors:
 			// continue
 		}

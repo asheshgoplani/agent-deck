@@ -759,7 +759,12 @@ func main() {
 			defer fetchCancel()
 			execCleanup.fetchCancel = fetchCancel
 			fetcher := &costs.Fetcher{CachePath: filepath.Join(cacheDir, "pricing.json"), Pricer: pricer}
-			go fetcher.StartDaily(fetchCtx)
+			fetchDone := make(chan struct{})
+			execCleanup.fetchDone = fetchDone
+			go func() {
+				defer close(fetchDone)
+				fetcher.StartDaily(fetchCtx)
+			}()
 		}
 
 		// Set up budget checker
@@ -787,12 +792,20 @@ func main() {
 		costEventsDir := getCostEventsDir()
 		costWatcher, watchErr := costs.NewCostEventWatcher(costEventsDir)
 		if watchErr == nil {
-			go costWatcher.Start()
+			costWatcherDone := make(chan struct{})
+			go func() {
+				defer close(costWatcherDone)
+				costWatcher.Start()
+			}()
 			defer costWatcher.Stop()
 			execCleanup.costWatcherStop = costWatcher.Stop
+			execCleanup.costWatcherDone = costWatcherDone
 
 			// Process incoming cost events from hooks
+			costConsumerDone := make(chan struct{})
+			execCleanup.costConsumerDone = costConsumerDone
 			go func() {
+				defer close(costConsumerDone)
 				for raw := range costWatcher.EventCh() {
 					ev := costs.CostEvent{
 						ID:               fmt.Sprintf("%s_%d", raw.InstanceID, raw.Timestamp),
@@ -1009,9 +1022,15 @@ type execCleanupTasks struct {
 	maintenanceCancel context.CancelFunc
 	maintenanceDone   <-chan struct{}
 	fetchCancel       context.CancelFunc
+	fetchDone         <-chan struct{}
 	costWatcherStop   func()
+	costWatcherDone   <-chan struct{}
+	costConsumerDone  <-chan struct{}
 	webShutdown       func() error
+	workerWaitTimeout time.Duration
 }
+
+const defaultExecWorkerWaitTimeout = 5 * time.Second
 
 func stopExecWorkers(tasks execCleanupTasks) error {
 	if tasks.maintenanceCancel != nil {
@@ -1027,8 +1046,37 @@ func stopExecWorkers(tasks execCleanupTasks) error {
 	if tasks.webShutdown != nil {
 		shutdownErr = tasks.webShutdown()
 	}
-	if tasks.maintenanceDone != nil {
-		<-tasks.maintenanceDone
+	timeout := tasks.workerWaitTimeout
+	if timeout <= 0 {
+		timeout = defaultExecWorkerWaitTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	workers := []struct {
+		name string
+		done <-chan struct{}
+	}{
+		{"maintenance worker", tasks.maintenanceDone},
+		{"pricing fetcher", tasks.fetchDone},
+		{"cost event watcher", tasks.costWatcherDone},
+		{"cost event consumer", tasks.costConsumerDone},
+	}
+	for _, worker := range workers {
+		if worker.done == nil {
+			continue
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("timed out after %s waiting for %s to stop before re-exec", timeout, worker.name)
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-worker.done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+			return fmt.Errorf("timed out after %s waiting for %s to stop before re-exec", timeout, worker.name)
+		}
 	}
 	if shutdownErr != nil {
 		return fmt.Errorf("shutdown web server: %w", shutdownErr)
