@@ -34,6 +34,13 @@ Fixes after remeasurement:
   rows it claims to govern. The old assertion stayed “inside” the block while complete
   paginated views repeated intentionally clipped header/footer chrome, producing false
   failures unrelated to the wrapped measured values.
+- Updated the pre-existing headless `--select` eval to use the context branch's explicit
+  `AGENT_DECK_ALLOW_NO_TTY` harness escape hatch. Without it, the branch's new non-TTY
+  safety guard correctly exited before the warning that eval was intended to inspect.
+- Cleared nine branch-owned lint failures: SIXGATE child processes now use the shared
+  filtered child environment (preventing conductor credentials and Telegram variables
+  from leaking), fixture deletion uses root-scoped filesystem operations, dead tmux
+  helpers were removed, and artifact filenames carry narrow false-positive annotations.
 
 Proof after these repairs:
 
@@ -41,6 +48,7 @@ Proof after these repairs:
 - `go build ./...` and `go vet ./...` pass.
 - Strict `govulncheck ./...` reaches analysis and reports zero reachable
   vulnerabilities (one required module contains an unreachable vulnerability).
+- `golangci-lint v2.13.1` reports zero issues.
 
 ## Finding 1 — `verdict --check` trusted cached gate statuses
 

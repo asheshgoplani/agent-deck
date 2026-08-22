@@ -71,7 +71,7 @@ func TestEval_SelectFlag_GroupScopeWarning(t *testing.T) {
 func runBinStderrShort(t *testing.T, sb *harness.Sandbox, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(sb.BinPath, args...)
-	cmd.Env = sb.Env()
+	cmd.Env = append(sb.Env(), "AGENT_DECK_ALLOW_NO_TTY=1")
 	cmd.Dir = sb.Home
 	// These bare-flag invocations (-g/--select with no subcommand) fall through
 	// to TUI startup, which never exits on its own in this non-PTY harness. A

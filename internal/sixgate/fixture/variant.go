@@ -187,15 +187,24 @@ var instructionNames = map[string]bool{
 
 // stripInstructionFiles deletes every memory file under root.
 func stripInstructionFiles(root string) (int, error) {
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return 0, err
+	}
+	defer rootFS.Close()
 	n := 0
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || !instructionNames[d.Name()] {
 			return nil
 		}
-		if err := os.Remove(p); err != nil {
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		if err := rootFS.Remove(rel); err != nil {
 			return err
 		}
 		n++
@@ -206,15 +215,24 @@ func stripInstructionFiles(root string) (int, error) {
 
 // removeSkillDirs deletes every skills directory under root.
 func removeSkillDirs(root string) (int, error) {
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return 0, err
+	}
+	defer rootFS.Close()
 	n := 0
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() || d.Name() != "skills" {
 			return nil
 		}
-		if err := os.RemoveAll(p); err != nil {
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		if err := rootFS.RemoveAll(rel); err != nil {
 			return err
 		}
 		n++
