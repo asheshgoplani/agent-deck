@@ -66,13 +66,23 @@ function projectSession(item) {
 
 function projectGroup(item) {
   const g = item.group || {}
+  const path = g.path || ''
+  const name = g.name || path
   return {
-    path: g.path || '',
-    label: (g.name || g.path || '').toUpperCase(),
+    path,
+    // label is the uppercased sidebar form; name is the raw display form
+    // used by the stats panel header and the create dialog's GROUP row.
+    label: name.toUpperCase(),
+    name,
+    // Explicitly configured folder for new sessions in this group. Empty
+    // when unset — callers fall back to the group's newest session path.
+    defaultPath: g.defaultPath || '',
+    // Nesting depth from MenuItem.level ("work/innotrade" => 1).
+    level: item.level || 0,
     expanded: !!g.expanded,
     sessionCount: g.sessionCount || 0,
     order: g.order || 0,
-    kind: g.path === 'conductor' ? 'conductor' : g.path === 'watchers' ? 'watcher' : null,
+    kind: path === 'conductor' ? 'conductor' : path === 'watchers' ? 'watcher' : null,
   }
 }
 
@@ -97,7 +107,17 @@ export const menuModelSignal = computed(() => {
   const seen = new Set(groups.map(g => g.path))
   for (const s of sessions) {
     if (s.group && !seen.has(s.group)) {
-      groups.push({ path: s.group, label: s.group.toUpperCase(), expanded: true, sessionCount: 0, order: 999, kind: null })
+      groups.push({
+        path: s.group,
+        label: s.group.toUpperCase(),
+        name: s.group,
+        defaultPath: '',
+        level: 0,
+        expanded: true,
+        sessionCount: 0,
+        order: 999,
+        kind: null,
+      })
       seen.add(s.group)
     }
   }
