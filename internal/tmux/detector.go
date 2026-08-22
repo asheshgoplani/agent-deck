@@ -88,11 +88,26 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 	case "deepseek":
 		return d.hasDeepSeekPrompt(content)
 
+	case "omp":
+		return d.hasOMPPrompt(content)
+
 	default:
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)
 	}
 }
+
+func (d *PromptDetector) hasOMPPrompt(content string) bool {
+	if strings.Contains(content, "⟨esc⟩") {
+		return false
+	}
+	if ompApprovalPrompt.MatchString(content) {
+		return true
+	}
+	return d.hasShellPrompt(content)
+}
+
+var ompApprovalPrompt = regexp.MustCompile(`(?m)^\s*Allow tool:\s`)
 
 // hasDeepSeekPrompt detects a DeepSeek Harness pane that is waiting.
 //

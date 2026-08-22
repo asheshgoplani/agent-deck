@@ -2125,6 +2125,9 @@ type DeepSeekSettings struct {
 // MIT, a fork of badlogic/pi-mono). Verified against v17.3.8. See
 // internal/session/omp.go for the full invocation grammar this block feeds.
 type OMPSettings struct {
+	// DefaultModel is passed as --model unless a session has its own override.
+	DefaultModel string `toml:"default_model,omitempty"`
+
 	// Command overrides the default binary/invocation for omp sessions.
 	// Supports flags (e.g., "omp --smol haiku"). Unlike buildCrushCommand's
 	// true passthrough, buildOMPCommand always appends --continue

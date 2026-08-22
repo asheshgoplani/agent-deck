@@ -296,6 +296,17 @@ func TestBuildOMPCommand_AppliesApprovalMode(t *testing.T) {
 	}
 }
 
+func TestBuildOMPCommand_AppliesPerSessionModel(t *testing.T) {
+	inst := &Instance{ID: "model-test-id", Tool: "omp"}
+	if err := inst.SetOMPOptions(&OMPOptions{Model: "anthropic/claude-sonnet-4-6"}); err != nil {
+		t.Fatal(err)
+	}
+	got := inst.buildOMPCommand("omp")
+	if !strings.Contains(got, `omp --model anthropic/claude-sonnet-4-6 --continue`) {
+		t.Errorf("buildOMPCommand() = %q, want per-session --model before lifecycle flags", got)
+	}
+}
+
 func TestCanRestartOMP(t *testing.T) {
 	inst := &Instance{Tool: "omp", Status: StatusWaiting}
 	if !inst.CanRestart() {
