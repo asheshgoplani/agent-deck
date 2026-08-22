@@ -89,6 +89,23 @@ type TransitionNotificationEvent struct {
 	// the old dropped_no_target ~1/sec runaway to a terminal state.
 	Attempts int `json:"attempts,omitempty"`
 
+	// SourceRemote names the configured remote a record was PULLED from by
+	// `agent-deck remote drain` (issue #1948). Empty for every locally produced
+	// record, so a conductor draining two hosts can still tell which machine a
+	// child ran on.
+	//
+	// It is NOT part of EventFingerprint/TurnFingerprint, and that is safe only
+	// because the drain namespaces ChildSessionID as `<remote>:<child>` on
+	// ingest (RemoteScopedChildID): the provenance is inside the child id, which
+	// every identity rule already keys on.
+	//
+	// An earlier revision of this comment claimed hashing SourceRemote would
+	// make one remote record hash differently per drain. That was wrong — the
+	// remote NAME is stable across drains — and the exclusion it justified let
+	// two hosts' records collide and silently destroy each other. Recorded
+	// because the reasoning error, not the field, was the defect.
+	SourceRemote string `json:"source_remote,omitempty"`
+
 	// DeadLetterReason records WHY a record was terminally undeliverable (audit
 	// B5): orphan, child_removed, parent_removed (incl. cross-profile),
 	// no_notify, self_conductor, or unresolvable. Empty for delivered records.

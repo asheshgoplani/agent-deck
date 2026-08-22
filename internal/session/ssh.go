@@ -496,6 +496,86 @@ func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, err
 	return sessions, nil
 }
 
+// FetchPendingRecords retrieves the remote host's completion and transition
+// records over the SAME ssh path every other remote fetch uses (issue #1948).
+//
+// Read-only on the remote: `inbox export` consumes, truncates and marks
+// nothing, so draining the same host from two conductors gives both the full
+// set and leaves the host's own conductor's inbox untouched.
+//
+// `[]` is the contract for "nothing pending", so ANY other answer is a failure
+// to report, never a quiet zero (review round 2, findings 1 and 2):
+//
+//   - a remote too old for `inbox export` exits NON-ZERO (its flag parser
+//     rejects --json), so it surfaces through r.Run's error. Diagnosing that as
+//     a version problem needs the remote's version, which this layer does not
+//     have; the caller probes it (staleRemoteBinaryHint) rather than guessing
+//     from stdout shape. An earlier revision guessed here and got it backwards:
+//     the guess never fired for a real old binary, and did fire for a current
+//     one whose shell printed a banner.
+//   - empty stdout with exit 0 means the remote said NOTHING, which is not the
+//     same as saying "[]". Reporting it as "no records" is the same silent-zero
+//     conflation the corrupt-ledger path forbids.
+func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotificationEvent, error) {
+	output, err := r.Run(ctx, "inbox", "export", "--json")
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("remote returned no output at all; `inbox export --json` prints `[]` when it has nothing, so this is a failed read, not an empty host")
+	}
+	if trimmed[0] != '[' {
+		return nil, fmt.Errorf("remote did not return a record array: %s", firstLineOf(trimmed))
+	}
+
+	var records []TransitionNotificationEvent
+	if err := json.Unmarshal(trimmed, &records); err != nil {
+		return nil, fmt.Errorf("failed to parse remote records: %w", err)
+	}
+	return records, nil
+}
+
+// FetchWriterStatus asks the remote whether anything is recording transitions
+// there. It is a SEPARATE call rather than a field on the export, so a remote
+// too old to know the command is an error: after records have been fetched, a
+// drain cannot distinguish an old binary from a host that stopped answering
+// between the export and this independent liveness probe. Callers must fail
+// closed rather than commit a completion-shaped partial export.
+func (r *SSHRunner) FetchWriterStatus(ctx context.Context) (WriterStatus, error) {
+	output, err := r.Run(ctx, "inbox", "writer-status", "--json")
+	if err != nil {
+		return WriterStatus{}, fmt.Errorf("writer-status command failed: %w", err)
+	}
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 {
+		return WriterStatus{}, fmt.Errorf("writer-status command returned no output")
+	}
+	if trimmed[0] != '{' {
+		return WriterStatus{}, fmt.Errorf("writer-status command did not return a JSON object: %s", firstLineOf(trimmed))
+	}
+	var status WriterStatus
+	if err := json.Unmarshal(trimmed, &status); err != nil {
+		return WriterStatus{}, fmt.Errorf("writer-status command returned corrupt JSON: %w", err)
+	}
+	return status, nil
+}
+
+// firstLineOf trims a remote reply to its first line, bounded, so an error
+// message quotes the remote's complaint without pasting a whole usage screen.
+func firstLineOf(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	const max = 200
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
+}
+
 type remoteSessionOutputJSON struct {
 	Content string `json:"content"`
 }

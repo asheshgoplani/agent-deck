@@ -75,6 +75,11 @@ func TestInbox_ReadAndTruncateReturnsThenEmpties(t *testing.T) {
 
 	parent := "parent-inbox-read"
 	for i := 0; i < 3; i++ {
+		// Three DISTINCT turns. Since #1948 the event fingerprint keys on the
+		// turn signal rather than the emit instant, so three events must differ
+		// by something real (here: the pane hash) to be three records — the
+		// same flip stamped three times is one assertion, which is what the
+		// #824 dedup exists to collapse.
 		ev := TransitionNotificationEvent{
 			ChildSessionID:  "child-r",
 			ChildTitle:      "worker",

@@ -880,12 +880,17 @@ agent-deck remote sessions dev
 # Attach to a remote session
 agent-deck remote attach dev my-session
 
+# Pull finished/stalled reports from a remote into this machine's inbox
+agent-deck remote drain dev
+
 # Keep remote binaries up to date
 agent-deck remote update          # all remotes
 agent-deck remote update dev      # specific remote
 ```
 
-Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). `remote list` and `remote sessions` support `--json` output for scripting. See the [Remote Commands reference](skills/agent-deck/references/cli-reference.md#remote-commands) for flags, security behavior, and examples.
+A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. `remote drain <name>` closes that gap by pulling — it reads the remote's records over the same SSH path (consuming nothing there) and writes them into the local inbox, safe to run on every heartbeat and safe to repeat.
+
+Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). `remote list`, `remote sessions` and `remote drain` support `--json` output for scripting. See the [Remote Commands reference](skills/agent-deck/references/cli-reference.md#remote-commands) for flags, security behavior, and examples.
 
 Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**: path suggestions come from the remote host, the remote session's group is pre-filled, and the create routes over SSH with your chosen tool — sessions are never accidentally created on localhost.
 

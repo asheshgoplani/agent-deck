@@ -56,6 +56,19 @@ type TransitionDaemon struct {
 	// across polls — or a later identical Stop — does not re-fire.
 	lastDone map[string]map[string]DoneSignal
 
+	// lastTurn tracks, per (profile, instance), the last COMPLETED TURN recorded
+	// into the drainable ledgers. Keyed by status + the transcript signal, so a
+	// session parked at `waiting` records once and a genuinely new turn records
+	// again. This is what makes recording independent of whether the daemon
+	// happened to observe the session mid-`running`: see recordTerminalTurns.
+	lastTurn map[string]map[string]string
+
+	// turnLiveCheck decides whether an instance is a live session or a stale
+	// registry row. A seam because the real check probes tmux, which a unit test
+	// cannot and should not do — and testing this logic is the whole point after a
+	// field failure that a passing suite failed to catch.
+	turnLiveCheck func(inst *Instance) bool
+
 	// lastDoneScan tracks, per (profile, instance), the hook-status timestamp
 	// whose pending transcript rescan (issue #1186 flush race) reached a
 	// conclusive answer — assistant record flushed, sentinel present or not.
@@ -112,6 +125,8 @@ func NewTransitionDaemon() *TransitionDaemon {
 		lastStatus:     map[string]map[string]string{},
 		initialized:    map[string]bool{},
 		lastDone:       map[string]map[string]DoneSignal{},
+		lastTurn:       map[string]map[string]string{},
+		turnLiveCheck:  func(inst *Instance) bool { return inst.Exists() },
 		lastDoneScan:   map[string]map[string]time.Time{},
 		lastProbeStall: map[string]time.Time{},
 
@@ -149,6 +164,11 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 	if len(profiles) == 0 {
 		return notifyPollSlow
 	}
+
+	// Stamp liveness BEFORE the work: the question a drain asks is "is a writer
+	// alive", and a daemon wedged inside a probe should still look alive for one
+	// staleness window rather than flipping to "absent" the moment it stalls.
+	WriteNotifyHeartbeat()
 
 	nextInterval := notifyPollSlow
 	for _, profile := range profiles {
@@ -467,6 +487,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
 	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
+	// Runs on EVERY pass, the first scan included — see the FIRST SCAN note on
+	// recordTerminalTurns for why suppressing it would recreate the field bug.
+	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
+
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.
 		d.emitHookTransitionCandidates(profile, byID, nil, statuses, hookCandidates)
@@ -519,6 +543,147 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
+}
+
+// recordTerminalTurns records EVERY completed turn into the drainable ledgers,
+// whether or not a completion sentinel was printed and whether or not the daemon
+// happened to observe the session mid-`running`.
+//
+// Field failure (2026-08-20, Mac↔agentbox, reproduced on g14 with the same
+// binary): a fresh claude session completed a turn, went to `waiting`, and
+// NOTHING was written anywhere. Two independent causes, both closed here.
+//
+//  1. DETECTION. The snapshot loop fires only on an observed edge, and
+//     ShouldNotifyTransition returns false when `from` is empty. A session first
+//     seen already at `waiting` — any turn that finishes between two polls, which
+//     is most short turns — therefore has no edge to fire on, and is then seeded
+//     into lastStatus so it can never fire for that turn afterwards. The
+//     compensating hook path (emitHookTransitionCandidates) covers exactly this
+//     case but needs Claude Stop-hooks wired into ~/.claude/settings.json; on a
+//     plain box none are, so hookStatuses is empty and it never runs.
+//
+//  2. RECORDING. WriteLedgerEntry was reachable ONLY from emitDoneSignals, which
+//     returns immediately when len(hookStatuses) == 0 and otherwise requires a
+//     ===AGENTDECK_DONE=== sentinel. Ordinary sessions — every interactive one —
+//     wrote no ledger entry, ever.
+//
+// The turn key is status + the transcript signal rather than a status edge. The
+// transcript is append-only and grows only on a real message, so the key is
+// stable while a session sits parked and changes on a genuine new turn. That
+// also catches waiting→running→waiting entirely between two polls, which no
+// edge-based rule can see. A tool with no resolvable transcript yields an empty
+// signal, so it records once per status change — the honest limit of what is
+// observable without a transcript, and the reason a sentinel still helps.
+//
+// FIRST SCAN. This runs on the daemon's first pass too, deliberately. The
+// 2026-08-20 field round 3 lost its turn to exactly that window: the daemon was
+// started, a session was launched, and its turn finished before any pass had
+// seen it running — a first-scan race. Seeding a silent baseline instead would
+// suppress precisely the turns the field test proved are being lost. The cost of
+// not seeding is re-publishing turns that are still parked when a daemon
+// restarts, and that costs nothing in practice: the record carries the same
+// transcript signal, so it produces an identical EventFingerprint and the inbox
+// collapses it. Across a consumption boundary the #1225 turn_fingerprint ledger
+// collapses the consumer effect instead. Both layers already existed; this
+// leans on them rather than adding a third.
+//
+// This does NOT emit desktop notifications: the operator-facing alert stays on
+// the observed-edge rule above, deliberately, so closing the ledger gap cannot
+// change notification volume.
+//
+// Duplicates are not a concern by construction. A turn the snapshot loop already
+// emitted produces an identical EventFingerprint here (same child, same
+// from=running, same to, same transcript signal), so WriteInboxEventIfNew
+// collapses the two — in the parent inbox and in the _unowned ledger alike.
+// Ordinary terminal observations are deliberately NOT completion-ledger entries:
+// only a sentinel asserts that a task finished. Mirroring a waiting transition
+// into that ledger changes its kind to "finished" during export.
+func (d *TransitionDaemon) recordTerminalTurns(
+	profile string,
+	byID map[string]*Instance,
+	statuses map[string]string,
+	hookStatuses map[string]*HookStatus,
+) {
+	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
+	if d.lastTurn == nil {
+		d.lastTurn = map[string]map[string]string{}
+	}
+	if d.lastTurn[profile] == nil {
+		d.lastTurn[profile] = map[string]string{}
+	}
+	seen := d.lastTurn[profile]
+
+	for id, to := range statuses {
+		if !isRecordableTurnStatus(to) {
+			continue
+		}
+		inst := byID[id]
+		if inst == nil {
+			continue
+		}
+		signal := transitionEventOutputHash(inst)
+		key := to + "|" + signal
+		previous, known := seen[id]
+		if known && previous == key {
+			continue
+		}
+		// NOTE ON A SUPPRESSION THAT WAS TRIED AND REMOVED. A first observation
+		// with no transcript signal looks like a launch rather than a completion
+		// — a pane that has just come up sits at `idle` with nothing behind it,
+		// and an early version skipped that case to avoid reporting a launch as a
+		// finished turn. It was wrong: a tool that never writes a transcript at
+		// all (a bash one-shot, field round 1) has an empty signal for its REAL
+		// completion too, so the rule silenced exactly the sessions the field
+		// test was trying to see. A spurious `idle` record is honest — the
+		// session is idle — while a missed completion is the bug this exists to
+		// fix. No transition is skipped here.
+		_ = known
+
+		// Liveness is checked only for a new candidate, so the tmux probe costs
+		// nothing in steady state after an eligible turn has been recorded. A
+		// registry row for a long-dead session sits at `error`
+		// indefinitely; recording that as a completed turn published 34 stale
+		// sessions on the first scan when this was first run against a real
+		// profile, which is how the check came to be here.
+		if d.turnLiveCheck != nil && !d.turnLiveCheck(inst) {
+			continue
+		}
+
+		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+			continue
+		}
+		// Commit the dedup key only after the observation is eligible. A registry
+		// row can appear before its tmux session, and notification settings can be
+		// enabled while a turn remains parked; neither temporary rejection may
+		// permanently suppress that unchanged turn.
+		seen[id] = key
+
+		// FromStatus is stamped `running` rather than the observed previous
+		// status, matching what emitHookTransitionCandidates already does for
+		// turns too fast to observe: a turn that reached a terminal status ran,
+		// whether or not any poll caught it doing so. It also makes the
+		// fingerprint identical to the snapshot loop's for the same turn, which
+		// is what lets the inbox collapse the pair.
+		event := TransitionNotificationEvent{
+			ChildSessionID: id,
+			ChildTitle:     inst.Title,
+			Profile:        profile,
+			FromStatus:     string(StatusRunning),
+			ToStatus:       to,
+			Timestamp:      time.Now(),
+			LastOutputHash: signal,
+			Substate:       string(inst.CachedSubstate()),
+		}
+		_ = d.notifier.NotifyTransition(event)
+	}
+
+	// Instances that disappeared (stopped, removed) must not keep an entry, or a
+	// long-lived daemon accumulates one per session ever seen.
+	for id := range seen {
+		if _, ok := statuses[id]; !ok {
+			delete(seen, id)
+		}
+	}
 }
 
 // emitDoneSignals turns a worker-printed completion sentinel (persisted into
@@ -907,6 +1072,16 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}
+}
+
+// isRecordableTurnStatus is the set of statuses that mean "a turn finished":
+// waiting, idle, error. Deliberately NARROWER than isNotifyTerminalStatus, which
+// also includes `stopped` — a stopped session did not complete a turn, it was
+// shut down, and recording that as a completion tells a conductor something
+// untrue.
+func isRecordableTurnStatus(status string) bool {
+	s := normalizeStatusString(status)
+	return s == string(StatusWaiting) || s == string(StatusIdle) || s == string(StatusError)
 }
 
 func isNotifyTerminalStatus(status string) bool {
