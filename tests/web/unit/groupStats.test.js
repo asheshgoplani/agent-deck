@@ -87,3 +87,85 @@ describe('groupStats', () => {
     expect(groupStats('nope')).toEqual({ total: 0, fragments: [] })
   })
 })
+
+// The TUI builds its group tree from the FULL instance set (home.go:3540),
+// so renderGroupPreview lists and counts ARCHIVED sessions. The web snapshot
+// filters them out server-side (session_data_service.go:278), which is why a
+// session archived from the TUI vanished from the web group panel entirely.
+// groupMembers/groupStats fold the archived feed back in for the panel only —
+// the sidebar still shows active sessions only, exactly as the TUI's list does.
+describe('archived sessions in group membership', () => {
+  beforeEach(async () => {
+    const { sessionsSignal, sessionCostsSignal, archivedSessionsSignal } = await import(stateModulePath)
+    sessionsSignal.value = []
+    sessionCostsSignal.value = {}
+    archivedSessionsSignal.value = []
+  })
+
+  it('groupMembers lists active members first, then archived, each flagged', async () => {
+    const { sessionsSignal, archivedSessionsSignal } = await import(stateModulePath)
+    const { groupMembers } = await import(dataModelModulePath)
+
+    sessionsSignal.value = [
+      { type: 'group', group: { name: 'work', path: 'work' } },
+      session('live', 'running'),
+    ]
+    archivedSessionsSignal.value = [
+      { id: 'parked', title: 'parked', tool: 'claude', status: 'stopped', groupPath: 'work' },
+      { id: 'broke', title: 'broke', tool: 'codex', status: 'error', groupPath: 'work' },
+    ]
+
+    const members = groupMembers('work')
+    expect(members.map((m) => [m.id, m.archived])).toEqual([
+      ['live', false],
+      ['parked', true],
+      ['broke', true],
+    ])
+  })
+
+  it('groupStats counts archived sessions in the total and the fragments', async () => {
+    const { sessionsSignal, archivedSessionsSignal } = await import(stateModulePath)
+    const { groupStats } = await import(dataModelModulePath)
+
+    sessionsSignal.value = [
+      { type: 'group', group: { name: 'work', path: 'work' } },
+      session('live', 'running'),
+    ]
+    archivedSessionsSignal.value = [
+      { id: 'parked', title: 'parked', tool: 'claude', status: 'stopped', groupPath: 'work' },
+      { id: 'broke', title: 'broke', tool: 'codex', status: 'error', groupPath: 'work' },
+    ]
+
+    const stats = groupStats('work')
+    expect(stats.total).toBe(3)
+    expect(stats.fragments.map((f) => [f.id, f.count])).toEqual([
+      ['running', 1], ['stopped', 1], ['error', 1],
+    ])
+  })
+
+  it('buckets archived sessions by their own group, with no cross-group bleed', async () => {
+    const { sessionsSignal, archivedSessionsSignal } = await import(stateModulePath)
+    const { groupMembers } = await import(dataModelModulePath)
+
+    sessionsSignal.value = [{ type: 'group', group: { name: 'work', path: 'work' } }]
+    archivedSessionsSignal.value = [
+      { id: 'a', title: 'a', tool: 'claude', status: 'stopped', groupPath: 'work' },
+      { id: 'b', title: 'b', tool: 'claude', status: 'stopped', groupPath: 'personal' },
+    ]
+
+    expect(groupMembers('work').map((m) => m.id)).toEqual(['a'])
+    expect(groupMembers('personal').map((m) => m.id)).toEqual(['b'])
+  })
+
+  it('leaves counts unchanged when nothing in the group is archived', async () => {
+    const { sessionsSignal } = await import(stateModulePath)
+    const { groupStats } = await import(dataModelModulePath)
+
+    sessionsSignal.value = [
+      { type: 'group', group: { name: 'work', path: 'work' } },
+      session('live', 'running'),
+    ]
+
+    expect(groupStats('work').total).toBe(1)
+  })
+})

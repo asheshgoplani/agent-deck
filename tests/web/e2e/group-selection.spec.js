@@ -191,6 +191,37 @@ test.describe('group selection', () => {
     await expect(page.locator('.dialog input').nth(1)).toHaveValue('/srv/work')
   })
 
+  // TUI parity: renderGroupPreview iterates group.Sessions from a tree built
+  // over the FULL instance set (home.go:3540), so ARCHIVED sessions appear in
+  // the group preview even though the TUI's left list partitions them out.
+  // The web snapshot behind the sidebar is archive-filtered server-side, so
+  // without groupMembers() folding the archived feed back in, a session
+  // archived from the TUI vanished from the web group panel entirely.
+  test('the panel lists archived sessions the sidebar omits', async ({ page }) => {
+    // Archive sess-001 ("agent-deck", group "work"), then restore it below so
+    // sibling tests keep their 4-session fixture assumptions.
+    await page.request.post('/api/sessions/sess-001/archive')
+    try {
+      await page.goto('/')
+      // Sidebar drops it -- the active snapshot is archive-filtered.
+      await expect(page.locator('.sess')).toHaveCount(3, { timeout: 5000 })
+      await expect(page.locator('.sess .tt')).not.toContainText(['agent-deck'])
+
+      await page.locator('[data-testid="group-head-work"] .name').click()
+      const panel = page.locator('[data-testid="group-stats-panel"]')
+      await expect(panel).toBeVisible()
+
+      // ...but the panel still shows it, flagged, and still counts it.
+      const archivedRow = panel.locator('.gs-row.archived')
+      await expect(archivedRow).toHaveCount(1)
+      await expect(archivedRow).toContainText('agent-deck')
+      await expect(archivedRow.locator('.gs-archived')).toHaveText('archived')
+      await expect(page.locator('[data-testid="group-stats-total"]')).toHaveText('2 sessions')
+    } finally {
+      await page.request.post('/api/sessions/sess-001/unarchive')
+    }
+  })
+
   test('group selection is reflected in the URL and survives a reload', async ({ page }) => {
     await page.locator('[data-testid="group-head-work"] .name').click()
     await expect(page).toHaveURL(/\/g\/work$/)

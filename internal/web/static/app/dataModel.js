@@ -8,7 +8,7 @@
 // so the design renders without inventing data. Components that need richer
 // data (e.g. RightRail Usage card) fall back to "no data" placeholders.
 import { computed } from '@preact/signals'
-import { sessionsSignal, sessionCostsSignal, selectedIdSignal, selectedGroupSignal, createSessionDialogSignal } from './state.js'
+import { sessionsSignal, sessionCostsSignal, selectedIdSignal, selectedGroupSignal, createSessionDialogSignal, archivedSessionsSignal } from './state.js'
 import { sidebarFilterSignal, groupExpandedSignal, statusFiltersSignal } from './uiState.js'
 
 // kind heuristic from session metadata (no API field today).
@@ -55,6 +55,11 @@ function projectSession(item) {
     lastAccessedAt: s.lastAccessedAt || '',
     createdAt: s.createdAt || '',
     sandbox: false,     // not exposed by API
+    // Sessions from the menu snapshot are active by definition — the server
+    // archive-filters it (session_data_service.go:278). archivedByGroupSignal
+    // flips this to true for the archived feed. Always present, never
+    // undefined, so consumers can branch on it without a guard.
+    archived: false,
     parent: null,
     pendingNeeds: 0,
     watcherType: null,
@@ -211,8 +216,37 @@ export function statusBucket(status) {
 // Status breakdown for one group. Direct members only — no subgroup rollup,
 // matching the TUI preview pane (note MenuGroup.sessionCount from the server
 // DOES roll up, so do not use it here).
+// Archived sessions bucketed by group path, projected into the same shape as
+// active ones. GET /api/sessions/archived returns bare MenuSession objects
+// (not menu items), so wrap each before reusing projectSession.
+export const archivedByGroupSignal = computed(() => {
+  const byGroup = {}
+  for (const raw of (archivedSessionsSignal.value || [])) {
+    if (!raw) continue
+    const s = projectSession({ session: raw })
+    s.archived = true
+    ;(byGroup[s.group] ||= []).push(s)
+  }
+  return byGroup
+})
+
+// Everything the group stats panel shows for a group: active members first,
+// then archived ones.
+//
+// The archived half exists for TUI parity. The TUI builds its group tree from
+// the full instance set (internal/ui/home.go:3540), so renderGroupPreview
+// lists and counts archived sessions — while its LEFT list partitions them out
+// (home.go:2470-2493). The web mirrors that split: the snapshot behind the
+// sidebar is archive-filtered server-side (session_data_service.go:278), and
+// this function folds the archived feed back in for the panel alone.
+export function groupMembers(groupPath) {
+  const active = menuModelSignal.value.byGroup[groupPath] || []
+  const archived = archivedByGroupSignal.value[groupPath] || []
+  return [...active, ...archived]
+}
+
 export function groupStats(groupPath) {
-  const members = (menuModelSignal.value.byGroup[groupPath] || [])
+  const members = groupMembers(groupPath)
   const counts = { running: 0, waiting: 0, idle: 0, stopped: 0, error: 0 }
   for (const s of members) counts[statusBucket(s.status)]++
   return {

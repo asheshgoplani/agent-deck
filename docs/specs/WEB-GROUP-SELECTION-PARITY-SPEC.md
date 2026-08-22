@@ -331,8 +331,20 @@ controls render above the group stats.
    switch (`home.go:19399-19416`) drops both, so its fragments can sum to less
    than its own `N sessions` headline. The web fragments always sum to the
    headline.
-2. **Archived sessions are excluded.** The web snapshot already excludes them
-   (`session_data_service.go:264`); the TUI preview counts them.
+2. **Archived sessions are included** — corrected after user report. The TUI
+   builds its group tree from the full instance set (`home.go:3540`), so
+   `renderGroupPreview` lists and counts archived sessions, while its LEFT list
+   partitions them out (`home.go:2470-2493`). The web mirrors that split: the
+   menu snapshot behind the sidebar stays archive-filtered server-side
+   (`session_data_service.go:278`), and `groupMembers()` folds the separate
+   `GET /api/sessions/archived` feed back in for the panel alone. Archived rows
+   render dimmed with an `archived` tag and are not clickable — the web has a
+   distinct Archived pane, so silently mixing them would be worse than the
+   TUI's undifferentiated list.
+
+   An earlier draft of this spec called the exclusion deliberate. It was not:
+   sessions archived from the TUI disappeared from the web group panel with no
+   indication they existed.
 3. **No subgroup rollup** — direct members only, matching the TUI *preview*.
    Note `MenuGroup.sessionCount` from the server *does* roll up
    (`SessionCountForGroup`, `groups.go:1466`), so the panel must count from

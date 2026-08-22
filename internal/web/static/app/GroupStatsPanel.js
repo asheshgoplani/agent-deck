@@ -11,14 +11,22 @@
 //   - Direct members only — no subgroup rollup, matching the TUI preview.
 //   - No Repository/worktree block: per-branch dirty state is not on the wire.
 import { html } from 'htm/preact'
-import { menuModelSignal, groupStats } from './dataModel.js'
-import { selectSession } from './state.js'
+import { useEffect } from 'preact/hooks'
+import { menuModelSignal, groupStats, groupMembers } from './dataModel.js'
+import { selectSession, loadArchivedSessions } from './state.js'
 import { activeTabSignal } from './uiState.js'
 import { Dot } from './icons.js'
 
 export function GroupStatsPanel({ path }) {
-  const { groups, byGroup } = menuModelSignal.value
+  const { groups } = menuModelSignal.value
   const group = groups.find(g => g.path === path)
+
+  // The archived feed is a separate endpoint from the menu snapshot, and
+  // nothing else on this screen fetches it. Load it on mount so a group whose
+  // sessions were archived elsewhere still shows them, matching the TUI.
+  // MUST run before the !group early return below — hook order has to be
+  // identical on every render.
+  useEffect(() => { loadArchivedSessions() }, [path])
 
   // The selected group can vanish out from under the panel — deleted in the
   // TUI while a browser tab has it selected, or a stale /g/{path} URL/reload
@@ -37,7 +45,7 @@ export function GroupStatsPanel({ path }) {
     `
   }
 
-  const members = byGroup[path] || []
+  const members = groupMembers(path)
   const stats = groupStats(path)
 
   const openSession = (id) => {
@@ -76,9 +84,11 @@ export function GroupStatsPanel({ path }) {
       ${members.length === 0
         ? html`<div class="gs-empty">No sessions in this group</div>`
         : members.map(s => html`
-            <div key=${s.id} class="gs-row" onClick=${() => openSession(s.id)}>
+            <div key=${s.id} class=${`gs-row ${s.archived ? 'archived' : ''}`}
+                 onClick=${() => !s.archived && openSession(s.id)}>
               <${Dot} status=${s.status}/>
               <span class="gs-title">${s.title}</span>
+              ${s.archived && html`<span class="gs-archived" title="Archived — not in the sidebar list">archived</span>`}
               <span class="gs-tool">${s.tool}</span>
             </div>
           `)}
