@@ -293,7 +293,14 @@ if (!sessionId) return html`<${EmptyStateDashboard} />`
 
 `TerminalPane` stays mounted and CSS-hidden inside `Panes` (`AppShell.js:103`),
 so selecting a group and returning to a session does not reconnect the
-WebSocket or lose scrollback. No new tab, no `activeTabSignal` change.
+WebSocket or lose scrollback. No new tab is added.
+
+Selecting a group DOES set `activeTabSignal` to `'terminal'`, exactly as
+selecting a session already does (`Sidebar.onSelect`). This corrects an earlier
+draft of this section which said otherwise: `Panes` gates the terminal pane on
+`tab === 'terminal'` (`AppShell.js:122`), so without the switch a group
+selected while the user sits on the Fleet or Costs tab renders the panel into a
+hidden container and nothing appears to happen.
 
 Content ports `renderGroupPreview`: `📁 name` header, `N sessions`, the ordered
 status fragments, then the session list as `glyph title tool` where clicking a
