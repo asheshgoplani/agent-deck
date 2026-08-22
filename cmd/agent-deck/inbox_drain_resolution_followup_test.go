@@ -97,6 +97,60 @@ func TestInboxDrain_CorruptProfileAbortsNamesProfileAndPreservesInbox(t *testing
 	}
 }
 
+// Revert pin for cfd424c9: the old resolver either drained the exact-ID owner
+// or returned on aaa-corrupt before discovering this cross-profile collision.
+func TestInboxDrain_CorruptProfileAndKnownCollisionRefusesRegardlessOfOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		profiles []string
+	}{
+		{name: "corrupt first", profiles: []string{"aaa-corrupt", "personal", "work"}},
+		{name: "corrupt last", profiles: []string{"personal", "work", "aaa-corrupt"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cliInboxTestHome(t)
+			t.Setenv("AGENTDECK_PROFILE", "work")
+
+			exact := session.NewInstance("exact-owner", t.TempDir())
+			exact.ID = "collision-id"
+			title := session.NewInstance("collision-id", t.TempDir())
+			title.ID = "title-owner"
+			saveInboxResolutionSessions(t, "personal", exact)
+			saveInboxResolutionSessions(t, "work", title)
+
+			dbPath, err := session.GetDBPathForProfile("aaa-corrupt")
+			if err != nil {
+				t.Fatalf("corrupt profile path: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+				t.Fatalf("mkdir corrupt profile: %v", err)
+			}
+			if err := os.WriteFile(dbPath, []byte("this is not sqlite"), 0o600); err != nil {
+				t.Fatalf("write corrupt profile: %v", err)
+			}
+			if err := session.CommitToInbox(exact.ID, session.TransitionNotificationEvent{ChildSessionID: "must-survive-combined-failure"}); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+
+			_, err = resolveInboxDrainSessionInProfiles(exact.ID, "work", false, tc.profiles)
+			if err == nil {
+				t.Fatal("corrupt profile and known collision resolved successfully")
+			}
+			if got := inboxExitCode(err); got != 3 {
+				t.Fatalf("exit code = %d, want 3 (known ambiguity): %v", got, err)
+			}
+			for _, want := range []string{"exact-owner", "collision-id", "personal", "title-owner", "work", "aaa-corrupt", "Nothing was drained"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("combined-state error %q missing %q", err, want)
+				}
+			}
+			if !session.InboxHasPending(exact.ID) {
+				t.Fatal("combined failure destructively drained the target inbox")
+			}
+		})
+	}
+}
+
 func TestInboxDrain_FullIDResolvesAcrossProfiles(t *testing.T) {
 	cliInboxTestHome(t)
 	t.Setenv("AGENTDECK_PROFILE", "work")
