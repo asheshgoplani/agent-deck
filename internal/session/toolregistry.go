@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -248,9 +247,15 @@ func (r *Registry) Match(cmd string) string {
 				return name
 			}
 		}
+		// Token match compares the basename of each whitespace field so that
+		// "/usr/local/bin/dsh" and "./pi" match like the bare command, while
+		// "/home/pi/bin/tool" does not (only the basename is compared, never an
+		// intermediate path segment).
 		for _, tok := range bt.detectTokens {
-			if slices.Contains(fields, tok) {
-				return name
+			for _, f := range fields {
+				if filepath.Base(f) == tok {
+					return name
+				}
 			}
 		}
 	}

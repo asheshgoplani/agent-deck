@@ -152,3 +152,52 @@ func TestRegistry_PrecedenceRejectsShadow(t *testing.T) {
 		t.Errorf("Match(\"claude\") = %q, want built-in %q", got, "claude")
 	}
 }
+
+// TestRegistry_MatchTokenByPath covers issue #2024: tools detected by token
+// (pi, deepseek/dsh, cursor/agent) must match when the token is the basename
+// of a path field, while near-misses that share letters or path segments
+// must still fall back to shell.
+func TestRegistry_MatchTokenByPath(t *testing.T) {
+	r := Init(nil)
+	tests := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		// pi
+		{"pi bare", "pi", "pi"},
+		{"pi absolute", "/usr/local/bin/pi", "pi"},
+		{"pi relative", "./pi", "pi"},
+		{"pi path with flags", "/usr/local/bin/pi --profile dev", "pi"},
+		{"pi env prefix", "env FOO=1 pi", "pi"},
+		{"pi env prefix path", "env FOO=1 /usr/local/bin/pi", "pi"},
+		{"pi uppercase path", "/usr/local/bin/Pi", "pi"},
+		{"pi near-miss epic", "epic", "shell"},
+		{"pi near-miss tapioca", "tapioca", "shell"},
+		{"pi path segment not basename", "/home/pi/bin/tool", "shell"},
+		{"pi basename with suffix", "/usr/local/bin/pip", "shell"},
+		// deepseek / dsh
+		{"dsh bare", "dsh", "deepseek"},
+		{"dsh with flags", "dsh --model x", "deepseek"},
+		{"dsh absolute", "/usr/local/bin/dsh", "deepseek"},
+		{"dsh relative", "./dsh", "deepseek"},
+		{"dsh path with flags", "./dsh --model x", "deepseek"},
+		{"dsh near-miss dshell path", "/usr/bin/dshell", "shell"},
+		{"dsh near-miss dshell bare", "dshell", "shell"},
+		{"dsh near-miss fdsh", "fdsh", "shell"},
+		{"dsh path segment not basename", "/opt/dsh/bin/other", "shell"},
+		// cursor / agent
+		{"agent bare", "agent", "cursor"},
+		{"agent absolute", "/usr/local/bin/agent", "cursor"},
+		{"agent relative", "./agent", "cursor"},
+		{"agent near-miss agent-deck", "agent-deck", "shell"},
+		{"agent path segment not basename", "/home/agent/bin/tool", "shell"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := r.Match(tt.cmd); got != tt.want {
+				t.Errorf("Match(%q) = %q, want %q", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
