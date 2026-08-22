@@ -198,10 +198,13 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		return drainExitUnreachable
 	}
 
-	records, fresh, written, duplicates, unknown, err := ingestRemoteRecords(name, targetID, records)
+	records, fresh, written, duplicates, unknown, restoreDetected, err := ingestRemoteRecords(name, targetID, records)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: writing to local inbox %s: %v\n", targetID, err)
 		return 1
+	}
+	if restoreDetected {
+		fmt.Fprintf(stderr, "Warning: detected consumed-ledger restore for inbox %s; forgotten window-inside records are unknown, never new.\n", targetID)
 	}
 
 	if *asJSON {
@@ -279,7 +282,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 // that commits nothing was re-printing the entire backlog as though it had just
 // arrived, which reads like new work on every heartbeat.
 func ingestRemoteRecords(remoteName, targetID string, records []session.TransitionNotificationEvent) (
-	stored, fresh []session.TransitionNotificationEvent, written, duplicates, unknown int, err error) {
+	stored, fresh []session.TransitionNotificationEvent, written, duplicates, unknown int, restoreDetected bool, err error) {
 	stored = make([]session.TransitionNotificationEvent, 0, len(records))
 	for _, ev := range records {
 		ev.SourceRemote = remoteName
@@ -303,7 +306,7 @@ func ingestRemoteRecords(remoteName, targetID string, records []session.Transiti
 
 		presence, werr := session.WriteInboxEventIfUnseen(targetID, ev)
 		if werr != nil {
-			return stored, fresh, written, duplicates, unknown, werr
+			return stored, fresh, written, duplicates, unknown, restoreDetected, werr
 		}
 		switch presence {
 		case session.InboxEventInserted:
@@ -311,11 +314,14 @@ func ingestRemoteRecords(remoteName, targetID string, records []session.Transiti
 			fresh = append(fresh, ev)
 		case session.InboxEventAlreadyPresent:
 			duplicates++
+		case session.InboxEventPresenceUnknownAfterLedgerRestore:
+			unknown++
+			restoreDetected = true
 		default:
 			unknown++
 		}
 	}
-	return stored, fresh, written, duplicates, unknown, nil
+	return stored, fresh, written, duplicates, unknown, restoreDetected, nil
 }
 
 // lookupRemoteFor resolves what the user typed to a configured remote: the
