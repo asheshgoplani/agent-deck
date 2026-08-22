@@ -2749,6 +2749,11 @@ func (d *NewDialog) View() string {
 		focusLogicalLine = strings.Count(content.String(), "\n")
 		content.WriteString(activeLabelStyle.Render(label))
 	}
+	markFocusedRow := func(target focusTarget) {
+		if cur == target {
+			focusLogicalLine = strings.Count(content.String(), "\n")
+		}
+	}
 
 	// Title with parent group info
 	content.WriteString(titleStyle.Render("New Session"))
@@ -2833,10 +2838,14 @@ func (d *NewDialog) View() string {
 	// The Multi-repo toggle and its path list move below the common fields
 	// (see renderMultiRepoSection, called after the Branch input). In multi-repo
 	// mode the single Path field is hidden — its list renders below the fold.
+	markFocusedRow(focusCommand)
 	d.renderCommandSection(&content, cur)
+	markFocusedRow(focusModel)
 	d.renderModelSection(&content, cur, dialogWidth)
+	markFocusedRow(focusReasoningEffort)
 	d.renderReasoningEffortSection(&content, cur)
 	if !d.multiRepoEnabled {
+		markFocusedRow(focusPath)
 		d.renderSinglePathSection(&content, cur, dialogWidth)
 	}
 
@@ -2848,6 +2857,7 @@ func (d *NewDialog) View() string {
 	if cur == focusCommand {
 		worktreeLabel = "Create in worktree (w)"
 	}
+	markFocusedRow(focusWorktree)
 	content.WriteString(renderCheckboxLine(worktreeLabel, d.worktreeEnabled, cur == focusWorktree))
 
 	// Docker sandbox checkbox — individually focusable.
@@ -2855,6 +2865,7 @@ func (d *NewDialog) View() string {
 	if cur == focusCommand {
 		sandboxLabel = "Run in Docker sandbox (s)"
 	}
+	markFocusedRow(focusSandbox)
 	content.WriteString(renderCheckboxLine(sandboxLabel, d.sandboxEnabled, cur == focusSandbox))
 
 	// Inherited Docker settings (only visible when sandbox is enabled).
@@ -2956,11 +2967,16 @@ func (d *NewDialog) View() string {
 	// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
 	// here when enabled; in the common single-repo case it's just a checkbox.
 	content.WriteString("\n")
+	markFocusedRow(focusMultiRepo)
 	d.renderMultiRepoSection(&content, cur)
 
 	// Tool options panel
 	if d.toolOptions != nil {
 		content.WriteString("\n")
+		panelStart := strings.Count(content.String(), "\n")
+		if cur == focusOptions {
+			focusLogicalLine = panelStart + d.toolOptions.FocusedLine()
+		}
 		content.WriteString(d.toolOptions.View())
 	}
 
@@ -3040,17 +3056,6 @@ func (d *NewDialog) View() string {
 	innerWidth := max(1, dialogWidth-8)
 	maxContentHeight := d.height - 6
 	fullContent := content.String()
-	if focusLogicalLine < 0 {
-		// Section renderers write the focused control at column zero; picker
-		// selections are indented. Capture that logical row identity before any
-		// wrapping creates ambiguous repeated glyphs.
-		for i, line := range strings.Split(fullContent, "\n") {
-			if strings.HasPrefix(stripAnsi(line), "▶ ") {
-				focusLogicalLine = i
-				break
-			}
-		}
-	}
 	viewported := viewportDialogContent(fullContent, innerWidth, maxContentHeight, focusLogicalLine)
 
 	// Dropdown anchors are based on visual lines. Recompute them after the

@@ -121,6 +121,55 @@ func TestNewDialogFits100x30AtModelFocus(t *testing.T) {
 	}
 }
 
+func TestNewDialogFits100x30AtIndentedClaudeOptionFocus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		focusIndex int
+		want       string
+	}{
+		{name: "extra args", focusIndex: 5, want: "▶ Extra args:"},
+		{name: "start query", focusIndex: 6, want: "▶ Start query:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewNewDialog()
+			d.SetDefaultTool("claude")
+			d.SetSize(100, 30)
+			d.Show()
+			d.focusIndex = d.indexOf(focusOptions)
+			d.updateFocus()
+			d.claudeOptions.focusIndex = tc.focusIndex
+			d.claudeOptions.updateInputFocus()
+
+			view := d.View()
+			plain := stripAnsi(view)
+			for _, pin := range []string{"New Session", tc.want, "create"} {
+				if !strings.Contains(plain, pin) {
+					t.Fatalf("100x30 Claude-options view lost %q:\n%s", pin, plain)
+				}
+			}
+			if got := lipgloss.Height(view); got > 30 {
+				t.Fatalf("100x30 dialog rendered %d rows", got)
+			}
+		})
+	}
+}
+
+func TestClaudeOptionsFocusedLineTracksConditionalRows(t *testing.T) {
+	p := NewClaudeOptionsPanel()
+	p.Focus()
+	p.sessionMode = 2
+	p.skipPermissions = true
+	p.autoMode = true
+	p.focusIndex = 7 // Start query, after the conditional resume and warning rows.
+	if got, want := p.FocusedLine(), 9; got != want {
+		t.Fatalf("Start query logical line = %d, want %d", got, want)
+	}
+	lines := strings.Split(stripAnsi(p.View()), "\n")
+	if got := lines[p.FocusedLine()]; !strings.Contains(got, "Start query:") {
+		t.Fatalf("focused identity resolved to %q, want Start query row", got)
+	}
+}
+
 func TestNewDialogWideLayoutRetainsAllFields(t *testing.T) {
 	d := NewNewDialog()
 	d.SetDefaultTool("codex")

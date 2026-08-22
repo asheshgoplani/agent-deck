@@ -187,6 +187,31 @@ func (p *ClaudeOptionsPanel) AtTop() bool {
 	return p.focusIndex <= 0
 }
 
+// FocusedLine maps the panel's focus identity and state to the logical row
+// emitted by View. Keep this beside the focus model: viewport callers must not
+// infer identity from styled marker glyphs, whose indentation varies by field.
+func (p *ClaudeOptionsPanel) FocusedLine() int {
+	if p.focusIndex < 0 {
+		return -1
+	}
+	line := 1 + p.focusIndex // options header precedes every focused control
+	// The explanatory row is rendered immediately after Auto mode, shifting all
+	// subsequent controls without changing their focus indices.
+	if p.autoMode && p.skipPermissions {
+		autoIndex := 1
+		if !p.isForkMode {
+			autoIndex++ // Session mode precedes Skip and Auto in NewDialog.
+			if p.sessionMode == 2 {
+				autoIndex++
+			}
+		}
+		if p.focusIndex > autoIndex {
+			line++
+		}
+	}
+	return line
+}
+
 // GetOptions returns current options as ClaudeOptions
 func (p *ClaudeOptionsPanel) GetOptions() *session.ClaudeOptions {
 	opts := &session.ClaudeOptions{

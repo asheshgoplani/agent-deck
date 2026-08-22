@@ -52,6 +52,13 @@ func (p *YoloOptionsPanel) AtTop() bool {
 	return true
 }
 
+func (p *YoloOptionsPanel) FocusedLine() int {
+	if !p.focused {
+		return -1
+	}
+	return 1 // The options header occupies line zero.
+}
+
 // Update handles key events.
 func (p *YoloOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
