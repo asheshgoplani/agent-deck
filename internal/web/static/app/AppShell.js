@@ -27,7 +27,7 @@ import { SkillsPane } from './panes/SkillsPane.js'
 import { Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
 import {
-  selectedIdSignal, createSessionDialogSignal, confirmDialogSignal,
+  selectedIdSignal, selectSession, createSessionDialogSignal, confirmDialogSignal,
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
@@ -221,7 +221,7 @@ export function AppShell() {
         // j/k navigation. Activating the terminal hands focus to xterm.js,
         // which swallows subsequent keypresses (issue #780 review).
         // The TUI's `enter` key is what opens; j/k just moves focus.
-        selectedIdSignal.value = next.id
+        selectSession(next.id)
       }
     }
     const focusedSession = () => {
@@ -281,7 +281,7 @@ export function AppShell() {
         const s = focusedSession()
         if (s) {
           e.preventDefault()
-          selectedIdSignal.value = s.id
+          selectSession(s.id)
           activeTabSignal.value = 'terminal'
         }
       } else if (e.key === 'n' && mutationsEnabledSignal.value) {

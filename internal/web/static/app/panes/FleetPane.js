@@ -6,7 +6,7 @@ import { html } from 'htm/preact'
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import { apiFetch } from '../api.js'
 import { menuModelSignal } from '../dataModel.js'
-import { selectedIdSignal } from '../state.js'
+import { selectSession } from '../state.js'
 import { activeTabSignal } from '../uiState.js'
 
 const EMPTY_REMOTE_COUNTS = {
@@ -161,7 +161,7 @@ export function FleetPane() {
   const totalCost = sessions.reduce((n, s) => n + (s.cost || 0), 0)
 
   const onSelect = (id) => {
-    selectedIdSignal.value = id
+    selectSession(id)
     activeTabSignal.value = 'terminal'
   }
 
