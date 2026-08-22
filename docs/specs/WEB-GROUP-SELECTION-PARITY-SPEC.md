@@ -130,22 +130,43 @@ One field on `MenuGroup` (`session_data_service.go:49`):
 DefaultPath string `json:"defaultPath,omitempty"`
 ```
 
-Populated in `menu_snapshot_builder.go:47-53` from
-`groupTree.ExplicitDefaultPathForGroup(item.Group.Path)` (`groups.go:1795`),
-ignoring the `bool` and letting `omitempty` drop the key when unset.
+Populated in `menu_snapshot_builder.go:47-53` by reading the field directly:
 
-**Why explicit-only, not `DefaultPathForGroup`.** The doc comment at
-`groups.go:1784-1794` states the problem directly: `DefaultPathForGroup`
-collapses "the user configured this group's default_path" and "nothing is
-configured, here's a guess from the group's sessions" into one indistinguishable
-string. The client already has to inspect the group's newest session to derive
-the tool, so it can derive the path fallback from that same session. One rule,
-one place, and the wire field means exactly what its name says.
+```go
+DefaultPath: item.Group.DefaultPath,
+```
 
-**No server-side `os.Stat`.** The TUI drops stale paths at `home.go:4318-4322`.
-Doing that in `BuildMenuSnapshot` would cost one stat per group on every
-`/api/menu` call *and* every SSE `menu` event. The value feeds an editable text
-input; a nonexistent directory surfaces as a create error.
+**Do not call `ExplicitDefaultPathForGroup` or `DefaultPathForGroup` here.**
+`BuildMenuSnapshot` already builds its tree via `NewGroupTreeWithGroups`
+(`menu_snapshot_builder.go:15`), which normalizes every group's `DefaultPath`
+through the **cached** resolver on construction (`groups.go:316-318` →
+`updateGroupDefaultPath`, `:1848-1860`). By the time the item loop runs, the
+field is the resolved, worktree-collapsed path. Reading it is a struct field
+access.
+
+The resolver functions take the uncached path: `resolveGroupDefaultPath` is an
+`os.Stat` plus up to three git subprocesses (`IsGitRepo`, `IsLinkedWorktree`,
+`GetWorktreeBaseRoot`), measured at ~21ms per group — see the header comment at
+`groups.go:1711-1731`, which exists because this exact call pattern once cost
+~800ms of main-goroutine freeze per reload. `BuildMenuSnapshot` runs on every
+`/api/menu` request *and* every SSE `menu` event, so calling them here would
+reintroduce that regression on the web path.
+
+**Why the raw field is also the semantics we want.** `Group.DefaultPath` is the
+**explicitly configured** default and is empty when unset — it never falls back
+to the most-recent-session guess. That distinction is the subject of the doc
+comment at `groups.go:1784-1794`: `DefaultPathForGroup` collapses "the user
+configured this" and "here's a guess from the group's sessions" into one
+indistinguishable string. The client already inspects the group's newest session
+to derive the tool, so it derives the path fallback from that same session. One
+rule, one place, and `omitempty` drops the key entirely when nothing is
+configured.
+
+**Stale paths are not filtered.** The TUI drops a default path that no longer
+exists on disk (`home.go:4318-4322`); `resolveGroupDefaultPath` itself returns
+the path even when its stat fails (`groups.go:1685-1688`). The web ships
+whatever is stored. It feeds an editable text input, and a nonexistent directory
+surfaces as a create error.
 
 `GET /api/groups` (`handlers_groups.go:28-36`) and `GET /api/sessions`
 re-serialize the same pointers and need no change.
