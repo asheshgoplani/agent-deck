@@ -722,6 +722,7 @@ func main() {
 	// ═══════════════════════════════════════════════════════════════════
 	// Cost Tracking Initialization
 	// ═══════════════════════════════════════════════════════════════════
+	execCleanup := execCleanupTasks{}
 	var costStore *costs.Store
 	if db := statedb.GetGlobal(); db != nil {
 		costStore = costs.NewStore(db.DB())
@@ -756,6 +757,7 @@ func main() {
 			// Start daily price fetcher
 			fetchCtx, fetchCancel := context.WithCancel(context.Background())
 			defer fetchCancel()
+			execCleanup.fetchCancel = fetchCancel
 			fetcher := &costs.Fetcher{CachePath: filepath.Join(cacheDir, "pricing.json"), Pricer: pricer}
 			go fetcher.StartDaily(fetchCtx)
 		}
@@ -787,6 +789,7 @@ func main() {
 		if watchErr == nil {
 			go costWatcher.Start()
 			defer costWatcher.Stop()
+			execCleanup.costWatcherStop = costWatcher.Stop
 
 			// Process incoming cost events from hooks
 			go func() {
@@ -876,7 +879,9 @@ func main() {
 			return
 		}
 
+		webDone := make(chan struct{})
 		go func() {
+			defer close(webDone)
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
 					slog.String("error", err.Error()))
@@ -888,6 +893,19 @@ func main() {
 			defer cancel()
 			_ = server.Shutdown(ctx)
 		}()
+		execCleanup.webShutdown = func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := server.Shutdown(ctx); err != nil {
+				return err
+			}
+			select {
+			case <-webDone:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("wait for web server shutdown: %w", ctx.Err())
+			}
+		}
 	}
 
 	// Disable the Kitty keyboard protocol before starting the TUI.
@@ -952,9 +970,11 @@ func main() {
 	// Start maintenance worker (background goroutine, respects config toggle)
 	maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
 	defer maintenanceCancel()
-	session.StartMaintenanceWorker(maintenanceCtx, func(result session.MaintenanceResult) {
+	maintenanceDone := session.StartMaintenanceWorker(maintenanceCtx, func(result session.MaintenanceResult) {
 		p.Send(ui.MaintenanceCompleteMsg{Result: result})
 	})
+	execCleanup.maintenanceCancel = maintenanceCancel
+	execCleanup.maintenanceDone = maintenanceDone
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -965,7 +985,7 @@ func main() {
 		// return: Quit + Wait guarantees the renderer/input goroutines are gone.
 		p.Quit()
 		p.Wait()
-		if err := prepareForExec(maintenanceCancel); err != nil {
+		if err := prepareForExec(execCleanup); err != nil {
 			fmt.Fprintf(os.Stderr, "automatic update installed, but re-exec preparation failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -985,8 +1005,41 @@ func main() {
 // prepareForExec explicitly performs cleanup normally owned by defers. execve
 // never runs defers. Closing PipeManager kills and reaps every owned tmux -C
 // process group; live tmux sessions themselves are untouched by design.
-func prepareForExec(maintenanceCancel context.CancelFunc) error {
-	maintenanceCancel()
+type execCleanupTasks struct {
+	maintenanceCancel context.CancelFunc
+	maintenanceDone   <-chan struct{}
+	fetchCancel       context.CancelFunc
+	costWatcherStop   func()
+	webShutdown       func() error
+}
+
+func stopExecWorkers(tasks execCleanupTasks) error {
+	if tasks.maintenanceCancel != nil {
+		tasks.maintenanceCancel()
+	}
+	if tasks.fetchCancel != nil {
+		tasks.fetchCancel()
+	}
+	if tasks.costWatcherStop != nil {
+		tasks.costWatcherStop()
+	}
+	var shutdownErr error
+	if tasks.webShutdown != nil {
+		shutdownErr = tasks.webShutdown()
+	}
+	if tasks.maintenanceDone != nil {
+		<-tasks.maintenanceDone
+	}
+	if shutdownErr != nil {
+		return fmt.Errorf("shutdown web server: %w", shutdownErr)
+	}
+	return nil
+}
+
+func prepareForExec(tasks execCleanupTasks) error {
+	if err := stopExecWorkers(tasks); err != nil {
+		return err
+	}
 	if runner := intervalhook.GetGlobal(); runner != nil {
 		runner.Stop()
 	}

@@ -53,8 +53,11 @@ func RunMaintenance(ctx context.Context) MaintenanceResult {
 // StartMaintenanceWorker launches a background goroutine that runs maintenance
 // on a 15-minute ticker with an immediate first run. It checks
 // GetMaintenanceSettings().Enabled before each run.
-func StartMaintenanceWorker(ctx context.Context, onComplete func(MaintenanceResult)) {
+
+func StartMaintenanceWorker(ctx context.Context, onComplete func(MaintenanceResult)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		// Immediate first run.
 		if GetMaintenanceSettings().Enabled {
 			result := RunMaintenance(ctx)
@@ -80,6 +83,7 @@ func StartMaintenanceWorker(ctx context.Context, onComplete func(MaintenanceResu
 			}
 		}
 	}()
+	return done
 }
 
 // pruneGeminiLogs deletes .txt files found directly inside ~/.gemini/tmp/*/

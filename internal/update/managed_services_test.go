@@ -60,3 +60,34 @@ func TestLaunchdBootstrapFailureIsLoud(t *testing.T) {
 		t.Fatalf("failure was not loud/actionable: %v", err)
 	}
 }
+
+func TestLaunchdBootoutFailureStopsBeforeBootstrap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "com.agentdeck.worker.plist"), []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origOS, origRun, origOutput := managedServicesGOOS, commandRun, commandOutput
+	managedServicesGOOS = "darwin"
+	commandOutput = func(string, ...string) ([]byte, error) { return nil, nil }
+	var calls []string
+	commandRun = func(_ string, args ...string) error {
+		calls = append(calls, args[0])
+		if args[0] == "bootout" {
+			return errors.New("operation not permitted")
+		}
+		return nil
+	}
+	t.Cleanup(func() { managedServicesGOOS, commandRun, commandOutput = origOS, origRun, origOutput })
+	_, err := RestartManagedServices()
+	if err == nil || !strings.Contains(err.Error(), "bootout failed") {
+		t.Fatalf("bootout failure was not actionable: %v", err)
+	}
+	if want := []string{"bootout"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls after failed bootout = %v, want %v", calls, want)
+	}
+}

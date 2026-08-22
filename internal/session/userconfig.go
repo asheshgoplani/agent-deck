@@ -1093,6 +1093,9 @@ type UpdateSettings struct {
 	// background. It is deliberately opt-in; the zero value is false.
 	// Default: false
 	AutoInstall bool `toml:"auto_install,omitempty"`
+	// AutoUpdate is the v1 spelling. It is decoded only for migration and is
+	// cleared after loading so the next save emits state-v2 auto_install.
+	AutoUpdate *bool `toml:"auto_update,omitempty"`
 
 	// CheckEnabled enables automatic update checks on startup
 	// Default: true (nil = true)
@@ -1110,7 +1113,12 @@ type UpdateSettings struct {
 // GetAutoInstall exists to make the opt-in gate conspicuous at call sites.
 // Never infer this value from check_enabled: checking is on by default, while
 // installation must remain strictly default-off.
-func (u UpdateSettings) GetAutoInstall() bool { return u.AutoInstall }
+func (u UpdateSettings) GetAutoInstall() bool {
+	if u.AutoInstall {
+		return true
+	}
+	return u.AutoUpdate != nil && *u.AutoUpdate
+}
 
 // GetCheckEnabled returns whether update checks are enabled (default: true).
 func (u UpdateSettings) GetCheckEnabled() bool {
@@ -3250,7 +3258,8 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 
 	var config UserConfig
-	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+	metadata, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
 		// Cache default to prevent hot-looping on a broken file, and cache
 		// the error too so every call (not just the first after the mtime
 		// change) can surface that the on-disk config is being ignored.
@@ -3261,6 +3270,10 @@ func LoadUserConfig() (*UserConfig, error) {
 		userConfigCacheErr = fmt.Errorf("config.toml parse error: %w", err)
 		return userConfigCache, userConfigCacheErr
 	}
+	if !metadata.IsDefined("updates", "auto_install") && config.Updates.AutoUpdate != nil {
+		config.Updates.AutoInstall = *config.Updates.AutoUpdate
+	}
+	config.Updates.AutoUpdate = nil
 
 	if config.Tools == nil {
 		config.Tools = make(map[string]ToolDef)
@@ -4545,7 +4558,7 @@ remove_orphans = true
 # Controls automatic update checking and installation
 [updates]
 # Automatically install updates without prompting (default: false)
-# auto_update = true
+# auto_install = true
 # Enable update checks on startup (default: true)
 check_enabled = true
 # How often to check for updates in hours (default: 24)

@@ -52,9 +52,9 @@ func RestartManagedServices() (string, error) {
 			return "No managed launchd jobs were running; none restarted.", nil
 		}
 		for _, job := range jobs {
-			// bootout can report that a disabled job is not loaded. Bootstrap is
-			// still required and its failure is always fatal/loud.
-			_ = commandRun("launchctl", "bootout", job.domain, job.path)
+			if err := commandRun("launchctl", "bootout", job.domain, job.path); err != nil {
+				return "", fmt.Errorf("launchd bootout failed for loaded job %s: %w", job.path, err)
+			}
 			if err := commandRun("launchctl", "bootstrap", job.domain, job.path); err != nil {
 				return "", fmt.Errorf("launchd re-bootstrap failed for %s: %w (BTM identity may cause EX_CONFIG until manually bootout+bootstrap'd)", job.path, err)
 			}

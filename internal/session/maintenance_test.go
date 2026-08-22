@@ -198,6 +198,23 @@ func TestStartMaintenanceWorkerDisabled(t *testing.T) {
 	}
 }
 
+func TestStartMaintenanceWorkerDoneClosesAfterCancel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".agent-deck"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := StartMaintenanceWorker(ctx, nil)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance worker did not report completion after cancellation")
+	}
+}
+
 func TestStartMaintenanceWorkerCallback(t *testing.T) {
 	// Create temp dir as HOME with maintenance enabled in config
 	tmpHome := t.TempDir()

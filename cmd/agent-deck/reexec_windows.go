@@ -29,6 +29,10 @@ func reexecSelf(version string) error {
 	}
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.Env = append(os.Environ(), "AGENTDECK_UPDATED="+version)
-	return cmd.Run()
+	cmd.Env = environmentForUpdate(os.Environ(), version)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	os.Exit(0)
+	return nil
 }

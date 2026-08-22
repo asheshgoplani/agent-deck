@@ -27,6 +27,6 @@ func reexecSelf(version string) error {
 	if err != nil {
 		return err
 	}
-	env := append(os.Environ(), "AGENTDECK_UPDATED="+version)
+	env := environmentForUpdate(os.Environ(), version)
 	return syscall.Exec(exe, os.Args, env)
 }
