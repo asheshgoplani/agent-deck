@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-08-22
+
+Delivery honesty, TUI gauntlet fixes, and a same-day community wave: 24 merged PRs including 12 community contributions.
+
+### Added
+
+- Auth-401 recovery holds aggregate by credential identity, so one dead credential halts its own sessions with one message instead of a storm ([#1963](https://github.com/asheshgoplani/agent-deck/pull/1963)).
+- Linux desktop notifications via notify-send ([#1951](https://github.com/asheshgoplani/agent-deck/pull/1951), community).
+
+### Fixed
+
+- **`worktree cleanup` cannot destroy work**: unpushed, dirty, live-process, and inspection-failure worktrees are never proposed for removal, `--force` cannot override any exclusion, facts are re-verified at deletion time, and every guard is mutation-pinned ([#2023](https://github.com/asheshgoplani/agent-deck/pull/2023), fixes [#1995](https://github.com/asheshgoplani/agent-deck/issues/1995)).
+- **CLI answers match stored truth**: `inbox drain` rejects unresolvable targets loudly with a documented exit-code contract; `list --json` carries both parent-linkage fields; JSON surfaces return raw stored model values ([#2022](https://github.com/asheshgoplani/agent-deck/pull/2022), fixes [#1991](https://github.com/asheshgoplani/agent-deck/issues/1991), [#1992](https://github.com/asheshgoplani/agent-deck/issues/1992), [#1994](https://github.com/asheshgoplani/agent-deck/issues/1994), [#2000](https://github.com/asheshgoplani/agent-deck/issues/2000)). Drain targets resolve across profiles for full ids, ambiguity is surfaced on its own exit code, and a duplicate id across profiles refuses rather than draining either ([#2030](https://github.com/asheshgoplani/agent-deck/pull/2030)).
+- **Help never mutates**: `--help`/`-h`/bare `help` at any argument position prints usage on every hook dispatcher — install and uninstall alike — instead of performing the action ([#2010](https://github.com/asheshgoplani/agent-deck/pull/2010), community, fixes [#1993](https://github.com/asheshgoplani/agent-deck/issues/1993)).
+- **TUI gauntlet blockers**: session dialogs stay usable at 100x30 with the title, focused field, and primary action always visible ([#2031](https://github.com/asheshgoplani/agent-deck/pull/2031)); `$` has one meaning (Cost Dashboard, with an explanatory line when the cost store is absent), `&` is the labeled error filter, errored sessions show `R Restart` at the state line with one name everywhere, Ctrl+Q detach is in Quick Start, and a keymap invariant test walks the dispatcher so duplicate bindings cannot return ([#2032](https://github.com/asheshgoplani/agent-deck/pull/2032)).
+- Claude 5-family models resolve their 1M context window in Session Analytics ([#1989](https://github.com/asheshgoplani/agent-deck/pull/1989), with thanks to the parallel report and tests in [#2008](https://github.com/asheshgoplani/agent-deck/pull/2008)).
+- Web terminal pasting keeps line breaks ([#1964](https://github.com/asheshgoplani/agent-deck/pull/1964), community). Hermes hook install asks consent first ([#1965](https://github.com/asheshgoplani/agent-deck/pull/1965), community). Worktree branch names are sanitized from session names ([#1966](https://github.com/asheshgoplani/agent-deck/pull/1966), community). `CODEX_HOME` is quoted on launch ([#1983](https://github.com/asheshgoplani/agent-deck/pull/1983), community, fixes [#1946](https://github.com/asheshgoplani/agent-deck/issues/1946)). Per-session custom commands survive resume with fork targets guarded ([#1984](https://github.com/asheshgoplani/agent-deck/pull/1984), community). Archived sessions are skipped correctly in the TUI ([#1986](https://github.com/asheshgoplani/agent-deck/pull/1986), community). `session send` no longer Ctrl+C-resends while the message body is on screen ([#1980](https://github.com/asheshgoplani/agent-deck/pull/1980), community, fixes [#1979](https://github.com/asheshgoplani/agent-deck/issues/1979)). Session handoff CLI paths gained test coverage ([#1982](https://github.com/asheshgoplani/agent-deck/pull/1982), community).
+- Remote and local group headers count exactly the partition they head ([#2013](https://github.com/asheshgoplani/agent-deck/pull/2013), fixes [#1945](https://github.com/asheshgoplani/agent-deck/issues/1945); [#2014](https://github.com/asheshgoplani/agent-deck/pull/2014), fixes [#1987](https://github.com/asheshgoplani/agent-deck/issues/1987)). `web --token` gets the same validation as `--token-file` ([#2017](https://github.com/asheshgoplani/agent-deck/pull/2017)). macOS process probing uses libproc instead of lsof, with the fast-death watcher accounting restored ([#2021](https://github.com/asheshgoplani/agent-deck/pull/2021), credit @jwiegley). A stale scope comment that misdescribed the MCP grouping is corrected ([#2015](https://github.com/asheshgoplani/agent-deck/pull/2015)). Orphaned poll clients are reaped safely ([#1941](https://github.com/asheshgoplani/agent-deck/pull/1941), community). The hotkeys invariant test moved off deprecated parser APIs ([#2034](https://github.com/asheshgoplani/agent-deck/pull/2034)).
+
+### Changed
+
+- Dependency bumps for the go-minor-patch group ([#1967](https://github.com/asheshgoplani/agent-deck/pull/1967)).
+- The changelog's trusted-domains entry now points at the implementing PR ([#2019](https://github.com/asheshgoplani/agent-deck/pull/2019)).
+
 ## [1.13.0] - 2026-08-16
 
 Remote visibility, restart persistence, and a large correctness wave: ~40 merged PRs including 13 community contributions.
