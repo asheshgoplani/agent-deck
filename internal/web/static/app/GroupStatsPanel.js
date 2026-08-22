@@ -19,6 +19,26 @@ import { Dot } from './icons.js'
 export function GroupStatsPanel({ path }) {
   const { groups, byGroup } = menuModelSignal.value
   const group = groups.find(g => g.path === path)
+
+  // The selected group can vanish out from under the panel — deleted in the
+  // TUI while a browser tab has it selected, or a stale /g/{path} URL/reload
+  // for a group that was never real. groupCreateDefaults() returns the blank
+  // context for an unknown path, so a create button here would disagree with
+  // it and silently create in the default group instead (review finding #3).
+  // Render an honest "gone" state and offer no action rather than fabricate
+  // stats for a group that is not in the current menu snapshot.
+  if (!group) {
+    return html`
+      <div class="group-stats" data-testid="group-stats-panel" data-group-path=${path}>
+        <div class="gs-head">
+          <span class="gs-folder" aria-hidden="true">📁</span>
+          <span class="gs-name">${path}</span>
+        </div>
+        <div class="gs-empty" data-testid="group-stats-missing">This group no longer exists.</div>
+      </div>
+    `
+  }
+
   const members = byGroup[path] || []
   const stats = groupStats(path)
 
@@ -31,7 +51,7 @@ export function GroupStatsPanel({ path }) {
     <div class="group-stats" data-testid="group-stats-panel" data-group-path=${path}>
       <div class="gs-head">
         <span class="gs-folder" aria-hidden="true">📁</span>
-        <span class="gs-name">${group ? group.name : path}</span>
+        <span class="gs-name">${group.name}</span>
       </div>
 
       ${mutationsEnabledSignal.value && html`

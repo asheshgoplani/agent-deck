@@ -139,7 +139,7 @@ DefaultPath: item.Group.DefaultPath,
 **Do not call `ExplicitDefaultPathForGroup` or `DefaultPathForGroup` here.**
 `BuildMenuSnapshot` already builds its tree via `NewGroupTreeWithGroups`
 (`menu_snapshot_builder.go:15`), which normalizes every group's `DefaultPath`
-through the **cached** resolver on construction (`groups.go:316-318` →
+through the **cached** resolver on construction (`groups.go:386-388` →
 `updateGroupDefaultPath`, `:1848-1860`). By the time the item loop runs, the
 field is the resolved, worktree-collapsed path. Reading it is a struct field
 access.
