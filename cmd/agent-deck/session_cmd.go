@@ -2877,9 +2877,30 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
-	// Record send time before the actual send so we can verify output freshness.
-	// Captured early to avoid false negatives from clock skew.
+	// Record send time before the actual send for the last-sent self-heal clock.
+	// Reply selection below uses durable turn identity, never this timestamp.
 	sentAt := time.Now()
+	var turnPath string
+	var turnCursor int64
+	if *wait || *stream {
+		if !session.IsClaudeCompatible(inst.Tool) {
+			out.Error(fmt.Sprintf("cannot establish turn identity for tool %q; refusing guessed --wait/--stream output", inst.Tool), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		var pathErr error
+		turnPath, pathErr = inst.GetJSONLPathChecked(instances)
+		if pathErr != nil {
+			out.Error(fmt.Sprintf("cannot establish turn identity: %v", pathErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if turnPath != "" {
+			turnCursor, pathErr = session.TranscriptCursor(turnPath)
+			if pathErr != nil {
+				out.Error(fmt.Sprintf("cannot capture turn identity cursor: %v", pathErr), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		}
+	}
 
 	// --draft: type text into the prompt without pressing Enter, letting the
 	// user review and submit manually.
@@ -2959,6 +2980,34 @@ func handleSessionSend(profile string, args []string) {
 			sendRes.draftSaved)
 	}
 
+	// #2043: delivery acknowledgement is not reply identity. A hook-busy send
+	// may sit behind another live turn, so bind wait/stream to the durable user
+	// transcript record before observing completion or assistant output.
+	var turnID session.TurnIdentity
+	if *wait || *stream {
+		identityDeadline := time.Now().Add(*timeout)
+		for turnPath == "" && time.Now().Before(identityDeadline) {
+			if fresh := inst.GetSessionIDFromTmux(); fresh != "" {
+				inst.ClaudeSessionID = fresh
+			}
+			turnPath, _ = inst.GetJSONLPathChecked(instances)
+			if turnPath == "" {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		if turnPath == "" {
+			out.Error("turn identity not established: transcript path unavailable", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		remaining := time.Until(identityDeadline)
+		var identityErr error
+		turnID, identityErr = session.AwaitTurnIdentity(turnPath, message, turnCursor, remaining, 100*time.Millisecond)
+		if identityErr != nil {
+			out.Error(fmt.Sprintf("turn identity not established: %v", identityErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
 	if !*stream {
 		data := map[string]interface{}{
 			"success":       true,
@@ -2975,7 +3024,7 @@ func handleSessionSend(profile string, args []string) {
 	// --stream: tail the Claude transcript and pipe JSONL events to
 	// stdout until end_turn, idle timeout, or error. Issue #689.
 	if *stream {
-		if err := streamSessionSend(inst, sessionRef, profile, sentAt, streamOptions{
+		if err := streamSessionSend(inst, sessionRef, profile, turnID, streamOptions{
 			idle:       *streamIdle,
 			charBudget: *streamCharBudget,
 			toolBudget: *streamToolBudget,
@@ -3009,19 +3058,9 @@ func handleSessionSend(profile string, args []string) {
 			}
 		}
 
-		// Wait for the JSONL to contain a response newer than sentAt.
-		// The status check (waitForCompletion) detects the UI prompt reappearing,
-		// but the JSONL file may not be flushed yet — poll until it is.
-		response, err := waitForFreshOutput(inst, sentAt, instances)
-		if err != nil {
-			// Fallback: reload session from DB in case tmux env was also stale
-			// (e.g., /clear created a new session that TUI or hooks detected)
-			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
-				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
-					response, err = waitForFreshOutput(freshInst, sentAt, freshInstances)
-				}
-			}
-		}
+		// The status check detects the UI prompt reappearing, but the JSONL may
+		// not be flushed yet. Poll for this exact turn's end_turn record.
+		response, err := session.AwaitTurnResponse(turnID, *timeout, 100*time.Millisecond)
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -4320,7 +4359,7 @@ type streamOptions struct {
 //
 // Overall budget: streamOptions.timeout bounds the entire stream (not just
 // idle gaps), matching the semantics of --wait's --timeout.
-func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentAt time.Time, opts streamOptions) error {
+func streamSessionSend(inst *session.Instance, sessionRef, profile string, turnID session.TurnIdentity, opts streamOptions) error {
 	// Resolve JSONL path. Claude writes the file after the first
 	// assistant chunk, so we poll briefly for its existence.
 	resolvedInst := inst
@@ -4394,7 +4433,12 @@ func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentA
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
 
-	return session.StreamTranscript(ctx, jsonlPath, resolvedInst.ClaudeSessionID, sentAt, os.Stdout, session.StreamConfig{
+	// The path resolved above must be the same transcript that supplied the
+	// durable turn identity. A rebind here would stream an unrelated turn.
+	if jsonlPath != turnID.Path {
+		return fmt.Errorf("turn transcript changed after submission; refusing guessed stream output")
+	}
+	return session.StreamTranscriptForTurn(ctx, turnID, resolvedInst.ClaudeSessionID, os.Stdout, session.StreamConfig{
 		IdleTimeout: opts.idle,
 		CharBudget:  opts.charBudget,
 		ToolBudget:  opts.toolBudget,
