@@ -43,4 +43,4 @@ found` instead of listing the two configured slots.
 
 ## Pull request
 
-Pending.
+https://github.com/asheshgoplani/agent-deck/pull/2053
