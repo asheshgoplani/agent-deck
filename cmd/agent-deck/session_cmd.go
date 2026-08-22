@@ -89,6 +89,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSendKeys(profile, args[1:])
 	case "output":
 		handleSessionOutput(profile, args[1:])
+	case "result":
+		handleSessionResult(profile, args[1:])
 	case "context":
 		handleSessionContext(profile, args[1:])
 	case "children":
@@ -131,6 +133,7 @@ func printSessionHelp() {
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
+	fmt.Println("  result <id>             Get the session's bounded RESULT.json")
 	fmt.Println("  context [id]            Show what is loaded into the agent's context, ranked by cost")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
@@ -163,6 +166,7 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session set-title-lock SCRUM-351 off        # Re-enable title sync")
 	fmt.Println("  agent-deck session output my-project                 # Get last response from session")
 	fmt.Println("  agent-deck session output my-project --json          # Get response as JSON")
+	fmt.Println("  agent-deck session result my-project --json          # Get structured task result")
 	fmt.Println("  agent-deck session context my-project                # What is in the agent's context")
 	fmt.Println("  agent-deck session context my-project --tab breakdown # Ranked by token cost")
 	fmt.Println("  agent-deck session context my-project --json         # Full report with provenance")
@@ -4600,6 +4604,70 @@ func handleSessionOutput(profile string, args []string) {
 	}
 
 	out.Print(sb.String(), jsonData)
+}
+
+// handleSessionResult returns a bounded artifact and never reads a transcript.
+func handleSessionResult(profile string, args []string) {
+	fs := flag.NewFlagSet("session result", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "Output as compact JSON")
+	waitSeconds := fs.Int("wait", 0, "Wait up to SECONDS for RESULT.json (checks every 2 seconds)")
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck session result <id|title> [--json] [--wait SECONDS]")
+		fmt.Fprintln(fs.Output(), "Wait uses a bounded 2-second filesystem poll and never reads the transcript.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+	if *waitSeconds < 0 || fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	_, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load sessions: %v\n", err)
+		os.Exit(1)
+	}
+	inst, errMsg, errCode := ResolveSession(fs.Arg(0), instances)
+	if inst == nil {
+		fmt.Fprintln(os.Stderr, errMsg)
+		if errCode == ErrCodeNotFound {
+			os.Exit(3)
+		}
+		os.Exit(1)
+	}
+
+	deadline := time.Now().Add(time.Duration(*waitSeconds) * time.Second)
+	for {
+		result, readErr := session.ReadSessionResult(inst.ProjectPath)
+		if readErr == nil && (*waitSeconds == 0 || strings.HasSuffix(result.Source, "RESULT.json")) {
+			if *jsonOutput {
+				encoded, _ := json.Marshal(result)
+				fmt.Println(string(encoded))
+			} else {
+				fmt.Println(string(result.Result))
+				if result.Verdict != "" {
+					fmt.Printf("VERDICT: %s\n", result.Verdict)
+				}
+			}
+			return
+		}
+		if readErr != nil && !errors.Is(readErr, session.ErrResultNotFound) {
+			fmt.Fprintln(os.Stderr, readErr)
+			os.Exit(1)
+		}
+		if *waitSeconds == 0 || !time.Now().Before(deadline) {
+			fmt.Println("no result yet")
+			os.Exit(3)
+		}
+		delay := 2 * time.Second
+		if remaining := time.Until(deadline); remaining < delay {
+			delay = remaining
+		}
+		time.Sleep(delay)
+	}
 }
 
 func tailOutputLines(content string, limit int) (string, int) {

@@ -118,6 +118,39 @@ type TransitionNotificationEvent struct {
 // asserted task-completion signal rather than a status transition.
 const transitionKindFinished = "finished"
 
+// transitionKindResult marks discovery of a new RESULT.json artifact.
+const transitionKindResult = "result"
+
+// NotifyResult commits a newly-written RESULT.json signal to the parent inbox.
+func (n *TransitionNotifier) NotifyResult(event TransitionNotificationEvent) TransitionNotificationEvent {
+	event.Kind = transitionKindResult
+	event.Profile = strings.TrimSpace(event.Profile)
+	event.ChildTitle = strings.TrimSpace(event.ChildTitle)
+	event.ChildSessionID = strings.TrimSpace(event.ChildSessionID)
+	event.DoneStatus = strings.TrimSpace(event.DoneStatus)
+	event.DoneSummary = strings.TrimSpace(event.DoneSummary)
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+	if event.ChildSessionID == "" || event.Profile == "" {
+		event.DeliveryResult = transitionDeliveryDropped
+		return event
+	}
+	committed, transient, reason := n.commitEventToInbox(event)
+	if committed {
+		event.DeliveryResult = transitionDeliveryCommitted
+		return event
+	}
+	if transient {
+		event.DeliveryResult = transitionDeliveryFailed
+		return event
+	}
+	n.terminalDrop(event, reason)
+	event.DeliveryResult = transitionDeliveryDropped
+	event.DeadLetterReason = reason
+	return event
+}
+
 type transitionNotifyRecord struct {
 	From string `json:"from"`
 	To   string `json:"to"`

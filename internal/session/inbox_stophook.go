@@ -166,7 +166,7 @@ func FormatCompletionsForInjection(events []TransitionNotificationEvent) string 
 	b.WriteString("Child session(s) completed while you were busy — handle each:\n")
 	for _, ev := range events {
 		status := ev.ToStatus
-		if ev.Kind == transitionKindFinished && ev.DoneStatus != "" {
+		if (ev.Kind == transitionKindFinished || ev.Kind == transitionKindResult) && ev.DoneStatus != "" {
 			status = ev.DoneStatus
 		}
 		title := ev.ChildTitle
@@ -174,7 +174,7 @@ func FormatCompletionsForInjection(events []TransitionNotificationEvent) string 
 			title = ev.ChildSessionID
 		}
 		line := fmt.Sprintf("- %s (%s): %s", title, ev.ChildSessionID, status)
-		if ev.Kind == transitionKindFinished && ev.DoneSummary != "" {
+		if (ev.Kind == transitionKindFinished || ev.Kind == transitionKindResult) && ev.DoneSummary != "" {
 			line += " — " + ev.DoneSummary
 		}
 		b.WriteString(line)
