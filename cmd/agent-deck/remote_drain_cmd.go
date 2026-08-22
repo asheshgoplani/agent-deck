@@ -179,6 +179,11 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+	targetID, err = resolveInboxDrainSession(targetID)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return inboxExitCode(err)
+	}
 
 	records, err := fetch(context.Background(), name, rc)
 
@@ -195,6 +200,12 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		// host that answered "I cannot read my own records" (review P2c). The
 		// underlying error above says which.
 		fmt.Fprintln(stderr, "Nothing was pulled. This is a FAILED drain, NOT an empty inbox.")
+		return drainExitUnreachable
+	}
+	if writer != nil && !writer.Running {
+		fmt.Fprintf(stderr, "STALLED: remote '%s' (%s) is not recording session transitions.\n", name, rc.Host)
+		fmt.Fprintf(stderr, "%s\n", writer.Detail)
+		fmt.Fprintln(stderr, "No fetched record was classified as finished or written locally.")
 		return drainExitUnreachable
 	}
 

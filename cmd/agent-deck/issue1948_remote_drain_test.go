@@ -80,6 +80,103 @@ func stubFetch(records []session.TransitionNotificationEvent, err error) (remote
 	}, &calls
 }
 
+func TestIssue2038_RemoteDrainRefusesTargetBeforeRemoteIO(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		target   string
+		wantCode int
+		setup    func(*testing.T, string)
+	}{
+		{name: "missing", target: "missing-target", wantCode: 2},
+		{name: "ambiguous", target: "abcdef", wantCode: 3, setup: func(t *testing.T, _ string) {
+			a := session.NewInstance("alpha", t.TempDir())
+			b := session.NewInstance("beta", t.TempDir())
+			a.ID, b.ID = "abcdef01-1777000200", "abcdef02-1777000201"
+			saveInboxResolutionSessions(t, "default", a, b)
+		}},
+		{name: "corrupt-profile", target: "healthy-target", wantCode: 1, setup: func(t *testing.T, target string) {
+			inst := session.NewInstance(target, t.TempDir())
+			inst.ID = target
+			saveInboxResolutionSessions(t, "default", inst)
+			dbPath, err := session.GetDBPathForProfile("aaa-corrupt")
+			if err != nil {
+				t.Fatalf("corrupt profile path: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+				t.Fatalf("mkdir corrupt profile: %v", err)
+			}
+			if err := os.WriteFile(dbPath, []byte("not sqlite"), 0o600); err != nil {
+				t.Fatalf("write corrupt profile: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drainTestHome(t)
+			t.Setenv("AGENTDECK_PROFILE", "default")
+			configureRemote(t, "boxb", "worker@box-b")
+			if tc.setup != nil {
+				tc.setup(t, tc.target)
+			}
+			if err := session.CommitToInbox(tc.target, session.TransitionNotificationEvent{ChildSessionID: "must-survive"}); err != nil {
+				t.Fatalf("seed inbox: %v", err)
+			}
+			fetch, calls := stubFetch([]session.TransitionNotificationEvent{
+				remoteCompletion("remote-child", "must-not-land", time.Now()),
+			}, nil)
+			probeCalls := 0
+			oldProbe := remoteWriterProbe
+			remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, bool) {
+				probeCalls++
+				return session.WriterStatus{Running: true}, true
+			}
+			t.Cleanup(func() { remoteWriterProbe = oldProbe })
+
+			var stdout, stderr bytes.Buffer
+			code := runRemoteDrain(&stdout, &stderr, []string{"--into", tc.target, "boxb"}, fetch)
+			if code != tc.wantCode {
+				t.Fatalf("exit=%d, want %d; stderr=%s", code, tc.wantCode, stderr.String())
+			}
+			if *calls != 0 || probeCalls != 0 {
+				t.Fatalf("refusal performed remote I/O: fetches=%d probes=%d", *calls, probeCalls)
+			}
+			events, err := session.ReadInboxEvents(tc.target)
+			if err != nil || len(events) != 1 || events[0].ChildSessionID != "must-survive" {
+				t.Fatalf("refusal mutated inbox: events=%+v err=%v", events, err)
+			}
+		})
+	}
+}
+
+func TestIssue1952_RemoteDrainStalledWriterNeverReportsFinished(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	const conductor = "conductor-stalled"
+	registerDrainTarget(t, conductor)
+	fetch, calls := stubFetch([]session.TransitionNotificationEvent{
+		remoteCompletion("remote-child", "looks complete in a partial reply", time.Now()),
+	}, nil)
+	oldProbe := remoteWriterProbe
+	remoteWriterProbe = func(context.Context, session.RemoteConfig, string) (session.WriterStatus, bool) {
+		return session.WriterStatus{Detail: "fake remote stopped responding mid-drain"}, true
+	}
+	t.Cleanup(func() { remoteWriterProbe = oldProbe })
+
+	var stdout, stderr bytes.Buffer
+	code := runRemoteDrain(&stdout, &stderr, []string{"--into", conductor, "boxb"}, fetch)
+	if code == 0 {
+		t.Fatal("stalled remote drain returned success")
+	}
+	if *calls != 1 {
+		t.Fatalf("fake remote fetch calls=%d, want 1", *calls)
+	}
+	if !strings.Contains(stderr.String(), "STALLED") || !strings.Contains(stderr.String(), "stopped responding mid-drain") {
+		t.Fatalf("stalled status is not explicit: %s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "finished") || session.InboxHasPending(conductor) {
+		t.Fatalf("stalled partial reply was classified or written as finished: stdout=%s", stdout.String())
+	}
+}
+
 // The headline: a completion that only ever existed on the remote host is in
 // the conductor's LOCAL inbox after one drain.
 func TestIssue1948_RemoteDrain_WritesRemoteCompletionIntoLocalInbox(t *testing.T) {
@@ -137,6 +234,7 @@ func TestIssue1948_RemoteDrain_SecondDrainIsIdempotent(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-idem"
+	registerDrainTarget(t, conductor)
 
 	record := remoteCompletion("worker-on-b", "migration finished", time.Now())
 	fetch, calls := stubFetch([]session.TransitionNotificationEvent{record}, nil)
@@ -179,6 +277,7 @@ func TestIssue1948_RemoteDrain_IdempotentAcrossProcesses(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-fresh"
+	registerDrainTarget(t, conductor)
 
 	record := remoteCompletion("worker-on-b", "done", time.Now())
 	fetch, _ := stubFetch([]session.TransitionNotificationEvent{record}, nil)
@@ -210,6 +309,7 @@ func TestIssue1948_RemoteDrain_AfterConsumptionReportsAlreadyPresent(t *testing.
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-consumed"
+	registerDrainTarget(t, conductor)
 	record := remoteCompletion("worker-on-b", "done hours ago", time.Now().Add(-3*time.Hour))
 	fetch, _ := stubFetch([]session.TransitionNotificationEvent{record}, nil)
 
@@ -242,6 +342,7 @@ func TestIssue1948_RemoteDrain_OlderLedgerRestoreIsUnknownWithWarning(t *testing
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-restored"
+	registerDrainTarget(t, conductor)
 	if err := os.MkdirAll(session.ConsumedTurnsDir(), 0o755); err != nil {
 		t.Fatalf("mkdir consumed ledger: %v", err)
 	}
@@ -287,6 +388,7 @@ func TestIssue1948_RemoteDrain_MixedConsumedAndNewReportsHonestSplit(t *testing.
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-mixed"
+	registerDrainTarget(t, conductor)
 	old := remoteCompletion("worker-old", "old turn", time.Now().Add(-3*time.Hour))
 	first, _ := stubFetch([]session.TransitionNotificationEvent{old}, nil)
 	var out, errBuf bytes.Buffer
@@ -315,6 +417,7 @@ func TestIssue1948_RemoteDrain_UnreadableDedupStateIsUnknownNotNew(t *testing.T)
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-unknown"
+	registerDrainTarget(t, conductor)
 	if err := os.MkdirAll(session.ConsumedTurnsDir(), 0o755); err != nil {
 		t.Fatalf("mkdir consumed ledger: %v", err)
 	}
@@ -344,6 +447,7 @@ func TestIssue1948_RemoteDrain_StaleExportCannotReplayAfterConsumedPrune(t *test
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-pruned"
+	registerDrainTarget(t, conductor)
 	stale := remoteCompletion("worker-old", "done weeks ago", time.Now().Add(-15*24*time.Hour))
 	stale.SourceRemote = "boxb"
 	stale.ChildSessionID = session.RemoteScopedChildID("boxb", stale.ChildSessionID)
@@ -413,6 +517,7 @@ func TestIssue1948_RemoteDrain_UncertainTimestampIsUnknownNotNew(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			drainTestHome(t)
 			configureRemote(t, "boxb", "worker@box-b")
+			registerDrainTarget(t, "conductor-skew")
 			fetch, _ := stubFetch([]session.TransitionNotificationEvent{
 				remoteCompletion("worker-on-b", "age unknown", tc.at),
 			}, nil)
@@ -479,6 +584,7 @@ func TestIssue1948_RemoteDrain_NoRemotesConfigured(t *testing.T) {
 func TestIssue1948_RemoteDrain_UnreachableRemoteIsDistinguishable(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
+	registerDrainTarget(t, "c")
 
 	fetch, _ := stubFetch(nil, errors.New("ssh command failed: exit status 255: connection refused"))
 	var stdout, stderr bytes.Buffer
@@ -503,6 +609,7 @@ func TestIssue1948_RemoteDrain_UnreachableRemoteIsDistinguishable(t *testing.T) 
 func TestIssue1948_RemoteDrain_ReachableButEmptySaysSo(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
+	registerDrainTarget(t, "c")
 
 	fetch, _ := stubFetch(nil, nil)
 	var stdout, stderr bytes.Buffer
@@ -521,6 +628,7 @@ func TestIssue1948_RemoteDrain_ReachableButEmptySaysSo(t *testing.T) {
 func TestIssue1948_RemoteDrain_ResolvesRemoteByHost(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
+	registerDrainTarget(t, "c")
 
 	fetch, calls := stubFetch([]session.TransitionNotificationEvent{
 		remoteCompletion("worker-on-b", "ok", time.Now()),
@@ -539,6 +647,7 @@ func TestIssue1948_RemoteDrain_JSONShape(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-json"
+	registerDrainTarget(t, conductor)
 
 	fetch, _ := stubFetch([]session.TransitionNotificationEvent{
 		remoteCompletion("worker-on-b", "ok", time.Now()),
@@ -575,6 +684,7 @@ func TestIssue1948_RemoteDrain_JSONPinsUnknownFieldOnUnreadableLedger(t *testing
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
 	conductor := "conductor-1948-json-unknown"
+	registerDrainTarget(t, conductor)
 	if err := os.MkdirAll(session.ConsumedTurnsDir(), 0o755); err != nil {
 		t.Fatalf("mkdir consumed ledger: %v", err)
 	}
@@ -693,6 +803,7 @@ func TestIssue1948_RemoteDrain_TwoConductorsBothReceive(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	for _, conductor := range []string{"conductor-one", "conductor-two"} {
+		registerDrainTarget(t, conductor)
 		stdout.Reset()
 		if code := runRemoteDrain(&stdout, &stderr, []string{"--into", conductor, "boxb"}, fetch); code != 0 {
 			t.Fatalf("%s drain exit=%d: %s", conductor, code, stderr.String())
