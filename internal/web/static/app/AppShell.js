@@ -27,7 +27,7 @@ import { SkillsPane } from './panes/SkillsPane.js'
 import { Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
 import {
-  selectedIdSignal, selectSession, createSessionDialogSignal, confirmDialogSignal,
+  selectedIdSignal, selectedGroupSignal, selectSession, createSessionDialogSignal, confirmDialogSignal,
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
@@ -50,14 +50,32 @@ import { apiFetch, authHeaders } from './api.js'
 import { shortcutsOverlaySignal } from './state.js'
 
 function WorkHead() {
-  const { sessions } = menuModelSignal.value
+  const { sessions, groups } = menuModelSignal.value
   const selected = selectedIdSignal.value
+  const selectedGroup = selectedGroupSignal.value
+  const profile = profileSignal.value || ''
+  const canMutate = mutationsEnabledSignal.value
+
+  // A selected group owns the head: never fall through to sessions[0], which
+  // would render an unrelated session's controls above the group stats.
+  if (selectedGroup) {
+    const group = groups.find(g => g.path === selectedGroup)
+    return html`
+      <div class="work-head" data-testid="work-head-group">
+        <div class="path">
+          <span class="kind">GROUP</span>
+          ${profile && html`<span class="seg">${profile} /</span>`}
+          <span class="cur">${group ? group.name : selectedGroup}</span>
+        </div>
+        <span class="spacer"/>
+      </div>
+    `
+  }
+
   const session = sessions.find(s => s.id === selected) || sessions[0]
   if (!session) return null
 
   const kindLabel = (session.kind || 'agent').toUpperCase()
-  const profile = profileSignal.value || ''
-  const canMutate = mutationsEnabledSignal.value
   const modelLabel = session.model
     ? `${session.model}${session.modelVersion ? ` ${session.modelVersion}` : ''}`
     : ''
