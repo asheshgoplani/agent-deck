@@ -3856,7 +3856,7 @@ exit 1
 		t.Fatal(err)
 	}
 	gotArgs := strings.Fields(string(rawArgs))
-	wantArgs := []string{"-L", "test-socket", "list-panes", "-s", "-t", "multi-window", "-F", "#{pane_pid}"}
+	wantArgs := []string{"-u", "-L", "test-socket", "list-panes", "-s", "-t", "multi-window", "-F", "#{pane_pid}"}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("tmux args = %q, want %q", gotArgs, wantArgs)
 	}
