@@ -33,8 +33,9 @@ import (
 // pattern: at-least-once delivery with exactly-once effects, never loss.
 
 // consumedTurnsTTL bounds the consumed-fingerprint ledger so it can't grow
-// without limit. A turn older than this can never be re-delivered (the inbox
-// TTL is shorter), so forgetting it is safe.
+// without limit. Remote exports are read-only and may outlive their normal
+// inbox TTL, so WriteInboxEventIfUnseen separately refuses records outside
+// this same acceptance window before a pruned fingerprint can become "new".
 const consumedTurnsTTL = 14 * 24 * time.Hour
 
 var consumedTurnsMu sync.Mutex
@@ -86,6 +87,20 @@ const (
 func WriteInboxEventIfUnseen(parentID string, event TransitionNotificationEvent) (InboxEventPresence, error) {
 	if strings.TrimSpace(parentID) == "" {
 		return InboxEventPresenceUnknown, errors.New("inbox: empty parent session id")
+	}
+
+	// The consumed ledger is deliberately bounded, while a read-only remote
+	// export can keep serving a record indefinitely. Therefore the record's own
+	// timestamp is the acceptance boundary: once it reaches the ledger horizon,
+	// it is stale/already-present and can never be resurrected after pruning.
+	// Zero or future timestamps cannot establish age (including clock skew), so
+	// fail closed as unknown rather than silently treating them as new.
+	now := time.Now()
+	if event.Timestamp.IsZero() || event.Timestamp.After(now) {
+		return InboxEventPresenceUnknown, nil
+	}
+	if !event.Timestamp.After(now.Add(-consumedTurnsTTL)) {
+		return InboxEventAlreadyPresent, nil
 	}
 
 	consumedTurnsMu.Lock()
