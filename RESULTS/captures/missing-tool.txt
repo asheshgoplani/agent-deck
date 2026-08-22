@@ -1,1 +1,0 @@
-Injected scenario: selected AI executable absent. Judge recovery copy and concrete next command.
