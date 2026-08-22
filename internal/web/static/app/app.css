@@ -1153,3 +1153,46 @@ body[data-rail="hidden"] .rightrail { display: none; }
   .cc { padding-bottom: 150px; }
   .cc-input select { max-width: 120px; }
 }
+
+/* Group stats panel (GroupStatsPanel.js) — shown in the main work area when
+   a group rather than a session is selected. */
+.group-stats {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: 22px 26px;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+}
+.group-stats .gs-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 16px; font-weight: 600; color: var(--tn-cyan);
+  margin-bottom: 14px;
+}
+.group-stats .gs-total {
+  font-size: 13px; font-weight: 600; color: var(--text-hi);
+  margin-bottom: 10px;
+}
+.group-stats .gs-fragments { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 16px; }
+.group-stats .gs-frag { white-space: nowrap; color: var(--muted); }
+.group-stats .gs-frag.running .gs-glyph { color: var(--tn-green); }
+.group-stats .gs-frag.waiting .gs-glyph { color: var(--tn-yellow); }
+.group-stats .gs-frag.idle    .gs-glyph { color: var(--text); }
+.group-stats .gs-frag.stopped .gs-glyph { color: var(--muted); }
+.group-stats .gs-frag.error   .gs-glyph { color: var(--tn-red); }
+.group-stats .gs-path { display: flex; gap: 10px; margin-bottom: 16px; min-width: 0; }
+.group-stats .gs-path .gs-k { color: var(--muted); }
+.group-stats .gs-path .gs-v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-stats .gs-divider {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 10px; letter-spacing: 0.1em; color: var(--muted);
+  margin: 18px 0 8px;
+}
+.group-stats .gs-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--border);
+}
+.group-stats .gs-empty { color: var(--muted); font-style: italic; padding: 4px 0; }
+.group-stats .gs-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px; border-radius: 3px; cursor: pointer;
+}
+.group-stats .gs-row:hover { background: rgba(255,255,255,0.03); }
+.group-stats .gs-title { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-stats .gs-tool { color: var(--tn-purple); opacity: 0.75; }
