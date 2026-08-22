@@ -83,5 +83,45 @@ class TestWorkerPromptTrustButVerify(unittest.TestCase):
         )
 
 
+class TestWorkerPromptSkeletonFirstReading(unittest.TestCase):
+    """The worker must narrow the repository before reading full bodies."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = WORKER_PROMPT.read_text(encoding="utf-8")
+
+    def test_reading_stages_are_present_and_ordered(self) -> None:
+        stages = [
+            "Repository tree",
+            "Declaration skeletons",
+            "Narrowed full code",
+        ]
+        positions = [self.text.find(stage) for stage in stages]
+        self.assertTrue(
+            all(position >= 0 for position in positions),
+            f"Worker contract must name every skeleton-first stage: {stages}",
+        )
+        self.assertEqual(
+            positions,
+            sorted(positions),
+            "Worker contract must order tree, skeletons, then narrowed full code",
+        )
+
+    def test_full_file_reads_are_forbidden_before_narrowing(self) -> None:
+        self.assertIn(
+            "Do not read full source files before completing stages 1 and 2",
+            self.text,
+            "Without an explicit gate, workers can bypass skeleton-first reading",
+        )
+
+    def test_protocol_gives_grep_first_commands(self) -> None:
+        for command in ("rg --files", "rg -n"):
+            self.assertIn(
+                command,
+                self.text,
+                f"Worker contract must provide the grep-first command {command!r}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
