@@ -8,12 +8,16 @@
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
 import { Icon, ICONS, Dot, kindSigil } from './icons.js'
-import { menuModelSignal } from './dataModel.js'
+import { menuModelSignal, sidebarRowsSignal, isGroupOpen } from './dataModel.js'
 import {
-  selectedIdSignal, selectSession, mutationsEnabledSignal, confirmDialogSignal,
+  selectedIdSignal, selectedGroupSignal, selectSession, selectGroup,
+  mutationsEnabledSignal, confirmDialogSignal,
   createSessionDialogSignal, editSessionDialogSignal,
 } from './state.js'
-import { statusFiltersSignal, showColsSignal, activeTabSignal } from './uiState.js'
+import {
+  statusFiltersSignal, showColsSignal, activeTabSignal,
+  sidebarFilterSignal, groupExpandedSignal,
+} from './uiState.js'
 import { apiFetch } from './api.js'
 import { addToast } from './Toast.js'
 import { formatRelativeTime } from './timeFmt.js'
@@ -80,7 +84,7 @@ function doAction(action, s) {
   }
 }
 
-function SessionItem({ s, sel, onSelect, showCols }) {
+function SessionItem({ s, sel, rowKey, onSelect, showCols }) {
   const [exp, setExp] = useState(false)
   const mcpCount = (s.mcps || []).length
   const skillCount = (s.skills || []).length
@@ -90,7 +94,10 @@ function SessionItem({ s, sel, onSelect, showCols }) {
     (showCols.sandbox && (s.sandbox || s.worktree)) ||
     showCols.lastSeen
   return html`
-    <div class=${`sess ${sel ? 'sel' : ''} ${s.kind} ${exp ? 'exp' : ''}`} onClick=${() => onSelect(s.id)}>
+    <div class=${`sess ${sel ? 'sel' : ''} ${s.kind} ${exp ? 'exp' : ''}`}
+         data-row-key=${rowKey}
+         aria-selected=${!!sel}
+         onClick=${() => onSelect(s.id)}>
       <span class="sig">${kindSigil(s.kind)}</span>
       <div class="titleline">
         <${Dot} status=${s.status}/>
@@ -137,32 +144,28 @@ function SessionItem({ s, sel, onSelect, showCols }) {
 }
 
 export function Sidebar() {
-  const { groups, byGroup, sessions } = menuModelSignal.value
+  const { sessions } = menuModelSignal.value
+  const rows = sidebarRowsSignal.value
   const selected = selectedIdSignal.value
+  const selectedGroup = selectedGroupSignal.value
   const statusFilters = statusFiltersSignal.value
   const showCols = showColsSignal.value
-  const [filter, setFilter] = useState('')
+  const filter = sidebarFilterSignal.value
+  const expandedMap = groupExpandedSignal.value
   const [showMenu, setShowMenu] = useState(false)
-  const [expanded, setExpanded] = useState(() => Object.fromEntries(groups.map(g => [g.path, g.expanded !== false])))
 
-  const matches = (s) => {
-    if (statusFilters.length && !statusFilters.includes(s.status)) return false
-    if (!filter) return true
-    const t = filter.toLowerCase()
-    return ((s.title || '') + ' ' + (s.group || '') + ' ' + (s.path || '') + ' ' + (s.tool || '') + ' ' + (s.branch || ''))
-      .toLowerCase().includes(t)
-  }
+  const totalVisible = useMemo(
+    () => rows.reduce((n, r) => n + (r.type === 'session' ? 1 : 0), 0),
+    [rows],
+  )
 
-  const totalVisible = useMemo(() => sessions.filter(matches).length, [sessions, filter, statusFilters])
   const toggleStatus = (id) => {
     const cur = statusFiltersSignal.value
     statusFiltersSignal.value = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]
   }
-  // Open is defined as `expanded[p] !== false` (undefined counts as open: groups
-  // arrive after the initial render, so most paths are never seeded). The toggle
-  // must mirror that read — plain `!s[p]` maps undefined → true, which is still
-  // "open", making the first click on a never-toggled group a silent no-op.
-  const toggleGroup = (p) => setExpanded(s => ({ ...s, [p]: s[p] === false }))
+  const toggleGroup = (p) => {
+    groupExpandedSignal.value = { ...groupExpandedSignal.value, [p]: !isGroupOpen(groupExpandedSignal.value, p) }
+  }
   const onSelect = (id) => {
     selectSession(id)
     activeTabSignal.value = 'terminal'
@@ -208,7 +211,7 @@ export function Sidebar() {
           placeholder="/ filter"
           data-testid="sidebar-filter-input"
           value=${filter}
-          onInput=${e => setFilter(e.target.value)}
+          onInput=${e => (sidebarFilterSignal.value = e.target.value)}
         />
         ${STATUS_CHIPS.map(s => html`
           <span key=${s.id}
@@ -221,23 +224,29 @@ export function Sidebar() {
         `)}
       </div>
       <div class="side-list">
-        ${groups.map(g => {
-          const members = (byGroup[g.path] || []).filter(matches)
-          if (filter && members.length === 0) return null
-          const open = expanded[g.path] !== false
-          return html`
-            <div key=${g.path}>
-              <div class=${`side-group-head ${g.kind || ''}`} data-testid=${`group-head-${g.path}`} onClick=${() => toggleGroup(g.path)}>
-                <span class="chev">${open ? '▾' : '▸'}</span>
-                <span class="name">${g.label}</span>
-                <span class="badge">(${members.length})</span>
-              </div>
-              ${open && members.map(s => html`
-                <${SessionItem} key=${s.id} s=${s} sel=${selected === s.id} onSelect=${onSelect} showCols=${showCols}/>
-              `)}
+        ${rows.map(r => r.type === 'group'
+          ? html`
+            <div key=${r.key}
+                 class=${`side-group-head ${r.group.kind || ''} ${selectedGroup === r.path ? 'sel' : ''}`}
+                 data-testid=${`group-head-${r.path}`}
+                 data-row-key=${r.key}
+                 aria-selected=${selectedGroup === r.path}
+                 onClick=${() => selectGroup(r.path)}>
+              <button type="button" class="chev"
+                      data-testid=${`group-chev-${r.path}`}
+                      title=${isGroupOpen(expandedMap, r.path) ? 'Collapse group' : 'Expand group'}
+                      onClick=${e => { e.stopPropagation(); toggleGroup(r.path) }}>
+                ${isGroupOpen(expandedMap, r.path) ? '▾' : '▸'}
+              </button>
+              <span class="name">${r.group.label}</span>
+              <span class="badge">(${r.memberCount})</span>
             </div>
           `
-        })}
+          : html`
+            <${SessionItem} key=${r.key} s=${r.session} sel=${selected === r.id}
+                            rowKey=${r.key} onSelect=${onSelect} showCols=${showCols}/>
+          `,
+        )}
         ${sessions.length === 0 && html`
           <div style="padding: 16px; font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: center;">
             No sessions yet. Press <span class="kbd" style="border:1px solid var(--border); padding: 0 4px; border-radius: 3px;">n</span> to create one.

@@ -174,15 +174,29 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .side-list { flex: 1; overflow: auto; padding: 6px 0 10px; }
 .side-group-head {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px;
+  padding: 6px 12px 6px 10px;
   font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
   color: var(--muted); cursor: pointer; user-select: none;
   text-transform: uppercase;
+  border-left: 2px solid transparent;
 }
 .side-group-head:hover { color: var(--text); }
-.side-group-head .chev { font-size: 10px; width: 10px; }
+.side-group-head.sel {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  color: var(--text-hi);
+}
+.side-group-head .chev {
+  font-size: 10px; width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; margin: 0;
+  background: none; border: 0; border-radius: 2px;
+  color: inherit; font-family: inherit; cursor: pointer;
+}
+.side-group-head .chev:hover { background: rgba(255,255,255,0.08); }
 .side-group-head .name { flex: 1; }
 .side-group-head .badge { color: var(--muted); }
+.side-group-head.sel .badge { color: var(--accent); }
 .side-group-head.conductor .name { color: var(--tn-purple); }
 .side-group-head.watcher .name { color: var(--tn-cyan); }
 
