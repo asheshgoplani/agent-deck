@@ -33,4 +33,4 @@ The regression additionally constructs a fresh `Session` after the timeout and p
 
 ## Pull request
 
-Pending creation.
+https://github.com/asheshgoplani/agent-deck/pull/2052
