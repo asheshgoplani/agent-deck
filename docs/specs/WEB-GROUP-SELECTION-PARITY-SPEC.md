@@ -407,13 +407,17 @@ In the single `useEffect` at `AppShell.js:208-337`:
 | `j` / `ArrowDown` | next row in `sidebarRowsSignal` (groups included) |
 | `k` / `ArrowUp` | previous row |
 | `ArrowLeft` / `h` | collapse focused group |
-| `ArrowRight` / `Tab` | expand focused group |
+| `ArrowRight` / `l` | expand focused group |
 | `Enter` | session → open in terminal; group → toggle collapse |
 | `n` | new session, prefilled from the current selection |
 
 `n` resolves its group as: selected group → else selected session's group →
 else none. All bindings stay behind the existing `inField` guard
-(`AppShell.js:243`). `Tab` needs `preventDefault` to avoid moving browser focus.
+(`AppShell.js:243`). `Tab` is deliberately NOT bound. The TUI uses it to toggle a group, but the TUI
+has no focus concept for it to collide with; on the web `Tab` is the platform's
+forward-focus key, and capturing it globally while a group is selected — which
+is a sticky state — is a keyboard trap (WCAG 2.1.2). `→`/`l` and `Enter`
+already cover the gesture.
 
 `KeyboardShortcuts.js:11-26` `BINDINGS` is hand-maintained documentation and is
 updated in the same commit.
@@ -424,6 +428,15 @@ updated in the same commit.
 `main.js:applyRouteSelection`. `encodeURIComponent('work/innotrade')` yields
 `work%2Finnotrade`, which survives the existing no-slash guard unchanged and
 decodes back correctly.
+
+`applyPath` also sets `activeTabSignal` to `'terminal'`. Both the terminal and
+the group panel live inside the terminal pane, which `Panes` hides unless that
+tab is active, and the tab is localStorage-persisted with a `'fleet'` default.
+Every click path set the tab as a side effect, so the URL was the one selection
+path that did not — a cold `/g/{path}` or `/s/{id}` link selected the row and
+rendered its content into a hidden container. This is done in `applyPath`, NOT
+in `selectSession`/`selectGroup`: `j`/`k` call those and must not switch tabs,
+or focus lands in xterm.js and it swallows the next keypress (issue #780).
 
 ## Testing
 
