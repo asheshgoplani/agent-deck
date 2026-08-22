@@ -221,6 +221,56 @@ func TestIssue1948_RemoteDrain_AfterConsumptionReportsAlreadyPresent(t *testing.
 	}
 }
 
+// Reviewer R2B's exact backup/restore sequence: a valid ledger backup is made
+// before A arrives, A is pulled and consumed, the old ledger is restored, and
+// a fresh process pulls the unchanged window-inside export again. The marker
+// beside the inbox must expose the rollback; producer time cannot reconstruct
+// the forgotten consumption history.
+func TestIssue1948_RemoteDrain_OlderLedgerRestoreIsUnknownWithWarning(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	conductor := "conductor-1948-restored"
+	if err := os.MkdirAll(session.ConsumedTurnsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir consumed ledger: %v", err)
+	}
+	ledgerPath := filepath.Join(session.ConsumedTurnsDir(), conductor+".json")
+	backup := []byte("{}")
+	if err := os.WriteFile(ledgerPath, backup, 0o644); err != nil {
+		t.Fatalf("create pre-A ledger backup: %v", err)
+	}
+
+	record := remoteCompletion("worker-on-b", "done one hour ago", time.Now().Add(-time.Hour))
+	fetch, _ := stubFetch([]session.TransitionNotificationEvent{record}, nil)
+	var out, errBuf bytes.Buffer
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, fetch); code != 0 {
+		t.Fatalf("first drain exit=%d: %s", code, errBuf.String())
+	}
+	if events, err := session.DrainInboxForParent(conductor); err != nil || len(events) != 1 {
+		t.Fatalf("consume A: events=%d err=%v", len(events), err)
+	}
+	if err := os.WriteFile(ledgerPath, backup, 0o644); err != nil {
+		t.Fatalf("restore pre-A ledger backup: %v", err)
+	}
+	session.ResetInboxFingerprintCacheForTest()
+	out.Reset()
+	errBuf.Reset()
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, fetch); code != 0 {
+		t.Fatalf("post-restore drain exit=%d: %s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "1 record(s) fetched, 0 new, 0 already present, 1 unknown") {
+		t.Fatalf("forgotten A was not unknown:\n%s", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "detected consumed-ledger restore for inbox "+conductor) {
+		t.Fatalf("restore warning missing or unnamed:\n%s", errBuf.String())
+	}
+	if strings.Count(errBuf.String(), "detected consumed-ledger restore") != 1 {
+		t.Fatalf("restore warning must be one line per drain:\n%s", errBuf.String())
+	}
+	if session.InboxHasPending(conductor) {
+		t.Fatal("forgotten A was reinserted after ledger restore")
+	}
+}
+
 func TestIssue1948_RemoteDrain_MixedConsumedAndNewReportsHonestSplit(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "boxb", "worker@box-b")
