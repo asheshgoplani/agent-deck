@@ -134,4 +134,39 @@ test.describe('group selection', () => {
     await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('personal')
     await expect(page.locator('.dialog input').nth(1)).toHaveValue('/home/dev/scratch')
   })
+
+  test('j walks group headers as well as sessions', async ({ page }) => {
+    await page.locator('body').click()
+
+    // Rendered order: g:work, s:sess-001, s:sess-002, g:work/innotrade,
+    // s:sess-003, g:personal, s:sess-004.
+    await page.keyboard.press('j')
+    await expect(page.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+
+    await page.keyboard.press('j')
+    await expect(page.locator('[data-testid="group-head-work"]')).not.toHaveClass(/\bsel\b/)
+    await expect(page.locator('.sess.sel .tt')).toHaveText('agent-deck')
+
+    await page.keyboard.press('k')
+    await expect(page.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+  })
+
+  test('arrow keys collapse and expand the focused group', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+
+    await page.keyboard.press('ArrowLeft')
+    await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▸')
+    await expect(page.locator('.sess')).toHaveCount(2)
+
+    await page.keyboard.press('ArrowRight')
+    await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▾')
+    await expect(page.locator('.sess')).toHaveCount(4)
+  })
+
+  test('n opens the dialog prefilled from the focused group', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await page.keyboard.press('n')
+
+    await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('work')
+  })
 })
