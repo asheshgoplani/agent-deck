@@ -2673,6 +2673,25 @@ func handleSessionSetTitleLock(profile string, args []string) {
 // reload each poll is deliberate: a fresh OS process has no StatusFileWatcher,
 // so the only way to observe the target's newest hook edge is to re-read it
 // from disk.
+// hookDrivenBusy reports the target's FRESH hook-driven busy state as
+// (busy, known). known is false when no fresh hook signal exists — non-hook
+// tools, or a stale/absent hook file — in which case the caller must fall back
+// to its own evidence rather than treat silence as idle (issue #2033). It
+// deliberately does not fall through to UpdateStatus the way
+// fetchHookDrivenStatus does: that is the spike-filtered heuristic whose decay
+// to idle is the very thing this signal exists to override.
+func hookDrivenBusy(inst *session.Instance) (busy, known bool) {
+	if inst == nil {
+		return false, false
+	}
+	session.RefreshInstancesForCLIStatus([]*session.Instance{inst})
+	hs, fresh := inst.GetHookStatus()
+	if !fresh || hs == "" {
+		return false, false
+	}
+	return send.StatusIsBusy(hs), true
+}
+
 func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
@@ -2910,6 +2929,12 @@ func handleSessionSend(profile string, args []string) {
 	if *noWait {
 		tun = noWaitSendTuning()
 	}
+	// #2033: give the verification loop the hook-driven busy signal so the
+	// Ctrl+C-and-resend recovery can tell a queued message on a live turn
+	// from a message lost during TUI init. Same signal --defer-if-busy reads.
+	tun.retry.targetBusyByHook = func() (bool, bool) {
+		return hookDrivenBusy(inst)
+	}
 	sendRes, sendErr := executeSend(tmuxSess, inst.Tool, message, *noWait, tun)
 	if sendErr != nil {
 		extra := sendRes.jsonFields()
@@ -3112,6 +3137,12 @@ const (
 	deliverySendFailed = "send_failed"
 	// deliveryComposerBlocked: no input sent because composer safety was not established.
 	deliveryComposerBlocked = "composer_blocked"
+	// deliveryQueued: the message was typed and Entered once, and the
+	// target's hook-driven status reports it mid-turn (issue #2033). Claude
+	// holds such input as a queued message and takes it up when the turn
+	// ends, so this is a successful single delivery — but NOT a confirmed
+	// submit. Exit 0, `"submitted": false`.
+	deliveryQueued = "queued"
 )
 
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
@@ -3404,6 +3435,15 @@ type sendRetryOptions struct {
 	// composer paste marker counts as foreign content and no nudge fires —
 	// the fail-safe default for callers that cannot establish provenance.
 	composerPasteFreeBeforeSend bool
+
+	// targetBusyByHook, when non-nil, reports the target's hook-driven busy
+	// state (the #1578 `--defer-if-busy` signal) as (busy, known). It is
+	// consulted before the Ctrl+C-and-resend recovery may fire (issue
+	// #2033): known && busy means the message is queued behind a live turn
+	// and the loop returns deliveryQueued instead of interrupting. known ==
+	// false (hooks absent or not firing) falls through to the #1980 pane
+	// check. nil means no hook signal is wired for this caller.
+	targetBusyByHook func() (busy, known bool)
 }
 
 // composerPasteFree captures the pane and reports whether the composer is
@@ -3568,6 +3608,20 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// Never clear or resend a body to force progress. Automatic Ctrl-C
 				// can erase operator input or become a session-exit gesture.
 				// Only the attribution gate may authorize an Enter retry.
+				//
+				// #2033: a target that is in fact generating satisfies every
+				// condition here, because the spike-filtered status decays
+				// through waiting to idle without ever reporting active. The
+				// hook-driven busy signal (the same one --defer-if-busy polls,
+				// #1578) is the authoritative answer: busy means the message
+				// is queued behind a live turn. Report it as queued instead of
+				// letting the budget expire into a false "NOT delivered".
+				// known == false (hooks absent or not firing) changes nothing.
+				if opts.targetBusyByHook != nil {
+					if busy, known := opts.targetBusyByHook(); known && busy {
+						return deliveryQueued, nil
+					}
+				}
 
 				// We haven't observed any post-send activity yet. Nudge Enter
 				// aggressively in the early window (every iteration for first 5
