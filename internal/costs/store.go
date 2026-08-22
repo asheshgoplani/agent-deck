@@ -88,7 +88,9 @@ func (s *Store) Export(from, to time.Time, by ExportGroup, profile string, price
 		FROM cost_events ce LEFT JOIN instances i ON ce.session_id=i.id
 		WHERE ce.timestamp >= ? AND ce.timestamp < ? GROUP BY %s ORDER BY %s`, selectIdentity, groupBy, orderBy)
 	rows, err := s.db.Query(query, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339))
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	result := make([]ExportRow, 0)
 	for rows.Next() {
@@ -97,15 +99,29 @@ func (s *Store) Export(from, to time.Time, by ExportGroup, profile string, price
 		var first, last string
 		if err := rows.Scan(&row.SessionID, &row.Title, &row.Tool, &row.Model, &row.Account, &row.Day,
 			&row.Events, &row.InputTokens, &row.OutputTokens, &row.CacheReadTokens, &row.CacheWriteTokens,
-			&micro, &first, &last); err != nil { return nil, err }
+			&micro, &first, &last); err != nil {
+			return nil, err
+		}
 		row.Profile = profile
 		row.FirstTimestamp, err = time.Parse(time.RFC3339, first)
-		if err != nil { return nil, fmt.Errorf("parse first timestamp %q: %w", first, err) }
+		if err != nil {
+			return nil, fmt.Errorf("parse first timestamp %q: %w", first, err)
+		}
 		row.LastTimestamp, err = time.Parse(time.RFC3339, last)
-		if err != nil { return nil, fmt.Errorf("parse last timestamp %q: %w", last, err) }
+		if err != nil {
+			return nil, fmt.Errorf("parse last timestamp %q: %w", last, err)
+		}
 		known := true
-		for _, model := range strings.Split(row.Model, ",") { if _, ok := pricer.GetPrice(model); !ok { known = false; break } }
-		if known { usd := float64(micro)/1_000_000; row.CostUSD = &usd }
+		for _, model := range strings.Split(row.Model, ",") {
+			if _, ok := pricer.GetPrice(model); !ok {
+				known = false
+				break
+			}
+		}
+		if known {
+			usd := float64(micro) / 1_000_000
+			row.CostUSD = &usd
+		}
 		result = append(result, row)
 	}
 	return result, rows.Err()

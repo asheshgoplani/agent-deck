@@ -55,21 +55,21 @@ const (
 // ExportRow is the stable machine-readable shape used by `costs export`.
 // Identity fields which do not apply to model/day grouping remain empty.
 type ExportRow struct {
-	SessionID        string     `json:"session_id"`
-	Title            string     `json:"title"`
-	Tool             string     `json:"tool"`
-	Model            string     `json:"model"`
-	Account          string     `json:"account"`
-	Profile          string     `json:"profile"`
-	Day              string     `json:"day"`
-	Events           int        `json:"events"`
-	InputTokens      int64      `json:"input_tokens"`
-	OutputTokens     int64      `json:"output_tokens"`
-	CacheReadTokens  int64      `json:"cache_read_tokens"`
-	CacheWriteTokens int64      `json:"cache_write_tokens"`
-	CostUSD          *float64   `json:"cost_usd"`
-	FirstTimestamp   time.Time  `json:"first_timestamp"`
-	LastTimestamp    time.Time  `json:"last_timestamp"`
+	SessionID        string    `json:"session_id"`
+	Title            string    `json:"title"`
+	Tool             string    `json:"tool"`
+	Model            string    `json:"model"`
+	Account          string    `json:"account"`
+	Profile          string    `json:"profile"`
+	Day              string    `json:"day"`
+	Events           int       `json:"events"`
+	InputTokens      int64     `json:"input_tokens"`
+	OutputTokens     int64     `json:"output_tokens"`
+	CacheReadTokens  int64     `json:"cache_read_tokens"`
+	CacheWriteTokens int64     `json:"cache_write_tokens"`
+	CostUSD          *float64  `json:"cost_usd"`
+	FirstTimestamp   time.Time `json:"first_timestamp"`
+	LastTimestamp    time.Time `json:"last_timestamp"`
 }
 
 // FormatUSD converts microdollars to a display string.

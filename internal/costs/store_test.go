@@ -116,14 +116,26 @@ func TestStore_ExportAggregatesDateRangeAndUnknownPrices(t *testing.T) {
 		{ID: "unknown", SessionID: "s2", Timestamp: time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC), Model: "claude-fable-5", InputTokens: 50, OutputTokens: 60, CostMicrodollars: 0},
 		{ID: "outside", SessionID: "s3", Timestamp: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC), Model: "claude-sonnet-4-6", CostMicrodollars: 9999},
 	} {
-		if err := s.WriteCostEvent(ev); err != nil { t.Fatal(err) }
+		if err := s.WriteCostEvent(ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rows, err := s.Export(time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC), costs.GroupBySession, "work", pricer)
-	if err != nil { t.Fatal(err) }
-	if len(rows) != 2 { t.Fatalf("got %d rows, want 2", len(rows)) }
-	if rows[0].SessionID != "s1" || rows[0].Events != 1 || rows[0].InputTokens != 10 || rows[0].CacheWriteTokens != 40 { t.Fatalf("known row = %#v", rows[0]) }
-	if rows[0].CostUSD == nil || *rows[0].CostUSD != 0.001234 { t.Fatalf("known cost = %v", rows[0].CostUSD) }
-	if rows[1].SessionID != "s2" || rows[1].CostUSD != nil { t.Fatalf("unknown row must have null cost: %#v", rows[1]) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	if rows[0].SessionID != "s1" || rows[0].Events != 1 || rows[0].InputTokens != 10 || rows[0].CacheWriteTokens != 40 {
+		t.Fatalf("known row = %#v", rows[0])
+	}
+	if rows[0].CostUSD == nil || *rows[0].CostUSD != 0.001234 {
+		t.Fatalf("known cost = %v", rows[0].CostUSD)
+	}
+	if rows[1].SessionID != "s2" || rows[1].CostUSD != nil {
+		t.Fatalf("unknown row must have null cost: %#v", rows[1])
+	}
 }
 
 func TestStore_TopSessionsByCost(t *testing.T) {

@@ -131,18 +131,40 @@ func handleCostsSummary(profile string, args []string) {
 	defer storage.Close()
 	if *since != "" || *until != "" {
 		from, to, err := parseCostDateRange(*since, *until)
-		if err != nil { fmt.Fprintf(os.Stderr, "Error: %v\n", err); return }
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return
+		}
 		summary, err := costStore.TotalRange(from, to)
-		if err != nil { fmt.Fprintf(os.Stderr, "Error: %v\n", err); return }
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return
+		}
 		rows, err := costStore.Export(from, to, costs.GroupByDay, costProfileName(profile), newPricerFromConfig())
-		if err != nil { fmt.Fprintf(os.Stderr, "Error: %v\n", err); return }
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return
+		}
 		var costUSD *float64
 		known := true
-		for _, row := range rows { if row.CostUSD == nil { known = false } }
-		if known { v := float64(summary.TotalCostMicrodollars)/1_000_000; costUSD = &v }
-		payload := map[string]interface{}{"since": from.Format("2006-01-02"), "until": to.AddDate(0,0,-1).Format("2006-01-02"), "events": summary.EventCount, "input_tokens": summary.TotalInputTokens, "output_tokens": summary.TotalOutputTokens, "cache_read_tokens": summary.TotalCacheReadTokens, "cache_write_tokens": summary.TotalCacheWriteTokens, "cost_usd": costUSD}
-		if *jsonOutput { _ = json.NewEncoder(os.Stdout).Encode(payload); return }
-		cost := "?"; if costUSD != nil { cost = fmt.Sprintf("$%.2f", *costUSD) }
+		for _, row := range rows {
+			if row.CostUSD == nil {
+				known = false
+			}
+		}
+		if known {
+			v := float64(summary.TotalCostMicrodollars) / 1_000_000
+			costUSD = &v
+		}
+		payload := map[string]interface{}{"since": from.Format("2006-01-02"), "until": to.AddDate(0, 0, -1).Format("2006-01-02"), "events": summary.EventCount, "input_tokens": summary.TotalInputTokens, "output_tokens": summary.TotalOutputTokens, "cache_read_tokens": summary.TotalCacheReadTokens, "cache_write_tokens": summary.TotalCacheWriteTokens, "cost_usd": costUSD}
+		if *jsonOutput {
+			_ = json.NewEncoder(os.Stdout).Encode(payload)
+			return
+		}
+		cost := "?"
+		if costUSD != nil {
+			cost = fmt.Sprintf("$%.2f", *costUSD)
+		}
 		fmt.Printf("Cost Summary (%s through %s):\n  Total: %s (%d events)\n", payload["since"], payload["until"], cost, summary.EventCount)
 		return
 	}
@@ -157,8 +179,18 @@ func handleCostsSummary(profile string, args []string) {
 	pricer := newPricerFromConfig()
 	allRows, _ := costStore.Export(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC), costs.GroupByModel, costProfileName(profile), pricer)
 	hasUnknown := false
-	for _, row := range allRows { if row.CostUSD == nil { hasUnknown = true; break } }
-	costValue := func(v int64) interface{} { if hasUnknown { return nil }; return v }
+	for _, row := range allRows {
+		if row.CostUSD == nil {
+			hasUnknown = true
+			break
+		}
+	}
+	costValue := func(v int64) interface{} {
+		if hasUnknown {
+			return nil
+		}
+		return v
+	}
 
 	if *jsonOutput {
 		// Wire shape mirrors costs.RemoteCostSummary so SSHRunner can json.Unmarshal directly.
@@ -179,7 +211,12 @@ func handleCostsSummary(profile string, args []string) {
 		return
 	}
 
-	displayCost := func(v int64) string { if hasUnknown { return "?" }; return costs.FormatUSD(v) }
+	displayCost := func(v int64) string {
+		if hasUnknown {
+			return "?"
+		}
+		return costs.FormatUSD(v)
+	}
 	fmt.Printf("Cost Summary:\n")
 	fmt.Printf("  Today:      %s (%d events)\n", displayCost(today.TotalCostMicrodollars), today.EventCount)
 	fmt.Printf("  This week:  %s (%d events)\n", displayCost(week.TotalCostMicrodollars), week.EventCount)
@@ -202,7 +239,10 @@ func handleCostsSummary(profile string, args []string) {
 	if len(byModel) > 0 {
 		fmt.Printf("\nCost by Model:\n")
 		for model, cost := range byModel {
-			value := costs.FormatUSD(cost); if _, ok := pricer.GetPrice(model); !ok { value = "?" }
+			value := costs.FormatUSD(cost)
+			if _, ok := pricer.GetPrice(model); !ok {
+				value = "?"
+			}
 			fmt.Printf("  %-30s %s\n", model, value)
 		}
 	}
@@ -212,9 +252,22 @@ func parseCostDateRange(since, until string) (time.Time, time.Time, error) {
 	from := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
 	var err error
-	if since != "" { from, err = time.Parse("2006-01-02", since); if err != nil { return time.Time{}, time.Time{}, fmt.Errorf("invalid --since %q (want YYYY-MM-DD)", since) } }
-	if until != "" { d, e := time.Parse("2006-01-02", until); if e != nil { return time.Time{}, time.Time{}, fmt.Errorf("invalid --until %q (want YYYY-MM-DD)", until) }; to = d.AddDate(0,0,1) }
-	if !from.Before(to) { return time.Time{}, time.Time{}, fmt.Errorf("--since must not be after --until") }
+	if since != "" {
+		from, err = time.Parse("2006-01-02", since)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid --since %q (want YYYY-MM-DD)", since)
+		}
+	}
+	if until != "" {
+		d, e := time.Parse("2006-01-02", until)
+		if e != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid --until %q (want YYYY-MM-DD)", until)
+		}
+		to = d.AddDate(0, 0, 1)
+	}
+	if !from.Before(to) {
+		return time.Time{}, time.Time{}, fmt.Errorf("--since must not be after --until")
+	}
 	return from, to, nil
 }
 
@@ -224,31 +277,56 @@ func handleCostsExport(profile string, args []string) {
 	until := fs.String("until", "", "Last UTC date, inclusive (YYYY-MM-DD)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON array")
 	by := fs.String("by", "session", "Group by session, model, or day")
-	if err := fs.Parse(args); err != nil { return }
+	if err := fs.Parse(args); err != nil {
+		return
+	}
 	from, to, err := parseCostDateRange(*since, *until)
-	if err != nil { fmt.Fprintf(os.Stderr, "Error: %v\n", err); return }
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return
+	}
 	group := costs.ExportGroup(*by)
-	if group != costs.GroupBySession && group != costs.GroupByModel && group != costs.GroupByDay { fmt.Fprintf(os.Stderr, "Error: invalid --by %q (want session, model, or day)\n", *by); return }
-	store, storage := openCostStore(profile); defer storage.Close()
+	if group != costs.GroupBySession && group != costs.GroupByModel && group != costs.GroupByDay {
+		fmt.Fprintf(os.Stderr, "Error: invalid --by %q (want session, model, or day)\n", *by)
+		return
+	}
+	store, storage := openCostStore(profile)
+	defer storage.Close()
 	rows, err := store.Export(from, to, group, costProfileName(profile), newPricerFromConfig())
-	if err != nil { fmt.Fprintf(os.Stderr, "Error: %v\n", err); return }
-	if err := writeCostExport(os.Stdout, rows, *jsonOutput); err != nil { fmt.Fprintf(os.Stderr, "Error: %v\n", err) }
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return
+	}
+	if err := writeCostExport(os.Stdout, rows, *jsonOutput); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	}
 }
 
 func costProfileName(profile string) string {
-	if profile == "" { return session.DefaultProfile }
+	if profile == "" {
+		return session.DefaultProfile
+	}
 	return profile
 }
 
 func writeCostExport(w io.Writer, rows []costs.ExportRow, jsonOutput bool) error {
-	if jsonOutput { return json.NewEncoder(w).Encode(rows) }
+	if jsonOutput {
+		return json.NewEncoder(w).Encode(rows)
+	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "SESSION\tTITLE\tTOOL\tMODEL\tEVENTS\tINPUT\tOUTPUT\tCACHE READ\tCACHE WRITE\tCOST\tFIRST\tLAST")
 	for _, row := range rows {
 		identity := row.SessionID
-		if row.Day != "" { identity = row.Day }
-		if identity == "" { identity = row.Model }
-		cost := "?"; if row.CostUSD != nil { cost = fmt.Sprintf("$%.6f", *row.CostUSD) }
+		if row.Day != "" {
+			identity = row.Day
+		}
+		if identity == "" {
+			identity = row.Model
+		}
+		cost := "?"
+		if row.CostUSD != nil {
+			cost = fmt.Sprintf("$%.6f", *row.CostUSD)
+		}
 		models := strings.ReplaceAll(row.Model, ",", ", ")
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\n", identity, row.Title, row.Tool, models, row.Events, row.InputTokens, row.OutputTokens, row.CacheReadTokens, row.CacheWriteTokens, cost, row.FirstTimestamp.Format(time.RFC3339), row.LastTimestamp.Format(time.RFC3339))
 	}
