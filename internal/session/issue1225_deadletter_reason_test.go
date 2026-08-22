@@ -61,11 +61,12 @@ func TestB5_ParentRemovedMidFlight_DeadLettersWithReasonAndLogs(t *testing.T) {
 		ToStatus:       "waiting",
 		Timestamp:      now,
 	})
-	if res.DeliveryResult != transitionDeliveryDropped {
-		t.Fatalf("expected dropped, got %q", res.DeliveryResult)
+	if res.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("durable _unowned persistence must report committed, got %q", res.DeliveryResult)
 	}
-	if res.DeadLetterReason != deadLetterReasonParentMissing {
-		t.Fatalf("expected reason %q, got %q", deadLetterReasonParentMissing, res.DeadLetterReason)
+	unowned, err := ReadAndTruncateInbox(UnownedInboxID)
+	if err != nil || len(unowned) != 1 || unowned[0].DeadLetterReason != deadLetterReasonParentMissing {
+		t.Fatalf("_unowned must preserve parent removal reason: events=%+v err=%v", unowned, err)
 	}
 
 	// Dead-letter record exists with the reason.

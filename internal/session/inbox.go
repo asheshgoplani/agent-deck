@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -180,6 +181,11 @@ func WriteInboxEventIfNew(parentSessionID string, event TransitionNotificationEv
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
+	fileLock, err := AcquireConfigFileLock(path)
+	if err != nil {
+		return false, fmt.Errorf("lock inbox append: %w", err)
+	}
+	defer fileLock.Release()
 
 	fp := EventFingerprint(event)
 
@@ -198,33 +204,37 @@ func WriteInboxEventIfNew(parentSessionID string, event TransitionNotificationEv
 		return false, nil
 	}
 
-	// Embed the fingerprint into the persisted JSON so on-disk state is
-	// self-describing — the file-scan recovery path can reconstruct the
-	// dedup set without re-deriving fingerprints from the event body.
-	type wireEvent struct {
-		TransitionNotificationEvent
-		Fingerprint string `json:"fp,omitempty"`
-	}
-	line, err := json.Marshal(wireEvent{TransitionNotificationEvent: event, Fingerprint: fp})
+	line, err := json.Marshal(inboxWireEvent{TransitionNotificationEvent: event, Fingerprint: fp})
 	if err != nil {
 		return false, err
 	}
-
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return false, err
-	}
-	// Audit B2: fsync the append so a crash after Write cannot lose a record the
-	// producer reported as committed.
-	if err := f.Sync(); err != nil {
+	if err := atomicAppendInboxLineLocked(path, line); err != nil {
 		return false, err
 	}
 	seen[fp] = struct{}{}
 	return true, nil
+}
+
+// atomicAppendInboxLineLocked gives an inbox append an old-or-new crash
+// boundary. It builds a complete replacement beside the inbox, fsyncs it, and
+// atomically renames it over the old file. SIGKILL before rename leaves the old
+// complete inbox; SIGKILL after rename leaves the new complete inbox. A partial
+// JSONL tail is never installed as the authoritative file.
+//
+// Caller holds inboxWriteMu.
+func atomicAppendInboxLineLocked(path string, line []byte) error {
+	existing, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	data := make([]byte, 0, len(existing)+len(line)+1)
+	data = append(data, existing...)
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	data = append(data, line...)
+	data = append(data, '\n')
+	return writeFileDurable(path, data, 0o644)
 }
 
 // loadInboxFingerprintsLocked scans an existing inbox file and returns the
