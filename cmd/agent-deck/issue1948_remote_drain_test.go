@@ -275,6 +275,99 @@ func TestIssue1948_RemoteDrain_UnreadableDedupStateIsUnknownNotNew(t *testing.T)
 	}
 }
 
+// A read-only remote can keep exporting a record after the bounded consumed
+// ledger prunes its fingerprint. The record's own age must keep that stale turn
+// from being resurrected as fresh work.
+func TestIssue1948_RemoteDrain_StaleExportCannotReplayAfterConsumedPrune(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	conductor := "conductor-1948-pruned"
+	stale := remoteCompletion("worker-old", "done weeks ago", time.Now().Add(-15*24*time.Hour))
+	stale.SourceRemote = "boxb"
+	stale.ChildSessionID = session.RemoteScopedChildID("boxb", stale.ChildSessionID)
+	stale.TurnFingerprint = session.TurnFingerprint(stale)
+
+	if err := os.MkdirAll(session.ConsumedTurnsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir consumed ledger: %v", err)
+	}
+	ledgerPath := filepath.Join(session.ConsumedTurnsDir(), conductor+".json")
+	ledger := map[string]int64{stale.TurnFingerprint: time.Now().Add(-15 * 24 * time.Hour).Unix()}
+	raw, err := json.Marshal(ledger)
+	if err != nil {
+		t.Fatalf("marshal consumed ledger: %v", err)
+	}
+	if err := os.WriteFile(ledgerPath, raw, 0o644); err != nil {
+		t.Fatalf("seed consumed ledger: %v", err)
+	}
+
+	// Consuming another turn exercises the production save/prune path and
+	// removes the stale fingerprint before the remote serves it again.
+	fresh := remoteCompletion("worker-new", "new turn", time.Now())
+	fresh.SourceRemote = "boxb"
+	fresh.ChildSessionID = session.RemoteScopedChildID("boxb", fresh.ChildSessionID)
+	fresh.TurnFingerprint = session.TurnFingerprint(fresh)
+	if _, err := session.WriteInboxEventIfUnseen(conductor, fresh); err != nil {
+		t.Fatalf("stage fresh turn: %v", err)
+	}
+	if _, err := session.DrainInboxForParent(conductor); err != nil {
+		t.Fatalf("consume fresh turn and prune ledger: %v", err)
+	}
+	raw, err = os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("read pruned ledger: %v", err)
+	}
+	var pruned map[string]int64
+	if err := json.Unmarshal(raw, &pruned); err != nil {
+		t.Fatalf("decode pruned ledger: %v", err)
+	}
+	if _, ok := pruned[stale.TurnFingerprint]; ok {
+		t.Fatal("test setup failed: production save did not prune stale fingerprint")
+	}
+
+	// Undo the local ingest scoping above: the fetch seam returns the unchanged
+	// remote representation and production ingest scopes it exactly once.
+	remoteStale := remoteCompletion("worker-old", "done weeks ago", stale.Timestamp)
+	fetch, _ := stubFetch([]session.TransitionNotificationEvent{remoteStale}, nil)
+	var out, errBuf bytes.Buffer
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, fetch); code != 0 {
+		t.Fatalf("stale re-drain exit=%d: %s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "nothing new — all already present") {
+		t.Fatalf("stale export was not classified already-present:\n%s", out.String())
+	}
+	if session.InboxHasPending(conductor) {
+		t.Fatal("stale exported record was reinserted after ledger pruning")
+	}
+}
+
+func TestIssue1948_RemoteDrain_UncertainTimestampIsUnknownNotNew(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+	}{
+		{name: "missing", at: time.Time{}},
+		{name: "future-clock-skew", at: time.Now().Add(time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drainTestHome(t)
+			configureRemote(t, "boxb", "worker@box-b")
+			fetch, _ := stubFetch([]session.TransitionNotificationEvent{
+				remoteCompletion("worker-on-b", "age unknown", tc.at),
+			}, nil)
+			var out, errBuf bytes.Buffer
+			if code := runRemoteDrain(&out, &errBuf, []string{"--into", "conductor-skew", "boxb"}, fetch); code != 0 {
+				t.Fatalf("drain exit=%d: %s", code, errBuf.String())
+			}
+			if !strings.Contains(out.String(), "0 new, 0 already present, 1 unknown") {
+				t.Fatalf("uncertain age was not unknown:\n%s", out.String())
+			}
+			if session.InboxHasPending("conductor-skew") {
+				t.Fatal("record with uncertain age was inserted")
+			}
+		})
+	}
+}
+
 // An unknown host is reported as unknown — with the configured remotes listed —
 // and never as an empty drain.
 func TestIssue1948_RemoteDrain_UnknownRemoteIsDistinguishable(t *testing.T) {
@@ -393,15 +486,58 @@ func TestIssue1948_RemoteDrain_JSONShape(t *testing.T) {
 		t.Fatalf("exit=%d: %s", code, stderr.String())
 	}
 
-	var got remoteDrainResult
+	var got map[string]json.RawMessage
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("json: %v\n%s", err, stdout.String())
 	}
-	if got.Remote != "boxb" || got.Host != "worker@box-b" || got.TargetSessionID != conductor {
-		t.Fatalf("json identity fields wrong: %+v", got)
+	var shaped remoteDrainResult
+	if err := json.Unmarshal(stdout.Bytes(), &shaped); err != nil {
+		t.Fatalf("typed json: %v\n%s", err, stdout.String())
 	}
-	if got.Fetched != 1 || got.Written != 1 || got.Duplicates != 0 || len(got.Records) != 1 {
-		t.Fatalf("json counts wrong: %+v", got)
+	if shaped.Remote != "boxb" || shaped.Host != "worker@box-b" || shaped.TargetSessionID != conductor || len(shaped.Records) != 1 {
+		t.Fatalf("json identity/records wrong: %+v", shaped)
+	}
+	var unknown int
+	if raw, ok := got["unknown"]; !ok || json.Unmarshal(raw, &unknown) != nil || unknown != 0 {
+		t.Fatalf("json must explicitly emit unknown: 0: %s", stdout.String())
+	}
+	for key, want := range map[string]int{"fetched": 1, "written": 1, "duplicates": 0} {
+		var value int
+		if raw, ok := got[key]; !ok || json.Unmarshal(raw, &value) != nil || value != want {
+			t.Fatalf("json %s=%d missing/wrong: %s", key, want, stdout.String())
+		}
+	}
+}
+
+func TestIssue1948_RemoteDrain_JSONPinsUnknownFieldOnUnreadableLedger(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	conductor := "conductor-1948-json-unknown"
+	if err := os.MkdirAll(session.ConsumedTurnsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir consumed ledger: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(session.ConsumedTurnsDir(), conductor+".json"), []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("corrupt consumed ledger: %v", err)
+	}
+	fetch, _ := stubFetch([]session.TransitionNotificationEvent{
+		remoteCompletion("worker-on-b", "unknown", time.Now()),
+	}, nil)
+	var stdout, stderr bytes.Buffer
+	if code := runRemoteDrain(&stdout, &stderr, []string{"--json", "--into", conductor, "boxb"}, fetch); code != 0 {
+		t.Fatalf("exit=%d: %s", code, stderr.String())
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	for key, want := range map[string]int{"fetched": 1, "written": 0, "duplicates": 0, "unknown": 1} {
+		var value int
+		if raw, ok := got[key]; !ok || json.Unmarshal(raw, &value) != nil || value != want {
+			t.Fatalf("json %s=%d missing/wrong: %s", key, want, stdout.String())
+		}
+	}
+	if session.InboxHasPending(conductor) {
+		t.Fatal("unknown record was inserted")
 	}
 }
 
