@@ -444,6 +444,7 @@ type Home struct {
 	// Launching animation state (for newly created sessions)
 	launchingSessions    map[string]time.Time        // sessionID -> creation time
 	resumingSessions     map[string]time.Time        // sessionID -> resume time (for restart/resume)
+	remoteRestarting     map[string]struct{}         // remote restart operation ID -> in flight
 	mcpLoadingSessions   map[string]time.Time        // sessionID -> MCP reload time
 	forkingSessions      map[string]time.Time        // sessionID -> fork start time (fork in progress)
 	setupRunningSessions map[string]time.Time        // sessionID -> setup script start time
@@ -1515,6 +1516,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		clearOnCompactSent:        make(map[string]time.Time),
 		launchingSessions:         make(map[string]time.Time),
 		resumingSessions:          make(map[string]time.Time),
+		remoteRestarting:          make(map[string]struct{}),
 		mcpLoadingSessions:        make(map[string]time.Time),
 		forkingSessions:           make(map[string]time.Time),
 		setupRunningSessions:      make(map[string]time.Time),
@@ -6311,6 +6313,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionRestartedMsg:
+		delete(h.remoteRestarting, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.resumingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to restart remote session: %w", msg.err))
@@ -9697,10 +9700,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				restartID := remoteRestartAnimationID(item.RemoteName, item.RemoteSession.ID)
-				if _, restarting := h.resumingSessions[restartID]; restarting {
+				if _, restarting := h.remoteRestarting[restartID]; restarting {
 					h.setError(fmt.Errorf("remote session is restarting, please wait..."))
 					return h, nil
 				}
+				h.remoteRestarting[restartID] = struct{}{}
 				h.resumingSessions[restartID] = time.Now()
 				return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}

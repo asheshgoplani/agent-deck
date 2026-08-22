@@ -1524,6 +1524,34 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	_ = h
 }
 
+func TestRemoteRestartGuardOutlivesAnimationCleanup(t *testing.T) {
+	home := NewHome()
+	remote := session.RemoteSessionInfo{ID: "slow-remote", Title: "slow restart", RemoteName: "edge"}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "edge"}}
+	home.cursor = 0
+
+	_, first := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	if first == nil {
+		t.Fatal("first remote restart returned no command")
+	}
+	restartID := remoteRestartAnimationID("edge", "slow-remote")
+	// Model an SSH restart that outlives the presentation timer. Animation
+	// cleanup must not release the operation-state re-entry lock.
+	home.resumingSessions[restartID] = time.Now().Add(-time.Minute)
+	home.cleanupExpiredAnimations(home.resumingSessions, 20*time.Second, 5*time.Second)
+	if _, animated := home.resumingSessions[restartID]; animated {
+		t.Fatal("expired remote restart animation was not cleaned up")
+	}
+	if _, inFlight := home.remoteRestarting[restartID]; !inFlight {
+		t.Fatal("animation cleanup released the in-flight remote restart guard")
+	}
+
+	_, second := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	if second != nil {
+		t.Fatal("second R started another remote restart while slow SSH operation was in flight")
+	}
+}
+
 func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
 	home := NewHome()
 	home.width = 100
