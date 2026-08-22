@@ -33,6 +33,30 @@ func TestViewportDialogContentPinsChromeAndFocusedField(t *testing.T) {
 	}
 }
 
+func TestViewportDialogContentPinsEntireWrappedFooter(t *testing.T) {
+	var body strings.Builder
+	body.WriteString("New Session\n  in group: default\n")
+	for i := 0; i < 32; i++ {
+		prefix := "  "
+		if i == 21 {
+			prefix = "▶ "
+		}
+		fmt.Fprintf(&body, "%sfield %02d\n", prefix, i)
+	}
+	body.WriteString("Tab next │ Shift+Tab previous │ ^S create │ Esc cancel")
+
+	got := viewportDialogContent(body.String(), 40, 24)
+	plain := stripAnsi(got)
+	for _, pin := range []string{"New Session", "▶ field 21", "^S", "create", "Esc cancel"} {
+		if !strings.Contains(plain, pin) {
+			t.Fatalf("viewport lost pinned %q from wrapped footer:\n%s", pin, plain)
+		}
+	}
+	if height := lipgloss.Height(got); height > 24 {
+		t.Fatalf("content height = %d, want <= 24", height)
+	}
+}
+
 func TestViewportDialogContentDoesNotChangeTallLayout(t *testing.T) {
 	const content = "New Session\n  in group: default\n\n▶ Name:\n  demo\n\nEnter create"
 	if got := viewportDialogContent(content, 76, 42); got != content {
@@ -117,6 +141,14 @@ func TestFullFooterUsesCompactReadableTierAt100Columns(t *testing.T) {
 	h.cursor = 0
 
 	footer := h.renderHelpBarWidthAdaptive()
+	compact := h.renderHelpBarCompact()
+	full := h.renderHelpBarFull()
+	if footer != compact {
+		t.Fatalf("100-column footer did not use compact tier:\n%s", stripAnsi(footer))
+	}
+	if footer == full {
+		t.Fatal("test fixture does not distinguish compact and full footer tiers")
+	}
 	plain := stripAnsi(footer)
 	if !strings.Contains(plain, "Skills") {
 		t.Fatalf("100-column selected-session footer lost Skills:\n%s", plain)

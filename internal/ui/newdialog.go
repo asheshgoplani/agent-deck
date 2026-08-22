@@ -244,10 +244,21 @@ func viewportDialogContent(content string, width, height int) string {
 		return strings.Join(lines, "\n")
 	}
 
-	// The title/group pair and the final action/help line are stable chrome.
-	headerEnd := min(2, len(lines)-1)
-	footer := lines[len(lines)-1]
-	bodyStart, bodyEnd := headerEnd, len(lines)-1
+	// The title/group pair and the final logical action/help line are stable
+	// chrome. The footer can occupy multiple visual rows after wrapping, and all
+	// of them must remain pinned so the primary action cannot scroll away.
+	logicalLines := strings.Split(content, "\n")
+	for len(logicalLines) > 0 && strings.TrimSpace(stripAnsi(logicalLines[len(logicalLines)-1])) == "" {
+		logicalLines = logicalLines[:len(logicalLines)-1]
+	}
+	footerHeight := 1
+	if len(logicalLines) > 0 {
+		footerHeight = lipgloss.Height(lipgloss.NewStyle().Width(width).Render(logicalLines[len(logicalLines)-1]))
+	}
+	footerHeight = min(footerHeight, len(lines)-1)
+	headerEnd := min(2, len(lines)-footerHeight)
+	bodyStart, bodyEnd := headerEnd, len(lines)-footerHeight
+	footer := lines[bodyEnd:]
 	focus := bodyStart
 	for i := bodyStart; i < bodyEnd; i++ {
 		if strings.Contains(stripAnsi(lines[i]), "▶") {
@@ -258,7 +269,7 @@ func viewportDialogContent(content string, width, height int) string {
 
 	// Reserve both indicator rows initially. Unused indicators are returned to
 	// the body below, maximizing useful content near either edge.
-	budget := max(1, height-headerEnd-1-2)
+	budget := max(1, height-headerEnd-footerHeight-2)
 	start := focus - budget/2
 	if start < bodyStart {
 		start = bodyStart
@@ -269,7 +280,7 @@ func viewportDialogContent(content string, width, height int) string {
 		start = max(bodyStart, end-budget)
 	}
 	showUp, showDown := start > bodyStart, end < bodyEnd
-	used := headerEnd + (end - start) + 1
+	used := headerEnd + (end - start) + footerHeight
 	if showUp {
 		used++
 	}
@@ -296,7 +307,7 @@ func viewportDialogContent(content string, width, height int) string {
 	if showDown {
 		visible = append(visible, dim.Render("  ↓ more fields"))
 	}
-	visible = append(visible, footer)
+	visible = append(visible, footer...)
 	return strings.Join(visible, "\n")
 }
 
