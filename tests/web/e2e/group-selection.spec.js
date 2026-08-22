@@ -183,4 +183,21 @@ test.describe('group selection', () => {
     await expect(page.locator('[data-testid="create-session-group"]')).toHaveText('work')
     await expect(page.locator('.dialog input').nth(1)).toHaveValue('/srv/work')
   })
+
+  test('group selection is reflected in the URL and survives a reload', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await expect(page).toHaveURL(/\/g\/work$/)
+
+    await page.reload()
+    await expect(page.locator('[data-testid="group-stats-panel"]')).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+  })
+
+  test('a nested group path round-trips through the URL', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work/innotrade"] .name').click()
+    await expect(page).toHaveURL(/\/g\/work%2Finnotrade$/)
+
+    await page.reload()
+    await expect(page.locator('[data-testid="group-stats-panel"]')).toHaveAttribute('data-group-path', 'work/innotrade', { timeout: 5000 })
+  })
 })
