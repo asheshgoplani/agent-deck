@@ -51,4 +51,6 @@ The broader `cmd/agent-deck` suite was also attempted. Its issue-focused tests p
 
 ## Pull request
 
-Pending creation. The PR will include `Closes #2025` and credit reporter @asheshgoplani.
+https://github.com/asheshgoplani/agent-deck/pull/2055
+
+The PR includes `Closes #2025`, credits reporter @asheshgoplani, and remains unmerged.
