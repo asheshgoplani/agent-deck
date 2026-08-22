@@ -152,6 +152,16 @@ const (
 // (shows all sessions except error/stopped). Change this constant to rebind.
 const FilterKeyActive = "%"
 
+// FilterKeyError is the keyboard shortcut for the error-only status filter.
+// Keep it distinct from CostDashboardKey: advertised keys must have exactly
+// one meaning in the overview context, regardless of whether cost tracking is
+// available.
+const FilterKeyError = "&"
+
+// CostDashboardKey opens the cost dashboard. It is deliberately not reused as
+// a conditional fallback for another action.
+const CostDashboardKey = "$"
+
 // FilterKeyArchived toggles the archived-sessions list view.
 const FilterKeyArchived = "^"
 
@@ -9918,14 +9928,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		return h, nil
 
-	case "$", "shift+4":
-		// Cost dashboard (when cost tracking is active), otherwise filter to error sessions
+	case CostDashboardKey, "shift+4":
+		// Cost dashboard (when cost tracking is active).
 		if h.costStore != nil {
 			h.showCostDashboard = true
 			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
-			return h, nil
 		}
-		// Fallback: filter to error sessions only
+		return h, nil
+
+	case FilterKeyError, "shift+7":
+		// Filter to error sessions only.
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -18662,6 +18674,11 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		keyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
 		b.WriteString(warnStyle.Render("✕ No tmux session running"))
+		if restartKey := h.actionKey(hotkeyRestart); restartKey != "" {
+			b.WriteString("   ")
+			b.WriteString(keyStyle.Render(restartKey))
+			b.WriteString(dimStyle.Render(" Restart"))
+		}
 		b.WriteString("\n\n")
 		b.WriteString(dimStyle.Render("This can happen if:"))
 		b.WriteString("\n")
@@ -18673,12 +18690,6 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString("\n\n")
 		b.WriteString(dimStyle.Render("Actions:"))
 		b.WriteString("\n")
-		if restartKey := h.actionKey(hotkeyRestart); restartKey != "" {
-			b.WriteString("  ")
-			b.WriteString(keyStyle.Render(restartKey))
-			b.WriteString(dimStyle.Render(" Start   - create and start tmux session"))
-			b.WriteString("\n")
-		}
 		if selected.CanRestartFresh() {
 			if restartFreshKey := h.actionKey(hotkeyRestartFresh); restartFreshKey != "" {
 				b.WriteString("  ")
@@ -20290,7 +20301,7 @@ func (h *Home) renderFilterBarHint() string {
 		mark("!", h.statusFilter == session.StatusRunning) +
 		mark("@", h.statusFilter == session.StatusWaiting) +
 		mark("#", h.statusFilter == session.StatusIdle) +
-		mark("$", h.statusFilter == session.StatusError) +
+		mark(FilterKeyError, h.statusFilter == session.StatusError) +
 		dim.Render(" filter • ") +
 		mark("0", h.statusFilter == "") +
 		dim.Render(" all • ") +

@@ -1,6 +1,70 @@
 package ui
 
-import "testing"
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
+)
+
+// TestAdvertisedOverviewBindingsHaveSingleMeaning walks the default overview
+// keymap plus the fixed status/dashboard shortcuts. A key may be repeated only
+// for the same action (for example ^ is both the archived-view hotkey and its
+// filter-bar hint). This prevents availability-dependent meanings like the old
+// "$ = Cost Dashboard or error filter" fallback from returning.
+func TestAdvertisedOverviewBindingsHaveSingleMeaning(t *testing.T) {
+	type advertisedBinding struct {
+		key    string
+		action string
+	}
+
+	bindings := make([]advertisedBinding, 0, len(defaultHotkeyBindings)+7)
+	for action, key := range defaultHotkeyBindings {
+		bindings = append(bindings, advertisedBinding{key: key, action: action})
+	}
+	bindings = append(bindings,
+		advertisedBinding{key: "!", action: "filter_running"},
+		advertisedBinding{key: "@", action: "filter_waiting"},
+		advertisedBinding{key: "#", action: "filter_idle"},
+		advertisedBinding{key: FilterKeyError, action: "filter_error"},
+		advertisedBinding{key: FilterKeyActive, action: "filter_open"},
+		advertisedBinding{key: FilterKeyArchived, action: hotkeyViewArchived},
+		advertisedBinding{key: CostDashboardKey, action: "cost_dashboard"},
+	)
+
+	seen := make(map[string]string)
+	for _, binding := range bindings {
+		for _, alias := range hotkeyAliases(binding.key) {
+			if previous, ok := seen[alias]; ok && previous != binding.action {
+				t.Errorf("overview advertises %q for both %q and %q", alias, previous, binding.action)
+				continue
+			}
+			seen[alias] = binding.action
+		}
+	}
+}
+
+func TestCostAndErrorFilterKeysAlwaysHaveSeparateMeanings(t *testing.T) {
+	home := NewHome()
+	home.statusFilter = session.StatusRunning
+
+	// With no cost store, $ remains reserved for Cost Dashboard and must not
+	// fall back to changing the filter.
+	home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(CostDashboardKey)})
+	if home.statusFilter != session.StatusRunning {
+		t.Fatalf("%s changed status filter to %q without a cost store", CostDashboardKey, home.statusFilter)
+	}
+
+	errSession := session.NewInstance("errored", t.TempDir())
+	errSession.Status = session.StatusError
+	home.instances = []*session.Instance{errSession}
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(FilterKeyError)})
+	if home.statusFilter != session.StatusError {
+		t.Fatalf("%s status filter = %q, want error", FilterKeyError, home.statusFilter)
+	}
+}
 
 func TestResolveHotkeysOverridesAndUnbinds(t *testing.T) {
 	bindings := resolveHotkeys(map[string]string{

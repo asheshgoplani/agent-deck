@@ -214,11 +214,21 @@ func (h *HelpOverlay) View() string {
 	archiveKey := h.key(hotkeyArchiveSession, "A")
 	unarchiveKey := h.key(hotkeyUnarchiveSession, "Shift+U")
 	viewArchivedKey := h.key(hotkeyViewArchived, "^")
+	detachKey := DetachByteLabel(DetachByteFromBinding(h.key(hotkeyDetach, "ctrl+q")))
 
 	sections := []struct {
 		title string
 		items [][2]string // [key, description]
 	}{
+		{
+			title: "QUICK START",
+			items: [][2]string{
+				{"Enter", "Attach to selected session"},
+				{restartKey, "Restart selected session"},
+				{detachKey, "Detach from session"},
+				{helpKey, "Open this help"},
+			},
+		},
 		{
 			title: "NAVIGATION",
 			items: [][2]string{
@@ -263,7 +273,7 @@ func (h *HelpOverlay) View() string {
 				{mcpKey, "MCP Manager (Claude/Gemini/Cursor)"},
 				{pluginKey, "Plugin Manager (Claude — RFC PLUGIN_ATTACH.md)"},
 				{skillsKey, "Skills Manager"},
-				{"$", "Cost Dashboard"},
+				{CostDashboardKey, "Cost Dashboard"},
 				{previewKey, "Toggle preview mode (output/stats/both)"},
 				{"O", "Toggle preview orientation (right / below — portrait monitors)"},
 				{"< / >", "Shrink / grow preview pane by 5% (drag divider with mouse; vertical in below-orientation)"},
@@ -314,6 +324,7 @@ func (h *HelpOverlay) View() string {
 			title: "SEARCH & FILTER",
 			items: [][2]string{
 				{searchKey, "Open search"},
+				{FilterKeyError, "Filter errors"},
 				{FilterKeyActive, "Filter open (hide errors)"},
 				{"/waiting", "Filter waiting"},
 				{"/running", "Filter running"},
@@ -327,7 +338,6 @@ func (h *HelpOverlay) View() string {
 				{settingsKey, "Settings"},
 				{reloadKey, "Reload from disk"},
 				{importKey, "Import tmux sessions"},
-				{"Ctrl+Q", "Detach from session"},
 				{switchKey, "Switch session (here or attached)"},
 				{scrollbackKey, "Scrollback pager (while attached)"},
 				{quitKey, "Quit"},

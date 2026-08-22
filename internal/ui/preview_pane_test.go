@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // helper: build a minimal Home with a single session at cursor 0
@@ -62,6 +63,20 @@ func TestPreviewPane_Error_HasSessionErrorHeader(t *testing.T) {
 	}
 	if strings.Contains(rendered, "Session Stopped") {
 		t.Fatalf("error-session preview should not contain 'Session Stopped'\nrendered=%q", rendered)
+	}
+}
+
+func TestPreviewPane_Error_PromotesRestartBesideStateLine(t *testing.T) {
+	inst := session.NewInstance("error-recovery", t.TempDir())
+	inst.Status = session.StatusError
+
+	rendered := tmux.StripANSI(homeWithSession(inst).renderPreviewPane(80, 30))
+	stateLine := "✕ No tmux session running   R Restart"
+	if !strings.Contains(rendered, stateLine) {
+		t.Fatalf("error recovery must sit beside the state line as %q\nrendered=%q", stateLine, rendered)
+	}
+	if strings.Contains(rendered, "R Start") {
+		t.Fatalf("error recovery must use the canonical Restart name, got %q", rendered)
 	}
 }
 

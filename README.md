@@ -99,6 +99,7 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 | Key | Action |
 |-----|--------|
 | `Enter` | Attach to session |
+| `Ctrl+Q` | Detach from session |
 | `n` | New session |
 | `f` / `F` | Fork (quick / dialog) |
 | `A` / `Shift+U` | Archive / unarchive session |
@@ -262,7 +263,7 @@ Running many sessions? Socket pooling shares MCP processes across all sessions v
 
 ### Search
 
-Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `$` (error). Press `G` for global search across all Claude conversations.
+Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `&` (error). Press `$` for the Cost Dashboard and `G` for global search across all Claude conversations.
 
 ### Keyboard navigation (v1.7.60)
 

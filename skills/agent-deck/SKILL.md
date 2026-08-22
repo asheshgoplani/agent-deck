@@ -391,7 +391,7 @@ Key constraints:
 |-----|--------|
 | `/` | Local search |
 | `G` | Global search (all Claude conversations) |
-| `!@#$` | Filter by status (running/waiting/idle/error) |
+| `!@#&` | Filter by status (running/waiting/idle/error) |
 | `^` | View archived sessions |
 
 ### Global

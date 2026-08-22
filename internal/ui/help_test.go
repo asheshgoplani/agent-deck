@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestHelpOverlayQuickStartUsesCanonicalRecoveryAndDetachNames(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetSize(100, 120)
+	overlay.Show()
+
+	view := overlay.View()
+	for _, want := range []string{"QUICK START", "R", "Restart selected session", "Ctrl+Q", "Detach from session"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("help Quick Start missing %q, got %q", want, view)
+		}
+	}
+	if strings.Contains(view, "$              Filter errors") {
+		t.Fatalf("help must not advertise $ as the error filter, got %q", view)
+	}
+}
+
 func TestHelpOverlayHidesNotesShortcutWhenDisabled(t *testing.T) {
 	disabled := false
 	setPreviewShowNotesConfigForTest(t, &disabled)
