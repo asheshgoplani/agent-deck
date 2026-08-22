@@ -1,0 +1,343 @@
+{
+  "harness": "deterministic fake agent; no model/network access",
+  "cases": [
+    {
+      "id": "create-session",
+      "passed": false,
+      "cheap_path": true,
+      "expected_command": "agent-deck add -t 'Eval Project' -c claude /work",
+      "commands": [
+        "agent-deck add -t 'Eval Project' -c claude /work"
+      ],
+      "tokens": 21423,
+      "wall_seconds": 1.278,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "find-session",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck session search 'Eval Project'",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23268,
+      "wall_seconds": 1.39,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "read-output",
+      "passed": false,
+      "cheap_path": true,
+      "expected_command": "agent-deck session output 'Eval Project'",
+      "commands": [
+        "agent-deck session output 'Eval Project'"
+      ],
+      "tokens": 21422,
+      "wall_seconds": 1.39,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "attach-detach",
+      "passed": false,
+      "cheap_path": true,
+      "expected_command": "agent-deck session attach 'Eval Project'",
+      "commands": [
+        "agent-deck session attach 'Eval Project'"
+      ],
+      "tokens": 21425,
+      "wall_seconds": 1.364,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "switch-model",
+      "passed": false,
+      "cheap_path": true,
+      "expected_command": "agent-deck session set 'Eval Project' model opus",
+      "commands": [
+        "agent-deck session set 'Eval Project' model opus"
+      ],
+      "tokens": 21421,
+      "wall_seconds": 0.865,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "drain-inbox",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck inbox drain --until-done",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23265,
+      "wall_seconds": 1.112,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "add-remote",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck remote add buildbox build@example",
+      "commands": [
+        "agent-deck remote add buildbox build@example"
+      ],
+      "tokens": 21499,
+      "wall_seconds": 1.116,
+      "failure": ""
+    },
+    {
+      "id": "recover-errored-session",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck fleet recover 'Eval Project'",
+      "commands": [
+        "agent-deck fleet recover 'Eval Project'"
+      ],
+      "tokens": 21427,
+      "wall_seconds": 1.038,
+      "failure": ""
+    },
+    {
+      "id": "top-add",
+      "passed": false,
+      "cheap_path": true,
+      "expected_command": "agent-deck add -t Demo /work",
+      "commands": [
+        "agent-deck add -t Demo /work"
+      ],
+      "tokens": 21414,
+      "wall_seconds": 1.053,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-launch",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck launch /work -c claude",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23262,
+      "wall_seconds": 1.062,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-list",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck list --json",
+      "commands": [
+        "agent-deck list --json"
+      ],
+      "tokens": 21411,
+      "wall_seconds": 1.133,
+      "failure": ""
+    },
+    {
+      "id": "top-remove",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck remove Demo",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23257,
+      "wall_seconds": 1.049,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-status",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck status --json",
+      "commands": [
+        "agent-deck status --json"
+      ],
+      "tokens": 21426,
+      "wall_seconds": 1.084,
+      "failure": ""
+    },
+    {
+      "id": "top-migrate-paths",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck migrate-paths --dry-run",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23264,
+      "wall_seconds": 1.2,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-web",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck web --help",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23260,
+      "wall_seconds": 1.04,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-session",
+      "passed": false,
+      "cheap_path": true,
+      "expected_command": "agent-deck session show Demo --json",
+      "commands": [
+        "agent-deck session show Demo --json"
+      ],
+      "tokens": 21426,
+      "wall_seconds": 1.184,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-fleet",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck fleet status",
+      "commands": [
+        "agent-deck fleet status"
+      ],
+      "tokens": 21417,
+      "wall_seconds": 1.021,
+      "failure": ""
+    },
+    {
+      "id": "top-worktree",
+      "passed": false,
+      "cheap_path": true,
+      "expected_command": "agent-deck worktree list",
+      "commands": [
+        "agent-deck worktree list"
+      ],
+      "tokens": 21412,
+      "wall_seconds": 1.133,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-mcp",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck mcp list",
+      "commands": [
+        "agent-deck mcp list"
+      ],
+      "tokens": 21445,
+      "wall_seconds": 1.065,
+      "failure": ""
+    },
+    {
+      "id": "top-skill",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck skill list",
+      "commands": [
+        "agent-deck skill list"
+      ],
+      "tokens": 21421,
+      "wall_seconds": 1.015,
+      "failure": ""
+    },
+    {
+      "id": "top-group",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck group list",
+      "commands": [
+        "agent-deck group list"
+      ],
+      "tokens": 21402,
+      "wall_seconds": 0.877,
+      "failure": ""
+    },
+    {
+      "id": "top-profile",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck profile list",
+      "commands": [
+        "agent-deck profile list"
+      ],
+      "tokens": 21419,
+      "wall_seconds": 1.222,
+      "failure": ""
+    },
+    {
+      "id": "top-conductor",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck conductor status",
+      "commands": [
+        "agent-deck conductor status"
+      ],
+      "tokens": 21422,
+      "wall_seconds": 1.216,
+      "failure": ""
+    },
+    {
+      "id": "top-remote",
+      "passed": true,
+      "cheap_path": true,
+      "expected_command": "agent-deck remote list",
+      "commands": [
+        "agent-deck remote list"
+      ],
+      "tokens": 21421,
+      "wall_seconds": 1.192,
+      "failure": ""
+    },
+    {
+      "id": "top-codex-hooks",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck codex-hooks --help",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23259,
+      "wall_seconds": 1.139,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    },
+    {
+      "id": "top-deepseek",
+      "passed": false,
+      "cheap_path": false,
+      "expected_command": "agent-deck deepseek --help",
+      "commands": [
+        "agent-deck --help"
+      ],
+      "tokens": 23259,
+      "wall_seconds": 1.079,
+      "failure": "skill phrase missing, wrong command, or command failed"
+    }
+  ],
+  "correctness_percent": 42.31,
+  "cheap_path_percent": 69.23,
+  "drift": {
+    "documented_but_missing": [
+      "inbox",
+      "list",
+      "remove"
+    ],
+    "missing_but_documented": [
+      "agent",
+      "agent-deck",
+      "agents",
+      "cursor-hooks",
+      "debug-dump",
+      "gemini-hooks",
+      "help",
+      "hermes-hooks",
+      "telegram-doctor",
+      "try",
+      "uninstall",
+      "update",
+      "version"
+    ],
+    "defects": 16,
+    "score": 84
+  }
+}

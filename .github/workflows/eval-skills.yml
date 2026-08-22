@@ -1,0 +1,22 @@
+name: Skill evaluations
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  pull_request:
+    paths:
+      - "skills/**"
+      - "eval/skills/**"
+  workflow_dispatch:
+jobs:
+  report-only:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build eval image
+        run: docker build -t agent-deck-go-test:latest -f eval/skills/Dockerfile .
+      - run: ./eval/skills/run.sh --jobs 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skill-eval-results
+          path: eval/skills/RESULTS.*
