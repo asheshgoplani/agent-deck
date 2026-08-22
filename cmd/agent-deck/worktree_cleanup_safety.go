@@ -127,6 +127,8 @@ func (f worktreeCleanupFacts) jsonData() map[string]interface{} {
 
 func inspectWorktreeForCleanup(wt vcs.Worktree) worktreeCleanupFacts {
 	facts := worktreeCleanupFacts{Worktree: wt}
+	// #nosec G204 -- "git" is a fixed binary invoked with an argv (no shell);
+	// wt.Path comes from `git worktree list --porcelain` on the local repo.
 	out, err := exec.Command("git", "-C", wt.Path, "rev-list", "--count", "HEAD", "--not", "--remotes").Output()
 	if err != nil {
 		facts.InspectErr = fmt.Errorf("count unpushed commits: %w", err)
@@ -138,6 +140,7 @@ func inspectWorktreeForCleanup(wt vcs.Worktree) worktreeCleanupFacts {
 		return facts
 	}
 	facts.Unpushed = &unpushed
+	// #nosec G204 -- same as above: fixed binary, argv exec, repo-derived path.
 	out, err = exec.Command("git", "-C", wt.Path, "status", "--porcelain", "--untracked-files=normal").Output()
 	if err != nil {
 		facts.InspectErr = fmt.Errorf("inspect working tree: %w", err)
@@ -254,6 +257,8 @@ func processWithCWDInside(root string) (int, error) {
 }
 
 func processWithCWDInsideLsof(root string) (int, error) {
+	// #nosec G204 G702 -- "lsof" is a fixed binary invoked with an argv (no
+	// shell); root is a worktree path from the repo's own worktree list.
 	out, err := exec.Command("lsof", "-a", "-d", "cwd", "+D", root, "-F", "p").Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && len(out) == 0 {
