@@ -222,6 +222,34 @@ test.describe('group selection', () => {
     }
   })
 
+  // A COLD load -- no prior click, so activeTabSignal is still its persisted
+  // default of 'fleet'. This is what a shared /g/{path} link actually does.
+  // The existing reload test below cannot catch this: it clicks the group
+  // first, and the click sets the tab as a side effect.
+  test('a cold /g/{path} link renders the panel, not just the sidebar row', async ({ browser }) => {
+    const ctx = await browser.newContext()   // fresh origin storage
+    const fresh = await ctx.newPage()
+    try {
+      await fresh.goto('/g/work')
+      await expect(fresh.locator('[data-testid="group-stats-panel"]')).toBeVisible({ timeout: 5000 })
+      await expect(fresh.locator('[data-testid="group-stats-total"]')).toHaveText('2 sessions')
+      await expect(fresh.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  test('a cold /s/{id} link renders the terminal pane, not the fleet table', async ({ browser }) => {
+    const ctx = await browser.newContext()
+    const fresh = await ctx.newPage()
+    try {
+      await fresh.goto('/s/sess-001')
+      await expect(fresh.locator('.term-wrap')).toBeVisible({ timeout: 5000 })
+    } finally {
+      await ctx.close()
+    }
+  })
+
   test('group selection is reflected in the URL and survives a reload', async ({ page }) => {
     await page.locator('[data-testid="group-head-work"] .name').click()
     await expect(page).toHaveURL(/\/g\/work$/)
@@ -322,6 +350,54 @@ test.describe('group selection', () => {
       await expect(page.locator('.overlay .dialog')).toHaveCount(0)
       expect(posted?.tool).toBe('codex')
     })
+  })
+
+  // The whole point of this branch: before it, the dialog never sent groupPath,
+  // so EVERY session created from the browser landed in the default group. The
+  // Go handler always supported it (handlers_sessions_test.go
+  // TestSessionsCollectionPOSTForwardsGroupPath) -- what was missing, and what
+  // stayed untested until now, is the client actually sending it.
+  test('creating from a selected group posts that groupPath', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await page.keyboard.press('n')
+    await expect(page.locator('.overlay .dialog')).toBeVisible()
+
+    // Fulfil locally so the shared fixture keeps its 4-session seed.
+    let posted = null
+    await page.route('**/api/sessions', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue()
+      posted = route.request().postDataJSON()
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'fake-grouppath' }) })
+    })
+    await page.locator('.dialog input').first().fill('grouppath-probe')
+    await page.locator('.dialog button[type=submit]').click()
+    await expect(page.locator('.overlay .dialog')).toHaveCount(0)
+
+    expect(posted?.groupPath).toBe('work')
+    expect(posted?.projectPath).toBe('/srv/work')
+  })
+
+  // ...and the guard on the other side: with no group context the key must be
+  // OMITTED, not sent empty, so the server falls back to the default group.
+  test('creating with no group selected omits groupPath entirely', async ({ page }) => {
+    await page.locator('body').click()
+    await page.keyboard.press('n')
+    await expect(page.locator('.overlay .dialog')).toBeVisible()
+    await expect(page.locator('[data-testid="create-session-group"]')).toHaveCount(0)
+
+    let posted = null
+    await page.route('**/api/sessions', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue()
+      posted = route.request().postDataJSON()
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'fake-nogroup' }) })
+    })
+    await page.locator('.dialog input').first().fill('nogroup-probe')
+    await page.locator('.dialog input').nth(1).fill('/tmp/nogroup')
+    await page.locator('.dialog button[type=submit]').click()
+    await expect(page.locator('.overlay .dialog')).toHaveCount(0)
+
+    expect(posted).not.toBeNull()
+    expect('groupPath' in posted).toBe(false)
   })
 
   // Final-review finding #3: a group that vanishes while selected (deleted

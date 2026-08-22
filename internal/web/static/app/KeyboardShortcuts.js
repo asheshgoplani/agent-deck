@@ -16,7 +16,6 @@ const BINDINGS = [
   { keys: ['↓'],               label: 'Move focus down' },
   { keys: ['←'],               label: 'Collapse focused group' },
   { keys: ['→'],               label: 'Expand focused group' },
-  { keys: ['Tab'],             label: 'Toggle focused group' },
   { keys: ['Enter'],           label: 'Open focused session / toggle focused group' },
   { keys: ['Shift', 'Enter'],  label: 'Open focused session in new browser tab' },
   { keys: ['n'],               label: 'New session in the focused group' },

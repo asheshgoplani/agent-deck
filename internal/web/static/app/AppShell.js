@@ -351,17 +351,7 @@ export function AppShell() {
         if (setGroupOpen(false)) e.preventDefault()
       } else if (e.key === 'ArrowRight' || e.key === 'l') {
         if (setGroupOpen(true)) e.preventDefault()
-      } else if (e.key === 'Tab' && !e.shiftKey && selectedGroupSignal.value && !anyOverlayOpen()) {
-        // Tab toggles the focused group, matching the TUI. Guarded on an
-        // actual group selection so normal focus traversal is untouched —
-        // and, critically, on no modal/overlay being open: otherwise this
-        // swallowed Tab (and, before the shiftKey check, Shift+Tab too)
-        // everywhere on the page the instant a group was selected, trapping
-        // keyboard focus behind any open dialog (review finding #1).
-        // Shift+Tab is left to the browser unconditionally.
-        e.preventDefault()
-        toggleGroupOpen(selectedGroupSignal.value)
-      } else if (e.key === 'Enter') {
+      } else if (e.key === 'Enter')  {
         if (selectedGroupSignal.value) {
           e.preventDefault()
           toggleGroupOpen(selectedGroupSignal.value)

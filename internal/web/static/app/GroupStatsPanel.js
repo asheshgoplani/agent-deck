@@ -6,8 +6,12 @@
 // docs/specs/WEB-GROUP-SELECTION-PARITY-SPEC.md:
 //   - `starting` counts as running, `queued` as idle, so the fragments always
 //     sum to the headline (the TUI drops both).
-//   - Archived sessions are excluded (the web menu snapshot never carries
-//     them; the TUI preview counts them).
+//   - Archived sessions ARE included, matching the TUI: it builds its group
+//     tree from the full instance set (home.go:3540) so renderGroupPreview
+//     lists them, while its left list partitions them out (home.go:2470-2493).
+//     The web mirrors that split -- the sidebar's snapshot stays
+//     archive-filtered server-side and groupMembers() folds the separate
+//     /api/sessions/archived feed back in for this panel alone.
 //   - Direct members only — no subgroup rollup, matching the TUI preview.
 //   - No Repository/worktree block: per-branch dirty state is not on the wire.
 import { html } from 'htm/preact'
