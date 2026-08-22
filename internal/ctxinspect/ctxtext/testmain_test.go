@@ -3,6 +3,8 @@ package ctxtext
 import (
 	"os"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestMain isolates the package from the developer's real home directory.
@@ -13,6 +15,12 @@ import (
 // formats strings and touches nothing, but the isolation is set up
 // unconditionally so a later test added here cannot reintroduce the hazard.
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
 	dir, err := os.MkdirTemp("", "ctxtext-home-")
 	if err != nil {
 		panic("ctxtext: cannot create isolated HOME for tests: " + err.Error())
@@ -30,7 +38,9 @@ func TestMain(m *testing.M) {
 			panic("ctxtext: cannot isolate " + k + ": " + err.Error())
 		}
 	}
+	cleanupTmux := testutil.IsolateTmuxSocket()
+	defer cleanupTmux()
 	code := m.Run()
 	_ = os.RemoveAll(dir)
-	os.Exit(code)
+	return code
 }

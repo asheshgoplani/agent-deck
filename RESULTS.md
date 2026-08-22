@@ -41,6 +41,12 @@ Fixes after remeasurement:
   filtered child environment (preventing conductor credentials and Telegram variables
   from leaking), fixture deletion uses root-scoped filesystem operations, dead tmux
   helpers were removed, and artifact filenames carry narrow false-positive annotations.
+- Reconciled the context feature with its current canonical parent fixes: corrected
+  resumed-session accounting, malformed fixture JSON, partial-residual parity, Codex
+  part-tag parsing, and expected render labels; added the missing Codex resumed-session
+  corpus case and Claude golden; and made every context package TestMain isolate both
+  HOME and the tmux socket. Unmatched AGENTS.md evidence is now surfaced at report level,
+  where both callers and the corpus verifier can observe it.
 
 Proof after these repairs:
 
@@ -49,6 +55,8 @@ Proof after these repairs:
 - Strict `govulncheck ./...` reaches analysis and reports zero reachable
   vulnerabilities (one required module contains an unreachable vulnerability).
 - `golangci-lint v2.13.1` reports zero issues.
+- The complete `internal/ctxinspect/...` package set and focused command, session,
+  agent-path, and isolation regressions pass in containers.
 
 ## Finding 1 — `verdict --check` trusted cached gate statuses
 
@@ -109,6 +117,10 @@ Proof: the documentation regression test passes in the container.
 
 - `go test ./internal/sixgate/... ./tools/sixgate` — PASS. These scoped packages do not
   spawn tmux.
+- `go test ./internal/ctxinspect/...` — PASS. These packages isolate a tmux socket but
+  do not spawn tmux.
+- Focused context render/golden, session accounting, agent-path, and test-isolation
+  tests — PASS.
 - `go build ./... && go vet ./...` — PASS using `golang:1.25`.
 - Repository-wide `go test ./...` was intentionally not run because the repository has
   tmux-spawning suites, which the task explicitly says to skip.

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestMain isolates the package from the developer's real home directory.
@@ -16,6 +18,12 @@ import (
 // outside t.TempDir, but the isolation is unconditional so a test added later
 // cannot reintroduce the hazard.
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
 	dir, err := os.MkdirTemp("", "ctxinspect-codex-home-")
 	if err != nil {
 		panic("codex: cannot create isolated HOME for tests: " + err.Error())
@@ -33,9 +41,11 @@ func TestMain(m *testing.M) {
 			panic("codex: cannot isolate " + k + ": " + err.Error())
 		}
 	}
+	cleanupTmux := testutil.IsolateTmuxSocket()
+	defer cleanupTmux()
 	code := m.Run()
 	_ = os.RemoveAll(dir)
-	os.Exit(code)
+	return code
 }
 
 // rolloutBuilder assembles a synthetic rollout file one record at a time, so a

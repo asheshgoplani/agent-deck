@@ -205,7 +205,7 @@ func TestRenderContextOverviewShowsEveryCategoryAndTheResidual(t *testing.T) {
 		"skills (2 items, 1 actionable)",
 		"system prompt + built-in tool schemas",
 		"history: 43.0k over 12 turns",
-		"reconciliation: OK",
+		"self-check: OK",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("overview is missing %q\n---\n%s", want, out)
@@ -433,7 +433,7 @@ func TestRenderContextVerifyReportsTheArithmetic(t *testing.T) {
 		"unaccounted",
 		"anchor − Σ(attributed); never clamped to zero",
 		"verdict:  OK",
-		"coverage:",
+		"attributed to a named item:",
 		"no violations",
 	} {
 		if !strings.Contains(out, want) {
@@ -618,7 +618,7 @@ func TestRenderContextOverviewPrintsUnsupportedLineForAGenericReport(t *testing.
 	if !strings.Contains(out, "token accounting unsupported for cursor-agent") {
 		t.Fatalf("generic overview did not print the unsupported line:\n%s", out)
 	}
-	if !strings.Contains(out, "AGENTS.md") {
+	if !strings.Contains(out, "instruction files (1 item, 1 actionable)") {
 		t.Fatalf("generic overview dropped the inventory:\n%s", out)
 	}
 	if !strings.Contains(out, "—") {

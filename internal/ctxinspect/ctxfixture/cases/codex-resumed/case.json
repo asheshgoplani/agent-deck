@@ -1,0 +1,20 @@
+{
+  "name": "codex-resumed",
+  "description": "A resumed Codex rollout whose cumulative usage exceeds the current turn; it must not claim a cold-prefix anchor.",
+  "tool": "codex",
+  "adapter": "codex",
+  "title": "fixture-codex-resumed",
+  "profile": "_fixture",
+  "session_id": "00000000-0000-4000-8000-00000000c0de",
+  "model": "gpt-5-codex",
+  "project_path": "project",
+  "config_dir": "home/.codex",
+  "transcript": "home/.codex/sessions/resumed.jsonl",
+  "expect": {
+    "anchored": false,
+    "reconciles": true,
+    "min_categories": 1,
+    "caveats": [],
+    "notes": "Cumulative input exceeds last-turn input, which proves this is resumed and prevents an anchor claim."
+  }
+}
