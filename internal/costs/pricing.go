@@ -147,7 +147,39 @@ func (p *Pricer) SaveCache(models map[string]pricingCacheModel) error {
 	if err := os.MkdirAll(p.cachePath, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(p.cachePath, "pricing.json"), data, 0o644)
+	// Write to a sibling temp file and rename so a reader (or a re-exec that
+	// proceeds after the worker-wait deadline) never observes a torn file:
+	// either the previous cache or the complete new one is on disk.
+	final := filepath.Join(p.cachePath, "pricing.json")
+	tmp, err := os.CreateTemp(p.cachePath, "pricing-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }
 
 // CacheAge returns the age of the cache, or -1 if no cache is loaded.
