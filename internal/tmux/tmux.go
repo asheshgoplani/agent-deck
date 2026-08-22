@@ -3189,6 +3189,30 @@ func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 	return panePID, allPIDs
 }
 
+// PanePID returns the pane's initial process id, or an error when the probe is
+// indeterminate.
+//
+// #1873: the ownership receipt is claimed from this pid the instant a spawn
+// commits, so the caller needs the probe outcome, not a degraded 0. A 0 with no
+// error would be recorded as "we own pid 0" or, worse, as "the spawn owns
+// nothing" — both of which turn an unproven claim into a durable one.
+func (s *Session) PanePID() (int, error) {
+	return PanePIDOfSession(s.SocketName, s.Name)
+}
+
+// PanePIDOfSession is the name-explicit variant, for callers holding a session
+// name from somewhere other than a live Session — notably an ownership receipt,
+// which records the tmux session its leader was launched into. An Instance's
+// in-memory tmux name can drift away from the live session (that is its own
+// bug class); the name written into the receipt at spawn cannot.
+func PanePIDOfSession(socketName, sessionName string) (int, error) {
+	if strings.TrimSpace(sessionName) == "" {
+		return 0, fmt.Errorf("no tmux session name")
+	}
+	out, err := runBoundedOutput(socketName, "list-panes", "-t", sessionName+":", "-F", "#{pane_pid}")
+	return parsePanePID(out, err)
+}
+
 // paneProcessTree is getPaneProcessTree with the probe outcome preserved.
 //
 // The distinction matters on exactly one path: the post-respawn probe in
