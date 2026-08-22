@@ -139,7 +139,7 @@ func agentLedgerLookup(sessionID string) []agents.LedgerEntry {
 		})
 	}
 
-	if events, err := session.ReadInboxEvents(sessionID); err == nil {
+	if events, err := session.PeekInboxEvents(sessionID); err == nil {
 		for _, event := range events {
 			title := event.ChildTitle
 			if title == "" {

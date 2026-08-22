@@ -535,3 +535,30 @@ func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent
 	delete(inboxFingerprintCache, path)
 	return out, nil
 }
+
+// PeekInboxEvents reads a parent's pending inbox records without consuming
+// them — a display-grade peek for the agents surface. Distinct by name from
+// the drain branch's ReadInboxEvents so the two merge without conflict; this
+// one tolerates a torn final line from a concurrent append.
+func PeekInboxEvents(parentSessionID string) ([]TransitionNotificationEvent, error) {
+	if strings.TrimSpace(parentSessionID) == "" {
+		return nil, errors.New("inbox peek: empty parent session id")
+	}
+	data, err := os.ReadFile(InboxPathFor(parentSessionID))
+	if err != nil {
+		return nil, err
+	}
+	var out []TransitionNotificationEvent
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ev TransitionNotificationEvent
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out, nil
+}

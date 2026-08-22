@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/agents"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -597,7 +598,8 @@ func loadConductorBlocks() map[string]agents.ConductorBlock {
 	}
 	source := "config.toml [conductors.*]"
 	for name, overrides := range config.Conductors {
-		block := agents.ConductorBlock{Name: name, Account: overrides.Account, Source: source}
+		block := agents.ConductorBlock{Name: name, Account: "", // per-conductor account overrides arrive with the accounts feature (E14); empty until it merges
+			Source: source}
 		switch {
 		case overrides.Claude.ConfigDir != "":
 			block.Tool = "claude"
@@ -644,7 +646,7 @@ func ledgerLookup() func(string) []agents.LedgerEntry {
 		}
 
 		// What its children reported to it.
-		if events, err := session.ReadInboxEvents(sessionID); err == nil {
+		if events, err := session.PeekInboxEvents(sessionID); err == nil {
 			for _, event := range events {
 				title := event.ChildTitle
 				if title == "" {
@@ -720,4 +722,14 @@ func fetchRemoteAgents(skip bool) []agents.RemoteMachineData {
 		})
 	}
 	return result
+}
+
+// truncateCell shortens a table cell to max runes with an ellipsis. Local
+// copy: the shared one lives on the context-inspector branch (PR #2011) and
+// arrives with it; same 6 lines, same semantics.
+func truncateCell(s string, max int) string {
+	if max < 4 || utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max-1]) + "…"
 }
