@@ -15,6 +15,13 @@ func handleHermesHooks(args []string) {
 		os.Exit(1)
 	}
 
+	// A help request anywhere in the argument list must print usage and exit
+	// without side effects (#1993).
+	if hooksHelpRequested(args) {
+		printHermesHooksUsage(os.Stdout)
+		return
+	}
+
 	switch args[0] {
 	case "help", "--help", "-h":
 		printHermesHooksUsage(os.Stdout)

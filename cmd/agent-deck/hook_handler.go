@@ -620,6 +620,15 @@ func handleHooks(args []string) {
 		os.Exit(1)
 	}
 
+	// A help request anywhere in the argument list must print usage and exit
+	// without side effects: an install triggered by `hooks install --help`
+	// would write to another tool's settings file from a command whose
+	// documented purpose in that invocation was to describe itself (#1993).
+	if hooksHelpRequested(args) {
+		printClaudeHooksUsage(os.Stdout)
+		return
+	}
+
 	switch args[0] {
 	case "install":
 		handleHooksInstall()
@@ -629,9 +638,32 @@ func handleHooks(args []string) {
 		handleHooksStatus()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown hooks subcommand: %s\n", args[0])
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck hooks <install|uninstall|status>")
+		printClaudeHooksUsage(os.Stderr)
 		os.Exit(1)
 	}
+}
+
+func printClaudeHooksUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage: agent-deck hooks <install|uninstall|status>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Manage agent-deck hook integration for Claude Code.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  install      Install or upgrade agent-deck Claude Code hooks")
+	fmt.Fprintln(w, "  uninstall    Remove agent-deck Claude Code hooks")
+	fmt.Fprintln(w, "  status       Show current hook install status")
+}
+
+// hooksHelpRequested reports whether any argument asks for help. Every hooks
+// handler runs this before dispatching so `... install --help` can never
+// reach an install path.
+func hooksHelpRequested(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" || a == "help" {
+			return true
+		}
+	}
+	return false
 }
 
 func handleHooksInstall() {
