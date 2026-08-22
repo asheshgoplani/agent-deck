@@ -37,19 +37,30 @@ type dispatcherBinding struct{ key, action string }
 func mainDispatcherBindings(t *testing.T) []dispatcherBinding {
 	t.Helper()
 	fset := token.NewFileSet()
-	packages, err := parser.ParseDir(fset, ".", func(info os.FileInfo) bool {
-		return strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkg := packages["ui"]
-	if pkg == nil {
+	var pkgFiles []*ast.File
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if file.Name.Name == "ui" {
+			pkgFiles = append(pkgFiles, file)
+		}
+	}
+	if len(pkgFiles) == 0 {
 		t.Fatal("ui package not found")
 	}
 	var bindings []dispatcherBinding
 	add := func(key, action string) { bindings = append(bindings, dispatcherBinding{key: key, action: action}) }
-	for _, file := range pkg.Files {
+	for _, file := range pkgFiles {
 		ast.Inspect(file, func(n ast.Node) bool {
 			fn, ok := n.(*ast.FuncDecl)
 			if !ok || fn.Name.Name != "handleMainKey" {
@@ -81,7 +92,7 @@ func mainDispatcherBindings(t *testing.T) []dispatcherBinding {
 						case *ast.IndexExpr:
 							if id, ok := e.X.(*ast.Ident); ok && id.Name == "defaultHotkeyBindings" {
 								if keyID, ok := e.Index.(*ast.Ident); ok {
-									if actionName := dispatcherConstantValue(pkg, keyID.Name); actionName != "" {
+									if actionName := dispatcherConstantValue(pkgFiles, keyID.Name); actionName != "" {
 										if key := defaultHotkeyBindings[actionName]; key != "" {
 											add(key, action)
 										}
@@ -90,7 +101,7 @@ func mainDispatcherBindings(t *testing.T) []dispatcherBinding {
 							}
 						case *ast.Ident:
 							// Resolve dispatcher constants without duplicating their values here.
-							if key := dispatcherConstantValue(pkg, e.Name); key != "" {
+							if key := dispatcherConstantValue(pkgFiles, e.Name); key != "" {
 								add(key, action)
 							}
 						}
@@ -104,8 +115,8 @@ func mainDispatcherBindings(t *testing.T) []dispatcherBinding {
 	return bindings
 }
 
-func dispatcherConstantValue(pkg *ast.Package, name string) string {
-	for _, file := range pkg.Files {
+func dispatcherConstantValue(pkgFiles []*ast.File, name string) string {
+	for _, file := range pkgFiles {
 		for _, decl := range file.Decls {
 			gen, ok := decl.(*ast.GenDecl)
 			if !ok || gen.Tok != token.CONST {
