@@ -303,10 +303,6 @@ func handleWorktreeList(profile string, args []string) {
 		})
 		return
 	}
-	if truncated {
-		fmt.Printf("\nShowing %d of %d worktrees (truncated; use --full)\n", len(results), totalResults)
-	}
-
 	// Human-readable output
 	if len(results) == 0 {
 		fmt.Println("No worktrees found.")
@@ -329,7 +325,11 @@ func handleWorktreeList(profile string, args []string) {
 			truncateString(sessionStr, 20))
 	}
 
-	fmt.Printf("\nTotal: %d worktree(s)\n", len(results))
+	fmt.Printf("\nShowing: %d of %d worktree(s)", len(results), totalResults)
+	if truncated {
+		fmt.Print(" (truncated; use --full)")
+	}
+	fmt.Println()
 }
 
 // handleWorktreeInfo shows worktree info for a specific session
