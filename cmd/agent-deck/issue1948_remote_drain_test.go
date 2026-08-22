@@ -191,6 +191,90 @@ func TestIssue1948_RemoteDrain_IdempotentAcrossProcesses(t *testing.T) {
 	}
 }
 
+// The durable consumed-turn ledger, not the now-empty inbox file, is the source
+// of truth after a conductor has acted on a record. A later remote poll must not
+// call that old turn new or put it back into the inbox.
+func TestIssue1948_RemoteDrain_AfterConsumptionReportsAlreadyPresent(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	conductor := "conductor-1948-consumed"
+	record := remoteCompletion("worker-on-b", "done hours ago", time.Now().Add(-3*time.Hour))
+	fetch, _ := stubFetch([]session.TransitionNotificationEvent{record}, nil)
+
+	var out, errBuf bytes.Buffer
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, fetch); code != 0 {
+		t.Fatalf("first drain exit=%d: %s", code, errBuf.String())
+	}
+	if _, err := session.DrainInboxForParent(conductor); err != nil {
+		t.Fatalf("consume first drain: %v", err)
+	}
+	session.ResetInboxFingerprintCacheForTest()
+	out.Reset()
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, fetch); code != 0 {
+		t.Fatalf("second drain exit=%d: %s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "1 record(s) fetched, nothing new — all already present") {
+		t.Fatalf("consumed record counted dishonestly:\n%s", out.String())
+	}
+	if session.InboxHasPending(conductor) {
+		t.Fatal("already-consumed remote record was reinserted")
+	}
+}
+
+func TestIssue1948_RemoteDrain_MixedConsumedAndNewReportsHonestSplit(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	conductor := "conductor-1948-mixed"
+	old := remoteCompletion("worker-old", "old turn", time.Now().Add(-3*time.Hour))
+	first, _ := stubFetch([]session.TransitionNotificationEvent{old}, nil)
+	var out, errBuf bytes.Buffer
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, first); code != 0 {
+		t.Fatalf("first drain exit=%d: %s", code, errBuf.String())
+	}
+	if _, err := session.DrainInboxForParent(conductor); err != nil {
+		t.Fatalf("consume first drain: %v", err)
+	}
+
+	newRecord := remoteCompletion("worker-new", "new turn", time.Now())
+	mixed, _ := stubFetch([]session.TransitionNotificationEvent{old, newRecord}, nil)
+	out.Reset()
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, mixed); code != 0 {
+		t.Fatalf("mixed drain exit=%d: %s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "2 record(s) fetched, 1 new (shown above), 1 already present") {
+		t.Fatalf("mixed split dishonest:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "worker-old") || !strings.Contains(out.String(), "worker-new") {
+		t.Fatalf("mixed drain must show only the inserted record:\n%s", out.String())
+	}
+}
+
+func TestIssue1948_RemoteDrain_UnreadableDedupStateIsUnknownNotNew(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	conductor := "conductor-1948-unknown"
+	if err := os.MkdirAll(session.ConsumedTurnsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir consumed ledger: %v", err)
+	}
+	ledgerPath := filepath.Join(session.ConsumedTurnsDir(), conductor+".json")
+	if err := os.WriteFile(ledgerPath, []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("corrupt consumed ledger: %v", err)
+	}
+
+	record := remoteCompletion("worker-on-b", "state unknowable", time.Now())
+	fetch, _ := stubFetch([]session.TransitionNotificationEvent{record}, nil)
+	var out, errBuf bytes.Buffer
+	if code := runRemoteDrain(&out, &errBuf, []string{"--into", conductor, "boxb"}, fetch); code != 0 {
+		t.Fatalf("drain exit=%d: %s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "1 record(s) fetched, 0 new, 0 already present, 1 unknown") {
+		t.Fatalf("unknown dedup state folded into another count:\n%s", out.String())
+	}
+	if session.InboxHasPending(conductor) {
+		t.Fatal("record with unknown dedup state must not be inserted")
+	}
+}
+
 // An unknown host is reported as unknown — with the configured remotes listed —
 // and never as an empty drain.
 func TestIssue1948_RemoteDrain_UnknownRemoteIsDistinguishable(t *testing.T) {

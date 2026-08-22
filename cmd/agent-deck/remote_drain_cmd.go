@@ -126,6 +126,7 @@ type remoteDrainResult struct {
 	Fetched         int    `json:"fetched"`
 	Written         int    `json:"written"`
 	Duplicates      int    `json:"duplicates"`
+	Unknown         int    `json:"unknown"`
 	// Writer reports whether the remote had anything recording transitions.
 	// Absent means the remote is too old to answer, which is reported as
 	// unknown rather than assumed healthy.
@@ -197,7 +198,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		return drainExitUnreachable
 	}
 
-	records, fresh, written, duplicates, err := ingestRemoteRecords(name, targetID, records)
+	records, fresh, written, duplicates, unknown, err := ingestRemoteRecords(name, targetID, records)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: writing to local inbox %s: %v\n", targetID, err)
 		return 1
@@ -214,6 +215,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 			Fetched:         len(records),
 			Written:         written,
 			Duplicates:      duplicates,
+			Unknown:         unknown,
 			Writer:          writer,
 			Records:         records,
 		}
@@ -251,8 +253,16 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	// 2026-08-20.
 	if written > 0 {
 		printInboxEventLines(stdout, fresh)
-		fmt.Fprintf(stdout, "\n  %d record(s) fetched, %d new (shown above), %d already present.\n",
-			len(records), written, duplicates)
+		if unknown > 0 {
+			fmt.Fprintf(stdout, "\n  %d record(s) fetched, %d new (shown above), %d already present, %d unknown.\n",
+				len(records), written, duplicates, unknown)
+		} else {
+			fmt.Fprintf(stdout, "\n  %d record(s) fetched, %d new (shown above), %d already present.\n",
+				len(records), written, duplicates)
+		}
+	} else if unknown > 0 {
+		fmt.Fprintf(stdout, "  %d record(s) fetched, 0 new, %d already present, %d unknown.\n",
+			len(records), duplicates, unknown)
 	} else {
 		fmt.Fprintf(stdout, "  %d record(s) fetched, nothing new — all already present.\n", len(records))
 	}
@@ -261,14 +271,15 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 
 // ingestRemoteRecords writes the pulled records into the local inbox, stamping
 // each with the remote it came from, and returns the records AS STORED so the
-// report shows what actually landed. The dedup decision is the inbox's own
-// (WriteInboxEventIfNew); this only counts the answers.
+// report shows what actually landed. The dedup decision covers both pending
+// inbox fingerprints and the durable consumed-turn ledger; this only counts
+// the answers.
 // fresh carries the records that were ACTUALLY committed by this call, separate
 // from stored (everything fetched). The display needs the distinction: a drain
 // that commits nothing was re-printing the entire backlog as though it had just
 // arrived, which reads like new work on every heartbeat.
 func ingestRemoteRecords(remoteName, targetID string, records []session.TransitionNotificationEvent) (
-	stored, fresh []session.TransitionNotificationEvent, written, duplicates int, err error) {
+	stored, fresh []session.TransitionNotificationEvent, written, duplicates, unknown int, err error) {
 	stored = make([]session.TransitionNotificationEvent, 0, len(records))
 	for _, ev := range records {
 		ev.SourceRemote = remoteName
@@ -290,18 +301,21 @@ func ingestRemoteRecords(remoteName, targetID string, records []session.Transiti
 		ev.TargetKind = "parent"
 		stored = append(stored, ev)
 
-		isNew, werr := session.WriteInboxEventIfNew(targetID, ev)
+		presence, werr := session.WriteInboxEventIfUnseen(targetID, ev)
 		if werr != nil {
-			return stored, fresh, written, duplicates, werr
+			return stored, fresh, written, duplicates, unknown, werr
 		}
-		if isNew {
+		switch presence {
+		case session.InboxEventInserted:
 			written++
 			fresh = append(fresh, ev)
-			continue
+		case session.InboxEventAlreadyPresent:
+			duplicates++
+		default:
+			unknown++
 		}
-		duplicates++
 	}
-	return stored, fresh, written, duplicates, nil
+	return stored, fresh, written, duplicates, unknown, nil
 }
 
 // lookupRemoteFor resolves what the user typed to a configured remote: the

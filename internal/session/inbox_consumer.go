@@ -62,6 +62,63 @@ func loadConsumedTurnsLocked(parentID string) map[string]int64 {
 	return out
 }
 
+// InboxEventPresence is the result of checking both durable dedup stores used
+// by inbox delivery.  Unknown is deliberately distinct from both inserted and
+// already-present: a damaged consumed-turn ledger cannot honestly answer
+// whether a fetched turn was delivered before.
+type InboxEventPresence int
+
+const (
+	InboxEventPresenceUnknown InboxEventPresence = iota
+	InboxEventInserted
+	InboxEventAlreadyPresent
+)
+
+// WriteInboxEventIfUnseen writes event only when it is absent from both the
+// pending inbox and the durable consumed-turn ledger. Remote drain needs this
+// wider answer because its source is read-only and continues serving records
+// after this conductor has consumed them.
+//
+// The consumed lock is held through the inbox check-and-append. This follows
+// finalizeInboxDrain's consumedTurnsMu -> inboxWriteMu order and prevents a
+// concurrent consumer from moving a record between the two stores while the
+// decision is made.
+func WriteInboxEventIfUnseen(parentID string, event TransitionNotificationEvent) (InboxEventPresence, error) {
+	if strings.TrimSpace(parentID) == "" {
+		return InboxEventPresenceUnknown, errors.New("inbox: empty parent session id")
+	}
+
+	consumedTurnsMu.Lock()
+	defer consumedTurnsMu.Unlock()
+
+	raw, err := os.ReadFile(consumedTurnsPathFor(parentID))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return InboxEventPresenceUnknown, nil
+	}
+	if err == nil {
+		consumed := map[string]int64{}
+		if json.Unmarshal(raw, &consumed) != nil {
+			return InboxEventPresenceUnknown, nil
+		}
+		fp := event.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(event)
+		}
+		if _, ok := consumed[fp]; ok {
+			return InboxEventAlreadyPresent, nil
+		}
+	}
+
+	written, err := WriteInboxEventIfNew(parentID, event)
+	if err != nil {
+		return InboxEventPresenceUnknown, err
+	}
+	if written {
+		return InboxEventInserted, nil
+	}
+	return InboxEventAlreadyPresent, nil
+}
+
 func saveConsumedTurnsLocked(parentID string, m map[string]int64) error {
 	// Prune expired entries on every save to bound growth.
 	cutoff := time.Now().Add(-consumedTurnsTTL).Unix()
