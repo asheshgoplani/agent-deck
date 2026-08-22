@@ -289,11 +289,10 @@ const (
 // stop or a restart/respawn bumps i.spawnGen, so a mismatch means this watcher
 // has been superseded and must exit quietly (#1580 data-race fix).
 //
-// wake is the supersede channel, subscribed by the caller via
-// newSpawnGenWatch() before this goroutine starts (see instance.go). Closing
-// it lets a supersession be noticed immediately rather than only on the next
-// spawnFastDeathTick poll — see spawnGenWake's doc comment for why the
-// up-to-one-tick tail mattered.
+// wake is the supersede channel, subscribed synchronously by
+// startFastDeathWatcher before the goroutine starts. Closing it lets a
+// supersession be noticed immediately rather than only on the next
+// spawnFastDeathTick poll.
 //
 // The generation is re-checked immediately before each write, not just once
 // per iteration: sess.Exists() shells out to tmux and can take tens of
@@ -310,12 +309,24 @@ const (
 // is suppressed. Only the writes are covered, never the tmux calls, so a stop
 // never waits on tmux.
 //
-// lifecycleLogPath and failureDir are likewise passed by value rather than
-// resolved here from the live $HOME: this goroutine is never joined, so it
-// can still be alive (parked on the ticker) after its caller's test has
-// finished and a later test has repointed $HOME. Resolving live at write
-// time would make the watcher write into whatever $HOME happens to be
-// current when it fires, not the one that was current when it was spawned.
+// lifecycleLogPath and failureDir are resolved before the goroutine starts and
+// passed by value, so the watcher cannot write through a later process-global
+// HOME value.
+func (i *Instance) startFastDeathWatcher(command string, sess *tmux.Session, id, tool string, logger *slog.Logger) {
+	gen, wake := i.newSpawnGenWatch()
+	lifecycleLogPath := GetSessionIDLifecycleLogPath()
+	failureDir := spawnFailureDir()
+	i.spawnWatchers.Add(1)
+	go func() {
+		defer i.spawnWatchers.Done()
+		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir)
+	}()
+}
+
+func (i *Instance) waitForFastDeathWatchers() {
+	i.spawnWatchers.Wait()
+}
+
 func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
 	if sess == nil {
 		return

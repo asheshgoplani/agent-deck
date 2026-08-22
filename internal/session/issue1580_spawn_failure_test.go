@@ -105,7 +105,22 @@ func TestIssue1580_DeliberateKillDoesNotRecordFastDeath(t *testing.T) {
 	t.Cleanup(func() { clearSpawnFailureRecord(inst.ID) })
 
 	require.NoError(t, inst.Start())
+	watcherDone := make(chan struct{})
+	go func() {
+		inst.waitForFastDeathWatchers()
+		close(watcherDone)
+	}()
+	select {
+	case <-watcherDone:
+		t.Fatal("fast-death watcher was not registered before Start returned")
+	case <-time.After(50 * time.Millisecond):
+	}
 	require.NoError(t, inst.Kill())
+	select {
+	case <-watcherDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fast-death watcher did not stop after Kill superseded it")
+	}
 	rec, err := readSpawnFailureRecord(inst.ID)
 	require.NoError(t, err)
 	assert.Nil(t, rec)

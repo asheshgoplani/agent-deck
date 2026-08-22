@@ -492,6 +492,7 @@ func newClaudeInstanceForDispatch(t *testing.T, home string) *Instance {
 
 	t.Cleanup(func() {
 		_ = inst.Kill()
+		inst.waitForFastDeathWatchers()
 	})
 	return inst
 }
