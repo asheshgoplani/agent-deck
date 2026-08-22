@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func TestRedactNormalizesClaudeProjectKey(t *testing.T) {
+	root := "/tmp/ctxfix123/padded"
+	got := Redact("path /tmp/ctxfix123/padded/project key -tmp-ctxfix123-padded-project", root)
+	want := "path <FIXTURE_ROOT>/project key <FIXTURE_ROOT_KEY>-project"
+	if got != want {
+		t.Fatalf("Redact() = %q, want %q", got, want)
+	}
+}
+
 // TestMain isolates the package from the developer's real home directory.
 //
 // Nothing here reads $HOME, but the isolation is unconditional: this repository

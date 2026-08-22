@@ -301,9 +301,20 @@ func compareGroup(rep *ctxinspect.Report, h *HarnessReport, g Group, tol Toleran
 		}
 	}
 
+	// A partial group containing the reconciliation residual is derived from
+	// every category outside the group: residual = anchor - all attribution.
+	// Grading it independently would therefore report a discrepancy in a
+	// directly measured category twice, once on that category and again with
+	// the opposite sign here. Full occupancy groups also include history and
+	// remain gradeable because they collapse to the independently measured
+	// anchor plus history rather than reallocating attribution.
+	partialResidual := g.IncludeResidual && !g.IncludeHistory
 	switch {
 	case g.Informational:
 		row.Verdict = VerdictInformational
+	case partialResidual:
+		row.Verdict = VerdictInformational
+		row.Note = strings.TrimSpace(row.Note + " — informational: the residual is derived from all other attribution, so this row is not independent evidence of drift")
 	case !harnessKnown:
 		row.Verdict = VerdictHarnessSilent
 		if row.Note == "" {
