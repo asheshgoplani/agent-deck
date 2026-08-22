@@ -1209,11 +1209,6 @@ func isWorktreeAlreadyExistsError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "already exists")
 }
 
-func resolveAutoParentInstance(instances []*session.Instance) *session.Instance {
-	inst, _ := resolveAutoParentInstanceChecked(instances)
-	return inst
-}
-
 // resolveAutoParentInstanceChecked distinguishes a top-level invocation (no
 // managed caller identity) from a child creation whose authoritative injected
 // identity is stale. The latter must fail at creation instead of silently

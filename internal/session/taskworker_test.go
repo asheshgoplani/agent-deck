@@ -230,6 +230,32 @@ func TestTaskWorker_ReplayUnacked_DeliversOncePerChildAcrossRestart(t *testing.T
 	}
 }
 
+func TestTaskWorker_UnownedDiscoveryCopyDoesNotAckCompletion(t *testing.T) {
+	profile := "_test-2007-unowned-not-ack"
+	parentID := "parent-missing-2007"
+	childID := seedChildOnly(t, profile, parentID)
+	if err := WriteCompletionRecord(CompletionRecord{
+		ChildID: childID, Profile: profile, Title: "worker", Status: "ok",
+		Summary: "discoverable but not delivered", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+	d.ReplayUnackedCompletions(profile)
+	d.notifier.Flush()
+
+	recs, err := LoadCompletionRecords(profile)
+	if err != nil || len(recs) != 1 || recs[0].Acked {
+		t.Fatalf("discovery copy acknowledged replay record: records=%+v err=%v", recs, err)
+	}
+	unowned, err := ReadAndTruncateInbox(UnownedInboxID)
+	if err != nil || len(unowned) != 1 || unowned[0].ChildSessionID != childID {
+		t.Fatalf("missing discovery copy: events=%+v err=%v", unowned, err)
+	}
+}
+
 // --- STEP 1: daemon never goes stale — version recycle guard ----------------
 
 func TestShouldRecycleForVersion(t *testing.T) {

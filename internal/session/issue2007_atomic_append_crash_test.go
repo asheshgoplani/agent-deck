@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+func TestIssue2007_CheckedAppendCapacityRejectsOverflow(t *testing.T) {
+	if _, err := checkedInboxAppendCapacity(maxInt(), 1); err == nil {
+		t.Fatal("overflowing inbox append capacity must be rejected")
+	}
+	if got, err := checkedInboxAppendCapacity(10, 20); err != nil || got != 31 {
+		t.Fatalf("ordinary capacity = %d, %v; want 31, nil", got, err)
+	}
+}
+
 const issue2007CrashHelperEnv = "AGENTDECK_TEST_2007_CRASH_APPEND"
 
 // TestIssue2007_AppendCrashHelper is invoked as a subprocess by the test below.

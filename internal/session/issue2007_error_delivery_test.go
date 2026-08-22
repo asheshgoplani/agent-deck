@@ -62,3 +62,9 @@ func TestIssue2007_UnresolvableParentAlsoLandsInUnownedLedger(t *testing.T) {
 		t.Fatalf("_unowned record lost resolution reason: got %q want %q", events[0].DeadLetterReason, deadLetterReasonParentMissing)
 	}
 }
+
+func TestIssue2007_TrueOrphanPreservesIssue805DropContract(t *testing.T) {
+	if isUnownedReason(deadLetterReasonOrphan) {
+		t.Fatal("a true parentless orphan must not enter the unowned discovery ledger")
+	}
+}

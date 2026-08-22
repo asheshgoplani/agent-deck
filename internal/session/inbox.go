@@ -227,7 +227,15 @@ func atomicAppendInboxLineLocked(path string, line []byte) error {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	data := make([]byte, 0, len(existing)+len(line)+1)
+	// Keep the capacity calculation explicit and checked. Although os.ReadFile
+	// cannot normally return a slice close to MaxInt, adding attacker-influenced
+	// line length without a guard can wrap and turn the allocation into a panic
+	// (CodeQL go/allocation-size-overflow).
+	capacity, err := checkedInboxAppendCapacity(len(existing), len(line))
+	if err != nil {
+		return err
+	}
+	data := make([]byte, 0, capacity)
 	data = append(data, existing...)
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		data = append(data, '\n')
@@ -235,6 +243,15 @@ func atomicAppendInboxLineLocked(path string, line []byte) error {
 	data = append(data, line...)
 	data = append(data, '\n')
 	return writeFileDurable(path, data, 0o644)
+}
+
+func maxInt() int { return int(^uint(0) >> 1) }
+
+func checkedInboxAppendCapacity(existingLen, lineLen int) (int, error) {
+	if existingLen < 0 || lineLen < 0 || existingLen > maxInt()-1 || lineLen > maxInt()-existingLen-1 {
+		return 0, fmt.Errorf("inbox append too large: existing=%d line=%d", existingLen, lineLen)
+	}
+	return existingLen + lineLen + 1, nil
 }
 
 // loadInboxFingerprintsLocked scans an existing inbox file and returns the

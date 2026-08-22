@@ -22,6 +22,7 @@ func TestIssue1877_AutoParentIdentityMustResolve(t *testing.T) {
 
 func TestIssue1877_InboxDrainReportsDeadLettersAndIsNonZero(t *testing.T) {
 	cliInboxTestHome(t)
+	registerInboxDrainTarget(t, "parent-1877")
 	event := session.TransitionNotificationEvent{
 		ChildSessionID: "dead-child-1877", Profile: "default",
 		FromStatus: "running", ToStatus: "error", Timestamp: time.Now(),
@@ -48,6 +49,7 @@ func TestIssue1877_InboxDrainReportsDeadLettersAndIsNonZero(t *testing.T) {
 
 func TestIssue1877_CorruptNonEmptyDeadLetterIsNotReportedClean(t *testing.T) {
 	cliInboxTestHome(t)
+	registerInboxDrainTarget(t, "parent-corrupt-1877")
 	if err := os.MkdirAll(session.DeadLetterDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +60,29 @@ func TestIssue1877_CorruptNonEmptyDeadLetterIsNotReportedClean(t *testing.T) {
 	var out bytes.Buffer
 	err := runInbox(&out, []string{"drain", "parent-corrupt-1877"})
 	var pending *deadLettersPendingError
-	if !errors.As(err, &pending) || pending.count != 1 || inboxExitCode(err) != 2 {
+	if !errors.As(err, &pending) || pending.count != 1 || inboxExitCode(err) != 4 {
 		t.Fatalf("non-empty corrupt dead-letter must be loud: output=%q err=%v", out.String(), err)
+	}
+}
+
+func TestIssue2007_InboxDrainCountsUnownedDiscoveryEntries(t *testing.T) {
+	cliInboxTestHome(t)
+	registerInboxDrainTarget(t, "parent-2007")
+	event := session.TransitionNotificationEvent{
+		ChildSessionID: "unowned-child-2007", Profile: "default",
+		FromStatus: "running", ToStatus: "error", Timestamp: time.Now(),
+	}
+	if err := session.WriteInboxEvent(session.UnownedInboxID, event); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := runInbox(&out, []string{"drain", "parent-2007"})
+	var pending *deadLettersPendingError
+	if !errors.As(err, &pending) || pending.count != 1 || inboxExitCode(err) != 4 {
+		t.Fatalf("unowned discovery must keep drain non-clean: output=%q err=%v", out.String(), err)
+	}
+	if !strings.Contains(out.String(), "1 dead-lettered event") {
+		t.Fatalf("unowned count missing from drain warning: %q", out.String())
 	}
 }

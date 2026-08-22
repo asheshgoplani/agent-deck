@@ -12,7 +12,7 @@ const UnownedInboxID = "_unowned"
 
 func isUnownedReason(reason string) bool {
 	switch strings.TrimSpace(reason) {
-	case deadLetterReasonOrphan, deadLetterReasonParentMissing, deadLetterReasonUnresolvable:
+	case deadLetterReasonParentMissing, deadLetterReasonUnresolvable:
 		return true
 	default:
 		return false

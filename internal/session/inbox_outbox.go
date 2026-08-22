@@ -315,16 +315,17 @@ func writeDeadLetter(event TransitionNotificationEvent) error {
 	return f.Sync()
 }
 
-// CountDeadLetterRecords returns the number of parseable records currently in
-// the dead-letter directory. Inbox drain uses this to avoid reporting a clean
-// state while undelivered events are parked out of sight.
+// CountDeadLetterRecords returns the number of unresolved records currently in
+// the dead-letter directory and the discovery-only _unowned ledger. Inbox
+// drain uses this to avoid reporting a clean state while undelivered events are
+// parked out of sight.
 func CountDeadLetterRecords() (int, error) {
 	entries, err := os.ReadDir(DeadLetterDir())
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
+		if !errors.Is(err, os.ErrNotExist) {
+			return 0, err
 		}
-		return 0, err
+		entries = nil
 	}
 	count := 0
 	for _, entry := range entries {
@@ -354,7 +355,28 @@ func CountDeadLetterRecords() (int, error) {
 			return count, closeErr
 		}
 	}
-	return count, nil
+	unowned, err := countNonblankInboxRecords(InboxPathFor(UnownedInboxID))
+	return count + unowned, err
+}
+
+func countNonblankInboxRecords(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer f.Close()
+	count := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) != "" {
+			count++
+		}
+	}
+	return count, scanner.Err()
 }
 
 // --- unified producer commit (shared by interactive + one-shot) -------------
@@ -447,9 +469,9 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 			// non-benign terminal reasons. The durable delivery result remains a
 			// success because _unowned is now the actionable copy.
 			n.terminalDrop(event, reason)
-			// A duplicate means the identical durable event already exists. Both a
-			// new append and that idempotent replay are successful commits.
-			return true, false, ""
+			// Preserve the reason in the result so completion replay can distinguish
+			// this discovery copy from an ackable parent-inbox commit.
+			return true, false, reason
 		}
 		return false, false, reason
 	}

@@ -183,8 +183,15 @@ func (d *TransitionDaemon) ReplayUnackedCompletions(profile string) {
 		if rec.Acked || strings.TrimSpace(rec.Status) == "" {
 			continue
 		}
-		if d.notifier.DeliverCompletion(rec) {
+		committed, parked := d.notifier.deliverCompletion(rec)
+		if committed {
 			_ = AckCompletion(rec.Profile, rec.ChildID)
+			continue
+		}
+		// _unowned is a discovery copy, never an acknowledgement. Keep the
+		// completion record replayable across daemon/parent restart, but do not
+		// spend its dead-letter budget merely because the parent is absent.
+		if parked {
 			continue
 		}
 		// Not committed: the parent is unresolvable (e.g. removed) or a
