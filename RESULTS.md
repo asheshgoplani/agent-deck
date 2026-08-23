@@ -47,4 +47,7 @@ The production patch was then restored. With the fix present, these tests plus `
 
 ## CI state
 
-Pending final-head GitHub Actions completion; update this section with the exact committed head and check conclusions after push.
+- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
+- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
+- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
+- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.
