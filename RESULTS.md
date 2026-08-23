@@ -208,3 +208,27 @@ a stale base.
 - Preserved invariant: unsupported tools (`shell`, Gemini, Cursor) remain
   outside the native fork gate, and `Instance.CanFork()` still separately
   checks whether the particular session currently has forkable source state.
+
+### Go full-suite failure after 91164adc
+
+- Hosted reproduction: Go workflow `32634096274` ran 9,950 tests and failed
+  only `cmd/agent-deck/TestSessionFork_AdmitsOpenCode`, including both automatic
+  reruns. Main was green and the PR was zero behind.
+- Root cause: production had intentionally replaced five hand-maintained local
+  gate booleans with `session.SupportsNativeFork`, but the existing test still
+  asserted the exact deleted source string
+  `isOpenCodeFork := inst.Tool == "opencode"`. OpenCode remained admitted at
+  runtime; the test encoded implementation shape rather than behavior.
+- Fix: the existing test now calls the canonical capability contract for
+  OpenCode and retains its separate assertion that CLI dispatch routes through
+  `CreateForkedInstanceForTool`.
+- Red without fix: overlaying the corrected test onto `51338619` (before the
+  canonical helper) fails to compile with
+  `undefined: session.SupportsNativeFork` (`OPENCODE_TEST_MUTATION_EXIT=1`).
+  This proves the corrected test requires the production gate consolidation;
+  it is not a test-only tautology.
+- Preserved invariant: the dispatcher-wiring assertion remains, and the shared
+  table test still checks every supported and unsupported native-fork tool.
+- Re-verification: the exact failing test passes at current head. The whole
+  `cmd/agent-deck` race package was also run in a Go 1.25 container with tmux
+  installed, matching CI prerequisites.

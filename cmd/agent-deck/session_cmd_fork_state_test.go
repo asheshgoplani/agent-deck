@@ -618,14 +618,14 @@ func TestSessionFork_WithState_RoutesJujutsu(t *testing.T) {
 }
 
 func TestSessionFork_AdmitsOpenCode(t *testing.T) {
+	if !session.SupportsNativeFork("opencode") {
+		t.Fatal("fork capability gate must recognize opencode")
+	}
 	src, err := os.ReadFile("session_cmd.go")
 	if err != nil {
 		t.Fatalf("read session_cmd.go: %v", err)
 	}
 	s := string(src)
-	if !strings.Contains(s, `isOpenCodeFork := inst.Tool == "opencode"`) {
-		t.Fatal("fork gate must recognize opencode")
-	}
 	if !strings.Contains(s, "CreateForkedInstanceForTool") {
 		t.Fatal("fork dispatch must route through the shared cross-tool create method")
 	}
