@@ -312,8 +312,7 @@ const (
 // lifecycleLogPath and failureDir are resolved before the goroutine starts and
 // passed by value, so the watcher cannot write through a later process-global
 // HOME value.
-func (i *Instance) startFastDeathWatcher(command string, sess *tmux.Session, id, tool string, logger *slog.Logger) {
-	gen, wake := i.newSpawnGenWatch()
+func (i *Instance) startFastDeathWatcher(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger) {
 	lifecycleLogPath := GetSessionIDLifecycleLogPath()
 	failureDir := spawnFailureDir()
 	i.spawnWatchers.Add(1)
