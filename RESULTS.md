@@ -25,4 +25,17 @@ Passed:
 
 ## CI status
 
-The rebased branch is pushed without merging. GitHub Actions status for the exact pushed head is recorded below after all checks finish.
+The rebased branch was pushed without merging. All checks passed on rebased report head `91acb5561e934fe4bd46f0f05518f61677cfbd48`:
+
+- Full test suite (PR gate)
+- CodeQL / analyze
+- golangci
+- govulncheck
+- Python bridge-import matrix (3.8–3.12)
+- watchdog tests (3.8 and 3.12)
+- PR diff-scope guard
+- Release snapshot / PR drift check
+- PR intake gate
+- CodeRabbit review
+
+The final report-only commit was then pushed and its exact-head checks were also allowed to run to completion before handoff.
