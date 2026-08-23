@@ -3,12 +3,27 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
+
+func openTestCostStore(t *testing.T) (*costs.Store, *statedb.StateDB) {
+	t.Helper()
+	db, err := statedb.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	return costs.NewStore(db.DB()), db
+}
 
 func TestWriteCostExportJSONStableFieldsAndUnknown(t *testing.T) {
 	known := 1.25
@@ -38,5 +53,26 @@ func TestWriteCostExportTableUsesQuestionMarkForUnknown(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "?") || strings.Contains(out.String(), "$0.00") {
 		t.Fatalf("table = %q", out.String())
+	}
+}
+
+func TestCostKnownForRange_IgnoresHistoricalUnknown(t *testing.T) {
+	store, storage := openTestCostStore(t)
+	defer storage.Close()
+	pricer := costs.NewPricer(costs.PricerConfig{})
+	for _, ev := range []costs.CostEvent{
+		{ID: "old-unknown", SessionID: "old", Timestamp: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), Model: "unknown-model"},
+		{ID: "current-known", SessionID: "new", Timestamp: time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC), Model: "claude-sonnet-4-6", CostMicrodollars: 1234},
+	} {
+		if err := store.WriteCostEvent(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	known, err := costKnownForRange(store, time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC), time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC), pricer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !known {
+		t.Fatal("historical unknown poisoned current known window")
 	}
 }

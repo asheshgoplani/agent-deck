@@ -54,6 +54,38 @@ func TestIssue1101_RemoteCostSummary_JSONRoundtrip(t *testing.T) {
 	}
 }
 
+func TestRemoteCostSummary_PreservesUnknownNull(t *testing.T) {
+	var got RemoteCostSummary
+	if err := json.Unmarshal([]byte(`{"cost_today_microdollars":null,"cost_this_week_microdollars":1250000}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CostTodayKnown {
+		t.Fatal("null remote cost was decoded as known")
+	}
+	if !got.CostThisWeekKnown || got.CostThisWeekMicrodollars != 1_250_000 {
+		t.Fatalf("known remote cost lost: %+v", got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(raw), `"cost_today_microdollars":null`) {
+		t.Fatalf("unknown remote cost was coerced on re-encode: %s", raw)
+	}
+}
+
+func TestMergeRemoteCostSummaries_UnknownPoisonsOnlyItsWindow(t *testing.T) {
+	known := RemoteCostSummary{CostTodayMicrodollars: 2_000_000, CostTodayKnown: true, CostThisWeekMicrodollars: 7_000_000, CostThisWeekKnown: true}
+	partial := RemoteCostSummary{CostTodayKnown: false, CostThisWeekMicrodollars: 3_000_000, CostThisWeekKnown: true}
+	got := MergeRemoteCostSummaries(map[string]*RemoteCostSummary{"known": &known, "partial": &partial})
+	if got.CostTodayKnown {
+		t.Fatalf("unknown today became a factual total: %+v", got)
+	}
+	if !got.CostThisWeekKnown || got.CostThisWeekMicrodollars != 10_000_000 {
+		t.Fatalf("unrelated unknown poisoned known week: %+v", got)
+	}
+}
+
 // TestIssue1101_MergeRemoteCostSummaries_AggregatesTotals asserts that the
 // TUI's per-host summary aggregator sums every microdollar field across all
 // configured remotes. This is the core arithmetic that makes the
