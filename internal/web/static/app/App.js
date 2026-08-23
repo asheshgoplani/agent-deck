@@ -8,34 +8,33 @@ import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
 import { AppShell } from './AppShell.js'
 import { selectedIdSignal, selectedGroupSignal, selectSession, selectGroup } from './state.js'
-import { activeTabSignal } from './uiState.js'
+import { activeTabSignal, hadStoredTab } from './uiState.js'
 
 // Map a pathname onto the selection. encodeURIComponent turns a nested group
 // path ("work/innotrade") into "work%2Finnotrade", which keeps the no-slash
 // guard below meaningful for both routes.
-// A URL-driven selection must also SHOW what it selected. activeTabSignal is
-// localStorage-persisted and defaults to 'fleet', while both the terminal and
-// the group stats panel live inside the terminal pane -- which Panes renders
-// display:none unless the tab is 'terminal' (AppShell.js). Every click path
-// sets the tab as a side effect, so this was the one selection path that did
-// not, and a cold /g/{path} or /s/{id} link selected the row while rendering
-// its content into a hidden container.
-//
-// Deliberately NOT done inside selectSession/selectGroup: j/k navigation calls
-// those and must NOT switch tabs, because activating the terminal hands focus
-// to xterm.js which swallows subsequent keypresses (issue #780).
+// A URL-driven selection must SHOW what it selected without overruling a pane
+// the viewer chose. Groups need no tab handling — Panes renders the group panel
+// over whatever tab is active. Sessions live in the terminal pane, which is
+// hidden unless the tab is 'terminal', so a COLD /s/{id} link must steer; one
+// from a viewer with a stored pane choice must not (PR #2047 review item 1:
+// forcing it broke Skills). Not done in selectSession/selectGroup — j/k call
+// those and must not switch tabs, or xterm eats the next key (issue #780).
 export function applyPath(path) {
   if (path.startsWith('/s/')) {
     const raw = path.slice(3)
     if (raw && !raw.includes('/')) {
-      try { selectSession(decodeURIComponent(raw)); activeTabSignal.value = 'terminal' } catch (_) { selectSession(null) }
+      try {
+        selectSession(decodeURIComponent(raw))
+        if (!hadStoredTab) activeTabSignal.value = 'terminal'
+      } catch (_) { selectSession(null) }
       return
     }
   }
   if (path.startsWith('/g/')) {
     const raw = path.slice(3)
     if (raw && !raw.includes('/')) {
-      try { selectGroup(decodeURIComponent(raw)); activeTabSignal.value = 'terminal' } catch (_) { selectSession(null) }
+      try { selectGroup(decodeURIComponent(raw)) } catch (_) { selectSession(null) }
       return
     }
   }

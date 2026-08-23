@@ -25,6 +25,18 @@ function persist(sig, key) {
 // Bundle ships 8 tabs: fleet, terminal, mcp, skills, conductor, watchers, costs, search.
 // Only `fleet | terminal | costs | search` have data (search filters local sessions only).
 // MCP/Skills/Conductor/Watchers render informative stubs because the API doesn't expose them.
+// Whether the VIEWER had already chosen a pane. Captured BEFORE persist()
+// below, which writes the default back immediately — after that, "is the key
+// set?" cannot tell a real choice from our own write. App.js reads this to
+// decide whether a /s/{id} link may steer the pane (only on a cold visit).
+export const hadStoredTab = (() => {
+  try {
+    return localStorage.getItem('agentdeck.tab') != null
+  } catch (_) {
+    return false   // private mode: treat as cold rather than trapping the link
+  }
+})()
+
 export const activeTabSignal = signal(loadJSON('agentdeck.tab', 'fleet'))
 persist(activeTabSignal, 'agentdeck.tab')
 
@@ -82,20 +94,15 @@ effect(() => {
   document.body.dataset.rail = railSignal.value
 })
 
-// Sidebar `/ filter` text. Lifted out of Sidebar.js local useState so
-// dataModel's sidebarRowsSignal — and therefore keyboard navigation — sees
-// the same filter the user is looking at. Session-scoped (not persisted),
-// matching the previous useState behavior.
+// Sidebar `/ filter` text. Lifted out of Sidebar.js useState so
+// sidebarRowsSignal — and therefore keyboard nav — sees the same filter the
+// user does. Session-scoped, as before.
 export const sidebarFilterSignal = signal('')
 
-// Group collapse map: { [groupPath]: boolean }. Only groups the user has
-// explicitly toggled appear here; an absent entry means open, which is
-// exactly the predicate Sidebar.js used before (`expanded[p] !== false`).
-//
-// Persisted so collapse survives a reload — the TUI persists it to SQLite,
-// and there is no web API to write it server-side (PATCH /api/groups/{path}
-// accepts only {name}). The server's own `expanded` field is deliberately
-// NOT honored: nothing can write it back from the browser, so respecting it
-// would make TUI collapse leak into the web one-way.
+// Group collapse map: { [groupPath]: boolean }. Only explicitly-toggled groups
+// appear; an absent entry means open (the predicate Sidebar.js already used).
+// Persisted because the TUI persists collapse and no web API can write it
+// server-side. The server's own `expanded` is deliberately NOT honored —
+// nothing can write it back, so it would leak TUI collapse in one-way.
 export const groupExpandedSignal = signal(loadJSON('agentdeck.groupExpanded', {}))
 persist(groupExpandedSignal, 'agentdeck.groupExpanded')

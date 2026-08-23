@@ -250,6 +250,55 @@ test.describe('group selection', () => {
     }
   })
 
+  // PR #2047 review item 2: archived members come from a separate endpoint no
+  // SSE event touches, so archiving a session from the selected group left the
+  // panel's archived half stale until you navigated away and back.
+  test('archiving from the selected group updates the panel without navigating away', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    const panel = page.locator('[data-testid="group-stats-panel"]')
+    await expect(panel).toBeVisible()
+    await expect(page.locator('[data-testid="group-stats-total"]')).toHaveText('2 sessions')
+    await expect(panel.locator('.gs-row.archived')).toHaveCount(0)
+
+    await page.request.post('/api/sessions/sess-001/archive')
+    try {
+      // No reload, no re-selection: the menu SSE event must carry the refresh.
+      await expect(panel.locator('.gs-row.archived')).toHaveCount(1, { timeout: 6000 })
+      await expect(panel.locator('.gs-row.archived')).toContainText('agent-deck')
+      // Still 2 -- one active + one archived; the total counts both, as the TUI does.
+      await expect(page.locator('[data-testid="group-stats-total"]')).toHaveText('2 sessions')
+      await expect(page.locator('.sess')).toHaveCount(3)
+    } finally {
+      await page.request.post('/api/sessions/sess-001/unarchive')
+    }
+  })
+
+  // PR #2047 review item 3: the removed global Tab binding was a WCAG 2.1.2
+  // keyboard trap -- forward focus died page-wide whenever a group was
+  // selected. This pins that focus escapes the sidebar rather than cycling.
+  test('Tab escapes the sidebar while a group is selected', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await expect(page.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+
+    const inSidebar = () => page.evaluate(() => !!document.activeElement?.closest('.sidebar'))
+    const chevron = () => page.locator('[data-testid="group-head-work"] .chev').textContent()
+
+    // Start focus inside the sidebar, on a real control.
+    await page.locator('[data-testid="sidebar-filter-input"]').focus()
+    await page.keyboard.press('Escape')   // blur the input so Tab is not an in-field key
+
+    let escaped = false
+    const before = await chevron()
+    for (let i = 0; i < 40 && !escaped; i++) {
+      await page.keyboard.press('Tab')
+      if (!(await inSidebar())) escaped = true
+    }
+    expect(escaped, 'focus never left the sidebar within 40 Tab presses').toBe(true)
+
+    // And Tab must not have been hijacked into toggling the group behind it.
+    expect(await chevron()).toBe(before)
+  })
+
   test('group selection is reflected in the URL and survives a reload', async ({ page }) => {
     await page.locator('[data-testid="group-head-work"] .name').click()
     await expect(page).toHaveURL(/\/g\/work$/)

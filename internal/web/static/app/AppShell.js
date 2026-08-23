@@ -7,7 +7,7 @@
 // Preserves existing dialog + toast components (still Tailwind-classed) so
 // no functional regression. Restyling those is a follow-up.
 import { html } from 'htm/preact'
-import { useEffect } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { Topbar } from './Topbar.js'
 import { Sidebar } from './Sidebar.js'
 import { Footer } from './Footer.js'
@@ -41,8 +41,6 @@ import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
   railSignal, profileSignal, groupExpandedSignal,
 } from './uiState.js'
-import { CreateSessionDialog } from './CreateSessionDialog.js'
-import { EditSessionDialog } from './EditSessionDialog.js'
 import { ConfirmDialog } from './ConfirmDialog.js'
 import { GroupNameDialog } from './GroupNameDialog.js'
 import { ToastContainer, addToast } from './Toast.js'
@@ -120,21 +118,61 @@ function WorkHead() {
 // when another tab is active. This preserves the xterm.js + WebSocket lifecycle
 // across tab switches; unmounting would trigger a reconnect storm and lose
 // scrollback. Other panes are cheap enough to mount/unmount on demand.
+// The group stats panel and its data module are only reachable once a viewer
+// selects a group, so they are fetched on demand rather than shipped in the
+// initial payload -- the page is under a hard total-byte-weight budget
+// (.lighthouserc.json) that this feature crossed (PR #2047 review, item 5).
+// Same approach the Costs route already uses for chart.umd (issue #1022).
+// Generic on-demand module loader for view code that is not needed at first
+// paint. Keeps the module out of the initial payload; the promise is cached so
+// repeated opens fetch once, and a failed fetch resets it so a later attempt
+// retries. Same approach the Costs route uses for chart.umd (issue #1022).
+function useLazyComponent(needed, loader, cacheKey, pick) {
+  const [Comp, setComp] = useState(null)
+  useEffect(() => {
+    if (!needed || Comp) return
+    let alive = true
+    lazyCache[cacheKey] = lazyCache[cacheKey] || loader()
+    lazyCache[cacheKey]
+      .then(m => { if (alive) setComp(() => pick(m)) })
+      .catch(() => { lazyCache[cacheKey] = null })
+    return () => { alive = false }
+  }, [needed, Comp])
+  return Comp
+}
+const lazyCache = {}
+
+function useLazyGroupStatsPanel(needed) {
+  return useLazyComponent(needed, () => import('./GroupStatsPanel.js'), 'groupPanel', m => m.GroupStatsPanel)
+}
+
 function Panes({ tab }) {
+  // A selected GROUP takes over the work area regardless of which tab is
+  // active. The group panel is not a tab, and housing it inside the terminal
+  // pane meant a /g/{path} link had to mutate activeTabSignal just to be
+  // visible -- which then stomped session-scoped pane choices like Skills
+  // (PR #2047 review, item 1). Nulling the tab here hides every tab pane,
+  // including the terminal, without unmounting TerminalPane: xterm and its
+  // WebSocket stay alive behind the panel, so returning to a session does not
+  // reconnect or lose scrollback.
+  const groupPath = selectedGroupSignal.value
+  const t = groupPath ? null : tab
+  const GroupPanel = useLazyGroupStatsPanel(!!groupPath)
   return html`
-    <div style=${{ display: tab === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+    <div style=${{ display: t === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
       <${TerminalPane}/>
     </div>
-    ${tab === 'command-center' && html`<${CommandCenterPane}/>`}
-    ${tab === 'fleet'     && html`<${FleetPane}/>`}
-    ${tab === 'costs'     && html`<${CostsPane}/>`}
-    ${tab === 'search'    && html`<${SearchPane}/>`}
-    ${tab === 'archived'  && html`<${ArchivedPane}/>`}
-    ${tab === 'mcp'       && html`<${McpPane}/>`}
-    ${tab === 'skills'    && html`<${SkillsPane}/>`}
-    ${tab === 'conductor' && html`<${StubPane} title="Conductor"
+    ${groupPath && GroupPanel && html`<${GroupPanel} path=${groupPath}/>`}
+    ${t === 'command-center' && html`<${CommandCenterPane}/>`}
+    ${t === 'fleet'     && html`<${FleetPane}/>`}
+    ${t === 'costs'     && html`<${CostsPane}/>`}
+    ${t === 'search'    && html`<${SearchPane}/>`}
+    ${t === 'archived'  && html`<${ArchivedPane}/>`}
+    ${t === 'mcp'       && html`<${McpPane}/>`}
+    ${t === 'skills'    && html`<${SkillsPane}/>`}
+    ${t === 'conductor' && html`<${StubPane} title="Conductor"
                               message="Conductor orchestration view is TUI-only. The web API does not expose child topology, bridges, or NEED escalation."/>`}
-    ${tab === 'watchers'  && html`<${StubPane} title="Watchers"
+    ${t === 'watchers'  && html`<${StubPane} title="Watchers"
                               message="Watcher framework events are routed in the backend; the web API does not surface event streams or routing config."/>`}
   `
 }
@@ -142,6 +180,14 @@ function Panes({ tab }) {
 export function AppShell() {
   const activeTab = activeTabSignal.value
   const showCreateSession = createSessionDialogSignal.value
+  // Dialog code is never needed at first paint -- fetched when first opened.
+  const CreateSessionDialogLazy = useLazyComponent(
+    !!showCreateSession, () => import('./CreateSessionDialog.js'), 'createDialog', m => m.CreateSessionDialog)
+  // Same case: EditSessionDialog is dialog-only and was eagerly imported.
+  // Deferring it keeps this PR's net first-paint weight comfortably under the
+  // budget rather than sitting on the line (PR #2047 review, item 5).
+  const EditSessionDialogLazy = useLazyComponent(
+    !!editSessionDialogSignal.value, () => import('./EditSessionDialog.js'), 'editDialog', m => m.EditSessionDialog)
   const confirmData = confirmDialogSignal.value
   const groupNameData = groupNameDialogSignal.value
   const drawerOpen = infoDrawerOpenSignal.value
@@ -430,8 +476,8 @@ export function AppShell() {
       <${Footer}/>
       <${MobileTabs}/>
 
-      ${showCreateSession && html`<${CreateSessionDialog}/>`}
-      <${EditSessionDialog}/>
+      ${showCreateSession && CreateSessionDialogLazy && html`<${CreateSessionDialogLazy}/>`}
+      ${EditSessionDialogLazy && html`<${EditSessionDialogLazy}/>`}
       ${confirmData && html`<${ConfirmDialog} ...${confirmData}/>`}
       ${groupNameData && html`<${GroupNameDialog} ...${groupNameData}/>`}
 

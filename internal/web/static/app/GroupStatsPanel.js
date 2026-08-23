@@ -16,7 +16,8 @@
 //   - No Repository/worktree block: per-branch dirty state is not on the wire.
 import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
-import { menuModelSignal, groupStats, groupMembers } from './dataModel.js'
+import { menuModelSignal } from './dataModel.js'
+import { groupStats, groupMembers } from './groupPanelData.js'
 import { selectSession, loadArchivedSessions } from './state.js'
 import { activeTabSignal } from './uiState.js'
 import { Dot } from './icons.js'
