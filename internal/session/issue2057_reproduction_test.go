@@ -47,3 +47,23 @@ func TestIssue2057_TwoPendingTurnsSurviveDrain(t *testing.T) {
 		t.Fatalf("drained turns = %d, want 2", len(drained))
 	}
 }
+
+func TestIssue2057_NotifyTransitionCommitsTwoFastTurns(t *testing.T) {
+	profile, parent, child, _ := seedParentTwoChildren(t)
+	n := NewTransitionNotifier()
+	t.Cleanup(n.Close)
+	base := time.Now()
+	for i, signal := range []string{"codex-turn-a", "codex-turn-b"} {
+		got := n.NotifyTransition(TransitionNotificationEvent{
+			ChildSessionID: child, ChildTitle: "interactive-worker", Profile: profile,
+			FromStatus: "running", ToStatus: "waiting", LastOutputHash: signal,
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+		})
+		if got.DeliveryResult != transitionDeliveryCommitted {
+			t.Fatalf("turn %d result=%q", i, got.DeliveryResult)
+		}
+	}
+	if pending := readInboxLines(t, parent); len(pending) != 2 {
+		t.Fatalf("notifier pending=%d want=2", len(pending))
+	}
+}

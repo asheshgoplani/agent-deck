@@ -41,13 +41,13 @@ func TestIssue2057_CrossHarnessIdentityAndDurableDrain(t *testing.T) {
 
 	// Codex fallback: completion-bound sequence ignores generic sequence churn/noise.
 	fallback := &Instance{ID: "codex-fallback", Tool: "codex"}
-	write2057Hook(t, fallback.ID, map[string]any{"event": "turn.completed", "sequence": 10, "codex_started_sequence": 4, "codex_completed_sequence": 4})
+	write2057Hook(t, fallback.ID, map[string]any{"event": "turn.completed", "sequence": 10, "codex_completed_generation": "reused", "codex_started_sequence": 4, "codex_completed_sequence": 4})
 	f1 := transitionEventOutputHash(fallback)
-	write2057Hook(t, fallback.ID, map[string]any{"event": "status.changed", "sequence": 99, "codex_started_sequence": 4, "codex_completed_sequence": 4})
+	write2057Hook(t, fallback.ID, map[string]any{"event": "status.changed", "sequence": 99, "codex_completed_generation": "reused", "codex_started_sequence": 4, "codex_completed_sequence": 4})
 	if got := transitionEventOutputHash(fallback); got != f1 {
 		t.Fatalf("noise changed fallback %q -> %q", f1, got)
 	}
-	write2057Hook(t, fallback.ID, map[string]any{"event": "turn.completed", "codex_started_sequence": 5, "codex_completed_sequence": 5})
+	write2057Hook(t, fallback.ID, map[string]any{"event": "turn.completed", "codex_completed_generation": "reused", "codex_started_sequence": 5, "codex_completed_sequence": 5})
 	f2 := transitionEventOutputHash(fallback)
 
 	// Claude transcript identity is stable by append-only content boundary.
