@@ -14713,17 +14713,31 @@ func (h *Home) renderFrame() string {
 	// fetch failed contribute zero — the local figures still render.
 	h.remoteCostsMu.RLock()
 	remoteAgg := costs.MergeRemoteCostSummaries(h.remoteCosts)
-	h.remoteCostsMu.RUnlock()
-	costVars := map[string]int64{
-		"cost_today":      h.costToday.Load() + remoteAgg.CostTodayMicrodollars,
-		"cost_yesterday":  h.costYesterday.Load() + remoteAgg.CostYesterdayMicrodollars,
-		"cost_this_week":  h.costWeek.Load() + remoteAgg.CostThisWeekMicrodollars,
-		"cost_last_week":  h.costLastWeek.Load() + remoteAgg.CostLastWeekMicrodollars,
-		"cost_this_month": h.costThisMonth.Load() + remoteAgg.CostThisMonthMicrodollars,
-		"cost_last_month": h.costLastMonth.Load() + remoteAgg.CostLastMonthMicrodollars,
-		"cost_projected":  h.costProjected.Load() + remoteAgg.CostProjectedMicrodollars,
+	hasRemoteCosts := false
+	for _, summary := range h.remoteCosts {
+		if summary != nil {
+			hasRemoteCosts = true
+			break
+		}
 	}
-	if rendered := costs.RenderCostLine(h.costLineTemplate, costVars, h.costLineHideWhenZero); rendered != "" {
+	h.remoteCostsMu.RUnlock()
+	costValue := func(local, remote int64, known bool) *int64 {
+		if hasRemoteCosts && !known {
+			return nil
+		}
+		value := local + remote
+		return &value
+	}
+	costVars := map[string]*int64{
+		"cost_today":      costValue(h.costToday.Load(), remoteAgg.CostTodayMicrodollars, remoteAgg.CostTodayKnown),
+		"cost_yesterday":  costValue(h.costYesterday.Load(), remoteAgg.CostYesterdayMicrodollars, remoteAgg.CostYesterdayKnown),
+		"cost_this_week":  costValue(h.costWeek.Load(), remoteAgg.CostThisWeekMicrodollars, remoteAgg.CostThisWeekKnown),
+		"cost_last_week":  costValue(h.costLastWeek.Load(), remoteAgg.CostLastWeekMicrodollars, remoteAgg.CostLastWeekKnown),
+		"cost_this_month": costValue(h.costThisMonth.Load(), remoteAgg.CostThisMonthMicrodollars, remoteAgg.CostThisMonthKnown),
+		"cost_last_month": costValue(h.costLastMonth.Load(), remoteAgg.CostLastMonthMicrodollars, remoteAgg.CostLastMonthKnown),
+		"cost_projected":  costValue(h.costProjected.Load(), remoteAgg.CostProjectedMicrodollars, remoteAgg.CostProjectedKnown),
+	}
+	if rendered := costs.RenderCostLineNullable(h.costLineTemplate, costVars, h.costLineHideWhenZero); rendered != "" {
 		costStyle := lipgloss.NewStyle().Foreground(ColorCyan)
 		stats += statsSep + costStyle.Render(rendered)
 	}

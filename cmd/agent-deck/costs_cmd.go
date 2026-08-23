@@ -177,51 +177,43 @@ func handleCostsSummary(profile string, args []string) {
 	lastMonth, _ := costStore.TotalLastMonth()
 	projected, _ := costStore.ProjectedMonthly()
 	pricer := newPricerFromConfig()
-	allRows, _ := costStore.Export(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC), costs.GroupByModel, costProfileName(profile), pricer)
-	hasUnknown := false
-	for _, row := range allRows {
-		if row.CostUSD == nil {
-			hasUnknown = true
-			break
-		}
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	weekStart := todayStart.AddDate(0, 0, -(int(todayStart.Weekday())+6)%7)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	known := func(from, to time.Time) bool {
+		value, err := costKnownForRange(costStore, from, to, pricer)
+		return err == nil && value
 	}
-	costValue := func(v int64) interface{} {
-		if hasUnknown {
-			return nil
-		}
-		return v
+	remote := costs.RemoteCostSummary{
+		CostTodayMicrodollars: today.TotalCostMicrodollars, CostTodayKnown: known(todayStart, now.Add(time.Nanosecond)),
+		CostYesterdayMicrodollars: yesterday.TotalCostMicrodollars, CostYesterdayKnown: known(todayStart.AddDate(0, 0, -1), todayStart),
+		CostThisWeekMicrodollars: week.TotalCostMicrodollars, CostThisWeekKnown: known(weekStart, now.Add(time.Nanosecond)),
+		CostLastWeekMicrodollars: lastWeek.TotalCostMicrodollars, CostLastWeekKnown: known(weekStart.AddDate(0, 0, -7), weekStart),
+		CostThisMonthMicrodollars: month.TotalCostMicrodollars, CostThisMonthKnown: known(monthStart, now.Add(time.Nanosecond)),
+		CostLastMonthMicrodollars: lastMonth.TotalCostMicrodollars, CostLastMonthKnown: known(monthStart.AddDate(0, -1, 0), monthStart),
+		CostProjectedMicrodollars: projected, CostProjectedKnown: known(now.AddDate(0, 0, -7), now.Add(time.Nanosecond)),
+		EventsToday: today.EventCount, EventsThisWeek: week.EventCount, EventsThisMonth: month.EventCount,
 	}
 
 	if *jsonOutput {
 		// Wire shape mirrors costs.RemoteCostSummary so SSHRunner can json.Unmarshal directly.
-		payload := map[string]interface{}{
-			"cost_today_microdollars":      costValue(today.TotalCostMicrodollars),
-			"cost_yesterday_microdollars":  costValue(yesterday.TotalCostMicrodollars),
-			"cost_this_week_microdollars":  costValue(week.TotalCostMicrodollars),
-			"cost_last_week_microdollars":  costValue(lastWeek.TotalCostMicrodollars),
-			"cost_this_month_microdollars": costValue(month.TotalCostMicrodollars),
-			"cost_last_month_microdollars": costValue(lastMonth.TotalCostMicrodollars),
-			"cost_projected_microdollars":  costValue(projected),
-			"events_today":                 today.EventCount,
-			"events_this_week":             week.EventCount,
-			"events_this_month":            month.EventCount,
-		}
 		enc := json.NewEncoder(os.Stdout)
-		_ = enc.Encode(payload)
+		_ = enc.Encode(remote)
 		return
 	}
 
-	displayCost := func(v int64) string {
-		if hasUnknown {
+	displayCost := func(v int64, known bool) string {
+		if !known {
 			return "?"
 		}
 		return costs.FormatUSD(v)
 	}
 	fmt.Printf("Cost Summary:\n")
-	fmt.Printf("  Today:      %s (%d events)\n", displayCost(today.TotalCostMicrodollars), today.EventCount)
-	fmt.Printf("  This week:  %s (%d events)\n", displayCost(week.TotalCostMicrodollars), week.EventCount)
-	fmt.Printf("  This month: %s (%d events)\n", displayCost(month.TotalCostMicrodollars), month.EventCount)
-	fmt.Printf("  Projected:  %s/mo\n", displayCost(projected))
+	fmt.Printf("  Today:      %s (%d events)\n", displayCost(today.TotalCostMicrodollars, remote.CostTodayKnown), today.EventCount)
+	fmt.Printf("  This week:  %s (%d events)\n", displayCost(week.TotalCostMicrodollars, remote.CostThisWeekKnown), week.EventCount)
+	fmt.Printf("  This month: %s (%d events)\n", displayCost(month.TotalCostMicrodollars, remote.CostThisMonthKnown), month.EventCount)
+	fmt.Printf("  Projected:  %s/mo\n", displayCost(projected, remote.CostProjectedKnown))
 
 	top, _ := costStore.TopSessionsByCost(5)
 	if len(top) > 0 {
@@ -231,7 +223,7 @@ func handleCostsSummary(profile string, args []string) {
 			if title == "" {
 				title = sc.SessionID
 			}
-			fmt.Printf("  %d. %-30s %s (%d events)\n", i+1, title, displayCost(sc.CostMicrodollars), sc.EventCount)
+			fmt.Printf("  %d. %-30s %s (%d events)\n", i+1, title, costs.FormatUSD(sc.CostMicrodollars), sc.EventCount)
 		}
 	}
 
@@ -307,6 +299,19 @@ func costProfileName(profile string) string {
 		return session.DefaultProfile
 	}
 	return profile
+}
+
+func costKnownForRange(store *costs.Store, from, to time.Time, pricer *costs.Pricer) (bool, error) {
+	rows, err := store.Export(from, to, costs.GroupByModel, "", pricer)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if row.CostUSD == nil {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func writeCostExport(w io.Writer, rows []costs.ExportRow, jsonOutput bool) error {

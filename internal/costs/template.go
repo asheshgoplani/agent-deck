@@ -15,6 +15,16 @@ import "strings"
 // The walker is left-to-right and never iterates the vars map, so output
 // is deterministic regardless of map iteration order.
 func RenderCostLine(template string, vars map[string]int64, hideWhenZero bool) string {
+	nullable := make(map[string]*int64, len(vars))
+	for name, value := range vars {
+		value := value
+		nullable[name] = &value
+	}
+	return RenderCostLineNullable(template, nullable, hideWhenZero)
+}
+
+// RenderCostLineNullable renders a question mark for costs whose value is unknown.
+func RenderCostLineNullable(template string, vars map[string]*int64, hideWhenZero bool) string {
 	var b strings.Builder
 	b.Grow(len(template))
 
@@ -37,8 +47,13 @@ func RenderCostLine(template string, vars map[string]int64, hideWhenZero bool) s
 		}
 		name := template[i+1 : i+1+end]
 		if val, ok := vars[name]; ok {
-			b.WriteString(FormatUSD(val))
-			if val != 0 {
+			if val == nil {
+				b.WriteString("?")
+				hasNonZero = true
+			} else {
+				b.WriteString(FormatUSD(*val))
+			}
+			if val != nil && *val != 0 {
 				hasNonZero = true
 			}
 		} else {
