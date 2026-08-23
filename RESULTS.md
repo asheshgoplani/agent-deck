@@ -36,7 +36,10 @@ dispatch intact, and the focused assertion becomes RED.
 
 The complete command-family enumeration, detailed nested help, positional data
 named `help`, and complete-tree no-write assertions from rounds 1-4 remain in
-place. No dispatch, parsing, or mutation ordering changed in round 5.
+place. Rebase reconciliation added main's new `accounts` command to the registry
+after exact-head CI exposed the omission; this restores the registry/dispatch
+invariant without changing command behavior. No dispatch, parsing, or mutation
+ordering changed in round 5.
 
 ## Fixed-tip gates and ancestry
 
@@ -50,4 +53,8 @@ place. No dispatch, parsing, or mutation ordering changed in round 5.
 - `git merge-base --is-ancestor origin/main HEAD` passed after rebase, and
   `git rev-list --left-right --count origin/main...HEAD` reported `0 8` before
   the two round-5 test/eval commits and this evidence commit.
-
+- The first exact-head GitHub full-suite run at `07358c32` correctly failed only
+  `TestCommandRegistryMatchesMainDispatch` because rebased main added `accounts`.
+  All other checks, including `test`, `eval_smoke suite`, lint, vulnerability,
+  snapshot, performance, and CodeRabbit, passed. The final tip includes the
+  registry reconciliation and receives a completely fresh exact-head rollup.
