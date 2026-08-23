@@ -202,4 +202,9 @@ symbols), and repeatability (restart the funnel when evidence changes). Hidden
 paths are included while `.git` remains excluded. No serialization, indexing,
 polling, heartbeat, output-limit, or summarization behavior changed.
 
-CI state is recorded against the final pushed head after completion below.
+## Exact-head CI
+
+All eight checks on the final head containing this report completed
+successfully after push: CodeQL (workflow and analysis), CodeRabbit, full Go
+test suite, PR diff-scope guard, golangci-lint, govulncheck, and the PR intake
+observer. There were zero failures, cancellations, skips, or pending checks.
