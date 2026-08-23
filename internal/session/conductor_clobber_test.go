@@ -10,6 +10,11 @@ import (
 	"testing"
 )
 
+// Release targets must provide a real atomic pathname exchange. Besides the
+// behavioral tests below, this compile-time contract makes a Darwin cross-test
+// build fail if Darwin falls back to generated_exchange_other.go again.
+const _ = 1 / generatedFileExchangeSupported
+
 func TestWriteGeneratedFileOrMigrateReplacesInodeAndRejectsUnsafeTargets(t *testing.T) {
 	t.Run("hard link is isolated", func(t *testing.T) {
 		dir := t.TempDir()
