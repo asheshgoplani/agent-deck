@@ -145,3 +145,44 @@ concurrency behavior. The test reaches the existing targeted
 replacing the bounded/concurrency-safe launch save mechanism. The existing
 missing-value test continues to prove fail-closed ordering: malformed
 `--account --no-wait` input is rejected before state or tmux side effects.
+
+# PR #2052 round-5 fix results
+
+## Decision and fix
+
+The round-4 blocker was valid. `RespawnPane` serialized pane replacement with
+the startup-timeout generation claim, but its `respawn-pane` client had no
+deadline while `s.mu` was held. The mutation now uses
+`context.WithTimeout(..., tmuxMutationTimeout)`, `s.tmuxCmdContext`, and
+`annotateDeadline`, matching the established bounded mutation path. Failure
+unlocks without publishing a new generation; success still publishes the
+fresh startup clock and clears timeout state before unlock.
+
+`TestIssue1892_RespawnPaneMutationIsBounded` is the permanent deterministic
+probe. Its fake tmux answers setup probes immediately and sleeps only for
+`respawn-pane`; with a 50 ms mutation deadline, the call must return an error
+within the 500 ms test ceiling and leave `s.mu` acquirable.
+
+## Rebase and ancestry
+
+- Reviewed round-4 head: `47124312bd533c935d0fd85edb8f29a61c7c29af`.
+- Rebased onto current `github/main` `bf506898` before diagnosis.
+- The fixed history has `0` main-only commits, preserving all prior issue-1892
+  generation, banner, hold-idempotence, return-revalidation, and manual-restart
+  fixes.
+
+## Mutation and gate receipts
+
+- Predecessor-red synthetic commit `4b70204f50ed6cc2e5bf9c221a63ebf57528ebc2`
+  contains the permanent probe on the rebased predecessor production code.
+  Build-service gate `20260823T185717-fix_2052_r5_predecessor-4b70204f-container-targeted`
+  failed the probe after 1.01 s because the unbounded respawn succeeded.
+- Fixed production commit `c157089c25c84db6f09f9845b6f102af53e99409`
+  no longer reports that probe among failures in the same package gate; the
+  package gate remains environment-red only because the build-service image
+  lacks the real `tmux` binary required by pre-existing integration tests.
+- Build-service build/vet receipt for the fixed production commit:
+  `c157089c25c84db6f09f9845b6f102af53e99409/build`, green on g14.
+
+The final result JSON records the final documentation commit, exact-head
+build/test receipts, pushed branch ancestry, and GitHub CI state.

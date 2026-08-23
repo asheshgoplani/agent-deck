@@ -1039,13 +1039,18 @@ func isBrailleSpinnerChar(ch string) bool {
 // NOTE: All mutable fields are protected by mu. The Bubble Tea event loop is single-threaded,
 // but we use mutex protection for defensive programming and future-proofing.
 type Session struct {
-	Name        string
-	DisplayName string
-	WorkDir     string
-	Command     string
-	Created     time.Time
-	InstanceID  string // Agent-deck instance ID for hook callbacks
-	startupAt   time.Time
+	Name            string
+	DisplayName     string
+	WorkDir         string
+	Command         string
+	Created         time.Time
+	InstanceID      string // Agent-deck instance ID for hook callbacks
+	startupAt       time.Time
+	startupTimedOut bool // terminal for this pane generation after #1892's deadline
+	// afterStartupTimeoutClaim is a test seam for scheduling a competing pane
+	// generation after timeout recovery releases mu but before GetStatus decides
+	// which generation's status to return.
+	afterStartupTimeoutClaim func()
 
 	// WorkDirIsPlaceholder marks a session whose local WorkDir is not where the
 	// work happens — today that means an SSH session, whose pane only runs an
@@ -1572,6 +1577,60 @@ func (s *Session) inStartupWindowLocked() bool {
 	return !s.startupAt.IsZero() && time.Since(s.startupAt) < startupStateWindow
 }
 
+// expireStartupHandover replaces an alive-but-unowned pane with an inert,
+// non-echoing recovery hold when the startup deadline expires. It is called
+// without s.mu held; claiming the flag prevents concurrent pollers from
+// respawning the pane more than once.
+func (s *Session) expireStartupHandover() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.startupTimedOut {
+		return true
+	}
+	if s.startupAt.IsZero() || time.Since(s.startupAt) < startupStateWindow {
+		return false
+	}
+	s.startupTimedOut = true
+	s.startupAt = time.Time{}
+	s.lastStableStatus = "error"
+
+	restartTarget := s.DisplayName
+	if strings.TrimSpace(restartTarget) == "" {
+		restartTarget = s.Name
+	}
+	message := fmt.Sprintf("Session startup timed out before the agent became interactive.\n\nRecovery: agent-deck session restart %s\n", shellescape.Quote(restartTarget))
+	// A tmux pane command normally inherits the pane's controlling terminal on
+	// stdin, which is what stty requires. Name /dev/tty explicitly so this does
+	// not silently depend on stdin surviving a wrapper change. If the pane has
+	// no controlling terminal, stty remains best-effort: the recovery message
+	// and inert hold still appear, but typed input may be echoed.
+	hold := fmt.Sprintf("printf %%s %s; stty -echo </dev/tty 2>/dev/null || true; exec sleep 2147483647", shellescape.Quote(message))
+	wrapped, err := wrapRespawnCommand(hold)
+	if err == nil {
+		args := append([]string{"respawn-pane", "-k", "-t", s.Name + ":"}, wrapped...)
+		ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
+		output, respawnErr := s.tmuxCmdContext(ctx, args...).CombinedOutput()
+		respawnErr = annotateDeadline(ctx.Err(), respawnErr)
+		cancel()
+		if respawnErr != nil {
+			statusLog.Warn("startup_timeout_hold_failed", slog.String("session", s.Name), slog.String("error", respawnErr.Error()), slog.String("output", string(output)))
+		}
+	} else {
+		statusLog.Warn("startup_timeout_hold_wrap_failed", slog.String("session", s.Name), slog.String("error", err.Error()))
+	}
+	return true
+}
+
+// startupTimeoutIsCurrent reports whether the timeout claim still belongs to
+// the pane generation GetStatus is about to describe. A successful respawn
+// clears the claim while publishing its fresh startup clock under the same
+// mutex, so this is the status return's generation-validation point.
+func (s *Session) startupTimeoutIsCurrent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startupTimedOut
+}
+
 // SetCustomPatterns sets custom patterns for generic tool support
 // These patterns enable custom tools defined in config.toml to have proper status detection
 func (s *Session) SetCustomPatterns(toolName string, busyPatterns, promptPatterns, detectPatterns []string) {
@@ -1731,6 +1790,14 @@ func ReconnectSessionWithStatus(tmuxName, displayName, workDir, command string, 
 	sess := ReconnectSession(tmuxName, displayName, workDir, command)
 
 	switch previousStatus {
+	case "error":
+		// "error" is shared by startup timeouts and live tool failures (auth,
+		// connection, unavailable model). Do not make that lossy persisted value
+		// terminal. GetStatus reclassifies current pane content; the distinctive
+		// timeout hold remains recoverable because a reconnected session has no
+		// fresh startup generation.
+		sess.lastStableStatus = "error"
+
 	case "idle":
 		// Session was acknowledged (user saw it) - restore as GRAY
 		sess.stateTracker = &StateTracker{
@@ -1783,6 +1850,11 @@ func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previo
 
 	// Restore state tracker based on previous status (without running tmux commands)
 	switch previousStatus {
+	case "error":
+		// See ReconnectSessionWithStatus: generic persisted errors must remain
+		// recoverable from the pane's current content.
+		sess.lastStableStatus = "error"
+
 	case "idle":
 		sess.stateTracker = &StateTracker{
 			lastHash:       "",
@@ -2266,6 +2338,7 @@ func (s *Session) Start(command string) error {
 	s.invalidateCache()
 	s.Created = time.Now()
 	s.startupAt = s.Created
+	s.startupTimedOut = false
 	s.mu.Lock()
 	s.lastStableStatus = "waiting"
 	s.stateTracker = nil
@@ -3471,14 +3544,33 @@ func (s *Session) RespawnPane(command string) error {
 		args = append(args, wrapped...)
 	}
 
+	// Serialize the pane replacement with expireStartupHandover. The mutex is
+	// the generation claim: neither path may kill a pane and then publish state
+	// for a different process generation.
+	s.mu.Lock()
+
 	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
-	cmd := s.tmuxCmd(args...)
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
+	cmd := s.tmuxCmdContext(ctx, args...)
 	output, err := cmd.CombinedOutput()
+	cancel()
+	err = annotateDeadline(ctx.Err(), err)
 	if err != nil {
+		s.mu.Unlock()
 		mcpLog.Debug("respawn_pane_error", slog.String("error", err.Error()), slog.String("output", string(output)))
 		return fmt.Errorf("failed to respawn pane: %w (output: %s)", err, string(output))
 	}
 	mcpLog.Debug("respawn_pane_output", slog.String("output", string(output)))
+
+	// Publish the new generation before releasing the claim. A timeout poll can
+	// only proceed after it observes this fresh startup clock.
+	s.startupAt = time.Now()
+	s.startupTimedOut = false
+	s.lastStableStatus = "waiting"
+	s.stateTracker = nil
+	s.cachedPromptDetector = nil
+	s.cachedPromptDetectorTool = ""
+	s.mu.Unlock()
 
 	// Capture the NEW process tree so we don't accidentally kill anything the
 	// respawn just created. Keep the probe error: "could not tell" must not be
@@ -3501,15 +3593,6 @@ func (s *Session) RespawnPane(command string) error {
 			)
 		}
 	}
-
-	// Reset startup/status trackers so GetStatus can classify the fresh process correctly.
-	s.mu.Lock()
-	s.startupAt = time.Now()
-	s.lastStableStatus = "waiting"
-	s.stateTracker = nil
-	s.cachedPromptDetector = nil
-	s.cachedPromptDetectorTool = ""
-	s.mu.Unlock()
 
 	return nil
 }
@@ -3939,6 +4022,15 @@ func (s *Session) GetStatus() (string, error) {
 		s.mu.Unlock()
 		statusLog.Debug("pane_dead", slog.String("session", shortName))
 		return "inactive", nil
+	}
+
+	if s.expireStartupHandover() {
+		if s.afterStartupTimeoutClaim != nil {
+			s.afterStartupTimeoutClaim()
+		}
+		if s.startupTimeoutIsCurrent() {
+			return "error", nil
+		}
 	}
 
 	// FAST PATH: Title-based state detection for Claude Code sessions.
@@ -5038,6 +5130,17 @@ func (s *Session) hasPromptIndicator(content string) bool {
 // redraws its input prompt below the banner, so prompt detection alone would
 // report "waiting" for a session that cannot make progress).
 func (s *Session) hasErrorBannerIndicator(content string) bool {
+	// Agent-deck's own startup hold is tool-neutral. Only recognize its text
+	// while the current/restored generation owns the timeout; tmux preserves old
+	// pane contents across RespawnPane, so text alone is stale-prone evidence.
+	// A live generation owns timeout evidence only after it has actually timed
+	// out. A reconnected session has no startup clock, so the hold text itself
+	// is the durable, timeout-specific reason. RespawnPane publishes a fresh
+	// startupAt before unlocking, preventing preserved old scrollback from
+	// poisoning the new generation.
+	if (s.startupTimedOut || s.startupAt.IsZero()) && strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
+		return true
+	}
 	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
 	if tool == "" {
 		return false
