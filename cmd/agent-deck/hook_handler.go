@@ -646,11 +646,12 @@ func handleHooks(args []string) {
 }
 
 func printClaudeHooksUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: agent-deck hooks <install|uninstall|status>")
+	fmt.Fprintln(w, "Usage: agent-deck hooks <help|install|uninstall|status>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Manage agent-deck hook integration for Claude Code.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  help         Show this help")
 	fmt.Fprintln(w, "  install      Install or upgrade agent-deck Claude Code hooks")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Claude Code hooks")
 	fmt.Fprintln(w, "  status       Show current hook install status")
