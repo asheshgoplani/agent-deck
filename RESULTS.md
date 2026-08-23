@@ -47,4 +47,6 @@ All commands ran in `golang:1.25` containers. Each production guard was restored
 
 ## CI state
 
-Pending the final signed commit and push; this section will be updated with the exact head and completed check result.
+- Exact verified code head: `0f3cddbce629ae72cb6cafeda7d61b7af87a7ab7`.
+- GREEN: full PR gate (7m18s), race persistence suite, persistence script, macOS and Ubuntu harnesses, golangci-lint, CodeQL analysis, govulncheck, eval smoke, stale-tmux smoke, diff-scope, snapshot, intake, and CodeRabbit.
+- The first post-fix CI cycle found one unused upstream watcher wrapper left by the rebase conflict. The signed follow-up `0f3cddbc` reused that wrapper with the PR's shared generation/wake arguments, preserving watcher lifecycle tracking; the complete exact-head rerun above passed.
