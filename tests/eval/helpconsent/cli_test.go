@@ -23,8 +23,9 @@ func TestEval_HooksBareHelpIsDetailedAndReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent-deck hooks help failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "Usage: agent-deck hooks <install|uninstall|status>") {
-		t.Fatalf("hooks help lost detailed usage:\n%s", out)
+	if !strings.Contains(string(out), "Usage: agent-deck hooks <help|install|uninstall|status>") ||
+		!strings.Contains(string(out), "  help         Show this help") {
+		t.Fatalf("hooks help did not document its accepted help subcommand:\n%s", out)
 	}
 	after := tree(t, sb.Home)
 	if strings.Join(before, "\n") != strings.Join(after, "\n") {
