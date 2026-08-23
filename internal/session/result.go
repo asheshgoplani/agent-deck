@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -50,6 +52,101 @@ func resultArtifactPath(id ResultIdentity) (string, error) {
 	return filepath.Join(root, sanitizeInboxName(id.SessionID), sanitizeInboxName(id.TurnID), "RESULT.json"), nil
 }
 
+type resultSourceFingerprint struct {
+	Exists bool   `json:"exists"`
+	Dev    uint64 `json:"dev,omitempty"`
+	Ino    uint64 `json:"ino,omitempty"`
+	Size   int64  `json:"size,omitempty"`
+	Mtime  int64  `json:"mtime_ns,omitempty"`
+	Ctime  int64  `json:"ctime_ns,omitempty"`
+}
+
+type resultSourceOwnership struct {
+	SessionID string                  `json:"session_id"`
+	TurnID    string                  `json:"turn_id,omitempty"`
+	Conflict  bool                    `json:"conflict,omitempty"`
+	JSON      resultSourceFingerprint `json:"result_json"`
+	Markdown  resultSourceFingerprint `json:"results_md"`
+}
+
+var resultSourceCaptureHook func()
+
+func resultSourcePath(projectPath string) string { return filepath.Join(projectPath, "RESULT.json") }
+
+func resultSourceOwnershipPath(projectPath string) (string, error) {
+	root, err := dataPath("results", "results")
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(filepath.Clean(projectPath))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return filepath.Join(root, "source-ownership", hex.EncodeToString(sum[:])+".json"), nil
+}
+
+func statResultSource(path string) (resultSourceFingerprint, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return resultSourceFingerprint{}, nil
+	}
+	if err != nil {
+		return resultSourceFingerprint{}, err
+	}
+	fp := resultSourceFingerprint{Exists: true, Size: info.Size(), Mtime: info.ModTime().UnixNano()}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		fp.Dev, fp.Ino = uint64(st.Dev), uint64(st.Ino)
+		fp.Ctime = st.Ctim.Sec*int64(time.Second) + st.Ctim.Nsec
+	}
+	return fp, nil
+}
+
+// ClaimSessionResultSource records the only legacy session allowed to produce
+// the next unlabelled compatibility artifact in this directory. The claim is
+// made while that session is observed running, before capture, and is shared by
+// all agent-deck processes. An existing claim is never stolen.
+func ClaimSessionResultSource(sessionID, projectPath string) error {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(projectPath) == "" {
+		return ErrResultNotFound
+	}
+	recordPath, err := resultSourceOwnershipPath(projectPath)
+	if err != nil {
+		return err
+	}
+	lock, err := AcquireConfigFileLock(recordPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	var owner resultSourceOwnership
+	if data, readErr := os.ReadFile(recordPath); readErr == nil && json.Unmarshal(data, &owner) == nil && owner.SessionID != "" {
+		if owner.SessionID == sessionID && !owner.Conflict {
+			return nil
+		}
+		owner.Conflict = true
+		data, _ = json.Marshal(owner)
+		if writeErr := writeFileDurable(recordPath, data, 0o644); writeErr != nil {
+			return writeErr
+		}
+		return ErrResultNotFound
+	}
+	jsonBaseline, err := statResultSource(resultSourcePath(projectPath))
+	if err != nil {
+		return err
+	}
+	markdownBaseline, err := statResultSource(filepath.Join(projectPath, "RESULTS.md"))
+	if err != nil {
+		return err
+	}
+	owner = resultSourceOwnership{SessionID: sessionID, JSON: jsonBaseline, Markdown: markdownBaseline}
+	data, _ := json.Marshal(owner)
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o755); err != nil {
+		return err
+	}
+	return writeFileDurable(recordPath, data, 0o644)
+}
+
 // CaptureSessionResult snapshots the cwd compatibility artifact into an
 // identity-scoped immutable turn artifact. It must be called at the observed
 // completion edge, before another session sharing the cwd can complete.
@@ -57,24 +154,88 @@ func CaptureSessionResult(id ResultIdentity, projectPath string) (SessionResult,
 	if strings.TrimSpace(id.SessionID) == "" || strings.TrimSpace(id.TurnID) == "" {
 		return UnknownSessionResult(id), ErrResultNotFound
 	}
+	// Serialize source observation, ownership assignment, and immutable copy.
+	recordPath, err := resultSourceOwnershipPath(projectPath)
+	if err != nil {
+		return UnknownSessionResult(id), err
+	}
+	lock, err := AcquireConfigFileLock(recordPath)
+	if err != nil {
+		return UnknownSessionResult(id), err
+	}
+	defer lock.Release()
+
 	result, err := readResultSource(projectPath)
 	if err != nil {
 		return UnknownSessionResult(id), err
 	}
-	path, err := resultArtifactPath(id)
+	sourcePath := result.Source
+	before, err := statResultSource(sourcePath)
 	if err != nil {
 		return UnknownSessionResult(id), err
 	}
-	sourceSum := sha256.Sum256(result.Result)
-	sourceHash := hex.EncodeToString(sourceSum[:])
-	markerPath := filepath.Join(filepath.Dir(filepath.Dir(path)), "source.json")
-	var marker struct {
-		TurnID string `json:"turn_id"`
-		Hash   string `json:"hash"`
+	// Re-read while holding the ownership lock so replacement or mutation
+	// between selection and copy cannot be promoted.
+	if resultSourceCaptureHook != nil {
+		resultSourceCaptureHook()
 	}
-	if markerData, readErr := os.ReadFile(markerPath); readErr == nil && json.Unmarshal(markerData, &marker) == nil &&
-		marker.TurnID != id.TurnID && marker.Hash == sourceHash {
+	result, err = readResultSource(projectPath)
+	if err != nil || result.Source != sourcePath {
 		return UnknownSessionResult(id), ErrResultNotFound
+	}
+	after, err := statResultSource(sourcePath)
+	if err != nil || before != after {
+		return UnknownSessionResult(id), ErrResultNotFound
+	}
+
+	var embedded struct {
+		SessionID *string `json:"session_id"`
+		TurnID    *string `json:"turn_id"`
+	}
+	hasEmbedded := false
+	if strings.HasSuffix(result.Source, "RESULT.json") && json.Unmarshal(result.Result, &embedded) == nil {
+		hasEmbedded = embedded.SessionID != nil || embedded.TurnID != nil
+	}
+	if hasEmbedded {
+		if embedded.SessionID == nil || embedded.TurnID == nil || *embedded.SessionID != id.SessionID || *embedded.TurnID != id.TurnID {
+			return UnknownSessionResult(id), ErrResultNotFound
+		}
+	} else {
+		var owner resultSourceOwnership
+		data, readErr := os.ReadFile(recordPath)
+		if readErr != nil || json.Unmarshal(data, &owner) != nil {
+			return UnknownSessionResult(id), ErrResultNotFound
+		}
+		if owner.Conflict || owner.SessionID != id.SessionID {
+			// A competing producer was observed. Retire the conflicted lease so a
+			// later clean running edge may establish a fresh baseline.
+			consumed := recordPath + ".conflict." + strconv.FormatInt(time.Now().UnixNano(), 10)
+			_ = os.Rename(recordPath, consumed)
+			return UnknownSessionResult(id), ErrResultNotFound
+		}
+		if owner.TurnID != "" && owner.TurnID != id.TurnID {
+			return UnknownSessionResult(id), ErrResultNotFound
+		}
+		baseline := owner.JSON
+		if strings.HasSuffix(sourcePath, "RESULTS.md") {
+			baseline = owner.Markdown
+		}
+		if baseline == after {
+			return UnknownSessionResult(id), ErrResultNotFound
+		}
+		// Bind the lease to this exact turn before copying. After a crash, only
+		// this turn can retry; a later turn cannot inherit the changed source.
+		if owner.TurnID == "" {
+			owner.TurnID = id.TurnID
+			data, _ = json.Marshal(owner)
+			if err := writeFileDurable(recordPath, data, 0o644); err != nil {
+				return UnknownSessionResult(id), err
+			}
+		}
+	}
+	path, err := resultArtifactPath(id)
+	if err != nil {
+		return UnknownSessionResult(id), err
 	}
 	result.State, result.SessionID, result.TurnID = ResultStateKnown, id.SessionID, id.TurnID
 	result.Source = path
@@ -88,10 +249,14 @@ func CaptureSessionResult(id ResultIdentity, projectPath string) (SessionResult,
 	if err := writeFileDurable(path, encoded, 0o644); err != nil {
 		return UnknownSessionResult(id), err
 	}
-	marker.TurnID, marker.Hash = id.TurnID, sourceHash
-	markerData, _ := json.Marshal(marker)
-	if err := writeFileDurable(markerPath, markerData, 0o644); err != nil {
-		return UnknownSessionResult(id), err
+	// Copy first, then consume the claim. A crash in between leaves either a
+	// resolvable immutable artifact or a retryable claim; it never assigns the
+	// source to another session.
+	if !hasEmbedded {
+		consumed := recordPath + ".consumed." + sanitizeInboxName(id.SessionID) + "." + strconv.FormatInt(time.Now().UnixNano(), 10)
+		if err := os.Rename(recordPath, consumed); err != nil {
+			return UnknownSessionResult(id), err
+		}
 	}
 	return result, nil
 }

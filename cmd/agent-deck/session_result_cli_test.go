@@ -45,6 +45,9 @@ func (f *resultCLIFixture) addTurn(t *testing.T, title, conversationID, content 
 
 func (f *resultCLIFixture) capture(t *testing.T, sessionID, turnID, value, verdict string) {
 	t.Helper()
+	if err := session.ClaimSessionResultSource(sessionID, f.shared); err != nil {
+		t.Fatal(err)
+	}
 	data := fmt.Sprintf(`{"verdict":%q,"value":%q}`, verdict, value)
 	if err := os.WriteFile(filepath.Join(f.shared, "RESULT.json"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)

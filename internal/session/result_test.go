@@ -104,6 +104,9 @@ func TestSessionResultIdentityAdversarialInterleaving(t *testing.T) {
 	}
 	capture := func(sessionID, turnID, value string) {
 		t.Helper()
+		if err := ClaimSessionResultSource(sessionID, shared); err != nil {
+			t.Fatal(err)
+		}
 		write(value)
 		if _, err := CaptureSessionResult(ResultIdentity{SessionID: sessionID, TurnID: turnID}, shared); err != nil {
 			t.Fatal(err)
@@ -133,6 +136,136 @@ func TestSessionResultIdentityAdversarialInterleaving(t *testing.T) {
 	}
 	if cross := ResolveSessionResult(ResultIdentity{SessionID: "session-b", TurnID: "turn-a2"}); cross.State != ResultStateUnknown {
 		t.Fatalf("cross-session result surfaced: %+v", cross)
+	}
+}
+
+func TestSessionResultSourceOwnershipMatrix(t *testing.T) {
+	t.Setenv("AGENT_DECK_HOME", t.TempDir())
+	shared := t.TempDir()
+	path := filepath.Join(shared, "RESULT.json")
+	write := func(data string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture := func(sessionID, turnID string) error {
+		t.Helper()
+		_, err := CaptureSessionResult(ResultIdentity{SessionID: sessionID, TurnID: turnID}, shared)
+		return err
+	}
+
+	// A1 -> B1 -> A2 with B1 unchanged: A cannot steal B's artifact.
+	if err := ClaimSessionResultSource("a", shared); err != nil {
+		t.Fatal(err)
+	}
+	write(`{"value":"a1"}`)
+	if err := capture("a", "a1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClaimSessionResultSource("b", shared); err != nil {
+		t.Fatal(err)
+	}
+	write(`{"value":"b1"}`)
+	if err := capture("b", "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := capture("a", "a2"); !errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("A2 stole B1: %v", err)
+	}
+
+	// A persisted source claim survives a process restart because no in-memory
+	// state is required, and a simultaneous contender cannot steal it.
+	if err := ClaimSessionResultSource("a", shared); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClaimSessionResultSource("b", shared); !errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("contender stole claim: %v", err)
+	}
+	write(`{"value":"same"}`)
+	if err := capture("a", "a3"); !errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("conflicted simultaneous production was accepted: %v", err)
+	}
+	if err := ClaimSessionResultSource("a", shared); err != nil {
+		t.Fatal(err)
+	}
+	write(`{"value":"same"}`)
+	if err := capture("a", "a3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClaimSessionResultSource("a", shared); err != nil {
+		t.Fatal(err)
+	}
+	write(`{"value":"same"}`)
+	if err := capture("a", "a4"); err != nil {
+		t.Fatalf("later owned identical bytes rejected: %v", err)
+	}
+
+	for name, body := range map[string]string{
+		"mismatch":     `{"session_id":"b","turn_id":"b9","value":"foreign"}`,
+		"missing-turn": `{"session_id":"a","value":"partial"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			write(body)
+			if err := capture("a", "a5"); !errors.Is(err, ErrResultNotFound) {
+				t.Fatalf("conflicting identity accepted: %v", err)
+			}
+		})
+	}
+	write(`{"session_id":"a","turn_id":"a5","value":"labelled"}`)
+	if err := capture("a", "a5"); err != nil {
+		t.Fatalf("matching embedded identity rejected: %v", err)
+	}
+}
+
+func TestSessionResultCrashBeforeIdentityCopyKeepsExactTurnBinding(t *testing.T) {
+	t.Setenv("AGENT_DECK_HOME", t.TempDir())
+	shared := t.TempDir()
+	if err := ClaimSessionResultSource("a", shared); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "RESULT.json"), []byte(`{"value":"owned"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := ResultIdentity{SessionID: "a", TurnID: "turn-1"}
+	target, err := resultArtifactPath(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil { // obstruct the durable file rename
+		t.Fatal(err)
+	}
+	if _, err := CaptureSessionResult(first, shared); err == nil {
+		t.Fatal("obstructed identity copy unexpectedly succeeded")
+	}
+	if err := os.RemoveAll(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CaptureSessionResult(ResultIdentity{SessionID: "a", TurnID: "turn-2"}, shared); !errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("later turn inherited crash-held source: %v", err)
+	}
+	if _, err := CaptureSessionResult(first, shared); err != nil {
+		t.Fatalf("exact crashed turn could not retry: %v", err)
+	}
+}
+
+func TestSessionResultMutationDuringCaptureFailsClosed(t *testing.T) {
+	t.Setenv("AGENT_DECK_HOME", t.TempDir())
+	shared := t.TempDir()
+	path := filepath.Join(shared, "RESULT.json")
+	if err := ClaimSessionResultSource("a", shared); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"value":"before"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resultSourceCaptureHook = func() { _ = os.WriteFile(path, []byte(`{"value":"between-stat-and-copy"}`), 0o644) }
+	t.Cleanup(func() { resultSourceCaptureHook = nil })
+	if _, err := CaptureSessionResult(ResultIdentity{SessionID: "a", TurnID: "t1"}, shared); !errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("mutated source was promoted: %v", err)
+	}
+	if got := ResolveSessionResult(ResultIdentity{SessionID: "a", TurnID: "t1"}); got.State != ResultStateUnknown {
+		t.Fatalf("mutated source surfaced: %+v", got)
 	}
 }
 

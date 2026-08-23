@@ -487,6 +487,17 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
 	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
+	// A legacy unlabelled RESULT.json is attributable only when a single
+	// session owned the source before producing it. Claims are process-safe and
+	// never stolen; explicit identity-bearing artifacts do not need this path.
+	for id, status := range statuses {
+		if status == string(StatusRunning) {
+			if inst := byID[id]; inst != nil {
+				_ = ClaimSessionResultSource(id, inst.ProjectPath)
+			}
+		}
+	}
+
 	// Runs on EVERY pass, the first scan included — see the FIRST SCAN note on
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
