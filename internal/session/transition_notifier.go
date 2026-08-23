@@ -53,12 +53,10 @@ type TransitionNotificationEvent struct {
 	// applies. Observability hook only — does not affect delivery/dedup.
 	Substate string `json:"substate,omitempty"`
 
-	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
-	// bytes of the child's tmux pane at transition time) used by the
-	// notifier's #1142 dedup to suppress repeated [EVENT] notifications
-	// for a dormant child whose pane content hasn't changed. Optional —
-	// empty string disables hash-based dedup and falls back to the legacy
-	// 90s short window.
+	// LastOutputHash is a stable per-turn signal used by the notifier's #1142
+	// deduplication. Claude uses a transcript-derived signal; Codex uses its
+	// persisted hook generation or sequence. Optional — an empty string disables
+	// hash-based deduplication and falls back to the legacy 90-second short window.
 	LastOutputHash string `json:"last_output_hash,omitempty"`
 
 	TargetSessionID string `json:"target_session_id,omitempty"`
@@ -490,14 +488,14 @@ func transitionEventOutputHash(inst *Instance) string {
 	return transitionContentSignal(inst)
 }
 
-// transitionContentSignal returns a dedup signal derived from the child's
-// transcript size. A Claude-compatible JSONL transcript is append-only and
-// grows ONLY when a real message is written (user prompt, assistant turn, tool
-// call) — it is completely untouched when the pane merely redraws its animated
-// chrome. So the signal stays identical across idle polls and strictly changes
-// on a genuine new turn. Returns "" when no transcript is resolvable (e.g.
-// non-Claude tools), which routes the caller to the legacy 90s window.
+// transitionContentSignal returns a stable signal for the child's logical turn.
+// Claude uses the append-only transcript size; Codex uses its persisted hook
+// generation or sequence. Returns "" when neither source is available, which
+// routes the caller to the legacy 90-second window.
 func transitionContentSignal(inst *Instance) string {
+	if signal := codexTurnSignal(inst); signal != "" {
+		return signal
+	}
 	path := inst.GetJSONLPath()
 	if path == "" {
 		return ""
@@ -507,6 +505,27 @@ func transitionContentSignal(inst *Instance) string {
 		return ""
 	}
 	return fmt.Sprintf("jsonl:%d", info.Size())
+}
+
+// codexTurnSignal returns a durable per-turn signal from the Codex hook state.
+// Codex does not expose a Claude-compatible JSONL transcript, but its hook
+// watcher persists a completed generation and a monotonic sequence. Both are
+// stable across notifier polls and process restarts.
+func codexTurnSignal(inst *Instance) string {
+	if inst == nil || !strings.EqualFold(strings.TrimSpace(inst.Tool), "codex") {
+		return ""
+	}
+	hs := readHookStatusFile(inst.ID)
+	if hs == nil {
+		return ""
+	}
+	if generation := strings.TrimSpace(hs.CodexCompletedGeneration); generation != "" {
+		return "codex-generation:" + generation
+	}
+	if hs.Sequence > 0 {
+		return fmt.Sprintf("codex-sequence:%s:%d", strings.TrimSpace(hs.HookGeneration), hs.Sequence)
+	}
+	return ""
 }
 
 func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
