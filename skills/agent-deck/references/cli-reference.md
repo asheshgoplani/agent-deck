@@ -302,10 +302,14 @@ approval: that path sends composer text followed by Enter.
 ### session output
 
 ```bash
-agent-deck session output [id|title] [--json] [-q]
+agent-deck session output [id|title] [--json] [-q] [--pane] [--copy] [--max-tokens N]
 ```
 
-Get the last response from a session. Transcript-backed extraction is tool-dependent; use `--pane` for a raw tmux capture when structured output is unavailable.
+Get the last response from a session. Default text output strips ANSI and is
+bounded to approximately 25,000 tokens (configurable with `--max-tokens`), with
+an explicit omission marker and a durable full-output path when truncated.
+`--json`, `-q`/`--quiet`, and `--copy` preserve the full source for compatibility;
+`--pane --json` is the raw ANSI-preserving transport used by remote previews.
 
 ### session set-parent / unset-parent
 

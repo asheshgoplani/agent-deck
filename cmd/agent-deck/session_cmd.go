@@ -4351,8 +4351,8 @@ func handleSessionOutput(profile string, args []string) {
 	// #1101: --pane returns tmux capture-pane content instead of the parsed transcript "last
 	// response". The local TUI preview uses capture-pane; remote sessions
 	// fetched via SSH need this same content to render claude-formatted output.
-	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (ANSI stripped)")
-	maxTokens := fs.Int("max-tokens", defaultOutputMaxTokens, "Maximum output budget in approximate tokens (head+tail; full text retained on disk)")
+	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (ANSI stripped in default text mode)")
+	maxTokens := fs.Int("max-tokens", defaultOutputMaxTokens, "Maximum default text-output budget in approximate tokens (head+tail; full text retained on disk)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -4415,16 +4415,20 @@ func handleSessionOutput(profile string, args []string) {
 			out.Error(fmt.Sprintf("failed to capture pane: %v", paneErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		fullPath, pathErr := outputSnapshotPath(inst.ID, "pane")
-		if pathErr != nil {
-			out.Error(fmt.Sprintf("failed to resolve full-output path: %v", pathErr), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		bounded, truncated := prepareAgentBoundaryOutput(paneContent, *maxTokens, fullPath)
-		if truncated {
-			if err := writeOutputSnapshot(fullPath, paneContent); err != nil {
-				out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
+		emitted := paneContent
+		truncated := false
+		if shouldBoundAgentOutput(*jsonOutput, quietMode, *copyFlag) {
+			fullPath, pathErr := outputSnapshotPath(inst.ID, "pane")
+			if pathErr != nil {
+				out.Error(fmt.Sprintf("failed to resolve full-output path: %v", pathErr), ErrCodeInvalidOperation)
 				os.Exit(1)
+			}
+			emitted, truncated = prepareAgentBoundaryOutput(paneContent, *maxTokens, fullPath)
+			if truncated {
+				if err := writeOutputSnapshot(fullPath, paneContent); err != nil {
+					out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
 			}
 		}
 		_ = recordOutputRead(profile, outputReadEvent{SessionID: inst.ID, Source: "pane", Truncated: truncated, MaxTokens: *maxTokens})
@@ -4434,13 +4438,13 @@ func handleSessionOutput(profile string, args []string) {
 			"session_title": inst.Title,
 			"tool":          inst.Tool,
 			"role":          "pane",
-			"content":       bounded,
+			"content":       emitted,
 		}
 		if quietMode {
-			fmt.Println(bounded)
+			fmt.Println(emitted)
 			return
 		}
-		out.Print(bounded, jsonData)
+		out.Print(emitted, jsonData)
 		return
 	}
 
@@ -4455,19 +4459,22 @@ func handleSessionOutput(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	fullPath, pathErr := outputSnapshotPath(inst.ID, "response")
-	if pathErr != nil {
-		out.Error(fmt.Sprintf("failed to resolve full-output path: %v", pathErr), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	bounded, truncated := prepareAgentBoundaryOutput(response.Content, *maxTokens, fullPath)
-	if truncated {
-		if err := writeOutputSnapshot(fullPath, response.Content); err != nil {
-			out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
+	bounded := response.Content
+	truncated := false
+	if shouldBoundAgentOutput(*jsonOutput, quietMode, *copyFlag) {
+		fullPath, pathErr := outputSnapshotPath(inst.ID, "response")
+		if pathErr != nil {
+			out.Error(fmt.Sprintf("failed to resolve full-output path: %v", pathErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		bounded, truncated = prepareAgentBoundaryOutput(response.Content, *maxTokens, fullPath)
+		if truncated {
+			if err := writeOutputSnapshot(fullPath, response.Content); err != nil {
+				out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		}
 	}
-	response.Content = bounded
 	_ = recordOutputRead(profile, outputReadEvent{SessionID: inst.ID, Source: "response", Truncated: truncated, MaxTokens: *maxTokens})
 
 	// Copy to clipboard mode
@@ -4492,6 +4499,7 @@ func handleSessionOutput(profile string, args []string) {
 		)
 		return
 	}
+	response.Content = bounded
 
 	// Quiet mode: just print raw content
 	if quietMode {
