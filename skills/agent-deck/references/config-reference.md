@@ -303,6 +303,7 @@ hooks_enabled = false      # Disable automatic Cursor hook injection on TUI star
 ## [omp] Section
 
 Oh My Pi sessions use an instance-scoped session directory and resume automatically.
+The configured `command`, including any flags, is used for both initial starts and restarts; an explicit per-session custom command takes precedence.
 
 ```toml
 [omp]

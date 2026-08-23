@@ -265,6 +265,38 @@ func TestBuildOMPCommand_UsesInstanceScopedSessionDir(t *testing.T) {
 	}
 }
 
+func TestBuildOMPCommand_ConfiguredCommandWinsForInitialStartAndRestart(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{OMP: OMPSettings{Command: "/opt/omp-custom --channel nightly"}})
+	defer restore()
+
+	// TUI/Web creation persists the built-in preset literally. Both Start and
+	// Restart dispatch through buildOMPCommand with this stored value.
+	inst := &Instance{ID: "configured-omp", Tool: "omp", Command: "omp"}
+	for _, phase := range []string{"initial start", "restart"} {
+		got := inst.buildOMPCommand(inst.Command)
+		if !strings.Contains(got, "/opt/omp-custom --channel nightly --continue") {
+			t.Fatalf("%s ignored [omp].command flags: %q", phase, got)
+		}
+		if strings.Contains(got, " AGENTDECK_PROFILE=default omp --continue") {
+			t.Fatalf("%s used persisted default instead of configured command: %q", phase, got)
+		}
+	}
+}
+
+func TestBuildOMPCommand_ExplicitSessionOverrideWinsOverConfig(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{OMP: OMPSettings{Command: "/opt/omp-configured --flag"}})
+	defer restore()
+
+	inst := &Instance{ID: "override-omp", Tool: "omp", Command: "/tmp/omp-session --local"}
+	got := inst.buildOMPCommand(inst.Command)
+	if !strings.Contains(got, "/tmp/omp-session --local --continue") {
+		t.Fatalf("explicit per-session command was not preserved: %q", got)
+	}
+	if strings.Contains(got, "/opt/omp-configured") {
+		t.Fatalf("configured command replaced explicit per-session override: %q", got)
+	}
+}
+
 func TestBuildOMPCommand_QuotesInstanceIDPathComponent(t *testing.T) {
 	inst := &Instance{ID: "test instance'id", Tool: "omp"}
 	got := inst.buildOMPCommand("omp")

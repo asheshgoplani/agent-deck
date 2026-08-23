@@ -59,6 +59,18 @@ func GetOMPCommand() string {
 	return "omp"
 }
 
+// resolveOMPCommand treats the bare built-in name as the default-command
+// sentinel. Session creation surfaces persist that name, so consulting the
+// configured command only for an empty string would silently ignore
+// [omp].command. Any other stored command is an explicit per-session override.
+func resolveOMPCommand(baseCommand string) string {
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" || cmd == "omp" {
+		return GetOMPCommand()
+	}
+	return cmd
+}
+
 // ompApprovalModeFlag returns the ` --approval-mode <value>` suffix for the
 // configured [omp].approval_mode, or "" when unset.
 func ompApprovalModeFlag() string {
@@ -84,10 +96,7 @@ func (i *Instance) buildOMPCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
-	cmd := strings.TrimSpace(baseCommand)
-	if cmd == "" {
-		cmd = GetOMPCommand()
-	}
+	cmd := resolveOMPCommand(baseCommand)
 
 	sessionDir := ompAgentDeckSessionDirExpr(i.ID)
 	quotedInstanceID := shellescape.Quote(i.ID)
@@ -121,10 +130,7 @@ func (i *Instance) buildOMPForkCommandForTarget(target *Instance, baseCommand st
 	}
 
 	envPrefix := target.buildEnvSourceCommand()
-	cmd := strings.TrimSpace(baseCommand)
-	if cmd == "" {
-		cmd = GetOMPCommand()
-	}
+	cmd := resolveOMPCommand(baseCommand)
 
 	parentSessionDir := ompAgentDeckSessionDirExpr(i.ID)
 	sessionDir := ompAgentDeckSessionDirExpr(target.ID)
@@ -198,10 +204,7 @@ func (i *Instance) CreateForkedOMPInstanceWithOptions(
 	forked.Tool = "omp"
 	forked.Wrapper = i.Wrapper
 
-	baseCommand := strings.TrimSpace(i.Command)
-	if baseCommand == "" {
-		baseCommand = GetOMPCommand()
-	}
+	baseCommand := resolveOMPCommand(i.Command)
 	forked.Command = baseCommand
 
 	cmd, err := i.buildOMPForkCommandForTarget(forked, baseCommand)

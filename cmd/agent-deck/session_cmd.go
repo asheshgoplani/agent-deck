@@ -964,7 +964,8 @@ func handleSessionFork(profile string, args []string) {
 	isPiFork := inst.Tool == "pi"
 	isOpenCodeFork := inst.Tool == "opencode"
 	isCodexFork := session.IsCodexCompatible(inst.Tool)
-	if !isClaudeFork && !isPiFork && !isOpenCodeFork && !isCodexFork {
+	isOMPFork := inst.Tool == "omp"
+	if !isClaudeFork && !isPiFork && !isOpenCodeFork && !isCodexFork && !isOMPFork {
 		out.Error(
 			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
