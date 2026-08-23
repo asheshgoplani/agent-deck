@@ -709,6 +709,12 @@ func TestConductorBridgeReferencesHeartbeatRulesWithoutInlining(t *testing.T) {
 	if !strings.Contains(block, "Read heartbeat rules from {rules_path_ref}.") {
 		t.Fatal("bridge heartbeat should send the resolved rules path")
 	}
+	if !strings.Contains(block, "rules_path.is_file()") {
+		t.Fatal("bridge must skip directories named HEARTBEAT_RULES.md")
+	}
+	if !strings.Contains(block, "rules_path.resolve()") {
+		t.Fatal("bridge must send an absolute path independent of the conductor working directory")
+	}
 }
 
 func TestRenderConductorHeartbeatScript_UsesXDGConductorRoot(t *testing.T) {

@@ -4710,7 +4710,7 @@ func handleSessionChildren(profile string, args []string) {
 	follow := fs.Bool("follow", false, "Stream child state changes as JSONL (one event per line) until interrupted")
 	interval := fs.Duration("interval", 2*time.Second, "Poll interval for --follow")
 	heartbeat := fs.Duration("heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
-	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child is terminal (done sentinel, error, or stopped)")
+	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child needs input or is terminal (waiting, done sentinel, error, or stopped)")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session children [id|title] [options]")
 		fmt.Println()
@@ -4727,7 +4727,7 @@ func handleSessionChildren(profile string, args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck session children --json")
 		fmt.Println("  agent-deck session children --follow                    # live fleet event stream")
-		fmt.Println("  agent-deck session children --follow --until-done      # exits when all children finish")
+		fmt.Println("  agent-deck session children --follow --until-done      # exits when every child needs input or finishes")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)

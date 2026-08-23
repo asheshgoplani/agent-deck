@@ -2835,8 +2835,8 @@ async def heartbeat_loop(
                     CONDUCTOR_DIR / profile / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / "HEARTBEAT_RULES.md",
                 ]:
-                    if rules_path.exists():
-                        rules_path_ref = rules_path
+                    if rules_path.is_file():
+                        rules_path_ref = rules_path.resolve()
                         break
                 if rules_path_ref:
                     parts.append(f"Read heartbeat rules from {rules_path_ref}.")

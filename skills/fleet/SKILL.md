@@ -116,8 +116,9 @@ re-running the check yourself, let the fleet notify you:
 ```bash
 # One-shot "wake me when the whole fleet is finished" — run this in the
 # BACKGROUND (e.g. Claude Code's run_in_background Bash): it streams JSONL
-# events and exits 0 once every child is terminal (done sentinel, error,
-# or stopped). The harness notifies you when it exits.
+# events and exits 0 once every child either needs input or is terminal
+# (waiting, done sentinel, error, or stopped). The harness notifies you when
+# it exits, so answer waiting children before starting another wait.
 agent-deck session children --follow --until-done
 
 # Live event stream for a long-running fleet — attach a stream watcher
@@ -240,8 +241,9 @@ All read-only / on-demand — none of them block your session:
 - `agent-deck session children --follow [--until-done]` — **the push monitor.**
   Streams JSONL child events (snapshot/added/status/done/removed/error +
   heartbeat) until interrupted; with `--until-done` it exits 0 once every child
-  is terminal. Run it in the background for a completion wake-up, or attach a
-  stream watcher for live events. Read-only like the plain form.
+  is waiting or terminal. Run it in the background for an intervention or
+  completion wake-up, or attach a stream watcher for live events. Read-only
+  like the plain form.
 - `agent-deck session output <id> --json` — a child's latest full response.
 - `agent-deck session send <id> "<msg>" [--wait|--stream|--no-wait|--draft]` —
   send a follow-up / answer a `waiting` child.

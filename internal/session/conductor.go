@@ -884,7 +884,8 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 			perNameTemplate = conductorPerNameClaudeMDTemplate
 		}
 		content := renderConductorInstructionsTemplate(perNameTemplate, name, profile, spec)
-		if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
+		oldContent := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(perNameTemplate), name, profile, spec)
+		if err := writeGeneratedFileOrMigrate(targetPath, oldContent, content, 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
 		}
 	}
@@ -1403,6 +1404,30 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 	return closeErr
 }
 
+// writeGeneratedFileOrMigrate creates a generated file when absent and upgrades
+// it only when its contents exactly match the previous generated template.
+// Symlinks and edited regular files remain user-owned and are never replaced.
+func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMode) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return writeFileIfAbsent(path, []byte(current), perm)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !matchesTemplateContent(string(content), previous) {
+		return nil
+	}
+	return os.WriteFile(path, []byte(current), info.Mode().Perm())
+}
+
 // InstallSharedConductorInstructions writes the shared instructions file for the given conductor agent,
 // or creates a symlink if customPath is provided.
 func InstallSharedConductorInstructions(agent, customPath string) error {
@@ -1424,12 +1449,12 @@ func InstallSharedConductorInstructions(agent, customPath string) error {
 		return createSymlinkWithExpansion(targetPath, customPath)
 	}
 
-	// No custom path - write the default template only if nothing is there yet.
-	// An existing file is preserved: a symlink keeps the user's customization,
-	// and a regular file may carry in-place edits we must not clobber on re-run.
-	// writeFileIfAbsent's O_EXCL makes both cases a no-op.
+	// No custom path: create the current generated template, or migrate an exact
+	// copy of the previous generated template. Customized files and symlinks are
+	// preserved.
 	content := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-	if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
+	oldContent := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
+	if err := writeGeneratedFileOrMigrate(targetPath, oldContent, content, 0o644); err != nil {
 		return fmt.Errorf("failed to write shared %s: %w", spec.InstructionsFileName, err)
 	}
 	return nil

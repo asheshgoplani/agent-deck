@@ -111,14 +111,14 @@ func diffChildEvents(prev, curr []childRow) []followEvent {
 }
 
 // childTerminal reports whether a child needs no further supervision: it
-// asserted the completion sentinel (ok or fail), or its process is gone.
+// asserted the completion sentinel (ok or fail), needs input, or its process is gone.
 // idle WITHOUT a sentinel is not terminal — an agent parked at the prompt may
 // just be between turns, and treating it as done would end --until-done early.
 func childTerminal(r childRow) bool {
 	if r.DoneStatus != "" {
 		return true
 	}
-	return r.Status == "error" || r.Status == "stopped"
+	return r.Status == "waiting" || r.Status == "error" || r.Status == "stopped"
 }
 
 func allChildrenTerminal(rows []childRow) bool {

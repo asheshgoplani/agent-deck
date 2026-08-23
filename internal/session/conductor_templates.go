@@ -1,5 +1,27 @@
 package session
 
+import "strings"
+
+// previousConductorInstructionsTemplate reconstructs the immediately previous
+// generated template. Installers compare its fully rendered form byte-for-byte
+// before migrating, so any user customization is preserved.
+func previousConductorInstructionsTemplate(template string) string {
+	template = strings.Replace(template,
+		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | **Always triage with this compact count summary first:** `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`,
+		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | Get counts: `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`, 1)
+	template = strings.Replace(template,
+		`| `+"`"+`agent-deck -p <PROFILE> list --json`+"`"+` | Expensive full inventory; use only when the user explicitly needs details for every profile session, never for status triage or polling |`,
+		`| `+"`"+`agent-deck -p <PROFILE> list --json`+"`"+` | List all sessions with details (id, title, path, tool, status, group) |`, 1)
+	template = strings.Replace(template,
+		`| `+"`"+`agent-deck -p <PROFILE> session children --follow --until-done`+"`"+` | Block in one shell call while children run; emits every waiting/error transition and exits when all children are terminal |\n`, "", 1)
+	template = strings.Replace(template,
+		`For child work still in flight, wait with one blocking `+"`"+`agent-deck -p <PROFILE> session children --follow --until-done`+"`"+` call. Do not spend turns repeatedly calling `+"`"+`list --json`+"`"+` or `+"`"+`session children --json`+"`"+`.\n\n`, "", 1)
+	template = strings.ReplaceAll(template,
+		`4. Only if the compact counts require action, inspect the affected child through `+"`"+`session children`+"`"+`/`+"`"+`session show`+"`"+`; never use `+"`"+`list --json`+"`"+` for triage`,
+		`4. Run `+"`"+`agent-deck -p {PROFILE} list --json`+"`"+` to know what sessions exist`)
+	return template
+}
+
 // conductorSharedClaudeMDTemplate is the shared instructions file written to
 // ~/.agent-deck/conductor/<instructions-file> for the selected conductor agent.
 // It contains CLI reference, protocols, and formats shared by all conductors (mechanism).

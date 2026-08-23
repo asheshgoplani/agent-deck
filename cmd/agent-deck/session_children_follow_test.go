@@ -89,7 +89,7 @@ func TestChildTerminal(t *testing.T) {
 		want bool
 	}{
 		{"running is not terminal", childRow{Status: "running"}, false},
-		{"waiting is not terminal", childRow{Status: "waiting"}, false},
+		{"waiting is terminal for supervision", childRow{Status: "waiting"}, true},
 		{"idle without sentinel is not terminal", childRow{Status: "idle"}, false},
 		{"done sentinel is terminal", childRow{Status: "idle", DoneStatus: "ok"}, true},
 		{"done fail sentinel is terminal", childRow{Status: "idle", DoneStatus: "fail"}, true},
@@ -219,7 +219,7 @@ func TestRunChildrenFollowEmitsWaitingAndErrorImmediately(t *testing.T) {
 			}, nil
 		default:
 			return []childRow{
-				{ID: "waiting", Title: "needs-input", Status: "waiting", DoneStatus: "fail"},
+				{ID: "waiting", Title: "needs-input", Status: "waiting"},
 				{ID: "error", Title: "crashed", Status: "error"},
 			}, nil
 		}
@@ -231,13 +231,12 @@ func TestRunChildrenFollowEmitsWaitingAndErrorImmediately(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("events = %d, want 6 (2 snapshots, waiting status/done, error status, complete):\n%s", len(lines), out.String())
+	if len(lines) != 5 {
+		t.Fatalf("events = %d, want 5 (2 snapshots, waiting status, error status, complete):\n%s", len(lines), out.String())
 	}
 	for i, want := range []string{
 		`"event":"snapshot"`, `"event":"snapshot"`,
-		`"event":"status","id":"waiting"`, `"event":"done","id":"waiting"`,
-		`"event":"status","id":"error"`,
+		`"event":"status","id":"waiting"`, `"event":"status","id":"error"`,
 		`"event":"complete"`,
 	} {
 		if !strings.Contains(lines[i], want) {
