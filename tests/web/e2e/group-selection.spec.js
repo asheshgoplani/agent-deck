@@ -299,6 +299,34 @@ test.describe('group selection', () => {
     expect(await chevron()).toBe(before)
   })
 
+  // CodeRabbit on PR #2047: anyOverlayOpen() was defined but never called once
+  // the Tab binding was removed, so shortcuts still acted on the sidebar behind
+  // an open dialog. ConfirmDialog focuses a <button>, not an input, so the
+  // in-field guard never applied.
+  test('shortcuts do not act behind an open confirm dialog', async ({ page }) => {
+    await page.locator('[data-testid="group-head-work"] .name').click()
+    await expect(page.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+    const chevBefore = await page.locator('[data-testid="group-head-work"] .chev').textContent()
+
+    // Open a confirm dialog (delete asks first; nothing is mutated).
+    await page.locator('.sess', { hasText: 'agent-deck' }).first().hover()
+    await page.locator('[data-testid="session-delete-btn"]').first().click()
+    const confirm = page.locator('[data-testid="confirm-dialog"], .overlay .dialog')
+    await expect(confirm.first()).toBeVisible()
+
+    await page.keyboard.press('n')
+    await expect(page.locator('[data-testid="create-session-group"]')).toHaveCount(0)
+
+    await page.keyboard.press('j')
+    await page.keyboard.press('ArrowLeft')
+    await expect(page.locator('[data-testid="group-head-work"]')).toHaveClass(/\bsel\b/)
+    expect(await page.locator('[data-testid="group-head-work"] .chev').textContent()).toBe(chevBefore)
+
+    // `q` must still dismiss it -- that is why the gate is an allow-list.
+    await page.keyboard.press('q')
+    await expect(confirm.first()).toHaveCount(0)
+  })
+
   test('group selection is reflected in the URL and survives a reload', async ({ page }) => {
     await page.locator('[data-testid="group-head-work"] .name').click()
     await expect(page).toHaveURL(/\/g\/work$/)
