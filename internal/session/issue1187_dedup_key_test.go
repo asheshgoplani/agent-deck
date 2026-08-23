@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -224,5 +225,61 @@ func TestIssue1187_NoTranscript_EmptyKeyFallsBackToLegacy(t *testing.T) {
 	inst := &Instance{ID: "shell-child", Tool: "shell"}
 	if got := transitionEventOutputHash(inst); got != "" {
 		t.Fatalf("issue #1187: non-Claude session must yield empty key (legacy fallback), got %q", got)
+	}
+}
+
+// Codex has no Claude-compatible transcript, so its persisted hook generation
+// must provide the stable per-turn signal used by notifier and inbox dedup.
+func TestIssue1187_CodexGenerationChangesPerTurn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_DECK_HOME", filepath.Join(home, "agent-deck"))
+
+	inst := &Instance{ID: "codex-child-1187", Tool: "codex"}
+	if err := os.MkdirAll(GetHooksDir(), 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	writeStatus := func(generation string, sequence uint64) {
+		t.Helper()
+		status := map[string]any{
+			"status":                     "waiting",
+			"event":                      "agent-turn-complete",
+			"ts":                         time.Now().Unix(),
+			"codex_completed_generation": generation,
+			"sequence":                   sequence,
+		}
+		data, err := json.Marshal(status)
+		if err != nil {
+			t.Fatalf("marshal hook status: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(GetHooksDir(), inst.ID+".json"), data, 0o644); err != nil {
+			t.Fatalf("write hook status: %v", err)
+		}
+	}
+
+	writeStatus("thread:turn-1", 7)
+	first := transitionEventOutputHash(inst)
+	if first != "codex-generation:thread:turn-1" {
+		t.Fatalf("first Codex signal = %q, want generation-based signal", first)
+	}
+	if got := transitionEventOutputHash(inst); got != first {
+		t.Fatalf("Codex signal changed across identical polls: %q != %q", got, first)
+	}
+
+	writeStatus("thread:turn-2", 8)
+	second := transitionEventOutputHash(inst)
+	if second == first {
+		t.Fatalf("Codex signal did not change for a new turn: %q", second)
+	}
+	firstEvent := TransitionNotificationEvent{
+		ChildSessionID: inst.ID,
+		FromStatus:     "running",
+		ToStatus:       "waiting",
+		LastOutputHash: first,
+	}
+	secondEvent := firstEvent
+	secondEvent.LastOutputHash = second
+	if TurnFingerprint(firstEvent) == TurnFingerprint(secondEvent) {
+		t.Fatal("Codex turns with different hook generations must have different turn fingerprints")
 	}
 }
