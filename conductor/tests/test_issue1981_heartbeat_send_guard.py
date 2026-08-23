@@ -100,6 +100,24 @@ PROSE_MENTIONING_PICKER = _pane(
     "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
 )
 
+# The realistic false positive: an assistant transcript that contains a numbered
+# LIST, a checkbox glyph, AND a prose line with picker wording — all sitting
+# ABOVE a normal, empty composer. An open picker replaces the composer, so the
+# composer footer below is the tell that this is prose, not a live picker. The
+# detector must return False here or ordinary transcript output would starve
+# heartbeats (CodeRabbit review on #1981).
+PROSE_WITH_NUMBERED_LIST = _pane(
+    "  Assistant: here is the plan.",
+    " ☐ Plan",
+    "  1. Fix identity first",
+    "  2. Combine the builds",
+    "  Then press Enter to select the option you prefer.",
+    RULE,
+    " ❯ ",
+    RULE,
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+)
+
 
 def _skips(pane: str) -> bool:
     """True if the heartbeat would SKIP this cycle for this pane."""
@@ -137,6 +155,11 @@ class TestPaneBlocksAutomatedSend(unittest.TestCase):
     def test_prose_mentioning_picker_sends(self):
         self.assertFalse(_skips(PROSE_MENTIONING_PICKER))
 
+    def test_prose_with_numbered_list_sends(self):
+        # A numbered transcript list + checkbox glyph + picker-wording prose above
+        # a normal composer must NOT read as an open picker.
+        self.assertFalse(_skips(PROSE_WITH_NUMBERED_LIST))
+
 
 class TestComponentDetectors(unittest.TestCase):
     def test_ghost_line_is_ghost(self):
@@ -150,12 +173,46 @@ class TestComponentDetectors(unittest.TestCase):
     def test_picker_detector_true_and_false(self):
         self.assertTrue(bridge._pane_has_open_picker(OPEN_PICKER))
         self.assertFalse(bridge._pane_has_open_picker(PROSE_MENTIONING_PICKER))
+        self.assertFalse(bridge._pane_has_open_picker(PROSE_WITH_NUMBERED_LIST))
         self.assertFalse(bridge._pane_has_open_picker(EMPTY_COMPOSER))
 
     def test_draft_detector_true_and_false(self):
         self.assertTrue(bridge._composer_has_unsent_draft(REAL_DRAFT))
         self.assertFalse(bridge._composer_has_unsent_draft(EMPTY_COMPOSER))
         self.assertFalse(bridge._composer_has_unsent_draft(GHOST_ONLY))
+
+
+class TestBoundedSkip(unittest.TestCase):
+    """A persistently-blocking pane (e.g. the #1999 stale glyph buffer) must not
+    silence a conductor forever: after HEARTBEAT_SKIP_LIMIT consecutive gated
+    cycles the heartbeat overrides the guard and delivers."""
+
+    def test_holds_below_the_limit(self):
+        limit = bridge.HEARTBEAT_SKIP_LIMIT
+        for n in range(1, limit):
+            self.assertEqual(bridge._heartbeat_skip_action(n), "skip")
+
+    def test_overrides_at_the_limit(self):
+        limit = bridge.HEARTBEAT_SKIP_LIMIT
+        self.assertEqual(bridge._heartbeat_skip_action(limit), "override")
+        self.assertEqual(bridge._heartbeat_skip_action(limit + 1), "override")
+
+    def test_full_cycle_starves_then_delivers(self):
+        # Simulate heartbeat_loop's per-conductor counter: an unchanged blocking
+        # pane holds for (limit-1) cycles, then the limit-th cycle delivers.
+        limit = bridge.HEARTBEAT_SKIP_LIMIT
+        skips = 0
+        delivered_on = None
+        for cycle in range(1, limit + 1):
+            block_reason = "composer-holds-unsent-input"  # unchanged, stale pane
+            if block_reason:
+                skips += 1
+                if bridge._heartbeat_skip_action(skips) == "skip":
+                    continue
+                delivered_on = cycle  # override → send goes out
+                skips = 0
+        self.assertEqual(delivered_on, limit)
+        self.assertEqual(skips, 0)  # counter reset after the override
 
 
 if __name__ == "__main__":

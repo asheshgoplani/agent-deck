@@ -140,6 +140,15 @@ IMAGE_MARKER_RE = re.compile(r"\[IMAGE:(?P<path>[^\]]+)\]")
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
 
+# issue #1981 / #1999: the interactive-state guard skips a heartbeat while a
+# picker or unsent draft is on screen. Its evidence is a single tmux pane
+# capture, which can LIE — a stale glyph buffer (#1999) keeps showing composer
+# text that is no longer really there and never repaints, so the guard would
+# report "blocked" every cycle and silence the conductor forever. After this
+# many CONSECUTIVE gated skips the heartbeat is delivered anyway (with a warning),
+# so a stale buffer or a forgotten draft cannot starve heartbeats indefinitely.
+HEARTBEAT_SKIP_LIMIT = 3
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -488,36 +497,68 @@ _PICKER_META_RES = (re.compile(r"^chat about this\b", re.I),)
 # made of horizontal rules.
 _INPUT_FOOTER_RE = re.compile(r"⏵⏵|bypass permissions|esc to interrupt|shift\+tab", re.I)
 _BORDERISH = re.compile(r"^[│\s]*[─—-]{4,}")
+# How far above the picker footer to look for the option block. A live picker's
+# options sit directly above the footer; a numbered list that merely scrolled by
+# earlier in the transcript is well outside this window.
+_PICKER_WINDOW = 12
 
 
 def _pane_has_open_picker(pane_text: str) -> bool:
     """True if an AskUserQuestion option-picker is currently open in the pane.
 
-    Requires the picker footer PLUS two or more real numbered answer options
-    PLUS a checkbox-style title above them, so ordinary transcript prose that
-    merely mentions "enter to select" does not match. The "Type something"
-    free-text row and meta rows ("Chat about this") are not counted as answer
-    options.
+    A live picker has, reading upward from the footer ("enter to select" /
+    "to navigate"): a CONTIGUOUS block of two or more real numbered answer
+    options immediately above it, and a checkbox-style title above that block.
+    Two guards stop ordinary transcript prose from matching (either would
+    otherwise starve heartbeats — issue #1981):
+
+      * an open picker REPLACES the composer, so if a composer input-footer
+        ("⏵⏵" / "bypass permissions" / "esc to interrupt") appears BELOW the
+        matched picker-footer line, that line is really prose sitting above a
+        normal composer, not a picker; and
+      * the option rows must be contiguous with the footer and within a small
+        window above it, so a numbered list elsewhere in the scrollback does not
+        count.
+
+    The "Type something" free-text row and meta rows ("Chat about this") are
+    tolerated inside the block but not counted as answer options.
     """
     lines = _ANSI_RE.sub("", pane_text).splitlines()
     footer_idx = next((i for i, ln in enumerate(lines) if _PICKER_FOOTER_RE.search(ln)), None)
     if footer_idx is None:
         return False
-    real = 0
-    first_opt = None
-    for i in range(footer_idx):
-        m = _PICKER_OPTION_RE.match(lines[i])
-        if not m:
-            continue
-        if first_opt is None:
-            first_opt = i
-        label = m.group(2).strip()
-        if _PICKER_FREETEXT_RE.match(label) or any(p.match(label) for p in _PICKER_META_RES):
-            continue
-        real += 1
-    if real < 2 or first_opt is None:
+    # A genuine picker occupies the input region — a composer footer below the
+    # match means we matched prose above an ordinary composer, not a picker.
+    if any(_INPUT_FOOTER_RE.search(ln) for ln in lines[footer_idx + 1:]):
         return False
-    return any(_PICKER_TITLE_RE.match(lines[i]) for i in range(first_opt))
+    window_top = max(-1, footer_idx - 1 - _PICKER_WINDOW)
+    # Skip a box border / blank lines directly beneath the footer.
+    i = footer_idx - 1
+    while i > window_top and (not lines[i].strip() or _BORDERISH.match(lines[i])):
+        i -= 1
+    # Walk the contiguous option block, tolerating blank / free-text rows.
+    real = 0
+    top_opt = None
+    while i > window_top:
+        m = _PICKER_OPTION_RE.match(lines[i])
+        if m:
+            label = m.group(2).strip()
+            if not (_PICKER_FREETEXT_RE.match(label) or any(p.match(label) for p in _PICKER_META_RES)):
+                real += 1
+            top_opt = i
+            i -= 1
+            continue
+        body = lines[i].strip().lstrip("❯>").strip()
+        if not body or _PICKER_FREETEXT_RE.match(body):
+            i -= 1
+            continue
+        break
+    if real < 2 or top_opt is None:
+        return False
+    # A checkbox-style title must sit just above the option block (blanks allowed).
+    while i > window_top and not lines[i].strip():
+        i -= 1
+    return i > window_top and bool(_PICKER_TITLE_RE.match(lines[i]))
 
 
 def _post_prompt_is_ghost(raw_line: str) -> bool:
@@ -621,6 +662,18 @@ def _pane_blocks_automated_send(pane_text: str) -> str | None:
     if _composer_has_unsent_draft(pane_text):
         return "composer-holds-unsent-input"
     return None
+
+
+def _heartbeat_skip_action(consecutive_skips: int, limit: int = HEARTBEAT_SKIP_LIMIT) -> str:
+    """Decide what a heartbeat should do given how many cycles the
+    interactive-state guard has blocked IN A ROW (counting the current one).
+
+    Returns ``"skip"`` to hold this cycle, or ``"override"`` to deliver anyway
+    despite the block. A real picker or draft rarely survives ``limit`` heartbeat
+    intervals; a stale pane buffer (#1999) would block forever, so at the limit
+    the heartbeat overrides the guard rather than starve (#1981/#1999).
+    """
+    return "override" if consecutive_skips >= limit else "skip"
 
 
 # Async callable type for reply notifications: (response_text: str) -> None
@@ -2955,6 +3008,11 @@ async def heartbeat_loop(
     # firing the same alert verbatim for 12+ hours.
     need_state_by_conductor: dict[str, dict] = {}
 
+    # issue #1981/#1999: consecutive interactive-state skips per conductor. Reset
+    # on any clear pane or successful send; once it reaches HEARTBEAT_SKIP_LIMIT we
+    # override the guard and deliver anyway (see the block below).
+    skip_count_by_conductor: dict[str, int] = {}
+
     log.info("Heartbeat loop started (global interval: %d minutes)", global_interval)
 
     while True:
@@ -3091,24 +3149,49 @@ async def heartbeat_loop(
                 # block_reason None so the send still goes out (heartbeats are
                 # never permanently blocked). The capture runs in the executor so
                 # the blocking CLI call never freezes the event loop.
+                #
+                # NOTE this narrows but does NOT close the clobber window: the
+                # capture and the send are separate steps, so a user who starts
+                # typing in the gap between them can still be clobbered. It is a
+                # best-effort guard, not a guarantee — see the bounded override
+                # below, which stops a persistently-blocking pane from starving
+                # heartbeats entirely (issue #1999).
                 try:
                     pane_text = await loop.run_in_executor(
                         None,
                         functools.partial(capture_pane, session_title, profile=profile),
                     )
                     block_reason = _pane_blocks_automated_send(pane_text)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — fail-open: ANY capture/parse error must allow the send
                     log.warning(
                         "Heartbeat [%s]: interactive-state check failed (%s); allowing send",
                         name, e,
                     )
                     block_reason = None
                 if block_reason:
-                    log.info(
-                        "Heartbeat [%s]: skipping this cycle — %s",
-                        name, block_reason,
+                    skips = skip_count_by_conductor.get(name, 0) + 1
+                    skip_count_by_conductor[name] = skips
+                    if _heartbeat_skip_action(skips) == "skip":
+                        log.info(
+                            "Heartbeat [%s]: skipping this cycle (%d/%d) — %s",
+                            name, skips, HEARTBEAT_SKIP_LIMIT, block_reason,
+                        )
+                        continue
+                    # Bounded skip: the guard has blocked HEARTBEAT_SKIP_LIMIT
+                    # cycles in a row. A real picker or draft rarely survives that
+                    # many heartbeat intervals; a stale pane buffer (#1999) would
+                    # survive forever. Deliver anyway so the conductor is never
+                    # silenced permanently, and reset the counter.
+                    log.warning(
+                        "Heartbeat [%s]: interactive-state guard blocked %d consecutive "
+                        "cycles (%s); overriding and delivering to prevent heartbeat "
+                        "starvation (guards against the #1999 stale-pane-buffer case)",
+                        name, skips, block_reason,
                     )
-                    continue
+                    skip_count_by_conductor[name] = 0
+                    # fall through and deliver this cycle
+                else:
+                    skip_count_by_conductor[name] = 0  # pane read clear → reset
 
                 # Send heartbeat to conductor (wrapped in executor — blocks up to
                 # RESPONSE_TIMEOUT seconds and must not freeze the event loop)
@@ -3129,6 +3212,8 @@ async def heartbeat_loop(
                         name,
                     )
                     continue
+
+                skip_count_by_conductor[name] = 0  # delivered → reset skip counter
 
                 # Response is captured via get_session_output (see send_to_conductor).
                 log.info(
