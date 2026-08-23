@@ -4641,25 +4641,23 @@ func handleSessionResult(profile string, args []string) {
 
 	deadline := time.Now().Add(time.Duration(*waitSeconds) * time.Second)
 	for {
-		result, readErr := session.ReadSessionResult(inst.ProjectPath)
-		if readErr == nil && (*waitSeconds == 0 || strings.HasSuffix(result.Source, "RESULT.json")) {
+		result := session.SessionResultForInstance(inst)
+		if result.State == session.ResultStateKnown {
 			if *jsonOutput {
 				encoded, _ := json.Marshal(result)
 				fmt.Println(string(encoded))
 			} else {
-				fmt.Println(string(result.Result))
-				if result.Verdict != "" {
-					fmt.Printf("VERDICT: %s\n", result.Verdict)
-				}
+				fmt.Println(session.FormatSessionResult(result))
 			}
 			return
 		}
-		if readErr != nil && !errors.Is(readErr, session.ErrResultNotFound) {
-			fmt.Fprintln(os.Stderr, readErr)
-			os.Exit(1)
-		}
 		if *waitSeconds == 0 || !time.Now().Before(deadline) {
-			fmt.Println("no result yet")
+			if *jsonOutput {
+				encoded, _ := json.Marshal(result)
+				fmt.Println(string(encoded))
+			} else {
+				fmt.Println(session.FormatSessionResult(result))
+			}
 			os.Exit(3)
 		}
 		delay := 2 * time.Second

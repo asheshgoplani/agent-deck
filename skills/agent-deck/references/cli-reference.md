@@ -302,6 +302,18 @@ agent-deck session output [id|title] [--json] [-q]
 
 Get the last response from a session. Transcript-backed extraction is tool-dependent; use `--pane` for a raw tmux capture when structured output is unavailable.
 
+### session result
+
+```bash
+agent-deck session result <id|title> [--json] [--wait SECONDS]
+```
+
+Get the bounded result for the selected session's current completed turn. Results
+are scoped by immutable session and turn identity, so sessions sharing a working
+directory cannot see each other's artifacts. `--json` always prints a JSON
+object; absent/current-turn-unknown results use `{"state":"unknown",...}` and
+exit 3. The TUI uses the same semantic object via `=`.
+
 ### session context
 
 ```bash

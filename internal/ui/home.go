@@ -9278,6 +9278,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case defaultHotkeyBindings[hotkeySessionResult]:
+		// Result parity: this is the same identity-aware semantic object and
+		// formatter used by `session result`; the TUI never reads the cwd.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				h.maintenanceMsg = tuiSessionResultText(session.SessionResultForInstance(item.Session))
+			}
+		}
+		return h, nil
+
 	case "/":
 		// Open global search first if available, otherwise local search
 		if h.globalSearchIndex != nil {

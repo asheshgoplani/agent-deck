@@ -14,6 +14,7 @@ const (
 	hotkeyRename           = "rename"
 	hotkeyRestart          = "restart"
 	hotkeyRestartFresh     = "restart_fresh"
+	hotkeySessionResult    = "session_result"
 	hotkeyDelete           = "delete"
 	hotkeyCloseSession     = "close_session"
 	hotkeyArchiveSession   = "archive_session"
@@ -100,6 +101,7 @@ var hotkeyActionOrder = []string{
 	hotkeyRename,
 	hotkeyRestart,
 	hotkeyRestartFresh,
+	hotkeySessionResult,
 	hotkeyDelete,
 	hotkeyCloseSession,
 	hotkeyArchiveSession,
@@ -149,6 +151,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyRename:           "r",
 	hotkeyRestart:          "R",
 	hotkeyRestartFresh:     "T",
+	hotkeySessionResult:    "=",
 	hotkeyDelete:           "d",
 	hotkeyCloseSession:     "D",
 	hotkeyArchiveSession:   "A",

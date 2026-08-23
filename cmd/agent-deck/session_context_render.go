@@ -385,7 +385,7 @@ func renderContextBreakdown(v contextView, all bool) string {
 			ri.Item.Origin.String(),
 			ri.Item.Load.State.String(),
 			ri.Category,
-			contextLockGlyphCLI(ri.Item) + truncateCell(itemLabel(ri.Item), maxItemCellWidth),
+			contextLockGlyphCLI(ri.Item) + truncateContextCell(itemLabel(ri.Item), maxItemCellWidth),
 			ri.Item.ID,
 		})
 	}
@@ -447,7 +447,7 @@ func itemLabel(it ctxinspect.Item) string {
 
 // truncateCell shortens a cell to max runes, marking that it did so. It never
 // truncates below a useful length.
-func truncateCell(s string, max int) string {
+func truncateContextCell(s string, max int) string {
 	if max < 4 || utf8.RuneCountInString(s) <= max {
 		return s
 	}

@@ -207,7 +207,7 @@ func TestIssue1948_Export_DedupsLedgerAndInboxCopiesOfOneCompletion(t *testing.T
 func TestIssue1948_Export_SkipsDeadLetterStore(t *testing.T) {
 	exportTestHome(t)
 
-	if err := writeDeadLetter(TransitionNotificationEvent{
+	if _, err := writeDeadLetter(TransitionNotificationEvent{
 		ChildSessionID:   "worker-suppressed",
 		Profile:          "default",
 		Kind:             transitionKindFinished,

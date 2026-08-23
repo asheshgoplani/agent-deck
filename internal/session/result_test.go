@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -89,5 +90,76 @@ func TestFormatCompletionsIncludesResultArtifact(t *testing.T) {
 	}})
 	if !strings.Contains(got, "DONE") || !strings.Contains(got, "/work/RESULT.json") {
 		t.Fatalf("result event did not wake parent with artifact location: %q", got)
+	}
+}
+
+func TestSessionResultIdentityAdversarialInterleaving(t *testing.T) {
+	t.Setenv("AGENT_DECK_HOME", t.TempDir())
+	shared := t.TempDir()
+	write := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(shared, "RESULT.json"), []byte(`{"verdict":"PASS","value":"`+value+`"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture := func(sessionID, turnID, value string) {
+		t.Helper()
+		write(value)
+		if _, err := CaptureSessionResult(ResultIdentity{SessionID: sessionID, TurnID: turnID}, shared); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assert := func(sessionID, turnID, value string) {
+		t.Helper()
+		got := ResolveSessionResult(ResultIdentity{SessionID: sessionID, TurnID: turnID})
+		if got.State != ResultStateKnown || !strings.Contains(string(got.Result), `"value":"`+value+`"`) {
+			t.Fatalf("%s/%s got %+v, want only %q", sessionID, turnID, got, value)
+		}
+	}
+
+	capture("session-a", "turn-a1", "a1")
+	capture("session-b", "turn-b1", "b1")
+	assert("session-a", "turn-a1", "a1")
+	assert("session-b", "turn-b1", "b1")
+	capture("session-b", "turn-b2", "b2")
+	capture("session-a", "turn-a2", "a2")
+	assert("session-a", "turn-a2", "a2")
+	assert("session-b", "turn-b2", "b2")
+	if _, err := CaptureSessionResult(ResultIdentity{SessionID: "session-a", TurnID: "turn-a3"}, shared); !errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("unchanged prior-turn source was accepted: %v", err)
+	}
+	if stale := ResolveSessionResult(ResultIdentity{SessionID: "session-a", TurnID: "turn-a3"}); stale.State != ResultStateUnknown {
+		t.Fatalf("stale prior turn surfaced as current: %+v", stale)
+	}
+	if cross := ResolveSessionResult(ResultIdentity{SessionID: "session-b", TurnID: "turn-a2"}); cross.State != ResultStateUnknown {
+		t.Fatalf("cross-session result surfaced: %+v", cross)
+	}
+}
+
+func TestUnknownSessionResultJSONIsHonestAndParseable(t *testing.T) {
+	got := UnknownSessionResult(ResultIdentity{SessionID: "s", TurnID: "t"})
+	data, err := json.Marshal(got)
+	if err != nil || !json.Valid(data) {
+		t.Fatalf("unknown JSON invalid: %s (%v)", data, err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["state"] != ResultStateUnknown || fields["session_id"] != "s" || fields["turn_id"] != "t" {
+		t.Fatalf("dishonest unknown shape: %s", data)
+	}
+	if _, exists := fields["result"]; exists {
+		t.Fatalf("unknown must not invent result: %s", data)
+	}
+}
+
+func TestResultFormatterParityKnownAndUnknown(t *testing.T) {
+	known := SessionResult{State: ResultStateKnown, Result: json.RawMessage(`{"ok":true}`), Verdict: "PASS"}
+	if got := FormatSessionResult(known); got != "{\"ok\":true}\nVERDICT: PASS" {
+		t.Fatalf("known = %q", got)
+	}
+	if got := FormatSessionResult(UnknownSessionResult(ResultIdentity{})); got != "no result for current turn" {
+		t.Fatalf("unknown = %q", got)
 	}
 }

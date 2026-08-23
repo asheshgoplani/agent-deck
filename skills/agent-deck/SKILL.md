@@ -114,6 +114,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
 | `agent-deck session output <name>` | Get last response |
+| `agent-deck session result <name> [--json]` | Get identity-scoped current-turn result; JSON unknowns are explicit |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
@@ -500,7 +501,8 @@ Key constraints:
 | Key | Action |
 |-----|--------|
 | `n` | New session |
-| `r/R` | Restart (reloads MCPs) |
+| `r/R` | Rename / restart (reloads MCPs) |
+| `=` | Show identity-scoped result for the selected session's current turn |
 | `m` | MCP Manager |
 | `s` | Skills Manager |
 | `f/F` | Fork Claude/OpenCode/Pi/Codex session |

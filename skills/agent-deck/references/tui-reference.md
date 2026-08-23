@@ -22,6 +22,7 @@ Complete reference for agent-deck Terminal UI features.
 | `n` | New session (inherits current group) |
 | `r` | Rename session or group |
 | `R` | Restart session (reloads MCPs) |
+| `=` | Show the selected session's current-turn result (or explicit unknown state) |
 | `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level when at the parent's first child) |
 | `-` / `J` / `Shift+↓` | Move item down (auto-promotes a sub-session to top-level when at the parent's last child) |
 | `Shift+→` / `Shift+←` | Indent / outdent within current group (single-level nesting) |

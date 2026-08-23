@@ -63,9 +63,6 @@ type TransitionDaemon struct {
 	// happened to observe the session mid-`running`: see recordTerminalTurns.
 	lastTurn map[string]map[string]string
 
-	// lastResult tracks RESULT.json content hashes, emitting once per write.
-	lastResult map[string]map[string]string
-
 	// turnLiveCheck decides whether an instance is a live session or a stale
 	// registry row. A seam because the real check probes tmux, which a unit test
 	// cannot and should not do — and testing this logic is the whole point after a
@@ -129,7 +126,6 @@ func NewTransitionDaemon() *TransitionDaemon {
 		initialized:    map[string]bool{},
 		lastDone:       map[string]map[string]DoneSignal{},
 		lastTurn:       map[string]map[string]string{},
-		lastResult:     map[string]map[string]string{},
 		turnLiveCheck:  func(inst *Instance) bool { return inst.Exists() },
 		lastDoneScan:   map[string]map[string]time.Time{},
 		lastProbeStall: map[string]time.Time{},
@@ -494,7 +490,6 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// Runs on EVERY pass, the first scan included — see the FIRST SCAN note on
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
-	d.emitResultFiles(profile, byID)
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.
@@ -548,44 +543,6 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
-}
-
-func (d *TransitionDaemon) emitResultFiles(profile string, byID map[string]*Instance) {
-	if d.lastResult == nil {
-		d.lastResult = map[string]map[string]string{}
-	}
-	if d.lastResult[profile] == nil {
-		d.lastResult[profile] = map[string]string{}
-	}
-	seen := d.lastResult[profile]
-	for id, inst := range byID {
-		signal, ok := resultFileSignal(inst.ProjectPath)
-		if !ok {
-			delete(seen, id)
-			continue
-		}
-		if seen[id] == signal {
-			continue
-		}
-		seen[id] = signal
-		if !GetNotificationsSettings().GetTransitionEventsEnabled() || !instanceAcceptsTransitionEvents(inst) {
-			continue
-		}
-		result, err := ReadSessionResult(inst.ProjectPath)
-		if err != nil {
-			continue
-		}
-		d.notifier.NotifyResult(TransitionNotificationEvent{
-			ChildSessionID: id,
-			ChildTitle:     inst.Title,
-			Profile:        profile,
-			ToStatus:       "result",
-			Timestamp:      time.Now(),
-			LastOutputHash: signal,
-			DoneStatus:     result.Verdict,
-			DoneSummary:    filepath.Join(inst.ProjectPath, "RESULT.json"),
-		})
-	}
 }
 
 // recordTerminalTurns records EVERY completed turn into the drainable ledgers,
@@ -689,6 +646,18 @@ func (d *TransitionDaemon) recordTerminalTurns(
 		// profile, which is how the check came to be here.
 		if d.turnLiveCheck != nil && !d.turnLiveCheck(inst) {
 			continue
+		}
+
+		turnID := signal
+		if turnID == "" {
+			turnID = resultTurnID(inst)
+		}
+		if result, err := CaptureSessionResult(ResultIdentity{SessionID: id, TurnID: turnID}, inst.ProjectPath); err == nil {
+			d.notifier.NotifyResult(TransitionNotificationEvent{
+				ChildSessionID: id, ChildTitle: inst.Title, Profile: profile,
+				ToStatus: "result", Timestamp: time.Now(), LastOutputHash: turnID,
+				DoneStatus: result.Verdict, DoneSummary: result.Source,
+			})
 		}
 
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
