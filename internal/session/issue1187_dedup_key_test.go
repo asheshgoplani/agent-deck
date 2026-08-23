@@ -259,7 +259,7 @@ func TestIssue1187_CodexGenerationChangesPerTurn(t *testing.T) {
 
 	writeStatus("thread:turn-1", 7)
 	first := transitionEventOutputHash(inst)
-	if first != "codex-generation:thread:turn-1" {
+	if !strings.HasPrefix(first, "codex-generation-sha256:") || strings.Contains(first, "thread:turn-1") {
 		t.Fatalf("first Codex signal = %q, want generation-based signal", first)
 	}
 	if got := transitionEventOutputHash(inst); got != first {

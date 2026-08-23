@@ -72,6 +72,9 @@ type hookStatusFile struct {
 	CodexCompletedGeneration string `json:"codex_completed_generation,omitempty"`
 	CodexStartedSessionID    string `json:"codex_started_session_id,omitempty"`
 	CodexCompletedSessionID  string `json:"codex_completed_session_id,omitempty"`
+	CodexTurnSequence        uint64 `json:"codex_turn_sequence,omitempty"`
+	CodexStartedSequence     uint64 `json:"codex_started_sequence,omitempty"`
+	CodexCompletedSequence   uint64 `json:"codex_completed_sequence,omitempty"`
 	HookGeneration           string `json:"hook_generation,omitempty"`
 	Sequence                 uint64 `json:"sequence,omitempty"`
 	InitialMessagePending    bool   `json:"initial_message_pending,omitempty"`
