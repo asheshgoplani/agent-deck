@@ -60,6 +60,33 @@ func TestInterruptSuppressedWhenHookStatusBusy(t *testing.T) {
 	}
 }
 
+// TestNoWaitClassifiesHookBusyAsQueued pins the sibling --no-wait path. Its
+// resend budget is intentionally disabled, but that must not disable the busy
+// classification or turn a safely queued message into a delivery failure.
+func TestNoWaitClassifiesHookBusyAsQueued(t *testing.T) {
+	mock := &mockSendRetryTarget{
+		statuses: []string{"idle"},
+		panes:    []string{busyPaneBodyScrolledOff()},
+	}
+	opts := noWaitSendOptions()
+	opts.checkDelay = 0
+	opts.targetBusyByHook = hookBusy
+
+	delivery, err := sendWithRetryTarget(mock, "queued no-wait message", false, opts)
+	if err != nil {
+		t.Fatalf("hook-busy --no-wait send returned error: %v", err)
+	}
+	if delivery != deliveryQueued {
+		t.Fatalf("delivery = %q, want %q", delivery, deliveryQueued)
+	}
+	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n != 0 {
+		t.Fatalf("SendCtrlC called %d times, want 0", n)
+	}
+	if n := atomic.LoadInt32(&mock.sendKeysCalls); n != 1 {
+		t.Fatalf("SendKeysAndEnter called %d times, want 1", n)
+	}
+}
+
 // TestInterruptUnchangedWhenHookStatusIdle pins (b): a hook-idle target with
 // nothing on screen is the #876 TUI-init loss, and the recovery must still fire
 // exactly as before.
@@ -140,4 +167,12 @@ func TestInterruptSuppressedWhenNilHookProbeAndBodyOnScreen(t *testing.T) {
 	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n != 0 {
 		t.Errorf("SendCtrlC called %d times with no hook probe and the body on screen, want 0", n)
 	}
+}
+
+// TestInterruptSuppressedWhenHookStatusBusy_RemoteSession records the parity
+// boundary explicitly: `session send` resolves local []*session.Instance and
+// has no RemoteSessionInfo transport path. Remote sends execute this command
+// over SSH on the owning host, where the same local hook gate is exercised.
+func TestInterruptSuppressedWhenHookStatusBusy_RemoteSession(t *testing.T) {
+	t.Skip("RemoteSessionInfo is a TUI cache row, not a session-send target; remote delivery invokes session send over SSH on the owning host")
 }

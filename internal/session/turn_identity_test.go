@@ -92,6 +92,41 @@ func TestAwaitTurnIdentity_RejectsMissingUUID(t *testing.T) {
 	}
 }
 
+func TestAwaitTurnIdentity_RetainsPartialTrailingRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	prefix := `{"type":"user","uuid":"mine","message":{"role":"user","content":"mine"}`
+	if err := os.WriteFile(path, []byte(prefix), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct {
+		id  TurnIdentity
+		err error
+	}, 1)
+	go func() {
+		id, err := AwaitTurnIdentity(path, "mine", 0, time.Second, time.Millisecond)
+		done <- struct {
+			id  TurnIdentity
+			err error
+		}{id, err}
+	}()
+	time.Sleep(10 * time.Millisecond)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintln(f, `}`); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.id.UUID != "mine" || got.id.StartOffset != int64(len(prefix)+2) {
+		t.Fatalf("identity = %+v, want UUID mine at offset %d", got.id, len(prefix)+2)
+	}
+}
+
 func TestStreamTranscriptForTurn_SkipsPreviousTurnTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	prefix := `{"type":"assistant","uuid":"old","message":{"role":"assistant","content":"WRONG","stop_reason":"end_turn"}}` + "\n" +
