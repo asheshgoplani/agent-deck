@@ -10265,6 +10265,8 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			yolo := h.newDialog.GetHermesYoloMode()
 			hermesOpts := &session.HermesOptions{YoloMode: &yolo}
 			toolOptionsJSON, _ = session.MarshalToolOptions(hermesOpts)
+		} else if command == "omp" {
+			toolOptionsJSON, _ = session.MarshalToolOptions(h.newDialog.GetOMPOptions())
 		}
 
 		// The account row is offered for every claude-compatible tool (the

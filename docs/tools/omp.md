@@ -11,10 +11,17 @@ Each instance launches with `--continue --session-dir "$HOME/.omp/agent-deck/<in
 command = "omp"
 env_file = "~/.config/omp.env"
 default_model = "anthropic/claude-sonnet-4-6"
+default_profile = "default"
 approval_mode = "write" # always-ask | write | yolo
+smol_model = "google/gemini-3-flash"
+slow_model = "anthropic/claude-opus-4-6"
+plan_model = "openai/gpt-5-codex"
 ```
 
-The new-session model field accepts any model identifier and passes it as `--model`; a per-session selection takes precedence over `default_model`. Other OMP flags can be included in `command`.
+The new-session dialog has first-class controls for session/no-session mode,
+primary and cycling models, role models, thought printing, approval and
+auto-approval, maximum duration, profile isolation, and Claude/Codex imports.
+A per-session selection takes precedence over the `[omp]` defaults.
 
 ## Status detection
 
