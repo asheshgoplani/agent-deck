@@ -71,6 +71,7 @@ func TestIssue1892_RespawnPaneMutationIsBounded(t *testing.T) {
 	locked := make(chan struct{})
 	go func() {
 		s.mu.Lock()
+		_ = s.startupTimedOut
 		s.mu.Unlock()
 		close(locked)
 	}()
