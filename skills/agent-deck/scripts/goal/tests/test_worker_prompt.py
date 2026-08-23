@@ -88,9 +88,11 @@ class TestWorkerPromptSkeletonFirstReading(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        """Load the shared prompt once for the skeleton-first assertions."""
         cls.text = WORKER_PROMPT.read_text(encoding="utf-8")
 
     def test_reading_stages_are_present_and_ordered(self) -> None:
+        """Require the funnel's three stages in their execution order."""
         stages = [
             "Repository tree",
             "Declaration skeletons",
@@ -108,6 +110,7 @@ class TestWorkerPromptSkeletonFirstReading(unittest.TestCase):
         )
 
     def test_full_file_reads_are_forbidden_before_narrowing(self) -> None:
+        """Keep full bodies gated behind tree and skeleton inspection."""
         self.assertIn(
             "Do not read full source files before completing stages 1 and 2",
             self.text,
@@ -115,12 +118,15 @@ class TestWorkerPromptSkeletonFirstReading(unittest.TestCase):
         )
 
     def test_protocol_gives_grep_first_commands(self) -> None:
-        for command in ("rg --files", "rg -n"):
-            self.assertIn(
-                command,
-                self.text,
-                f"Worker contract must provide the grep-first command {command!r}",
-            )
+        """Bind each discovery command to its stage before full-code reads."""
+        tree_start = self.text.index("Repository tree")
+        skeleton_start = self.text.index("Declaration skeletons")
+        full_code_start = self.text.index("Narrowed full code")
+
+        tree_instructions = self.text[tree_start:skeleton_start]
+        skeleton_instructions = self.text[skeleton_start:full_code_start]
+        self.assertIn("rg --files --hidden -g '!.git'", tree_instructions)
+        self.assertIn("rg -n", skeleton_instructions)
 
 
 if __name__ == "__main__":

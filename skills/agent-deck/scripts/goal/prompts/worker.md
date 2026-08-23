@@ -49,7 +49,7 @@ Read the task log at `{WORKDIR}/task-log.md`. Identify your most recent receipt 
 
 When you need to inspect an unfamiliar part of the repository, use this reading funnel in order:
 
-1. **Repository tree** — map filenames first with `rg --files` (narrow by directory or extension when useful). Do not dump file contents.
+1. **Repository tree** — map filenames first with `rg --files --hidden -g '!.git'` (narrow by directory or extension when useful). Include hidden paths without traversing Git metadata. Do not dump file contents.
 2. **Declaration skeletons** — use `rg -n` to inspect declarations, signatures, types, imports, and tests with implementation bodies omitted. Choose patterns appropriate to the repository's language.
 3. **Narrowed full code** — read complete bodies only for the smallest set of files and symbols selected by stages 1 and 2.
 
