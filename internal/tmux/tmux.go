@@ -1595,11 +1595,20 @@ func (s *Session) expireStartupHandover() bool {
 		restartTarget = s.Name
 	}
 	message := fmt.Sprintf("Session startup timed out before the agent became interactive.\n\nRecovery: agent-deck session restart %s\n", shellescape.Quote(restartTarget))
-	hold := fmt.Sprintf("printf %%s %s; stty -echo 2>/dev/null || true; exec sleep 2147483647", shellescape.Quote(message))
+	// A tmux pane command normally inherits the pane's controlling terminal on
+	// stdin, which is what stty requires. Name /dev/tty explicitly so this does
+	// not silently depend on stdin surviving a wrapper change. If the pane has
+	// no controlling terminal, stty remains best-effort: the recovery message
+	// and inert hold still appear, but typed input may be echoed.
+	hold := fmt.Sprintf("printf %%s %s; stty -echo </dev/tty 2>/dev/null || true; exec sleep 2147483647", shellescape.Quote(message))
 	wrapped, err := wrapRespawnCommand(hold)
 	if err == nil {
 		args := append([]string{"respawn-pane", "-k", "-t", s.Name + ":"}, wrapped...)
-		if output, respawnErr := s.tmuxCmd(args...).CombinedOutput(); respawnErr != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
+		output, respawnErr := s.tmuxCmdContext(ctx, args...).CombinedOutput()
+		respawnErr = annotateDeadline(ctx.Err(), respawnErr)
+		cancel()
+		if respawnErr != nil {
 			statusLog.Warn("startup_timeout_hold_failed", slog.String("session", s.Name), slog.String("error", respawnErr.Error()), slog.String("output", string(output)))
 		}
 	} else {
@@ -1768,7 +1777,11 @@ func ReconnectSessionWithStatus(tmuxName, displayName, workDir, command string, 
 
 	switch previousStatus {
 	case "error":
-		sess.startupTimedOut = true
+		// "error" is shared by startup timeouts and live tool failures (auth,
+		// connection, unavailable model). Do not make that lossy persisted value
+		// terminal. GetStatus reclassifies current pane content; the distinctive
+		// timeout hold remains recoverable because a reconnected session has no
+		// fresh startup generation.
 		sess.lastStableStatus = "error"
 
 	case "idle":
@@ -1824,7 +1837,8 @@ func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previo
 	// Restore state tracker based on previous status (without running tmux commands)
 	switch previousStatus {
 	case "error":
-		sess.startupTimedOut = true
+		// See ReconnectSessionWithStatus: generic persisted errors must remain
+		// recoverable from the pane's current content.
 		sess.lastStableStatus = "error"
 
 	case "idle":
@@ -5097,7 +5111,12 @@ func (s *Session) hasErrorBannerIndicator(content string) bool {
 	// Agent-deck's own startup hold is tool-neutral. Only recognize its text
 	// while the current/restored generation owns the timeout; tmux preserves old
 	// pane contents across RespawnPane, so text alone is stale-prone evidence.
-	if s.startupTimedOut && strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
+	// A live generation owns timeout evidence only after it has actually timed
+	// out. A reconnected session has no startup clock, so the hold text itself
+	// is the durable, timeout-specific reason. RespawnPane publishes a fresh
+	// startupAt before unlocking, preventing preserved old scrollback from
+	// poisoning the new generation.
+	if (s.startupTimedOut || s.startupAt.IsZero()) && strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
 		return true
 	}
 	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
