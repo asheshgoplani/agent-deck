@@ -143,7 +143,10 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 		{"deepseek sessions", []string{"deepseek", "sessions", "--help"}},
 		{"remote add", []string{"remote", "add", "test", "example.invalid", "--help"}},
 		{"notify daemon", []string{"notify-daemon", "--help"}},
-		{"creds refresh", []string{"creds-refresh", "--config-dir", "CONFIG_DIR", "--help"}},
+		// normalizeArgs treats the token after an unknown non-boolean flag as
+		// that flag's value, so flag.Parse reports the unknown flag before it
+		// can provide built-in help. This exercises the explicit pre-parse guard.
+		{"creds refresh", []string{"creds-refresh", "--not-a-real-flag", "--help"}},
 	}
 
 	for _, tt := range tests {
@@ -177,6 +180,18 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHooksBareHelpRemainsReadOnly(t *testing.T) {
+	home := t.TempDir()
+	out, err := runIssue2025Helper(t, home, []string{"hooks", "help"})
+	if err != nil {
+		t.Fatalf("bare hooks help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "Usage: agent-deck hooks") {
+		t.Fatalf("bare hooks help did not print hooks usage:\n%s", out)
+	}
+	assertNoFiles(t, home)
 }
 
 func snapshotTree(t *testing.T, root string) map[string]bool {

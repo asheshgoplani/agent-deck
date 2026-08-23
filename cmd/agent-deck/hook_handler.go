@@ -630,6 +630,8 @@ func handleHooks(args []string) {
 	}
 
 	switch args[0] {
+	case "help":
+		printClaudeHooksUsage(os.Stdout)
 	case "install":
 		handleHooksInstall()
 	case "uninstall":
