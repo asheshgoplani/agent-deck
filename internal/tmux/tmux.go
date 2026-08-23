@@ -3550,8 +3550,11 @@ func (s *Session) RespawnPane(command string) error {
 	s.mu.Lock()
 
 	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
-	cmd := s.tmuxCmd(args...)
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
+	cmd := s.tmuxCmdContext(ctx, args...)
 	output, err := cmd.CombinedOutput()
+	cancel()
+	err = annotateDeadline(ctx.Err(), err)
 	if err != nil {
 		s.mu.Unlock()
 		mcpLog.Debug("respawn_pane_error", slog.String("error", err.Error()), slog.String("output", string(output)))

@@ -42,6 +42,45 @@ func TestIssue1892_StartupTimeoutRespawnIsBounded(t *testing.T) {
 	}
 }
 
+// TestIssue1892_RespawnPaneMutationIsBounded is the permanent reviewer probe
+// for the general restart path. Only respawn-pane stalls: the setup probes
+// remain immediate so the elapsed bound measures the mutation guarded by s.mu.
+func TestIssue1892_RespawnPaneMutationIsBounded(t *testing.T) {
+	binDir := t.TempDir()
+	fakeTmux := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(fakeTmux, []byte("#!/bin/sh\ncase \" $* \" in\n  *\" respawn-pane \"*) exec sleep 1 ;;\nesac\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	oldTimeout := tmuxMutationTimeout
+	tmuxMutationTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { tmuxMutationTimeout = oldTimeout })
+
+	s := NewSession("issue1892-bounded-respawn", t.TempDir())
+	started := time.Now()
+	err := s.RespawnPane("sleep 300")
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("stalled respawn unexpectedly succeeded")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("respawn mutation exceeded test ceiling: %v", elapsed)
+	}
+
+	locked := make(chan struct{})
+	go func() {
+		s.mu.Lock()
+		s.mu.Unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("respawn timeout left the session mutex locked")
+	}
+}
+
 func TestIssue1892_RestartedGenerationIgnoresPreservedTimeoutBanner(t *testing.T) {
 	s := NewSession("issue1892-restarted", t.TempDir())
 	s.startupTimedOut = false // RespawnPane resets this for the new generation.
