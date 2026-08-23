@@ -182,16 +182,53 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestHooksBareHelpRemainsReadOnly(t *testing.T) {
-	home := t.TempDir()
-	out, err := runIssue2025Helper(t, home, []string{"hooks", "help"})
-	if err != nil {
-		t.Fatalf("bare hooks help failed: %v\n%s", err, out)
+func TestEveryRegisteredCommandFamilyBareHelpIsReadOnly(t *testing.T) {
+	// Every top-level dispatcher that owns a subcommand family and documents a
+	// command-position `help` token belongs here. Keep aliases in the table:
+	// they are independently registered entry points and have regressed apart
+	// from their canonical spelling before.
+	families := []struct {
+		command string
+		usage   string
+	}{
+		{"agent", "Usage: agent-deck agent <command>"},
+		{"codex-hooks", "Usage: agent-deck codex-hooks"},
+		{"conductor", "conductor <command>"},
+		{"costs", "Usage: agent-deck costs"},
+		{"cursor-hooks", "Usage: agent-deck cursor-hooks"},
+		{"deepseek", "Usage: agent-deck deepseek"},
+		{"fleet", "Usage: agent-deck fleet"},
+		{"gemini-hooks", "Usage: agent-deck gemini-hooks"},
+		{"group", "Usage: agent-deck group"},
+		{"hermes-hooks", "Usage: agent-deck hermes-hooks"},
+		{"hooks", "Usage: agent-deck hooks"},
+		{"mcp", "Usage: agent-deck mcp"},
+		{"oc", "Usage: agent-deck openclaw"},
+		{"openclaw", "Usage: agent-deck openclaw"},
+		{"plugin", "Usage: agent-deck plugin"},
+		{"remote", "Usage: agent-deck remote"},
+		{"session", "Usage: agent-deck session"},
+		{"skill", "Usage: agent-deck skill"},
+		{"watcher", "Usage: agent-deck watcher"},
+		{"worktree", "Usage: agent-deck worktree"},
+		{"wt", "Usage: agent-deck worktree"},
 	}
-	if !strings.Contains(string(out), "Usage: agent-deck hooks") {
-		t.Fatalf("bare hooks help did not print hooks usage:\n%s", out)
+	for _, family := range families {
+		t.Run(family.command, func(t *testing.T) {
+			if !commandRegistry[family.command] {
+				t.Fatalf("enumerated family %q is not registered", family.command)
+			}
+			home := t.TempDir()
+			out, err := runIssue2025Helper(t, home, []string{family.command, "help"})
+			if err != nil {
+				t.Fatalf("bare command-position help failed: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), family.usage) {
+				t.Fatalf("bare help swallowed detailed family usage %q:\n%s", family.usage, out)
+			}
+			assertNoFiles(t, home)
+		})
 	}
-	assertNoFiles(t, home)
 }
 
 func snapshotTree(t *testing.T, root string) map[string]bool {
