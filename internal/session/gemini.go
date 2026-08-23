@@ -270,7 +270,15 @@ func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *Gem
 			analytics.CachedTokens += msg.Tokens.Cached
 			analytics.ThoughtsTokens += msg.Tokens.Thoughts
 			analytics.ToolTokens += msg.Tokens.Tool
-			analytics.ReportedTotalTokens += msg.Tokens.Total
+			messageTotal := msg.Tokens.Total
+			if messageTotal <= 0 {
+				// Older Gemini CLI messages did not carry tokens.total. Apply
+				// the fallback per message so a mixed-format session does not
+				// discard its older turns merely because a newer turn has a
+				// reported total. Cached is already a subset of Input.
+				messageTotal = msg.Tokens.Input + msg.Tokens.Output + msg.Tokens.Thoughts + msg.Tokens.Tool
+			}
+			analytics.ReportedTotalTokens += messageTotal
 			analytics.TotalTurns++
 
 			// For Gemini, the input tokens of the last message represent the total context size

@@ -17,8 +17,9 @@ type GeminiSessionAnalytics struct {
 	ThoughtsTokens int `json:"thoughts_tokens"` // reasoning tokens
 	ToolTokens     int `json:"tool_tokens"`
 
-	// ReportedTotalTokens is the sum of the per-message "total" fields, i.e. the
-	// harness's own accounting. Preferred over any sum computed here.
+	// ReportedTotalTokens is the complete normalized per-message total: the
+	// harness-reported total when present, otherwise that message's component
+	// sum for older Gemini CLI records.
 	ReportedTotalTokens int `json:"reported_total_tokens"`
 
 	// Current context size: the last turn's input tokens, which for Gemini
@@ -46,9 +47,9 @@ type GeminiSessionAnalytics struct {
 }
 
 // TotalTokens returns the session's total token count. Gemini reports a "total"
-// per message (input + output + thoughts + tool), so prefer that measured value
-// and only fall back to summing the parts when the session file carried none
-// (older Gemini CLI writes, or a file with no gemini-typed messages).
+// per message (input + output + thoughts + tool). Parsing normalizes older
+// messages without that field, so prefer the complete per-message total and
+// retain a struct-level fallback for callers constructing analytics directly.
 // CachedTokens is deliberately excluded: it is a subset of InputTokens.
 func (a *GeminiSessionAnalytics) TotalTokens() int {
 	if a.ReportedTotalTokens > 0 {

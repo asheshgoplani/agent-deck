@@ -151,6 +151,37 @@ func TestUpdateGeminiAnalyticsFromDisk_KeepsAllTokenCounters(t *testing.T) {
 	}
 }
 
+// TestUpdateGeminiAnalyticsFromDisk_MixedFormatsFallbackPerMessage covers a
+// session spanning the Gemini CLI format change that introduced tokens.total.
+// An older message must not disappear merely because a newer message reports
+// its own total.
+func TestUpdateGeminiAnalyticsFromDisk_MixedFormatsFallbackPerMessage(t *testing.T) {
+	const sessionID = "cdef0123-0000-0000-0000-000000000000"
+	body := `{
+	  "sessionId": "` + sessionID + `",
+	  "startTime": "2026-07-26T10:00:00.000Z",
+	  "lastUpdated": "2026-07-26T10:30:00.000Z",
+	  "messages": [
+	    {"type":"gemini","model":"gemini-2.5-pro","tokens":{"input":100,"output":10,"cached":40,"thoughts":5,"tool":1}},
+	    {"type":"gemini","model":"gemini-2.5-pro","tokens":{"input":200,"output":20,"cached":80,"thoughts":7,"tool":3,"total":230}}
+	  ]
+	}`
+	projectPath := writeGeminiSession(t, sessionID, body)
+
+	var a GeminiSessionAnalytics
+	if err := UpdateGeminiAnalyticsFromDisk(projectPath, sessionID, &a); err != nil {
+		t.Fatalf("UpdateGeminiAnalyticsFromDisk: %v", err)
+	}
+
+	const want = (100 + 10 + 5 + 1) + 230
+	if got := a.TotalTokens(); got != want {
+		t.Fatalf("TotalTokens() = %d, want %d (per-message fallback)", got, want)
+	}
+	if a.ReportedTotalTokens != want {
+		t.Fatalf("ReportedTotalTokens = %d, want %d (complete normalized total)", a.ReportedTotalTokens, want)
+	}
+}
+
 // TestUpdateGeminiAnalyticsFromDisk_ResetsAllCountersOnReparse: the function
 // mutates a reused struct, so every new counter must be zeroed first or a
 // re-parse would double-count.
