@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -277,15 +278,17 @@ func TestIssue1873_LockSurvivesAProcessThatDiesHoldingIt(t *testing.T) {
 
 	// Wait until the child reports it holds the lock, so the kill below is a
 	// kill of a holder rather than a race with one.
-	buf := make([]byte, len("held\n"))
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(string(buf), "held") && time.Now().Before(deadline) {
-		n, readErr := stdout.Read(buf)
-		if readErr != nil || n == 0 {
-			break
-		}
+	lineCh := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(stdout).ReadString('\n')
+		lineCh <- line
+	}()
+	select {
+	case line := <-lineCh:
+		require.Contains(t, line, "held", "child never reported holding the lock")
+	case <-time.After(10 * time.Second):
+		t.Fatal("child never reported holding the lock")
 	}
-	require.Contains(t, string(buf), "held", "child never reported holding the lock")
 
 	// Kill the holder, then prove the store can still take the lock. If the
 	// kernel did not release the flock on exit this would block until the

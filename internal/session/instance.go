@@ -4868,6 +4868,14 @@ func (i *Instance) Start() error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
+	var validatedDeepSeekCommand string
+	if i.Tool == "deepseek" {
+		var err error
+		validatedDeepSeekCommand, err = i.deepSeekStartCommand()
+		if err != nil {
+			return err
+		}
+	}
 
 	// #1873: refuse to spawn while this instance still owns a process tree from
 	// an earlier spawn. Runs before anything is mutated or launched, so a
@@ -5012,11 +5020,7 @@ func (i *Instance) Start() error {
 		// must replay a recorded task or refuse — `dsh --profile headless` with
 		// no positional is a usage error dsh rejects before anything could be
 		// delivered (PR #1942 review, P1b/P1c).
-		dsCommand, dsErr := i.deepSeekStartCommand()
-		if dsErr != nil {
-			return dsErr
-		}
-		command = dsCommand
+		command = validatedDeepSeekCommand
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -5232,6 +5236,14 @@ func (i *Instance) StartWithMessage(message string) error {
 			return err
 		}
 	}
+	var validatedDeepSeekCommand string
+	if i.Tool == "deepseek" && message == "" {
+		var err error
+		validatedDeepSeekCommand, err = i.deepSeekStartCommand()
+		if err != nil {
+			return err
+		}
+	}
 
 	// #1873: same fail-closed ownership gate as Start(), in the same position
 	// relative to the spawn stamp. A second spawn path is still a second tree.
@@ -5368,11 +5380,7 @@ func (i *Instance) StartWithMessage(message string) error {
 		if message == "" {
 			// StartWithMessage with no message is an ordinary start, and
 			// headless still needs its recorded task.
-			dsCommand, dsErr := i.deepSeekStartCommand()
-			if dsErr != nil {
-				return dsErr
-			}
-			command = dsCommand
+			command = validatedDeepSeekCommand
 			break
 		}
 		command, promptEmbeddedInCommand = i.buildDeepSeekCommandWithPrompt(i.Command, message)
@@ -8832,6 +8840,15 @@ func (i *Instance) restart(env map[string]string) error {
 	if err := i.guardOwnedProcessesBeforeSpawn("restart"); err != nil {
 		return err
 	}
+	var validatedDeepSeekRestartCommand string
+	if i.Tool == "deepseek" {
+		i.refreshDeepSeekSessionID()
+		var err error
+		validatedDeepSeekRestartCommand, err = i.deepSeekRestartCommand()
+		if err != nil {
+			return err
+		}
+	}
 	// Deferred only once the gate has passed: a refused restart started nothing,
 	// so it must not leave a spawn stamp that makes a concurrent caller believe
 	// a replacement is already running.
@@ -8841,7 +8858,8 @@ func (i *Instance) restart(env map[string]string) error {
 	// while the spawn lock is still held (deferred release() was registered
 	// first, so it runs last). A replacement pane that kept the previous
 	// receipt would be an unowned tree.
-	defer func() { i.commitOwnershipAfterRestart(i.Command) }()
+	ownershipCommand := i.Command
+	defer func() { i.commitOwnershipAfterRestart(ownershipCommand) }()
 
 	// #1775: supersede the fast-death watcher from the PREVIOUS spawn here, at
 	// the single entry point, rather than deeper down. restart() has several
@@ -8930,6 +8948,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		mcpLog.Debug("respawn_pane_claude", slog.String("command", resumeCmd))
 
 		// #1822 F2: assert AGENTDECK_PROFILE / CLAUDE_CONFIG_DIR host-side
@@ -8986,6 +9005,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_gemini_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: gemini's rebuilt resume command carries no inline
@@ -9045,6 +9065,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_opencode_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: opencode's rebuilt resume command carries no inline
@@ -9119,6 +9140,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_codex_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: belt-and-suspenders to the inline prefix buildCodexCommand
@@ -9162,6 +9184,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_cursor_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: must run BEFORE RespawnPane — see the Claude branch above
@@ -9206,6 +9229,7 @@ func (i *Instance) restart(env map[string]string) error {
 			if containerName != "" {
 				i.SandboxContainer = containerName
 			}
+			ownershipCommand = resumeCmd
 
 			// The resume command embeds the conversation id, so it is not
 			// logged; the fingerprint identifies the binding without
@@ -9295,15 +9319,10 @@ func (i *Instance) restart(env map[string]string) error {
 		// of resuming a dead ID forever. A no-op when [deepseek].resume_flag is
 		// unset (the default), where restart is a plain re-boot and dsh's own
 		// persistence under $DSH_HOME keeps the conversation reachable.
-		i.refreshDeepSeekSessionID()
 		// A headless restart replays the recorded task; every other profile
 		// re-boots as before. deepSeekRestartCommand refuses rather than
 		// rebuilding a taskless one-shot invocation.
-		dsCommand, dsErr := i.deepSeekRestartCommand()
-		if dsErr != nil {
-			return dsErr
-		}
-		command = dsCommand
+		command = validatedDeepSeekRestartCommand
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -9351,6 +9370,7 @@ func (i *Instance) restart(env map[string]string) error {
 		i.recordPrepareFailure(command, err) // #1924, sister path
 		return err
 	}
+	ownershipCommand = command
 	if containerName != "" {
 		i.SandboxContainer = containerName
 	}

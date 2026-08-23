@@ -58,9 +58,13 @@ func printSessionOwnershipHelp() {
 // resolveOwnershipTarget loads and resolves the session named on the command
 // line, exiting with the shared CLI codes when it cannot.
 func resolveOwnershipTarget(profile, identifier string, out *CLIOutput) *session.Instance {
+	if strings.TrimSpace(identifier) == "" {
+		out.Error("session identifier is required", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
-		out.Error(err.Error(), ErrCodeNotFound)
+		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
@@ -199,7 +203,7 @@ func handleSessionOwnershipAbandon(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to abandon ownership receipt: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	out.Success("ownership receipt discarded; nothing was signalled", ownershipPayload(status))
+	out.Success("ownership receipt discarded; nothing was signalled", ownershipPayload(inst.OwnershipStatus()))
 }
 
 func renderOwnershipStatus(inst *session.Instance, status session.OwnershipStatus) string {
@@ -208,10 +212,10 @@ func renderOwnershipStatus(inst *session.Instance, status session.OwnershipStatu
 	switch {
 	case status.LoadErr != nil:
 		fmt.Fprintf(&b, "Receipt:  UNREADABLE — %v\n", status.LoadErr)
-		fmt.Fprintf(&b, "Verdict:  unknown (nothing will be signalled)\n")
+		b.WriteString("Verdict:  unknown (nothing will be signalled)\n")
 		return b.String()
 	case status.Receipt == nil:
-		fmt.Fprintf(&b, "Receipt:  none — this session owns no recorded processes\n")
+		b.WriteString("Receipt:  none — this session owns no recorded processes\n")
 		return b.String()
 	}
 	r := status.Receipt

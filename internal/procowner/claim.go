@@ -60,7 +60,7 @@ func Claim(p Prober, in ClaimInput) (*Receipt, error) {
 		now = time.Now
 	}
 	stamp := now().Unix()
-	return &Receipt{
+	r := &Receipt{
 		Version:    ReceiptVersion,
 		InstanceID: in.InstanceID,
 		Generation: in.Generation,
@@ -81,7 +81,11 @@ func Claim(p Prober, in ClaimInput) (*Receipt, error) {
 			Role:    RoleLeader,
 			SeenAt:  stamp,
 		},
-	}, nil
+	}
+	if err := r.Validate(); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // Attribute adds the leader's live descendants to the receipt, each with its
@@ -121,6 +125,9 @@ func Attribute(p Prober, r *Receipt, now func() time.Time) ([]Member, error) {
 	leaderInfo, err := p.Inspect(r.Leader.PID)
 	if err != nil {
 		return nil, err
+	}
+	if leaderInfo.PID != r.Leader.PID || leaderInfo.StartID != r.Leader.StartID || leaderInfo.UID != r.Leader.UID {
+		return nil, fmt.Errorf("%w: leader pid %d changed identity during attribution", ErrNoProcess, r.Leader.PID)
 	}
 	descendants, err := p.Descendants(leaderInfo)
 	if err != nil {

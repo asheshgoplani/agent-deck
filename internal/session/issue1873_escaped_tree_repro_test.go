@@ -257,13 +257,17 @@ func startEscapedInstance(t *testing.T, w *escapedWrapper, id string) (*Instance
 
 	require.NoError(t, inst.Start())
 	t.Cleanup(func() { _ = inst.Kill() })
+	panePID, err := inst.GetTmuxSession().PanePID()
+	require.NoError(t, err)
 
 	kids := w.waitForChildren(1, 15*time.Second)
 	child := kids[len(kids)-1]
 	require.True(t, paneGoneWithin(inst, 20*time.Second),
 		"the pane must die inside the fast-death window for this reproduction")
 	requireChildAlive(t, child, "the wrapped child must survive the pane it was launched from")
-	require.NotEqual(t, childPPID(child.PID), os.Getpid(),
+	ppid := childPPID(child.PID)
+	require.Greater(t, ppid, 0, "the survivor must still have a readable parent")
+	require.NotEqual(t, panePID, ppid,
 		"the survivor must have been reparented away from the pane tree")
 	return inst, child
 }

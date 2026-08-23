@@ -442,6 +442,25 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("reason", logging.SanitizeValue(attrErr.Error())))
 		}
+		// A restart may replace a healthy pane while one of its descendants has
+		// already detached. Never let the new generation erase that ownership:
+		// carry forward every old identity that still verifies, so later teardown
+		// either reaps it or continues to fail closed. Gone and reused identities
+		// are deliberately omitted.
+		if existing != nil {
+			seen := map[string]bool{claimed.Leader.Key(): true}
+			for _, member := range existing.All() {
+				if len(claimed.Members) >= procowner.MaxMembers || seen[member.Key()] {
+					continue
+				}
+				if procowner.VerifyMember(ownershipProber, member).State != procowner.StateOwned {
+					continue
+				}
+				member.Role = procowner.RoleDescendant
+				claimed.Members = append(claimed.Members, member)
+				seen[member.Key()] = true
+			}
+		}
 		return claimed, nil
 	})
 	if err != nil {

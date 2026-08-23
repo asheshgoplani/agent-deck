@@ -12,6 +12,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+func TestSessionOwnership_RemoteSessionRunsOnOwningHost(t *testing.T) {
+	t.Skip("ownership receipts are host-local; remote recovery must execute on the remote agent, not inspect controller PIDs")
+}
+
 // The recovery surface is the only thing an operator sees when a restart is
 // refused, so it has to name the processes and the exact command that resolves
 // them. A verdict with no pids is a dead end.

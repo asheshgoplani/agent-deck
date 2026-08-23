@@ -285,6 +285,15 @@ func TestReap_EPERMIsReportedNotEscalated(t *testing.T) {
 	assert.Equal(t, VerdictUnknown, report.Verdict)
 }
 
+func TestReap_NilReceiptIsClearAndSignalsNothing(t *testing.T) {
+	p := newFakeProber()
+	sig := newRecordingSignaler()
+
+	report := Reap(p, sig, nil, fastReapOptions())
+	assert.Empty(t, sig.calls())
+	assert.Equal(t, VerdictClear, report.Verdict)
+}
+
 func TestReap_RefusesReceiptFromAnotherBoot(t *testing.T) {
 	p := newFakeProber()
 	leader := p.add(100, 1, "5000", 1000)

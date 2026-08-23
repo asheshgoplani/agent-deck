@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +9,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
+
+const configFileLockTimeout = 30 * time.Second
 
 // Serialization for read-modify-write cycles on a shared config file.
 //
@@ -106,8 +110,8 @@ func resolveConfigLockPath(configPath string) (resolved, lockPath string, err er
 	return resolved, lockPath, nil
 }
 
-// AcquireConfigFileLock blocks until this process and this host both hold
-// exclusive access to configPath. The returned lock must be released.
+// AcquireConfigFileLock waits for bounded time until this process and this host
+// both hold exclusive access to configPath. The returned lock must be released.
 func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
 	resolved, lockPath, err := resolveConfigLockPath(configPath)
 	if err != nil {
@@ -116,7 +120,13 @@ func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
 
 	mIface, _ := configFileMu.LoadOrStore(resolved, &sync.Mutex{})
 	m := mIface.(*sync.Mutex)
-	m.Lock()
+	deadline := time.Now().Add(configFileLockTimeout)
+	for !m.TryLock() {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("config file lock: timed out waiting for in-process lock on %s", resolved)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		m.Unlock()
@@ -127,10 +137,22 @@ func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
 		m.Unlock()
 		return nil, fmt.Errorf("open config lock file %s: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		m.Unlock()
-		return nil, fmt.Errorf("flock config %s: %w", resolved, err)
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			_ = f.Close()
+			m.Unlock()
+			return nil, fmt.Errorf("flock config %s: %w", resolved, err)
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			m.Unlock()
+			return nil, fmt.Errorf("config file lock: timed out waiting for flock on %s", resolved)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	configLockAcquisitions.Add(1)
 	return &ConfigFileLock{inProc: m, file: f}, nil

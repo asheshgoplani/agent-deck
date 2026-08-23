@@ -168,14 +168,16 @@ func TestLinuxProber_AttributesRealDescendants(t *testing.T) {
 	var added []Member
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		added, err = Attribute(p, receipt, nil)
-		require.NoError(t, err)
+		batch, attrErr := Attribute(p, receipt, nil)
+		require.NoError(t, attrErr)
+		added = append(added, batch...)
 		if len(receipt.Members) > 0 {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	require.NotEmpty(t, receipt.Members, "the forked child must be attributable while its parent lives")
+	assert.Equal(t, receipt.Members, added, "every recorded member must be reported as added exactly once")
 
 	for _, m := range receipt.Members {
 		assert.NotEmpty(t, m.StartID, "every member carries its own start identity")
@@ -191,7 +193,6 @@ func TestLinuxProber_AttributesRealDescendants(t *testing.T) {
 	for _, m := range receipt.All() {
 		assert.NotEqual(t, StateOwned, VerifyMember(p, m).State, "member %s survived the reap", m)
 	}
-	_ = added
 }
 
 func bumpStart(t *testing.T, start string) string {
