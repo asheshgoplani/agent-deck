@@ -76,6 +76,32 @@ func TestIssue1892_RespawnCannotCrossTimeoutGenerationClaim(t *testing.T) {
 	}
 }
 
+func TestIssue1892_GetStatusDoesNotReturnTimeoutForReplacementGeneration(t *testing.T) {
+	s := NewSession("issue1892-timeout-return-race", t.TempDir())
+	if err := s.Start("sleep 300"); err != nil {
+		t.Fatalf("start inert pane: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Kill() })
+
+	s.mu.Lock()
+	s.startupAt = time.Now().Add(-startupStateWindow - time.Second)
+	s.lastStableStatus = "starting"
+	s.afterStartupTimeoutClaim = func() {
+		if err := s.RespawnPane("sleep 300"); err != nil {
+			t.Fatalf("replace timed-out pane generation: %v", err)
+		}
+	}
+	s.mu.Unlock()
+
+	status, err := s.GetStatus()
+	if err != nil {
+		t.Fatalf("GetStatus across replacement generation: %v", err)
+	}
+	if status == "error" {
+		t.Fatal("GetStatus returned the expired generation's timeout for its replacement")
+	}
+}
+
 // TestIssue1892_StartupWithoutAgentSignalTimesOutHonesty reproduces the stuck
 // startup handover with a real tmux pane.  The pane process remains alive but
 // never renders either an agent prompt or a busy signal, exactly the condition

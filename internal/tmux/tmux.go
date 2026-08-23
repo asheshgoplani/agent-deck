@@ -1047,6 +1047,10 @@ type Session struct {
 	InstanceID      string // Agent-deck instance ID for hook callbacks
 	startupAt       time.Time
 	startupTimedOut bool // terminal for this pane generation after #1892's deadline
+	// afterStartupTimeoutClaim is a test seam for scheduling a competing pane
+	// generation after timeout recovery releases mu but before GetStatus decides
+	// which generation's status to return.
+	afterStartupTimeoutClaim func()
 
 	// WorkDirIsPlaceholder marks a session whose local WorkDir is not where the
 	// work happens — today that means an SSH session, whose pane only runs an
@@ -1615,6 +1619,16 @@ func (s *Session) expireStartupHandover() bool {
 		statusLog.Warn("startup_timeout_hold_wrap_failed", slog.String("session", s.Name), slog.String("error", err.Error()))
 	}
 	return true
+}
+
+// startupTimeoutIsCurrent reports whether the timeout claim still belongs to
+// the pane generation GetStatus is about to describe. A successful respawn
+// clears the claim while publishing its fresh startup clock under the same
+// mutex, so this is the status return's generation-validation point.
+func (s *Session) startupTimeoutIsCurrent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startupTimedOut
 }
 
 // SetCustomPatterns sets custom patterns for generic tool support
@@ -4008,7 +4022,12 @@ func (s *Session) GetStatus() (string, error) {
 	}
 
 	if s.expireStartupHandover() {
-		return "error", nil
+		if s.afterStartupTimeoutClaim != nil {
+			s.afterStartupTimeoutClaim()
+		}
+		if s.startupTimeoutIsCurrent() {
+			return "error", nil
+		}
 	}
 
 	// FAST PATH: Title-based state detection for Claude Code sessions.
