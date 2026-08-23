@@ -175,12 +175,13 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 	return append(flags, positional...)
 }
 
-// helpRequested reports whether an argument list contains a conventional help
-// token. Mutating or long-running dispatchers must check this before parsing or
-// interpreting positional arguments so asking for help is always read-only.
+// helpRequested reports whether an argument list contains an unambiguous help
+// flag. Bare "help" is intentionally not recognized here: it can be a session,
+// remote, workspace, or other user-supplied value. Dispatchers that expose a
+// help command recognize it explicitly in their command-position switch.
 func helpRequested(args []string) bool {
 	for _, arg := range args {
-		if arg == "help" || arg == "--help" || arg == "-h" {
+		if arg == "--help" || arg == "-h" {
 			return true
 		}
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -139,10 +140,10 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"deepseek sessions", []string{"deepseek", "sessions", "help"}},
-		{"remote add", []string{"remote", "add", "test", "example.invalid", "help"}},
-		{"notify daemon", []string{"notify-daemon", "help"}},
-		{"creds refresh", []string{"creds-refresh", "--config-dir", "CONFIG_DIR", "help"}},
+		{"deepseek sessions", []string{"deepseek", "sessions", "--help"}},
+		{"remote add", []string{"remote", "add", "test", "example.invalid", "--help"}},
+		{"notify daemon", []string{"notify-daemon", "--help"}},
+		{"creds refresh", []string{"creds-refresh", "--config-dir", "CONFIG_DIR", "--help"}},
 	}
 
 	for _, tt := range tests {
@@ -155,6 +156,7 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(configDir, ".credentials.json"), []byte("{}"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			before := snapshotTree(t, home)
 			args := append([]string(nil), tt.args...)
 			for i := range args {
 				if args[i] == "CONFIG_DIR" {
@@ -169,13 +171,94 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 			if !strings.Contains(string(out), "Usage: agent-deck") {
 				t.Fatalf("help request did not print usage:\n%s", out)
 			}
-			if _, err := os.Stat(filepath.Join(home, ".config", "agent-deck", "config.toml")); err == nil {
-				t.Fatal("help request wrote user config")
-			}
-			if _, err := os.Stat(filepath.Join(home, ".cache", "agent-deck", "debug.log")); err == nil {
-				t.Fatal("help request created the daemon debug log")
+			after := snapshotTree(t, home)
+			if diff := mapKeyDiff(before, after); diff != "" {
+				t.Fatalf("help request changed fixture filesystem:\n%s", diff)
 			}
 		})
+	}
+}
+
+func snapshotTree(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	snapshot := make(map[string]bool)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		key := fmt.Sprintf("%s mode=%s size=%d mtime=%d", rel, info.Mode(), info.Size(), info.ModTime().UnixNano())
+		if info.Mode().IsRegular() {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			key += " contents=" + string(contents)
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			key += " target=" + target
+		}
+		snapshot[key] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func TestBareHelpRemainsADataValue(t *testing.T) {
+	for _, args := range [][]string{
+		{"sessions", "help"},
+		{"attach", "help", "session"},
+		{"attach", "remote", "help"},
+		{"help"}, // inbox's sole argument is a session identifier, not a command.
+	} {
+		if helpRequested(args) {
+			t.Fatalf("bare help in a value position was classified as a help flag: %v", args)
+		}
+	}
+	home := t.TempDir()
+	out, err := runIssue2025Helper(t, home, []string{"deepseek", "sessions", "help", "--json"})
+	if err != nil {
+		t.Fatalf("deepseek sessions help failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "Usage:") || !strings.Contains(string(out), `"workspace"`) {
+		t.Fatalf("workspace named help was not inspected as data:\n%s", out)
+	}
+}
+
+func TestCostsRecomputeHelpIsDetailed(t *testing.T) {
+	out, err := runIssue2025Helper(t, t.TempDir(), []string{"costs", "recompute", "--help"})
+	if err != nil {
+		t.Fatalf("costs recompute help failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"Usage: agent-deck costs recompute [--dry-run]", "unknown", "Idempotent"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("missing %q from recompute help:\n%s", want, out)
+		}
+	}
+}
+
+func TestRemoteHelpUsesDocumentedLongFlags(t *testing.T) {
+	out, err := runIssue2025Helper(t, t.TempDir(), []string{"remote", "add", "--help"})
+	if err != nil {
+		t.Fatalf("remote add help failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"--agent-deck-path", "--profile"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("missing %q from remote help:\n%s", want, out)
+		}
 	}
 }
 
@@ -196,7 +279,7 @@ func TestRemoteSubcommandHelpRoutesToSelectedCommand(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		for _, help := range []string{"--help", "-h", "help"} {
+		for _, help := range []string{"--help", "-h"} {
 			t.Run(tt.command+"/"+help, func(t *testing.T) {
 				home := t.TempDir()
 				out, err := runIssue2025Helper(t, home, []string{"remote", tt.command, help})
