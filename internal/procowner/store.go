@@ -71,7 +71,7 @@ type Store struct {
 // NewStore returns a store rooted at dir, serialized by lock.
 func NewStore(dir string, lock LockFunc) *Store {
 	if lock == nil {
-		lock = NoCrossProcessLock
+		panic("procowner: NewStore needs a lock; pass NoCrossProcessLock to opt out")
 	}
 	return &Store{dir: dir, lock: lock}
 }
@@ -267,7 +267,7 @@ func (s *Store) Clear(r *Receipt) error {
 	}
 	return s.withLock(r.InstanceID, func(path string) error {
 		existing, loadErr := loadFrom(path, r.InstanceID)
-		if loadErr != nil && !errors.Is(loadErr, ErrCorruptReceipt) {
+		if loadErr != nil {
 			return loadErr
 		}
 		if existing != nil {

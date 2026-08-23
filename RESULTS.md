@@ -1,147 +1,50 @@
-# Issue #2045 results
+# PR #1961 final verification
 
-## Reproduction
+## Rebase evidence
 
-Reproduced on current `origin/main` at `47bb2103` in a `golang:1.25`
-container. The regression test `TestIssue2045LaunchHelpOffersNamedAccountSlot`
-failed because `agent-deck launch --help` had no `--account` option. The test
-`TestIssue2045AccountsListsConfiguredSlots` failed because the unknown
-`accounts` command fell through to TUI startup and exited with `Error: tmux not
-found` instead of listing the two configured slots.
+- Pre-rebase head: `f0f507eb641b6af51fdfa2ac82952164107eed11`.
+- Fetched `origin/main` from `47bb2103` to `7771aca6`, then rebased before making any finding fixes.
+- Resolved the only conflict in `internal/session/instance.go` by preserving both upstream DeepSeek fast-exit/prompt guards and the PR's shared ownership-generation watcher.
+- `git range-diff 47bb2103..f0f507eb origin/main..384eeaf7` preserved all four PR commits. The config-lock file removed from the second patch was already present on the new main.
+- Rebased head `384eeaf7` was force-pushed with lease before review work.
 
-## Root cause
+## Findings addressed
 
-- `cmd/agent-deck/launch_cmd.go:124` had no account flag, and the instance
-  construction path near `cmd/agent-deck/launch_cmd.go:441` therefore never
-  copied a selected slot into `Instance.Account`. The existing start-time
-  resolver already consumes that field, so the missing launch wiring was the
-  gap.
-- The top-level command switch in `cmd/agent-deck/main.go:334` had no
-  `accounts` route. Unknown commands continue into TUI startup, which explains
-  the unrelated tmux error seen in the reproduction.
+- Darwin `ps` cancellation/timeouts now remain unreadable and fail closed; only a genuinely exited `ps` with empty output means the PID is gone.
+- Descendant attribution revalidates the exact leader observation used as its walk root (PID, start identity, and UID).
+- `Claim` validates the completed receipt, rejecting missing instance IDs or start identities immediately.
+- Restart receipts record the prepared command actually launched. DeepSeek task validation occurs before spawn stamps, generation changes, or pane termination.
+- Restart generation replacement carries forward every still-owned prior identity, preserving escaped descendants rather than silently dropping ownership.
+- Receipt `Clear` preserves corrupt evidence; only explicit `ForceClear`/abandon discards it.
+- Store construction requires an explicit cross-process lock choice.
+- Config-file/receipt locking now has a bounded 30-second wait for both the in-process mutex and host flock.
+- Ownership CLI treats omitted IDs as usage errors, storage failures as invalid operations, reports post-abandon state, and avoids verb-free `Fprintf` calls.
+- The receipt-race child handshake preserves partial reads and has an effective deadline.
+- Fake-prober fields are mutex-protected; Linux attribution asserts returned members; nil-receipt reap is covered; escaped-tree PPID checks the actual pane; remote ownership is explicitly documented as host-local via a skipped test.
 
-## Fix
+## Revert proofs
 
-- Added `launch --account <slot>` and persist the trimmed value on the new
-  instance before it is saved and started.
-- Added a read-only `accounts [--json]` command. It lists profiles with a
-  configured Claude `config_dir`, expands paths through the existing config
-  resolver, and sorts by slot name for deterministic human and JSON output.
-- Updated top-level help, README documentation, and the bundled agent-deck
-  skill/reference.
+All commands ran in `golang:1.25` containers. Each production guard was restored immediately after the failing run.
 
-## Proof
+- Removed the second-observation leader identity comparison: `TestAttribute_RefusesLeaderReusedBetweenVerificationAndWalk` failed because attribution returned nil error and would accept the stranger's tree.
+- Removed final receipt validation from `Claim`: `TestClaim_RefusesWhatItCannotProve` failed because an empty instance ID produced no error.
+- Restored corrupt-receipt deletion in ordinary `Clear`: `TestStore_ClearPreservesCorruptReceiptForExplicitAbandon` failed because clear returned nil and deleted the evidence.
 
-- PASS: `go test ./cmd/agent-deck -run "TestIssue2045" -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-- Both commands ran only in `golang:1.25` containers.
-- The full `go test ./cmd/agent-deck -count=1` suite was also attempted in the
-  stock Go container. It is not green there because tmux is absent; existing
-  tmux-dependent tests fail with `Error: tmux not found`, and the two existing
-  40 ms cold-start budgets also exceeded the shared-container timings. The
-  issue-specific tests pass in that same environment.
+## Local verification
 
-## Pull request
+- PASS: `go build ./... && go vet ./...` in `golang:1.25` after marking `/src` as a Git safe directory for VCS stamping.
+- PASS: full `internal/procowner` tests.
+- PASS: targeted ownership, issue-1873, config-lock, DeepSeek, and CLI ownership tests.
+- The stock container's full affected-package attempt additionally exposed only known environment failures: no `tmux`, root bypassing a read-only-directory assertion, and nested test builds rejecting the bind-mounted Git ownership. These are unrelated and are exercised by repository CI's prepared environment.
 
-https://github.com/asheshgoplani/agent-deck/pull/2053
+## Invariant check
 
-# PR #2053 round-2 review results
+- Bounds: receipt `MaxMembers` remains enforced while carrying identities across restart.
+- Ordering: task validation and ownership admission precede all state mutation; identity is rechecked immediately before descendant traversal and again before every signal.
+- Idempotence/CAS: duplicate members are key-deduplicated; generation and leader checks remain under one cross-process lock; attribution cancellation/barrier behavior is unchanged.
+- Fail closed: unreadable probes, lock timeouts, corrupt receipts, and identity changes never authorize a signal or a replacement spawn.
+- Sibling parity: `Start`, `StartWithMessage`, restart fallback, and every respawn-pane branch now feed the actual launched command into ownership; DeepSeek validation covers all three spawn families.
 
-## Finding: launch consumed the next flag as `--account`'s value
+## CI state
 
-### Reproduction
-
-On the pre-fix parent `4ccce635`, I applied only the new regression test and
-ran it in `golang:1.25`. The `launch` table case failed with:
-
-```text
-launch accepted a flag-shaped account value; output:
-    ✓ Launched session: agent-deck
-```
-
-This reproduces the review's exact `launch . --account --no-wait` scenario:
-the command reported success instead of rejecting the missing account name.
-The test also enumerates both session-creation commands with an `--account`
-surface (`add` and `launch`) so the existing sibling guard cannot silently
-diverge again.
-
-### Root cause
-
-`cmd/agent-deck/launch_cmd.go:167` proceeded to argument reordering and Go flag
-parsing without calling the shared `checkFlagValueNotFlag` guard. Go's flag
-parser therefore bound the registered `--no-wait` token as the string value of
-`--account`; account resolution then treated that unknown slot as a fallback.
-The sibling `add` command already invoked the guard on original argv at
-`cmd/agent-deck/main.go:1445`.
-
-### Fix
-
-`cmd/agent-deck/launch_cmd.go:167` now invokes `checkFlagValueNotFlag` before
-argument reordering, parsing, account fallback, state writes, or tmux launch.
-The shared guard recognizes that the following token is another flag from the
-same launch `FlagSet` and exits with an actionable error. The CLI reference now
-documents the required explicit account name and the `--account=<name>` escape
-hatch for an intentional dash-prefixed name.
-
-### Test and evidence
-
-- RED on `4ccce635`: `TestIssue2053AccountGuardCoversSessionCreationCommands/launch`
-  reported that launch accepted the malformed argv and launched a session.
-- GREEN on the fixed branch: both the `add` and `launch` enumeration cases
-  reject the malformed argv, name the swallowed flag, and prove that neither
-  state nor tmux side effects occurred.
-- PASS: `go test ./cmd/agent-deck -run 'TestIssue2053|TestIssue1923|TestIssue1928' -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-
-All Go commands above ran only in a `golang:1.25` container.
-
-# PR #2053 round-3 verification results
-
-## Blocking finding: launch account persistence had no effective test
-
-### Reproduction
-
-The verifier selectively removed the assignment at
-`cmd/agent-deck/launch_cmd.go:452-454` while retaining flag registration and
-parsing. The old help-only test remained green, proving it did not cover the
-user-visible persistence behavior.
-
-### Root cause
-
-`cmd/agent-deck/issue2045_accounts_cli_test.go:12` exercised only `launch
---help`; it never entered the creation path or inspected the saved
-`Instance.Account`. The production assignment itself is at
-`cmd/agent-deck/launch_cmd.go:452-454`.
-
-### Fix
-
-`TestIssue2045LaunchPersistsNamedAccountSlot` now configures the `work` Claude
-account, drives the real `launch` command through creation, start, and save with
-an isolated fake tmux executable, opens the isolated profile storage, and
-asserts that exactly one saved instance has `Account == "work"`.
-
-The test also contains the requested focused `RemoteSession` skip marker.
-`launch` creates a local session and has no remote target argument or
-RemoteSession dispatch branch, so remote runtime behavior is not applicable.
-
-### Revert-proof
-
-All commands below ran in `golang:1.25` containers with
-`GOFLAGS=-buildvcs=false` for the bind-mounted linked worktree.
-
-- GREEN with the production assignment present:
-  `TestIssue2045LaunchPersistsNamedAccountSlot` exited 0.
-- RED after replacing only `launch_cmd.go:452-454` with `_ = account`:
-  `issue2045_accounts_cli_test.go:55: persisted launch account = "", want work`.
-- The assignment was then restored before the final verification.
-- Final combined container command passed:
-  `go test ./cmd/agent-deck -run "TestIssue2045|TestIssue2053" -count=1 -v && go build ./... && go vet ./...`.
-
-### Preserved invariant
-
-The change is test-only and does not alter launch ordering, persistence, or
-concurrency behavior. The test reaches the existing targeted
-`InsertSessionAndVerify` path, so it verifies account persistence without
-replacing the bounded/concurrency-safe launch save mechanism. The existing
-missing-value test continues to prove fail-closed ordering: malformed
-`--account --no-wait` input is rejected before state or tmux side effects.
+Pending the final signed commit and push; this section will be updated with the exact head and completed check result.

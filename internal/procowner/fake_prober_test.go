@@ -37,9 +37,15 @@ func newFakeProber() *fakeProber {
 	}
 }
 
-func (f *fakeProber) Name() string { return f.name }
+func (f *fakeProber) Name() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.name
+}
 
 func (f *fakeProber) BootID() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.bootErr != nil {
 		return "", f.bootErr
 	}
@@ -70,8 +76,11 @@ func (f *fakeProber) setErr(pid int, err error) {
 }
 
 func (f *fakeProber) Inspect(pid int) (ProcInfo, error) {
-	if f.onInspect != nil {
-		f.onInspect(pid)
+	f.mu.Lock()
+	onInspect := f.onInspect
+	f.mu.Unlock()
+	if onInspect != nil {
+		onInspect(pid)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,11 +96,11 @@ func (f *fakeProber) Inspect(pid int) (ProcInfo, error) {
 }
 
 func (f *fakeProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.descErr != nil {
 		return nil, f.descErr
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	var out []ProcInfo
 	queue := []int{root.PID}
 	seen := map[int]bool{root.PID: true}

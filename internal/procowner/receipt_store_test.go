@@ -177,6 +177,28 @@ func TestStore_CorruptReceiptSurfacesAsAnError(t *testing.T) {
 	require.NotNil(t, loaded)
 }
 
+func TestStore_ClearPreservesCorruptReceiptForExplicitAbandon(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir, NoCrossProcessLock)
+	path := filepath.Join(dir, "inst-1.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"inst`), 0o600))
+
+	err := store.Clear(liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader}))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCorruptReceipt)
+	_, statErr := os.Stat(path)
+	assert.NoError(t, statErr, "ordinary clear must retain unreadable evidence")
+	require.NoError(t, store.ForceClear("inst-1"))
+	_, statErr = os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr), "explicit abandon is allowed to discard it")
+}
+
+func TestNewStore_RequiresExplicitLockChoice(t *testing.T) {
+	assert.PanicsWithValue(t, "procowner: NewStore needs a lock; pass NoCrossProcessLock to opt out", func() {
+		NewStore(t.TempDir(), nil)
+	})
+}
+
 func TestStore_ReceiptForAnotherInstanceIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir, NoCrossProcessLock)
@@ -256,8 +278,10 @@ func TestClaim_RecordsLeaderIdentityAtSpawn(t *testing.T) {
 func TestClaim_RefusesWhatItCannotProve(t *testing.T) {
 	p := newFakeProber()
 	p.add(100, 1, "5000", 1000)
+	_, err := Claim(p, ClaimInput{PanePID: 100})
+	require.Error(t, err, "an empty instance id must fail before an unusable receipt is returned")
 
-	_, err := Claim(p, ClaimInput{InstanceID: "inst-1", PanePID: 0})
+	_, err = Claim(p, ClaimInput{InstanceID: "inst-1", PanePID: 0})
 	require.Error(t, err)
 
 	_, err = Claim(p, ClaimInput{InstanceID: "inst-1", PanePID: 1})
@@ -275,6 +299,35 @@ func TestClaim_RefusesWhatItCannotProve(t *testing.T) {
 	p.bootErr = errors.New("no boot id")
 	_, err = Claim(p, ClaimInput{InstanceID: "inst-1", PanePID: 100})
 	require.Error(t, err, "without a boot id every start identity is ambiguous")
+
+	p = newFakeProber()
+	p.add(100, 1, "", 1000)
+	_, err = Claim(p, ClaimInput{InstanceID: "inst-1", PanePID: 100})
+	require.Error(t, err, "an empty start identity must fail at claim time")
+}
+
+func TestAttribute_RefusesLeaderReusedBetweenVerificationAndWalk(t *testing.T) {
+	p := newFakeProber()
+	p.add(100, 1, "5000", 1000)
+	receipt, err := Claim(p, ClaimInput{InstanceID: "inst-1", Generation: 1, PanePID: 100})
+	require.NoError(t, err)
+
+	reads := 0
+	p.onInspect = func(pid int) {
+		if pid != 100 {
+			return
+		}
+		reads++
+		if reads == 2 {
+			p.remove(100)
+			p.add(100, 1, "9999", 1000)
+			p.add(103, 100, "10000", 1000)
+		}
+	}
+	added, err := Attribute(p, receipt, nil)
+	require.Error(t, err)
+	assert.Empty(t, added)
+	assert.Empty(t, receipt.Members, "a recycled leader's tree must never be attributed")
 }
 
 func TestAttribute_RecordsLiveDescendants(t *testing.T) {

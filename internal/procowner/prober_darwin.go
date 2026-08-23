@@ -55,7 +55,7 @@ func (DarwinProber) Inspect(pid int) (ProcInfo, error) {
 	if err != nil {
 		// ps exits non-zero with no output when the pid is absent. Anything
 		// else (a timeout, a missing binary) stays unreadable, not "gone".
-		if strings.TrimSpace(out) == "" && isExitStatus(err) {
+		if strings.TrimSpace(out) == "" && isExitedStatus(err) {
 			return ProcInfo{}, fmt.Errorf("%w: pid %d", ErrNoProcess, pid)
 		}
 		return ProcInfo{}, fmt.Errorf("%w: ps for pid %d: %v", ErrUnreadable, pid, err)
@@ -90,12 +90,15 @@ func runBounded(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, name, args...).Output()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return string(out), ctxErr
+	}
 	return string(out), err
 }
 
-func isExitStatus(err error) bool {
+func isExitedStatus(err error) bool {
 	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr)
+	return errors.As(err, &exitErr) && exitErr.Exited()
 }
 
 // CompareStart implements StartComparer over the `lstart` wall-clock format.
