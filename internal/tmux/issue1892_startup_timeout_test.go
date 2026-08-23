@@ -1,10 +1,46 @@
 package tmux
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestIssue1892_ReloadedGenericErrorIsNotAStartupTimeout(t *testing.T) {
+	s := ReconnectSessionLazy("issue1892-generic-error", "generic-error", t.TempDir(), "claude", "error")
+
+	if s.startupTimedOut {
+		t.Fatal("generic persisted error was restored as a terminal startup timeout")
+	}
+	if s.hasErrorBannerIndicator("credentials repaired\n\n❯ ready") {
+		t.Fatal("repaired generic error remained terminal after reload")
+	}
+}
+
+func TestIssue1892_StartupTimeoutRespawnIsBounded(t *testing.T) {
+	binDir := t.TempDir()
+	fakeTmux := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(fakeTmux, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	oldTimeout := tmuxMutationTimeout
+	tmuxMutationTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { tmuxMutationTimeout = oldTimeout })
+
+	s := NewSession("issue1892-bounded-timeout", t.TempDir())
+	s.startupAt = time.Now().Add(-startupStateWindow - time.Second)
+	started := time.Now()
+	if !s.expireStartupHandover() {
+		t.Fatal("expired startup was not claimed")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("startup timeout respawn exceeded mutation deadline: %v", elapsed)
+	}
+}
 
 func TestIssue1892_RestartedGenerationIgnoresPreservedTimeoutBanner(t *testing.T) {
 	s := NewSession("issue1892-restarted", t.TempDir())
