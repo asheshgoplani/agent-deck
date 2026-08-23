@@ -67,7 +67,7 @@ Reconciled against the in-app help overlay (`?`), which is the source of truth
 | `-` / `J` / `Shift+↓` | Move item down (auto-promotes a sub-session to top-level at the parent's last child) |
 | `Shift+→` / `Shift+←` | Indent / outdent within current group (single-level nesting) |
 | `,` | Pin (cycles off -> top -> bottom -> off) |
-| `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex) (**rebindable**) |
+| `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi) (**rebindable**) |
 | `x` | Send output to another session (**rebindable**) |
 | `E` | Exec shell in sandbox container (**rebindable**) |
 | `H` | Open shell in session's worktree, split pane / window (**rebindable**) |
