@@ -231,7 +231,10 @@ func TestIssue1948P1_UnownedLedgerIgnoresDeliberateSuppression(t *testing.T) {
 		FromStatus: "running", ToStatus: "waiting", Timestamp: time.Now(),
 	})
 
-	pending, _ := ReadInboxEvents(UnownedInboxID)
+	pending, err := ReadInboxEvents(UnownedInboxID)
+	if err != nil {
+		t.Fatalf("read unowned ledger: %v", err)
+	}
 	for _, p := range pending {
 		if p.ChildSessionID == silent.ID {
 			t.Fatalf("a suppressed session must not be diverted into the unowned ledger: %+v", p)

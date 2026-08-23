@@ -94,16 +94,9 @@ type TransitionNotificationEvent struct {
 	// record, so a conductor draining two hosts can still tell which machine a
 	// child ran on.
 	//
-	// It is NOT part of EventFingerprint/TurnFingerprint, and that is safe only
-	// because the drain namespaces ChildSessionID as `<remote>:<child>` on
-	// ingest (RemoteScopedChildID): the provenance is inside the child id, which
-	// every identity rule already keys on.
-	//
-	// An earlier revision of this comment claimed hashing SourceRemote would
-	// make one remote record hash differently per drain. That was wrong — the
-	// remote NAME is stable across drains — and the exclusion it justified let
-	// two hosts' records collide and silently destroy each other. Recorded
-	// because the reasoning error, not the field, was the defect.
+	// SourceRemote is part of every inbox identity rule. The visible
+	// `<remote>:<child>` spelling alone is not disjoint from caller-chosen local
+	// IDs, so structured provenance is the authoritative collision boundary.
 	SourceRemote string `json:"source_remote,omitempty"`
 
 	// DeadLetterReason records WHY a record was terminally undeliverable (audit

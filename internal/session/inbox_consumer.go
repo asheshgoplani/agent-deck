@@ -459,14 +459,15 @@ func collapseLastWins(events []TransitionNotificationEvent) []TransitionNotifica
 	latest := map[string]TransitionNotificationEvent{}
 	order := []string{}
 	for _, ev := range events {
-		cur, seen := latest[ev.ChildSessionID]
+		key := strings.TrimSpace(ev.SourceRemote) + "\x00" + ev.ChildSessionID
+		cur, seen := latest[key]
 		if !seen {
-			order = append(order, ev.ChildSessionID)
-			latest[ev.ChildSessionID] = ev
+			order = append(order, key)
+			latest[key] = ev
 			continue
 		}
 		if !ev.Timestamp.Before(cur.Timestamp) {
-			latest[ev.ChildSessionID] = ev
+			latest[key] = ev
 		}
 	}
 	out := make([]TransitionNotificationEvent, 0, len(order))

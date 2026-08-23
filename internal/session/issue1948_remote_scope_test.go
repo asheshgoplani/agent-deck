@@ -11,7 +11,7 @@ func TestIssue1948R2_RemoteScopedChildID(t *testing.T) {
 		name, remote, child, want string
 	}{
 		{"scopes a plain id", "boxb", "nightly-build", "boxb:nightly-build"},
-		{"does not stack on re-ingest", "boxb", "boxb:nightly-build", "boxb:nightly-build"},
+		{"caller prefix remains distinct", "boxb", "boxb:nightly-build", "boxb:boxb:nightly-build"},
 		{"a different host is a different id", "boxc", "nightly-build", "boxc:nightly-build"},
 		{"no remote leaves the id alone", "", "nightly-build", "nightly-build"},
 		{"no child stays empty", "boxb", "", ""},
@@ -66,5 +66,22 @@ func TestIssue1948R2_ScopedIDsSeparateEveryIdentityRule(t *testing.T) {
 	ub, uc := mk("nightly-build", "ok"), mk("nightly-build", "fail")
 	if len(collapseLastWins([]TransitionNotificationEvent{ub, uc})) != 1 {
 		t.Fatalf("premise check failed: unscoped ids were expected to collapse")
+	}
+}
+
+func TestIssue1952_OriginSeparatesEveryIdentityRule(t *testing.T) {
+	mk := func(source string) TransitionNotificationEvent {
+		return TransitionNotificationEvent{ChildSessionID: "boxb:nightly-build", SourceRemote: source,
+			Kind: transitionKindFinished, DoneStatus: "ok", DoneSummary: "run"}
+	}
+	local, remote := mk(""), mk("boxb")
+	if EventFingerprint(local) == EventFingerprint(remote) {
+		t.Fatal("local and remote records share EventFingerprint")
+	}
+	if TurnFingerprint(local) == TurnFingerprint(remote) {
+		t.Fatal("local and remote records share TurnFingerprint")
+	}
+	if got := collapseLastWins([]TransitionNotificationEvent{local, remote}); len(got) != 2 {
+		t.Fatalf("collapseLastWins merged distinct origins: %+v", got)
 	}
 }

@@ -24,6 +24,23 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+type issue1952FailWriter struct{}
+
+func (issue1952FailWriter) Write([]byte) (int, error) { return 0, errors.New("output closed") }
+
+func TestIssue1952_OutputFailuresAreNotSuccess(t *testing.T) {
+	if err := runInbox(issue1952FailWriter{}, nil); err == nil {
+		t.Fatal("inbox usage write failure reported success")
+	}
+	drainTestHome(t)
+	configureRemote(t, "boxb", "worker@box-b")
+	registerDrainTarget(t, "conductor-output-failure")
+	fetch, _ := stubFetch(nil, nil)
+	if code := runRemoteDrain(issue1952FailWriter{}, &bytes.Buffer{}, []string{"--into", "conductor-output-failure", "boxb"}, fetch); code == 0 {
+		t.Fatal("remote drain output failure reported success")
+	}
+}
+
 func drainTestHome(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()

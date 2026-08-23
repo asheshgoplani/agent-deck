@@ -134,7 +134,15 @@ type remoteDrainResult struct {
 	Records []session.TransitionNotificationEvent `json:"records"`
 }
 
-func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordFetcher) int {
+func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordFetcher) (exitCode int) {
+	trackedOut := &errorTrackingWriter{Writer: stdout}
+	trackedErr := &errorTrackingWriter{Writer: stderr}
+	stdout, stderr = trackedOut, trackedErr
+	defer func() {
+		if exitCode == 0 && (trackedOut.err != nil || trackedErr.err != nil) {
+			exitCode = 1
+		}
+	}()
 	fs := flag.NewFlagSet("remote drain", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "Emit the drain result as JSON")

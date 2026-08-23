@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,5 +155,20 @@ func TestFieldTalkback_WriterStatusDistinguishesAbsentFromQuiet(t *testing.T) {
 	}
 	if st := ReadWriterStatus(); st.Running {
 		t.Error("a heartbeat 10 minutes old means nothing is recording; it must not read as running")
+	}
+}
+
+func TestIssue1952_WriterStatusReadFailureIsUnknown(t *testing.T) {
+	withFieldSandbox(t)
+	path, err := notifyHeartbeatPath()
+	if err != nil {
+		t.Fatalf("heartbeat path: %v", err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("make unreadable heartbeat stand-in: %v", err)
+	}
+	st := ReadWriterStatus()
+	if !strings.Contains(st.Detail, "unreadable") || strings.Contains(st.Detail, "never stamped") {
+		t.Fatalf("I/O failure must be unknown, not absent: %+v", st)
 	}
 }

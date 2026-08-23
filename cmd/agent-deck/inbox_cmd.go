@@ -12,6 +12,22 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+type errorTrackingWriter struct {
+	io.Writer
+	err error
+}
+
+func (w *errorTrackingWriter) Write(p []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	n, err := w.Writer.Write(p)
+	if err != nil {
+		w.err = err
+	}
+	return n, err
+}
+
 // handleInbox is the dispatch entry for `agent-deck inbox <session-id>`. It
 // drains the per-conductor inbox file that the transition notifier commits
 // completions to (issue #1225). The bare form is the legacy raw read+truncate
@@ -116,7 +132,14 @@ func runInbox(stdout io.Writer, args []string) error {
 	return runInboxWithProfile(stdout, args, "")
 }
 
-func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string) error {
+func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string) (retErr error) {
+	tracked := &errorTrackingWriter{Writer: stdout}
+	stdout = tracked
+	defer func() {
+		if retErr == nil && tracked.err != nil {
+			retErr = fmt.Errorf("write inbox output: %w", tracked.err)
+		}
+	}()
 	if len(args) > 0 && args[0] == "drain" {
 		return runInboxDrain(stdout, args[1:], explicitProfile)
 	}

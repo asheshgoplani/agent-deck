@@ -73,6 +73,9 @@ func ReadWriterStatus() WriterStatus {
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			return WriterStatus{Detail: "the heartbeat file is unreadable; writer liveness is unknown"}
+		}
 		return WriterStatus{
 			Detail: "no notify-daemon has ever stamped a heartbeat on this host — nothing is recording session transitions, so an empty drain says nothing about whether sessions finished. Start one with `agent-deck notify-daemon`.",
 		}
