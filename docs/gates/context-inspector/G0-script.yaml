@@ -1,0 +1,266 @@
+# G0 — SCRIPT — context inspector
+#
+# Written from Ashesh's own sentence, before the acceptance harness existed:
+#
+#   "open TUI, press C on a busy session, see how full it is, drill into memory
+#    files, find the fat one, exit"
+#
+# WHY THIS FILE EXISTS. The context inspector was declared done on the strength
+# of code analysis, a 2,961-transcript corpus replay and an adversarial review.
+# Nobody ever pressed C. The first thing Ashesh saw when he opened it was a
+# blank percentage he had to ask about. Static verification cannot detect "this
+# feels broken on arrival" — only a recording of the software being used can.
+# So the journey is written down here as literal keystrokes, and G1 executes it
+# against the real built artifact while G2 asserts on the frames it captured.
+#
+# THE LOAD-BEARING ASSERTION is on step 04: the overview must show either a real
+# percentage or the honest sentence explaining why there is none, and must never
+# show "( %)". That assertion is written to FAIL the original miss. Every frame
+# additionally goes through the Blank Detector, which catches the same class of
+# failure without anyone knowing to look for it.
+#
+# HONESTY NOTE. This script was authored before Driver A and Driver B exist, so
+# its substrings are grounded in the renderer's source but not yet observed on a
+# real screen. G1 is what turns them from intention into evidence; a substring
+# that turns out to be wrong gets corrected HERE, before the feature can be
+# called done — never by relaxing an assertion until it passes.
+#
+# WHAT THE FIRST DRIVE CORRECTED (2026-07-28, Driver A, fixture claude-cold).
+# Steps 05-09 originally switched to the Breakdown tab and pressed Enter there,
+# expecting the memory-files breadcrumb. The recorded frames said otherwise:
+# Breakdown is a FLAT ranking of every item across categories, so its breadcrumb
+# reads "all items › <path>" and never names a category. Drilling into memory
+# files is an Overview journey — categories, then that category's items. The
+# steps below were rewritten to the journey the software actually has, and the
+# assertions were left exactly as strict as they were. This is the correction
+# the note above reserved, and it is the whole reason G1 runs before "done":
+# the original steps were a plausible, confident, wrong description of the
+# feature, and no amount of reading the source produced the correction that one
+# recorded frame did. The failing evidence is preserved in
+# G1-drive/../transcript.md history and is why the wait_for on the drill step is
+# unchanged: it is the assertion that caught it.
+#
+#   validate: sixgate validate context-inspector
+#   unlock:   sixgate scaffold context-inspector
+#   gate:     sixgate verdict  context-inspector --check
+
+version: 1
+slug: context-inspector
+
+sentence: "Open the TUI, press C on a busy session, see how full it is, drill into memory files, find the fat one, exit."
+
+# Wide enough that the preview panel and the pager's 28-cell gauge both render.
+# The 80x24 clipping case is a G3 matrix row, not a change to this script.
+term: {width: 200, height: 50}
+
+owns:
+  - internal/ui/context_inspector.go
+  - internal/ui/context_pager.go
+  - internal/ctxinspect/...
+  - cmd/agent-deck/session_context_cmd.go
+  - cmd/agent-deck/session_context_render.go
+  - cmd/agent-deck/session_context_json.go
+  - cmd/agent-deck/session_context_verify.go
+  - cmd/agent-deck/session_context_parity_render.go
+
+# One suppression, scoped to three frames, with the reason on the record.
+#
+# The first G2 run flagged orphan-percent on the session list's filter legend:
+#
+#   All    ● 1   ◐ 0   ○ 0   !@#$ filter • 0 all • % open • ^ archived • t view
+#
+# That "%" is not a number that failed to render — it is the key you press.
+# internal/ui/home.go:152 declares `FilterKeyActive = "%"`, and the legend prints
+# every filter hotkey literally, which is why "!@#$", "^" and "t" sit on the same
+# row. The rule was right to be suspicious and wrong about this row.
+#
+# The suppression names the three frames it covers rather than the whole journey,
+# because the miss this framework exists to catch lived on the PAGER, and
+# silencing orphan-percent everywhere would have disarmed the guard on exactly
+# the screen that shipped broken. Scoping is the difference between "we explained
+# a false positive" and "we quietly turned the alarm off".
+banned_screen_patterns_allow:
+  - pattern: orphan-percent
+    steps: [01-home, 02-busy, 12-close]
+    justification: >-
+      On the session list the bare "%" is the filter hotkey printed in the
+      keyboard legend (internal/ui/home.go: FilterKeyActive = "%"), not a figure
+      that failed to render. Scoped to the three session-list frames so the rule
+      stays armed on every context-pager frame, which is where the blank
+      percentage actually shipped.
+
+steps:
+  - id: 01-home
+    note: "open the TUI and wait for the session list to paint"
+    do: {wait_for: "SESSIONS"}
+    capture: home
+    expect:
+      - screen_contains: "Agent Deck"
+        why: "the binary booted and rendered its own chrome, rather than dying into an empty alt-screen"
+      - screen_contains: "SESSIONS"
+        why: "the session list panel is present; without it there is nothing to press C on"
+
+  - id: 02-busy
+    note: "move onto a session that is actually doing something — the inspector is uninteresting on an idle one"
+    do: {key: "down"}
+    capture: busy-selected
+    expect:
+      - screen_matches: '(?i)status:\s*\S'
+        why: "the preview panel resolved a status for the selected row, so a real session is selected"
+      - screen_matches: '(?i)\b(running|waiting)\b'
+        why: "the selected session is busy; a cold idle session would not exercise the token accounting at all"
+
+  - id: 03-press-c
+    note: "the keystroke nobody ever pressed"
+    do: {key: "C"}
+
+  - id: 04-overview
+    note: "see how full it is — the frame that shipped with a blank percentage"
+    do: {wait_for: "[ Overview ]"}
+    capture: inspector-overview
+    expect:
+      - screen_contains: " ctx · "
+        why: "the pager took over the screen; C did something visible"
+      - screen_contains: "[ Overview ]"
+        why: "the Overview tab is the one that opened, not Breakdown or Verify"
+      - screen_matches: '\(\d{1,3}(?:\.\d)?%\)|no percentage: '
+        why: >-
+          THE MISS. The gauge must state how full the window is, or say in plain
+          words that it cannot know the denominator. A percentage of an unknown
+          total is exactly the plausible-looking number this feature exists to
+          avoid, so the honest sentence is an acceptable answer and silence is not.
+          CORRECTED BY THE 2026-07-29 DRIVE: the sentence used to read "context
+          window size unknown, so no percentage is shown" and now reads "no
+          percentage: <the reason>, To get one, set AGENTDECK_CONTEXT_WINDOW…".
+          The wording moved because the screen got better — it now names the
+          model and the remedy inline under the gauge instead of 25 lines below
+          in the caveats — and the assertion was re-pointed rather than relaxed:
+          the branch below makes the remedy load-bearing too, which the old
+          single substring never checked.
+      - screen_matches: '\(\d{1,3}(?:\.\d)?%\)|AGENTDECK_CONTEXT_WINDOW'
+        why: >-
+          A screen that cannot show a percentage must not be a dead end. Either
+          there IS a percentage, or the way to get one is on the same frame as
+          the gauge that is missing it. This is the half of the miss the original
+          assertion did not cover: an honest unknown with no remedy still leaves
+          the reader with nowhere to go, which is what "window unknown" alone did.
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: >-
+          The literal thing Ashesh saw. A percent sign with no number in front of
+          it must fail this gate, permanently, at any terminal size.
+      - screen_matches: '(?i)\b(measured|estimat)'
+        why: >-
+          every figure on this screen is labelled as measured or estimated. A
+          number with no oracle and no label is a G2 failure, not a footnote.
+
+  - id: 05-select-memory
+    note: >-
+      walk down the Overview's category rows to "memory files". Two presses is a
+      claim about the adapter's category order, and it is a claim only a recorded
+      frame can settle: step 06 asserts the row is actually selected, so a wrong
+      count fails here rather than silently drilling into the wrong category.
+    do: {keys: ["down", "down"]}
+
+  - id: 06-category-selected
+    note: "the memory-files row is the one under the cursor, before anything is opened"
+    do: {wait_for: "memory files"}
+    capture: memory-category-selected
+    expect:
+      - screen_contains: "[ Overview ]"
+        why: "still on the tab whose drill goes category → items; Breakdown is a flat ranking and cannot answer 'which category is fat'"
+      - screen_matches: 'memory files \(\d+ items?'
+        why: >-
+          the category is enumerated with a real item count. A category row that
+          names itself and counts nothing is the enumerator running without the
+          accountant, which is the same failure class as a blank percentage.
+      - screen_matches: 'row 3/\d+'
+        why: >-
+          the cursor is on the third row after two presses. This is the assertion
+          that catches a changed category order before the drill opens something
+          else and every later frame quietly describes the wrong thing.
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the blank-percentage miss must not appear once a row is selected"
+
+  - id: 07-drill
+    note: "open the memory-files category"
+    do: {key: "enter"}
+
+  - id: 08-fat-item
+    note: "find the fat one — the memory files ranked by what they cost"
+    do: {wait_for: "› memory files"}
+    capture: memory-drill
+    expect:
+      - screen_contains: "› memory files"
+        why: "the breadcrumb proves we are inside the memory-files drill, not still on the category list"
+      - screen_matches: '(?m)^\s*~?\d+(?:\.\d)?[kM]?\s'
+        why: >-
+          the drill opens on a row whose first column is a token figure. A list of
+          filenames with no numbers cannot answer "which one is fat", which is the
+          question the journey exists to answer.
+      - screen_matches: '(?i)\b(measured|estimat)|~'
+        why: >-
+          the provenance marker is still on screen at depth. Ashesh must be able
+          to tell a counted token from a guessed one without leaving the pager.
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the miss must not reappear at drill depth"
+
+  - id: 09-back
+    note: "climb back out of the drill"
+    do: {key: "esc"}
+    capture: back-to-categories
+    expect:
+      - screen_contains: "[ Overview ]"
+        why: "esc went up one level rather than closing the whole pager"
+      - screen_not_contains: "› memory files"
+        why: "the breadcrumb was popped; a stale crumb would mean the drill stack leaked"
+
+  - id: 10-breakdown-tab
+    note: "the other tab: every item ranked across categories, where the fat one is visible against everything else"
+    do: {key: "2"}
+    capture: breakdown-all
+    expect:
+      - screen_contains: "[ Breakdown ]"
+        why: "the tab actually switched rather than silently ignoring the key"
+      - screen_contains: "memory-files"
+        why: "the memory files are present in the flat ranking too, so the two tabs cannot disagree about what exists"
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the blank-percentage miss must not merely have moved to another tab"
+
+  - id: 11-verify-tab
+    note: >-
+      the third tab, which the Overview explicitly tells the reader to press:
+      "N notes about how these figures were obtained — press 3 for Verify".
+      ADDED BY THE 2026-07-29 DRIVE. Two provider-measured figures — the anchor
+      total and the share of it served from the prompt cache — used to sit in an
+      info caveat on the Overview, which is where G4's only real oracle read
+      them. Demoting info caveats moved them here, and because no frame captured
+      this tab the oracle reported them "ours-missing": the gate lost its only
+      independently-checkable numbers without anything on screen looking wrong.
+      Capturing the tab the software points at restores the check AND tests an
+      instruction the Overview gives, which had already shipped broken once (the
+      Overview said press 3 for the notes and Verify did not print them).
+    do: {key: "3"}
+    capture: verify-tab
+    expect:
+      - screen_contains: "[ Verify ]"
+        why: "the key the Overview told the reader to press actually switched to that tab"
+      - screen_matches: '(?i)\b(measured|estimat)'
+        why: >-
+          the tab that exists to explain where the figures came from still marks
+          which of them were measured and which were estimated
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the blank-percentage miss must not merely have moved to the tab nobody captured"
+
+  - id: 12-close
+    note: "exit the inspector"
+    do: {key: "esc"}
+    capture: closed
+    expect:
+      - screen_contains: "SESSIONS"
+        why: "we are back on the session list the journey started from"
+      - screen_not_contains: " ctx · "
+        why: "the pager released the screen; a half-torn-down overlay is how a TUI feels broken on arrival"
+
+  - id: 13-quit
+    note: "leave the TUI"
+    do: {key: "q"}

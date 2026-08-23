@@ -1,147 +1,86 @@
-# Issue #2045 results
+# PR #2018 verification results
 
-## Reproduction
+## Rebase evidence
 
-Reproduced on current `origin/main` at `47bb2103` in a `golang:1.25`
-container. The regression test `TestIssue2045LaunchHelpOffersNamedAccountSlot`
-failed because `agent-deck launch --help` had no `--account` option. The test
-`TestIssue2045AccountsListsConfiguredSlots` failed because the unknown
-`accounts` command fell through to TUI startup and exited with `Error: tmux not
-found` instead of listing the two configured slots.
+- Pre-rebase head: `2f285923b52391b27915a923280c42ceb567d442`.
+- Fresh `origin/main`: `7771aca6169e93973851d8b85fe2238b4b3897be`.
+- The seven commits were rebased before findings work. Post-rebase head was
+  `68e6a4eae9acb7959e22e1cfdfc9668ca5699d2e` and was force-pushed with an
+  exact `--force-with-lease` against the recorded old head.
+- `git range-diff` matched all seven old/new commits. The only non-identical
+  entry was the expected add/add resolution for this repository-level
+  `RESULTS.md`; all production, test, documentation, and skill patches replayed.
 
-## Root cause
+## Findings addressed
 
-- `cmd/agent-deck/launch_cmd.go:124` had no account flag, and the instance
-  construction path near `cmd/agent-deck/launch_cmd.go:441` therefore never
-  copied a selected slot into `Instance.Account`. The existing start-time
-  resolver already consumes that field, so the missing launch wiring was the
-  gap.
-- The top-level command switch in `cmd/agent-deck/main.go:334` had no
-  `accounts` route. Unknown commands continue into TUI startup, which explains
-  the unrelated tmux error seen in the reproduction.
+The complete conversation and inline-review history was read through both
+`gh pr view 2018 --comments` and the pull-request review-comment API.
 
-## Fix
+- Earlier sixgate findings remain fixed: verdict checks re-read current G1-G5
+  evidence; gate roots and slugs cannot escape the repository; the historical
+  context-inspector notes no longer claim absent evidence. Their regression
+  suites pass.
+- Earlier CI findings remain fixed: child environments use the repository
+  sanitization helper, gosec/unused findings are clear, and panedrive resolves
+  its state path through `agentpaths`.
+- The slug-traversal inline finding is covered by the current containment and
+  unsafe-path regression tests.
+- The supposedly missing Claude model-switch golden is present at
+  `internal/ctxinspect/ctxfixture/cases/claude-model-switch/expected-report.json`;
+  the fixture suite passes.
+- The Codex unmatched-AGENTS.md warning is already promoted to
+  `Report.Caveats`, with a report-level regression assertion.
+- Codex tag recognition already requires a lower-case XML-style name starter
+  and a closing delimiter. Its enumeration includes digit-start, uppercase,
+  empty, unterminated, and ordinary `<3 is a heart` inputs.
+- Remaining defect fixed here: Gemini session totals now fall back per message
+  when older records lack `tokens.total`, instead of dropping all old-format
+  turns as soon as one newer record supplies a total.
 
-- Added `launch --account <slot>` and persist the trimmed value on the new
-  instance before it is saved and started.
-- Added a read-only `accounts [--json]` command. It lists profiles with a
-  configured Claude `config_dir`, expands paths through the existing config
-  resolver, and sorts by slot name for deterministic human and JSON output.
-- Updated top-level help, README documentation, and the bundled agent-deck
-  skill/reference.
+## Revert proof
 
-## Proof
+All Go execution was inside `golang:1.25` containers.
 
-- PASS: `go test ./cmd/agent-deck -run "TestIssue2045" -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-- Both commands ran only in `golang:1.25` containers.
-- The full `go test ./cmd/agent-deck -count=1` suite was also attempted in the
-  stock Go container. It is not green there because tmux is absent; existing
-  tmux-dependent tests fail with `Error: tmux not found`, and the two existing
-  40 ms cold-start budgets also exceeded the shared-container timings. The
-  issue-specific tests pass in that same environment.
+- Added `TestUpdateGeminiAnalyticsFromDisk_MixedFormatsFallbackPerMessage` with
+  one old-format and one new-format Gemini message.
+- RED before the fix: `TotalTokens() = 230, want 346 (per-message fallback)`.
+- GREEN with the fix: the mixed-format test and the existing all-counters and
+  reset-on-reparse sibling tests pass.
+- Removed only the production per-message fallback after the green run and
+  reran the regression. It returned the same RED `230, want 346`; the
+  production hunk was then restored and reverified.
 
-## Pull request
+## Verification
 
-https://github.com/asheshgoplani/agent-deck/pull/2053
+- PASS: `go test ./internal/ctxinspect/codex ./internal/ctxinspect/ctxfixture ./internal/sixgate/... ./tools/sixgate -count=1`.
+- PASS: focused Gemini accounting tests, including mixed formats, complete
+  counters, and reset-on-reparse.
+- PASS: `go build ./... && go vet ./...` in `golang:1.25`, after marking the
+  bind-mounted checkout as a safe Git directory inside the disposable
+  container so Go VCS stamping could inspect it.
+- The broad `internal/session` package run reached one unrelated container-root
+  assumption: `TestWriteJSONFileAtomic_SkipsUnchangedWrite` expects a chmod
+  read-only directory to reject writes, while container root can still write.
+  The affected Gemini family is green in that same image.
 
-# PR #2053 round-2 review results
+## Invariant check
 
-## Finding: launch consumed the next flag as `--account`'s value
+- Accounting remains ordered and additive per Gemini message. A positive
+  harness total is authoritative; absent or non-positive totals fail over to
+  `input + output + thoughts + tool` for that message only.
+- Cached tokens remain excluded from the total because they are a subset of
+  input, preserving the no-double-count invariant.
+- Reparse reset behavior, last-turn context selection, model selection, and
+  cost counters are unchanged and covered by sibling tests.
+- The touched parser is the only Gemini session-file accumulation path; the
+  test deliberately enumerates both record generations in one session to
+  prevent format siblings from diverging.
 
-### Reproduction
+## CI state
 
-On the pre-fix parent `4ccce635`, I applied only the new regression test and
-ran it in `golang:1.25`. The `launch` table case failed with:
-
-```text
-launch accepted a flag-shaped account value; output:
-    ✓ Launched session: agent-deck
-```
-
-This reproduces the review's exact `launch . --account --no-wait` scenario:
-the command reported success instead of rejecting the missing account name.
-The test also enumerates both session-creation commands with an `--account`
-surface (`add` and `launch`) so the existing sibling guard cannot silently
-diverge again.
-
-### Root cause
-
-`cmd/agent-deck/launch_cmd.go:167` proceeded to argument reordering and Go flag
-parsing without calling the shared `checkFlagValueNotFlag` guard. Go's flag
-parser therefore bound the registered `--no-wait` token as the string value of
-`--account`; account resolution then treated that unknown slot as a fallback.
-The sibling `add` command already invoked the guard on original argv at
-`cmd/agent-deck/main.go:1445`.
-
-### Fix
-
-`cmd/agent-deck/launch_cmd.go:167` now invokes `checkFlagValueNotFlag` before
-argument reordering, parsing, account fallback, state writes, or tmux launch.
-The shared guard recognizes that the following token is another flag from the
-same launch `FlagSet` and exits with an actionable error. The CLI reference now
-documents the required explicit account name and the `--account=<name>` escape
-hatch for an intentional dash-prefixed name.
-
-### Test and evidence
-
-- RED on `4ccce635`: `TestIssue2053AccountGuardCoversSessionCreationCommands/launch`
-  reported that launch accepted the malformed argv and launched a session.
-- GREEN on the fixed branch: both the `add` and `launch` enumeration cases
-  reject the malformed argv, name the swallowed flag, and prove that neither
-  state nor tmux side effects occurred.
-- PASS: `go test ./cmd/agent-deck -run 'TestIssue2053|TestIssue1923|TestIssue1928' -count=1 -v`
-- PASS: `go build ./... && go vet ./...`
-
-All Go commands above ran only in a `golang:1.25` container.
-
-# PR #2053 round-3 verification results
-
-## Blocking finding: launch account persistence had no effective test
-
-### Reproduction
-
-The verifier selectively removed the assignment at
-`cmd/agent-deck/launch_cmd.go:452-454` while retaining flag registration and
-parsing. The old help-only test remained green, proving it did not cover the
-user-visible persistence behavior.
-
-### Root cause
-
-`cmd/agent-deck/issue2045_accounts_cli_test.go:12` exercised only `launch
---help`; it never entered the creation path or inspected the saved
-`Instance.Account`. The production assignment itself is at
-`cmd/agent-deck/launch_cmd.go:452-454`.
-
-### Fix
-
-`TestIssue2045LaunchPersistsNamedAccountSlot` now configures the `work` Claude
-account, drives the real `launch` command through creation, start, and save with
-an isolated fake tmux executable, opens the isolated profile storage, and
-asserts that exactly one saved instance has `Account == "work"`.
-
-The test also contains the requested focused `RemoteSession` skip marker.
-`launch` creates a local session and has no remote target argument or
-RemoteSession dispatch branch, so remote runtime behavior is not applicable.
-
-### Revert-proof
-
-All commands below ran in `golang:1.25` containers with
-`GOFLAGS=-buildvcs=false` for the bind-mounted linked worktree.
-
-- GREEN with the production assignment present:
-  `TestIssue2045LaunchPersistsNamedAccountSlot` exited 0.
-- RED after replacing only `launch_cmd.go:452-454` with `_ = account`:
-  `issue2045_accounts_cli_test.go:55: persisted launch account = "", want work`.
-- The assignment was then restored before the final verification.
-- Final combined container command passed:
-  `go test ./cmd/agent-deck -run "TestIssue2045|TestIssue2053" -count=1 -v && go build ./... && go vet ./...`.
-
-### Preserved invariant
-
-The change is test-only and does not alter launch ordering, persistence, or
-concurrency behavior. The test reaches the existing targeted
-`InsertSessionAndVerify` path, so it verifies account persistence without
-replacing the bounded/concurrency-safe launch save mechanism. The existing
-missing-value test continues to prove fail-closed ordering: malformed
-`--account --no-wait` input is rejected before state or tmux side effects.
+The first complete post-fix run was GREEN on `4a638808`: all 16 reported checks
+passed, including the eight-minute Full test suite PR gate, golangci,
+govulncheck, CodeQL, eval smoke, persistence/race tests, snapshot tests,
+performance tests, both harness platforms, diffscope, and intake. After this
+CI-result paragraph was committed, the complete check set was required to
+finish GREEN again on the exact final pushed head before handoff.

@@ -1,0 +1,6 @@
+{"timestamp":"2026-07-28T11:22:58.805Z","type":"session_meta","payload":{"session_id":"00000000-0000-4000-8000-00000000c0de","cwd":"<FIXTURE_PROJECT>","cli_version":"0.145.0","originator":"codex-tui","thread_source":"user","base_instructions":{"text":"BASE PROMPT"}}}
+{"timestamp":"2026-07-28T11:22:59.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\nFilesystem policy"}]}}
+{"timestamp":"2026-07-28T11:23:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Continue the resumed task"}]}}
+{"timestamp":"2026-07-28T11:23:00.100Z","type":"event_msg","payload":{"type":"user_message","message":"Continue the resumed task"}}
+{"timestamp":"2026-07-28T11:23:01.000Z","type":"response_item","payload":{"type":"reasoning"}}
+{"timestamp":"2026-07-28T11:23:01.100Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200},"last_token_usage":{"input_tokens":100},"model_context_window":258400}}}

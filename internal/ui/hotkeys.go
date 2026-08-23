@@ -34,6 +34,15 @@ const (
 	hotkeyForkWithOptions  = "fork_with_options"
 	hotkeyCopyOutput       = "copy_output"
 	hotkeyCopyPane         = "copy_pane"
+	// hotkeyCopyInfo copies the preview pane's Repo / Path / Branch block
+	// (#791). It shipped hardcoded on "C"; that key now opens the context
+	// inspector, so this moved to "B" and became rebindable like everything
+	// else. Users who want the old key back set [hotkeys].copy_info = "C" and
+	// [hotkeys].context_inspector to something else.
+	hotkeyCopyInfo = "copy_info"
+	// hotkeyContextInspector opens the full-context overlay: everything the
+	// harness is being sent, ranked by what it costs, with a lever per item.
+	hotkeyContextInspector = "context_inspector"
 	hotkeySendOutput       = "send_output"
 	hotkeyExecShell        = "exec_shell"
 	hotkeyOpenShellHere    = "open_shell_here"
@@ -111,6 +120,8 @@ var hotkeyActionOrder = []string{
 	hotkeyForkWithOptions,
 	hotkeyCopyOutput,
 	hotkeyCopyPane,
+	hotkeyCopyInfo,
+	hotkeyContextInspector,
 	hotkeySendOutput,
 	hotkeyExecShell,
 	hotkeyOpenShellHere,
@@ -158,6 +169,8 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyForkWithOptions:  "F",
 	hotkeyCopyOutput:       "c",
 	hotkeyCopyPane:         "V",
+	hotkeyCopyInfo:         "B",
+	hotkeyContextInspector: "C",
 	hotkeySendOutput:       "x",
 	hotkeyExecShell:        "E",
 	hotkeyOpenShellHere:    "H",
