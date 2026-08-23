@@ -4,19 +4,60 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-func TestIssue2045LaunchHelpOffersNamedAccountSlot(t *testing.T) {
+func TestIssue2045LaunchPersistsNamedAccountSlot(t *testing.T) {
 	home := t.TempDir()
-	stdout, stderr, code := runAgentDeck(t, home, "launch", "--help")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("AGENTDECK_PROFILE", "ch_support_test")
+	configDir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(`[profiles.work.claude]
+config_dir = "~/.claude-work"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The launch path requires tmux, but persistence is the behavior under
+	// test. A successful no-op executable lets the real command reach every
+	// create/start/save stage without sharing the developer's tmux server.
+	binDir := t.TempDir()
+	fakeTmux := "#!/bin/sh\ncase \" $* \" in\n  *' has-session '*) exit 1 ;;\nesac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte(fakeTmux), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stdout, stderr, code := runAgentDeck(t, home, "launch", home, "-c", "shell", "--account", "work", "--no-wait")
 	if code != 0 {
-		t.Fatalf("launch --help exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+		t.Fatalf("launch exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout+stderr, "-account") {
-		t.Fatalf("launch --help does not offer --account:\n%s%s", stdout, stderr)
+
+	storage, err := session.NewStorageWithProfile("ch_support_test")
+	if err != nil {
+		t.Fatalf("open launch storage: %v", err)
 	}
+	sessions, err := storage.Load()
+	if err != nil {
+		t.Fatalf("load launched session: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("persisted sessions = %d, want 1", len(sessions))
+	}
+	if sessions[0].Account != "work" {
+		t.Fatalf("persisted launch account = %q, want work", sessions[0].Account)
+	}
+
+	t.Run("RemoteSession", func(t *testing.T) {
+		t.Skip("RemoteSession out of scope: launch creates a local session and accepts no remote target")
+	})
 }
 
 func TestIssue2045AccountsListsConfiguredSlots(t *testing.T) {

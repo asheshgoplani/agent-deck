@@ -94,3 +94,54 @@ hatch for an intentional dash-prefixed name.
 - PASS: `go build ./... && go vet ./...`
 
 All Go commands above ran only in a `golang:1.25` container.
+
+# PR #2053 round-3 verification results
+
+## Blocking finding: launch account persistence had no effective test
+
+### Reproduction
+
+The verifier selectively removed the assignment at
+`cmd/agent-deck/launch_cmd.go:452-454` while retaining flag registration and
+parsing. The old help-only test remained green, proving it did not cover the
+user-visible persistence behavior.
+
+### Root cause
+
+`cmd/agent-deck/issue2045_accounts_cli_test.go:12` exercised only `launch
+--help`; it never entered the creation path or inspected the saved
+`Instance.Account`. The production assignment itself is at
+`cmd/agent-deck/launch_cmd.go:452-454`.
+
+### Fix
+
+`TestIssue2045LaunchPersistsNamedAccountSlot` now configures the `work` Claude
+account, drives the real `launch` command through creation, start, and save with
+an isolated fake tmux executable, opens the isolated profile storage, and
+asserts that exactly one saved instance has `Account == "work"`.
+
+The test also contains the requested focused `RemoteSession` skip marker.
+`launch` creates a local session and has no remote target argument or
+RemoteSession dispatch branch, so remote runtime behavior is not applicable.
+
+### Revert-proof
+
+All commands below ran in `golang:1.25` containers with
+`GOFLAGS=-buildvcs=false` for the bind-mounted linked worktree.
+
+- GREEN with the production assignment present:
+  `TestIssue2045LaunchPersistsNamedAccountSlot` exited 0.
+- RED after replacing only `launch_cmd.go:452-454` with `_ = account`:
+  `issue2045_accounts_cli_test.go:55: persisted launch account = "", want work`.
+- The assignment was then restored before the final verification.
+- Final combined container command passed:
+  `go test ./cmd/agent-deck -run "TestIssue2045|TestIssue2053" -count=1 -v && go build ./... && go vet ./...`.
+
+### Preserved invariant
+
+The change is test-only and does not alter launch ordering, persistence, or
+concurrency behavior. The test reaches the existing targeted
+`InsertSessionAndVerify` path, so it verifies account persistence without
+replacing the bounded/concurrency-safe launch save mechanism. The existing
+missing-value test continues to prove fail-closed ordering: malformed
+`--account --no-wait` input is rejected before state or tmux side effects.
