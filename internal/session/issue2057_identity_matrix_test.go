@@ -51,11 +51,15 @@ func TestIssue2057_CrossHarnessIdentityAndDurableDrain(t *testing.T) {
 	f2 := transitionEventOutputHash(fallback)
 
 	// Claude transcript identity is stable by append-only content boundary.
-	transcript := filepath.Join(t.TempDir(), "claude.jsonl")
+	project := t.TempDir()
+	transcript := filepath.Join(GetClaudeConfigDir(), "projects", ConvertToClaudeDirName(project), "session-2057.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(transcript, []byte("turn-one\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	claude := &Instance{ID: "claude", Tool: "claude", lastJSONLPath: transcript}
+	claude := &Instance{ID: "claude", Tool: "claude", ProjectPath: project, ClaudeSessionID: "session-2057"}
 	cl1 := transitionEventOutputHash(claude)
 	if transitionEventOutputHash(claude) != cl1 {
 		t.Fatal("Claude same-turn signal changed")
