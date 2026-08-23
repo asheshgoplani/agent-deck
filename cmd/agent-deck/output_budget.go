@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +21,8 @@ const (
 	outputBytesPerToken    = 4
 )
 
+const outputOmissionMarker = "\n\n… output omitted …\n\n"
+
 type outputReadEvent struct {
 	SessionID string `json:"session_id"`
 	Profile   string `json:"profile"`
@@ -30,28 +35,43 @@ type outputReadEvent struct {
 // prepareAgentBoundaryOutput strips terminal control sequences and applies a
 // conservative UTF-8 byte budget. Keeping both ends preserves the command or
 // question that started a long response and the final result/error that ended
-// it. The footer is part of the budget, so --max-tokens is always an upper
-// bound under the documented four-bytes-per-token approximation.
+// it. The footer is part of the budget unless the requested budget is too
+// small to preserve the complete recovery location.
 func prepareAgentBoundaryOutput(raw string, maxTokens int, fullPath string) (string, bool) {
 	clean := tmux.StripANSI(raw)
-	budget := maxTokens * outputBytesPerToken
+	budget := math.MaxInt
+	if maxTokens <= math.MaxInt/outputBytesPerToken {
+		budget = maxTokens * outputBytesPerToken
+	}
 	if len(clean) <= budget {
 		return clean, false
 	}
 
 	footer := fmt.Sprintf("\n\n… output truncated to %d tokens; full output at %s\n", maxTokens, fullPath)
-	contentBudget := budget - len(footer)
+	minimumBudget := len(footer)
+	if budget < minimumBudget {
+		budget = minimumBudget
+	}
+	contentBudget := budget - len(footer) - len(outputOmissionMarker)
 	if contentBudget <= 0 {
-		return truncateUTF8(footer, budget), true
+		return footer, true
 	}
 
 	headBytes := (contentBudget + 1) / 2
 	tailBytes := contentBudget - headBytes
 	head := truncateUTF8(clean, headBytes)
 	tail := truncateUTF8FromEnd(clean, tailBytes)
-	return head + tail + footer, true
+	return head + outputOmissionMarker + tail + footer, true
 }
 
+// shouldBoundAgentOutput identifies the human-readable agent boundary. JSON,
+// quiet, and clipboard modes are compatibility or internal transport surfaces
+// and must retain the complete source data.
+func shouldBoundAgentOutput(jsonOutput, quietMode, copyMode bool) bool {
+	return !jsonOutput && !quietMode && !copyMode
+}
+
+// truncateUTF8 returns the largest valid UTF-8 prefix within maxBytes.
 func truncateUTF8(s string, maxBytes int) string {
 	if maxBytes <= 0 {
 		return ""
@@ -66,6 +86,7 @@ func truncateUTF8(s string, maxBytes int) string {
 	return s[:cut]
 }
 
+// truncateUTF8FromEnd returns the largest valid UTF-8 suffix within maxBytes.
 func truncateUTF8FromEnd(s string, maxBytes int) string {
 	if maxBytes <= 0 {
 		return ""
@@ -80,16 +101,22 @@ func truncateUTF8FromEnd(s string, maxBytes int) string {
 	return s[start:]
 }
 
+// outputSnapshotPath resolves a session-scoped snapshot beneath the effective
+// agent-deck data directory.
 func outputSnapshotPath(sessionID, source string) (string, error) {
 	dataDir, err := session.GetAgentDeckDir()
 	if err != nil {
 		return "", err
 	}
 	safeID := strings.NewReplacer("/", "_", `\`, "_").Replace(sessionID)
+	if safeID == "" || strings.Trim(safeID, ".") == "" {
+		return "", fmt.Errorf("invalid session id for snapshot path: %q", sessionID)
+	}
 	return filepath.Join(dataDir, "output", safeID, "latest-"+source+".txt"), nil
 }
 
-func writeOutputSnapshot(path, raw string) error {
+// writeOutputSnapshot atomically persists raw output with private permissions.
+func writeOutputSnapshot(path, raw string) (retErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -99,8 +126,11 @@ func writeOutputSnapshot(path, raw string) error {
 	}
 	tmpName := tmp.Name()
 	ok := false
+	closed := false
 	defer func() {
-		_ = tmp.Close()
+		if !closed {
+			retErr = errors.Join(retErr, tmp.Close())
+		}
 		if !ok {
 			_ = os.Remove(tmpName)
 		}
@@ -114,8 +144,10 @@ func writeOutputSnapshot(path, raw string) error {
 	if err := tmp.Sync(); err != nil {
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	closeErr := tmp.Close()
+	closed = true
+	if closeErr != nil {
+		return closeErr
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
@@ -147,7 +179,18 @@ func recordOutputRead(profile string, event outputReadEvent) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(append(line, '\n'))
-	return err
+	return writeOutputReadLine(f, append(line, '\n'))
+}
+
+type outputReadWriteCloser interface {
+	io.Writer
+	io.Closer
+}
+
+// writeOutputReadLine reports both write and close failures so a buffered
+// filesystem error cannot be mistaken for a durable read event.
+func writeOutputReadLine(dst outputReadWriteCloser, line []byte) error {
+	_, writeErr := dst.Write(line)
+	closeErr := dst.Close()
+	return errors.Join(writeErr, closeErr)
 }
