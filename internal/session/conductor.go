@@ -1404,9 +1404,11 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 	return closeErr
 }
 
+var renameGeneratedFile = os.Rename
+
 // writeGeneratedFileOrMigrate creates a generated file when absent and upgrades
 // it only when its contents exactly match the previous generated template.
-// Symlinks and edited regular files remain user-owned and are never replaced.
+// Edited regular files remain user-owned; non-regular targets are rejected.
 func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMode) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -1416,7 +1418,7 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return nil
+		return fmt.Errorf("refusing to replace unsafe generated-file target %s (%s)", path, info.Mode().Type())
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -1425,7 +1427,58 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 	if !matchesTemplateContent(string(content), previous) {
 		return nil
 	}
-	return os.WriteFile(path, []byte(current), info.Mode().Perm())
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	keepTemp := true
+	defer func() {
+		if keepTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	fail := func(op string, opErr error) error {
+		_ = tmp.Close()
+		return fmt.Errorf("%s generated replacement: %w", op, opErr)
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		return fail("chmod", err)
+	}
+	if _, err := tmp.Write([]byte(current)); err != nil {
+		return fail("write", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail("sync", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close generated replacement: %w", err)
+	}
+
+	// Refuse to clobber a target replaced or edited while the new complete file
+	// was being prepared. The rename below is the only visibility boundary.
+	latestInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("recheck generated target: %w", err)
+	}
+	if !latestInfo.Mode().IsRegular() || !os.SameFile(info, latestInfo) {
+		return fmt.Errorf("generated target changed during migration: %s", path)
+	}
+	latest, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("recheck generated content: %w", err)
+	}
+	if !matchesTemplateContent(string(latest), previous) {
+		return fmt.Errorf("generated target was edited during migration: %s", path)
+	}
+	if err := renameGeneratedFile(tmpPath, path); err != nil {
+		return fmt.Errorf("replace generated target: %w", err)
+	}
+	keepTemp = false
+	fsyncDir(dir)
+	return nil
 }
 
 // InstallSharedConductorInstructions writes the shared instructions file for the given conductor agent,

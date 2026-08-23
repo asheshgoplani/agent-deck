@@ -102,13 +102,15 @@ agent-deck session children --json
 ```
 
 Lists your sub-sessions with, per child: `id`, `title`, live `status`
-(running / waiting / idle / error), and the last asserted completion
+(running / waiting / idle / error), and last asserted completion history
 (`done_status` = ok|fail, `done_summary`, `done_at`). Defaults to the current
 session; pass an id/title to inspect another parent. **Read-only** — it never
 clears the inbox, so you can poll it as often as you like from any chat without
 disturbing the conductor or other readers.
 
-A child with a `done_status` has finished and asserted its result.
+`done_status` records a prior assertion; it is not proof that the current turn
+is finished. Treat live `running`, `queued`, or `unknown` as still active even
+when completion history is present.
 
 **Prefer push over polling when your harness supports it.** Instead of
 re-running the check yourself, let the fleet notify you:
@@ -236,7 +238,7 @@ agent-deck ls --json | jq -r '.[] | select(.title|test("<name>")) | "\(.title)\t
 All read-only / on-demand — none of them block your session:
 
 - `agent-deck session children [id] --json` — **the default monitor.** Live
-  status + last completion per child. Non-destructive (never clears the inbox),
+  status + last completion history per child. Non-destructive (never clears the inbox),
   so poll it as often as you like. Start here every heartbeat.
 - `agent-deck session children --follow [--until-done]` — **the push monitor.**
   Streams JSONL child events (snapshot/added/status/done/removed/error +

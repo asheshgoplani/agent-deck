@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,62 @@ func TestWriteGeneratedFileOrMigratePreservesEditedAndNewerAssets(t *testing.T) 
 		if string(got) != content {
 			t.Fatalf("content %q clobbered to %q", content, got)
 		}
+	}
+}
+
+func TestWriteGeneratedFileOrMigrateRollbackCleansTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "managed")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalRename := renameGeneratedFile
+	renameGeneratedFile = func(string, string) error { return errors.New("injected rename failure") }
+	t.Cleanup(func() { renameGeneratedFile = originalRename })
+	if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
+		t.Fatal("expected replacement error")
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "old" {
+		t.Fatalf("old complete file changed to %q on failure", got)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || entries[0].Name() != "managed" {
+		t.Fatalf("temporary artifacts left after failure: %v", entries)
+	}
+}
+
+func TestWriteGeneratedFileOrMigratePublishesOnlyCompleteContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "managed")
+	old := strings.Repeat("o", 1<<20)
+	newContent := strings.Repeat("n", 1<<20)
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalRename := renameGeneratedFile
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	renameGeneratedFile = func(from, to string) error {
+		close(ready)
+		<-release
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { renameGeneratedFile = originalRename })
+	done := make(chan error, 1)
+	go func() { done <- writeGeneratedFileOrMigrate(path, old, newContent, 0o644) }()
+	<-ready
+	before, _ := os.ReadFile(path)
+	if string(before) != old {
+		t.Fatal("observer saw partial content before atomic publication")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != newContent {
+		t.Fatal("observer did not see complete replacement")
 	}
 }
 
