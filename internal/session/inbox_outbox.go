@@ -44,6 +44,18 @@ const (
 // for a human-readable completion summary while keeping the line scannable.
 const maxDoneSummaryBytes = 32 * 1024
 
+// maxPendingTurnsPerChild preserves distinct turn notifications without
+// allowing one stopped/no-longer-draining child producer to grow its parent's
+// inbox without bound. The total valid queue is therefore bounded by the
+// number of children. A producer gets ErrInboxTurnOverflow instead of an
+// implicit eviction, so no unacknowledged turn is silently lost.
+const maxPendingTurnsPerChild = 64
+
+// ErrInboxTurnOverflow is returned when a distinct turn would exceed the
+// per-child pending-turn bound. Callers can treat it as an observable,
+// retryable backpressure outcome; the inbox remains unchanged.
+var ErrInboxTurnOverflow = errors.New("inbox pending-turn limit reached")
+
 // capDoneSummary truncates an over-long completion summary to maxDoneSummaryBytes,
 // appending a marker so an operator sees the summary was clipped. Truncation is
 // byte-based (a multi-byte rune at the boundary is tolerated — the marker makes
@@ -142,6 +154,14 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
+	pendingForChild, retry, err := pendingTurnsForChildLocked(path, event)
+	if err != nil {
+		return err
+	}
+	if !retry && pendingForChild >= maxPendingTurnsPerChild {
+		return fmt.Errorf("%w: child=%s limit=%d", ErrInboxTurnOverflow, event.ChildSessionID, maxPendingTurnsPerChild)
+	}
+
 	// Drop only a retry of this exact turn before appending the fresh copy.
 	// rewriteInboxLocked is atomic and invalidates the
 	// fingerprint cache for the path.
@@ -156,6 +176,47 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	}
 
 	return appendInboxLineLocked(path, event)
+}
+
+// pendingTurnsForChildLocked counts the child's durable pending turns and
+// reports whether event is a retry already present in the queue. Caller holds
+// inboxWriteMu and the cross-process config-file lock.
+func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) (count int, retry bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == "" {
+			continue
+		}
+		ev, decodeErr := decodeInboxLine(scanner.Bytes())
+		if decodeErr != nil {
+			return 0, false, fmt.Errorf("scan inbox capacity: %w", decodeErr)
+		}
+		if ev.ChildSessionID != event.ChildSessionID {
+			continue
+		}
+		count++
+		fp := ev.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(ev)
+		}
+		if fp == event.TurnFingerprint {
+			retry = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, false, err
+	}
+	return count, retry, nil
 }
 
 // appendInboxLineLocked marshals one event and atomically installs an old-or-new

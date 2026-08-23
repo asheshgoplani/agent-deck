@@ -113,6 +113,15 @@ func TestIssue2057_FallbackAmbiguityFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	inst := &Instance{ID: "ambiguous", Tool: "codex"}
+	// Positive control: this is the exact completion-scoped fallback the
+	// implementation must recognize. Without it, all of the empty-signal
+	// assertions below could pass because Codex signaling was absent entirely.
+	write2057Hook(t, inst.ID, map[string]any{
+		"event": "turn.completed", "codex_started_sequence": 8, "codex_completed_sequence": 8,
+	})
+	if got := transitionEventOutputHash(inst); got == "" {
+		t.Fatal("valid completion-scoped fallback produced no signal")
+	}
 	for _, fields := range []map[string]any{
 		{"event": "turn.completed", "sequence": 22},
 		{"event": "turn.completed", "codex_started_sequence": 7, "codex_completed_sequence": 6},
