@@ -179,6 +179,39 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestRemoteSubcommandHelpRoutesToSelectedCommand(t *testing.T) {
+	tests := []struct {
+		command string
+		usage   string
+	}{
+		{"add", "Usage: agent-deck remote add <name> <user@host> [options]"},
+		{"remove", "Usage: agent-deck remote remove <name>"},
+		{"rm", "Usage: agent-deck remote remove <name>"},
+		{"list", "Usage: agent-deck remote list [options]"},
+		{"ls", "Usage: agent-deck remote list [options]"},
+		{"sessions", "Usage: agent-deck remote sessions [name] [options]"},
+		{"attach", "Usage: agent-deck remote attach <remote-name> <session-title-or-id>"},
+		{"rename", "Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>"},
+		{"update", "Usage: agent-deck remote update [name]"},
+	}
+
+	for _, tt := range tests {
+		for _, help := range []string{"--help", "-h", "help"} {
+			t.Run(tt.command+"/"+help, func(t *testing.T) {
+				home := t.TempDir()
+				out, err := runIssue2025Helper(t, home, []string{"remote", tt.command, help})
+				if err != nil {
+					t.Fatalf("help request failed: %v\n%s", err, out)
+				}
+				if !strings.Contains(string(out), tt.usage) {
+					t.Fatalf("help routed to wrong usage; want %q:\n%s", tt.usage, out)
+				}
+				assertNoFiles(t, home)
+			})
+		}
+	}
+}
+
 func runIssue2025Helper(t *testing.T, home string, args []string) ([]byte, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

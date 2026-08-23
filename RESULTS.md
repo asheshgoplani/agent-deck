@@ -54,3 +54,35 @@ The broader `cmd/agent-deck` suite was also attempted. Its issue-focused tests p
 https://github.com/asheshgoplani/agent-deck/pull/2055
 
 The PR includes `Closes #2025`, credits reporter @asheshgoplani, and remains unmerged.
+
+## Round 2 reviewer finding: nested remote help
+
+### Reproduction
+
+After confirming the branch was already up to date with `origin/main`, added `TestRemoteSubcommandHelpRoutesToSelectedCommand`. Before the fix, all 27 cases failed: `--help`, `-h`, and `help` for every remote subcommand and alias (`add`, `remove`/`rm`, `list`/`ls`, `sessions`, `attach`, `rename`, and `update`) printed only `Usage: agent-deck remote <command> [options]` instead of the selected command's usage.
+
+### Root cause
+
+`cmd/agent-deck/remote_cmd.go:23` recognized help across the entire nested argument list but returned through the generic parent usage function before the switch at line 28 could select a subcommand. That made the help request read-only, but discarded the selected command and its required arguments/options.
+
+### Fix
+
+`cmd/agent-deck/remote_cmd.go:23` now routes help through `printRemoteSubcommandUsage(args[0])`. The dispatcher at line 50 covers the complete switch family and both aliases, prints each selected command's invocation, and documents the flags for `add`, `list`, and `sessions`. Unknown selections retain generic remote help. Routing still occurs before any config or SSH work.
+
+### Test and evidence
+
+`TestRemoteSubcommandHelpRoutesToSelectedCommand` is an executable-level enumeration test. Each case runs with isolated HOME/XDG directories, requires exit status 0, asserts the exact selected usage line, and asserts no files were created. It failed before the production change and passes after it together with the original issue tests:
+
+```text
+go test ./cmd/agent-deck -run '^(TestRemoteSubcommandHelpRoutesToSelectedCommand|TestIssue2025TrailingHelpIsReadOnly|TestEveryRegisteredCommandHelpIsReadOnly|TestCommandRegistryMatchesMainDispatch)$' -count=1
+ok github.com/asheshgoplani/agent-deck/cmd/agent-deck 11.541s
+```
+
+The bundled CLI reference already lists every remote invocation and option at `skills/agent-deck/references/cli-reference.md:597-660`; the corrected runtime help now agrees with it.
+
+Required repository proof also passed in `golang:1.25`:
+
+```text
+go build ./... && go vet ./...
+exit 0
+```
