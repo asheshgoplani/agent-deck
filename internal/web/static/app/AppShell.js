@@ -146,6 +146,12 @@ function useLazyGroupStatsPanel(needed) {
   return useLazyComponent(needed, () => import('./GroupStatsPanel.js'), 'groupPanel', m => m.GroupStatsPanel)
 }
 
+// Keys that still work while an overlay is open. `?` toggles the shortcuts
+// overlay, so it must be able to close the thing it opens; `q` exists to
+// dismiss modals; `]` toggles the rail. Escape is handled earlier, before the
+// in-field guard. Everything else is blocked -- see the gate in onKey.
+const OVERLAY_PASSTHROUGH_KEYS = new Set(['?', 'q', ']'])
+
 function Panes({ tab }) {
   // A selected GROUP takes over the work area regardless of which tab is
   // active. The group panel is not a tab, and housing it inside the terminal
@@ -370,6 +376,16 @@ export function AppShell() {
         return
       }
       if (inField) return
+
+      // An open overlay owns the keyboard. Without this, `j`/`k` moved the
+      // sidebar selection, `Enter` opened a session, and `n` stacked a second
+      // dialog -- all behind an open ConfirmDialog, whose focused element is a
+      // <button>, so the inField guard above never applied.
+      //
+      // Deliberately an allow-list rather than a blanket `return`: blocking
+      // everything would make `?` unable to close the overlay it opens and
+      // turn `q` into a no-op exactly when it is needed.
+      if (anyOverlayOpen() && !OVERLAY_PASSTHROUGH_KEYS.has(e.key)) return
 
       // Shift+Enter: open focused session in new browser tab (web equivalent
       // of the TUI's iTerm "new tab" affordance, issue #1077). Check this

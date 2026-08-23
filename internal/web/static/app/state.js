@@ -213,11 +213,20 @@ export const systemStatsSignal = signal(null)
 // SSE snapshot lands; the pane handles the null case with a skeleton.
 export const commandCenterSignal = signal(null)
 
+// Monotonic request token. Six call sites now reach this, one of them driven
+// by the menu SSE stream, so overlapping requests are routine -- and without a
+// guard an older response completing last would overwrite a newer archived
+// snapshot, showing a stale set until something else refetched.
+let archivedRequestSeq = 0
+
 export async function loadArchivedSessions() {
+  const seq = ++archivedRequestSeq
   try {
     const data = await apiFetch('GET', '/api/sessions/archived')
+    if (seq !== archivedRequestSeq) return   // a newer request superseded this one
     archivedSessionsSignal.value = data.sessions || []
   } catch (_) {
+    if (seq !== archivedRequestSeq) return
     archivedSessionsSignal.value = []
   }
 }
