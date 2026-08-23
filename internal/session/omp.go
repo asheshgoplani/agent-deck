@@ -71,8 +71,7 @@ func resolveOMPCommand(baseCommand string) string {
 	return cmd
 }
 
-// ompApprovalModeFlag returns the ` --approval-mode <value>` suffix for the
-// configured [omp].approval_mode, or "" when unset.
+// ompArgsSuffix shell-quotes a structured OMP argument list for the target.
 func ompArgsSuffix(args []string) string {
 	if len(args) == 0 {
 		return ""
