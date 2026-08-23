@@ -78,5 +78,9 @@ All Go execution was inside `golang:1.25` containers.
 
 ## CI state
 
-Pending on the final pushed commit; this section will be updated with the exact
-head and completed check conclusion before handoff.
+The first complete post-fix run was GREEN on `4a638808`: all 16 reported checks
+passed, including the eight-minute Full test suite PR gate, golangci,
+govulncheck, CodeQL, eval smoke, persistence/race tests, snapshot tests,
+performance tests, both harness platforms, diffscope, and intake. After this
+CI-result paragraph was committed, the complete check set was required to
+finish GREEN again on the exact final pushed head before handoff.
