@@ -1,114 +1,83 @@
-# PR #2050 Round-2 Results
+# PR #2050 final verification
 
-The branch was rebased against `origin/main` before reproduction; it was already
-up to date. Reviewer comments that describe the same defect are grouped below,
-but every inline, summary, and owner finding is accounted for.
+## Rebase evidence
 
-## 1. `--copy` silently copied truncated data
+- Pre-rebase head: `4282ece17d842eeb36e29c3470acb1a20c802dfa`.
+- Fetched and rebased first onto current `origin/main` at
+  `7771aca6c3c356090e01f7af1f068c9290cfce46`.
+- Rebased feature/fix commits: `7a1d14af` and `6c138701`.
+- `git range-diff` confirmed both PR commits survived. A direct old-head/new-head
+  production-path comparison showed only the expected new `main` account-command
+  changes; the output-budget production and test hunks were unchanged. The only
+  rebase conflict was the shared operational `RESULTS.md`.
+- The rebased branch was pushed with `--force-with-lease` before review work.
 
-- Reproduction: `TestAgentBoundaryModesEnumeration/copy_keeps_full_clipboard`
-  failed on the reviewed head because there was no mode guard and
-  `response.Content` was replaced before the clipboard branch.
-- Root cause: `cmd/agent-deck/session_cmd.go:4462-4502` mutated the source
-  response before selecting the output consumer.
-- Fix: centralize consumer selection in `shouldBoundAgentOutput`; copy mode now
-  bypasses boundary truncation and `clipboard.Copy` receives the untouched
-  response.
-- Evidence: targeted CLI regression suite passes in Go 1.25 container.
+## Findings addressed
 
-## 2. Remote SSH pane previews lost ANSI; JSON/quiet compatibility regressed
+All issue comments, reviews, and eight inline review comments were read. The
+current head addresses every distinct finding:
 
-- Reproduction: `TestAgentBoundaryModesEnumeration` enumerates default, JSON,
-  quiet, and copy consumers; the JSON and quiet cases failed on the reviewed
-  head. `TestIssue1101_RemotePreview_FetchUsesPaneFlag` proves the SSH parser
-  transports ANSI-rich pane content.
-- Root cause: `cmd/agent-deck/session_cmd.go:4418-4447` unconditionally passed
-  pane content through the ANSI-stripping budget helper before JSON
-  serialization. The same unconditional branch changed existing transcript
-  JSON and quiet callers.
-- Fix: only default human-readable text crosses the bounded agent boundary.
-  JSON (including `FetchSessionPane` over SSH), quiet, and copy modes preserve
-  full raw source content and the existing JSON envelope.
-- Evidence: targeted `cmd/agent-deck` and `internal/ui` tests pass; CLI help,
-  conductor docs, and `skills/agent-deck` CLI reference describe the modes.
+1. Copy mode keeps the complete response and its complete size metadata.
+2. JSON and quiet transport remain unbounded/raw; remote SSH pane JSON therefore
+   retains ANSI and matches the local preview contract.
+3. Truncated head and tail fragments have an explicit omission marker.
+4. Tiny budgets retain the complete recovery footer and integer multiplication
+   saturates instead of overflowing.
+5. JSONL event writes propagate both write and close failures (CodeQL #292).
+6. Empty and dot-only session IDs cannot escape the snapshot directory.
+7. Durability assertions resolve the effective data directory through the same
+   production helper as event recording.
+8. Touched helpers are documented and the remote pane-fetch regression is in
+   the targeted gate.
 
-## 3. Head/tail concatenation fabricated a nonexistent line
+## Revert proofs
 
-- Reproduction: `TestPrepareAgentBoundaryOutputMarksOmittedContent` failed on
-  the reviewed head because the retained prefix and suffix were adjacent.
-- Root cause: `cmd/agent-deck/output_budget.go:55-64` reserved no bytes for a
-  splice delimiter.
-- Fix: reserve and insert an explicit `… output omitted …` marker between the
-  UTF-8-safe fragments.
-- Evidence: the seam regression and byte-cap/head-tail regression pass.
+All Go commands ran in `golang:1.25` containers. In an isolated detached
+worktree at the rebased head, the corresponding production guards were removed
+while tests were left intact. The targeted test command exited 1 with behavioral
+failures (not a compile failure):
 
-## 4. Tiny and overflowing token budgets lost the recovery footer
+- missing seam: `TestPrepareAgentBoundaryOutputMarksOmittedContent` RED;
+- chopped tiny-budget footer:
+  `TestPrepareAgentBoundaryOutputAlwaysIncludesRecoveryFooter` RED;
+- overflowing budget: `TestPrepareAgentBoundaryOutputSaturatesOverflow` RED;
+- forced bounding across all consumers: JSON, quiet, and copy cases in
+  `TestAgentBoundaryModesEnumeration` RED;
+- removed dot-only guard: all four cases in
+  `TestOutputSnapshotPathRejectsDotOnlySessionIDs` RED;
+- ignored close failure: `TestWriteOutputReadLineReturnsCloseError` RED.
 
-- Reproduction: `TestPrepareAgentBoundaryOutputAlwaysIncludesRecoveryFooter`
-  showed `--max-tokens 1` returning only a chopped footer;
-  `TestPrepareAgentBoundaryOutputSaturatesOverflow` showed `math.MaxInt`
-  wrapping the byte budget negative.
-- Root cause: `cmd/agent-deck/output_budget.go:40-57` multiplied unchecked and
-  truncated the footer with a nonpositive content budget.
-- Fix: saturate multiplication at `math.MaxInt` and treat the complete recovery
-  footer as the minimum emitted budget. Tiny budgets therefore preserve the
-  promised location instead of pretending the requested cap can contain it.
-- Evidence: both boundary-value tests pass in the Go 1.25 container.
+The PR checkout was never mutated by this proof. With production restored, the
+targeted gate passed:
 
-## 5. Writable close errors were swallowed (CodeQL #292)
+```text
+go test ./cmd/agent-deck ./internal/ui -run 'Test(PrepareAgentBoundaryOutput|AgentBoundaryModesEnumeration|OutputSnapshot|WriteOutputReadLine|Issue1101_RemotePreview_FetchUsesPaneFlag)' -count=1
+ok github.com/asheshgoplani/agent-deck/cmd/agent-deck
+ok github.com/asheshgoplani/agent-deck/internal/ui
+```
 
-- Reproduction: `TestWriteOutputReadLineReturnsCloseError` injects a writer
-  whose write succeeds and close fails; the reviewed deferred `f.Close()` could
-  not return that failure.
-- Root cause: `cmd/agent-deck/output_budget.go:161-195` discarded the close
-  result after appending the JSONL event. Snapshot cleanup also contained an
-  ignored deferred close.
-- Fix: `writeOutputReadLine` joins write and close errors; snapshot persistence
-  tracks explicit closure and propagates cleanup close errors through its named
-  return.
-- Evidence: injected close-error test passes; `go vet ./...` passes.
+The required repository gate also passed:
 
-## 6. Dot-only session IDs escaped the snapshot directory
+```text
+go build ./... && go vet ./...
+```
 
-- Reproduction: `TestOutputSnapshotPathRejectsDotOnlySessionIDs` showed `.`,
-  `..`, `...`, and empty IDs resolving without error; `..` normalized above the
-  session directory.
-- Root cause: `cmd/agent-deck/output_budget.go:104-115` replaced separators but
-  did not reject path dot segments.
-- Fix: reject empty and dot-only sanitized IDs before `filepath.Join`.
-- Evidence: the table-driven path regression passes.
+## Invariant check
 
-## 7. Durability test hardcoded the non-effective data directory
+- Bounds: default human text is capped; tiny budgets deliberately expand only
+  enough to retain the recovery locator; overflow saturates safely.
+- Ordering/fail closed: paths are validated and full snapshots are durably
+  closed before bounded output is emitted; persistence failures abort emission.
+- Data integrity: the source is never overwritten for copy, JSON, quiet, or SSH
+  transport, and a seam marker prevents fabricated adjacency.
+- Parity: the enumeration covers every output consumer (default, JSON, quiet,
+  copy), while the SSH pane test covers the remote sibling path.
+- Idempotence: reads do not modify session/transcript state; they append one
+  audit event per invocation and atomically replace only that session/source's
+  recovery snapshot.
 
-- Reproduction: reviewer analysis showed the test path diverges when legacy
-  markers make `GetAgentDeckDir` select the legacy directory.
-- Root cause: `cmd/agent-deck/output_budget_test.go` constructed the log path
-  directly from `$XDG_DATA_HOME` while production uses
-  `session.GetAgentDeckDir()`.
-- Fix: the test now resolves its assertion path through the same production
-  helper.
-- Evidence: `TestOutputSnapshotAndReadEventAreDurable` passes.
+## CI state
 
-## 8. Remote coverage and touched-function documentation
-
-- Reproduction: review correctly identified that the new helper-only tests did
-  not cover the remote pane consumer and touched-function doc coverage was low.
-- Root cause: coverage stopped at `prepareAgentBoundaryOutput`; several new
-  helpers lacked Go doc comments.
-- Fix: include the SSH remote-preview regression in the gauntlet, enumerate all
-  output consumers, and document each touched helper.
-- Evidence: targeted CLI/UI tests and `go vet ./...` pass.
-
-## Verification
-
-- Red evidence on reviewed head: new regression batch failed to compile because
-  the consumer guard and close-aware writer did not exist; direct helper tests
-  additionally exposed the absent seam, lost footer, overflow, and unsafe IDs.
-- Green targeted gate:
-  `go test ./cmd/agent-deck ./internal/ui -run 'Test(PrepareAgentBoundaryOutput|AgentBoundaryModesEnumeration|OutputSnapshot|WriteOutputReadLine|Issue1101_RemotePreview_FetchUsesPaneFlag)' -count=1`
-- Required repository gate: `go build ./... && go vet ./...` passes in
-  `golang:1.25` with the mounted checkout registered as a Git safe directory.
-- A broader package test attempt was also made. Unrelated environment-only
-  failures were observed: subprocess builds rejected the container-mounted Git
-  ownership until safe-directory configuration, and tmux-dependent UI tests
-  cannot run in the stock Go image. No changed-path test failed.
+The final evidence commit was pushed and every required GitHub check was allowed
+to finish on that exact SHA. The final external state is recorded in the PR's
+check suite; no merge was performed.
