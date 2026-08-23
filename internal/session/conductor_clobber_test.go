@@ -1,7 +1,9 @@
 package session
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,9 +81,9 @@ func TestWriteGeneratedFileOrMigrateRollbackCleansTemporaryFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	originalRename := renameGeneratedFile
-	renameGeneratedFile = func(string, string) error { return errors.New("injected rename failure") }
-	t.Cleanup(func() { renameGeneratedFile = originalRename })
+	originalExchange := exchangeGeneratedFiles
+	exchangeGeneratedFiles = func(string, string) error { return errors.New("injected exchange failure") }
+	t.Cleanup(func() { exchangeGeneratedFiles = originalExchange })
 	if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
 		t.Fatal("expected replacement error")
 	}
@@ -103,15 +105,15 @@ func TestWriteGeneratedFileOrMigratePublishesOnlyCompleteContent(t *testing.T) {
 	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	originalRename := renameGeneratedFile
+	originalExchange := exchangeGeneratedFiles
 	ready := make(chan struct{})
 	release := make(chan struct{})
-	renameGeneratedFile = func(from, to string) error {
+	exchangeGeneratedFiles = func(from, to string) error {
 		close(ready)
 		<-release
-		return os.Rename(from, to)
+		return exchangeGeneratedFile(from, to)
 	}
-	t.Cleanup(func() { renameGeneratedFile = originalRename })
+	t.Cleanup(func() { exchangeGeneratedFiles = originalExchange })
 	done := make(chan error, 1)
 	go func() { done <- writeGeneratedFileOrMigrate(path, old, newContent, 0o644) }()
 	<-ready
@@ -129,21 +131,44 @@ func TestWriteGeneratedFileOrMigratePublishesOnlyCompleteContent(t *testing.T) {
 	}
 }
 
-func priorGeneratedInstructions(template string) string {
-	template = strings.Replace(template,
-		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | **Always triage with this compact count summary first:** `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`,
-		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | Get counts: `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`, 1)
-	template = strings.Replace(template,
-		`| `+"`"+`agent-deck -p <PROFILE> list --json`+"`"+` | Expensive full inventory; use only when the user explicitly needs details for every profile session, never for status triage or polling |`,
-		`| `+"`"+`agent-deck -p <PROFILE> list --json`+"`"+` | List all sessions with details (id, title, path, tool, status, group) |`, 1)
-	template = strings.Replace(template,
-		`| `+"`"+`agent-deck -p <PROFILE> session children --follow --until-done`+"`"+` | Block in one shell call while children run; emits every waiting/error transition and exits when all children are terminal |\n`, "", 1)
-	template = strings.Replace(template,
-		`For child work still in flight, wait with one blocking `+"`"+`agent-deck -p <PROFILE> session children --follow --until-done`+"`"+` call. Do not spend turns repeatedly calling `+"`"+`list --json`+"`"+` or `+"`"+`session children --json`+"`"+`.\n\n`, "", 1)
-	template = strings.ReplaceAll(template,
-		`4. Only if the compact counts require action, inspect the affected child through `+"`"+`session children`+"`"+`/`+"`"+`session show`+"`"+`; never use `+"`"+`list --json`+"`"+` for triage`,
-		`4. Run `+"`"+`agent-deck -p {PROFILE} list --json`+"`"+` to know what sessions exist`)
-	return template
+func TestWriteGeneratedFileOrMigrateRestoresEditAtPublication(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "managed")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalExchange := exchangeGeneratedFiles
+	first := true
+	exchangeGeneratedFiles = func(from, to string) error {
+		if first {
+			first = false
+			if err := os.WriteFile(to, []byte("user edited"), 0o644); err != nil {
+				return err
+			}
+		}
+		return exchangeGeneratedFile(from, to)
+	}
+	t.Cleanup(func() { exchangeGeneratedFiles = originalExchange })
+	if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
+		t.Fatal("expected concurrent-edit error")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "user edited" {
+		t.Fatalf("concurrent edit clobbered: got %q", got)
+	}
+}
+
+// These fingerprints were captured from the generated assets in fffbef46^,
+// the release immediately before the guidance change. Unlike reconstructing
+// history by reversing current edits, they fail if production invents even one
+// byte of the prior release's content.
+var priorReleaseInstructionSHA256 = map[string]struct{ shared, perName string }{
+	ConductorAgentClaude: {"17959a9f4cbf343fe0d7cba850c74f039ad2bbffd4e521a70631a3ebdb905f57", "d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2"},
+	ConductorAgentCodex:  {"cce189efca2f2c8ccedfaee4dd74bc5669fcc85e1a4d441ed7f4e49f598bd366", "b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83"},
+	ConductorAgentHermes: {"2c836f29873758c1f4fb093fe1a6f4360f33f1e22eae1bad9a573bdebef884bf", "664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b"},
 }
 
 func TestGeneratedConductorInstructionsMigrateExactPriorTemplate(t *testing.T) {
@@ -163,7 +188,10 @@ func TestGeneratedConductorInstructionsMigrateExactPriorTemplate(t *testing.T) {
 				t.Fatal(err)
 			}
 			sharedPath := filepath.Join(base, spec.InstructionsFileName)
-			oldShared := renderConductorInstructionsTemplate(priorGeneratedInstructions(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
+			oldShared := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
+			if got := fmtHash(oldShared); got != priorReleaseInstructionSHA256[agent].shared {
+				t.Fatalf("prior shared fixture hash = %s, want released asset %s", got, priorReleaseInstructionSHA256[agent].shared)
+			}
 			if err := os.WriteFile(sharedPath, []byte(oldShared), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -192,7 +220,10 @@ func TestGeneratedConductorInstructionsMigrateExactPriorTemplate(t *testing.T) {
 				perNameTemplate = conductorPerNameHermesMDTemplate
 			}
 			perNamePath := filepath.Join(nameDir, spec.InstructionsFileName)
-			oldPerName := renderConductorInstructionsTemplate(priorGeneratedInstructions(perNameTemplate), name, DefaultProfile, spec)
+			oldPerName := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(perNameTemplate), name, DefaultProfile, spec)
+			if got := fmtHash(oldPerName); got != priorReleaseInstructionSHA256[agent].perName {
+				t.Fatalf("prior per-name fixture hash = %s, want released asset %s", got, priorReleaseInstructionSHA256[agent].perName)
+			}
 			if err := os.WriteFile(perNamePath, []byte(oldPerName), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -209,6 +240,10 @@ func TestGeneratedConductorInstructionsMigrateExactPriorTemplate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func fmtHash(content string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 }
 
 // TestSetupConductorWithAgent_PreservesEditsAndMetaOnRerun verifies the

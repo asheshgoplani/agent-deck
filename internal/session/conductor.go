@@ -1404,7 +1404,10 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 	return closeErr
 }
 
-var renameGeneratedFile = os.Rename
+// exchangeGeneratedFiles atomically swaps two pathnames. After the exchange,
+// the temporary pathname holds the displaced destination, which lets the
+// caller validate (and, if necessary, restore) the exact file it replaced.
+var exchangeGeneratedFiles = exchangeGeneratedFile
 
 // writeGeneratedFileOrMigrate creates a generated file when absent and upgrades
 // it only when its contents exactly match the previous generated template.
@@ -1427,7 +1430,6 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 	if !matchesTemplateContent(string(content), previous) {
 		return nil
 	}
-
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -1457,8 +1459,9 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 		return fmt.Errorf("close generated replacement: %w", err)
 	}
 
-	// Refuse to clobber a target replaced or edited while the new complete file
-	// was being prepared. The rename below is the only visibility boundary.
+	// Avoid needless exchanges when a change is already visible. This recheck is
+	// only an optimization: correctness comes from validating the file displaced
+	// by the atomic exchange below.
 	latestInfo, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("recheck generated target: %w", err)
@@ -1473,10 +1476,22 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 	if !matchesTemplateContent(string(latest), previous) {
 		return fmt.Errorf("generated target was edited during migration: %s", path)
 	}
-	if err := renameGeneratedFile(tmpPath, path); err != nil {
+	if err := exchangeGeneratedFiles(tmpPath, path); err != nil {
 		return fmt.Errorf("replace generated target: %w", err)
 	}
-	keepTemp = false
+	displacedInfo, statErr := os.Lstat(tmpPath)
+	displaced, readErr := os.ReadFile(tmpPath)
+	if statErr != nil || readErr != nil || !displacedInfo.Mode().IsRegular() ||
+		!os.SameFile(info, displacedInfo) || !matchesTemplateContent(string(displaced), previous) {
+		// An edit landed after the last recheck. Swap it back atomically; the
+		// generated replacement returns to tmpPath and is removed by the defer.
+		if restoreErr := exchangeGeneratedFiles(tmpPath, path); restoreErr != nil {
+			// Do not delete the only copy of the displaced user file.
+			keepTemp = false
+			return fmt.Errorf("generated target changed during publication; displaced file preserved at %s (restore: %w)", tmpPath, restoreErr)
+		}
+		return fmt.Errorf("generated target was edited during publication: %s", path)
+	}
 	fsyncDir(dir)
 	return nil
 }
