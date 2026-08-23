@@ -89,6 +89,9 @@ func TestChildTerminal(t *testing.T) {
 		want bool
 	}{
 		{"running is not terminal", childRow{Status: "running"}, false},
+		{"stale done cannot override running", childRow{Status: "running", DoneStatus: "ok"}, false},
+		{"stale done cannot override queued", childRow{Status: "queued", DoneStatus: "ok"}, false},
+		{"stale done cannot override unknown", childRow{Status: "unknown", DoneStatus: "ok"}, false},
 		{"waiting is terminal for supervision", childRow{Status: "waiting"}, true},
 		{"idle without sentinel is not terminal", childRow{Status: "idle"}, false},
 		{"done sentinel is terminal", childRow{Status: "idle", DoneStatus: "ok"}, true},
@@ -102,6 +105,31 @@ func TestChildTerminal(t *testing.T) {
 				t.Errorf("childTerminal(%+v) = %v, want %v", tc.row, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunChildrenFollowWaitsForCurrentTurnFinish(t *testing.T) {
+	polls := 0
+	restore := pollChildRows
+	pollChildRows = func(string, string) ([]childRow, error) {
+		polls++
+		status := "running"
+		if polls >= 2 {
+			status = "idle"
+		}
+		return []childRow{{ID: "a", Title: "restarted", Status: status, DoneStatus: "ok", DoneSummary: "older turn"}}, nil
+	}
+	t.Cleanup(func() { pollChildRows = restore })
+
+	var out strings.Builder
+	if code := runChildrenFollow("p", "parent", time.Millisecond, 0, true, &out); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if polls != 2 {
+		t.Fatalf("polls = %d, want 2; stale completion ended the current turn early", polls)
+	}
+	if !strings.Contains(out.String(), `"from":"running","to":"idle"`) || !strings.Contains(out.String(), `"event":"complete"`) {
+		t.Fatalf("missing actual finish transition or completion:\n%s", out.String())
 	}
 }
 

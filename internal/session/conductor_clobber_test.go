@@ -7,6 +7,71 @@ import (
 	"testing"
 )
 
+func TestWriteGeneratedFileOrMigrateReplacesInodeAndRejectsUnsafeTargets(t *testing.T) {
+	t.Run("hard link is isolated", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "managed")
+		backup := filepath.Join(dir, "backup")
+		if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(path, backup); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(backup)
+		if string(got) != "old" {
+			t.Fatalf("hard-linked backup mutated to %q", got)
+		}
+		info, _ := os.Stat(path)
+		if info.Mode().Perm() != 0o640 {
+			t.Fatalf("mode = %o, want 640", info.Mode().Perm())
+		}
+	})
+
+	for _, kind := range []string{"directory", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "managed")
+			if kind == "directory" {
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				target := filepath.Join(dir, "target")
+				if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
+				t.Fatal("unsafe target silently accepted")
+			}
+		})
+	}
+}
+
+func TestWriteGeneratedFileOrMigratePreservesEditedAndNewerAssets(t *testing.T) {
+	for _, content := range []string{"user edited", "new"} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "managed")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(path)
+		if string(got) != content {
+			t.Fatalf("content %q clobbered to %q", content, got)
+		}
+	}
+}
+
 func priorGeneratedInstructions(template string) string {
 	template = strings.Replace(template,
 		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | **Always triage with this compact count summary first:** `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`,
