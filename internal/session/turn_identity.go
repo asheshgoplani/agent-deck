@@ -88,12 +88,20 @@ func AwaitTurnIdentity(path, prompt string, cursor int64, timeout, poll time.Dur
 				cursor = 0
 			}
 			_, _ = f.Seek(cursor, 0)
-			sc := bufio.NewScanner(f)
-			sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-			for sc.Scan() {
-				cursor += int64(len(sc.Bytes())) + 1
+			r := bufio.NewReaderSize(f, 64*1024)
+			for {
+				line, readErr := r.ReadBytes('\n')
+				if readErr != nil {
+					// Do not consume a partial trailing JSON record. Claude may be
+					// writing it concurrently; the next poll must retry from the
+					// same durable cursor once its newline arrives.
+					break
+				}
+				cursor += int64(len(line))
+				line = bytes.TrimSuffix(line, []byte{'\n'})
+				line = bytes.TrimSuffix(line, []byte{'\r'})
 				var rec turnRecord
-				if json.Unmarshal(sc.Bytes(), &rec) != nil {
+				if json.Unmarshal(line, &rec) != nil {
 					continue
 				}
 				body, human := humanPrompt(rec)

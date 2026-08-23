@@ -2901,10 +2901,13 @@ func handleSessionSend(profile string, args []string) {
 	sentAt := time.Now()
 	var turnPath string
 	var turnCursor int64
-	if *wait || *stream {
-		if !session.IsClaudeCompatible(inst.Tool) {
-			out.Error(fmt.Sprintf("cannot establish turn identity for tool %q; refusing guessed --wait/--stream output", inst.Tool), ErrCodeInvalidOperation)
-			os.Exit(1)
+	useTurnIdentity := *stream || (*wait && session.IsClaudeCompatible(inst.Tool))
+	if useTurnIdentity {
+		if fresh := inst.GetSessionIDFromTmux(); fresh != "" {
+			inst.ClaudeSessionID = fresh
+			// #1815: own pane env — weak vouch.
+			session.NoteClaudeSessionIDFromOwnPane(inst)
+			inst.ClaudeDetectedAt = time.Now()
 		}
 		var pathErr error
 		turnPath, pathErr = inst.GetJSONLPathChecked(instances)
@@ -2912,12 +2915,14 @@ func handleSessionSend(profile string, args []string) {
 			out.Error(fmt.Sprintf("cannot establish turn identity: %v", pathErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		if turnPath != "" {
-			turnCursor, pathErr = session.TranscriptCursor(turnPath)
-			if pathErr != nil {
-				out.Error(fmt.Sprintf("cannot capture turn identity cursor: %v", pathErr), ErrCodeInvalidOperation)
-				os.Exit(1)
-			}
+		if turnPath == "" {
+			out.Error("cannot establish turn identity: transcript path unavailable before send", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		turnCursor, pathErr = session.TranscriptCursor(turnPath)
+		if pathErr != nil {
+			out.Error(fmt.Sprintf("cannot capture turn identity cursor: %v", pathErr), ErrCodeInvalidOperation)
+			os.Exit(1)
 		}
 	}
 
@@ -3008,21 +3013,8 @@ func handleSessionSend(profile string, args []string) {
 	// may sit behind another live turn, so bind wait/stream to the durable user
 	// transcript record before observing completion or assistant output.
 	var turnID session.TurnIdentity
-	if *wait || *stream {
+	if useTurnIdentity {
 		identityDeadline := time.Now().Add(*timeout)
-		for turnPath == "" && time.Now().Before(identityDeadline) {
-			if fresh := inst.GetSessionIDFromTmux(); fresh != "" {
-				inst.ClaudeSessionID = fresh
-			}
-			turnPath, _ = inst.GetJSONLPathChecked(instances)
-			if turnPath == "" {
-				time.Sleep(200 * time.Millisecond)
-			}
-		}
-		if turnPath == "" {
-			out.Error("turn identity not established: transcript path unavailable", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
 		remaining := time.Until(identityDeadline)
 		var identityErr error
 		turnID, identityErr = session.AwaitTurnIdentity(turnPath, message, turnCursor, remaining, 100*time.Millisecond)
@@ -3084,9 +3076,17 @@ func handleSessionSend(profile string, args []string) {
 
 		// The status check detects the UI prompt reappearing, but the JSONL may
 		// not be flushed yet. Poll for this exact turn's end_turn record.
-		response, err := session.AwaitTurnResponse(turnID, *timeout, 100*time.Millisecond)
-		if err != nil {
-			out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
+		var response *session.ResponseOutput
+		var responseErr error
+		if useTurnIdentity {
+			response, responseErr = session.AwaitTurnResponse(turnID, *timeout, 100*time.Millisecond)
+		} else {
+			// Preserve the pre-#2043 contract for non-Claude tools, whose output
+			// adapters do not expose Claude transcript UUIDs.
+			response, responseErr = waitForFreshOutput(inst, sentAt, instances)
+		}
+		if responseErr != nil {
+			out.Error(fmt.Sprintf("failed to get response: %v", responseErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		fmt.Println(response.Content)
@@ -3599,6 +3599,15 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	}
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
+		// Hook-busy is itself positive evidence that the one submitted message
+		// is queued behind the live turn. Classification must not depend on the
+		// Ctrl+C resend threshold or budget: --no-wait deliberately has no such
+		// budget, but must still report this successful queued delivery.
+		if opts.targetBusyByHook != nil {
+			if busy, known := opts.targetBusyByHook(); known && busy {
+				return deliveryQueued, nil
+			}
+		}
 
 		unsentPromptDetected := false
 		// paneNow is this iteration's observation (raw ANSI + whether the
@@ -3651,16 +3660,8 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// #2033: a target that is in fact generating satisfies every
 				// condition here, because the spike-filtered status decays
 				// through waiting to idle without ever reporting active. The
-				// hook-driven busy signal (the same one --defer-if-busy polls,
-				// #1578) is the authoritative answer: busy means the message
-				// is queued behind a live turn. Report it as queued instead of
-				// letting the budget expire into a false "NOT delivered".
-				// known == false (hooks absent or not firing) changes nothing.
-				if opts.targetBusyByHook != nil {
-					if busy, known := opts.targetBusyByHook(); known && busy {
-						return deliveryQueued, nil
-					}
-				}
+				// hook-driven busy probe at the top of the loop is what tells
+				// that target apart from one that never received the message.
 
 				// We haven't observed any post-send activity yet. Nudge Enter
 				// aggressively in the early window (every iteration for first 5
