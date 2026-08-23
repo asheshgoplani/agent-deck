@@ -1579,18 +1579,16 @@ func (s *Session) inStartupWindowLocked() bool {
 // respawning the pane more than once.
 func (s *Session) expireStartupHandover() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.startupTimedOut {
-		s.mu.Unlock()
 		return true
 	}
 	if s.startupAt.IsZero() || time.Since(s.startupAt) < startupStateWindow {
-		s.mu.Unlock()
 		return false
 	}
 	s.startupTimedOut = true
 	s.startupAt = time.Time{}
 	s.lastStableStatus = "error"
-	s.mu.Unlock()
 
 	restartTarget := s.DisplayName
 	if strings.TrimSpace(restartTarget) == "" {
@@ -1769,6 +1767,10 @@ func ReconnectSessionWithStatus(tmuxName, displayName, workDir, command string, 
 	sess := ReconnectSession(tmuxName, displayName, workDir, command)
 
 	switch previousStatus {
+	case "error":
+		sess.startupTimedOut = true
+		sess.lastStableStatus = "error"
+
 	case "idle":
 		// Session was acknowledged (user saw it) - restore as GRAY
 		sess.stateTracker = &StateTracker{
@@ -1821,6 +1823,10 @@ func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previo
 
 	// Restore state tracker based on previous status (without running tmux commands)
 	switch previousStatus {
+	case "error":
+		sess.startupTimedOut = true
+		sess.lastStableStatus = "error"
+
 	case "idle":
 		sess.stateTracker = &StateTracker{
 			lastHash:       "",
@@ -3510,14 +3516,30 @@ func (s *Session) RespawnPane(command string) error {
 		args = append(args, wrapped...)
 	}
 
+	// Serialize the pane replacement with expireStartupHandover. The mutex is
+	// the generation claim: neither path may kill a pane and then publish state
+	// for a different process generation.
+	s.mu.Lock()
+
 	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
 	cmd := s.tmuxCmd(args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		s.mu.Unlock()
 		mcpLog.Debug("respawn_pane_error", slog.String("error", err.Error()), slog.String("output", string(output)))
 		return fmt.Errorf("failed to respawn pane: %w (output: %s)", err, string(output))
 	}
 	mcpLog.Debug("respawn_pane_output", slog.String("output", string(output)))
+
+	// Publish the new generation before releasing the claim. A timeout poll can
+	// only proceed after it observes this fresh startup clock.
+	s.startupAt = time.Now()
+	s.startupTimedOut = false
+	s.lastStableStatus = "waiting"
+	s.stateTracker = nil
+	s.cachedPromptDetector = nil
+	s.cachedPromptDetectorTool = ""
+	s.mu.Unlock()
 
 	// Capture the NEW process tree so we don't accidentally kill anything the
 	// respawn just created. Keep the probe error: "could not tell" must not be
@@ -3540,16 +3562,6 @@ func (s *Session) RespawnPane(command string) error {
 			)
 		}
 	}
-
-	// Reset startup/status trackers so GetStatus can classify the fresh process correctly.
-	s.mu.Lock()
-	s.startupAt = time.Now()
-	s.startupTimedOut = false
-	s.lastStableStatus = "waiting"
-	s.stateTracker = nil
-	s.cachedPromptDetector = nil
-	s.cachedPromptDetectorTool = ""
-	s.mu.Unlock()
 
 	return nil
 }
@@ -5082,10 +5094,10 @@ func (s *Session) hasPromptIndicator(content string) bool {
 // redraws its input prompt below the banner, so prompt detection alone would
 // report "waiting" for a session that cannot make progress).
 func (s *Session) hasErrorBannerIndicator(content string) bool {
-	// Agent-deck's own startup hold is tool-neutral and survives process
-	// restarts in the pane contents. Recognize it before tool inference so a
-	// fresh CLI/TUI process reports the same error verdict (#1892).
-	if strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
+	// Agent-deck's own startup hold is tool-neutral. Only recognize its text
+	// while the current/restored generation owns the timeout; tmux preserves old
+	// pane contents across RespawnPane, so text alone is stale-prone evidence.
+	if s.startupTimedOut && strings.Contains(strings.ToLower(StripANSI(content)), "session startup timed out before the agent became interactive") {
 		return true
 	}
 	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
