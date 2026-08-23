@@ -39,3 +39,10 @@ The rebased branch was pushed without merging. All checks passed on rebased repo
 - CodeRabbit review
 
 The final report-only commit was then pushed and its exact-head checks were also allowed to run to completion before handoff.
+
+## Round-5 base refresh
+
+- The readiness repair began from the authoritative reviewed head `9961cc9e0992b96b05c5665adff8090c84163cd9` and retained the already-pushed round-5 verification commits through `40760de4f1a5f0e101726df2baaf9d577f67eec1`.
+- GitHub `main` advanced once more to `bf50689893053c6dd33a29b21e12eb36e251d94b` (`chore(release): v1.15.0 changelog (#2059)`). The eight-commit repaired PR stack was rebased onto that exact base. This refresh had no conflicts; `git range-diff 7771aca6..40760de4 github/main..HEAD` reported all eight patches identical.
+- `git merge-base --is-ancestor github/main HEAD` succeeds and `git rev-list --left-right --count github/main...HEAD` reports `0 8` before this report update. The original rebase conflict remained confined to `RESULTS.md`; no production, test, Darwin/Linux exchange, heartbeat, generated-file preservation, or child-state hunk was dropped.
+- Exact-head build/test receipts and GitHub CI state for the final pushed report head are recorded in the accompanying `fix-2051-r5.RESULT.json` handoff artifact.
