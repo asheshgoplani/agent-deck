@@ -253,6 +253,44 @@ func TestWriteCodexHookStatus_IdentityLessCompletionFailsClosed(t *testing.T) {
 	if got.CodexCompletedGeneration != "" {
 		t.Fatalf("identity-less completion converged: %#v", got)
 	}
+	if got.CodexStartedSequence == 0 || got.CodexCompletedSequence != got.CodexStartedSequence {
+		t.Fatalf("completion did not bind retained start sequence: %#v", got)
+	}
+	// A repeat completion is the same turn, not a fresh sequence.
+	seq := got.CodexCompletedSequence
+	writeCodexHookStatus("no-turn", "waiting", "thread-1", "agent-turn-complete", "")
+	data, err = os.ReadFile(filepath.Join(getHooksDir(), "no-turn.json"))
+	if err != nil || json.Unmarshal(data, &got) != nil || got.CodexCompletedSequence != seq {
+		t.Fatalf("completion retry changed sequence: %#v err=%v", got, err)
+	}
+	// A new proven start/completion pair advances exactly once.
+	writeCodexHookStatus("no-turn", "running", "thread-1", "turn.started", "")
+	writeCodexHookStatus("no-turn", "waiting", "thread-1", "agent-turn-complete", "")
+	data, err = os.ReadFile(filepath.Join(getHooksDir(), "no-turn.json"))
+	if err != nil || json.Unmarshal(data, &got) != nil || got.CodexCompletedSequence <= seq {
+		t.Fatalf("distinct fallback turn did not advance: %#v err=%v", got, err)
+	}
+}
+
+func TestWriteCodexHookStatus_PartialPriorFailsClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_HOOKS_DIR", filepath.Join(t.TempDir(), "hooks"))
+	if err := os.MkdirAll(getHooksDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(getHooksDir(), "partial.json")
+	partial := []byte(`{"status":`)
+	if err := os.WriteFile(path, partial, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCodexHookStatus("partial", "running", "", "turn.started", "")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(partial) {
+		t.Fatalf("ambiguous prior was overwritten: %q", got)
+	}
 }
 
 func TestWriteCodexHookStatus_LegacyCompletionConvergesWithoutStart(t *testing.T) {
