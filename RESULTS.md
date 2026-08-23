@@ -1,66 +1,53 @@
-# Round-4 results — PR #2055
+# PR #2055 round-5 fix results
 
-## Verdict
+## Decision and reconciliation
 
-PASS. Both round-4 blockers are fixed. The reviewed predecessor was
-`1fca383db1827999f9901c9a819e510f2c05ee66`; the round-4 baseline commit was
-`287e14db9e6f3649e54d5e9921395acfb6bdd575`. The exact pushed tip is recorded
-in the adjacent structured `RESULT.json` receipt because a commit cannot
-contain its own hash.
+The round-4 worker tip was inspected rather than accepted blindly. Its local tip
+`cc4009fc333b204c012b49674ca5537cd013c654` added command-family enumeration and
+eval-smoke coverage on top of the reviewed `287e14db9e6f3649e54d5e9921395acfb6bdd575`,
+but did not address the authoritative round-4 finding: hooks usage still omitted
+the accepted `help` subcommand. Those useful tests were preserved. The branch was
+rebased onto current `origin/main` `bf50689893053c6dd33a29b21e12eb36e251d94b`
+before the round-5 edit.
 
-All Go commands below ran through the required Go 1.25 container gate. No Go
-test or build command ran on the host.
+## Fix
 
-## Blocking finding 1 — bare `hooks help`
+`agent-deck hooks help` now advertises
+`<help|install|uninstall|status>` and lists `help` in its Commands section. The
+focused unit and real-binary eval assertions require both strings while retaining
+the existing successful dispatch and complete HOME-tree no-write checks.
 
-- Reproduction: at the reviewed predecessor, `agent-deck hooks help` printed
-  `Unknown hooks subcommand: help`, printed hooks usage, and exited 1.
-- Root cause: `cmd/agent-deck/hook_handler.go` changed from its local helper,
-  which recognized bare `help`, to the shared flag-only `helpRequested` helper,
-  but did not retain a command-position `case "help"` as the Codex, Gemini,
-  Hermes, and Cursor hook dispatchers do.
-- Fix: `handleHooks` now explicitly handles command-position `help` and writes
-  its detailed family usage to stdout. The shared helper remains flag-only, so
-  positional data named `help` is still preserved.
-- Family audit: `TestEveryRegisteredCommandFamilyBareHelpIsReadOnly` enumerates
-  every registered top-level subcommand family that documents bare help,
-  including aliases. Each case requires exit 0, family-specific usage (not
-  generic top-level usage), and an empty temporary HOME.
-- Mutation proof: removing only the new `case "help"` made the `hooks` row RED:
-  exit 1 with `Unknown hooks subcommand: help`. The mutation was restored.
+## Predecessor RED and mutation proof
 
-## Blocking finding 2 — non-discriminating creds-refresh test
+The assertion-only predecessor `c6b1db71ee4ec54eb1e924f2e000b548a989588d`
+was run through `overnight/build-service.sh`. It was RED and reported
+`TestHooksBareHelpPrintsUsageWithoutSideEffects`: dispatch exited successfully
+and printed hooks usage, but that usage was still
+`<install|uninstall|status>` and had no `help` command. Receipt:
 
-- Decision: keep the production pre-parse guard; it is not redundant. Go's
-  flag package happens to make a normal trailing `--help` successful, but does
-  not satisfy the stronger CLI contract when an earlier unknown flag exists.
-- Strengthened test: the creds case now invokes
-  `creds-refresh --not-a-real-flag --help`. The explicit help-consent guard must
-  win before flag parsing, print usage, exit 0, and leave the full fixture tree
-  unchanged.
-- Mutation proof: removing only the `helpRequested(args)` production guard made
-  `TestIssue2025TrailingHelpIsReadOnly/creds_refresh` RED with exit 2 and
-  `flag provided but not defined: -not-a-real-flag`. The mutation was restored.
+- build-service result: `overnight/builds/c6b1db71ee4ec54eb1e924f2e000b548a989588d/test-936568f6`
+- gate summary: `overnight/metrics/gates/20260823T185822-fix_2055_r5_predecessor-c6b1db71-container-targeted/summary.json`
 
-## Permanent behavioral eval
+This is the requested production mutation proof: removing only the usage fix
+recreates that predecessor while leaving the successful, read-only `help`
+dispatch intact, and the focused assertion becomes RED.
 
-`tests/eval/helpconsent` builds and executes the real CLI binary in the eval
-sandbox. `TestEval_HooksBareHelpIsDetailedAndReadOnly` requires successful
-`hooks help`, detailed hooks usage, and a byte-for-byte stable sandbox tree.
-Removing the production hooks case made this eval RED with exit 1; restoring
-the production case made it green. The eval is tagged `eval_smoke`, so it runs
-in the permanent PR/release evaluator gauntlet.
+## Preserved guarantees
 
-## Fixed-tip receipts
+The complete command-family enumeration, detailed nested help, positional data
+named `help`, and complete-tree no-write assertions from rounds 1-4 remain in
+place. No dispatch, parsing, or mutation ordering changed in round 5.
 
-The consistency gauntlet completed successfully in `golang:1.25`:
+## Fixed-tip gates and ancestry
 
-```text
-go build ./...                                                PASS
-go vet ./...                                                  PASS
-go test ./cmd/agent-deck -run '<8 help-consent tests>'        PASS (6.631s)
-go test -tags eval_smoke ./tests/eval/helpconsent/...         PASS (1.416s)
-```
+- `overnight/build-service.sh` build/vet was GREEN at production tip
+  `81f586cb5513e323e47c365741b428177e1c7ef6`; receipt
+  `overnight/builds/81f586cb5513e323e47c365741b428177e1c7ef6/build`.
+- The final committed tip is required to receive a fresh build-service build/vet
+  receipt and exact-head GitHub CI after push; those receipts are recorded in
+  the external `RESULT.json` so its own commit does not make the recorded SHA
+  stale.
+- `git merge-base --is-ancestor origin/main HEAD` passed after rebase, and
+  `git rev-list --left-right --count origin/main...HEAD` reported `0 8` before
+  the two round-5 test/eval commits and this evidence commit.
 
-The working tree was checked with `git diff --check`. Production mutation
-proofs were applied one at a time and restored before the fixed-tip gauntlet.
