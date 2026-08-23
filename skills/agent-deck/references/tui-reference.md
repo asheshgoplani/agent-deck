@@ -33,8 +33,8 @@ Complete reference for agent-deck Terminal UI features.
 | `Shift+U` | Unarchive session (restores to list; does NOT auto-start tmux) |
 | `b` | Re-run worktree setup script (`.agent-deck/worktree-setup.sh`) |
 | `u` | Mark unread (idle -> waiting) |
-| `f` | Quick fork (Claude/OpenCode/Pi/Codex) |
-| `F` | Fork with options (Claude/OpenCode/Pi/Codex) |
+| `f` | Quick fork (Claude/OpenCode/Pi/Codex/Oh My Pi) |
+| `F` | Fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi) |
 
 For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. Remote-session reorder keys move only within the current remote group; the order is saved on the viewing machine, while remote group headers remain name-sorted.
 
