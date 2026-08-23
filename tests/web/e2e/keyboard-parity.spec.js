@@ -219,11 +219,22 @@ test.describe('keyboard parity: visual', () => {
     await waitForAppMount(page)
   })
 
+  // Screenshots the opaque DIALOG, not the full-viewport overlay.
+  //
+  // `.overlay` is `rgba(0,0,0,0.5)` + `backdrop-filter: blur(4px)` (app.css),
+  // so a shot of it is a blurred rendering of the whole live app behind it --
+  // footer system stats polled every 5s, pulsing status dots, relative
+  // timestamps. Measured on one fixed browser build at the tablet viewport:
+  // the overlay produced 4 distinct hashes in 5 runs, `.kshort-dialog`
+  // produced 1 in 5. Disabling animations and awaiting document.fonts.ready
+  // changed nothing, which ruled both out. The dialog holds the binding table
+  // this test actually cares about, and it is deterministic.
   test('shortcuts overlay renders consistently', async ({ page }) => {
     await page.keyboard.press('?')
-    const overlay = page.locator('[data-testid="shortcuts-overlay"]')
-    await expect(overlay).toBeVisible()
+    await expect(page.locator('[data-testid="shortcuts-overlay"]')).toBeVisible()
+    const dialog = page.locator('.kshort-dialog')
+    await expect(dialog).toBeVisible()
     await page.waitForTimeout(200)
-    await expect(overlay).toHaveScreenshot('shortcuts-overlay.png')
+    await expect(dialog).toHaveScreenshot('shortcuts-dialog.png')
   })
 })

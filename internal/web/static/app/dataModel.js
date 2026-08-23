@@ -21,7 +21,7 @@ function deriveKind(s) {
   return 'agent'
 }
 
-function projectSession(item) {
+export function projectSession(item) {
   const s = item.session || {}
   const id = s.id || ''
   const groupPath = s.groupPath || ''
@@ -55,10 +55,9 @@ function projectSession(item) {
     lastAccessedAt: s.lastAccessedAt || '',
     createdAt: s.createdAt || '',
     sandbox: false,     // not exposed by API
-    // Sessions from the menu snapshot are active by definition — the server
-    // archive-filters it (session_data_service.go:278). archivedByGroupSignal
-    // flips this to true for the archived feed. Always present, never
-    // undefined, so consumers can branch on it without a guard.
+    // Menu-snapshot sessions are active by definition (the server
+    // archive-filters it); archivedByGroupSignal flips this for the archived
+    // feed. Always present so consumers need no guard.
     archived: false,
     parent: null,
     pendingNeeds: 0,
@@ -152,11 +151,9 @@ export function toggleGroupOpen(path) {
 // Row-level filter predicate shared by the sidebar and keyboard nav.
 // `filter` must already be lowercased and trimmed.
 export function sessionMatches(s, filter, statuses) {
-  // Compare on the BUCKET, not the raw status, so the chips agree with the
-  // group stats panel: `starting` counts as running and `queued` as idle.
-  // An exact `statuses.includes(s.status)` made those two match no chip at
-  // all, so a starting/queued session vanished from the sidebar as soon as
-  // any filter was activated.
+  // Compare on the BUCKET so chips agree with the panel. An exact
+  // `statuses.includes(s.status)` made starting/queued match no chip, so those
+  // sessions vanished from the sidebar whenever any filter was active.
   if (statuses && statuses.length && !statuses.includes(statusBucket(s.status))) return false
   if (!filter) return true
   const hay = (s.title || '') + ' ' + (s.group || '') + ' ' + (s.path || '') +
@@ -165,8 +162,8 @@ export function sessionMatches(s, filter, statuses) {
 }
 
 // The sidebar's rendered row order, group headers included. Single source of
-// truth: the Sidebar renders from it and keyboard navigation walks it, so the
-// two can never disagree about what is on screen.
+// truth: the Sidebar renders it and keyboard nav walks it, so they cannot
+// disagree about what is on screen.
 export const sidebarRowsSignal = computed(() => {
   const { groups, byGroup } = menuModelSignal.value
   const filter = (sidebarFilterSignal.value || '').trim().toLowerCase()
@@ -186,22 +183,10 @@ export const sidebarRowsSignal = computed(() => {
   return rows
 })
 
-// Status buckets for the group stats panel, in the TUI's fixed display order
-// with the TUI's glyphs (internal/ui/home.go:19418-19444).
-export const GROUP_STATUS_BUCKETS = [
-  { id: 'running', glyph: '●', label: 'running' },
-  { id: 'waiting', glyph: '◐', label: 'waiting' },
-  { id: 'idle',    glyph: '○', label: 'idle' },
-  { id: 'stopped', glyph: '■', label: 'stopped' },
-  { id: 'error',   glyph: '✕', label: 'error' },
-]
-
-// Map a session status onto one of the five display buckets.
-//
-// Deliberate divergence from the TUI: its five-case switch lets `starting`
-// and `queued` fall through UNCOUNTED, so its fragments can sum to less than
-// its own "N sessions" headline. We fold them in — and default anything
-// unrecognized to idle — so the breakdown always adds up.
+// Map a status onto one of the five display buckets. Deliberate divergence:
+// the TUI's switch lets `starting`/`queued` fall through uncounted, so its
+// fragments can under-sum its own headline. Folding them in (and defaulting
+// unknowns to idle) keeps the breakdown adding up.
 export function statusBucket(status) {
   switch (status) {
     case 'running':
@@ -218,49 +203,9 @@ export function statusBucket(status) {
   }
 }
 
-// Status breakdown for one group. Direct members only — no subgroup rollup,
-// matching the TUI preview pane (note MenuGroup.sessionCount from the server
-// DOES roll up, so do not use it here).
-// Archived sessions bucketed by group path, projected into the same shape as
-// active ones. GET /api/sessions/archived returns bare MenuSession objects
-// (not menu items), so wrap each before reusing projectSession.
-export const archivedByGroupSignal = computed(() => {
-  const byGroup = {}
-  for (const raw of (archivedSessionsSignal.value || [])) {
-    if (!raw) continue
-    const s = projectSession({ session: raw })
-    s.archived = true
-    ;(byGroup[s.group] ||= []).push(s)
-  }
-  return byGroup
-})
-
-// Everything the group stats panel shows for a group: active members first,
-// then archived ones.
-//
-// The archived half exists for TUI parity. The TUI builds its group tree from
-// the full instance set (internal/ui/home.go:3540), so renderGroupPreview
-// lists and counts archived sessions — while its LEFT list partitions them out
-// (home.go:2470-2493). The web mirrors that split: the snapshot behind the
-// sidebar is archive-filtered server-side (session_data_service.go:278), and
-// this function folds the archived feed back in for the panel alone.
-export function groupMembers(groupPath) {
-  const active = menuModelSignal.value.byGroup[groupPath] || []
-  const archived = archivedByGroupSignal.value[groupPath] || []
-  return [...active, ...archived]
-}
-
-export function groupStats(groupPath) {
-  const members = groupMembers(groupPath)
-  const counts = { running: 0, waiting: 0, idle: 0, stopped: 0, error: 0 }
-  for (const s of members) counts[statusBucket(s.status)]++
-  return {
-    total: members.length,
-    fragments: GROUP_STATUS_BUCKETS
-      .filter((b) => counts[b.id] > 0)
-      .map((b) => ({ id: b.id, glyph: b.glyph, count: counts[b.id], label: b.label })),
-  }
-}
+// Status breakdown for one group. Direct members only, matching the TUI
+// preview. NB: MenuGroup.sessionCount from the server DOES roll up subgroups —
+// do not use it here.
 
 // Epoch millis for a session's createdAt; -Infinity when absent or unparsable
 // so a session with no timestamp never wins "newest".
@@ -269,13 +214,10 @@ function createdAtMillis(s) {
   return Number.isNaN(t) ? -Infinity : t
 }
 
-// Defaults for a new session created in `groupPath`.
-//
-// Mirrors the TUI's quick-create (internal/ui/home.go:12325-12350): the folder
-// comes from the group's configured default_path and falls back to the group's
-// newest session path; the tool and model are inherited from the most recently
-// CREATED session in the group. Everything is derived client-side, so no
-// per-group tool/model schema is needed.
+// Defaults for a new session in `groupPath`, mirroring the TUI's quick-create
+// (home.go:12325-12350): folder from the group's configured default_path,
+// falling back to its newest session's path; tool and model inherited from the
+// most recently CREATED session. All derived client-side.
 export function groupCreateDefaults(groupPath) {
   const blank = { groupPath: '', groupName: '', defaultPath: '', tool: '', modelId: '' }
   if (!groupPath) return blank

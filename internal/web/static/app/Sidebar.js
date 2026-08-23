@@ -234,7 +234,7 @@ export function Sidebar() {
                  data-testid=${`group-head-${r.path}`}
                  data-row-key=${r.key}
                  aria-selected=${selectedGroup === r.path}
-                 onClick=${() => { selectGroup(r.path); activeTabSignal.value = 'terminal' }}>
+                 onClick=${() => selectGroup(r.path)}>
               <button type="button" class="chev"
                       data-testid=${`group-chev-${r.path}`}
                       title=${isGroupOpen(expandedMap, r.path) ? 'Collapse group' : 'Expand group'}

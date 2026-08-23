@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 const stateModulePath = '../../../internal/web/static/app/state.js'
 const dataModelModulePath = '../../../internal/web/static/app/dataModel.js'
+const groupPanelDataPath = '../../../internal/web/static/app/groupPanelData.js'
 
 function session(id, status, groupPath = 'work') {
   return { type: 'session', session: { id, title: id, groupPath, tool: 'claude', status } }
@@ -16,7 +17,7 @@ describe('groupStats', () => {
 
   it('emits non-zero buckets in the TUI fixed order with the TUI glyphs', async () => {
     const { sessionsSignal } = await import(stateModulePath)
-    const { groupStats } = await import(dataModelModulePath)
+    const { groupStats } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [
       { type: 'group', group: { name: 'work', path: 'work' } },
@@ -38,7 +39,7 @@ describe('groupStats', () => {
 
   it('omits zero buckets entirely', async () => {
     const { sessionsSignal } = await import(stateModulePath)
-    const { groupStats } = await import(dataModelModulePath)
+    const { groupStats } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [
       { type: 'group', group: { name: 'work', path: 'work' } },
@@ -50,7 +51,7 @@ describe('groupStats', () => {
 
   it('folds starting into running and queued into idle so counts sum to the total', async () => {
     const { sessionsSignal } = await import(stateModulePath)
-    const { groupStats } = await import(dataModelModulePath)
+    const { groupStats } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [
       { type: 'group', group: { name: 'work', path: 'work' } },
@@ -69,7 +70,7 @@ describe('groupStats', () => {
 
   it('counts direct members only, never subgroups', async () => {
     const { sessionsSignal } = await import(stateModulePath)
-    const { groupStats } = await import(dataModelModulePath)
+    const { groupStats } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [
       { type: 'group', group: { name: 'work', path: 'work' } },
@@ -83,7 +84,7 @@ describe('groupStats', () => {
   })
 
   it('returns an empty result for an unknown group', async () => {
-    const { groupStats } = await import(dataModelModulePath)
+    const { groupStats } = await import(groupPanelDataPath)
     expect(groupStats('nope')).toEqual({ total: 0, fragments: [] })
   })
 })
@@ -104,7 +105,7 @@ describe('archived sessions in group membership', () => {
 
   it('groupMembers lists active members first, then archived, each flagged', async () => {
     const { sessionsSignal, archivedSessionsSignal } = await import(stateModulePath)
-    const { groupMembers } = await import(dataModelModulePath)
+    const { groupMembers } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [
       { type: 'group', group: { name: 'work', path: 'work' } },
@@ -125,7 +126,7 @@ describe('archived sessions in group membership', () => {
 
   it('groupStats counts archived sessions in the total and the fragments', async () => {
     const { sessionsSignal, archivedSessionsSignal } = await import(stateModulePath)
-    const { groupStats } = await import(dataModelModulePath)
+    const { groupStats } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [
       { type: 'group', group: { name: 'work', path: 'work' } },
@@ -145,7 +146,7 @@ describe('archived sessions in group membership', () => {
 
   it('buckets archived sessions by their own group, with no cross-group bleed', async () => {
     const { sessionsSignal, archivedSessionsSignal } = await import(stateModulePath)
-    const { groupMembers } = await import(dataModelModulePath)
+    const { groupMembers } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [{ type: 'group', group: { name: 'work', path: 'work' } }]
     archivedSessionsSignal.value = [
@@ -159,7 +160,7 @@ describe('archived sessions in group membership', () => {
 
   it('leaves counts unchanged when nothing in the group is archived', async () => {
     const { sessionsSignal } = await import(stateModulePath)
-    const { groupStats } = await import(dataModelModulePath)
+    const { groupStats } = await import(groupPanelDataPath)
 
     sessionsSignal.value = [
       { type: 'group', group: { name: 'work', path: 'work' } },

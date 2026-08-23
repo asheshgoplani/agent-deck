@@ -112,4 +112,22 @@ test.describe('URL routing (/s/{id})', () => {
     await expect(newPage.locator('.sess.sel .tt')).toHaveText('frontend')
     await newPage.close()
   })
+
+  // PR #2047 review item 1: applyPath used to force the terminal pane for every
+  // /s/{id} URL, overruling a deliberately chosen session-scoped pane. Six
+  // skills.spec failures came from this. A cold link may steer; a viewer with a
+  // stored choice may not be overruled.
+  test('/s/{id} preserves an explicitly chosen pane', async ({ browser }) => {
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    try {
+      await page.addInitScript(() => {
+        localStorage.setItem('agentdeck.tab', JSON.stringify('skills'))
+      })
+      await page.goto('/s/sess-001')
+      await expect(page.locator('[data-testid="skills-pane"]')).toBeVisible({ timeout: 5000 })
+    } finally {
+      await ctx.close()
+    }
+  })
 })
