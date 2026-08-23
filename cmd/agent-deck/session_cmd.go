@@ -961,11 +961,7 @@ func handleSessionFork(profile string, args []string) {
 
 	// Verify this tool has a session-fork implementation.
 	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
-	isPiFork := inst.Tool == "pi"
-	isOpenCodeFork := inst.Tool == "opencode"
-	isCodexFork := session.IsCodexCompatible(inst.Tool)
-	isOMPFork := inst.Tool == "omp"
-	if !isClaudeFork && !isPiFork && !isOpenCodeFork && !isCodexFork && !isOMPFork {
+	if !session.SupportsNativeFork(inst.Tool) {
 		out.Error(
 			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
@@ -1675,9 +1671,11 @@ func handleSessionShow(profile string, args []string) {
 	// bug report against the wrong component.
 	jsonData["wrapper"] = inst.Wrapper
 
+	if session.SupportsNativeFork(inst.Tool) {
+		jsonData["can_fork"] = inst.CanFork()
+	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
-		jsonData["can_fork"] = inst.CanFork()
 		jsonData["can_restart"] = inst.CanRestart()
 
 		if mcps := mcpInfoForJSON(mcpInfo); mcps != nil {

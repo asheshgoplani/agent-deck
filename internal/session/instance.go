@@ -9569,7 +9569,17 @@ func (i *Instance) CanRestartFresh() bool {
 	return i.CanRestartGeneric()
 }
 
-// CanFork returns true if this session can be forked
+// SupportsNativeFork reports whether tool has a concrete native fork
+// dispatcher. Keep CLI/API capability gates routed through this helper so a
+// newly supported tool cannot be admitted by Instance.CanFork while remaining
+// rejected or hidden at another surface.
+func SupportsNativeFork(tool string) bool {
+	return IsClaudeCompatible(tool) || tool == "pi" || tool == "opencode" ||
+		IsCodexCompatible(tool) || tool == "omp"
+}
+
+// CanFork returns true if this session currently has the source state needed
+// by its native fork implementation.
 func (i *Instance) CanFork() bool {
 	// Gemini CLI doesn't support forking
 	if i.Tool == "gemini" {

@@ -907,17 +907,15 @@ func detectToolFromCommand(command string) string {
 // In particular, incidental argument text such as `grep omp README.md` is not
 // evidence that the pane runs OMP.
 func isOMPCommand(fields []string) bool {
-	commandSeen := false
 	for idx, field := range fields {
-		if !commandSeen && isShellAssignmentToken(field) {
+		if isShellAssignmentToken(field) {
 			continue
 		}
 		base := filepath.Base(strings.Trim(field, `"'`))
 		base = strings.TrimSuffix(strings.TrimSuffix(base, ".exe"), ".cmd")
-		if base == "env" && !commandSeen {
+		if base == "env" {
 			continue
 		}
-		commandSeen = true
 		if base == "omp" || base == "oh-my-pi" {
 			return true
 		}

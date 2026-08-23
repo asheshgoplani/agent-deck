@@ -140,3 +140,71 @@ Fix commit: `9f9883df` plus this results-only follow-up. All Go commands ran in
 - Mutation exits: session 1, tmux 1, UI 1, Web 1, isolated fork 1, all for the
   intended missing contract/assertions documented above.
 - No CHANGELOG or workflow files changed. PR was not merged.
+
+## Post-51338619 CI/Codex re-measurement
+
+This follow-up began by fetching `origin/main` and the PR branch. The measured
+relationship was `16 0` for `HEAD...origin/main`: the PR was 16 commits ahead
+and **zero behind**, so no rebase was necessary and no finding was attributed to
+a stale base.
+
+### golangci-lint — survived and fixed
+
+- Reproduction: both GitHub Actions run `32633307304` and an exact local
+  `golangci/golangci-lint:v2.13.1` container reported
+  `internal/tmux/tmux.go:920:3: ineffectual assignment to commandSeen`.
+- Root cause/fix: `isOMPCommand` returns immediately after inspecting the first
+  command-position token, making its `commandSeen = true` assignment dead. The
+  dead state was removed without changing command-position parsing.
+- Red without fix: `/tmp/r3-2054/mutation-lint` at `51338619` produced the
+  exact `ineffassign` diagnostic above. Current head reports `0 issues` under
+  the same linter image/version.
+- Preserved invariant: the existing alias/environment-prefix/false-positive
+  detector test remains green.
+
+### CodeQL log injection — suppressed, no source change
+
+- Re-measurement: current CodeQL CI is green. The historical alert's source is
+  session-controlled instance/path text; its sink is a `slog.String` attribute
+  passed through `logging.dynamicHandler` to Go's `slog.TextHandler` or
+  `slog.JSONHandler` (`internal/logging/logger.go:143-147,193-205`). There is no
+  raw string concatenation into the log stream.
+- Dynamic validation: a Go 1.25 reproduction passed embedded newline and CR
+  bytes through both production handler types. Both emitted exactly one record
+  and encoded the bytes as `\\n`/`\\r` inside the attribute.
+- Disposition: false positive, high confidence. No logging-boundary defect
+  exists, so no feature-branch change and no separate security PR are needed.
+- Durable validation report and PoC:
+  `/tmp/codex-security-scans/agent-deck/51338619_20260823T1025Z/artifacts/05_findings/codeql-log-injection/`.
+
+### CLI fork gate and configured command — already fixed, re-proved
+
+- The CLI gate contains the OMP path and
+  `TestSessionFork_OMPReachesNativeForkPath` passes at current head. Its original
+  red-without-fix proof remains commit `b1252e08`'s parent overlay: OMP was
+  rejected as `not forkable` before reaching native dispatch.
+- `resolveOMPCommand` treats persisted literal `omp` as the configured-command
+  sentinel, while retaining explicit per-session commands.
+  `TestBuildOMPCommand_ConfiguredCommandWinsForInitialStartAndRestart` passes at
+  current head; on `b1252e08`'s parent it failed because configured flags were
+  absent. No duplicate fix was added.
+
+### Other tool-gated command sweep
+
+- The fork command's hand-maintained five-way boolean gate was the only CLI
+  rejection gate of that shape. It now uses
+  `session.SupportsNativeFork`, the same canonical capability helper covering
+  Claude-compatible, Pi, OpenCode, Codex-compatible, and OMP dispatchers.
+- The sweep found one sibling surface bug: `session show --json` exposed
+  `can_fork` only inside its Claude block, so OMP/Pi/OpenCode/Codex sessions
+  silently omitted the capability. It now uses the same helper.
+- Red without fix:
+  - parent production plus `TestSupportsNativeForkCoversEveryDispatcher` fails
+    to compile because the canonical contract is absent
+    (`SUPPORT_GATE_MUTATION_EXIT=1`);
+  - restoring only `session_cmd.go` to the parent makes
+    `TestSessionShowJSONReportsOMPForkCapability` fail with a real OMP JSON
+    response lacking `can_fork`.
+- Preserved invariant: unsupported tools (`shell`, Gemini, Cursor) remain
+  outside the native fork gate, and `Instance.CanFork()` still separately
+  checks whether the particular session currently has forkable source state.
