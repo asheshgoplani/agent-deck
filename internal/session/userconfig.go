@@ -2126,7 +2126,11 @@ type DeepSeekSettings struct {
 // internal/session/omp.go for the full invocation grammar this block feeds.
 type OMPSettings struct {
 	// DefaultModel is passed as --model unless a session has its own override.
-	DefaultModel string `toml:"default_model,omitempty"`
+	DefaultModel   string `toml:"default_model,omitempty"`
+	DefaultProfile string `toml:"default_profile,omitempty"`
+	SmolModel      string `toml:"smol_model,omitempty"`
+	SlowModel      string `toml:"slow_model,omitempty"`
+	PlanModel      string `toml:"plan_model,omitempty"`
 
 	// Command overrides the default binary/invocation for omp sessions.
 	// Supports flags (e.g., "omp --smol haiku"). Unlike buildCrushCommand's

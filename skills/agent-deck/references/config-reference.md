@@ -310,10 +310,18 @@ The configured `command`, including any flags, is used for both initial starts a
 command = "omp"
 env_file = "~/.config/omp.env"
 default_model = "anthropic/claude-sonnet-4-6"
+default_profile = "default"
 approval_mode = "write" # always-ask | write | yolo
+smol_model = "google/gemini-3-flash"
+slow_model = "anthropic/claude-opus-4-6"
+plan_model = "openai/gpt-5-codex"
 ```
 
-`default_model` is passed as `--model`; a model selected for an individual session takes precedence.
+These values map to `--model`, `--profile`, `--approval-mode`, `--smol`,
+`--slow`, and `--plan`. A value selected in the OMP launch panel takes
+precedence. The panel also exposes session/no-session mode, `--models`,
+`--print-thoughts`, `--auto-approve`, `--max-time`, `--from-claude`, and
+`--from-codex` per session.
 
 ## [hermes] Section
 

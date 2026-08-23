@@ -64,7 +64,7 @@ func builtinTools() []builtinTool {
 		// @oh-my-pi/pi-coding-agent, bin: "omp"). Token match only: "omp" as a
 		// substring would false-match "compass"/"accomplish"/"component" —
 		// the same reason "pi" and "dsh" are token-matched.
-		{Name: "omp", Icon: "⌥", detectTokens: []string{"omp"}},
+		{Name: "omp", Icon: "⌥", detectSubstrings: []string{"oh-my-pi", "@oh-my-pi/pi-coding-agent"}, detectTokens: []string{"omp"}},
 		{Name: "copilot", Icon: "🐙", detectSubstrings: []string{"copilot"}},
 		{Name: "crush", Icon: "💘", detectSubstrings: []string{"crush"}},
 		// detectTokens includes bare "agent" (standalone Cursor Agent CLI).

@@ -73,16 +73,15 @@ func resolveOMPCommand(baseCommand string) string {
 
 // ompApprovalModeFlag returns the ` --approval-mode <value>` suffix for the
 // configured [omp].approval_mode, or "" when unset.
-func ompApprovalModeFlag() string {
-	config, _ := LoadUserConfig()
-	if config == nil {
+func ompArgsSuffix(args []string) string {
+	if len(args) == 0 {
 		return ""
 	}
-	mode := strings.TrimSpace(config.OMP.ApprovalMode)
-	if mode == "" {
-		return ""
+	quoted := make([]string, len(args))
+	for idx, arg := range args {
+		quoted[idx] = shellescape.Quote(arg)
 	}
-	return " --approval-mode " + shellescape.Quote(mode)
+	return " " + strings.Join(quoted, " ")
 }
 
 // buildOMPCommand builds the command for the Oh My Pi CLI.
@@ -101,23 +100,22 @@ func (i *Instance) buildOMPCommand(baseCommand string) string {
 	sessionDir := ompAgentDeckSessionDirExpr(i.ID)
 	quotedInstanceID := shellescape.Quote(i.ID)
 	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
-	modelFlag := ""
 	opts := i.GetOMPOptions()
 	if opts == nil {
 		config, _ := LoadUserConfig()
 		opts = NewOMPOptions(config)
 	}
-	if args := opts.ToArgs(); len(args) == 2 {
-		modelFlag = " --model " + shellescape.Quote(args[1])
-	}
+	harnessSuffix := ompArgsSuffix(opts.harnessArgs())
+	lifecycleSuffix := ompArgsSuffix(opts.sessionArgs())
 
 	return envPrefix + fmt.Sprintf(
-		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --continue --session-dir \"$session_dir\"%s",
+		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s%s%s --session-dir \"$session_dir\"",
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
-		cmd+modelFlag,
-		ompApprovalModeFlag(),
+		cmd,
+		harnessSuffix,
+		lifecycleSuffix,
 	)
 }
 
@@ -136,6 +134,12 @@ func (i *Instance) buildOMPForkCommandForTarget(target *Instance, baseCommand st
 	sessionDir := ompAgentDeckSessionDirExpr(target.ID)
 	quotedInstanceID := shellescape.Quote(target.ID)
 	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
+	opts := target.GetOMPOptions()
+	if opts == nil {
+		config, _ := LoadUserConfig()
+		opts = NewOMPOptions(config)
+	}
+	argsSuffix := ompArgsSuffix(opts.harnessArgs())
 
 	return envPrefix + fmt.Sprintf(
 		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No omp session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
@@ -144,7 +148,7 @@ func (i *Instance) buildOMPForkCommandForTarget(target *Instance, baseCommand st
 		quotedInstanceID,
 		quotedProfile,
 		cmd,
-		ompApprovalModeFlag(),
+		argsSuffix,
 	), nil
 }
 
@@ -206,6 +210,13 @@ func (i *Instance) CreateForkedOMPInstanceWithOptions(
 
 	baseCommand := resolveOMPCommand(i.Command)
 	forked.Command = baseCommand
+	if parentOpts := i.GetOMPOptions(); parentOpts != nil {
+		copied := *parentOpts
+		copied.Models = append([]string(nil), parentOpts.Models...)
+		if err := forked.SetOMPOptions(&copied); err != nil {
+			return nil, "", err
+		}
+	}
 
 	cmd, err := i.buildOMPForkCommandForTarget(forked, baseCommand)
 	if err != nil {

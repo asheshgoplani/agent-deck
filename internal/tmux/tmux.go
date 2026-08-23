@@ -858,7 +858,10 @@ func detectToolFromCommand(command string) string {
 			return "deepseek"
 		case "pi":
 			return "pi"
-		case "omp":
+		case "omp", "oh-my-pi":
+			return "omp"
+		}
+		if isOMPCommand(fields) {
 			return "omp"
 		}
 	}
@@ -895,11 +898,33 @@ func detectToolFromCommand(command string) string {
 		return "deepseek"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"
-	case strings.Contains(cmdLower, " omp ") || strings.HasPrefix(cmdLower, "omp "):
-		return "omp"
 	default:
 		return ""
 	}
+}
+
+// isOMPCommand recognizes only supported OMP launchers in command position.
+// In particular, incidental argument text such as `grep omp README.md` is not
+// evidence that the pane runs OMP.
+func isOMPCommand(fields []string) bool {
+	commandSeen := false
+	for idx, field := range fields {
+		if !commandSeen && isShellAssignmentToken(field) {
+			continue
+		}
+		base := filepath.Base(strings.Trim(field, `"'`))
+		base = strings.TrimSuffix(strings.TrimSuffix(base, ".exe"), ".cmd")
+		if base == "env" && !commandSeen {
+			continue
+		}
+		commandSeen = true
+		if base == "omp" || base == "oh-my-pi" {
+			return true
+		}
+		return base == "npx" && idx+1 < len(fields) &&
+			strings.Trim(fields[idx+1], `"'`) == "@oh-my-pi/pi-coding-agent"
+	}
+	return false
 }
 
 // isDeepSeekCommand reports whether the first COMMAND-position token of a
