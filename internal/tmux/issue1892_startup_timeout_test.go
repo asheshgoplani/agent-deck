@@ -6,6 +6,40 @@ import (
 	"time"
 )
 
+func TestIssue1892_RestartedGenerationIgnoresPreservedTimeoutBanner(t *testing.T) {
+	s := NewSession("issue1892-restarted", t.TempDir())
+	s.startupTimedOut = false // RespawnPane resets this for the new generation.
+
+	content := "Session startup timed out before the agent became interactive.\n\n❯ ready"
+	if s.hasErrorBannerIndicator(content) {
+		t.Fatal("timeout evidence from the previous pane generation poisoned the restarted generation")
+	}
+}
+
+func TestIssue1892_RespawnCannotCrossTimeoutGenerationClaim(t *testing.T) {
+	s := NewSession("issue1892-generation-race", t.TempDir())
+	if err := s.Start("sleep 300"); err != nil {
+		t.Fatalf("start inert pane: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Kill() })
+
+	oldPID, _ := s.getPaneProcessTree()
+	s.mu.Lock() // models expireStartupHandover's claimed generation
+	done := make(chan error, 1)
+	go func() { done <- s.RespawnPane("sleep 300") }()
+	time.Sleep(150 * time.Millisecond)
+	newPID, _ := s.getPaneProcessTree()
+	if newPID != oldPID {
+		s.mu.Unlock()
+		<-done
+		t.Fatalf("respawn replaced pane while timeout generation claim was held: pid %d -> %d", oldPID, newPID)
+	}
+	s.mu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("respawn after generation claim released: %v", err)
+	}
+}
+
 // TestIssue1892_StartupWithoutAgentSignalTimesOutHonesty reproduces the stuck
 // startup handover with a real tmux pane.  The pane process remains alive but
 // never renders either an agent prompt or a busy signal, exactly the condition
