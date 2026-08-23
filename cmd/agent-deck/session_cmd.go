@@ -117,7 +117,7 @@ func printSessionHelp() {
 	fmt.Println("  unarchive <id|title>    Restore an archived session (does not restart it)")
 	fmt.Println("  restart [id] [--all] [--env KEY=VALUE]  Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
-	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
+	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, Codex, or Oh My Pi session with context")
 	fmt.Println("  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
@@ -914,7 +914,7 @@ func handleSessionFork(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
 		fmt.Println()
-		fmt.Println("Fork a Claude, OpenCode, Pi, or Codex session with conversation context.")
+		fmt.Println("Fork a Claude, OpenCode, Pi, Codex, or Oh My Pi session with conversation context.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -961,10 +961,7 @@ func handleSessionFork(profile string, args []string) {
 
 	// Verify this tool has a session-fork implementation.
 	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
-	isPiFork := inst.Tool == "pi"
-	isOpenCodeFork := inst.Tool == "opencode"
-	isCodexFork := session.IsCodexCompatible(inst.Tool)
-	if !isClaudeFork && !isPiFork && !isOpenCodeFork && !isCodexFork {
+	if !session.SupportsNativeFork(inst.Tool) {
 		out.Error(
 			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
@@ -1674,9 +1671,11 @@ func handleSessionShow(profile string, args []string) {
 	// bug report against the wrong component.
 	jsonData["wrapper"] = inst.Wrapper
 
+	if session.SupportsNativeFork(inst.Tool) {
+		jsonData["can_fork"] = inst.CanFork()
+	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
-		jsonData["can_fork"] = inst.CanFork()
 		jsonData["can_restart"] = inst.CanRestart()
 
 		if mcps := mcpInfoForJSON(mcpInfo); mcps != nil {

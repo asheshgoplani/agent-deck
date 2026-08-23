@@ -183,7 +183,7 @@ Use `--all --env KEY=VALUE` to inject the variable into every active session.
 Claude's existing protection that removes `TELEGRAM_*` variables from sessions
 that do not own a Telegram channel remains in effect.
 
-### session fork (Claude, OpenCode, Pi, Codex)
+### session fork (Claude, OpenCode, Pi, Codex, Oh My Pi)
 
 ```bash
 agent-deck session fork <id|title> [-t "title"] [-g "group"]

@@ -173,6 +173,22 @@ func TestDefaultRawPatterns_PiSubagentSignals(t *testing.T) {
 	}
 }
 
+func TestDefaultRawPatterns_Omp(t *testing.T) {
+	raw := DefaultRawPatterns("omp")
+	if raw == nil {
+		t.Fatal("expected non-nil for omp")
+	}
+	if len(raw.BusyPatterns) == 0 {
+		t.Error("omp should have busy patterns")
+	}
+	if len(raw.PromptPatterns) == 0 {
+		t.Error("omp should have prompt patterns")
+	}
+	if len(raw.SpinnerChars) == 0 {
+		t.Error("omp should define spinner chars")
+	}
+}
+
 func TestDefaultRawPatterns_Unknown(t *testing.T) {
 	raw := DefaultRawPatterns("unknowntool")
 	if raw != nil {

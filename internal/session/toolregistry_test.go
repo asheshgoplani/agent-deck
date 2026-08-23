@@ -8,7 +8,7 @@ import (
 // canonicalBuiltins is the canonical built-in set, in the precedence order that
 // Registry.Match() (and the legacy detectTool() switch) walk.
 var canonicalBuiltins = []string{
-	"claude", "opencode", "gemini", "codex", "pi",
+	"claude", "opencode", "gemini", "codex", "pi", "omp",
 	"copilot", "crush", "cursor", "hermes", "deepseek", "aider", "shell",
 }
 
@@ -52,6 +52,13 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		{"pi uppercase", "Pi", "pi"},
 		{"pi no false match in epic", "epic", "shell"},
 		{"pi no false match in tapioca", "tapioca", "shell"},
+		// omp — whitespace-token match, NOT substring
+		{"omp bare", "omp", "omp"},
+		{"omp with flags", "omp --model sonnet", "omp"},
+		{"omp uppercase", "Omp", "omp"},
+		{"omp no false match in compass", "compass", "shell"},
+		{"omp no false match in accomplish", "accomplish", "shell"},
+		{"omp no false match in component", "component", "shell"},
 		// copilot
 		{"copilot with flags", "copilot --resume", "copilot"},
 		// crush

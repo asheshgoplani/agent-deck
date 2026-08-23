@@ -147,7 +147,7 @@ Two short guides to read next:
 
 ### Fork Sessions
 
-Try different approaches without losing context. Fork Claude, OpenCode, Pi, and Codex sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
+Try different approaches without losing context. Fork Claude, OpenCode, Pi, Codex, and Oh My Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
 
 - Press `f` for quick fork, `F` to customize name/group
 - Fork your forks to explore as many branches as you need
@@ -470,7 +470,7 @@ See the [Docker Sandbox Guide](skills/agent-deck/references/sandbox.md) for the 
 
 ### Forking sessions
 
-Press `f` to **quick-fork** the selected session, or `Shift+F` for the fork **dialog** (customize title, group, branch, and toggles). A fork inherits the parent's conversation context through each tool's native fork — supported for **Claude, OpenCode, Pi, and Codex** (and Codex-compatible custom tools) across the TUI, CLI (`agent-deck session fork <id>`), and Web UI.
+Press `f` to **quick-fork** the selected session, or `Shift+F` for the fork **dialog** (customize title, group, branch, and toggles). A fork inherits the parent's conversation context through each tool's native fork — supported for **Claude, OpenCode, Pi, Codex, and Oh My Pi** (and Codex-compatible custom tools) across the TUI, CLI (`agent-deck session fork <id>`), and Web UI.
 
 Quick fork (`f`) is **comprehensive by default**: it creates a new git worktree + branch, carries the parent's uncommitted working-tree state, matches the parent's Docker isolation, and inherits the parent's Claude launch options. The `Shift+F` dialog opens pre-seeded from the same defaults ("comprehensive, tweak down"). Jujutsu (jj) repos are supported too — the fork materializes the parent's working state into a new jj workspace.
 
@@ -722,6 +722,7 @@ Agent Deck works with any terminal-based AI tool:
 | **Cursor** (terminal) | Status detection, organization |
 | **Hermes Agent** | Organization, launch |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
+| **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 Codex status detection uses Codex's notify hook. Install and verify it once for each Codex home:

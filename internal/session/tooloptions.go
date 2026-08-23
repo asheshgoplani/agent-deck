@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // ToolOptions is the interface for tool-specific launch options
@@ -316,6 +317,136 @@ func UnmarshalOpenCodeOptions(data json.RawMessage) (*OpenCodeOptions, error) {
 		return nil, err
 	}
 
+	return &opts, nil
+}
+
+// OMPOptions holds per-session launch options for Oh My Pi.
+type OMPOptions struct {
+	SessionMode   string   `json:"session_mode,omitempty"`
+	ResumeID      string   `json:"resume_id,omitempty"`
+	NoSession     bool     `json:"no_session,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Models        []string `json:"models,omitempty"`
+	SmolModel     string   `json:"smol_model,omitempty"`
+	SlowModel     string   `json:"slow_model,omitempty"`
+	PlanModel     string   `json:"plan_model,omitempty"`
+	PrintThoughts bool     `json:"print_thoughts,omitempty"`
+	ApprovalMode  string   `json:"approval_mode,omitempty"`
+	AutoApprove   bool     `json:"auto_approve,omitempty"`
+	MaxTime       string   `json:"max_time,omitempty"`
+	Profile       string   `json:"profile,omitempty"`
+	FromClaude    bool     `json:"from_claude,omitempty"`
+	FromCodex     bool     `json:"from_codex,omitempty"`
+}
+
+func (o *OMPOptions) ToolName() string { return "omp" }
+
+func (o *OMPOptions) ToArgs() []string {
+	return o.toArgs(true)
+}
+
+func (o *OMPOptions) harnessArgs() []string {
+	return o.toArgs(false)
+}
+
+func (o *OMPOptions) sessionArgs() []string {
+	if o == nil {
+		return []string{"--continue"}
+	}
+	if o.NoSession {
+		return []string{"--no-session"}
+	}
+	switch o.SessionMode {
+	case "new":
+		return nil
+	case "resume":
+		args := []string{"--resume"}
+		if id := strings.TrimSpace(o.ResumeID); id != "" {
+			args = append(args, id)
+		}
+		return args
+	default:
+		return []string{"--continue"}
+	}
+}
+
+func (o *OMPOptions) toArgs(includeSession bool) []string {
+	if o == nil {
+		return nil
+	}
+	var args []string
+	if includeSession && o.NoSession {
+		args = append(args, "--no-session")
+	} else if includeSession {
+		switch o.SessionMode {
+		case "new":
+		case "resume":
+			args = append(args, "--resume")
+			if id := strings.TrimSpace(o.ResumeID); id != "" {
+				args = append(args, id)
+			}
+		default:
+			args = append(args, "--continue")
+		}
+	}
+	appendValue := func(flag, value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			args = append(args, flag, value)
+		}
+	}
+	appendValue("--model", o.Model)
+	if len(o.Models) > 0 {
+		appendValue("--models", strings.Join(o.Models, ","))
+	}
+	appendValue("--smol", o.SmolModel)
+	appendValue("--slow", o.SlowModel)
+	appendValue("--plan", o.PlanModel)
+	if o.PrintThoughts {
+		args = append(args, "--print-thoughts")
+	}
+	appendValue("--approval-mode", o.ApprovalMode)
+	if o.AutoApprove {
+		args = append(args, "--auto-approve")
+	}
+	appendValue("--max-time", o.MaxTime)
+	appendValue("--profile", o.Profile)
+	if o.FromClaude {
+		args = append(args, "--from-claude")
+	}
+	if o.FromCodex {
+		args = append(args, "--from-codex")
+	}
+	return args
+}
+
+func NewOMPOptions(config *UserConfig) *OMPOptions {
+	opts := &OMPOptions{SessionMode: "continue"}
+	if config != nil {
+		opts.Model = config.OMP.DefaultModel
+		opts.Profile = config.OMP.DefaultProfile
+		opts.ApprovalMode = config.OMP.ApprovalMode
+		opts.SmolModel = config.OMP.SmolModel
+		opts.SlowModel = config.OMP.SlowModel
+		opts.PlanModel = config.OMP.PlanModel
+	}
+	return opts
+}
+
+func UnmarshalOMPOptions(data json.RawMessage) (*OMPOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Tool != "omp" {
+		return nil, nil
+	}
+	var opts OMPOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
 	return &opts, nil
 }
 

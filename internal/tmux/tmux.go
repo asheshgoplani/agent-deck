@@ -748,7 +748,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "deepseek", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "deepseek", "pi", "omp"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -806,6 +806,16 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bpi\s+cli\b`),
 		regexp.MustCompile(`(?i)\bpi\s+code\b`),
 	},
+	"omp": {
+		// Oh My Pi (github.com/can1357/oh-my-pi). Captured LIVE against the
+		// real installed binary (v17.3.8) via a PTY: the busy/streaming
+		// status line always contains the literal "⟨esc⟩" marker (U+27E8/
+		// U+27E9 angle brackets — NOT ascii "<esc>"), and the tool-approval
+		// dialog always contains "Allow tool: ". Neither string collides with
+		// any other registered tool's vocabulary.
+		regexp.MustCompile(`⟨esc⟩`),
+		regexp.MustCompile(`(?m)^\s*Allow tool:\s`),
+	},
 	"cursor": {
 		// Cursor CLI agent TUI
 		regexp.MustCompile(`(?i)\bcursor\s+agent\b`),
@@ -848,6 +858,11 @@ func detectToolFromCommand(command string) string {
 			return "deepseek"
 		case "pi":
 			return "pi"
+		case "omp", "oh-my-pi":
+			return "omp"
+		}
+		if isOMPCommand(fields) {
+			return "omp"
 		}
 	}
 
@@ -886,6 +901,28 @@ func detectToolFromCommand(command string) string {
 	default:
 		return ""
 	}
+}
+
+// isOMPCommand recognizes only supported OMP launchers in command position.
+// In particular, incidental argument text such as `grep omp README.md` is not
+// evidence that the pane runs OMP.
+func isOMPCommand(fields []string) bool {
+	for idx, field := range fields {
+		if isShellAssignmentToken(field) {
+			continue
+		}
+		base := filepath.Base(strings.Trim(field, `"'`))
+		base = strings.TrimSuffix(strings.TrimSuffix(base, ".exe"), ".cmd")
+		if base == "env" {
+			continue
+		}
+		if base == "omp" || base == "oh-my-pi" {
+			return true
+		}
+		return base == "npx" && idx+1 < len(fields) &&
+			strings.Trim(fields[idx+1], `"'`) == "@oh-my-pi/pi-coding-agent"
+	}
+	return false
 }
 
 // isDeepSeekCommand reports whether the first COMMAND-position token of a

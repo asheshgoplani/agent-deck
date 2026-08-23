@@ -638,6 +638,9 @@ func TestDetectToolFromCommand(t *testing.T) {
 		{name: "opencode", command: "open-code --continue", want: "opencode"},
 		{name: "codex", command: "codex --dangerously-bypass-approvals-and-sandbox", want: "codex"},
 		{name: "pi", command: "pi --model fast", want: "pi"},
+		{name: "omp", command: "omp --model sonnet", want: "omp"},
+		{name: "omp bare", command: "omp", want: "omp"},
+		{name: "omp no false match", command: "compass", want: ""},
 		{name: "cursor", command: "cursor agent", want: "cursor"},
 		{name: "standalone agent", command: "agent", want: "cursor"},
 		{name: "standalone agent flags", command: "agent --continue", want: "cursor"},
@@ -687,6 +690,24 @@ Yes, allow once`,
 			content: `Welcome to Pi CLI
 pi> `,
 			want: "pi",
+		},
+		{
+			name: "omp busy marker detects omp",
+			content: `╭──     Sonnet 5 · high   my-session   2.4%/1M  (sub) ────────────────────────╮
+╰─                                                                              ─╯
+ ⠋ Working… ⟨esc⟩`,
+			want: "omp",
+		},
+		{
+			name: "omp approval dialog detects omp",
+			content: ` Allow tool: bash
+ Command: echo hi
+
+  Approve
+   Deny
+
+ up/down navigate  enter select  esc cancel`,
+			want: "omp",
 		},
 	}
 

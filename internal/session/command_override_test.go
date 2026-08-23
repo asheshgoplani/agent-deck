@@ -32,7 +32,7 @@ func TestGetToolCommand_NoConfig(t *testing.T) {
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
-	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes"}
+	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes", "omp"}
 	for _, tool := range tools {
 		got := GetToolCommand(tool)
 		if got != tool {
@@ -49,6 +49,7 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 		Codex:    CodexSettings{Command: "codex --experimental"},
 		Copilot:  CopilotSettings{Command: "gh copilot"},
 		Hermes:   HermesSettings{Command: "hermes --model gpt-5.5-pro --provider openai"},
+		OMP:      OMPSettings{Command: "omp --smol haiku"},
 	}
 	restore := resetUserConfigCache(t, cfg)
 	defer restore()
@@ -63,13 +64,26 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 		{"codex", "codex --experimental"},
 		{"copilot", "gh copilot"},
 		{"hermes", "hermes --model gpt-5.5-pro --provider openai"},
+		{"omp", "omp --smol haiku"},
 	}
-
 	for _, tt := range tests {
 		got := GetToolCommand(tt.tool)
 		if got != tt.expected {
 			t.Errorf("GetToolCommand(%q) = %q, want %q", tt.tool, got, tt.expected)
 		}
+	}
+}
+
+func TestGetToolIcon_OMP(t *testing.T) {
+	icon := GetToolIcon("omp")
+	if icon == "" {
+		t.Error("GetToolIcon(\"omp\") returned empty")
+	}
+	if icon == GetToolIcon("shell") {
+		t.Errorf("GetToolIcon(\"omp\") = %q equals shell fallback (want a distinct icon)", icon)
+	}
+	if icon == GetToolIcon("pi") {
+		t.Errorf("GetToolIcon(\"omp\") = %q must not collide with the unrelated \"pi\" tool's icon", icon)
 	}
 }
 
@@ -215,6 +229,123 @@ func TestBuildPiCommand_WrongTool(t *testing.T) {
 	}
 }
 
+func seedLocalOMPSessionFile(t *testing.T, inst *Instance) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("HOME"), ".omp", "agent-deck", inst.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir omp session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write omp session file: %v", err)
+	}
+}
+
+func TestBuildOMPCommand_UsesInstanceScopedSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	inst := &Instance{ID: "test-instance-id", Tool: "omp"}
+	got := inst.buildOMPCommand("omp")
+
+	wantSessionDir := "${HOME}/.omp/agent-deck/test-instance-id"
+	for _, want := range []string{
+		"session_dir=" + wantSessionDir,
+		"mkdir -p \"$session_dir\"",
+		"AGENTDECK_INSTANCE_ID=test-instance-id",
+		"omp --continue --session-dir \"$session_dir\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildOMPCommand() = %q, want to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, tmpDir) {
+		t.Errorf("buildOMPCommand() must use target-side $HOME, got host path in %q", got)
+	}
+}
+
+func TestBuildOMPCommand_ConfiguredCommandWinsForInitialStartAndRestart(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{OMP: OMPSettings{Command: "/opt/omp-custom --channel nightly"}})
+	defer restore()
+
+	// TUI/Web creation persists the built-in preset literally. Both Start and
+	// Restart dispatch through buildOMPCommand with this stored value.
+	inst := &Instance{ID: "configured-omp", Tool: "omp", Command: "omp"}
+	for _, phase := range []string{"initial start", "restart"} {
+		got := inst.buildOMPCommand(inst.Command)
+		if !strings.Contains(got, "/opt/omp-custom --channel nightly --continue") {
+			t.Fatalf("%s ignored [omp].command flags: %q", phase, got)
+		}
+		if strings.Contains(got, " AGENTDECK_PROFILE=default omp --continue") {
+			t.Fatalf("%s used persisted default instead of configured command: %q", phase, got)
+		}
+	}
+}
+
+func TestBuildOMPCommand_ExplicitSessionOverrideWinsOverConfig(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{OMP: OMPSettings{Command: "/opt/omp-configured --flag"}})
+	defer restore()
+
+	inst := &Instance{ID: "override-omp", Tool: "omp", Command: "/tmp/omp-session --local"}
+	got := inst.buildOMPCommand(inst.Command)
+	if !strings.Contains(got, "/tmp/omp-session --local --continue") {
+		t.Fatalf("explicit per-session command was not preserved: %q", got)
+	}
+	if strings.Contains(got, "/opt/omp-configured") {
+		t.Fatalf("configured command replaced explicit per-session override: %q", got)
+	}
+}
+
+func TestBuildOMPCommand_QuotesInstanceIDPathComponent(t *testing.T) {
+	inst := &Instance{ID: "test instance'id", Tool: "omp"}
+	got := inst.buildOMPCommand("omp")
+
+	wantSessionDir := `${HOME}/.omp/agent-deck/` + shellescape.Quote(inst.ID)
+	if !strings.Contains(got, "session_dir="+wantSessionDir) {
+		t.Errorf("buildOMPCommand() should quote instance ID path component %q, got %q", wantSessionDir, got)
+	}
+}
+
+func TestBuildOMPCommand_WrongTool(t *testing.T) {
+	inst := &Instance{Tool: "claude"}
+	got := inst.buildOMPCommand("some-command")
+	if got != "some-command" {
+		t.Errorf("buildOMPCommand with wrong tool = %q, want %q", got, "some-command")
+	}
+}
+
+func TestBuildOMPCommand_AppliesApprovalMode(t *testing.T) {
+	cfg := &UserConfig{OMP: OMPSettings{ApprovalMode: "yolo"}}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "approval-test-id", Tool: "omp"}
+	got := inst.buildOMPCommand("omp")
+
+	if !strings.Contains(got, `--approval-mode yolo`) {
+		t.Errorf("buildOMPCommand() = %q, want to contain %q", got, "--approval-mode yolo")
+	}
+}
+
+func TestBuildOMPCommand_AppliesPerSessionModel(t *testing.T) {
+	inst := &Instance{ID: "model-test-id", Tool: "omp"}
+	if err := inst.SetOMPOptions(&OMPOptions{Model: "anthropic/claude-sonnet-4-6"}); err != nil {
+		t.Fatal(err)
+	}
+	got := inst.buildOMPCommand("omp")
+	if !strings.Contains(got, `omp --model anthropic/claude-sonnet-4-6 --continue`) {
+		t.Errorf("buildOMPCommand() = %q, want per-session --model before lifecycle flags", got)
+	}
+}
+
+func TestCanRestartOMP(t *testing.T) {
+	inst := &Instance{Tool: "omp", Status: StatusWaiting}
+	if !inst.CanRestart() {
+		t.Fatal("omp sessions should be restartable so Agent Deck can relaunch with --continue")
+	}
+}
+
 func TestCreateForkedPiInstance_UsesNativeForkAndPersistsBaseCommand(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	parent := NewInstanceWithTool("parent", "/tmp/project", "pi")
@@ -296,6 +427,95 @@ func TestCanRestartPi(t *testing.T) {
 	inst := &Instance{Tool: "pi", Status: StatusWaiting}
 	if !inst.CanRestart() {
 		t.Fatal("Pi sessions should be restartable so Agent Deck can relaunch with --continue")
+	}
+}
+
+func TestCreateForkedOMPInstance_UsesNativeForkAndPersistsBaseCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := NewInstanceWithTool("parent", "/tmp/project", "omp")
+	parent.ID = "parent-omp-id"
+	parent.GroupPath = "projects/omp"
+	parent.Command = "omp"
+	seedLocalOMPSessionFile(t, parent)
+
+	forked, cmd, err := parent.CreateForkedOMPInstanceWithOptions("forked", "", nil)
+	if err != nil {
+		t.Fatalf("CreateForkedOMPInstanceWithOptions() failed: %v", err)
+	}
+
+	if forked.Tool != "omp" {
+		t.Fatalf("forked.Tool = %q, want omp", forked.Tool)
+	}
+	if forked.GroupPath != "projects/omp" {
+		t.Fatalf("forked.GroupPath = %q, want inherited group", forked.GroupPath)
+	}
+	if forked.Command != "omp" {
+		t.Fatalf("forked.Command = %q, want base command for later --continue restarts", forked.Command)
+	}
+	if !forked.IsForkAwaitingStart {
+		t.Fatal("forked omp instance should carry IsForkAwaitingStart for first launch")
+	}
+	if forked.ForkStartCommand != cmd {
+		t.Fatalf("ForkStartCommand should hold the first-start fork command")
+	}
+
+	for _, want := range []string{
+		"parent_session_dir=${HOME}/.omp/agent-deck/parent-omp-id",
+		"session_dir=${HOME}/.omp/agent-deck/" + forked.ID,
+		`source_file=$(find "$parent_session_dir" -type f -name '*.jsonl' -exec ls -t {} +`,
+		`AGENTDECK_INSTANCE_ID=` + forked.ID,
+		`omp --fork "$source_file" --session-dir "$session_dir"`,
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("omp fork command = %q, want to contain %q", cmd, want)
+		}
+	}
+	if strings.Contains(cmd, "--continue") {
+		t.Fatalf("omp fork command must not include --continue: %s", cmd)
+	}
+
+	resumeCmd := forked.buildOMPCommand(forked.Command)
+	if !strings.Contains(resumeCmd, `omp --continue --session-dir "$session_dir"`) {
+		t.Fatalf("omp forked instance restart command should resume with --continue, got: %s", resumeCmd)
+	}
+	if strings.Contains(resumeCmd, "--fork") {
+		t.Fatalf("omp forked instance restart command must not replay --fork, got: %s", resumeCmd)
+	}
+}
+
+func TestCreateForkedOMPInstance_WorktreeOptions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := NewInstanceWithTool("parent", "/tmp/project", "omp")
+	parent.ID = "parent-omp-id"
+	seedLocalOMPSessionFile(t, parent)
+
+	opts := &ClaudeOptions{
+		WorkDir:          "/tmp/project-wt",
+		WorktreePath:     "/tmp/project-wt",
+		WorktreeRepoRoot: "/tmp/project",
+		WorktreeBranch:   "fork/omp",
+	}
+	forked, _, err := parent.CreateForkedOMPInstanceWithOptions("forked", "custom", opts)
+	if err != nil {
+		t.Fatalf("CreateForkedOMPInstanceWithOptions() failed: %v", err)
+	}
+	if forked.ProjectPath != "/tmp/project-wt" {
+		t.Fatalf("forked.ProjectPath = %q, want worktree path", forked.ProjectPath)
+	}
+	if forked.WorktreePath != "/tmp/project-wt" || forked.WorktreeRepoRoot != "/tmp/project" || forked.WorktreeBranch != "fork/omp" {
+		t.Fatalf("forked worktree fields not copied: %+v", forked)
+	}
+}
+
+func TestCanForkOMP_RequiresLocalSessionFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	inst := &Instance{ID: "no-session-omp", Tool: "omp"}
+	if inst.CanForkOMP() {
+		t.Fatal("CanForkOMP() should be false with no local session JSONL")
+	}
+	seedLocalOMPSessionFile(t, inst)
+	if !inst.CanForkOMP() {
+		t.Fatal("CanForkOMP() should be true once a local session JSONL exists")
 	}
 }
 

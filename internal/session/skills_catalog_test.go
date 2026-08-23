@@ -794,3 +794,13 @@ func TestAttachSkill_PluginManifestDirIsAttachable(t *testing.T) {
 		t.Fatalf("expected symlink materialized: %v", err)
 	}
 }
+
+func TestGetProjectSkillsDir_OMP(t *testing.T) {
+	dir, ok := GetProjectSkillsDir("omp")
+	if !ok {
+		t.Fatal("GetProjectSkillsDir(\"omp\") should be supported")
+	}
+	if dir != ".omp/skills" {
+		t.Errorf("GetProjectSkillsDir(\"omp\") = %q, want \".omp/skills\"", dir)
+	}
+}

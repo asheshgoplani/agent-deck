@@ -165,6 +165,7 @@ type NewDialog struct {
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
 	hermesOptions         *YoloOptionsPanel   // Hermes YOLO panel (concrete for value extraction).
+	ompOptions            *OMPOptionsPanel    // Full OMP harness controls.
 	toolOptions           OptionsPanel        // Currently active tool options panel (nil if none).
 	focusTargets          []focusTarget       // Ordered list of active focusable elements.
 	focusIndex            int                 // Index into focusTargets.
@@ -362,7 +363,7 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek"}
+	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -473,6 +474,7 @@ func NewNewDialog() *NewDialog {
 		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
 		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
 		hermesOptions:   NewYoloOptionsPanel("Hermes", "YOLO mode - auto-approve all tool calls"),
+		ompOptions:      NewOMPOptionsPanel(),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  buildPresetCommands(),
@@ -571,10 +573,12 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
+	d.ompOptions.SetDefaults(nil)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.hermesOptions.SetDefaults(userConfig.Hermes.YoloMode)
+		d.ompOptions.SetDefaults(session.NewOMPOptions(userConfig))
 		d.claudeOptions.SetDefaults(userConfig)
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
 		d.worktreeEnabled = userConfig.Worktree.DefaultEnabled
@@ -1373,6 +1377,8 @@ func (d *NewDialog) updateModelPlaceholder() {
 		d.modelInput.Placeholder = "gemini-3.1-pro-preview"
 	case cmd == "opencode":
 		d.modelInput.Placeholder = "openai/gpt-5.5"
+	case cmd == "omp":
+		d.modelInput.Placeholder = "provider/model"
 	case session.IsCodexCompatible(cmd):
 		d.modelInput.Placeholder = "gpt-5.6-sol"
 	default:
@@ -1388,6 +1394,8 @@ func (d *NewDialog) modelInputHint() string {
 		return "Examples: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro"
 	case cmd == "opencode":
 		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-opus-5"
+	case cmd == "omp":
+		return "Primary model; use OMP Options below for multi-model and role routing"
 	case session.IsCodexCompatible(cmd):
 		return "Examples: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5"
 	default:
@@ -1420,6 +1428,14 @@ func (d *NewDialog) GetClaudeOptions() *session.ClaudeOptions {
 	opts := d.claudeOptions.GetOptions()
 	opts.Effort = d.GetLaunchReasoningEffort()
 	return opts
+}
+
+// GetOMPOptions returns every first-class OMP launch control from the dialog.
+func (d *NewDialog) GetOMPOptions() *session.OMPOptions {
+	if d.GetSelectedCommand() != "omp" {
+		return nil
+	}
+	return d.ompOptions.GetOptions(d.GetLaunchModelID())
 }
 
 // GetClaudeExtraArgs returns the user-supplied claude CLI tokens from the
@@ -1615,6 +1631,8 @@ func (d *NewDialog) updateToolOptions() {
 		d.toolOptions = d.codexOptions
 	case cmd == "hermes":
 		d.toolOptions = d.hermesOptions
+	case cmd == "omp":
+		d.toolOptions = d.ompOptions
 	default:
 		d.toolOptions = nil
 	}
@@ -1631,6 +1649,7 @@ func (d *NewDialog) updateFocus() {
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 	d.hermesOptions.Blur()
+	d.ompOptions.Blur()
 
 	// Reset dropdown and soft-select state when focus changes.
 	d.pathSoftSelected = false
