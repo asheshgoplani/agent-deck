@@ -22,6 +22,13 @@ func TestIssue1101_RemoteCostSummary_JSONRoundtrip(t *testing.T) {
 		EventsToday:               5,
 		EventsThisWeek:            42,
 		EventsThisMonth:           180,
+		CostTodayKnown:            true,
+		CostYesterdayKnown:        true,
+		CostThisWeekKnown:         true,
+		CostLastWeekKnown:         true,
+		CostThisMonthKnown:        true,
+		CostLastMonthKnown:        true,
+		CostProjectedKnown:        true,
 	}
 
 	raw, err := json.Marshal(original)
