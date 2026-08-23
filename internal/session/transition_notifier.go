@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -440,7 +442,10 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 
 	elapsed := event.Timestamp.Unix() - record.At
 
-	if record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
+	// A supplied turn signal is authoritative.  The legacy status-only window
+	// is only safe for callers which cannot prove turn identity.
+	if event.LastOutputHash == "" && record.OutputHash == "" &&
+		record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
 		return true
 	}
 
@@ -519,11 +524,19 @@ func codexTurnSignal(inst *Instance) string {
 	if hs == nil {
 		return ""
 	}
-	if generation := strings.TrimSpace(hs.CodexCompletedGeneration); generation != "" {
-		return "codex-generation:" + generation
+	// The generic hook sequence advances for noise as well as completions.  Only
+	// the Codex writer's start/completion-bound sequence is a turn identity.
+	if hs.CodexCompletedSequence > 0 && hs.CodexStartedSequence == hs.CodexCompletedSequence {
+		generation := strings.TrimSpace(hs.CodexCompletedGeneration)
+		if generation != "" {
+			sum := sha256.Sum256([]byte(generation))
+			return fmt.Sprintf("codex-completion:%d:%s", hs.CodexCompletedSequence, hex.EncodeToString(sum[:]))
+		}
+		return fmt.Sprintf("codex-completion:%d", hs.CodexCompletedSequence)
 	}
-	if hs.Sequence > 0 {
-		return fmt.Sprintf("codex-sequence:%s:%d", strings.TrimSpace(hs.HookGeneration), hs.Sequence)
+	if generation := strings.TrimSpace(hs.CodexCompletedGeneration); generation != "" {
+		sum := sha256.Sum256([]byte(generation))
+		return "codex-generation-sha256:" + hex.EncodeToString(sum[:])
 	}
 	return ""
 }

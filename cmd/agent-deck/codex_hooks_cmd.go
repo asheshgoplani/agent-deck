@@ -250,7 +250,11 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	path := filepath.Join(hooksDir, base+".json")
 	var prior hookStatusFile
 	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &prior)
+		if json.Unmarshal(data, &prior) != nil {
+			return // ambiguous/partial prior state: never reset the durable counter
+		}
+	} else if !os.IsNotExist(err) {
+		return
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID != "" {
@@ -268,6 +272,9 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	if started {
 		prior.CodexCompletedGeneration = ""
 		prior.CodexCompletedSessionID = ""
+		prior.CodexTurnSequence++
+		prior.CodexStartedSequence = prior.CodexTurnSequence
+		prior.CodexCompletedSequence = 0
 		if evidenceSessionID != "" && turnID != "" {
 			prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
 			prior.CodexStartedSessionID = evidenceSessionID
@@ -289,6 +296,15 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 		prior.CodexStartedSessionID = evidenceSessionID
 		prior.CodexCompletedGeneration = completionGeneration
 		prior.CodexCompletedSessionID = evidenceSessionID
+		if prior.CodexStartedSequence > 0 && prior.CodexCompletedSequence == 0 {
+			prior.CodexCompletedSequence = prior.CodexStartedSequence
+		}
+	}
+	// Identity-less completion is usable only when it closes a retained start
+	// edge. Completion-only legacy payloads are ambiguous and fail closed.
+	if completed && completionGeneration == "" && prior.Status == "running" &&
+		prior.CodexStartedSequence > 0 && prior.CodexCompletedSequence == 0 {
+		prior.CodexCompletedSequence = prior.CodexStartedSequence
 	}
 	prior.Status, prior.SessionID, prior.Event = status, sessionID, event
 	prior.Timestamp = time.Now().Unix()

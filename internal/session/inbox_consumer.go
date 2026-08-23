@@ -23,7 +23,7 @@ import (
 //	union to the WAL (fsync), THEN remove the inbox file. The WAL is the durable
 //	copy that survives the truncate — "record intent → delete → finalize".
 //
-//	Phase 2 (finalize, under consumedTurnsMu): collapse to last-wins per child,
+//	Phase 2 (finalize, under consumedTurnsMu): collapse retries per turn,
 //	skip turn_fingerprints already consumed (exactly-once EFFECTS), mark the rest
 //	consumed (fsync the ledger), and only THEN drop the WAL.
 //
@@ -82,7 +82,7 @@ func saveConsumedTurnsLocked(parentID string, m map[string]int64) error {
 }
 
 // DrainInboxForParent drains the parent's durable outbox and returns the
-// deliverables (last-wins per child, exactly-once per turn). See file comment.
+// deliverables (all distinct turns, exactly once per turn). See file comment.
 //
 // Two-phase, crash-safe (audit B1): stage the records into the in-flight WAL
 // before truncating the inbox, then finalize the consumed ledger and drop the
@@ -146,10 +146,10 @@ func stageInboxDrainLocked(parentID string) ([]TransitionNotificationEvent, erro
 	return union, nil
 }
 
-// finalizeInboxDrain is phase 2: collapse last-wins, dedup against the consumed
+// finalizeInboxDrain is phase 2: collapse same-turn retries, dedup against the consumed
 // ledger, mark newly-delivered turns consumed (durable), then drop the WAL.
 func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) ([]TransitionNotificationEvent, error) {
-	collapsed := collapseLastWins(staged)
+	collapsed := collapseTurnRetries(staged)
 
 	consumedTurnsMu.Lock()
 	defer consumedTurnsMu.Unlock()
@@ -293,25 +293,29 @@ func readInboxEventsLocked(path string) ([]TransitionNotificationEvent, error) {
 	return out, nil
 }
 
-// collapseLastWins reduces multiple records for one child to the single latest
-// (by Timestamp), preserving first-seen order of children for stable output.
-func collapseLastWins(events []TransitionNotificationEvent) []TransitionNotificationEvent {
+// collapseTurnRetries reduces repeated records for one logical turn to the
+// latest copy while preserving every distinct turn and first-seen order.
+func collapseTurnRetries(events []TransitionNotificationEvent) []TransitionNotificationEvent {
 	latest := map[string]TransitionNotificationEvent{}
 	order := []string{}
 	for _, ev := range events {
-		cur, seen := latest[ev.ChildSessionID]
+		fp := ev.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(ev)
+		}
+		cur, seen := latest[fp]
 		if !seen {
-			order = append(order, ev.ChildSessionID)
-			latest[ev.ChildSessionID] = ev
+			order = append(order, fp)
+			latest[fp] = ev
 			continue
 		}
 		if !ev.Timestamp.Before(cur.Timestamp) {
-			latest[ev.ChildSessionID] = ev
+			latest[fp] = ev
 		}
 	}
 	out := make([]TransitionNotificationEvent, 0, len(order))
-	for _, id := range order {
-		out = append(out, latest[id])
+	for _, fp := range order {
+		out = append(out, latest[fp])
 	}
 	return out
 }

@@ -33,7 +33,7 @@ const (
 // not the last-resort graveyard the old push path fell into. Two producers
 // (interactive running→waiting and one-shot run-task kernel-exit) commit here;
 // the parent drains it on its own turn boundary. This file holds the producer
-// side: last-wins-per-child commit, the turn_fingerprint for exactly-once
+// side: distinct-turn retention, the turn_fingerprint for exactly-once
 // consumer effects, and the bounded dead-letter path that replaces the
 // dropped_no_target ~1/sec runaway with a terminal state logged once.
 
@@ -105,10 +105,9 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 }
 
 // CommitToInbox writes one completion record to the parent's durable inbox with
-// LAST-WINS-PER-CHILD semantics: any existing unacked record for the same child
-// is dropped first, so there is at most ONE pending record per child (issue
-// #1225 — kills flood at the source; the old path appended one line per busy
-// retry). The write is atomic (temp file + rename via rewriteInboxLocked, then
+// EXACTLY-ONCE-PER-TURN semantics: a retry replaces its matching pending turn,
+// while every distinct unacknowledged turn remains queued. The write is atomic
+// (temp file + rename via rewriteInboxLocked, then
 // a single append under the same lock). Stamps TurnFingerprint when absent.
 //
 // This is the unified producer entry point for both the interactive
@@ -143,12 +142,15 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
-	// Last-wins: drop any prior pending record for this child before appending
-	// the fresh one. rewriteInboxLocked is atomic and invalidates the
+	// Drop only a retry of this exact turn before appending the fresh copy.
+	// rewriteInboxLocked is atomic and invalidates the
 	// fingerprint cache for the path.
-	child := event.ChildSessionID
 	if _, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
-		return ev.ChildSessionID == child
+		fp := ev.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(ev)
+		}
+		return fp == event.TurnFingerprint
 	}); err != nil {
 		return err
 	}
