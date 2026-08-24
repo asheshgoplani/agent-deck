@@ -191,6 +191,9 @@ func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) 
 	}
 	defer f.Close()
 
+	// A crash between rewrite and append, or a legacy file, can leave two rows
+	// for one logical turn. Counting rows would then spend the bound twice.
+	seen := map[string]struct{}{}
 	if err := forEachInboxLine(f, func(line []byte) error {
 		ev, decodeErr := decodeInboxLine(line)
 		if decodeErr != nil {
@@ -199,7 +202,6 @@ func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) 
 		if ev.ChildSessionID != event.ChildSessionID {
 			return nil
 		}
-		count++
 		fp := ev.TurnFingerprint
 		if fp == "" {
 			fp = TurnFingerprint(ev)
@@ -207,11 +209,12 @@ func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) 
 		if fp == event.TurnFingerprint {
 			retry = true
 		}
+		seen[fp] = struct{}{}
 		return nil
 	}); err != nil {
 		return 0, false, err
 	}
-	return count, retry, nil
+	return len(seen), retry, nil
 }
 
 // appendInboxLineLocked marshals one event and atomically installs an old-or-new
@@ -585,8 +588,10 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
 	if err := CommitToInbox(parentID, event); err != nil {
+		n.noteCommitBackpressure(event, err)
 		return false, true, ""
 	}
+	n.clearCommitBackpressure(event.ChildSessionID)
 	n.logEvent(event)
 	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
 	// to drain it immediately instead of on its next ~14-min heartbeat. This is
@@ -595,6 +600,40 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	// because this same record is still drained on the parent's next turn.
 	n.fireWakeNudge(parent, event)
 	return true, false, ""
+}
+
+// noteCommitBackpressure logs a saturated parent inbox ONCE per child. The
+// commit stays a transient retry, so only this line tells an operator why a
+// child's completions stopped landing.
+func (n *TransitionNotifier) noteCommitBackpressure(event TransitionNotificationEvent, err error) {
+	if !errors.Is(err, ErrInboxTurnOverflow) {
+		return
+	}
+	child := strings.TrimSpace(event.ChildSessionID)
+	n.overflowMu.Lock()
+	if n.overflowWarned == nil {
+		n.overflowWarned = map[string]bool{}
+	}
+	already := n.overflowWarned[child]
+	n.overflowWarned[child] = true
+	n.overflowMu.Unlock()
+	if already {
+		return
+	}
+	slog.Warn("inbox_turn_overflow",
+		slog.String("child", child),
+		slog.String("parent", event.TargetSessionID),
+		slog.Int("limit", maxPendingTurnsPerChild),
+		slog.String("error", err.Error()))
+}
+
+// clearCommitBackpressure re-arms the saturation warning after a commit for
+// this child succeeds.
+func (n *TransitionNotifier) clearCommitBackpressure(childSessionID string) {
+	child := strings.TrimSpace(childSessionID)
+	n.overflowMu.Lock()
+	delete(n.overflowWarned, child)
+	n.overflowMu.Unlock()
 }
 
 // ReadDeadLetter returns the dead-lettered records for a child (empty if none).

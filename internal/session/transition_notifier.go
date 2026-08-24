@@ -145,6 +145,15 @@ type TransitionNotifier struct {
 	terminalMu   sync.Mutex
 	terminalSeen map[string]bool
 
+	// overflowMu guards overflowWarned, the set of children whose parent inbox
+	// is saturated at maxPendingTurnsPerChild. Backpressure stays retryable, so
+	// without a signal here a stalled parent makes its child re-observe the
+	// same transition every poll with nothing in any log — the runaway class
+	// the dead-letter work removed. Cleared once a commit for that child
+	// succeeds, so a second stall is reported again.
+	overflowMu     sync.Mutex
+	overflowWarned map[string]bool
+
 	// outputHashDedupTTLOverride lets tests shrink the issue #1142
 	// output-hash dedup window without waiting hours of wall-clock time.
 	// Zero means "use defaultOutputHashDedupTTL". Production never sets
@@ -442,9 +451,11 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 
 	elapsed := event.Timestamp.Unix() - record.At
 
-	// A supplied turn signal is authoritative.  The legacy status-only window
-	// is only safe for callers which cannot prove turn identity.
-	if event.LastOutputHash == "" && record.OutputHash == "" &&
+	// A supplied turn signal is authoritative, but only when BOTH sides carry
+	// one — otherwise there is nothing to compare and the legacy window is the
+	// floor. Requiring both sides to be empty would let a child whose signal is
+	// momentarily unavailable re-emit the identical transition (issue #1187).
+	if (event.LastOutputHash == "" || record.OutputHash == "") &&
 		record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
 		return true
 	}
