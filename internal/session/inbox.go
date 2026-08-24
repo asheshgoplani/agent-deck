@@ -278,6 +278,11 @@ func forEachInboxLine(f *os.File, fn func([]byte) error) error {
 							if errors.Is(discardErr, io.EOF) {
 								return nil
 							}
+							// The remainder of an oversized line refills the
+							// reader once per buffer; that is not a failure.
+							if errors.Is(discardErr, bufio.ErrBufferFull) {
+								continue
+							}
 							return discardErr
 						}
 					}
