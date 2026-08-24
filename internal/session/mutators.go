@@ -48,6 +48,11 @@ const (
 	// baked/default model. Restart-required (the running process keeps the
 	// model it launched with).
 	FieldModel = "model"
+	// FieldContextLevel sets the per-session context-injection level
+	// (v1.16.0 session context injection): "none", "primer", "full", or ""
+	// to inherit (group → global → built-in default). Restart-required —
+	// the primer/env spine is emitted at spawn/resume command build.
+	FieldContextLevel = "context-level"
 )
 
 var ValidMutableFields = []string{
@@ -74,6 +79,7 @@ var ValidMutableFields = []string{
 	FieldIdleTimeout,
 	FieldPin,
 	FieldModel,
+	FieldContextLevel,
 }
 
 type FieldRestartPolicy int
@@ -87,6 +93,7 @@ func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
 		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel,
+		FieldContextLevel,
 		// Resume flags are baked into the next spawn command.
 		FieldToolSessionID:
 		return FieldRestartRequired
@@ -471,6 +478,23 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			}
 		} else if aerr := inst.ApplyLaunchModel(trimmed); aerr != nil {
 			return oldValue, nil, &MutationError{Field: field, Msg: aerr.Error()}
+		}
+
+	case FieldContextLevel:
+		// v1.16.0 session context injection: "none"/"primer"/"full", or ""
+		// to inherit (group → global → built-in default). Restart-required —
+		// the primer and env spine are emitted at spawn/resume build time.
+		oldValue = inst.ContextLevel
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			inst.ContextLevel = ""
+		} else if lvl := NormalizeContextLevel(trimmed); lvl != "" {
+			inst.ContextLevel = lvl
+		} else {
+			return oldValue, nil, &MutationError{
+				Field: field,
+				Msg:   fmt.Sprintf("invalid context level %q — expected 'none', 'primer', 'full', or '' to inherit", value),
+			}
 		}
 
 	case FieldPin:

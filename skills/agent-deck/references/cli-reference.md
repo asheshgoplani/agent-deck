@@ -230,6 +230,32 @@ Auto-detects current session if no ID provided.
 - Attached MCPs (local, global, project)
 - tmux session name
 
+### session primer
+
+```bash
+agent-deck session primer [id|title] [--json]
+```
+
+Prints the session context primer (v1.16.0 session context injection):
+identity (id, title, group), location (dir, worktree + live-probed branch,
+host), harness/model/account/profile, parent (and how to report back),
+lifecycle (`created` / `resumed` / `revived`), and the cheap command paths.
+Auto-detects the calling session when no id is given — this is the universal
+"who am I?" fallback the injected `AGENTDECK_*` env vars point at. Facts that
+cannot be determined print `unknown`, never a guess. `--json` returns the raw
+fact sheet (including `context_level` + resolution source).
+
+The same primer is injected automatically at spawn: claude sessions get it
+via the SessionStart hook (`additionalContext` — re-fires on resume, /clear,
+and compaction, so it survives a resume natively); other tools get it
+prepended to the initial message plus the `AGENTDECK_*` env spine on every
+start AND resume command. Exception: deepseek gets the env spine only — its
+headless one-shot task is replayed verbatim on restart, so an embedded
+primer would replay stale lifecycle facts. Level control: `--context-level` on `add`/`launch`,
+`session set <id> context-level <none|primer|full>`, `[groups."<path>"]
+context_level`, or global `context_level` (default: `primer`; conductors
+default to `full`).
+
 ### session current
 
 ```bash
@@ -263,7 +289,7 @@ agent-deck session current --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account
+**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, color, notes, claude-session-id, gemini-session-id, opencode-session-id, codex-session-id, tool-session-id, title-locked, no-transition-notify, skip-permissions, auto-mode, account, idle-timeout, pin, model, context-level
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 

@@ -88,6 +88,14 @@ type UserConfig struct {
 	// Default: true (nil = true)
 	SyncTitle *bool `toml:"sync_title,omitempty"`
 
+	// ContextLevel is the global default for session context injection
+	// (v1.16.0): "none", "primer", or "full". Empty = built-in default
+	// ("full" for conductors, "primer" otherwise). Overridable per group
+	// ([groups."<path>"].context_level) and per session
+	// (`session set <id> context-level`, `--context-level` on add/launch).
+	// Resolution: ResolveContextLevel in primer.go.
+	ContextLevel string `toml:"context_level,omitempty"`
+
 	// GroupSort controls the order of sessions within a group.
 	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
 	//   "actionable"           — issue #857 status→recency→Order surfacing.
@@ -801,6 +809,11 @@ type GroupSettings struct {
 	Create bool `toml:"create,omitempty"`
 	// DefaultPath sets the default working directory for new sessions in this group.
 	DefaultPath string `toml:"default_path,omitempty"`
+	// ContextLevel overrides the global context-injection level for sessions
+	// in this group ("none"/"primer"/"full"; v1.16.0). Ancestor-walking like
+	// the [groups.X.claude] scalars: a child group inherits its nearest
+	// ancestor's explicit value. Per-session settings still win.
+	ContextLevel string `toml:"context_level,omitempty"`
 	// Claude defines Claude Code overrides for a specific group.
 	Claude GroupClaudeSettings `toml:"claude,omitempty"`
 	// Hermes defines Hermes overrides for a specific group.

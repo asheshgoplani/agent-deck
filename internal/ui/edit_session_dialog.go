@@ -77,6 +77,13 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 			pillOptions: []string{string(session.PinNone), string(session.PinTop), string(session.PinBottom)},
 			pillLabels:  []string{"Off", "Top", "Bottom"},
 			pillCursor:  pinCursorFor(inst.Pin)},
+		// Context injection level (v1.16.0 session context injection).
+		// "" = inherit (group → global → default). Tool-agnostic, so it
+		// lives in the shared field block. Restart-required.
+		{key: session.FieldContextLevel, label: "Context level (restart)", kind: editFieldPills,
+			pillOptions: []string{"", session.ContextLevelNone, session.ContextLevelPrimer, session.ContextLevelFull},
+			pillLabels:  []string{"Inherit", "None", "Primer", "Full"},
+			pillCursor:  contextLevelCursorFor(inst.ContextLevel)},
 	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		skip, auto := readClaudeFlags(inst)
@@ -281,8 +288,24 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 		return strconv.FormatBool(auto)
 	case session.FieldPin:
 		return string(inst.Pin)
+	case session.FieldContextLevel:
+		return inst.ContextLevel
 	}
 	return ""
+}
+
+// contextLevelCursorFor maps a stored context level to its pill index in the
+// {Inherit, None, Primer, Full} row. Unknown values fall back to Inherit.
+func contextLevelCursorFor(level string) int {
+	switch session.NormalizeContextLevel(level) {
+	case session.ContextLevelNone:
+		return 1
+	case session.ContextLevelPrimer:
+		return 2
+	case session.ContextLevelFull:
+		return 3
+	}
+	return 0
 }
 
 func (d *EditSessionDialog) updateFocus() {

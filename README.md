@@ -145,6 +145,15 @@ Two short guides to read next:
 
 ## Features
 
+### Session context injection
+
+Every launched session knows what agent-deck is, who/where it is, and which cheap CLI paths exist — no more hand-explaining the deck in every prompt. A runtime-derived primer (session id/title/group, dir + worktree/branch, host, harness/model/account/profile, parent + how to report back, and lifecycle `created`/`resumed`/`revived`) is injected at spawn; facts that cannot be determined print the literal `unknown`, never a guess.
+
+- Claude sessions: injected via the SessionStart hook (`additionalContext`), which re-fires on resume, `/clear`, and compaction — the primer survives a resume natively
+- Other tools: prepended to the initial launch message, plus an `AGENTDECK_*` env fact spine on every start and resume command
+- Levels: `none` / `primer` (worker default) / `full` (conductor default, adds orchestration guidance) — per session (`--context-level`, `session set <id> context-level`, edit dialog), per group (`context_level`, ancestor-walking), or global
+- Any session can re-query with `agent-deck session primer [--json]`; injection failure never fails a launch
+
 ### Fork Sessions
 
 Try different approaches without losing context. Fork Claude, OpenCode, Pi, and Codex sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.

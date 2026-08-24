@@ -60,6 +60,8 @@ func handleSession(profile string, args []string) {
 		handleSessionFocus(profile, args[1:])
 	case "show":
 		handleSessionShow(profile, args[1:])
+	case "primer":
+		handleSessionPrimer(profile, args[1:])
 	case "current":
 		handleSessionCurrent(profile, args[1:])
 	case "set-parent":
@@ -122,6 +124,7 @@ func printSessionHelp() {
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
+	fmt.Println("  primer [id]             Print the session context primer (identity, lifecycle, cheap paths)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
@@ -172,6 +175,7 @@ func printSessionHelp() {
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
 	fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)")
+	fmt.Println("  context-level      Context injection level: none, primer, full, or '' to inherit (restart)")
 	fmt.Println()
 	fmt.Println("Set examples:")
 	fmt.Println("  agent-deck session set my-project title \"New Title\"")
@@ -1660,6 +1664,17 @@ func handleSessionShow(profile string, args []string) {
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
 	addAutoNameJSON(jsonData, inst)
+
+	// v1.16.0 session context injection: explicit per-session value ("" =
+	// inherit) plus the resolved effective level and its source, so
+	// `session show --json` answers "what will actually inject" directly.
+	{
+		cfg, _ := session.LoadUserConfig()
+		effectiveLevel, levelSource := session.ResolveContextLevel(cfg, inst)
+		jsonData["context_level"] = inst.ContextLevel
+		jsonData["context_level_effective"] = effectiveLevel
+		jsonData["context_level_source"] = levelSource
+	}
 
 	if inst.Command != "" {
 		jsonData["command"] = inst.Command

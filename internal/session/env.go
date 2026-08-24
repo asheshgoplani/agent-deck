@@ -53,6 +53,12 @@ func (i *Instance) buildEnvSourceCommand() string {
 		sources = append(sources, paneWarning("config.toml error — overrides inactive: "+cfgErr.Error()))
 	}
 	if config == nil {
+		// Context env spine still applies on a broken config — level
+		// resolution degrades to its built-in default chain and identity
+		// facts don't need config.toml (session context injection, v1.16.0).
+		if ctxExports := i.buildContextEnvExports(nil); ctxExports != "" {
+			sources = append(sources, ctxExports)
+		}
 		if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
 			sources = append(sources, restartEnv)
 		}
@@ -141,6 +147,18 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// 7. Conductor-specific env (highest priority, overrides tool env)
 	if conductorEnv := i.getConductorEnv(ignoreMissing); conductorEnv != "" {
 		sources = append(sources, conductorEnv)
+	}
+
+	// 7b. Session context env spine (v1.16.0 session context injection):
+	//     AGENTDECK_SESSION_ID/TITLE/TOOL/GROUP/LIFECYCLE/CONTEXT_LEVEL
+	//     (+PARENT_ID when linked). This is the one choke point every tool's
+	//     fresh-start AND resume builder already flows through, and inline
+	//     `export` survives the bash -c / SSH / sandbox wrapping chains that
+	//     host-side tmux set-environment does not reach. Level "none" emits
+	//     nothing. Placed before the restart overrides (step 8) so a one-shot
+	//     `session restart --env` can override any of these for debugging.
+	if ctxExports := i.buildContextEnvExports(config); ctxExports != "" {
+		sources = append(sources, ctxExports)
 	}
 
 	// 8. Explicit restart overrides are applied after every configured source,

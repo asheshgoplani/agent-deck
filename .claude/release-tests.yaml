@@ -1972,3 +1972,58 @@ tests:
   run:
     command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_live_mode_invokes_session_send -v
     expected: pass
+- id: sessionctx-env-spine-fresh-and-resume
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestClaudeCommands_CarryContextEnvSpine
+  purpose: Context env spine present on FRESH claude spawn AND on the RESUME command; level none emits nothing on either
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestClaudeCommands_CarryContextEnvSpine -count=1 -v
+    expected: pass
+- id: sessionctx-none-injects-nothing
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestRenderPrimer_NoneInjectsNothing
+  purpose: "Negative control — context level none renders no primer text and prepends nothing"
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestRenderPrimer_NoneInjectsNothing|TestPrimerMessagePrefix' -count=1 -v
+    expected: pass
+- id: sessionctx-unknown-never-guessed
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestRenderPrimer_UnknownFields
+  purpose: Undeterminable facts render as the literal 'unknown' (incl. stale worktree-branch snapshots and SSH placeholder paths), never a guess
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestRenderPrimer_UnknownFields|TestCollectPrimerFacts' -count=1 -v
+    expected: pass
+- id: sessionctx-primer-budget
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestPrimerBudget
+  purpose: Hard size budget on the rendered primer (dumping-ground guard); growing it must edit the budget consts in the same diff
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestPrimerBudget -count=1 -v
+    expected: pass
+- id: sessionctx-primer-commands-exist
+  added: 2026-08-24
+  task: session-context-injection
+  file: cmd/agent-deck/hook_primer_context_test.go
+  test_name: TestPrimerCommandsExist
+  purpose: Every agent-deck command the primer recommends resolves to a real handler (compiled never-stale guard against CLI drift)
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestPrimerCommandsExist -count=1 -v
+    expected: pass

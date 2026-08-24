@@ -118,6 +118,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
+| `agent-deck session primer [--json]` | Print the calling session's context primer (identity, lifecycle, cheap paths; unknowns print `unknown`) |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck session switch-account <name> <account>` | Switch Claude account, conversation follows |
 | `agent-deck mcp list` | List available MCPs |
@@ -130,6 +131,27 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck feedback` | Submit feedback (opens rating prompt + optional comment) |
 
 **Status:** `●` running | `◐` waiting | `○` idle | `✕` error
+
+## Session Context Injection (v1.16.0)
+
+Every launched session automatically receives a context primer — what
+agent-deck is, the session's identity (id, title, group, dir/worktree/branch,
+host, harness, model, account, profile, parent), its lifecycle (`created` /
+`resumed` / `revived`), and the cheap command paths. Undeterminable facts
+print the literal `unknown`, never a guess.
+
+Delivery: claude sessions get it via the SessionStart hook
+(`additionalContext`), which re-fires on resume, /clear, and compaction — the
+primer survives a resume natively. Other tools get it prepended to the
+initial launch message, plus the `AGENTDECK_SESSION_ID/_TOOL/_GROUP/
+_LIFECYCLE/_CONTEXT_LEVEL/_PARENT_ID` env spine on every start AND resume
+command. Any session can re-query with `agent-deck session primer [--json]`.
+
+Levels: `none` (inject nothing) / `primer` (default for workers) / `full`
+(default for conductors; adds `launch` + completion-sentinel guidance).
+Override per session (`--context-level`, `session set <id> context-level`),
+per group (`[groups."<path>"] context_level`, ancestor-walking), or globally
+(`context_level` in config.toml). Injection failure never fails a launch.
 
 ## Sub-Agent Launch
 

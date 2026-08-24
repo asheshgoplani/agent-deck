@@ -508,6 +508,16 @@ type Instance struct {
 	// launching from the TUI without going through the user's shell.
 	LaunchShell *bool `json:"launch_shell,omitempty"`
 
+	// ContextLevel is the per-session context-injection level (v1.16.0
+	// session context injection): "none", "primer", "full", or "" to
+	// inherit (group context_level → global context_level → built-in
+	// default: "full" for conductors, "primer" otherwise). Resolution
+	// lives in ResolveContextLevel (primer.go). Persisted via the
+	// tool_data extras zone (context_level key) so legacy binaries
+	// round-trip it untouched. Restart-required: injection happens at
+	// spawn/resume command build time.
+	ContextLevel string `json:"context_level,omitempty"`
+
 	// StartupQuery is the claude-code positional "startup query" (#725,
 	// v1.7.67). Set from the new-session dialog's "Start query" field and
 	// emitted as a single shell-quoted positional arg on the claude
@@ -5052,6 +5062,17 @@ func (i *Instance) StartWithMessage(message string) error {
 	if message != "" {
 		if err := i.PromptDeliveryError(); err != nil {
 			return err
+		}
+	}
+
+	// v1.16.0 session context injection: tools WITHOUT a native injection
+	// channel (everything non-claude-compatible; claude gets the primer via
+	// the SessionStart hook, which also re-fires on resume) get the primer
+	// prepended to the initial message. Level "none" — or any render
+	// problem — prepends nothing; injection can never fail a launch.
+	if message != "" {
+		if prefix := i.PrimerMessagePrefix(); prefix != "" {
+			message = prefix + "\n\n" + message
 		}
 	}
 
