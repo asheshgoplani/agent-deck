@@ -4108,19 +4108,12 @@ func formatGenericResumeShellVar(baseCommand, resumeFlag, varName, dangerousFlag
 // a real claude/codex subcommand invocation.
 func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 	if !i.SubcommandPassthrough {
-		// v1.16.0 session context injection: plain shell/raw commands never
-		// flow through a tool builder, so without this prefix they were the
-		// ONE spawn path with no AGENTDECK_* env fact spine — falsifying the
-		// delivery table's "generic/shell: env spine" row (caught by the
-		// harness-matrix mechanical shell cells, run2). Context exports
-		// only: the broader env_file/init_script machinery deliberately
-		// stays tool-builder-scoped, and level "none" prefixes nothing.
-		if baseCommand != "" {
-			cfg, _ := LoadUserConfig()
-			if ctxExports := i.buildContextEnvExports(cfg); ctxExports != "" {
-				return ctxExports + " && " + baseCommand
-			}
-		}
+		// Byte-identical by contract (#1821): a Tool=="shell" command is typed
+		// via send-keys into the user's interactive login shell, which may be
+		// fish — inline `export … &&` is a syntax error there. The v1.16.0
+		// context fact spine for plain shell sessions therefore travels
+		// host-side via the tmux session environment (setContextTmuxEnv),
+		// never as a command prefix.
 		return baseCommand
 	}
 
@@ -4966,6 +4959,9 @@ func (i *Instance) Start() error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+	// v1.16.0 session context injection: host-side, tool-agnostic fact spine
+	// in the tmux session environment (see setContextTmuxEnv).
+	i.setContextTmuxEnv()
 
 	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
 	// command run inside this session resolves the session's own profile rather
@@ -5286,6 +5282,9 @@ func (i *Instance) StartWithMessage(message string) error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+	// v1.16.0 session context injection: host-side, tool-agnostic fact spine
+	// in the tmux session environment (see setContextTmuxEnv).
+	i.setContextTmuxEnv()
 
 	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
 	// command run inside this session resolves the session's own profile rather
@@ -9050,17 +9049,7 @@ func (i *Instance) restart(env map[string]string) error {
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
 				command = i.buildGenericCommand(i.Command)
 			} else {
-				// v1.16.0 session context injection: mirror the fresh-spawn
-				// shell prefix (buildShellPassthroughCommand's non-passthrough
-				// branch) so the env fact spine survives a shell restart too.
-				ctxPrefix := ""
-				if i.Command != "" {
-					cfg, _ := LoadUserConfig()
-					if ctxExports := i.buildContextEnvExports(cfg); ctxExports != "" {
-						ctxPrefix = ctxExports + " && "
-					}
-				}
-				command = i.buildRestartEnvPrefix() + ctxPrefix + i.Command
+				command = i.buildRestartEnvPrefix() + i.Command
 				if i.Command == "" && command != "" {
 					shell := ""
 					if !i.IsSandboxed() && i.SSHHost == "" {
@@ -9122,6 +9111,9 @@ func (i *Instance) restart(env map[string]string) error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+	// v1.16.0 session context injection: host-side, tool-agnostic fact spine
+	// in the tmux session environment (see setContextTmuxEnv).
+	i.setContextTmuxEnv()
 
 	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
 	// command run inside this session resolves the session's own profile rather

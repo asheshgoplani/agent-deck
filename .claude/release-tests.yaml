@@ -2076,7 +2076,7 @@ tests:
   task: session-context-injection
   file: internal/session/primer_test.go
   test_name: TestShellSessions_CarryContextEnvSpine
-  purpose: Plain shell/raw --cmd sessions carry the AGENTDECK_* fact spine on spawn and restart; level none stays bare (caught by the harness-matrix mechanical shell cells)
+  purpose: Plain shell/raw --cmd commands stay byte-identical (#1821, fish-safe) while the AGENTDECK_* fact spine is published host-side via the tmux session environment; level none publishes nothing (caught by the harness-matrix mechanical shell cells)
   source: harness-matrix-run2-shell-cells
   manual: false
   run:

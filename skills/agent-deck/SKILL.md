@@ -147,7 +147,10 @@ ignores stdout from async hooks. Every claude spawn installs/upgrades the
 hooks in its config dir, covering CLI-only installs.) Other tools get it prepended to the
 initial launch message, plus the `AGENTDECK_SESSION_ID/_TOOL/_GROUP/
 _LIFECYCLE/_CONTEXT_LEVEL/_PARENT_ID` env spine on every start AND resume
-command. Any session can re-query with `agent-deck session primer [--json]`.
+command (plain shell/raw `--cmd` sessions get the same spine host-side in the
+tmux session environment — `tmux show-environment` — since their command is
+typed into the interactive shell verbatim). Any session can re-query with
+`agent-deck session primer [--json]`.
 
 Levels: `none` (inject nothing) / `primer` (default for workers) / `full`
 (default for conductors; adds `launch` + completion-sentinel guidance).

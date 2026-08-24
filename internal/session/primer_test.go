@@ -679,15 +679,31 @@ func TestContextLevel_SQLiteFullToInheritRoundTrip(t *testing.T) {
 // stays empty.
 func TestShellSessions_CarryContextEnvSpine(t *testing.T) {
 	primerTestEnv(t)
-	inst := &Instance{ID: "sh1", Title: "s", GroupPath: "g", Tool: "shell", Command: "bash", ProjectPath: t.TempDir()}
-	cmd := inst.buildShellPassthroughCommand(inst.Command)
-	if !strings.Contains(cmd, "export AGENTDECK_SESSION_ID=sh1") ||
-		!strings.Contains(cmd, "export AGENTDECK_CONTEXT_LEVEL=primer") ||
-		!strings.HasSuffix(cmd, " && bash") {
-		t.Errorf("plain shell spawn missing context env spine:\n%s", cmd)
+	inst := &Instance{ID: "sh1", Title: "s", GroupPath: "g", Tool: "shell", Command: "bash", ProjectPath: t.TempDir(), ParentSessionID: "p9"}
+
+	// #1821 contract stands: the typed command is byte-identical (fish-safe).
+	if cmd := inst.buildShellPassthroughCommand(inst.Command); cmd != "bash" {
+		t.Errorf("plain shell command must stay byte-identical (send-keys into a possibly-fish shell), got %q", cmd)
+	}
+
+	// The spine for shell sessions travels host-side via tmux set-environment;
+	// the pair set is the single source both channels share.
+	pairs := inst.contextEnvPairs(nil)
+	got := map[string]string{}
+	for _, kv := range pairs {
+		got[kv[0]] = kv[1]
+	}
+	for k, want := range map[string]string{
+		"AGENTDECK_SESSION_ID": "sh1", "AGENTDECK_TOOL": "shell", "AGENTDECK_GROUP": "g",
+		"AGENTDECK_LIFECYCLE": LifecycleCreated, "AGENTDECK_CONTEXT_LEVEL": ContextLevelPrimer,
+		"AGENTDECK_PARENT_ID": "p9",
+	} {
+		if got[k] != want {
+			t.Errorf("contextEnvPairs[%s] = %q, want %q", k, got[k], want)
+		}
 	}
 	inst.ContextLevel = ContextLevelNone
-	if cmd := inst.buildShellPassthroughCommand(inst.Command); cmd != "bash" {
-		t.Errorf("level none shell spawn must be the bare command, got %q", cmd)
+	if pairs := inst.contextEnvPairs(nil); len(pairs) != 0 {
+		t.Errorf("level none must publish no spine, got %v", pairs)
 	}
 }

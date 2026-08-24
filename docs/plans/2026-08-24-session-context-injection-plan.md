@@ -100,8 +100,9 @@ Two-part delivery everywhere:
 | cursor-agent | `.cursorrules` (pollutes repo); cursor hooks exist (injection support unverified) | initial-message prepend + env spine | **PARTIAL** |
 | hermes | `HERMES.md`; hermes hooks | initial-message prepend + env spine (already carries inline AGENTDECK_*) | **PARTIAL** |
 | omp | not in tree yet | documented: adopts the generic path on merge | n/a |
-| generic `--cmd` / `[tools.X]` | none knowable | env spine only; prepend when a launch message is given | env YES; visibility weak — stated plainly |
-| shell | n/a (human/scripts) | env spine only | YES |
+| generic `[tools.X]` | none knowable | inline env spine (buildGenericCommand flows through buildEnvSourceCommand); prepend when a launch message is given | env YES; visibility weak — stated plainly |
+| plain `--cmd` shell / raw command | none — the command is typed via send-keys into the user's interactive login shell (possibly fish), so inline `export` is forbidden (#1821) | **host-side tmux session environment** (`tmux show-environment`, every later pane/window) — NOT the already-running initial shell's process env; scripts run `agent-deck session primer` | tmux env YES (spawn + restart); initial-shell env NO — stated plainly |
+| shell (default, no command) | n/a (human/scripts) | host-side tmux session environment, same as plain `--cmd` | tmux env YES |
 
 Prepend mechanics: in `StartWithMessage`/launch, `message = primer + "\n\n" + message` when level ≠ none and the harness has no hook path. A session started with no message on a no-hook harness gets env spine only — reported honestly in the matrix, not papered over.
 

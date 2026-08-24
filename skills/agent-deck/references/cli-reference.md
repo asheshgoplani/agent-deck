@@ -252,9 +252,12 @@ MUST be synchronous — Claude Code ignores stdout from async hooks — and
 every claude spawn now installs/upgrades the hooks in the session's config
 dir, so CLI-only installs are covered); other tools get it
 prepended to the initial message plus the `AGENTDECK_*` env spine on every
-start AND resume command. Exception: deepseek gets the env spine only — its
+start AND resume command. Exceptions: deepseek gets the env spine only — its
 headless one-shot task is replayed verbatim on restart, so an embedded
-primer would replay stale lifecycle facts. Level control: `--context-level` on `add`/`launch`,
+primer would replay stale lifecycle facts; plain shell / raw `--cmd`
+sessions get the spine host-side in the tmux session environment
+(`tmux show-environment`, later panes) rather than as a command prefix,
+because their command is typed verbatim into the interactive shell. Level control: `--context-level` on `add`/`launch`,
 `session set <id> context-level <none|primer|full>`, `[groups."<path>"]
 context_level`, or global `context_level` (default: `primer`; conductors
 default to `full`).

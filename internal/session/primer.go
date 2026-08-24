@@ -19,6 +19,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
@@ -484,23 +485,63 @@ func (i *Instance) contextEnvTool() string {
 // that host-side `tmux set-environment` values do not reach.
 // Level "none" emits nothing (the red-path contract: none injects nothing).
 func (i *Instance) buildContextEnvExports(cfg *UserConfig) string {
-	level, _ := ResolveContextLevel(cfg, i)
-	if level == ContextLevelNone {
+	pairs := i.contextEnvPairs(cfg)
+	if len(pairs) == 0 {
 		return ""
 	}
-	lifecycle := i.LifecycleAtLaunch()
-	parts := []string{
-		"export AGENTDECK_SESSION_ID=" + shellescape.Quote(i.ID),
-		"export AGENTDECK_SESSION_TITLE=" + shellescape.Quote(i.GetTitleThreadSafe()),
-		"export AGENTDECK_TOOL=" + shellescape.Quote(i.contextEnvTool()),
-		"export AGENTDECK_GROUP=" + shellescape.Quote(i.GroupPath),
-		"export AGENTDECK_LIFECYCLE=" + shellescape.Quote(lifecycle),
-		"export AGENTDECK_CONTEXT_LEVEL=" + shellescape.Quote(level),
-	}
-	if i.ParentSessionID != "" {
-		parts = append(parts, "export AGENTDECK_PARENT_ID="+shellescape.Quote(i.ParentSessionID))
+	parts := make([]string, 0, len(pairs))
+	for _, kv := range pairs {
+		parts = append(parts, "export "+kv[0]+"="+shellescape.Quote(kv[1]))
 	}
 	return strings.Join(parts, " && ")
+}
+
+// contextEnvPairs is the single source of the fact spine's key/value set,
+// shared by the inline export builder (tool sessions) and the host-side tmux
+// setter (all sessions incl. plain shell). Ordered for stable output. Empty
+// at level none.
+func (i *Instance) contextEnvPairs(cfg *UserConfig) [][2]string {
+	level, _ := ResolveContextLevel(cfg, i)
+	if level == ContextLevelNone {
+		return nil
+	}
+	pairs := [][2]string{
+		{"AGENTDECK_SESSION_ID", i.ID},
+		{"AGENTDECK_SESSION_TITLE", i.GetTitleThreadSafe()},
+		{"AGENTDECK_TOOL", i.contextEnvTool()},
+		{"AGENTDECK_GROUP", i.GroupPath},
+		{"AGENTDECK_LIFECYCLE", i.LifecycleAtLaunch()},
+		{"AGENTDECK_CONTEXT_LEVEL", level},
+	}
+	if i.ParentSessionID != "" {
+		pairs = append(pairs, [2]string{"AGENTDECK_PARENT_ID", i.ParentSessionID})
+	}
+	return pairs
+}
+
+// setContextTmuxEnv publishes the fact spine into the tmux SESSION
+// environment, host-side and tool-agnostic — the same channel that already
+// carries AGENTDECK_INSTANCE_ID/PROFILE. This is the delivery path for plain
+// shell / raw --cmd sessions, whose command is typed via send-keys into the
+// user's interactive login shell and therefore must stay byte-identical
+// (#1821: fish has no `export`). Stated plainly: values land in
+// `tmux show-environment` and every pane/window created afterwards; they are
+// NOT exported into the already-running initial shell's process env — a
+// script there reads them via `tmux show-environment` or simply runs
+// `agent-deck session primer`. Host tmux env does not reach docker sandboxes
+// either; tool sessions get the inline export spine for that. Never fails a
+// launch; level none sets nothing.
+func (i *Instance) setContextTmuxEnv() {
+	if i == nil || i.tmuxSession == nil {
+		return
+	}
+	cfg, _ := LoadUserConfig()
+	for _, kv := range i.contextEnvPairs(cfg) {
+		if err := i.tmuxSession.SetEnvironment(kv[0], kv[1]); err != nil {
+			sessionLog.Debug("context tmux env set failed", slog.String("key", kv[0]), slog.String("error", err.Error()))
+			return
+		}
+	}
 }
 
 // ---- persistence (tool_data extras zone, mirrors idle_timeout_persist.go) ----
