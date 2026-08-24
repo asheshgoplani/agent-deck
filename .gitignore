@@ -71,3 +71,6 @@ __pycache__/
 # Local brainstorming/design docs (not committed)
 docs/superpowers/
 RESULTS/
+# 验证产物不得进入产品树（#2044）
+RESULTS.md
+RESULTS-*.md
