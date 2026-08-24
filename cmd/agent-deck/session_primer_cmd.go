@@ -75,11 +75,6 @@ func handleSessionPrimer(profile string, args []string) {
 
 	facts := session.CollectPrimerFacts(cfg, inst, parentTitle, lifecycle)
 
-	if *jsonOutput {
-		out.Print("", facts)
-		return
-	}
-
 	// Human/agent-readable form: render at the effective level, but never
 	// below primer — asking for the fact sheet IS the opt-in, so a level
 	// of "none" (which gates automatic injection) must not blank the
@@ -88,5 +83,8 @@ func handleSessionPrimer(profile string, args []string) {
 	if level == session.ContextLevelNone {
 		level = session.ContextLevelPrimer
 	}
-	fmt.Println(session.RenderPrimer(facts, level))
+	// Route through the shared CLIOutput helper so --json/-q behave like
+	// every other session command (round-1 P2 parity: a bare fmt.Println
+	// ignored quiet mode).
+	out.Print(session.RenderPrimer(facts, level)+"\n", facts)
 }

@@ -67,8 +67,35 @@ const (
 	primerCapSmall  = 32 // harness, model, account, profile, host, parent title
 )
 
-// clipHead keeps the first max runes, appending "…" when truncated.
+// sanitizeFact is the single boundary every dynamic fact crosses before it
+// is interpolated into the primer (PR #2064 round-1 P1): runtime-controlled
+// values (titles, group names, branch names, paths — any of which a
+// hostile or merely unlucky repo can shape) must not be able to fabricate
+// primer lines or smuggle control sequences into the injected block.
+// Newlines/tabs collapse to single spaces, all other control characters
+// (including ESC — ANSI sequences) are dropped, and the result is
+// whitespace-trimmed. Length is bounded separately by clipHead/clipTail,
+// which both call this first so no call site can forget the order.
+func sanitizeFact(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f: // C0 controls incl. ESC, and DEL
+			// dropped
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// clipHead sanitizes, then keeps the first max runes, appending "…" when
+// truncated.
 func clipHead(s string, max int) string {
+	s = sanitizeFact(s)
 	r := []rune(s)
 	if len(r) <= max {
 		return s
@@ -76,8 +103,10 @@ func clipHead(s string, max int) string {
 	return string(r[:max]) + "…"
 }
 
-// clipTail keeps the last max runes, prepending "…" when truncated.
+// clipTail sanitizes, then keeps the last max runes, prepending "…" when
+// truncated (paths: the tail is the identifying part).
 func clipTail(s string, max int) string {
+	s = sanitizeFact(s)
 	r := []rune(s)
 	if len(r) <= max {
 		return s
@@ -328,6 +357,10 @@ func RenderPrimer(f PrimerFacts, level string) string {
 	// paths, auto-generated titles); the budget is guaranteed by clipping
 	// each field here, not merely asserted against short fixtures. IDs are
 	// exempt (bounded, and the report-back command must stay paste-able).
+	// IDs are sanitized but never truncated (the report-back command must
+	// stay paste-able); everything else is sanitized + clipped.
+	f.SessionID = sanitizeFact(f.SessionID)
+	f.ParentID = sanitizeFact(f.ParentID)
 	f.Title = clipHead(f.Title, primerCapName)
 	f.Group = clipHead(f.Group, primerCapName)
 	f.Dir = clipTail(f.Dir, primerCapPath)
@@ -475,19 +508,22 @@ func (i *Instance) buildContextEnvExports(cfg *UserConfig) string {
 const toolDataContextLevelKey = "context_level"
 
 // WriteContextLevelToToolData merges context_level into the tool_data blob.
-// An empty level removes the key (blob shape identical to a pre-1.16 row, so
-// downgrades stay clean and MergeToolDataExtras carries nothing stale).
+// An empty level (inherit) is written as an EXPLICIT empty string, never by
+// deleting the key: context_level is outside the typed toolDataBlob schema,
+// so MergeToolDataExtras treats an OMITTED key as "unaware writer — carry
+// the old value forward". Under deletion-by-omission, clearing a persisted
+// `full` back to inherit silently stayed `full` across the merge (PR #2064
+// round-1 P1). Explicit-empty is the merge layer's documented intentional-
+// clear contract (see MergeToolDataExtras), and a legacy writer that omits
+// the key entirely still preserves the stored value — exactly the sticky
+// semantics we want.
 func WriteContextLevelToToolData(td json.RawMessage, level string) json.RawMessage {
 	m := map[string]json.RawMessage{}
 	if len(td) > 0 {
 		_ = json.Unmarshal(td, &m)
 	}
-	if lvl := NormalizeContextLevel(level); lvl != "" {
-		raw, _ := json.Marshal(lvl)
-		m[toolDataContextLevelKey] = raw
-	} else {
-		delete(m, toolDataContextLevelKey)
-	}
+	raw, _ := json.Marshal(NormalizeContextLevel(level))
+	m[toolDataContextLevelKey] = raw
 	out, _ := json.Marshal(m)
 	return out
 }

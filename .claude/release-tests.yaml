@@ -2049,3 +2049,25 @@ tests:
   run:
     command: go test ./internal/session/ -run 'TestPrimerBudget_WorstCase|TestRenderPrimer_TruncatesUnboundedFields' -count=1 -v
     expected: pass
+- id: sessionctx-hostile-fact-sanitization
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestRenderPrimer_HostileFactsCannotEscapeStructure
+  purpose: Newline/ANSI/oversized runtime facts cannot fabricate primer lines, smuggle control chars, or break either budget (round-1 P1; mutation-proven red with sanitizeFact disabled)
+  source: pr2064-round1-P1-sanitization
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestRenderPrimer_HostileFactsCannotEscapeStructure -count=1 -v
+    expected: pass
+- id: sessionctx-clear-survives-merge
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestContextLevel_SQLiteFullToInheritRoundTrip
+  purpose: full→inherit clear survives the tool_data extras merge and a real SQLite save/load cycle (round-1 P1; mutation-proven red with delete-on-empty restored)
+  source: pr2064-round1-P1-clear-tombstone
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestContextLevelClear_SurvivesExtrasMerge|TestContextLevel_SQLiteFullToInheritRoundTrip' -count=1 -v
+    expected: pass
