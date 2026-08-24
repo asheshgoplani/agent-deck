@@ -121,6 +121,7 @@ func handleLaunch(profile string, args []string) {
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
+	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
 	// `agent-deck add --tmux-socket`: overrides `[tmux].socket_name` for
@@ -157,6 +158,15 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
 		fmt.Println("  agent-deck launch . -c claude -w feature/new -b -m \"Start work\"")
+	}
+
+	// Reject an omitted --account value before either reordering pass can bind
+	// the following flag as the account name. Besides swallowing that flag, an
+	// unknown account silently falls through to another credential source, so
+	// this check must happen before any launch or fallback resolution begins.
+	if err := checkFlagValueNotFlag(fs, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -435,6 +445,12 @@ func handleLaunch(profile string, args []string) {
 		if ts := newInstance.GetTmuxSession(); ts != nil {
 			ts.SocketName = flagSocket
 		}
+	}
+
+	// #2045: launch must preserve the same per-session named account slot as
+	// add. Start-time resolution already consumes Instance.Account.
+	if trimmed := strings.TrimSpace(*account); trimmed != "" {
+		newInstance.Account = trimmed
 	}
 
 	if parentInstance != nil {

@@ -39,7 +39,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.14.0" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.15.0" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -333,6 +333,9 @@ func main() {
 			return
 		case "launch":
 			handleLaunch(profile, args[1:])
+			return
+		case "accounts":
+			handleAccounts(args[1:])
 			return
 		case "conductor":
 			handleConductor(profile, args[1:])
@@ -3541,6 +3544,7 @@ func printHelp() {
 	fmt.Println("  (none)           Start the TUI")
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
+	fmt.Println("  accounts         List configured named account slots")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")
 	fmt.Println("  list, ls         List all sessions")
 	fmt.Println("  remove, rm       Remove a session")
