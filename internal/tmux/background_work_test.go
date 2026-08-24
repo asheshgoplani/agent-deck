@@ -41,6 +41,23 @@ const paneAwaitingAgent = `⏺ Probe launched. Ending my turn.
    Model: Opus 4.8  Ctx: 136.9k  ⎇ feat/context-budget-handoff  (+0,-0)  𖠰 main
   ⏵⏵ bypass permissions on · 1 shell · ← for agents`
 
+// Claude Code 2.1.27+ can leave the parent at its prompt while a team agent is
+// active. In that layout the footer carries the only reliable live count: the
+// agent row itself persists after completion and cannot prove work is pending.
+const paneTeamAgentRunning = `⏺ Launching the implementation subagent now.
+
+⏺ Agent(Implement chart text size story 1)
+
+⏺ Step 3 of 5 running: implementation subagent is building story 1.
+                                                                            115708 tokens
+─────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents
+
+  ⏺ main
+  ◯ impl-chart-text-size  Work exclusively in the git worktree /...  7m 14s · ↓ 144.9k tokens`
+
 const paneIdleNoBackground = `⏺ All done — your tests pass.
 
 ✻ Churned for 1m 2s
@@ -76,6 +93,7 @@ func TestClaudeBackgroundWorkPending(t *testing.T) {
 		{"shells still running (plural)", paneShellsStillRunning, true},
 		{"single shell footer", paneSingleShell, true},
 		{"awaiting background agent", paneAwaitingAgent, true},
+		{"team agent count in footer", paneTeamAgentRunning, true},
 		{"idle, nothing pending", paneIdleNoBackground, false},
 		{"completed agent row, no background", paneCompletedAgentRowNoBackground, false},
 		{"empty", "", false},

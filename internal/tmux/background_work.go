@@ -12,6 +12,7 @@ import (
 //	✻ Churned for 6m 24s · 2 shells still running
 //	✻ Waiting for 1 background agent to finish
 //	⏵⏵ bypass permissions on · 2 shells · ← for agents   (footer; segment present iff shells>0)
+//	⏵⏵ bypass permissions on · ← 2 agents               (main + active team agent)
 //
 // run_in_background shells and a background agent the turn awaits are the two
 // "still working after Stop" cases. Without recognizing them, agent-deck maps
@@ -21,7 +22,8 @@ import (
 var claudeBackgroundWorkRe = regexp.MustCompile(`(?i)` +
 	`\d+\s+shells?\s+still\s+running` + // completion line: shells
 	`|waiting\s+for\s+\d+\s+background\s+agents?\s+to\s+finish` + // completion line: background agent
-	`|·\s*\d+\s+shells?\s*·`) // footer shell counter
+	`|·\s*\d+\s+shells?\s*·` + // footer shell counter
+	`|←\s*(?:[2-9]|\d{2,})\s+agents?`) // footer team count (includes main)
 
 // backgroundWorkScanLines bounds the scan to the pane tail (completion line +
 // input box + footer) so a transcript that merely mentions "shells" in prose
