@@ -9451,6 +9451,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.IsWorktree())
+			} else if item.Type == session.ItemTypeWindow {
+				h.confirmDialog.ShowKillWindow(item.WindowSessionID, item.WindowIndex, item.WindowName)
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
@@ -10123,6 +10125,22 @@ func (h *Home) confirmAction() tea.Cmd {
 		if inst := h.getInstanceByID(sessionID); inst != nil {
 			h.confirmDialog.Hide()
 			return h.deleteSession(inst)
+		}
+	case ConfirmKillWindow:
+		sessionID := h.confirmDialog.GetTargetID()
+		windowIndex := h.confirmDialog.GetWindowIndex()
+		h.confirmDialog.Hide()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				if err := tmuxSess.KillWindow(windowIndex); err != nil {
+					h.setError(fmt.Errorf("kill window %d: %w", windowIndex, err))
+					return nil
+				}
+				// Prune the cache so the row disappears now, not on the
+				// next background refresh tick.
+				tmux.RemoveCachedWindow(tmuxSess.Name, windowIndex)
+				h.rebuildFlatItems()
+			}
 		}
 	case ConfirmCloseSession:
 		sessionID := h.confirmDialog.GetTargetID()
@@ -16413,8 +16431,10 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 		}
 
 	case session.ItemTypeWindow:
-		// A tmux window row attaches just like its session.
+		// A tmux window row attaches just like its session, and 'd' kills
+		// the selected window (with confirmation).
 		add("⏎", "attach")
+		add(h.actionKey(hotkeyDelete), "delete")
 
 	case session.ItemTypeRemoteSession:
 		// A remote session row attaches over SSH just like a local session;

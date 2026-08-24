@@ -6010,6 +6010,13 @@ func (s *Session) SplitShellPane(workdir string) error {
 	return tmuxExec(s.SocketName, args...).Run()
 }
 
+// KillWindow kills the window with the given index in this session, leaving
+// the session's other windows intact.
+func (s *Session) KillWindow(index int) error {
+	target := fmt.Sprintf("%s:%d", s.Name, index)
+	return tmuxExec(s.SocketName, "kill-window", "-t", target).Run()
+}
+
 // ListAllSessions returns all Agent Deck tmux sessions
 func ListAllSessions() ([]*Session, error) {
 	socket := DefaultSocketName()
