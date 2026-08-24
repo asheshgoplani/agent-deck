@@ -1,9 +1,7 @@
 package tmux
 
 import (
-	"errors"
 	"log/slog"
-	"os/exec"
 	"strings"
 )
 
@@ -17,10 +15,12 @@ const agentDeckTerminalFeature = "*:hyperlinks:extkeys"
 // terminalFeatureState is what the target tmux server currently reports for the
 // server-wide `terminal-features` array.
 //
-// known is false when the array could not be read at all: there is no server
-// yet (Session.Start emits its option chunks in the SAME tmux command that
-// creates the session, so the read runs before the server exists), the server is
-// wedged past tmuxPollTimeout, or tmux is too old to know the option.
+// known is true only when values is the WHOLE array as tmux printed it on a
+// clean exit — possibly empty. It is false whenever the read did not complete:
+// no server behind the socket, a server wedged past tmuxPollTimeout, a tmux too
+// old to know the option, or a client abandoned at cmd.WaitDelay with its
+// stdout still held open. Nothing is ever written to a server in that state
+// (see terminalFeatureArgsFor).
 type terminalFeatureState struct {
 	values []string
 	known  bool
@@ -38,29 +38,28 @@ func readTerminalFeatures(socketName string) terminalFeatureState {
 }
 
 // classifyTerminalFeatures turns a `show-options -sv terminal-features` result
-// into a state. It is separate from the exec so the three cases that matter can
-// be tested directly, the way parsePanePID's contract is.
+// into a state. It is separate from the exec so the cases that matter can be
+// tested directly, the way parsePanePID's contract is.
 //
 // A clean exit with NO output is a real answer: the array is empty, which is
 // what `set -s terminal-features ""` leaves behind. It must not be confused
 // with "we could not read", because the two demand opposite actions — an empty
-// array should be SET to our entry, while an unknown array must never be
-// rewritten from nothing.
+// array should be SET to our entry, while an unreadable array is never written.
 //
-// The WaitDelay contract (see tmuxSubprocessWaitDelay) is where that
-// distinction gets sharp. When cmd.Wait abandons the stdio goroutine after the
-// process exited, whatever bytes arrived are still authoritative — but an EMPTY
-// body under that error is indeterminate, not an empty array: the values may
-// simply never have been copied. Treating it as empty would rewrite a
-// (possibly large) user array down to our single entry. So it is unknown, and
-// the next pass asks again.
+// Any error is "could not read", and that includes exec.ErrWaitDelay with
+// bytes already in the buffer. Under the WaitDelay contract (see
+// tmuxSubprocessWaitDelay) cmd.Wait gives up on the stdio goroutine while
+// something still holds the pipe open, so whatever arrived is a PREFIX of the
+// array, not the array: the copy was cut off, and this side cannot tell whether
+// the last line it saw was the last value. Planning a rewrite from a prefix
+// would `set` the array down to that prefix and drop every entry past it — a
+// user's entries, not only ours. Partial output is therefore treated exactly
+// like no output.
 func classifyTerminalFeatures(out []byte, err error) terminalFeatureState {
-	body := strings.TrimRight(string(out), "\n")
 	if err != nil {
-		if !errors.Is(err, exec.ErrWaitDelay) || body == "" {
-			return terminalFeatureState{known: false}
-		}
+		return terminalFeatureState{known: false}
 	}
+	body := strings.TrimRight(string(out), "\n")
 	if body == "" {
 		return terminalFeatureState{known: true} // empty array, no values
 	}
@@ -81,13 +80,19 @@ func classifyTerminalFeatures(out []byte, err error) terminalFeatureState {
 // of uptime, and a live server at 36,355. tmux consults the array on terminal
 // setup and on every capability lookup, and `*` matches every terminal, so the
 // duplicates show up as progressive display corruption.
+//
+// The rule is: never write blind. Both callers address a server that already
+// exists — Session.Start's option batch runs as its own tmux command AFTER
+// new-session has created the session, and EnableMouseMode runs against a live
+// session — so an unreadable array means the server is wedged, gone, or too old
+// to have the option, and an append would be lost, refused, or a no-op
+// respectively. The next pass that CAN read decides. A blind append here was the
+// last unconditional write on this path: against a server whose reads
+// persistently failed (a tmux wrapper that leaks stdout, say) it would have
+// grown the array by one per pass, which is #2061 again by another door.
 func terminalFeatureArgsFor(st terminalFeatureState) []string {
 	if !st.known {
-		// Nothing to compare against. Append once: every LATER pass reads the
-		// array successfully and short-circuits, so this can add at most one
-		// entry per server — the append is no longer per-spawn. `-q` keeps a
-		// tmux too old for the option quiet, as before.
-		return []string{";", "set", "-asq", "terminal-features", "," + agentDeckTerminalFeature}
+		return nil
 	}
 
 	desired, changed := planTerminalFeatures(st.values)
@@ -98,7 +103,9 @@ func terminalFeatureArgsFor(st terminalFeatureState) []string {
 		// The array holds something we cannot express as one comma-joined
 		// value, so rewriting it could corrupt or drop a user entry. Fall back
 		// to the historical append — still bounded, because we only reach it
-		// when our entry is absent.
+		// when our entry is absent from an array we DID read, and the next
+		// read finds it present. `-q` keeps a tmux too old for the option
+		// quiet, as before.
 		return []string{";", "set", "-asq", "terminal-features", "," + agentDeckTerminalFeature}
 	}
 	return []string{";", "set", "-sq", "terminal-features", strings.Join(desired, ",")}
@@ -161,9 +168,15 @@ func safeToRewriteTerminalFeatures(values []string) bool {
 // server and never write the entry to it, so hyperlinks and extended keys would
 // stay off there until agent-deck itself restarted. That is #2061's defect
 // pointing the other way — writing unconditionally leaks, skipping on stale
-// state never writes, and both fail silently. The read is one bounded
-// `show-options` on a cold path (session creation, or the once-per-process
-// deferred configuration pass), which is the honest price of being right.
+// state never writes, and both fail silently.
+//
+// Keying such a memo on a server identity (its pid or start time) instead of
+// the socket name does not rescue it: learning the identity is itself a tmux
+// round trip, and `show-options` IS that round trip with the answer attached.
+// A memo could only pay for itself by trusting something it cannot verify. The
+// read is one bounded `show-options` on a cold path (session creation, or the
+// once-per-process deferred configuration pass), which is the honest price of
+// being right; it replaces the write the old code issued on the same pass.
 func (s *Session) terminalFeatureArgs() []string {
 	st := readTerminalFeatures(s.SocketName)
 	args := terminalFeatureArgsFor(st)

@@ -2,7 +2,10 @@ package tmux
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,12 +25,13 @@ var tmuxDefaultFeatures = []string{
 func TestTerminalFeatureArgsFor(t *testing.T) {
 	joined := func(args []string) string { return strings.Join(args, " ") }
 
-	// No server to read (Session.Start emits its chunk in the same command that
-	// creates the session): append once. Bounded, because every later pass CAN
-	// read and short-circuits.
-	unknown := terminalFeatureArgsFor(terminalFeatureState{known: false})
-	assert.Equal(t, "; set -asq terminal-features ,*:hyperlinks:extkeys", joined(unknown),
-		"unreadable server must still get the entry, via the quiet append")
+	// Could not read the array: write NOTHING. Both callers run against a
+	// server that already exists (Session.Start's option batch runs after
+	// new-session has returned), so "unreadable" is a wedged, gone or too-old
+	// server — and a blind append against a server whose reads keep failing
+	// would grow the array once per pass, which is the bug itself.
+	assert.Nil(t, terminalFeatureArgsFor(terminalFeatureState{known: false}),
+		"an unreadable server must not be written to at all")
 
 	// Already present exactly once: emit nothing. This is the assertion that
 	// makes repeat setup a no-op instead of a leak (#2061).
@@ -93,12 +97,15 @@ func TestClassifyTerminalFeatures(t *testing.T) {
 	assert.False(t, classifyTerminalFeatures(nil, errors.New("no server running")).known)
 	assert.False(t, classifyTerminalFeatures([]byte("xterm*:title\n"), errors.New("boom")).known)
 
-	// WaitDelay: bytes that arrived before cmd.Wait abandoned the stdio
-	// goroutine are authoritative, but an empty body under it is indeterminate
-	// — the values may simply never have been copied.
+	// WaitDelay with bytes in the buffer is a PREFIX of the array, not the
+	// array: cmd.Wait cut the copy off while something still held the pipe.
+	// Treating it as authoritative would plan `set terminal-features
+	// xterm*:title,screen*:title,<ours>` and drop every entry past the cut —
+	// a user's entries, not only ours. So it is unknown, and unknown writes
+	// nothing.
 	partial := classifyTerminalFeatures([]byte("xterm*:title\nscreen*:title\n"), exec.ErrWaitDelay)
-	assert.True(t, partial.known)
-	assert.Equal(t, []string{"xterm*:title", "screen*:title"}, partial.values)
+	assert.False(t, partial.known, "partial output under WaitDelay must not be treated as the whole array")
+	assert.Nil(t, terminalFeatureArgsFor(partial), "a prefix must never be written back")
 	assert.False(t, classifyTerminalFeatures(nil, exec.ErrWaitDelay).known,
 		"empty body under WaitDelay must not be mistaken for an empty array")
 }
@@ -357,4 +364,114 @@ func TestTerminalFeatures_ExactlyOncePerServerLifetime(t *testing.T) {
 		assert.Len(t, got.values, len(baseline.values)+1,
 			"server generation %d: array grew by more than our entry", generation)
 	}
+}
+
+// TestTerminalFeatures_StartOnFreshSocketWritesExactlyOnce pins the ordering
+// the never-write-blind rule depends on: Session.Start creates the session with
+// one tmux command and emits its option batch — the terminal-features chunk
+// included — as a SECOND command, so the read that decides the chunk always has
+// a live server to ask. If that ordering ever changed (the chunk folded into
+// new-session, say), the read would report unknown, unknown writes nothing, and
+// every brand-new server would silently miss the entry: the never-write bug
+// again. This fails the moment that happens.
+func TestTerminalFeatures_StartOnFreshSocketWritesExactlyOnce(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	socket := "ad2061-" + generateShortID()
+	t.Cleanup(func() { _ = tmuxExec(socket, "kill-server").Run() })
+	require.False(t, readTerminalFeatures(socket).known, "pre-condition: no server behind the socket yet")
+
+	first := NewSession("tf-start-a", t.TempDir())
+	first.SocketName = socket
+	require.NoError(t, first.Start("sleep 300"))
+
+	got := readTerminalFeatures(socket)
+	require.True(t, got.known, "Start must have created a server we can read")
+	assert.Equal(t, 1, countTerminalFeature(got.values),
+		"the first session on a brand-new server must get the entry exactly once, got: %v", got.values)
+
+	// More sessions and more passes on the SAME server: still exactly one.
+	second := NewSession("tf-start-b", t.TempDir())
+	second.SocketName = socket
+	require.NoError(t, second.Start("sleep 300"))
+	for range 3 {
+		require.NoError(t, first.EnableMouseMode())
+	}
+	after := readTerminalFeatures(socket)
+	require.True(t, after.known)
+	assert.Equal(t, 1, countTerminalFeature(after.values), "got: %v", after.values)
+	assert.Equal(t, got.values, after.values,
+		"further sessions and configuration passes must not change the array at all")
+}
+
+// installPartialReadTmuxShim puts a `tmux` ahead of the real one on PATH that
+// answers `show-options` with ONE line of the array and then leaves a child
+// holding stdout open past its own exit — the lingering-fd shape that makes
+// cmd.Wait give up at tmuxSubprocessWaitDelay with a partial buffer. Every other
+// tmux command is forwarded to the real binary untouched, so writes still land
+// on the real private server. It returns a func that puts the real PATH back,
+// for reading the server afterwards without the shim in the way.
+func installPartialReadTmuxShim(t *testing.T) (restore func()) {
+	t.Helper()
+	realTmux, err := exec.LookPath("tmux")
+	require.NoError(t, err)
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not on PATH (shim requires it)")
+	}
+	dir := t.TempDir()
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = show-options ]; then
+    printf '%%s\n' 'xterm*:clipboard:ccolour:cstyle:focus:title'
+    sleep 4 &
+    exit 0
+  fi
+done
+exec %q "$@"
+`, realTmux)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755))
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+origPath)
+	return func() { t.Setenv("PATH", origPath) }
+}
+
+// TestTerminalFeatures_UnreadableServerNeverGrows is the third red path, and it
+// is the one CodeRabbit's second-round finding pointed at. A read cut off at
+// WaitDelay hands back a PREFIX of the array. Round 2 treated a non-empty prefix
+// as the whole array, so the pass would have planned `set terminal-features
+// <prefix>,<ours>` — rewriting a user's array down to its first line — and the
+// round-1 code would have appended blindly on every failed read, growing the
+// array once per pass (the original bug through another door).
+//
+// So: real private server, a tmux shim that makes every show-options come back
+// partial, several configuration passes — and the array must be byte-for-byte
+// what it was. Not grown, not truncated, not touched. The entry is NOT written
+// on such a server, deliberately: a missing enhancement on a server we cannot
+// read is a degraded feature; a rewrite from a guess is data loss.
+func TestTerminalFeatures_UnreadableServerNeverGrows(t *testing.T) {
+	socket, session := startPrivateTmuxServer(t)
+	baseline := readTerminalFeatures(socket)
+	require.True(t, baseline.known)
+	require.Greater(t, len(baseline.values), 1, "pre-condition: the real array has more than the shim's one-line prefix")
+
+	restore := installPartialReadTmuxShim(t)
+	partial := readTerminalFeatures(socket)
+	// Non-fatal on purpose: against a classifier that trusts the prefix this
+	// fails, and the assertion on the array below then shows the damage.
+	assert.False(t, partial.known, "the shim must make the read come back unreadable, got values: %v", partial.values)
+
+	sess := &Session{Name: session, SocketName: socket, mouse: true}
+	const passes = 3
+	start := time.Now()
+	for range passes {
+		require.NoError(t, sess.EnableMouseMode())
+	}
+	elapsed := time.Since(start)
+	assert.Less(t, elapsed, passes*(tmuxSubprocessWaitDelay+tmuxPollTimeout),
+		"each pass must be bounded by WaitDelay, not by the lingering child")
+
+	restore()
+	after := readTerminalFeatures(socket)
+	require.True(t, after.known)
+	assert.Equal(t, baseline.values, after.values,
+		"%d passes against an unreadable array must leave it exactly as it was", passes)
 }
