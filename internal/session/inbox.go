@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -254,6 +255,62 @@ func checkedInboxAppendCapacity(existingLen, lineLen int) (int, error) {
 	return existingLen + lineLen + 1, nil
 }
 
+// forEachInboxLine reads JSONL records without allowing one malformed or
+// oversized line to prevent later records from being processed. Oversized lines
+// are discarded through their terminating newline; the callback sees only
+// non-empty, bounded lines without the newline delimiter.
+func forEachInboxLine(f *os.File, fn func([]byte) error) error {
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var line []byte
+
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			if len(line)+len(fragment) > maxInboxLineBytes {
+				line = nil
+				if fragment[len(fragment)-1] != '\n' {
+					for {
+						discard, discardErr := reader.ReadSlice('\n')
+						if len(discard) > 0 && discard[len(discard)-1] == '\n' {
+							break
+						}
+						if discardErr != nil {
+							if errors.Is(discardErr, io.EOF) {
+								return nil
+							}
+							return discardErr
+						}
+					}
+				}
+			} else {
+				line = append(line, fragment...)
+				if fragment[len(fragment)-1] == '\n' {
+					line = line[:len(line)-1]
+					if len(strings.TrimSpace(string(line))) > 0 {
+						if err := fn(line); err != nil {
+							return err
+						}
+					}
+					line = nil
+				}
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if len(line) > 0 && len(strings.TrimSpace(string(line))) > 0 {
+					return fn(line)
+				}
+				return nil
+			}
+			if errors.Is(err, bufio.ErrBufferFull) {
+				continue
+			}
+			return err
+		}
+	}
+}
+
 // loadInboxFingerprintsLocked scans an existing inbox file and returns the
 // set of fingerprints already persisted. Caller holds inboxWriteMu.
 //
@@ -268,33 +325,23 @@ func loadInboxFingerprintsLocked(path string) map[string]struct{} {
 		return out
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	if err := forEachInboxLine(f, func(line []byte) error {
 		var probe struct {
 			TransitionNotificationEvent
 			Fingerprint string `json:"fp"`
 		}
-		if err := json.Unmarshal([]byte(line), &probe); err != nil {
-			continue
+		if err := json.Unmarshal(line, &probe); err != nil {
+			return nil
 		}
 		fp := probe.Fingerprint
 		if fp == "" {
 			fp = EventFingerprint(probe.TransitionNotificationEvent)
 		}
 		out[fp] = struct{}{}
-	}
-	// Audit B6: a scanner error (e.g. an oversized line at the raised cap, or a
-	// read fault) must not silently yield an INCOMPLETE dedup set — that would
-	// let WriteInboxEvent re-append events the file already holds. On error we
-	// reset to the empty set: a fresh full scan failed, so treat dedup state as
-	// unknown rather than partially-known. The caller's write still proceeds;
-	// worst case is a duplicate the drain's turn_fingerprint dedup collapses.
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
+		// A read failure leaves dedup state unknown; the caller may still append,
+		// and the durable consumer will collapse any resulting duplicate.
 		return map[string]struct{}{}
 	}
 	return out
@@ -421,9 +468,10 @@ func SweepInboxByTTL(maxAge time.Duration) (int, error) {
 // whose decoded event does NOT match shouldDrop. Returns the count of
 // dropped lines. Caller holds inboxWriteMu.
 //
-// Mirrors the rm_sweep.go strategy: temp file + atomic rename, with
-// unparseable lines preserved verbatim to avoid silent data loss during
-// cleanup.
+// Mirrors the rm_sweep.go strategy: temp file + atomic rename, with bounded
+// unparseable lines preserved verbatim to avoid silent data loss during cleanup.
+// Oversized lines are discarded by forEachInboxLine because they cannot be
+// retained safely within the inbox line-size contract.
 func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent) bool) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -436,25 +484,19 @@ func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent
 
 	var kept [][]byte
 	var dropped int
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		raw := scanner.Bytes()
-		if len(strings.TrimSpace(string(raw))) == 0 {
-			continue
-		}
+	if err := forEachInboxLine(f, func(raw []byte) error {
 		var ev TransitionNotificationEvent
 		if err := json.Unmarshal(raw, &ev); err != nil {
 			kept = append(kept, append([]byte(nil), raw...))
-			continue
+			return nil
 		}
 		if shouldDrop(ev) {
 			dropped++
-			continue
+			return nil
 		}
 		kept = append(kept, append([]byte(nil), raw...))
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return dropped, err
 	}
 	_ = f.Close()
@@ -539,20 +581,14 @@ func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent
 	defer f.Close()
 
 	var out []TransitionNotificationEvent
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	if err := forEachInboxLine(f, func(line []byte) error {
 		var ev TransitionNotificationEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue // skip corrupt lines rather than failing the whole drain
+		if err := json.Unmarshal(line, &ev); err != nil {
+			return nil // skip corrupt lines rather than failing the whole drain
 		}
 		out = append(out, ev)
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return out, err
 	}
 

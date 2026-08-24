@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -53,12 +55,10 @@ type TransitionNotificationEvent struct {
 	// applies. Observability hook only — does not affect delivery/dedup.
 	Substate string `json:"substate,omitempty"`
 
-	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
-	// bytes of the child's tmux pane at transition time) used by the
-	// notifier's #1142 dedup to suppress repeated [EVENT] notifications
-	// for a dormant child whose pane content hasn't changed. Optional —
-	// empty string disables hash-based dedup and falls back to the legacy
-	// 90s short window.
+	// LastOutputHash is a stable per-turn signal used by the notifier's #1142
+	// deduplication. Claude uses a transcript-derived signal; Codex uses its
+	// persisted hook generation or sequence. Optional — an empty string disables
+	// hash-based deduplication and falls back to the legacy 90-second short window.
 	LastOutputHash string `json:"last_output_hash,omitempty"`
 
 	TargetSessionID string `json:"target_session_id,omitempty"`
@@ -442,7 +442,10 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 
 	elapsed := event.Timestamp.Unix() - record.At
 
-	if record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
+	// A supplied turn signal is authoritative.  The legacy status-only window
+	// is only safe for callers which cannot prove turn identity.
+	if event.LastOutputHash == "" && record.OutputHash == "" &&
+		record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
 		return true
 	}
 
@@ -490,14 +493,14 @@ func transitionEventOutputHash(inst *Instance) string {
 	return transitionContentSignal(inst)
 }
 
-// transitionContentSignal returns a dedup signal derived from the child's
-// transcript size. A Claude-compatible JSONL transcript is append-only and
-// grows ONLY when a real message is written (user prompt, assistant turn, tool
-// call) — it is completely untouched when the pane merely redraws its animated
-// chrome. So the signal stays identical across idle polls and strictly changes
-// on a genuine new turn. Returns "" when no transcript is resolvable (e.g.
-// non-Claude tools), which routes the caller to the legacy 90s window.
+// transitionContentSignal returns a stable signal for the child's logical turn.
+// Claude uses the append-only transcript size; Codex uses its persisted hook
+// generation or sequence. Returns "" when neither source is available, which
+// routes the caller to the legacy 90-second window.
 func transitionContentSignal(inst *Instance) string {
+	if signal := codexTurnSignal(inst); signal != "" {
+		return signal
+	}
 	path := inst.GetJSONLPath()
 	if path == "" {
 		return ""
@@ -507,6 +510,35 @@ func transitionContentSignal(inst *Instance) string {
 		return ""
 	}
 	return fmt.Sprintf("jsonl:%d", info.Size())
+}
+
+// codexTurnSignal returns a durable per-turn signal from the Codex hook state.
+// Codex does not expose a Claude-compatible JSONL transcript, but its hook
+// watcher persists a completed generation and a monotonic sequence. Both are
+// stable across notifier polls and process restarts.
+func codexTurnSignal(inst *Instance) string {
+	if inst == nil || !strings.EqualFold(strings.TrimSpace(inst.Tool), "codex") {
+		return ""
+	}
+	hs := readHookStatusFile(inst.ID)
+	if hs == nil {
+		return ""
+	}
+	// The generic hook sequence advances for noise as well as completions.  Only
+	// the Codex writer's start/completion-bound sequence is a turn identity.
+	if hs.CodexCompletedSequence > 0 && hs.CodexStartedSequence == hs.CodexCompletedSequence {
+		generation := strings.TrimSpace(hs.CodexCompletedGeneration)
+		if generation != "" {
+			sum := sha256.Sum256([]byte(generation))
+			return fmt.Sprintf("codex-completion:%d:%s", hs.CodexCompletedSequence, hex.EncodeToString(sum[:]))
+		}
+		return fmt.Sprintf("codex-completion:%d", hs.CodexCompletedSequence)
+	}
+	if generation := strings.TrimSpace(hs.CodexCompletedGeneration); generation != "" {
+		sum := sha256.Sum256([]byte(generation))
+		return "codex-generation-sha256:" + hex.EncodeToString(sum[:])
+	}
+	return ""
 }
 
 func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {

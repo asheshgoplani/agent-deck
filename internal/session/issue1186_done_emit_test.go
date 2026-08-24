@@ -183,8 +183,7 @@ func TestDaemon_EmitDoneSignals_HappyAndIdempotent(t *testing.T) {
 		t.Fatalf("idempotency: inbox has %d records after re-poll of same sentinel, want 1", len(got))
 	}
 
-	// A genuinely new completion (different summary) supersedes via last-wins —
-	// still one pending record, but now carrying the new summary.
+	// A genuinely new completion (different summary) remains alongside the first.
 	hookStatuses[childID] = &HookStatus{
 		Status:      "waiting",
 		Event:       "Stop",
@@ -195,11 +194,11 @@ func TestDaemon_EmitDoneSignals_HappyAndIdempotent(t *testing.T) {
 	d.emitDoneSignals(profile, byID, hookStatuses)
 	d.notifier.Flush()
 	got := readInboxLines(t, parentID)
-	if len(got) != 1 {
-		t.Fatalf("new completion: inbox has %d records, want 1 (last-wins)", len(got))
+	if len(got) != 2 {
+		t.Fatalf("new completion: inbox has %d records, want 2", len(got))
 	}
-	if got[0].DoneSummary != "second done" {
-		t.Fatalf("new completion: pending record summary=%q, want %q", got[0].DoneSummary, "second done")
+	if got[1].DoneSummary != "second done" {
+		t.Fatalf("new completion: pending record summary=%q, want %q", got[1].DoneSummary, "second done")
 	}
 
 	// And draining yields the new turn exactly once.
@@ -207,8 +206,8 @@ func TestDaemon_EmitDoneSignals_HappyAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainInboxForParent: %v", err)
 	}
-	if len(drained) != 1 || drained[0].DoneSummary != "second done" {
-		t.Fatalf("drain yielded %+v, want one record summary=second done", drained)
+	if len(drained) != 2 || drained[0].DoneSummary != "first done" || drained[1].DoneSummary != "second done" {
+		t.Fatalf("drain yielded %+v, want both distinct completions", drained)
 	}
 }
 
