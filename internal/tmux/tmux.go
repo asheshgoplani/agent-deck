@@ -6010,6 +6010,22 @@ func (s *Session) SplitShellPane(workdir string) error {
 	return tmuxExec(s.SocketName, args...).Run()
 }
 
+// NewShellWindow adds a new window (tab) to this session running shell in
+// workdir, instead of splitting the current window. If workdir is empty the
+// window inherits the session's current working directory.
+func (s *Session) NewShellWindow(workdir string) error {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	args := []string{"new-window", "-t", s.Name}
+	if workdir != "" {
+		args = append(args, "-c", workdir)
+	}
+	args = append(args, shell)
+	return tmuxExec(s.SocketName, args...).Run()
+}
+
 // ListAllSessions returns all Agent Deck tmux sessions
 func ListAllSessions() ([]*Session, error) {
 	socket := DefaultSocketName()

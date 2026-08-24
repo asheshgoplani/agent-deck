@@ -962,13 +962,14 @@ func (h *Home) openInSplitPane(req terminal.AttachRequest) error {
 }
 
 // resolveShellSplitMode returns session.ShellSplitITerm when an iTerm2 split
-// should be used, session.ShellSplitTmux otherwise. Reads [ui].shell_split
-// first; falls back to auto-detection via TERM_PROGRAM / LC_TERMINAL. Issue #1470.
+// should be used, session.ShellSplitWindow for a tmux window (tab), and
+// session.ShellSplitTmux otherwise. Reads [ui].shell_split first; falls back
+// to auto-detection via TERM_PROGRAM / LC_TERMINAL. Issue #1470.
 func resolveShellSplitMode() string {
 	cfg, _ := session.LoadUserConfig()
 	if cfg != nil {
 		mode := cfg.UI.GetShellSplit()
-		if mode == session.ShellSplitITerm || mode == session.ShellSplitTmux {
+		if mode == session.ShellSplitITerm || mode == session.ShellSplitTmux || mode == session.ShellSplitWindow {
 			return mode
 		}
 	}
@@ -996,7 +997,17 @@ func (h *Home) openShellHere(inst *session.Instance) tea.Cmd {
 		Name:       tmuxSess.Name,
 		SocketName: tmuxSess.SocketName,
 	}
-	if resolveShellSplitMode() == session.ShellSplitITerm {
+	mode := resolveShellSplitMode()
+	if mode == session.ShellSplitWindow {
+		// Shell as a tmux window (tab) instead of a split pane; attach so
+		// the new window is visible immediately.
+		if err := tmuxSess.NewShellWindow(workdir); err != nil {
+			h.setError(fmt.Errorf("open shell here: %w", err))
+			return nil
+		}
+		return h.attachSession(inst)
+	}
+	if mode == session.ShellSplitITerm {
 		// Launch iTerm2 split before mutating tmux so a failed osascript
 		// call does not leave an orphaned pane. Issue #1470.
 		if err := h.openInSplitPane(req); err != nil {

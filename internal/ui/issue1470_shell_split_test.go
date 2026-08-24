@@ -33,6 +33,20 @@ func TestResolveShellSplitMode_AutoDetect(t *testing.T) {
 	})
 }
 
+// TestResolveShellSplitMode_ConfigWindow verifies that [ui].shell_split =
+// "window" is honored, including over iTerm2 env auto-detection, so the
+// open_shell_here hotkey opens a tmux window instead of a split pane.
+func TestResolveShellSplitMode_ConfigWindow(t *testing.T) {
+	home := setXDGTestHome(t)
+	writeXDGTestConfig(t, home, "[ui]\nshell_split = \"window\"\n")
+	t.Setenv("LC_TERMINAL", "iTerm2")
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+
+	if got := resolveShellSplitMode(); got != session.ShellSplitWindow {
+		t.Errorf("resolveShellSplitMode() = %q, want %q", got, session.ShellSplitWindow)
+	}
+}
+
 // TestResolveShellSplitMode_DefaultIsTmux verifies that the safe default (tmux)
 // is returned when no config and no iTerm env vars are set. Issue #1470.
 func TestResolveShellSplitMode_DefaultIsTmux(t *testing.T) {
