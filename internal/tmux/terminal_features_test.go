@@ -1,6 +1,8 @@
 package tmux
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +76,31 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 		known:  true,
 		values: append(unsafe, agentDeckTerminalFeature),
 	}), "unsafe array with our entry present must produce no write")
+}
+
+func TestClassifyTerminalFeatures(t *testing.T) {
+	// A clean exit with no output is an EMPTY array, not an unreadable one —
+	// `set -s terminal-features ""` produces exactly this, and the right answer
+	// is to set our entry rather than blind-append to it.
+	empty := classifyTerminalFeatures(nil, nil)
+	assert.True(t, empty.known, "clean exit with no output is an empty array, not unknown")
+	assert.Empty(t, empty.values)
+	assert.Equal(t, "; set -sq terminal-features *:hyperlinks:extkeys",
+		strings.Join(terminalFeatureArgsFor(empty), " "))
+
+	// No server / unknown option / a client killed at its deadline: unknown.
+	// Rewriting the array from nothing here would wipe it.
+	assert.False(t, classifyTerminalFeatures(nil, errors.New("no server running")).known)
+	assert.False(t, classifyTerminalFeatures([]byte("xterm*:title\n"), errors.New("boom")).known)
+
+	// WaitDelay: bytes that arrived before cmd.Wait abandoned the stdio
+	// goroutine are authoritative, but an empty body under it is indeterminate
+	// — the values may simply never have been copied.
+	partial := classifyTerminalFeatures([]byte("xterm*:title\nscreen*:title\n"), exec.ErrWaitDelay)
+	assert.True(t, partial.known)
+	assert.Equal(t, []string{"xterm*:title", "screen*:title"}, partial.values)
+	assert.False(t, classifyTerminalFeatures(nil, exec.ErrWaitDelay).known,
+		"empty body under WaitDelay must not be mistaken for an empty array")
 }
 
 func TestPlanTerminalFeatures_PreservesOrder(t *testing.T) {
@@ -210,6 +237,26 @@ func TestTerminalFeatures_CollapsesInflatedServer(t *testing.T) {
 	for _, existing := range baseline.values {
 		assert.Contains(t, healed.values, existing, "tmux default must survive the collapse")
 	}
+}
+
+// TestTerminalFeatures_EmptyArrayServerGetsOneEntry covers the server whose
+// array a user emptied outright (`set -s terminal-features ""`). tmux reports
+// that as a clean read with no output, and the pass must set our entry once and
+// then leave it alone — not append to it every time.
+func TestTerminalFeatures_EmptyArrayServerGetsOneEntry(t *testing.T) {
+	socket, session := startPrivateTmuxServer(t)
+	require.NoError(t, tmuxExec(socket, "set", "-s", "terminal-features", "").Run())
+	require.Empty(t, readTerminalFeatures(socket).values, "pre-condition: the array is empty")
+
+	sess := &Session{Name: session, SocketName: socket, mouse: true}
+	for range 5 {
+		require.NoError(t, sess.EnableMouseMode())
+	}
+
+	got := readTerminalFeatures(socket)
+	require.True(t, got.known)
+	assert.Equal(t, []string{agentDeckTerminalFeature}, got.values,
+		"an emptied array must end up holding exactly our entry")
 }
 
 // TestTerminalFeatures_OverrideIsAuthoritative pins the #1625 escape hatch that

@@ -34,17 +34,35 @@ type terminalFeatureState struct {
 // tmuxFieldSep rewrites control bytes in FORMAT output, not in show-options).
 func readTerminalFeatures(socketName string) terminalFeatureState {
 	out, err := runBoundedOutput(socketName, "show-options", "-sv", "terminal-features")
-	// WaitDelay contract (see tmuxSubprocessWaitDelay): when cmd.Wait abandons
-	// the stdio goroutine after the process exited, the bytes already read are
-	// still authoritative. Anything else — no server, unknown option, a client
-	// killed at its deadline — leaves us with no idea what the server holds,
-	// and guessing "empty" there would rewrite the array from nothing.
-	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
-		return terminalFeatureState{known: false}
-	}
+	return classifyTerminalFeatures(out, err)
+}
+
+// classifyTerminalFeatures turns a `show-options -sv terminal-features` result
+// into a state. It is separate from the exec so the three cases that matter can
+// be tested directly, the way parsePanePID's contract is.
+//
+// A clean exit with NO output is a real answer: the array is empty, which is
+// what `set -s terminal-features ""` leaves behind. It must not be confused
+// with "we could not read", because the two demand opposite actions — an empty
+// array should be SET to our entry, while an unknown array must never be
+// rewritten from nothing.
+//
+// The WaitDelay contract (see tmuxSubprocessWaitDelay) is where that
+// distinction gets sharp. When cmd.Wait abandons the stdio goroutine after the
+// process exited, whatever bytes arrived are still authoritative — but an EMPTY
+// body under that error is indeterminate, not an empty array: the values may
+// simply never have been copied. Treating it as empty would rewrite a
+// (possibly large) user array down to our single entry. So it is unknown, and
+// the next pass asks again.
+func classifyTerminalFeatures(out []byte, err error) terminalFeatureState {
 	body := strings.TrimRight(string(out), "\n")
-	if strings.TrimSpace(body) == "" {
-		return terminalFeatureState{known: false}
+	if err != nil {
+		if !errors.Is(err, exec.ErrWaitDelay) || body == "" {
+			return terminalFeatureState{known: false}
+		}
+	}
+	if body == "" {
+		return terminalFeatureState{known: true} // empty array, no values
 	}
 	return terminalFeatureState{values: strings.Split(body, "\n"), known: true}
 }
