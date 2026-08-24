@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -51,30 +52,25 @@ func TestSession_KillWindow(t *testing.T) {
 	}
 }
 
-// TestSession_WindowCount verifies that WindowCount reports the live number
-// of windows in the session.
-func TestSession_WindowCount(t *testing.T) {
+// TestSession_KillWindow_RefusesLastWindow verifies that KillWindow returns
+// ErrLastWindow instead of killing the session's only remaining window
+// (which would take the whole session down).
+func TestSession_KillWindow_RefusesLastWindow(t *testing.T) {
 	requireTmux(t)
 	socket, target := makeIsolatedServer(t)
 
 	s := &Session{Name: target, SocketName: socket}
-	n, err := s.WindowCount()
-	if err != nil {
-		t.Fatalf("WindowCount: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("WindowCount = %d, want 1", n)
+	err := s.KillWindow(1)
+	if !errors.Is(err, ErrLastWindow) {
+		t.Fatalf("KillWindow on the last window = %v, want ErrLastWindow", err)
 	}
 
-	if out, err := exec.Command("tmux", "-L", socket, "new-window", "-t", target, "sleep", "60").CombinedOutput(); err != nil {
-		t.Fatalf("new-window: %v: %s", err, out)
-	}
-	n, err = s.WindowCount()
+	out, err := exec.Command("tmux", "-L", socket, "list-windows", "-t", target, "-F", "#{window_index}").CombinedOutput()
 	if err != nil {
-		t.Fatalf("WindowCount after new-window: %v", err)
+		t.Fatalf("list-windows after refused kill: %v: %s", err, out)
 	}
-	if n != 2 {
-		t.Fatalf("WindowCount after new-window = %d, want 2", n)
+	if got := len(strings.Split(strings.TrimSpace(string(out)), "\n")); got != 1 {
+		t.Fatalf("window count = %d, want 1 (the last window must survive)", got)
 	}
 }
 

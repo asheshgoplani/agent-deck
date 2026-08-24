@@ -6010,25 +6010,32 @@ func (s *Session) SplitShellPane(workdir string) error {
 	return tmuxExec(s.SocketName, args...).Run()
 }
 
+// ErrLastWindow is returned by KillWindow when the target is the session's
+// only remaining window; killing it would kill the whole session.
+var ErrLastWindow = errors.New("window is the session's last window")
+
 // KillWindow kills the window with the given index in this session, leaving
-// the session's other windows intact.
+// the session's other windows intact. The live window count is checked and
+// the window killed in a single server-side command (if-shell -F), so the
+// count cannot change between check and kill; when the target is the
+// session's last window it returns ErrLastWindow instead of killing the
+// session. Bounded (runBoundedOutput) so a wedged server cannot hang the UI.
 func (s *Session) KillWindow(index int) error {
 	target := fmt.Sprintf("%s:%d", s.Name, index)
-	return tmuxExec(s.SocketName, "kill-window", "-t", target).Run()
-}
-
-// WindowCount returns the live number of windows in this session, queried
-// from the tmux server rather than the window cache.
-func (s *Session) WindowCount() (int, error) {
-	out, err := tmuxExec(s.SocketName, "display-message", "-p", "-t", s.Name, "#{session_windows}").Output()
+	// The nested command is a tmux command string; s.Name is an agent-deck
+	// generated session name (sanitized charset), so embedding it is safe.
+	out, err := runBoundedOutput(s.SocketName,
+		"if-shell", "-F", "-t", target,
+		"#{>:#{session_windows},1}",
+		"kill-window -t \""+target+"\"",
+		"display-message -p last-window")
 	if err != nil {
-		return 0, fmt.Errorf("window count: %w", err)
+		return err
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		return 0, fmt.Errorf("window count: parse %q: %w", strings.TrimSpace(string(out)), err)
+	if strings.Contains(string(out), "last-window") {
+		return ErrLastWindow
 	}
-	return n, nil
+	return nil
 }
 
 // ListAllSessions returns all Agent Deck tmux sessions

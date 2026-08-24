@@ -54,6 +54,17 @@ func windowCountVia(t *testing.T, socket, target string) int {
 	return len(strings.Split(strings.TrimSpace(string(out)), "\n"))
 }
 
+// TestKillWindow_RemoteSessionNotApplicable documents that the kill-window
+// flow is intentionally local-only. Window sub-items (ItemTypeWindow) are
+// injected under local sessions from the local tmux window cache
+// (GetCachedWindows in rebuildFlatItems); ItemTypeRemoteSession rows never
+// grow window sub-items, so the 'd' handler's ItemTypeWindow branch is
+// unreachable for remote sessions. If remote window listing is ever added,
+// this skip should be replaced with real RemoteSession coverage.
+func TestKillWindow_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("kill-window is local-only by design: remote sessions have no window sub-items to select")
+}
+
 // TestConfirmKillWindow_RefusesLastWindow — confirming a kill when the
 // session has only one window left must refuse with an error instead of
 // killing the window (which would take the whole session down). The window

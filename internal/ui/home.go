@@ -10134,14 +10134,14 @@ func (h *Home) confirmAction() tea.Cmd {
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				// The window row was rendered when the session had 2+
 				// windows, but the other window can close between rendering
-				// and confirmation — and killing the last window kills the
-				// whole session. Re-check the live count before acting.
-				if n, err := tmuxSess.WindowCount(); err == nil && n < 2 {
-					h.setError(fmt.Errorf("not killing window %d: it is the session's last window", windowIndex))
-					return nil
-				}
+				// and confirmation — KillWindow checks and kills atomically
+				// server-side and refuses the session's last window.
 				if err := tmuxSess.KillWindow(windowIndex); err != nil {
-					h.setError(fmt.Errorf("kill window %d: %w", windowIndex, err))
+					if errors.Is(err, tmux.ErrLastWindow) {
+						h.setError(fmt.Errorf("not killing window %d: it is the session's last window", windowIndex))
+					} else {
+						h.setError(fmt.Errorf("kill window %d: %w", windowIndex, err))
+					}
 					return nil
 				}
 				// Prune the cache so the row disappears now, not on the
