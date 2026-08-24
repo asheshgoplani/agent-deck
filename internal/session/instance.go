@@ -4108,6 +4108,19 @@ func formatGenericResumeShellVar(baseCommand, resumeFlag, varName, dangerousFlag
 // a real claude/codex subcommand invocation.
 func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 	if !i.SubcommandPassthrough {
+		// v1.16.0 session context injection: plain shell/raw commands never
+		// flow through a tool builder, so without this prefix they were the
+		// ONE spawn path with no AGENTDECK_* env fact spine — falsifying the
+		// delivery table's "generic/shell: env spine" row (caught by the
+		// harness-matrix mechanical shell cells, run2). Context exports
+		// only: the broader env_file/init_script machinery deliberately
+		// stays tool-builder-scoped, and level "none" prefixes nothing.
+		if baseCommand != "" {
+			cfg, _ := LoadUserConfig()
+			if ctxExports := i.buildContextEnvExports(cfg); ctxExports != "" {
+				return ctxExports + " && " + baseCommand
+			}
+		}
 		return baseCommand
 	}
 
@@ -9037,7 +9050,17 @@ func (i *Instance) restart(env map[string]string) error {
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
 				command = i.buildGenericCommand(i.Command)
 			} else {
-				command = i.buildRestartEnvPrefix() + i.Command
+				// v1.16.0 session context injection: mirror the fresh-spawn
+				// shell prefix (buildShellPassthroughCommand's non-passthrough
+				// branch) so the env fact spine survives a shell restart too.
+				ctxPrefix := ""
+				if i.Command != "" {
+					cfg, _ := LoadUserConfig()
+					if ctxExports := i.buildContextEnvExports(cfg); ctxExports != "" {
+						ctxPrefix = ctxExports + " && "
+					}
+				}
+				command = i.buildRestartEnvPrefix() + ctxPrefix + i.Command
 				if i.Command == "" && command != "" {
 					shell := ""
 					if !i.IsSandboxed() && i.SSHHost == "" {

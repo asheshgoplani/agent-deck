@@ -671,3 +671,23 @@ func TestContextLevel_SQLiteFullToInheritRoundTrip(t *testing.T) {
 		t.Fatalf("full→inherit clear did not survive the save/merge/load cycle: got %q — the session silently stays at full", reloaded[0].ContextLevel)
 	}
 }
+
+// TestShellSessions_CarryContextEnvSpine: plain shell/raw --cmd sessions were
+// the one spawn path with no AGENTDECK_* fact spine, falsifying the delivery
+// table's "generic/shell: env spine" row (caught by the harness-matrix
+// mechanical shell cells). Pinned for the fresh spawn builder; level none
+// stays empty.
+func TestShellSessions_CarryContextEnvSpine(t *testing.T) {
+	primerTestEnv(t)
+	inst := &Instance{ID: "sh1", Title: "s", GroupPath: "g", Tool: "shell", Command: "bash", ProjectPath: t.TempDir()}
+	cmd := inst.buildShellPassthroughCommand(inst.Command)
+	if !strings.Contains(cmd, "export AGENTDECK_SESSION_ID=sh1") ||
+		!strings.Contains(cmd, "export AGENTDECK_CONTEXT_LEVEL=primer") ||
+		!strings.HasSuffix(cmd, " && bash") {
+		t.Errorf("plain shell spawn missing context env spine:\n%s", cmd)
+	}
+	inst.ContextLevel = ContextLevelNone
+	if cmd := inst.buildShellPassthroughCommand(inst.Command); cmd != "bash" {
+		t.Errorf("level none shell spawn must be the bare command, got %q", cmd)
+	}
+}

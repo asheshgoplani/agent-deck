@@ -2071,3 +2071,14 @@ tests:
   run:
     command: go test ./internal/session/ -run 'TestContextLevelClear_SurvivesExtrasMerge|TestContextLevel_SQLiteFullToInheritRoundTrip' -count=1 -v
     expected: pass
+- id: sessionctx-shell-env-spine
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestShellSessions_CarryContextEnvSpine
+  purpose: Plain shell/raw --cmd sessions carry the AGENTDECK_* fact spine on spawn and restart; level none stays bare (caught by the harness-matrix mechanical shell cells)
+  source: harness-matrix-run2-shell-cells
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestShellSessions_CarryContextEnvSpine -count=1 -v
+    expected: pass
