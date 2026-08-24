@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
-	"sync"
 )
 
 // agentDeckTerminalFeature is the single `terminal-features` entry agent-deck
@@ -130,45 +129,26 @@ func safeToRewriteTerminalFeatures(values []string) bool {
 	return true
 }
 
-// terminalFeatureSettled records, per tmux socket, that this process has SEEN
-// the server carry exactly one agent-deck entry. Later setup passes on that
-// socket then skip the read too, which keeps the steady state at zero extra
-// subprocesses — the "set once per server" half of the fix.
-//
-// Only a verified read marks a socket settled; the pass that WRITES does not, so
-// a write that silently failed is re-checked (and re-applied) on the next pass
-// instead of being assumed good for the life of the process.
-var terminalFeatureSettled sync.Map // socketName -> struct{}
-
-func terminalFeatureIsSettled(socketName string) bool {
-	_, ok := terminalFeatureSettled.Load(socketName)
-	return ok
-}
-
-func markTerminalFeatureSettled(socketName string) {
-	terminalFeatureSettled.Store(socketName, struct{}{})
-}
-
-// forgetTerminalFeatureSettled drops the memo for one socket. Tests use it to
-// model a FRESH agent-deck process attaching to the same long-lived server,
-// which is the shape that actually grew the option in #2061.
-func forgetTerminalFeatureSettled(socketName string) {
-	terminalFeatureSettled.Delete(socketName)
-}
-
 // terminalFeatureArgs returns the ";"-prefixed tmux argument chunk that makes
 // agent-deck's terminal-features entry present exactly once on this session's
 // server, or nil when there is nothing to do.
+//
+// Every pass asks the server, and deliberately caches nothing across passes.
+// The obvious optimisation — remember per socket that this process already saw
+// the entry, and skip the read — is wrong, and wrong in a way that is silent and
+// permanent: a tmux socket NAME is not a tmux server IDENTITY. The server on
+// `-L agent-deck` exits when its last session closes (or crashes), and the next
+// session starts a brand-new server under that same name. A process-lifetime
+// memo keyed on the socket would report "already settled" for the replacement
+// server and never write the entry to it, so hyperlinks and extended keys would
+// stay off there until agent-deck itself restarted. That is #2061's defect
+// pointing the other way — writing unconditionally leaks, skipping on stale
+// state never writes, and both fail silently. The read is one bounded
+// `show-options` on a cold path (session creation, or the once-per-process
+// deferred configuration pass), which is the honest price of being right.
 func (s *Session) terminalFeatureArgs() []string {
-	if terminalFeatureIsSettled(s.SocketName) {
-		return nil
-	}
 	st := readTerminalFeatures(s.SocketName)
 	args := terminalFeatureArgsFor(st)
-	if st.known && len(args) == 0 {
-		markTerminalFeatureSettled(s.SocketName)
-		return nil
-	}
 	if st.known && len(args) > 0 {
 		if dupes := countTerminalFeature(st.values) - 1; dupes > 0 {
 			// Collapsing an already-inflated server. Worth a log line: this is

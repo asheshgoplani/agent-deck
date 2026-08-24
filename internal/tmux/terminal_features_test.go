@@ -3,6 +3,7 @@ package tmux
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,14 +103,32 @@ func startPrivateTmuxServer(t *testing.T) (socket, session string) {
 	skipIfNoTmuxBinary(t)
 	socket = "ad2061-" + generateShortID()
 	session = "tf-" + generateShortID()
-	t.Cleanup(func() {
-		_ = tmuxExec(socket, "kill-server").Run()
-		forgetTerminalFeatureSettled(socket)
-	})
+	t.Cleanup(func() { _ = tmuxExec(socket, "kill-server").Run() })
+	startPrivateTmuxSession(t, socket, session)
+	return socket, session
+}
+
+// startPrivateTmuxSession starts (or restarts) a server on an existing private
+// socket name and waits for it to answer, so a caller can replace the server
+// behind a socket the way real life does.
+func startPrivateTmuxSession(t *testing.T, socket, session string) {
+	t.Helper()
 	out, err := tmuxExec(socket, "-f", "/dev/null", "new-session", "-d", "-s", session,
 		"sh", "-c", "sleep 300").CombinedOutput()
 	require.NoError(t, err, "start private tmux server: %s", strings.TrimSpace(string(out)))
-	return socket, session
+	require.Eventually(t, func() bool {
+		return readTerminalFeatures(socket).known
+	}, 5*time.Second, 20*time.Millisecond, "private tmux server did not come up")
+}
+
+// tmuxServerPID identifies the tmux SERVER behind a socket name. Two different
+// pids under the same socket name are two different servers, which is the whole
+// point of TestTerminalFeatures_ReplacedServerStillGetsTheEntry.
+func tmuxServerPID(t *testing.T, socket string) string {
+	t.Helper()
+	out, err := tmuxExec(socket, "display-message", "-p", "#{pid}").Output()
+	require.NoError(t, err, "read tmux server pid")
+	return strings.TrimSpace(string(out))
 }
 
 // TestTerminalFeatures_ControlClientRespawnDoesNotGrow is the #2061 red path.
@@ -124,9 +143,10 @@ func startPrivateTmuxServer(t *testing.T) (socket, session string) {
 // against the long-lived SERVER, so the array grew once per pass forever.
 //
 // So the loop below respawns a real control-mode client and re-runs the
-// configuration pass, with the per-socket memo cleared each round to model a
-// FRESH agent-deck process every time — the memo must not be the only thing
-// holding the line, because it dies with the process and the server does not.
+// configuration pass. Nothing is cached between passes, deliberately: the state
+// that grew lives in the server, so idempotence has to hold at the tmux level
+// and not in a process-lifetime memo that dies with the process (see
+// TestTerminalFeatures_ReplacedServerStillGetsTheEntry for the other direction).
 //
 // Without the fix this fails with one entry per iteration.
 func TestTerminalFeatures_ControlClientRespawnDoesNotGrow(t *testing.T) {
@@ -144,7 +164,6 @@ func TestTerminalFeatures_ControlClientRespawnDoesNotGrow(t *testing.T) {
 		require.NoError(t, err, "spawn control-mode client")
 		require.NoError(t, ks.Close())
 
-		forgetTerminalFeatureSettled(socket)
 		require.NoError(t, sess.EnableMouseMode())
 	}
 
@@ -206,7 +225,6 @@ func TestTerminalFeatures_OverrideIsAuthoritative(t *testing.T) {
 		OptionOverrides: map[string]string{"terminal-features": "xterm*:hyperlinks"},
 	}
 	for range 5 {
-		forgetTerminalFeatureSettled(socket)
 		require.NoError(t, sess.EnableMouseMode())
 	}
 
@@ -216,21 +234,80 @@ func TestTerminalFeatures_OverrideIsAuthoritative(t *testing.T) {
 		"an explicit override must suppress agent-deck's entry entirely, got: %v", got.values)
 }
 
-// TestTerminalFeatures_SettledMemoStopsProbing pins the steady state: once a
-// process has SEEN the entry on a socket, later passes cost no tmux subprocess
-// at all. Start and EnableMouseMode run on hot paths, so a per-pass read would
-// trade one bug for a slower one.
-func TestTerminalFeatures_SettledMemoStopsProbing(t *testing.T) {
+// TestTerminalFeatures_ReplacedServerStillGetsTheEntry is the second red path,
+// and it points the opposite way to the first.
+//
+// Round 1 of this fix remembered, per socket, that the process had already seen
+// the entry, and skipped both the read and the write from then on. A tmux socket
+// NAME is not a tmux server IDENTITY: the server exits when its last session
+// closes (or crashes), and the next session starts a brand-new server under the
+// same name. The memo then reported "settled" for a server that had never been
+// written to, so that server never got hyperlinks or extended keys for the rest
+// of the process's life — an unbounded-write bug traded for a never-write bug,
+// silent in both directions.
+//
+// So: settle the entry, replace the server behind the socket, and require that
+// the next configuration pass write it again. This fails against any
+// process-lifetime memo keyed on the socket name.
+func TestTerminalFeatures_ReplacedServerStillGetsTheEntry(t *testing.T) {
 	socket, session := startPrivateTmuxServer(t)
 	sess := &Session{Name: session, SocketName: socket, mouse: true}
 
-	require.NoError(t, sess.EnableMouseMode(), "first pass must write the entry")
-	assert.False(t, terminalFeatureIsSettled(socket), "the writing pass must not assume its write landed")
-	assert.Empty(t, sess.terminalFeatureArgs(), "second pass sees the entry and writes nothing")
-	assert.True(t, terminalFeatureIsSettled(socket), "a verified read settles the socket")
+	// Two passes against the FIRST server: one to write the entry, one that
+	// finds it already there. The second is what armed the round-1 memo.
+	require.NoError(t, sess.EnableMouseMode())
+	require.NoError(t, sess.EnableMouseMode())
+	require.Equal(t, 1, countTerminalFeature(readTerminalFeatures(socket).values),
+		"pre-condition: the entry is settled on the first server")
+	firstPID := tmuxServerPID(t, socket)
 
-	// Settled means no more reads: kill the server and ask again. A pass that
-	// still probed would come back "unreadable" and emit the append.
+	// The server goes away and a new one takes over the same socket name.
 	require.NoError(t, tmuxExec(socket, "kill-server").Run())
-	assert.Empty(t, sess.terminalFeatureArgs(), "a settled socket must not be probed again")
+	require.Eventually(t, func() bool {
+		return !readTerminalFeatures(socket).known
+	}, 5*time.Second, 20*time.Millisecond, "old server did not go away")
+	startPrivateTmuxSession(t, socket, session)
+	require.NotEqual(t, firstPID, tmuxServerPID(t, socket), "must be a different tmux server")
+
+	fresh := readTerminalFeatures(socket)
+	require.True(t, fresh.known)
+	require.Equal(t, 0, countTerminalFeature(fresh.values),
+		"pre-condition: the replacement server starts without our entry")
+
+	require.NoError(t, sess.EnableMouseMode())
+
+	after := readTerminalFeatures(socket)
+	require.True(t, after.known)
+	assert.Equal(t, 1, countTerminalFeature(after.values),
+		"a server replaced behind the same socket name must still be configured, got: %v", after.values)
+	assert.Len(t, after.values, len(fresh.values)+1)
+}
+
+// TestTerminalFeatures_ExactlyOncePerServerLifetime states the contract both red
+// paths defend, in one place: however many passes run, the entry ends up present
+// exactly once per server — and "per server" means per server, not per socket
+// name.
+func TestTerminalFeatures_ExactlyOncePerServerLifetime(t *testing.T) {
+	socket, session := startPrivateTmuxServer(t)
+	sess := &Session{Name: session, SocketName: socket, mouse: true}
+
+	for generation := range 3 {
+		if generation > 0 {
+			require.NoError(t, tmuxExec(socket, "kill-server").Run())
+			require.Eventually(t, func() bool {
+				return !readTerminalFeatures(socket).known
+			}, 5*time.Second, 20*time.Millisecond, "old server did not go away")
+			startPrivateTmuxSession(t, socket, session)
+		}
+		baseline := readTerminalFeatures(socket)
+		require.True(t, baseline.known)
+		for range 4 {
+			require.NoError(t, sess.EnableMouseMode())
+		}
+		got := readTerminalFeatures(socket)
+		assert.Equal(t, 1, countTerminalFeature(got.values),
+			"server generation %d: expected exactly one entry, got: %v", generation, got.values)
+		assert.Len(t, got.values, len(baseline.values)+1,
+			"server generation %d: array grew by more than our entry", generation)
+	}
 }
