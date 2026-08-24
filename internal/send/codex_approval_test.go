@@ -78,6 +78,89 @@ func TestApproveCodexPrompt_OnceSendsOneDigitWithoutEnter(t *testing.T) {
 	}
 }
 
+func TestInspectCodexApprovalPrompt_IsReadOnlyAndStable(t *testing.T) {
+	target := &fakeCodexApprovalTarget{captures: []string{codexExecApprovalPrompt}}
+
+	request, err := InspectCodexApprovalPrompt(target)
+	if err != nil {
+		t.Fatalf("InspectCodexApprovalPrompt: %v", err)
+	}
+	if request == nil {
+		t.Fatal("expected a live approval request")
+	}
+	if len(request.Fingerprint) != 64 {
+		t.Fatalf("fingerprint length = %d, want 64", len(request.Fingerprint))
+	}
+	if request.Context == "" || len(request.Options) != 3 {
+		t.Fatalf("unexpected request: %+v", request)
+	}
+	if len(target.sent) != 0 {
+		t.Fatalf("inspection sent keys: %v", target.sent)
+	}
+
+	secondTarget := &fakeCodexApprovalTarget{captures: []string{codexExecApprovalPrompt}}
+	second, err := InspectCodexApprovalPrompt(secondTarget)
+	if err != nil {
+		t.Fatalf("second InspectCodexApprovalPrompt: %v", err)
+	}
+	if second.Fingerprint != request.Fingerprint {
+		t.Fatalf("fingerprint changed: %q != %q", second.Fingerprint, request.Fingerprint)
+	}
+}
+
+func TestInspectCodexApprovalPrompt_NoActivePrompt(t *testing.T) {
+	target := &fakeCodexApprovalTarget{captures: []string{"› Continue\n"}}
+
+	request, err := InspectCodexApprovalPrompt(target)
+	if err != nil {
+		t.Fatalf("InspectCodexApprovalPrompt: %v", err)
+	}
+	if request != nil {
+		t.Fatalf("request = %+v, want nil", request)
+	}
+	if len(target.sent) != 0 {
+		t.Fatalf("inspection sent keys: %v", target.sent)
+	}
+}
+
+func TestApproveCodexPrompt_RejectSelectsDisplayedNoOption(t *testing.T) {
+	target := &fakeCodexApprovalTarget{
+		captures: []string{codexExecApprovalPrompt, codexExecApprovalPrompt, "› Continue\n"},
+	}
+
+	result, err := ApproveCodexPrompt(target, "reject", CodexApprovalOptions{
+		VerifyTimeout: 50 * time.Millisecond,
+		PollInterval:  time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("ApproveCodexPrompt: %v", err)
+	}
+	if len(target.sent) != 1 || target.sent[0] != "3" {
+		t.Fatalf("sent keys = %v, want exactly [3]", target.sent)
+	}
+	if result.Choice != "reject" || result.OptionNumber != 3 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestApproveCodexPrompt_RejectFailsClosedForAmbiguousNegativeOptions(t *testing.T) {
+	prompt := strings.Replace(
+		codexExecApprovalPrompt,
+		"  3. No, and tell Codex what to do differently (esc)",
+		"  3. No, return to the prompt (esc)\n  4. No, cancel the task (c)",
+		1,
+	)
+	target := &fakeCodexApprovalTarget{captures: []string{prompt}}
+
+	_, err := ApproveCodexPrompt(target, "reject", CodexApprovalOptions{})
+	if err == nil || !strings.Contains(err.Error(), "multiple negative options") {
+		t.Fatalf("expected ambiguous-negative error, got %v", err)
+	}
+	if len(target.sent) != 0 {
+		t.Fatalf("ambiguous rejection must not send a key; sent %v", target.sent)
+	}
+}
+
 func TestApproveCodexPrompt_AlwaysSelectsDisplayedPersistentOption(t *testing.T) {
 	target := &fakeCodexApprovalTarget{
 		captures: []string{

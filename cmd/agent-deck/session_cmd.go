@@ -85,6 +85,10 @@ func handleSession(profile string, args []string) {
 		handleSessionSend(profile, args[1:])
 	case "approve":
 		handleSessionApprove(profile, args[1:])
+	case "reject":
+		handleSessionReject(profile, args[1:])
+	case "approval":
+		handleSessionApproval(profile, args[1:])
 	case "send-keys":
 		handleSessionSendKeys(profile, args[1:])
 	case "output":
@@ -128,6 +132,8 @@ func printSessionHelp() {
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
+	fmt.Println("  reject <id>             Reject a visible Codex approval prompt")
+	fmt.Println("  approval <id>           Inspect a visible Codex approval prompt (read-only)")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
 	fmt.Println("  search <query>          Search message content across Claude sessions")

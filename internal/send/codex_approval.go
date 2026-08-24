@@ -1,6 +1,7 @@
 package send
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -35,6 +36,20 @@ type CodexApprovalResult struct {
 	NextPromptSeen bool
 }
 
+// CodexApprovalInfo is a read-only description of one live Codex approval
+// prompt. Fingerprint is stable for identical normalized prompt content.
+type CodexApprovalInfo struct {
+	Fingerprint string                `json:"fingerprint"`
+	Context     string                `json:"context"`
+	Options     []CodexApprovalChoice `json:"options"`
+}
+
+// CodexApprovalChoice is one numbered option displayed by Codex.
+type CodexApprovalChoice struct {
+	Number int    `json:"number"`
+	Label  string `json:"label"`
+}
+
 type codexApprovalOption struct {
 	number int
 	label  string
@@ -47,10 +62,30 @@ type codexApprovalPrompt struct {
 
 var codexApprovalOptionPattern = regexp.MustCompile(`^\s*(›\s*)?([1-9][0-9]*)\.\s+(.+?)\s*$`)
 
+// InspectCodexApprovalPrompt returns a stable description of the currently
+// visible approval gate without sending input to the session.
+func InspectCodexApprovalPrompt(target CodexApprovalTarget) (*CodexApprovalInfo, error) {
+	prompt, err := captureCodexApprovalPrompt(target)
+	if err != nil || prompt == nil {
+		return nil, err
+	}
+
+	choices := make([]CodexApprovalChoice, 0, len(prompt.options))
+	for _, option := range prompt.options {
+		choices = append(choices, CodexApprovalChoice{Number: option.number, Label: option.label})
+	}
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(prompt.fingerprint)))
+	return &CodexApprovalInfo{
+		Fingerprint: fingerprint,
+		Context:     prompt.fingerprint,
+		Options:     choices,
+	}, nil
+}
+
 // ApproveCodexPrompt resolves one currently visible Codex approval menu.
 //
-// choice accepts a displayed option number, or one of "once", "always", and
-// "session". The displayed number is sent as one literal keypress; Enter is
+// choice accepts a displayed option number, or one of "once", "always",
+// "session", and "reject". The displayed number is sent as one literal keypress; Enter is
 // intentionally not sent because Codex selects numbered approval options on
 // the digit KeyEvent itself.
 func ApproveCodexPrompt(target CodexApprovalTarget, choice string, opts CodexApprovalOptions) (CodexApprovalResult, error) {
@@ -237,6 +272,26 @@ func selectCodexApprovalOption(prompt *codexApprovalPrompt, choice string) (code
 		return codexApprovalOption{}, normalized, fmt.Errorf("Codex approval option %d is not displayed", number)
 	}
 
+	if normalized == "reject" || normalized == "no" {
+		var negative *codexApprovalOption
+		for i := range prompt.options {
+			option := &prompt.options[i]
+			if !strings.HasPrefix(strings.ToLower(option.label), "no") {
+				continue
+			}
+			if negative != nil {
+				return codexApprovalOption{}, "reject", fmt.Errorf(
+					"Codex approval prompt has multiple negative options; select a displayed option number",
+				)
+			}
+			negative = option
+		}
+		if negative != nil {
+			return *negative, "reject", nil
+		}
+		return codexApprovalOption{}, "reject", fmt.Errorf("Codex approval prompt does not offer a negative option")
+	}
+
 	for _, option := range prompt.options {
 		label := strings.ToLower(option.label)
 		switch normalized {
@@ -259,7 +314,7 @@ func selectCodexApprovalOption(prompt *codexApprovalPrompt, choice string) (code
 			}
 		default:
 			return codexApprovalOption{}, normalized, fmt.Errorf(
-				"invalid approval choice %q (use once, always, session, or a displayed option number)",
+				"invalid approval choice %q (use once, always, session, reject, or a displayed option number)",
 				choice,
 			)
 		}

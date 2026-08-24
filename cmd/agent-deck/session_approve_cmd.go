@@ -16,7 +16,7 @@ import (
 func handleSessionApprove(profile string, args []string) {
 	fs := flag.NewFlagSet("session approve", flag.ExitOnError)
 	fs.SetOutput(os.Stdout)
-	choiceFlag := fs.String("choice", "", "Approval choice: once, always, session, or displayed option number")
+	choiceFlag := fs.String("choice", "", "Approval choice: once, always, session, reject, or displayed option number")
 	timeout := fs.Duration("timeout", 5*time.Second, "Max time to verify that the original approval prompt cleared")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
@@ -31,6 +31,7 @@ func handleSessionApprove(profile string, args []string) {
 		fmt.Println("  once       Select \"Yes, proceed\" (default)")
 		fmt.Println("  always     Select the persistent/prefix approval, when offered")
 		fmt.Println("  session    Select the session-scoped approval, when offered")
+		fmt.Println("  reject     Select the unique displayed negative option")
 		fmt.Println("  1-9        Select that displayed option directly")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -128,12 +129,38 @@ func handleSessionApprove(profile string, args []string) {
 		if result.KeySent {
 			code = ErrCodeDeliveryFailed
 		}
-		out.ErrorWithData(fmt.Sprintf("failed to approve Codex prompt: %v", approveErr), code, data)
+		out.ErrorWithData(fmt.Sprintf("failed to resolve Codex prompt: %v", approveErr), code, data)
 		os.Exit(1)
 	}
 
+	verb := "Approved"
+	if result.Choice == "reject" {
+		verb = "Rejected"
+	}
 	out.Success(
-		fmt.Sprintf("Approved option %d in '%s'", result.OptionNumber, inst.Title),
+		fmt.Sprintf("%s option %d in '%s'", verb, result.OptionNumber, inst.Title),
 		data,
 	)
+}
+
+// handleSessionReject is the explicit negative-decision command used by
+// coordinators. It reuses the guarded `session approve` path and cannot select
+// a positive option.
+func handleSessionReject(profile string, args []string) {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" {
+			fmt.Println("Usage: agent-deck session reject <id|title> [options]")
+			fmt.Println()
+			fmt.Println("Reject one currently visible Codex approval prompt with exactly one")
+			fmt.Println("keypress. Fails closed when no unique negative option is visible.")
+			fmt.Println()
+			fmt.Println("Options:")
+			fmt.Println("  --timeout duration   Max time to verify that the prompt cleared (default 5s)")
+			fmt.Println("  --json               Output as JSON")
+			fmt.Println("  -q                   Quiet mode")
+			return
+		}
+	}
+	forwarded := append(append([]string{}, args...), "reject")
+	handleSessionApprove(profile, forwarded)
 }
