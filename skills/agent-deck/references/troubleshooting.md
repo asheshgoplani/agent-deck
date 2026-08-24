@@ -170,6 +170,80 @@ Reload kitty's config (`Ctrl+Shift+F5`) and Shift+Enter will insert a newline,
 both natively and inside agent-deck. iTerm2, Ghostty, WezTerm and xterm honor
 modifyOtherKeys and do not need this mapping.
 
+### Progressive Display Corruption Inside tmux (duplicated rows, mojibake, junk after scroll)
+
+Symptoms: rows duplicated or shifted down, stray escape characters, leftover
+junk after a scroll or resize. It builds up over days, affects every session on
+the machine, reproduces under any agent, and does **not** reproduce in a bare
+terminal without tmux.
+
+Check the tmux server's `terminal-features` array:
+
+```bash
+tmux show-options -s terminal-features | wc -l          # default socket
+tmux -L <socket_name> show-options -s terminal-features | wc -l   # if [tmux].socket_name is set
+```
+
+A healthy server reports a handful of lines. Thousands mean the array is
+inflated (issue #2061): agent-deck versions up to v1.15.0 appended
+`*:hyperlinks:extkeys` to that **server-wide** option on every session
+configuration pass, with no membership check. `*` matches every terminal and
+tmux walks the array on every capability lookup, so the duplicates turn into
+display corruption. Reported counts reached 5,018 entries (219.8 KB) after weeks
+of uptime.
+
+Two things matter about where the damage lives:
+
+- It is in the **tmux server**, not in the agent-deck binary. That is why
+  downgrading or upgrading agent-deck changes nothing while the server keeps
+  running, and why nobody notices the cause — restarting the tmux server would
+  destroy every live agent session.
+- The fix for #2061 both stops the growth and collapses the duplicates the next
+  time agent-deck configures a session on that server, so upgrading past
+  v1.15.0 is enough — but only once the new binary is the one running sessions.
+  While an old binary is still driving them, the array keeps growing.
+
+To reset the array immediately, without restarting the server:
+
+```bash
+tmux set -su terminal-features      # back to tmux's built-in defaults
+tmux source-file ~/.tmux.conf       # re-apply your own terminal-features lines, if any
+```
+
+Add `-L <socket_name>` to both commands when `[tmux].socket_name` is set. The
+first command is safe on a live server: it resets one option and touches no
+session, window or pane. If you prefer to pin the value yourself and have
+agent-deck never write it, set it in config.toml — an explicit key opts out of
+agent-deck's default entirely:
+
+```toml
+[tmux.options]
+terminal-features = "*:hyperlinks:extkeys"
+```
+
+### One tmux Window Stuck at 80x24 While Its Siblings Are Full Width
+
+`window-size` is a tmux **window** option, and agent-deck sets its
+`window-size largest` default with a *session* target at session start — which
+lands on the window that exists at that moment. A window created later in the
+same session (by the agent, or by hand with `prefix c`) keeps tmux's global
+default, `latest`, so it is sized by whichever client most recently sent input
+instead of by the largest attached client. With a mix of client sizes that shows
+up as one window clipped to 80x24 while its siblings are full width, and the
+resize cycle bakes wrong wrap points into scrollback that replay as corruption
+later.
+
+Until agent-deck propagates the policy to later windows, set the default for
+every window yourself:
+
+```conf
+# ~/.tmux.conf
+set -wg window-size largest
+```
+
+or fix one window in place with
+`tmux set-option -w -t <session>:<window> window-size largest`.
+
 ## Debugging
 
 Enable debug logging:
