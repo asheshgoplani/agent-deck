@@ -6017,6 +6017,20 @@ func (s *Session) KillWindow(index int) error {
 	return tmuxExec(s.SocketName, "kill-window", "-t", target).Run()
 }
 
+// WindowCount returns the live number of windows in this session, queried
+// from the tmux server rather than the window cache.
+func (s *Session) WindowCount() (int, error) {
+	out, err := tmuxExec(s.SocketName, "display-message", "-p", "-t", s.Name, "#{session_windows}").Output()
+	if err != nil {
+		return 0, fmt.Errorf("window count: %w", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("window count: parse %q: %w", strings.TrimSpace(string(out)), err)
+	}
+	return n, nil
+}
+
 // ListAllSessions returns all Agent Deck tmux sessions
 func ListAllSessions() ([]*Session, error) {
 	socket := DefaultSocketName()

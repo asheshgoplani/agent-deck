@@ -51,6 +51,33 @@ func TestSession_KillWindow(t *testing.T) {
 	}
 }
 
+// TestSession_WindowCount verifies that WindowCount reports the live number
+// of windows in the session.
+func TestSession_WindowCount(t *testing.T) {
+	requireTmux(t)
+	socket, target := makeIsolatedServer(t)
+
+	s := &Session{Name: target, SocketName: socket}
+	n, err := s.WindowCount()
+	if err != nil {
+		t.Fatalf("WindowCount: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("WindowCount = %d, want 1", n)
+	}
+
+	if out, err := exec.Command("tmux", "-L", socket, "new-window", "-t", target, "sleep", "60").CombinedOutput(); err != nil {
+		t.Fatalf("new-window: %v: %s", err, out)
+	}
+	n, err = s.WindowCount()
+	if err != nil {
+		t.Fatalf("WindowCount after new-window: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("WindowCount after new-window = %d, want 2", n)
+	}
+}
+
 // TestRemoveCachedWindow verifies that RemoveCachedWindow prunes one window
 // from the cache so the TUI drops the row immediately instead of waiting for
 // the next background refresh.

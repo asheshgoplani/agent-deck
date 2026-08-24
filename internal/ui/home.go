@@ -10132,6 +10132,14 @@ func (h *Home) confirmAction() tea.Cmd {
 		h.confirmDialog.Hide()
 		if inst := h.getInstanceByID(sessionID); inst != nil {
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				// The window row was rendered when the session had 2+
+				// windows, but the other window can close between rendering
+				// and confirmation — and killing the last window kills the
+				// whole session. Re-check the live count before acting.
+				if n, err := tmuxSess.WindowCount(); err == nil && n < 2 {
+					h.setError(fmt.Errorf("not killing window %d: it is the session's last window", windowIndex))
+					return nil
+				}
 				if err := tmuxSess.KillWindow(windowIndex); err != nil {
 					h.setError(fmt.Errorf("kill window %d: %w", windowIndex, err))
 					return nil
