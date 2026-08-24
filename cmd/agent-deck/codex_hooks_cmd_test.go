@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -503,5 +505,71 @@ func TestCodexSharedStatusWriteNeverMutatesAnchor(t *testing.T) {
 	}
 	if got := session.ReadHookSessionAnchor(id); got != "thread-current" {
 		t.Fatalf("shared writer mutated Codex anchor: %q", got)
+	}
+}
+
+// A zero-length status file carries no durable counter to protect, so failing
+// closed on it only freezes the session in "running" forever. atomicHookWrite
+// renames without fsync, so a crash can leave exactly this file.
+func TestWriteCodexHookStatus_EmptyPriorFileRecovers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(getHooksDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(getHooksDir(), "inst-empty.json")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeCodexHookStatus("inst-empty", "running", "thread-1", "turn.started", "turn-1")
+	writeCodexHookStatus("inst-empty", "waiting", "thread-1", "turn.completed", "turn-1")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hook hookStatusFile
+	if err := json.Unmarshal(data, &hook); err != nil {
+		t.Fatalf("status file still unusable after an empty prior: %v", err)
+	}
+	if hook.Status != "waiting" {
+		t.Fatalf("status = %q, want waiting", hook.Status)
+	}
+	if hook.CodexCompletedGeneration == "" {
+		t.Fatalf("turn identity did not advance past an empty prior: %#v", hook)
+	}
+}
+
+// A non-empty prior that cannot be parsed must still fail closed — resetting a
+// live counter would hand two different turns the same identity — but the
+// refusal has to be visible instead of silently freezing the session.
+func TestWriteCodexHookStatus_CorruptPriorFailsClosedAndWarns(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(getHooksDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(getHooksDir(), "inst-corrupt.json")
+	if err := os.WriteFile(path, []byte(`{"status":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	writeCodexHookStatus("inst-corrupt", "waiting", "thread-1", "turn.completed", "turn-1")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"status":` {
+		t.Fatalf("corrupt prior was overwritten: %q", string(data))
+	}
+	if !strings.Contains(buf.String(), "codex_hook_status_unreadable") {
+		t.Fatalf("refusal was silent:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "inst-corrupt") {
+		t.Fatalf("warning does not name the instance:\n%s", buf.String())
 	}
 }
