@@ -113,14 +113,35 @@ func TestIssue2057_FallbackAmbiguityFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	inst := &Instance{ID: "ambiguous", Tool: "codex"}
-	// Positive control: this is the exact completion-scoped fallback the
-	// implementation must recognize. Without it, all of the empty-signal
-	// assertions below could pass because Codex signaling was absent entirely.
+	// Positive controls, one per production path that may produce a signal.
+	// Without them the empty-signal assertions below would still pass if the
+	// Codex implementation were absent entirely, or replaced by a constant.
 	write2057Hook(t, inst.ID, map[string]any{
 		"event": "turn.completed", "codex_started_sequence": 8, "codex_completed_sequence": 8,
 	})
-	if got := transitionEventOutputHash(inst); got == "" {
+	seq8 := transitionEventOutputHash(inst)
+	if seq8 == "" {
 		t.Fatal("valid completion-scoped fallback produced no signal")
+	}
+	write2057Hook(t, inst.ID, map[string]any{
+		"event": "turn.completed", "codex_started_sequence": 9, "codex_completed_sequence": 9,
+	})
+	seq9 := transitionEventOutputHash(inst)
+	if seq9 == seq8 {
+		t.Fatalf("completion-scoped signal ignored the turn boundary: %q", seq9)
+	}
+	write2057Hook(t, inst.ID, map[string]any{
+		"event": "turn.completed", "codex_completed_generation": "thread:gen-a",
+	})
+	genA := transitionEventOutputHash(inst)
+	if genA == "" || strings.Contains(genA, "thread:gen-a") {
+		t.Fatalf("generation-only signal missing or unhashed: %q", genA)
+	}
+	write2057Hook(t, inst.ID, map[string]any{
+		"event": "turn.completed", "codex_completed_generation": "thread:gen-b",
+	})
+	if genB := transitionEventOutputHash(inst); genB == genA {
+		t.Fatalf("generation-only signal ignored the turn boundary: %q", genB)
 	}
 	for _, fields := range []map[string]any{
 		{"event": "turn.completed", "sequence": 22},
