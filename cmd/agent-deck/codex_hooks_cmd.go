@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -250,10 +252,24 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	path := filepath.Join(hooksDir, base+".json")
 	var prior hookStatusFile
 	if data, err := os.ReadFile(path); err == nil {
-		if json.Unmarshal(data, &prior) != nil {
-			return // ambiguous/partial prior state: never reset the durable counter
+		// An empty file holds no counter to protect. atomicHookWrite renames
+		// without fsync, so a crash leaves exactly this — failing closed on it
+		// would freeze the session's status for good.
+		if len(bytes.TrimSpace(data)) > 0 && json.Unmarshal(data, &prior) != nil {
+			// Ambiguous/partial prior state: never reset the durable counter,
+			// or two turns can share one identity. Say so, since the session's
+			// status stops advancing until the file is repaired.
+			slog.Warn("codex_hook_status_unreadable",
+				slog.String("instance", instanceID),
+				slog.String("path", path),
+				slog.Int("bytes", len(data)))
+			return
 		}
 	} else if !os.IsNotExist(err) {
+		slog.Warn("codex_hook_status_unreadable",
+			slog.String("instance", instanceID),
+			slog.String("path", path),
+			slog.String("error", err.Error()))
 		return
 	}
 	sessionID = strings.TrimSpace(sessionID)
