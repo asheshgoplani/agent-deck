@@ -42,14 +42,48 @@ const (
 
 // Primer size budget. These are load-bearing: TestPrimerBudget fails the build
 // when a rendered primer exceeds them, which is the hard line against the
-// primer becoming a dumping ground. ~4 chars/token puts primer at ≈300 tokens
-// and full at ≈500 tokens.
+// primer becoming a dumping ground. The char budgets are the WORST-CASE bound
+// with every runtime field at its truncation cap below (pinned by
+// TestPrimerBudget_WorstCase, which renders exactly that) — a live session
+// cannot exceed them because RenderPrimer truncates each field (PR #2064
+// round-2 P2: runtime titles/paths are unbounded; fixtures are not). A
+// typical primer is ~1100 chars ≈ 280 tokens; the pathological bound is
+// ≈400 tokens.
 const (
 	PrimerMaxLines = 16
-	PrimerMaxChars = 1200
+	PrimerMaxChars = 1700
 	FullMaxLines   = 26
-	FullMaxChars   = 2000
+	FullMaxChars   = 2400
 )
+
+// Per-field render caps (runes). Paths keep their TAIL (the identifying
+// part); names keep their HEAD. Session/parent IDs are never truncated —
+// they are agent-deck-generated (bounded) and the report-back command must
+// stay paste-able.
+const (
+	primerCapName   = 48 // title, group
+	primerCapPath   = 72 // dir, repo root
+	primerCapBranch = 40
+	primerCapSmall  = 32 // harness, model, account, profile, host, parent title
+)
+
+// clipHead keeps the first max runes, appending "…" when truncated.
+func clipHead(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
+// clipTail keeps the last max runes, prepending "…" when truncated.
+func clipTail(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return "…" + string(r[len(r)-max:])
+}
 
 // unknownFact is the literal printed for a fact that cannot be determined.
 const unknownFact = "unknown"
@@ -289,6 +323,22 @@ func RenderPrimer(f PrimerFacts, level string) string {
 	if level == "" || level == ContextLevelNone {
 		return ""
 	}
+
+	// P2 (PR #2064 round 2): runtime fields are unbounded (deep worktree
+	// paths, auto-generated titles); the budget is guaranteed by clipping
+	// each field here, not merely asserted against short fixtures. IDs are
+	// exempt (bounded, and the report-back command must stay paste-able).
+	f.Title = clipHead(f.Title, primerCapName)
+	f.Group = clipHead(f.Group, primerCapName)
+	f.Dir = clipTail(f.Dir, primerCapPath)
+	f.RepoRoot = clipTail(f.RepoRoot, primerCapPath)
+	f.Branch = clipHead(f.Branch, primerCapBranch)
+	f.Harness = clipHead(f.Harness, primerCapSmall)
+	f.Model = clipHead(f.Model, primerCapSmall)
+	f.Account = clipHead(f.Account, primerCapSmall)
+	f.Profile = clipHead(f.Profile, primerCapSmall)
+	f.Host = clipHead(f.Host, primerCapSmall)
+	f.ParentTitle = clipHead(f.ParentTitle, primerCapSmall)
 
 	var b strings.Builder
 	b.WriteString("<agent-deck-context>\n")

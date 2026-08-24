@@ -2027,3 +2027,25 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestPrimerCommandsExist -count=1 -v
     expected: pass
+- id: sessionctx-sessionstart-sync
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/claude_hooks_primer_test.go
+  test_name: TestSessionStartHookIsSynchronous
+  purpose: SessionStart hook installs synchronously — Claude Code ignores stdout (additionalContext) from async hooks, which silently no-ops the primer on default installs (PR 2064 round-2 P1)
+  source: pr2064-round2-P1
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestSessionStartHookIsSynchronous|TestInjectClaudeHooks_UpgradesAsyncSessionStart|TestEnsureClaudeHooksForSpawn_InstallsIntoFreshConfigDir' -count=1 -v
+    expected: pass
+- id: sessionctx-field-truncation
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestPrimerBudget_WorstCase
+  purpose: Budget holds with every runtime field at its truncation cap — live sessions with unbounded titles/paths cannot blow it (PR 2064 round-2 P2)
+  source: pr2064-round2-P2
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestPrimerBudget_WorstCase|TestRenderPrimer_TruncatesUnboundedFields' -count=1 -v
+    expected: pass

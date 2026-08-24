@@ -42,7 +42,19 @@ var hookEventConfigs = []struct {
 	Matcher string // empty = no matcher
 	Async   bool   // false = synchronous (blocks via exit code)
 }{
-	{Event: "SessionStart", Async: true},
+	// SessionStart is SYNCHRONOUS: Claude Code only reads hook stdout —
+	// including hookSpecificOutput.additionalContext — from sync hooks (the
+	// same semantics the Stop-hook flip below documents). The v1.16.0
+	// session-context primer and the conductor fleet snapshot are delivered
+	// on this edge; under the previous Async:true they were silently
+	// discarded on every default install (PR #2064 round-2 P1). The handler
+	// path for SessionStart is local-only (status write, title/cwd sync,
+	// storage read for primer + children), so the added start latency is a
+	// few tens of milliseconds. mergeHookEvent's in-place update flips
+	// existing async installs to sync on the next InjectClaudeHooks run
+	// (TUI startup, `agent-deck hooks install`, or any claude spawn — see
+	// ensureClaudeHooksForSpawn).
+	{Event: "SessionStart", Async: false},
 	{Event: "UserPromptSubmit", Async: true},
 	// Issue #1225/#1226 ACTIVATION: Stop is SYNCHRONOUS so Claude Code reads the
 	// {decision:"block",reason} the hook emits to inject busy-parent completions.
@@ -352,4 +364,29 @@ func removeAgentDeckFromEvent(raw json.RawMessage) (json.RawMessage, bool) {
 
 	result, _ := json.Marshal(cleaned)
 	return result, true
+}
+
+// ensureClaudeHooksForSpawn installs/upgrades the agent-deck hooks in the
+// config dir this session will actually use, at spawn time. The TUI does
+// this at startup (home.go), but CLI-only flows (`agent-deck launch`,
+// overnight dispatch, evals) never ran it — leaving default installs with
+// no hooks, or with a stale async SessionStart entry from an older binary,
+// either of which silently drops the v1.16.0 context primer (PR #2064
+// round-2 P1). Runs BEFORE the worker-scratch copy so the per-session
+// scratch settings.json inherits the upgraded hooks. Idempotent (fast
+// no-op when settings already match) and never fails a launch.
+func (i *Instance) ensureClaudeHooksForSpawn() {
+	if !instInvokesClaudeBinary(i) || i.IsSSH() {
+		return
+	}
+	configDir := GetClaudeConfigDirForInstance(i)
+	if configDir == "" {
+		return
+	}
+	if _, err := InjectClaudeHooks(configDir); err != nil {
+		sessionLog.Debug("claude hook ensure at spawn failed; primer may not inject",
+			slog.String("session", i.Title),
+			slog.String("config_dir", configDir),
+			slog.String("error", err.Error()))
+	}
 }

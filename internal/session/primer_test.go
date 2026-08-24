@@ -469,3 +469,62 @@ func TestContextEnvTool_PassthroughReportsRealTool(t *testing.T) {
 		t.Fatalf("plain shell contextEnvTool = %q, want shell", got)
 	}
 }
+
+// --- PR #2064 round 2 ---
+
+// TestRenderPrimer_TruncatesUnboundedFields (P2): runtime fields are clipped
+// at render time — a live session with pathological titles/paths cannot blow
+// the budget, and paths keep their identifying TAIL.
+func TestRenderPrimer_TruncatesUnboundedFields(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	deep := "/very" + strings.Repeat("/deeply/nested", 20) + "/worktree-final"
+	f := PrimerFacts{
+		SessionID: "id1", Title: long, Group: long,
+		Dir: deep, RepoRoot: deep, Branch: long, Host: long,
+		Harness: long, Model: long, Account: long, Profile: long,
+		ParentID: "p1", ParentTitle: long,
+		Lifecycle: LifecycleCreated, Level: ContextLevelPrimer,
+	}
+	out := RenderPrimer(f, ContextLevelPrimer)
+	if strings.Contains(out, strings.Repeat("x", primerCapName+2)) {
+		t.Errorf("a field escaped truncation:\n%s", out)
+	}
+	if !strings.Contains(out, "worktree-final") {
+		t.Errorf("path truncation must keep the identifying tail:\n%s", out)
+	}
+	if !strings.Contains(out, "…") {
+		t.Errorf("truncated fields must be marked with …:\n%s", out)
+	}
+	if len(out) > PrimerMaxChars {
+		t.Errorf("truncated primer is %d chars, budget %d:\n%s", len(out), PrimerMaxChars, out)
+	}
+}
+
+// TestPrimerBudget_WorstCase (P2): render with EVERY field exactly at its
+// cap (the bound truncation guarantees) and pin the budget against that —
+// not against friendly fixtures.
+func TestPrimerBudget_WorstCase(t *testing.T) {
+	cap := func(n int) string { return strings.Repeat("w", n+50) } // forces clip to cap
+	f := PrimerFacts{
+		SessionID: strings.Repeat("i", 40), Title: cap(primerCapName), Group: cap(primerCapName),
+		Dir: cap(primerCapPath), IsWorktree: true, RepoRoot: cap(primerCapPath), Branch: cap(primerCapBranch),
+		Host: cap(primerCapSmall), Harness: cap(primerCapSmall), Model: cap(primerCapSmall),
+		Account: cap(primerCapSmall), Profile: cap(primerCapSmall),
+		ParentID: strings.Repeat("p", 40), ParentTitle: cap(primerCapSmall),
+		Lifecycle: LifecycleResumed, Level: ContextLevelFull,
+	}
+	primer := RenderPrimer(f, ContextLevelPrimer)
+	if len(primer) > PrimerMaxChars {
+		t.Errorf("worst-case primer is %d chars, budget %d:\n%s", len(primer), PrimerMaxChars, primer)
+	}
+	if lines := strings.Count(primer, "\n") + 1; lines > PrimerMaxLines {
+		t.Errorf("worst-case primer is %d lines, budget %d", lines, PrimerMaxLines)
+	}
+	full := RenderPrimer(f, ContextLevelFull)
+	if len(full) > FullMaxChars {
+		t.Errorf("worst-case full primer is %d chars, budget %d:\n%s", len(full), FullMaxChars, full)
+	}
+	if lines := strings.Count(full, "\n") + 1; lines > FullMaxLines {
+		t.Errorf("worst-case full primer is %d lines, budget %d", lines, FullMaxLines)
+	}
+}

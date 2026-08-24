@@ -4749,6 +4749,10 @@ func (i *Instance) Start() error {
 	// (issue #59, v1.7.68). Runs before command-building so the
 	// CLAUDE_CONFIG_DIR= prefix picks up the scratch path. No-op for
 	// conductors, explicit telegram channel owners, and non-claude tools.
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	// Pre-accept Codex workspace trust for non-sandbox sessions so first launch
@@ -5083,6 +5087,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// (issue #59, v1.7.68). Same call as in Start() — both spawn paths
 	// must pin the telegram plugin off for workers.
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	// Start session normally (no embedded message logic)
@@ -8577,6 +8585,10 @@ func (i *Instance) restart(env map[string]string) error {
 	// sees the plugin enablement state from session creation, not the
 	// current state. Same call as Start()/recreate paths — idempotent
 	// per (sourceProfileDir, plugins-set) and best-effort on failure.
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn()
 
 	// Issue #956: custom-command Claude sessions whose hooks never fired
@@ -8946,6 +8958,10 @@ func (i *Instance) restart(env map[string]string) error {
 
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// on the restart path too (issue #59, v1.7.68).
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	var command string

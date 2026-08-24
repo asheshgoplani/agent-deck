@@ -246,8 +246,11 @@ cannot be determined print `unknown`, never a guess. `--json` returns the raw
 fact sheet (including `context_level` + resolution source).
 
 The same primer is injected automatically at spawn: claude sessions get it
-via the SessionStart hook (`additionalContext` — re-fires on resume, /clear,
-and compaction, so it survives a resume natively); other tools get it
+via the synchronous SessionStart hook (`additionalContext` — re-fires on
+resume, /clear, and compaction, so it survives a resume natively; the hook
+MUST be synchronous — Claude Code ignores stdout from async hooks — and
+every claude spawn now installs/upgrades the hooks in the session's config
+dir, so CLI-only installs are covered); other tools get it
 prepended to the initial message plus the `AGENTDECK_*` env spine on every
 start AND resume command. Exception: deepseek gets the env spine only — its
 headless one-shot task is replayed verbatim on restart, so an embedded

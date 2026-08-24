@@ -140,9 +140,11 @@ host, harness, model, account, profile, parent), its lifecycle (`created` /
 `resumed` / `revived`), and the cheap command paths. Undeterminable facts
 print the literal `unknown`, never a guess.
 
-Delivery: claude sessions get it via the SessionStart hook
+Delivery: claude sessions get it via the synchronous SessionStart hook
 (`additionalContext`), which re-fires on resume, /clear, and compaction — the
-primer survives a resume natively. Other tools get it prepended to the
+primer survives a resume natively. (Synchronous is load-bearing: Claude Code
+ignores stdout from async hooks. Every claude spawn installs/upgrades the
+hooks in its config dir, covering CLI-only installs.) Other tools get it prepended to the
 initial launch message, plus the `AGENTDECK_SESSION_ID/_TOOL/_GROUP/
 _LIFECYCLE/_CONTEXT_LEVEL/_PARENT_ID` env spine on every start AND resume
 command. Any session can re-query with `agent-deck session primer [--json]`.

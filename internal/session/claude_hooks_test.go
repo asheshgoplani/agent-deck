@@ -61,8 +61,12 @@ func TestInjectClaudeHooks_Fresh(t *testing.T) {
 	if matchers[0].Hooks[0].Command != agentDeckHookCommand {
 		t.Errorf("Hook command = %q, want %q", matchers[0].Hooks[0].Command, agentDeckHookCommand)
 	}
-	if !matchers[0].Hooks[0].Async {
-		t.Error("Hook should be async")
+	if matchers[0].Hooks[0].Async {
+		// PR #2064 round-2 P1: SessionStart must install SYNCHRONOUSLY —
+		// Claude Code only reads additionalContext from sync hooks, and the
+		// v1.16.0 context primer is delivered on this edge. See
+		// TestSessionStartHookIsSynchronous for the standing guard.
+		t.Error("SessionStart hook must be synchronous (primer delivery rides its stdout)")
 	}
 }
 
