@@ -33,9 +33,20 @@ import (
 // pattern: at-least-once delivery with exactly-once effects, never loss.
 
 // consumedTurnsTTL bounds the consumed-fingerprint ledger so it can't grow
-// without limit. A turn older than this can never be re-delivered (the inbox
-// TTL is shorter), so forgetting it is safe.
+// without limit. Remote exports are read-only and may outlive their normal
+// inbox TTL, so WriteInboxEventIfUnseen separately refuses records outside
+// this same acceptance window before a pruned fingerprint can become "new".
 const consumedTurnsTTL = 14 * 24 * time.Hour
+
+// consumedLedgerGenerationKey stores the ledger's generation without changing
+// the historical JSON object shape (fingerprint -> int64). The authoritative
+// copy is stored beside the inbox, outside ConsumedTurnsDir, so restoring an
+// older consumed-ledger backup cannot also roll it back accidentally.
+const consumedLedgerGenerationKey = "__agent_deck_consumed_generation__"
+
+type inboxConsumeMarker struct {
+	Generation uint64 `json:"generation"`
+}
 
 var consumedTurnsMu sync.Mutex
 
@@ -52,6 +63,41 @@ func consumedTurnsPathFor(parentID string) string {
 	return filepath.Join(ConsumedTurnsDir(), sanitizeInboxName(parentID)+".json")
 }
 
+func inboxConsumeMarkerPathFor(parentID string) string {
+	return filepath.Join(InboxDir(), sanitizeInboxName(parentID)+".consumed-generation.json")
+}
+
+func loadInboxConsumeMarker(parentID string) (inboxConsumeMarker, error) {
+	var marker inboxConsumeMarker
+	raw, err := os.ReadFile(inboxConsumeMarkerPathFor(parentID))
+	if errors.Is(err, fs.ErrNotExist) {
+		return marker, nil // pre-marker installations begin at generation zero
+	}
+	if err != nil {
+		return marker, err
+	}
+	if err := json.Unmarshal(raw, &marker); err != nil {
+		return marker, err
+	}
+	return marker, nil
+}
+
+func saveInboxConsumeMarker(parentID string, generation uint64) error {
+	raw, err := json.Marshal(inboxConsumeMarker{Generation: generation})
+	if err != nil {
+		return err
+	}
+	return writeFileDurable(inboxConsumeMarkerPathFor(parentID), raw, 0o644)
+}
+
+func consumedLedgerGeneration(consumed map[string]int64) uint64 {
+	generation := consumed[consumedLedgerGenerationKey]
+	if generation < 0 {
+		return 0
+	}
+	return uint64(generation)
+}
+
 func loadConsumedTurnsLocked(parentID string) map[string]int64 {
 	out := map[string]int64{}
 	raw, err := os.ReadFile(consumedTurnsPathFor(parentID))
@@ -62,10 +108,100 @@ func loadConsumedTurnsLocked(parentID string) map[string]int64 {
 	return out
 }
 
+// InboxEventPresence is the result of checking both durable dedup stores used
+// by inbox delivery.  Unknown is deliberately distinct from both inserted and
+// already-present: a damaged consumed-turn ledger cannot honestly answer
+// whether a fetched turn was delivered before.
+type InboxEventPresence int
+
+const (
+	InboxEventPresenceUnknown InboxEventPresence = iota
+	InboxEventInserted
+	InboxEventAlreadyPresent
+	// InboxEventPresenceUnknownAfterLedgerRestore remains UNKNOWN for public
+	// accounting, but lets callers name the detected recovery condition.
+	InboxEventPresenceUnknownAfterLedgerRestore
+)
+
+// WriteInboxEventIfUnseen writes event only when it is absent from both the
+// pending inbox and the durable consumed-turn ledger. Remote drain needs this
+// wider answer because its source is read-only and continues serving records
+// after this conductor has consumed them.
+//
+// The consumed lock is held through the inbox check-and-append. This follows
+// finalizeInboxDrain's consumedTurnsMu -> inboxWriteMu order and prevents a
+// concurrent consumer from moving a record between the two stores while the
+// decision is made.
+func WriteInboxEventIfUnseen(parentID string, event TransitionNotificationEvent) (InboxEventPresence, error) {
+	if strings.TrimSpace(parentID) == "" {
+		return InboxEventPresenceUnknown, errors.New("inbox: empty parent session id")
+	}
+
+	// The consumed ledger is deliberately bounded, while a read-only remote
+	// export can keep serving a record indefinitely. Therefore the record's own
+	// timestamp is the acceptance boundary: once it reaches the ledger horizon,
+	// it is stale/already-present and can never be resurrected after pruning.
+	// Zero or future timestamps cannot establish age (including clock skew), so
+	// fail closed as unknown rather than silently treating them as new.
+	now := time.Now()
+	if event.Timestamp.IsZero() || event.Timestamp.After(now) {
+		return InboxEventPresenceUnknown, nil
+	}
+	if !event.Timestamp.After(now.Add(-consumedTurnsTTL)) {
+		return InboxEventAlreadyPresent, nil
+	}
+
+	consumedTurnsMu.Lock()
+	defer consumedTurnsMu.Unlock()
+
+	raw, err := os.ReadFile(consumedTurnsPathFor(parentID))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return InboxEventPresenceUnknown, nil
+	}
+	consumed := map[string]int64{}
+	if err == nil {
+		if json.Unmarshal(raw, &consumed) != nil {
+			return InboxEventPresenceUnknown, nil
+		}
+		fp := event.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(event)
+		}
+		if _, ok := consumed[fp]; ok {
+			return InboxEventAlreadyPresent, nil
+		}
+	}
+	marker, markerErr := loadInboxConsumeMarker(parentID)
+	if markerErr != nil {
+		return InboxEventPresenceUnknown, nil
+	}
+	if consumedLedgerGeneration(consumed) < marker.Generation {
+		// Recovery contract: restoring the mutable consumed ledger trades
+		// replay protection for recovery. The inbox-side marker detects the
+		// regression, but cannot reconstruct which forgotten fingerprints
+		// were consumed. Window-inside records absent from the restored ledger
+		// are therefore UNKNOWN, never new. Non-rollbackable tombstones would
+		// require a separate design and are intentionally out of scope here.
+		return InboxEventPresenceUnknownAfterLedgerRestore, nil
+	}
+
+	written, err := WriteInboxEventIfNew(parentID, event)
+	if err != nil {
+		return InboxEventPresenceUnknown, err
+	}
+	if written {
+		return InboxEventInserted, nil
+	}
+	return InboxEventAlreadyPresent, nil
+}
+
 func saveConsumedTurnsLocked(parentID string, m map[string]int64) error {
 	// Prune expired entries on every save to bound growth.
 	cutoff := time.Now().Add(-consumedTurnsTTL).Unix()
 	for fp, ts := range m {
+		if fp == consumedLedgerGenerationKey {
+			continue
+		}
 		if ts < cutoff {
 			delete(m, fp)
 		}
@@ -154,6 +290,10 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 	consumedTurnsMu.Lock()
 	defer consumedTurnsMu.Unlock()
 	consumed := loadConsumedTurnsLocked(parentID)
+	marker, err := loadInboxConsumeMarker(parentID)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().Unix()
 	var out []TransitionNotificationEvent
@@ -171,9 +311,29 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 		out = append(out, ev)
 	}
 	if dirty {
+		generation := marker.Generation + 1
+		if ledgerGeneration := consumedLedgerGeneration(consumed); generation <= ledgerGeneration {
+			generation = ledgerGeneration + 1
+		}
+		consumed[consumedLedgerGenerationKey] = int64(generation) // #nosec G115 -- generation increments by 1 per consume; reaching int64 overflow would need 2^63 consumed turns
 		if err := saveConsumedTurnsLocked(parentID, consumed); err != nil {
 			// Ledger not durable — leave the WAL in place so the next drain
 			// re-delivers rather than loses.
+			return out, err
+		}
+		// The marker is deliberately alongside the inbox, not the restorable
+		// ledger. Writing ledger first is fail-closed: a marker-write failure
+		// leaves the WAL for retry and cannot falsely bless a rolled-back ledger.
+		if err := saveInboxConsumeMarker(parentID, generation); err != nil {
+			return out, err
+		}
+		marker.Generation = generation
+	}
+	// If the ledger write succeeded but the marker write failed on a previous
+	// attempt, the WAL retry sees every event as already consumed. Reconcile the
+	// marker before dropping that WAL so the completed consume is still pinned.
+	if ledgerGeneration := consumedLedgerGeneration(consumed); marker.Generation < ledgerGeneration {
+		if err := saveInboxConsumeMarker(parentID, ledgerGeneration); err != nil {
 			return out, err
 		}
 	}
@@ -299,14 +459,15 @@ func collapseLastWins(events []TransitionNotificationEvent) []TransitionNotifica
 	latest := map[string]TransitionNotificationEvent{}
 	order := []string{}
 	for _, ev := range events {
-		cur, seen := latest[ev.ChildSessionID]
+		key := strings.TrimSpace(ev.SourceRemote) + "\x00" + ev.ChildSessionID
+		cur, seen := latest[key]
 		if !seen {
-			order = append(order, ev.ChildSessionID)
-			latest[ev.ChildSessionID] = ev
+			order = append(order, key)
+			latest[key] = ev
 			continue
 		}
 		if !ev.Timestamp.Before(cur.Timestamp) {
-			latest[ev.ChildSessionID] = ev
+			latest[key] = ev
 		}
 	}
 	out := make([]TransitionNotificationEvent, 0, len(order))
