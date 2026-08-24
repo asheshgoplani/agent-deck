@@ -58,3 +58,116 @@ ordering changed in round 5.
   All other checks, including `test`, `eval_smoke suite`, lint, vulnerability,
   snapshot, performance, and CodeRabbit, passed. The final tip includes the
   registry reconciliation and receives a completely fresh exact-head rollup.
+
+# PR #2055 round-6 verification results
+
+No code defect was found at the head, and no production behavior changed in
+round 6. This section records the independent audit that the rebase dropped
+nothing and that CI is green on the exact head.
+
+## Rebase currency
+
+`origin/main` is `bf50689893053c6dd33a29b21e12eb36e251d94b`.
+
+```text
+git merge-base --is-ancestor origin/main HEAD   -> ok
+git rev-list --left-right --count origin/main...HEAD -> 0  11
+```
+
+The branch is zero commits behind main, so the eleven PR commits replay on
+current main with no merge required.
+
+## No round-2/3/4 fix was dropped
+
+The pre-rebase tip `cc4009fc333b204c012b49674ca5537cd013c654` (based on
+`47bb210373c87aa1a90f2a319acf9174ea4b3dae`) was diffed against its own base and
+the resulting patch was reverse-applied against the rebased head. A clean
+reverse-apply proves every pre-rebase hunk is still present verbatim:
+
+```text
+git diff 47bb2103..cc4009fc -- ':!RESULTS.md' ':!cmd/agent-deck/main.go' \
+    ':!tests/eval/helpconsent/cli_test.go' | git apply --check -R   -> clean
+```
+
+Seventeen of the nineteen non-receipt files reverse-apply verbatim. The two
+exceptions were inspected line by line and are both additive, not losses:
+
+- `cmd/agent-deck/main.go` carries main's own post-rebase content (`Version`
+  `1.15.0`, the `accounts` dispatch case, the `accounts` line in `printHelp`)
+  plus this PR's `"accounts": true` registry entry. The registry entry is
+  required by this PR's own `TestCommandRegistryMatchesMainDispatch`
+  invariant; without it the invariant would be violated by main's new command.
+- `tests/eval/helpconsent/cli_test.go` carries the round-5 tightening that
+  requires hooks help to name its own `help` subcommand. That assertion is
+  strictly stronger than the round-4 one it replaced.
+
+File-set comparison confirms the same shape: the post-rebase diff is a superset
+of the pre-rebase diff, adding only `cmd/agent-deck/hooks_help_test.go` and the
+round-5 growth in `hook_handler.go` and `main.go`.
+
+## Exact-head CI
+
+All fourteen checks on `bdbe8c9a5a932ee2ea86c7bebb7182169a97f434` completed
+successfully: `intake`, `diffscope`, `golangci`, `govulncheck`, `analyze`
+(CodeQL), `CodeQL`, `test` (telegram-reliability), `Full test suite (PR gate)`,
+`eval_smoke suite`, `reap-stale-tmux.sh DRY_RUN smoke`, `snapshot`,
+`TestPerf_ walltime regressions (-race, multiplier=2.0)`,
+`Benchmark ns/op trend (advisory)`, and `CodeRabbit`. `mergeable` is
+`MERGEABLE`. `mergeStateStatus` is `BLOCKED` solely because `reviewDecision` is
+`REVIEW_REQUIRED`; that is a human approval gate, not a CI or conflict failure.
+
+## Independent container re-verification at the head
+
+Run in `golang:1.25` with `-buildvcs=false`; nothing was tested on the host.
+
+```text
+go build ./...                                                          BUILD_OK
+go vet ./...                                                            VET_OK
+go test ./cmd/agent-deck -run 'TestCommandRegistryMatchesMainDispatch|
+  TestEveryRegisteredCommandHelpIsReadOnly|TestIssue2025' -count=1      PASS (3.698s)
+go test ./cmd/agent-deck -run 'TestEveryRegisteredCommandFamilyBareHelp
+  IsReadOnly|TestHooks...|TestSiblingHooksInstallHelpDoesNotInstall'    PASS (0.844s)
+go test -tags eval_smoke ./tests/eval/helpconsent/... -count=1          PASS (1.415s)
+```
+
+The working tree was clean before and after; the container used named cache
+volumes so no build artifacts landed in the repository.
+
+## CodeRabbit's remaining actionable comment is invalid
+
+CodeRabbit asked for an `agents` entry in the family table of
+`cmd/agent-deck/issue2025_help_consent_test.go`, described as an alias of
+`agent` sharing its usage string. It is not an alias. `main.go:346` routes
+`agents` to `handleAgents` (a read-only listing of adopted agents) while
+`main.go:349` routes `agent` to `handleAgent` (the subcommand family).
+`agents` owns no subcommand family and defines no command-position `help`
+token. Executed against the built binary in a sandboxed `HOME`:
+
+```text
+$ agent-deck agents help
+No agents adopted yet.
+Run `agent-deck agent adopt <conductor-dir|session|plist|unit>` to make an existing setup visible.
+exit=0
+
+$ agent-deck agent help
+Usage: agent-deck agent <command>
+```
+
+Adding `agents` to that table would assert `Usage: agent-deck agent <command>`
+against the listing output and make the test RED. The table is deliberately
+scoped to dispatchers that document a command-position `help`. `agents` is
+already covered for `--help` and `-h` by
+`TestEveryRegisteredCommandHelpIsReadOnly`, which enumerates the whole
+registry. The comment is declined with that reason and no change was made.
+
+## Scope note on the tmux mutation-deadline defect
+
+The verification brief carried a `RespawnPane` finding scoped to PR #2052: an
+unbounded `CombinedOutput()` executed while holding `s.mu`. On this branch's
+head that mutex half does not exist. `RespawnPane` begins at
+`internal/tmux/tmux.go:3427`; the external command runs at line 3476 and the
+only `s.mu` critical section is lines 3506-3512, covering four field
+assignments after the command has already returned. The remaining unbounded
+execution at line 3476 is pre-existing on `main` and unrelated to this PR,
+which touches only CLI help consent. Changing it here would break diff scope,
+so it is recorded and left to PR #2052.
