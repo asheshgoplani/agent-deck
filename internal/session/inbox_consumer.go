@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -261,8 +260,8 @@ func removeInflightLocked(parentID string) {
 // readInboxEventsLocked reads all parseable events from a JSONL inbox/WAL file
 // without truncating it. Returns an empty slice for a missing/empty file.
 // Corrupt lines are skipped rather than failing the whole read (audit B3/B11),
-// and the scanner cap is raised so oversized events are not silently truncated
-// (audit B6). Caller holds inboxWriteMu.
+// and oversized lines are discarded without blocking later records (audit B6).
+// Caller holds inboxWriteMu.
 func readInboxEventsLocked(path string) ([]TransitionNotificationEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -274,20 +273,14 @@ func readInboxEventsLocked(path string) ([]TransitionNotificationEvent, error) {
 	defer f.Close()
 
 	var out []TransitionNotificationEvent
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		ev, derr := decodeInboxLine([]byte(line))
+	if err := forEachInboxLine(f, func(line []byte) error {
+		ev, derr := decodeInboxLine(line)
 		if derr != nil {
-			continue // skip corrupt lines rather than failing the whole drain
+			return nil // skip corrupt lines rather than failing the whole drain
 		}
 		out = append(out, ev)
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return out, err
 	}
 	return out, nil

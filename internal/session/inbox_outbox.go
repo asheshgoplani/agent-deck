@@ -191,18 +191,13 @@ func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) 
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		if strings.TrimSpace(scanner.Text()) == "" {
-			continue
-		}
-		ev, decodeErr := decodeInboxLine(scanner.Bytes())
+	if err := forEachInboxLine(f, func(line []byte) error {
+		ev, decodeErr := decodeInboxLine(line)
 		if decodeErr != nil {
-			return 0, false, fmt.Errorf("scan inbox capacity: %w", decodeErr)
+			return nil
 		}
 		if ev.ChildSessionID != event.ChildSessionID {
-			continue
+			return nil
 		}
 		count++
 		fp := ev.TurnFingerprint
@@ -212,8 +207,8 @@ func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) 
 		if fp == event.TurnFingerprint {
 			retry = true
 		}
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return 0, false, err
 	}
 	return count, retry, nil
