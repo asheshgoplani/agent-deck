@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -3078,6 +3079,22 @@ func (d *NewDialog) renderSuggestionsDropdown() string {
 	return menuStyle.Render(b.String())
 }
 
+// sanitizeMatchForDisplay neutralizes control characters in a
+// filesystem-derived name before it is rendered. Directory names may carry
+// ESC/BEL/CR/LF and OSC sequences (repo checkouts, extracted archives), which
+// would otherwise become live terminal escape sequences inside the dropdown —
+// able to alter terminal state or forge menu contents. Each control rune is
+// replaced with U+FFFD for display only; callers keep the raw name for
+// selection so completion still targets the real directory.
+func sanitizeMatchForDisplay(name string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '�'
+		}
+		return r
+	}, name)
+}
+
 // renderCompletionDropdown renders the active Tab-completion matches as a
 // menu, highlighting the match currently applied to the path input.
 func (d *NewDialog) renderCompletionDropdown() string {
@@ -3124,7 +3141,7 @@ func (d *NewDialog) renderCompletionDropdown() string {
 			style = selectedStyle
 			prefix = "▶ "
 		}
-		b.WriteString(style.Render(prefix + matches[i]))
+		b.WriteString(style.Render(prefix + sanitizeMatchForDisplay(matches[i])))
 	}
 	if endIdx < total {
 		b.WriteString("\n")

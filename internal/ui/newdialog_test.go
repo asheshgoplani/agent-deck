@@ -6,6 +6,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -662,6 +666,66 @@ func TestNewDialog_TabShowsCompletionMatches(t *testing.T) {
 	}
 	if strings.Contains(view, "▶ "+first) {
 		t.Errorf("after second Tab, %q should no longer be highlighted", first)
+	}
+}
+
+// TestNewDialog_CompletionDropdown_SanitizesControlBytes: directory names can
+// carry ESC/BEL/OSC sequences and newlines (repo checkouts, extracted
+// archives). The dropdown renders filesystem-derived names, so control bytes
+// must be neutralized at the render boundary — while the raw names stay
+// intact in the match set so selection still targets the real directory.
+func TestNewDialog_CompletionDropdown_SanitizesControlBytes(t *testing.T) {
+	// Pin the global lipgloss profile to Ascii so the render carries no
+	// style-generated escapes (issue391 tests force TrueColor binary-wide);
+	// any control byte left in the output can then only come from a filename.
+	oldProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(oldProfile) })
+
+	d := NewNewDialog()
+	d.SetSize(200, 50)
+	d.Show()
+
+	tmpDir := t.TempDir()
+	oscName := "evil\x1b]52;c;cGF5bG9hZA==\x07osc"
+	nlName := "evil\nnewline"
+	for _, sub := range []string{oscName, nlName, "evilclean"} {
+		if err := os.Mkdir(filepath.Join(tmpDir, sub), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Focus the path field and Tab on a prefix matching all three.
+	d.focusIndex = 2
+	d.updateFocus()
+	d.pathInput.SetValue(filepath.Join(tmpDir, "evil"))
+	d.pathInput.SetCursor(len(d.pathInput.Value()))
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if !d.pathCycler.IsActive() {
+		t.Fatal("expected completion cycler to be active after Tab on partial path")
+	}
+
+	// Raw bytes must survive in the match set used for selection.
+	var rawOSC, rawNL bool
+	for _, m := range d.pathCycler.Matches() {
+		if strings.HasSuffix(m, oscName) {
+			rawOSC = true
+		}
+		if strings.HasSuffix(m, nlName) {
+			rawNL = true
+		}
+	}
+	if !rawOSC || !rawNL {
+		t.Errorf("raw control-byte names must remain selectable, matches: %q", d.pathCycler.Matches())
+	}
+
+	// The rendered menu must carry no control bytes (newlines between menu
+	// rows are layout, not payload).
+	menu := d.renderCompletionDropdown()
+	for _, r := range menu {
+		if r != '\n' && unicode.IsControl(r) {
+			t.Fatalf("rendered dropdown contains control rune %q:\n%q", r, menu)
+		}
 	}
 }
 
