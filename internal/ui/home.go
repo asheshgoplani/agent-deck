@@ -6836,7 +6836,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.previewFetchingID = ""
 		h.previewCacheTime[msg.previewKey] = time.Now()
 		if msg.err == nil {
-			h.previewCache[msg.previewKey] = msg.content
+			// Tabs cannot survive into a fixed-cell frame: ansi.StringWidth
+			// measures a TAB as zero cells while the terminal expands it to the
+			// next multiple-of-8 column, so a captured `git status` or `ls` line
+			// passes every width gate and still overflows the pane. Expand at
+			// ingest — one chokepoint for local and remote previews alike — so
+			// the cached content is already what the terminal will render.
+			h.previewCache[msg.previewKey] = expandTabs(msg.content)
 		}
 		h.previewCacheMu.Unlock()
 		return h, nil
@@ -15277,8 +15283,16 @@ func clampViewToViewport(content string, width, height int) string {
 		if i > 0 {
 			rendered.WriteByte('\n')
 		}
+		//
+		// expandTabs before fitting: a TAB measures zero cells through
+		// cellWidth but advances the terminal's cursor to the next
+		// multiple-of-8 column, so an un-expanded tab makes this clamp pad a
+		// row to width that the terminal then renders wider, wrapping it and
+		// scrolling the header off the alternate screen. Every row starts at
+		// column 0 here, so per-row expansion lands on the same stops the
+		// terminal would use.
 		rendered.WriteString(sgrReset)
-		rendered.WriteString(fitCellWidth(line, width))
+		rendered.WriteString(fitCellWidth(expandTabs(line), width))
 		rendered.WriteString(sgrReset)
 	}
 
