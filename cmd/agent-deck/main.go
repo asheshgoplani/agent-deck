@@ -2688,7 +2688,8 @@ func handleRename(profile string, args []string) {
 	// Route through SetField so the rename also sets TitleLocked — a direct
 	// Title assignment would be reverted by the #572 Claude-name sync on the
 	// next hook event.
-	if _, _, err := session.SetField(inst, session.FieldTitle, newTitle, nil); err != nil {
+	_, postCommit, err := session.SetField(inst, session.FieldTitle, newTitle, nil)
+	if err != nil {
 		out.Error(fmt.Sprintf("failed to rename: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -2697,6 +2698,14 @@ func handleRename(profile string, args []string) {
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	// Run the mutator's post-commit side effects (the claude_title_push /name
+	// delivery) only once the rename is on disk — every other SetField caller
+	// runs postCommit, and dropping it here was why `agent-deck rename` left
+	// the agent still answering to its old name until the next restart.
+	if postCommit != nil {
+		postCommit()
 	}
 
 	out.Success(

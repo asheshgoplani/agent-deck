@@ -1783,6 +1783,16 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		flags = append(flags, "--channels "+shellescape.Quote(strings.Join(i.Channels, ","))) // audit F1
 	}
 
+	// Session name (claude_title_push.go): tell claude the title the operator
+	// gave this session in the deck, so `ListAgents`/`SendMessage` address it by
+	// that name instead of the cwd-derived placeholder. Re-emitted on restart and
+	// resume — that is what heals a rename the live /name push had to decline.
+	// Suppressed when extra-args carry their own --name, same last-wins reasoning
+	// as --model above.
+	if launchName := i.ClaudeLaunchName(); launchName != "" {
+		flags = append(flags, "--name "+shellescape.Quote(launchName)) // audit F1
+	}
+
 	// User-supplied extra args: each token is shellescape-quoted before
 	// re-emission so values with spaces survive the `bash -c` wrapper
 	// without being re-tokenized. Appended last so user flags can override

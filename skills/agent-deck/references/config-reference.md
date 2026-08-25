@@ -39,6 +39,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 default_tool = "claude"   # Pre-selected tool when creating sessions
 default_path = ""         # Fallback project directory for add/launch without a path
 sync_title   = true       # Let agents rename sessions from their session-name
+push_title   = true       # Tell agents the title you gave the session
 group_sort   = "creation" # within-group order: "creation" (default) or "actionable"
 ```
 
@@ -47,6 +48,7 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | `default_tool` | string | `"claude"` | Pre-selected tool when creating sessions. |
 | `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. A title you supply explicitly is already exempt: `add -t`, `launch -t`, the TUI New Session dialog, an explicit fork title, and `rename` all lock the title on creation (#1615/#1715), so only auto-derived folder-name titles follow the agent. The per-session title-lock (`agent-deck session set-title-lock <id> on|off`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
+| `push_title` | bool | `true` | The outbound counterpart to `sync_title`. When `true`, agent-deck tells the agent the title the session has in the deck, so the agent answers to that name instead of the one it derives from its working directory — Claude Code sessions get `--name <slug>` on every start/restart/resume, and a rename of a live, idle session is delivered as `/name <slug>` without a restart. This is what keeps `ListAgents` / `SendMessage` in Claude Code resolving the same names you see in the deck. The title is slugged to lowercase kebab (`My Feature Work` → `my-feature-work`, 48 chars max); a title with nothing addressable left after slugging (emoji- or CJK-only) pushes nothing. A `--name` you pass yourself via `--extra-arg` always wins. Set `false` to leave the agent's own name alone. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
 
 ## [shell] Section

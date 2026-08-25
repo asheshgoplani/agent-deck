@@ -247,6 +247,7 @@ By default, agent-deck syncs a session's displayed title from the tool's own ses
 | --- | --- |
 | This one session keeps the title I gave it | `--title-lock` (alias `--no-title-sync`) on `agent-deck add` / `agent-deck launch`, or `agent-deck session set-title-lock <id> on` at runtime |
 | No session in this installation ever gets renamed by its agent | `sync_title = false` in `config.toml` |
+| The agent should answer to the deck title, so `ListAgents`/`SendMessage` in Claude Code match what I see here | on by default; `push_title = false` in `config.toml` to turn it off |
 | A throwaway session where the live task description matters more than a fixed name | `agent-deck add --quick` (`-Q` short flag) — the list shows the session's current Claude task in place of the generated handle |
 
 An explicit `-t/--title` locks the title automatically, the same as passing `--title-lock` — there's no separate opt-in needed. There's also no create-time opt-out: if you want a session with an explicit title to still pick up the agent's renames, unlock it afterward with `agent-deck session set-title-lock <id> off`. A locked title is never silently overwritten by the sync path — it only changes via an explicit rename or `session set-title-lock <id> off`.
