@@ -1099,6 +1099,7 @@ func NewInstance(title, projectPath string) *Instance {
 		tmuxSession:      tmuxSess,
 		addedThisProcess: true,
 	}
+	tmuxSess.GroupPath = inst.GroupPath
 	logSessionCreated(inst)
 	return inst
 }
@@ -1183,6 +1184,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 		tmuxSession:      tmuxSess,
 		addedThisProcess: true,
 	}
+	tmuxSess.GroupPath = inst.GroupPath
 
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
@@ -1195,6 +1197,9 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 func NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool string) *Instance {
 	inst := NewInstanceWithTool(title, projectPath, tool)
 	inst.GroupPath = groupPath
+	if inst.tmuxSession != nil {
+		inst.tmuxSession.GroupPath = groupPath
+	}
 	return inst
 }
 
@@ -7197,6 +7202,7 @@ func (i *Instance) recreateTmuxSession() {
 	// ProjectPath (which is a symlink into that parent dir). Delegates to
 	// EffectiveWorkingDir so single-repo sessions keep using ProjectPath.
 	i.tmuxSession = tmux.NewSession(i.Title, i.EffectiveWorkingDir())
+	i.tmuxSession.GroupPath = i.GroupPath
 	// Preserve the socket the instance was originally created on (issue
 	// #687). A restart/respawn cycle must NOT silently relocate the session
 	// to the current default socket — that would strand the old tmux pane
@@ -10152,6 +10158,7 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
 		tmuxSess.DisplayName = i.Title
+		tmuxSess.GroupPath = i.GroupPath
 		tmuxSess.ConfigureStatusBar()
 		tmuxSess.ConfigureTerminalTitle()
 	}

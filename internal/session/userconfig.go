@@ -3063,8 +3063,19 @@ type DisplaySettings struct {
 	// IncludeCwdPrefix controls whether the terminal/pane title is prefixed
 	// with "[<cwd-basename>]" (e.g. "[my-project] feature work"). Default true
 	// preserves the historical format; set false to show only the session
-	// title. Consumed by the tmux set-titles-string builder.
+	// title. Consumed by the tmux set-titles-string builder. Ignored when
+	// TitleFormat is set.
 	IncludeCwdPrefix *bool `toml:"include_cwd_prefix,omitempty"`
+
+	// TitleFormat is a custom template for the outer terminal title. When
+	// non-empty it overrides the default "[<project>] <name>" format (and the
+	// IncludeCwdPrefix toggle). Supported placeholders, substituted live by
+	// tmux on rename/regroup:
+	//   {group}   — the agent-deck group/tree path (e.g. "projects/devops")
+	//   {project} — the working-directory basename
+	//   {name}    — the session title
+	// Example: "{group}/{name}" or "[{project}] {group} · {name}".
+	TitleFormat string `toml:"title_format,omitempty"`
 
 	// ShowSessionTimestamps appends a dim "Nm ago" badge to every session row.
 	// Default: false — opt-in to avoid crowding existing badges. See
@@ -3138,6 +3149,12 @@ func (d DisplaySettings) GetIncludeCwdPrefix() bool {
 		return true
 	}
 	return *d.IncludeCwdPrefix
+}
+
+// GetTitleFormat returns the trimmed custom terminal title template, or "" when
+// unset (in which case the default format and GetIncludeCwdPrefix apply).
+func (d DisplaySettings) GetTitleFormat() string {
+	return strings.TrimSpace(d.TitleFormat)
 }
 
 // Default user config (empty maps)

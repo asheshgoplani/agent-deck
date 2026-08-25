@@ -1572,6 +1572,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
 		tmux.SetHideCwdPrefixInTitle(!cfg.Display.GetIncludeCwdPrefix())
+		tmux.SetTitleFormat(cfg.Display.GetTitleFormat())
 		h.showSessionTimestamps = cfg.Display.ShowSessionTimestamps
 		h.showPaneTitles = cfg.Display.ShowPaneTitles
 		h.sysStatsConfig = cfg.SystemStats
@@ -11303,6 +11304,9 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
 						kind: groupOpMove, sessionID: item.Session.ID, targetPath: targetGroupPath,
 					})
+					// Refresh the outer terminal title so a {group}-based
+					// title_format reflects the new group immediately.
+					item.Session.SyncTmuxDisplayName()
 					h.instancesMu.Lock()
 					h.instances = h.groupTree.GetAllInstances()
 					h.instancesMu.Unlock()

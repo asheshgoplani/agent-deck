@@ -1568,6 +1568,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			)
 			groupPath = DefaultGroupPath
 		}
+		if tmuxSess != nil {
+			tmuxSess.GroupPath = groupPath
+		}
 
 		// Expand tilde in project path (handles paths like ~/project saved from UI)
 		// fixMalformedTildePath handles the case where the textinput suggestion
