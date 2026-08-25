@@ -1560,6 +1560,10 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	h.reloadHotkeysFromConfig()
 
+	// Fzf-like Default Path suggestions in the group dialog share the unified
+	// frecency-ranked corpus (recents + group defaults) with the zoxide picker.
+	h.groupDialog.SetSuggestProvider(h.groupDialogPathCandidates)
+
 	// Cache display settings (config.toml [display]) and resolve the
 	// status-bar cost-line template once. The template + hide flag are
 	// reused on every render; see (*Home).renderStats.
@@ -11228,6 +11232,11 @@ func (h *Home) reapplyPendingGroupOps() bool {
 func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
+		// Enter with a highlighted path suggestion accepts it instead of
+		// submitting the form; the dropdown closes so the next Enter submits.
+		if h.groupDialog.ApplyHighlightedPathSuggestion() {
+			return h, nil
+		}
 		// Validate before proceeding
 		if validationErr := h.groupDialog.Validate(); validationErr != "" {
 			h.groupDialog.SetError(validationErr)
@@ -11398,6 +11407,11 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
 		return h, nil
 	case "esc":
+		// First Esc dismisses the path suggestion dropdown only; the dialog
+		// stays open (mirrors the model-picker Esc handling in #1162).
+		if h.groupDialog.DismissPathSuggestions() {
+			return h, nil
+		}
 		h.groupDialog.Hide()
 		h.clearError()            // Clear any validation error
 		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
@@ -12541,6 +12555,38 @@ func (h *Home) pathSuggestProvider() func(string) []session.PathCandidate {
 			Query:         query,
 		})
 	}
+}
+
+// groupDialogPathCandidates snapshots the ranked candidate paths for the
+// group dialog's Default Path suggestions: recent session paths + group
+// default paths via session.PathSuggest. Zoxide is intentionally excluded —
+// the corpus is fetched once per dialog open, not per keystroke, and the
+// fuzzy filter plus live filesystem completions cover discovery from there.
+func (h *Home) groupDialogPathCandidates() []string {
+	var groupDefaults []string
+	if h.groupTree != nil {
+		for groupPath := range h.groupTree.Groups {
+			if dp := h.getDefaultPathForGroup(groupPath); dp != "" {
+				groupDefaults = append(groupDefaults, dp)
+			}
+		}
+	}
+
+	h.instancesMu.RLock()
+	insts := make([]*session.Instance, len(h.instances))
+	copy(insts, h.instances)
+	h.instancesMu.RUnlock()
+
+	cands := session.PathSuggest(session.PathSuggestInput{
+		Instances:     insts,
+		GroupDefaults: groupDefaults,
+		Limit:         20,
+	})
+	out := make([]string, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, c.Path)
+	}
+	return out
 }
 
 // quickCreateSessionAt creates a session rooted at the given path with an
