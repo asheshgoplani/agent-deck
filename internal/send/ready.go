@@ -13,6 +13,29 @@ import (
 // are not cut off early.
 const DefaultAgentReadyTimeout = 10 * time.Minute
 
+// startupPromptConfirmations is how many consecutive polls must see the tool
+// prompt before the startup-window bypass below accepts it.
+//
+// A prompt drawn during the startup window is not proof the tool will keep
+// what we type next. Claude Code paints its composer box early and then keeps
+// mounting - MCP servers connecting, hooks firing, the remote-control bridge
+// dialing - and keystrokes delivered into that window can be dropped as the
+// input component remounts. Because the send is a single tmux send-keys of the
+// whole message, what survives is a *tail*: the caller then presses Enter on a
+// fragment, the agent answers the fragment, and the session looks entirely
+// healthy afterwards. verifyPromptConsumedAfterLaunch cannot catch it either -
+// it tests whether the full message is still sitting unsent in the input line,
+// and a truncated tail makes that false, so it reports the prompt consumed.
+//
+// Observed on a Claude launch carrying a 2183-byte --message-file: 88 bytes
+// arrived, the closing paragraph, and the session sat idle for 18 hours.
+//
+// One sighting was the old bar. Requiring the prompt to still be there three
+// polls later costs 400ms on a launch and takes the bypass out of the window
+// where the pane is still being repainted. It cannot deadlock: a prompt that
+// is really up stays up, and the surrounding timeout is unchanged.
+const startupPromptConfirmations = 3
+
 // AgentReadyChecker abstracts the tmux surface readiness polling needs.
 // *tmux.Session satisfies this interface.
 type AgentReadyChecker interface {
@@ -46,6 +69,7 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 
 	sawActive := false
 	readyCount := 0
+	startupPromptSeen := 0
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		time.Sleep(pollInterval)
@@ -60,9 +84,17 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 		// "starting" because prompt detection only runs on activity changes.
 		if status == "starting" {
 			if paneShowsReadyPrompt(target, tool, gates) {
-				time.Sleep(300 * time.Millisecond)
-				return nil
+				startupPromptSeen++
+				if startupPromptSeen >= startupPromptConfirmations {
+					time.Sleep(300 * time.Millisecond)
+					return nil
+				}
+				readyCount = 0
+				continue
 			}
+			// A prompt that came and went was a transient paint, not a
+			// tool waiting for input. Start counting again.
+			startupPromptSeen = 0
 			readyCount = 0
 			continue
 		}
