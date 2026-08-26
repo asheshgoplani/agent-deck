@@ -100,3 +100,79 @@ func TestWaitForAgentReady_RespectsTimeout(t *testing.T) {
 		t.Error("expected GetStatus to be polled")
 	}
 }
+
+// paneSequenceChecker replays a scripted series of pane captures, so a test can
+// model a TUI that is still painting rather than one frozen on one frame.
+type paneSequenceChecker struct {
+	status   string
+	panes    []string
+	captures atomic.Int64
+}
+
+func (p *paneSequenceChecker) GetStatus() (string, error) { return p.status, nil }
+
+func (p *paneSequenceChecker) CapturePaneFresh() (string, error) {
+	i := int(p.captures.Add(1)) - 1
+	if i >= len(p.panes) {
+		return p.panes[len(p.panes)-1], nil
+	}
+	return p.panes[i], nil
+}
+
+const claudeComposerPane = "❯ \n  ⏵⏵ bypass permissions on"
+
+// A composer that appears for one frame and is gone the next was a transient
+// paint, not a tool waiting for input. Accepting it is how a launch message
+// gets typed into a TUI that is still mounting and loses its leading bytes.
+func TestWaitForAgentReady_StartupPromptMustPersist(t *testing.T) {
+	mock := &paneSequenceChecker{
+		status: "starting",
+		panes: []string{
+			claudeComposerPane,
+			"Loading MCP servers...",
+			claudeComposerPane,
+			"Connecting...",
+			"Loading...",
+		},
+	}
+
+	err := WaitForAgentReady(mock, "claude", 1500*time.Millisecond,
+		PromptGates{ClaudeComposer: true})
+	if err == nil {
+		t.Fatal("a prompt that keeps disappearing must not count as ready")
+	}
+}
+
+// The bypass still fires - it just needs the prompt to still be there.
+func TestWaitForAgentReady_StartupPromptAcceptedOncePersistent(t *testing.T) {
+	mock := &paneSequenceChecker{status: "starting", panes: []string{claudeComposerPane}}
+
+	if err := WaitForAgentReady(mock, "claude", 5*time.Second,
+		PromptGates{ClaudeComposer: true}); err != nil {
+		t.Fatalf("a steady composer should be ready, got: %v", err)
+	}
+	if got := mock.captures.Load(); got < startupPromptConfirmations {
+		t.Fatalf("expected at least %d pane captures before ready, got %d",
+			startupPromptConfirmations, got)
+	}
+}
+
+// A TUI that paints, repaints, then settles is the normal case, not a failure:
+// once the prompt holds for the full run of confirmations it is accepted.
+func TestWaitForAgentReady_StartupPromptSettlesAfterRepaint(t *testing.T) {
+	mock := &paneSequenceChecker{
+		status: "starting",
+		panes: []string{
+			claudeComposerPane,
+			"Loading MCP servers...",
+			claudeComposerPane,
+			claudeComposerPane,
+			claudeComposerPane,
+		},
+	}
+
+	if err := WaitForAgentReady(mock, "claude", 5*time.Second,
+		PromptGates{ClaudeComposer: true}); err != nil {
+		t.Fatalf("a composer that settles should be ready, got: %v", err)
+	}
+}
