@@ -24,8 +24,9 @@ const DefaultAgentReadyTimeout = 10 * time.Minute
 // whole message, what survives is a *tail*: the caller then presses Enter on a
 // fragment, the agent answers the fragment, and the session looks entirely
 // healthy afterwards. verifyPromptConsumedAfterLaunch cannot catch it either -
-// it tests whether the full message is still sitting unsent in the input line,
-// and a truncated tail makes that false, so it reports the prompt consumed.
+// it polls until the composer is rendered and holds no draft, i.e. until
+// *something* was submitted, and never compares what landed against what was
+// sent, so a submitted fragment reads as a clean delivery.
 //
 // Observed on a Claude launch carrying a 2183-byte --message-file: 88 bytes
 // arrived, the closing paragraph, and the session sat idle for 18 hours.
