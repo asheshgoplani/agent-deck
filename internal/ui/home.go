@@ -1326,6 +1326,17 @@ type maintenanceCompleteMsg struct {
 	result session.MaintenanceResult
 }
 
+// remoteMoveResultMsg reports the outcome of an SSH-routed "move to group"
+// for a remote session (M key → GroupDialogMove). The session's row lives in
+// the remote's own state DB, so the move is executed there and the local
+// fleet cache is patched only after the remote confirms.
+type remoteMoveResultMsg struct {
+	remoteName string
+	sessionID  string
+	groupPath  string
+	err        error
+}
+
 // clearMaintenanceMsg signals auto-clear of maintenance banner
 type clearMaintenanceMsg struct{}
 
@@ -2070,6 +2081,55 @@ func (h *Home) scopedGroupPaths() []string {
 		}
 	}
 	return scoped
+}
+
+// remoteGroupPaths returns the distinct, normalized group paths currently
+// observed on a remote, sorted for the move dialog (M key on a remote
+// session). These are the only groups the remote knows about; a remote move
+// is executed with `agent-deck group move <id> <group>` on that host.
+func (h *Home) remoteGroupPaths(remoteName string) []string {
+	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	seen := make(map[string]bool)
+	var paths []string
+	for _, s := range h.remoteSessions[remoteName] {
+		p := normalizeRemoteGroupPath(s.Group)
+		if !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// moveRemoteSessionToGroup routes a TUI "move to group" for a remote session
+// over SSH: the session's row lives in the remote's own state DB, so the
+// local tree cannot move it. Runs `agent-deck group move <id> <group>` on the
+// remote (the same command the remote's own TUI would run) and returns a
+// remoteMoveResultMsg so the fleet cache is updated only on remote
+// confirmation. Mirrors the remote-rename path in GroupDialogRenameSession.
+func (h *Home) moveRemoteSessionToGroup(title, remoteName, sessionID, targetGroupPath string) tea.Cmd {
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath,
+				err: fmt.Errorf("cannot move '%s': failed to load remotes config: %v", title, err)}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath,
+				err: fmt.Errorf("cannot move '%s': remote '%s' is not configured", title, remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := runner.RunCommand(ctx, "group", "move", sessionID, targetGroupPath); err != nil {
+			return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath,
+				err: fmt.Errorf("failed to move '%s' on %s: %v", title, remoteName, err)}
+		}
+		return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath}
+	}
 }
 
 // groupScopeDisplayName returns the human-readable name for the active group scope.
@@ -6386,6 +6446,29 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case remoteMoveResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		// Remote confirmed; patch the local fleet cache so the row moves
+		// groups immediately, before the next poll re-fetches the truth.
+		// The persisted local order overlay for the old bucket is harmless:
+		// applyRemoteSessionOrder skips overlay IDs the remote no longer
+		// reports in that bucket.
+		h.remoteSessionsMu.Lock()
+		if sessions, ok := h.remoteSessions[msg.remoteName]; ok {
+			for i := range sessions {
+				if sessions[i].ID == msg.sessionID {
+					sessions[i].Group = msg.groupPath
+					break
+				}
+			}
+		}
+		h.remoteSessionsMu.Unlock()
+		h.rebuildFlatItems()
+		return h, nil
+
 	case reviverTickMsg:
 		// Fire-and-forget reviver sweep for instances whose tmux server
 		// survived an SSH scope cleanup but whose pipe was reaped. Runs in
@@ -9103,6 +9186,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.setError(errSessionStillCreating)
 			} else if item.Type == session.ItemTypeSession {
 				h.groupDialog.ShowMove(h.scopedGroupPaths())
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Remote sessions live in the remote's own state DB, so the
+				// local tree cannot move them. Offer the group paths currently
+				// observed on that remote (the only groups the remote knows
+				// about); the confirmed move is routed over SSH in
+				// GroupDialogMove (see moveRemoteSessionToGroup).
+				h.groupDialog.ShowMove(h.remoteGroupPaths(item.RemoteName))
 			}
 		}
 		return h, nil
@@ -11235,6 +11325,10 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.clearError() // Clear any previous validation error
 
+		// moveCmd is set when the confirmed action is a remote-session move,
+		// which runs over SSH and reports back via remoteMoveResultMsg.
+		var moveCmd tea.Cmd
+
 		switch h.groupDialog.Mode() {
 		case GroupDialogCreate:
 			name := h.groupDialog.GetValue()
@@ -11308,6 +11402,12 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.instancesMu.Unlock()
 					h.rebuildFlatItems()
 					h.saveInstances()
+				} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && item.RemoteName != "" {
+					// The row lives in the remote's own DB; run
+					// `agent-deck group move` there over SSH (mirrors the
+					// remote-rename path) and refresh the fleet cache when the
+					// remote confirms via remoteMoveResultMsg.
+					moveCmd = h.moveRemoteSessionToGroup(item.RemoteSession.Title, item.RemoteName, item.RemoteSession.ID, targetGroupPath)
 				}
 			}
 		case GroupDialogRenameSession:
@@ -11396,7 +11496,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.groupDialog.Hide()
 		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
-		return h, nil
+		return h, moveCmd
 	case "esc":
 		h.groupDialog.Hide()
 		h.clearError()            // Clear any validation error
