@@ -3234,6 +3234,7 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 		tun.retry.composerPasteFreeBeforeSend = guard.ComposerPasteMarkerFree
 	}
 
+	tun.retry.tool = tool
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
 
@@ -3366,6 +3367,7 @@ type sendRetryOptions struct {
 	maxRetries     int
 	checkDelay     time.Duration
 	maxFullResends int // >0 overrides default (3); <0 disables Ctrl+C-then-resend; 0 uses default
+	tool           string
 
 	// verifyDelivery, when true, requires the verification loop to observe at
 	// least one positive signal that the message reached the inner agent (an
@@ -3790,7 +3792,7 @@ type sendArrivalBaseline struct {
 // baseline is disabled, never guessed.
 func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
 	base := sendArrivalBaseline{}
-	if n, markers, ok := paneArrivalObservation(target, message); ok {
+	if n, markers, _, ok := paneArrivalObservation(target, message); ok {
 		base.occurrences, base.pasteMarkers, base.paneOK = n, markers, true
 	}
 	if status, err := target.GetStatus(); err == nil {
@@ -3877,8 +3879,11 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			}
 		}
 		if baseline.paneOK {
-			if n, markers, ok := paneArrivalObservation(target, message); ok {
+			if n, markers, content, ok := paneArrivalObservation(target, message); ok {
 				if n > baseline.occurrences {
+					if opts.tool == "pi" && piComposerEmpty(content) {
+						return deliverySubmitted, nil
+					}
 					// Keep polling: the body is in, but the turn may still
 					// start within the budget and upgrade this to submitted.
 					sawBody = true
@@ -3980,7 +3985,8 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 // paneArrivalObservation reads the pane ONCE and reports both arrival signals
 // the check compares against its baseline: how many times the message's
 // distinctive token is visible in the pane, and how many "[Pasted text …]"
-// collapse markers the COMPOSER holds. One capture serving both signals is
+// collapse markers the COMPOSER holds. It also returns stripped pane content
+// for tool-specific submission checks. One capture serving all signals is
 // deliberate — they must describe the same instant, and the scripted-capture
 // test fakes index captures by call count. The final bool reports whether the
 // pane was actually read: a failed look is not "zero occurrences", it is no
@@ -3999,18 +4005,37 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 // composer holding one more marker than before is unsubmitted payload.
 //
 // Both counts are raw observations; the caller compares them to its baseline.
-func paneArrivalObservation(target sendRetryTarget, message string) (int, int, bool) {
+func paneArrivalObservation(target sendRetryTarget, message string) (int, int, string, bool) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
-		return 0, 0, false
+		return 0, 0, "", false
 	}
 	raw, err := target.CapturePaneFresh()
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, "", false
 	}
 	content := tmux.StripANSI(raw)
 	return strings.Count(collapseWhitespace(content), token),
-		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), true
+		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), content, true
+}
+
+// piComposerEmpty recognizes Pi's editor between its final two horizontal
+// borders. Once this send's body is in the pane and that editor is empty, Enter
+// was accepted; an unsent message would still occupy the editor.
+func piComposerEmpty(content string) bool {
+	lines := strings.Split(content, "\n")
+	borders := make([]int, 0, 2)
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Count(line, "\u2500") >= 20 && strings.Trim(line, "\u2500") == "" {
+			borders = append(borders, i)
+		}
+	}
+	if len(borders) < 2 {
+		return false
+	}
+	top, bottom := borders[len(borders)-2], borders[len(borders)-1]
+	return strings.TrimSpace(strings.Join(lines[top+1:bottom], "\n")) == ""
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives

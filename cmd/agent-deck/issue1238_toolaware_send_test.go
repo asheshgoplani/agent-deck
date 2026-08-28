@@ -46,6 +46,47 @@ func TestSend_NonClaudeTool_NotReportedDropped(t *testing.T) {
 	}
 }
 
+func TestSend_PiComposerDistinguishesSubmittedFromTyped(t *testing.T) {
+	const message = "Reply with exactly this text and nothing else"
+	border := strings.Repeat("\u2500", 40)
+	cases := []struct {
+		name    string
+		pane    string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "submitted",
+			pane: "transcript\n" + message + "\n\nHello, world!\n" + border + "\n  \n" + border + "\n~/src/project",
+			want: deliverySubmitted,
+		},
+		{
+			name:    "still in composer",
+			pane:    "transcript\n" + border + "\n" + message + "\n" + border + "\n~/src/project",
+			want:    deliveryTyped,
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockSendRetryTarget{
+				statuses: []string{"waiting"},
+				panes:    []string{"transcript", tc.pane},
+			}
+			res, err := executeSend(mock, "pi", message, false, sendExecTuning{
+				retry: sendRetryOptions{maxRetries: 1, checkDelay: 0, verifyDelivery: true},
+			})
+			delivery := res.delivery
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if delivery != tc.want {
+				t.Fatalf("delivery = %q, want %q", delivery, tc.want)
+			}
+		})
+	}
+}
+
 // TestSend_ClaudeTool_VerifyPreserved guards against over-skipping: Claude tools
 // must still run the #876 verify, so a genuinely silent drop (no markers, never
 // active) is still surfaced as an error.
