@@ -7298,6 +7298,9 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 	if i.Tool == "gemini" {
 		return i.getGeminiLastResponse()
 	}
+	if i.Tool == "pi" {
+		return i.getPiLastResponse()
+	}
 	return i.getTerminalLastResponse()
 }
 
@@ -8164,6 +8167,87 @@ func parseGeminiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 	}
 
 	return nil, fmt.Errorf("no assistant response found in session")
+}
+
+func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var latest string
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && (latest == "" || info.ModTime().After(latestTime)) {
+			latest = filepath.Join(dir, entry.Name())
+			latestTime = info.ModTime()
+		}
+	}
+	if latest == "" {
+		return nil, fmt.Errorf("no Pi session transcript found")
+	}
+	data, err := os.ReadFile(latest)
+	if err != nil {
+		return nil, err
+	}
+	return parsePiLastAssistantMessage(data)
+}
+
+func parsePiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
+	type contentPart struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var sessionID string
+	var last *ResponseOutput
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Role    string        `json:"role"`
+				Content []contentPart `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &event) != nil {
+			continue
+		}
+		if event.Type == "session" {
+			sessionID = event.ID
+			continue
+		}
+		if event.Type != "message" || event.Message.Role != "assistant" {
+			continue
+		}
+		var text []string
+		for _, part := range event.Message.Content {
+			if part.Type == "text" {
+				text = append(text, part.Text)
+			}
+		}
+		if len(text) != 0 {
+			last = &ResponseOutput{
+				Tool: "pi", Role: "assistant", Content: strings.Join(text, "\n"),
+				Timestamp: event.Timestamp, SessionID: sessionID,
+			}
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("no assistant response found in Pi session")
+	}
+	return last, nil
 }
 
 // getTerminalLastResponse extracts the last response from terminal output
