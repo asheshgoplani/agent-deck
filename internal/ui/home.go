@@ -617,9 +617,15 @@ type Home struct {
 	uiStateSaveTicks     int      // Counter for periodic UI state saves in tick handler
 
 	// Remote sessions (Phase 2: Agent-Deck Remotes)
-	remoteSessions     map[string][]session.RemoteSessionInfo // remoteName -> sessions
-	remoteFromCache    map[string]bool                        // remoteName -> data is a startup cache snapshot, not live yet
-	remoteFetchedAt    map[string]time.Time                   // remoteName -> when its sessions last came from a live fetch
+	remoteSessions map[string][]session.RemoteSessionInfo // remoteName -> sessions
+	// remoteGroups holds each remote's FULL group path list as reported by
+	// its own state DB (`agent-deck group list --json`, fetched on the same
+	// fleet poll). Unlike session-derived buckets it includes EMPTY groups,
+	// so the M move dialog can still offer a remote folder after every
+	// session has been moved out of it. Guarded by remoteSessionsMu.
+	remoteGroups       map[string][]string  // remoteName -> sorted group paths (incl. empty groups)
+	remoteFromCache    map[string]bool      // remoteName -> data is a startup cache snapshot, not live yet
+	remoteFetchedAt    map[string]time.Time // remoteName -> when its sessions last came from a live fetch
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
@@ -1360,6 +1366,14 @@ type remoteSessionsFetchedMsg struct {
 	sessions map[string][]session.RemoteSessionInfo
 	// #1101: per-remote cost summary collected on the same SSH fanout.
 	costs map[string]*costs.RemoteCostSummary
+	// groups holds each remote's FULL group path list (incl. empty groups)
+	// from `group list --json`, so the move/create dialogs can offer folders
+	// that currently hold no sessions. Only remotes that reported a fresh
+	// list appear here.
+	groups map[string][]string
+	// groupsFailed marks remotes whose group-list fetch errored this round;
+	// the handler keeps their last-good cached group paths.
+	groupsFailed map[string]bool
 	// failed marks remotes whose fetch errored this round (issue #1170).
 	// The handler keeps their last-good sessions instead of wiping them,
 	// so one slow/offline remote can't flicker the whole list.
@@ -2083,21 +2097,31 @@ func (h *Home) scopedGroupPaths() []string {
 	return scoped
 }
 
-// remoteGroupPaths returns the distinct, normalized group paths currently
-// observed on a remote, sorted for the move dialog (M key on a remote
-// session). These are the only groups the remote knows about; a remote move
-// is executed with `agent-deck group move <id> <group>` on that host.
+// remoteGroupPaths returns the distinct, normalized group paths available as
+// move targets on a remote, sorted for the move dialog (M key on a remote
+// session). The remote's own group list (fetched on the fleet poll via
+// `group list --json`) is the primary source: unlike session-derived buckets
+// it includes EMPTY groups, so a folder that currently holds no sessions is
+// still offered after every session has been moved out of it. Groups observed
+// on the fetched sessions are unioned in as a fallback for remotes whose
+// group-list fetch failed or predates the JSON shape.
 func (h *Home) remoteGroupPaths(remoteName string) []string {
 	h.remoteSessionsMu.RLock()
 	defer h.remoteSessionsMu.RUnlock()
 	seen := make(map[string]bool)
 	var paths []string
-	for _, s := range h.remoteSessions[remoteName] {
-		p := normalizeRemoteGroupPath(s.Group)
+	add := func(p string) {
+		p = normalizeRemoteGroupPath(p)
 		if !seen[p] {
 			seen[p] = true
 			paths = append(paths, p)
 		}
+	}
+	for _, p := range h.remoteGroups[remoteName] {
+		add(p)
+	}
+	for _, s := range h.remoteSessions[remoteName] {
+		add(s.Group)
 	}
 	sort.Strings(paths)
 	return paths
@@ -3418,6 +3442,14 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 	// as "remote contributes zero" so a single broken remote can't poison
 	// the displayed total.
 	costResults := make(map[string]*costs.RemoteCostSummary, len(config.Remotes))
+	// Remote group lists (group list --json) ride the same fanout so the
+	// move/create dialogs can offer EMPTY remote folders — a folder that
+	// currently holds no sessions is invisible to session-derived buckets
+	// but is still a valid target. Successful fetches land in groupResults;
+	// failures in groupsFailed keep last-good cache entries (same contract
+	// as the sessions map, issue #1170).
+	groupResults := make(map[string][]string, len(config.Remotes))
+	groupsFailed := make(map[string]bool, len(config.Remotes))
 	// #1170: track remotes that errored so the handler keeps their last-good
 	// sessions instead of dropping them.
 	failed := make(map[string]bool, len(config.Remotes))
@@ -3443,6 +3475,8 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			if err != nil {
 				mu.Lock()
 				failed[name] = true
+				// The group list can't be trusted either — keep last-good.
+				groupsFailed[name] = true
 				mu.Unlock()
 				return
 			}
@@ -3456,17 +3490,33 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			summary, costErr := runner.FetchCostSummary(costCtx)
 			costCancel()
 
+			// Group list fetch has the same isolation: a slow `group list`
+			// on one remote must not starve the session/cost data of any
+			// other remote, and a failure degrades to the session-derived
+			// group fallback in remoteGroupPaths.
+			groupCtx, groupCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+			groupPaths, groupErr := runner.FetchGroupPaths(groupCtx)
+			groupCancel()
+
 			mu.Lock()
 			results[name] = sessions
 			if costErr == nil && summary != nil {
 				costResults[name] = summary
+			}
+			if groupErr == nil {
+				if groupPaths == nil {
+					groupPaths = []string{}
+				}
+				groupResults[name] = groupPaths
+			} else {
+				groupsFailed[name] = true
 			}
 			mu.Unlock()
 		}(name, rc)
 	}
 	wg.Wait()
 
-	return remoteSessionsFetchedMsg{sessions: results, costs: costResults, failed: failed}
+	return remoteSessionsFetchedMsg{sessions: results, costs: costResults, groups: groupResults, groupsFailed: groupsFailed, failed: failed}
 }
 
 // mergeRemoteSessions reconciles a freshly fetched remote-session map against
@@ -6334,6 +6384,26 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// #1170: merge rather than wholesale-replace so a remote that errored
 		// this round keeps its last-good sessions instead of flickering out.
 		h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
+		// Remote group lists: replace wholesale for remotes that reported a
+		// fresh list; failed remotes keep their last-good cached paths so the
+		// move dialog doesn't lose empty-group targets on a transient SSH
+		// hiccup. Remotes absent from BOTH lists are dropped (deconfigured).
+		if h.remoteGroups == nil {
+			h.remoteGroups = make(map[string][]string)
+		}
+		keepGroups := make(map[string]bool, len(msg.groups)+len(msg.groupsFailed))
+		for name, paths := range msg.groups {
+			h.remoteGroups[name] = paths
+			keepGroups[name] = true
+		}
+		for name := range msg.groupsFailed {
+			keepGroups[name] = true
+		}
+		for name := range h.remoteGroups {
+			if !keepGroups[name] {
+				delete(h.remoteGroups, name)
+			}
+		}
 		for name := range msg.sessions {
 			if !msg.failed[name] {
 				delete(h.remoteFromCache, name)
