@@ -48,6 +48,7 @@ func TestCompletionTree_Consistent(t *testing.T) {
 	}
 }
 
+// Top-level completions include user-facing commands and exclude internal ones.
 func TestCompletionTopLevelNames_IncludesCoreCommands(t *testing.T) {
 	names := completionTopLevelNames()
 	for _, want := range []string{"add", "session", "mcp", "group", "completion", "profile", "remote"} {
@@ -142,11 +143,12 @@ func TestCompletionRules_KnownCases(t *testing.T) {
 	}
 }
 
+// The generated bash script contains the expected structure and rule cases.
 func TestBashCompletionScript_WellFormed(t *testing.T) {
 	script := bashCompletionScript()
 	for _, want := range []string{
 		"_agent_deck_completion()",
-		"complete -F _agent_deck_completion agent-deck",
+		"complete -o default -F _agent_deck_completion agent-deck",
 		"COMP_WORDS",
 		"'start stop remove cleanup",
 		"remote:update:0) kind=remotes ;;",
@@ -162,6 +164,7 @@ func TestBashCompletionScript_WellFormed(t *testing.T) {
 	}
 }
 
+// The generated zsh script contains the expected structure and rule cases.
 func TestZshCompletionScript_WellFormed(t *testing.T) {
 	script := zshCompletionScript()
 	for _, want := range []string{
@@ -180,6 +183,7 @@ func TestZshCompletionScript_WellFormed(t *testing.T) {
 	}
 }
 
+// The generated fish script contains the expected structure and rule cases.
 func TestFishCompletionScript_WellFormed(t *testing.T) {
 	script := fishCompletionScript()
 	for _, want := range []string{
@@ -252,6 +256,7 @@ func TestCompletionScripts_CarryEverySubcommandList(t *testing.T) {
 
 // captureStdout is defined in cursor_hooks_cmd_test.go.
 
+// Session completions list every saved session by title, falling back to ID.
 func TestHandleComplete_Sessions(t *testing.T) {
 	storage, err := session.NewStorageWithProfile("_test_completion")
 	if err != nil {
@@ -284,6 +289,7 @@ func TestHandleComplete_Sessions(t *testing.T) {
 	}
 }
 
+// An unknown completion kind prints nothing.
 func TestHandleComplete_UnknownProfileIsSilent(t *testing.T) {
 	// A profile that doesn't resolve (or any other failure along the way)
 	// must never print an error line — the shell would offer it as a bogus
@@ -294,6 +300,7 @@ func TestHandleComplete_UnknownProfileIsSilent(t *testing.T) {
 	}
 }
 
+// With no remotes configured, remote completion prints nothing and doesn't crash.
 func TestHandleComplete_Remotes(t *testing.T) {
 	// LoadUserConfig reads the real (test-isolated, per TestMain) config
 	// file; without any [[remotes]] configured this should print nothing
@@ -317,6 +324,7 @@ func TestHandleComplete_RemotesListsConfigured(t *testing.T) {
 	}
 }
 
+// An unconfigured remote name prints nothing rather than shelling out.
 func TestHandleComplete_RemoteSessionsUnknownRemoteIsSilent(t *testing.T) {
 	// No such remote configured in the isolated test config; must print
 	// nothing and, critically, never shell out to ssh trying to reach it.
@@ -328,6 +336,7 @@ func TestHandleComplete_RemoteSessionsUnknownRemoteIsSilent(t *testing.T) {
 	}
 }
 
+// A missing remote argument prints nothing instead of panicking.
 func TestHandleComplete_RemoteSessionsMissingRemoteArgIsSilent(t *testing.T) {
 	// The shell scripts always forward the remote name, but handleComplete
 	// must degrade gracefully (never index out of range) if invoked without
@@ -338,6 +347,7 @@ func TestHandleComplete_RemoteSessionsMissingRemoteArgIsSilent(t *testing.T) {
 	}
 }
 
+// With no adopted agents, agent completion prints nothing and doesn't crash.
 func TestHandleComplete_Agents(t *testing.T) {
 	// No adopted agents in the test-isolated registry; must print nothing
 	// and, critically, nothing on stderr/panic.
@@ -345,6 +355,7 @@ func TestHandleComplete_Agents(t *testing.T) {
 	_ = out
 }
 
+// Group completions list configured groups but omit the default group.
 func TestHandleComplete_Groups(t *testing.T) {
 	storage, err := session.NewStorageWithProfile("_test_completion_groups")
 	if err != nil {
@@ -368,6 +379,7 @@ func TestHandleComplete_Groups(t *testing.T) {
 	}
 }
 
+// Underscore-prefixed (internal) profiles are filtered out of completions.
 func TestPrintProfileCompletions_FiltersInternalNames(t *testing.T) {
 	if err := session.CreateProfile("_test_completion_internal"); err != nil {
 		t.Fatalf("CreateProfile: %v", err)
@@ -385,6 +397,7 @@ func TestPrintProfileCompletions_FiltersInternalNames(t *testing.T) {
 	}
 }
 
+// Completion help output includes usage for every supported shell.
 func TestPrintCompletionHelp_WritesUsage(t *testing.T) {
 	var buf bytes.Buffer
 	printCompletionHelp(&buf)
@@ -400,6 +413,7 @@ func TestPrintCompletionHelp_WritesUsage(t *testing.T) {
 	}
 }
 
+// handleCompletion dispatches to the right script or help text per argument.
 func TestHandleCompletion_DispatchesEachShellAndHelp(t *testing.T) {
 	cases := []struct {
 		args []string
@@ -472,6 +486,7 @@ func TestCompletionHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// No arguments exits 1 with usage on stderr.
 func TestHandleCompletion_NoArgsExitsNonZeroWithUsageOnStderr(t *testing.T) {
 	stdout, stderr, code := runCompletionHelperProcess(t)
 	if code != 1 {
@@ -482,6 +497,7 @@ func TestHandleCompletion_NoArgsExitsNonZeroWithUsageOnStderr(t *testing.T) {
 	}
 }
 
+// An unknown shell name exits 1 with an error and usage on stderr.
 func TestHandleCompletion_UnknownShellExitsNonZeroWithMessage(t *testing.T) {
 	stdout, stderr, code := runCompletionHelperProcess(t, "bogus")
 	if code != 1 {
