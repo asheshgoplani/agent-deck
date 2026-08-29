@@ -6,6 +6,7 @@ Complete reference for all agent-deck CLI commands.
 
 - [Global Options](#global-options)
 - [Basic Commands](#basic-commands)
+- [Shell Completion](#shell-completion)
 - [Web Command](#web-command)
 - [Session Commands](#session-commands)
 - [Fleet Recovery Commands](#fleet-recovery-commands)
@@ -125,6 +126,44 @@ agent-deck migrate-paths [--dry-run] [--force]
 ```
 
 Copies known legacy `~/.agent-deck` files into the split XDG layout (config under `~/.config/agent-deck`, durable data under `~/.local/share/agent-deck`, cache under `~/.cache/agent-deck`) without deleting the legacy directory. Use `--dry-run` to preview what would be copied.
+
+## Shell Completion
+
+### completion - Print a shell completion script
+
+```bash
+agent-deck completion bash    # -> stdout
+agent-deck completion zsh     # -> stdout
+agent-deck completion fish    # -> stdout
+```
+
+Completes top-level commands and, for the ones with their own subcommand dispatch (`session`, `mcp`, `skill`, `group`, `remote`, `worktree`, `profile`, `conductor`, `agent(s)`, `watcher`, `openclaw`, `costs`, `hooks`, the `*-hooks` family, `deepseek`), the next word too.
+
+For commands that name a specific resource, the argument after that completes to live values, fetched via the hidden `agent-deck __complete <kind>` helper (not a command you'd run directly):
+
+| Kind | Used by |
+|------|---------|
+| session titles | `remove`/`rename`, most `session <verb>` subcommands (including both positions of `set-parent`), `mcp`/`plugin`/`skill attached\|attach\|detach`, `worktree info\|finish`, `group move`, `conductor move`, `remote attach\|rename` (2nd arg) |
+| remote names | `remote remove\|sessions\|attach\|rename\|update` |
+| profile names | `profile delete\|default`, `session switch-account` (2nd arg), and right after a leading `-p`/`--profile` |
+| group paths | `group show\|update\|delete\|move (2nd arg)\|change\|reorder` |
+| adopted agent names | `agent show` |
+
+This is what lets `agent-deck remote update <Tab>` offer your configured remotes and `agent-deck session set-parent <Tab> <Tab>` offer session titles at both positions, three and four words in — dynamic completion isn't limited to the first word after a subcommand. A leading `-p`/`--profile` is detected and forwarded, so completions match the profile being typed rather than the default one. Any other argument (paths, free-form text) falls back to the shell's default completion.
+
+```bash
+# bash
+echo 'source <(agent-deck completion bash)' >> ~/.bashrc
+
+# zsh — either source it directly, or save it as a file named `_agent_deck`
+# in a directory on $fpath for autoload
+echo 'source <(agent-deck completion zsh)' >> ~/.zshrc
+
+# fish
+agent-deck completion fish > ~/.config/fish/completions/agent-deck.fish
+```
+
+Open a new shell (or re-source the config file) for it to take effect.
 
 ## Web Command
 

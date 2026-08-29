@@ -282,6 +282,12 @@ func main() {
 		case "help", "--help", "-h":
 			printHelp()
 			return
+		case "completion":
+			handleCompletion(args[1:])
+			return
+		case "__complete":
+			handleComplete(profile, args[1:])
+			return
 		case "add":
 			handleAdd(profile, args[1:])
 			return
@@ -990,7 +996,8 @@ var globalFlagSubcommands = map[string]bool{
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true,
-	"debug-dump": true, "version": true, "help": true,
+	"debug-dump": true, "version": true, "help": true, "completion": true,
+	"__complete": true,
 }
 
 // extractProfileFlag extracts the global -p or --profile flag from args,
@@ -3574,6 +3581,7 @@ func printHelp() {
 	fmt.Println("  uninstall        Uninstall Agent Deck")
 	fmt.Println("  version          Show version")
 	fmt.Println("  help             Show this help")
+	fmt.Println("  completion       Print a shell completion script (bash, zsh, fish)")
 	fmt.Println()
 	fmt.Println("Session Commands:")
 	fmt.Println("  session start <id>        Start a session's tmux process")
@@ -3667,6 +3675,11 @@ func printHelp() {
 	fmt.Println("  agent-deck web --read-only            # TUI + web in read-only mode")
 	fmt.Println("  agent-deck web --token secret         # auth token (REQUIRED to bind a non-loopback address)")
 	fmt.Println("  agent-deck web --help                 # Show web command flags")
+	fmt.Println()
+	fmt.Println("Shell Completion:")
+	fmt.Println("  agent-deck completion bash             # Print bash completion script")
+	fmt.Println("  agent-deck completion zsh              # Print zsh completion script")
+	fmt.Println("  agent-deck completion fish             # Print fish completion script")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
 	fmt.Println("  AGENTDECK_PROFILE    Default profile to use")
