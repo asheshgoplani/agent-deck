@@ -328,6 +328,10 @@ func handleCompletion(args []string) {
 	}
 }
 
+// printCompletionHelp writes usage for `agent-deck completion` to w — stdout
+// for the explicit help forms, stderr when handleCompletion falls back to it
+// after bad or missing arguments, so the message lands wherever the caller
+// was already looking.
 func printCompletionHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck completion <bash|zsh|fish>")
 	fmt.Fprintln(w)
@@ -413,6 +417,11 @@ func appendTitleOrIDCandidate(names []string, seen map[string]bool, title, id st
 	return append(names, cand)
 }
 
+// printSessionCompletions prints this machine's own local session titles
+// (falling back to ID for an untitled session), one per line — the
+// completer behind every plain argSession position. Any failure to open the
+// profile's store is swallowed: it prints nothing rather than an error line
+// a shell would otherwise offer as a bogus candidate.
 func printSessionCompletions(profile string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
@@ -430,6 +439,10 @@ func printSessionCompletions(profile string) {
 	printSortedCompletions(names)
 }
 
+// printRemoteCompletions prints the names of every remote configured in the
+// user's config file — the completer for argRemote positions like `remote
+// update <TAB>`. A missing or unreadable config prints nothing rather than
+// an error line.
 func printRemoteCompletions() {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil {
@@ -473,6 +486,11 @@ func printRemoteSessionCompletions(remoteName string) {
 	printSortedCompletions(names)
 }
 
+// printProfileCompletions prints every non-internal profile name — the
+// completer for argProfile positions such as `profile delete <TAB>` and the
+// leading `-p <TAB>` flag. Underscore-prefixed profiles are test fixtures
+// and scratch state (#1926), so they're filtered out the same way
+// handleProfileList visually separates them.
 func printProfileCompletions() {
 	profiles, err := session.ListProfiles()
 	if err != nil {
@@ -493,6 +511,10 @@ func printProfileCompletions() {
 	printSortedCompletions(names)
 }
 
+// printGroupCompletions prints every group path in profile's session tree
+// except the default group — the completer for argGroup positions like
+// `group show <TAB>`. The default group is where ungrouped sessions live,
+// not a real move/rename destination, so offering it would just be noise.
 func printGroupCompletions(profile string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
@@ -515,6 +537,8 @@ func printGroupCompletions(profile string) {
 	printSortedCompletions(paths)
 }
 
+// printAgentCompletions prints the name of every adopted agent definition —
+// the completer for argAgent positions such as `agent show <TAB>`.
 func printAgentCompletions() {
 	defs, err := agents.LoadAll()
 	if err != nil {
@@ -615,15 +639,19 @@ func bashCompletionScript() string {
 	b.WriteString("        if [[ $kind == remote-sessions ]]; then\n")
 	b.WriteString("            extra_args=(\"${words[start+1+arg_index]}\")\n")
 	b.WriteString("        fi\n")
-	b.WriteString("        local -a names\n")
-	b.WriteString("        local IFS=$'\\n'\n")
-	b.WriteString("        names=($(agent-deck \"${profile_args[@]}\" __complete \"$kind\" \"${extra_args[@]}\" 2>/dev/null))\n")
+	b.WriteString("        local -a names=()\n")
+	b.WriteString("        local n\n")
+	b.WriteString("        # Read line-by-line (not `names=($(...))`) so a candidate\n")
+	b.WriteString("        # containing a glob character (*, ?, [) is kept literal instead\n")
+	b.WriteString("        # of being pathname-expanded against files in cwd.\n")
+	b.WriteString("        while IFS= read -r n; do\n")
+	b.WriteString("            names+=(\"$n\")\n")
+	b.WriteString("        done < <(agent-deck \"${profile_args[@]}\" __complete \"$kind\" \"${extra_args[@]}\" 2>/dev/null)\n")
 	b.WriteString("        # Candidates may contain spaces (session titles); compgen -W would\n")
 	b.WriteString("        # re-split them on whitespace and lose the escaping bash needs to\n")
 	b.WriteString("        # insert a multi-word completion as one argument, so filter and\n")
 	b.WriteString("        # escape by hand instead of going through it.\n")
 	b.WriteString("        COMPREPLY=()\n")
-	b.WriteString("        local n\n")
 	b.WriteString("        for n in \"${names[@]}\"; do\n")
 	b.WriteString("            if [[ $n == \"$cur\"* ]]; then\n")
 	b.WriteString("                COMPREPLY+=(\"${n// /\\\\ }\")\n")
@@ -632,7 +660,10 @@ func bashCompletionScript() string {
 	b.WriteString("        return 0\n")
 	b.WriteString("    fi\n")
 	b.WriteString("}\n")
-	b.WriteString("complete -F _agent_deck_completion agent-deck\n")
+	// -o default lets readline fall back to its own filename completion
+	// whenever the function above leaves COMPREPLY empty — e.g. `add
+	// <TAB>`, a leaf command with no dynamic completer at all.
+	b.WriteString("complete -o default -F _agent_deck_completion agent-deck\n")
 	return b.String()
 }
 
@@ -714,8 +745,14 @@ func zshCompletionScript() string {
 	b.WriteString("            extra_args=(${words[start+1+arg_index]})\n")
 	b.WriteString("        fi\n")
 	b.WriteString("        cands=(${(f)\"$(agent-deck ${profile_args[@]} __complete $kind ${extra_args[@]} 2>/dev/null)\"})\n")
+	b.WriteString("    fi\n")
+	b.WriteString("    # No dynamic completer applies (a leaf command's own positional args,\n")
+	b.WriteString("    # e.g. `add <TAB>`) or it produced no candidates — fall back to\n")
+	b.WriteString("    # filename completion, matching bash's `complete -o default`.\n")
+	b.WriteString("    if (( ${#cands[@]} )); then\n")
 	b.WriteString("        compadd -a cands\n")
-	b.WriteString("        return\n")
+	b.WriteString("    else\n")
+	b.WriteString("        _files\n")
 	b.WriteString("    fi\n")
 	b.WriteString("}\n\n")
 	b.WriteString("if [[ $(type compdef) = *function* ]]; then\n")
