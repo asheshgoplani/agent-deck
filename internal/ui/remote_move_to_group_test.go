@@ -89,6 +89,79 @@ func TestRemoteMoveToGroup_MKeyOpensDialogWithRemoteGroups(t *testing.T) {
 	}
 }
 
+// TestRemoteMoveToGroup_MKeyIncludesEmptyGroups pins the empty-folder fix:
+// the move dialog must offer groups that currently hold NO sessions on the
+// remote (a folder left empty after every session was moved out of it).
+// Session-derived buckets can never contain an empty group, so this relies on
+// the fleet poll's cached `group list --json` (Home.remoteGroups) being
+// unioned into remoteGroupPaths.
+func TestRemoteMoveToGroup_MKeyIncludesEmptyGroups(t *testing.T) {
+	home := armHomeWithOneRemoteSessionInGroups(t)
+
+	// The remote's own group DB reports an extra EMPTY folder (no sessions):
+	// it must still be offered as a move target.
+	home.remoteSessionsMu.Lock()
+	home.remoteGroups = map[string][]string{
+		"lab": {"empty-folder", "personal", "work"},
+	}
+	home.remoteSessionsMu.Unlock()
+
+	if _, _ = home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'M'}}); !home.groupDialog.IsVisible() {
+		t.Fatal("M on a remote session did not open the move dialog")
+	}
+
+	// Union of the remote's own group list (incl. the empty folder) and the
+	// session-derived groups (empty remote group normalizes to my-sessions).
+	want := []string{"empty-folder", "my-sessions", "personal", "work"}
+	got := home.groupDialog.groupPaths
+	if len(got) != len(want) {
+		t.Fatalf("dialog offered %d group paths %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("dialog groupPaths[%d] = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestRemoteSessionsFetchedMsgPopulatesGroupCache pins the fleet-poll wiring:
+// the remote group lists carried on remoteSessionsFetchedMsg land in
+// Home.remoteGroups (guarded by remoteSessionsMu), which is what the M move
+// dialog reads to offer empty remote folders.
+func TestRemoteSessionsFetchedMsgPopulatesGroupCache(t *testing.T) {
+	home := NewHome()
+	home.width = 120
+	home.height = 40
+	home.initialLoading = false
+
+	model, _ := home.Update(remoteSessionsFetchedMsg{
+		sessions: map[string][]session.RemoteSessionInfo{
+			"lab": {{ID: "x", Title: "s", Group: "work"}},
+		},
+		groups: map[string][]string{
+			"lab": {"empty-folder", "work"},
+		},
+	})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatalf("unexpected model type %T", model)
+	}
+
+	h.remoteSessionsMu.RLock()
+	got := append([]string(nil), h.remoteGroups["lab"]...)
+	h.remoteSessionsMu.RUnlock()
+
+	want := []string{"empty-folder", "work"}
+	if len(got) != len(want) {
+		t.Fatalf("remoteGroups[lab] = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("remoteGroups[lab][%d] = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 // TestRemoteMoveToGroup_EnterReturnsMoveCmd pins the submit path: confirming
 // the dialog on a remote row must return a tea.Cmd (the SSH-routed move) and
 // must NOT mutate the local group tree.
