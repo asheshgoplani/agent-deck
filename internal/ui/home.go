@@ -1343,6 +1343,16 @@ type remoteMoveResultMsg struct {
 	err        error
 }
 
+// remoteGroupResultMsg reports the outcome of an SSH-routed "create group"
+// for a remote context (g key on a remote row → GroupDialogCreate). The
+// group must be created in the remote's own state DB; groupPath is the full
+// path the remote assigned (parent/name, or name for a root-level group).
+type remoteGroupResultMsg struct {
+	remoteName string
+	groupPath  string
+	err        error
+}
+
 // clearMaintenanceMsg signals auto-clear of maintenance banner
 type clearMaintenanceMsg struct{}
 
@@ -2154,6 +2164,56 @@ func (h *Home) moveRemoteSessionToGroup(title, remoteName, sessionID, targetGrou
 		}
 		return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath}
 	}
+}
+
+// createRemoteGroup routes a TUI "create group" (g key on a remote row) over
+// SSH: the group must be created in the remote's own state DB, not the local
+// tree. Runs `agent-deck group create <name> [--parent <parent>]` on the
+// remote and returns a remoteGroupResultMsg so the local group-path cache is
+// updated only on remote confirmation. Mirrors moveRemoteSessionToGroup and
+// the remote-rename path in GroupDialogRenameSession.
+func (h *Home) createRemoteGroup(name, remoteName, parentPath string) tea.Cmd {
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteGroupResultMsg{remoteName: remoteName,
+				err: fmt.Errorf("cannot create group '%s': failed to load remotes config: %v", name, err)}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteGroupResultMsg{remoteName: remoteName,
+				err: fmt.Errorf("cannot create group '%s': remote '%s' is not configured", name, remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		args := []string{"group", "create", name}
+		if parentPath != "" {
+			args = append(args, "--parent", parentPath)
+		}
+		if _, err := runner.RunCommand(ctx, args...); err != nil {
+			return remoteGroupResultMsg{remoteName: remoteName,
+				err: fmt.Errorf("failed to create group '%s' on %s: %v", name, remoteName, err)}
+		}
+		full := name
+		if parentPath != "" {
+			full = parentPath + "/" + name
+		}
+		return remoteGroupResultMsg{remoteName: remoteName, groupPath: full}
+	}
+}
+
+// remoteGroupPathFromItem extracts the remote-relative group path from a
+// remote group header's Item.Path ("remotes/<name>/<group-path>"); returns
+// "" for the level-0 host header (Path == "remotes/<name>"). Used by the g
+// key handler to decide the parent for a remote subgroup create.
+func remoteGroupPathFromItem(item session.Item) string {
+	prefix := "remotes/" + item.RemoteName + "/"
+	p := strings.TrimPrefix(item.Path, prefix)
+	if p == item.Path {
+		return "" // level-0 host header
+	}
+	return p
 }
 
 // groupScopeDisplayName returns the human-readable name for the active group scope.
@@ -6539,6 +6599,35 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		return h, nil
 
+	case remoteGroupResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		// Remote confirmed the group exists; add it to the cached group list
+		// so the M move dialog (and subsequent subgroup creates) offer it
+		// immediately, before the next fleet poll re-confirms from the
+		// remote's own DB. The sessions map is untouched — creating a group
+		// moves no sessions.
+		h.remoteSessionsMu.Lock()
+		if h.remoteGroups == nil {
+			h.remoteGroups = make(map[string][]string)
+		}
+		seen := false
+		for _, p := range h.remoteGroups[msg.remoteName] {
+			if p == msg.groupPath {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			h.remoteGroups[msg.remoteName] = append(h.remoteGroups[msg.remoteName], msg.groupPath)
+			sort.Strings(h.remoteGroups[msg.remoteName])
+		}
+		h.remoteSessionsMu.Unlock()
+		h.setError(fmt.Errorf("created group '%s' on %s", msg.groupPath, msg.remoteName))
+		return h, nil
+
 	case reviverTickMsg:
 		// Fire-and-forget reviver sweep for instances whose tmux server
 		// survived an SSH scope cleanup but whose pipe was reaped. Runs in
@@ -9349,7 +9438,32 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeGroup {
+			if item.Type == session.ItemTypeRemoteGroup {
+				// Remote group header (incl. the level-0 host header): create
+				// the group on the remote itself. The parent defaults to the
+				// header's own group path so Enter creates a remote subgroup;
+				// Tab toggles to root-level remote create (issue #111 parity).
+				parentPath := remoteGroupPathFromItem(item)
+				parentName := parentPath
+				if idx := strings.LastIndex(parentPath, "/"); idx >= 0 {
+					parentName = parentPath[idx+1:]
+				}
+				h.groupDialog.ShowCreateRemoteWithContext(parentPath, parentName, item.RemoteName)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Remote session: default to a root-level group on the remote;
+				// Tab toggles to a subgroup under the session's current group.
+				if gPath := item.RemoteSession.Group; gPath != "" {
+					gName := gPath
+					if idx := strings.LastIndex(gPath, "/"); idx >= 0 {
+						gName = gPath[idx+1:]
+					}
+					h.groupDialog.ShowCreateRemoteWithContextDefaultRoot(gPath, gName, item.RemoteName)
+				} else {
+					// Ungrouped remote session: root only, no toggle (mirrors
+					// the local ungrouped case below).
+					h.groupDialog.ShowCreateRemoteWithContext("", "", item.RemoteName)
+				}
+			} else if item.Type == session.ItemTypeGroup {
 				// On group header: default to subgroup mode
 				h.groupDialog.ShowCreateWithContext(item.Group.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.GroupPath != "" {
@@ -11395,14 +11509,29 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.clearError() // Clear any previous validation error
 
-		// moveCmd is set when the confirmed action is a remote-session move,
-		// which runs over SSH and reports back via remoteMoveResultMsg.
-		var moveCmd tea.Cmd
+		// remoteCmd is set when the confirmed action runs over SSH against a
+		// remote's own state DB (remote-session move, remote group create) and
+		// reports back via remoteMoveResultMsg / remoteGroupResultMsg.
+		var remoteCmd tea.Cmd
 
 		switch h.groupDialog.Mode() {
 		case GroupDialogCreate:
 			name := h.groupDialog.GetValue()
 			if name != "" {
+				if remoteName := h.groupDialog.RemoteName(); remoteName != "" {
+					// g was pressed on a REMOTE row: the group must be created
+					// in the remote's own state DB, not the local tree. Run
+					// `agent-deck group create` there over SSH (mirrors the
+					// remote-move and remote-rename paths); the local group
+					// path cache updates when the remote confirms via
+					// remoteGroupResultMsg.
+					parentPath := ""
+					if h.groupDialog.HasParent() {
+						parentPath = h.groupDialog.GetParentPath()
+					}
+					remoteCmd = h.createRemoteGroup(name, remoteName, parentPath)
+					break
+				}
 				// Seed the new-group default from [group_defaults].max_concurrent.
 				if cfg, _ := session.LoadUserConfig(); cfg != nil {
 					h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
@@ -11477,7 +11606,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// `agent-deck group move` there over SSH (mirrors the
 					// remote-rename path) and refresh the fleet cache when the
 					// remote confirms via remoteMoveResultMsg.
-					moveCmd = h.moveRemoteSessionToGroup(item.RemoteSession.Title, item.RemoteName, item.RemoteSession.ID, targetGroupPath)
+					remoteCmd = h.moveRemoteSessionToGroup(item.RemoteSession.Title, item.RemoteName, item.RemoteSession.ID, targetGroupPath)
 				}
 			}
 		case GroupDialogRenameSession:
@@ -11566,7 +11695,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.groupDialog.Hide()
 		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
-		return h, moveCmd
+		return h, remoteCmd
 	case "esc":
 		h.groupDialog.Hide()
 		h.clearError()            // Clear any validation error
