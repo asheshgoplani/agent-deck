@@ -9,7 +9,7 @@ import (
 // Registry.Match() (and the legacy detectTool() switch) walk.
 var canonicalBuiltins = []string{
 	"claude", "opencode", "gemini", "codex", "pi",
-	"copilot", "crush", "cursor", "hermes", "deepseek", "aider", "shell",
+	"copilot", "crush", "muse", "cursor", "hermes", "deepseek", "aider", "shell",
 }
 
 func TestRegistry_AllReturnsCanonicalBuiltins(t *testing.T) {
@@ -56,6 +56,9 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		{"copilot with flags", "copilot --resume", "copilot"},
 		// crush
 		{"crush bare", "crush", "crush"},
+		// muse
+		{"muse bare", "muse", "muse"},
+		{"muse with trust flag", "muse --trust-workspace", "muse"},
 		// cursor
 		{"cursor agent subcommand", "cursor agent", "cursor"},
 		{"standalone agent binary", "agent", "cursor"},

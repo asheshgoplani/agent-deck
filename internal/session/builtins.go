@@ -62,6 +62,7 @@ func builtinTools() []builtinTool {
 		{Name: "pi", Icon: "π", detectTokens: []string{"pi"}},
 		{Name: "copilot", Icon: "🐙", detectSubstrings: []string{"copilot"}},
 		{Name: "crush", Icon: "💘", detectSubstrings: []string{"crush"}},
+		{Name: "muse", Icon: "🔮", detectSubstrings: []string{"muse"}},
 		// detectTokens includes bare "agent" (standalone Cursor Agent CLI).
 		// Token match only: substring "agent" would false-match "agent-deck".
 		{Name: "cursor", Icon: "📝", detectSubstrings: []string{"cursor"}, detectTokens: []string{"agent"}},

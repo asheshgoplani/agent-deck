@@ -530,6 +530,7 @@ func initStyles() {
 		"shell":    lipgloss.NewStyle().Foreground(ColorText),
 		"opencode": lipgloss.NewStyle().Foreground(ColorText),
 		"crush":    lipgloss.NewStyle().Foreground(ColorPurple),
+		"muse":     lipgloss.NewStyle().Foreground(ColorGreen),
 	}
 
 	// DefaultToolStyle
@@ -607,6 +608,8 @@ func ToolIcon(tool string) string {
 		return "🐙"
 	case "crush":
 		return "💘"
+	case "muse":
+		return "🔮"
 	case "cursor":
 		return "📝"
 	case "hermes":
@@ -636,6 +639,8 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorAccent // Blue for GitHub Copilot
 	case "crush":
 		return ColorPurple // Pink/magenta for Charm Crush
+	case "muse":
+		return ColorGreen // Green for Muse Code
 	case "cursor":
 		return ColorAccent // Blue for Cursor
 	case "hermes":

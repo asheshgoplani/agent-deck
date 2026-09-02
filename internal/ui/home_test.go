@@ -153,6 +153,16 @@ func TestCreateSessionTool_Crush(t *testing.T) {
 	}
 }
 
+// TUI session creation must produce Tool="muse" rather than
+// Tool="shell" with Command="muse", matching the tmux/userconfig
+// wiring for the Muse Code CLI integration.
+func TestCreateSessionTool_Muse(t *testing.T) {
+	tool, command := createSessionTool("muse")
+	if tool != "muse" || command != "muse" {
+		t.Fatalf("createSessionTool(\"muse\") = (%q, %q), want (\"muse\", \"muse\")", tool, command)
+	}
+}
+
 // TUI session creation must produce Tool="hermes" rather than
 // Tool="shell" with Command="hermes", matching the tmux/userconfig
 // wiring for the Hermes Agent CLI integration.
