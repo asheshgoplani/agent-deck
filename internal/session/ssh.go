@@ -1059,10 +1059,13 @@ type RemoteSessionInfo struct {
 	Archived bool   `json:"archived"`
 
 	// LastActivityAt is the remote session's Instance.DisplayLastActivityTime(),
-	// RFC3339-formatted, so the local recency filter (session.TimeFilterMode)
-	// can apply to remote rows the same way it applies to local ones. Same
-	// degradation story as Substate/Archived above: a remote too old to send
-	// it omits the key, which unmarshals to "" — see LastActivity below.
+	// RFC3339Nano-formatted (fractional seconds kept: TimeFilterMode's 3/7-day
+	// cutoffs are exact instants, and truncating to whole seconds could flip a
+	// session sitting right on one), so the local recency filter
+	// (session.TimeFilterMode) can apply to remote rows the same way it
+	// applies to local ones. Same degradation story as Substate/Archived
+	// above: a remote too old to send it omits the key, which unmarshals to
+	// "" — see LastActivity below.
 	LastActivityAt string `json:"last_activity_at,omitempty"`
 
 	// Set locally, not from JSON
@@ -1078,7 +1081,7 @@ func (r RemoteSessionInfo) LastActivity() (t time.Time, ok bool) {
 	if r.LastActivityAt == "" {
 		return time.Time{}, false
 	}
-	parsed, err := time.Parse(time.RFC3339, r.LastActivityAt)
+	parsed, err := time.Parse(time.RFC3339Nano, r.LastActivityAt)
 	if err != nil {
 		return time.Time{}, false
 	}

@@ -2303,7 +2303,7 @@ func handleList(profile string, args []string) {
 				Color:             inst.Color,
 				Archived:          inst.IsArchived(),
 				ArchivedAt:        inst.ArchivedAt,
-				LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339),
+				LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name

@@ -340,16 +340,22 @@ func TestParseRemoteVersion(t *testing.T) {
 }
 
 func TestRemoteSessionInfoLastActivity(t *testing.T) {
-	now := time.Now().Truncate(time.Second)
+	now := time.Now()
 
-	t.Run("valid RFC3339 parses", func(t *testing.T) {
-		r := RemoteSessionInfo{LastActivityAt: now.Format(time.RFC3339)}
+	t.Run("valid RFC3339Nano round-trips exactly, sub-second included", func(t *testing.T) {
+		// Sub-second precision matters here: RemoteSessionInfo is formatted
+		// with RFC3339Nano (not RFC3339) specifically so a session sitting
+		// right on a TimeFilterMode 3/7-day cutoff isn't misclassified by
+		// rounding down to the nearest second. now (not now.Truncate(time.
+		// Second)) exercises that: it round-trips only if fractional seconds
+		// actually survive the format/parse.
+		r := RemoteSessionInfo{LastActivityAt: now.Format(time.RFC3339Nano)}
 		got, ok := r.LastActivity()
 		if !ok {
 			t.Fatalf("LastActivity() ok = false, want true")
 		}
 		if !got.Equal(now) {
-			t.Errorf("LastActivity() = %v, want %v", got, now)
+			t.Errorf("LastActivity() = %v, want %v (sub-second precision lost)", got, now)
 		}
 	})
 
@@ -366,4 +372,30 @@ func TestRemoteSessionInfoLastActivity(t *testing.T) {
 			t.Errorf("LastActivity() ok = true for malformed field, want false")
 		}
 	})
+}
+
+// TestRemoteSessionInfoLastActivity_BoundaryPrecision covers the scenario a
+// review caught: a session active a few hundred milliseconds inside a
+// TimeFilterMode 3-day cutoff round-trips as "inside" the window. Formatting
+// with RFC3339 (whole seconds only) can round down across the cutoff and
+// misclassify it as outside; RFC3339Nano cannot.
+func TestRemoteSessionInfoLastActivity_BoundaryPrecision(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(-3 * 24 * time.Hour)
+	// 300ms inside the 3-day window (i.e. after the cutoff). A whole-second
+	// truncation could floor this across the cutoff if the sub-second part
+	// were dropped and the second itself landed exactly on it.
+	justInside := cutoff.Add(300 * time.Millisecond)
+
+	r := RemoteSessionInfo{LastActivityAt: justInside.Format(time.RFC3339Nano)}
+	got, ok := r.LastActivity()
+	if !ok {
+		t.Fatalf("LastActivity() ok = false, want true")
+	}
+	if got.Before(cutoff) {
+		t.Fatalf("LastActivity() = %v, which is before the 3-day cutoff %v (precision lost)", got, cutoff)
+	}
+	if !TimeFilter3Days.Matches(got, now) {
+		t.Errorf("TimeFilter3Days.Matches(%v, %v) = false, want true (300ms inside the window)", got, now)
+	}
 }
