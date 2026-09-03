@@ -347,6 +347,28 @@ func TestBuildMuseResumeCommand_ExplicitYoloFalseBeatsConfig(t *testing.T) {
 	}
 }
 
+func TestBuildMuseCommand_NilYoloInheritsConfig(t *testing.T) {
+	oldCache := userConfigCache
+	defer func() { userConfigCache = oldCache }()
+	userConfigCache = &UserConfig{
+		Muse: MuseSettings{YoloMode: true},
+	}
+
+	// A serialized default (YoloMode nil) is not a choice: the global
+	// config applies instead of being silently dropped.
+	opts, err := MarshalToolOptions(&MuseOptions{})
+	if err != nil {
+		t.Fatalf("MarshalToolOptions: %v", err)
+	}
+	inst := &Instance{Tool: "muse", Command: "muse", ToolOptionsJSON: opts}
+	if cmd := inst.buildMuseCommand("muse"); !strings.HasSuffix(cmd, "muse --trust-workspace --yolo") {
+		t.Errorf("nil YoloMode must inherit config yolo, got %q", cmd)
+	}
+	if cmd := inst.buildMuseResumeCommand("sess-uuid-1"); !strings.HasSuffix(cmd, "resume sess-uuid-1 --yolo") {
+		t.Errorf("nil YoloMode must inherit config yolo on resume, got %q", cmd)
+	}
+}
+
 func TestBuildMuseResumeCommand_EmptyIDFallsBackToFresh(t *testing.T) {
 	oldCache := userConfigCache
 	defer func() { userConfigCache = oldCache }()

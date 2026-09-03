@@ -53,12 +53,17 @@ func GetMuseCommand() string {
 // (true or false) is authoritative and the config is ignored; only when no
 // usable per-session options exist does [muse].yolo_mode apply.
 func museYoloSuffix(opts *MuseOptions, optsOK bool, config *UserConfig) string {
-	if optsOK && opts != nil {
-		if opts.YoloMode != nil && *opts.YoloMode {
+	if optsOK && opts != nil && opts.YoloMode != nil {
+		// Explicit per-session override wins both ways: true forces
+		// --yolo, false suppresses the global [muse].yolo_mode.
+		if *opts.YoloMode {
 			return " --yolo"
 		}
 		return ""
 	}
+	// No usable per-session value: absent, unparseable, or a serialized
+	// default whose YoloMode is nil. Nil is not a choice, so inherit the
+	// global config instead of silently dropping it.
 	if config != nil && config.Muse.YoloMode {
 		return " --yolo"
 	}

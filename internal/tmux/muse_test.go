@@ -55,6 +55,11 @@ func TestDetectToolFromCommand_Muse_Negative(t *testing.T) {
 		{"museum", "echo museum"},
 		{"muse in path", "git -C /tmp/muse-project status"},
 		{"wrapper trailing bare muse fails closed", "my-wrapper muse"},
+		// Executable-only classification: mid-line tokens never match,
+		// even with trailing args. Wrappers still launch verbatim via
+		// passthrough; they just do not claim the pane here.
+		{"wrapper with flags fails closed", "my-wrapper muse --trust-workspace"},
+		{"echo with flags fails closed", "echo muse --help"},
 	}
 
 	for _, tt := range tests {
@@ -67,10 +72,19 @@ func TestDetectToolFromCommand_Muse_Negative(t *testing.T) {
 	}
 }
 
-func TestDetectToolFromCommand_Muse_Wrapper(t *testing.T) {
-	// Wrapper with trailing flags still resolves via the token arm.
-	if got := detectToolFromCommand("my-wrapper muse --trust-workspace"); got != "muse" {
-		t.Fatalf("detectToolFromCommand(wrapper) = %q, want muse", got)
+func TestDetectToolFromCommand_Muse_ExecutableForms(t *testing.T) {
+	// Only the executable slot classifies: bare, flagged, quoted, and
+	// absolute-path invocations all resolve via the basename switch.
+	for _, cmd := range []string{
+		"muse",
+		"muse --trust-workspace",
+		"/usr/local/bin/muse",
+		"/usr/local/bin/muse --yolo",
+		`"muse" --trust-workspace`,
+	} {
+		if got := detectToolFromCommand(cmd); got != "muse" {
+			t.Errorf("detectToolFromCommand(%q) = %q, want muse", cmd, got)
+		}
 	}
 }
 

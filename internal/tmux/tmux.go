@@ -873,14 +873,12 @@ func detectToolFromCommand(command string) string {
 		return "copilot"
 	case strings.Contains(cmdLower, "crush"):
 		return "crush"
-	// Token-position match only (pi precedent): a bare substring would
-	// false-match "amuse", "museum", or paths like "/tmp/muse-project".
-	// The executable basename is already handled by the base switch above,
-	// so this arm covers only wrapper forms ("my-wrapper muse --flag").
-	// A wrapper ending in bare "muse" with no trailing args is
-	// indistinguishable from `echo muse` and stays unmatched (fail closed).
-	case strings.Contains(cmdLower, " muse ") || strings.HasPrefix(cmdLower, "muse "):
-		return "muse"
+	// No fallback arm for muse: the executable basename in the base switch
+	// above is the only classifier. Any mid-line token form (`my-wrapper
+	// muse --flag`, `echo muse --help`) is indistinguishable from prose or
+	// another tool's arguments at this layer, so wrappers fail closed to
+	// shell here (they still launch verbatim via passthrough). This keeps
+	// the tmux layer consistent with the registry's executableOnly rule.
 	case strings.Contains(cmdLower, "cursor"):
 		return "cursor"
 	case strings.Contains(cmdLower, "hermes"):
