@@ -352,7 +352,6 @@ func TestHandleComplete_Agents(t *testing.T) {
 	// No adopted agents in the test-isolated registry; must print nothing
 	// and, critically, nothing on stderr/panic.
 	out := captureStdout(t, func() { handleComplete("_test_completion", []string{"agents"}) })
-	out := captureStdout(t, func() { handleComplete("_test_completion", []string{"agents"}) })
 	if out != "" {
 		t.Fatalf("expected no agent completions, got %q", out)
 	}
