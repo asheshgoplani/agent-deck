@@ -104,10 +104,16 @@ func (i *Instance) buildMuseCommand(baseCommand string) string {
 }
 
 // buildMuseResumeCommand builds the launch command that resumes a known
-// muse session: the resolved base command plus the `resume <uuid>`
-// subcommand (muse takes resume as a subcommand, not a flag; root options
-// may appear on either side of it). An empty session ID falls back to a
-// fresh launch rather than emitting a broken `resume` with no target.
+// muse session: the base command plus the `resume <uuid>` subcommand (muse
+// takes resume as a subcommand, not a flag; root options may appear on
+// either side of it). An empty session ID falls back to a fresh launch
+// rather than emitting a broken `resume` with no target.
+//
+// The base mirrors buildMuseCommand exactly: the instance's persisted
+// command when it is a non-bare custom invocation (wrapper, provider or
+// model flags), otherwise the configured default. A custom base is used
+// verbatim with no flag injection, same as the fresh passthrough path, so
+// a restart never silently drops the operator's explicit invocation.
 func (i *Instance) buildMuseResumeCommand(sessionID string) string {
 	if i.Tool != "muse" {
 		return ""
@@ -116,9 +122,18 @@ func (i *Instance) buildMuseResumeCommand(sessionID string) string {
 		return i.buildMuseCommand(i.Command)
 	}
 	envPrefix := i.buildEnvSourceCommand()
-	opts, optsOK := i.museLaunchOptions()
-	config, _ := LoadUserConfig()
-	return envPrefix + GetMuseCommand() + " resume " + strings.TrimSpace(sessionID) + museYoloSuffix(opts, optsOK, config)
+	base := GetMuseCommand()
+	passthrough := false
+	if trimmed := strings.TrimSpace(i.Command); trimmed != "" && trimmed != "muse" {
+		base, passthrough = trimmed, true
+	}
+	cmd := base + " resume " + strings.TrimSpace(sessionID)
+	if !passthrough {
+		opts, optsOK := i.museLaunchOptions()
+		config, _ := LoadUserConfig()
+		cmd += museYoloSuffix(opts, optsOK, config)
+	}
+	return envPrefix + cmd
 }
 
 // discoverMuseResumeID returns the newest muse session ID bound to the

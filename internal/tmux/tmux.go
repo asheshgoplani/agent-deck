@@ -873,7 +873,13 @@ func detectToolFromCommand(command string) string {
 		return "copilot"
 	case strings.Contains(cmdLower, "crush"):
 		return "crush"
-	case strings.Contains(cmdLower, "muse"):
+	// Token-position match only (pi precedent): a bare substring would
+	// false-match "amuse", "museum", or paths like "/tmp/muse-project".
+	// The executable basename is already handled by the base switch above,
+	// so this arm covers only wrapper forms ("my-wrapper muse --flag").
+	// A wrapper ending in bare "muse" with no trailing args is
+	// indistinguishable from `echo muse` and stays unmatched (fail closed).
+	case strings.Contains(cmdLower, " muse ") || strings.HasPrefix(cmdLower, "muse "):
 		return "muse"
 	case strings.Contains(cmdLower, "cursor"):
 		return "cursor"

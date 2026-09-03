@@ -369,6 +369,29 @@ func TestBuildMuseResumeCommand_WrongTool(t *testing.T) {
 	}
 }
 
+func TestBuildMuseResumeCommand_CustomCommandPreserved(t *testing.T) {
+	oldCache := userConfigCache
+	defer func() { userConfigCache = oldCache }()
+	userConfigCache = &UserConfig{
+		Muse: MuseSettings{YoloMode: true},
+	}
+
+	// A session launched with a custom invocation (wrapper/provider flags)
+	// must resume through it, verbatim: no default substitution and no
+	// flag injection, mirroring the fresh passthrough path.
+	inst := &Instance{Tool: "muse", Command: "muse --provider echo"}
+	cmd := inst.buildMuseResumeCommand("sess-uuid-1")
+	if !strings.HasSuffix(cmd, "muse --provider echo resume sess-uuid-1") {
+		t.Errorf("buildMuseResumeCommand() = %q, want custom command preserved with resume suffix", cmd)
+	}
+	if strings.Contains(cmd, "--yolo") {
+		t.Errorf("passthrough resume must not inject --yolo, got %q", cmd)
+	}
+	if strings.Contains(cmd, "--trust-workspace") {
+		t.Errorf("custom base must replace the default wholesale, got %q", cmd)
+	}
+}
+
 func TestGetToolEnvFile_Muse(t *testing.T) {
 	oldCache := userConfigCache
 	defer func() { userConfigCache = oldCache }()
@@ -385,9 +408,36 @@ func TestGetToolEnvFile_Muse(t *testing.T) {
 
 func TestMatchTool_Muse(t *testing.T) {
 	r := Init(nil)
-	for _, cmd := range []string{"muse", "muse --trust-workspace", "muse --yolo", "MUSE"} {
+	for _, cmd := range []string{
+		"muse",
+		"muse --trust-workspace",
+		"muse --yolo",
+		"MUSE",
+		"muse resume 01a063dd-45dd-7402-b516-4346e923db3e",
+		"/usr/local/bin/muse",
+		"/usr/local/bin/muse --trust-workspace",
+	} {
 		if got := r.Match(cmd); got != "muse" {
 			t.Errorf("Match(%q) = %q, want %q", cmd, got, "muse")
+		}
+	}
+}
+
+func TestMatchTool_Muse_Negative(t *testing.T) {
+	// Executable-position match only: the name must lead the command.
+	r := Init(nil)
+	for _, cmd := range []string{
+		"echo muse",
+		"amuse",
+		"echo museum",
+		"git -C /tmp/muse-project status",
+		// Non-leading occurrences fail closed, even for wrappers: only
+		// the executable slot classifies.
+		"my-wrapper muse --flag",
+		"my-wrapper muse",
+	} {
+		if got := r.Match(cmd); got == "muse" {
+			t.Errorf("Match(%q) = %q, should NOT match muse", cmd, got)
 		}
 	}
 }

@@ -29,13 +29,16 @@ func TestDetectTool_Muse(t *testing.T) {
 }
 
 func TestDetectTool_Muse_Negative(t *testing.T) {
-	// Note: detectTool matches on substrings, so any string containing
-	// "muse" will match. Only truly unrelated strings are tested here.
+	// Token match only: substrings must not claim unrelated commands.
 	tests := []struct {
 		name string
 		cmd  string
 	}{
 		{"empty string", ""},
+		{"echo muse", "echo muse"},
+		{"amuse", "amuse"},
+		{"museum", "echo museum"},
+		{"muse in path", "git -C /tmp/muse-project status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

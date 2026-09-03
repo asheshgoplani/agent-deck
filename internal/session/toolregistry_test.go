@@ -59,6 +59,8 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		// muse
 		{"muse bare", "muse", "muse"},
 		{"muse with trust flag", "muse --trust-workspace", "muse"},
+		{"muse no match echo", "echo muse", "shell"},
+		{"muse no match museum", "museum visit", "shell"},
 		// cursor
 		{"cursor agent subcommand", "cursor agent", "cursor"},
 		{"standalone agent binary", "agent", "cursor"},

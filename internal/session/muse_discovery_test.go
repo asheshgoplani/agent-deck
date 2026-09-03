@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -218,6 +219,36 @@ func TestFindLatestMuseSession_SinceBound(t *testing.T) {
 	if got := FindLatestMuseSession(ws, now.Add(-3*time.Hour)); got != "uuid-old" {
 		t.Errorf("bounded scan = %q, want uuid-old", got)
 	}
+}
+
+func TestFindLatestMuseSession_OverCapFindsNewest(t *testing.T) {
+	root := withMuseFixtureRoot(t)
+	old := time.Now().Add(-48 * time.Hour)
+	wsOld := filepath.Join(root, "oldproj")
+	wsNew := filepath.Join(root, "newproj")
+	if err := os.MkdirAll(wsOld, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	if err := os.MkdirAll(wsNew, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	// More sessions than museDiscoveryMaxFiles, all lexically BEFORE the
+	// newest UUID: a lexical-order cap would cut the newest session off.
+	for i := 0; i < museDiscoveryMaxFiles+5; i++ {
+		writeMuseFixtureSession(t, root, "aaa-"+padMuseTestNum(i), wsOld, "echo", old)
+	}
+	// Lexically last, newest by mtime: must still be found.
+	writeMuseFixtureSession(t, root, "zzz-newest", wsNew, "echo", time.Now())
+	if got := FindLatestMuseSession(wsNew, time.Time{}); got != "zzz-newest" {
+		t.Errorf("over-cap scan = %q, want zzz-newest", got)
+	}
+	if got := FindLatestMuseSession(wsOld, time.Time{}); got == "" || got == "zzz-newest" {
+		t.Errorf("over-cap scan for old ws = %q, want one of the old sessions", got)
+	}
+}
+
+func padMuseTestNum(i int) string {
+	return fmt.Sprintf("%04d", i)
 }
 
 func TestFindLatestMuseSession_SymlinkResolved(t *testing.T) {

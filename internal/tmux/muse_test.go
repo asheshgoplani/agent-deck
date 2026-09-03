@@ -46,11 +46,15 @@ func TestDetectToolFromCommand_Muse_Negative(t *testing.T) {
 		name    string
 		command string
 	}{
-		// Truly unrelated strings — the strings.Contains fallback is
-		// intentionally permissive (matches the crush/copilot precedent),
-		// so only blatant false positives are guarded here.
+		// Token-position matching (not substring): English words and paths
+		// containing "muse" must not claim the pane.
 		{"empty", ""},
 		{"unrelated tool", "ls -la"},
+		{"echo muse", "echo muse"},
+		{"amuse", "amuse"},
+		{"museum", "echo museum"},
+		{"muse in path", "git -C /tmp/muse-project status"},
+		{"wrapper trailing bare muse fails closed", "my-wrapper muse"},
 	}
 
 	for _, tt := range tests {
@@ -60,6 +64,13 @@ func TestDetectToolFromCommand_Muse_Negative(t *testing.T) {
 				t.Fatalf("detectToolFromCommand(%q) = %q, should NOT match muse", tt.command, got)
 			}
 		})
+	}
+}
+
+func TestDetectToolFromCommand_Muse_Wrapper(t *testing.T) {
+	// Wrapper with trailing flags still resolves via the token arm.
+	if got := detectToolFromCommand("my-wrapper muse --trust-workspace"); got != "muse" {
+		t.Fatalf("detectToolFromCommand(wrapper) = %q, want muse", got)
 	}
 }
 
@@ -79,6 +90,19 @@ func TestDetectToolFromContent_Muse(t *testing.T) {
 				t.Fatalf("detectToolFromContent(%q) = %q, want %q", tt.content, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDetectToolFromContent_Muse_Negative(t *testing.T) {
+	// Content patterns anchor on the product banner and busy marker, so
+	// prose containing "muse" must not claim the pane.
+	for _, content := range []string{
+		"planning a museum visit",
+		"this will amuse the team",
+	} {
+		if got := detectToolFromContent(content); got == "muse" {
+			t.Errorf("detectToolFromContent(%q) = %q, should NOT match muse", content, got)
+		}
 	}
 }
 

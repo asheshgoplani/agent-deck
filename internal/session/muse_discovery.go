@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -123,44 +124,29 @@ func parseMuseMetadataLine(line string) *museRecord {
 }
 
 // readMuseSessionMetadata returns the FIRST metadata record in a session
-// log (workspace binding is written at session start) without reading the
-// whole file: it streams lines and stops at the first hit.
+// log (workspace binding is written at session start). It streams the file
+// line by line and stops at the first hit, so a multi-megabyte log costs
+// one short prefix read instead of a full load (os.ReadFile would load the
+// whole file before any prefix could apply).
 func readMuseSessionMetadata(sessionFile string) *museRecord {
-	data, err := os.ReadFile(sessionFile)
+	f, err := os.Open(sessionFile)
 	if err != nil {
 		return nil
 	}
-	// Lines are long (framed transactions); scan incrementally and stop at
-	// the first metadata line. A 64KB prefix covers the startup records in
-	// every observed log; fall back to the whole file past that.
-	const prefixLimit = 64 * 1024
-	text := string(data)
-	if len(text) > prefixLimit {
-		if rec := scanMuseMetadataPrefix(text[:prefixLimit]); rec != nil {
-			return rec
-		}
-	}
-	return scanMuseMetadataPrefix(text)
-}
-
-// scanMuseMetadataPrefix returns the first metadata record in text.
-func scanMuseMetadataPrefix(text string) *museRecord {
-	start := 0
-	for start < len(text) {
-		end := strings.IndexByte(text[start:], '\n')
-		var line string
-		if end < 0 {
-			line = text[start:]
-			start = len(text)
-		} else {
-			line = text[start : start+end]
-			start += end + 1
-		}
+	defer f.Close()
+	reader := bufio.NewReader(f)
+	for {
+		// ReadString grows past the default buffer for the very long
+		// framed-transaction lines; the final line without a newline is
+		// still returned alongside io.EOF and parsed below.
+		line, err := reader.ReadString('\n')
 		if rec := parseMuseMetadataLine(line); rec != nil {
 			return rec
 		}
+		if err != nil {
+			return nil
+		}
 	}
-	return nil
 }
 
 // normalizeMuseWorkspace absolutizes and symlink-resolves a workspace path
@@ -188,13 +174,14 @@ func ListMuseSessions() []MuseSessionInfo {
 		path  string
 		mtime time.Time
 	}
+	// Phase 1: gather candidates (paths + mtimes only, no file reads).
+	// Uncapped: gathering is cheap, and capping here would cut in lexical
+	// YYYY/MM/DD order (oldest first). The parse cap applies in phase 2
+	// after sorting newest-first.
 	var files []candidate
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "session.jsonl" {
 			return nil
-		}
-		if len(files) >= museDiscoveryMaxFiles {
-			return filepath.SkipAll
 		}
 		if info, err := d.Info(); err == nil {
 			files = append(files, candidate{path: path, mtime: info.ModTime()})
@@ -206,7 +193,14 @@ func ListMuseSessions() []MuseSessionInfo {
 	})
 
 	var out []MuseSessionInfo
-	for _, f := range files {
+	for i, f := range files {
+		// Parse newest first and stop at the cap: gathering is cheap
+		// (paths + mtimes), parsing is not, so the limit applies here,
+		// never mid-walk where lexical YYYY/MM/DD order would cut the
+		// newest sessions first.
+		if i >= museDiscoveryMaxFiles {
+			break
+		}
 		rec := readMuseSessionMetadata(f.path)
 		if rec == nil || rec.Stream.ID == "" {
 			continue
