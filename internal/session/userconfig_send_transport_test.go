@@ -47,6 +47,13 @@ func TestGetSendTransport_RoundTripsThroughWrittenConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("send_transport = \"tmux\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// LoadUserConfig's cache key is the file's mtime alone, not its path
+	// (internal/session/userconfig.go): two temp config.toml files from two
+	// different tests can share an mtime, in which case a stale cache would
+	// hand back a DIFFERENT test's config. Clear explicitly rather than
+	// relying on mtimes to differ.
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
 
 	cfg, err := LoadUserConfig()
 	if err != nil {
@@ -70,6 +77,12 @@ func TestGetSendTransport_AbsentFromWrittenConfig_DefaultsAuto(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("group_sort = \"actionable\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// See the ClearUserConfigCache comment in
+	// TestGetSendTransport_RoundTripsThroughWrittenConfig: the cache keys on
+	// mtime alone, so a stale hit from a same-mtime temp file elsewhere would
+	// silently return the wrong test's config.
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
 
 	cfg, err := LoadUserConfig()
 	if err != nil {
