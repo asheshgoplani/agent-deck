@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSSHRunnerBuildRemoteCommand_QuotesAllDynamicArgs(t *testing.T) {
@@ -336,4 +337,33 @@ func TestParseRemoteVersion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRemoteSessionInfoLastActivity(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+
+	t.Run("valid RFC3339 parses", func(t *testing.T) {
+		r := RemoteSessionInfo{LastActivityAt: now.Format(time.RFC3339)}
+		got, ok := r.LastActivity()
+		if !ok {
+			t.Fatalf("LastActivity() ok = false, want true")
+		}
+		if !got.Equal(now) {
+			t.Errorf("LastActivity() = %v, want %v", got, now)
+		}
+	})
+
+	t.Run("empty is unknown, not zero-time", func(t *testing.T) {
+		r := RemoteSessionInfo{}
+		if _, ok := r.LastActivity(); ok {
+			t.Errorf("LastActivity() ok = true for empty field, want false (older remote, field never sent)")
+		}
+	})
+
+	t.Run("malformed value is unknown, not an error a caller must handle", func(t *testing.T) {
+		r := RemoteSessionInfo{LastActivityAt: "not-a-timestamp"}
+		if _, ok := r.LastActivity(); ok {
+			t.Errorf("LastActivity() ok = true for malformed field, want false")
+		}
+	})
 }

@@ -2716,6 +2716,56 @@ func (h *Home) rebuildFlatItems() {
 		}
 	}
 
+	// Apply the same recency filter to the remote rows just appended. This
+	// runs as its own pass, separate from the local time-filter pass above,
+	// because remote rows don't exist yet when that one runs (they're
+	// appended after local filtering/partitioning/window-injection, which
+	// don't apply to them). Same two-pass mark/filter shape, scoped to
+	// ItemTypeRemoteGroup/ItemTypeRemoteSession so it's a no-op for local
+	// rows. A remote session with no (or unparseable) last-activity time — an
+	// older remote binary that predates the field — always matches, same
+	// graceful-degradation convention as RemoteSessionInfo's Substate/Archived
+	// fields: it stays visible rather than vanishing.
+	if len(remotes) > 0 && h.timeFilter != session.TimeFilterAll {
+		now := time.Now()
+		remoteMatches := func(item session.Item) bool {
+			if item.RemoteSession == nil {
+				return true
+			}
+			t, ok := item.RemoteSession.LastActivity()
+			if !ok {
+				return true
+			}
+			return h.timeFilter.Matches(t, now)
+		}
+		remoteGroupsWithMatches := make(map[string]bool)
+		for _, item := range h.flatItems {
+			if item.Type == session.ItemTypeRemoteSession && remoteMatches(item) {
+				remoteGroupsWithMatches[item.Path] = true
+				parts := strings.Split(item.Path, "/")
+				for i := range parts {
+					remoteGroupsWithMatches[strings.Join(parts[:i+1], "/")] = true
+				}
+			}
+		}
+		filtered := make([]session.Item, 0, len(h.flatItems))
+		for _, item := range h.flatItems {
+			switch item.Type {
+			case session.ItemTypeRemoteGroup:
+				if remoteGroupsWithMatches[item.Path] {
+					filtered = append(filtered, item)
+				}
+			case session.ItemTypeRemoteSession:
+				if remoteMatches(item) {
+					filtered = append(filtered, item)
+				}
+			default:
+				filtered = append(filtered, item)
+			}
+		}
+		h.flatItems = filtered
+	}
+
 	// Pre-compute root group numbers for O(1) hotkey lookup (replaces O(n) loop in renderGroupItem).
 	// View-mode partitioning can duplicate root headers; every copy of the same
 	// logical root reuses the same digit.
@@ -20476,10 +20526,14 @@ func (h *Home) renderFilterBarHint() string {
 	}
 
 	// Time-range filter indicator (today / 3 days / 7 days), only when active.
+	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeFilterKey == "" {
+		timeFilterKey = "*"
+	}
 	if h.timeFilter != session.TimeFilterAll {
-		hint += dim.Render(" • ") + mark("*", true) + dim.Render(" "+h.timeFilter.Label())
+		hint += dim.Render(" • ") + mark(timeFilterKey, true) + dim.Render(" "+h.timeFilter.Label())
 	} else {
-		hint += dim.Render(" • ") + mark("*", false) + dim.Render(" time")
+		hint += dim.Render(" • ") + mark(timeFilterKey, false) + dim.Render(" time")
 	}
 	return hint
 }

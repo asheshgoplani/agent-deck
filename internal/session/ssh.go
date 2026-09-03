@@ -1058,8 +1058,31 @@ type RemoteSessionInfo struct {
 	Substate string `json:"substate"`
 	Archived bool   `json:"archived"`
 
+	// LastActivityAt is the remote session's Instance.DisplayLastActivityTime(),
+	// RFC3339-formatted, so the local recency filter (session.TimeFilterMode)
+	// can apply to remote rows the same way it applies to local ones. Same
+	// degradation story as Substate/Archived above: a remote too old to send
+	// it omits the key, which unmarshals to "" — see LastActivity below.
+	LastActivityAt string `json:"last_activity_at,omitempty"`
+
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
+}
+
+// LastActivity parses LastActivityAt. ok is false when the field is empty or
+// unparseable — a remote agent-deck build too old to send it, or a malformed
+// value — and callers should treat that as "unknown" (matches any recency
+// filter) rather than "very old", so an old remote's sessions don't just
+// vanish under a time filter.
+func (r RemoteSessionInfo) LastActivity() (t time.Time, ok bool) {
+	if r.LastActivityAt == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339, r.LastActivityAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
 }
 
 // RemoteLatency is a live round-trip-time sample for a configured remote.
