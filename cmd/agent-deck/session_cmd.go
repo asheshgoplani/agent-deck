@@ -2688,7 +2688,7 @@ func handleSessionSend(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
-	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
+	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (on a socket send, first waits up to 30s for the turn to start)")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
@@ -2703,6 +2703,14 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("Usage: agent-deck session send <id|title> <message> [options]")
 		fmt.Println()
 		fmt.Println("Send a message to a running session.")
+		fmt.Println()
+		fmt.Println("Claude targets: when the target has a live Claude Code messaging socket")
+		fmt.Println("(peerProtocol 1), this writes directly to it instead of typing into the")
+		fmt.Println("pane. Set send_transport = \"tmux\" in config.toml to pin the old keystroke")
+		fmt.Println("path for every send. A bare slash command (e.g. \"/compact\") always uses")
+		fmt.Println("tmux, since Claude's socket path renders slash commands as literal text.")
+		fmt.Println("SSH-backed (remote) targets always use tmux too: the messaging socket must")
+		fmt.Println("be dialed on the machine that owns it.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2891,7 +2899,16 @@ func handleSessionSend(profile string, args []string) {
 	if *noWait {
 		tun = noWaitSendTuning()
 	}
-	sendRes, sendErr := executeSend(tmuxSess, inst.Tool, message, *noWait, tun)
+
+	// #2089: pick tmux keystrokes or Claude Code's own messaging socket for
+	// this send. chooseSendTransport is pure and every check it runs happens
+	// strictly before any byte is written, so falling back to tmux here is
+	// indistinguishable from today's behavior on any resolution failure.
+	sendTransportValue, sendTransportWarn := sendTransportFromConfig()
+	if sendTransportWarn != "" {
+		fmt.Fprintln(os.Stderr, sendTransportWarn)
+	}
+	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, nil, nil)
 	if sendErr != nil {
 		extra := sendRes.jsonFields()
 		extra["session_id"] = inst.ID
@@ -2908,6 +2925,12 @@ func handleSessionSend(profile string, args []string) {
 			out.ErrorWithData(fmt.Sprintf("message reached '%s' but was never confirmed submitted: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliveryNoEvidence:
 			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliverySocketWriteFailed:
+			// #2089: the write to the Claude messaging socket started and
+			// failed partway. The message may or may not have reached the
+			// target's inbox — it is NEVER safe to retry on tmux here, that
+			// would risk double delivery.
+			out.ErrorWithData(fmt.Sprintf("socket write to '%s' failed after the send was already committed (message may or may not have been queued; do not resend): %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		default:
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
@@ -2964,7 +2987,7 @@ func handleSessionSend(profile string, args []string) {
 
 	// If --wait, block until the agent finishes processing, then print output
 	if *wait {
-		finalStatus, err := waitForCompletion(tmuxSess, *timeout)
+		finalStatus, err := waitAfterSend(tmuxSess, sendRes.transport, *timeout)
 		if err != nil {
 			out.Error(fmt.Sprintf("timeout waiting for completion: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -3086,6 +3109,15 @@ const (
 	deliveryNoEvidence = "no_evidence"
 	// deliverySendFailed: the initial tmux send-keys itself failed.
 	deliverySendFailed = "send_failed"
+	// deliveryQueuedSocket: the message was written to the target's Claude Code
+	// messaging socket after the endpoint's identity was verified (issue
+	// #2089). Claude's inbox sends no in-band ack (verified against 2.1.259),
+	// so this means "accepted for the target's next turn boundary", not
+	// "consumed".
+	deliveryQueuedSocket = "queued_socket"
+	// deliverySocketWriteFailed: the write started and failed. The message may
+	// or may not have been queued, so it is NEVER retried on tmux.
+	deliverySocketWriteFailed = "socket_write_failed"
 )
 
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
@@ -3108,6 +3140,19 @@ type sendDeliveryResult struct {
 	// the type-back failed (SendKeysChunked errored) — the draft is held in
 	// draftSaved for recovery and must be surfaced, not silently dropped.
 	draftRestoreFailed bool
+
+	// transport is "tmux" or "socket" (issue #2089), always set.
+	transport string
+	// fallbackReason is populated only when transport is "tmux" AND a socket
+	// send was genuinely attempted and refused (chooseSendTransport's
+	// resolve() step) — not when a socket was never a candidate to begin
+	// with (draft, an explicit send_transport=tmux pin, a non-Claude tool, a
+	// slash command, or no known Claude session ID). An explicit pin is not
+	// a fallback.
+	fallbackReason send.UnavailableReason
+	// socketMsgID is the msg_id SendOverClaudeSocket generated, set only on
+	// a successful socket send.
+	socketMsgID string
 }
 
 // jsonFields returns the delivery-status fields added to `session send`
@@ -3118,10 +3163,12 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 	if r.delivery != "" {
 		fields["delivery"] = r.delivery
 		// Explicit, machine-checkable: a caller must not have to know which
-		// delivery strings imply an accepted turn. Only deliverySubmitted
-		// does; `typed` in particular means the bytes arrived and nothing
-		// confirmed the agent took them up (issue #1793).
-		fields["submitted"] = r.delivery == deliverySubmitted
+		// delivery strings imply an accepted turn. deliverySubmitted (tmux)
+		// and deliveryQueuedSocket (#2089) both do; `typed` in particular
+		// means the bytes arrived and nothing confirmed the agent took them
+		// up (issue #1793). A socket enqueue is a stronger acceptance signal
+		// than any pane heuristic, so it counts as submitted too.
+		fields["submitted"] = r.delivery == deliverySubmitted || r.delivery == deliveryQueuedSocket
 	}
 	if ms := r.held.Milliseconds(); ms > 0 {
 		fields["held_for_composer_ms"] = ms
@@ -3132,6 +3179,15 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 		if r.draftRestoreFailed {
 			fields["draft_restore_failed"] = true
 		}
+	}
+	if r.transport != "" {
+		fields["transport"] = r.transport
+	}
+	if r.transport == "tmux" && r.fallbackReason != "" {
+		fields["fallback_reason"] = string(r.fallbackReason)
+	}
+	if r.socketMsgID != "" {
+		fields["msg_id"] = r.socketMsgID
 	}
 	return fields
 }
@@ -4143,6 +4199,76 @@ func waitForCompletion(checker statusChecker, timeout time.Duration) (string, er
 		// Any non-active status means the agent is done
 		return status, nil
 	}
+}
+
+// waitForTurnStart polls checker.GetStatus() every 500ms until it reports
+// "active" or timeout elapses. Returns true iff it saw "active" in time.
+//
+// #2089: the socket send path returns as soon as the frame is written to
+// Claude's messaging socket — unlike the tmux path, nothing here observed
+// the target actually pick the message up. waitForCompletion's 1s initial
+// grace period is calibrated for tmux, where executeSend's own verification
+// loop already blocked until an "active" transition; on the socket path
+// that transition hasn't necessarily happened yet by the time --wait starts
+// polling, so waitForCompletion could see a stale non-active status and
+// return immediately with stale output. Called only on the socket path,
+// before waitForCompletion, to close that gap.
+func waitForTurnStart(checker statusChecker, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	const pollInterval = 500 * time.Millisecond
+	for {
+		if status, err := checker.GetStatus(); err == nil && status == "active" {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// waitAfterSend is the `--wait` completion pipeline used by handleSessionSend
+// (#2089): on the socket transport, first wait (bounded) for the turn to
+// start (see waitForTurnStart's doc comment), then wait for it to finish. On
+// the tmux transport, skip straight to the completion wait — unchanged from
+// before #2089.
+//
+// Both waits share ONE deadline computed from timeout: waitForTurnStart and
+// waitForCompletion must not each get their own full timeout budget, or
+// --wait could take up to turnStartBound + timeout instead of honoring
+// timeout as the cap.
+//
+// On the socket transport, a turn that never starts within the bound is a
+// hard error, not a fall-through to waitForCompletion: waitForCompletion
+// treats a non-"active" status as complete, so falling through would let
+// --wait print stale output and exit 0 for a message the target never
+// actually consumed (held by its own inbound controls, or silently
+// dropped — §1.5, Claude's inbox never acknowledges either way). Reported
+// the same way the existing --wait timeout is, so callers don't need a new
+// error-handling branch.
+func waitAfterSend(checker statusChecker, transport string, timeout time.Duration) (string, error) {
+	waitDeadline := time.Now().Add(timeout)
+	if transport == "socket" {
+		turnStartBound := 30 * time.Second
+		if remaining := time.Until(waitDeadline); remaining < turnStartBound {
+			turnStartBound = remaining
+		}
+		if !waitForTurnStart(checker, turnStartBound) {
+			return "", fmt.Errorf("target did not start a turn within %s after socket delivery; the message may be held by the target's inbound controls or dropped, check the target session", turnStartBound.Round(time.Second))
+		}
+	}
+	completionTimeout := time.Until(waitDeadline)
+	if completionTimeout <= 0 {
+		// The turn-start wait (successfully) consumed the whole budget:
+		// same shape of failure waitForCompletion itself would report on a
+		// real timeout, so report it identically rather than starting a new
+		// poll against an already-exhausted budget.
+		return "", fmt.Errorf("agent still running after %s", timeout)
+	}
+	return waitForCompletion(checker, completionTimeout)
 }
 
 // freshOutputConfig holds tunable parameters for waitForFreshOutput.
