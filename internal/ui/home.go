@@ -316,17 +316,18 @@ type Home struct {
 	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor              int                   // Selected item index in flatItems
-	viewOffset          int                   // First visible item index (for scrolling)
-	previewScrollOffset int                   // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
-	isAttaching         atomic.Bool           // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	lastRenderedFrame   string                // Last non-empty frame View produced; re-served while isAttaching so no frame is ever black (#1753). Event-loop goroutine only.
-	statusFilter        session.Status        // Filter sessions by status ("" = all, or specific status)
-	groupScope          string                // Limit TUI to a specific group path ("" = all groups)
-	initialSelect       string                // Session ID or title to preselect on first load (#709). Does NOT scope groups.
-	initialSelectDone   bool                  // Guard so preselection only fires once
-	previewMode         PreviewMode           // What to show in preview pane (both, output-only, analytics-only)
-	groupViewMode       session.GroupViewMode // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
+	cursor              int                    // Selected item index in flatItems
+	viewOffset          int                    // First visible item index (for scrolling)
+	previewScrollOffset int                    // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
+	isAttaching         atomic.Bool            // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	lastRenderedFrame   string                 // Last non-empty frame View produced; re-served while isAttaching so no frame is ever black (#1753). Event-loop goroutine only.
+	statusFilter        session.Status         // Filter sessions by status ("" = all, or specific status)
+	groupScope          string                 // Limit TUI to a specific group path ("" = all groups)
+	initialSelect       string                 // Session ID or title to preselect on first load (#709). Does NOT scope groups.
+	initialSelectDone   bool                   // Guard so preselection only fires once
+	previewMode         PreviewMode            // What to show in preview pane (both, output-only, analytics-only)
+	groupViewMode       session.GroupViewMode  // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
+	timeFilter          session.TimeFilterMode // Recency filter: all, today, 3 days, 7 days (cycled by hotkey '*')
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
 	isReloading         bool       // Visual feedback during auto-reload
@@ -761,6 +762,7 @@ type uiState struct {
 	PreviewMode     int    `json:"preview_mode"`
 	StatusFilter    string `json:"status_filter,omitempty"`
 	GroupViewMode   int    `json:"group_view_mode,omitempty"`
+	TimeFilterMode  int    `json:"time_filter_mode,omitempty"`
 	// Collapsed remote headers, keyed like Item.Path. Local group folds live in
 	// groupTree, which is persisted separately by saveGroupState; remote groups
 	// are synthetic UI rows and have no home there.
@@ -2561,6 +2563,45 @@ func (h *Home) rebuildFlatItems() {
 		}
 	} else {
 		h.flatItems = allItems
+	}
+
+	// Apply time-range filter if active (composes with status filter above,
+	// same two-pass group/session shape, same auto-clear-when-empty safety
+	// net: a session's activity clock keeps ticking while a time filter is
+	// open, so a filter that matched something a moment ago can go stale
+	// exactly like a status filter can).
+	if h.timeFilter != session.TimeFilterAll {
+		now := time.Now()
+		groupsWithMatches := make(map[string]bool)
+		for _, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				if h.timeFilter.Matches(item.Session.DisplayLastActivityTime(), now) {
+					groupsWithMatches[item.Path] = true
+					parts := strings.Split(item.Path, "/")
+					for i := range parts {
+						groupsWithMatches[strings.Join(parts[:i+1], "/")] = true
+					}
+				}
+			}
+		}
+
+		filtered := make([]session.Item, 0, len(h.flatItems))
+		for _, item := range h.flatItems {
+			if item.Type == session.ItemTypeGroup {
+				if groupsWithMatches[item.Path] {
+					filtered = append(filtered, item)
+				}
+			} else if item.Type == session.ItemTypeSession && item.Session != nil {
+				if h.timeFilter.Matches(item.Session.DisplayLastActivityTime(), now) {
+					filtered = append(filtered, item)
+				}
+			}
+		}
+		if len(filtered) == 0 && len(h.flatItems) > 0 {
+			h.timeFilter = session.TimeFilterAll
+		} else {
+			h.flatItems = filtered
+		}
 	}
 
 	// Apply group scope filter (composes with status filter above)
@@ -9646,6 +9687,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.saveUIState()
 		return h, h.fetchSelectedPreview()
 
+	case "*":
+		// Cycle time-range filter: all → today → 3 days → 7 days → all.
+		// Preserve the cursor's row identity across the rebuild, same as the
+		// 't' view-mode cycle above.
+		selectedBefore := h.captureSelectedItemIdentity()
+		h.timeFilter = session.TimeFilterMode((int(h.timeFilter) + 1) % session.TimeFilterModeCount)
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
+		h.syncViewport()
+		h.saveUIState()
+		return h, h.fetchSelectedPreview()
+
 	case "y":
 		// Toggle YOLO mode for Gemini or Codex sessions (requires restart)
 		if h.cursor < len(h.flatItems) {
@@ -11748,6 +11800,7 @@ func (h *Home) saveUIStateErr() error {
 		PreviewMode:        int(h.previewMode),
 		StatusFilter:       string(h.statusFilter),
 		GroupViewMode:      int(h.groupViewMode),
+		TimeFilterMode:     int(h.timeFilter),
 		RemoteSessionOrder: h.remoteSessionOrder,
 	}
 
@@ -11829,6 +11882,10 @@ func (h *Home) loadUIState() {
 	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)
 	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
 		h.groupViewMode = session.GroupViewNormal
+	}
+	h.timeFilter = session.TimeFilterMode(state.TimeFilterMode)
+	if h.timeFilter < session.TimeFilterAll || h.timeFilter >= session.TimeFilterModeCount {
+		h.timeFilter = session.TimeFilterAll
 	}
 
 	// #1875: restore the manual remote row order. Entries for remotes that no
@@ -20416,6 +20473,13 @@ func (h *Home) renderFilterBarHint() string {
 		hint += dim.Render(" • ") + mark("t", true) + dim.Render(" "+h.groupViewMode.Label())
 	} else {
 		hint += dim.Render(" • ") + mark("t", false) + dim.Render(" view")
+	}
+
+	// Time-range filter indicator (today / 3 days / 7 days), only when active.
+	if h.timeFilter != session.TimeFilterAll {
+		hint += dim.Render(" • ") + mark("*", true) + dim.Render(" "+h.timeFilter.Label())
+	} else {
+		hint += dim.Render(" • ") + mark("*", false) + dim.Render(" time")
 	}
 	return hint
 }

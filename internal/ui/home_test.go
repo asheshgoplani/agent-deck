@@ -1051,6 +1051,33 @@ func TestHandleMainKeyEditNotesStartsEditor(t *testing.T) {
 	}
 }
 
+func TestHandleMainKeyCyclesTimeFilter(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.storage = nil // Avoid touching persistence in this unit test.
+
+	inst := &session.Instance{ID: "s1", Title: "s1", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: time.Now()}
+	home.groupTree = session.NewGroupTree([]*session.Instance{inst})
+
+	wantCycle := []session.TimeFilterMode{
+		session.TimeFilterToday,
+		session.TimeFilter3Days,
+		session.TimeFilter7Days,
+		session.TimeFilterAll,
+	}
+	for i, want := range wantCycle {
+		model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'*'}})
+		h, ok := model.(*Home)
+		if !ok {
+			t.Fatalf("step %d: handleMainKey should return *Home", i)
+		}
+		if h.timeFilter != want {
+			t.Errorf("step %d: timeFilter = %v, want %v", i, h.timeFilter, want)
+		}
+	}
+}
+
 func TestHandleNotesEditorKeySave(t *testing.T) {
 	home := NewHome()
 	home.width = 100
@@ -3439,6 +3466,110 @@ func TestRebuildFlatItemsGroupScopeComposesWithStatusFilter(t *testing.T) {
 				t.Errorf("found non-running session %q, expected only running", item.Session.Title)
 			}
 		}
+	}
+}
+
+func TestRebuildFlatItemsTimeFilter(t *testing.T) {
+	now := time.Now()
+
+	instToday := &session.Instance{ID: "s-today", Title: "today", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.Add(-time.Hour)}
+	inst2DaysAgo := &session.Instance{ID: "s-2days", Title: "2days", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.AddDate(0, 0, -2)}
+	inst5DaysAgo := &session.Instance{ID: "s-5days", Title: "5days", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.AddDate(0, 0, -5)}
+	inst30DaysAgo := &session.Instance{ID: "s-30days", Title: "30days", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.AddDate(0, 0, -30)}
+	all := []*session.Instance{instToday, inst2DaysAgo, inst5DaysAgo, inst30DaysAgo}
+
+	sessionIDs := func(h *Home) []string {
+		var ids []string
+		for _, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				ids = append(ids, item.Session.ID)
+			}
+		}
+		return ids
+	}
+
+	tests := []struct {
+		name string
+		mode session.TimeFilterMode
+		want []string
+	}{
+		{"all", session.TimeFilterAll, []string{"s-today", "s-2days", "s-5days", "s-30days"}},
+		{"today", session.TimeFilterToday, []string{"s-today"}},
+		{"3 days", session.TimeFilter3Days, []string{"s-today", "s-2days"}},
+		{"7 days", session.TimeFilter7Days, []string{"s-today", "s-2days", "s-5days"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Home{}
+			h.timeFilter = tt.mode
+			h.groupTree = session.NewGroupTree(all)
+			h.windowsCollapsed = make(map[string]bool)
+			h.rebuildFlatItems()
+
+			got := sessionIDs(h)
+			if len(got) != len(tt.want) {
+				t.Fatalf("session count = %v, want %v", got, tt.want)
+			}
+			gotSet := make(map[string]bool, len(got))
+			for _, id := range got {
+				gotSet[id] = true
+			}
+			for _, id := range tt.want {
+				if !gotSet[id] {
+					t.Errorf("expected session %q in filtered list, got %v", id, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRebuildFlatItemsAutoClearsEmptyTimeFilter(t *testing.T) {
+	h := &Home{}
+	// Only session is 30 days old; "today" should match nothing.
+	inst := &session.Instance{ID: "s1", Title: "old", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: time.Now().AddDate(0, 0, -30)}
+	h.timeFilter = session.TimeFilterToday
+	h.groupTree = session.NewGroupTree([]*session.Instance{inst})
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	if h.timeFilter != session.TimeFilterAll {
+		t.Errorf("timeFilter should be auto-cleared when it matches nothing, got %v", h.timeFilter)
+	}
+	sessionCount := 0
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession {
+			sessionCount++
+		}
+	}
+	if sessionCount != 1 {
+		t.Errorf("expected 1 session in flatItems after auto-clear, got %d", sessionCount)
+	}
+}
+
+func TestRebuildFlatItemsTimeFilterComposesWithStatusFilter(t *testing.T) {
+	h := &Home{}
+	now := time.Now()
+	recentRunning := &session.Instance{ID: "s1", Title: "recent-running", Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now.Add(-time.Hour)}
+	recentIdle := &session.Instance{ID: "s2", Title: "recent-idle", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.Add(-time.Hour)}
+	oldRunning := &session.Instance{ID: "s3", Title: "old-running", Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now.AddDate(0, 0, -30)}
+
+	h.statusFilter = session.StatusRunning
+	h.timeFilter = session.TimeFilterToday
+	h.groupTree = session.NewGroupTree([]*session.Instance{recentRunning, recentIdle, oldRunning})
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	var ids []string
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			ids = append(ids, item.Session.ID)
+		}
+	}
+	if len(ids) != 1 || ids[0] != "s1" {
+		t.Errorf("expected only s1 (running AND today), got %v", ids)
 	}
 }
 
