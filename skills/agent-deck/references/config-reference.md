@@ -36,10 +36,11 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 ## Top-Level
 
 ```toml
-default_tool = "claude"   # Pre-selected tool when creating sessions
-default_path = ""         # Fallback project directory for add/launch without a path
-sync_title   = true       # Let agents rename sessions from their session-name
-group_sort   = "creation" # within-group order: "creation" (default) or "actionable"
+default_tool   = "claude"   # Pre-selected tool when creating sessions
+default_path   = ""         # Fallback project directory for add/launch without a path
+sync_title     = true       # Let agents rename sessions from their session-name
+group_sort     = "creation" # within-group order: "creation" (default) or "actionable"
+send_transport = "auto"     # `session send` delivery: "auto" (default) or "tmux"
 ```
 
 | Key | Type | Default | Description |
@@ -48,6 +49,7 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. A title you supply explicitly is already exempt: `add -t`, `launch -t`, the TUI New Session dialog, an explicit fork title, and `rename` all lock the title on creation (#1615/#1715), so only auto-derived folder-name titles follow the agent. The per-session title-lock (`agent-deck session set-title-lock <id> on|off`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
+| `send_transport` | string | `"auto"` | How `agent-deck session send` delivers to a Claude-compatible target (discussion #2089). `"auto"` (default) writes directly to Claude Code's own messaging socket when the target has one — a live process, `peerProtocol == 1`, a readable socket path — and falls back to tmux keystrokes on anything that fails a check *before* a byte is written (dead pid, stale record, no socket, old protocol, etc). Once a write to the socket starts, it is never retried on tmux, even on failure, to avoid double delivery. Claude's own inbox sends no in-band acknowledgement or refusal on any path, so a socket send reports `delivery: "queued_socket"` (accepted for the target's next turn boundary), not "consumed". A message that is a bare slash command (starts with `/`) always routes to tmux, because the socket path sets `skipSlashCommands`, and Claude would otherwise render e.g. `/compact` as literal text instead of running it. Set `"tmux"` to pin the historical keystroke path for every Claude send. |
 
 ## [shell] Section
 
