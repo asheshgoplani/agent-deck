@@ -141,6 +141,7 @@ type MenuSession struct {
 
 type storageLoader interface {
 	LoadWithGroups() ([]*session.Instance, []*session.GroupData, error)
+	GetUpdatedAt() (time.Time, error)
 	Close() error
 	// Profile returns the profile name actually opened — which, per the
 	// #1790 guard inside NewStorageWithProfile, may differ from the raw
@@ -263,6 +264,31 @@ func (s *SessionDataService) LoadMenuSnapshot() (*MenuSnapshot, error) {
 
 	active := session.FilterInstancesByArchive(instances, false)
 	return BuildMenuSnapshot(profile, active, groupsData, s.now()), nil
+}
+
+// MenuDataRevision returns the storage revision that changes after a persisted mutation.
+func (s *SessionDataService) MenuDataRevision() (int64, error) {
+	if s == nil {
+		return 0, fmt.Errorf("session data service is nil")
+	}
+	if s.openStorage == nil {
+		return 0, fmt.Errorf("storage opener is not configured")
+	}
+
+	storage, profile, err := s.resolveAndOpenStorage()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = storage.Close() }()
+
+	updatedAt, err := storage.GetUpdatedAt()
+	if err != nil {
+		return 0, fmt.Errorf("load menu data revision for profile %q: %w", profile, err)
+	}
+	if updatedAt.IsZero() {
+		return 0, nil
+	}
+	return updatedAt.UnixNano(), nil
 }
 
 // LoadArchivedMenuSnapshot returns a menu containing only archived sessions.
