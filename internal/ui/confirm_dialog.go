@@ -27,6 +27,7 @@ const (
 	ConfirmUnarchiveSession
 	ConfirmNotice // acknowledge-only message (single OK button), e.g. protected-action blocks
 	ConfirmInstallHermesHooks
+	ConfirmKillWindow
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -43,6 +44,8 @@ type ConfirmDialog struct {
 	hookEvents  []string
 
 	remoteName string // Remote name for remote session confirmations.
+
+	windowIndex int // Tmux window index for ConfirmKillWindow.
 
 	// Notice (ConfirmNotice) carries an acknowledge-only title/body.
 	noticeTitle string
@@ -81,6 +84,18 @@ func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, 
 	c.targetName = sessionName
 	c.sandboxed = sandboxed
 	c.worktree = worktree
+	c.buttonCount = 2
+	c.focusedButton = 1 // default to Cancel
+}
+
+// ShowKillWindow shows confirmation for killing a tmux window (sub-tab)
+// inside a session.
+func (c *ConfirmDialog) ShowKillWindow(sessionID string, windowIndex int, windowName string) {
+	c.visible = true
+	c.confirmType = ConfirmKillWindow
+	c.targetID = sessionID
+	c.targetName = windowName
+	c.windowIndex = windowIndex
 	c.buttonCount = 2
 	c.focusedButton = 1 // default to Cancel
 }
@@ -284,6 +299,11 @@ func (c *ConfirmDialog) GetConfirmType() ConfirmType {
 	return c.confirmType
 }
 
+// GetWindowIndex returns the tmux window index for ConfirmKillWindow.
+func (c *ConfirmDialog) GetWindowIndex() int {
+	return c.windowIndex
+}
+
 // GetRemoteName returns the remote name for remote session confirmations.
 func (c *ConfirmDialog) GetRemoteName() string {
 	return c.remoteName
@@ -404,6 +424,17 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y close · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmKillWindow:
+		title = "⚠  Kill Window?"
+		warning = fmt.Sprintf("This will kill tmux window %d:\n\n  \"%s\"", c.windowIndex, c.targetName)
+		details = "• Any processes in the window will be killed\n• Other windows in the session are unaffected"
+		borderColor = ColorRed
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Kill", ColorRed, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y kill · n cancel · ←/→ navigate · Enter select · Esc"))
 
 	case ConfirmDeleteRemoteSession:
 		title = "⚠  Delete Remote Session?"

@@ -95,6 +95,21 @@ func GetCachedWindows(sessionName string) []WindowInfo {
 	return result
 }
 
+// RemoveCachedWindow prunes one window from the cache so the TUI drops the
+// row immediately after a kill-window instead of waiting up to a full
+// refresh tick for the stale entry to age out.
+func RemoveCachedWindow(sessionName string, index int) {
+	windowCacheMu.Lock()
+	defer windowCacheMu.Unlock()
+	wins := windowCacheData[sessionName]
+	for i, w := range wins {
+		if w.Index == index {
+			windowCacheData[sessionName] = append(wins[:i:i], wins[i+1:]...)
+			return
+		}
+	}
+}
+
 // updateWindowToolCache replaces the entire tool cache with new data.
 // Called ONLY by RefreshPaneInfoCache — tool detection lives there.
 func updateWindowToolCache(windowTools map[string]map[int]string) {
