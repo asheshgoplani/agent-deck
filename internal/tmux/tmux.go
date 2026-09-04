@@ -175,14 +175,9 @@ func (s *Session) projectDisplayName() string {
 // Callers should preserve previous state rather than transitioning to error/inactive.
 var ErrCaptureTimeout = errors.New("capture-pane timed out")
 
-// ErrCaptureGone is returned by the history-capture helpers when capture-pane
-// failed specifically because the target session/pane (or the tmux server) is
-// gone — the post-completion teardown or resume race described in plan 001.
-// This is a benign, retryable non-event: callers on the response-read path
-// should degrade to an empty response instead of surfacing the opaque
-// "failed to capture terminal output: ... exit status 1" error. It deliberately
-// does NOT drive crash-vs-clean status classification (that stays gated for a
-// separate review); it only makes the read path honest.
+// ErrCaptureGone means a history capture failed because its target or server
+// disappeared. Best-effort response readers can return an empty response;
+// this sentinel does not change session status classification.
 var ErrCaptureGone = errors.New("capture-pane target is gone")
 
 // captureGoneMarkers are the lower-cased tmux stderr fragments that mean the
@@ -201,7 +196,6 @@ var captureGoneMarkers = []string{
 	"no server running",
 	"lost server",
 	"server exited unexpectedly",
-	"error connecting to", // stale/closed socket path
 }
 
 // captureGoneFromErr reports whether a capture-pane failure was caused by the
@@ -215,7 +209,12 @@ func captureGoneFromErr(err error) bool {
 	if !errors.As(err, &exitErr) {
 		return false
 	}
-	stderr := strings.ToLower(string(exitErr.Stderr))
+	stderr := strings.ToLower(strings.TrimSpace(string(exitErr.Stderr)))
+	// Connection errors also cover permissions and malformed sockets. Only an
+	// explicitly missing socket is benign; never match markers inside its path.
+	if strings.HasPrefix(stderr, "error connecting to ") {
+		return strings.HasSuffix(stderr, " (no such file or directory)")
+	}
 	if stderr == "" {
 		return false
 	}

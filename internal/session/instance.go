@@ -7396,29 +7396,16 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 
 	// Final fallback: terminal parsing (works for all tools).
 	if i.tmuxSession != nil {
-		if terminalResp, terminalErr := i.getTerminalLastResponse(); terminalErr == nil {
+		terminalResp, terminalErr := i.getTerminalLastResponse()
+		if terminalErr == nil {
 			return terminalResp, nil
 		}
+		err = terminalErr
 	}
 
-	// A vanished session/pane is benign for EVERY tool: the session is simply
-	// gone (post-completion teardown / resume race), not crashed. Return an
-	// empty response rather than surfacing the capture-gone error. This is the
-	// read-path half of plan 001; it does not change status classification.
-	if errors.Is(err, tmux.ErrCaptureGone) {
-		toolName := i.Tool
-		if IsClaudeCompatible(toolName) {
-			toolName = "claude"
-		}
-		return &ResponseOutput{
-			Tool:    toolName,
-			Role:    "assistant",
-			Content: "",
-		}, nil
-	}
-
-	// For Claude and Gemini, prefer a graceful empty response instead of a hard error.
-	if IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
+	// A vanished terminal is benign for every tool. Preserve the existing
+	// graceful-empty behavior for Claude and Gemini when recovery fails.
+	if errors.Is(err, tmux.ErrCaptureGone) || IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
 		toolName := i.Tool
 		if IsClaudeCompatible(toolName) {
 			toolName = "claude"
@@ -8192,14 +8179,6 @@ func (i *Instance) getTerminalLastResponse() (*ResponseOutput, error) {
 	// Capture full history
 	content, err := i.tmuxSession.CaptureFullHistory()
 	if err != nil {
-		// A vanished session/pane (post-completion teardown or resume race) is a
-		// benign, retryable non-event. Propagate the sentinel so best-effort
-		// callers can degrade to an empty response instead of the opaque
-		// "failed to capture terminal output: ... exit status 1" error that the
-		// conductor kept surfacing. See plan 001.
-		if errors.Is(err, tmux.ErrCaptureGone) {
-			return nil, tmux.ErrCaptureGone
-		}
 		return nil, fmt.Errorf("failed to capture terminal output: %w", err)
 	}
 

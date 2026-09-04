@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,10 @@ func TestCaptureGoneFromErr_KnownStderrMarkers(t *testing.T) {
 		{"lost server", "lost server", true},
 		{"server exited", "server exited unexpectedly", true},
 		{"stale socket", "error connecting to /private/tmp/tmux-501/adtmux (No such file or directory)", true},
+		{"permission denied", "error connecting to /tmp/blocked/socket (Permission denied)", false},
+		{"bad socket", "error connecting to /tmp/socket (Not a socket)", false},
+		{"connection refused", "error connecting to /tmp/socket (Connection refused)", false},
+		{"misleading socket path", "error connecting to /tmp/no server running/socket (Permission denied)", false},
 		{"case insensitive", "Can't Find Session: X", true},
 		{"marker mid-message", "capture-pane: can't find pane: %9", true},
 
@@ -101,24 +106,67 @@ func TestCaptureFullHistory_LiveSessionNotGone(t *testing.T) {
 	}
 	socket := fmt.Sprintf("adeck-live-test-%d", os.Getpid())
 	name := "agentdeck_capture_live_probe"
-	run := func(args ...string) {
-		_ = exec.Command("tmux", append([]string{"-L", socket}, args...)...).Run()
+	if out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", name, "printf 'done-marker\\n'; sleep 30").CombinedOutput(); err != nil {
+		t.Fatalf("start isolated tmux: %v: %s", err, out)
 	}
-	// Keep the pane alive during capture so we test a present session, not a
-	// teardown race.
-	run("new-session", "-d", "-s", name, "printf 'done-marker\\n'; sleep 5")
-	defer run("kill-server")
-	time.Sleep(400 * time.Millisecond)
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-session", "-t", name).Run() })
 
 	sess := &Session{Name: name, SocketName: socket}
-	out, err := sess.CaptureFullHistory()
-	if errors.Is(err, ErrCaptureGone) {
-		t.Fatalf("present session misclassified as gone: %v", err)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		out, err := sess.CaptureFullHistory()
+		if err != nil {
+			t.Fatalf("CaptureFullHistory on live session: %v", err)
+		}
+		if strings.Contains(out, "done-marker") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("captured history missing expected content; got %q", out)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if err != nil {
-		t.Fatalf("CaptureFullHistory on live session errored: %v", err)
+	// The server remains alive, but this particular capture target is absent.
+	missing := &Session{Name: name + "_missing", SocketName: socket}
+	if _, err := missing.CaptureFullHistory(); !errors.Is(err, ErrCaptureGone) {
+		t.Fatalf("missing target on live server = %v, want ErrCaptureGone", err)
 	}
-	if !strings.Contains(out, "done-marker") {
-		t.Fatalf("captured history missing expected content; got %q", out)
+}
+
+func TestCaptureHistory_PermissionDeniedIsNotGone(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+	// An inaccessible parent directory makes the actual tmux connect fail with EACCES.
+	root := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", root)
+	dir := filepath.Join(root, fmt.Sprintf("tmux-%d", os.Getuid()), "blocked")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+	if _, err := os.ReadDir(dir); err == nil {
+		t.Skip("process can bypass directory permissions")
+	}
+	sess := &Session{Name: "missing", SocketName: "blocked/socket"}
+	for _, capture := range []struct {
+		name string
+		run  func() (string, error)
+	}{
+		{"full", sess.CaptureFullHistory}, {"lines", func() (string, error) { return sess.CaptureHistoryLines(20) }},
+	} {
+		t.Run(capture.name, func(t *testing.T) {
+			_, err := capture.run()
+			if err == nil || errors.Is(err, ErrCaptureGone) {
+				t.Fatalf("permission failure = %v, want non-gone error", err)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || !strings.Contains(strings.ToLower(string(exitErr.Stderr)), "permission denied") {
+				t.Fatalf("expected real tmux permission error: %v", err)
+			}
+		})
 	}
 }
