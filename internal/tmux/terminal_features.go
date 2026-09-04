@@ -101,11 +101,19 @@ func terminalFeatureArgsFor(st terminalFeatureState) []string {
 	}
 	if !safeToRewriteTerminalFeatures(st.values) {
 		// The array holds something we cannot express as one comma-joined
-		// value, so rewriting it could corrupt or drop a user entry. Fall back
-		// to the historical append — still bounded, because we only reach it
-		// when our entry is absent from an array we DID read, and the next
-		// read finds it present. `-q` keeps a tmux too old for the option
-		// quiet, as before.
+		// value, so rewriting it could corrupt or drop a user entry. changed
+		// can be true here for two reasons, and only one of them gets a write:
+		//
+		//   - our entry is ABSENT: fall back to the historical append. Still
+		//     bounded, because the next read finds it present. `-q` keeps a
+		//     tmux too old for the option quiet, as before.
+		//   - our entry is DUPLICATED: do nothing. The duplicates cannot be
+		//     collapsed without the rewrite, and appending would add one more
+		//     copy per pass forever — #2061 again, on the one server shape
+		//     this fallback exists for.
+		if countTerminalFeature(st.values) > 0 {
+			return nil
+		}
 		return []string{";", "set", "-asq", "terminal-features", "," + agentDeckTerminalFeature}
 	}
 	return []string{";", "set", "-sq", "terminal-features", strings.Join(desired, ",")}
@@ -180,11 +188,14 @@ func safeToRewriteTerminalFeatures(values []string) bool {
 func (s *Session) terminalFeatureArgs() []string {
 	st := readTerminalFeatures(s.SocketName)
 	args := terminalFeatureArgsFor(st)
-	if st.known && len(args) > 0 {
+	if isTerminalFeaturesRewrite(args) {
 		if dupes := countTerminalFeature(st.values) - 1; dupes > 0 {
 			// Collapsing an already-inflated server. Worth a log line: this is
 			// the state that produced the reported display corruption, and the
-			// count is the only evidence a support thread can quote.
+			// count is the only evidence a support thread can quote. Gated on
+			// the whole-array rewrite, not merely on "something was written":
+			// the append fallback never collapses anything, and a log claiming
+			// it did would send a support thread the wrong way.
 			statusLog.Info("terminal_features_collapsed",
 				slog.String("socket", s.SocketName),
 				slog.Int("duplicates_removed", dupes),
@@ -192,6 +203,13 @@ func (s *Session) terminalFeatureArgs() []string {
 		}
 	}
 	return args
+}
+
+// isTerminalFeaturesRewrite reports whether args is the whole-array
+// `set -sq terminal-features …` chunk from terminalFeatureArgsFor — the only
+// write that can remove entries.
+func isTerminalFeaturesRewrite(args []string) bool {
+	return len(args) >= 3 && args[1] == "set" && args[2] == "-sq"
 }
 
 // countTerminalFeature counts occurrences of agent-deck's entry in values.

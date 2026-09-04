@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,16 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 		known:  true,
 		values: append(unsafe, agentDeckTerminalFeature),
 	}), "unsafe array with our entry present must produce no write")
+
+	// Unsafe AND already inflated: the one combination that must NOT fall back
+	// to the append. The array cannot be rewritten (so the duplicates stay),
+	// but our entry IS present, so an append would add one more copy on every
+	// pass — #2061 re-opened for exactly the servers that need healing most.
+	// Leaving the duplicates in place is the honest answer: the read told us
+	// it is not the whole truth, and a write from that read is a guess.
+	unsafeInflated := append(append([]string{}, unsafe...), agentDeckTerminalFeature, agentDeckTerminalFeature)
+	assert.Nil(t, terminalFeatureArgsFor(terminalFeatureState{known: true, values: unsafeInflated}),
+		"unsafe array with our entry duplicated must not append another copy")
 }
 
 func TestClassifyTerminalFeatures(t *testing.T) {
@@ -244,6 +255,47 @@ func TestTerminalFeatures_CollapsesInflatedServer(t *testing.T) {
 	for _, existing := range baseline.values {
 		assert.Contains(t, healed.values, existing, "tmux default must survive the collapse")
 	}
+}
+
+// TestTerminalFeatures_UnsafeInflatedServerNeverGrows is the collapse test's
+// evil twin. A user entry stored under an explicit index, `set -s
+// 'terminal-features[9]' 'foo,bar'`, comes back from `show-options -sv` as a
+// comma-carrying line, so the array can no longer be rewritten as one
+// comma-joined value and the collapse is off the table. That is acceptable —
+// but the fallback must then be "leave it alone", not "append": with our entry
+// already present (200 times, here) an append per pass is #2061 again, on the
+// one server shape the fix declared it could not heal. The array must not shrink
+// (we cannot safely rewrite it) and must not grow (we can see our entry).
+func TestTerminalFeatures_UnsafeInflatedServerNeverGrows(t *testing.T) {
+	socket, session := startPrivateTmuxServer(t)
+
+	require.NoError(t, tmuxExec(socket, "set", "-s", "terminal-features[9]", "foo,bar").Run())
+	const inflation = 200
+	for range inflation {
+		require.NoError(t, tmuxExec(socket, "set", "-asq", "terminal-features",
+			","+agentDeckTerminalFeature).Run())
+	}
+	inflated := readTerminalFeatures(socket)
+	require.True(t, inflated.known)
+	require.False(t, safeToRewriteTerminalFeatures(inflated.values),
+		"pre-condition: the indexed comma entry must make the array unsafe to rewrite, got: %v", inflated.values)
+	require.Equal(t, inflation, countTerminalFeature(inflated.values),
+		"pre-condition: the historical append must have grown the array")
+
+	sess := &Session{Name: session, SocketName: socket, mouse: true}
+	const passes = 3
+	for range passes {
+		require.NoError(t, sess.EnableMouseMode())
+	}
+
+	after := readTerminalFeatures(socket)
+	require.True(t, after.known)
+	assert.Equal(t, len(inflated.values), len(after.values),
+		"%d passes against an unsafe-to-rewrite array that already holds our entry must not change its size", passes)
+	assert.True(t, slices.Equal(inflated.values, after.values),
+		"%d passes must leave the array exactly as it was (%d entries before, %d after, %d copies of ours before, %d after)",
+		passes, len(inflated.values), len(after.values),
+		countTerminalFeature(inflated.values), countTerminalFeature(after.values))
 }
 
 // TestTerminalFeatures_EmptyArrayServerGetsOneEntry covers the server whose
@@ -460,14 +512,16 @@ func TestTerminalFeatures_UnreadableServerNeverGrows(t *testing.T) {
 	assert.False(t, partial.known, "the shim must make the read come back unreadable, got values: %v", partial.values)
 
 	sess := &Session{Name: session, SocketName: socket, mouse: true}
+	// No wall-clock assertion here, on purpose. That each pass returns at
+	// WaitDelay rather than waiting out the shim's lingering child is the
+	// runtime half of the WaitDelay contract, pinned by socket_waitdelay_test.go
+	// with its own budget; repeating it against real tmux round trips gave a
+	// bound that was either loose enough to miss a regression or tight enough
+	// to flake on a loaded runner. What this test owns is the array.
 	const passes = 3
-	start := time.Now()
 	for range passes {
 		require.NoError(t, sess.EnableMouseMode())
 	}
-	elapsed := time.Since(start)
-	assert.Less(t, elapsed, passes*(tmuxSubprocessWaitDelay+tmuxPollTimeout),
-		"each pass must be bounded by WaitDelay, not by the lingering child")
 
 	restore()
 	after := readTerminalFeatures(socket)
