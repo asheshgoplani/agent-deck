@@ -26,6 +26,7 @@ type MemoryMenuData struct {
 	snapshotFromFallback bool
 	fallbackRevision     int64
 	lastRevisionCheck    time.Time
+	lastFallbackError    error
 }
 
 const (
@@ -48,13 +49,26 @@ func NewMemoryMenuData(fallback MenuDataLoader) *MemoryMenuData {
 
 // LoadMenuSnapshot returns the latest complete snapshot.
 // It rate-limits storage checks for fallback-owned snapshots.
-func (m *MemoryMenuData) LoadMenuSnapshot() (*MenuSnapshot, error) {
+func (m *MemoryMenuData) LoadMenuSnapshot() (snapshot *MenuSnapshot, err error) {
 	if m == nil {
 		return nil, fmt.Errorf("menu snapshot is unavailable")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Coalesce failed reads as well as successful revision checks. Keep the
+	// error visible during the retry interval instead of serving stale data
+	// as a successful refresh. Explicit invalidation or publishing resets it.
+	if m.lastFallbackError != nil && time.Since(m.lastRevisionCheck) < memoryMenuRevisionCheckInterval {
+		return nil, m.lastFallbackError
+	}
+	defer func() {
+		m.lastFallbackError = err
+		if err != nil {
+			m.lastRevisionCheck = time.Now()
+		}
+	}()
 
 	if m.snapshot == nil {
 		return m.loadFallbackSnapshotLocked()
@@ -153,6 +167,7 @@ func (m *MemoryMenuData) InvalidateCache() {
 	m.snapshotFromFallback = false
 	m.fallbackRevision = 0
 	m.lastRevisionCheck = time.Time{}
+	m.lastFallbackError = nil
 	m.mu.Unlock()
 }
 
@@ -166,6 +181,7 @@ func (m *MemoryMenuData) SetSnapshot(snapshot *MenuSnapshot) {
 	m.snapshotFromFallback = false
 	m.fallbackRevision = 0
 	m.lastRevisionCheck = time.Time{}
+	m.lastFallbackError = nil
 	m.mu.Unlock()
 }
 
