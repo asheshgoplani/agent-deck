@@ -21,7 +21,9 @@ import (
 // string field without escaping concerns and is cheap to grep for.
 func EventFingerprint(e TransitionNotificationEvent) string {
 	var b strings.Builder
-	b.Grow(len(e.ChildSessionID) + len(e.FromStatus) + len(e.ToStatus) + len(e.LastOutputHash) + 32)
+	b.Grow(len(e.SourceRemote) + len(e.ChildSessionID) + len(e.FromStatus) + len(e.ToStatus) + len(e.LastOutputHash) + 33)
+	b.WriteString(strings.TrimSpace(e.SourceRemote))
+	b.WriteByte('|')
 	b.WriteString(strings.TrimSpace(e.ChildSessionID))
 	b.WriteByte('|')
 	b.WriteString(strings.ToLower(strings.TrimSpace(e.FromStatus)))
