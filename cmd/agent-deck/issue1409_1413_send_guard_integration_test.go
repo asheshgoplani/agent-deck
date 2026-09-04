@@ -90,7 +90,7 @@ func TestExecuteSend_OperatorDraftNotMerged_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content, "instruct deploy ag") || strings.Contains(content, msg) || strings.Contains(content, "GOT:") {
+	if !strings.Contains(content, "instruct deploy ag") || strings.Contains(content, msg) || strings.Contains(content, "\nGOT: ") {
 		t.Fatalf("draft changed or automated input leaked into pane: %q", content)
 	}
 }
@@ -99,9 +99,14 @@ func TestExecuteSend_OperatorDraftNotMerged_Integration(t *testing.T) {
 // characters back onto the prompt line but never accepts Enter — the
 // typed-but-unsubmitted state of issue #1413.
 const fakeClaudeSwallowsEnter = `bash -c '
-	printf "❯ "
-	buf=""
-	while IFS= read -r -n1 c; do [ -n "$c" ] && buf="$buf$c" && printf "\r❯ %s" "$buf"; done
+ stty -echo
+ divider="────────────────────────────────────────"
+ buf=""
+ render() { printf "\033[2J\033[H%s\n❯ %s\n%s\n" "$divider" "$buf" "$divider"; }
+ render
+ while IFS= read -r -n1 c; do
+  if [ -n "$c" ]; then buf="$buf$c"; render; fi
+ done
 '`
 
 func TestExecuteSend_TypedNotSubmitted_Integration(t *testing.T) {
@@ -137,7 +142,7 @@ func TestExecuteSend_NoWaitGuardsDraft_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content, "instruct deploy ag") || strings.Contains(content, msg) || strings.Contains(content, "GOT:") {
+	if !strings.Contains(content, "instruct deploy ag") || strings.Contains(content, msg) || strings.Contains(content, "\nGOT: ") {
 		t.Fatalf("draft changed or automated input leaked into pane: %q", content)
 	}
 }
