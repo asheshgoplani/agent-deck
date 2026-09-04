@@ -232,123 +232,63 @@ func TestExecuteSend_HoldsWhileOperatorDraftPresent(t *testing.T) {
 	}
 }
 
-func TestExecuteSend_SaveClearRestoreAroundBusyComposer(t *testing.T) {
-	// The operator draft never clears on its own: at the hold bound the guard
-	// must save it, clear the composer, deliver the automated message, and
-	// restore the draft after delivery is confirmed.
-	mock := &guardedSendMock{
-		draftPane:        claudeComposer("instruct deploy ag"),
-		postSendPanes:    []string{""},
-		postSendStatuses: []string{"active", "active"},
+func TestExecuteSend_RefusesBusyComposer(t *testing.T) {
+	mock := &guardedSendMock{draftPane: claudeComposer("operator draft"), chunkedErr: errors.New("typing unavailable")}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 40, checkDelay: 0, verifyDelivery: true})
+	res, err := executeSend(mock, "claude", "AUTOMATED", false, tun)
+	if err == nil || res.delivery != deliveryComposerBlocked {
+		t.Fatalf("expected explicit unsent refusal, got %+v %v", res, err)
 	}
-	tun := testGuardTuning(sendRetryOptions{maxRetries: 5, checkDelay: 0, verifyDelivery: true})
-	res, err := executeSend(mock, "claude", "[EVENT] child waiting", false, tun)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if mock.ctrlCCalls != 0 || mock.sendKeysCalls != 0 || mock.enterCalls != 0 || mock.chunkedCalls != 0 {
+		t.Fatalf("refusal mutated composer: %+v", mock)
 	}
-	if got := atomic.LoadInt32(&mock.ctrlCCalls); got != 1 {
-		t.Fatalf("expected 1 Ctrl+C to clear the busy composer, got %d", got)
-	}
-	if res.draftSaved != "instruct deploy ag" {
-		t.Fatalf("saved draft: want %q, got %q", "instruct deploy ag", res.draftSaved)
-	}
-	if !res.draftRestored {
-		t.Fatal("issue #1409: operator draft must be restored after delivery")
-	}
-	if mock.chunkedText != "instruct deploy ag" {
-		t.Fatalf("restored text: want %q, got %q", "instruct deploy ag", mock.chunkedText)
-	}
-	if mock.restoredBeforeSend {
-		t.Fatal("draft restore must happen after the automated delivery, not before")
-	}
-	if res.delivery != deliverySubmitted {
-		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, res.delivery)
+	if res.draftSaved != "" || res.draftRestored || res.draftCleared {
+		t.Fatalf("draft must stay in place: %+v", res)
 	}
 }
 
-func TestExecuteSend_NoRestoreWhenTypedNotSubmitted(t *testing.T) {
-	// If the automated message itself ends typed-but-unsubmitted, restoring
-	// the operator draft would merge it into the stuck composer — exactly the
-	// #1409 collision. The draft must stay saved (surfaced to the caller),
-	// not retyped.
-	const msg = "[EVENT] child waiting on approval gate"
-	mock := &guardedSendMock{
-		draftPane:        claudeComposer("instruct deploy ag"),
-		postSendPanes:    []string{claudeComposer(msg)},
-		postSendStatuses: []string{"waiting"},
+func TestExecuteSend_RefusesBeforeTypingIntoOccupiedComposer(t *testing.T) {
+	mock := &guardedSendMock{draftPane: claudeComposer("operator draft"), chunkedErr: errors.New("typing unavailable")}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 40, checkDelay: 0, verifyDelivery: true})
+	res, err := executeSend(mock, "claude", "AUTOMATED", false, tun)
+	if err == nil || res.delivery != deliveryComposerBlocked {
+		t.Fatalf("expected explicit unsent refusal, got %+v %v", res, err)
 	}
-	tun := testGuardTuning(sendRetryOptions{maxRetries: 4, checkDelay: 0, verifyDelivery: true})
-	res, err := executeSend(mock, "claude", msg, false, tun)
-	if err == nil {
-		t.Fatal("expected typed_not_submitted error")
+	if mock.ctrlCCalls != 0 || mock.sendKeysCalls != 0 || mock.enterCalls != 0 || mock.chunkedCalls != 0 {
+		t.Fatalf("refusal mutated composer: %+v", mock)
 	}
-	if res.delivery != deliveryTypedNotSubmitted {
-		t.Fatalf("delivery: want %q, got %q", deliveryTypedNotSubmitted, res.delivery)
-	}
-	if res.draftRestored || atomic.LoadInt32(&mock.chunkedCalls) != 0 {
-		t.Fatal("draft must NOT be restored into a composer stuck holding the automated message")
-	}
-	if res.draftSaved != "instruct deploy ag" {
-		t.Fatalf("saved draft must be surfaced for recovery, got %q", res.draftSaved)
+	if res.draftSaved != "" || res.draftRestored || res.draftCleared {
+		t.Fatalf("draft must stay in place: %+v", res)
 	}
 }
 
-func TestExecuteSend_RestoreFailureIsSurfacedNotSwallowed(t *testing.T) {
-	// Delivery succeeds and the guard cleared the operator draft, but typing
-	// the draft back fails (SendKeysChunked errors). The draft is no longer on
-	// screen, so the result must flag the restore failure and keep draftSaved
-	// for recovery — not report a clean success that silently lost the draft.
-	mock := &guardedSendMock{
-		draftPane:        claudeComposer("instruct deploy ag"),
-		postSendPanes:    []string{""},
-		postSendStatuses: []string{"active", "active"},
-		chunkedErr:       errors.New("tmux send-keys failed"),
+func TestExecuteSend_PreservesDraftWithoutDependingOnRestoration(t *testing.T) {
+	mock := &guardedSendMock{draftPane: claudeComposer("operator draft"), chunkedErr: errors.New("typing unavailable")}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 40, checkDelay: 0, verifyDelivery: true})
+	res, err := executeSend(mock, "claude", "AUTOMATED", false, tun)
+	if err == nil || res.delivery != deliveryComposerBlocked {
+		t.Fatalf("expected explicit unsent refusal, got %+v %v", res, err)
 	}
-	tun := testGuardTuning(sendRetryOptions{maxRetries: 5, checkDelay: 0, verifyDelivery: true})
-	res, err := executeSend(mock, "claude", "[EVENT] child waiting", false, tun)
-	if err != nil {
-		t.Fatalf("delivery should still succeed (the automated message went through): %v", err)
+	if mock.ctrlCCalls != 0 || mock.sendKeysCalls != 0 || mock.enterCalls != 0 || mock.chunkedCalls != 0 {
+		t.Fatalf("refusal mutated composer: %+v", mock)
 	}
-	if res.delivery != deliverySubmitted {
-		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, res.delivery)
-	}
-	if res.draftSaved != "instruct deploy ag" {
-		t.Fatalf("saved draft must be retained for recovery, got %q", res.draftSaved)
-	}
-	if res.draftRestored {
-		t.Fatal("draftRestored must be false when the type-back failed")
-	}
-	if !res.draftRestoreFailed {
-		t.Fatal("draftRestoreFailed must be set so the lost draft is surfaced, not swallowed")
-	}
-	if _, ok := res.jsonFields()["draft_restore_failed"]; !ok {
-		t.Fatal("draft_restore_failed must appear in jsonFields for machine-readable recovery")
+	if res.draftSaved != "" || res.draftRestored || res.draftCleared {
+		t.Fatalf("draft must stay in place: %+v", res)
 	}
 }
 
 func TestExecuteSend_NoWaitStillGuardsComposer(t *testing.T) {
-	// --no-wait skips the readiness wait, NOT the composer guard (#1409) or
-	// submit verification (#1413).
-	mock := &guardedSendMock{
-		draftPane:        claudeComposer("half typed operator message"),
-		postSendPanes:    []string{""},
-		postSendStatuses: []string{"active", "active"},
+	mock := &guardedSendMock{draftPane: claudeComposer("operator draft"), chunkedErr: errors.New("typing unavailable")}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 40, checkDelay: 0, verifyDelivery: true})
+	res, err := executeSend(mock, "claude", "AUTOMATED", true, tun)
+	if err == nil || res.delivery != deliveryComposerBlocked {
+		t.Fatalf("expected explicit unsent refusal, got %+v %v", res, err)
 	}
-	tun := testGuardTuning(noWaitSendOptions())
-	tun.retry.checkDelay = 0
-	res, err := executeSend(mock, "claude", "[INBOX] wake", true, tun)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if mock.ctrlCCalls != 0 || mock.sendKeysCalls != 0 || mock.enterCalls != 0 || mock.chunkedCalls != 0 {
+		t.Fatalf("refusal mutated composer: %+v", mock)
 	}
-	if got := atomic.LoadInt32(&mock.ctrlCCalls); got != 1 {
-		t.Fatalf("--no-wait must still clear a busy composer, got %d Ctrl+C calls", got)
-	}
-	if !res.draftRestored || mock.chunkedText != "half typed operator message" {
-		t.Fatalf("--no-wait must still restore the draft, got restored=%v text=%q",
-			res.draftRestored, mock.chunkedText)
-	}
-	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
-		t.Fatalf("#479 guard: exactly 1 SendKeysAndEnter expected, got %d", got)
+	if res.draftSaved != "" || res.draftRestored || res.draftCleared {
+		t.Fatalf("draft must stay in place: %+v", res)
 	}
 }
 

@@ -4632,15 +4632,12 @@ func (h *Home) backgroundStatusUpdate() {
 				conductorName := strings.TrimPrefix(inst.Title, "conductor-")
 				safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
 					time.Sleep(500 * time.Millisecond)
-					_ = tmuxSess.SendKeysAndEnter("/clear")
-					// After /clear wipes context, immediately send heartbeat to restore orientation
-					time.Sleep(3 * time.Second)
-					_ = session.DefaultProfile
-					if meta, err := session.LoadConductorMeta(conductorName); err == nil {
-						_ = meta.Profile
-					}
 					msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
-					_ = tmuxSess.SendKeysAndEnter(msg)
+					if err := clearConductorAndHeartbeat(func(body string) error {
+						return deliverToConductorPane(tmuxSess, body)
+					}, msg, 3*time.Second); err != nil {
+						uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
+					}
 				})
 			}
 		}
@@ -10554,10 +10551,21 @@ func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
 // Intended to run inside a goroutine.
 //
 // Issue #1409: delivery is composer-guarded — a pane whose composer holds a
-// half-typed operator draft is held briefly, then the draft is saved, cleared
-// and restored around the automated send so it cannot merge with it.
+// half-typed operator draft is held briefly, then refused without modifying it.
 func deliverToConductorPane(p guardableConductorPane, msg string) error {
 	return deliverToConductorPaneGuarded(p, msg, conductorComposerGuardOptions(), 40, 250*time.Millisecond)
+}
+
+// clearConductorAndHeartbeat rechecks the composer independently for each
+// delivery. A failed clear must never be followed by a heartbeat.
+func clearConductorAndHeartbeat(deliver func(string) error, heartbeat string, settle time.Duration) error {
+	if err := deliver("/clear"); err != nil {
+		return err
+	}
+	if settle > 0 {
+		time.Sleep(settle)
+	}
+	return deliver(heartbeat)
 }
 
 // conductorComposerGuardOptions are the production bounds of the watcher/
@@ -10573,37 +10581,18 @@ func conductorComposerGuardOptions() send.ComposerGuardOptions {
 	}
 }
 
-// deliverToConductorPaneGuarded wraps deliverToConductorPaneTuned with the
-// issue #1409 composer-draft guard: hold while an operator draft occupies the
-// composer; at the bound save-clear it; restore it (typed back, no Enter)
-// once the automated delivery is confirmed. When delivery is NOT confirmed
-// the draft is intentionally not retyped — the composer may still hold the
-// automated message and restoring would recreate the merge this guard exists
-// to prevent; the saved draft is logged instead.
+// deliverToConductorPaneGuarded waits for operator input to clear naturally.
+// If it remains or cannot be read, refuse before sending any input.
 func deliverToConductorPaneGuarded(p guardableConductorPane, msg string, guardOpts send.ComposerGuardOptions, maxChecks int, checkDelay time.Duration) error {
 	guard := send.GuardComposerDraft(p, guardOpts)
+	if guard.Refused {
+		return fmt.Errorf("message not sent: composer is occupied or unreadable; existing draft preserved")
+	}
 	// guard.ComposerPasteMarkerFree is the #1777 provenance the verify loop
 	// needs: the guard's pre-send capture saw a composer with no
 	// "[Pasted text …]" marker, so a marker seen during verification is the
 	// collapsed rendering of OUR framed multi-line payload (issue #1855).
-	err := deliverToConductorPaneAttributed(p, msg, guard.ComposerPasteMarkerFree, maxChecks, checkDelay)
-	if guard.SavedDraft != "" {
-		if err == nil {
-			// Delivery confirmed: type the operator draft back. If the
-			// type-back itself fails the draft is no longer on screen — log
-			// it so the loss is visible and recoverable, not swallowed.
-			if restoreErr := p.SendKeysChunked(guard.SavedDraft); restoreErr != nil {
-				uiLog.Warn("conductor_dispatch_draft_restore_failed",
-					slog.String("saved_draft", guard.SavedDraft),
-					slog.String("error", restoreErr.Error()))
-			}
-		} else {
-			uiLog.Warn("conductor_dispatch_draft_not_restored",
-				slog.String("saved_draft", guard.SavedDraft),
-				slog.String("error", err.Error()))
-		}
-	}
-	return err
+	return deliverToConductorPaneAttributed(p, msg, guard.ComposerPasteMarkerFree, maxChecks, checkDelay)
 }
 
 // conductorPane is the slice of *tmux.Session that reliable delivery needs.
@@ -10620,8 +10609,6 @@ type conductorPane interface {
 // composer guard needs. *tmux.Session satisfies it.
 type guardableConductorPane interface {
 	conductorPane
-	SendCtrlC() error
-	SendKeysChunked(string) error
 }
 
 // blindEnterCap bounds the fallback Enter presses for agents whose composer is

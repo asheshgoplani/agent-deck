@@ -152,54 +152,33 @@ func TestGuardComposerDraft_HoldsUntilOperatorDraftClears(t *testing.T) {
 	}
 }
 
-func TestGuardComposerDraft_SaveClearAtHoldBound(t *testing.T) {
-	target := &fakeGuardTarget{
-		captures:     []string{renderComposer("instruct deploy ag")},
-		clearOnCtrlC: true,
-	}
-	res := GuardComposerDraft(target, ComposerGuardOptions{
-		HoldWait: 0, PollInterval: time.Millisecond, ClearWait: 50 * time.Millisecond,
-	})
-	if res.SavedDraft != "instruct deploy ag" {
-		t.Fatalf("expected operator draft to be saved, got %q", res.SavedDraft)
-	}
-	if !res.DraftCleared {
-		t.Fatal("expected DraftCleared after Ctrl+C emptied the composer")
-	}
-	if res.ClearFailed {
-		t.Fatal("did not expect ClearFailed")
-	}
-	if target.ctrlCCalls != 1 {
-		t.Fatalf("expected exactly 1 Ctrl+C, got %d", target.ctrlCCalls)
+func TestGuardComposerDraft_RefusesAtHoldBound(t *testing.T) {
+	target := &fakeGuardTarget{captures: []string{renderComposer("operator draft")}, clearOnCtrlC: true}
+	for i := 0; i < 3; i++ {
+		res := GuardComposerDraft(target, ComposerGuardOptions{HoldWait: time.Millisecond, PollInterval: time.Millisecond})
+		if !res.Refused || res.SavedDraft != "" || res.DraftCleared || target.ctrlCCalls != 0 {
+			t.Fatalf("must refuse without changing input: %+v, interrupts=%d", res, target.ctrlCCalls)
+		}
 	}
 }
 
-func TestGuardComposerDraft_ClearFailureIsBoundedAndReported(t *testing.T) {
-	// Composer never clears even after Ctrl+C: the guard must give up after a
-	// bounded number of attempts and report ClearFailed (delivery proceeds —
-	// watchers/conductors depend on the send going through).
-	target := &fakeGuardTarget{captures: []string{renderComposer("stuck draft")}}
-	res := GuardComposerDraft(target, ComposerGuardOptions{
-		HoldWait: 0, PollInterval: time.Millisecond, ClearWait: time.Millisecond,
-	})
-	if res.SavedDraft != "stuck draft" {
-		t.Fatalf("expected draft saved even when clear fails, got %q", res.SavedDraft)
-	}
-	if !res.ClearFailed || res.DraftCleared {
-		t.Fatalf("expected ClearFailed without DraftCleared, got %+v", res)
-	}
-	if target.ctrlCCalls != 2 {
-		t.Fatalf("clear attempts must be bounded at 2, got %d", target.ctrlCCalls)
+func TestGuardComposerDraft_RepeatedRefusalNeverInterrupts(t *testing.T) {
+	target := &fakeGuardTarget{captures: []string{renderComposer("operator draft")}, clearOnCtrlC: true}
+	for i := 0; i < 3; i++ {
+		res := GuardComposerDraft(target, ComposerGuardOptions{HoldWait: time.Millisecond, PollInterval: time.Millisecond})
+		if !res.Refused || res.SavedDraft != "" || res.DraftCleared || target.ctrlCCalls != 0 {
+			t.Fatalf("must refuse without changing input: %+v, interrupts=%d", res, target.ctrlCCalls)
+		}
 	}
 }
 
-func TestGuardComposerDraft_CaptureErrorProceedsWithoutBlocking(t *testing.T) {
+func TestGuardComposerDraft_CaptureErrorRefusesWithoutMutation(t *testing.T) {
 	target := &fakeGuardTarget{captureErr: errors.New("pane gone")}
 	res := GuardComposerDraft(target, ComposerGuardOptions{
 		HoldWait: time.Second, PollInterval: time.Millisecond, ClearWait: time.Millisecond,
 	})
-	if res.SavedDraft != "" || res.ClearFailed || target.ctrlCCalls != 0 {
-		t.Fatalf("capture errors must not block or mutate the pane, got %+v (ctrlC=%d)", res, target.ctrlCCalls)
+	if !res.Refused || res.SavedDraft != "" || res.ClearFailed || target.ctrlCCalls != 0 {
+		t.Fatalf("capture errors must refuse without mutating the pane, got %+v (ctrlC=%d)", res, target.ctrlCCalls)
 	}
 }
 
