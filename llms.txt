@@ -7,6 +7,7 @@ Agent Deck is a TUI (Terminal User Interface) that manages multiple AI coding ag
 ## Key Features
 
 - **Multi-agent dashboard**: See status (running/waiting/idle/error) of all sessions at a glance
+- **Session context injection**: Every launched session knows what agent-deck is, its own identity/lifecycle, and the cheap CLI paths (`session primer`, levels none/primer/full)
 - **Session forking**: Fork Claude Code conversations to explore different approaches in parallel
 - **MCP Manager**: Toggle MCP servers per session without editing config files
 - **MCP Socket Pool**: Share MCP processes across sessions, reducing memory by 85-90%

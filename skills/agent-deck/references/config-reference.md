@@ -158,6 +158,32 @@ agent-deck hooks status -p work
 agent-deck hooks status -p clientx
 ```
 
+## Session context injection (`context_level`)
+
+Controls the context primer injected into every session (v1.16.0): what
+agent-deck is, the session's identity/lifecycle facts, and the cheap command
+paths (`status --json`, `session search`, `session children --follow
+--until-done`, …). Levels: `none` (inject nothing), `primer` (identity +
+cheap paths), `full` (primer + orchestrator extras: `launch`, the
+`===AGENTDECK_DONE===` completion sentinel, concurrency notes).
+
+```toml
+context_level = "primer"          # global default (top level of config.toml)
+
+[groups."workers"]
+context_level = "primer"          # per-group override, ancestor-walking
+```
+
+Resolution (most specific wins): per-session (`--context-level` on
+`add`/`launch`, `session set <id> context-level …`) → group (nearest
+ancestor with an explicit value) → global → built-in default (`full` for
+conductor sessions, `primer` for everything else). Facts that cannot be
+determined render as the literal `unknown`. Injection failures never fail a
+launch — delivery degrades to nothing.
+
+Note the group key sits at the group's top level (it is tool-agnostic), NOT
+inside `[groups."<path>".claude]`.
+
 ## Per-group / per-conductor Claude overrides
 
 `[groups."<path>".claude]` and `[conductors.<name>.claude]` carry the same

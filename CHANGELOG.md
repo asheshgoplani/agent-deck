@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Session context injection** — every launched session now knows what agent-deck is, who/where it is, and which cheap CLI paths exist. A runtime-derived primer (id, title, group, dir/worktree/live-probed branch, host, harness, model, account, profile, parent + how to report back, and lifecycle `created`/`resumed`/`revived`; undeterminable facts print the literal `unknown`) is injected at spawn: claude via the synchronous SessionStart hook's `additionalContext` (Claude Code only reads stdout from sync hooks; the hook is installed/upgraded at every claude spawn so CLI-only installs are covered, and it re-fires on resume, /clear, and compaction, so the primer survives a resume natively), other tools via initial-message prepend, and an `AGENTDECK_SESSION_ID/_TOOL/_GROUP/_LIFECYCLE/_CONTEXT_LEVEL/_PARENT_ID` env spine on every start and resume command for all tools. Levels `none`/`primer`/`full` (workers default `primer`, conductors `full`), overridable per session (`--context-level` on `add`/`launch`, `session set <id> context-level`, TUI edit dialog), per group (`[groups."<path>"] context_level`, ancestor-walking), or globally (`context_level`). New `agent-deck session primer [id] [--json]` prints the fact sheet from inside any session. Injection failure never fails a launch; per-field truncation plus a worst-case size-budget test keep the primer bounded for any runtime values.
+
 ## [1.15.0] - 2026-08-23
 
 Fail-closed inbox delivery, safer session navigation, and CLI parity across ten commits merged after v1.14.0.

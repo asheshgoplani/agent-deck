@@ -508,6 +508,16 @@ type Instance struct {
 	// launching from the TUI without going through the user's shell.
 	LaunchShell *bool `json:"launch_shell,omitempty"`
 
+	// ContextLevel is the per-session context-injection level (v1.16.0
+	// session context injection): "none", "primer", "full", or "" to
+	// inherit (group context_level → global context_level → built-in
+	// default: "full" for conductors, "primer" otherwise). Resolution
+	// lives in ResolveContextLevel (primer.go). Persisted via the
+	// tool_data extras zone (context_level key) so legacy binaries
+	// round-trip it untouched. Restart-required: injection happens at
+	// spawn/resume command build time.
+	ContextLevel string `json:"context_level,omitempty"`
+
 	// StartupQuery is the claude-code positional "startup query" (#725,
 	// v1.7.67). Set from the new-session dialog's "Start query" field and
 	// emitted as a single shell-quoted positional arg on the claude
@@ -4098,6 +4108,12 @@ func formatGenericResumeShellVar(baseCommand, resumeFlag, varName, dangerousFlag
 // a real claude/codex subcommand invocation.
 func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 	if !i.SubcommandPassthrough {
+		// Byte-identical by contract (#1821): a Tool=="shell" command is typed
+		// via send-keys into the user's interactive login shell, which may be
+		// fish — inline `export … &&` is a syntax error there. The v1.16.0
+		// context fact spine for plain shell sessions therefore travels
+		// host-side via the tmux session environment (setContextTmuxEnv),
+		// never as a command prefix.
 		return baseCommand
 	}
 
@@ -4739,6 +4755,10 @@ func (i *Instance) Start() error {
 	// (issue #59, v1.7.68). Runs before command-building so the
 	// CLAUDE_CONFIG_DIR= prefix picks up the scratch path. No-op for
 	// conductors, explicit telegram channel owners, and non-claude tools.
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	// Pre-accept Codex workspace trust for non-sandbox sessions so first launch
@@ -4939,6 +4959,9 @@ func (i *Instance) Start() error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+	// v1.16.0 session context injection: host-side, tool-agnostic fact spine
+	// in the tmux session environment (see setContextTmuxEnv).
+	i.setContextTmuxEnv()
 
 	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
 	// command run inside this session resolves the session's own profile rather
@@ -5055,6 +5078,17 @@ func (i *Instance) StartWithMessage(message string) error {
 		}
 	}
 
+	// v1.16.0 session context injection: tools WITHOUT a native injection
+	// channel (everything non-claude-compatible; claude gets the primer via
+	// the SessionStart hook, which also re-fires on resume) get the primer
+	// prepended to the initial message. Level "none" — or any render
+	// problem — prepends nothing; injection can never fail a launch.
+	if message != "" {
+		if prefix := i.PrimerMessagePrefix(); prefix != "" {
+			message = prefix + "\n\n" + message
+		}
+	}
+
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
 	// spawn_attempt trace (same as Start()).
 	i.recordSpawnAttempt()
@@ -5062,6 +5096,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// (issue #59, v1.7.68). Same call as in Start() — both spawn paths
 	// must pin the telegram plugin off for workers.
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	// Start session normally (no embedded message logic)
@@ -5244,6 +5282,9 @@ func (i *Instance) StartWithMessage(message string) error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+	// v1.16.0 session context injection: host-side, tool-agnostic fact spine
+	// in the tmux session environment (see setContextTmuxEnv).
+	i.setContextTmuxEnv()
 
 	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
 	// command run inside this session resolves the session's own profile rather
@@ -8556,6 +8597,10 @@ func (i *Instance) restart(env map[string]string) error {
 	// sees the plugin enablement state from session creation, not the
 	// current state. Same call as Start()/recreate paths — idempotent
 	// per (sourceProfileDir, plugins-set) and best-effort on failure.
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn()
 
 	// Issue #956: custom-command Claude sessions whose hooks never fired
@@ -8925,6 +8970,10 @@ func (i *Instance) restart(env map[string]string) error {
 
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// on the restart path too (issue #59, v1.7.68).
+	// v1.16.0 session context injection: ensure the sync SessionStart
+	// hook exists in this session's config dir BEFORE the scratch copy, so
+	// the primer injects on CLI-only installs too (PR #2064 round-2 P1).
+	i.ensureClaudeHooksForSpawn()
 	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	var command string
@@ -9062,6 +9111,9 @@ func (i *Instance) restart(env map[string]string) error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+	// v1.16.0 session context injection: host-side, tool-agnostic fact spine
+	// in the tmux session environment (see setContextTmuxEnv).
+	i.setContextTmuxEnv()
 
 	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
 	// command run inside this session resolves the session's own profile rather

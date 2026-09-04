@@ -284,10 +284,28 @@ func handleHookHandler() {
 	// injected as additionalContext. State, not events — complements the #1225
 	// Stop-edge drain below, which delivers queued deltas. No-op for sessions
 	// without children; AGENTDECK_NO_CHILDREN_CONTEXT=1 opts a session out.
-	if ctxEvent := claudeContextEventName(payload.HookEventName); ctxEvent != "" &&
-		os.Getenv("AGENTDECK_NO_CHILDREN_CONTEXT") != "1" {
-		if summary := buildChildrenContextSummary(instanceID); summary != "" {
-			if out := childrenContextJSON(ctxEvent, summary); out != "" {
+	// v1.16.0 session context injection: on SessionStart the same
+	// additionalContext channel also carries the session primer (identity,
+	// lifecycle, cheap CLI paths — see internal/session/primer.go).
+	// SessionStart fires on startup AND resume/clear/compact, which is what
+	// makes the claude primer survive a resume natively. Primer and fleet
+	// snapshot are merged into ONE hookSpecificOutput JSON — Claude Code
+	// parses hook stdout as a single object, so two Println calls here would
+	// corrupt both.
+	if ctxEvent := claudeContextEventName(payload.HookEventName); ctxEvent != "" {
+		var parts []string
+		if ctxEvent == "SessionStart" && os.Getenv("AGENTDECK_NO_PRIMER_CONTEXT") != "1" {
+			if primer := buildPrimerContextSummary(instanceID, payload.Source); primer != "" {
+				parts = append(parts, primer)
+			}
+		}
+		if os.Getenv("AGENTDECK_NO_CHILDREN_CONTEXT") != "1" {
+			if summary := buildChildrenContextSummary(instanceID); summary != "" {
+				parts = append(parts, summary)
+			}
+		}
+		if len(parts) > 0 {
+			if out := childrenContextJSON(ctxEvent, strings.Join(parts, "\n\n")); out != "" {
 				fmt.Println(out)
 			}
 		}

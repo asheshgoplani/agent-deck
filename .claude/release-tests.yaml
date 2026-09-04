@@ -1972,3 +1972,113 @@ tests:
   run:
     command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_live_mode_invokes_session_send -v
     expected: pass
+- id: sessionctx-env-spine-fresh-and-resume
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestClaudeCommands_CarryContextEnvSpine
+  purpose: Context env spine present on FRESH claude spawn AND on the RESUME command; level none emits nothing on either
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestClaudeCommands_CarryContextEnvSpine -count=1 -v
+    expected: pass
+- id: sessionctx-none-injects-nothing
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestRenderPrimer_NoneInjectsNothing
+  purpose: "Negative control — context level none renders no primer text and prepends nothing"
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestRenderPrimer_NoneInjectsNothing|TestPrimerMessagePrefix' -count=1 -v
+    expected: pass
+- id: sessionctx-unknown-never-guessed
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestRenderPrimer_UnknownFields
+  purpose: Undeterminable facts render as the literal 'unknown' (incl. stale worktree-branch snapshots and SSH placeholder paths), never a guess
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestRenderPrimer_UnknownFields|TestCollectPrimerFacts' -count=1 -v
+    expected: pass
+- id: sessionctx-primer-budget
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestPrimerBudget
+  purpose: Hard size budget on the rendered primer (dumping-ground guard); growing it must edit the budget consts in the same diff
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestPrimerBudget -count=1 -v
+    expected: pass
+- id: sessionctx-primer-commands-exist
+  added: 2026-08-24
+  task: session-context-injection
+  file: cmd/agent-deck/hook_primer_context_test.go
+  test_name: TestPrimerCommandsExist
+  purpose: Every agent-deck command the primer recommends resolves to a real handler (compiled never-stale guard against CLI drift)
+  source: SESSION-CONTEXT-PLAN.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestPrimerCommandsExist -count=1 -v
+    expected: pass
+- id: sessionctx-sessionstart-sync
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/claude_hooks_primer_test.go
+  test_name: TestSessionStartHookIsSynchronous
+  purpose: SessionStart hook installs synchronously — Claude Code ignores stdout (additionalContext) from async hooks, which silently no-ops the primer on default installs (PR 2064 round-2 P1)
+  source: pr2064-round2-P1
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestSessionStartHookIsSynchronous|TestInjectClaudeHooks_UpgradesAsyncSessionStart|TestEnsureClaudeHooksForSpawn_InstallsIntoFreshConfigDir' -count=1 -v
+    expected: pass
+- id: sessionctx-field-truncation
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestPrimerBudget_WorstCase
+  purpose: Budget holds with every runtime field at its truncation cap — live sessions with unbounded titles/paths cannot blow it (PR 2064 round-2 P2)
+  source: pr2064-round2-P2
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestPrimerBudget_WorstCase|TestRenderPrimer_TruncatesUnboundedFields' -count=1 -v
+    expected: pass
+- id: sessionctx-hostile-fact-sanitization
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestRenderPrimer_HostileFactsCannotEscapeStructure
+  purpose: Newline/ANSI/oversized runtime facts cannot fabricate primer lines, smuggle control chars, or break either budget (round-1 P1; mutation-proven red with sanitizeFact disabled)
+  source: pr2064-round1-P1-sanitization
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestRenderPrimer_HostileFactsCannotEscapeStructure -count=1 -v
+    expected: pass
+- id: sessionctx-clear-survives-merge
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestContextLevel_SQLiteFullToInheritRoundTrip
+  purpose: full→inherit clear survives the tool_data extras merge and a real SQLite save/load cycle (round-1 P1; mutation-proven red with delete-on-empty restored)
+  source: pr2064-round1-P1-clear-tombstone
+  manual: false
+  run:
+    command: go test ./internal/session/ -run 'TestContextLevelClear_SurvivesExtrasMerge|TestContextLevel_SQLiteFullToInheritRoundTrip' -count=1 -v
+    expected: pass
+- id: sessionctx-shell-env-spine
+  added: 2026-08-24
+  task: session-context-injection
+  file: internal/session/primer_test.go
+  test_name: TestShellSessions_CarryContextEnvSpine
+  purpose: Plain shell/raw --cmd commands stay byte-identical (#1821, fish-safe) while the AGENTDECK_* fact spine is published host-side via the tmux session environment; level none publishes nothing (caught by the harness-matrix mechanical shell cells)
+  source: harness-matrix-run2-shell-cells
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestShellSessions_CarryContextEnvSpine -count=1 -v
+    expected: pass

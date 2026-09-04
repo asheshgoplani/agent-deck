@@ -1169,6 +1169,9 @@ func reorderArgsForFlagParsing(args []string) []string {
 		// value stripped off as a positional and reordered away from the flag.
 		// That mis-parse predates the #1923 guard; the guard only made it loud.
 		"account": true,
+		// v1.16.0 session context injection — same #928 trap: a value-taking
+		// flag absent from this map has its value reordered away.
+		"context-level": true,
 	}
 
 	var flags []string
@@ -1387,6 +1390,7 @@ func handleAdd(profile string, args []string) {
 	// and becomes the most-specific level of CLAUDE_CONFIG_DIR resolution.
 	// Empty = fall through to conductor/group/env/profile/global/default.
 	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
+	contextLevel := fs.String("context-level", "", "Context injection level: none, primer, full (default: inherit group/global, else primer; conductors full)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
@@ -1935,6 +1939,18 @@ func handleAdd(profile string, args []string) {
 	// block exists, so unknown names are never an error here.
 	if trimmed := strings.TrimSpace(*account); trimmed != "" {
 		newInstance.Account = trimmed
+	}
+
+	// v1.16.0 session context injection: explicit per-session level. An
+	// invalid value is a hard error here (interactive command line) rather
+	// than a silent fall-through at spawn time.
+	if trimmed := strings.TrimSpace(*contextLevel); trimmed != "" {
+		lvl := session.NormalizeContextLevel(trimmed)
+		if lvl == "" {
+			fmt.Printf("Error: invalid --context-level %q — expected 'none', 'primer', or 'full'\n", trimmed)
+			os.Exit(1)
+		}
+		newInstance.ContextLevel = lvl
 	}
 
 	// Apply per-session model override after command/tool resolution so the
@@ -3582,6 +3598,7 @@ func printHelp() {
 	fmt.Println("  session fork <id>         Fork Claude or Pi session with context")
 	fmt.Println("  session attach <id>       Attach to session interactively")
 	fmt.Println("  session show [id]         Show session details")
+	fmt.Println("  session primer [id]       Print the session context primer (identity, lifecycle, cheap paths)")
 	fmt.Println()
 	fmt.Println("Fleet Recovery Commands:")
 	fmt.Println("  fleet status              Report sessions whose panes are gone (read-only)")

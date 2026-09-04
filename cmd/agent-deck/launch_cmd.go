@@ -122,6 +122,7 @@ func handleLaunch(profile string, args []string) {
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
+	contextLevel := fs.String("context-level", "", "Context injection level: none, primer, full (default: inherit group/global, else primer; conductors full)")
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
 	// `agent-deck add --tmux-socket`: overrides `[tmux].socket_name` for
@@ -451,6 +452,18 @@ func handleLaunch(profile string, args []string) {
 	// add. Start-time resolution already consumes Instance.Account.
 	if trimmed := strings.TrimSpace(*account); trimmed != "" {
 		newInstance.Account = trimmed
+	}
+
+	// v1.16.0 session context injection: explicit per-session level. An
+	// invalid value is a hard error here (interactive command line) rather
+	// than a silent fall-through at spawn time.
+	if trimmed := strings.TrimSpace(*contextLevel); trimmed != "" {
+		lvl := session.NormalizeContextLevel(trimmed)
+		if lvl == "" {
+			fmt.Printf("Error: invalid --context-level %q — expected 'none', 'primer', or 'full'\n", trimmed)
+			os.Exit(1)
+		}
+		newInstance.ContextLevel = lvl
 	}
 
 	if parentInstance != nil {
