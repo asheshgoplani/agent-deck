@@ -35,6 +35,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/procfd"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -5012,6 +5013,10 @@ func (i *Instance) Start() error {
 	if i.Tool == "copilot" && i.CopilotSessionID == "" {
 		go i.detectCopilotSessionAsync()
 	}
+
+	// Opt-in usage telemetry: counts only when the user has consented
+	// (no-op otherwise), tool name normalised to the built-in list.
+	telemetry.RecordSessionStarted(i.Tool)
 
 	return nil
 }

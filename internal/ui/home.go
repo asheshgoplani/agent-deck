@@ -44,6 +44,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -277,6 +278,7 @@ type Home struct {
 	scrollbackPager      *ScrollbackPager      // In-attach scrollback pager for the deck's control-mode view (#1491)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
+	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
 	feedbackState        *feedback.State       // Loaded at first show, avoids repeated disk I/O
 	feedbackSender       *feedback.Sender      // Sender constructed once in NewHome (Phase 3, per D-05)
@@ -1506,6 +1508,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		scrollbackPager:           NewScrollbackPager(),
 		worktreeFinishDialog:      NewWorktreeFinishDialog(),
 		feedbackDialog:            NewFeedbackDialog(),
+		telemetryDialog:           NewTelemetryDialog(),
 		zoxidePicker:              NewZoxidePicker(),
 		feedbackSender:            feedback.NewSender(),
 		watcherPanel:              NewWatcherPanel(),
@@ -3102,6 +3105,10 @@ func (h *Home) Init() tea.Cmd {
 		h.reviverTick(),
 		h.checkForUpdate(),
 		h.fetchRemoteSessions,
+		// Opt-in telemetry daily report. MaybeSend re-reads consent from
+		// disk and the kill switches from env, so this is a no-op for
+		// everyone who has not said yes.
+		telemetrySendCmd(Version),
 	}
 
 	// Start listening for storage changes
@@ -5548,6 +5555,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.lastLoadMtime = msg.loadMtime
 		}
 		h.reloadMu.Unlock()
+		firstLoad := h.initialLoading
 		h.initialLoading = false // First load complete, hide splash
 		h.reloadHotkeysFromConfig()
 
@@ -5556,10 +5564,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.showPendingHooksPrompt()
 		}
 
+		// One-time telemetry consent prompt (TELEMETRY.md). Shown only on the
+		// FIRST load of this process (never on a storage-watcher reload or
+		// ctrl+r, which could pop it up while the user is typing into an
+		// agent), only when telemetry.ShouldPrompt says so (undecided,
+		// interactive, no kill switch), never in insert mode, and only when
+		// no other dialog is on screen; otherwise it waits for a later
+		// launch. It takes precedence over the feedback prompt so the two
+		// never stack.
+		if firstLoad && h.telemetryDialog != nil && !h.telemetryDialog.IsVisible() && !h.insertMode && !h.hasModalVisible() {
+			if h.telemetryDialog.Show(Version, telemetry.LoadState()) {
+				h.telemetryDialog.SetSize(h.width, h.height)
+			}
+		}
+
 		// Show feedback popup if user has a new version and hasn't rated yet (D-11/D-12).
 		// v1.7.38: also skip when the user's config.toml has [feedback].disabled=true,
 		// so a user who opts out via config edit (not just state.json) is honoured.
-		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() {
+		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() && (h.telemetryDialog == nil || !h.telemetryDialog.IsVisible()) {
 			fbState, _ := feedback.LoadState()
 			cfg, _ := session.LoadUserConfig()
 			configDisabled := cfg != nil && cfg.Feedback.Disabled
@@ -6413,6 +6435,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.feedbackDialog != nil && h.feedbackDialog.IsVisible() {
 			h.feedbackDialog.Hide()
 		}
+		return h, nil
+
+	case telemetryDismissMsg:
+		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+			h.telemetryDialog.Hide()
+		}
+		return h, nil
+
+	case telemetrySentMsg:
+		// Background daily report finished (or was refused by the package's
+		// own gates). Deliberately silent either way.
 		return h, nil
 
 	case modelsFetchedMsg:
@@ -7483,6 +7516,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.feedbackDialog = d
 			return h, cmd
 		}
+		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+			d, cmd := h.telemetryDialog.Update(msg)
+			h.telemetryDialog = d
+			return h, cmd
+		}
 		if h.zoxidePicker.IsVisible() {
 			return h.handleZoxidePickerKey(msg)
 		}
@@ -8257,6 +8295,7 @@ func (h *Home) hasModalVisible() bool {
 		h.sessionSwitcher.IsVisible() || h.scrollbackPager.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
+		(h.telemetryDialog != nil && h.telemetryDialog.IsVisible()) ||
 		h.zoxidePicker.IsVisible()
 }
 
@@ -14469,6 +14508,9 @@ func (h *Home) updateSizes() {
 	if h.feedbackDialog != nil {
 		h.feedbackDialog.SetSize(h.width, h.height)
 	}
+	if h.telemetryDialog != nil {
+		h.telemetryDialog.SetSize(h.width, h.height)
+	}
 }
 
 // View renders the UI
@@ -14617,6 +14659,9 @@ func (h *Home) renderFrame() string {
 	}
 	if h.feedbackDialog.IsVisible() {
 		return h.feedbackDialog.View()
+	}
+	if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+		return h.telemetryDialog.View()
 	}
 	if h.zoxidePicker.IsVisible() {
 		return h.zoxidePicker.View()
