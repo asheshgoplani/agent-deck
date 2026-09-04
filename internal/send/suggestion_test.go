@@ -142,7 +142,7 @@ func TestGuardComposerDraft_IgnoresDimAutosuggestion(t *testing.T) {
 }
 
 // The #1409 protection must survive intact: a real draft carrying ANSI colour
-// is still held, saved and cleared.
+// is still held, then refused without modification.
 func TestGuardComposerDraft_StillGuardsRealDraftWithANSI(t *testing.T) {
 	target := &fakeGuardTarget{captures: []string{pane(fixtureRealDraftComposer)}, clearOnCtrlC: true}
 	res := GuardComposerDraft(target, ComposerGuardOptions{HoldWait: time.Millisecond, PollInterval: time.Millisecond, Strip: stripANSI})
@@ -150,6 +150,28 @@ func TestGuardComposerDraft_StillGuardsRealDraftWithANSI(t *testing.T) {
 		t.Fatalf("real draft must remain untouched: %+v, interrupts=%d", res, target.ctrlCCalls)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1777 — the inverse gap: suggestions that render normal-coloured, and
+// suggestions rendered grey instead of dim. Composer lines below mirror the
+// reporter's `tmux capture-pane -e -p` evidence.
+// ---------------------------------------------------------------------------
+
+const (
+	// Suggestion rendered bright-black (SGR 90) instead of dim — a Claude
+	// build / terminal profile rendering the ghost in grey defeats a
+	// dim-only check.
+	fixtureGreyBrightBlackComposer = "\x1b[39m❯ \x1b[90mupgrade agent-deck on carrollton and archive the five error sessions\x1b[0m"
+
+	// Same ghost via 256-colour grey (colour index 8, bright black).
+	fixtureGrey256Composer = "\x1b[39m❯ \x1b[38;5;8mprune the stale cluster\x1b[0m"
+
+	// A suggestion that MATERIALIZED as real, normal-coloured (\e[39m)
+	// unsubmitted input — the #1777 defect case. Colour alone cannot prove
+	// this is not an operator draft, so it must be treated as one for
+	// guard purposes but must NEVER be submitted by a bare Enter.
+	fixtureMaterializedComposer = "\x1b[39m❯ wrap up the session — anything left uncommitted?"
+)
 
 func TestComposerBodyIsSuggestion_GreyBrightBlackIsDetected(t *testing.T) {
 	if !ComposerBodyIsSuggestion(pane(fixtureGreyBrightBlackComposer)) {
@@ -234,8 +256,7 @@ func TestGuardComposerDraft_MidRenderSuggestionIsNotSaved(t *testing.T) {
 	}
 }
 
-// The save-step re-capture must not weaken #1409: a REAL draft that is still
-// present on the second capture is saved and cleared exactly as before.
+// Reconfirmation must preserve a real draft that remains in the composer.
 func TestGuardComposerDraft_ReconfirmStillPreservesRealDraft(t *testing.T) {
 	target := &fakeGuardTarget{captures: []string{pane(fixtureRealDraftComposer)}, clearOnCtrlC: true}
 	res := GuardComposerDraft(target, ComposerGuardOptions{HoldWait: time.Millisecond, PollInterval: time.Millisecond, Strip: stripANSI})
