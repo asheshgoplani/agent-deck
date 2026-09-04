@@ -4965,7 +4965,7 @@ func (i *Instance) Start() error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	if i.Tool == "shell" && i.Account != "" && !i.RunCommandAsInitialProcess {
+	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
 		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
 			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
 		}
@@ -5282,7 +5282,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	if i.Tool == "shell" && i.Account != "" && !i.RunCommandAsInitialProcess {
+	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
 		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
 			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
 		}
