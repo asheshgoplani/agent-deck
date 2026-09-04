@@ -432,13 +432,17 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		}
 
 	case FieldAccount:
+		candidate := strings.TrimSpace(value)
+		if err := ValidateAccountSlot(candidate, inst.Tool); err != nil {
+			return inst.Account, nil, &MutationError{Field: field, Msg: err.Error()}
+		}
 		// #924 per-session named account slot. Stored verbatim; an
 		// unconfigured name silently falls through the resolver chain.
 		// Empty string clears the override (back to conductor/group/env).
 		// Restart required (see RestartPolicyFor) — the in-flight
 		// conversation is lost, that's the documented Option 1 tradeoff.
 		oldValue = inst.Account
-		inst.Account = strings.TrimSpace(value)
+		inst.Account = candidate
 
 	case FieldIdleTimeout:
 		// #1143: parses a Go duration like "30m"; 0 (or "0", "") disables.
