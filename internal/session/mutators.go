@@ -433,7 +433,13 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldAccount:
 		candidate := strings.TrimSpace(value)
-		if err := ValidateAccountSlot(candidate, inst.Tool); err != nil {
+		validationTool := inst.Tool
+		if validationTool == "shell" {
+			if fields := strings.Fields(inst.Command); len(fields) > 0 {
+				validationTool = MatchTool(fields[0])
+			}
+		}
+		if err := ValidateAccountSlot(candidate, validationTool); err != nil {
 			return inst.Account, nil, &MutationError{Field: field, Msg: err.Error()}
 		}
 		// #924 per-session named account slot. Stored verbatim; an
