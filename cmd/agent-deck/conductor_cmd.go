@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"al.essio.dev/pkg/shellescape"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -1296,8 +1298,9 @@ func formatPipFailureMessage(d pipFailureDiagnostic) string {
 	if venvDir == "" {
 		venvDir = session.ConductorVenvDir()
 	}
+	venvCommandDir := shellescape.Quote(venvDir)
 	if venvDir == "" {
-		venvDir = filepath.Join("~", ".agent-deck", "conductor", "venv")
+		venvCommandDir = `"$HOME"/.agent-deck/conductor/venv`
 	}
 
 	if d.Kind != pipFailurePEP668 {
@@ -1347,8 +1350,8 @@ func formatPipFailureMessage(d pipFailureDiagnostic) string {
 	b.WriteString("         # <VERSION> is any Python 3.11+ — e.g. 3.12 or 3.13.\n")
 	b.WriteString("         # agent-deck does not pin a specific version.\n\n")
 	fmt.Fprintf(&b, "    %s\n", venvHeader)
-	fmt.Fprintf(&b, "         python3 -m venv %s\n", venvDir)
-	fmt.Fprintf(&b, "         %s/bin/pip install %s\n", venvDir, pkgs)
+	fmt.Fprintf(&b, "         python3 -m venv %s\n", venvCommandDir)
+	fmt.Fprintf(&b, "         %s/bin/pip install %s\n", venvCommandDir, pkgs)
 	b.WriteString("         # agent-deck prefers this interpreter automatically once it\n")
 	b.WriteString("         # exists — no plist or unit file to edit by hand.\n\n")
 	b.WriteString("    3. Override the policy (works, but the policy exists for a reason):\n")

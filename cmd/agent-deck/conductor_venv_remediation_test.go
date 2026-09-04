@@ -14,6 +14,8 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,5 +85,48 @@ func TestProbePythonInterpreter_UsesTheGivenInterpreter(t *testing.T) {
 	}
 	if path == "" {
 		t.Fatalf("probe returned empty path with version %q", version)
+	}
+}
+
+// Exercise the printed commands with a real shell and harmless executables.
+// A valid configured directory must remain one literal argument.
+func TestFormatPipFailureMessage_VenvCommandsPreserveLiteralPaths(t *testing.T) {
+	for _, name := range []string{"plain", "with spaces", "literal $EXPAND_ME", "single'quote"} {
+		t.Run(name, func(t *testing.T) {
+			venvDir := filepath.Join(t.TempDir(), name, "venv")
+			binDir := filepath.Join(venvDir, "bin")
+			if err := os.MkdirAll(binDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			pip := filepath.Join(binDir, "pip")
+			if err := os.WriteFile(pip, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("EXPAND_ME", "wrong-directory")
+			msg := formatPipFailureMessage(pipFailureDiagnostic{
+				Kind: pipFailurePEP668, Packages: []string{"toml", "aiogram"}, VenvDir: venvDir,
+			})
+			commands := 0
+			for _, line := range strings.Split(msg, "\n") {
+				line = strings.TrimSpace(line)
+				var want string
+				if strings.HasPrefix(line, "python3 -m venv ") {
+					want = "-m\nvenv\n" + venvDir + "\n"
+					line = "python3() { printf '%s\\n' \"$@\"; }; " + line
+				} else if strings.Contains(line, "/bin/pip") && strings.HasSuffix(line, " install toml aiogram") {
+					want = "install\ntoml\naiogram\n"
+				} else {
+					continue
+				}
+				commands++
+				out, err := exec.Command("sh", "-c", line).CombinedOutput()
+				if err != nil || string(out) != want {
+					t.Errorf("repair command did not preserve its arguments: err=%v, got %q, want %q", err, out, want)
+				}
+			}
+			if commands != 2 {
+				t.Fatalf("found %d repair commands, want 2", commands)
+			}
+		})
 	}
 }
