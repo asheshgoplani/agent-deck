@@ -3095,7 +3095,7 @@ type sendDeliveryResult struct {
 	// delivery is one of the delivery* constants above.
 	delivery string
 	// held is how long the composer guard waited/worked before the send
-	// (issue #1409 hold-and-retry plus save-clear time).
+	// (bounded hold plus the final read-only settle check).
 	held time.Duration
 	// draftSaved is the operator draft that was cleared from the composer to
 	// make way for the automated send (empty when no clear was needed).
@@ -3275,7 +3275,8 @@ func executeDraft(target draftSender, message string) error {
 // submitted. Budget must be long enough to see the composer either
 // accept or reject the submission.
 //
-// maxFullResends=-1 is load-bearing: it disables the Ctrl+C-then-resend
+// Full-body resend recovery is disabled for every send mode. Historically,
+// maxFullResends=-1 disabled the Ctrl+C-then-resend
 // path (issue #479 — would otherwise double-send).
 func noWaitSendOptions() sendRetryOptions {
 	return sendRetryOptions{
@@ -3341,8 +3342,8 @@ func awaitComposerReadyBestEffort(target sendRetryTarget, maxWait, pollInterval 
 //     after the initial send, keeps detecting unsent-prompt markers and
 //     re-firing SendEnter if the composer still holds our message.
 //
-// maxFullResends=-1 is load-bearing for the #479 regression (never
-// double-send). Non-Claude tools skip the preflight — they have their
+// Full-body resend recovery stays disabled (#479). Non-Claude tools skip
+// the preflight; they have their
 // own readiness shapes and upstream gating. Issue #1409 added a fourth
 // layer between 2 and 3: the composer-draft guard.
 
@@ -3362,8 +3363,8 @@ type sendRetryOptions struct {
 
 	// verifyDelivery, when true, requires the verification loop to observe at
 	// least one positive signal that the message reached the inner agent (an
-	// "active" status transition, an unsent-prompt composer marker, a full
-	// resend, or the message body appearing in the captured pane). If the
+	// "active" status transition, an unsent-prompt composer marker, or the
+	// message body appearing in the captured pane). If the
 	// budget is exhausted without any such signal, the function returns an
 	// error instead of the prior best-effort `nil`. Closes the silent-drop
 	// path reported in issue #876.

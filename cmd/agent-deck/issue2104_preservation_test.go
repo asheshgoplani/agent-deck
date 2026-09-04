@@ -22,7 +22,7 @@ func TestIssue2104RefusalNeverTypesOrInterrupts(t *testing.T) {
 }
 
 func TestIssue2104FailedCaptureRefusesBeforeTyping(t *testing.T) {
-	mock := &mockSendRetryTarget{paneErrs: []error{errors.New("capture unavailable")}}
+	mock := &mockSendRetryTarget{panes: []string{""}, paneErrs: []error{errors.New("capture unavailable")}}
 	res, err := executeSend(mock, "claude", "automation", false, testGuardTuning(sendRetryOptions{verifyDelivery: true}))
 	if err == nil || res.jsonFields()["submitted"] != false {
 		t.Fatalf("capture failure authorized delivery: %+v %v", res, err)
