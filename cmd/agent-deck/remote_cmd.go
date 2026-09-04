@@ -15,6 +15,25 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
+// resolveRemoteConfig loads the user config and looks up the RemoteConfig
+// for name — the "load config, check config.Remotes, check the key"
+// resolution every remote subcommand (and completion_cmd.go's
+// printRemoteSessionCompletions) needs before it can build an SSHRunner.
+// loadErr is only set when LoadUserConfig itself failed; exists is false
+// whenever config.Remotes is nil or has no entry for name — callers that
+// want a distinct message for each case check loadErr first.
+func resolveRemoteConfig(name string) (rc session.RemoteConfig, exists bool, loadErr error) {
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		return session.RemoteConfig{}, false, err
+	}
+	if config.Remotes == nil {
+		return session.RemoteConfig{}, false, nil
+	}
+	rc, exists = config.Remotes[name]
+	return rc, exists, nil
+}
+
 func handleRemote(profile string, args []string) {
 	if len(args) == 0 {
 		printRemoteUsage()
@@ -355,18 +374,11 @@ func handleRemoteAttach(args []string) {
 	remoteName := args[0]
 	sessionRef := args[1]
 
-	config, err := session.LoadUserConfig()
+	rc, exists, err := resolveRemoteConfig(remoteName)
 	if err != nil {
 		fmt.Printf("Error: failed to load config: %v\n", err)
 		os.Exit(1)
 	}
-
-	if config.Remotes == nil {
-		fmt.Printf("Error: remote '%s' not found\n", remoteName)
-		os.Exit(1)
-	}
-
-	rc, exists := config.Remotes[remoteName]
 	if !exists {
 		fmt.Printf("Error: remote '%s' not found\n", remoteName)
 		os.Exit(1)
@@ -412,18 +424,11 @@ func handleRemoteRename(args []string) {
 	sessionRef := args[1]
 	newTitle := strings.Join(args[2:], " ")
 
-	config, err := session.LoadUserConfig()
+	rc, exists, err := resolveRemoteConfig(remoteName)
 	if err != nil {
 		fmt.Printf("Error: failed to load config: %v\n", err)
 		os.Exit(1)
 	}
-
-	if config.Remotes == nil {
-		fmt.Printf("Error: remote '%s' not found\n", remoteName)
-		os.Exit(1)
-	}
-
-	rc, exists := config.Remotes[remoteName]
 	if !exists {
 		fmt.Printf("Error: remote '%s' not found\n", remoteName)
 		os.Exit(1)
