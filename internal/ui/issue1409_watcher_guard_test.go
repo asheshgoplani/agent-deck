@@ -82,29 +82,19 @@ func testConductorGuardOpts() send.ComposerGuardOptions {
 // against a composer holding a half-typed operator draft must not merge with
 // it (#1409): the draft is cleared before the send and restored (without
 // Enter) after the delivery is confirmed.
-func TestDeliverToConductorPaneGuarded_SaveClearRestore(t *testing.T) {
-	p := &guardedFakePane{
-		draftPane:        composerWith("instruct deploy ag"),
-		postSendCaptures: []string{emptyComposer()},
-	}
-	err := deliverToConductorPaneGuarded(p, "[slack] u: hi", testConductorGuardOpts(), 40, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if p.ctrlCCalls != 1 {
-		t.Fatalf("expected 1 Ctrl+C to clear the operator draft, got %d", p.ctrlCCalls)
-	}
-	if p.chunkedText != "instruct deploy ag" {
-		t.Fatalf("restored draft: want %q, got %q", "instruct deploy ag", p.chunkedText)
-	}
-	if p.restoredBeforeSend {
-		t.Fatal("draft restore must happen after the automated delivery")
+func TestDeliverToConductorPaneGuarded_RefusesAndPreservesDraft(t *testing.T) {
+	for _, msg := range []string{"[slack] u: hi", "/clear", "Heartbeat: check sessions"} {
+		p := &guardedFakePane{draftPane: composerWith("operator draft")}
+		err := deliverToConductorPaneGuarded(p, msg, testConductorGuardOpts(), 40, 0)
+		if err == nil {
+			t.Fatal("occupied composer must refuse delivery")
+		}
+		if p.ctrlCCalls != 0 || p.sendKeysCalls != 0 || p.enterCalls != 0 || p.chunkedCalls != 0 {
+			t.Fatalf("refusal mutated composer: %+v", p)
+		}
 	}
 }
 
-// TestDeliverToConductorPaneGuarded_HoldsWhileDraftClearsItself: when the
-// operator submits/erases their draft within the hold window, no Ctrl+C and
-// no restore happen.
 func TestDeliverToConductorPaneGuarded_HoldsWhileDraftClearsItself(t *testing.T) {
 	p := &fakeConductorPane{captures: []string{
 		composerWith("operator wip"), // guard: busy

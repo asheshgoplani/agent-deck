@@ -80,49 +80,20 @@ const fakeClaudeWithDraft = `bash -c '
 
 func TestExecuteSend_OperatorDraftNotMerged_Integration(t *testing.T) {
 	skipUnlessIntegration(t)
-	sess := startFakeClaudePane(t, "send-1409-draft", fakeClaudeWithDraft)
-
-	const msg = "EVENT_1409_AUTOMATED_MESSAGE"
+	sess := startFakeClaudePane(t, "send-preserve-draft", fakeClaudeWithDraft)
+	const msg = "AUTOMATED_MUST_NOT_APPEAR"
 	res, err := executeSend(sess, "claude", msg, false, integrationGuardTuning())
-	if err != nil {
-		t.Fatalf("executeSend failed: %v (result %+v)", err, res)
+	if err == nil || res.delivery != deliveryComposerBlocked {
+		t.Fatalf("expected unsent refusal: %+v %v", res, err)
 	}
-
-	// Give the restore keystrokes time to echo.
-	time.Sleep(time.Second)
 	content, err := sess.CapturePane()
 	if err != nil {
-		t.Fatalf("CapturePane failed: %v", err)
+		t.Fatal(err)
 	}
-	t.Logf("pane after guarded send:\n%s", content)
-
-	if !strings.Contains(content, "GOT: "+msg) {
-		t.Errorf("automated message was not delivered standalone.\npane:\n%s", content)
-	}
-	if strings.Contains(content, "GOT: instruct deploy ag") {
-		t.Errorf("issue #1409: operator draft was merged/submitted with the automated send.\npane:\n%s", content)
-	}
-	if res.draftSaved != "instruct deploy ag" {
-		t.Errorf("saved draft: want %q, got %q", "instruct deploy ag", res.draftSaved)
-	}
-	if !res.draftRestored {
-		t.Errorf("operator draft must be restored after delivery, result %+v", res)
-	}
-	// Restore evidence: the draft is typed back (echoed) after the GOT line.
-	gotIdx := strings.Index(content, "GOT: "+msg)
-	if gotIdx >= 0 && !strings.Contains(content[gotIdx:], "instruct deploy ag") {
-		t.Errorf("restored draft not visible after delivery.\npane:\n%s", content)
+	if !strings.Contains(content, "instruct deploy ag") || strings.Contains(content, msg) || strings.Contains(content, "GOT:") {
+		t.Fatalf("draft changed or automated input leaked into pane: %q", content)
 	}
 }
-
-// fakeClaudeSwallowsEnter renders an empty composer and echoes typed
-// characters back onto the prompt line but never accepts Enter — the
-// typed-but-unsubmitted state of issue #1413.
-const fakeClaudeSwallowsEnter = `bash -c '
-	printf "❯ "
-	buf=""
-	while IFS= read -r -n1 c; do [ -n "$c" ] && buf="$buf$c" && printf "\r❯ %s" "$buf"; done
-'`
 
 func TestExecuteSend_TypedNotSubmitted_Integration(t *testing.T) {
 	skipUnlessIntegration(t)
@@ -147,38 +118,17 @@ func TestExecuteSend_TypedNotSubmitted_Integration(t *testing.T) {
 
 func TestExecuteSend_NoWaitGuardsDraft_Integration(t *testing.T) {
 	skipUnlessIntegration(t)
-	sess := startFakeClaudePane(t, "send-1409-nowait", fakeClaudeWithDraft)
-
-	tun := noWaitSendTuning()
-	tun.guardHold = 700 * time.Millisecond
-	tun.guardPoll = 100 * time.Millisecond
-	tun.settleDelay = 100 * time.Millisecond
-	tun.retry = sendRetryOptions{
-		maxRetries:     12,
-		checkDelay:     150 * time.Millisecond,
-		maxFullResends: -1,
-		verifyDelivery: true,
+	sess := startFakeClaudePane(t, "send-preserve-draft", fakeClaudeWithDraft)
+	const msg = "AUTOMATED_MUST_NOT_APPEAR"
+	res, err := executeSend(sess, "claude", msg, true, integrationGuardTuning())
+	if err == nil || res.delivery != deliveryComposerBlocked {
+		t.Fatalf("expected unsent refusal: %+v %v", res, err)
 	}
-
-	const msg = "INBOX_1409_NOWAIT_NUDGE"
-	res, err := executeSend(sess, "claude", msg, true, tun)
-	if err != nil {
-		t.Fatalf("executeSend --no-wait failed: %v (result %+v)", err, res)
-	}
-
 	content, err := sess.CapturePane()
 	if err != nil {
-		t.Fatalf("CapturePane failed: %v", err)
+		t.Fatal(err)
 	}
-	t.Logf("pane after guarded --no-wait send:\n%s", content)
-
-	if !strings.Contains(content, "GOT: "+msg) {
-		t.Errorf("--no-wait automated message was not delivered standalone.\npane:\n%s", content)
-	}
-	if strings.Contains(content, "GOT: instruct deploy ag") {
-		t.Errorf("issue #1409: --no-wait merged the operator draft.\npane:\n%s", content)
-	}
-	if res.draftSaved != "instruct deploy ag" || !res.draftRestored {
-		t.Errorf("--no-wait must save+restore the draft, result %+v", res)
+	if !strings.Contains(content, "instruct deploy ag") || strings.Contains(content, msg) || strings.Contains(content, "GOT:") {
+		t.Fatalf("draft changed or automated input leaked into pane: %q", content)
 	}
 }
