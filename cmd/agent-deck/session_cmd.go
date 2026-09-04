@@ -3086,6 +3086,8 @@ const (
 	deliveryNoEvidence = "no_evidence"
 	// deliverySendFailed: the initial tmux send-keys itself failed.
 	deliverySendFailed = "send_failed"
+	// deliveryComposerBlocked: no input sent because composer safety was not established.
+	deliveryComposerBlocked = "composer_blocked"
 )
 
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
@@ -3142,7 +3144,7 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 type sendExecTuning struct {
 	// guardHold bounds the #1409 hold-and-retry phase: how long an automated
 	// send waits for a non-empty operator draft to clear on its own before
-	// falling back to save-clear-restore.
+	// refusing delivery while preserving it.
 	guardHold      time.Duration
 	guardPoll      time.Duration
 	guardClearWait time.Duration
@@ -3225,8 +3227,10 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 			Strip:        tmux.StripANSI,
 		})
 		res.held = guard.Held
-		res.draftSaved = guard.SavedDraft
-		res.draftCleared = guard.DraftCleared
+		if guard.Refused {
+			res.delivery = deliveryComposerBlocked
+			return res, fmt.Errorf("message not sent: composer is occupied or unreadable; existing draft preserved")
+		}
 		// Provenance for the #1777 attribution gate, taken from the capture
 		// the guard already made just before we type: with no paste marker
 		// parked in the composer then, a marker seen during verification is
@@ -3237,17 +3241,6 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
 
-	if res.draftSaved != "" && delivery != deliveryTypedNotSubmitted {
-		if restoreErr := target.SendKeysChunked(res.draftSaved); restoreErr == nil {
-			res.draftRestored = true
-		} else {
-			// The composer was cleared (Ctrl+C) but the type-back failed, so
-			// the operator's draft is no longer on screen. Don't silently
-			// drop it: flag the failure so the caller surfaces draftSaved for
-			// recovery instead of reporting a clean success.
-			res.draftRestoreFailed = true
-		}
-	}
 	return res, err
 }
 
@@ -3365,7 +3358,7 @@ type sendRetryTarget interface {
 type sendRetryOptions struct {
 	maxRetries     int
 	checkDelay     time.Duration
-	maxFullResends int // >0 overrides default (3); <0 disables Ctrl+C-then-resend; 0 uses default
+	maxFullResends int // Legacy option; full-body interrupt/resend recovery is disabled.
 
 	// verifyDelivery, when true, requires the verification loop to observe at
 	// least one positive signal that the message reached the inner agent (an
@@ -3455,27 +3448,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// - If we never observe active and remain in waiting/idle, keep a periodic
 	//   fallback Enter cadence instead of returning early (handles late unsent
 	//   prompt rendering races seen in Claude startup).
-	// - If the message appears completely lost (no prompt marker, no activity
-	//   after several retries), clear stale input with Ctrl+C and re-send the
-	//   full message. This handles the TUI init race where the prompt renders
-	//   before the input handler is ready, causing sent keys to be discarded.
 	const activeSuccessThreshold = 2
 	const waitingAfterActiveThreshold = 2
-	// fullResendThreshold: after this many consecutive waiting/idle checks
-	// with no activity and no unsent prompt, assume the message was lost
-	// during TUI init and re-send the full message.
-	const fullResendThreshold = 8
-	maxFullResends := 3 // default
-	if opts.maxFullResends > 0 {
-		maxFullResends = opts.maxFullResends
-	} else if opts.maxFullResends < 0 {
-		maxFullResends = 0
-	}
 	waitingNoMarkerChecks := 0
-	waitingNoActivityChecks := 0
 	activeChecks := 0
 	sawActiveAfterSend := false
-	fullResendCount := 0
+
 	// sawDeliveryEvidence flips true on any positive signal that the message
 	// reached the agent: an "active" status transition, an unsent-prompt
 	// composer marker, or the message body appearing verbatim in the pane.
@@ -3550,7 +3528,6 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			sawDeliveryEvidence = true
 			sawUnsentMarker = true
 			waitingNoMarkerChecks = 0
-			waitingNoActivityChecks = 0
 			activeChecks = 0
 			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 			continue
@@ -3560,7 +3537,6 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			sawActiveAfterSend = true
 			sawDeliveryEvidence = true
 			waitingNoMarkerChecks = 0
-			waitingNoActivityChecks = 0
 			activeChecks++
 			if activeChecks >= activeSuccessThreshold {
 				return deliverySubmitted, nil
@@ -3572,91 +3548,15 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if err == nil && (status == "waiting" || status == "idle") {
 			if sawActiveAfterSend {
 				waitingNoMarkerChecks++
-				waitingNoActivityChecks = 0
 				if waitingNoMarkerChecks >= waitingAfterActiveThreshold {
 					return deliverySubmitted, nil
 				}
 			} else {
 				waitingNoMarkerChecks = 0
-				waitingNoActivityChecks++
 
-				// Message may have been lost during TUI init: the prompt was
-				// visible but the input handler wasn't ready, so sent keys were
-				// discarded. Clear stale input and re-send the full message.
-				//
-				// THE GATE: fire only when the body is not on screen right now.
-				// A recovery for a body that is already there can only
-				// duplicate it, and the Ctrl+C that precedes it interrupts
-				// whatever the target is doing meanwhile. bodyInPaneNow is
-				// recomputed every iteration on purpose: "a resend would
-				// duplicate" is a claim about the present, so it needs a
-				// present-tense signal.
-				//
-				// NOT sawDeliveryEvidence, which is the obvious candidate and
-				// is wrong. It latches, and one of its sources is the composer
-				// merely HOLDING the message — the first step of the very
-				// TUI-init loss this recovery exists for. Gating on it would
-				// suppress the recovery exactly when it is needed and then,
-				// because the same flag suppresses the #876 error at the end of
-				// the budget, report the lost message as delivered. Compare
-				// sawUnsentMarker, which is tracked separately for the same
-				// provenance reason.
-				//
-				// paneNow.OK is required for a related reason one level down:
-				// bodyInPaneNow is only assigned when the capture succeeded, so
-				// without it the gate would read false by ABSENCE of an
-				// observation rather than by an observation of absence, and a
-				// failed CapturePaneFresh would re-authorize the Ctrl+C against
-				// a target that is working fine. A destructive branch should
-				// need positive evidence, not silence.
-				//
-				// History: #1979 is the busy target with the message already
-				// queued. It and a target that never received the message both
-				// fail to report "active" — they are indistinguishable BY
-				// STATUS ALONE, which is why this reaches for pane evidence
-				// instead. Ungated, the branch fired on the busy one and
-				// destroyed in-flight work at exit 0. #479 established the same
-				// double-send on the --no-wait path, which noWaitSendOptions
-				// disables outright; this keeps the recovery for the case it was
-				// written for.
-				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends &&
-					paneNow.OK && !bodyInPaneNow {
-					// The resend types the message and presses Enter, so it
-					// submits whatever the composer still holds. Ctrl+C is
-					// meant to empty it first — but a failed Ctrl+C, or one
-					// the agent ignored, would leave foreign content to be
-					// submitted with our payload appended (#1777). Re-read
-					// the pane and skip the resend unless the composer is
-					// verifiably clear of content we cannot attribute.
-					//
-					// fullResendCount and waitingNoActivityChecks are consumed
-					// below, ONLY once a resend is actually about to fire —
-					// not here. Either abort path (Ctrl+C error, or a pane
-					// that still reads as foreign after it) sends nothing, so
-					// charging the finite resend budget or resetting the
-					// waiting-check counter here would burn a scarce slot for
-					// no send and force a fresh fullResendThreshold wait
-					// before the next attempt, right after Ctrl+C may have
-					// already wiped the composer (#1778 review finding 3).
-					if ctrlCErr := target.SendCtrlC(); ctrlCErr != nil {
-						continue
-					}
-					time.Sleep(200 * time.Millisecond)
-					if attrib.EnterWouldSubmitForeignDraft(
-						send.CaptureOutcome(target.CapturePaneFresh()), tmux.StripANSI) {
-						continue
-					}
-					fullResendCount++
-					waitingNoActivityChecks = 0
-					// A successful resend is not yet evidence of receipt — the
-					// next iteration must still observe a positive signal — so
-					// we intentionally do NOT set sawDeliveryEvidence here, even
-					// when SendKeysAndEnter returns nil. The send attempt is
-					// recorded only so verifyDelivery can distinguish "pipe ever
-					// fired" from "never even acked".
-					_ = target.SendKeysAndEnter(message)
-					continue
-				}
+				// Never clear or resend a body to force progress. Automatic Ctrl-C
+				// can erase operator input or become a session-exit gesture.
+				// Only the attribution gate may authorize an Enter retry.
 
 				// We haven't observed any post-send activity yet. Nudge Enter
 				// aggressively in the early window (every iteration for first 5
@@ -3669,7 +3569,6 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			continue
 		}
 		waitingNoMarkerChecks = 0
-		waitingNoActivityChecks = 0
 
 		// Ambiguous state: keep a best-effort Enter retry budget.
 		// Increased from 2 to 4 because some TUI frameworks take longer

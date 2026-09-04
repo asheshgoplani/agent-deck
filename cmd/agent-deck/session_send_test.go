@@ -677,19 +677,13 @@ func TestSendWithRetryTarget_IncreasedAmbiguousBudget(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_FullResendAfterMessageLost(t *testing.T) {
-	// Simulate the TUI init race: agent reports "waiting" but never transitions
-	// to "active" because the message was lost during init. After
-	// fullResendThreshold (8) consecutive waiting checks with no activity,
-	// sendWithRetryTarget should Ctrl+C and re-send the full message.
-	// After re-send, the agent transitions to "active".
+func TestSendWithRetryTarget_NeverInterruptsBeforeDelayedActivity(t *testing.T) {
 	statuses := make([]string, 12)
 	panes := make([]string, 12)
 	for i := range statuses {
 		statuses[i] = "waiting"
 		panes[i] = ""
 	}
-	// After the full resend (at check ~9), agent becomes active
 	statuses[10] = "active"
 	statuses[11] = "active"
 
@@ -701,26 +695,15 @@ func TestSendWithRetryTarget_FullResendAfterMessageLost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 1 {
-		t.Fatalf("expected 1 SendCtrlC call for full resend, got %d", got)
+	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
+		t.Fatalf("expected 0 SendCtrlC calls, got %d", got)
 	}
-	// sendKeysCalls: 1 initial + 1 resend = 2
-	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 2 {
-		t.Fatalf("expected 2 SendKeysAndEnter calls (initial + resend), got %d", got)
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
+		t.Fatalf("expected 1 SendKeysAndEnter call, got %d", got)
 	}
 }
 
-// TestSendWithRetryTarget_FullResendMaxLimit guards the full-resend cap (3)
-// AND the post-#876 silent-drop contract. Note: the impl deliberately does
-// NOT count a successful Ctrl+C+resend attempt as positive evidence —
-// `sawDeliveryEvidence` is intentionally NOT set on a resend (session_cmd.go
-// "intentionally NOT setting sawDeliveryEvidence here" comment). So even
-// after 3 successful resends, if the agent never transitions to active and
-// no marker appears, verifyDelivery must error. State-machine assertions
-// (3 Ctrl+C, 4 SendKeysAndEnter) preserved.
-func TestSendWithRetryTarget_FullResendMaxLimit(t *testing.T) {
-	// With fullResendThreshold=8 we need at least 8*4=32 retries to trigger
-	// all 3 resends plus some trailing checks.
+func TestSendWithRetryTarget_NeverInterruptsOrResendsAfterUnconfirmedDelivery(t *testing.T) {
 	n := 40
 	statuses := make([]string, n)
 	panes := make([]string, n)
@@ -742,13 +725,11 @@ func TestSendWithRetryTarget_FullResendMaxLimit(t *testing.T) {
 	if !strings.Contains(err.Error(), "876") {
 		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
-	// Should have exactly 3 full resends (the cap)
-	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 3 {
-		t.Fatalf("expected 3 SendCtrlC calls (max resends), got %d", got)
+	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
+		t.Fatalf("expected 0 SendCtrlC calls, got %d", got)
 	}
-	// 1 initial + 3 resends = 4
-	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 4 {
-		t.Fatalf("expected 4 SendKeysAndEnter calls (initial + 3 resends), got %d", got)
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
+		t.Fatalf("expected 1 SendKeysAndEnter call, got %d", got)
 	}
 }
 
