@@ -208,3 +208,17 @@ func TestTelemetryDialogStaleDeclineOverridesConcurrentGrant(t *testing.T) {
 		t.Fatal("stale decline did not win")
 	}
 }
+
+func TestTelemetryDialogConsumesMouse(t *testing.T) {
+	d, st, saves, sends := telemetryDialogHarness(t)
+	forceShow(d, st)
+	// Consent is installation-scoped and has no selected local/remote session input.
+	// A minimal Home also proves mouse dispatch never reaches underlying panels.
+	h := &Home{telemetryDialog: d}
+	for _, button := range []tea.MouseButton{tea.MouseButtonWheelUp, tea.MouseButtonWheelDown, tea.MouseButtonLeft} {
+		_, cmd := h.updateInner(tea.MouseMsg{Button: button})
+		if cmd != nil || !d.visible || len(*saves) != 0 || *sends != 0 {
+			t.Fatal("mouse escaped consent modal")
+		}
+	}
+}

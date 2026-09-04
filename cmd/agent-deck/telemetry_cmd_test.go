@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -253,5 +255,21 @@ func TestTelemetryUnknownSubcommandAndFlag(t *testing.T) {
 	}
 	if code, _, errOut := runTel(t, "", false, "status", "--nope"); code != 2 || !strings.Contains(errOut, "unknown flag") {
 		t.Fatalf("flag: %d %q", code, errOut)
+	}
+}
+
+type failedDisclosure struct{}
+
+func (failedDisclosure) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestTelemetryFailedDisclosureCannotGrant(t *testing.T) {
+	for _, jsonOut := range []bool{false, true} {
+		t.Run(fmt.Sprint(jsonOut), func(t *testing.T) {
+			isolateTelemetryHome(t)
+			code := telemetryEnableCmd("9.9.9", strings.NewReader("y\n"), failedDisclosure{}, failedDisclosure{}, jsonOut, false, true)
+			if code == 0 || telemetry.LoadState().Consent != telemetry.ConsentUndecided {
+				t.Fatal("failed disclosure granted consent")
+			}
+		})
 	}
 }

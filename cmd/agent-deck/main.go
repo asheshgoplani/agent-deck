@@ -89,6 +89,9 @@ func initTelemetrySettings() {
 // handlers and daemons are excluded: they fire on every agent turn and
 // would swamp the human-driven counts.
 func recordCLITelemetry(subcommand string, rest []string) {
+	if !globalFlagSubcommands[subcommand] {
+		return
+	}
 	for _, a := range rest {
 		if a == "-h" || a == "--help" || a == "help" {
 			return
@@ -3621,7 +3624,7 @@ func printHelp() {
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
-	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|show-last|reset-id (see TELEMETRY.md)")
+	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
 	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths")
 	fmt.Println("  uninstall        Uninstall Agent Deck")

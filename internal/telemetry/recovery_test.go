@@ -112,6 +112,7 @@ func TestRecoveryCrossProcessBudgetAndCounters(t *testing.T) {
 	interactiveEnv(t)
 	r := newReceiver(t)
 	granted(t)
+	recorded := 0
 	for _, action := range []string{"record", "send"} {
 		cmds := make([]*exec.Cmd, 12)
 		outputs := make([]bytes.Buffer, len(cmds))
@@ -128,8 +129,11 @@ func TestRecoveryCrossProcessBudgetAndCounters(t *testing.T) {
 				t.Fatalf("%s: %v %s", action, err, outputs[i].String())
 			}
 		}
-		if action == "record" && LoadState().Counters[CounterTUILaunches] != 300 {
-			t.Fatal("cross-process increments lost")
+		if action == "record" {
+			recorded = LoadState().Counters[CounterTUILaunches]
+			if recorded < 1 || recorded > 300 {
+				t.Fatalf("invalid best-effort count: %d", recorded)
+			}
 		}
 	}
 	if r.hits.Load() != 1 {
@@ -139,7 +143,7 @@ func TestRecoveryCrossProcessBudgetAndCounters(t *testing.T) {
 	if err := json.Unmarshal(LoadState().LastPayload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Counters[CounterTUILaunches] != 300 {
+	if payload.Counters[CounterTUILaunches] != recorded {
 		t.Fatalf("payload counters=%v", payload.Counters)
 	}
 }
@@ -236,5 +240,35 @@ func TestRecoveryDisableDuringInFlightSend(t *testing.T) {
 	}
 	if result := MaybeSend(context.Background(), "9.9.9"); result.Attempted {
 		t.Fatal("sent after completed disable")
+	}
+}
+
+func TestRecoveryDeclineSurvivesSchemaChange(t *testing.T) {
+	interactiveEnv(t)
+	s := LoadState()
+	Decline(s, "9.9.9", time.Now())
+	s.SchemaVersion = SchemaVersion + 1
+	if err := SaveState(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadState().Consent; got != ConsentDeclined {
+		t.Fatalf("decline became %s", got)
+	}
+}
+
+func TestRecoveryRecordDoesNotWaitForSender(t *testing.T) {
+	interactiveEnv(t)
+	granted(t)
+	unlock, err := lockState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	defer func() { unlock(); <-done }()
+	go func() { Record(CounterTUILaunches); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Error("counter blocked behind sender lock")
 	}
 }

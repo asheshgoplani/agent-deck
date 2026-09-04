@@ -5408,6 +5408,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case tea.MouseMsg:
+		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+			return h, nil
+		}
 		// Route mouse wheel events to the active scrollable area.
 		// Priority: setup wizard > settings > help > global search > MCP dialog > new/fork dialogs > main list.
 		// Non-wheel events are silently ignored (O(1), no blocking I/O).

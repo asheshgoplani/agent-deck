@@ -20,8 +20,7 @@ import (
 type Consent string
 
 const (
-	// ConsentUndecided is the default: the user has never been asked, or the
-	// state file is missing/corrupt. Sends nothing.
+	// ConsentUndecided is the default for missing or corrupt state. Sends nothing.
 	ConsentUndecided Consent = "undecided"
 	// ConsentGranted is the only value that permits a send.
 	ConsentGranted Consent = "granted"
@@ -29,19 +28,16 @@ const (
 	ConsentDeclined Consent = "declined"
 )
 
-// SchemaVersion is the payload/state schema version. A change to the payload
-// shape must bump this and update TELEMETRY.md.
+// SchemaVersion must change with the payload shape and TELEMETRY.md.
 const SchemaVersion = 1
 
 // StateFileName is the state file, stored in the agent-deck data directory.
 const StateFileName = "telemetry-state.json"
 
-// DayFormat is the only time granularity that ever appears in the state file
-// or in a payload.
+// DayFormat is the finest granularity in state and payload.
 const DayFormat = "2006-01-02"
 
-// State is the on-disk telemetry state. Every field is serialized so the file
-// is self-describing when a user opens it.
+// State is the on-disk telemetry state.
 type State struct {
 	Revision        uint64          `json:"revision"`
 	ConsentEndpoint string          `json:"consent_endpoint,omitempty"`
@@ -56,7 +52,6 @@ type State struct {
 	LastPayload     json.RawMessage `json:"last_payload,omitempty"`
 }
 
-// defaultState is the state of an install that has never been asked.
 func defaultState() *State {
 	return &State{SchemaVersion: SchemaVersion, Consent: ConsentUndecided}
 }
@@ -85,14 +80,13 @@ func LoadState() *State {
 	default:
 		s.Consent = ConsentUndecided
 	}
-	if s.SchemaVersion != SchemaVersion {
+	if s.SchemaVersion != SchemaVersion && s.Consent == ConsentGranted {
 		s.Consent = ConsentUndecided
 	}
 	return &s
 }
 
-// SaveState writes the state atomically (unique temp file + rename via
-// internal/atomicfile), mode 0600.
+// SaveState rejects stale revisions and durably replaces state with mode 0600.
 func SaveState(s *State) error {
 	unlock, err := lockState()
 	if err != nil {
@@ -107,7 +101,9 @@ func SaveState(s *State) error {
 
 // lockState uses a stable sibling file because state is replaced atomically.
 // Separate open descriptions serialize goroutines and processes alike.
-func lockState() (func(), error) {
+func lockState() (func(), error) { return lockStateWithFlags(syscall.LOCK_EX) }
+
+func lockStateWithFlags(flags int) (func(), error) {
 	path, err := StatePath()
 	if err != nil {
 		return nil, err
@@ -119,7 +115,7 @@ func lockState() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(f.Fd()), flags); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -148,7 +144,6 @@ func saveStateLocked(s *State) error {
 	return nil
 }
 
-// newInstallID returns 16 random bytes, hex encoded.
 func newInstallID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -157,7 +152,6 @@ func newInstallID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// dayOf formats t as a UTC day string.
 func dayOf(t time.Time) string {
 	return t.UTC().Format(DayFormat)
 }

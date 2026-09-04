@@ -13,17 +13,13 @@ import (
 	"time"
 )
 
-// DefaultEndpoint is a placeholder. The .invalid TLD (RFC 2606) never
-// resolves, so a build shipped without a maintainer-provided endpoint cannot
-// deliver anything even when consent is granted. The maintainer must stand
-// up a receiver (docs/TELEMETRY-DESIGN.md section 10) and either replace
-// this constant or set [telemetry].endpoint in config.toml.
+// DefaultEndpoint is undeployed; .invalid endpoints cause no network request.
+// Configure a receiver as described in TELEMETRY.md before collecting.
 const DefaultEndpoint = "https://telemetry.agent-deck.invalid/v1/ping"
 
 // sendTimeout bounds the whole request: dial, TLS, write, response.
 const sendTimeout = 5 * time.Second
 
-// maxResponseBytes caps how much of a response is read before discarding.
 const maxResponseBytes = 1024
 
 var endpoint = DefaultEndpoint
@@ -79,7 +75,6 @@ var httpClient = &http.Client{
 	},
 }
 
-// nowFn is a test seam.
 var nowFn = time.Now
 
 // SendResult describes what MaybeSend did, for tests and for `status`.

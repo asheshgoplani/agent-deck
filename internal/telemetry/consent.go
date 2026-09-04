@@ -8,9 +8,7 @@ import (
 // DocsURL is the user documentation linked from the consent prompt.
 const DocsURL = "https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md"
 
-// promptTemplate is the exact consent copy shared by the TUI dialog and
-// `agent-deck telemetry enable`. {{endpoint}} is substituted with the
-// effective endpoint so the person sees the real destination.
+// Shared CLI/TUI disclosure with the effective endpoint substituted.
 const promptTemplate = `Help improve agent-deck? (optional, off by default)
 
 agent-deck can send one small anonymous usage report per day so the

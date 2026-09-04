@@ -46,7 +46,7 @@ At most 2 KiB of JSON with exactly these keys:
 | `version` | A bounded release version, or `dev` for custom build strings |
 | `os`, `arch` | Operating system and CPU architecture |
 | `day` | UTC date, YYYY-MM-DD; no finer timestamp |
-| `counters` | Positive feature counts, each capped at 1000 |
+| `counters` | Best-effort positive counts, each capped at 1000 |
 
 Counter allowlist:
 
@@ -97,6 +97,6 @@ A receiver must validate the fixed schema, cap input at 2 KiB, and store only th
 
 ## Local storage and design
 
-`telemetry-state.json` lives in the effective agent-deck data directory, shared across profiles, mode 0600. It holds consent, endpoint, schema, revision, ID, counters, attempt/acknowledgement days and the last acknowledged JSON body. A stable sibling lock and durable atomic saves serialize writers across processes; stale positive choices cannot override a newer refusal. Deleting state resets to off. Manual edits, filesystem rollback and deleting files bypass daily-budget history. Disabling cannot delete reports already held by a receiver.
+`telemetry-state.json` lives in the effective agent-deck data directory, shared across profiles, mode 0600. It holds consent, endpoint, schema, revision, ID, counters, attempt/acknowledgement days and the last acknowledged JSON body. A stable sibling lock and durable atomic saves serialize writers across processes; stale positive choices cannot override a newer refusal. Counter writes skip contention, including an in-flight request, to avoid stalling interactive use. Deleting state resets to off. Manual edits, filesystem rollback and deleting files bypass daily-budget history. Disabling cannot delete reports already held by a receiver.
 
 [Design and threat model](docs/TELEMETRY-DESIGN.md) describe the consent boundary, transport contract and required independent verification.

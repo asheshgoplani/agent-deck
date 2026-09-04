@@ -7,27 +7,17 @@ import (
 	"golang.org/x/term"
 )
 
-// Environment variables that hard-disable telemetry regardless of stored
-// consent. Both are re-read on every call; nothing is cached.
 const (
-	// EnvTelemetry, when set to anything other than 1/true/yes/on, disables
-	// telemetry (so "0", "false", "off", "disabled", a typo, or an empty
-	// value all mean off). A truthy value is a no-op: an env var can turn
-	// telemetry off, never on.
+	// EnvTelemetry can force off; an explicit on value never grants consent.
 	EnvTelemetry = "AGENTDECK_TELEMETRY"
 	// EnvDoNotTrack follows https://consoledonottrack.com: any truthy value
 	// disables telemetry.
 	EnvDoNotTrack = "DO_NOT_TRACK"
 )
 
-// sessionMarkers are set by agent-deck inside every session it launches (the
-// tmux environment carries AGENTDECK_INSTANCE_ID; AGENT_DECK_SESSION_ID is
-// the older spelling still honoured by the CLI). A process running there is
-// driven by an agent, not by the person at the keyboard, so it must neither
-// prompt nor send.
+// Session markers identify agent-driven contexts, which cannot prompt or send.
 var sessionMarkers = []string{"AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID"}
 
-// ciMarkers are env vars whose presence means a CI or automation context.
 var ciMarkers = []string{
 	"CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE",
 	"CIRCLECI", "TRAVIS", "JENKINS_URL", "TEAMCITY_VERSION", "TF_BUILD",
@@ -69,9 +59,7 @@ const (
 	ReasonDeclined     DisableReason = "consent was declined"
 )
 
-// configDisabled / configUnreadable are set by the CLI layer from config.toml
-// [telemetry].disabled. They can only turn telemetry off; the config file
-// cannot grant consent. An unreadable config fails closed.
+// Configuration can only disable telemetry; unreadable config fails closed.
 var (
 	configDisabled   bool
 	configUnreadable bool
@@ -127,7 +115,6 @@ func InsideSession() bool {
 	return false
 }
 
-// isTerminalFn is a test seam for TTY detection.
 var isTerminalFn = func() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }

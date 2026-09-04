@@ -5298,6 +5298,8 @@ func (i *Instance) StartWithMessage(message string) error {
 		go i.detectCodexSessionAsync()
 	}
 
+	telemetry.RecordSessionStarted(i.Tool)
+
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
 	if message != "" && !promptEmbeddedInCommand {

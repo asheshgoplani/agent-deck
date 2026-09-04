@@ -3,11 +3,10 @@ package telemetry
 import (
 	"sort"
 	"strings"
+	"syscall"
 )
 
-// Counter names. This list is the payload allowlist: Record drops anything
-// else, so a new call site cannot leak a new dimension without editing this
-// file and TELEMETRY.md.
+// Counters are allowlisted here and in TELEMETRY.md; all other keys are dropped.
 const (
 	CounterTUILaunches    = "tui_launches"
 	CounterCLIInvocations = "cli_invocations"
@@ -25,8 +24,7 @@ var plainCounters = map[string]bool{
 	CounterConductorUsed:  true,
 }
 
-// knownTools mirrors the built-in tool registry in internal/session. Custom
-// tool names are user-chosen strings and are reported as "other".
+// Built-in tool names only; user-chosen names are reported as "other".
 var knownTools = map[string]bool{
 	"claude": true, "codex": true, "gemini": true, "opencode": true, "pi": true,
 	"copilot": true, "crush": true, "cursor": true, "hermes": true,
@@ -56,7 +54,6 @@ func SessionStartedKey(tool string) string {
 	return sessionsStartedPrefix + tool
 }
 
-// allowedKey reports whether key may be counted.
 func allowedKey(key string) bool {
 	if plainCounters[key] {
 		return true
@@ -67,7 +64,7 @@ func allowedKey(key string) bool {
 	return false
 }
 
-// Record increments a counter, persisting the state.
+// Record persists a best-effort counter, skipping contention to avoid blocking the UI.
 func Record(key string) {
 	if !allowedKey(key) {
 		return
@@ -75,7 +72,7 @@ func Record(key string) {
 	if HardDisabled() || !Interactive() {
 		return
 	}
-	unlock, err := lockState()
+	unlock, err := lockStateWithFlags(syscall.LOCK_EX | syscall.LOCK_NB)
 	if err != nil {
 		return
 	}

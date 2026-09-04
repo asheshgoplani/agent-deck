@@ -14,12 +14,11 @@ import (
 	"golang.org/x/term"
 )
 
-// handleTelemetry dispatches `agent-deck telemetry <subcommand>`.
 func handleTelemetry(args []string) {
 	interactive := telemetry.Interactive()
 	for _, arg := range args {
 		if arg == "--json" {
-			interactive = interactive && term.IsTerminal(int(os.Stderr.Fd()))
+			interactive = term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
 		}
 	}
 	code := runTelemetry(args, Version, os.Stdin, os.Stdout, os.Stderr, interactive)
@@ -44,7 +43,6 @@ type telemetryStatus struct {
 	SchemaVersion  int            `json:"schema_version"`
 }
 
-// runTelemetry is the testable core.
 func runTelemetry(args []string, version string, in io.Reader, out, errOut io.Writer, interactive bool) int {
 	var sub string
 	var jsonOut, yes bool
@@ -170,8 +168,9 @@ func telemetryEnableCmd(version string, in io.Reader, out, errOut io.Writer, jso
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
-	fmt.Fprintln(disclosure, telemetry.PromptText(shownEndpoint))
-	fmt.Fprint(disclosure, "Send anonymous usage reports? [y/N]: ")
+	if _, err := fmt.Fprintf(disclosure, "%s\nSend anonymous usage reports? [y/N]: ", telemetry.PromptText(shownEndpoint)); err != nil {
+		return 1
+	}
 	line, readErr := bufio.NewReader(in).ReadString('\n')
 	// EOF or a failed read is never an affirmative answer, even after a y.
 	if readErr != nil || !isYesConfirmation(line) {
