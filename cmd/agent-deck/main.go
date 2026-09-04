@@ -1754,7 +1754,9 @@ func handleAdd(profile string, args []string) {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 
-			fmt.Printf("Created worktree at: %s\n", worktreePath)
+			if !*jsonOutput {
+				fmt.Printf("Created worktree at: %s\n", worktreePath)
+			}
 		}
 		worktreeRepoRoot = repoRoot
 		// Update path to point to worktree so session uses worktree as working directory

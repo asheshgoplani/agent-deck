@@ -97,12 +97,12 @@ func startParitySSH(t *testing.T, remoteHome, binDir string) {
 							cmd.Dir = remoteHome
 							for _, kv := range os.Environ() {
 								key := strings.SplitN(kv, "=", 2)[0]
-								if key == "HOME" || strings.HasPrefix(key, "XDG_") || strings.HasPrefix(key, "AGENTDECK_") || strings.HasPrefix(key, "TMUX") {
+								if key == "PATH" || key == "HOME" || strings.HasPrefix(key, "XDG_") || strings.HasPrefix(key, "AGENTDECK_") || strings.HasPrefix(key, "TMUX") {
 									continue
 								}
 								cmd.Env = append(cmd.Env, kv)
 							}
-							cmd.Env = append(cmd.Env, "HOME="+remoteHome)
+							cmd.Env = append(cmd.Env, "HOME="+remoteHome, "PATH="+binDir+":"+os.Getenv("PATH"))
 							cmd.Stdin, cmd.Stdout, cmd.Stderr = channel, channel, channel.Stderr()
 							status := uint32(0)
 							if err := cmd.Run(); err != nil {

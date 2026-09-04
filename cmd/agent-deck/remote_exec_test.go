@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,7 +75,13 @@ func TestRemoteCommandParity(t *testing.T) {
 			local, localErr, localCode := run(remote, "", args...)
 			forwarded, remoteErr, remoteCode := run(controller, "", append([]string{"remote", "lab"}, args...)...)
 			var l, r any
-			if json.Unmarshal([]byte(local), &l) == nil && json.Unmarshal([]byte(forwarded), &r) == nil {
+			if args[len(args)-1] == "--json" {
+				if err := json.Unmarshal([]byte(local), &l); err != nil {
+					t.Fatalf("local JSON required: %v: %q", err, local)
+				}
+				if err := json.Unmarshal([]byte(forwarded), &r); err != nil {
+					t.Fatalf("remote JSON required: %v: %q", err, forwarded)
+				}
 				if !reflect.DeepEqual(l, r) {
 					t.Errorf("JSON differs:\nlocal %s\nremote %s", local, forwarded)
 				}
@@ -89,11 +98,18 @@ func TestRemoteCommandParity(t *testing.T) {
 		t.Fatalf("remote add wrote controller registry: %s", out)
 	}
 	for _, args := range [][]string{{"version"}, {"session", "remove", title}, {"remote", "list"}, {"--help"}} {
+		sentinel := filepath.Join(remote, "unsupported-ssh-called")
+		write(filepath.Join(shim, "sentinel"), "#!/bin/sh\nprintf called > '"+sentinel+"'\n", 0700)
+		write(filepath.Join(controller, ".config", "agent-deck", "config.toml"), fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = '%s'\n", filepath.Join(shim, "sentinel")), 0600)
 		out, stderr, code := run(controller, "", append([]string{"remote", "lab"}, args...)...)
 		if code == 0 || !strings.Contains(out+stderr, "unsupported remote command") {
 			t.Errorf("unsupported %v: %d %q %q", args, code, out, stderr)
 		}
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("unsupported command contacted remote: %v", err)
+		}
 	}
+	write(filepath.Join(controller, ".config", "agent-deck", "config.toml"), fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = '%s'\n", bin), 0600)
 	mustRun := func(args ...string) string {
 		t.Helper()
 		out, stderr, code := run(controller, "", append([]string{"remote", "lab"}, args...)...)
@@ -158,6 +174,143 @@ func TestRemoteCommandParity(t *testing.T) {
 		t.Fatalf("remote skill side effect: %v", err)
 	}
 
+	// Read persisted slots independently of CLI output, which historically omitted account.
+	assertAccount := func(title string) {
+		t.Helper()
+		found := false
+		err := filepath.WalkDir(remote, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || d.Name() != "state.db" {
+				return nil
+			}
+			db, err := statedb.Open(path)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			rows, err := db.LoadInstances()
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if row.Title == title {
+					found = true
+					if row.Account != "person_a" {
+						t.Errorf("persisted account for %s: %q", title, row.Account)
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil || !found {
+			t.Fatalf("persisted account for %s: found=%v err=%v", title, found, err)
+		}
+	}
+	assertAccount(launched)
+	assertAccount("worktree parity")
+	// Launch creates the worktree and starts an actual child with the selected
+	// Claude directory. The probe replaces only the external paid tool.
+	childEnv := filepath.Join(remote, "child-env")
+	write(filepath.Join(shim, "claude"), "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo 2.0.0; exit 0; fi\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > '"+childEnv+"'\nexec sleep 600\n", 0700)
+	launchWT := "launch worktree"
+	t.Cleanup(func() { run(remote, "", "session", "stop", launchWT) })
+	mustRun("launch", remote, "--title", launchWT, "--cmd", "claude", "--worktree", "launch-branch", "--new-branch", "--location", "subdirectory", "--account", "person_a", "--no-wait", "--json")
+	assertAccount(launchWT)
+	if out, err := exec.Command("git", "-C", remote, "show-ref", "--verify", "refs/heads/feature/launch-branch").CombinedOutput(); err != nil {
+		t.Fatalf("launch branch: %v %s", err, out)
+	}
+	waitFor := func(label string, ready func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if ready() {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal(label + " timeout")
+	}
+	waitFor("account child environment", func() bool {
+		data, _ := os.ReadFile(childEnv)
+		return string(data) == filepath.Join(remote, "claude-a")
+	})
+
+	// Actual remote send, file transport and output, through CLI and live tmux.
+	receiver := filepath.Join(remote, "receiver.py")
+	write(receiver, `import os, tty, hashlib
+	tty.setraw(0)
+	print("READY", flush=True)
+	buf = b""
+	while True:
+	    data = os.read(0, 8192)
+	    if not data: break
+	    for byte in data:
+	        if byte in (10, 13):
+	            cleaned = buf.replace(b"\x1b[200~", b"").replace(b"\x1b[201~", b"")
+	            print("\r\nRX:" + hashlib.sha256(cleaned).hexdigest() + ":" + str(len(cleaned)), flush=True)
+	            buf = b""
+	        else: buf += bytes([byte])
+	`, 0700)
+	// Remove Go indentation from embedded Python fixture.
+	data, _ := os.ReadFile(receiver)
+	write(receiver, strings.ReplaceAll(string(data), "\n\t", "\n"), 0700)
+	mustRun("add", remote, "--title", "receiver", "--cmd", "shell", "--wrapper", "python3 -u "+receiver, "--json")
+	t.Cleanup(func() { run(remote, "", "session", "stop", "receiver") })
+	mustRun("session", "start", "receiver", "--json")
+	waitFor("receiver ready", func() bool {
+		out, _, _ := run(remote, "", "session", "output", "receiver", "--json")
+		return strings.Contains(out, "READY")
+	})
+	for n, file := range []bool{false, true} {
+		payload := strings.Repeat(fmt.Sprintf("%dabc", n), 1024)
+		args := []string{"send", "receiver", payload, "--no-wait", "--json"}
+		if file {
+			path := filepath.Join(controller, "actual-message")
+			write(path, payload, 0600)
+			args = []string{"send", "receiver", "--message-file", path, "--no-wait", "--json"}
+		}
+		result := mustRun(args...)
+		var sent any
+		if err := json.Unmarshal([]byte(result), &sent); err != nil {
+			t.Fatalf("send JSON: %v %q", err, result)
+		}
+		receipt := fmt.Sprintf("RX:%x:%d", sha256.Sum256([]byte(payload)), len(payload))
+		waitFor("actual send receipt", func() bool {
+			out, _, _ := run(remote, "", "session", "output", "receiver", "--json")
+			return strings.Contains(out, receipt)
+		})
+		local, _, code := run(remote, "", "session", "output", "receiver", "--json")
+		forwarded := mustRun("output", "receiver", "--json")
+		var l, r any
+		if code != 0 || json.Unmarshal([]byte(local), &l) != nil || json.Unmarshal([]byte(forwarded), &r) != nil {
+			t.Fatalf("output JSON required: %q %q", local, forwarded)
+		}
+		if !reflect.DeepEqual(l, r) {
+			t.Fatalf("successful output differs: %s %s", local, forwarded)
+		}
+	}
+	// Destructive cleanup is restricted to a disposable merged orphan created
+	// by this fixture. Confirm via streamed stdin and inspect Git + filesystem.
+	if out, err := exec.Command("git", "-C", remote, "update-ref", "refs/remotes/origin/main", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("published fixture ref: %v %s", err, out)
+	}
+	orphan := filepath.Join(remote, "disposable-orphan")
+	if out, err := exec.Command("git", "-C", remote, "worktree", "add", "-b", "disposable-orphan", orphan).CombinedOutput(); err != nil {
+		t.Fatalf("orphan fixture: %v %s", err, out)
+	}
+	out, stderr, code := run(controller, "yes\n", "remote", "lab", "worktree", "cleanup", "--force")
+	if code != 0 {
+		t.Fatalf("cleanup: %d %s %s", code, out, stderr)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan remains after cleanup: %v %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", remote, "worktree", "list", "--porcelain").CombinedOutput(); err != nil || strings.Contains(string(out), orphan) {
+		t.Fatalf("orphan registered after cleanup: %v %s", err, out)
+	}
+
 	// A server stub isolates transport semantics from send readiness and tool APIs.
 	write(filepath.Join(shim, "server"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\ncat\nprintf 'remote diagnostic' >&2\nexit 43\n", 0700)
 	write(filepath.Join(controller, ".config", "agent-deck", "config.toml"), fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = '%s'\n", filepath.Join(shim, "server")), 0600)
@@ -187,7 +340,7 @@ func TestRemoteCommandParity(t *testing.T) {
 			t.Errorf("literal argv %v: %d %q %q", args, code, out, stderr)
 		}
 	}
-	out, stderr, code := run(controller, "", "remote", "lab", "send", title, "--message-file", "/missing-superseded", "--message-file", messageFile)
+	out, stderr, code = run(controller, "", "remote", "lab", "send", title, "--message-file", "/missing-superseded", "--message-file", messageFile)
 	if code != 43 || stderr != "remote diagnostic" || !strings.HasSuffix(out, payload) {
 		t.Errorf("last file wins: %d %q %q", code, out, stderr)
 	}
