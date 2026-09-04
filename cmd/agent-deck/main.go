@@ -89,17 +89,18 @@ func initTelemetrySettings() {
 // handlers and daemons are excluded: they fire on every agent turn and
 // would swamp the human-driven counts.
 func recordCLITelemetry(subcommand string, rest []string) {
-	if !globalFlagSubcommands[subcommand] {
-		return
-	}
 	for _, a := range rest {
 		if a == "-h" || a == "--help" || a == "help" {
 			return
 		}
 	}
 	switch subcommand {
-	case "hook-handler", "codex-notify", "notify-daemon", "run-task", "inbox",
-		"telemetry", "version", "--version", "-v", "help", "--help", "-h", "debug-dump":
+	case "add", "list", "ls", "remove", "rm", "rename", "mv", "status", "profile", "update",
+		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
+		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
+		"remote", "worktree", "wt", "costs", "web", "uninstall", "migrate-paths", "hooks",
+		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "deepseek", "feedback", "creds-refresh":
+	default:
 		return
 	}
 	telemetry.Record(telemetry.CounterCLIInvocations)
