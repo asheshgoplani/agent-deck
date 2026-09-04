@@ -2522,19 +2522,17 @@ func (h *Home) rebuildFlatItems() {
 
 	// Apply status filter if active (skip when browsing archived list).
 	if h.statusFilter != "" && h.statusFilter != FilterModeArchived {
-		// First pass: identify groups that have matching sessions
+		// Use full membership so a collapsed match retains a header. The
+		// recency pass below must not count sessions whose status header was
+		// discarded merely because their group is folded.
 		groupsWithMatches := make(map[string]bool)
-		for _, item := range allItems {
-			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if h.matchesStatusFilter(h.statusFilter, item.Session.Status) {
-					// Mark this session's group and all parent groups as having matches
-					groupsWithMatches[item.Path] = true
-					// Also mark parent paths
-					parts := strings.Split(item.Path, "/")
-					for i := range parts {
-						parentPath := strings.Join(parts[:i+1], "/")
-						groupsWithMatches[parentPath] = true
-					}
+		for _, group := range h.groupTree.GroupList {
+			if group == nil {
+				continue
+			}
+			for _, inst := range group.Sessions {
+				if inst != nil && !inst.IsArchived() && h.matchesStatusFilter(h.statusFilter, inst.Status) {
+					markGroupPathAndAncestors(groupsWithMatches, group.Path)
 				}
 			}
 		}
@@ -2565,41 +2563,66 @@ func (h *Home) rebuildFlatItems() {
 		h.flatItems = allItems
 	}
 
-	// Apply time-range filter if active (composes with status filter above,
-	// same two-pass group/session shape, same auto-clear-when-empty safety
-	// net: a session's activity clock keeps ticking while a time filter is
-	// open, so a filter that matched something a moment ago can go stale
-	// exactly like a status filter can).
+	// Use one remote snapshot for recency fallback and row construction.
+	h.remoteSessionsMu.RLock()
+	remoteNames := make([]string, 0, len(h.remoteSessions))
+	remotes := make(map[string][]session.RemoteSessionInfo, len(h.remoteSessions))
+	for name, sessions := range h.remoteSessions {
+		remoteNames = append(remoteNames, name)
+		remotes[name] = append([]session.RemoteSessionInfo(nil), sessions...)
+	}
+	h.remoteSessionsMu.RUnlock()
+	sort.Strings(remoteNames)
+
+	// Decide fallback across eligible local and remote sessions before hiding
+	// rows. Full group membership keeps collapsed matches available to reopen.
+	now := time.Now()
+	remoteMatchesTime := func(remote session.RemoteSessionInfo) bool {
+		activity, known := remote.LastActivity()
+		return !known || h.timeFilter.Matches(activity, now)
+	}
 	if h.timeFilter != session.TimeFilterAll {
-		now := time.Now()
 		groupsWithMatches := make(map[string]bool)
-		for _, item := range h.flatItems {
-			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if h.timeFilter.Matches(item.Session.DisplayLastActivityTime(), now) {
-					groupsWithMatches[item.Path] = true
-					parts := strings.Split(item.Path, "/")
-					for i := range parts {
-						groupsWithMatches[strings.Join(parts[:i+1], "/")] = true
+		hasCandidates, hasMatches := false, false
+		for _, group := range h.groupTree.GroupList {
+			if group == nil || !h.isInGroupScope(group.Path) {
+				continue
+			}
+			for _, inst := range group.Sessions {
+				if inst == nil || inst.IsArchived() != viewArchived {
+					continue
+				}
+				if h.statusFilter != "" && !viewArchived && !h.matchesStatusFilter(h.statusFilter, inst.Status) {
+					continue
+				}
+				hasCandidates = true
+				if h.timeFilter.Matches(inst.DisplayLastActivityTime(), now) {
+					hasMatches = true
+					markGroupPathAndAncestors(groupsWithMatches, group.Path)
+				}
+			}
+		}
+		if !viewArchived {
+			for _, sessions := range remotes {
+				for _, remote := range sessions {
+					hasCandidates = true
+					if remoteMatchesTime(remote) {
+						hasMatches = true
 					}
 				}
 			}
 		}
-
-		filtered := make([]session.Item, 0, len(h.flatItems))
-		for _, item := range h.flatItems {
-			if item.Type == session.ItemTypeGroup {
-				if groupsWithMatches[item.Path] {
+		if hasCandidates && !hasMatches {
+			h.timeFilter = session.TimeFilterAll
+		} else {
+			filtered := make([]session.Item, 0, len(h.flatItems))
+			for _, item := range h.flatItems {
+				if item.Type == session.ItemTypeGroup && groupsWithMatches[item.Path] {
 					filtered = append(filtered, item)
-				}
-			} else if item.Type == session.ItemTypeSession && item.Session != nil {
-				if h.timeFilter.Matches(item.Session.DisplayLastActivityTime(), now) {
+				} else if item.Type == session.ItemTypeSession && item.Session != nil && h.timeFilter.Matches(item.Session.DisplayLastActivityTime(), now) {
 					filtered = append(filtered, item)
 				}
 			}
-		}
-		if len(filtered) == 0 && len(h.flatItems) > 0 {
-			h.timeFilter = session.TimeFilterAll
-		} else {
 			h.flatItems = filtered
 		}
 	}
@@ -2697,73 +2720,28 @@ func (h *Home) rebuildFlatItems() {
 		h.flatItems = expanded
 	}
 
-	// Append remote sessions as selectable items
-	h.remoteSessionsMu.RLock()
-	remoteNames := make([]string, 0, len(h.remoteSessions))
-	remotes := make(map[string][]session.RemoteSessionInfo, len(h.remoteSessions))
-	for name, sessions := range h.remoteSessions {
-		remoteNames = append(remoteNames, name)
-		remotes[name] = append([]session.RemoteSessionInfo(nil), sessions...)
-	}
-	h.remoteSessionsMu.RUnlock()
-	sort.Strings(remoteNames)
 	if len(remotes) > 0 && h.statusFilter != FilterModeArchived {
 		for _, remoteName := range remoteNames {
+			sessions := remotes[remoteName]
+			if h.timeFilter != session.TimeFilterAll {
+				filtered := make([]session.RemoteSessionInfo, 0, len(sessions))
+				for _, remote := range sessions {
+					if remoteMatchesTime(remote) {
+						filtered = append(filtered, remote)
+					}
+				}
+				if len(filtered) == 0 {
+					continue
+				}
+				sessions = filtered
+			}
+			// Filter before building rows so collapsed headers and connectors
+			// describe the surviving sessions.
 			// #1553: nest each remote's sessions under their Group paths
 			// instead of dumping them flat at Level 1.
 			// #1875: apply the user's manual row order for this remote.
-			h.flatItems = append(h.flatItems, buildRemoteFlatItemsOrdered(remoteName, remotes[remoteName], h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName))...)
+			h.flatItems = append(h.flatItems, buildRemoteFlatItemsOrdered(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName))...)
 		}
-	}
-
-	// Apply the same recency filter to the remote rows just appended. This
-	// runs as its own pass, separate from the local time-filter pass above,
-	// because remote rows don't exist yet when that one runs (they're
-	// appended after local filtering/partitioning/window-injection, which
-	// don't apply to them). Same two-pass mark/filter shape, scoped to
-	// ItemTypeRemoteGroup/ItemTypeRemoteSession so it's a no-op for local
-	// rows. A remote session with no (or unparseable) last-activity time — an
-	// older remote binary that predates the field — always matches, same
-	// graceful-degradation convention as RemoteSessionInfo's Substate/Archived
-	// fields: it stays visible rather than vanishing.
-	if len(remotes) > 0 && h.timeFilter != session.TimeFilterAll {
-		now := time.Now()
-		remoteMatches := func(item session.Item) bool {
-			if item.RemoteSession == nil {
-				return true
-			}
-			t, ok := item.RemoteSession.LastActivity()
-			if !ok {
-				return true
-			}
-			return h.timeFilter.Matches(t, now)
-		}
-		remoteGroupsWithMatches := make(map[string]bool)
-		for _, item := range h.flatItems {
-			if item.Type == session.ItemTypeRemoteSession && remoteMatches(item) {
-				remoteGroupsWithMatches[item.Path] = true
-				parts := strings.Split(item.Path, "/")
-				for i := range parts {
-					remoteGroupsWithMatches[strings.Join(parts[:i+1], "/")] = true
-				}
-			}
-		}
-		filtered := make([]session.Item, 0, len(h.flatItems))
-		for _, item := range h.flatItems {
-			switch item.Type {
-			case session.ItemTypeRemoteGroup:
-				if remoteGroupsWithMatches[item.Path] {
-					filtered = append(filtered, item)
-				}
-			case session.ItemTypeRemoteSession:
-				if remoteMatches(item) {
-					filtered = append(filtered, item)
-				}
-			default:
-				filtered = append(filtered, item)
-			}
-		}
-		h.flatItems = filtered
 	}
 
 	// Pre-compute root group numbers for O(1) hotkey lookup (replaces O(n) loop in renderGroupItem).
