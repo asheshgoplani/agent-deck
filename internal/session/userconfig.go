@@ -94,6 +94,12 @@ type UserConfig struct {
 	// Empty or unrecognized values normalize to "creation".
 	GroupSort string `toml:"group_sort,omitempty"`
 
+	// SendTransport selects how `agent-deck session send` delivers to a
+	// Claude-compatible target. "auto" (default) uses Claude Code's messaging
+	// socket when one is available and falls back to tmux keystrokes otherwise;
+	// "tmux" pins the historical keystroke path. Discussion #2089.
+	SendTransport string `toml:"send_transport,omitempty"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps,omitempty"`
@@ -1442,6 +1448,17 @@ func (c *UserConfig) GetGroupSort() string {
 		return "actionable"
 	}
 	return "creation"
+}
+
+// GetSendTransport returns the normalized send transport: "tmux" only when
+// explicitly set, otherwise "auto" (the default). Unknown values (e.g. a
+// typo'd "TMUX" or "garbage") normalize to "auto" rather than erroring, the
+// same fail-open shape as GetGroupSort.
+func (c *UserConfig) GetSendTransport() string {
+	if c.SendTransport == "tmux" {
+		return "tmux"
+	}
+	return "auto"
 }
 
 // ClaudeSettings defines Claude Code configuration
