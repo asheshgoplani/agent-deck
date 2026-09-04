@@ -2,6 +2,8 @@ package session
 
 import (
 	"strings"
+
+	"al.essio.dev/pkg/shellescape"
 )
 
 // Muse adapter.
@@ -132,7 +134,7 @@ func (i *Instance) buildMuseResumeCommand(sessionID string) string {
 	if trimmed := strings.TrimSpace(i.Command); trimmed != "" && trimmed != "muse" {
 		base, passthrough = trimmed, true
 	}
-	cmd := base + " resume " + strings.TrimSpace(sessionID)
+	cmd := base + " resume " + shellescape.Quote(strings.TrimSpace(sessionID))
 	if !passthrough {
 		opts, optsOK := i.museLaunchOptions()
 		config, _ := LoadUserConfig()
