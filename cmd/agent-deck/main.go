@@ -237,6 +237,11 @@ func main() {
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer
 	// a prompt and would otherwise fail closed under the "prompt" default.
+	// Remote arguments belong to the server, including its script-consent flag.
+	if len(args) > 0 && args[0] == "remote" {
+		handleRemote(profile, args[1:])
+		return
+	}
 	allowRepoScripts, args2 := extractAllowRepoScriptsFlag(args)
 	args = args2
 	if envVal := strings.TrimSpace(os.Getenv("AGENT_DECK_ALLOW_REPO_SCRIPTS")); envVal != "" {
