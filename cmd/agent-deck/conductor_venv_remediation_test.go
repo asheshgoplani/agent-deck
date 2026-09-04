@@ -68,11 +68,20 @@ func TestFormatPipFailureMessage_VenvPathFallsBackWhenUnset(t *testing.T) {
 	}
 	want := session.ConductorVenvDir()
 	if want == "" {
-		want = filepath.Join("~", ".agent-deck", "conductor", "venv")
+		want = filepath.Join(os.Getenv("HOME"), ".agent-deck", "conductor", "venv")
 	}
-	if !strings.Contains(msg, "python3 -m venv "+want) {
-		t.Fatalf("message venv path is not the resolver's\n want: %s\n----- full message -----\n%s", want, msg)
+	for _, line := range strings.Split(msg, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "python3 -m venv ") {
+			command := "python3() { printf '%s\\n' \"$@\"; }; " + line
+			out, err := exec.Command("sh", "-c", command).CombinedOutput()
+			if err != nil || string(out) != "-m\nvenv\n"+want+"\n" {
+				t.Fatalf("fallback command does not target the resolver's directory: err=%v, got %q, want %q", err, out, want)
+			}
+			return
+		}
 	}
+	t.Fatal("message contains no venv creation command")
 }
 
 // probePythonInterpreter reports the interpreter the installer actually used,
