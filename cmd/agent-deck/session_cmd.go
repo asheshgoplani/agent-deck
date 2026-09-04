@@ -3881,7 +3881,7 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		if baseline.paneOK {
 			if n, markers, content, ok := paneArrivalObservation(target, message); ok {
 				if n > baseline.occurrences {
-					if opts.tool == "pi" && piComposerEmpty(content) {
+					if opts.tool == "pi" && piComposerEmpty(content, message) {
 						return deliverySubmitted, nil
 					}
 					// Keep polling: the body is in, but the turn may still
@@ -4022,7 +4022,13 @@ func paneArrivalObservation(target sendRetryTarget, message string) (int, int, s
 // piComposerEmpty recognizes Pi's editor between its final two horizontal
 // borders. Once this send's body is in the pane and that editor is empty, Enter
 // was accepted; an unsent message would still occupy the editor.
-func piComposerEmpty(content string) bool {
+func piComposerEmpty(content, message string) bool {
+	// User-provided rules can impersonate the editor's top border. A pane
+	// capture cannot distinguish those bytes from Pi's own empty editor, so
+	// these messages require an activity transition instead of visual inference.
+	if strings.Contains(tmux.StripANSI(message), strings.Repeat("─", 20)) {
+		return false
+	}
 	lines := strings.Split(content, "\n")
 	borders := make([]int, 0, 2)
 	for i, line := range lines {
@@ -4186,12 +4192,11 @@ var freshOutputTestConfig *freshOutputConfig
 // This bridges the gap between the UI prompt reappearing (detected by
 // waitForCompletion) and the JSONL being flushed to disk.
 //
-// For non-Claude tools (Codex, Gemini, etc.) the JSONL freshness check is
-// skipped entirely to avoid an unnecessary 5s penalty, since those tools
-// don't use the same JSONL format.
+// Local Pi sessions also expose structured timestamps. Other tools and
+// nonlocal Pi sessions retain best-effort output without a freshness claim.
 //
-// Falls back to the best-effort response if the freshness timeout expires,
-// logging a warning to stderr so the caller knows the data may be stale.
+// Claude retains its best-effort response with a warning on timeout. Pi
+// returns an error instead of reporting an earlier turn as this send's reply.
 //
 // peers carries the profile snapshot for the #1400 collision guard: a
 // claude_session_id shared by multiple live instances resolves to ONE
@@ -4199,14 +4204,18 @@ var freshOutputTestConfig *freshOutputConfig
 // Fail fast (same semantics as --stream's #1352 guard) instead of polling
 // a colliding transcript until the freshness timeout.
 func waitForFreshOutput(inst *session.Instance, sentAt time.Time, peers []*session.Instance) (*session.ResponseOutput, error) {
-	// Non-Claude tools don't use JSONL timestamps — skip the freshness loop.
-	if !session.IsClaudeCompatible(inst.Tool) {
+	// Pi's transcript lives in the tool's HOME. Legacy SSH/sandbox instances
+	// use terminal fallback, which does not provide timestamp evidence.
+	localPi := inst.Tool == "pi" && !inst.IsSSH() && !inst.IsSandboxed()
+	if !session.IsClaudeCompatible(inst.Tool) && !localPi {
 		return inst.GetLastResponseBestEffort()
 	}
 
 	// #1400: refuse a colliding transcript before entering the poll loop.
-	if _, err := inst.GetJSONLPathChecked(peers); err != nil {
-		return nil, fmt.Errorf("refusing to read a colliding transcript: %w", err)
+	if session.IsClaudeCompatible(inst.Tool) {
+		if _, err := inst.GetJSONLPathChecked(peers); err != nil {
+			return nil, fmt.Errorf("refusing to read a colliding transcript: %w", err)
+		}
 	}
 
 	pollInterval := 250 * time.Millisecond
@@ -4221,6 +4230,11 @@ func waitForFreshOutput(inst *session.Instance, sentAt time.Time, peers []*sessi
 	// time.Now() can be slightly ahead of Claude's clock. Tighter than the
 	// original 2s to reduce false positives on genuinely stale output.
 	threshold := sentAt.Add(-250 * time.Millisecond)
+	if localPi {
+		// Pi records milliseconds; do not accept a previous turn under Claude's
+		// wider clock-skew allowance.
+		threshold = sentAt.Truncate(time.Millisecond)
+	}
 
 	deadline := time.Now().Add(timeout)
 	var lastResp *session.ResponseOutput
@@ -4252,7 +4266,15 @@ func waitForFreshOutput(inst *session.Instance, sentAt time.Time, peers []*sessi
 		time.Sleep(pollInterval)
 	}
 
-	// Freshness timeout: return whatever we have but warn that it may be stale
+	// Pi's send --wait result must belong to this turn. Neither stale text nor
+	// a terminal fallback without a timestamp can establish that relationship.
+	if localPi {
+		if lastErr != nil {
+			return nil, fmt.Errorf("Pi output freshness timeout (%s): %w", timeout, lastErr)
+		}
+		return nil, fmt.Errorf("Pi output freshness timeout (%s): no fresh assistant response", timeout)
+	}
+	// Preserve Claude's historical warning-and-best-effort timeout behavior.
 	if lastResp != nil {
 		fmt.Fprintf(os.Stderr, "Warning: output freshness timeout (%s) — response may be stale\n", timeout)
 		return lastResp, nil

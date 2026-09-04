@@ -8170,6 +8170,9 @@ func parseGeminiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 }
 
 func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
+	if i.IsSSH() || i.IsSandboxed() {
+		return nil, fmt.Errorf("instance %s runs outside this host; its Pi transcript is not on this machine", i.ID)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
