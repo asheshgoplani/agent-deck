@@ -95,6 +95,15 @@ func TestExecuteSend_OperatorDraftNotMerged_Integration(t *testing.T) {
 	}
 }
 
+// fakeClaudeSwallowsEnter renders an empty composer and echoes typed
+// characters back onto the prompt line but never accepts Enter — the
+// typed-but-unsubmitted state of issue #1413.
+const fakeClaudeSwallowsEnter = `bash -c '
+	printf "❯ "
+	buf=""
+	while IFS= read -r -n1 c; do [ -n "$c" ] && buf="$buf$c" && printf "\r❯ %s" "$buf"; done
+'`
+
 func TestExecuteSend_TypedNotSubmitted_Integration(t *testing.T) {
 	skipUnlessIntegration(t)
 	sess := startFakeClaudePane(t, "send-1413-stuck", fakeClaudeSwallowsEnter)
