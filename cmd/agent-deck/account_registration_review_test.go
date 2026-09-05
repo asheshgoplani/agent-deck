@@ -28,6 +28,7 @@ func TestAccountReviewRegistrationRejectsBeforePersistence(t *testing.T) {
 				db, err := statedb.Open(filepath.Join(home, ".local", "share", "agent-deck", "profiles", "ch_support_test", "state.db"))
 				require.NoError(t, err)
 				defer db.Close()
+				require.NoError(t, db.Migrate())
 				rows, err := db.LoadInstances()
 				require.NoError(t, err)
 				require.Empty(t, rows, "account failure must not leave a registered session")
