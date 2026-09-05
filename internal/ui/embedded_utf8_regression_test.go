@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
-	deckterminal "github.com/asheshgoplani/agent-deck/internal/terminal"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestEval_EmbeddedLocalAndWindowUTF8UnderCLocale(t *testing.T) {
+	setIsolatedAgentDeckDir(t)
 	t.Setenv("LC_ALL", "C")
 	t.Setenv("LANG", "C")
 	t.Setenv("LC_CTYPE", "C")
@@ -32,9 +33,25 @@ func TestEval_EmbeddedLocalAndWindowUTF8UnderCLocale(t *testing.T) {
 	command := "printf '%s\\n' " + shellSingleQuote(want) + "; sleep 300"
 	tm("new-session", "-d", "-x", "60", "-y", "8", "-s", "unicode", command)
 	tm("new-window", "-d", "-t", "unicode:1", command)
-	for _, target := range []string{"unicode:0", "unicode:1"} {
-		t.Run(target, func(t *testing.T) {
-			terminal, err := startEmbeddedTerminalWithClipboard(context.Background(), deckterminal.AttachRequest{Name: target, SocketName: socket}, embeddedTerminalSize{Cols: 60, Rows: 8}, nil)
+	inst := session.NewInstanceWithTool("unicode", t.TempDir(), "claude")
+	inst.GetTmuxSession().Name = "unicode"
+	inst.GetTmuxSession().SocketName = socket
+	home := &Home{}
+	for _, tc := range []struct {
+		name   string
+		target insertTargetRef
+	}{
+		{"unicode", insertTargetRef{local: inst}},
+		{"unicode:1", insertTargetRef{local: inst, hasWindow: true, windowIndex: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Exercise the production request builder. Raw AttachRequest values
+			// intentionally leave ForceUTF8 unset for external terminal launchers.
+			req, ok := home.embeddedAttachRequest(tc.target)
+			if !ok || req.Name != tc.name || req.SocketName != socket || !req.ForceUTF8 {
+				t.Fatalf("embedded request = %+v, ok=%v", req, ok)
+			}
+			terminal, err := startEmbeddedTerminalWithClipboard(context.Background(), req, embeddedTerminalSize{Cols: 60, Rows: 8}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
