@@ -164,7 +164,7 @@ func TestEval_ClassicTUI(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !classicAttached {
-		clients, _ := tmuxTryEmbedded(socketName, "list-clients", "-F", "#{client_tty}\t#{client_width}\t#{client_session}")
+		clients, _ := tmuxTryEmbedded(socketName, "list-clients", "-F", "#{client_tty}|#{client_width}|#{client_session}")
 		t.Fatalf("classic Enter did not replace the dashboard with a full-width tmux client; clients=%q\n%s", clients, p.Dump())
 	}
 
@@ -255,12 +255,14 @@ func tmuxTryEmbedded(socketName string, args ...string) (string, error) {
 }
 
 func embeddedTTYClientWidth(socketName string) (int, bool) {
-	out, err := tmuxTryEmbedded(socketName, "list-clients", "-F", "#{client_tty}\t#{client_width}")
+	// tmux can replace control characters in format output with underscores.
+	// Use a printable separator to keep TTY clients distinct from control clients.
+	out, err := tmuxTryEmbedded(socketName, "list-clients", "-F", "#{client_tty}|#{client_width}")
 	if err != nil {
 		return 0, false
 	}
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 2)
+		parts := strings.SplitN(line, "|", 2)
 		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
 			continue
 		}
