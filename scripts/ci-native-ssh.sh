@@ -65,15 +65,18 @@ export NATIVE_SSHD=/usr/sbin/sshd NATIVE_SSH_RECEIPT_DIR="$run/receipts"
 set +e
 go test -json -p 1 -count=1 -timeout 10m ./cmd/agent-deck -run '^TestNativeSSHAttachLifecycle$' > "$run/lifecycle.jsonl" 2> "$run/lifecycle.stderr"
 lifecycle=$?
+go test -json -p 1 -count=1 -timeout 5m ./cmd/agent-deck -run '^TestNativeSSHTUIRegistryLifecycle$' > "$run/tui.jsonl" 2> "$run/tui.stderr"
+tui=$?
 go test -json -p 1 -count=1 -timeout 5m ./internal/session -run '^TestSSHAttachPortableTERM$' > "$run/term.jsonl" 2> "$run/term.stderr"
 term=$?
 printf '%s\n' "$lifecycle" > "$run/lifecycle.exit"
+printf '%s\n' "$tui" > "$run/tui.exit"
 printf '%s\n' "$term" > "$run/term.exit"
 set -e
 python3 - "$run" <<'PY'
 import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); inventory={}
-required={'lifecycle':['TestNativeSSHAttachLifecycle'],'term':['TestSSHAttachPortableTERM','TestSSHAttachPortableTERM/xterm-256color','TestSSHAttachPortableTERM/screen','TestSSHAttachPortableTERM/tmux-256color','TestSSHAttachPortableTERM/xterm-ghostty','TestSSHAttachPortableTERM/#00','TestSSHAttachPortableTERM/x;_touch_/unwanted']}
+required={'tui':['TestNativeSSHTUIRegistryLifecycle'],'lifecycle':['TestNativeSSHAttachLifecycle'],'term':['TestSSHAttachPortableTERM','TestSSHAttachPortableTERM/xterm-256color','TestSSHAttachPortableTERM/screen','TestSSHAttachPortableTERM/tmux-256color','TestSSHAttachPortableTERM/xterm-ghostty','TestSSHAttachPortableTERM/#00','TestSSHAttachPortableTERM/x;_touch_/unwanted']}
 for name,tests in required.items():
  rows=[json.loads(line) for line in (root/(name+'.jsonl')).read_text().splitlines()]
  assert rows and (root/(name+'.exit')).read_text().strip()=='0',name
