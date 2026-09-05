@@ -39,7 +39,7 @@ round trip through the list.
 | --------- | ------------ |
 | `Ctrl-S` | Open the session switcher, pre-highlighted on the session you're currently in. |
 
-With the switcher open in the classic layout:
+With the switcher open from the overview or a full-screen attachment:
 
 - **`Ctrl-S`** again — cycle **forward** (the first step lands on the
   most-recently-used *other* session); **`Ctrl-A`** — cycle **backward**.
@@ -70,12 +70,12 @@ accidental press never yanks you away.
 
 ### Embedded layout
 
-With `[ui].embedded_terminal = true`, the configured switcher chord opens the
-local-session picker and reveals the sidebar. Cycling changes the highlight,
+When pressed in a focused embedded local pane, the configured switcher chord
+opens the local-session picker and reveals the sidebar. Cycling changes the highlight,
 but there is no automatic idle commit. Press `Enter` to attach to the highlight.
-Press `Esc` to return to the originating session when the picker was opened
-from an embedded pane, or to close it when opened from the overview. `Ctrl-Q`
-returns to the overview.
+Press `Esc` to return to the originating session. `Ctrl-Q` returns to the
+overview. A picker opened from the overview or a full-screen attachment keeps
+the timed behavior described above.
 
 The explicit choice keeps queued input from being redirected by a timer. The
 switcher remains unbound by default, and remote sessions do not intercept its
@@ -96,7 +96,7 @@ Claude Code's "stash prompt" (and XON/XOFF flow-control), readline binds
 the switcher ships unbound and you pick a key that's free in the tools you
 actually attach to.
 
-**Why does the classic layout auto-commit instead of switching on key release?**
+**Why does the overview/full-screen picker auto-commit instead of switching on key release?**
 Terminals don't deliver key-*release* events without an enhanced
 keyboard protocol that isn't available here, so "switch the moment you
 release Ctrl" can't be detected. The idle auto-commit (~1s) approximates
