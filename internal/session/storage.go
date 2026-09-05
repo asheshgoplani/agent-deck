@@ -366,11 +366,19 @@ func (s *Storage) Save(instances []*Instance) error {
 // DeleteInstance / RemoveSessionAndVerify at the moment the user deletes a
 // session, or statedb.ClearAllInstances for an intentional full wipe.
 func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) error {
+	rows, err := s.saveWithGroups(instances, groupTree)
+	if err == nil {
+		s.refreshCommittedGroupTitles(instances, rows)
+	}
+	return err
+}
+
+func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([]*statedb.InstanceRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.db == nil {
-		return fmt.Errorf("storage database not initialized")
+		return nil, fmt.Errorf("storage database not initialized")
 	}
 
 	// Enforce one Claude conversation owner across persisted sessions.
@@ -382,13 +390,13 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 	for i, inst := range instances {
 		row, err := instanceToRow(inst)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rows[i] = row
 	}
 
 	if err := s.db.UpsertInstances(rows); err != nil {
-		return fmt.Errorf("failed to save instances: %w", err)
+		return nil, fmt.Errorf("failed to save instances: %w", err)
 	}
 
 	// Intentional generic_session_id clear is a one-shot for this save.
@@ -410,14 +418,14 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			})
 		}
 		if err := s.db.SaveGroups(groupRows); err != nil {
-			return fmt.Errorf("failed to save groups: %w", err)
+			return nil, fmt.Errorf("failed to save groups: %w", err)
 		}
 	}
 
 	// Touch metadata for change detection by other instances
 	_ = s.db.Touch()
 
-	return nil
+	return rows, nil
 }
 
 // UpdateTitleIfUnlocked sets an instance's title with a single conditional
@@ -1567,6 +1575,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 				slog.String("fallback_group", DefaultGroupPath),
 			)
 			groupPath = DefaultGroupPath
+		}
+		if tmuxSess != nil {
+			tmuxSess.GroupPath = groupPath
 		}
 
 		// Expand tilde in project path (handles paths like ~/project saved from UI)
