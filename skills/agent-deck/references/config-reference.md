@@ -27,6 +27,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[global_search] Section](#global_search-section)
 - [[notifications] Section](#notifications-section)
 - [[performance] Section](#performance-section)
+- [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
 - [[mcps.*] Section](#mcps-section)
@@ -652,6 +653,71 @@ claim_polling = true   # Opt-in: dedupe status polling across concurrent instanc
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `claim_polling` | bool | `false` | When `true`, each session is actively polled (tmux status scan, live pipe attach) by exactly one instance instead of every open instance polling every session redundantly. Instances take ownership of sessions in their `-g` scope via a `session_claims` table in `state.db`, refreshing a heartbeat each sweep; a session with no live claim (owner heartbeat older than 15s, or no claim row at all) is up for grabs by the next instance that sees it in scope. Every 30s the elected primary instance additionally slow-polls **orphaned** sessions — those no scoped instance currently claims — so their statuses and notifications keep working even with no dedicated owner. Claims for sessions no longer present in the `instances` table (deleted, or archived-then-purged) are pruned periodically so the table cannot grow unbounded over a long-lived process. Default `false` preserves today's behavior: every instance polls every session it can see. |
+
+## [tmux] Section
+
+How agent-deck drives tmux: which server its sessions live on, and which tmux options it sets on them.
+
+```toml
+[tmux]
+socket_name = ""              # "" = share the user's default tmux server
+mouse = true                  # false = terminal keeps raw mouse events
+inject_status_line = true     # false = agent-deck never touches the tmux status line
+clear_on_restart = false      # true = wipe scrollback on session restart
+window_style_override = ""    # "default" lets the terminal background show through
+detach_key = ""               # alias for [hotkeys].detach, e.g. "ctrl+d"
+launch_as = ""                # "", "scope", "service", "direct", "auto"
+options = { "history-limit" = "50000" }   # raw tmux options, applied after agent-deck's defaults
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `socket_name` | string | `""` | tmux `-L <name>` selector for every agent-deck spawn. Empty shares the user's default server at `$TMUX_TMPDIR/tmux-<uid>/default`. Set it to isolate agent-deck onto its own tmux server, so its global option and key-binding writes never touch the user's interactive tmux, and a `tmux kill-server` in a shell cannot take managed sessions down. Captured per session at creation time — changing it later does **not** migrate existing sessions. CLI `--tmux-socket <name>` wins over this value. See `docs/SOCKET_ISOLATION.md`. |
+| `mouse` | bool | `true` | `false` never sets tmux `mouse on`, so the terminal emulator keeps raw control of mouse events — required by the VS Code Linux integrated terminal for click-drag selection. Applies both at session creation and on the reconnect configuration pass. |
+| `inject_status_line` | bool | `true` | `false` leaves the tmux status bar alone, and also disables agent-deck's global tmux notification bar and key bindings, so the runtime stops mutating global tmux options. |
+| `clear_on_restart` | bool | `false` | `true` wipes the scrollback buffer on session restart (`respawn-pane`) instead of preserving the previous run's output. |
+| `window_style_override` | string | `""` | Sets `window-style` and `window-active-style` for all sessions, overriding the theme. `"default"` lets the terminal emulator's background show through. Takes precedence over the same keys in `options`. |
+| `detach_key` | string | `""` | Alias for `[hotkeys].detach` (`"ctrl+<letter>"`). Used only when `[hotkeys].detach` is absent; empty keeps the built-in Ctrl+Q. |
+| `launch_as` | string | `""` | Spawn form for new tmux servers: `"scope"` (`systemd-run --user --scope`), `"service"` (systemd unit with restart-on-failure), `"direct"` (plain `tmux new-session`), `"auto"` (service where a systemd user manager exists, else direct). Empty defers to `launch_in_user_scope`. Unknown values are ignored rather than silently changing the spawn path. |
+| `launch_in_user_scope` | bool | platform | Launch new tmux servers under the user's systemd manager so they survive an SSH login scope teardown. Default: `true` on Linux hosts where `systemd-run --user` works, `false` elsewhere. Ignored when `launch_as` is set. |
+| `options` | table | — | Raw tmux options applied after agent-deck's own defaults. See below. |
+
+### [tmux.options] — raw tmux options
+
+Each pair is applied as `tmux set-option -t <session> -q <key> <value>` after agent-deck's defaults, so it wins over them. Either spelling works:
+
+```toml
+[tmux]
+options = { "history-limit" = "50000" }
+
+# or
+[tmux.options]
+history-limit = "50000"
+```
+
+Setting a key here does more than add an option: for the keys agent-deck sets itself, **an explicit entry opts out of agent-deck's default for that key entirely** ([#1625](https://github.com/asheshgoplani/agent-deck/issues/1625)), so your value — or the one in your own `~/.tmux.conf` — is what survives. The keys that behave that way:
+
+| Key | agent-deck default | Why it exists |
+|-----|--------------------|---------------|
+| `escape-time` | `10` | tmux's 500ms default makes Vim and editors feel sluggish. |
+| `extended-keys` | `on` | Forwards Shift+Enter and other modified keys to the agent (tmux 3.2+). A deliberate `set -s extended-keys off` in your tmux config needs this opt-out to survive. |
+| `extended-keys-format` | `csi-u` | Delivers modified keys as `ESC[13;2u` (the kitty form Claude Code reads) rather than xterm's `ESC[27;2;13~`, which Claude Code ignores. |
+| `terminal-features` | `*:hyperlinks:extkeys` | OSC 8 hyperlink tracking plus extended key reporting. Server-wide — see the note below. |
+| `window-size` | `largest` | Keeps a window sized to the biggest attached client, so a web `tmux -C` client and a native terminal client can share a session without void cells or clipping. |
+| `aggressive-resize` | `on` | Only resizes windows that are actively viewed, avoiding cross-window resize storms. |
+| `window-style`, `window-active-style` | theme value | Prevents color issues in some terminals. `window_style_override` above is the friendlier way to set these. |
+| `remain-on-exit` | `on` for sandbox and one-shot sessions only | Keeps a dead pane readable instead of tearing it down with the answer still in it. Not set for ordinary sessions. |
+
+**`terminal-features` is a server option.** It is an array on the tmux *server*, shared by every session on that socket, and it survives every agent-deck restart because the server does. Versions up to v1.15.0 appended to it on each session configuration pass without checking whether the entry was already there, which grew it without bound and eventually corrupted the display ([#2061](https://github.com/asheshgoplani/agent-deck/issues/2061)). agent-deck reads exact indexed entries and removes duplicates with guarded indexed deletions. New entries use the stable shared slot `terminal-features[2147483647]` and tmux's atomic no-overwrite operation, which works on tmux 3.4 as well as newer versions. This highest signed array index is sparse: it orders the owned entry after lower indices without allocating the intervening slots. Concurrent initializers target the same slot; foreign appends and replacements are never reconstructed or overwritten.
+
+A foreign value at that slot, including an explicitly empty value, wins. Agent-deck leaves it untouched and does not append elsewhere. If a complete read after the attempt still finds no exact owned entry, logs report `terminal_features_installation_deferred`; an incomplete verification reports `terminal_features_installation_unverified`. Freeing the slot permits installation on a later pass, or you can set an explicit override. Existing owned entries at other indices are honored. Cleanup leaves duplicates untouched when the read contains comma-bearing or blank values, and an unreadable array is never changed. Concurrent changes or a timeout can leave cleanup for a later pass. To inspect or reset it by hand:
+
+```bash
+tmux show-options -s terminal-features | wc -l   # a healthy server: a handful of lines
+tmux set -su terminal-features                   # reset to tmux's built-in defaults
+```
+
+Add `-L <socket_name>` to both when `socket_name` is set. See [troubleshooting](troubleshooting.md) for the full symptom list.
 
 ## Skills Registry (Outside config.toml)
 
