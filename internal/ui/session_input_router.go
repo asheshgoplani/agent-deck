@@ -64,6 +64,7 @@ type SessionInputRouter struct {
 	barrier          *sessionInputBarrier
 	queue            *sessionInputQueue
 	failed           chan struct{}
+	reading          bool // raw fd read/poll is outside mu
 	discardUntilIdle bool
 	discardPaste     bool
 	discardTail      []byte
@@ -212,6 +213,18 @@ func (r *SessionInputRouter) deactivateLocked() {
 		r.discardTail = append(r.discardTail[:0], r.rawBuf[len(r.rawBuf)-n:]...)
 	}
 	if r.queue != nil {
+		r.queue.mu.Lock()
+		inputFailed := r.queue.err != nil
+		r.queue.mu.Unlock()
+		if inputFailed && !r.discardPaste {
+			// The error command can beat Read's failed-state observation.
+			// Unread bytes still belong to this failed generation, including
+			// ordinary (non-paste) input that resembles dashboard shortcuts.
+			r.discardUntilIdle = true
+			if !r.reading {
+				r.discardBufferedTailLocked()
+			}
+		}
 		r.queue.stop()
 		r.queue = nil
 	}
@@ -250,6 +263,16 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			r.mu.Unlock()
 			return n, nil
 		}
+		if r.failed == nil && r.queue != nil && r.queue.ctx.Err() != nil {
+			r.queue.mu.Lock()
+			inputFailed := r.queue.err != nil
+			r.queue.mu.Unlock()
+			if inputFailed {
+				// An asynchronous writer error stops dashboard control/mouse
+				// routing too; no further input belongs to a failed generation.
+				r.failed = make(chan struct{})
+			}
+		}
 		if failed := r.failed; failed != nil {
 			r.mu.Unlock()
 			select {
@@ -280,17 +303,34 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 		// Reading one byte costs syscalls, but avoids prefetching bytes whose
 		// destination Home has not decided, and preserves FD readiness.
 		const readSize = 1
+		readQueue := r.queue
+		r.reading = true
 		r.mu.Unlock()
 
 		// Yield to cancelreader periodically: its cancellation pipe cannot
 		// interrupt our internal receipt waits or a second raw read. An empty
 		// read retains all parser state and lets its next Read observe Cancel.
 		if runtime.GOOS != "windows" && !pollFdReady(int(r.File.Fd()), 25*time.Millisecond) {
+			r.mu.Lock()
+			r.reading = false
+			r.discardBufferedTailLocked()
+			r.mu.Unlock()
 			return 0, nil
 		}
 		buf := make([]byte, readSize)
 		n, err := r.File.Read(buf)
 		r.mu.Lock()
+		r.reading = false
+		if readQueue != nil && readQueue != r.queue && !r.discardPaste {
+			// Cancellation raced an unlocked fd read. Its byte belongs to
+			// the abandoned generation, never to the dashboard/new target.
+			r.discardBufferedTailLocked()
+			r.mu.Unlock()
+			if err != nil {
+				return 0, err
+			}
+			continue
+		}
 		if r.discardPaste {
 			for _, b := range buf[:n] {
 				r.discardTail = append(r.discardTail, b)
