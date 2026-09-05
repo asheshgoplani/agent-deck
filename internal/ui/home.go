@@ -332,6 +332,7 @@ type Home struct {
 	sidebarMode         sidebarPresentation   // Session navigation: grouped (default) or flat
 	compactSidebar      bool                  // Narrow session rail; manual split resizing opts out
 	embeddedLayout      bool                  // Embedded terminal layout; false preserves classic interaction
+	sidebarDensity      string                // Embedded sidebar rows per session: full (3), compact (2), minimal (1), auto
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
 	isReloading         bool       // Visual feedback during auto-reload
@@ -1557,6 +1558,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		sidebarMode:               sidebarGrouped,
 		compactSidebar:            false,
 		embeddedLayout:            false,
+		sidebarDensity:            session.DefaultSidebarDensity,
 		initialLoading:            true, // Show splash until sessions load
 		ctx:                       ctx,
 		cancel:                    cancel,
@@ -1623,6 +1625,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.previewOrientation = cfg.UI.GetPreviewOrientation()
 		h.embeddedLayout = cfg.UI.GetEmbeddedTerminal()
 		h.compactSidebar = h.embeddedLayout
+		h.sidebarDensity = cfg.UI.GetSidebarDensity()
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
 		h.footerMode = cfg.UI.GetFooter()
@@ -2802,26 +2805,23 @@ func (h *Home) rebuildFlatItems() {
 	h.publishWebMenuSnapshot()
 }
 
-// syncViewport ensures the cursor is visible within the viewport
-// Call this after any cursor movement
-func (h *Home) syncViewport() {
-	if len(h.flatItems) == 0 {
-		h.viewOffset = 0
-		return
-	}
-
-	// Calculate visible height for session list
-	// MUST match the calculation in View() exactly!
-	//
-	// Layout breakdown:
-	// - Header: 1 line
-	// - Filter bar: 1 line (always shown)
-	// - Update banner: 0 or 1 line (when update available)
-	// - Maintenance banner: 0 or 1 line (when maintenance completed)
-	// - Main content: contentHeight lines
-	// - Help bar: 2 lines (border + content)
-	// Panel title within content: 2 lines (title + underline)
-	// Panel content: contentHeight - 2 lines
+// sidebarLineBudget reports how many terminal lines the session list may draw
+// into, and the width it draws at. Scroll windowing, the auto sidebar density,
+// and click hit-testing all measure the sidebar against this one budget, so
+// none of them can disagree about how much room a row has.
+//
+// MUST match the calculation in View() exactly!
+//
+// Layout breakdown:
+// - Header: 1 line
+// - Filter bar: 1 line (always shown)
+// - Update banner: 0 or 1 line (when update available)
+// - Maintenance banner: 0 or 1 line (when maintenance completed)
+// - Main content: contentHeight lines
+// - Help bar: 2 lines (border + content)
+// Panel title within content: 2 lines (title + underline)
+// Panel content: contentHeight - 2 lines
+func (h *Home) sidebarLineBudget() (lineBudget int, sidebarWidth int) {
 	helpBarHeight := 2
 	panelTitleLines := 2 // SESSIONS title + underline (matches View())
 
@@ -2863,11 +2863,22 @@ func (h *Home) syncViewport() {
 		panelContentHeight = contentHeight - panelTitleLines
 	}
 
-	lineBudget := max(1, panelContentHeight-1)
-	sidebarWidth := h.width
+	sidebarWidth = h.width
 	if layoutMode == LayoutModeDual {
 		sidebarWidth = h.sessionsPaneWidth()
 	}
+	return max(1, panelContentHeight-1), sidebarWidth
+}
+
+// syncViewport ensures the cursor is visible within the viewport
+// Call this after any cursor movement
+func (h *Home) syncViewport() {
+	if len(h.flatItems) == 0 {
+		h.viewOffset = 0
+		return
+	}
+
+	lineBudget, sidebarWidth := h.sidebarLineBudget()
 
 	if h.cursor < h.viewOffset {
 		h.viewOffset = h.cursor
@@ -7524,6 +7535,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.showPaneTitles = config.Display.ShowPaneTitles
 				wasEmbeddedLayout := h.embeddedLayout
 				h.embeddedLayout = config.UI.GetEmbeddedTerminal()
+				h.sidebarDensity = config.UI.GetSidebarDensity()
 				if h.embeddedLayout != wasEmbeddedLayout {
 					h.compactSidebar = h.embeddedLayout
 				}
@@ -18025,8 +18037,17 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if embedded {
 			marker = "┃ "
 		}
-		firstPlain := indent + marker + statusIcon + " " + rs.Title
-		first := fitCellWidth(indent+marker+statusStyle.Render(statusIcon)+" "+rs.Title, max(1, listWidth))
+		// A one-line rail carries the tool marker inline, like local rows.
+		toolPrefix := ""
+		if h.sidebarRowLines() == 1 && rs.Tool != "" {
+			toolPrefix = sidebarToolIcon(rs.Tool) + " "
+		}
+		firstPlain := indent + marker + statusIcon + " " + toolPrefix + rs.Title
+		first := indent + marker + statusStyle.Render(statusIcon) + " "
+		if toolPrefix != "" {
+			first += GetToolStyle(strings.ToLower(rs.Tool)).Bold(true).Render(sidebarToolIcon(rs.Tool)) + " "
+		}
+		first = fitCellWidth(first+rs.Title, max(1, listWidth))
 		secondText := strings.TrimSpace(rs.Status)
 		if secondText == "" {
 			secondText = "idle"
@@ -18037,7 +18058,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if !h.compactSidebar {
 			secondText += " · " + item.RemoteName
 		}
-		second := fitCellWidth(indent+"    "+secondText, max(1, listWidth))
+		second := fitCellWidth(indent+"  ╰ "+secondText, max(1, listWidth))
 		if selected || embedded {
 			style := lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface)
 			first = style.Render(fitCellWidth(firstPlain, max(1, listWidth)))
@@ -18048,8 +18069,10 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		}
 		b.WriteString(first)
 		b.WriteString("\n")
-		b.WriteString(second)
-		b.WriteString("\n")
+		if toolPrefix == "" {
+			b.WriteString(second)
+			b.WriteString("\n")
+		}
 		return
 	}
 

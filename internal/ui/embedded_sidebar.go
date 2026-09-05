@@ -14,8 +14,10 @@ const (
 	sidebarGrouped sidebarPresentation = "grouped"
 	sidebarFlat    sidebarPresentation = "flat"
 
-	embeddedCardMinWidth    = 28
-	embeddedSessionRowLines = 2
+	embeddedCardMinWidth = 28
+	// embeddedSessionRowLines is the tallest card: the identity line plus two
+	// metadata lines. Densities resolve to this or fewer, never more.
+	embeddedSessionRowLines = 3
 )
 
 func flattenSidebarItems(items []session.Item) []session.Item {
@@ -53,40 +55,97 @@ func flatSidebarItemsFromTree(tree *session.GroupTree) []session.Item {
 	return items
 }
 
-func sidebarItemRenderHeight(item session.Item) int {
+// sidebarDensityRowLines maps a configured density to how many terminal lines
+// one expanded session occupies. Everything that measures the sidebar — scroll
+// windowing, click hit-testing, the renderer itself — reads this one number, so
+// a density is described in exactly one place.
+func sidebarDensityRowLines(density string) int {
+	switch density {
+	case session.SidebarDensityMinimal:
+		return 1
+	case session.SidebarDensityFull:
+		return embeddedSessionRowLines
+	default:
+		return 2
+	}
+}
+
+func sidebarItemRenderHeightDensity(item session.Item, sessionLines int) int {
 	switch item.Type {
-	case session.ItemTypeSession, session.ItemTypeRemoteSession:
+	case session.ItemTypeSession:
 		if item.CreatingID != "" {
 			return 1
 		}
-		return embeddedSessionRowLines
+		return sessionLines
+	case session.ItemTypeRemoteSession:
+		// Remote rows carry one metadata line at most.
+		return min(2, sessionLines)
 	default:
 		return 1
 	}
 }
 
-func sidebarItemRenderHeightAtWidth(item session.Item, width int) int {
+func sidebarItemRenderHeightAtWidthDensity(item session.Item, width, sessionLines int) int {
 	if width < embeddedCardMinWidth {
 		return 1
 	}
-	return sidebarItemRenderHeight(item)
+	return sidebarItemRenderHeightDensity(item, sessionLines)
 }
 
-func sidebarItemsHeight(items []session.Item, start, end, width int) int {
+func sidebarItemsHeightDensity(items []session.Item, start, end, width, sessionLines int) int {
 	start = max(0, start)
 	end = min(len(items), end)
 	height := 0
 	for i := start; i < end; i++ {
-		height += sidebarItemRenderHeightAtWidth(items[i], width)
+		height += sidebarItemRenderHeightAtWidthDensity(items[i], width, sessionLines)
 	}
 	return height
+}
+
+// sidebarAutoRowLinesFor resolves the "auto" density: the most height a row can
+// have while the whole list still fits on screen at once. Scrolling a rail you
+// could have read in one glance is the cost the extra metadata line was buying,
+// so auto spends height only while there is height nobody is scrolling past.
+//
+// The choice reads the item list and the available height and nothing else —
+// never the density it last returned — so a shrink cannot feed back into the
+// measurement that caused it and oscillate.
+func sidebarAutoRowLinesFor(items []session.Item, width, budget int) int {
+	for lines := embeddedSessionRowLines; lines > 1; lines-- {
+		if sidebarItemsHeightDensity(items, 0, len(items), width, lines) <= budget {
+			return lines
+		}
+	}
+	return 1
+}
+
+// sidebarAutoRowLines applies sidebarAutoRowLinesFor to the visible list.
+// h.flatItems already omits the sessions inside collapsed groups, so opening a
+// group is what makes the rail tighten and closing it is what gives the lines
+// back.
+func (h *Home) sidebarAutoRowLines() int {
+	if h.height <= 0 {
+		// No layout yet (a fresh Home, or a test that never sized it): there is
+		// no budget to fit anything to, so fall back to the fixed default.
+		return sidebarDensityRowLines(session.DefaultSidebarDensity)
+	}
+	budget, width := h.sidebarLineBudget()
+	return sidebarAutoRowLinesFor(h.flatItems, width, budget)
+}
+
+// sidebarRowLines is how many lines this Home gives one expanded session.
+func (h *Home) sidebarRowLines() int {
+	if h.sidebarDensity == session.SidebarDensityAuto {
+		return h.sidebarAutoRowLines()
+	}
+	return sidebarDensityRowLines(h.sidebarDensity)
 }
 
 func (h *Home) sidebarItemRenderHeightAtWidth(item session.Item, width int) int {
 	if !h.embeddedLayout {
 		return 1
 	}
-	return sidebarItemRenderHeightAtWidth(item, width)
+	return sidebarItemRenderHeightAtWidthDensity(item, width, h.sidebarRowLines())
 }
 
 func (h *Home) sidebarItemsHeight(items []session.Item, start, end, width int) int {
@@ -95,7 +154,7 @@ func (h *Home) sidebarItemsHeight(items []session.Item, start, end, width int) i
 		end = min(len(items), end)
 		return max(0, end-start)
 	}
-	return sidebarItemsHeight(items, start, end, width)
+	return sidebarItemsHeightDensity(items, start, end, width, h.sidebarRowLines())
 }
 
 func (h *Home) compactEmbeddedSidebar() bool {
@@ -125,6 +184,12 @@ func (h *Home) renderEmbeddedSessionItem(
 	}
 
 	statusIcon, statusStyle := rowStatusGlyph(state.status, state.substate, inst.IsArchived())
+	_, restarting := h.resumingSessions[inst.ID]
+	if restarting {
+		spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+		statusIcon = spinnerFrames[h.animationFrame%len(spinnerFrames)]
+		statusStyle = SessionStatusWaiting
+	}
 
 	statusText := string(state.status)
 	if statusText == "" {
@@ -133,6 +198,10 @@ func (h *Home) renderEmbeddedSessionItem(
 	tool := strings.ToLower(strings.TrimSpace(state.tool))
 	if tool == "" {
 		tool = strings.ToLower(strings.TrimSpace(inst.Tool))
+	}
+	toolIcon := ""
+	if tool != "" {
+		toolIcon = sidebarToolIcon(tool)
 	}
 
 	titleStyle := SessionTitleDefault
@@ -174,34 +243,107 @@ func (h *Home) renderEmbeddedSessionItem(
 			chevron = "▸ "
 		}
 	}
+	rowLines := h.sidebarRowLines()
 
-	firstPlain := gutter + indent + marker + chevron + statusIcon + " " + label
-	first := gutter + indent + marker + chevron + statusStyle.Render(statusIcon) + " " + titleStyle.Render(label)
-	second := gutter + indent + "    " + statusText
+	// At one line per session the metadata lines are gone, and with them the
+	// only place the sidebar says which agent this is. The tool marker moves
+	// onto the identity line so Codex still reads differently from Claude —
+	// that distinction is the whole reason a one-line rail stays usable.
+	toolPrefix := ""
+	if rowLines == 1 && toolIcon != "" {
+		toolPrefix = toolIcon + " "
+	}
+
+	firstPlain := gutter + indent + marker + chevron + statusIcon + " " + toolPrefix + label
+	first := gutter + indent + marker + chevron + statusStyle.Render(statusIcon) + " "
+	if toolPrefix != "" {
+		first += GetToolStyle(tool).Bold(true).Render(toolIcon) + " "
+	}
+	first += titleStyle.Render(label)
+
+	metadataParts := make([]string, 0, 6)
+	metadataParts = append(metadataParts, statusText)
 	if tool != "" {
-		second += " · " + tool
+		metadataParts = append(metadataParts, tool)
 	}
 	if state.substate != "" {
-		second += " · " + string(state.substate)
+		metadataParts = append(metadataParts, string(state.substate))
+	}
+	if restarting {
+		metadataParts = append(metadataParts, "restarting…")
 	}
 	if !h.compactSidebar && state.paneTitle != "" && state.paneTitle != label {
-		second += " · " + state.paneTitle
+		metadataParts = append(metadataParts, state.paneTitle)
 	}
 
+	metadataPrefix := gutter + indent + "  │ "
+	metadataLastPrefix := gutter + indent + "  ╰ "
+	metadataWidth := max(1, listWidth-cellWidth(metadataPrefix))
+	metadataCount := max(0, rowLines-1)
+	metadataLines := wrapSidebarMetadata(strings.Join(metadataParts, " · "), metadataWidth, metadataCount)
+	for len(metadataLines) < metadataCount {
+		metadataLines = append(metadataLines, "")
+	}
+
+	highlighted := selected || embedded
 	first = fitCellWidth(first, max(1, listWidth))
-	second = fitCellWidth(second, max(1, listWidth))
-	if selected || embedded {
+	if highlighted {
 		style := lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface)
 		first = style.Render(fitCellWidth(firstPlain, max(1, listWidth)))
-		second = style.Foreground(ColorTextDim).Render(second)
 	} else {
 		first = lipgloss.NewStyle().Foreground(ColorText).Render(first)
-		second = lipgloss.NewStyle().Foreground(ColorTextDim).Render(second)
 	}
 	b.WriteString(first)
 	b.WriteString("\n")
-	b.WriteString(second)
-	b.WriteString("\n")
+
+	// The last metadata line always carries the ╰ elbow so the card closes,
+	// whether that is line 2 or line 3.
+	for i := 0; i < metadataCount; i++ {
+		prefix := metadataPrefix
+		if i == metadataCount-1 {
+			prefix = metadataLastPrefix
+		}
+		b.WriteString(renderSidebarMetadataLine(prefix, metadataLines[i], listWidth, highlighted))
+		b.WriteString("\n")
+	}
+}
+
+func wrapSidebarMetadata(text string, width, maxLines int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" || width <= 0 || maxLines <= 0 {
+		return nil
+	}
+	lines := strings.Split(ansi.Wrap(text, width, ""), "\n")
+	if len(lines) <= maxLines {
+		return lines
+	}
+	lines[maxLines-1] = cellTruncate(strings.Join(lines[maxLines-1:], " "), width, "…")
+	return lines[:maxLines]
+}
+
+// sidebarToolIcon is the one-glyph tool marker the sidebar uses where a full
+// tool name does not fit.
+func sidebarToolIcon(tool string) string {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "claude":
+		return "✻"
+	case "codex":
+		return "⌬"
+	case "pi":
+		return "π"
+	default:
+		return session.GetToolIcon(tool)
+	}
+}
+
+// renderSidebarMetadataLine renders one of a session's metadata lines.
+func renderSidebarMetadataLine(prefix, text string, width int, highlighted bool) string {
+	style := lipgloss.NewStyle().Foreground(ColorTextDim)
+	if highlighted {
+		style = style.Background(ColorSurface)
+	}
+	line := fitCellWidth(prefix+text, max(1, width))
+	return style.Render(line)
 }
 
 func renderEmbeddedTerminal(title, status, tool, preview string, width, height, scrollOffset int) string {

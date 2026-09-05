@@ -1093,3 +1093,30 @@ func TestSettingsPanel_ViewShowsUnboundMCPHotkeyHint(t *testing.T) {
 		t.Fatalf("settings view should show unbound MCP key hint, got %q", view)
 	}
 }
+
+func TestSettingsPanelSidebarDensityRoundTrips(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{})
+	if got := sidebarDensityValues[panel.sidebarDensity]; got != session.DefaultSidebarDensity {
+		t.Fatalf("settings panel default sidebar density = %q, want %q", got, session.DefaultSidebarDensity)
+	}
+
+	panel.LoadConfig(&session.UserConfig{UI: session.UISettings{SidebarDensity: "minimal"}})
+	if got := sidebarDensityValues[panel.sidebarDensity]; got != session.SidebarDensityMinimal {
+		t.Fatalf("settings panel did not load sidebar_density=minimal, got %q", got)
+	}
+
+	panel.visible = true
+	panel.cursor = int(SettingSidebarDensity)
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Fatal("space did not cycle the sidebar density radio group")
+	}
+	cfg := panel.GetConfig()
+	if cfg.UI.SidebarDensity != sidebarDensityValues[panel.sidebarDensity] {
+		t.Fatalf("settings panel persisted sidebar_density=%q, want %q", cfg.UI.SidebarDensity, sidebarDensityValues[panel.sidebarDensity])
+	}
+	if view := panel.View(); !containsString(view, "Sidebar density") {
+		t.Fatal("settings panel does not render the sidebar density radio group")
+	}
+}

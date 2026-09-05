@@ -112,6 +112,9 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	if panel.UI.EmbeddedTerminal != nil {
 		merged.UI.EmbeddedTerminal = panel.UI.EmbeddedTerminal
 	}
+	if panel.UI.SidebarDensity != "" {
+		merged.UI.SidebarDensity = panel.UI.SidebarDensity
+	}
 	merged.UI.ShowOnlyInstalledTools = panel.UI.ShowOnlyInstalledTools
 
 	// ── SystemStats subset ─────────────────────────────────────────────
