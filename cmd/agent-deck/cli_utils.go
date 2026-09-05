@@ -192,6 +192,33 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 	return append(flags, positional...)
 }
 
+// helpRequested reports whether an argument list contains an unambiguous help
+// flag. Bare "help" is intentionally not recognized here: it can be a session,
+// remote, workspace, or other user-supplied value. Dispatchers that expose a
+// help command recognize it explicitly in their command-position switch.
+func helpRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+// hooksHelpRequested preserves bare help for hook subcommands, which accept
+// no positional values. Other command families must keep help usable as data.
+func hooksHelpRequested(args []string) bool {
+	if helpRequested(args) {
+		return true
+	}
+	for _, arg := range args {
+		if arg == "help" {
+			return true
+		}
+	}
+	return false
+}
+
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
