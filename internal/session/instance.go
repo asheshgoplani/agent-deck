@@ -1100,6 +1100,7 @@ func NewInstance(title, projectPath string) *Instance {
 		tmuxSession:      tmuxSess,
 		addedThisProcess: true,
 	}
+	tmuxSess.GroupPath = inst.GroupPath
 	logSessionCreated(inst)
 	return inst
 }
@@ -1157,6 +1158,7 @@ func (i *Instance) applyVimModeFromConfig() {
 func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 	inst := NewInstance(title, projectPath)
 	inst.GroupPath = groupPath
+	inst.tmuxSession.GroupPath = groupPath
 	return inst
 }
 
@@ -1184,6 +1186,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 		tmuxSession:      tmuxSess,
 		addedThisProcess: true,
 	}
+	tmuxSess.GroupPath = inst.GroupPath
 
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
@@ -1196,6 +1199,9 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 func NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool string) *Instance {
 	inst := NewInstanceWithTool(title, projectPath, tool)
 	inst.GroupPath = groupPath
+	if inst.tmuxSession != nil {
+		inst.tmuxSession.GroupPath = groupPath
+	}
 	return inst
 }
 
@@ -7204,6 +7210,7 @@ func (i *Instance) recreateTmuxSession() {
 	// ProjectPath (which is a symlink into that parent dir). Delegates to
 	// EffectiveWorkingDir so single-repo sessions keep using ProjectPath.
 	i.tmuxSession = tmux.NewSession(i.Title, i.EffectiveWorkingDir())
+	i.tmuxSession.GroupPath = i.GroupPath
 	// Preserve the socket the instance was originally created on (issue
 	// #687). A restart/respawn cycle must NOT silently relocate the session
 	// to the current default socket — that would strand the old tmux pane
@@ -7305,6 +7312,9 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 	if i.Tool == "gemini" {
 		return i.getGeminiLastResponse()
 	}
+	if i.Tool == "pi" {
+		return i.getPiLastResponse()
+	}
 	return i.getTerminalLastResponse()
 }
 
@@ -7403,13 +7413,16 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 
 	// Final fallback: terminal parsing (works for all tools).
 	if i.tmuxSession != nil {
-		if terminalResp, terminalErr := i.getTerminalLastResponse(); terminalErr == nil {
+		terminalResp, terminalErr := i.getTerminalLastResponse()
+		if terminalErr == nil {
 			return terminalResp, nil
 		}
+		err = terminalErr
 	}
 
-	// For Claude and Gemini, prefer a graceful empty response instead of a hard error.
-	if IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
+	// A vanished terminal is benign for every tool. Preserve the existing
+	// graceful-empty behavior for Claude and Gemini when recovery fails.
+	if errors.Is(err, tmux.ErrCaptureGone) || IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
 		toolName := i.Tool
 		if IsClaudeCompatible(toolName) {
 			toolName = "claude"
@@ -8171,6 +8184,90 @@ func parseGeminiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 	}
 
 	return nil, fmt.Errorf("no assistant response found in session")
+}
+
+func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
+	if i.IsSSH() || i.IsSandboxed() {
+		return nil, fmt.Errorf("instance %s runs outside this host; its Pi transcript is not on this machine", i.ID)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var latest string
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && (latest == "" || info.ModTime().After(latestTime)) {
+			latest = filepath.Join(dir, entry.Name())
+			latestTime = info.ModTime()
+		}
+	}
+	if latest == "" {
+		return nil, fmt.Errorf("no Pi session transcript found")
+	}
+	data, err := os.ReadFile(latest)
+	if err != nil {
+		return nil, err
+	}
+	return parsePiLastAssistantMessage(data)
+}
+
+func parsePiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
+	type contentPart struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var sessionID string
+	var last *ResponseOutput
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Role    string        `json:"role"`
+				Content []contentPart `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &event) != nil {
+			continue
+		}
+		if event.Type == "session" {
+			sessionID = event.ID
+			continue
+		}
+		if event.Type != "message" || event.Message.Role != "assistant" {
+			continue
+		}
+		var text []string
+		for _, part := range event.Message.Content {
+			if part.Type == "text" {
+				text = append(text, part.Text)
+			}
+		}
+		if len(text) != 0 {
+			last = &ResponseOutput{
+				Tool: "pi", Role: "assistant", Content: strings.Join(text, "\n"),
+				Timestamp: event.Timestamp, SessionID: sessionID,
+			}
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("no assistant response found in Pi session")
+	}
+	return last, nil
 }
 
 // getTerminalLastResponse extracts the last response from terminal output
@@ -9635,6 +9732,7 @@ func (i *Instance) ForkWithOptions(newTitle, newGroupPath string, opts *ClaudeOp
 	} else {
 		target.GroupPath = i.GroupPath
 	}
+	target.tmuxSession.SetGroupPath(target.GroupPath)
 	target.Tool = "claude"
 
 	return i.buildClaudeForkCommandForTarget(target, opts)
@@ -9732,6 +9830,7 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = "claude"
 	if IsClaudeCompatible(i.Tool) {
 		forked.Tool = i.Tool
@@ -9895,6 +9994,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	// Defer the one-shot fork script via ForkStartCommand (Pi/Codex pattern): the
 	// script self-deletes after first run, so storing it as the persistent Command
 	// would make a later restart re-run a missing file. Command holds a stable base
@@ -9943,6 +10043,7 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = "pi"
 	forked.Wrapper = i.Wrapper
 
@@ -10028,6 +10129,7 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
 	// #1929: a fork runs against the parent's thread, so it must run under the
@@ -10159,6 +10261,7 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
 		tmuxSess.DisplayName = i.Title
+		tmuxSess.SetGroupPath(i.GroupPath)
 		tmuxSess.ConfigureStatusBar()
 		tmuxSess.ConfigureTerminalTitle()
 	}

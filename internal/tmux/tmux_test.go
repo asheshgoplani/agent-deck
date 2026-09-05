@@ -2992,6 +2992,49 @@ func TestBuildTerminalTitleArgs_CwdPrefixHidden(t *testing.T) {
 	}
 }
 
+func TestBuildTerminalTitleArgs_GroupPathAndTitleFormat(t *testing.T) {
+	parse := func(args []string) map[string]string {
+		m := make(map[string]string)
+		for i, a := range args {
+			if a == "set-option" && i+4 < len(args) {
+				m[args[i+3]] = args[i+4]
+			}
+		}
+		return m
+	}
+
+	s := &Session{
+		Name:        "test-sess",
+		DisplayName: "feature work",
+		WorkDir:     "/tmp/agent-deck",
+		GroupPath:   "projects/devops",
+	}
+
+	// GroupPath is always exported as a user option, even without a custom format.
+	if got := parse(s.buildTerminalTitleArgs())["@agentdeck_group_path"]; got != "projects/devops" {
+		t.Fatalf("@agentdeck_group_path = %q, want %q", got, "projects/devops")
+	}
+
+	// A custom title_format overrides the default and the cwd-prefix toggle,
+	// translating placeholders into tmux user-option references.
+	SetTitleFormat("{group}/{name}")
+	t.Cleanup(func() { SetTitleFormat("") })
+	SetHideCwdPrefixInTitle(true) // must be ignored when a format is set
+	t.Cleanup(func() { SetHideCwdPrefixInTitle(false) })
+
+	want := "#{@agentdeck_group_path}/#{@agentdeck_display_name}"
+	if got := parse(s.buildTerminalTitleArgs())["set-titles-string"]; got != want {
+		t.Fatalf("set-titles-string = %q, want %q", got, want)
+	}
+
+	// All three placeholders translate; literal text is preserved.
+	SetTitleFormat("[{project}] {group} · {name}")
+	want = "[#{@agentdeck_project_name}] #{@agentdeck_group_path} · #{@agentdeck_display_name}"
+	if got := parse(s.buildTerminalTitleArgs())["set-titles-string"]; got != want {
+		t.Fatalf("set-titles-string = %q, want %q", got, want)
+	}
+}
+
 func TestConfigureTerminalTitle(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
