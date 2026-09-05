@@ -37,6 +37,14 @@ type embeddedCursorState struct {
 
 type embeddedClipboardFunc func(string)
 
+// embeddedClipboardMaxEncodedBytes caps an OSC 52 payload before it is
+// decoded. The VT parser already bounds a string at 4 MiB, but decoding and
+// queueing a payload that size still costs several multi-megabyte allocations
+// per request from a session the user may not be looking at. One MiB of
+// base64 (~768 KiB of text) is far beyond any selection a terminal clipboard
+// carries; larger requests are dropped like a malformed one.
+const embeddedClipboardMaxEncodedBytes = 1 << 20
+
 var (
 	embeddedClipboardOnce     sync.Once
 	embeddedClipboardRequests chan string
@@ -59,6 +67,9 @@ func newEmbeddedTerminalEmulator(
 	emulator.RegisterOscHandler(52, func(data []byte) bool {
 		parts := strings.SplitN(string(data), ";", 3)
 		if len(parts) != 3 || parts[0] != "52" || parts[2] == "" || parts[2] == "?" {
+			return true
+		}
+		if len(parts[2]) > embeddedClipboardMaxEncodedBytes {
 			return true
 		}
 		decoded, err := base64.StdEncoding.DecodeString(parts[2])
