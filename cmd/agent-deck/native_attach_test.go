@@ -56,7 +56,7 @@ func TestNativeSSHAttachLifecycle(t *testing.T) {
 tty.setraw(0)
 generation = str(uuid.uuid4())
 banner = "\033[32mREADY café 世界 e\u0301\033[0m APP:" + str(os.getpid()) + ":" + generation
-sys.stdout.write("\033[?2004h" + banner + "\r\n\033[31;44mA界e\u0301Z\033[0m")
+sys.stdout.write("\033[2J\033[H\033[?2004h" + banner + "\r\n\033[31;44mA界e\u0301Z\033[0m")
 sys.stdout.flush()
 buf = bytearray()
 escape = bytearray()
@@ -78,8 +78,9 @@ while True:
             escape.clear()
             continue
         if byte in (10, 13) and not pasting:
-            if buf == b"@identity":
-                print("\r\n" + banner, flush=True)
+            if buf.startswith(b"@identity "):
+                nonce = bytes(buf[len(b"@identity "):]).decode("ascii")
+                print("\r\nID:" + nonce + " APP:" + str(os.getpid()) + ":" + generation, flush=True)
                 buf.clear()
                 continue
             count += 1
@@ -116,7 +117,17 @@ while True:
 	}
 	run("add", remote, "--title", "native", "--cmd", "shell", "--wrapper", "python3 -u "+receiver, "--json")
 	run("session", "start", "native", "--json")
-	t.Cleanup(func() { cmd := exec.Command(bin, "session", "stop", "native"); cmd.Env = envFor(remote); cmd.Run() })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, bin, "session", "stop", "native")
+		command.Env = envFor(remote)
+		output, err := command.CombinedOutput()
+		t.Logf("session cleanup: %v %s", err, output)
+		if ctx.Err() != nil {
+			t.Error("session cleanup timed out")
+		}
+	})
 	var tmuxName string
 	// The name is stable and avoids relying on a registry title-to-tmux mapping.
 	probe := func(format string) string {
@@ -169,6 +180,8 @@ while True:
 	directSSH := false
 	multiplex := false
 	lastFrame := "READY café 世界"
+	appPattern := regexp.MustCompile(`APP:[0-9]+:[a-f0-9-]{36}`)
+	var appIdentity string
 	attachNumber := 0
 	attach := func() (*os.File, *exec.Cmd, func() string, <-chan error) {
 		t.Helper()
@@ -186,7 +199,9 @@ while True:
 		thisAttach := attachNumber
 		var mu sync.Mutex
 		var output bytes.Buffer
+		readerDone := make(chan struct{})
 		go func() {
+			defer close(readerDone)
 			buf := make([]byte, 8192)
 			var pending []byte
 			for {
@@ -223,14 +238,26 @@ while True:
 		}()
 		snapshot := func() string { mu.Lock(); defer mu.Unlock(); return output.String() }
 		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
+		processDone := make(chan struct{})
+		go func() { done <- cmd.Wait(); close(processDone) }()
 		t.Cleanup(func() {
-			terminal.Close()
+			_ = terminal.Close()
 			if cmd.Process != nil {
-				cmd.Process.Kill()
+				_ = cmd.Process.Kill()
 			}
-		})
-		t.Cleanup(func() {
+			// Dedicated completion channels are safe after the test has already
+			// consumed the process error from done.
+			select {
+			case <-processDone:
+			case <-time.After(3 * time.Second):
+				t.Error("attach process cleanup timed out")
+			}
+			select {
+			case <-readerDone:
+			case <-time.After(3 * time.Second):
+				t.Error("attach output cleanup timed out")
+			}
+
 			if dir := os.Getenv("NATIVE_SSH_RECEIPT_DIR"); dir != "" {
 				if err := os.MkdirAll(dir, 0700); err != nil {
 					t.Error(err)
@@ -251,22 +278,22 @@ while True:
 			}
 		})
 		waitFor("remote first frame", func() bool { return strings.Contains(snapshot(), lastFrame) })
-		if lastFrame != "READY café 世界" {
-			writeInput(terminal, "@identity\r")
-			waitFor("fresh application banner", func() bool { return strings.Contains(snapshot(), "READY café 世界") })
-		}
-		if !strings.Contains(snapshot(), "[32m") {
-			t.Errorf("remote colors missing: %q", snapshot())
+		if thisAttach == 1 {
+			waitFor("initial application identity", func() bool { return appPattern.MatchString(snapshot()) })
+			appIdentity = appPattern.FindString(snapshot())
+			if !strings.Contains(snapshot(), "[32m") {
+				t.Error("initial remote color missing")
+			}
+		} else {
+			nonce := fmt.Sprintf("attach-%02d", thisAttach)
+			expected := "ID:" + nonce + " " + appIdentity
+			writeInput(terminal, "@identity "+nonce+"\r")
+			waitFor("fresh matching application identity", func() bool { return strings.Contains(snapshot(), expected) })
+			t.Logf("reconnect identity: %s", expected)
 		}
 		return terminal, cmd, snapshot, done
 	}
 	terminal, client, snapshot, done := attach()
-	appPattern := regexp.MustCompile(`APP:[0-9]+:[a-f0-9-]{36}`)
-	waitFor("application identity", func() bool { return appPattern.MatchString(snapshot()) })
-	appIdentity := appPattern.FindString(snapshot())
-	if appIdentity == "" {
-		t.Fatal("missing application identity")
-	}
 	waitFor("initial attach dimensions", func() bool { return probe("#{window_width}x#{window_height}") == "120x39" })
 	captureGrid := func(escaped bool) string {
 		t.Helper()
@@ -318,7 +345,8 @@ while True:
 		t.Errorf("terminal reply reached application: %q", snapshot())
 	}
 
-	// Deliberately fragment UTF-8 and bytes around the pump's 256-byte read size.
+	// Fragment writes across UTF-8 and payload sizes around the pump buffer.
+	// The OS may coalesce writes; this does not prove individual read boundaries.
 	var latencies []time.Duration
 	for index, size := range []int{1, 255, 256, 257, 511, 512, 513} {
 		frame := fmt.Sprintf("frame-%02d-世界-", index) + strings.Repeat("x", size)
@@ -351,7 +379,19 @@ while True:
 	// The CLI send path must submit its own 4KB message even with --no-wait.
 	sendMessage := strings.Repeat("wxyz", 1024)
 	run("session", "send", "native", sendMessage, "--no-wait", "--json")
-	waitFor("4KB no-wait send receipt", func() bool { return strings.Contains(snapshot(), receipt(sendMessage)) })
+	waitFor("4KB no-wait send receipt", func() bool { return strings.Contains(snapshot(), receipt(sendMessage)+":COUNT:11") })
+	barrier := "after-cli-send-barrier"
+	writeInput(terminal, barrier+"\r")
+	waitFor("exactly-once CLI send barrier", func() bool { return strings.Contains(snapshot(), receipt(barrier)+":COUNT:12") })
+	// Repaints may repeat the same receipt bytes; a different receiver count
+	// for this payload is an actual duplicate submission.
+	cliReceipts := regexp.MustCompile(regexp.QuoteMeta(receipt(sendMessage)) + `:COUNT:([0-9]+)`)
+	for _, match := range cliReceipts.FindAllStringSubmatch(snapshot(), -1) {
+		if match[1] != "11" {
+			t.Errorf("CLI payload submitted again at receiver count%s", match[1])
+		}
+	}
+	lastFrame = receipt(barrier)
 	writeInput(terminal, "\x11")
 	select {
 	case err := <-done:
@@ -369,6 +409,7 @@ while True:
 	waitFor("reconnect transcript", func() bool { return strings.Contains(snapshot(), receipt(sendMessage)) })
 	writeInput(terminal, "alive-after-detach\r")
 	waitFor("live after detach", func() bool { return strings.Contains(snapshot(), receipt("alive-after-detach")) })
+	lastFrame = receipt("alive-after-detach")
 	pidBytes, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatal(err)
@@ -401,15 +442,14 @@ while True:
 	waitFor("SSH reconnect transcript", func() bool { return strings.Contains(snapshot(), receipt(sendMessage)) })
 	writeInput(terminal, "alive-after-ssh-loss\r")
 	waitFor("live receiver after SSH reconnect", func() bool { return strings.Contains(snapshot(), receipt("alive-after-ssh-loss")) })
+	lastFrame = receipt("alive-after-ssh-loss")
 	if output := run("session", "show", "native", "--json"); !strings.Contains(output, "\"status\": \"idle\"") {
 		t.Errorf("unexpected status after reconnect: %s", output)
 	}
 	if got := probe("#{pid}:#{session_id}:#{pane_id}:#{pane_pid}"); got != identity {
 		t.Fatalf("identity changed: %s != %s", got, identity)
 	}
-	if !strings.Contains(snapshot(), appIdentity) {
-		t.Fatal("application identity changed after reconnect")
-	}
+
 	proxy.drop()
 	select {
 	case err := <-done:
@@ -423,6 +463,7 @@ while True:
 	terminal, _, snapshot, done = attach()
 	writeInput(terminal, "alive-after-network-close\r")
 	waitFor("live after network close", func() bool { return strings.Contains(snapshot(), receipt("alive-after-network-close")) })
+	lastFrame = receipt("alive-after-network-close")
 	proxy.pause(true)
 	writeInput(terminal, "held-during-blackhole\r")
 	// Hold the transport long enough to establish a real interrupted interval.
@@ -432,6 +473,7 @@ while True:
 	}
 	proxy.pause(false)
 	waitFor("restored network", func() bool { return strings.Contains(snapshot(), receipt("held-during-blackhole")) })
+	lastFrame = receipt("held-during-blackhole")
 	proxy.pause(true)
 	writeInput(terminal, "\x11")
 	select {
@@ -447,12 +489,11 @@ while True:
 	terminal, _, snapshot, done = attach()
 	writeInput(terminal, "alive-after-blackhole\r")
 	waitFor("live after blackhole reconnect", func() bool { return strings.Contains(snapshot(), receipt("alive-after-blackhole")) })
+	lastFrame = receipt("alive-after-blackhole")
 	if got := probe("#{pid}:#{session_id}:#{pane_id}:#{pane_pid}"); got != identity {
 		t.Fatalf("network fault changed identity: %s != %s", got, identity)
 	}
-	if !strings.Contains(snapshot(), appIdentity) {
-		t.Fatal("network fault changed application identity")
-	}
+
 	writeInput(terminal, "\x11")
 	select {
 	case <-done:
@@ -550,8 +591,8 @@ while True:
 	}
 	terminal.Close()
 	terminal, _, snapshot, done = attach()
-	// Separate writes with a transport round-trip-sized gap force the native
-	// pump to encounter a partial escape sequence before its completion.
+	// A delayed split exercises escape-sequence handling across transport
+	// writes. The kernel may coalesce reads; no particular read boundary is assumed.
 	writeInput(terminal, "\x1b[113;")
 	time.Sleep(100 * time.Millisecond)
 	writeInput(terminal, "5u")
@@ -561,7 +602,7 @@ while True:
 			t.Errorf("fragmented CSI-u detach: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Error("fragmented CSI-u CtrlQ was forwarded instead of detaching")
+		t.Error("delayed-split CSI-u CtrlQ did not detach within2s")
 		writeInput(terminal, "\x11")
 		select {
 		case <-done:
