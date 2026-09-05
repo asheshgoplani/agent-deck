@@ -53,6 +53,9 @@ func TestStorageWatcherRealProcessesOneRefresh(t *testing.T) {
 		require.Equal(t, want, h.getInstanceByID(inst.ID).GetTitleThreadSafe())
 	}
 	applyRefresh("raw-process-title")
+	perTestModules := filepath.Join(os.Getenv("HOME"), "go", "pkg", "mod")
+	_, err = os.Stat(perTestModules)
+	require.True(t, os.IsNotExist(err), "control HOME already contains modules")
 	binary := filepath.Join(t.TempDir(), "agent-deck")
 	build := exec.Command("go", "build", "-p", "1", "-o", binary, "../../cmd/agent-deck")
 	build.Env = watcherBuildEnvironment(os.Environ())
@@ -62,6 +65,8 @@ func TestStorageWatcherRealProcessesOneRefresh(t *testing.T) {
 	out, err = cli.CombinedOutput()
 	require.NoError(t, err, string(out))
 	applyRefresh("cli-process-title")
+	_, err = os.Stat(perTestModules)
+	require.True(t, os.IsNotExist(err), "go build populated per-test HOME with modules; normal cleanup would be unsafe")
 }
 
 var watcherBuildCaches map[string]string
