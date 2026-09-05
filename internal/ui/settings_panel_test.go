@@ -1170,6 +1170,10 @@ func TestSettingsPanel_AutoInstallRestartToggles(t *testing.T) {
 	}
 }
 
+// RemoteSession: sidebar_density is a layout setting that sizes every row
+// type through sidebarItemRenderHeightDensity; remote rows are measured at
+// min(2, density) and covered by TestEmbeddedRemoteRowMinimalDensityIsOneLineWithoutTool
+// and TestSyncViewportHoldsStillWithRemoteRowsInEmbeddedLayout.
 func TestSettingsPanelSidebarDensityRoundTrips(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.LoadConfig(&session.UserConfig{})

@@ -7,6 +7,8 @@ import (
 	"github.com/charmbracelet/x/vt"
 )
 
+// RemoteSession: cursor callbacks come from the emulator, which is fed by the
+// PTY regardless of whether tmux runs locally or behind ssh.
 func TestEmbeddedCursorCallbacksDoNotPublishPartialFrame(t *testing.T) {
 	terminal := &embeddedTerminal{
 		dirty:  make(chan struct{}, 1),

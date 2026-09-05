@@ -10,6 +10,9 @@ import (
 	"github.com/charmbracelet/x/vt"
 )
 
+// RemoteSession: SessionOutput sees only the emulator's cursor state and the
+// pane rectangle. Local and remote embedded sessions feed it through the same
+// embeddedTerminal, so there is no remote-specific branch to cover here.
 func TestSessionOutputPlacesAndShapesHardwareCursor(t *testing.T) {
 	w := &SessionOutput{
 		active: true,

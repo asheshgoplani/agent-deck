@@ -20,6 +20,9 @@ func TestEval_EmbeddedTerminalForwardsTmuxClipboardToHost(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
+	// RemoteSession: OSC 52 is decoded from the client's output stream, so a
+	// remote attach (ssh carrying the same tmux client bytes) exercises the
+	// identical handler; only the local transport is driven here.
 	socket := fmt.Sprintf("agent-deck-clipboard-eval-%d", os.Getpid())
 	sessionName := "clipboard-forwarding"
 	tmux := func(args ...string) (string, error) {
@@ -78,6 +81,9 @@ func TestEval_EmbeddedTerminalIsARealTmuxClient(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
+	// RemoteSession: the remote variant runs `ssh -tt ... agent-deck session
+	// attach` in the same PTY; it needs a reachable host the sandbox lacks,
+	// and the command shape is pinned by internal/terminal's #1100 tests.
 	socket := fmt.Sprintf("agent-deck-embedded-eval-%d", os.Getpid())
 	sessionName := "full-fidelity"
 	tmux := func(args ...string) (string, error) {
