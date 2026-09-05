@@ -24,10 +24,12 @@ func setEmbeddedTerminalCleanup(fn func()) {
 // call when nothing was registered (classic layout).
 func runEmbeddedTerminalCleanup() {
 	embeddedTerminalCleanup.mu.Lock()
+	defer embeddedTerminalCleanup.mu.Unlock()
 	fn := embeddedTerminalCleanup.fn
 	embeddedTerminalCleanup.fn = nil
-	embeddedTerminalCleanup.mu.Unlock()
 	if fn != nil {
+		// A concurrent signal exit must wait for the same terminal restore,
+		// rather than observing nil and exiting while restoration is active.
 		fn()
 	}
 }
