@@ -154,3 +154,65 @@ func TestSessionOutputPayloadSizeBound(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionOutputPointerShapeEmitsOnlyTransitions(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "pointer-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+
+	w := NewSessionOutput(output)
+	w.SetPointerShape(pointerShapeGrab)
+	w.SetPointerShape(pointerShapeGrab)
+	w.SetPointerShape(pointerShapeGrabbing)
+	w.SetPointerShape(pointerShapeDefault)
+	w.SetPointerShape(pointerShapeDefault)
+
+	written, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(written)
+	want := "\x1b]22;grab\a\x1b]22;grabbing\a\x1b]22;default\a"
+	if got != want {
+		t.Fatalf("pointer shape sequences = %q, want %q", got, want)
+	}
+}
+
+func TestSessionOutputReleaseResetsPointerShapeByName(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "pointer-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+
+	w := NewSessionOutput(output)
+	w.SetPointerShape(pointerShapeGrab)
+	w.ReleaseEmbeddedCursor()
+
+	written, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(written)
+	if !strings.HasSuffix(got, "\x1b]22;default\a") {
+		t.Fatalf("release did not hand the pointer back by name: %q", got)
+	}
+
+	// A pointer that was never changed has nothing to reset.
+	if err := output.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	w.ReleaseEmbeddedCursor()
+	written, err = os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), "\x1b]22;") {
+		t.Fatalf("release emitted a pointer reset with no shape to reset: %q", string(written))
+	}
+}

@@ -143,13 +143,22 @@ func (h *Home) splitPaneWidths() (int, int) {
 	return left, right
 }
 
+// dividerGrabSlop widens the mouse target for the split divider beyond the
+// three columns it actually draws. Three columns is a ~2mm target: you aim at
+// it, miss by one, and select a session row instead — the drag reads as broken
+// when it was only narrow. The slop columns it borrows are the far-right
+// padding of a session row and the leading edge of the preview, neither of
+// which carries anything you click for.
+const dividerGrabSlop = 2
+
 // isOnDivider reports whether column x falls on the " │ " separator drawn
 // between the sessions and preview panes in the dual layout. The separator
 // occupies the paneSeparatorWidth columns immediately to the right of the
-// sessions pane. Used as the grab target for mouse-drag resizing.
+// sessions pane, plus dividerGrabSlop columns of grab tolerance on each side.
+// Used as the grab target for mouse-drag resizing.
 func (h *Home) isOnDivider(x int) bool {
 	left := h.sessionsPaneWidth()
-	return x >= left && x < left+paneSeparatorWidth
+	return x >= left-dividerGrabSlop && x < left+paneSeparatorWidth+dividerGrabSlop
 }
 
 // setPreviewPctFromMouseX resizes the split so the divider follows the mouse

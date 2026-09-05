@@ -31,10 +31,11 @@ var errSessionOutputPayloadTooLarge = errors.New("embedded terminal frame exceed
 type SessionOutput struct {
 	*os.File
 
-	mu     sync.Mutex
-	active bool
-	rect   terminalCellRect
-	cursor embeddedCursorState
+	mu           sync.Mutex
+	active       bool
+	rect         terminalCellRect
+	cursor       embeddedCursorState
+	pointerShape string
 }
 
 func NewSessionOutput(stdout *os.File) *SessionOutput {
@@ -61,6 +62,39 @@ func (w *SessionOutput) SetEmbeddedCursor(rect terminalCellRect, cursor embedded
 	w.mu.Unlock()
 }
 
+// Mouse-pointer shapes for SetPointerShape. These are CSS cursor names, the
+// vocabulary OSC 22 uses.
+//
+// The reset is the literal name "default", not an empty payload. Ghostty
+// resolves the payload against its list of CSS cursor names and ignores
+// anything that does not match, so `OSC 22 ; BEL` is silently a no-op there —
+// which is exactly the shape of "the hand cursor gets stuck": the highlight
+// clears, the grab cursor never does, and nothing in the code looks wrong.
+const (
+	pointerShapeDefault  = "default"
+	pointerShapeGrab     = "grab"     // hovering a draggable handle
+	pointerShapeGrabbing = "grabbing" // handle currently held
+)
+
+// SetPointerShape asks the outer terminal to change the mouse-pointer shape
+// via OSC 22, the same escape kitty and Ghostty use. A terminal that does not
+// implement it parses the OSC and discards it, so this is a no-op there rather
+// than stray output.
+//
+// It goes through the same mutex and file handle as the embedded cursor
+// sequences because it is the same kind of thing: a terminal state transition,
+// not frame decoration. Emitting it per frame would be wasteful and could fight
+// the renderer, so the last shape is remembered and only transitions are sent.
+func (w *SessionOutput) SetPointerShape(shape string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.File == nil || w.pointerShape == shape {
+		return
+	}
+	w.pointerShape = shape
+	_, _ = w.File.WriteString("\x1b]22;" + shape + "\a")
+}
+
 func (w *SessionOutput) DeactivateEmbeddedCursor() {
 	w.mu.Lock()
 	wasActive := w.active
@@ -77,7 +111,14 @@ func (w *SessionOutput) DeactivateEmbeddedCursor() {
 func (w *SessionOutput) ReleaseEmbeddedCursor() {
 	w.mu.Lock()
 	w.active = false
-	_, _ = w.File.WriteString("\x1b[0 q\x1b[?25h")
+	// Also hand the mouse pointer back: a grab cursor left behind on exit
+	// follows the user into their shell.
+	reset := ""
+	if w.pointerShape != "" && w.pointerShape != pointerShapeDefault {
+		w.pointerShape = pointerShapeDefault
+		reset = "\x1b]22;" + pointerShapeDefault + "\a"
+	}
+	_, _ = w.File.WriteString("\x1b[0 q\x1b[?25h" + reset)
 	w.mu.Unlock()
 }
 
