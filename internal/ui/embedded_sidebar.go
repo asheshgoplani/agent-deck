@@ -142,19 +142,60 @@ func (h *Home) sidebarRowLines() int {
 }
 
 func (h *Home) sidebarItemRenderHeightAtWidth(item session.Item, width int) int {
+	return h.sidebarItemRenderHeightAtWidthLines(item, width, h.sidebarRowLines())
+}
+
+// sidebarItemRenderHeightAtWidthLines is sidebarItemRenderHeightAtWidth for a
+// caller that walks many rows: resolve the density once (under "auto" that is
+// a pass over the whole list) and hand it in, instead of once per row.
+func (h *Home) sidebarItemRenderHeightAtWidthLines(item session.Item, width, rowLines int) int {
 	if !h.embeddedLayout {
 		return 1
 	}
-	return sidebarItemRenderHeightAtWidthDensity(item, width, h.sidebarRowLines())
+	return sidebarItemRenderHeightAtWidthDensity(item, width, rowLines)
 }
 
 func (h *Home) sidebarItemsHeight(items []session.Item, start, end, width int) int {
+	return h.sidebarItemsHeightWithLines(items, start, end, width, h.sidebarRowLines())
+}
+
+// sidebarItemsHeightWithLines lets a caller that measures repeatedly (the
+// viewport loops) resolve the density once instead of per call.
+func (h *Home) sidebarItemsHeightWithLines(items []session.Item, start, end, width, rowLines int) int {
 	if !h.embeddedLayout {
 		start = max(0, start)
 		end = min(len(items), end)
 		return max(0, end-start)
 	}
-	return sidebarItemsHeightDensity(items, start, end, width, h.sidebarRowLines())
+	return sidebarItemsHeightDensity(items, start, end, width, rowLines)
+}
+
+// pageStepItems converts a line budget into a number of rows for the vi-style
+// page keys, walking from the cursor in dir (+1 down, -1 up) and charging each
+// row its rendered height. In the classic layout every row is one line, so
+// this is exactly the old lines-as-rows arithmetic; in the embedded layout a
+// two- or three-line card counts for as many lines as it draws, so one Ctrl+F
+// advances one visual page rather than two or three.
+func (h *Home) pageStepItems(lines, dir int) int {
+	lines = max(1, lines)
+	if !h.embeddedLayout || dir == 0 {
+		return lines
+	}
+	_, sidebarWidth := h.sidebarLineBudget()
+	rowLines := h.sidebarRowLines()
+	steps := 0
+	for i := h.cursor + dir; i >= 0 && i < len(h.flatItems); i += dir {
+		height := sidebarItemRenderHeightAtWidthDensity(h.flatItems[i], sidebarWidth, rowLines)
+		if height > lines && steps > 0 {
+			break
+		}
+		lines -= height
+		steps++
+		if lines <= 0 {
+			break
+		}
+	}
+	return max(1, steps)
 }
 
 func (h *Home) compactEmbeddedSidebar() bool {
@@ -215,7 +256,12 @@ func (h *Home) renderEmbeddedSessionItem(
 		titleStyle = titleStyle.Foreground(lipgloss.Color(inst.Color))
 	}
 
-	label := strings.TrimSpace(inst.Title)
+	// Read the label from the snapshot, not Instance.Title: the snapshot exists
+	// so View() never queues behind a mid-sweep UpdateStatus writer (#1753),
+	// and it is where auto-named sessions get their task description promoted
+	// in place of the generated handle, the same way the classic row does.
+	displayTitle, _ := sessionDisplayLabelsFromState(state)
+	label := strings.TrimSpace(displayTitle)
 	if label == "" {
 		label = inst.ID
 	}
