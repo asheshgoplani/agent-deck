@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,28 @@ func TestEmbeddedTerminalOSC52IgnoresClipboardQueries(t *testing.T) {
 
 	if called {
 		t.Fatal("clipboard query reached the host clipboard as a copy")
+	}
+}
+
+func TestEmbeddedTerminalOSC52DropsOversizedPayloadBeforeDecoding(t *testing.T) {
+	var copies int
+	emulator := newEmbeddedTerminalEmulator(
+		embeddedTerminalSize{Cols: 40, Rows: 8},
+		func(string) { copies++ },
+	)
+	defer func() { _ = emulator.Close() }()
+
+	// Valid base64 either side of the cap: a multiple of four 'A's decodes to
+	// NUL bytes, so only the length decides.
+	atCap := strings.Repeat("A", embeddedClipboardMaxEncodedBytes)
+	_, _ = emulator.WriteString("\x1b]52;c;" + atCap + "\x07")
+	if copies != 1 {
+		t.Fatalf("payload at the cap was not copied (copies=%d)", copies)
+	}
+	overCap := strings.Repeat("A", embeddedClipboardMaxEncodedBytes+4)
+	_, _ = emulator.WriteString("\x1b]52;c;" + overCap + "\x07")
+	if copies != 1 {
+		t.Fatalf("payload over the cap reached the host clipboard (copies=%d)", copies)
 	}
 }
 
