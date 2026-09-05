@@ -526,7 +526,11 @@ type Instance struct {
 
 	tmuxSession *tmux.Session // Internal tmux session
 
-	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
+	serverHasSessionsForTest       func() bool
+	terminatedCommitBarrierForTest func()
+	hookLaunchGeneration           string
+	completionExecutableForTest    string
+	paneDeadExitStatusForTest      func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
@@ -4736,6 +4740,9 @@ func (i *Instance) Start() error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
+	if err := i.seedCompletionLaunch(); err != nil {
+		return err
+	}
 
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
 	// spawn_attempt trace so a spawn that dies before anything else runs still
@@ -5064,6 +5071,9 @@ func (i *Instance) StartWithMessage(message string) error {
 		if err := i.PromptDeliveryError(); err != nil {
 			return err
 		}
+	}
+	if err := i.seedCompletionLaunch(); err != nil {
+		return err
 	}
 
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
@@ -5680,8 +5690,12 @@ func (i *Instance) applyTerminatedPaneStatus() {
 	tmuxSession := i.tmuxSession
 	tool := i.Tool
 	paneDeadExitStatus := i.paneDeadExitStatusForTest
+	serverHasSessions := i.serverHasSessionsForTest
+	started, spawnGen, launch := i.LastStartedAt, i.spawnGen.Load(), i.hookLaunchGeneration
+	instanceID, sessionID := i.ID, i.completionSessionIDLocked()
 
 	i.mu.Unlock()
+	generation, authority := hookGenerationForInstance(instanceID)
 	exitCode, haveExitCode := 0, false
 	if tmuxSession != nil {
 		if paneDeadExitStatus == nil {
@@ -5690,8 +5704,59 @@ func (i *Instance) applyTerminatedPaneStatus() {
 		exitCode, haveExitCode = paneDeadExitStatus()
 	}
 	status := classifyTerminatedPane(exitCode, haveExitCode, tool)
+	var completion *HookStatus
+	serverPresent := false
+	completionEligible := completionProtocolActive() && !haveExitCode && tmuxSession != nil && completionHookTool(tool) && authority == hookGenerationValid
+	if completionEligible {
+		// A producer can publish DONE after this probe begins. Probe the server
+		// independently of an early status snapshot, without holding i.mu.
+		if serverHasSessions == nil {
+			serverHasSessions = func() bool {
+				names, err := tmux.ListSessionNamesOnSocket(tmuxSession.SocketName)
+				_, targetExists := names[tmuxSession.Name]
+				return err == nil && len(names) > 0 && !targetExists
+			}
+		}
+		serverPresent = serverHasSessions()
+	}
+	// Serialize the final evidence read/commit with cross-process lifecycle
+	// operations, without waiting on a start that already owns the marker.
+	releaseCommit := func() {}
+	if instanceID != "" {
+		var ok bool
+		releaseCommit, ok = tryTerminatedStatusCommit(instanceID)
+		if !ok {
+			i.mu.Lock()
+			return
+		}
+	}
+	defer releaseCommit()
+	currentGeneration, currentAuthority := hookGenerationForInstance(instanceID)
+	if i.terminatedCommitBarrierForTest != nil {
+		i.terminatedCommitBarrierForTest()
+	}
 	i.mu.Lock()
+	if completionEligible {
+		locks, ok := tryCompletionWriterLocks(instanceID)
+		if !ok {
+			return
+		}
+		defer locks.release()
+		// Accept the latest proof, including a new completion during the probe.
+		// Control/status sequence equality is checked under the writer locks,
+		// which remain held through assignment and exclude contradictions.
+		completion = readSequencedCompletionLocked(instanceID)
+		currentGeneration, currentAuthority = hookGenerationForInstance(instanceID)
+	}
 
+	if i.tmuxSession != tmuxSession || !i.LastStartedAt.Equal(started) || i.spawnGen.Load() != spawnGen || i.hookLaunchGeneration != launch || currentGeneration != generation || currentAuthority != authority {
+		return
+	}
+	if completionProtocolActive() && !haveExitCode && serverPresent && completion != nil && (i.Status == StatusWaiting || i.Status == StatusIdle) &&
+		!i.hookLastUpdate.After(completion.UpdatedAt) &&
+		validTerminatedCompletion(completion, tool, generation, sessionID, started, time.Now()) {
+		status = StatusStopped
+	}
 	if i.Status != StatusStopped {
 		i.Status = status
 	}
@@ -8614,6 +8679,9 @@ func (i *Instance) restart(env map[string]string) error {
 		return nil
 	}
 	defer recordInstanceSpawn(i.ID)
+	if err := i.seedCompletionLaunch(); err != nil {
+		return err
+	}
 
 	// #1775: supersede the fast-death watcher from the PREVIOUS spawn here, at
 	// the single entry point, rather than deeper down. restart() has several
@@ -11271,6 +11339,7 @@ func (i *Instance) wrapLaunchShell(command string) string {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	cmd = i.bindCompletionLaunchCommand(cmd)
 	// Exit-to-shell wrap FIRST, on the bare agent command, so the agent's own
 	// `exec ` launcher is still visible to neutralise and the trailing shell
 	// exec stays the outermost statement before any user-wrapper / bash -c /

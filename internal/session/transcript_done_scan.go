@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // This file holds the transcript-tail scan behind completion-sentinel
@@ -20,6 +21,7 @@ import (
 // transcriptContentMessage extracts the assistant message content blocks from
 // a transcript line, for completion-sentinel detection.
 type transcriptContentMessage struct {
+	Timestamp   string `json:"timestamp"`
 	Type        string `json:"type"`
 	IsSidechain bool   `json:"isSidechain"`
 	Message     struct {
@@ -101,6 +103,7 @@ func ScanTranscriptTailForDone(path string) (sig DoneSignal, found bool, pending
 		switch msg.Type {
 		case "assistant":
 			sig, found = ScanDoneSentinel(transcriptText(msg.Message.Content))
+			sig.Timestamp, _ = time.Parse(time.RFC3339Nano, msg.Timestamp)
 			return sig, found, false
 		case "user":
 			return DoneSignal{}, false, true
