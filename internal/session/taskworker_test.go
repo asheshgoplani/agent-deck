@@ -70,16 +70,11 @@ func addParentRow(t *testing.T, profile, parentID, childID string) {
 		Status:      StatusIdle,
 		CreatedAt:   time.Now(),
 	}
-	child := &Instance{
-		ID:              childID,
-		Title:           "worker",
-		ProjectPath:     "/tmp/c1214",
-		GroupPath:       DefaultGroupPath,
-		ParentSessionID: parentID,
-		Tool:            "claude",
-		Status:          StatusWaiting,
-		CreatedAt:       time.Now(),
+	children, err := storage.Load()
+	if err != nil || len(children) != 1 || children[0].ID != childID {
+		t.Fatalf("load existing child: instances=%v err=%v", children, err)
 	}
+	child := children[0]
 	if err := storage.SaveWithGroups([]*Instance{parent, child}, nil); err != nil {
 		t.Fatalf("save: %v", err)
 	}

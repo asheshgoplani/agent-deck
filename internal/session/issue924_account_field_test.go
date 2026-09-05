@@ -10,6 +10,7 @@
 package session
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -137,6 +138,22 @@ func TestPersistence_Account_SchemaMigration(t *testing.T) {
 // "account" (FieldAccount) hits the right struct field, normalises
 // whitespace, and that the empty string clears the slot.
 func TestSetField_Account_RoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	configDir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(`[profiles.work.claude]
+config_dir = "~/.claude-work"
+[profiles.personal.claude]
+config_dir = "~/.claude-personal"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
 	inst := &Instance{ID: "x", Tool: "claude"}
 
 	old, _, err := SetField(inst, FieldAccount, "  work  ", nil)
