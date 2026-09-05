@@ -863,6 +863,16 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 
 **Feedback prompt frequency** (v1.7.41+): the TUI's auto-prompt is paced so brand-new users aren't asked on their first few launches. The first prompt appears only after **7 launches or 3 days** of use, whichever comes later. If you dismiss it, agent-deck waits **14 days** before asking again. You'll see at most **3 prompts per version**, and pressing `n` at any step opts you out permanently — use `agent-deck feedback` or `Ctrl+E` to re-enable on demand. Opt-out always wins over every pacing gate.
 
+### Usage telemetry (opt-in, off by default)
+
+agent-deck can send one small anonymous usage report per day (random install id, version, OS/arch, feature counters) so the maintainer can see which features are used. **It is off until you explicitly say yes** in the one-time TUI prompt or with `agent-deck telemetry enable`; declining is remembered and nothing is ever sent or counted without consent. `AGENTDECK_TELEMETRY=0` or `DO_NOT_TRACK=1` hard-disable it regardless. Full details, the exact payload, and every control: [TELEMETRY.md](TELEMETRY.md).
+
+```bash
+agent-deck telemetry status      # on/off and why
+agent-deck telemetry show-last   # the exact JSON that was last sent
+agent-deck telemetry disable     # off, install id deleted
+```
+
 ### Remote Instances
 
 Manage agent-deck instances running on remote SSH servers from your local terminal. Remote sessions report coarse live status and use the same nested group layout as local sessions; remote groups can be collapsed, and `K`/`J` reorder sessions within a remote group. Session identity includes its location, so the same title can safely exist locally and on different remote host/path pairs.
@@ -884,12 +894,17 @@ agent-deck remote sessions dev
 # Attach to a remote session
 agent-deck remote attach dev my-session
 
+# Pull finished/stalled reports from a remote into this machine's inbox
+agent-deck remote drain dev
+
 # Keep remote binaries up to date
 agent-deck remote update          # all remotes
 agent-deck remote update dev      # specific remote
 ```
 
-Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). `remote list` and `remote sessions` support `--json` output for scripting. See the [Remote Commands reference](skills/agent-deck/references/cli-reference.md#remote-commands) for flags, security behavior, and examples.
+A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. `remote drain <name>` closes that gap by pulling — it reads the remote's records over the same SSH path (consuming nothing there) and writes them into the local inbox, safe to run on every heartbeat and safe to repeat.
+
+Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). `remote list`, `remote sessions` and `remote drain` support `--json` output for scripting. See the [Remote Commands reference](skills/agent-deck/references/cli-reference.md#remote-commands) for flags, security behavior, and examples.
 
 Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**: path suggestions come from the remote host, the remote session's group is pre-filled, and the create routes over SSH with your chosen tool — sessions are never accidentally created on localhost.
 

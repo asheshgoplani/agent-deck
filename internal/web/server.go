@@ -448,6 +448,12 @@ func (s *Server) HasMutator() bool {
 }
 
 func (s *Server) notifyMenuChanged() {
+	// Clear the fallback cache before a subscriber loads the changed menu.
+	// Headless mode has no TUI publisher, so the next load reads storage.
+	if mmd, ok := s.menuData.(*MemoryMenuData); ok {
+		mmd.InvalidateCache()
+	}
+
 	s.menuSubscribersMu.Lock()
 	for ch := range s.menuSubscribers {
 		select {
@@ -456,15 +462,6 @@ func (s *Server) notifyMenuChanged() {
 		}
 	}
 	s.menuSubscribersMu.Unlock()
-
-	// Invalidate the MemoryMenuData cache so the next LoadMenuSnapshot()
-	// reloads from the storage-backed fallback. In headless (--no-tui) mode
-	// there is no TUI loop to call publishWebMenuSnapshot(), so without this
-	// the menu snapshot would remain frozen at its first-load state and new
-	// sessions created via the API would never appear until server restart.
-	if mmd, ok := s.menuData.(*MemoryMenuData); ok {
-		mmd.InvalidateCache()
-	}
 }
 
 // checkMutationsAllowed writes a 403 response and returns false when web mutations are disabled.

@@ -125,7 +125,7 @@ func TestPerf_OutboxDrain_Drain25(t *testing.T) {
 // un-normalizable disk walltime.
 //
 // Derived by reading the drain code (inbox_consumer.go), NOT by recording
-// observed values. DrainInboxForParent issues exactly TWO durable writes for any
+// observed values. DrainInboxForParent issues exactly THREE durable writes for any
 // non-empty drain of distinct-child, not-yet-consumed records:
 //
 //  1. stageInboxDrainLocked → writeInflightLocked → writeFileDurable(WAL)
@@ -133,8 +133,10 @@ func TestPerf_OutboxDrain_Drain25(t *testing.T) {
 //  2. finalizeInboxDrain → saveConsumedTurnsLocked → writeFileDurable(ledger)
 //     — persists the WHOLE consumed-turns map in ONE write (1 data fsync + 1
 //     dir fsync).
+//  3. finalizeInboxDrain → saveInboxConsumeMarker → writeFileDurable(marker)
+//     — persists restore-detection state beside the inbox (1 data + 1 dir fsync).
 //
-// So a drain of N messages = 2 file fsyncs + 2 directory fsyncs, INDEPENDENT of
+// So a drain of N messages = 3 file fsyncs + 3 directory fsyncs, INDEPENDENT of
 // N. Proving the count is identical for N=1 and N=25 is the regression guard: a
 // change to fsync-per-record would make the file-fsync count scale with N. The
 // inbox truncate (os.Remove) and the WAL drop (os.Remove) issue no fsync.
@@ -151,8 +153,8 @@ func TestPerf_OutboxDrain_FsyncCount(t *testing.T) {
 	defer restore()
 
 	const (
-		wantFileSyncs = 2 // WAL stage + consumed-ledger persist
-		wantDirSyncs  = 2 // one best-effort parent-dir fsync per durable write
+		wantFileSyncs = 3 // WAL stage + consumed-ledger + inbox-side marker
+		wantDirSyncs  = 3 // one best-effort parent-dir fsync per durable write
 	)
 
 	for _, n := range []int{1, outboxDrainFanout} {
@@ -190,6 +192,7 @@ func populateInboxForDrain(t *testing.T, parent string, n int) {
 	_ = os.Remove(InboxPathFor(parent))
 	_ = os.Remove(inboxInflightPathFor(parent))
 	_ = os.Remove(consumedTurnsPathFor(parent))
+	_ = os.Remove(inboxConsumeMarkerPathFor(parent))
 	ResetInboxFingerprintCacheForTest()
 
 	now := time.Now()
