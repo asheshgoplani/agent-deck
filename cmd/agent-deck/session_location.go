@@ -305,6 +305,35 @@ func localSessionPaths(instances []*session.Instance) map[string]bool {
 	return paths
 }
 
+// allProfileSessionPaths protects worktrees owned by any local profile. A
+// cleanup invocation must not remove a live checkout merely because its
+// session row belongs to a different profile.
+func allProfileSessionPaths(currentProfile string, current []*session.Instance) (map[string]bool, error) {
+	paths := localSessionPaths(current)
+	profiles, err := session.ListProfiles()
+	if err != nil {
+		return nil, fmt.Errorf("list profiles for worktree ownership: %w", err)
+	}
+	for _, profile := range profiles {
+		if profile == currentProfile {
+			continue
+		}
+		storage, err := session.NewStorageWithProfile(profile)
+		if err != nil {
+			return nil, fmt.Errorf("open profile %q for worktree ownership: %w", profile, err)
+		}
+		instances, _, err := storage.LoadWithGroups()
+		_ = storage.Close()
+		if err != nil {
+			return nil, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err)
+		}
+		for path := range localSessionPaths(instances) {
+			paths[path] = true
+		}
+	}
+	return paths, nil
+}
+
 // localSessionsAtPath returns every session that runs locally at path. Callers
 // that can only mean a local session (worktree occupancy, `try`, the tmux-cwd
 // fallback) must use this rather than comparing ProjectPath, so a remote session

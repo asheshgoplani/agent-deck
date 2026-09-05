@@ -176,8 +176,12 @@ func ListProfiles() ([]string, error) {
 			jsonPath := filepath.Join(profilesDir, entry.Name(), "sessions.json")
 			if _, err := os.Stat(dbPath); err == nil {
 				profiles = append(profiles, entry.Name())
+			} else if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("inspect profile %q database: %w", entry.Name(), err)
 			} else if _, err := os.Stat(jsonPath); err == nil {
 				profiles = append(profiles, entry.Name())
+			} else if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("inspect profile %q legacy data: %w", entry.Name(), err)
 			}
 		}
 	}
