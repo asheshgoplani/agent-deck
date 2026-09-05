@@ -1,249 +1,355 @@
 package ui
 
 import (
-	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/tmux"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/vt"
-	"github.com/creack/pty"
-	"golang.org/x/term"
 )
 
-// Between Enter and the tmux client's first byte the PTY does not exist. Keys
-// typed in that window used to reach Bubble Tea and be discarded in embedded
-// mode; a fast typist or a paste lost the first characters of every session.
-// The router now enters session mode on Prepare and holds pane bytes until
-// Activate installs the child.
-
-func TestSessionInputRouterHoldsInputUntilTheChildExists(t *testing.T) {
-	router := NewSessionInputRouter(nil)
-	router.Prepare(terminalCellRect{Width: 80, Height: 24}, 0)
-
-	if got := routeTestBytes(t, router, "ls -la"); len(got) != 0 {
-		t.Fatalf("connecting interval leaked keys to the dashboard: %q", got)
-	}
-
-	var child bytes.Buffer
-	router.Activate(&child, terminalCellRect{Width: 80, Height: 24}, 0)
-	if got := child.String(); got != "ls -la" {
-		t.Fatalf("child received %q after activation, want the held keystrokes", got)
-	}
-
-	if got := routeTestBytes(t, router, "\r"); len(got) != 0 {
-		t.Fatalf("live keys leaked to the dashboard: %q", got)
-	}
-	if got := child.String(); got != "ls -la\r" {
-		t.Fatalf("child received %q, want held bytes followed by live bytes", got)
+func awaitConnectingBytes(t *testing.T, w *connectingCapture, want string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for w.snapshot() != want {
+		select {
+		case <-w.writes:
+		case <-deadline:
+			t.Fatalf("writer bytes = %q, want %q", w.snapshot(), want)
+		}
 	}
 }
 
-func TestSessionInputRouterForwardedKeysPrecedeLiveBytes(t *testing.T) {
-	router := NewSessionInputRouter(nil)
-	router.Prepare(terminalCellRect{Width: 80, Height: 24}, 0)
-
-	// Home re-encodes the KeyMsgs that shared a stdin read with Enter and
-	// forwards them; anything read afterwards is routed raw.
-	router.Forward([]byte("ec"))
-	_ = routeTestBytes(t, router, "ho hi")
-
-	var child bytes.Buffer
-	router.Activate(&child, terminalCellRect{Width: 80, Height: 24}, 0)
-	if got := child.String(); got != "echo hi" {
-		t.Fatalf("child received %q, want forwarded keys before raw keys", got)
-	}
-
-	// Once the client exists, forwarded stragglers go straight through.
-	router.Forward([]byte("\r"))
-	if got := child.String(); got != "echo hi\r" {
-		t.Fatalf("child received %q after live forward", got)
-	}
-}
-
-func TestSessionInputRouterDetachWhileConnectingDropsHeldInput(t *testing.T) {
-	router := NewSessionInputRouter(nil)
-	router.Prepare(terminalCellRect{Width: 80, Height: 24}, 0)
-
-	got := routeTestBytes(t, router, "abc\x11def")
-	if !bytes.Equal(got, []byte{0x11}) {
-		t.Fatalf("dashboard bytes = %q, want the detach chord alone", got)
-	}
-	if router.active {
-		t.Fatal("detach chord while connecting left the router in session mode")
-	}
-	if len(router.held) != 0 {
-		t.Fatalf("held bytes survived the detach: %q", router.held)
-	}
-
-	// Home abandons the connect; a late Activate must not replay stale keys.
-	var child bytes.Buffer
-	router.Activate(&child, terminalCellRect{Width: 80, Height: 24}, 0)
-	if child.Len() != 0 {
-		t.Fatalf("stale held bytes reached a later client: %q", child.String())
-	}
-}
-
-func TestSessionInputRouterForwardOutsideSessionModeIsDropped(t *testing.T) {
-	router := NewSessionInputRouter(nil)
-	router.Forward([]byte("stray"))
-	if len(router.held) != 0 {
-		t.Fatalf("dashboard-mode forward was held: %q", router.held)
-	}
-}
-
-// blockingWriter stalls its first Write until released, standing in for a PTY
-// whose client has stopped reading.
-type blockingWriter struct {
-	release chan struct{}
+// This writer accepts a short prefix, then blocks until the test permits
+// progress or cancellation closes it. Its accepted prefix cannot be recalled.
+type connectingBlockedWriter struct {
+	*connectingCapture
 	entered chan struct{}
+	release chan struct{}
 	once    sync.Once
-	buf     bytes.Buffer
+	partial bool
 }
 
-func (w *blockingWriter) Write(p []byte) (int, error) {
-	w.once.Do(func() { close(w.entered) })
-	<-w.release
-	return w.buf.Write(p)
+func newConnectingBlockedWriter(partial bool) *connectingBlockedWriter {
+	return &connectingBlockedWriter{connectingCapture: newConnectingCapture(), entered: make(chan struct{}), release: make(chan struct{}), partial: partial}
 }
 
-func TestSessionInputRouterWritesToTheChildOutsideItsLock(t *testing.T) {
+func (w *connectingBlockedWriter) Write(p []byte) (int, error) {
+	first := false
+	w.once.Do(func() { first = true })
+	if first && w.partial && len(p) > 1 {
+		return w.connectingCapture.Write(p[:1])
+	}
+	select {
+	case <-w.entered:
+	default:
+		close(w.entered)
+	}
+	select {
+	case <-w.closed:
+		return 0, io.ErrClosedPipe
+	case <-w.release:
+		return w.connectingCapture.Write(p)
+	}
+}
+
+func TestSessionInputQueueOrdersConnectingPartialAndLiveWrites(t *testing.T) {
+	q := newSessionInputQueue(context.Background(), 1)
+	defer q.stop()
+	if _, err := q.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	w := newConnectingBlockedWriter(true)
+	if !q.install(w) {
+		t.Fatal("install rejected")
+	}
+	awaitConnectingSignal(t, w.entered, "partial write did not resume")
+	if got := w.snapshot(); got != "a" {
+		t.Fatalf("accepted prefix = %q", got)
+	}
+	if _, err := q.Write([]byte("界\r")); err != nil {
+		t.Fatal(err)
+	}
+	close(w.release)
+	awaitConnectingBytes(t, w.connectingCapture, "abc界\r")
+}
+
+func TestSessionInputRouterCtrlQCancelsBlockedWriter(t *testing.T) {
 	readFile, writeFile, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer readFile.Close()
 	defer writeFile.Close()
-
-	child := &blockingWriter{release: make(chan struct{}), entered: make(chan struct{})}
 	router := NewSessionInputRouter(readFile)
-	router.Activate(child, terminalCellRect{Width: 80, Height: 24}, 0)
-
-	readDone := make(chan struct{})
+	defer router.Deactivate()
+	q := router.BeginConnecting(context.Background(), 7, terminalCellRect{Width: 80, Height: 24}, 0)
+	w := newConnectingBlockedWriter(false)
+	if !router.Install(7, w) {
+		t.Fatal("install rejected")
+	}
+	result := make(chan []byte, 1)
 	go func() {
-		buf := make([]byte, 32)
-		_, _ = router.Read(buf)
-		close(readDone)
+		buf := make([]byte, 256)
+		for {
+			n, err := router.Read(buf)
+			if n > 0 || err != nil {
+				result <- append([]byte(nil), buf[:n]...)
+				return
+			}
+		}
 	}()
-	if _, err := io.WriteString(writeFile, "x"); err != nil {
+	if _, err := io.WriteString(writeFile, "pending"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-child.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("router never wrote to the child")
-	}
-
-	// With the PTY write stalled, Bubble Tea's goroutine must still be able
-	// to move the pane, detach, or resize; each takes r.mu.
-	done := make(chan struct{})
-	go func() {
-		router.UpdateRect(terminalCellRect{Width: 40, Height: 12})
-		router.Deactivate()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("UpdateRect/Deactivate blocked behind a stalled child write")
-	}
-	close(child.release)
+	awaitConnectingSignal(t, w.entered, "PTY write never blocked")
 	if _, err := io.WriteString(writeFile, "\x11"); err != nil {
 		t.Fatal(err)
 	}
-	<-readDone
+	select {
+	case got := <-result:
+		if string(got) != "\x11" {
+			t.Fatalf("dashboard = %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl+Q blocked behind PTY Write")
+	}
+	awaitConnectingSignal(t, w.closed, "cancel did not close the blocked writer")
+	if err := q.result(); err != nil {
+		t.Fatalf("explicit cancellation became a write error: %v", err)
+	}
+	if got := w.snapshot(); got != "" {
+		t.Fatalf("unsent bytes delivered after cancellation: %q", got)
+	}
+	fresh := router.BeginConnecting(context.Background(), 8, terminalCellRect{}, 0)
+	if router.Install(7, newConnectingCapture()) {
+		t.Fatal("stale generation installed")
+	}
+	if _, err := fresh.Write([]byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	freshWriter := newConnectingCapture()
+	if !router.Install(8, freshWriter) {
+		t.Fatal("new generation rejected")
+	}
+	awaitConnectingBytes(t, freshWriter, "new")
 }
 
-func TestKeyMsgRawBytesReEncodesLegacyKeys(t *testing.T) {
-	cases := []struct {
-		name string
-		msg  tea.KeyMsg
-		want string
-		ok   bool
-	}{
-		{"runes", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("héllo")}, "héllo", true},
-		{"alt rune", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x"), Alt: true}, "\x1bx", true},
-		{"paste", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ab"), Paste: true}, bracketedPasteStart + "ab" + bracketedPasteEnd, true},
-		{"space", tea.KeyMsg{Type: tea.KeySpace}, " ", true},
-		{"enter", tea.KeyMsg{Type: tea.KeyEnter}, "\r", true},
-		{"tab", tea.KeyMsg{Type: tea.KeyTab}, "\t", true},
-		{"backspace", tea.KeyMsg{Type: tea.KeyBackspace}, "\x7f", true},
-		{"escape", tea.KeyMsg{Type: tea.KeyEscape}, "\x1b", true},
-		{"ctrl+c", tea.KeyMsg{Type: tea.KeyCtrlC}, "\x03", true},
-		{"up", tea.KeyMsg{Type: tea.KeyUp}, "\x1b[A", true},
-		{"shift+tab", tea.KeyMsg{Type: tea.KeyShiftTab}, "\x1b[Z", true},
-		{"f1 has no legacy form", tea.KeyMsg{Type: tea.KeyF1}, "", false},
+type connectingPartialErrorWriter struct{ *connectingCapture }
+
+func (w *connectingPartialErrorWriter) Write(p []byte) (int, error) {
+	n, _ := w.connectingCapture.Write(p[:1])
+	return n, io.ErrUnexpectedEOF
+}
+
+func TestSessionInputQueuePartialErrorDoesNotReplay(t *testing.T) {
+	q := newSessionInputQueue(context.Background(), 1)
+	defer q.stop()
+	if _, err := q.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := keyMsgRawBytes(tc.msg)
-			if ok != tc.ok {
-				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+	w := &connectingPartialErrorWriter{newConnectingCapture()}
+	if !q.install(w) {
+		t.Fatal("install rejected")
+	}
+	awaitConnectingSignal(t, w.closed, "write error did not close the generation")
+	if err := q.result(); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("result = %v", err)
+	}
+	if _, err := q.Write([]byte("later")); err == nil {
+		t.Fatal("failed generation accepted more bytes")
+	}
+	if got := w.snapshot(); got != "a" {
+		t.Fatalf("partial write was replayed: %q", got)
+	}
+}
+
+func TestSessionInputRouterOverflowQuarantinesSplitPasteTail(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+	router := NewSessionInputRouter(readFile)
+	defer router.Deactivate()
+	q := router.BeginConnecting(context.Background(), 1, terminalCellRect{}, 0)
+	// Fill all but one byte. Read must detect overflow on the paste start,
+	// then stop consuming until the UI observes the generation error.
+	if _, err := q.Write([]byte(strings.Repeat("x", maxConnectingInputBytes-1))); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := router.Read(buf)
+			if n > 0 || err != nil {
+				result <- string(buf[:n])
+				return
 			}
-			if string(got) != tc.want {
-				t.Fatalf("bytes = %q, want %q", got, tc.want)
+		}
+	}()
+	if _, err := io.WriteString(writeFile, bracketedPasteStart+"\x11\r\x1b[20"); err != nil {
+		t.Fatal(err)
+	}
+	awaitConnectingSignal(t, q.ctx.Done(), "paste overflow not reported")
+	if err := q.result(); !errors.Is(err, errConnectingInputOverflow) {
+		t.Fatalf("result = %v", err)
+	}
+	router.Deactivate() // Home's error handler abandons this generation.
+	if _, err := io.WriteString(writeFile, "1~z"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-result:
+		if got != "z" {
+			t.Fatalf("paste tail escaped into dashboard: %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("quarantine did not release after split paste end")
+	}
+}
+
+func TestSessionInputRouterInstallRetainsSplitPasteAndControl(t *testing.T) {
+	router := NewSessionInputRouter(nil)
+	defer router.Deactivate()
+	router.BeginConnecting(context.Background(), 1, terminalCellRect{}, 0)
+	feed := func(s string) {
+		t.Helper()
+		router.mu.Lock()
+		router.rawBuf = append(router.rawBuf, s...)
+		dashboard, err := router.routeToQueueLocked(false)
+		router.mu.Unlock()
+		if err != nil || len(dashboard) != 0 {
+			t.Fatalf("route = %q, %v", dashboard, err)
+		}
+	}
+	feed(bracketedPasteStart + "界\x1b[20")
+	w := newConnectingCapture()
+	if !router.Install(1, w) {
+		t.Fatal("install rejected")
+	}
+	feed("1~\x1b[13;")
+	feed("2u")
+	awaitConnectingBytes(t, w, bracketedPasteStart+"界"+bracketedPasteEnd+"\x1b[13;2u")
+}
+
+func TestSessionInputRouterActiveMouseDecisionOwnsFollowingRawTail(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+	router := NewSessionInputRouter(readFile)
+	defer router.Deactivate()
+	router.BeginConnecting(context.Background(), 1, terminalCellRect{X: 20, Width: 80, Height: 24}, 0)
+	old := newConnectingCapture()
+	if !router.Install(1, old) {
+		t.Fatal("old install rejected")
+	}
+	mouse := "\x1b[<0;2;2M"
+	want := "界\x1bOP\x1b[13;2u\r"
+	if _, err := io.WriteString(writeFile, mouse+want+"\x1b[98;7u"); err != nil {
+		t.Fatal(err)
+	}
+	readEvent := func() string {
+		t.Helper()
+		buf := make([]byte, 256)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			n, err := router.Read(buf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n > 0 {
+				return string(buf[:n])
+			}
+		}
+		t.Fatal("input event never returned")
+		return ""
+	}
+	if got := readEvent(); got != mouse {
+		t.Fatalf("first event = %q", got)
+	}
+	if got := old.snapshot(); got != "" {
+		t.Fatalf("undecided suffix reached old session: %q", got)
+	}
+	// Even another decoder Read cannot consume the suffix while Home's
+	// decision is outstanding. It may yield empty for cancelreader shutdown.
+	buf := make([]byte, 256)
+	if n, err := router.Read(buf); n != 0 || err != nil {
+		t.Fatalf("read before decision = %q, %v", buf[:n], err)
+	}
+	router.BeginConnecting(context.Background(), 2, terminalCellRect{}, 0)
+	fresh := newConnectingCapture()
+	if !router.Install(2, fresh) {
+		t.Fatal("new install rejected")
+	}
+	if got := readEvent(); got != string(embeddedSidebarToggleSignal) {
+		t.Fatalf("flush marker = %q", got)
+	}
+	awaitConnectingBytes(t, fresh, want)
+	if got := old.snapshot(); got != "" {
+		t.Fatalf("suffix crossed generation: %q", got)
+	}
+}
+
+func TestSessionInputRouterCancelDiscardsBufferedDashboardShortcuts(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+	router := NewSessionInputRouter(readFile)
+	defer router.Deactivate()
+	router.BeginConnecting(context.Background(), 1, terminalCellRect{}, 0)
+	if _, err := io.WriteString(writeFile, "\x11\rdelete"); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 256)
+	if n, err := router.Read(buf); err != nil || string(buf[:n]) != "\x11" {
+		t.Fatalf("detach = %q, %v", buf[:n], err)
+	}
+	router.Deactivate() // Home finishes the detach event.
+	if n, err := router.Read(buf); n != 0 || err != nil {
+		t.Fatalf("cancelled suffix became input: %q, %v", buf[:n], err)
+	}
+	// An idle read ends cancellation's buffered-tail quarantine.
+	if n, err := router.Read(buf); n != 0 || err != nil {
+		t.Fatalf("idle read = %q, %v", buf[:n], err)
+	}
+	if _, err := io.WriteString(writeFile, "z"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := router.Read(buf); err != nil || string(buf[:n]) != "z" {
+		t.Fatalf("fresh dashboard input = %q, %v", buf[:n], err)
+	}
+}
+
+func TestSessionInputRouterDashboardStillFiltersEscapeStringReplies(t *testing.T) {
+	for _, reply := range []string{"\x1b]0;not-dashboard-input\a", "\x1bP>|terminal-version\x1b\\"} {
+		t.Run(reply, func(t *testing.T) {
+			readFile, writeFile, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer readFile.Close()
+			defer writeFile.Close()
+			router := NewSessionInputRouter(readFile)
+			defer router.Deactivate()
+			if _, err := io.WriteString(writeFile, reply+"z"); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 256)
+			if n, err := router.Read(buf); err != nil || string(buf[:n]) != "z" {
+				t.Fatalf("reply became dashboard input: %q, %v", buf[:n], err)
 			}
 		})
 	}
-}
-
-// End to end through Home: Enter prepares the router, keys typed while the
-// PTY connects are held (raw and re-encoded alike), and the install pass
-// replays them into the client before anything else.
-func TestEmbeddedModeReplaysKeysTypedWhileConnecting(t *testing.T) {
-	home, inst, _ := armHomeWithOneSession(t)
-	home.embeddedLayout = true
-	inst.SetTmuxSessionForTest(tmux.NewSession("focused-session", "/tmp/focused"))
-	home.sessionExists = func(*session.Instance) bool { return true }
-	router := NewSessionInputRouter(nil)
-	home.sessionInput = router
-
-	if !home.enterEmbeddedMode() {
-		t.Fatalf("enterEmbeddedMode failed: %v", home.err)
-	}
-	if !router.active || router.child != nil {
-		t.Fatalf("router after Enter: active=%v child=%v, want session mode with no child yet", router.active, router.child)
-	}
-
-	// A KeyMsg that shared Enter's stdin read arrives through Bubble Tea.
-	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ls")})
-	home = model.(*Home)
-	// Bytes read after the switch are routed raw by the router itself.
-	_ = routeTestBytes(t, router, "\r")
-
-	ptmx, tty, err := pty.Open()
-	if err != nil {
-		t.Skipf("open pty: %v", err)
-	}
-	defer ptmx.Close()
-	defer tty.Close()
-	// Read the client side raw so the line discipline does not fold the
-	// carriage return into a newline before the assertion sees it.
-	if _, err := term.MakeRaw(int(tty.Fd())); err != nil {
-		t.Skipf("raw mode on pty slave: %v", err)
-	}
-	emulator := vt.NewSafeEmulator(80, 24)
-	defer func() { _ = emulator.Close() }()
-	terminal := &embeddedTerminal{ptmx: ptmx, emulator: emulator, dirty: make(chan struct{}, 1)}
-
-	_ = home.installEmbeddedTerminal(embeddedStartMsg{generation: home.embeddedGeneration, terminal: terminal})
-	if router.child == nil {
-		t.Fatal("install did not activate the router")
-	}
-
-	got := make([]byte, 16)
-	_ = tty.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err := tty.Read(got)
-	if err != nil {
-		t.Fatalf("read replayed keys from the client side: %v", err)
-	}
-	if string(got[:n]) != "ls\r" {
-		t.Fatalf("client received %q, want the keys typed while connecting, in order", got[:n])
-	}
-	home.embeddedTerminal = nil // fixture has no child process for Close
 }

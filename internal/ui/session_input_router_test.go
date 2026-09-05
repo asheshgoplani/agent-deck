@@ -19,9 +19,8 @@ func newRoutingTestInput(rect terminalCellRect) (*SessionInputRouter, *bytes.Buf
 	return router, child
 }
 
-// routeTestBytes runs one routing pass the way Read does: route under the
-// lock, then deliver the pane bytes to the child that was installed when the
-// pass began (a detach chord clears r.child before the pass returns).
+// routeTestBytes exercises pure token classification. Generation delivery and
+// cancellation are covered separately by the connecting input tests.
 func routeTestBytes(t *testing.T, router *SessionInputRouter, data string) []byte {
 	t.Helper()
 	router.mu.Lock()
@@ -29,7 +28,11 @@ func routeTestBytes(t *testing.T, router *SessionInputRouter, data string) []byt
 	child := router.child
 	dashboard, toChild := router.routeEmbeddedLocked(false)
 	router.mu.Unlock()
-	writeChild(child, toChild)
+	if child != nil && len(toChild) > 0 {
+		if _, err := child.Write(toChild); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return dashboard
 }
 
@@ -207,7 +210,11 @@ func TestSessionInputRouterFlushesStandaloneEscape(t *testing.T) {
 	}
 	_, toChild := router.routeEmbeddedLocked(true)
 	router.mu.Unlock()
-	writeChild(child, toChild)
+	if child != nil && len(toChild) > 0 {
+		if _, err := child.Write(toChild); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if got := child.String(); got != "\x1b" {
 		t.Fatalf("standalone Escape = %q, want raw ESC", got)
 	}
@@ -222,32 +229,36 @@ func TestSessionInputRouterActivationDuringBlockedReadPreservesRawBytes(t *testi
 	defer writeFile.Close()
 
 	router := NewSessionInputRouter(readFile)
-	var child bytes.Buffer
+	child := newConnectingCapture()
 	result := make(chan []byte, 1)
 	go func() {
 		buf := make([]byte, 32)
-		n, _ := router.Read(buf)
-		result <- append([]byte(nil), buf[:n]...)
+		for {
+			n, err := router.Read(buf)
+			if n > 0 || err != nil {
+				result <- append([]byte(nil), buf[:n]...)
+				return
+			}
+		}
 	}()
 
 	// Activate after Read has entered its blocking syscall. A dashboard-owned
 	// compatibility reader used to consume and rewrite this first sequence.
 	time.Sleep(20 * time.Millisecond)
-	router.Activate(&child, terminalCellRect{Width: 80, Height: 24}, 0)
+	defer router.Deactivate()
+	router.Activate(child, terminalCellRect{Width: 80, Height: 24}, 0)
 	raw := "\x1b[13;2u"
-	if _, err := io.WriteString(writeFile, raw+"\x11"); err != nil {
+	if _, err := io.WriteString(writeFile, raw+"\x1b[98;7u"); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case dashboard := <-result:
-		if !bytes.Equal(dashboard, []byte{0x11}) {
-			t.Fatalf("dashboard bytes = %q, want Ctrl+Q", dashboard)
+		if !bytes.Equal(dashboard, []byte{embeddedSidebarToggleSignal}) {
+			t.Fatalf("dashboard bytes = %q, want sidebar signal", dashboard)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("router did not return detach key")
 	}
-	if child.String() != raw {
-		t.Fatalf("child bytes = %q, want exact raw sequence %q", child.String(), raw)
-	}
+	awaitConnectingBytes(t, child, raw)
 }

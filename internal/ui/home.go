@@ -860,6 +860,7 @@ type Home struct {
 	embeddedTerminal   *embeddedTerminal
 	embeddedRequest    terminal.AttachRequest
 	embeddedGeneration uint64
+	embeddedInput      *sessionInputQueue
 	// embeddedAppliedRect is the pane rectangle the child PTY was last sized
 	// to. Dashboard chrome (update nudge, maintenance banner) changes the pane
 	// without a WindowSizeMsg, so geometry is re-derived on those events and
@@ -6896,6 +6897,8 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Terminal reads may combine rapid printable keystrokes. Route them in
 	// order so a shortcut can open the text field that receives the tail.
 	// Bracketed paste and Alt input retain their original event semantics.
+	// Each single-rune recursive call goes through this same Update method,
+	// so the session-input receipt below is still acquired per keystroke.
 	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyRunes && len(key.Runes) > 1 && !key.Alt && !key.Paste {
 		var commands []tea.Cmd
 		for _, r := range key.Runes {
@@ -6906,6 +6909,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return h, tea.Sequence(commands...)
+	}
+	if input := h.sessionInput; input != nil {
+		receipt := input.InputReceipt(msg)
+		defer input.FinishInput(receipt)
 	}
 	defer h.recordFocusedSession()
 	model, cmd := h.updateInner(msg)
@@ -7134,6 +7141,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		return h, h.fetchPreview(inst, key, winIdx)
+
+	case embeddedInputErrorMsg:
+		if msg.generation == h.embeddedGeneration && msg.err != nil {
+			h.exitInsertMode()
+			h.setError(fmt.Errorf("embedded session input: %w", msg.err))
+		}
+		return h, nil
 
 	case embeddedStartMsg:
 		return h, h.installEmbeddedTerminal(msg)
@@ -23611,6 +23625,11 @@ func (h *Home) openEmbeddedSessionSwitcher(fromID string) {
 // stops tapping — the closest we can get to "commit on key release".
 func (h *Home) armSwitcherCommit() tea.Cmd {
 	gen := h.sessionSwitcher.bumpCommitGen()
+	if h.sessionSwitcher.embeddedOnAttach {
+		// A timer cannot acknowledge ownership of prefetched input. An
+		// embedded handoff requires the fenced Enter/Esc event instead.
+		return nil
+	}
 	return tea.Tick(switcherIdleCommit, func(time.Time) tea.Msg {
 		return switcherCommitMsg{gen: gen}
 	})
@@ -23644,7 +23663,7 @@ func (h *Home) selectSidebarSessionForSwitcher(id string) {
 // handleSwitcherCommit commits the highlighted session when the idle timer that
 // fired is the current one (no later keypress superseded it).
 func (h *Home) handleSwitcherCommit(msg switcherCommitMsg) tea.Cmd {
-	if !h.sessionSwitcher.IsVisible() || msg.gen != h.sessionSwitcher.commitGen {
+	if !h.sessionSwitcher.IsVisible() || h.sessionSwitcher.embeddedOnAttach || msg.gen != h.sessionSwitcher.commitGen {
 		return nil
 	}
 	return h.commitSessionSwitch()
@@ -23768,6 +23787,7 @@ func (h *Home) attachToSwitchTargetInMode(id string, embedded bool) tea.Cmd {
 //   - Up / Down: deliberate browsing. These cancel the pending auto-commit, so
 //     you stay in the switcher until you press Enter (or Esc).
 //
+// Embedded switchers require Enter/Esc and never use idle commit.
 // Enter attaches to the highlight. Esc, when the picker was opened from an
 // attached session, re-attaches to where you came from (you meant to switch,
 // not to leave); when opened from the overview it just closes. Ctrl+Q (the
