@@ -8015,12 +8015,15 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			remoteName := h.pendingRemoteName
 			name, path, command := h.newDialog.GetRemoteValues()
 			groupPath := h.newDialog.GetSelectedGroup()
+			// The sandbox checkbox applies to the remote too: the remote runs
+			// the container with its own Docker config and image.
+			sandbox := h.newDialog.IsSandboxEnabled()
 			// Remember the submitted tool for the next dialog open (UX top-3 #2).
 			rememberTool(h.stateDB(), command)
 			h.newDialog.Hide()
 			h.pendingRemoteName = ""
 			h.clearError()
-			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path, groupPath)
+			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path, groupPath, sandbox)
 		}
 
 		// Get values including worktree settings.
@@ -14126,7 +14129,7 @@ func (a attachCmd) SetStderr(w io.Writer) {}
 // createRemoteSession creates a new session on a remote and auto-attaches to it.
 // Used by quick-create (N): auto-generated name, remote defaults (shell).
 func (h *Home) createRemoteSession(remoteName string) tea.Cmd {
-	return h.createRemoteSessionWithOptions(remoteName, "", "", "", "")
+	return h.createRemoteSessionWithOptions(remoteName, "", "", "", "", false)
 }
 
 // remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
@@ -14136,6 +14139,7 @@ type remoteCreateAndAttachCmd struct {
 	title     string
 	path      string
 	group     string
+	sandbox   bool
 	createCtx context.Context
 	// onExit: same contract as attachCmd.onExit (#1753) — clear the attach flag
 	// while Bubble Tea's loop is still parked, so the first View() after resume
@@ -14165,7 +14169,7 @@ func (r remoteCreateAndAttachCmd) Run() error {
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Second)
 	defer cancel()
-	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path, r.group)
+	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path, r.group, r.sandbox)
 	if err != nil {
 		return err
 	}
@@ -14182,8 +14186,9 @@ func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
 // createRemoteSessionWithOptions creates a new session on a remote with an
 // explicit tool/title/path/group from the new-session dialog (#1353), then
 // auto-attaches to it. Empty values fall back to remote defaults (shell,
-// auto-generated name, remote CWD).
-func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, group string) tea.Cmd {
+// auto-generated name, remote CWD). sandbox forwards the dialog's Docker
+// sandbox checkbox so the remote creates the session with -sandbox.
+func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, group string, sandbox bool) tea.Cmd {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || config.Remotes == nil {
 		return func() tea.Msg {
@@ -14199,7 +14204,7 @@ func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, gro
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteCreateAndAttachCmd{
-		runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx,
+		runner: runner, tool: tool, title: title, path: path, group: group, sandbox: sandbox, createCtx: h.ctx,
 		// Clear the flag inside Run(), before Bubble Tea restores the terminal
 		// and resumes the loop (#1753); the callback below is only the belt for
 		// the path where Run() never executes.

@@ -174,6 +174,7 @@ func TestRemoteAddArgs(t *testing.T) {
 	cases := []struct {
 		name                     string
 		tool, title, path, group string
+		sandbox                  bool
 		want                     []string
 	}{
 		{
@@ -205,16 +206,26 @@ func TestRemoteAddArgs(t *testing.T) {
 			tool: "  ", title: " ", group: " ", path: " . ",
 			want: []string{"add", "--json", "--quick"},
 		},
+		{
+			name: "docker sandbox checkbox is forwarded before the path",
+			tool: "claude", title: "sandboxed", path: "/srv/project", sandbox: true,
+			want: []string{"add", "--json", "-t", "sandboxed", "-c", "claude", "-sandbox", "/srv/project"},
+		},
+		{
+			name: "docker sandbox with quick name and remote CWD",
+			tool: "claude", sandbox: true,
+			want: []string{"add", "--json", "--quick", "-c", "claude", "-sandbox"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := remoteAddArgs(tc.tool, tc.title, tc.path, tc.group)
+			got := remoteAddArgs(tc.tool, tc.title, tc.path, tc.group, tc.sandbox)
 			if len(got) != len(tc.want) {
-				t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
+				t.Fatalf("remoteAddArgs(%q,%q,%q,%q,%v) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, tc.sandbox, got, tc.want)
 			}
 			for i := range got {
 				if got[i] != tc.want[i] {
-					t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
+					t.Fatalf("remoteAddArgs(%q,%q,%q,%q,%v) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, tc.sandbox, got, tc.want)
 				}
 			}
 		})
@@ -236,7 +247,7 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 		},
 	}
 
-	id, err := runner.CreateSessionWithOptions(context.Background(), "codex", "Remote Work", "~/project", "work")
+	id, err := runner.CreateSessionWithOptions(context.Background(), "codex", "Remote Work", "~/project", "work", true)
 	if err != nil {
 		t.Fatalf("CreateSessionWithOptions unexpected error: %v", err)
 	}
@@ -247,7 +258,7 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 		t.Fatalf("calls = %v, want add and start", calls)
 	}
 	add := strings.Join(calls[0], " ")
-	for _, want := range []string{"add", "--json", "-t", "Remote Work", "-g", "work", "-c", "codex", "~/project"} {
+	for _, want := range []string{"add", "--json", "-t", "Remote Work", "-g", "work", "-c", "codex", "-sandbox", "~/project"} {
 		if !strings.Contains(add, want) {
 			t.Fatalf("remote add call = %q, want token %q", add, want)
 		}
@@ -276,7 +287,7 @@ func TestSSHRunnerCreateSessionWithOptions_QueuedStartIsNotAttachable(t *testing
 		},
 	}
 
-	_, err := runner.CreateSessionWithOptions(context.Background(), "claude", "", "", "")
+	_, err := runner.CreateSessionWithOptions(context.Background(), "claude", "", "", "", false)
 	if err == nil || !strings.Contains(err.Error(), "queued") {
 		t.Fatalf("CreateSessionWithOptions error = %v, want queued error", err)
 	}

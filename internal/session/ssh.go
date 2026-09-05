@@ -991,14 +991,16 @@ func remoteAttachTERM() string {
 
 // CreateSession creates and starts a quick new session on the remote, returning its ID.
 func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
-	return r.CreateSessionWithOptions(ctx, "", "", "", "")
+	return r.CreateSessionWithOptions(ctx, "", "", "", "", false)
 }
 
 // remoteAddArgs builds the `agent-deck add` argument list for creating a
 // session on a remote with explicit dialog values (#1353). Empty values fall
 // back to remote defaults: no -c means shell, no -t means --quick
 // (auto-generated name), and an empty or "." path means remote CWD.
-func remoteAddArgs(tool, title, path, group string) []string {
+// sandbox forwards the dialog's "Run in Docker sandbox" checkbox as -sandbox;
+// the image and other Docker settings come from the remote's own config.
+func remoteAddArgs(tool, title, path, group string, sandbox bool) []string {
 	args := []string{"add", "--json"}
 	if t := strings.TrimSpace(title); t != "" {
 		args = append(args, "-t", t)
@@ -1011,6 +1013,9 @@ func remoteAddArgs(tool, title, path, group string) []string {
 	if c := strings.TrimSpace(tool); c != "" {
 		args = append(args, "-c", c)
 	}
+	if sandbox {
+		args = append(args, "-sandbox")
+	}
 	if p := strings.TrimSpace(path); p != "" && p != "." {
 		args = append(args, p)
 	}
@@ -1018,11 +1023,11 @@ func remoteAddArgs(tool, title, path, group string) []string {
 }
 
 // CreateSessionWithOptions creates and starts a new session on the remote with
-// an explicit tool/title/path/group from the new-session dialog (#1353),
+// an explicit tool/title/path/group/sandbox from the new-session dialog (#1353),
 // returning its ID. Empty values fall back to remote defaults (see remoteAddArgs).
-func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, path, group string) (string, error) {
+func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, path, group string, sandbox bool) (string, error) {
 	// Step 1: Create the session
-	output, err := r.Run(ctx, remoteAddArgs(tool, title, path, group)...)
+	output, err := r.Run(ctx, remoteAddArgs(tool, title, path, group, sandbox)...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create remote session: %w", err)
 	}
