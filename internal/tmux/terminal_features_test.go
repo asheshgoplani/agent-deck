@@ -42,24 +42,24 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 	})
 	assert.Empty(t, present, "entry already present must produce no tmux write, got: %s", joined(present))
 
-	// Absent from a readable server: one whole-array set that keeps every
-	// existing entry, in order, and adds ours at the end.
+	// Absent from a readable server: a runtime conditional append. Foreign
+	// values are never copied into a whole-array write.
 	absent := terminalFeatureArgsFor(terminalFeatureState{known: true, values: tmuxDefaultFeatures})
 	assert.Equal(t,
-		"; set -sq terminal-features xterm*:clipboard:ccolour:cstyle:focus:title,screen*:title,rxvt*:ignorefkeys,*:hyperlinks:extkeys",
+		"; if-shell -F #{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0} set-option -asq terminal-features ,*:hyperlinks:extkeys",
 		joined(absent))
 
-	// An already-inflated server heals: the duplicates agent-deck created
-	// collapse to one, and nothing else is touched. This is what an existing
-	// user's server looks like on the first run after the fix.
+	// The ordinary option batch stays small even on an inflated server.
+	// Actual indexed cleanup runs separately through bounded stdin and is
+	// exercised by the real-server duplicate tests below.
 	inflated := append([]string{}, tmuxDefaultFeatures...)
 	for range 5000 {
 		inflated = append(inflated, agentDeckTerminalFeature)
 	}
 	healed := terminalFeatureArgsFor(terminalFeatureState{known: true, values: inflated})
 	assert.Equal(t,
-		"; set -sq terminal-features xterm*:clipboard:ccolour:cstyle:focus:title,screen*:title,rxvt*:ignorefkeys,*:hyperlinks:extkeys",
-		joined(healed), "5000 duplicates must collapse to one entry")
+		"; if-shell -F #{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0} set-option -asq terminal-features ,*:hyperlinks:extkeys",
+		joined(healed), "the option batch must not carry a stale array snapshot")
 	// The healing write must stay small: an argv carrying the 5,003-entry value
 	// back would be ~220 KB and can exceed ARG_MAX on macOS, which is exactly
 	// the platform the leak was reported on.
@@ -75,7 +75,7 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 	// is not the whole truth. Never rewrite the array then: append if our entry
 	// is missing, do nothing if it is there.
 	unsafe := []string{"xterm*:title,screen*:title", "rxvt*:ignorefkeys"}
-	assert.Equal(t, "; set -asq terminal-features ,*:hyperlinks:extkeys",
+	assert.Equal(t, joined(absent),
 		joined(terminalFeatureArgsFor(terminalFeatureState{known: true, values: unsafe})))
 	assert.Empty(t, terminalFeatureArgsFor(terminalFeatureState{
 		known:  true,
@@ -96,11 +96,11 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 func TestClassifyTerminalFeatures(t *testing.T) {
 	// A clean exit with no output is an EMPTY array, not an unreadable one —
 	// `set -s terminal-features ""` produces exactly this, and the right answer
-	// is to set our entry rather than blind-append to it.
+	// is a guarded append rather than a write from an unreadable state.
 	empty := classifyTerminalFeatures(nil, nil)
 	assert.True(t, empty.known, "clean exit with no output is an empty array, not unknown")
 	assert.Empty(t, empty.values)
-	assert.Equal(t, "; set -sq terminal-features *:hyperlinks:extkeys",
+	assert.Equal(t, "; if-shell -F #{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0} set-option -asq terminal-features ,*:hyperlinks:extkeys",
 		strings.Join(terminalFeatureArgsFor(empty), " "))
 
 	// No server / unknown option / a client killed at its deadline: unknown.
@@ -121,17 +121,15 @@ func TestClassifyTerminalFeatures(t *testing.T) {
 		"empty body under WaitDelay must not be mistaken for an empty array")
 }
 
-func TestPlanTerminalFeatures_PreservesOrder(t *testing.T) {
-	desired, changed := planTerminalFeatures([]string{
-		"a:x", agentDeckTerminalFeature, "b:y", agentDeckTerminalFeature, "c:z",
-	})
-	require.True(t, changed)
-	assert.Equal(t, []string{"a:x", agentDeckTerminalFeature, "b:y", "c:z"}, desired,
-		"the first occurrence keeps its position; later copies drop out")
-
-	same, changed := planTerminalFeatures([]string{"a:x", agentDeckTerminalFeature})
-	assert.False(t, changed)
-	assert.Equal(t, []string{"a:x", agentDeckTerminalFeature}, same)
+func TestTerminalFeatureCleanupScriptRejectsInvalidAndRepeatedIndices(t *testing.T) {
+	for _, indexed := range []string{
+		"terminal-features[3] " + agentDeckTerminalFeature + "\nterminal-features[3] " + agentDeckTerminalFeature,
+		"terminal-features[-1] " + agentDeckTerminalFeature + "\nterminal-features[3] " + agentDeckTerminalFeature,
+		"terminal-features[2147483648] " + agentDeckTerminalFeature + "\nterminal-features[3] " + agentDeckTerminalFeature,
+		"terminal-features[0; set -g @injected yes] " + agentDeckTerminalFeature + "\nterminal-features[3] " + agentDeckTerminalFeature,
+	} {
+		assert.Empty(t, terminalFeatureCleanupScript([]byte(indexed)), "no second valid unique owned index: %q", indexed)
+	}
 }
 
 // startPrivateTmuxServer boots a tmux server on a socket NAME that exists only
@@ -277,7 +275,7 @@ func TestTerminalFeatures_UnsafeInflatedServerNeverGrows(t *testing.T) {
 	}
 	inflated := readTerminalFeatures(socket)
 	require.True(t, inflated.known)
-	require.False(t, safeToRewriteTerminalFeatures(inflated.values),
+	require.False(t, canCleanTerminalFeatures(inflated.values),
 		"pre-condition: the indexed comma entry must make the array unsafe to rewrite, got: %v", inflated.values)
 	require.Equal(t, inflation, countTerminalFeature(inflated.values),
 		"pre-condition: the historical append must have grown the array")

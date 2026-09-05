@@ -2200,10 +2200,10 @@ func isSocketAcceptingConnections(socketPath string) bool {
 //
 // terminal-features is a server-wide ARRAY, so it gets its own treatment: the
 // `-a` (append) form grew it by one item on every pass and never shrank
-// (#2061). terminalFeatures supplies the chunk that makes agent-deck's entry
-// present exactly once, and is consulted only when the user has not overridden
-// the key — it costs a tmux read, so the override gate must come first. A nil
-// func emits nothing.
+// (#2061). terminalFeatures performs guarded cleanup and supplies a conditional
+// append, subject to the conservative limits documented in terminal_features.go.
+// It can read and mutate server options, so the override gate must come first.
+// A nil func emits nothing.
 func gatedTmuxKeyOptionArgs(name string, overrides map[string]string, terminalFeatures func() []string) []string {
 	args := make([]string, 0, 20)
 	if _, ok := overrides["escape-time"]; !ok {

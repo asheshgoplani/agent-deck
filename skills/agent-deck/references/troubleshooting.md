@@ -198,10 +198,14 @@ Two things matter about where the damage lives:
   downgrading or upgrading agent-deck changes nothing while the server keeps
   running, and why nobody notices the cause — restarting the tmux server would
   destroy every live agent session.
-- The fix for #2061 both stops the growth and collapses the duplicates the next
-  time agent-deck configures a session on that server, so upgrading past
-  v1.15.0 is enough — but only once the new binary is the one running sessions.
-  While an old binary is still driving them, the array keeps growing.
+- The fix for #2061 checks membership on the server before appending and
+  removes duplicates with guarded indexed deletions when configuring a session.
+  Another client's appended or changed entries are preserved. Cleanup is
+  conservative: comma-bearing or blank values leave existing duplicates alone,
+  and concurrent changes or a timeout may leave work for a later pass. See the
+  [configuration reference](config-reference.md) for the unusual embedded-space
+  membership limitation. The new binary must be the one running sessions;
+  while an old binary is still driving them, the array keeps growing.
 
 To reset the array immediately, without restarting the server:
 

@@ -1,7 +1,11 @@
 package tmux
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -44,7 +48,7 @@ func readTerminalFeatures(socketName string) terminalFeatureState {
 // A clean exit with NO output is a real answer: the array is empty, which is
 // what `set -s terminal-features ""` leaves behind. It must not be confused
 // with "we could not read", because the two demand opposite actions — an empty
-// array should be SET to our entry, while an unreadable array is never written.
+// array may receive a guarded append, while an unreadable array is never written.
 //
 // Any error is "could not read", and that includes exec.ErrWaitDelay with
 // bytes already in the buffer. Under the WaitDelay contract (see
@@ -66,94 +70,80 @@ func classifyTerminalFeatures(out []byte, err error) terminalFeatureState {
 	return terminalFeatureState{values: strings.Split(body, "\n"), known: true}
 }
 
-// terminalFeatureArgsFor is the pure decision: given what the server currently
-// holds, what (if anything) must be written so that agentDeckTerminalFeature is
-// present EXACTLY ONCE. The returned chunk is ";"-prefixed so callers can chain
-// it onto a set-option in the same tmux command; nil means "nothing to do".
+// terminalFeatureArgsFor keeps the cheap no-op paths, but membership is checked
+// again by the server before appending. if-shell -F and its nonwaiting set-option
+// branch run in the same client command queue, so two stale readers cannot both
+// append an entry that was absent when they read.
 //
-// This is the #2061 fix. `set -as terminal-features ,<value>` appends a new
-// array item every time it runs, with no membership check, and the option lives
-// on the long-lived tmux SERVER — so every repeat of agent-deck's per-session
-// setup (a new spawn, a fresh process, a TUI storage reload, a control-client
-// respawn that lands another EnsureConfigured pass) added one more copy for the
-// life of that server. Reporters measured 5,018 entries / 219.8 KB after weeks
-// of uptime, and a live server at 36,355. tmux consults the array on terminal
-// setup and on every capability lookup, and `*` matches every terminal, so the
-// duplicates show up as progressive display corruption.
-//
-// The rule is: never write blind. Both callers address a server that already
-// exists — Session.Start's option batch runs as its own tmux command AFTER
-// new-session has created the session, and EnableMouseMode runs against a live
-// session — so an unreadable array means the server is wedged, gone, or too old
-// to have the option, and an append would be lost, refused, or a no-op
-// respectively. The next pass that CAN read decides. A blind append here was the
-// last unconditional write on this path: against a server whose reads
-// persistently failed (a tmux wrapper that leaks stdout, say) it would have
-// grown the array by one per pass, which is #2061 again by another door.
+// tmux formats flatten arrays with spaces. A foreign value embedding our literal
+// between spaces can therefore conservatively suppress the append. That ambiguity
+// must never authorize deletion or reconstruction of another client's value.
 func terminalFeatureArgsFor(st terminalFeatureState) []string {
 	if !st.known {
 		return nil
 	}
-
-	desired, changed := planTerminalFeatures(st.values)
-	if !changed {
+	count := countTerminalFeature(st.values)
+	if count == 1 || (count > 1 && !canCleanTerminalFeatures(st.values)) {
 		return nil
 	}
-	if !safeToRewriteTerminalFeatures(st.values) {
-		// The array holds something we cannot express as one comma-joined
-		// value, so rewriting it could corrupt or drop a user entry. changed
-		// can be true here for two reasons, and only one of them gets a write:
-		//
-		//   - our entry is ABSENT: fall back to the historical append. Still
-		//     bounded, because the next read finds it present. `-q` keeps a
-		//     tmux too old for the option quiet, as before.
-		//   - our entry is DUPLICATED: do nothing. The duplicates cannot be
-		//     collapsed without the rewrite, and appending would add one more
-		//     copy per pass forever — #2061 again, on the one server shape
-		//     this fallback exists for.
-		if countTerminalFeature(st.values) > 0 {
-			return nil
-		}
-		return []string{";", "set", "-asq", "terminal-features", "," + agentDeckTerminalFeature}
-	}
-	return []string{";", "set", "-sq", "terminal-features", strings.Join(desired, ",")}
+	return []string{";", "if-shell", "-F",
+		"#{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0}",
+		"set-option -asq terminal-features ," + agentDeckTerminalFeature}
 }
 
-// planTerminalFeatures returns the array agent-deck wants: every existing entry
-// in its existing order, with agentDeckTerminalFeature present exactly once.
-// changed reports whether that differs from current.
+// terminalFeatureCleanupScript removes only exact owned entries at their actual
+// indices. Each deletion rechecks both the retained and candidate entries on the
+// server. A concurrent replacement survives, and removing the retained entry
+// prevents cleanup from deleting the last remaining owned copy.
 //
-// Only OUR entry is ever collapsed. Duplicates of anything else are left alone:
-// agent-deck did not create them, and a server option is shared with the user's
-// own tmux config.
-func planTerminalFeatures(current []string) (desired []string, changed bool) {
-	desired = make([]string, 0, len(current)+1)
-	seen := false
-	for _, v := range current {
-		if v == agentDeckTerminalFeature {
-			if seen {
-				changed = true
-				continue
-			}
-			seen = true
+// Only validated decimal indices and fixed literals enter tmux command syntax.
+// stdin keeps argv bounded even for thousands of duplicates; no user values are
+// copied into this script and no whole-array assignment is generated.
+func terminalFeatureCleanupScript(indexed []byte) string {
+	indices := make([]int, 0)
+	seen := make(map[int]bool)
+	for _, line := range strings.Split(string(indexed), "\n") {
+		name, value, ok := strings.Cut(line, " ")
+		if !ok || value != agentDeckTerminalFeature ||
+			!strings.HasPrefix(name, "terminal-features[") || !strings.HasSuffix(name, "]") {
+			continue
 		}
-		desired = append(desired, v)
+		digits := strings.TrimSuffix(strings.TrimPrefix(name, "terminal-features["), "]")
+		index, err := strconv.ParseUint(digits, 10, 31)
+		if err != nil || seen[int(index)] {
+			continue
+		}
+		seen[int(index)] = true
+		indices = append(indices, int(index))
 	}
-	if !seen {
-		desired = append(desired, agentDeckTerminalFeature)
-		changed = true
+	if len(indices) < 2 {
+		return ""
 	}
-	return desired, changed
+	sort.Ints(indices)
+	var script strings.Builder
+	for _, index := range indices[1:] {
+		fmt.Fprintf(&script,
+			"if-shell -F '#{&&:#{==:#{terminal-features[%d]},%s},#{==:#{terminal-features[%d]},%s}}' 'set-option -suq terminal-features[%d]'\n",
+			indices[0], agentDeckTerminalFeature, index, agentDeckTerminalFeature, index)
+	}
+	return script.String()
 }
 
-// safeToRewriteTerminalFeatures reports whether the array can be rewritten with
-// a single `set -s terminal-features "a,b,c"` without losing information.
-//
-// A value carrying a comma would come back as two array items, and an empty
-// value cannot be round-tripped at all. Neither is a shape tmux itself produces
-// for this option (entries are `<term-glob>:<feature>[:<feature>…]`), so hitting
-// either means our read is not the whole truth — leave the array alone.
-func safeToRewriteTerminalFeatures(values []string) bool {
+func runTerminalFeatureCleanup(socketName, script string) error {
+	if script == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxPollTimeout)
+	defer cancel()
+	cmd := tmuxExecContext(ctx, socketName, "source-file", "-")
+	cmd.Stdin = strings.NewReader(script)
+	return cmd.Run()
+}
+
+// canCleanTerminalFeatures retains the original conservative cleanup gate:
+// comma-bearing or blank values leave existing duplicates untouched. Cleanup no
+// longer rewrites any array; even safe arrays use guarded indexed deletions.
+func canCleanTerminalFeatures(values []string) bool {
 	for _, v := range values {
 		if strings.TrimSpace(v) == "" || strings.Contains(v, ",") {
 			return false
@@ -162,54 +152,26 @@ func safeToRewriteTerminalFeatures(values []string) bool {
 	return true
 }
 
-// terminalFeatureArgs returns the ";"-prefixed tmux argument chunk that makes
-// agent-deck's terminal-features entry present exactly once on this session's
-// server, or nil when there is nothing to do.
-//
-// Every pass asks the server, and deliberately caches nothing across passes.
-// The obvious optimisation — remember per socket that this process already saw
-// the entry, and skip the read — is wrong, and wrong in a way that is silent and
-// permanent: a tmux socket NAME is not a tmux server IDENTITY. The server on
-// `-L agent-deck` exits when its last session closes (or crashes), and the next
-// session starts a brand-new server under that same name. A process-lifetime
-// memo keyed on the socket would report "already settled" for the replacement
-// server and never write the entry to it, so hyperlinks and extended keys would
-// stay off there until agent-deck itself restarted. That is #2061's defect
-// pointing the other way — writing unconditionally leaks, skipping on stale
-// state never writes, and both fail silently.
-//
-// Keying such a memo on a server identity (its pid or start time) instead of
-// the socket name does not rescue it: learning the identity is itself a tmux
-// round trip, and `show-options` IS that round trip with the answer attached.
-// A memo could only pay for itself by trusting something it cannot verify. The
-// read is one bounded `show-options` on a cold path (session creation, or the
-// once-per-process deferred configuration pass), which is the honest price of
-// being right; it replaces the write the old code issued on the same pass.
+// terminalFeatureArgs deliberately reads the current server on every pass. A
+// socket name may refer to a replacement server, so process-lifetime memoization
+// cannot establish that its terminal features are configured.
 func (s *Session) terminalFeatureArgs() []string {
 	st := readTerminalFeatures(s.SocketName)
-	args := terminalFeatureArgsFor(st)
-	if isTerminalFeaturesRewrite(args) {
-		if dupes := countTerminalFeature(st.values) - 1; dupes > 0 {
-			// Collapsing an already-inflated server. Worth a log line: this is
-			// the state that produced the reported display corruption, and the
-			// count is the only evidence a support thread can quote. Gated on
-			// the whole-array rewrite, not merely on "something was written":
-			// the append fallback never collapses anything, and a log claiming
-			// it did would send a support thread the wrong way.
-			statusLog.Info("terminal_features_collapsed",
-				slog.String("socket", s.SocketName),
-				slog.Int("duplicates_removed", dupes),
-				slog.Int("entries_before", len(st.values)))
+	if !st.known {
+		return nil
+	}
+	if countTerminalFeature(st.values) > 1 && canCleanTerminalFeatures(st.values) {
+		indexed, err := runBoundedOutput(s.SocketName, "show-options", "-s", "terminal-features")
+		if err != nil {
+			return nil // Partial indexed reads must not authorize cleanup.
+		}
+		if err := runTerminalFeatureCleanup(s.SocketName, terminalFeatureCleanupScript(indexed)); err != nil {
+			// Guards can skip candidates and timeouts can interrupt cleanup;
+			// neither a plan nor a successful client exit proves a removal count.
+			statusLog.Debug("terminal_features_cleanup_failed", slog.Any("error", err))
 		}
 	}
-	return args
-}
-
-// isTerminalFeaturesRewrite reports whether args is the whole-array
-// `set -sq terminal-features …` chunk from terminalFeatureArgsFor — the only
-// write that can remove entries.
-func isTerminalFeaturesRewrite(args []string) bool {
-	return len(args) >= 3 && args[1] == "set" && args[2] == "-sq"
+	return terminalFeatureArgsFor(st)
 }
 
 // countTerminalFeature counts occurrences of agent-deck's entry in values.
