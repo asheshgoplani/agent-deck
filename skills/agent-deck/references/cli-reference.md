@@ -105,6 +105,8 @@ agent-deck list [--json] [--all]
 agent-deck ls  # Alias
 ```
 
+Both JSON forms always include `account`: the exact stored per-session slot, including an empty string when no slot is explicitly stored. Human tables show the slot in a quoted `ACCOUNT` column, escaping controls. This is stored metadata, not a resolved account or login identity.
+
 ### remove - Remove session
 
 ```bash
@@ -230,6 +232,7 @@ Auto-detects current session if no ID provided.
 
 **JSON output includes:**
 - Session details (id, title, status, path, group, tool)
+- `account`: the exact stored slot, always present including an empty string. Human output shows a quoted, control-escaped `Account:` field; neither form resolves login identity.
 - Claude/Gemini session ID
 - Attached MCPs (local, global, project)
 - tmux session name
