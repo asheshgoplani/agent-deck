@@ -50,6 +50,7 @@ func BuildMenuSnapshot(profile string, instances []*session.Instance, groupsData
 					Expanded:     expanded,
 					Order:        item.Group.Order,
 					SessionCount: groupTree.SessionCountForGroup(item.Group.Path),
+					DefaultPath:  item.Group.DefaultPath,
 				},
 			})
 			continue

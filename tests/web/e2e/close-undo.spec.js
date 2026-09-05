@@ -100,10 +100,13 @@ test.describe('non-destructive close + undo delete', () => {
     await page.goto('/')
     await page.waitForSelector('.sess', { timeout: 5000 })
 
-    // Focus a session row (sess-002 = "frontend", running) via keyboard nav.
-    // Move focus down to the 2nd session entry.
+    // Focus a session row via keyboard nav. Rows are interleaved group
+    // headers and sessions, so the first `j` lands on the `work` group
+    // header and the second lands on its first session (sess-001,
+    // "agent-deck", idle).
     await page.keyboard.press('j')
     await page.keyboard.press('j')
+    await page.waitForSelector('.sess.sel', { timeout: 2000 })
 
     // Press Shift+D. A confirm dialog appears; accept it.
     await page.keyboard.press('Shift+D')

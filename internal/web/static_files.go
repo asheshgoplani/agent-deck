@@ -57,7 +57,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
-	if path != "/" && !strings.HasPrefix(path, "/s/") {
+	if path != "/" && !strings.HasPrefix(path, "/s/") && !strings.HasPrefix(path, "/g/") {
 		http.NotFound(w, r)
 		return
 	}

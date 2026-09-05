@@ -106,6 +106,9 @@ function reasoningEffortsForTool(tool) {
 }
 
 export function CreateSessionDialog() {
+  const open = createSessionDialogSignal.value
+  const ctx = open || { groupPath: '', groupName: '', defaultPath: '', tool: '', modelId: '' }
+
   const [title, setTitle] = useState('')
   const [tool, setTool] = useState('claude')
   const [modelId, setModelId] = useState('')
@@ -114,6 +117,35 @@ export function CreateSessionDialog() {
   const [path, setPath] = useState('')
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [seededFor, setSeededFor] = useState(null)
+
+  // Tools actually offered by the picker (operator-filtered via hidden_tools /
+  // show_only_installed_tools). Computed before the seeding effect below so
+  // the seed can be checked against it — see next comment.
+  const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
+
+  // Re-seed when the dialog opens for a different group. Keyed on groupPath so
+  // SSE-driven re-renders never stomp edits the user is in the middle of, and
+  // reopening on another group does not inherit the previous group's values.
+  if (open && seededFor !== ctx.groupPath) {
+    // Only seed a tool the picker actually shows: an operator-hidden tool
+    // (e.g. `claude` filtered via hidden_tools) must never seed a selection
+    // no button reflects, which used to submit an invisible/wrong tool on
+    // create (review finding #2). Fall back to the first shown tool.
+    const seedTool = shownTools.includes(ctx.tool) ? ctx.tool : shownTools[0]
+    setTool(seedTool)
+    setPath(ctx.defaultPath || '')
+    // Only prefill a model the catalog recognizes: an unknown id would render
+    // as a blank <select> and, on submit, become an explicit per-session
+    // override (see resolveClaudeLaunchModel, internal/session/claude.go:611).
+    const known = (MODEL_ID_CATALOG[seedTool] || []).some(m => m.value === ctx.modelId)
+    setModelId(known ? ctx.modelId : '')
+    setCustomModel('')
+    setReasoningEffort('')
+    setTitle('')
+    setError(null)
+    setSeededFor(ctx.groupPath)
+  }
 
   // WEB-P0-4 prevention layer: when mutations are disabled (server
   // webMutations=false), do not render the dialog at all. Hooks order is
@@ -126,11 +158,12 @@ export function CreateSessionDialog() {
     setSubmitting(true)
     try {
       const payload = { title, tool, projectPath: path }
+      if (ctx.groupPath) payload.groupPath = ctx.groupPath
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
       if (reasoningEffort) payload.reasoningEffort = reasoningEffort
       await apiFetch('POST', '/api/sessions', payload)
-      createSessionDialogSignal.value = false
+      createSessionDialogSignal.value = null
     } catch (err) {
       setError(err.message)
     } finally {
@@ -150,11 +183,10 @@ export function CreateSessionDialog() {
     return modelId || ''
   }
 
-  const close = () => (createSessionDialogSignal.value = false)
+  const close = () => (createSessionDialogSignal.value = null)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
   const reasoningEfforts = reasoningEffortsForTool(tool)
-  const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
@@ -169,9 +201,15 @@ export function CreateSessionDialog() {
           </button>
         </div>
         <div class="db">
+          ${ctx.groupName && html`
+            <div class="field">
+              <label>GROUP</label>
+              <div class="ro-value" data-testid="create-session-group">${ctx.groupName}</div>
+            </div>
+          `}
           <div class="field">
-            <label>TITLE</label>
-            <input autofocus required value=${title} onInput=${e => setTitle(e.target.value)} placeholder="my-session"/>
+            <label>NAME</label>
+            <input autofocus required value=${title} onInput=${e => setTitle(e.target.value)} placeholder="session-name"/>
           </div>
           <div class="field">
             <label>WORKING DIR</label>

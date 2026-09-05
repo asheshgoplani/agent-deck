@@ -7,7 +7,7 @@
 // Preserves existing dialog + toast components (still Tailwind-classed) so
 // no functional regression. Restyling those is a follow-up.
 import { html } from 'htm/preact'
-import { useEffect } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { Topbar } from './Topbar.js'
 import { Sidebar } from './Sidebar.js'
 import { Footer } from './Footer.js'
@@ -25,10 +25,13 @@ import { SearchPane } from './panes/SearchPane.js'
 import { McpPane } from './panes/McpPane.js'
 import { SkillsPane } from './panes/SkillsPane.js'
 import { Icon, ICONS } from './icons.js'
-import { menuModelSignal } from './dataModel.js'
 import {
-  selectedIdSignal, createSessionDialogSignal, confirmDialogSignal,
-  groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
+  menuModelSignal, sidebarRowsSignal, isGroupOpen, toggleGroupOpen,
+  openCreateSessionForGroup, currentGroupPath,
+} from './dataModel.js'
+import {
+  selectedIdSignal, selectedGroupSignal, selectSession, selectGroup, createSessionDialogSignal, confirmDialogSignal,
+  groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal, editSessionDialogSignal, toastHistoryOpenSignal,
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
   hiddenToolsSignal, pickerToolsSignal,
@@ -36,10 +39,8 @@ import {
 } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
-  railSignal, profileSignal,
+  railSignal, profileSignal, groupExpandedSignal,
 } from './uiState.js'
-import { CreateSessionDialog } from './CreateSessionDialog.js'
-import { EditSessionDialog } from './EditSessionDialog.js'
 import { ConfirmDialog } from './ConfirmDialog.js'
 import { GroupNameDialog } from './GroupNameDialog.js'
 import { ToastContainer, addToast } from './Toast.js'
@@ -50,14 +51,32 @@ import { apiFetch, authHeaders } from './api.js'
 import { shortcutsOverlaySignal } from './state.js'
 
 function WorkHead() {
-  const { sessions } = menuModelSignal.value
+  const { sessions, groups } = menuModelSignal.value
   const selected = selectedIdSignal.value
+  const selectedGroup = selectedGroupSignal.value
+  const profile = profileSignal.value || ''
+  const canMutate = mutationsEnabledSignal.value
+
+  // A selected group owns the head: never fall through to sessions[0], which
+  // would render an unrelated session's controls above the group stats.
+  if (selectedGroup) {
+    const group = groups.find(g => g.path === selectedGroup)
+    return html`
+      <div class="work-head" data-testid="work-head-group">
+        <div class="path">
+          <span class="kind">GROUP</span>
+          ${profile && html`<span class="seg">${profile} /</span>`}
+          <span class="cur">${group ? group.name : selectedGroup}</span>
+        </div>
+        <span class="spacer"/>
+      </div>
+    `
+  }
+
   const session = sessions.find(s => s.id === selected) || sessions[0]
   if (!session) return null
 
   const kindLabel = (session.kind || 'agent').toUpperCase()
-  const profile = profileSignal.value || ''
-  const canMutate = mutationsEnabledSignal.value
   const modelLabel = session.model
     ? `${session.model}${session.modelVersion ? ` ${session.modelVersion}` : ''}`
     : ''
@@ -86,7 +105,7 @@ function WorkHead() {
             : html`<button class="btn ghost" onClick=${() => action('start')}><${Icon} d=${ICONS.play} size=${12}/>Start</button>`}
           <button class="btn ghost" onClick=${() => action('restart')}><${Icon} d=${ICONS.restart} size=${12}/>Restart</button>
           ${session.canFork && html`<button class="btn" onClick=${() => action('fork')}><${Icon} d=${ICONS.fork} size=${12}/>Fork</button>`}
-          <button class="btn primary" onClick=${() => (createSessionDialogSignal.value = true)}>
+          <button class="btn primary" onClick=${() => openCreateSessionForGroup(session.group || '')}>
             <${Icon} d=${ICONS.plus} size=${12}/>New <span class="kbd">n</span>
           </button>
         </div>
@@ -99,21 +118,67 @@ function WorkHead() {
 // when another tab is active. This preserves the xterm.js + WebSocket lifecycle
 // across tab switches; unmounting would trigger a reconnect storm and lose
 // scrollback. Other panes are cheap enough to mount/unmount on demand.
+// The group stats panel and its data module are only reachable once a viewer
+// selects a group, so they are fetched on demand rather than shipped in the
+// initial payload -- the page is under a hard total-byte-weight budget
+// (.lighthouserc.json) that this feature crossed (PR #2047 review, item 5).
+// Same approach the Costs route already uses for chart.umd (issue #1022).
+// Generic on-demand module loader for view code that is not needed at first
+// paint. Keeps the module out of the initial payload; the promise is cached so
+// repeated opens fetch once, and a failed fetch resets it so a later attempt
+// retries. Same approach the Costs route uses for chart.umd (issue #1022).
+function useLazyComponent(needed, loader, cacheKey, pick) {
+  const [Comp, setComp] = useState(null)
+  useEffect(() => {
+    if (!needed || Comp) return
+    let alive = true
+    lazyCache[cacheKey] = lazyCache[cacheKey] || loader()
+    lazyCache[cacheKey]
+      .then(m => { if (alive) setComp(() => pick(m)) })
+      .catch(() => { lazyCache[cacheKey] = null })
+    return () => { alive = false }
+  }, [needed, Comp])
+  return Comp
+}
+const lazyCache = {}
+
+function useLazyGroupStatsPanel(needed) {
+  return useLazyComponent(needed, () => import('./GroupStatsPanel.js'), 'groupPanel', m => m.GroupStatsPanel)
+}
+
+// Keys that still work while an overlay is open. `?` toggles the shortcuts
+// overlay, so it must be able to close the thing it opens; `q` exists to
+// dismiss modals; `]` toggles the rail. Escape is handled earlier, before the
+// in-field guard. Everything else is blocked -- see the gate in onKey.
+const OVERLAY_PASSTHROUGH_KEYS = new Set(['?', 'q', ']'])
+
 function Panes({ tab }) {
+  // A selected GROUP takes over the work area regardless of which tab is
+  // active. The group panel is not a tab, and housing it inside the terminal
+  // pane meant a /g/{path} link had to mutate activeTabSignal just to be
+  // visible -- which then stomped session-scoped pane choices like Skills
+  // (PR #2047 review, item 1). Nulling the tab here hides every tab pane,
+  // including the terminal, without unmounting TerminalPane: xterm and its
+  // WebSocket stay alive behind the panel, so returning to a session does not
+  // reconnect or lose scrollback.
+  const groupPath = selectedGroupSignal.value
+  const t = groupPath ? null : tab
+  const GroupPanel = useLazyGroupStatsPanel(!!groupPath)
   return html`
-    <div style=${{ display: tab === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+    <div style=${{ display: t === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
       <${TerminalPane}/>
     </div>
-    ${tab === 'command-center' && html`<${CommandCenterPane}/>`}
-    ${tab === 'fleet'     && html`<${FleetPane}/>`}
-    ${tab === 'costs'     && html`<${CostsPane}/>`}
-    ${tab === 'search'    && html`<${SearchPane}/>`}
-    ${tab === 'archived'  && html`<${ArchivedPane}/>`}
-    ${tab === 'mcp'       && html`<${McpPane}/>`}
-    ${tab === 'skills'    && html`<${SkillsPane}/>`}
-    ${tab === 'conductor' && html`<${StubPane} title="Conductor"
+    ${groupPath && GroupPanel && html`<${GroupPanel} path=${groupPath}/>`}
+    ${t === 'command-center' && html`<${CommandCenterPane}/>`}
+    ${t === 'fleet'     && html`<${FleetPane}/>`}
+    ${t === 'costs'     && html`<${CostsPane}/>`}
+    ${t === 'search'    && html`<${SearchPane}/>`}
+    ${t === 'archived'  && html`<${ArchivedPane}/>`}
+    ${t === 'mcp'       && html`<${McpPane}/>`}
+    ${t === 'skills'    && html`<${SkillsPane}/>`}
+    ${t === 'conductor' && html`<${StubPane} title="Conductor"
                               message="Conductor orchestration view is TUI-only. The web API does not expose child topology, bridges, or NEED escalation."/>`}
-    ${tab === 'watchers'  && html`<${StubPane} title="Watchers"
+    ${t === 'watchers'  && html`<${StubPane} title="Watchers"
                               message="Watcher framework events are routed in the backend; the web API does not surface event streams or routing config."/>`}
   `
 }
@@ -121,6 +186,14 @@ function Panes({ tab }) {
 export function AppShell() {
   const activeTab = activeTabSignal.value
   const showCreateSession = createSessionDialogSignal.value
+  // Dialog code is never needed at first paint -- fetched when first opened.
+  const CreateSessionDialogLazy = useLazyComponent(
+    !!showCreateSession, () => import('./CreateSessionDialog.js'), 'createDialog', m => m.CreateSessionDialog)
+  // Same case: EditSessionDialog is dialog-only and was eagerly imported.
+  // Deferring it keeps this PR's net first-paint weight comfortably under the
+  // budget rather than sitting on the line (PR #2047 review, item 5).
+  const EditSessionDialogLazy = useLazyComponent(
+    !!editSessionDialogSignal.value, () => import('./EditSessionDialog.js'), 'editDialog', m => m.EditSessionDialog)
   const confirmData = confirmDialogSignal.value
   const groupNameData = groupNameDialogSignal.value
   const drawerOpen = infoDrawerOpenSignal.value
@@ -206,38 +279,87 @@ export function AppShell() {
   // Guard: any key that isn't a modal-bound modifier combo must NOT fire
   // while the user is typing in an input/textarea/select/contenteditable.
   useEffect(() => {
-    // Navigate selectedIdSignal by `delta` (+1 or -1) through the flat
-    // session list from menuModelSignal. Stable across SSE updates because
-    // we resolve by ID, not by array index in a possibly-stale snapshot.
-    const moveFocus = (delta) => {
-      const sessions = (menuModelSignal.value?.sessions) || []
-      if (sessions.length === 0) return
-      const curId = selectedIdSignal.value
-      let idx = sessions.findIndex(s => s.id === curId)
-      if (idx === -1) idx = delta > 0 ? -1 : sessions.length
-      const next = sessions[Math.max(0, Math.min(sessions.length - 1, idx + delta))]
-      if (next) {
-        // Only change the selected id; do NOT switch to the terminal tab on
-        // j/k navigation. Activating the terminal hands focus to xterm.js,
-        // which swallows subsequent keypresses (issue #780 review).
-        // The TUI's `enter` key is what opens; j/k just moves focus.
-        selectedIdSignal.value = next.id
+    // Scroll the newly selected row into view. Rows carry data-row-key
+    // matching sidebarRowsSignal keys (Sidebar.js).
+    const revealRow = (key) => {
+      const el = document.querySelector(`[data-row-key="${CSS.escape(key)}"]`)
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'nearest' })
       }
     }
+
+    // Move the selection by `delta` through the sidebar's RENDERED rows —
+    // group headers included, collapse state and filters honored. Walking
+    // the raw session array (the previous behavior) could land on a row
+    // hidden inside a collapsed group or filtered off screen.
+    const moveFocus = (delta) => {
+      const rows = sidebarRowsSignal.value
+      if (rows.length === 0) return
+
+      const groupPath = selectedGroupSignal.value
+      const sessionId = selectedIdSignal.value
+      let idx = -1
+      if (groupPath) idx = rows.findIndex(r => r.type === 'group' && r.path === groupPath)
+      else if (sessionId) idx = rows.findIndex(r => r.type === 'session' && r.id === sessionId)
+      if (idx === -1) idx = delta > 0 ? -1 : rows.length
+
+      const next = rows[Math.max(0, Math.min(rows.length - 1, idx + delta))]
+      if (!next) return
+      // Only move the selection; do NOT switch to the terminal tab. Activating
+      // the terminal hands focus to xterm.js, which swallows later keypresses
+      // (issue #780 review). Enter is what opens.
+      if (next.type === 'group') selectGroup(next.path)
+      else selectSession(next.id)
+      revealRow(next.key)
+    }
+
+    // Collapse/expand the focused group. Mirrors the TUI's h/left and
+    // l/right/tab (internal/ui/home.go:999, :8786). No-op unless a group is
+    // actually selected. Routes through the shared toggleGroupOpen (review
+    // finding #7) — a toggle is equivalent to a forced set here because the
+    // current state is checked first, so this keeps its own "did a group
+    // exist to act on" return value that ArrowLeft/ArrowRight rely on for
+    // preventDefault.
+    const setGroupOpen = (open) => {
+      const p = selectedGroupSignal.value
+      if (!p) return false
+      if (isGroupOpen(groupExpandedSignal.value, p) !== open) toggleGroupOpen(p)
+      return true
+    }
+
     const focusedSession = () => {
       const sessions = (menuModelSignal.value?.sessions) || []
       const id = selectedIdSignal.value
-      return sessions.find(s => s.id === id) || sessions[0] || null
+      if (!id) return null
+      return sessions.find(s => s.id === id) || null
     }
     const closeAllModals = () => {
       paletteOpenSignal.value = false
       tweaksOpenSignal.value = false
       shortcutsOverlaySignal.value = false
-      createSessionDialogSignal.value = false
+      createSessionDialogSignal.value = null
+      editSessionDialogSignal.value = null
       confirmDialogSignal.value = null
       groupNameDialogSignal.value = null
       infoDrawerOpenSignal.value = false
+      toastHistoryOpenSignal.value = false
     }
+    // Every overlay/modal signal closeAllModals resets, kept as one list so
+    // this predicate and closeAllModals cannot drift apart (review finding
+    // #1). Anything here must block keyboard shortcuts — like the group
+    // Tab-toggle below — that would otherwise fire invisibly behind an open
+    // dialog.
+    const anyOverlayOpen = () => !!(
+      paletteOpenSignal.value ||
+      tweaksOpenSignal.value ||
+      shortcutsOverlaySignal.value ||
+      createSessionDialogSignal.value ||
+      editSessionDialogSignal.value ||
+      confirmDialogSignal.value ||
+      groupNameDialogSignal.value ||
+      infoDrawerOpenSignal.value ||
+      toastHistoryOpenSignal.value
+    )
     const onKey = (e) => {
       const t = e.target
       const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
@@ -254,6 +376,16 @@ export function AppShell() {
         return
       }
       if (inField) return
+
+      // An open overlay owns the keyboard. Without this, `j`/`k` moved the
+      // sidebar selection, `Enter` opened a session, and `n` stacked a second
+      // dialog -- all behind an open ConfirmDialog, whose focused element is a
+      // <button>, so the inField guard above never applied.
+      //
+      // Deliberately an allow-list rather than a blanket `return`: blocking
+      // everything would make `?` unable to close the overlay it opens and
+      // turn `q` into a no-op exactly when it is needed.
+      if (anyOverlayOpen() && !OVERLAY_PASSTHROUGH_KEYS.has(e.key)) return
 
       // Shift+Enter: open focused session in new browser tab (web equivalent
       // of the TUI's iTerm "new tab" affordance, issue #1077). Check this
@@ -273,19 +405,29 @@ export function AppShell() {
       } else if (e.key === '/') {
         e.preventDefault()
         document.querySelector('.side-filter input')?.focus()
-      } else if (e.key === 'j') {
+      } else if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault(); moveFocus(+1)
-      } else if (e.key === 'k') {
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault(); moveFocus(-1)
-      } else if (e.key === 'Enter') {
+      } else if (e.key === 'ArrowLeft' || e.key === 'h') {
+        if (setGroupOpen(false)) e.preventDefault()
+      } else if (e.key === 'ArrowRight' || e.key === 'l') {
+        if (setGroupOpen(true)) e.preventDefault()
+      } else if (e.key === 'Enter')  {
+        if (selectedGroupSignal.value) {
+          e.preventDefault()
+          toggleGroupOpen(selectedGroupSignal.value)
+          return
+        }
         const s = focusedSession()
         if (s) {
           e.preventDefault()
-          selectedIdSignal.value = s.id
+          selectSession(s.id)
           activeTabSignal.value = 'terminal'
         }
       } else if (e.key === 'n' && mutationsEnabledSignal.value) {
-        createSessionDialogSignal.value = true
+        e.preventDefault()
+        openCreateSessionForGroup(currentGroupPath())
       } else if (e.key === 'r') {
         // Web has no session-rename API yet (matrix gap); surface the gap
         // honestly instead of silently no-op'ing.
@@ -350,8 +492,8 @@ export function AppShell() {
       <${Footer}/>
       <${MobileTabs}/>
 
-      ${showCreateSession && html`<${CreateSessionDialog}/>`}
-      <${EditSessionDialog}/>
+      ${showCreateSession && CreateSessionDialogLazy && html`<${CreateSessionDialogLazy}/>`}
+      ${EditSessionDialogLazy && html`<${EditSessionDialogLazy}/>`}
       ${confirmData && html`<${ConfirmDialog} ...${confirmData}/>`}
       ${groupNameData && html`<${GroupNameDialog} ...${groupNameData}/>`}
 

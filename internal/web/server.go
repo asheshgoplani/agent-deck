@@ -216,6 +216,7 @@ func NewServer(cfg Config) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/s/", s.handleIndex)
+	mux.HandleFunc("/g/", s.handleIndex)
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
 	mux.HandleFunc("/sw.js", s.handleServiceWorker)
 	mux.Handle("/static/", gzipAndCacheStatic(http.StripPrefix("/static/", s.staticFileServer())))

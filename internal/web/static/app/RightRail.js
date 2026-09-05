@@ -14,7 +14,7 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
 import { menuModelSignal } from './dataModel.js'
-import { selectedIdSignal } from './state.js'
+import { selectedIdSignal, selectedGroupSignal } from './state.js'
 import { rightRailPanelsSignal } from './uiState.js'
 
 // Module-scope signal so collapsed state survives RightRail re-mounts
@@ -120,8 +120,25 @@ function ChildrenTree({ rootId, sessions }) {
 export function RightRail() {
   const { sessions } = menuModelSignal.value
   const selected = selectedIdSignal.value
-  const session = sessions.find(s => s.id === selected) || sessions[0]
+  const selectedGroup = selectedGroupSignal.value
   const panels = rightRailPanelsSignal.value
+
+  // The rail is session-scoped; a selected group has no session to describe.
+  // Say so instead of falling back to sessions[0].
+  if (selectedGroup) {
+    return html`
+      <div class="rightrail" data-testid="right-rail">
+        <div class="rail-head"><span class="t">SESSION</span></div>
+        <div class="rail-body">
+          <div style="padding: 18px; font-family: var(--mono); font-size: 11px; color: var(--muted);">
+            group selected — pick a session to see its details
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  const session = sessions.find(s => s.id === selected) || sessions[0]
 
   if (!session) {
     return html`
