@@ -278,7 +278,6 @@ func main() {
 		// resolve consistently across all command paths in this process.
 		_ = os.Setenv("AGENTDECK_PROFILE", profile)
 	}
-
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer
@@ -378,6 +377,10 @@ func main() {
 			handleSkill(profile, args[1:])
 			return
 		case "mcp-proxy":
+			if helpRequested(args[1:]) {
+				fmt.Println("Usage: agent-deck mcp-proxy <socket-path>")
+				return
+			}
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "Usage: agent-deck mcp-proxy <socket-path>")
 				os.Exit(1)
@@ -483,6 +486,10 @@ func main() {
 			handleCredsRefresh(args[1:])
 			return
 		case "debug-dump":
+			if helpRequested(args[1:]) {
+				fmt.Println("Usage: agent-deck debug-dump")
+				return
+			}
 			handleDebugDump()
 			return
 		}
@@ -1039,23 +1046,25 @@ func main() {
 	}
 }
 
-// globalFlagSubcommands lists every token that main()'s dispatch switch treats
+// commandRegistry lists every token that main()'s dispatch switch treats
 // as a subcommand. extractProfileFlag stops honoring the global -p/--profile
 // flag once it reaches one of these, so a subcommand that defines its own -p
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
-var globalFlagSubcommands = map[string]bool{
-	"add": true, "list": true, "ls": true, "remove": true, "rm": true,
+var commandRegistry = map[string]bool{
+	"add": true, "accounts": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
-	"session": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
+	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
+	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
 	"remote": true, "worktree": true, "wt": true, "costs": true, "web": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true, "telemetry": true,
-	"debug-dump": true, "version": true, "help": true,
+	"debug-dump": true, "version": true, "--version": true, "-v": true,
+	"help": true, "--help": true, "-h": true,
 }
 
 // extractProfileFlag extracts the global -p or --profile flag from args,
@@ -1077,7 +1086,7 @@ func extractProfileFlag(args []string) (string, []string) {
 
 		// Reached the subcommand: global flag parsing is over. Everything from
 		// here belongs to the subcommand, which may define its own -p.
-		if globalFlagSubcommands[arg] {
+		if commandRegistry[arg] {
 			remaining = append(remaining, args[i:]...)
 			return profile, remaining
 		}
@@ -2343,6 +2352,10 @@ func handleList(profile string, args []string) {
 			Color             string    `json:"color,omitempty"` // issue #391
 			Archived          bool      `json:"archived"`
 			ArchivedAt        time.Time `json:"archived_at,omitempty"`
+			// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
+			// apply the local recency filter (session.TimeFilterMode) to this
+			// session, the same way it applies to a local one.
+			LastActivityAt string `json:"last_activity_at,omitempty"`
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -2371,6 +2384,7 @@ func handleList(profile string, args []string) {
 				Color:             inst.Color,
 				Archived:          inst.IsArchived(),
 				ArchivedAt:        inst.ArchivedAt,
+				LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name

@@ -48,10 +48,11 @@ func TestHooksInstallHelpDoesNotInstall(t *testing.T) {
 func TestHooksBareHelpPrintsUsageWithoutSideEffects(t *testing.T) {
 	home := setupHooksHelpTest(t)
 
-	out := captureStdout(t, func() { handleHooks([]string{"--help"}) })
+	out := captureStdout(t, func() { handleHooks([]string{"help"}) })
 
-	if !strings.Contains(out, "Usage: agent-deck hooks") {
-		t.Fatalf("expected usage output; got:\n%s", out)
+	if !strings.Contains(out, "Usage: agent-deck hooks <help|install|uninstall|status>") ||
+		!strings.Contains(out, "  help         Show this help") {
+		t.Fatalf("hooks help did not document its accepted help subcommand:\n%s", out)
 	}
 	assertNoClaudeHooksInstalled(t, home)
 }

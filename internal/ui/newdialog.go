@@ -1008,6 +1008,7 @@ func knownModelIDsForTool(tool string) []string {
 		return []string{
 			"claude-opus-5",
 			"claude-sonnet-5",
+			"claude-fable-5-1",
 			"claude-fable-5",
 			"claude-sonnet-4-6",
 			"claude-opus-4-8",
@@ -1038,6 +1039,7 @@ func knownModelIDsForTool(tool string) []string {
 			"openai/o3",
 			"anthropic/claude-opus-5",
 			"anthropic/claude-sonnet-5",
+			"anthropic/claude-fable-5-1",
 			"anthropic/claude-fable-5",
 			"anthropic/claude-sonnet-4-6",
 			"anthropic/claude-opus-4-8",

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -563,4 +564,40 @@ func TestHomebrewUpgradeHint(t *testing.T) {
 			assert.Equal(t, tt.wantHint, hint)
 		})
 	}
+}
+
+// installFakeGh writes an executable `gh` shell script into a temp dir and
+// prepends that dir to PATH so resolveGitHubToken's fallback runs it.
+func installFakeGh(t *testing.T, script string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh shell script requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\n"+script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	return dir
+}
+
+func TestResolveGitHubToken_OnlyUsesGithubComScopedGhToken(t *testing.T) {
+	t.Run("passes --hostname github.com", func(t *testing.T) {
+		dir := installFakeGh(t, `echo "$@" >> "$(dirname "$0")/args"; echo tok`)
+		assert.Equal(t, "tok", resolveGitHubToken())
+		argv, err := os.ReadFile(filepath.Join(dir, "args"))
+		require.NoError(t, err)
+		assert.Equal(t, "auth token --hostname github.com", strings.TrimSpace(string(argv)))
+	})
+
+	t.Run("GHE-only gh yields no token", func(t *testing.T) {
+		// Mimics gh on a machine whose hosts.yml only knows an enterprise
+		// host: the hostless form returns the enterprise token, the
+		// github.com-scoped form fails.
+		installFakeGh(t, `case " $* " in
+  *" --hostname github.com "*) echo "no oauth token found for github.com" >&2; exit 1 ;;
+  *) echo ghe_fake_token ;;
+esac`)
+		assert.Equal(t, "", resolveGitHubToken())
+	})
 }
