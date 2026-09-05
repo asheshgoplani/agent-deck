@@ -232,25 +232,6 @@ func resolveLocksDirForSpawnLock() (string, error) {
 	return dataPath("locks", "locks")
 }
 
-// Legacy standalone reclamation cannot safely participate in the new guard.
-// Kept for old callers/tests; acquisition reclaims versioned owners under guard.
-func reclaimStaleInstanceSpawnLock(path string) bool { return false }
-
-func parseInstanceSpawnLockPID(content string) (int, error) {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		return 0, fmt.Errorf("empty marker")
-	}
-	var pid int
-	if _, err := fmt.Sscanf(trimmed, "%d", &pid); err != nil {
-		return 0, err
-	}
-	if pid <= 0 {
-		return 0, fmt.Errorf("invalid pid %d", pid)
-	}
-	return pid, nil
-}
-
 // Status never waits on a lifecycle operation. Both status and upgraded
 // lifecycle callers hold the stable guard throughout marker ownership.
 func tryTerminatedStatusCommit(instanceID string) (func(), bool) {
