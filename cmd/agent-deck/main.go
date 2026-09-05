@@ -285,6 +285,7 @@ func main() {
 	// a prompt and would otherwise fail closed under the "prompt" default.
 	// Remote arguments belong to the server, including its script-consent flag.
 	if len(args) > 0 && args[0] == "remote" {
+		recordCLITelemetry(args[0], args[1:])
 		handleRemote(profile, args[1:])
 		return
 	}
@@ -326,7 +327,6 @@ func main() {
 
 	// Handle subcommands
 	if len(args) > 0 {
-		recordCLITelemetry(args[0], args[1:])
 		switch args[0] {
 		case "telemetry":
 			handleTelemetry(args[1:])
