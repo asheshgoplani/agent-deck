@@ -39,28 +39,15 @@ func TestWriteGeneratedFileOrMigrateReplacesInodeAndRejectsUnsafeTargets(t *test
 		}
 	})
 
-	for _, kind := range []string{"directory", "symlink"} {
-		t.Run(kind, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "managed")
-			if kind == "directory" {
-				if err := os.Mkdir(path, 0o755); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				target := filepath.Join(dir, "target")
-				if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(target, path); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
-				t.Fatal("unsafe target silently accepted")
-			}
-		})
-	}
+	t.Run("directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "managed")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
+			t.Fatal("directory target silently accepted")
+		}
+	})
 }
 
 func TestWriteGeneratedFileOrMigratePreservesEditedAndNewerAssets(t *testing.T) {
@@ -80,7 +67,7 @@ func TestWriteGeneratedFileOrMigratePreservesEditedAndNewerAssets(t *testing.T) 
 	}
 }
 
-func TestWriteGeneratedFileOrMigrateRollbackCleansTemporaryFile(t *testing.T) {
+func TestWriteGeneratedFileOrMigrateExchangeFailureCleansTemporaryFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "managed")
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
@@ -133,36 +120,6 @@ func TestWriteGeneratedFileOrMigratePublishesOnlyCompleteContent(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if string(after) != newContent {
 		t.Fatal("observer did not see complete replacement")
-	}
-}
-
-func TestWriteGeneratedFileOrMigrateRestoresEditAtPublication(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "managed")
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	originalExchange := exchangeGeneratedFiles
-	first := true
-	exchangeGeneratedFiles = func(from, to string) error {
-		if first {
-			first = false
-			if err := os.WriteFile(to, []byte("user edited"), 0o644); err != nil {
-				return err
-			}
-		}
-		return exchangeGeneratedFile(from, to)
-	}
-	t.Cleanup(func() { exchangeGeneratedFiles = originalExchange })
-	if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
-		t.Fatal("expected concurrent-edit error")
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "user edited" {
-		t.Fatalf("concurrent edit clobbered: got %q", got)
 	}
 }
 

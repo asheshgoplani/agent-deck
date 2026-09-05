@@ -1406,12 +1406,13 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 
 // exchangeGeneratedFiles atomically swaps two pathnames. After the exchange,
 // the temporary pathname holds the displaced destination, which lets the
-// caller validate (and, if necessary, restore) the exact file it replaced.
+// caller validate and retain the exact file it replaced for recovery.
 var exchangeGeneratedFiles = exchangeGeneratedFile
 
 // writeGeneratedFileOrMigrate creates a generated file when absent and upgrades
 // it only when its contents exactly match the previous generated template.
-// Edited regular files remain user-owned; non-regular targets are rejected.
+// Edited files and existing symlinks remain user-owned. Migration retains the
+// displaced inode so an editor with an open descriptor cannot lose its writes.
 func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMode) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -1420,8 +1421,11 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 	if err != nil {
 		return err
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("refusing to replace unsafe generated-file target %s (%s)", path, info.Mode().Type())
+		return fmt.Errorf("refusing to replace unsafe generated-file target %q (%s)", path, info.Mode().Type())
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -1431,14 +1435,14 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 		return nil
 	}
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".previous-*")
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
-	keepTemp := true
+	exchanged := false
 	defer func() {
-		if keepTemp {
+		if !exchanged {
 			_ = os.Remove(tmpPath)
 		}
 	}()
@@ -1479,20 +1483,23 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 	if err := exchangeGeneratedFiles(tmpPath, path); err != nil {
 		return fmt.Errorf("replace generated target: %w", err)
 	}
-	displacedInfo, statErr := os.Lstat(tmpPath)
-	displaced, readErr := os.ReadFile(tmpPath)
-	if statErr != nil || readErr != nil || !displacedInfo.Mode().IsRegular() ||
-		!os.SameFile(info, displacedInfo) || !matchesTemplateContent(string(displaced), previous) {
-		// An edit landed after the last recheck. Swap it back atomically; the
-		// generated replacement returns to tmpPath and is removed by the defer.
-		if restoreErr := exchangeGeneratedFiles(tmpPath, path); restoreErr != nil {
-			// Do not delete the only copy of the displaced user file.
-			keepTemp = false
-			return fmt.Errorf("generated target changed during publication; displaced file preserved at %s (restore: %w)", tmpPath, restoreErr)
-		}
-		return fmt.Errorf("generated target was edited during publication: %s", path)
-	}
+	// From this point tmpPath belongs to the displaced inode, which may still
+	// have an editor writing through an open descriptor. Never unlink it.
+	exchanged = true
 	fsyncDir(dir)
+	displacedInfo, statErr := os.Lstat(tmpPath)
+	var displaced []byte
+	var readErr error
+	if statErr == nil && displacedInfo.Mode().IsRegular() {
+		displaced, readErr = os.ReadFile(tmpPath)
+	}
+	if statErr != nil || !displacedInfo.Mode().IsRegular() || readErr != nil ||
+		!os.SameFile(info, displacedInfo) || !matchesTemplateContent(string(displaced), previous) {
+		// A second exchange could overwrite a newer visible edit. Keep both
+		// paths and make the publication conflict actionable instead.
+		return fmt.Errorf("generated target %q changed during publication; publication occurred, displaced file retained at %q for reconciliation", path, tmpPath)
+	}
+	sessionLog.Info("generated_instructions_migrated", slog.String("path", path), slog.String("previous_path", tmpPath))
 	return nil
 }
 
