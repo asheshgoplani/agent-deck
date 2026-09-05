@@ -3,6 +3,7 @@ package tmux
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // SessionState represents the detected state of a session
@@ -769,9 +770,11 @@ func StripANSI(content string) string {
 			i = j
 			continue
 		}
-		// Regular character - copy to output
-		b.WriteByte(content[i])
-		i++
+		// Copy a whole UTF-8 character so a continuation byte such as 0x9B
+		// cannot be mistaken for a standalone 8-bit CSI introducer.
+		_, size := utf8.DecodeRuneInString(content[i:])
+		b.WriteString(content[i : i+size])
+		i += size
 	}
 
 	return b.String()
