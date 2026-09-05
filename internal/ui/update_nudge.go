@@ -28,6 +28,8 @@ func (h *Home) shouldRenderUpdateNudge() bool {
 // the handler is idempotent either way.
 func (h *Home) handleUpdateNudgeDismiss(_ tea.KeyMsg) {
 	h.updateNudgeDismissed = true
+	// Dismissing the banner gives its row back to the embedded pane.
+	h.syncEmbeddedTerminalGeometry()
 }
 
 // renderUpdateNudgeText builds the user-visible banner string. Kept as a

@@ -796,6 +796,12 @@ type Home struct {
 	embeddedTerminal   *embeddedTerminal
 	embeddedRequest    terminal.AttachRequest
 	embeddedGeneration uint64
+	// embeddedAppliedRect is the pane rectangle the child PTY was last sized
+	// to. Dashboard chrome (update nudge, maintenance banner) changes the pane
+	// without a WindowSizeMsg, so geometry is re-derived on those events and
+	// on the embedded refresh tick, and only a changed rectangle reaches the
+	// PTY as a resize.
+	embeddedAppliedRect terminalCellRect
 	// embeddedSidebarHidden maximizes the PTY inside the dashboard while
 	// preserving the previous sidebar width for the next restore.
 	embeddedSidebarHidden bool
@@ -6937,6 +6943,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !h.embeddedMode {
 			return h, nil
 		}
+		// Backstop for chrome that changes without an explicit message (the
+		// nudge's own dismissal rules, a debug bar): a no-op when nothing moved.
+		h.syncEmbeddedTerminalGeometry()
 		inst, key, winIdx := h.selectedPreviewTarget()
 		if inst == nil || key == "" {
 			remoteName, remoteSessionID, remoteKey, ok := h.selectedRemotePreviewTarget()
@@ -7753,6 +7762,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			h.updateInfo = msg.info
 		}
+		// The nudge banner takes a row from the embedded pane.
+		h.syncEmbeddedTerminalGeometry()
 		return h, nil
 
 	case remoteFetchRoundMsg:
@@ -7992,6 +8003,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(parts) > 0 {
 			h.maintenanceMsg = "Maintenance: " + strings.Join(parts, ", ") + fmt.Sprintf(" (%s)", r.Duration.Round(time.Millisecond))
 			h.maintenanceMsgTime = time.Now()
+			// The banner takes a row from the embedded pane.
+			h.syncEmbeddedTerminalGeometry()
 			// Auto-clear after 30 seconds
 			return h, tea.Tick(30*time.Second, func(_ time.Time) tea.Msg {
 				return clearMaintenanceMsg{}
@@ -8142,6 +8155,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearMaintenanceMsg:
 		h.maintenanceMsg = ""
+		h.syncEmbeddedTerminalGeometry()
 		return h, nil
 
 	case feedbackSentMsg:
