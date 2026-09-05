@@ -50,10 +50,12 @@ const (
 	SettingShowPaneTitles
 	SettingShowOnlyInstalledTools
 	SettingVisibleTools
+	SettingEmbeddedTerminal
+	SettingSidebarDensity
 )
 
 // Total number of navigable settings.
-const settingsCount = 34
+const settingsCount = 36
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -104,6 +106,8 @@ type SettingsPanel struct {
 	showSessionTimestamps  bool
 	showPaneTitles         bool
 	showOnlyInstalledTools bool
+	embeddedLayout         bool
+	sidebarDensity         int // index into sidebarDensityValues
 	pendingToolVisibility  bool
 
 	// Text input state
@@ -136,6 +140,28 @@ var (
 	themeValues = []string{"dark", "light", "system"}
 )
 
+// Embedded sidebar density names for radio selection. Index order must match
+// sidebarDensityValues.
+var (
+	sidebarDensityNames  = []string{"Full", "Compact", "Minimal", "Auto"}
+	sidebarDensityValues = []string{
+		session.SidebarDensityFull,
+		session.SidebarDensityCompact,
+		session.SidebarDensityMinimal,
+		session.SidebarDensityAuto,
+	}
+)
+
+// defaultSidebarDensityIndex is the radio index of session.DefaultSidebarDensity.
+func defaultSidebarDensityIndex() int {
+	for i, val := range sidebarDensityValues {
+		if val == session.DefaultSidebarDensity {
+			return i
+		}
+	}
+	return 0
+}
+
 // Stats format names for radio selection
 var (
 	statsFormatNames  = []string{"Compact", "Full", "Minimal"}
@@ -163,6 +189,8 @@ func NewSettingsPanel() *SettingsPanel {
 		statsShowRAM:        true,
 		statsShowDisk:       true,
 		statsShowNetwork:    true,
+		embeddedLayout:      false,
+		sidebarDensity:      defaultSidebarDensityIndex(),
 	}
 }
 
@@ -339,7 +367,15 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.showSessionTimestamps = config.Display.ShowSessionTimestamps
 	s.showPaneTitles = config.Display.ShowPaneTitles
 
-	// UI tool picker settings
+	// UI settings
+	s.embeddedLayout = config.UI.GetEmbeddedTerminal()
+	s.sidebarDensity = defaultSidebarDensityIndex()
+	for i, val := range sidebarDensityValues {
+		if val == config.UI.GetSidebarDensity() {
+			s.sidebarDensity = i
+			break
+		}
+	}
 	s.showOnlyInstalledTools = config.UI.ShowOnlyInstalledTools
 }
 
@@ -476,7 +512,12 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Display.ShowSessionTimestamps = s.showSessionTimestamps
 	config.Display.ShowPaneTitles = s.showPaneTitles
 
-	// UI tool picker settings
+	// UI settings
+	embeddedLayout := s.embeddedLayout
+	config.UI.EmbeddedTerminal = &embeddedLayout
+	if s.sidebarDensity >= 0 && s.sidebarDensity < len(sidebarDensityValues) {
+		config.UI.SidebarDensity = sidebarDensityValues[s.sidebarDensity]
+	}
 	config.UI.ShowOnlyInstalledTools = s.showOnlyInstalledTools
 
 	// Preserve original MCPs, Tools, and Docker settings.
@@ -649,6 +690,13 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 			s.statsFormat = newVal
 			changed = true
 		}
+
+	case SettingSidebarDensity:
+		newVal := s.sidebarDensity + delta
+		if newVal >= 0 && newVal < len(sidebarDensityNames) {
+			s.sidebarDensity = newVal
+			changed = true
+		}
 	}
 
 	return changed
@@ -750,6 +798,16 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingShowOnlyInstalledTools:
 		s.showOnlyInstalledTools = !s.showOnlyInstalledTools
+		return true
+
+	case SettingEmbeddedTerminal:
+		s.embeddedLayout = !s.embeddedLayout
+		return true
+
+	case SettingSidebarDensity:
+		// Space cycles the radio group, so the density is reachable without
+		// remembering that h/l adjust multi-value settings.
+		s.sidebarDensity = (s.sidebarDensity + 1) % len(sidebarDensityNames)
 		return true
 	}
 
@@ -1149,6 +1207,24 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
+	// INTERFACE
+	content.WriteString(sectionStyle.Render("INTERFACE"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox("Embedded terminal", s.embeddedLayout) + " - Persistent sidebar with an interactive tmux pane (applies at next launch)"
+	if s.cursor == int(SettingEmbeddedTerminal) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = "Sidebar density: " + s.renderRadioGroup(sidebarDensityNames, s.sidebarDensity, s.cursor == int(SettingSidebarDensity))
+	if s.cursor == int(SettingSidebarDensity) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(dimStyle.Render("    Lines per session in the embedded sidebar: 3 / 2 / 1 (1 keeps the tool marker)") + "\n")
+	content.WriteString(dimStyle.Render("    Auto: the most lines that still fit every open session on screen") + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1216,6 +1292,8 @@ func (s *SettingsPanel) View() string {
 			58, // SettingShowPaneTitles (DISPLAY section, after timestamps)
 			61, // SettingShowOnlyInstalledTools (TOOL PICKER section)
 			62, // SettingVisibleTools
+			65, // SettingEmbeddedTerminal (INTERFACE section)
+			66, // SettingSidebarDensity
 		}
 		cursorLine := cursorToLine[s.cursor]
 

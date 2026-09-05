@@ -21,6 +21,20 @@ func TestBuildAttachCommand_WithSocket(t *testing.T) {
 	}
 }
 
+// The embedded client asks for tmux's global -u so a dashboard launched under
+// a non-UTF-8 locale still renders non-ASCII output; the flag precedes the
+// socket and the attach verb exactly as internal/tmux/pty.go orders it.
+func TestBuildAttachCommand_ForceUTF8(t *testing.T) {
+	got := BuildAttachCommand(AttachRequest{Name: "myproj", SocketName: "agentdeck", ForceUTF8: true})
+	want := "tmux -u -L 'agentdeck' attach -t 'myproj'"
+	if got != want {
+		t.Fatalf("BuildAttachCommand mismatch:\n got=%q\nwant=%q", got, want)
+	}
+	if got := BuildAttachCommand(AttachRequest{Name: "myproj", ForceUTF8: true}); got != "tmux -u attach -t 'myproj'" {
+		t.Fatalf("BuildAttachCommand without socket = %q", got)
+	}
+}
+
 func TestBuildAttachCommand_EmptyNameReturnsEmpty(t *testing.T) {
 	if got := BuildAttachCommand(AttachRequest{}); got != "" {
 		t.Fatalf("expected empty string for empty name, got %q", got)

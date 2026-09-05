@@ -92,6 +92,12 @@ const (
 	// At 2s: 2-5 CapturePane() calls/sec = minimal CPU overhead
 	tickInterval = 2 * time.Second
 
+	// hoverDividerTTL bounds how long the divider's hover highlight may survive
+	// without a mouse event confirming it. Checked on the 2s tick, so expiry
+	// lands 3-5s after the last confirmation — far past any approach-and-click
+	// pause, and short enough that a stranded highlight reads as transient.
+	hoverDividerTTL = 3 * time.Second
+
 	// logOutputDebounce limits how often a single session can trigger
 	// UpdateStatus() from tmux %output events.
 	// A higher value avoids expensive status parsing loops for very chatty sessions
@@ -329,6 +335,10 @@ type Home struct {
 	initialSelectDone   bool                  // Guard so preselection only fires once
 	previewMode         PreviewMode           // What to show in preview pane (both, output-only, analytics-only)
 	groupViewMode       session.GroupViewMode // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
+	sidebarMode         sidebarPresentation   // Session navigation: grouped (default) or flat
+	compactSidebar      bool                  // Narrow session rail; manual split resizing opts out
+	embeddedLayout      bool                  // Embedded terminal layout; false preserves classic interaction
+	sidebarDensity      string                // Embedded sidebar rows per session: full (3), compact (2), minimal (1), auto
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
 	isReloading         bool       // Visual feedback during auto-reload
@@ -544,6 +554,8 @@ type Home struct {
 	previewPct          int       // 10-90, default 65
 	previewPctOverlayAt time.Time // when to hide the split overlay (zero = hidden)
 	draggingDivider     bool      // true while the mouse is dragging the Sessions/Preview divider
+	hoverDivider        bool      // true while the mouse rests on the divider's grab zone
+	hoverDividerAt      time.Time // when hoverDivider was last confirmed by a mouse event
 
 	// previewOrientation places the PREVIEW pane "right" (side-by-side) or
 	// "below" (stacked) on wide terminals. Loaded from config.toml [ui]
@@ -687,7 +699,25 @@ type Home struct {
 	// focused session's tmux pane instead of being interpreted as TUI
 	// commands. Toggled with `I` (enter) and `Esc` (exit).
 	insertMode          bool
+	embeddedMode        bool
 	insertModeSessionID string
+	// Full-fidelity embedded session state. Production wires sessionInput and
+	// sessionOutput from main; package tests that omit them keep exercising the
+	// legacy capture/send-keys path until their focused seam is migrated.
+	sessionInput       *SessionInputRouter
+	sessionOutput      *SessionOutput
+	embeddedTerminal   *embeddedTerminal
+	embeddedRequest    terminal.AttachRequest
+	embeddedGeneration uint64
+	// embeddedAppliedRect is the pane rectangle the child PTY was last sized
+	// to. Dashboard chrome (update nudge, maintenance banner) changes the pane
+	// without a WindowSizeMsg, so geometry is re-derived on those events and
+	// on the embedded refresh tick, and only a changed rectangle reaches the
+	// PTY as a resize.
+	embeddedAppliedRect terminalCellRect
+	// embeddedSidebarHidden maximizes the PTY inside the dashboard while
+	// preserving the previous sidebar width for the next restore.
+	embeddedSidebarHidden bool
 	// insertKeySink is an optional override used by tests to capture keys
 	// without running real tmux. When nil, keys are sent via the session's
 	// tmux pane (SendKeys / SendEnter).
@@ -715,6 +745,7 @@ type Home struct {
 	// insertModeSessionID instead.
 	insertModeRemoteName string
 	insertModeRemoteID   string
+	sessionExists        func(*session.Instance) bool
 
 	// Insert-mode keystroke batching (#1094). Per-keystroke tmux send-keys
 	// invocations are too slow when typing fast. Runes are accumulated in
@@ -729,6 +760,7 @@ type Home struct {
 	// after an insert keystroke (#1131). Only one tick is in flight at a time;
 	// see scheduleInsertPreviewRefresh.
 	insertPreviewRefreshPending bool
+	embeddedRefreshPending      bool
 	// openInNewWindowSink is an optional override used by tests to capture
 	// Shift+Enter dispatches without spawning a real iTerm2 window. When
 	// nil, the dispatch calls terminal.OpenSessionInNewWindow directly.
@@ -774,6 +806,9 @@ type uiState struct {
 	// status filter above. Nested rather than flat-keyed so a remote name or
 	// group path containing "/" cannot alias another bucket (see remoteOrder).
 	RemoteSessionOrder map[string]map[string][]string `json:"remote_session_order,omitempty"`
+
+	SidebarMode            string `json:"sidebar_mode,omitempty"`
+	SidebarWidthCustomized bool   `json:"sidebar_width_customized,omitempty"`
 }
 
 type selectedItemIdentity struct {
@@ -1145,6 +1180,12 @@ type deletedSessionEntry struct {
 // user can opt into the stacked (PREVIEW-below) layout via
 // preview_orientation = "below"; narrow terminals always stack.
 func (h *Home) getLayoutMode() string {
+	if h.embeddedMode {
+		if h.width < layoutBreakpointStacked {
+			return LayoutModeStacked
+		}
+		return LayoutModeDual
+	}
 	switch {
 	case h.width < layoutBreakpointSingle:
 		return LayoutModeSingle
@@ -1528,6 +1569,10 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
 		cursor:                    0,
+		sidebarMode:               sidebarGrouped,
+		compactSidebar:            false,
+		embeddedLayout:            false,
+		sidebarDensity:            session.DefaultSidebarDensity,
 		initialLoading:            true, // Show splash until sessions load
 		ctx:                       ctx,
 		cancel:                    cancel,
@@ -1592,6 +1637,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()
 		h.previewOrientation = cfg.UI.GetPreviewOrientation()
+		h.embeddedLayout = cfg.UI.GetEmbeddedTerminal()
+		h.compactSidebar = h.embeddedLayout
+		h.sidebarDensity = cfg.UI.GetSidebarDensity()
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
 		h.footerMode = cfg.UI.GetFooter()
@@ -1602,6 +1650,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(nil, actualProfile)
 		h.previewPct = session.DefaultPreviewPct
 		h.previewOrientation = session.DefaultPreviewOrientation
+		h.embeddedLayout = (session.UISettings{}).GetEmbeddedTerminal()
+		h.compactSidebar = h.embeddedLayout
 		h.remoteLatencyRefreshSec = (session.UISettings{}).GetRemoteLatencyRefreshSecs(0)
 		h.remoteSessionRefreshSec = (session.UISettings{}).GetRemoteSessionRefreshSecs()
 		h.footerMode = (session.UISettings{}).GetFooter()
@@ -2503,6 +2553,9 @@ func (h *Home) rebuildFlatItems() {
 	h.jumpBuffer = ""
 
 	allItems := h.groupTree.Flatten()
+	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+		allItems = flatSidebarItemsFromTree(h.groupTree)
+	}
 
 	// Partition archived vs active before status filters. Group membership is
 	// resolved from the full group tree — not the flattened view — so
@@ -2689,6 +2742,10 @@ func (h *Home) rebuildFlatItems() {
 		}
 	}
 
+	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+		h.flatItems = flattenSidebarItems(h.flatItems)
+	}
+
 	// Pre-compute root group numbers for O(1) hotkey lookup (replaces O(n) loop in renderGroupItem).
 	// View-mode partitioning can duplicate root headers; every copy of the same
 	// logical root reuses the same digit.
@@ -2762,26 +2819,23 @@ func (h *Home) rebuildFlatItems() {
 	h.publishWebMenuSnapshot()
 }
 
-// syncViewport ensures the cursor is visible within the viewport
-// Call this after any cursor movement
-func (h *Home) syncViewport() {
-	if len(h.flatItems) == 0 {
-		h.viewOffset = 0
-		return
-	}
-
-	// Calculate visible height for session list
-	// MUST match the calculation in View() exactly!
-	//
-	// Layout breakdown:
-	// - Header: 1 line
-	// - Filter bar: 1 line (always shown)
-	// - Update banner: 0 or 1 line (when update available)
-	// - Maintenance banner: 0 or 1 line (when maintenance completed)
-	// - Main content: contentHeight lines
-	// - Help bar: 2 lines (border + content)
-	// Panel title within content: 2 lines (title + underline)
-	// Panel content: contentHeight - 2 lines
+// sidebarLineBudget reports how many terminal lines the session list may draw
+// into, and the width it draws at. Scroll windowing, the auto sidebar density,
+// and click hit-testing all measure the sidebar against this one budget, so
+// none of them can disagree about how much room a row has.
+//
+// MUST match the calculation in View() exactly!
+//
+// Layout breakdown:
+// - Header: 1 line
+// - Filter bar: 1 line (always shown)
+// - Update banner: 0 or 1 line (when update available)
+// - Maintenance banner: 0 or 1 line (when maintenance completed)
+// - Main content: contentHeight lines
+// - Help bar: 2 lines (border + content)
+// Panel title within content: 2 lines (title + underline)
+// Panel content: contentHeight - 2 lines
+func (h *Home) sidebarLineBudget() (lineBudget int, sidebarWidth int) {
 	helpBarHeight := 2
 	panelTitleLines := 2 // SESSIONS title + underline (matches View())
 
@@ -2823,55 +2877,60 @@ func (h *Home) syncViewport() {
 		panelContentHeight = contentHeight - panelTitleLines
 	}
 
-	// maxVisible = how many items can be shown (reserving 1 for "more below" indicator)
-	maxVisible := panelContentHeight - 1
-	if maxVisible < 1 {
-		maxVisible = 1
+	sidebarWidth = h.width
+	if layoutMode == LayoutModeDual {
+		sidebarWidth = h.sessionsPaneWidth()
+	}
+	return max(1, panelContentHeight-1), sidebarWidth
+}
+
+// syncViewport ensures the cursor is visible within the viewport
+// Call this after any cursor movement
+func (h *Home) syncViewport() {
+	if len(h.flatItems) == 0 {
+		h.viewOffset = 0
+		return
 	}
 
-	// Account for "more above" indicator (takes 1 line when scrolled down)
-	// This is the key fix: when we're scrolled down, we have 1 less visible line
-	effectiveMaxVisible := maxVisible
-	if h.viewOffset > 0 {
-		effectiveMaxVisible-- // "more above" indicator takes 1 line
-	}
-	if effectiveMaxVisible < 1 {
-		effectiveMaxVisible = 1
-	}
+	lineBudget, sidebarWidth := h.sidebarLineBudget()
+	rowLines := h.sidebarRowLines()
 
-	// If cursor is above viewport, scroll up
 	if h.cursor < h.viewOffset {
 		h.viewOffset = h.cursor
 	}
-
-	// If cursor is below viewport, scroll down
-	if h.cursor >= h.viewOffset+effectiveMaxVisible {
-		// When scrolling down, we need to account for the "more above" indicator
-		// that will appear once viewOffset > 0
-		if h.viewOffset == 0 {
-			// First scroll down: "more above" will appear, reducing visible by 1
-			h.viewOffset = h.cursor - (maxVisible - 1) + 1
-		} else {
-			// Already scrolled: "more above" already showing
-			h.viewOffset = h.cursor - effectiveMaxVisible + 1
-		}
-	}
-
-	// Clamp viewOffset to valid range
-	// When scrolled down, "more above" takes 1 line, so we can show fewer items
-	finalMaxVisible := maxVisible
-	if h.viewOffset > 0 {
-		finalMaxVisible--
-	}
-	maxOffset := len(h.flatItems) - finalMaxVisible
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
-	if h.viewOffset > maxOffset {
-		h.viewOffset = maxOffset
+	if h.viewOffset >= len(h.flatItems) {
+		h.viewOffset = len(h.flatItems) - 1
 	}
 	if h.viewOffset < 0 {
 		h.viewOffset = 0
+	}
+
+	for h.viewOffset < h.cursor {
+		effectiveBudget := lineBudget
+		if h.viewOffset > 0 {
+			effectiveBudget--
+		}
+		effectiveBudget = max(1, effectiveBudget)
+		if h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth, rowLines) <= effectiveBudget {
+			break
+		}
+		h.viewOffset++
+	}
+
+	// Scroll back up only to reclaim blank space at the end of the list
+	// (after removals or a resize). Measuring to the end of the list — not
+	// the cursor — keeps the viewport still while the cursor moves within it.
+	for h.viewOffset > 0 {
+		candidate := h.viewOffset - 1
+		effectiveBudget := lineBudget
+		if candidate > 0 {
+			effectiveBudget--
+		}
+		effectiveBudget = max(1, effectiveBudget)
+		if h.sidebarItemsHeightWithLines(h.flatItems, candidate, len(h.flatItems), sidebarWidth, rowLines) > effectiveBudget {
+			break
+		}
+		h.viewOffset = candidate
 	}
 }
 
@@ -3026,6 +3085,25 @@ func (h *Home) cleanupNotifications() {
 	}
 	h.boundKeys = make(map[string]string)
 	h.boundKeysMu.Unlock()
+}
+
+// applySavedLayoutSettings applies the [ui] values the settings panel just
+// saved. sidebar_density is live. embedded_terminal is not: main negotiates
+// the terminal protocol for the layout once, at startup (all-motion mouse,
+// focus reporting, the stdin router and stdout wrapper), and the classic path
+// stays byte-identical when the option is off. Flipping h.embeddedLayout here
+// would advertise the embedded terminal while Enter fell back to the legacy
+// key-sender, so a changed value is stored and takes effect at the next
+// launch, and the user is told so.
+func (h *Home) applySavedLayoutSettings(ui session.UISettings) {
+	h.sidebarDensity = ui.GetSidebarDensity()
+	if want := ui.GetEmbeddedTerminal(); want != h.embeddedLayout {
+		state := "off"
+		if want {
+			state = "on"
+		}
+		h.setError(fmt.Errorf("embedded terminal %s saved: restart agent-deck to switch layouts", state))
+	}
 }
 
 // getVisibleHeight returns the number of visible items in the session list
@@ -5398,9 +5476,21 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Execute final shutdown logic after splash delay
 		return h, h.performFinalShutdown(bool(msg))
 
+	case tea.BlurMsg:
+		// The terminal reports motion only while the pointer is inside its
+		// window, so once focus leaves there is no event coming that would
+		// correct a stale hover. Losing focus IS that event. (Focus reporting
+		// is enabled only for the embedded layout; classic mode never sees
+		// this message.)
+		h.clearDividerHover()
+		return h, nil
+
 	case tea.WindowSizeMsg:
 		h.width = msg.Width
 		h.height = msg.Height
+		// The divider moves when the frame does, so a hover measured against
+		// the old geometry is about a column that no longer exists.
+		h.clearDividerHover()
 		h.updateSizes()
 		h.syncViewport() // Recalculate viewport when window size changes
 		h.setupWizard.SetSize(msg.Width, msg.Height)
@@ -5413,6 +5503,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
 		h.promptInputDialog.SetSize(msg.Width, msg.Height)
 		h.scrollbackPager.SetSize(msg.Width, msg.Height)
+		if h.embeddedMode && h.embeddedTerminal != nil {
+			h.syncEmbeddedTerminalGeometry()
+			return h, nil
+		}
 		// Issue #1366: a resize can reveal the preview pane (single -> stacked/dual).
 		// fetchSelectedPreview self-guards to nil in single-column, so this only
 		// fetches when a preview pane is actually visible.
@@ -5422,11 +5516,23 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
 			return h, nil
 		}
+		// Every mouse event updates the hover state, including the wheel events
+		// routed away below. Scrolling the list is the ordinary way to move the
+		// pointer off the divider, and a wheel notch that skipped this left the
+		// separator lit with nothing under it.
+		h.syncDividerHover(msg.X)
+
 		// Route mouse wheel events to the active scrollable area.
 		// Priority: setup wizard > settings > help > global search > MCP dialog > new/fork dialogs > main list.
 		// Non-wheel events are silently ignored (O(1), no blocking I/O).
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+			// A wheel notch means the user moved on to something else; never
+			// let it slip past the drag handler and strand a grabbed divider.
+			if h.draggingDivider {
+				h.endDividerDrag()
+				h.syncPointerShape()
+			}
 			if h.setupWizard.IsVisible() {
 				return h, nil
 			}
@@ -5560,6 +5666,51 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		return h, h.fetchPreview(inst, key, winIdx)
+
+	case embeddedStartMsg:
+		return h, h.installEmbeddedTerminal(msg)
+
+	case embeddedFrameMsg:
+		return h, h.updateEmbeddedFrame(msg)
+
+	case embeddedRefreshMsg:
+		h.embeddedRefreshPending = false
+		if !h.embeddedMode {
+			return h, nil
+		}
+		// Backstop for chrome that changes without an explicit message (the
+		// nudge's own dismissal rules, a debug bar): a no-op when nothing moved.
+		h.syncEmbeddedTerminalGeometry()
+		inst, key, winIdx := h.selectedPreviewTarget()
+		if inst == nil || key == "" {
+			remoteName, remoteSessionID, remoteKey, ok := h.selectedRemotePreviewTarget()
+			if !ok {
+				return h, h.scheduleEmbeddedRefresh()
+			}
+			h.previewCacheMu.Lock()
+			alreadyFetching := h.previewFetchingID == remoteKey
+			if !alreadyFetching {
+				h.previewFetchingID = remoteKey
+			}
+			h.previewCacheMu.Unlock()
+			if alreadyFetching {
+				return h, h.scheduleEmbeddedRefresh()
+			}
+			return h, tea.Batch(
+				h.fetchRemotePreview(remoteName, remoteSessionID, remoteKey),
+				h.scheduleEmbeddedRefresh(),
+			)
+		}
+		h.previewCacheMu.Lock()
+		alreadyFetching := h.previewFetchingID == key
+		if !alreadyFetching {
+			h.previewFetchingID = key
+		}
+		h.previewCacheMu.Unlock()
+		if alreadyFetching {
+			return h, h.scheduleEmbeddedRefresh()
+		}
+		return h, tea.Batch(h.fetchPreview(inst, key, winIdx), h.scheduleEmbeddedRefresh())
 
 	case loadSessionsMsg:
 		// Clear loading indicators and store file mtime for external change detection
@@ -6303,6 +6454,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			h.updateInfo = msg.info
 		}
+		// The nudge banner takes a row from the embedded pane.
+		h.syncEmbeddedTerminalGeometry()
 		return h, nil
 
 	case remoteSessionsFetchedMsg:
@@ -6415,6 +6568,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(parts) > 0 {
 			h.maintenanceMsg = "Maintenance: " + strings.Join(parts, ", ") + fmt.Sprintf(" (%s)", r.Duration.Round(time.Millisecond))
 			h.maintenanceMsgTime = time.Now()
+			// The banner takes a row from the embedded pane.
+			h.syncEmbeddedTerminalGeometry()
 			// Auto-clear after 30 seconds
 			return h, tea.Tick(30*time.Second, func(_ time.Time) tea.Msg {
 				return clearMaintenanceMsg{}
@@ -6434,6 +6589,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearMaintenanceMsg:
 		h.maintenanceMsg = ""
+		h.syncEmbeddedTerminalGeometry()
 		return h, nil
 
 	case feedbackSentMsg:
@@ -7098,6 +7254,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case tickMsg:
+		h.expireDividerHover(time.Now())
+
 		// Honor a pending `agent-deck session focus <id>` request from the CLI.
 		// A non-nil cmd means the request asked to --attach the session: open it
 		// now (same as Enter) and skip the rest of this tick's background work,
@@ -7347,6 +7505,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
+		// Hands on the keyboard means the mouse is not about to grab anything,
+		// and the terminal stops reporting motion the instant the pointer
+		// leaves its window — so a keystroke is the most reliable signal we get
+		// that a hover highlight has outlived its mouse.
+		h.clearDividerHover()
 
 		// Handle jump mode input (before modals)
 		if h.jumpMode {
@@ -7443,6 +7606,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.reloadHotkeysFromConfig()
 				h.showSessionTimestamps = config.Display.ShowSessionTimestamps
 				h.showPaneTitles = config.Display.ShowPaneTitles
+				h.applySavedLayoutSettings(config.UI)
+				h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 
 				// Apply theme changes live
 				h.stopThemeWatcher()
@@ -8341,28 +8506,66 @@ func (h *Home) clickedItemID(index int) string {
 	return ""
 }
 
+// endDividerDrag releases the divider and persists whatever ratio it was left
+// at. Every path out of a drag goes through here so a drag can never end
+// without its result being saved.
+func (h *Home) endDividerDrag() {
+	if !h.draggingDivider {
+		return
+	}
+	h.draggingDivider = false
+	persistPreviewPct(h.getPreviewPct())
+	h.saveUIState()
+}
+
 // handleDividerDrag processes mouse events for the Sessions/Preview divider
 // resize drag and reports whether it consumed the event. The lifecycle is:
 // left-press on the separator grabs it, motion resizes the split live, and
 // release persists the new ratio. It keys off draggingDivider + msg.Action
 // rather than msg.Button because X10 terminals report a drag release as
 // MouseButtonNone, not MouseButtonLeft.
+//
+// The drag also has to survive a release it never sees. Under all-motion
+// reporting a terminal that is moving the mouse at the instant the button comes
+// up encodes that release with the motion bit set (SGR `<32;x;ym`), and Bubble
+// Tea's parser refuses to promote a motion report to a release — so the event
+// arrives as one more drag step and the divider keeps following a mouse nobody
+// is holding. That is the "click and release stays dragging" bug. The next
+// event gives the state away for free: a genuine drag reports motion with the
+// left button still set, while an unheld cursor reports motion with
+// MouseButtonNone. So a button-less motion ends the drag rather than continuing
+// it, and the divider unsticks on the very next mouse move.
 func (h *Home) handleDividerDrag(msg tea.MouseMsg) bool {
 	if h.draggingDivider {
 		switch msg.Action {
 		case tea.MouseActionMotion:
+			if msg.Button != tea.MouseButtonLeft || !h.dividerResizeEnabled() {
+				// The button is not down any more (or the divider went inert
+				// under us); either way the drag is over.
+				h.endDividerDrag()
+				return true
+			}
 			h.lastUserInputTime = time.Now()
 			h.setPreviewPctFromMouseX(msg.X)
 		case tea.MouseActionRelease:
-			h.draggingDivider = false
-			persistPreviewPct(h.getPreviewPct())
+			h.endDividerDrag()
+		case tea.MouseActionPress:
+			// A fresh press while still "dragging" means the previous release
+			// never landed. Close out the old drag and let this press start a
+			// clean one if it is on the divider.
+			h.endDividerDrag()
+			if msg.Button == tea.MouseButtonLeft && h.hoverDivider {
+				h.draggingDivider = true
+				h.lastUserInputTime = time.Now()
+			}
 		}
 		return true
 	}
 
-	// Grab the divider only on a left-press over the separator, dual layout only.
-	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress &&
-		h.getLayoutMode() == LayoutModeDual && h.isOnDivider(msg.X) {
+	// Grab the divider only on a left-press over the separator, and only while
+	// it is live. hoverDivider is already current and already carries that
+	// condition: syncDividerHover ran for this event.
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress && h.hoverDivider {
 		h.draggingDivider = true
 		h.lastUserInputTime = time.Now()
 		return true
@@ -8370,21 +8573,103 @@ func (h *Home) handleDividerDrag(msg tea.MouseMsg) bool {
 	return false
 }
 
+// dividerResizeEnabled reports whether the Sessions/Preview divider accepts a
+// resize right now. It requires the dual layout AND a detached dashboard.
+//
+// Attached is the disqualifier that matters. While a session is embedded, the
+// input router forwards every mouse event that lands inside the session pane
+// straight to tmux, so the dashboard sees the pointer arrive at the divider and
+// then never hears about it leaving — the highlight and the grab cursor outlive
+// the mouse by whatever the expiry window is. There is no event to fix that
+// with, because the events are going somewhere else by design. Resizing the
+// frame around a terminal you are typing into is also not what the mouse is for
+// in that mode. So the divider is simply inert while attached: detach and it
+// comes back.
+func (h *Home) dividerResizeEnabled() bool {
+	return h.getLayoutMode() == LayoutModeDual && !h.embeddedMode
+}
+
+// syncDividerHover recomputes whether the mouse is resting on the divider's
+// grab zone. Hover is derived state with exactly one input — the last known
+// mouse position — so it is recomputed from every mouse event rather than
+// updated from some of them. Anything else strands the highlight: an event the
+// drag handler never sees leaves the divider lit under a mouse that moved away.
+func (h *Home) syncDividerHover(x int) {
+	h.hoverDivider = !h.hasModalVisible() &&
+		h.dividerResizeEnabled() &&
+		h.isOnDivider(x)
+	if h.hoverDivider {
+		h.hoverDividerAt = time.Now()
+	}
+	h.syncPointerShape()
+}
+
+// expireDividerHover is the backstop for every way a mouse can stop reporting
+// that we cannot observe directly. The one that actually bites: in embedded
+// mode the input router forwards events inside the session pane straight to
+// tmux, so moving the pointer off the divider and into the terminal next to it
+// delivers nothing to the dashboard at all — the divider would stay lit under a
+// mouse that is demonstrably somewhere else.
+//
+// Rather than enumerate those channels, hover simply expires if no mouse event
+// has confirmed it recently. The window is deliberately generous: approaching
+// the divider and pausing before you click must never lose the highlight, and
+// losing it costs nothing anyway — the click re-establishes hover before the
+// grab check, and any movement brings it straight back.
+func (h *Home) expireDividerHover(now time.Time) {
+	if h.hoverDivider && now.Sub(h.hoverDividerAt) > hoverDividerTTL {
+		h.clearDividerHover()
+	}
+}
+
+// clearDividerHover drops the highlight and hands the mouse cursor back. Hover
+// is a claim about where the mouse is, and the moment the mouse stops reporting
+// — the user went to the keyboard, the window lost focus, the layout moved
+// under it — that claim has no evidence behind it and must not survive on
+// screen. The next mouse move re-establishes it in a frame.
+func (h *Home) clearDividerHover() {
+	if !h.hoverDivider {
+		// Still resync the pointer: a stale grab cursor outlives its highlight.
+		h.syncPointerShape()
+		return
+	}
+	h.hoverDivider = false
+	h.syncPointerShape()
+}
+
+// syncPointerShape asks the terminal for a grab cursor over the divider, so the
+// handle looks draggable before you find out by dragging it. Terminals without
+// OSC 22 ignore it and fall back to the widened hit zone and the hover
+// highlight, which need no terminal cooperation.
+func (h *Home) syncPointerShape() {
+	if h.sessionOutput == nil {
+		return
+	}
+	switch {
+	case h.draggingDivider:
+		h.sessionOutput.SetPointerShape(pointerShapeGrabbing)
+	case h.hoverDivider:
+		h.sessionOutput.SetPointerShape(pointerShapeGrab)
+	default:
+		h.sessionOutput.SetPointerShape(pointerShapeDefault)
+	}
+}
+
 // handleMouse handles mouse events (click to select, double-click to activate)
 func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if h.hasModalVisible() {
 		// A modal opening mid-drag shouldn't leave the divider stuck grabbed.
 		// Treat it as a release so the dragged-to ratio is preserved.
-		if h.draggingDivider {
-			h.draggingDivider = false
-			persistPreviewPct(h.getPreviewPct())
-		}
+		h.endDividerDrag()
+		h.clearDividerHover()
 		return h, nil
 	}
 
 	// Divider resize drag takes precedence over list selection (the separator
 	// columns sit at x >= sessionsPaneWidth, where list clicks are ignored).
-	if h.handleDividerDrag(msg) {
+	consumed := h.handleDividerDrag(msg)
+	h.syncPointerShape()
+	if consumed {
 		return h, nil
 	}
 
@@ -8426,21 +8711,43 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if isDoubleClick {
 			h.lastClickIndex = -1 // Reset to prevent triple-click
 			item := h.flatItems[itemIndex]
-			if item.Type == session.ItemTypeSession && item.Session != nil {
+			if !h.embeddedLayout && (item.Type == session.ItemTypeSession || item.Type == session.ItemTypeWindow || item.Type == session.ItemTypeRemoteSession) {
+				h.cursor = itemIndex
+				return h, h.attachSelectedLegacy()
+			}
+			switch item.Type {
+			case session.ItemTypeSession:
+				if item.Session == nil {
+					return h, nil
+				}
 				if h.hasActiveAnimation(item.Session.ID) {
 					h.setError(fmt.Errorf("session is starting, please wait..."))
 					return h, nil
 				}
-				if item.Session.Exists() {
-					// No isAttaching pre-set here: attachSession sets the flag
-					// itself right before returning the tea.Exec Cmd, and can
-					// return nil (GetTmuxSession()==nil on a cross-socket race)
-					// — a premature set followed by a nil return left the flag
-					// stuck true and View() suppressed forever (#1753; same
-					// rationale as the handleWebAttach call site).
-					return h, h.attachSession(item.Session)
+				if h.sessionExistsForUI(item.Session) {
+					h.cursor = itemIndex
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
 				}
-			} else if item.Type == session.ItemTypeGroup {
+			case session.ItemTypeWindow:
+				// Enter accepts window and remote rows as embedded targets; a
+				// double-click on the same row must land in the same place.
+				parentInst := h.getInstanceByID(item.WindowSessionID)
+				if parentInst != nil && h.sessionExistsForUI(parentInst) {
+					h.cursor = itemIndex
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
+				}
+			case session.ItemTypeRemoteSession:
+				if item.RemoteSession != nil {
+					h.cursor = itemIndex
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
+				}
+			case session.ItemTypeGroup:
 				groupPath := item.Path
 				h.groupTree.ToggleGroup(groupPath)
 				h.rebuildFlatItems()
@@ -8452,7 +8759,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
-			} else if item.Type == session.ItemTypeRemoteGroup {
+			case session.ItemTypeRemoteGroup:
 				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			}
 			return h, nil
@@ -8512,11 +8819,19 @@ func (h *Home) mouseYToItemIndex(y int) int {
 		return -1
 	}
 
-	itemIndex := h.viewOffset + lineInList
-	if itemIndex >= len(h.flatItems) {
-		return -1
+	sidebarWidth := h.width
+	if h.getLayoutMode() == LayoutModeDual {
+		sidebarWidth = h.sessionsPaneWidth()
 	}
-	return itemIndex
+	rowLines := h.sidebarRowLines()
+	for itemIndex := h.viewOffset; itemIndex < len(h.flatItems); itemIndex++ {
+		rowHeight := h.sidebarItemRenderHeightAtWidthLines(h.flatItems[itemIndex], sidebarWidth, rowLines)
+		if lineInList < rowHeight {
+			return itemIndex
+		}
+		lineInList -= rowHeight
+	}
+	return -1
 }
 
 // handleMainKey handles keys in main view
@@ -8605,10 +8920,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Vi-style pagination (#38) - half/full page scrolling
 	case "ctrl+u", "pgup": // Half page up
-		pageSize := h.getVisibleHeight() / 2
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight()/2, -1)
 		h.cursor -= pageSize
 		if h.cursor < 0 {
 			h.cursor = 0
@@ -8620,10 +8932,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "ctrl+d", "pgdown": // Half page down
-		pageSize := h.getVisibleHeight() / 2
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight()/2, 1)
 		h.cursor += pageSize
 		if h.cursor >= len(h.flatItems) {
 			h.cursor = len(h.flatItems) - 1
@@ -8638,10 +8947,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "ctrl+b": // Full page up (backward)
-		pageSize := h.getVisibleHeight()
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight(), -1)
 		h.cursor -= pageSize
 		if h.cursor < 0 {
 			h.cursor = 0
@@ -8653,10 +8959,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "ctrl+f": // Full page down (forward)
-		pageSize := h.getVisibleHeight()
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight(), 1)
 		h.cursor += pageSize
 		if h.cursor >= len(h.flatItems) {
 			h.cursor = len(h.flatItems) - 1
@@ -8793,11 +9096,20 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "alt+enter":
+		if !h.embeddedLayout {
+			return h, nil
+		}
+		return h, h.attachSelectedLegacy()
+
 	case "enter":
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if !h.embeddedLayout && (item.Type == session.ItemTypeSession || item.Type == session.ItemTypeWindow || item.Type == session.ItemTypeRemoteSession) {
+				return h, h.attachSelectedLegacy()
+			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if item.Session.Exists() {
+				if h.sessionExistsForUI(item.Session) {
 					// Pane dead (process exited) — restart instead of attaching to dead pane.
 					tmuxSess := item.Session.GetTmuxSession()
 					if tmuxSess != nil && tmuxSess.IsPaneDead() {
@@ -8807,7 +9119,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						}
 						return h, nil
 					}
-					return h, h.attachSession(item.Session)
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
+					return h, nil
 				}
 				// Session exited (tmux session gone) — auto-restart it.
 				if !h.hasActiveAnimation(item.Session.ID) {
@@ -8832,47 +9147,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// There is nothing to attach to on a header row.
 				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			} else if item.Type == session.ItemTypeWindow {
-				// Find parent session by WindowSessionID
-				var parentInst *session.Instance
-				h.instancesMu.RLock()
-				for _, inst := range h.instances {
-					if inst.ID == item.WindowSessionID {
-						parentInst = inst
-						break
-					}
-				}
-				h.instancesMu.RUnlock()
-
-				if parentInst != nil && parentInst.Exists() {
-					tmuxSess := parentInst.GetTmuxSession()
-					if tmuxSess != nil {
-						tmuxSess.EnsureConfigured()
-						parentInst.SyncSessionIDsToTmux()
-						parentInst.MarkAccessed()
-
-						if parentInst.GetStatusThreadSafe() == session.StatusWaiting {
-							tmuxSess.Acknowledge()
-							if db := statedb.GetGlobal(); db != nil {
-								_ = db.SetAcknowledged(parentInst.ID, true)
-							}
-						}
-
-						h.isAttaching.Store(true)
-						return h, tea.Exec(attachWindowCmd{
-							session:     tmuxSess,
-							windowIndex: item.WindowIndex,
-							detachByte:  h.detachByte(),
-							onExit:      func() { h.isAttaching.Store(false) },
-						}, func(err error) tea.Msg {
-							h.isAttaching.Store(false)
-							parentInst.MarkAccessed()
-							return statusUpdateMsg{}
-						})
-					}
+				parentInst := h.getInstanceByID(item.WindowSessionID)
+				if parentInst != nil && h.sessionExistsForUI(parentInst) && h.enterEmbeddedMode() {
+					return h, h.startEmbeddedModeCmd()
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
-				// Attach to remote session via SSH
-				return h, h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
+				if h.enterEmbeddedMode() {
+					return h, h.startEmbeddedModeCmd()
+				}
 			}
 		}
 		return h, nil
@@ -9694,6 +9976,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.previewMode = (h.previewMode + 1) % 3
 		return h, nil
 
+	case "alt+v":
+		if !h.embeddedLayout {
+			return h, nil
+		}
+		selectedBefore := h.captureSelectedItemIdentity()
+		if h.sidebarMode == sidebarGrouped {
+			h.sidebarMode = sidebarFlat
+		} else {
+			h.sidebarMode = sidebarGrouped
+		}
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
+		h.skipDivider(1)
+		h.saveUIState()
+		return h, h.fetchSelectedPreview()
+
 	case "t":
 		// Cycle list partition: normal → active-on-top → populated-on-top → normal.
 		// Preserve the cursor's row identity across the rebuild.
@@ -10072,6 +10369,68 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return h, nil
+}
+
+func (h *Home) attachSelectedLegacy() tea.Cmd {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return nil
+	}
+	item := h.flatItems[h.cursor]
+	switch item.Type {
+	case session.ItemTypeSession:
+		if item.Session == nil {
+			return nil
+		}
+		if !h.sessionExistsForUI(item.Session) {
+			if !h.hasActiveAnimation(item.Session.ID) {
+				h.resumingSessions[item.Session.ID] = time.Now()
+				return h.restartSession(item.Session)
+			}
+			return nil
+		}
+		if tmuxSess := item.Session.GetTmuxSession(); tmuxSess != nil && tmuxSess.IsPaneDead() {
+			if !h.hasActiveAnimation(item.Session.ID) {
+				h.resumingSessions[item.Session.ID] = time.Now()
+				return h.restartSession(item.Session)
+			}
+			return nil
+		}
+		return h.attachSession(item.Session)
+	case session.ItemTypeWindow:
+		parentInst := h.getInstanceByID(item.WindowSessionID)
+		if parentInst == nil || !h.sessionExistsForUI(parentInst) {
+			return nil
+		}
+		tmuxSess := parentInst.GetTmuxSession()
+		if tmuxSess == nil {
+			return nil
+		}
+		tmuxSess.EnsureConfigured()
+		parentInst.SyncSessionIDsToTmux()
+		parentInst.MarkAccessed()
+		if parentInst.GetStatusThreadSafe() == session.StatusWaiting {
+			tmuxSess.Acknowledge()
+			if db := statedb.GetGlobal(); db != nil {
+				_ = db.SetAcknowledged(parentInst.ID, true)
+			}
+		}
+		h.isAttaching.Store(true)
+		return tea.Exec(attachWindowCmd{
+			session:     tmuxSess,
+			windowIndex: item.WindowIndex,
+			detachByte:  h.detachByte(),
+			onExit:      func() { h.isAttaching.Store(false) },
+		}, func(err error) tea.Msg {
+			h.isAttaching.Store(false)
+			parentInst.MarkAccessed()
+			return statusUpdateMsg{}
+		})
+	case session.ItemTypeRemoteSession:
+		if item.RemoteSession != nil {
+			return h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
+		}
+	}
+	return nil
 }
 
 // handleConfirmDialogKey handles keys when confirmation dialog is visible
@@ -11804,10 +12163,12 @@ func (h *Home) saveUIStateErr() error {
 	}
 
 	state := uiState{
-		PreviewMode:        int(h.previewMode),
-		StatusFilter:       string(h.statusFilter),
-		GroupViewMode:      int(h.groupViewMode),
-		RemoteSessionOrder: h.remoteSessionOrder,
+		PreviewMode:            int(h.previewMode),
+		StatusFilter:           string(h.statusFilter),
+		GroupViewMode:          int(h.groupViewMode),
+		RemoteSessionOrder:     h.remoteSessionOrder,
+		SidebarMode:            string(h.sidebarMode),
+		SidebarWidthCustomized: h.embeddedLayout && !h.compactSidebar,
 	}
 
 	// Sorted so an unchanged fold state marshals byte-identically and doesn't
@@ -11882,14 +12243,6 @@ func (h *Home) loadUIState() {
 		h.remoteGroupsCollapsed[path] = true
 	}
 
-	// Apply preview mode, status filter, and group view mode immediately
-	h.previewMode = PreviewMode(state.PreviewMode)
-	h.statusFilter = session.Status(state.StatusFilter)
-	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)
-	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
-		h.groupViewMode = session.GroupViewNormal
-	}
-
 	// #1875: restore the manual remote row order. Entries for remotes that no
 	// longer exist are harmless — a bucket key nobody builds is never read —
 	// and stale session IDs inside a live bucket are skipped when applied.
@@ -11902,8 +12255,26 @@ func (h *Home) loadUIState() {
 		}
 	}
 
+	h.applyUIState(state)
+
 	// Defer cursor restoration until flatItems are populated
 	h.pendingCursorRestore = &state
+}
+
+func (h *Home) applyUIState(state uiState) {
+	h.previewMode = PreviewMode(state.PreviewMode)
+	h.statusFilter = session.Status(state.StatusFilter)
+	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)
+	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
+		h.groupViewMode = session.GroupViewNormal
+	}
+	h.sidebarMode = sidebarPresentation(state.SidebarMode)
+	if h.sidebarMode != sidebarFlat {
+		h.sidebarMode = sidebarGrouped
+	}
+	if h.embeddedLayout {
+		h.compactSidebar = !state.SidebarWidthCustomized
+	}
 }
 
 // createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
@@ -14519,9 +14890,8 @@ func (h *Home) updateSizes() {
 	h.confirmDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
 	if h.sessionSwitcher != nil {
-		// The switcher is a centered full-screen overlay; keep it sized so a
-		// resize while it is open (notably from the overview, where it can stay
-		// up) re-centers it instead of leaving it on stale dimensions.
+		// Keep the switcher's viewport current so its standalone centered view
+		// and the dashboard composite both respond to terminal resizes.
 		h.sessionSwitcher.SetSize(h.width, h.height)
 	}
 	h.worktreeFinishDialog.SetSize(h.width, h.height)
@@ -14661,9 +15031,6 @@ func (h *Home) renderFrame() string {
 	}
 	if h.geminiModelDialog.IsVisible() {
 		return h.geminiModelDialog.View()
-	}
-	if h.sessionSwitcher.IsVisible() {
-		return h.sessionSwitcher.View()
 	}
 	if h.scrollbackPager.IsVisible() {
 		return h.scrollbackPager.View()
@@ -14877,17 +15244,19 @@ func (h *Home) renderFrame() string {
 	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
 	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
 
-	// Route to appropriate layout based on terminal width
-	layoutMode := h.getLayoutMode()
-
 	var mainContent string
-	switch layoutMode {
-	case LayoutModeSingle:
-		mainContent = h.renderSingleColumnLayout(contentHeight)
-	case LayoutModeStacked:
-		mainContent = h.renderStackedLayout(contentHeight)
-	default: // LayoutModeDual
-		mainContent = h.renderDualColumnLayout(contentHeight)
+	if h.embeddedMode && h.embeddedSidebarHidden {
+		mainContent = h.renderEmbeddedOnlyLayout(contentHeight)
+	} else {
+		// Route to appropriate layout based on terminal width.
+		switch h.getLayoutMode() {
+		case LayoutModeSingle:
+			mainContent = h.renderSingleColumnLayout(contentHeight)
+		case LayoutModeStacked:
+			mainContent = h.renderStackedLayout(contentHeight)
+		default: // LayoutModeDual
+			mainContent = h.renderDualColumnLayout(contentHeight)
+		}
 	}
 
 	// Ensure mainContent has exact height
@@ -14962,7 +15331,105 @@ func (h *Home) renderFrame() string {
 	if h.promptInputDialog.IsVisible() {
 		rendered = h.promptInputDialog.View(rendered)
 	}
+	// Keep the session list and preview visible while Ctrl+S is open. The card
+	// is anchored to the left edge of the active-session area, immediately
+	// beside the sidebar in a dual layout, so the current sidebar selection
+	// remains visible and spatially close to the choices.
+	if h.sessionSwitcher.IsVisible() {
+		rendered = h.renderSessionSwitcherOverlay(rendered)
+	}
 	return rendered
+}
+
+// sessionSwitcherOverlayRegion returns the active-session portion of the
+// dashboard. In the ordinary dual embedded layout this is the preview pane to the
+// right of the sidebar; in a stacked layout it is the preview below the list.
+// A single-column terminal has no preview pane, so the main content area is the
+// least surprising fallback.
+func (h *Home) sessionSwitcherOverlayRegion() terminalCellRect {
+	helpBarHeight := 2
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
+	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
+	contentHeight := h.height - 1 - helpBarHeight - filterBarHeight -
+		updateBannerHeight - maintenanceBannerHeight - debugBarHeight
+	contentY := 1 + filterBarHeight + updateBannerHeight + maintenanceBannerHeight
+
+	switch h.getLayoutMode() {
+	case LayoutModeDual:
+		leftWidth, rightWidth := h.splitPaneWidths()
+		return terminalCellRect{
+			X:      leftWidth + paneSeparatorWidth,
+			Y:      contentY,
+			Width:  rightWidth,
+			Height: contentHeight,
+		}
+	case LayoutModeStacked:
+		listHeight := h.stackedListHeight(contentHeight)
+		return terminalCellRect{
+			X:      0,
+			Y:      contentY + listHeight + 1,
+			Width:  h.width,
+			Height: max(contentHeight-listHeight-1, 1),
+		}
+	default:
+		return terminalCellRect{X: 0, Y: contentY, Width: h.width, Height: contentHeight}
+	}
+}
+
+// renderSessionSwitcherOverlay composites the Ctrl+S card over the existing
+// dashboard rather than replacing the frame. Its left edge is fixed to the
+// active-session region while its vertical position is centered within that
+// region, leaving the sidebar fully unobscured in the dual layout.
+func (h *Home) renderSessionSwitcherOverlay(background string) string {
+	region := h.sessionSwitcherOverlayRegion()
+	card := h.sessionSwitcher.dialogView(region.Width)
+	if card == "" {
+		return background
+	}
+	cardHeight := lipgloss.Height(card)
+	y := region.Y + max((region.Height-cardHeight)/2, 0)
+	composite := overlayAtCells(background, card, y, region.X)
+	return clampViewToViewport(composite, h.width, h.height)
+}
+
+// overlayAtCells paints overlay over base at terminal-cell coordinates. The
+// shared dialog dropdown helper predates wide-grapheme sidebar labels and
+// counts visible runes, which can shift a card right when a session name
+// contains emoji/CJK. Ctrl+S is explicitly anchored to the pane boundary, so
+// use ANSI-aware cell cuts here to keep that edge exact on every row.
+func overlayAtCells(base, overlay string, row, col int) string {
+	baseLines := strings.Split(base, "\n")
+	overLines := strings.Split(overlay, "\n")
+	for i, overLine := range overLines {
+		targetRow := row + i
+		if targetRow < 0 || targetRow >= len(baseLines) {
+			continue
+		}
+		baseLine := baseLines[targetRow]
+		baseWidth := cellWidth(baseLine)
+		prefix := ansi.Cut(baseLine, 0, max(col, 0))
+		if prefixWidth := cellWidth(prefix); prefixWidth < col {
+			prefix += strings.Repeat(" ", col-prefixWidth)
+		}
+		afterCol := col + cellWidth(overLine)
+		suffix := ""
+		if afterCol < baseWidth {
+			suffix = ansi.Cut(baseLine, afterCol, baseWidth)
+		}
+		baseLines[targetRow] = prefix + overLine + suffix
+	}
+	return strings.Join(baseLines, "\n")
 }
 
 // renderPanelTitle creates a styled section title with underline
@@ -15423,7 +15890,7 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	// Build left panel (session list) with styled title.
 	// Issue #1092: when the user just adjusted the split, briefly append
 	// the new ratio to both titles so the change is visible.
-	sessionsTitle := "SESSIONS"
+	sessionsTitle := h.sidebarTitle()
 	previewTitle := "PREVIEW"
 	if !h.previewPctOverlayAt.IsZero() && time.Now().Before(h.previewPctOverlayAt) {
 		pct := h.getPreviewPct()
@@ -15436,22 +15903,43 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	leftContent = ensureExactHeight(leftContent, panelContentHeight)
 	leftPanel := leftTitle + "\n" + leftContent
 
-	// Build right panel (preview) with styled title
-	rightTitle := h.renderPanelTitle(previewTitle, rightWidth)
-	rightContent := h.renderPreviewPane(rightWidth, panelContentHeight)
-	// CRITICAL: Ensure right content has exactly panelContentHeight lines
-	rightContent = ensureExactHeight(rightContent, panelContentHeight)
-	rightPanel := rightTitle + "\n" + rightContent
+	var rightPanel string
+	if h.embeddedMode {
+		innerWidth := max(1, rightWidth-2)
+		innerHeight := max(1, contentHeight-2)
+		rightContent := h.renderPreviewPane(innerWidth, innerHeight)
+		rightContent = ensureExactHeight(rightContent, innerHeight)
+		rightContent = ensureExactWidth(rightContent, innerWidth)
+		rightPanel = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorAccent).
+			Width(innerWidth).
+			Height(innerHeight).
+			Render(rightContent)
+	} else {
+		rightTitle := h.renderPanelTitle(previewTitle, rightWidth)
+		rightContent := h.renderPreviewPane(rightWidth, panelContentHeight)
+		rightContent = ensureExactHeight(rightContent, panelContentHeight)
+		rightPanel = rightTitle + "\n" + rightContent
+	}
 
 	// Build separator - must be exactly contentHeight lines. Brighten it while
 	// the user is dragging it so the resize handle reads as active.
 	separatorColor := ColorBorder
-	if h.draggingDivider {
+	if h.draggingDivider || h.embeddedMode {
+		separatorColor = ColorAccent
+	}
+	// A hovered divider brightens and thickens before you press, so the handle
+	// tells you it is a handle. This is the affordance every terminal gets;
+	// the OSC 22 grab cursor is a bonus where the terminal supports it.
+	separatorGlyph := " │ "
+	if h.hoverDivider || h.draggingDivider {
+		separatorGlyph = " ┃ "
 		separatorColor = ColorAccent
 	}
 	// Every row is the same constant string, so style it once and reuse it
 	// instead of paying a lipgloss render per screen row per frame.
-	separatorCell := lipgloss.NewStyle().Foreground(separatorColor).Render(" │ ")
+	separatorCell := lipgloss.NewStyle().Foreground(separatorColor).Render(separatorGlyph)
 	separatorLines := make([]string, contentHeight)
 	for i := range separatorLines {
 		separatorLines[i] = separatorCell
@@ -15516,7 +16004,7 @@ func (h *Home) renderStackedLayout(totalHeight int) string {
 	}
 
 	// Session list (full width)
-	listTitle := h.renderPanelTitle("SESSIONS", h.width)
+	listTitle := h.renderPanelTitle(h.sidebarTitle(), h.width)
 	listContent := h.renderSessionList(h.width, listHeight-2) // -2 for title
 	listContent = ensureExactHeight(listContent, listHeight-2)
 	b.WriteString(listTitle)
@@ -15547,7 +16035,7 @@ func (h *Home) renderSingleColumnLayout(totalHeight int) string {
 	// Full height for list
 	listHeight := totalHeight - 2 // -2 for title
 
-	listTitle := h.renderPanelTitle("SESSIONS", h.width)
+	listTitle := h.renderPanelTitle(h.sidebarTitle(), h.width)
 	listContent := h.renderSessionList(h.width, listHeight)
 	listContent = ensureExactHeight(listContent, listHeight)
 
@@ -15556,6 +16044,22 @@ func (h *Home) renderSingleColumnLayout(totalHeight int) string {
 	b.WriteString(listContent)
 
 	return b.String()
+}
+
+// renderEmbeddedOnlyLayout gives the attached PTY the entire dashboard
+// content area while keeping the header and session control bar available.
+func (h *Home) renderEmbeddedOnlyLayout(contentHeight int) string {
+	innerWidth := max(1, h.width-2)
+	innerHeight := max(1, contentHeight-2)
+	content := h.renderPreviewPane(innerWidth, innerHeight)
+	content = ensureExactWidth(ensureExactHeight(content, innerHeight), innerWidth)
+	panel := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Width(innerWidth).
+		Height(innerHeight).
+		Render(content)
+	return ensureExactWidth(ensureExactHeight(panel, contentHeight), h.width)
 }
 
 // renderSectionDivider creates a modern section divider with optional centered label
@@ -16662,18 +17166,20 @@ func (h *Home) renderSessionList(width, height int) string {
 			Render(emptyContent)
 	}
 
-	// Render items starting from viewOffset
-	visibleCount := 0
-	maxVisible := height - 1 // Leave room for scrolling indicator
-	if maxVisible < 1 {
-		maxVisible = 1
+	// Render items starting from viewOffset. Local sessions use a three-line
+	// Embedded card when the pane is wide enough; remote sessions use two lines and
+	// group/divider/window rows stay one line.
+	usedLines := 0
+	lineBudget := height - 1 // Leave room for scrolling indicator
+	if lineBudget < 1 {
+		lineBudget = 1
 	}
 
 	// Show "more above" indicator if scrolled down
 	if h.viewOffset > 0 {
 		b.WriteString(DimStyle.Render(fmt.Sprintf("  ⋮ +%d above", h.viewOffset)))
 		b.WriteString("\n")
-		maxVisible-- // Account for the indicator line
+		lineBudget-- // Account for the indicator line
 	}
 
 	snapshot := h.getSessionRenderSnapshot()
@@ -16688,13 +17194,20 @@ func (h *Home) renderSessionList(width, height int) string {
 		}
 	}
 
-	for i := h.viewOffset; i < len(h.flatItems) && visibleCount < maxVisible; i++ {
+	nextItem := h.viewOffset
+	rowLines := h.sidebarRowLines()
+	for i := h.viewOffset; i < len(h.flatItems); i++ {
 		item := h.flatItems[i]
+		rowHeight := h.sidebarItemRenderHeightAtWidthLines(item, width, rowLines)
+		if usedLines > 0 && usedLines+rowHeight > lineBudget {
+			break
+		}
 		if h.jumpMode && item.Type != session.ItemTypeDivider {
 			hint, ok := jumpHintByItemIndex[i]
 			if !ok {
 				h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot, width)
-				visibleCount++
+				usedLines += rowHeight
+				nextItem = i + 1
 				continue
 			}
 			// Render item to temp buffer, then overlay hint badge at name position
@@ -16720,11 +17233,12 @@ func (h *Home) renderSessionList(width, height int) string {
 		} else {
 			h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot, width)
 		}
-		visibleCount++
+		usedLines += rowHeight
+		nextItem = i + 1
 	}
 
 	// Show "more below" indicator if there are more items
-	remaining := len(h.flatItems) - (h.viewOffset + visibleCount)
+	remaining := len(h.flatItems) - nextItem
 	if remaining > 0 {
 		b.WriteString(DimStyle.Render(fmt.Sprintf("  ⋮ +%d below", remaining)))
 	}
@@ -16819,7 +17333,7 @@ func (h *Home) renderItem(
 ) {
 	switch item.Type {
 	case session.ItemTypeGroup:
-		h.renderGroupItem(b, item, selected, itemIndex, groupStats)
+		h.renderGroupItem(b, item, selected, itemIndex, groupStats, listWidth)
 	case session.ItemTypeSession:
 		if item.CreatingID != "" {
 			h.renderCreatingSessionItem(b, item, selected)
@@ -16831,7 +17345,7 @@ func (h *Home) renderItem(
 	case session.ItemTypeRemoteGroup:
 		h.renderRemoteGroupItem(b, item, selected)
 	case session.ItemTypeRemoteSession:
-		h.renderRemoteSessionItem(b, item, selected)
+		h.renderRemoteSessionItemAtWidth(b, item, selected, listWidth)
 	case session.ItemTypeDivider:
 		h.renderDivider(b, item)
 	}
@@ -16867,6 +17381,7 @@ func (h *Home) renderGroupItem(
 	selected bool,
 	itemIndex int,
 	groupStats map[string]groupRenderStats,
+	listWidth int,
 ) {
 	group := item.Group
 
@@ -16911,6 +17426,16 @@ func (h *Home) renderGroupItem(
 	// Use precomputed recursive stats (group + descendants) for this render pass.
 	stats := groupStats[group.Path]
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
+	if h.compactEmbeddedSidebar() {
+		row := indent + expandIcon + " " + nameStyle.Render(group.Name) + countStr
+		row = fitCellWidth(row, max(1, listWidth))
+		if selected {
+			row = lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface).Render(row)
+		}
+		b.WriteString(row)
+		b.WriteString("\n")
+		return
+	}
 
 	statusStr := ""
 	if stats.running > 0 {
@@ -17046,6 +17571,14 @@ func (h *Home) renderSessionItem(
 	listWidth int,
 ) {
 	inst := item.Session
+	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
+		instState, ok := snapshot[inst.ID]
+		if !ok {
+			instState = h.getSessionRenderState(inst)
+		}
+		h.renderEmbeddedSessionItem(b, item, selected, instState, listWidth)
+		return
+	}
 
 	// Read status/tool from snapshot so render path stays lock-light during key-repeat.
 	instState, ok := snapshot[inst.ID]
@@ -17678,8 +18211,76 @@ func (h *Home) renderRemoteLatencyMarker(remoteName string, selected bool) strin
 
 // renderRemoteSessionItem renders a single remote session row
 func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, selected bool) {
+	h.renderRemoteSessionItemAtWidth(b, item, selected, embeddedCardMinWidth-1)
+}
+
+func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.Item, selected bool, listWidth int) {
 	rs := item.RemoteSession
 	if rs == nil {
+		return
+	}
+	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
+		statusIcon := "○"
+		statusStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+		switch rs.Status {
+		case "running":
+			statusIcon = "●"
+			statusStyle = lipgloss.NewStyle().Foreground(ColorGreen)
+		case "waiting":
+			statusIcon = "◐"
+			statusStyle = lipgloss.NewStyle().Foreground(ColorYellow)
+		case "error":
+			statusIcon = "✕"
+			statusStyle = lipgloss.NewStyle().Foreground(ColorRed)
+		}
+		indent := strings.Repeat("  ", max(0, item.Level-1))
+		marker := "  "
+		if selected {
+			marker = "▶ "
+		}
+		embedded := h.embeddedRemoteSessionIs(item.RemoteName, rs.ID)
+		if embedded {
+			marker = "┃ "
+		}
+		// A one-line rail carries the tool marker inline, like local rows.
+		rowLines := h.sidebarRowLines()
+		toolPrefix := ""
+		if rowLines == 1 && rs.Tool != "" {
+			toolPrefix = sidebarToolIcon(rs.Tool) + " "
+		}
+		firstPlain := indent + marker + statusIcon + " " + toolPrefix + rs.Title
+		first := indent + marker + statusStyle.Render(statusIcon) + " "
+		if toolPrefix != "" {
+			first += GetToolStyle(strings.ToLower(rs.Tool)).Bold(true).Render(sidebarToolIcon(rs.Tool)) + " "
+		}
+		first = fitCellWidth(first+rs.Title, max(1, listWidth))
+		secondText := strings.TrimSpace(rs.Status)
+		if secondText == "" {
+			secondText = "idle"
+		}
+		if rs.Tool != "" {
+			secondText += " · " + strings.ToLower(rs.Tool)
+		}
+		if !h.compactSidebar {
+			secondText += " · " + item.RemoteName
+		}
+		second := fitCellWidth(indent+"  ╰ "+secondText, max(1, listWidth))
+		if selected || embedded {
+			style := lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface)
+			first = style.Render(fitCellWidth(firstPlain, max(1, listWidth)))
+			second = style.Foreground(ColorTextDim).Render(second)
+		} else {
+			first = lipgloss.NewStyle().Foreground(ColorText).Render(first)
+			second = lipgloss.NewStyle().Foreground(ColorTextDim).Render(second)
+		}
+		b.WriteString(first)
+		b.WriteString("\n")
+		// Gate on the resolved density so this row is exactly as tall as
+		// sidebarItemRenderHeightDensity measured it, tool marker or not.
+		if rowLines > 1 {
+			b.WriteString(second)
+			b.WriteString("\n")
+		}
 		return
 	}
 
@@ -18080,6 +18681,9 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 // renderPreviewPane renders the right panel with live preview
 func (h *Home) renderPreviewPane(width, height int) string {
 	var b strings.Builder
+	if h.embeddedMode && h.sessionInput != nil {
+		return h.renderEmbeddedTerminalContent(width, height)
+	}
 
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
 		// Show different message when there are no sessions vs just no selection
@@ -18135,6 +18739,31 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Remote items: show simple preview
 	if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
+		if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil &&
+			h.embeddedRemoteSessionIs(item.RemoteName, item.RemoteSession.ID) {
+			key := remotePreviewCacheKey(item.RemoteName, item.RemoteSession.ID)
+			h.previewCacheMu.RLock()
+			preview := h.previewCache[key]
+			h.previewCacheMu.RUnlock()
+			return renderEmbeddedTerminal(
+				item.RemoteSession.Title,
+				item.RemoteSession.Status,
+				item.RemoteSession.Tool+" · "+item.RemoteName,
+				preview,
+				width,
+				height,
+				h.previewScrollOffset,
+			)
+		}
+		if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && h.embeddedLayout &&
+			item.RemoteSession.Status != string(session.StatusStopped) &&
+			item.RemoteSession.Status != string(session.StatusError) {
+			key := remotePreviewCacheKey(item.RemoteName, item.RemoteSession.ID)
+			h.previewCacheMu.RLock()
+			preview := h.previewCache[key]
+			h.previewCacheMu.RUnlock()
+			return h.renderDetachedTerminalContent(preview, width, height)
+		}
 		return h.renderRemotePreview(item, width, height)
 	}
 
@@ -18185,10 +18814,30 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if item.Type == session.ItemTypeWindow {
 		pvKey = previewCacheKey(selected.ID, item.WindowIndex)
 	}
+	if h.embeddedSessionIs(selected.ID) {
+		h.previewCacheMu.RLock()
+		preview := h.previewCache[pvKey]
+		h.previewCacheMu.RUnlock()
+		return renderEmbeddedTerminal(
+			selected.Title,
+			string(selected.GetStatusThreadSafe()),
+			selected.Tool,
+			preview,
+			width,
+			height,
+			h.previewScrollOffset,
+		)
+	}
+	selectedStatus := selected.GetStatusThreadSafe()
+	if h.embeddedLayout && selectedStatus != session.StatusStopped && selectedStatus != session.StatusError {
+		h.previewCacheMu.RLock()
+		preview := h.previewCache[pvKey]
+		h.previewCacheMu.RUnlock()
+		return h.renderDetachedTerminalContent(preview, width, height)
+	}
 
 	// Session info header box
 	// Cache status once to avoid races with background status updates
-	selectedStatus := selected.GetStatusThreadSafe()
 	statusIcon := "○"
 	statusColor := ColorTextDim
 	switch selectedStatus {
@@ -19933,6 +20582,10 @@ func (h *Home) openSessionSwitcher(fromID string, reattachOnCancel bool) {
 	}
 	h.sessionSwitcher.labels = labels
 	h.sessionSwitcher.reattachOnCancel = reattachOnCancel
+	// Keep the underlying sidebar on the same session as the picker from
+	// the first frame. This matters when Ctrl+S was opened from a full-screen
+	// attach whose session was not the dashboard's last cursor position.
+	h.syncSessionSwitcherSidebarSelection()
 	// Treat the opening Ctrl+S as the first advance so key-repeat that arrives
 	// right after the attach->TUI handoff is throttled instead of spinning.
 	h.sessionSwitcher.lastCycleAt = time.Now()
@@ -19940,6 +20593,21 @@ func (h *Home) openSessionSwitcher(fromID string, reattachOnCancel bool) {
 	// session, and schedule none: auto-commit arms only once the user cycles
 	// (Ctrl+S/Ctrl+A) inside this picker.
 	h.sessionSwitcher.bumpCommitGen()
+}
+
+// openEmbeddedSessionSwitcher records that commit and Esc should return through
+// the same embedded-pane path the user came from. Full-screen and overview
+// switchers retain their existing attach behavior.
+func (h *Home) openEmbeddedSessionSwitcher(fromID string) {
+	h.openSessionSwitcher(fromID, true)
+	if h.sessionSwitcher.IsVisible() {
+		h.sessionSwitcher.embeddedOnAttach = true
+		// Ctrl+S deliberately reveals the dashboard sidebar so its selection can
+		// mirror the picker highlight. Keep that visible layout when the idle
+		// commit re-enters the selected session; restoring the old collapsed
+		// state here made the sidebar disappear as soon as the user released W.
+		h.embeddedSidebarHidden = false
+	}
 }
 
 // armSwitcherCommit (re)starts the idle-commit countdown and returns the timer
@@ -19950,6 +20618,31 @@ func (h *Home) armSwitcherCommit() tea.Cmd {
 	return tea.Tick(switcherIdleCommit, func(time.Time) tea.Msg {
 		return switcherCommitMsg{gen: gen}
 	})
+}
+
+// syncSessionSwitcherSidebarSelection maps the floating picker's highlight to
+// the ordinary sidebar cursor. The dashboard remains visible beneath Ctrl+S,
+// so keeping both cursors on the same session makes the spatial relationship
+// explicit instead of leaving the sidebar parked on the origin row.
+func (h *Home) syncSessionSwitcherSidebarSelection() {
+	sel := h.sessionSwitcher.GetSelected()
+	if sel == nil {
+		return
+	}
+	h.selectSidebarSessionForSwitcher(sel.ID)
+}
+
+func (h *Home) selectSidebarSessionForSwitcher(id string) {
+	if idx := h.flatItemIndexByID(id); idx >= 0 {
+		h.cursor = idx
+		h.syncViewport()
+		return
+	}
+	// Production Home always owns a GroupTree; the nil guard keeps lightweight
+	// renderer/interaction fixtures from needing the entire dashboard graph.
+	if h.groupTree != nil {
+		h.SelectSessionByID(id)
+	}
 }
 
 // handleSwitcherCommit commits the highlighted session when the idle timer that
@@ -19968,8 +20661,9 @@ func (h *Home) commitSessionSwitch() tea.Cmd {
 	if sel := h.sessionSwitcher.GetSelected(); sel != nil {
 		target = sel.ID
 	}
+	embedded := h.sessionSwitcher.embeddedOnAttach
 	h.sessionSwitcher.Hide()
-	return h.attachToSwitchTarget(target)
+	return h.attachToSwitchTargetInMode(target, embedded)
 }
 
 // scrollbackCaptureLines is how many trailing history lines the pager captures.
@@ -20041,6 +20735,10 @@ func (h *Home) handleScrollbackPagerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // attachToSwitchTarget re-attaches to the session with the given ID and lands
 // the list cursor there on the next detach. Returns nil if the session is gone.
 func (h *Home) attachToSwitchTarget(id string) tea.Cmd {
+	return h.attachToSwitchTargetInMode(id, false)
+}
+
+func (h *Home) attachToSwitchTargetInMode(id string, embedded bool) tea.Cmd {
 	if id == "" {
 		return nil
 	}
@@ -20048,6 +20746,15 @@ func (h *Home) attachToSwitchTarget(id string) tea.Cmd {
 	inst := h.instanceByID[id]
 	h.instancesMu.RUnlock()
 	if inst == nil {
+		return nil
+	}
+	if embedded {
+		if !h.SelectSessionByID(id) {
+			return nil
+		}
+		if h.enterEmbeddedMode() {
+			return h.startEmbeddedModeCmd()
+		}
 		return nil
 	}
 	h.lastNotifSwitchMu.Lock()
@@ -20075,10 +20782,14 @@ func (h *Home) handleSessionSwitcherKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.commitSessionSwitch()
 	case "esc":
 		reattach := h.sessionSwitcher.reattachOnCancel
+		embedded := h.sessionSwitcher.embeddedOnAttach
 		fromID := h.sessionSwitcher.fromID
 		h.sessionSwitcher.Hide()
+		// Cancel means the origin is selected again in both the sidebar and
+		// attach target. Overview-opened switchers also restore their origin.
+		h.selectSidebarSessionForSwitcher(fromID)
 		if reattach {
-			return h, h.attachToSwitchTarget(fromID)
+			return h, h.attachToSwitchTargetInMode(fromID, embedded)
 		}
 		return h, nil
 	case "ctrl+q":
@@ -20086,17 +20797,23 @@ func (h *Home) handleSessionSwitcherKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.sessionSwitcher.Hide()
 		return h, nil
 	case "ctrl+s":
-		h.sessionSwitcher.cycle(true, time.Now())
+		if h.sessionSwitcher.cycle(true, time.Now()) {
+			h.syncSessionSwitcherSidebarSelection()
+		}
 		return h, h.armSwitcherCommit()
 	case "ctrl+a":
-		h.sessionSwitcher.cycle(false, time.Now())
+		if h.sessionSwitcher.cycle(false, time.Now()) {
+			h.syncSessionSwitcherSidebarSelection()
+		}
 		return h, h.armSwitcherCommit()
 	case "up":
 		h.sessionSwitcher.prev()
+		h.syncSessionSwitcherSidebarSelection()
 		h.sessionSwitcher.bumpCommitGen() // cancel pending auto-commit: manual mode
 		return h, nil
 	case "down":
 		h.sessionSwitcher.next()
+		h.syncSessionSwitcherSidebarSelection()
 		h.sessionSwitcher.bumpCommitGen()
 		return h, nil
 	default:
