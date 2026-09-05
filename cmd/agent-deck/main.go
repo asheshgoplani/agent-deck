@@ -480,6 +480,21 @@ func main() {
 			handleDebugDump()
 			return
 		}
+
+		// An unrecognised subcommand used to fall through and launch the TUI.
+		// Every plausible guess at a command that exists under another name —
+		// `agent-deck context`, `ctx`, `inspect`, `tokens` — therefore opened a
+		// full-screen app instead of saying "no such command", and with no TTY
+		// it hung until killed. A word that is not a flag and not a command is a
+		// mistake, and the shell's job is to say so.
+		if !webEnabled && args[0] != "" && !strings.HasPrefix(args[0], "-") {
+			fmt.Fprintf(os.Stderr, "Error: unknown command %q.\n", args[0])
+			if suggestion := suggestCommand(args[0]); suggestion != "" {
+				fmt.Fprintf(os.Stderr, "Did you mean: %s\n", suggestion)
+			}
+			fmt.Fprintln(os.Stderr, "Run 'agent-deck help' for the command list, or 'agent-deck' with no arguments for the TUI.")
+			os.Exit(1)
+		}
 	}
 
 	// Every path that reaches this point boots the bubbletea TUI (which
@@ -504,6 +519,33 @@ func main() {
 	// pipe got killed by e.g. an SSH logout scope cleanup. Runs in the
 	// background so it never blocks TUI boot. See .planning/v178-ssh-reviver/PLAN.md.
 	go reviveOnStartup(profile)
+
+	// Block TUI launch when stdin is not a terminal.
+	//
+	// A full-screen app with no keyboard is not a screen, it is a hang: bubbletea
+	// reads keys from stdin, so with stdin on a pipe or /dev/null there is no way
+	// to press q and the process paints into the void until it is killed. That is
+	// literally what a cold reviewer's first typo produced — `agent-deck context`
+	// fell through to the TUI and their terminal was dead for two minutes. The
+	// unknown-command guard above closes the common path; this closes the rest of
+	// it (a redirect, a CI job, a `| head`, a scripted invocation).
+	//
+	// Headless web mode never boots a TUI, so it is exempt, and the escape hatch
+	// exists for harnesses that deliberately drive the TUI without a PTY.
+	if !webHeadless && !term.IsTerminal(int(os.Stdin.Fd())) && os.Getenv("AGENT_DECK_ALLOW_NO_TTY") == "" {
+		fmt.Fprintln(os.Stderr, "Error: the agent-deck TUI needs an interactive terminal, and stdin is not one.")
+		fmt.Fprintln(os.Stderr, "Started without a terminal it would draw a full-screen app you cannot type into,")
+		fmt.Fprintln(os.Stderr, "and there would be no key that closes it.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Every reporting command works without a terminal. For example:")
+		fmt.Fprintln(os.Stderr, "  agent-deck list                       # List sessions")
+		fmt.Fprintln(os.Stderr, "  agent-deck status --json              # Status counts as JSON")
+		fmt.Fprintln(os.Stderr, "  agent-deck session context <id>       # What is loaded into every turn")
+		fmt.Fprintln(os.Stderr, "  agent-deck help                       # The full command list")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "To drive the TUI from a harness that has no PTY, set AGENT_DECK_ALLOW_NO_TTY=1.")
+		os.Exit(1)
+	}
 
 	// Block TUI launch inside a managed session to prevent infinite nesting.
 	// CLI commands (add, session start/stop, mcp attach, etc.) still work fine.
@@ -3647,6 +3689,7 @@ func printHelp() {
 	fmt.Println("  session fork <id>         Fork Claude or Pi session with context")
 	fmt.Println("  session attach <id>       Attach to session interactively")
 	fmt.Println("  session show [id]         Show session details")
+	fmt.Println("  session context [id]      Show what is loaded into every turn, and what you can remove")
 	fmt.Println()
 	fmt.Println("Fleet Recovery Commands:")
 	fmt.Println("  fleet status              Report sessions whose panes are gone (read-only)")
@@ -3723,6 +3766,7 @@ func printHelp() {
 	fmt.Println("  agent-deck add -t \"My App\" -g dev .   # With title and group")
 	fmt.Println("  agent-deck session start my-project   # Start a session")
 	fmt.Println("  agent-deck session show               # Show current session (in tmux)")
+	fmt.Println("  agent-deck session context my-project # What is loaded into every turn, ranked by cost")
 	fmt.Println("  agent-deck mcp list --json            # List MCPs as JSON")
 	fmt.Println("  agent-deck mcp attach my-app exa      # Attach MCP to session")
 	fmt.Println("  agent-deck skill attach my-app react  # Attach skill to project")
@@ -3752,6 +3796,7 @@ func printHelp() {
 	fmt.Println("  Enter      Attach to session")
 	fmt.Println("  m          MCP Manager")
 	fmt.Println("  s          Skills Manager")
+	fmt.Println("  C          Inspect context (what is loaded into every turn)")
 	fmt.Println("  M          Move session to group")
 	fmt.Println("  r          Rename session/group")
 	fmt.Println("  R          Restart session")
@@ -3760,6 +3805,29 @@ func printHelp() {
 	fmt.Println("  /          Search")
 	fmt.Println("  Ctrl+Q     Detach from session")
 	fmt.Println("  q          Quit")
+}
+
+// suggestCommand maps a plausible-but-wrong first word onto the command that
+// does what the user was reaching for. It exists because the names people guess
+// are not always the names a command tree grew: everything below was an actual
+// first guess at `session context`.
+func suggestCommand(arg string) string {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "context", "ctx", "inspect", "tokens", "usage":
+		return "agent-deck session context [id]"
+	case "sessions":
+		return "agent-deck list"
+	case "start", "stop", "restart", "fork", "attach", "show":
+		return "agent-deck session " + strings.ToLower(arg) + " <id>"
+	case "mcps":
+		return "agent-deck mcp list"
+	case "skills":
+		return "agent-deck skill list"
+	case "groups":
+		return "agent-deck group list"
+	default:
+		return ""
+	}
 }
 
 // mergeFlags returns the non-empty value, preferring the first

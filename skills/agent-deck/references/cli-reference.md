@@ -307,6 +307,45 @@ agent-deck session output [id|title] [--json] [-q]
 
 Get the last response from a session. Transcript-backed extraction is tool-dependent; use `--pane` for a raw tmux capture when structured output is unavailable.
 
+### session context
+
+```bash
+agent-deck session context [id|title] [--tab overview|breakdown|verify] [--item <id>] [--all] [--capabilities] [--json] [--strict]
+```
+
+Show what is loaded into the agent's context for a session — the instruction-file
+hierarchy, skills, agents, deferred tool names and MCP servers — ranked by what
+each costs, with the lever (file to edit, directory to delete, command to run)
+for everything the user controls.
+
+Every figure states its provenance on two independent axes: whether the *text*
+is verbatim as the harness injected it, reconstructed from the same sources the
+harness reads, or absent; and whether the *number* was measured by the provider,
+estimated, obtained by subtraction, or unknown. An unknown renders as `—` and is
+never summed as zero, and a total containing one is prefixed `≥`.
+
+- `--tab overview` (default) — the occupancy gauge and one row per category.
+- `--tab breakdown` — every item ranked, actionable first, with its id and lever.
+- `--tab verify` — the arithmetic: anchor, attributed, residual, coverage,
+  invariant violations, and what the adapter declared it could achieve.
+- `--item <id>` — one item's provenance, lever and verbatim text. Accepts any
+  unique id prefix.
+- `--capabilities` — what this harness can report, without inspecting anything.
+- `--json` — the full report on a stable schema (`schema_version`), whatever the
+  tab. Unknown token counts encode as `null`, never `0`.
+- `--strict` — exit 3 when the report fails its own reconciliation. Without it
+  the command exits 0 for any report it managed to produce, including an honest
+  "token accounting unsupported for <tool>" inventory.
+
+Claude Code sessions are fully supported (measured first-turn anchor, verbatim
+skill/agent/tool listings, reconstructed CLAUDE.md chain). Harnesses with no
+readable accounting still get a populated inventory with `—` for every figure.
+
+```bash
+agent-deck session context my-project --tab breakdown
+agent-deck session context my-project --json | jq '.report.reconciliation'
+```
+
 ### session set-parent / unset-parent
 
 ```bash

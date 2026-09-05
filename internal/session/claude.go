@@ -557,6 +557,77 @@ func IsClaudeConfigDirExplicitForInstance(inst *Instance) bool {
 	return source != "default"
 }
 
+// Config-dir source labels that only SpawnClaudeConfigDirForInstance can
+// return. The rest come from resolveClaudeConfigDir.
+const (
+	// ClaudeConfigSourceWorkerScratch means the running process was handed the
+	// per-session scratch home agent-deck prepared for it.
+	ClaudeConfigSourceWorkerScratch = "worker-scratch"
+	// ClaudeConfigSourceAmbient means agent-deck exported nothing, so the
+	// process inherited whatever CLAUDE_CONFIG_DIR its shell had. The path
+	// returned alongside it is where the resolver would land, which is a
+	// well-founded guess and not an observation.
+	ClaudeConfigSourceAmbient = "ambient"
+)
+
+// SpawnClaudeConfigDirForInstance returns the CLAUDE_CONFIG_DIR the spawned
+// claude process actually runs under, with a label for how it was decided.
+//
+// It exists because GetClaudeConfigDirForInstance answers a different question.
+// That function resolves which *account* a session belongs to — the user's
+// intent — and deliberately ignores worker-scratch dirs, because a scratch home
+// is an ephemeral mirror and must never be mistaken for a credential source.
+// But the scratch home is exactly what the process is handed at spawn, and
+// therefore exactly where its CLAUDE.md, settings.json, skills and projects
+// come from. A reader asking "what is loaded into this session" who is shown
+// the profile dir is shown files that are not the ones being read: on a real
+// session that meant listing two phantom memory files and missing the one the
+// harness actually loaded.
+//
+// The gate is reproduced from the spawn builders (buildClaudeCommandWithMessage
+// / buildBashExportPrefix / buildClaudeResumeCommand, issue #949) rather than
+// re-invented, so this cannot drift from what is really exported:
+//
+//  1. no prepared scratch, or the scratch is gone from disk → the resolved dir
+//  2. scratch prepared but the config-dir gate is closed (nothing explicit) →
+//     dormant scratch, the process inherits the ambient dir
+//  3. otherwise → the scratch home
+//
+// A caller that needs to know whether the answer is observed or inferred should
+// test the source against [ClaudeConfigSourceAmbient].
+func SpawnClaudeConfigDirForInstance(inst *Instance) (path, source string) {
+	if inst == nil {
+		return "", ""
+	}
+	resolved, resolvedSource := resolveClaudeConfigDir(resolveOpts{inst: inst})
+	if !IsClaudeConfigDirExplicitForInstance(inst) {
+		// The gate is closed: agent-deck exports no CLAUDE_CONFIG_DIR at all,
+		// so any prepared scratch stays dormant and the process falls back to
+		// the harness's own default. Reporting the resolved default path is
+		// right; reporting it as if we had set it is not.
+		return resolved, ClaudeConfigSourceAmbient
+	}
+	scratch := strings.TrimSpace(inst.WorkerScratchConfigDir)
+	if scratch == "" {
+		// WorkerScratchConfigDir lives only on the process that prepared it —
+		// it is not a column in the instances table. A CLI invocation that
+		// loaded this session from state.db therefore sees it empty even while
+		// the running pane is reading a scratch home. The path is deterministic
+		// from the instance id, so recover it and let the filesystem decide.
+		scratch = WorkerScratchConfigDirFor(inst.ID)
+	}
+	if scratch == "" {
+		return resolved, resolvedSource
+	}
+	if info, err := os.Stat(scratch); err != nil || !info.IsDir() {
+		// Never created, or cleaned up since (a stopped session): whichever, no
+		// process is reading it now, and the resolved dir is what a fresh spawn
+		// would use.
+		return resolved, resolvedSource
+	}
+	return scratch, ClaudeConfigSourceWorkerScratch
+}
+
 // GetClaudeCommand returns the configured Claude command/alias
 // Priority: 1) UserConfig setting, 2) Default "claude"
 // This allows users to configure an alias like "cdw" or "cdp" that sets
