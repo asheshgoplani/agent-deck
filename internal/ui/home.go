@@ -92,6 +92,12 @@ const (
 	// At 2s: 2-5 CapturePane() calls/sec = minimal CPU overhead
 	tickInterval = 2 * time.Second
 
+	// hoverDividerTTL bounds how long the divider's hover highlight may survive
+	// without a mouse event confirming it. Checked on the 2s tick, so expiry
+	// lands 3-5s after the last confirmation — far past any approach-and-click
+	// pause, and short enough that a stranded highlight reads as transient.
+	hoverDividerTTL = 3 * time.Second
+
 	// logOutputDebounce limits how often a single session can trigger
 	// UpdateStatus() from tmux %output events.
 	// A higher value avoids expensive status parsing loops for very chatty sessions
@@ -548,6 +554,8 @@ type Home struct {
 	previewPct          int       // 10-90, default 65
 	previewPctOverlayAt time.Time // when to hide the split overlay (zero = hidden)
 	draggingDivider     bool      // true while the mouse is dragging the Sessions/Preview divider
+	hoverDivider        bool      // true while the mouse rests on the divider's grab zone
+	hoverDividerAt      time.Time // when hoverDivider was last confirmed by a mouse event
 
 	// previewOrientation places the PREVIEW pane "right" (side-by-side) or
 	// "below" (stacked) on wide terminals. Loaded from config.toml [ui]
@@ -5442,9 +5450,21 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Execute final shutdown logic after splash delay
 		return h, h.performFinalShutdown(bool(msg))
 
+	case tea.BlurMsg:
+		// The terminal reports motion only while the pointer is inside its
+		// window, so once focus leaves there is no event coming that would
+		// correct a stale hover. Losing focus IS that event. (Focus reporting
+		// is enabled only for the embedded layout; classic mode never sees
+		// this message.)
+		h.clearDividerHover()
+		return h, nil
+
 	case tea.WindowSizeMsg:
 		h.width = msg.Width
 		h.height = msg.Height
+		// The divider moves when the frame does, so a hover measured against
+		// the old geometry is about a column that no longer exists.
+		h.clearDividerHover()
 		h.updateSizes()
 		h.syncViewport() // Recalculate viewport when window size changes
 		h.setupWizard.SetSize(msg.Width, msg.Height)
@@ -5470,11 +5490,23 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
 			return h, nil
 		}
+		// Every mouse event updates the hover state, including the wheel events
+		// routed away below. Scrolling the list is the ordinary way to move the
+		// pointer off the divider, and a wheel notch that skipped this left the
+		// separator lit with nothing under it.
+		h.syncDividerHover(msg.X)
+
 		// Route mouse wheel events to the active scrollable area.
 		// Priority: setup wizard > settings > help > global search > MCP dialog > new/fork dialogs > main list.
 		// Non-wheel events are silently ignored (O(1), no blocking I/O).
 		switch msg.Button {
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+			// A wheel notch means the user moved on to something else; never
+			// let it slip past the drag handler and strand a grabbed divider.
+			if h.draggingDivider {
+				h.endDividerDrag()
+				h.syncPointerShape()
+			}
 			if h.setupWizard.IsVisible() {
 				return h, nil
 			}
@@ -7188,6 +7220,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case tickMsg:
+		h.expireDividerHover(time.Now())
+
 		// Honor a pending `agent-deck session focus <id>` request from the CLI.
 		// A non-nil cmd means the request asked to --attach the session: open it
 		// now (same as Enter) and skip the rest of this tick's background work,
@@ -7437,6 +7471,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
+		// Hands on the keyboard means the mouse is not about to grab anything,
+		// and the terminal stops reporting motion the instant the pointer
+		// leaves its window — so a keystroke is the most reliable signal we get
+		// that a hover highlight has outlived its mouse.
+		h.clearDividerHover()
 
 		// Handle jump mode input (before modals)
 		if h.jumpMode {
@@ -8438,29 +8477,66 @@ func (h *Home) clickedItemID(index int) string {
 	return ""
 }
 
+// endDividerDrag releases the divider and persists whatever ratio it was left
+// at. Every path out of a drag goes through here so a drag can never end
+// without its result being saved.
+func (h *Home) endDividerDrag() {
+	if !h.draggingDivider {
+		return
+	}
+	h.draggingDivider = false
+	persistPreviewPct(h.getPreviewPct())
+	h.saveUIState()
+}
+
 // handleDividerDrag processes mouse events for the Sessions/Preview divider
 // resize drag and reports whether it consumed the event. The lifecycle is:
 // left-press on the separator grabs it, motion resizes the split live, and
 // release persists the new ratio. It keys off draggingDivider + msg.Action
 // rather than msg.Button because X10 terminals report a drag release as
 // MouseButtonNone, not MouseButtonLeft.
+//
+// The drag also has to survive a release it never sees. Under all-motion
+// reporting a terminal that is moving the mouse at the instant the button comes
+// up encodes that release with the motion bit set (SGR `<32;x;ym`), and Bubble
+// Tea's parser refuses to promote a motion report to a release — so the event
+// arrives as one more drag step and the divider keeps following a mouse nobody
+// is holding. That is the "click and release stays dragging" bug. The next
+// event gives the state away for free: a genuine drag reports motion with the
+// left button still set, while an unheld cursor reports motion with
+// MouseButtonNone. So a button-less motion ends the drag rather than continuing
+// it, and the divider unsticks on the very next mouse move.
 func (h *Home) handleDividerDrag(msg tea.MouseMsg) bool {
 	if h.draggingDivider {
 		switch msg.Action {
 		case tea.MouseActionMotion:
+			if msg.Button != tea.MouseButtonLeft || !h.dividerResizeEnabled() {
+				// The button is not down any more (or the divider went inert
+				// under us); either way the drag is over.
+				h.endDividerDrag()
+				return true
+			}
 			h.lastUserInputTime = time.Now()
 			h.setPreviewPctFromMouseX(msg.X)
 		case tea.MouseActionRelease:
-			h.draggingDivider = false
-			persistPreviewPct(h.getPreviewPct())
-			h.saveUIState()
+			h.endDividerDrag()
+		case tea.MouseActionPress:
+			// A fresh press while still "dragging" means the previous release
+			// never landed. Close out the old drag and let this press start a
+			// clean one if it is on the divider.
+			h.endDividerDrag()
+			if msg.Button == tea.MouseButtonLeft && h.hoverDivider {
+				h.draggingDivider = true
+				h.lastUserInputTime = time.Now()
+			}
 		}
 		return true
 	}
 
-	// Grab the divider only on a left-press over the separator, dual layout only.
-	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress &&
-		h.getLayoutMode() == LayoutModeDual && h.isOnDivider(msg.X) {
+	// Grab the divider only on a left-press over the separator, and only while
+	// it is live. hoverDivider is already current and already carries that
+	// condition: syncDividerHover ran for this event.
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress && h.hoverDivider {
 		h.draggingDivider = true
 		h.lastUserInputTime = time.Now()
 		return true
@@ -8468,22 +8544,103 @@ func (h *Home) handleDividerDrag(msg tea.MouseMsg) bool {
 	return false
 }
 
+// dividerResizeEnabled reports whether the Sessions/Preview divider accepts a
+// resize right now. It requires the dual layout AND a detached dashboard.
+//
+// Attached is the disqualifier that matters. While a session is embedded, the
+// input router forwards every mouse event that lands inside the session pane
+// straight to tmux, so the dashboard sees the pointer arrive at the divider and
+// then never hears about it leaving — the highlight and the grab cursor outlive
+// the mouse by whatever the expiry window is. There is no event to fix that
+// with, because the events are going somewhere else by design. Resizing the
+// frame around a terminal you are typing into is also not what the mouse is for
+// in that mode. So the divider is simply inert while attached: detach and it
+// comes back.
+func (h *Home) dividerResizeEnabled() bool {
+	return h.getLayoutMode() == LayoutModeDual && !h.embeddedMode
+}
+
+// syncDividerHover recomputes whether the mouse is resting on the divider's
+// grab zone. Hover is derived state with exactly one input — the last known
+// mouse position — so it is recomputed from every mouse event rather than
+// updated from some of them. Anything else strands the highlight: an event the
+// drag handler never sees leaves the divider lit under a mouse that moved away.
+func (h *Home) syncDividerHover(x int) {
+	h.hoverDivider = !h.hasModalVisible() &&
+		h.dividerResizeEnabled() &&
+		h.isOnDivider(x)
+	if h.hoverDivider {
+		h.hoverDividerAt = time.Now()
+	}
+	h.syncPointerShape()
+}
+
+// expireDividerHover is the backstop for every way a mouse can stop reporting
+// that we cannot observe directly. The one that actually bites: in embedded
+// mode the input router forwards events inside the session pane straight to
+// tmux, so moving the pointer off the divider and into the terminal next to it
+// delivers nothing to the dashboard at all — the divider would stay lit under a
+// mouse that is demonstrably somewhere else.
+//
+// Rather than enumerate those channels, hover simply expires if no mouse event
+// has confirmed it recently. The window is deliberately generous: approaching
+// the divider and pausing before you click must never lose the highlight, and
+// losing it costs nothing anyway — the click re-establishes hover before the
+// grab check, and any movement brings it straight back.
+func (h *Home) expireDividerHover(now time.Time) {
+	if h.hoverDivider && now.Sub(h.hoverDividerAt) > hoverDividerTTL {
+		h.clearDividerHover()
+	}
+}
+
+// clearDividerHover drops the highlight and hands the mouse cursor back. Hover
+// is a claim about where the mouse is, and the moment the mouse stops reporting
+// — the user went to the keyboard, the window lost focus, the layout moved
+// under it — that claim has no evidence behind it and must not survive on
+// screen. The next mouse move re-establishes it in a frame.
+func (h *Home) clearDividerHover() {
+	if !h.hoverDivider {
+		// Still resync the pointer: a stale grab cursor outlives its highlight.
+		h.syncPointerShape()
+		return
+	}
+	h.hoverDivider = false
+	h.syncPointerShape()
+}
+
+// syncPointerShape asks the terminal for a grab cursor over the divider, so the
+// handle looks draggable before you find out by dragging it. Terminals without
+// OSC 22 ignore it and fall back to the widened hit zone and the hover
+// highlight, which need no terminal cooperation.
+func (h *Home) syncPointerShape() {
+	if h.sessionOutput == nil {
+		return
+	}
+	switch {
+	case h.draggingDivider:
+		h.sessionOutput.SetPointerShape(pointerShapeGrabbing)
+	case h.hoverDivider:
+		h.sessionOutput.SetPointerShape(pointerShapeGrab)
+	default:
+		h.sessionOutput.SetPointerShape(pointerShapeDefault)
+	}
+}
+
 // handleMouse handles mouse events (click to select, double-click to activate)
 func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if h.hasModalVisible() {
 		// A modal opening mid-drag shouldn't leave the divider stuck grabbed.
 		// Treat it as a release so the dragged-to ratio is preserved.
-		if h.draggingDivider {
-			h.draggingDivider = false
-			persistPreviewPct(h.getPreviewPct())
-			h.saveUIState()
-		}
+		h.endDividerDrag()
+		h.clearDividerHover()
 		return h, nil
 	}
 
 	// Divider resize drag takes precedence over list selection (the separator
 	// columns sit at x >= sessionsPaneWidth, where list clicks are ignored).
-	if h.handleDividerDrag(msg) {
+	consumed := h.handleDividerDrag(msg)
+	h.syncPointerShape()
+	if consumed {
 		return h, nil
 	}
 
@@ -15733,9 +15890,17 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	if h.draggingDivider || h.embeddedMode {
 		separatorColor = ColorAccent
 	}
+	// A hovered divider brightens and thickens before you press, so the handle
+	// tells you it is a handle. This is the affordance every terminal gets;
+	// the OSC 22 grab cursor is a bonus where the terminal supports it.
+	separatorGlyph := " │ "
+	if h.hoverDivider || h.draggingDivider {
+		separatorGlyph = " ┃ "
+		separatorColor = ColorAccent
+	}
 	// Every row is the same constant string, so style it once and reuse it
 	// instead of paying a lipgloss render per screen row per frame.
-	separatorCell := lipgloss.NewStyle().Foreground(separatorColor).Render(" │ ")
+	separatorCell := lipgloss.NewStyle().Foreground(separatorColor).Render(separatorGlyph)
 	separatorLines := make([]string, contentHeight)
 	for i := range separatorLines {
 		separatorLines[i] = separatorCell
