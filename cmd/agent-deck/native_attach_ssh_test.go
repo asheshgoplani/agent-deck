@@ -86,6 +86,9 @@ func startNativeSSH(t *testing.T, remoteHome, binDir string) *nativeSSHProxy {
 		sshd = "/usr/sbin/sshd"
 	}
 	if _, err := os.Stat(sshd); err != nil {
+		if os.IsNotExist(err) && os.Getenv("NATIVE_SSHD") == "" {
+			nativeSSHMissingTool(t, sshd)
+		}
 		t.Fatalf("real sshd required: %v", err)
 	}
 	account, err := user.Current()
@@ -253,4 +256,14 @@ func nativeRetainFile(t *testing.T, name, source string) {
 	if _, err := io.Copy(output, input); err != nil {
 		t.Error(err)
 	}
+}
+
+// Ordinary developer runs may lack SSH server tools. Acceptance runs opt in
+// explicitly and also verify that this test ran, so a skip cannot certify them.
+func nativeSSHMissingTool(t *testing.T, tool string) {
+	t.Helper()
+	if os.Getenv("NATIVE_SSH_REQUIRED") == "1" {
+		t.Fatalf("native SSH acceptance requires %s", tool)
+	}
+	t.Skipf("native SSH integration requires %s", tool)
 }
