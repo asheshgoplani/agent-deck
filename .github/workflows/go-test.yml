@@ -107,7 +107,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      NATIVE_SSH_ARTIFACT_DIR: ${{ runner.temp }}/native-ssh-evidence
       NATIVE_SSH_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout exact candidate
@@ -118,6 +117,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+      - name: Set native evidence path
+        run: echo "NATIVE_SSH_ARTIFACT_DIR=$RUNNER_TEMP/native-ssh-evidence" >> "$GITHUB_ENV"
       - name: Install real SSH fixture tools
         run: |
           mkdir -p "$NATIVE_SSH_ARTIFACT_DIR"
