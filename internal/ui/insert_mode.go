@@ -156,6 +156,10 @@ func (h *Home) enterEmbeddedMode() bool {
 			h.insertModeRemoteName = ""
 			h.insertModeRemoteID = ""
 		}
+		// Session mode begins now, not when the PTY reports ready: whatever
+		// the user types while tmux connects belongs to the pane and waits in
+		// the router until Activate.
+		h.sessionInput.Prepare(h.embeddedPaneRect(), h.embeddedSwitchByte())
 	} else {
 		if !h.enterInsertMode() {
 			return false
@@ -177,6 +181,16 @@ func (h *Home) enterEmbeddedMode() bool {
 		}
 	}
 	return true
+}
+
+// embeddedSwitchByte is the configured portable Ctrl+<key> chord that returns
+// an embedded local session to the MRU switcher. Remote rows deliberately
+// leave it disabled because the switcher re-attaches through local tmux only.
+func (h *Home) embeddedSwitchByte() byte {
+	if h.insertModeSessionID == "" {
+		return 0
+	}
+	return h.attachOptions(nil).SwitchKeyByte
 }
 
 func (h *Home) sessionExistsForUI(inst *session.Instance) bool {
@@ -299,10 +313,17 @@ func (h *Home) handleInsertModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		// With the production input router, every other key bypasses Bubble
-		// Tea and reaches the child tmux PTY as its original bytes. Any key
-		// message observed here raced with activation and must not be sent a
-		// second time through the legacy KeySender path.
+		// Tea and reaches the child tmux PTY as its original bytes. A key
+		// message observed here is one the router did not forward: it shared
+		// a stdin read with the Enter that began the session, or arrived
+		// while the PTY was still connecting. Re-encode it and let the router
+		// deliver it in order once the client exists, instead of dropping the
+		// first characters a fast typist or a paste sends into a new session.
+		// It must never take the legacy KeySender path.
 		if h.sessionInput != nil {
+			if raw, ok := keyMsgRawBytes(msg); ok {
+				h.sessionInput.Forward(raw)
+			}
 			return h, nil
 		}
 		if msg.Type == tea.KeyCtrlUp {

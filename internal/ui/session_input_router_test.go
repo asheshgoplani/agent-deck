@@ -19,15 +19,17 @@ func newRoutingTestInput(rect terminalCellRect) (*SessionInputRouter, *bytes.Buf
 	return router, child
 }
 
+// routeTestBytes runs one routing pass the way Read does: route under the
+// lock, then deliver the pane bytes to the child that was installed when the
+// pass began (a detach chord clears r.child before the pass returns).
 func routeTestBytes(t *testing.T, router *SessionInputRouter, data string) []byte {
 	t.Helper()
 	router.mu.Lock()
 	router.rawBuf = append(router.rawBuf, data...)
-	dashboard, err := router.routeEmbeddedLocked(false)
+	child := router.child
+	dashboard, toChild := router.routeEmbeddedLocked(false)
 	router.mu.Unlock()
-	if err != nil {
-		t.Fatalf("routeEmbeddedLocked: %v", err)
-	}
+	writeChild(child, toChild)
 	return dashboard
 }
 
@@ -104,6 +106,9 @@ func TestSessionInputRouterSwitchKeyHonorsPasteAndDisabledBinding(t *testing.T) 
 		t.Fatal("Ctrl+W inside bracketed paste deactivated routing")
 	}
 
+	// RemoteSession path: Home activates remote rows with switchByte == 0
+	// because the MRU switcher re-attaches through local tmux only, so the
+	// chord must reach the remote pane as ordinary input.
 	router, child = newRoutingTestInput(terminalCellRect{Width: 80, Height: 24})
 	if got := routeTestBytes(t, router, "\x17"); len(got) != 0 {
 		t.Fatalf("disabled switch binding returned bytes to dashboard: %q", got)
@@ -197,16 +202,12 @@ func TestSessionInputRouterFlushesStandaloneEscape(t *testing.T) {
 	router, child := newRoutingTestInput(terminalCellRect{Width: 80, Height: 24})
 	router.mu.Lock()
 	router.rawBuf = append(router.rawBuf, '\x1b')
-	if _, err := router.routeEmbeddedLocked(false); err != nil {
-		t.Fatal(err)
+	if _, toChild := router.routeEmbeddedLocked(false); len(toChild) != 0 {
+		t.Fatalf("ambiguous Escape forwarded before timeout: %q", toChild)
 	}
-	if child.Len() != 0 {
-		t.Fatalf("ambiguous Escape forwarded before timeout: %q", child.String())
-	}
-	if _, err := router.routeEmbeddedLocked(true); err != nil {
-		t.Fatal(err)
-	}
+	_, toChild := router.routeEmbeddedLocked(true)
 	router.mu.Unlock()
+	writeChild(child, toChild)
 	if got := child.String(); got != "\x1b" {
 		t.Fatalf("standalone Escape = %q, want raw ESC", got)
 	}

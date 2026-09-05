@@ -131,14 +131,7 @@ func (h *Home) installEmbeddedTerminal(msg embeddedStartMsg) tea.Cmd {
 	// if the chrome moved during the connect.
 	h.embeddedAppliedRect = terminalCellRect{}
 	if h.sessionInput != nil {
-		switchByte := byte(0)
-		if h.insertModeSessionID != "" {
-			// Keep embedded mode at parity with full-screen attach. Remote rows
-			// deliberately leave this disabled because the switcher currently
-			// re-attaches through local tmux sessions only.
-			switchByte = h.attachOptions(nil).SwitchKeyByte
-		}
-		h.sessionInput.Activate(h.embeddedTerminal, h.embeddedPaneRect(), switchByte)
+		h.sessionInput.Activate(h.embeddedTerminal, h.embeddedPaneRect(), h.embeddedSwitchByte())
 	}
 	h.syncEmbeddedTerminalGeometry()
 	return waitEmbeddedTerminalCmd(h.embeddedGeneration, h.embeddedTerminal)
