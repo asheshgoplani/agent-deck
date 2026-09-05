@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1650,6 +1651,7 @@ func handleSessionShow(profile string, args []string) {
 		"no_transition_notify": inst.NoTransitionNotify,
 		"title_locked":         inst.TitleLocked,
 		"tool":                 inst.Tool,
+		"account":              inst.Account,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
 	}
 	// Honest Status v2: additive substate refinement (omit when none so the
@@ -1754,6 +1756,7 @@ func handleSessionShow(profile string, args []string) {
 	}
 
 	sb.WriteString(fmt.Sprintf("Tool:    %s\n", inst.Tool))
+	sb.WriteString(fmt.Sprintf("Account: %s\n", strconv.Quote(inst.Account)))
 	if modelInfo.ModelID != "" {
 		if modelInfo.Model != "" {
 			sb.WriteString(fmt.Sprintf("Model:   %s\n", modelInfo.Model))
