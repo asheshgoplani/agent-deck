@@ -91,6 +91,12 @@ func startNativeSSH(t *testing.T, remoteHome, binDir string) *nativeSSHProxy {
 		}
 		t.Fatalf("real sshd required: %v", err)
 	}
+	if _, err := os.Stat("/usr/bin/cat"); err != nil {
+		if os.IsNotExist(err) {
+			nativeSSHMissingTool(t, "/usr/bin/cat")
+		}
+		t.Fatalf("authorized key command required: %v", err)
+	}
 	account, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
