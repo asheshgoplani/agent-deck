@@ -56,6 +56,16 @@ type AttachRequest struct {
 	// `agent-deck session attach <Name>` on the remote host. Issue #1100,
 	// follow-up to #1098 — Shift+Enter for remote sessions.
 	Remote *RemoteAttach
+
+	// ForceUTF8 passes tmux's global -u flag on a local attach. The embedded
+	// terminal client runs inside the dashboard's own process, which may have
+	// inherited a non-UTF-8 locale from launchd or systemd; without -u tmux
+	// treats that client as non-UTF-8 and corrupts every non-ASCII cell. The
+	// in-TUI attach path always forces it (internal/tmux/pty.go); the embedded
+	// client keeps the same invariant. A new terminal window (Shift+Enter)
+	// starts its own login shell and locale, so it leaves this unset and its
+	// command shape unchanged. Ignored when Remote != nil.
+	ForceUTF8 bool
 }
 
 // RemoteAttach carries the SSH and agent-deck details needed to attach
@@ -105,6 +115,9 @@ func BuildAttachCommand(req AttachRequest) string {
 	}
 	var b strings.Builder
 	b.WriteString("tmux")
+	if req.ForceUTF8 {
+		b.WriteString(" -u")
+	}
 	if s := strings.TrimSpace(req.SocketName); s != "" {
 		b.WriteString(" -L ")
 		b.WriteString(shellQuote(s))
