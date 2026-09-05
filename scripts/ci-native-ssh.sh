@@ -4,7 +4,12 @@ set -euo pipefail
 export GOTOOLCHAIN=local
 : "${NATIVE_SSH_ARTIFACT_DIR:?Set an absolute artifact directory outside the checkout}"
 : "${NATIVE_SSH_EXPECTED_SHA:?Set the exact reviewed source commit}"
-test "$(uname -s)" = Linux
+case "$(uname -s)" in
+  Linux) hash=(sha256sum); authorized_cat=/usr/bin/cat ;;
+  Darwin) hash=(shasum -a 256); authorized_cat=/bin/cat ;;
+  *) echo "Native SSH acceptance requires Linux or macOS" >&2; exit 1 ;;
+esac
+export NATIVE_SSH_AUTHORIZED_CAT="$authorized_cat"
 test "$(id -u)" -ne 0
 root=$(git rev-parse --show-toplevel)
 cd "$root"
@@ -24,21 +29,21 @@ finish() {
  result=$?
  trap - EXIT
  set +e
- sha256sum -c "$run/source.sha256" > "$run/source-check.log" 2>&1
+ "${hash[@]}" -c "$run/source.sha256" > "$run/source-check.log" 2>&1
  check=$?
  git status --porcelain > "$run/source-status.txt"
  if test "$check" -ne 0 || test -s "$run/source-status.txt"; then result=94; fi
  printf '%s\n' "$result" > "$run/exit"
  exit "$result"
 }
-git ls-files -z | xargs -0 sha256sum > "$run/source.sha256"
+git ls-files -z | xargs -0 "${hash[@]}" > "$run/source.sha256"
 trap finish EXIT
 git rev-parse HEAD 'HEAD^{tree}' > "$run/source"
-sha256sum "$0" > "$run/runner.sha256"
+"${hash[@]}" "$0" > "$run/runner.sha256"
 for tool in go tmux ssh ssh-keygen python3; do command -v "$tool"; done
 python3 - <<'PY'
 import os,stat
-for p in ['/usr/sbin/sshd','/usr/bin/cat']:
+for p in ['/usr/sbin/sshd',os.environ['NATIVE_SSH_AUTHORIZED_CAT']]:
  s=os.stat(p)
  assert s.st_uid==0 and not s.st_mode & 0o022 and os.access(p,os.X_OK),p
 # The acceptance fixture uses this production namespace. Refuse active sockets.
