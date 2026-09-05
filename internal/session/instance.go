@@ -929,6 +929,22 @@ func (inst *Instance) GetToolThreadSafe() string {
 	return t
 }
 
+// GetAccountThreadSafe returns the stored slot, not a resolved login identity.
+func (inst *Instance) GetAccountThreadSafe() string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	return inst.Account
+}
+
+// setAccountThreadSafe exchanges the stored slot under the snapshot reader's lock.
+func (inst *Instance) setAccountThreadSafe(account string) string {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	old := inst.Account
+	inst.Account = account
+	return old
+}
+
 // GetTitleThreadSafe returns the session title with read-lock protection.
 // Use this when reading Title from a goroutine concurrent with title syncs
 // (SetField, ReconcileTitleFromClaude, pending-title reapplication) — those
