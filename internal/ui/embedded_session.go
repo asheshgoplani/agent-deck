@@ -13,6 +13,20 @@ type embeddedStartMsg struct {
 	err        error
 }
 
+type embeddedInputErrorMsg struct {
+	generation uint64
+	err        error
+}
+
+func waitEmbeddedInputCmd(input *sessionInputQueue) tea.Cmd {
+	if input == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return embeddedInputErrorMsg{generation: input.generation, err: input.result()}
+	}
+}
+
 type embeddedFrameMsg struct {
 	generation uint64
 	terminal   *embeddedTerminal
@@ -91,6 +105,9 @@ func (h *Home) startEmbeddedTerminalCmd() tea.Cmd {
 	req := h.embeddedRequest
 	size := h.embeddedTerminalSize()
 	ctx := h.ctx
+	if h.embeddedInput != nil {
+		ctx = h.embeddedInput.ctx
+	}
 	return func() tea.Msg {
 		terminal, err := startEmbeddedTerminal(ctx, req, size)
 		return embeddedStartMsg{generation: generation, terminal: terminal, err: err}
@@ -113,13 +130,13 @@ func waitEmbeddedTerminalCmd(generation uint64, terminal *embeddedTerminal) tea.
 }
 
 func (h *Home) installEmbeddedTerminal(msg embeddedStartMsg) tea.Cmd {
-	h.embeddedRefreshPending = false
 	if msg.generation != h.embeddedGeneration || !h.embeddedMode {
 		if msg.terminal != nil {
 			_ = msg.terminal.Close()
 		}
 		return nil
 	}
+	h.embeddedRefreshPending = false
 	if msg.err != nil {
 		h.exitInsertMode()
 		h.setError(fmt.Errorf("open embedded session: %w", msg.err))
@@ -131,7 +148,10 @@ func (h *Home) installEmbeddedTerminal(msg embeddedStartMsg) tea.Cmd {
 	// if the chrome moved during the connect.
 	h.embeddedAppliedRect = terminalCellRect{}
 	if h.sessionInput != nil {
-		h.sessionInput.Activate(h.embeddedTerminal, h.embeddedPaneRect(), h.embeddedSwitchByte())
+		if !h.sessionInput.Install(msg.generation, h.embeddedTerminal) {
+			h.exitInsertMode()
+			return nil
+		}
 	}
 	h.syncEmbeddedTerminalGeometry()
 	return waitEmbeddedTerminalCmd(h.embeddedGeneration, h.embeddedTerminal)

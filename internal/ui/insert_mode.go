@@ -156,10 +156,8 @@ func (h *Home) enterEmbeddedMode() bool {
 			h.insertModeRemoteName = ""
 			h.insertModeRemoteID = ""
 		}
-		// Session mode begins now, not when the PTY reports ready: whatever
-		// the user types while tmux connects belongs to the pane and waits in
-		// the router until Activate.
-		h.sessionInput.Prepare(h.embeddedPaneRect(), h.embeddedSwitchByte())
+		// Reserve raw input before returning the asynchronous PTY command.
+		h.embeddedInput = h.sessionInput.BeginConnecting(h.ctx, h.embeddedGeneration, h.embeddedPaneRect(), h.embeddedSwitchByte())
 	} else {
 		if !h.enterInsertMode() {
 			return false
@@ -254,8 +252,10 @@ func (h *Home) openInsertKeySender(target insertTargetRef) (insertKeySender, err
 
 // exitInsertMode returns the TUI to normal navigation mode. Any pending
 // keystrokes in the batch buffer are dropped — they should have been flushed
-// by the caller via flushInsertBuf() if the user wanted them preserved. The
-// persistent KeySender (if any) is closed here, releasing the tmux -C
+// by the caller via flushInsertBuf() if the user wanted them preserved.
+// A generation cancels unsent input; bytes already accepted by the PTY cannot
+// be recalled or safely replayed. The persistent KeySender (if any) is closed
+// here, releasing the tmux -C
 // subprocess or SSH ControlMaster slot.
 func (h *Home) exitInsertMode() {
 	h.embeddedGeneration++
@@ -272,6 +272,7 @@ func (h *Home) exitInsertMode() {
 	}
 	h.embeddedAppliedRect = terminalCellRect{}
 	h.embeddedRequest = terminal.AttachRequest{}
+	h.embeddedInput = nil
 	h.insertMode = false
 	h.embeddedMode = false
 	h.previewScrollOffset = 0
@@ -312,18 +313,10 @@ func (h *Home) handleInsertModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.toggleEmbeddedSidebar()
 			return h, nil
 		}
-		// With the production input router, every other key bypasses Bubble
-		// Tea and reaches the child tmux PTY as its original bytes. A key
-		// message observed here is one the router did not forward: it shared
-		// a stdin read with the Enter that began the session, or arrived
-		// while the PTY was still connecting. Re-encode it and let the router
-		// deliver it in order once the client exists, instead of dropping the
-		// first characters a fast typist or a paste sends into a new session.
-		// It must never take the legacy KeySender path.
+		// The acknowledged input boundary retains the raw suffix before the
+		// decoder can see it. Never reconstruct/replay a synthetic KeyMsg:
+		// its encoding and ownership cannot be recovered from parsed runes.
 		if h.sessionInput != nil {
-			if raw, ok := keyMsgRawBytes(msg); ok {
-				h.sessionInput.Forward(raw)
-			}
 			return h, nil
 		}
 		if msg.Type == tea.KeyCtrlUp {
@@ -566,7 +559,7 @@ func (h *Home) scheduleEmbeddedRefresh() tea.Cmd {
 
 func (h *Home) startEmbeddedModeCmd() tea.Cmd {
 	if h.sessionInput != nil {
-		return h.scheduleEmbeddedRefresh()
+		return tea.Batch(h.scheduleEmbeddedRefresh(), waitEmbeddedInputCmd(h.embeddedInput))
 	}
 	return tea.Batch(h.fetchSelectedPreview(), h.scheduleEmbeddedRefresh())
 }

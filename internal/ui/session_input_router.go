@@ -2,13 +2,19 @@ package ui
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const (
@@ -40,18 +46,8 @@ type SessionInputRouter struct {
 
 	mu     sync.RWMutex
 	active bool
-	// child is the embedded PTY. It is nil between Prepare and Activate, the
-	// interval in which Home is still opening the tmux client; bytes routed to
-	// the pane during that interval wait in held.
-	child io.Writer
-	// held collects pane-bound bytes that arrived before the child existed, or
-	// while Activate was still draining an earlier batch, so the first thing
-	// the client reads is everything the user typed, in order.
-	held []byte
-	// draining is set while Activate writes held bytes outside the lock; Read
-	// keeps appending to held until it clears so the two cannot interleave.
-	draining bool
-	rect     terminalCellRect
+	child  io.Writer
+	rect   terminalCellRect
 	// switchByte is the configured portable Ctrl+<key> chord that returns an
 	// embedded local session to Bubble Tea's MRU switcher. Zero disables it
 	// (including remote sessions, whose switcher path is not local-tmux based).
@@ -59,6 +55,24 @@ type SessionInputRouter struct {
 	pending    []byte
 	rawBuf     []byte
 	inPaste    bool
+
+	// Dashboard reads stop at a complete event. A matching Home.Update must
+	// finish before another read can cross a possible attach transition.
+	dashboardBytes   []byte
+	dashboardPaste   bool
+	dashboardEscape  bool
+	barrier          *sessionInputBarrier
+	queue            *sessionInputQueue
+	failed           chan struct{}
+	discardUntilIdle bool
+	discardPaste     bool
+	discardTail      []byte
+}
+
+type sessionInputBarrier struct {
+	done  chan struct{}
+	key   string
+	mouse bool
 }
 
 func NewSessionInputRouter(stdin *os.File) *SessionInputRouter {
@@ -71,103 +85,116 @@ func NewSessionInputRouter(stdin *os.File) *SessionInputRouter {
 	}
 }
 
-// Prepare switches the router into session mode before the child PTY exists.
-// Home calls it the moment Enter is accepted, so keystrokes read while the
-// tmux client is still connecting are held for the pane instead of reaching
-// Bubble Tea, where they would be dashboard hotkeys or, in embedded mode,
-// silently dropped. Ctrl+Q, the switch chord, and out-of-pane mouse still
-// return to the dashboard during this interval.
-func (r *SessionInputRouter) Prepare(rect terminalCellRect, switchByte byte) {
+// BeginConnecting reserves input for one immutable attach generation before
+// the asynchronous PTY start. Installation supplies its writer without resetting
+// paste or partial-token state.
+func (r *SessionInputRouter) BeginConnecting(parent context.Context, generation uint64, rect terminalCellRect, switchByte byte) *sessionInputQueue {
+	if parent == nil {
+		parent = context.Background()
+	}
+	q := newSessionInputQueue(parent, generation)
 	r.mu.Lock()
+	r.deactivateLocked()
+	r.queue = q
+	r.child = q
 	r.active = true
-	r.child = nil
 	r.rect = rect
 	r.switchByte = switchByte
-	r.rawBuf = r.rawBuf[:0]
-	r.held = r.held[:0]
-	r.draining = false
-	r.inPaste = false
 	r.mu.Unlock()
+	return q
 }
 
-// Activate installs the child PTY. Bytes held since Prepare are written to it
-// first, outside the lock; Read keeps holding new pane bytes until that drain
-// completes, so the client sees the user's keystrokes in the order typed.
-func (r *SessionInputRouter) Activate(child io.Writer, rect terminalCellRect, switchByte byte) {
+func (r *SessionInputRouter) Install(generation uint64, child io.WriteCloser) bool {
 	r.mu.Lock()
-	wasActive := r.active
-	r.active = child != nil
-	r.child = child
-	r.rect = rect
-	r.switchByte = switchByte
-	if !wasActive {
-		// A fresh activation (no Prepare) starts from a clean token stream.
-		// After Prepare the partial token in rawBuf belongs to the session.
-		r.rawBuf = r.rawBuf[:0]
-		r.inPaste = false
-		r.held = r.held[:0]
+	defer r.mu.Unlock()
+	return r.queue != nil && r.queue.generation == generation && r.queue.install(child)
+}
+
+// InputReceipt captures only the outstanding event that this update actually
+// handles. Earlier keys, redraws and timers cannot release an Enter barrier.
+func (r *SessionInputRouter) InputReceipt(msg tea.Msg) *sessionInputBarrier {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b := r.barrier
+	if b == nil {
+		return nil
 	}
-	if child == nil {
-		r.held = r.held[:0]
-		r.draining = false
-		r.mu.Unlock()
+	switch m := msg.(type) {
+	case tea.KeyMsg:
+		if !b.mouse && m.String() == b.key {
+			return b
+		}
+	case tea.MouseMsg:
+		if b.mouse {
+			return b
+		}
+	}
+	return nil
+}
+
+func (r *SessionInputRouter) FinishInput(b *sessionInputBarrier) {
+	if b == nil {
 		return
 	}
-	r.draining = true
-	r.mu.Unlock()
-	r.drainHeld(child)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.barrier == b {
+		r.releaseBarrierLocked()
+	}
 }
 
-func (r *SessionInputRouter) drainHeld(child io.Writer) {
-	for {
-		r.mu.Lock()
-		if len(r.held) == 0 || r.child != child {
-			r.held = r.held[:0]
-			r.draining = false
-			r.mu.Unlock()
+func (r *SessionInputRouter) releaseBarrierLocked() {
+	if r.barrier != nil {
+		close(r.barrier.done)
+		r.barrier = nil
+	}
+}
+
+// armDashboardBarrierLocked is intentionally based on bytes already translated
+// for the dashboard, never on bytes destined for the connecting/connected pane.
+func (r *SessionInputRouter) armDashboardBarrierLocked(p []byte) {
+	if string(p) == bracketedPasteStart {
+		r.dashboardPaste = true
+		return
+	}
+	if string(p) == bracketedPasteEnd {
+		r.dashboardPaste = false
+		return
+	}
+	if r.dashboardPaste || len(p) == 0 {
+		return
+	}
+	b := &sessionInputBarrier{done: make(chan struct{})}
+	if bytes.HasPrefix(p, []byte("\x1b[<")) && mouseSequenceEnd(p) == len(p) {
+		b.mouse = true
+	} else {
+		alt := len(p) > 1 && p[0] == 0x1b && p[1] != '[' && p[1] != 'O'
+		keyBytes := p
+		if alt {
+			keyBytes = p[1:]
+		}
+		if len(keyBytes) == 1 && (keyBytes[0] <= 31 || keyBytes[0] == 127) {
+			b.key = (tea.KeyMsg{Type: tea.KeyType(keyBytes[0]), Alt: alt}).String()
+		} else {
+			// Other terminal sequences retain the compatibility reader's
+			// existing behavior. They cannot be a plain Enter or mouse attach.
 			return
 		}
-		batch := append([]byte(nil), r.held...)
-		r.held = r.held[:0]
-		r.mu.Unlock()
-		writeChild(child, batch)
 	}
+	r.barrier = b
 }
 
-// Forward hands the router bytes that Bubble Tea has already parsed as key
-// events before session mode began. When Enter and the following keystrokes
-// share one stdin read, the router translates the whole read for the
-// dashboard, so those keys arrive at Home as messages after the mode switch.
-// Home re-encodes them and forwards them here rather than dropping them.
-func (r *SessionInputRouter) Forward(raw []byte) {
-	if len(raw) == 0 {
+// Activate starts a fresh generation for callers that already own a writer.
+// As with Install, the writer must be closable so cancellation can interrupt a
+// pending Write. Home uses BeginConnecting/Install to retain pre-start bytes.
+func (r *SessionInputRouter) Activate(child io.Writer, rect terminalCellRect, switchByte byte) {
+	closer, ok := child.(io.WriteCloser)
+	if !ok {
+		r.Deactivate()
 		return
 	}
-	r.mu.Lock()
-	if !r.active {
-		r.mu.Unlock()
-		return
-	}
-	if r.child == nil || r.draining {
-		r.held = append(r.held, raw...)
-		r.mu.Unlock()
-		return
-	}
-	child := r.child
-	r.mu.Unlock()
-	writeChild(child, raw)
-}
-
-// writeChild delivers pane bytes with no router lock held. A PTY write can
-// block when the client stops reading, and it fails once the client has gone;
-// neither may stall Activate/Deactivate/UpdateRect on the Bubble Tea goroutine
-// or surface as a stdin error that ends the dashboard's input loop. Home
-// notices the exited client through embeddedFrameMsg and detaches.
-func writeChild(child io.Writer, data []byte) {
-	if child == nil || len(data) == 0 {
-		return
-	}
-	_, _ = child.Write(data)
+	q := r.BeginConnecting(context.Background(), 0, rect, switchByte)
+	q.install(closer)
 }
 
 func (r *SessionInputRouter) Deactivate() {
@@ -177,10 +204,24 @@ func (r *SessionInputRouter) Deactivate() {
 }
 
 func (r *SessionInputRouter) deactivateLocked() {
+	if r.inPaste && !r.discardPaste {
+		// Cancellation/overflow must not turn the remainder of a paste into
+		// dashboard shortcuts. Keep a split terminator prefix across reads.
+		r.discardPaste = true
+		n := longestSuffixPrefix(r.rawBuf, []byte(bracketedPasteEnd))
+		r.discardTail = append(r.discardTail[:0], r.rawBuf[len(r.rawBuf)-n:]...)
+	}
+	if r.queue != nil {
+		r.queue.stop()
+		r.queue = nil
+	}
+	if r.failed != nil {
+		close(r.failed)
+		r.failed = nil
+	}
+	r.releaseBarrierLocked()
 	r.active = false
 	r.child = nil
-	r.held = r.held[:0]
-	r.draining = false
 	r.switchByte = 0
 	r.rawBuf = r.rawBuf[:0]
 	r.inPaste = false
@@ -196,7 +237,12 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	readUntil := time.Now().Add(25 * time.Millisecond)
 	for {
+		// A continuous paste must yield too, even when stdin never goes idle.
+		if time.Now().After(readUntil) {
+			return 0, nil
+		}
 		r.mu.Lock()
 		if len(r.pending) > 0 {
 			n := copy(p, r.pending)
@@ -204,96 +250,225 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			r.mu.Unlock()
 			return n, nil
 		}
+		if failed := r.failed; failed != nil {
+			r.mu.Unlock()
+			select {
+			case <-failed:
+				continue
+			case <-time.After(25 * time.Millisecond):
+				return 0, nil
+			}
+		}
+		if b := r.barrier; b != nil {
+			r.mu.Unlock()
+			select {
+			case <-b.done:
+				continue
+			case <-time.After(25 * time.Millisecond):
+				return 0, nil
+			}
+		}
+		if r.discardUntilIdle {
+			r.discardBufferedTailLocked()
+			if r.discardUntilIdle {
+				r.mu.Unlock()
+				return 0, nil
+			}
+		}
+		// Keep suffixes in the kernel in both modes. An out-of-pane mouse
+		// event can select another generation just as Enter can attach one.
+		// Reading one byte costs syscalls, but avoids prefetching bytes whose
+		// destination Home has not decided, and preserves FD readiness.
+		const readSize = 1
 		r.mu.Unlock()
 
-		buf := make([]byte, max(256, len(p)))
-		n, err := r.File.Read(buf)
-		if n == 0 {
-			return 0, err
+		// Yield to cancelreader periodically: its cancellation pipe cannot
+		// interrupt our internal receipt waits or a second raw read. An empty
+		// read retains all parser state and lets its next Read observe Cancel.
+		if runtime.GOOS != "windows" && !pollFdReady(int(r.File.Fd()), 25*time.Millisecond) {
+			return 0, nil
 		}
-
+		buf := make([]byte, readSize)
+		n, err := r.File.Read(buf)
 		r.mu.Lock()
-		if !r.active {
-			translated := r.normal.consume(buf[:n], err != nil)
-			if len(translated) > 0 {
-				copied := copy(p, translated)
-				if copied < len(translated) {
-					r.pending = append(r.pending, translated[copied:]...)
+		if r.discardPaste {
+			for _, b := range buf[:n] {
+				r.discardTail = append(r.discardTail, b)
+				if bytes.HasSuffix(r.discardTail, []byte(bracketedPasteEnd)) {
+					r.discardPaste = false
+					r.discardTail = nil
+					break
 				}
-				r.mu.Unlock()
-				return copied, nil
+				keep := longestSuffixPrefix(r.discardTail, []byte(bracketedPasteEnd))
+				r.discardTail = append(r.discardTail[:0], r.discardTail[len(r.discardTail)-keep:]...)
 			}
-			standaloneEscape := len(r.normal.inBuf) == 1 && r.normal.inBuf[0] == 0x1b
 			r.mu.Unlock()
 			if err != nil {
 				return 0, err
 			}
-			// Match csiuReader's ncurses-style ESC delay without allowing that
-			// compatibility reader to own a blocking raw read across activation.
-			if standaloneEscape &&
-				!pollFdReady(int(r.File.Fd()), 50*time.Millisecond) {
-				r.mu.Lock()
-				translated = r.normal.consume(nil, true)
+			continue
+		}
+		if !r.active {
+			raw := buf[:n]
+			if r.dashboardEscape {
+				raw = append([]byte{0x1b}, raw...)
+				r.dashboardEscape = false
+			} else if n == 1 && raw[0] == 0x1b && err == nil {
+				// The reply filter eagerly flushes an unarmed trailing ESC.
+				// Keep its introducer together so bytewise reads cannot turn
+				// OSC/DCS replies into dashboard text.
+				r.dashboardEscape = true
+				raw = nil
+			}
+			r.dashboardBytes = append(r.dashboardBytes, r.normal.consume(raw, err != nil)...)
+			standaloneEscape := r.dashboardEscape || (len(r.normal.inBuf) == 1 && r.normal.inBuf[0] == 0x1b)
+			if len(r.dashboardBytes) > 0 && completeDashboardRunes(r.dashboardBytes) {
+				translated := r.dashboardBytes
+				r.dashboardBytes = nil
+				r.armDashboardBarrierLocked(translated)
 				copied := copy(p, translated)
-				if copied < len(translated) {
-					r.pending = append(r.pending, translated[copied:]...)
+				r.pending = append(r.pending, translated[copied:]...)
+				r.mu.Unlock()
+				return copied, nil
+			}
+			r.mu.Unlock()
+			if err != nil {
+				return 0, err
+			}
+			if standaloneEscape && !pollFdReady(int(r.File.Fd()), 50*time.Millisecond) {
+				r.mu.Lock()
+				var translated []byte
+				if r.dashboardEscape {
+					r.dashboardEscape = false
+					translated = r.normal.consume([]byte{0x1b}, false)
 				}
+				if len(r.normal.inBuf) == 1 && r.normal.inBuf[0] == 0x1b {
+					translated = append(translated, r.normal.consume(nil, true)...)
+				}
+				r.armDashboardBarrierLocked(translated)
+				copied := copy(p, translated)
+				r.pending = append(r.pending, translated[copied:]...)
 				r.mu.Unlock()
 				return copied, nil
 			}
 			continue
 		}
 		r.rawBuf = append(r.rawBuf, buf[:n]...)
-		child := r.child
-		toDashboard, toChild := r.routeEmbeddedLocked(err != nil)
-		if len(toDashboard) > 0 {
-			copied := copy(p, toDashboard)
-			if copied < len(toDashboard) {
-				r.pending = append(r.pending, toDashboard[copied:]...)
-			}
+		if len(r.rawBuf) > maxConnectingInputBytes && r.queue != nil {
+			// An unterminated mouse/control token must not evade the queue's
+			// finite pending-input policy by growing the parser buffer forever.
+			r.queue.mu.Lock()
+			r.queue.failLocked(errConnectingInputOverflow)
+			r.queue.mu.Unlock()
+			r.failed = make(chan struct{})
 			r.mu.Unlock()
-			writeChild(child, toChild)
+			continue
+		}
+		toDashboard, routeErr := r.routeToQueueLocked(err != nil)
+		r.discardBufferedTailLocked()
+		if routeErr != nil && r.queue != nil {
+			// The generation's error command returns the UI to the dashboard.
+			// Keep further bytes away from both targets until Home cancels it.
+			r.failed = make(chan struct{})
+			r.mu.Unlock()
+			continue
+		}
+		if len(toDashboard) > 0 {
+			r.armDashboardBarrierLocked(toDashboard)
+			copied := copy(p, toDashboard)
+			r.pending = append(r.pending, toDashboard[copied:]...)
+			r.mu.Unlock()
 			return copied, nil
 		}
-		partial := len(r.rawBuf) > 0
+		partial := len(r.rawBuf) == 1 && r.rawBuf[0] == 0x1b && !r.inPaste
 		r.mu.Unlock()
-		writeChild(child, toChild)
-		// A lone Escape is both a valid key and the prefix of every CSI/SS3
-		// token. Give the kernel the conventional short ESC-delay window to
-		// deliver the rest of a split sequence, then forward it as-is rather
-		// than blocking until the user's next keypress.
+		if routeErr != nil {
+			return 0, routeErr
+		}
+		if err != nil {
+			return 0, err
+		}
 		if partial && !pollFdReady(int(r.File.Fd()), 50*time.Millisecond) {
 			r.mu.Lock()
-			child = r.child
-			toDashboard, toChild = r.routeEmbeddedLocked(true)
-			if len(toDashboard) > 0 {
-				copied := copy(p, toDashboard)
-				if copied < len(toDashboard) {
-					r.pending = append(r.pending, toDashboard[copied:]...)
-				}
+			toDashboard, routeErr = r.routeToQueueLocked(true)
+			if routeErr != nil && r.queue != nil {
+				r.failed = make(chan struct{})
 				r.mu.Unlock()
-				writeChild(child, toChild)
-				return copied, nil
+				continue
+			}
+			if len(toDashboard) > 0 {
+				r.armDashboardBarrierLocked(toDashboard)
+				copied := copy(p, toDashboard)
+				r.pending = append(r.pending, toDashboard[copied:]...)
+				r.mu.Unlock()
+				return copied, routeErr
 			}
 			r.mu.Unlock()
-			writeChild(child, toChild)
+			if routeErr != nil {
+				return 0, routeErr
+			}
 		}
 	}
 }
 
+// Discard the bytes already available at cancellation, before handing Ctrl+Q
+// back to Home. Waiting until the next readiness notification would instead
+// discard a fresh dashboard key. Bound each drain so shutdown can still yield.
+func (r *SessionInputRouter) discardBufferedTailLocked() {
+	if !r.discardUntilIdle || r.File == nil {
+		return
+	}
+	var buf [256]byte
+	for discarded := 0; discarded < maxConnectingInputBytes; {
+		if !pollFdReady(int(r.File.Fd()), 0) {
+			r.discardUntilIdle = false
+			return
+		}
+		n, err := r.File.Read(buf[:])
+		discarded += n
+		if err != nil || n == 0 {
+			r.discardUntilIdle = false
+			return
+		}
+	}
+}
+
+func completeDashboardRunes(p []byte) bool {
+	for len(p) > 0 {
+		if !utf8.FullRune(p) {
+			return false
+		}
+		_, n := utf8.DecodeRune(p)
+		p = p[n:]
+	}
+	return true
+}
+
+// routeToQueueLocked preserves the pure parser seam used by routing tests.
+// A cancellation token may deactivate the generation during parsing; in that
+// case its unsent prefix is deliberately discarded with the remaining queue.
+func (r *SessionInputRouter) routeToQueueLocked(final bool) ([]byte, error) {
+	dashboard, child := r.routeEmbeddedLocked(final)
+	if !r.active || len(child) == 0 {
+		return dashboard, nil
+	}
+	if r.queue == nil {
+		return dashboard, errors.New("embedded input has no generation writer")
+	}
+	_, err := r.queue.Write(child)
+	return dashboard, err
+}
+
 // routeEmbeddedLocked consumes complete tokens from rawBuf. It returns bytes
 // that should go back through Bubble Tea (detach and out-of-pane mouse) and
-// bytes for the pane. The caller writes the pane bytes after releasing r.mu;
-// every pane byte precedes any dashboard byte in the stream, so writing them
-// first and then returning the dashboard bytes preserves the typed order.
-// While the child does not exist yet (Prepare) or Activate is still draining,
-// pane bytes are appended to held instead and nothing is returned for it.
+// bytes for the pane. Delivery belongs to the generation writer, so parsing
+// never blocks on a PTY. A detach cancels unsent bytes; already accepted writes
+// cannot be recalled and are never replayed to another generation.
 func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChild []byte) {
 	var child bytes.Buffer
 	var dashboard bytes.Buffer
 	data := r.rawBuf
 	i := 0
-	holdForChild := r.child == nil || r.draining
 
 	for i < len(data) {
 		if r.inPaste {
@@ -304,10 +479,7 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 				r.inPaste = false
 				continue
 			}
-			keep := 0
-			if !final {
-				keep = longestSuffixPrefix(data[i:], []byte(bracketedPasteEnd))
-			}
+			keep := longestSuffixPrefix(data[i:], []byte(bracketedPasteEnd))
 			child.Write(data[i : len(data)-keep])
 			i = len(data) - keep
 			break
@@ -330,6 +502,7 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 			// dashboard hotkeys, and never leak to the dying client.
 			i = len(data)
 			r.deactivateLocked()
+			r.discardUntilIdle = true
 			break
 		}
 		if !final && couldBeCtrlQPrefix(data[i:]) {
@@ -344,6 +517,7 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 			// chord and stop routing into the client that Home is about to close.
 			i = len(data)
 			r.deactivateLocked()
+			r.discardUntilIdle = true
 			break
 		}
 		if !final && couldBeControlSequencePrefix(data[i:], r.switchByte) {
@@ -395,15 +569,7 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 	}
 
 	r.rawBuf = append(r.rawBuf[:0], data[i:]...)
-	if holdForChild {
-		// A detach or switch chord while connecting already cleared held via
-		// deactivateLocked; do not resurrect bytes for a client Home is
-		// about to abandon.
-		if r.active {
-			r.held = append(r.held, child.Bytes()...)
-		}
-		return dashboard.Bytes(), nil
-	}
+
 	return dashboard.Bytes(), child.Bytes()
 }
 
@@ -537,4 +703,136 @@ func translateSGRMouse(seq []byte, rect terminalCellRect) ([]byte, bool, bool) {
 		return seq, false, true
 	}
 	return []byte(fmt.Sprintf("\x1b[<%d;%d;%d%c", button, x0-rect.X+1, y0-rect.Y+1, action)), true, true
+}
+
+// A connecting generation may retain at most this many input bytes, including
+// the write currently in flight. Overflow is an explicit input error, never a
+// truncated command or a replay into a different session.
+const maxConnectingInputBytes = 256 << 10
+
+var errConnectingInputOverflow = errors.New("embedded session input exceeds 256 KiB pending limit")
+
+type sessionInputQueue struct {
+	generation uint64
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	chunks     [][]byte
+	bytes      int
+	installed  bool
+	wake       chan struct{}
+	err        error
+}
+
+func newSessionInputQueue(parent context.Context, generation uint64) *sessionInputQueue {
+	ctx, cancel := context.WithCancel(parent)
+	return &sessionInputQueue{generation: generation, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}
+}
+
+func (q *sessionInputQueue) Write(p []byte) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.ctx.Err() != nil {
+		return 0, q.ctx.Err()
+	}
+	if len(p) > maxConnectingInputBytes-q.bytes {
+		q.failLocked(errConnectingInputOverflow)
+		return 0, errConnectingInputOverflow
+	}
+	// Coalesce the byte-at-a-time raw reader's pending input into bounded
+	// chunks. A chunk in flight has already left this slice and is immutable.
+	if last := len(q.chunks) - 1; last >= 0 && len(q.chunks[last])+len(p) <= 4096 {
+		q.chunks[last] = append(q.chunks[last], p...)
+	} else {
+		q.chunks = append(q.chunks, append([]byte(nil), p...))
+	}
+	q.bytes += len(p)
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+	return len(p), nil
+}
+
+func (q *sessionInputQueue) stop() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.chunks = nil
+	q.cancel()
+}
+
+func (q *sessionInputQueue) install(w io.WriteCloser) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.installed || q.ctx.Err() != nil || w == nil {
+		return false
+	}
+	q.installed = true
+	// Closing is independent of the writer: a full PTY must never prevent
+	// cancellation from reaching its Close. Production Close is idempotent.
+	go func() {
+		<-q.ctx.Done()
+		_ = w.Close()
+	}()
+	go q.drain(w)
+	return true
+}
+
+func (q *sessionInputQueue) failLocked(err error) {
+	if q.ctx.Err() == nil {
+		q.err = err
+	}
+	q.chunks = nil
+	q.cancel()
+}
+
+func (q *sessionInputQueue) result() error {
+	<-q.ctx.Done()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.err
+}
+
+func (q *sessionInputQueue) drain(w io.Writer) {
+	for {
+		select {
+		case <-q.ctx.Done():
+			return
+		case <-q.wake:
+		}
+		for {
+			q.mu.Lock()
+			if q.ctx.Err() != nil || len(q.chunks) == 0 {
+				q.mu.Unlock()
+				break
+			}
+			p := q.chunks[0]
+			q.chunks[0] = nil
+			q.chunks = q.chunks[1:]
+			q.mu.Unlock()
+			// Only this goroutine writes. Connecting bytes cannot be
+			// overtaken, and a partial write is never retried from its start.
+			for len(p) > 0 {
+				if q.ctx.Err() != nil {
+					return
+				}
+				n, err := w.Write(p)
+				q.mu.Lock()
+				if n < 0 || n > len(p) {
+					n, err = 0, io.ErrShortWrite
+				}
+				q.bytes -= n
+				if err != nil || n == 0 {
+					if err == nil {
+						err = io.ErrShortWrite
+					}
+					q.failLocked(err)
+					q.mu.Unlock()
+					return
+				}
+				q.mu.Unlock()
+				p = p[n:]
+			}
+		}
+	}
 }
