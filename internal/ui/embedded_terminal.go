@@ -396,14 +396,15 @@ func (t *embeddedTerminal) Close() error {
 		if t.cmd.Process != nil {
 			_ = t.cmd.Process.Kill()
 		}
-		<-t.outputDone
 		// SafeEmulator.Read delegates directly to Emulator.Read, whose closed
 		// flag is not synchronized with Emulator.Close. Close the input pipe
-		// first so the reply reader reaches EOF without racing that flag, then
-		// close the otherwise-idle emulator.
+		// before waiting for output: a parser producing another reply can be
+		// blocked in this pipe after the reply copier exits on a PTY error.
+		// Once both loops stop, closing the emulator cannot race its flag.
 		if input, ok := t.emulator.InputPipe().(io.Closer); ok {
 			_ = input.Close()
 		}
+		<-t.outputDone
 		<-t.replyDone
 		_ = t.emulator.Close()
 		// Reap the attach process before returning so it cannot keep using the
