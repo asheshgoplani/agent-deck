@@ -6143,12 +6143,39 @@ func (s *Session) NewShellWindow(workdir string) error {
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	args := []string{"new-window", "-t", s.Name}
+	args := []string{"new-window", "-P", "-F", "#{window_id}", "-t", s.Name}
 	if workdir != "" {
 		args = append(args, "-c", workdir)
 	}
 	args = append(args, shell)
-	return tmuxExec(s.SocketName, args...).Run()
+	out, err := tmuxExec(s.SocketName, args...).Output()
+	if err != nil {
+		return err
+	}
+	// new-window prints its ID before running after-new-window hooks, which
+	// may print more output or select another window. Configure that exact ID.
+	windowID, _, _ := strings.Cut(string(out), "\n")
+	args = nil
+	for _, option := range []struct{ key, value string }{
+		{"window-size", "largest"},
+		{"aggressive-resize", "on"},
+	} {
+		if value, ok := s.OptionOverrides[option.key]; ok {
+			option.value = value
+		}
+		if len(args) > 0 {
+			args = append(args, ";")
+		}
+		// Like Start, apply Deck's defaults/configuration, but preserve any
+		// local option a user's after-new-window hook explicitly installed.
+		args = append(args, "set-window-option", "-oq", "-t", windowID, option.key, option.value)
+	}
+	// Creation succeeded. As in Start, option configuration is best effort;
+	// an invalid override must not report failure and invite a duplicate tab.
+	if err := s.runBoundedMutation(args...); err != nil {
+		statusLog.Warn("shell_window_options_failed", slog.String("window", windowID), slog.String("error", err.Error()))
+	}
+	return nil
 }
 
 // ListAllSessions returns all Agent Deck tmux sessions
