@@ -2252,11 +2252,17 @@ func isSocketAcceptingConnections(socketPath string) bool {
 // them unconditionally on every spawn overrode a deliberate
 // `set -s extended-keys off` in the user's ~/.tmux.conf server-wide, which on
 // some terminals (e.g. Windows Terminal + WSL2) stops Enter from submitting in
-// the pane. terminal-features uses -a (append), so re-emitting it every spawn
-// also grew that server-wide option unbounded. Gating each key through
-// OptionOverrides lets config.toml [tmux] options — and by extension the user's
-// own tmux config — take effect instead of being silently clobbered.
-func gatedTmuxKeyOptionArgs(name string, overrides map[string]string) []string {
+// the pane. Gating each key through OptionOverrides lets config.toml [tmux]
+// options — and by extension the user's own tmux config — take effect instead of
+// being silently clobbered.
+//
+// terminal-features is a server-wide ARRAY, so it gets its own treatment: the
+// `-a` (append) form grew it by one item on every pass and never shrank
+// (#2061). terminalFeatures performs guarded cleanup and verified no-overwrite
+// insertion, subject to the collision limits documented in terminal_features.go.
+// It can read and mutate server options, so the override gate must come first.
+// A nil func emits nothing.
+func gatedTmuxKeyOptionArgs(name string, overrides map[string]string, terminalFeatures func()) []string {
 	args := make([]string, 0, 20)
 	if _, ok := overrides["escape-time"]; !ok {
 		args = append(args, ";", "set-option", "-t", name, "escape-time", "10")
@@ -2271,8 +2277,8 @@ func gatedTmuxKeyOptionArgs(name string, overrides map[string]string) []string {
 		// otherwise Shift+Enter collapses to a bare Enter and submits.
 		args = append(args, ";", "set", "-sq", "extended-keys-format", "csi-u")
 	}
-	if _, ok := overrides["terminal-features"]; !ok {
-		args = append(args, ";", "set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+	if _, ok := overrides["terminal-features"]; !ok && terminalFeatures != nil {
+		terminalFeatures()
 	}
 	return args
 }
@@ -2505,7 +2511,7 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "set-clipboard", "on")
 	// #1625: the key-handling defaults are gated through OptionOverrides so an
 	// explicit user tmux setting wins (see gatedTmuxKeyOptionArgs).
-	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides)...)
+	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
 	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
 	// control client (controlpipe.go) at the same time as native `tmux attach`
 	// clients (Ghostty, iTerm). Default `window-size latest` makes the window
@@ -3227,7 +3233,7 @@ func (s *Session) EnableMouseMode() error {
 	}
 	// #1625: gate the key-handling defaults through OptionOverrides so an explicit
 	// user tmux setting wins (mirrors Start; see gatedTmuxKeyOptionArgs).
-	enhanceArgs = append(enhanceArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides)...)
+	enhanceArgs = append(enhanceArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
 	enhanceCmd := s.tmuxCmd(enhanceArgs...)
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
