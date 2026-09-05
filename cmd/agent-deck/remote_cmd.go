@@ -20,14 +20,38 @@ func handleRemote(profile string, args []string) {
 		printRemoteUsage()
 		return
 	}
-	if helpRequested(args) {
+	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		printRemoteUsage()
+		return
+	}
+	if args[0] == "exec" {
+		if len(args) == 2 && helpRequested(args[1:]) {
+			printRemoteSubcommandUsage("exec")
+			return
+		}
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: agent-deck remote exec <name> <command> [arguments]")
+			os.Exit(2)
+		}
+		handleRemoteExec(args[1], args[2:])
+		return
+	}
+	// Help for management commands is local; named-remote command arguments
+	// (including help flags) belong to the remote process.
+	if isRemoteManagementCommand(args[0]) && helpRequested(args[1:]) {
 		printRemoteSubcommandUsage(args[0])
 		return
 	}
+	// Existing configurations may use a management verb as a remote name.
+	// Refuse ambiguous syntax instead of accidentally mutating local config.
+	if config, err := session.LoadUserConfig(); err == nil {
+		if _, exists := config.Remotes[args[0]]; exists && isRemoteManagementCommand(args[0]) {
+			fmt.Fprintf(os.Stderr, "Ambiguous remote name %q; use 'agent-deck remote exec %s <command>' or rename this remote in config before managing remotes\n", args[0], args[0])
+			os.Exit(2)
+		}
+	}
 
 	switch args[0] {
-	case "help", "--help", "-h":
-		printRemoteUsage()
 	case "add":
 		handleRemoteAdd(args[1:])
 	case "remove", "rm":
@@ -45,14 +69,22 @@ func handleRemote(profile string, args []string) {
 	case "update":
 		handleRemoteUpdate(args[1:])
 	default:
-		fmt.Printf("Unknown remote command: %s\n", args[0])
-		printRemoteUsage()
-		os.Exit(1)
+		handleRemoteExec(args[0], args[1:])
 	}
+}
+
+func isRemoteManagementCommand(name string) bool {
+	switch name {
+	case "add", "remove", "rm", "list", "ls", "sessions", "drain", "attach", "rename", "update", "exec":
+		return true
+	}
+	return false
 }
 
 func printRemoteSubcommandUsage(command string) {
 	switch command {
+	case "exec":
+		fmt.Println("Usage: agent-deck remote exec <name> <command> [arguments]")
 	case "add":
 		fmt.Println("Usage: agent-deck remote add <name> <user@host> [options]")
 		fmt.Println("\nOptions:")
@@ -89,6 +121,10 @@ func printRemoteUsage() {
 	fmt.Println("Usage: agent-deck remote <command> [options]")
 	fmt.Println()
 	fmt.Println("Manage remote agent-deck instances.")
+	fmt.Println("Run commands: agent-deck remote <name> <command> [arguments]")
+	fmt.Println("  Use remote exec <name> <command> when a name matches a management command.")
+	fmt.Println("  list/status, show/output/send, add/launch, session start/stop/restart,")
+	fmt.Println("  worktree list/info/cleanup, mcp attach, skill attach")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  add <name> <user@host>    Add a remote agent-deck instance")
@@ -114,7 +150,7 @@ func printRemoteUsage() {
 }
 
 func isValidRemoteName(name string) bool {
-	return name != "" && !strings.ContainsAny(name, " /\\.:")
+	return name != "" && !strings.ContainsAny(name, " /\\.:") && !isRemoteManagementCommand(name)
 }
 
 func handleRemoteAdd(args []string) {
@@ -148,7 +184,7 @@ func handleRemoteAdd(args []string) {
 	// Validate name (no spaces, slashes, dots, or colons).
 	// Colon is reserved by the UI's internal remote session identifier format.
 	if !isValidRemoteName(name) {
-		fmt.Println("Error: remote name must not contain spaces, slashes, dots, or colons")
+		fmt.Println("Error: remote name must not contain spaces, slashes, dots, or colons, or match a remote management command")
 		os.Exit(1)
 	}
 
