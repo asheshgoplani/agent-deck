@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -2281,6 +2282,8 @@ func handleList(profile string, args []string) {
 		fmt.Println("Usage: agent-deck list [options]")
 		fmt.Println()
 		fmt.Println("List all sessions.")
+		fmt.Println("ACCOUNT shows the quoted stored account slot, not a resolved account or login identity.")
+		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2328,6 +2331,7 @@ func handleList(profile string, args []string) {
 			Path              string    `json:"path"`
 			Group             string    `json:"group"`
 			Tool              string    `json:"tool"`
+			Account           string    `json:"account"`
 			Command           string    `json:"command,omitempty"`
 			ModelID           string    `json:"model_id,omitempty"`
 			Model             string    `json:"model,omitempty"`
@@ -2364,6 +2368,7 @@ func handleList(profile string, args []string) {
 				Path:              inst.ProjectPath,
 				Group:             inst.GroupPath,
 				Tool:              inst.Tool,
+				Account:           inst.Account,
 				Command:           inst.Command,
 				Status:            StatusString(inst.Status),
 				Substate:          string(inst.Substate()),
@@ -2399,7 +2404,7 @@ func handleList(profile string, args []string) {
 
 	// Table output
 	fmt.Printf("Profile: %s\n\n", storage.Profile())
-	fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", "ID")
+	fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
 	fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
 	for _, inst := range instances {
 		title := truncate(inst.Title, tableColTitle)
@@ -2410,7 +2415,7 @@ func handleList(profile string, args []string) {
 		if len(idDisplay) > tableColIDDisplay {
 			idDisplay = idDisplay[:tableColIDDisplay]
 		}
-		fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, idDisplay)
+		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
 	}
 	fmt.Printf("\nTotal: %d sessions\n", len(instances))
 
@@ -2440,6 +2445,7 @@ func handleListAllProfiles(jsonOutput bool) {
 			Path              string    `json:"path"`
 			Group             string    `json:"group"`
 			Tool              string    `json:"tool"`
+			Account           string    `json:"account"`
 			Command           string    `json:"command,omitempty"`
 			Profile           string    `json:"profile"`
 			CreatedAt         time.Time `json:"created_at"`
@@ -2466,6 +2472,7 @@ func handleListAllProfiles(jsonOutput bool) {
 					Path:              inst.ProjectPath,
 					Group:             inst.GroupPath,
 					Tool:              inst.Tool,
+					Account:           inst.Account,
 					Command:           inst.Command,
 					Profile:           profileName,
 					CreatedAt:         inst.CreatedAt,
@@ -2501,7 +2508,7 @@ func handleListAllProfiles(jsonOutput bool) {
 		}
 
 		fmt.Printf("\n═══ Profile: %s ═══\n\n", profileName)
-		fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", "ID")
+		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
 		fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
 
 		for _, inst := range instances {
@@ -2512,7 +2519,7 @@ func handleListAllProfiles(jsonOutput bool) {
 			if len(idDisplay) > tableColIDDisplay {
 				idDisplay = idDisplay[:tableColIDDisplay]
 			}
-			fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, idDisplay)
+			fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
 		}
 		fmt.Printf("(%d sessions)\n", len(instances))
 		totalSessions += len(instances)
