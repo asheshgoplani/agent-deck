@@ -117,14 +117,35 @@ config_dir = '~/missing'
 
 func TestDoctorRemoteNeverRunsLocally(t *testing.T) {
 	home := t.TempDir()
+	configDir := filepath.Join(home, ".agent-deck")
+	if err := os.Mkdir(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := "[remotes.example]\nhost='unused.invalid'\n[profiles.local.claude]\nconfig_dir='~/local'\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(home, "bin")
+	if err := os.Mkdir(shim, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(home, "ssh-called")
+	if err := os.WriteFile(filepath.Join(shim, "ssh"), []byte("#!/bin/sh\nprintf called > \"$DOCTOR_SSH_SENTINEL\"\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DOCTOR_SSH_SENTINEL", sentinel)
 	before := snapshotTree(t, home)
 	stdout, stderr, code := runAgentDeck(t, home, "remote", "example", "doctor", "--json")
 	out := strings.ToLower(stdout + stderr)
-	if code == 0 || !strings.Contains(out, "remote") || (!strings.Contains(out, "unknown") && !strings.Contains(out, "unsupported") && !strings.Contains(out, "not supported")) {
-		t.Fatalf("remote must reject unsupported doctor: exit %d: %s", code, out)
+	if code != 2 || !strings.Contains(out, `unsupported remote command "doctor --json"`) {
+		t.Fatalf("configured remote must explicitly reject doctor: exit %d: %s", code, out)
 	}
 	if strings.Contains(out, "account_slots") || strings.Contains(out, "named claude account directories") {
 		t.Fatalf("remote ran doctor locally: %s", out)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("unsupported doctor called SSH: %v", err)
 	}
 	if after := snapshotTree(t, home); !reflect.DeepEqual(before, after) {
 		t.Fatalf("remote rejection changed HOME")
