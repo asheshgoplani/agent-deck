@@ -417,3 +417,117 @@ func TestSessionInputRouterFailedGenerationDiscardsNonPasteTail(t *testing.T) {
 		})
 	}
 }
+
+type connectingGatedErrorWriter struct {
+	*connectingCapture
+	entered chan struct{}
+	fail    chan struct{}
+}
+
+func (w *connectingGatedErrorWriter) Write(p []byte) (int, error) {
+	close(w.entered)
+	select {
+	case <-w.fail:
+	case <-w.closed:
+		return 0, io.ErrClosedPipe
+	}
+	n, _ := w.connectingCapture.Write(p[:1])
+	return n, io.ErrUnexpectedEOF
+}
+
+func TestSessionInputRouterFailureDuringRawReadStopsCompletedEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+		last   string
+		paste  bool
+	}{
+		{"outside mouse", "\x1b[<0;2;2", "M", false},
+		{"paste terminator", "\x1b[201", "~", true},
+		{"paste opener", "\x1b[200", "~", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			readFile, writeFile, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer readFile.Close()
+			defer writeFile.Close()
+			router := NewSessionInputRouter(readFile)
+			defer router.Deactivate()
+			q := router.BeginConnecting(context.Background(), 1, terminalCellRect{X: 20, Width: 80, Height: 24}, 0)
+			w := &connectingGatedErrorWriter{connectingCapture: newConnectingCapture(), entered: make(chan struct{}), fail: make(chan struct{})}
+			if _, err := q.Write([]byte("abc")); err != nil {
+				t.Fatal(err)
+			}
+			if !router.Install(1, w) {
+				t.Fatal("install rejected")
+			}
+			awaitConnectingSignal(t, w.entered, "writer never entered its controlled write")
+			router.mu.Lock()
+			router.inPaste = tc.paste
+			router.rawBuf = append(router.rawBuf, tc.prefix...)
+			router.mu.Unlock()
+			result := make(chan []byte, 1)
+			go func() {
+				buf := make([]byte, 256)
+				n, _ := router.Read(buf)
+				result <- append([]byte(nil), buf[:n]...)
+			}()
+			// Hold the router lock across the final-byte read and writer
+			// failure. The reader must recheck failure after reacquiring it.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				router.mu.Lock()
+				if router.reading {
+					break
+				}
+				router.mu.Unlock()
+				if time.Now().After(deadline) {
+					t.Fatal("reader did not enter raw read")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			func() {
+				defer router.mu.Unlock()
+				if _, err := io.WriteString(writeFile, tc.last); err != nil {
+					t.Fatal(err)
+				}
+				// Prove the final byte actually left the pipe. A poll timeout
+				// followed by a pre-read failure check must not make this pass.
+				for pollFdReady(int(readFile.Fd()), 0) {
+					if time.Now().After(deadline) {
+						t.Fatal("final byte was not consumed in the guarded read")
+					}
+					time.Sleep(time.Millisecond)
+				}
+				close(w.fail)
+				awaitConnectingSignal(t, q.ctx.Done(), "controlled writer failure did not complete")
+			}()
+			select {
+			case got := <-result:
+				if len(got) != 0 {
+					t.Fatalf("event from failed generation escaped to Home: %q", got)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("failed read did not yield")
+			}
+			if err := q.result(); !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("failure = %v", err)
+			}
+			router.Deactivate()
+			if tc.name == "paste opener" {
+				if _, err := io.WriteString(writeFile, "\rnot-dashboard"+bracketedPasteEnd); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := io.WriteString(writeFile, "z"); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 256)
+			if n, err := router.Read(buf); err != nil || string(buf[:n]) != "z" {
+				t.Fatalf("fresh key or paste quarantine = %q, %v", buf[:n], err)
+			}
+		})
+	}
+}
