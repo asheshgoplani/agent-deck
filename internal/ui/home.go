@@ -2887,6 +2887,7 @@ func (h *Home) syncViewport() {
 	}
 
 	lineBudget, sidebarWidth := h.sidebarLineBudget()
+	rowLines := h.sidebarRowLines()
 
 	if h.cursor < h.viewOffset {
 		h.viewOffset = h.cursor
@@ -2904,7 +2905,7 @@ func (h *Home) syncViewport() {
 			effectiveBudget--
 		}
 		effectiveBudget = max(1, effectiveBudget)
-		if h.sidebarItemsHeight(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth) <= effectiveBudget {
+		if h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth, rowLines) <= effectiveBudget {
 			break
 		}
 		h.viewOffset++
@@ -2920,7 +2921,7 @@ func (h *Home) syncViewport() {
 			effectiveBudget--
 		}
 		effectiveBudget = max(1, effectiveBudget)
-		if h.sidebarItemsHeight(h.flatItems, candidate, len(h.flatItems), sidebarWidth) > effectiveBudget {
+		if h.sidebarItemsHeightWithLines(h.flatItems, candidate, len(h.flatItems), sidebarWidth, rowLines) > effectiveBudget {
 			break
 		}
 		h.viewOffset = candidate
@@ -8686,18 +8687,39 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				h.cursor = itemIndex
 				return h, h.attachSelectedLegacy()
 			}
-			if item.Type == session.ItemTypeSession && item.Session != nil {
+			switch item.Type {
+			case session.ItemTypeSession:
+				if item.Session == nil {
+					return h, nil
+				}
 				if h.hasActiveAnimation(item.Session.ID) {
 					h.setError(fmt.Errorf("session is starting, please wait..."))
 					return h, nil
 				}
 				if h.sessionExistsForUI(item.Session) {
+					h.cursor = itemIndex
 					if h.enterEmbeddedMode() {
 						return h, h.startEmbeddedModeCmd()
 					}
-					return h, nil
 				}
-			} else if item.Type == session.ItemTypeGroup {
+			case session.ItemTypeWindow:
+				// Enter accepts window and remote rows as embedded targets; a
+				// double-click on the same row must land in the same place.
+				parentInst := h.getInstanceByID(item.WindowSessionID)
+				if parentInst != nil && h.sessionExistsForUI(parentInst) {
+					h.cursor = itemIndex
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
+				}
+			case session.ItemTypeRemoteSession:
+				if item.RemoteSession != nil {
+					h.cursor = itemIndex
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
+				}
+			case session.ItemTypeGroup:
 				groupPath := item.Path
 				h.groupTree.ToggleGroup(groupPath)
 				h.rebuildFlatItems()
@@ -8709,7 +8731,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
-			} else if item.Type == session.ItemTypeRemoteGroup {
+			case session.ItemTypeRemoteGroup:
 				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			}
 			return h, nil
@@ -8773,8 +8795,9 @@ func (h *Home) mouseYToItemIndex(y int) int {
 	if h.getLayoutMode() == LayoutModeDual {
 		sidebarWidth = h.sessionsPaneWidth()
 	}
+	rowLines := h.sidebarRowLines()
 	for itemIndex := h.viewOffset; itemIndex < len(h.flatItems); itemIndex++ {
-		rowHeight := h.sidebarItemRenderHeightAtWidth(h.flatItems[itemIndex], sidebarWidth)
+		rowHeight := h.sidebarItemRenderHeightAtWidthLines(h.flatItems[itemIndex], sidebarWidth, rowLines)
 		if lineInList < rowHeight {
 			return itemIndex
 		}
@@ -8869,10 +8892,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Vi-style pagination (#38) - half/full page scrolling
 	case "ctrl+u", "pgup": // Half page up
-		pageSize := h.getVisibleHeight() / 2
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight()/2, -1)
 		h.cursor -= pageSize
 		if h.cursor < 0 {
 			h.cursor = 0
@@ -8884,10 +8904,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "ctrl+d", "pgdown": // Half page down
-		pageSize := h.getVisibleHeight() / 2
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight()/2, 1)
 		h.cursor += pageSize
 		if h.cursor >= len(h.flatItems) {
 			h.cursor = len(h.flatItems) - 1
@@ -8902,10 +8919,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "ctrl+b": // Full page up (backward)
-		pageSize := h.getVisibleHeight()
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight(), -1)
 		h.cursor -= pageSize
 		if h.cursor < 0 {
 			h.cursor = 0
@@ -8917,10 +8931,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "ctrl+f": // Full page down (forward)
-		pageSize := h.getVisibleHeight()
-		if pageSize < 1 {
-			pageSize = 1
-		}
+		pageSize := h.pageStepItems(h.getVisibleHeight(), 1)
 		h.cursor += pageSize
 		if h.cursor >= len(h.flatItems) {
 			h.cursor = len(h.flatItems) - 1
@@ -17156,9 +17167,10 @@ func (h *Home) renderSessionList(width, height int) string {
 	}
 
 	nextItem := h.viewOffset
+	rowLines := h.sidebarRowLines()
 	for i := h.viewOffset; i < len(h.flatItems); i++ {
 		item := h.flatItems[i]
-		rowHeight := h.sidebarItemRenderHeightAtWidth(item, width)
+		rowHeight := h.sidebarItemRenderHeightAtWidthLines(item, width, rowLines)
 		if usedLines > 0 && usedLines+rowHeight > lineBudget {
 			break
 		}
@@ -18203,8 +18215,9 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 			marker = "┃ "
 		}
 		// A one-line rail carries the tool marker inline, like local rows.
+		rowLines := h.sidebarRowLines()
 		toolPrefix := ""
-		if h.sidebarRowLines() == 1 && rs.Tool != "" {
+		if rowLines == 1 && rs.Tool != "" {
 			toolPrefix = sidebarToolIcon(rs.Tool) + " "
 		}
 		firstPlain := indent + marker + statusIcon + " " + toolPrefix + rs.Title
@@ -18234,7 +18247,9 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		}
 		b.WriteString(first)
 		b.WriteString("\n")
-		if toolPrefix == "" {
+		// Gate on the resolved density so this row is exactly as tall as
+		// sidebarItemRenderHeightDensity measured it, tool marker or not.
+		if rowLines > 1 {
 			b.WriteString(second)
 			b.WriteString("\n")
 		}
