@@ -133,6 +133,8 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
+	storageSnapshot *instanceStorageSnapshot
+
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	ProjectPath string `json:"project_path"`
