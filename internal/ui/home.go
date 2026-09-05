@@ -701,6 +701,10 @@ type Home struct {
 	// (Backspace, arrows, Tab, Ctrl-C, Ctrl-D — #1094). When nil, named keys
 	// are sent via the session's tmux pane (SendNamedKey).
 	insertNamedKeySink func(inst *session.Instance, key string) error
+	// remoteCreateSink is an optional override used by tests to capture what
+	// the new-session dialog forwards to the remote-create path (#1353) without
+	// opening an SSH connection. When nil, createRemoteSessionWithOptions runs.
+	remoteCreateSink func(remoteName, tool, title, path, group string, sandbox bool) tea.Cmd
 	// insertKeySender is the persistent dispatch path opened on
 	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
 	// remote support). Local sessions get a tmux.KeySender (control-mode
@@ -8023,7 +8027,11 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.newDialog.Hide()
 			h.pendingRemoteName = ""
 			h.clearError()
-			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path, groupPath, sandbox)
+			create := h.createRemoteSessionWithOptions
+			if h.remoteCreateSink != nil {
+				create = h.remoteCreateSink
+			}
+			return h, create(remoteName, command, name, path, groupPath, sandbox)
 		}
 
 		// Get values including worktree settings.
@@ -14159,6 +14167,10 @@ func (e remoteAttachFailedError) Unwrap() error {
 	return e.err
 }
 
+// Run creates the session on the remote with the dialog's tool, title, path,
+// group and sandbox choice, then attaches to it. A create failure is returned
+// as-is; an attach failure after a successful create is wrapped in
+// remoteAttachFailedError so the caller can tell the two apart.
 func (r remoteCreateAndAttachCmd) Run() error {
 	if r.onExit != nil {
 		defer r.onExit()
