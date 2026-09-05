@@ -140,6 +140,9 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 			retErr = fmt.Errorf("write inbox output: %w", tracked.err)
 		}
 	}()
+	if len(args) > 0 && args[0] == "dead-letter" {
+		return runInboxDeadLetter(stdout, args[1:])
+	}
 	if len(args) > 0 && args[0] == "drain" {
 		return runInboxDrain(stdout, args[1:], explicitProfile)
 	}
@@ -155,6 +158,7 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 		fmt.Fprintln(stdout, "Usage: agent-deck inbox <session-id>")
 		fmt.Fprintln(stdout, "       agent-deck inbox drain [--json] <session-id>")
 		fmt.Fprintln(stdout, "       agent-deck inbox export [--json]")
+		fmt.Fprintln(stdout, "       agent-deck inbox dead-letter list|show [--json]")
 		fmt.Fprintln(stdout, "       agent-deck inbox writer-status [--json]")
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Drain pending completion events from the parent's durable outbox.")
