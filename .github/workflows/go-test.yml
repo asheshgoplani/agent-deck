@@ -33,6 +33,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/go-test.yml'
+      - 'scripts/ci-native-ssh.sh'
 
 # One in-flight run per PR (or per branch on push). Rapid follow-up pushes
 # cancel the stale run instead of stacking 20-minute jobs.
@@ -100,3 +101,39 @@ jobs:
         run: |
           go install gotest.tools/gotestsum@v1.13.0
           gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="./..." -- -race -timeout 20m
+
+  native-ssh:
+    name: Required native SSH acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NATIVE_SSH_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.NATIVE_SSH_EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - name: Set native evidence path
+        run: echo "NATIVE_SSH_ARTIFACT_DIR=$RUNNER_TEMP/native-ssh-evidence" >> "$GITHUB_ENV"
+      - name: Install real SSH fixture tools
+        run: |
+          mkdir -p "$NATIVE_SSH_ARTIFACT_DIR"
+          id | tee "$NATIVE_SSH_ARTIFACT_DIR/runner-user.txt"
+          sudo apt-get update -qq 2>&1 | tee "$NATIVE_SSH_ARTIFACT_DIR/apt-update.log"
+          sudo apt-get install -y --no-install-recommends openssh-server openssh-client tmux python3 2>&1 | tee "$NATIVE_SSH_ARTIFACT_DIR/apt-install.log"
+          dpkg-query -W openssh-server openssh-client tmux python3 > "$NATIVE_SSH_ARTIFACT_DIR/packages.txt"
+      - name: Require real native SSH execution
+        timeout-minutes: 18
+        run: bash scripts/ci-native-ssh.sh
+      - name: Retain native SSH evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-ssh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_SSH_ARTIFACT_DIR }}
+          if-no-files-found: error
