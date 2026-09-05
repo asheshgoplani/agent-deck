@@ -10,24 +10,45 @@ func storedAccountLabel(account string) string {
 	return strconv.Quote(account)
 }
 
+const storedAccountPrefix = " [account:"
+
+// Immutable presentation travels with the raw slot in the render snapshot.
+// Width-independent quoting is shared across rows with the same stored slot.
+type accountPresentation struct {
+	label  string
+	badge  string
+	width  int
+	quoted bool
+}
+
+func newAccountPresentation(account string) accountPresentation {
+	label := storedAccountLabel(account)
+	return accountPresentation{
+		label:  label,
+		badge:  storedAccountPrefix + label + "]",
+		width:  len(storedAccountPrefix) + cellWidth(label) + 1,
+		quoted: account != "",
+	}
+}
+
 // Quote before styling/truncation so terminal controls cannot become commands.
 // Keep the delimiters visible even when a long account needs an ellipsis.
-func storedAccountBadge(account string, budget int) string {
-	const prefix = " [account:"
-	label := storedAccountLabel(account)
-	available := budget - cellWidth(prefix) - 1
+func (p accountPresentation) fit(budget int) (string, int) {
+	if p.width <= budget {
+		return p.badge, p.width
+	}
+	available := budget - len(storedAccountPrefix) - 1
 	if available < 1 {
-		return ""
+		return "", 0
 	}
-	if cellWidth(label) > available {
-		if account != "" {
-			if available < 3 {
-				return ""
-			}
-			label = "\"" + cellTruncate(label[1:len(label)-1], available-2, "…") + "\""
-		} else {
-			label = cellTruncate(label, available, "…")
+	label := p.label
+	if p.quoted {
+		if available < 3 {
+			return "", 0
 		}
+		label = "\"" + cellTruncate(label[1:len(label)-1], available-2, "…") + "\""
+	} else {
+		label = cellTruncate(label, available, "…")
 	}
-	return prefix + label + "]"
+	return storedAccountPrefix + label + "]", len(storedAccountPrefix) + cellWidth(label) + 1
 }

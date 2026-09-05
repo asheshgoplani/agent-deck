@@ -4201,10 +4201,11 @@ type sessionRenderState struct {
 	// the residual "Ctrl+Q → black screen" on large decks with a big group
 	// expanded. Carrying the labels in the snapshot makes row rendering
 	// lock-free.
-	account      string // Stored slot; empty means inherited, not a login identity.
-	title        string // Instance.Title at snapshot time
-	autoName     bool   // session displays a captured/live task description
-	autoNameDesc string // last persisted auto-name description (fallback when paneTitle empty)
+	account        string // Stored slot; empty means inherited, not a login identity.
+	accountDisplay accountPresentation
+	title          string // Instance.Title at snapshot time
+	autoName       bool   // session displays a captured/live task description
+	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
 }
 
 // displaySessionTitle returns the label to render for a session row. For an
@@ -4331,6 +4332,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 	}
 
 	snap := make(map[string]sessionRenderState, len(instances))
+	accounts := make(map[string]accountPresentation)
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -4349,6 +4351,12 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			autoName:     inst.GetAutoName(),
 			autoNameDesc: inst.GetAutoNameDescription(),
 		}
+		display, ok := accounts[state.account]
+		if !ok {
+			display = newAccountPresentation(state.account)
+			accounts[state.account] = display
+		}
+		state.accountDisplay = display
 		// Look up pane title from the already-refreshed tmux cache.
 		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
 		// the cache fresh; processStatusUpdate and other rebuild paths run on
@@ -4388,13 +4396,15 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	// Fallback for newly-added sessions before snapshot refresh. This path DOES
 	// take Instance.mu (briefly, as a reader); it is bounded to sessions that a
 	// snapshot refresh has not seen yet, never the steady-state whole list.
+	account := inst.GetAccountThreadSafe()
 	return sessionRenderState{
-		status:       inst.GetStatusThreadSafe(),
-		tool:         inst.GetToolThreadSafe(),
-		account:      inst.GetAccountThreadSafe(),
-		title:        inst.GetTitleThreadSafe(),
-		autoName:     inst.GetAutoName(),
-		autoNameDesc: inst.GetAutoNameDescription(),
+		status:         inst.GetStatusThreadSafe(),
+		tool:           inst.GetToolThreadSafe(),
+		account:        account,
+		accountDisplay: newAccountPresentation(account),
+		title:          inst.GetTitleThreadSafe(),
+		autoName:       inst.GetAutoName(),
+		autoNameDesc:   inst.GetAutoNameDescription(),
 	}
 }
 
@@ -17413,11 +17423,11 @@ func (h *Home) renderSessionItem(
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
 		cellWidth(agentBadge) + cellWidth(timestampBadge)
-	accountBudget := cellWidth(" [account:" + storedAccountLabel(instState.account) + "]")
+	accountBudget := instState.accountDisplay.width
 	if listWidth > 0 {
 		accountBudget = min(accountBudget, max(0, listWidth-reserved-2))
 	}
-	accountBadge := storedAccountBadge(instState.account, accountBudget)
+	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
 	if accountBadge != "" {
 		accountStyle := DimStyle
 		if selected {
@@ -17426,7 +17436,7 @@ func (h *Home) renderSessionItem(
 		accountBadge = accountStyle.Render(accountBadge)
 	}
 	if listWidth > 0 {
-		budget := max(0, listWidth-reserved-cellWidth(accountBadge)-1)
+		budget := max(0, listWidth-reserved-accountWidth-1)
 		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
@@ -18153,7 +18163,7 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
 
 	// Use the same cached metadata as the row; no account/config resolution.
-	account := storedAccountLabel(h.getSessionRenderState(inst).account)
+	account := h.getSessionRenderState(inst).accountDisplay.label
 	account = cellTruncate(account, max(0, width-cellWidth("Account slot: ")), "…")
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Account slot:"), valueStyle.Render(account)))
 

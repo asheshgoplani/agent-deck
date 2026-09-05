@@ -18,7 +18,7 @@ func TestStoredAccountWidthMatrix(t *testing.T) {
 					h := NewHome()
 					h.width, h.height = width, 40
 					inst := &session.Instance{ID: "width", Title: strings.Repeat("Title日本e\u0301", 8), Tool: "shell", Status: session.StatusIdle, Account: slot}
-					state := sessionRenderState{status: session.StatusIdle, tool: "shell", title: inst.Title, account: slot, autoName: auto, paneTitle: "pane subtitle", autoNameDesc: "description"}
+					state := sessionRenderState{status: session.StatusIdle, tool: "shell", title: inst.Title, account: slot, accountDisplay: newAccountPresentation(slot), autoName: auto, paneTitle: "pane subtitle", autoNameDesc: "description"}
 					for _, selected := range []bool{false, true} {
 						var b strings.Builder
 						h.renderSessionItem(&b, session.Item{Type: session.ItemTypeSession, Session: inst, Level: 1, Path: "work", IsLastInGroup: true}, selected, map[string]sessionRenderState{inst.ID: state}, width)
@@ -45,6 +45,8 @@ func TestStoredAccountSnapshotIsAuthoritative(t *testing.T) {
 	h.refreshSessionRenderSnapshot([]*session.Instance{inst})
 	inst.Account = "second" // Sequential controlled mutation; no concurrent writer.
 	require.Equal(t, "first", h.getSessionRenderState(inst).account)
+	require.Equal(t, `"first"`, h.getSessionRenderState(inst).accountDisplay.label)
 	h.refreshSessionRenderSnapshot([]*session.Instance{inst})
 	require.Equal(t, "second", h.getSessionRenderState(inst).account)
+	require.Equal(t, `"second"`, h.getSessionRenderState(inst).accountDisplay.label)
 }
