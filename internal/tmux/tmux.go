@@ -175,6 +175,57 @@ func (s *Session) projectDisplayName() string {
 // Callers should preserve previous state rather than transitioning to error/inactive.
 var ErrCaptureTimeout = errors.New("capture-pane timed out")
 
+// ErrCaptureGone means a history capture failed because its target or server
+// disappeared. Best-effort response readers can return an empty response;
+// this sentinel does not change session status classification.
+var ErrCaptureGone = errors.New("capture-pane target is gone")
+
+// captureGoneMarkers are the lower-cased tmux stderr fragments that mean the
+// capture target no longer exists. Detection is deliberately conservative:
+// capture-pane exits non-zero for many reasons (bad flags, malformed target,
+// permissions), so only an explicit "absent" message counts as gone; any
+// unrecognized stderr surfaces as a real error. tmux wording varies across
+// versions, so the list covers the session/pane/window/server-absence phrasings
+// observed across tmux 2.x–3.x.
+var captureGoneMarkers = []string{
+	"can't find session",
+	"can't find pane",
+	"can't find window",
+	"can't find client",
+	"no such session",
+	"no server running",
+	"lost server",
+	"server exited unexpectedly",
+}
+
+// captureGoneFromErr reports whether a capture-pane failure was caused by the
+// target being gone, by matching tmux's stderr against captureGoneMarkers.
+// exec.Cmd.Output() populates (*exec.ExitError).Stderr, so the message is
+// available without a separate stderr pipe. Unrecognized stderr (or a
+// non-ExitError such as a context kill) returns false so real failures and
+// timeouts keep their existing handling.
+func captureGoneFromErr(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	stderr := strings.ToLower(strings.TrimSpace(string(exitErr.Stderr)))
+	// Connection errors also cover permissions and malformed sockets. Only an
+	// explicitly missing socket is benign; never match markers inside its path.
+	if strings.HasPrefix(stderr, "error connecting to ") {
+		return strings.HasSuffix(stderr, " (no such file or directory)")
+	}
+	if stderr == "" {
+		return false
+	}
+	for _, marker := range captureGoneMarkers {
+		if strings.Contains(stderr, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 const SessionPrefix = "agentdeck_"
 
 // serverAlive tracks whether the tmux server is responsive.
@@ -3688,6 +3739,9 @@ func (s *Session) CaptureFullHistory() (string, error) {
 	// concurrent `capture-pane -S -2000` clients, each spinning >20 minutes.
 	output, err := s.runBoundedOutput("capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
 	if err != nil {
+		if captureGoneFromErr(err) {
+			return "", ErrCaptureGone
+		}
 		return "", fmt.Errorf("failed to capture history: %w", err)
 	}
 	return string(output), nil
@@ -3713,6 +3767,9 @@ func (s *Session) CaptureHistoryLines(n int) (string, error) {
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", ErrCaptureTimeout
+		}
+		if captureGoneFromErr(err) {
+			return "", ErrCaptureGone
 		}
 		return "", fmt.Errorf("failed to capture history: %w", err)
 	}
