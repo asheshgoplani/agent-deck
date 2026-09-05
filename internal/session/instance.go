@@ -9635,6 +9635,7 @@ func (i *Instance) ForkWithOptions(newTitle, newGroupPath string, opts *ClaudeOp
 	} else {
 		target.GroupPath = i.GroupPath
 	}
+	target.tmuxSession.SetGroupPath(target.GroupPath)
 	target.Tool = "claude"
 
 	return i.buildClaudeForkCommandForTarget(target, opts)
@@ -9732,6 +9733,7 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = "claude"
 	if IsClaudeCompatible(i.Tool) {
 		forked.Tool = i.Tool
@@ -9895,6 +9897,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	// Defer the one-shot fork script via ForkStartCommand (Pi/Codex pattern): the
 	// script self-deletes after first run, so storing it as the persistent Command
 	// would make a later restart re-run a missing file. Command holds a stable base
@@ -9943,6 +9946,7 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = "pi"
 	forked.Wrapper = i.Wrapper
 
@@ -10028,6 +10032,7 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
 	// #1929: a fork runs against the parent's thread, so it must run under the
