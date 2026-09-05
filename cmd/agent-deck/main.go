@@ -624,6 +624,9 @@ func main() {
 			_ = db.ReleaseAllClaims()
 			_ = db.UnregisterInstance()
 		}
+		// Hand the outer terminal's cursor and pointer back if the embedded
+		// terminal owned them; deferred releases do not survive os.Exit.
+		runEmbeddedTerminalCleanup()
 		os.Exit(0)
 	}()
 
@@ -1016,8 +1019,13 @@ func main() {
 		// traffic to an embedded tmux client without giving up the outer TUI.
 		sessionOutput := ui.NewSessionOutput(os.Stdout)
 		sessionInput := ui.NewSessionInputRouter(os.Stdin)
-		defer sessionInput.Deactivate()
-		defer sessionOutput.ReleaseEmbeddedCursor()
+		// One release for every exit: the normal return below, the signal
+		// handler, and the p.Run error path (both of which os.Exit past defers).
+		setEmbeddedTerminalCleanup(func() {
+			sessionInput.Deactivate()
+			sessionOutput.ReleaseEmbeddedCursor()
+		})
+		defer runEmbeddedTerminalCleanup()
 		homeModel.SetSessionIO(sessionInput, sessionOutput)
 		programOptions = append(
 			programOptions,
@@ -1049,6 +1057,7 @@ func main() {
 	})
 
 	if _, err := p.Run(); err != nil {
+		runEmbeddedTerminalCleanup()
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -3765,7 +3774,7 @@ func printHelp() {
 	fmt.Println("Keyboard shortcuts (in TUI):")
 	fmt.Println("  n          New session")
 	fmt.Println("  g          New group")
-	fmt.Println("  Enter      Attach to session")
+	fmt.Println("  Enter      Attach to session (with [ui].embedded_terminal = true: focus the embedded terminal pane)")
 	fmt.Println("  m          MCP Manager")
 	fmt.Println("  s          Skills Manager")
 	fmt.Println("  M          Move session to group")

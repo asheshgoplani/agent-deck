@@ -245,7 +245,9 @@ func (h *HelpOverlay) View() string {
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
 		embeddedLayout = cfg.UI.GetEmbeddedTerminal()
 	}
+	quickStartEnter := "Attach to selected session"
 	if embeddedLayout {
+		quickStartEnter = "Focus embedded terminal for selected session"
 		navigationItems = append(navigationItems,
 			[2]string{"Enter", "Focus embedded terminal / toggle group"},
 			[2]string{"Alt+Enter", "Full-screen attach"},
@@ -266,7 +268,7 @@ func (h *HelpOverlay) View() string {
 		{
 			title: "QUICK START",
 			items: [][2]string{
-				{"Enter", "Attach to selected session"},
+				{"Enter", quickStartEnter},
 				{restartKey, "Restart selected session"},
 				{detachKey, "Detach from session"},
 				{helpKey, "Open this help"},
