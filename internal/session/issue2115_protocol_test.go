@@ -3,7 +3,6 @@ package session
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -96,7 +95,7 @@ func TestReview2115GuardProcesses(t *testing.T) {
 			review2115Activate(t)
 			childTemp := t.TempDir()
 			ready := filepath.Join(childTemp, "ready")
-			cmd := exec.Command(os.Args[0], "-test.run=^TestReview2115GuardChild$")
+			cmd := sessionTestChildCommand(t, "TestReview2115GuardChild")
 			cmd.Env = append(os.Environ(), "TMPDIR="+childTemp, "REVIEW2115_CHILD=1", "REVIEW2115_READY="+ready, "REVIEW2115_HOME="+os.Getenv("HOME"))
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)

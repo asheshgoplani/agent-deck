@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -213,6 +214,7 @@ func TestMain(m *testing.M) {
 // TMUX_TMPDIR is removed. Skipping this leaked a tmux server (1 pty) on every
 // run — the 2026-06-07 pty-exhaustion incident.
 func runTestMain(m *testing.M) int {
+	flag.Parse()
 	// Isolate HOME+XDG FIRST so every path this package resolves (config.json,
 	// profiles/<p>/state.db, worker-scratch, logs) lands in a temp dir, never
 	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
@@ -245,32 +247,12 @@ func runTestMain(m *testing.M) int {
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
 	os.Setenv("AGENTDECK_PROFILE", "_test")
 
-	// Build one matching CLI helper for tests that exercise the launch prelude.
-	// This is test-only state; production always uses os.Executable().
-	helperRoot, err := os.Getwd()
+	cleanupHelper, err := provisionSessionTestHelper()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "test helper source discovery failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "test helper provisioning failed: %v\n", err)
 		return 1
 	}
-	projectRoot := filepath.Clean(filepath.Join(helperRoot, "../.."))
-	if _, err := os.Stat(filepath.Join(projectRoot, "cmd", "agent-deck")); err != nil {
-		fmt.Fprintf(os.Stderr, "test helper source discovery failed: %v\n", err)
-		return 1
-	}
-	helperDir, err := os.MkdirTemp("", "agent-deck-test-helper-")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "test helper temp directory failed: %v\n", err)
-		return 1
-	}
-	defer os.RemoveAll(helperDir)
-	out := filepath.Join(helperDir, "agent-deck")
-	cmd := exec.Command("go", "build", "-p", "1", "-o", out, "./cmd/agent-deck")
-	cmd.Dir = projectRoot
-	if output, buildErr := cmd.CombinedOutput(); buildErr != nil {
-		fmt.Fprintf(os.Stderr, "test helper build failed: %v: %s\n", buildErr, output)
-		return 1
-	}
-	completionExecutableForTests = out
+	defer cleanupHelper()
 
 	// Run tests
 	code := m.Run()
