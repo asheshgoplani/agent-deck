@@ -2,9 +2,14 @@ package ui
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -603,6 +608,125 @@ func TestNewDialog_MalformedPathFix(t *testing.T) {
 				t.Errorf("GetValues() path = %q, want %q", path, tt.expected)
 			}
 		})
+	}
+}
+
+// TestNewDialog_TabShowsCompletionMatches: when Tab autocompletes a partial
+// path with multiple matches, the matches must be listed in the dropdown
+// (terminal-style menu completion) with the current one highlighted, and
+// repeated Tab must move the highlight through the list.
+func TestNewDialog_TabShowsCompletionMatches(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(200, 50)
+	d.Show()
+
+	tmpDir := t.TempDir()
+	subdirs := []string{"alpha", "amber", "apple"}
+	for _, sub := range subdirs {
+		if err := os.MkdirAll(filepath.Join(tmpDir, sub), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Focus the path field.
+	d.focusIndex = 2
+	d.updateFocus()
+	if d.currentTarget() != focusPath {
+		t.Fatalf("expected focusPath, got %v", d.currentTarget())
+	}
+
+	d.pathInput.SetValue(filepath.Join(tmpDir, "a"))
+	d.pathInput.SetCursor(len(d.pathInput.Value()))
+
+	// First Tab: completes to the first match and shows the match list.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	if !d.pathCycler.IsActive() {
+		t.Fatal("expected completion cycler to be active after Tab on partial path")
+	}
+	view := d.View()
+	for _, sub := range subdirs {
+		if !strings.Contains(view, sub) {
+			t.Errorf("completion list should show %q, view:\n%s", sub, view)
+		}
+	}
+	first := d.pathCycler.Matches()[0]
+	if !strings.Contains(view, "▶ "+first) {
+		t.Errorf("current match %q should be highlighted with ▶", first)
+	}
+
+	// Second Tab: cycles to the next match and moves the highlight.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	second := d.pathCycler.Matches()[1]
+	if got := d.pathInput.Value(); got != second {
+		t.Errorf("second Tab should complete to %q, got %q", second, got)
+	}
+	view = d.View()
+	if !strings.Contains(view, "▶ "+second) {
+		t.Errorf("after second Tab, %q should be highlighted with ▶", second)
+	}
+	if strings.Contains(view, "▶ "+first) {
+		t.Errorf("after second Tab, %q should no longer be highlighted", first)
+	}
+}
+
+// TestNewDialog_CompletionDropdown_SanitizesControlBytes: directory names can
+// carry ESC/BEL/OSC sequences and newlines (repo checkouts, extracted
+// archives). The dropdown renders filesystem-derived names, so control bytes
+// must be neutralized at the render boundary — while the raw names stay
+// intact in the match set so selection still targets the real directory.
+func TestNewDialog_CompletionDropdown_SanitizesControlBytes(t *testing.T) {
+	// Pin the global lipgloss profile to Ascii so the render carries no
+	// style-generated escapes (issue391 tests force TrueColor binary-wide);
+	// any control byte left in the output can then only come from a filename.
+	oldProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(oldProfile) })
+
+	d := NewNewDialog()
+	d.SetSize(200, 50)
+	d.Show()
+
+	tmpDir := t.TempDir()
+	oscName := "evil\x1b]52;c;cGF5bG9hZA==\x07osc"
+	nlName := "evil\nnewline"
+	for _, sub := range []string{oscName, nlName, "evilclean"} {
+		if err := os.Mkdir(filepath.Join(tmpDir, sub), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Focus the path field and Tab on a prefix matching all three.
+	d.focusIndex = 2
+	d.updateFocus()
+	d.pathInput.SetValue(filepath.Join(tmpDir, "evil"))
+	d.pathInput.SetCursor(len(d.pathInput.Value()))
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if !d.pathCycler.IsActive() {
+		t.Fatal("expected completion cycler to be active after Tab on partial path")
+	}
+
+	// Raw bytes must survive in the match set used for selection.
+	var rawOSC, rawNL bool
+	for _, m := range d.pathCycler.Matches() {
+		if strings.HasSuffix(m, oscName) {
+			rawOSC = true
+		}
+		if strings.HasSuffix(m, nlName) {
+			rawNL = true
+		}
+	}
+	if !rawOSC || !rawNL {
+		t.Errorf("raw control-byte names must remain selectable, matches: %q", d.pathCycler.Matches())
+	}
+
+	// The rendered menu must carry no control bytes (newlines between menu
+	// rows are layout, not payload).
+	menu := d.renderCompletionDropdown()
+	for _, r := range menu {
+		if r != '\n' && unicode.IsControl(r) {
+			t.Fatalf("rendered dropdown contains control rune %q:\n%q", r, menu)
+		}
 	}
 }
 

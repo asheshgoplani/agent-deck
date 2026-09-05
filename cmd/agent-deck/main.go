@@ -32,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -66,6 +67,50 @@ func initUpdateSettings() {
 	update.SetCheckInterval(settings.CheckIntervalHours)
 	update.SetBridgeScriptInstaller(session.InstallBridgeScript)
 	update.SetConductorDirResolver(session.ConductorDir)
+}
+
+// initTelemetrySettings passes the config.toml [telemetry] section to the
+// telemetry package. Config can only turn telemetry OFF or change the
+// receiver URL; consent itself lives in telemetry-state.json (TELEMETRY.md).
+func initTelemetrySettings() {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		// Fail closed: the user may have written [telemetry].disabled = true
+		// in a file we cannot parse right now.
+		telemetry.SetConfigUnreadable()
+		return
+	}
+	telemetry.SetConfigDisabled(cfg.Telemetry.Disabled)
+	telemetry.SetEndpoint(cfg.Telemetry.Endpoint)
+}
+
+// recordCLITelemetry bumps the opt-in usage counters for a CLI subcommand.
+// No-op unless the user has consented (telemetry.Record checks). Hook
+// handlers and daemons are excluded: they fire on every agent turn and
+// would swamp the human-driven counts.
+func recordCLITelemetry(subcommand string, rest []string) {
+	for _, a := range rest {
+		if a == "-h" || a == "--help" || a == "help" {
+			return
+		}
+	}
+	switch subcommand {
+	case "add", "list", "ls", "remove", "rm", "rename", "mv", "status", "profile", "update",
+		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
+		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
+		"remote", "worktree", "wt", "costs", "web", "uninstall", "migrate-paths", "hooks",
+		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "deepseek", "feedback", "creds-refresh":
+	default:
+		return
+	}
+	telemetry.Record(telemetry.CounterCLIInvocations)
+	switch subcommand {
+	case "remote":
+		telemetry.Record(telemetry.CounterRemoteUsed)
+	case "conductor":
+		telemetry.Record(telemetry.CounterConductorUsed)
+
+	}
 }
 
 // writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending
@@ -224,6 +269,7 @@ func main() {
 	// Configure update checking before any command path can reach an update
 	// check (printUpdateNotice, `update`, `version`). See the doc comment.
 	initUpdateSettings()
+	initTelemetrySettings()
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
@@ -278,7 +324,11 @@ func main() {
 
 	// Handle subcommands
 	if len(args) > 0 {
+		recordCLITelemetry(args[0], args[1:])
 		switch args[0] {
+		case "telemetry":
+			handleTelemetry(args[1:])
+			return
 		case "version", "--version", "-v":
 			writeVersionOutput(os.Stdout, Version)
 			return
@@ -672,6 +722,12 @@ func main() {
 	// min-launches threshold for new users. Non-TUI subcommands (add, list,
 	// feedback, etc.) deliberately skip this so scripted usage doesn't
 	// inflate the counter.
+	// Opt-in usage telemetry: count the TUI launch (no-op without consent).
+	// Headless `web --no-tui` never boots the TUI and is not counted.
+	if !webHeadless {
+		telemetry.Record(telemetry.CounterTUILaunches)
+	}
+
 	if fbSt, _ := feedback.LoadState(); fbSt != nil {
 		feedback.RecordLaunch(fbSt, time.Now())
 		// #967: migrate pre-existing forever-opt-outs to per-release-series.
@@ -992,7 +1048,7 @@ var globalFlagSubcommands = map[string]bool{
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
-	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true,
+	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true, "telemetry": true,
 	"debug-dump": true, "version": true, "help": true,
 }
 
@@ -3572,6 +3628,7 @@ func printHelp() {
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
+	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
 	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths")
 	fmt.Println("  uninstall        Uninstall Agent Deck")

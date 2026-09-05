@@ -304,7 +304,7 @@ func (h *HelpOverlay) View() string {
 				{copyPaneKey, "Copy visible terminal text, including links"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
-				{openShellHereKey, "Open shell in session's worktree (split pane / tmux)"},
+				{openShellHereKey, "Open shell in session's worktree (split pane / window)"},
 				{editPathsKey, "Edit multi-repo paths"},
 				{editSessionKey, "Edit session settings (title/color/...)"},
 				{notesKey, "Edit notes"},

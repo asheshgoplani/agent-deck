@@ -35,6 +35,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/procfd"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -5019,6 +5020,10 @@ func (i *Instance) Start() error {
 		go i.detectCopilotSessionAsync()
 	}
 
+	// Opt-in usage telemetry: counts only when the user has consented
+	// (no-op otherwise), tool name normalised to the built-in list.
+	telemetry.RecordSessionStarted(i.Tool)
+
 	return nil
 }
 
@@ -5298,6 +5303,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	if IsCodexCompatible(i.Tool) {
 		go i.detectCodexSessionAsync()
 	}
+
+	telemetry.RecordSessionStarted(i.Tool)
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
@@ -7305,6 +7312,9 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 	if i.Tool == "gemini" {
 		return i.getGeminiLastResponse()
 	}
+	if i.Tool == "pi" {
+		return i.getPiLastResponse()
+	}
 	return i.getTerminalLastResponse()
 }
 
@@ -7403,13 +7413,16 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 
 	// Final fallback: terminal parsing (works for all tools).
 	if i.tmuxSession != nil {
-		if terminalResp, terminalErr := i.getTerminalLastResponse(); terminalErr == nil {
+		terminalResp, terminalErr := i.getTerminalLastResponse()
+		if terminalErr == nil {
 			return terminalResp, nil
 		}
+		err = terminalErr
 	}
 
-	// For Claude and Gemini, prefer a graceful empty response instead of a hard error.
-	if IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
+	// A vanished terminal is benign for every tool. Preserve the existing
+	// graceful-empty behavior for Claude and Gemini when recovery fails.
+	if errors.Is(err, tmux.ErrCaptureGone) || IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
 		toolName := i.Tool
 		if IsClaudeCompatible(toolName) {
 			toolName = "claude"
@@ -8171,6 +8184,90 @@ func parseGeminiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 	}
 
 	return nil, fmt.Errorf("no assistant response found in session")
+}
+
+func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
+	if i.IsSSH() || i.IsSandboxed() {
+		return nil, fmt.Errorf("instance %s runs outside this host; its Pi transcript is not on this machine", i.ID)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var latest string
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && (latest == "" || info.ModTime().After(latestTime)) {
+			latest = filepath.Join(dir, entry.Name())
+			latestTime = info.ModTime()
+		}
+	}
+	if latest == "" {
+		return nil, fmt.Errorf("no Pi session transcript found")
+	}
+	data, err := os.ReadFile(latest)
+	if err != nil {
+		return nil, err
+	}
+	return parsePiLastAssistantMessage(data)
+}
+
+func parsePiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
+	type contentPart struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var sessionID string
+	var last *ResponseOutput
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Role    string        `json:"role"`
+				Content []contentPart `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &event) != nil {
+			continue
+		}
+		if event.Type == "session" {
+			sessionID = event.ID
+			continue
+		}
+		if event.Type != "message" || event.Message.Role != "assistant" {
+			continue
+		}
+		var text []string
+		for _, part := range event.Message.Content {
+			if part.Type == "text" {
+				text = append(text, part.Text)
+			}
+		}
+		if len(text) != 0 {
+			last = &ResponseOutput{
+				Tool: "pi", Role: "assistant", Content: strings.Join(text, "\n"),
+				Timestamp: event.Timestamp, SessionID: sessionID,
+			}
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("no assistant response found in Pi session")
+	}
+	return last, nil
 }
 
 // getTerminalLastResponse extracts the last response from terminal output
