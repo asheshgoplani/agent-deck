@@ -15,6 +15,23 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
+// resolveCLIAccountSlot validates the final command provenance before callers
+// create worktrees or run setup scripts. Empty commands keep NewInstance's
+// default shell; selecting a configured default tool here would change behavior.
+func resolveCLIAccountSlot(explicitAccount, resolvedTool, resolvedCommand string, passthrough bool) (string, error) {
+	account := strings.TrimSpace(explicitAccount)
+	if account == "" {
+		account = strings.TrimSpace(os.Getenv("AGENTDECK_ACCOUNT"))
+	}
+	candidate := session.Instance{
+		Account:               account,
+		Tool:                  firstNonEmpty(resolvedTool, "shell"),
+		Command:               resolvedCommand,
+		SubcommandPassthrough: passthrough,
+	}
+	return account, candidate.ValidateAccount()
+}
+
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
 // the caller's own session. These deliberately omit -L so tmux auto-routes via
 // $TMUX (see the display-message entries in TestNoRawTmuxExec_OutsideAllowlist),

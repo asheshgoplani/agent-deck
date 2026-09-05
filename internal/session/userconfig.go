@@ -88,6 +88,11 @@ type UserConfig struct {
 	// Default: true (nil = true)
 	SyncTitle *bool `toml:"sync_title,omitempty"`
 
+	// PushTitle passes the exact deck title via --name on supported Claude
+	// startup commands. Live renames take effect at the next start/restart.
+	// Default: true (nil = true); unreadable config disables automatic naming.
+	PushTitle *bool `toml:"push_title,omitempty"`
+
 	// GroupSort controls the order of sessions within a group.
 	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
 	//   "actionable"           — issue #857 status→recency→Order surfacing.
@@ -1453,6 +1458,16 @@ func (c *UserConfig) GetSyncTitle() bool {
 		return true
 	}
 	return *c.SyncTitle
+}
+
+// GetPushTitle returns whether agent-deck may tell the agent its own session
+// name. Defaults to true (nil = true); set push_title = false to leave the
+// agent's name alone and keep the sync one-directional.
+func (c *UserConfig) GetPushTitle() bool {
+	if c.PushTitle == nil {
+		return true
+	}
+	return *c.PushTitle
 }
 
 // GetGroupSort returns the normalized within-group sort mode: "actionable" only

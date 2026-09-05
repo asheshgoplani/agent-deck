@@ -193,9 +193,13 @@ func saveCache(cache *UpdateCache) error {
 }
 
 // resolveGitHubToken returns a GitHub token from (in order) GITHUB_TOKEN,
-// GH_TOKEN, or `gh auth token`. Returns "" if none are available. Any
-// failure invoking `gh` is treated as "no token" so we fall back to
-// anonymous requests.
+// GH_TOKEN, or `gh auth token --hostname github.com`. Returns "" if none
+// are available. The gh lookup is pinned to github.com because that is the
+// only host we talk to: without the flag gh returns the token for its
+// "default" host, which on a GitHub Enterprise-only machine is the
+// enterprise credential. Any failure invoking `gh` (including "no token
+// for github.com") is treated as "no token" so we fall back to anonymous
+// requests.
 func resolveGitHubToken() string {
 	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
 		return t
@@ -206,7 +210,7 @@ func resolveGitHubToken() string {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return ""
 	}
-	out, err := exec.Command("gh", "auth", "token").Output()
+	out, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
 	if err != nil {
 		return ""
 	}
