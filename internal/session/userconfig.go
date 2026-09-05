@@ -234,6 +234,11 @@ type UserConfig struct {
 	// to the user and editable without running `agent-deck feedback`.
 	Feedback FeedbackSettings `toml:"feedback,omitempty"`
 
+	// Telemetry configures the opt-in usage telemetry (see TELEMETRY.md).
+	// Consent itself lives in telemetry-state.json, never here: this section
+	// can only turn telemetry OFF or point it at a self-hosted endpoint.
+	Telemetry TelemetrySettings `toml:"telemetry,omitempty"`
+
 	// Terminal defines outer-terminal chrome settings — sequences agent-deck
 	// writes directly to the host terminal (iTerm2 badge, etc), distinct
 	// from anything tmux draws. Empty/absent uses defaults; see TerminalSettings.
@@ -376,7 +381,8 @@ type UISettings struct {
 	// ShellSplit controls the terminal used by the open_shell_here hotkey.
 	// Valid values:
 	//   "iterm"  — always open an iTerm2 vertical split pane (macOS only)
-	//   "tmux"   — always open a new tmux window
+	//   "tmux"   — always open an inline tmux split pane
+	//   "window" — always open a tmux window (tab) inside the session
 	//   ""       — auto: use iTerm2 split when LC_TERMINAL=iTerm2 or
 	//              TERM_PROGRAM=iTerm.app, otherwise tmux
 	// Default: "" (auto). Issue #1470.
@@ -505,8 +511,9 @@ const (
 
 // ShellSplit modes for the open_shell_here hotkey (issue #1470).
 const (
-	ShellSplitITerm = "iterm"
-	ShellSplitTmux  = "tmux"
+	ShellSplitITerm  = "iterm"
+	ShellSplitTmux   = "tmux"
+	ShellSplitWindow = "window"
 )
 
 // Preview-pane orientation modes for wide terminals (>= 80 cols).
@@ -585,6 +592,8 @@ func (u UISettings) GetShellSplit() string {
 		return ShellSplitITerm
 	case ShellSplitTmux:
 		return ShellSplitTmux
+	case ShellSplitWindow:
+		return ShellSplitWindow
 	}
 	return ""
 }
@@ -696,6 +705,17 @@ type FeedbackSettings struct {
 	// Disabled suppresses all passive feedback prompts when true.
 	// Defaults to false. Set by RecordOptOut paths; cleared on re-enable.
 	Disabled bool `toml:"disabled,omitempty"`
+}
+
+// TelemetrySettings configures opt-in usage telemetry (TELEMETRY.md).
+type TelemetrySettings struct {
+	// Disabled forces telemetry off regardless of stored consent, like
+	// AGENTDECK_TELEMETRY=0. It cannot enable telemetry.
+	Disabled bool `toml:"disabled,omitempty"`
+
+	// Endpoint overrides the HTTPS receiver URL for self-hosting. Plain http
+	// is accepted only for localhost. Empty uses the compiled-in default.
+	Endpoint string `toml:"endpoint,omitempty"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -3063,8 +3083,19 @@ type DisplaySettings struct {
 	// IncludeCwdPrefix controls whether the terminal/pane title is prefixed
 	// with "[<cwd-basename>]" (e.g. "[my-project] feature work"). Default true
 	// preserves the historical format; set false to show only the session
-	// title. Consumed by the tmux set-titles-string builder.
+	// title. Consumed by the tmux set-titles-string builder. Ignored when
+	// TitleFormat is set.
 	IncludeCwdPrefix *bool `toml:"include_cwd_prefix,omitempty"`
+
+	// TitleFormat is a custom template for the outer terminal title. When
+	// non-empty it overrides the default "[<project>] <name>" format (and the
+	// IncludeCwdPrefix toggle). Supported placeholders, substituted live by
+	// tmux on rename/regroup:
+	//   {group}   — the agent-deck group/tree path (e.g. "projects/devops")
+	//   {project} — the working-directory basename
+	//   {name}    — the session title
+	// Example: "{group}/{name}" or "[{project}] {group} · {name}".
+	TitleFormat string `toml:"title_format,omitempty"`
 
 	// ShowSessionTimestamps appends a dim "Nm ago" badge to every session row.
 	// Default: false — opt-in to avoid crowding existing badges. See
@@ -3138,6 +3169,18 @@ func (d DisplaySettings) GetIncludeCwdPrefix() bool {
 		return true
 	}
 	return *d.IncludeCwdPrefix
+}
+
+// GetTitleFormat returns the trimmed custom terminal title template, or "" when
+// unset (in which case the default format and GetIncludeCwdPrefix apply).
+func (d DisplaySettings) GetTitleFormat() string {
+	return strings.TrimSpace(d.TitleFormat)
+}
+
+// ConfigureTmuxDisplay applies the shared CLI, TUI and headless-web title policy.
+func ConfigureTmuxDisplay(display DisplaySettings) {
+	tmux.SetHideCwdPrefixInTitle(!display.GetIncludeCwdPrefix())
+	tmux.SetTitleFormat(display.GetTitleFormat())
 }
 
 // Default user config (empty maps)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -1007,6 +1008,7 @@ func knownModelIDsForTool(tool string) []string {
 		return []string{
 			"claude-opus-5",
 			"claude-sonnet-5",
+			"claude-fable-5-1",
 			"claude-fable-5",
 			"claude-sonnet-4-6",
 			"claude-opus-4-8",
@@ -1037,6 +1039,7 @@ func knownModelIDsForTool(tool string) []string {
 			"openai/o3",
 			"anthropic/claude-opus-5",
 			"anthropic/claude-sonnet-5",
+			"anthropic/claude-fable-5-1",
 			"anthropic/claude-fable-5",
 			"anthropic/claude-sonnet-4-6",
 			"anthropic/claude-opus-4-8",
@@ -3139,6 +3142,13 @@ func (d *NewDialog) renderSuggestionsDropdown() string {
 		return ""
 	}
 
+	// While Tab-completion is cycling through multiple filesystem matches,
+	// show those matches instead of the recent-path suggestions so the user
+	// can see what Tab is cycling through (terminal-style menu completion).
+	if len(d.pathCycler.Matches()) > 1 {
+		return d.renderCompletionDropdown()
+	}
+
 	menuBg := dropdownMenuBg()
 	suggestionStyle := lipgloss.NewStyle().Foreground(ColorComment).Background(menuBg)
 	customStyle := lipgloss.NewStyle().Foreground(ColorPurple).Italic(true).Background(menuBg)
@@ -3229,6 +3239,88 @@ func (d *NewDialog) renderSuggestionsDropdown() string {
 	menuStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
+		Background(menuBg).
+		Padding(0, 1)
+
+	return menuStyle.Render(b.String())
+}
+
+// sanitizeMatchForDisplay neutralizes control characters in a
+// filesystem-derived name before it is rendered. Directory names may carry
+// ESC/BEL/CR/LF and OSC sequences (repo checkouts, extracted archives), which
+// would otherwise become live terminal escape sequences inside the dropdown —
+// able to alter terminal state or forge menu contents. Each control rune is
+// replaced with U+FFFD for display only; callers keep the raw name for
+// selection so completion still targets the real directory.
+func sanitizeMatchForDisplay(name string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '�'
+		}
+		return r
+	}, name)
+}
+
+// renderCompletionDropdown renders the active Tab-completion matches as a
+// menu, highlighting the match currently applied to the path input.
+func (d *NewDialog) renderCompletionDropdown() string {
+	menuBg := dropdownMenuBg()
+	matchStyle := lipgloss.NewStyle().Foreground(ColorComment).Background(menuBg)
+	selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Background(menuBg)
+
+	matches := d.pathCycler.Matches()
+	cursor := d.pathCycler.Index()
+	total := len(matches)
+
+	// Paginated scrolling window around the selected match.
+	maxShow := 5
+	startIdx := 0
+	endIdx := total
+	if total > maxShow {
+		anchor := cursor
+		if anchor < 0 {
+			anchor = 0
+		}
+		startIdx = anchor - maxShow/2
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		endIdx = startIdx + maxShow
+		if endIdx > total {
+			endIdx = total
+			startIdx = endIdx - maxShow
+		}
+	}
+
+	var b strings.Builder
+	if startIdx > 0 {
+		b.WriteString(matchStyle.Render(fmt.Sprintf("  ↑ %d more above", startIdx)))
+		b.WriteString("\n")
+	}
+	for i := startIdx; i < endIdx; i++ {
+		if i > startIdx {
+			b.WriteString("\n")
+		}
+		style := matchStyle
+		prefix := "  "
+		if i == cursor {
+			style = selectedStyle
+			prefix = "▶ "
+		}
+		b.WriteString(style.Render(prefix + sanitizeMatchForDisplay(matches[i])))
+	}
+	if endIdx < total {
+		b.WriteString("\n")
+		b.WriteString(matchStyle.Render(fmt.Sprintf("  ↓ %d more below", total-endIdx)))
+	}
+
+	b.WriteString("\n")
+	footerText := fmt.Sprintf(" %d matches │ Tab cycle │ type to edit ", total)
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
+
+	menuStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorCyan).
 		Background(menuBg).
 		Padding(0, 1)
 

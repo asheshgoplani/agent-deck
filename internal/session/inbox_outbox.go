@@ -91,6 +91,7 @@ func decodeInboxLine(line []byte) (TransitionNotificationEvent, error) {
 // Format "<child_id>@<hex16>" keeps it greppable and child-scoped.
 func TurnFingerprint(e TransitionNotificationEvent) string {
 	child := strings.TrimSpace(e.ChildSessionID)
+	originChild := strings.TrimSpace(e.SourceRemote) + "\x00" + child
 	var signal string
 	switch {
 	case e.Kind == transitionKindFinished:
@@ -100,7 +101,7 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 	default:
 		signal = "flip|" + strings.ToLower(strings.TrimSpace(e.FromStatus)) + ">" + strings.ToLower(strings.TrimSpace(e.ToStatus))
 	}
-	sum := sha256.Sum256([]byte(child + "@" + signal))
+	sum := sha256.Sum256([]byte(originChild + "@" + signal))
 	return child + "@" + hex.EncodeToString(sum[:])[:16]
 }
 
@@ -147,8 +148,9 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	// the fresh one. rewriteInboxLocked is atomic and invalidates the
 	// fingerprint cache for the path.
 	child := event.ChildSessionID
+	source := event.SourceRemote
 	if _, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
-		return ev.ChildSessionID == child
+		return ev.ChildSessionID == child && ev.SourceRemote == source
 	}); err != nil {
 		return err
 	}

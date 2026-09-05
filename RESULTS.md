@@ -1,83 +1,53 @@
-# PR #2050 final verification
+# PR #1952 verification results
 
 ## Rebase evidence
 
-- Pre-rebase head: `4282ece17d842eeb36e29c3470acb1a20c802dfa`.
-- Fetched and rebased first onto current `origin/main` at
-  `7771aca6c3c356090e01f7af1f068c9290cfce46`.
-- Rebased feature/fix commits: `7a1d14af` and `6c138701`.
-- `git range-diff` confirmed both PR commits survived. A direct old-head/new-head
-  production-path comparison showed only the expected new `main` account-command
-  changes; the output-budget production and test hunks were unchanged. The only
-  rebase conflict was the shared operational `RESULTS.md`.
-- The rebased branch was pushed with `--force-with-lease` before review work.
+- Pre-rebase head: `ce4debeb6f3ea5b1cffdc9242eb598df4a3dede5`.
+- Rebased head before the final fixes: `70bb777fd94106162f81a208764f42d4cfce84bc` on current `origin/main`.
+- `git range-diff 92bb498f..ce4debeb origin/main..70bb777f` mapped all 16 PR commits one-for-one with `=`; no prior patch changed or disappeared.
+- The rebased branch was pushed with `--force-with-lease` before findings work began.
 
 ## Findings addressed
 
-All issue comments, reviews, and eight inline review comments were read. The
-current head addresses every distinct finding:
-
-1. Copy mode keeps the complete response and its complete size metadata.
-2. JSON and quiet transport remain unbounded/raw; remote SSH pane JSON therefore
-   retains ANSI and matches the local preview contract.
-3. Truncated head and tail fragments have an explicit omission marker.
-4. Tiny budgets retain the complete recovery footer and integer multiplication
-   saturates instead of overflowing.
-5. JSONL event writes propagate both write and close failures (CodeQL #292).
-6. Empty and dot-only session IDs cannot escape the snapshot directory.
-7. Durability assertions resolve the effective data directory through the same
-   production helper as event recording.
-8. Touched helpers are documented and the remote pane-fetch regression is in
-   the targeted gate.
+- Made `SourceRemote` part of every pending-inbox identity decision: event fingerprint, turn fingerprint, last-wins producer replacement, and consumer collapse. This keeps local `boxb:nightly-build`, remote `nightly-build`, and caller-prefixed remote IDs distinct even when their visible child spelling overlaps.
+- Removed prefix inference from `RemoteScopedChildID`; arbitrary caller-selected IDs are always scoped rather than mistaken for an already-scoped record.
+- Converted injected CLI writers to error-tracking writers so `inbox` and `remote drain` cannot return success after partial/failed output.
+- Made writer-status distinguish a missing heartbeat from permission/I/O/read failures; only `ENOENT` means “never stamped,” while other failures report unknown liveness.
+- Fixed the suppressed-session absence test to fail on `ReadInboxEvents` errors instead of passing vacuously.
+- Rechecked earlier findings on orphan export, suppression, completion-copy deduplication, corrupt ledger reads, recurring terminal turns, fetch/probe ordering, consumed-ledger bounds, and writer probe fail-closed behavior; their current-head fixes remain present after rebase.
 
 ## Revert proofs
 
-All Go commands ran in `golang:1.25` containers. In an isolated detached
-worktree at the rebased head, the corresponding production guards were removed
-while tests were left intact. The targeted test command exited 1 with behavioral
-failures (not a compile failure):
-
-- missing seam: `TestPrepareAgentBoundaryOutputMarksOmittedContent` RED;
-- chopped tiny-budget footer:
-  `TestPrepareAgentBoundaryOutputAlwaysIncludesRecoveryFooter` RED;
-- overflowing budget: `TestPrepareAgentBoundaryOutputSaturatesOverflow` RED;
-- forced bounding across all consumers: JSON, quiet, and copy cases in
-  `TestAgentBoundaryModesEnumeration` RED;
-- removed dot-only guard: all four cases in
-  `TestOutputSnapshotPathRejectsDotOnlySessionIDs` RED;
-- ignored close failure: `TestWriteOutputReadLineReturnsCloseError` RED.
-
-The PR checkout was never mutated by this proof. With production restored, the
-targeted gate passed:
+Only the production hunks were reverse-applied while the new tests remained, and the focused tests were run in `golang:1.25`:
 
 ```text
-go test ./cmd/agent-deck ./internal/ui -run 'Test(PrepareAgentBoundaryOutput|AgentBoundaryModesEnumeration|OutputSnapshot|WriteOutputReadLine|Issue1101_RemotePreview_FetchUsesPaneFlag)' -count=1
-ok github.com/asheshgoplani/agent-deck/cmd/agent-deck
-ok github.com/asheshgoplani/agent-deck/internal/ui
+RED_EXIT=1
+TestIssue1952_OriginSeparatesEveryIdentityRule:
+  local and remote records share EventFingerprint
+TestIssue1952_OutputFailuresAreNotSuccess:
+  remote drain output failure reported success
 ```
 
-The required repository gate also passed:
+The production patch was then restored. With the fix present, these tests plus `TestIssue1952_WriterStatusReadFailureIsUnknown` pass.
 
-```text
-go build ./... && go vet ./...
-```
+## Container verification
+
+- `go build ./...`: PASS in `golang:1.25`.
+- `go vet ./...`: PASS in `golang:1.25`.
+- Focused regression tests across `./internal/session` and `./cmd/agent-deck`: PASS.
+- A raw `go test ./...` in the stock Go image reaches unrelated environment-dependent tests but lacks CI's tmux/zoxide packages and non-root permission behavior. The authoritative full race suite is the repository's GitHub Actions PR gate, which installs those dependencies.
 
 ## Invariant check
 
-- Bounds: default human text is capped; tiny budgets deliberately expand only
-  enough to retain the recovery locator; overflow saturates safely.
-- Ordering/fail closed: paths are validated and full snapshots are durably
-  closed before bounded output is emitted; persistence failures abort emission.
-- Data integrity: the source is never overwritten for copy, JSON, quiet, or SSH
-  transport, and a seam marker prevents fabricated adjacency.
-- Parity: the enumeration covers every output consumer (default, JSON, quiet,
-  copy), while the SSH pane test covers the remote sibling path.
-- Idempotence: reads do not modify session/transcript state; they append one
-  audit event per invocation and atomically replace only that session/source's
-  recovery snapshot.
+- Bounds: existing summary, inbox-line, retry, generation, and stale-record bounds are unchanged.
+- Ordering: last-wins still preserves first-seen identity order; the identity is now `(SourceRemote, ChildSessionID)`.
+- Idempotence: repeated drains of one remote retain the same structured origin and fingerprint; separate origins no longer destroy one another.
+- Fail closed: fetch, writer probe, unreadable heartbeat, unreadable export, target resolution, and output failures all return non-success rather than an empty/successful drain.
+- Sibling parity: both inbox producer replacement and consumer collapse use the same origin-aware key; both `EventFingerprint` and `TurnFingerprint` enumerate the same provenance field; both CLI entry paths track writer errors.
 
 ## CI state
 
-The final evidence commit was pushed and every required GitHub check was allowed
-to finish on that exact SHA. The final external state is recorded in the PR's
-check suite; no merge was performed.
+- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
+- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
+- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
+- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.

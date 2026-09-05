@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-08-23
+
+Fail-closed inbox delivery, safer session navigation, and CLI parity across ten commits merged after v1.14.0.
+
+### Added
+
+- Existing agent configurations can be adopted and rendered read-only in the first phase of the agents workflow ([#2037](https://github.com/asheshgoplani/agent-deck/pull/2037)).
+- `launch --account` now has the same named-slot behavior as other session creation paths, and `accounts` lists configured slots ([#2053](https://github.com/asheshgoplani/agent-deck/pull/2053)).
+
+### Fixed
+
+- Inbox drain fails closed on ambiguous title/id targets and corrupt-profile ordering, so unsafe targets are not silently selected ([#2038](https://github.com/asheshgoplani/agent-deck/pull/2038)).
+- Error transitions are delivered again without weakening the replay guarantee ([#2039](https://github.com/asheshgoplani/agent-deck/pull/2039)).
+- The TUI uses operation state for restart guards, derives header boundaries consistently, and keeps scrolling anchored to row identity ([#2041](https://github.com/asheshgoplani/agent-deck/pull/2041)).
+- The model picker shows an explicit back path instead of trapping navigation ([#2048](https://github.com/asheshgoplani/agent-deck/pull/2048)).
+- Tool detection recognizes token-matched executables invoked by path by comparing their basename ([#2040](https://github.com/asheshgoplani/agent-deck/pull/2040)).
+- Update settings load from `main` rather than package initialization, preserving startup ordering ([#2042](https://github.com/asheshgoplani/agent-deck/pull/2042)).
+
+### Changed
+
+- Operational capture artifacts accidentally shipped in the repository were removed ([#2044](https://github.com/asheshgoplani/agent-deck/pull/2044)).
+
 ## [1.14.0] - 2026-08-22
 
 Delivery honesty, TUI gauntlet fixes, and a same-day community wave: 25 merged PRs including 11 community contributions.
