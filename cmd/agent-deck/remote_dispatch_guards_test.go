@@ -32,6 +32,10 @@ func TestCLIDispatchTelemetryCounters(t *testing.T) {
 		for _, control := range []string{"enabled", "disabled", "declined", "nonterminal", "help"} {
 			t.Run(command.name+"/"+control, func(t *testing.T) {
 				home := t.TempDir()
+				socketDir := filepath.Join(home, "tmux")
+				if err := os.Mkdir(socketDir, 0700); err != nil {
+					t.Fatal(err)
+				}
 				dataDir := filepath.Join(home, "data", "agent-deck")
 				if err := os.MkdirAll(dataDir, 0700); err != nil {
 					t.Fatal(err)
@@ -60,7 +64,7 @@ func TestCLIDispatchTelemetryCounters(t *testing.T) {
 				// An allowlist also clears all current/future CI and agent-session markers.
 				cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home,
 					"XDG_DATA_HOME=" + filepath.Join(home, "data"), "XDG_CONFIG_HOME=" + filepath.Join(home, "config"),
-					"XDG_CACHE_HOME=" + filepath.Join(home, "cache"), "TERM=xterm-256color"}
+					"XDG_CACHE_HOME=" + filepath.Join(home, "cache"), "TERM=xterm-256color", "TMUX_TMPDIR=" + socketDir}
 				if control == "disabled" {
 					cmd.Env = append(cmd.Env, "AGENTDECK_TELEMETRY=0")
 				}
