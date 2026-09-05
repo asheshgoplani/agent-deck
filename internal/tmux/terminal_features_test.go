@@ -42,11 +42,11 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 	})
 	assert.Empty(t, present, "entry already present must produce no tmux write, got: %s", joined(present))
 
-	// Absent from a readable server: a runtime conditional append. Foreign
+	// Absent from a readable server: an atomic indexed no-overwrite insertion. Foreign
 	// values are never copied into a whole-array write.
 	absent := terminalFeatureArgsFor(terminalFeatureState{known: true, values: tmuxDefaultFeatures})
 	assert.Equal(t,
-		"; if-shell -F #{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0} set-option -asq terminal-features ,*:hyperlinks:extkeys",
+		"set-option -soq terminal-features[2147483647] *:hyperlinks:extkeys",
 		joined(absent))
 
 	// The ordinary option batch stays small even on an inflated server.
@@ -57,9 +57,7 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 		inflated = append(inflated, agentDeckTerminalFeature)
 	}
 	healed := terminalFeatureArgsFor(terminalFeatureState{known: true, values: inflated})
-	assert.Equal(t,
-		"; if-shell -F #{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0} set-option -asq terminal-features ,*:hyperlinks:extkeys",
-		joined(healed), "the option batch must not carry a stale array snapshot")
+	assert.Empty(t, healed, "cleanup of an already present entry must not enqueue another insertion")
 	// The healing write must stay small: an argv carrying the 5,003-entry value
 	// back would be ~220 KB and can exceed ARG_MAX on macOS, which is exactly
 	// the platform the leak was reported on.
@@ -96,11 +94,11 @@ func TestTerminalFeatureArgsFor(t *testing.T) {
 func TestClassifyTerminalFeatures(t *testing.T) {
 	// A clean exit with no output is an EMPTY array, not an unreadable one —
 	// `set -s terminal-features ""` produces exactly this, and the right answer
-	// is a guarded append rather than a write from an unreadable state.
+	// is a no-overwrite insertion rather than a write from an unreadable state.
 	empty := classifyTerminalFeatures(nil, nil)
 	assert.True(t, empty.known, "clean exit with no output is an empty array, not unknown")
 	assert.Empty(t, empty.values)
-	assert.Equal(t, "; if-shell -F #{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0} set-option -asq terminal-features ,*:hyperlinks:extkeys",
+	assert.Equal(t, "set-option -soq terminal-features[2147483647] *:hyperlinks:extkeys",
 		strings.Join(terminalFeatureArgsFor(empty), " "))
 
 	// No server / unknown option / a client killed at its deadline: unknown.

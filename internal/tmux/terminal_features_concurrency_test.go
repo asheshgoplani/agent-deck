@@ -10,17 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The returned argument list is a deterministic read/apply barrier: another
+// The captured state is a deterministic read/apply barrier: another
 // real tmux client completes its write before the planned configuration runs.
 func TestTerminalFeatures_UserAppendAfterReadSurvives(t *testing.T) {
-	socket, session := startPrivateTmuxServer(t)
-	sess := &Session{Name: session, SocketName: socket, mouse: true}
-	args := sess.terminalFeatureArgs()
-	require.NotEmpty(t, args)
+	socket, _ := startPrivateTmuxServer(t)
+	before := readTerminalFeatures(socket)
+	require.NotEmpty(t, terminalFeatureArgsFor(before))
 
 	const userEntry = "concurrent-user*:RGB"
 	require.NoError(t, tmuxExec(socket, "set", "-as", "terminal-features", ","+userEntry).Run())
-	require.NoError(t, tmuxExec(socket, args[1:]...).Run())
+	ensureTerminalFeature(socket, before)
 
 	after := readTerminalFeatures(socket)
 	require.True(t, after.known)
@@ -29,16 +28,17 @@ func TestTerminalFeatures_UserAppendAfterReadSurvives(t *testing.T) {
 }
 
 func TestTerminalFeatures_UserReplacementAfterReadSurvives(t *testing.T) {
-	socket, session := startPrivateTmuxServer(t)
+	socket, _ := startPrivateTmuxServer(t)
 	require.NoError(t, tmuxExec(socket, "set", "-as", "terminal-features",
 		","+strings.Repeat(agentDeckTerminalFeature+",", 3)+agentDeckTerminalFeature).Run())
-	sess := &Session{Name: session, SocketName: socket, mouse: true}
-	args := sess.terminalFeatureArgs()
-	require.NotEmpty(t, args)
+	indexed, err := runBoundedOutput(socket, "show-options", "-s", "terminal-features")
+	require.NoError(t, err)
+	script := terminalFeatureCleanupScript(indexed)
+	require.NotEmpty(t, script)
 
 	const userEntry = "replacement-user*:RGB"
 	require.NoError(t, tmuxExec(socket, "set", "-s", "terminal-features", userEntry).Run())
-	require.NoError(t, tmuxExec(socket, args[1:]...).Run())
+	require.NoError(t, runTerminalFeatureCleanup(socket, script))
 
 	after := readTerminalFeatures(socket)
 	require.True(t, after.known)
@@ -57,22 +57,22 @@ func TestTerminalFeatures_ConcurrentInitializersDoNotDuplicate(t *testing.T) {
 			name = "comma-valued-user-entry"
 		}
 		t.Run(name, func(t *testing.T) {
-			socket, session := startPrivateTmuxServer(t)
+			socket, _ := startPrivateTmuxServer(t)
 			if unsafe {
 				require.NoError(t, tmuxExec(socket, "set", "-s", "terminal-features[9]", "foo,bar").Run())
 			}
 			before := readTerminalFeatures(socket)
 			require.True(t, before.known)
-			first := (&Session{Name: session, SocketName: socket, mouse: true}).terminalFeatureArgs()
-			second := (&Session{Name: session, SocketName: socket, mouse: true}).terminalFeatureArgs()
-			require.NotEmpty(t, first)
-			require.NotEmpty(t, second)
+			first := readTerminalFeatures(socket)
+			second := readTerminalFeatures(socket)
+			require.NotEmpty(t, terminalFeatureArgsFor(first))
+			require.NotEmpty(t, terminalFeatureArgsFor(second))
 
 			// Both clients have finished reading before either is allowed to
 			// apply. Sequential application is itself a valid concurrent-read
 			// interleaving and makes the missing-membership-check failure exact.
-			require.NoError(t, tmuxExec(socket, first[1:]...).Run())
-			require.NoError(t, tmuxExec(socket, second[1:]...).Run())
+			ensureTerminalFeature(socket, first)
+			ensureTerminalFeature(socket, second)
 			after := readTerminalFeatures(socket)
 			require.True(t, after.known)
 			assert.Equal(t, 1, countTerminalFeature(after.values))
@@ -147,7 +147,7 @@ func TestTerminalFeatures_IndexedCleanupNeverCopiesForeignValues(t *testing.T) {
 	assert.Equal(t, 1, countTerminalFeature(readTerminalFeatures(socket).values))
 }
 
-func TestTerminalFeatures_AmbiguousMembershipConservativelySkipsAppend(t *testing.T) {
+func TestTerminalFeatures_EmbeddedOwnedTextPreservesForeignValue(t *testing.T) {
 	socket, session := startPrivateTmuxServer(t)
 	value := "user " + agentDeckTerminalFeature + " tail"
 	require.NoError(t, tmuxExec(socket, "set", "-s", "terminal-features[9]", value).Run())
@@ -156,8 +156,11 @@ func TestTerminalFeatures_AmbiguousMembershipConservativelySkipsAppend(t *testin
 	require.NoError(t, (&Session{Name: session, SocketName: socket, mouse: true}).EnableMouseMode())
 	after := readTerminalFeatures(socket)
 	require.True(t, after.known)
-	assert.Equal(t, before.values, after.values, "flattened membership ambiguity must not mutate foreign values")
-	assert.Zero(t, countTerminalFeature(after.values), "no exact membership guarantee is claimed for this ambiguous value")
+	assert.Equal(t, append(before.values, agentDeckTerminalFeature), after.values)
+	assert.Equal(t, 1, countTerminalFeature(after.values), "embedded text is not an exact owned entry")
+	got, err := runBoundedOutput(socket, "show-options", "-sv", "terminal-features[9]")
+	require.NoError(t, err)
+	assert.Equal(t, value+"\n", string(got))
 }
 
 func TestTerminalFeatures_FiveThousandDuplicatesUseBoundedStdin(t *testing.T) {

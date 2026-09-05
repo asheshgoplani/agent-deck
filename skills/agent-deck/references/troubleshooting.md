@@ -198,13 +198,16 @@ Two things matter about where the damage lives:
   downgrading or upgrading agent-deck changes nothing while the server keeps
   running, and why nobody notices the cause — restarting the tmux server would
   destroy every live agent session.
-- The fix for #2061 checks membership on the server before appending and
-  removes duplicates with guarded indexed deletions when configuring a session.
+- The fix for #2061 reads exact indexed entries, installs through a shared
+  no-overwrite slot and removes duplicates with guarded indexed deletions.
   Another client's appended or changed entries are preserved. Cleanup is
   conservative: comma-bearing or blank values leave existing duplicates alone,
   and concurrent changes or a timeout may leave work for a later pass. See the
-  [configuration reference](config-reference.md) for the unusual embedded-space
-  membership limitation. The new binary must be the one running sessions;
+  [configuration reference](config-reference.md) for the shared slot
+  `terminal-features[2147483647]`. A foreign or empty occupant is preserved;
+  `terminal_features_installation_deferred` reports observed absence after an
+  installation attempt. Free that slot or set an explicit override to install
+  the feature, and do not interpret a quiet no-overwrite exit as proof of presence. The new binary must be the one running sessions;
   while an old binary is still driving them, the array keeps growing.
 
 To reset the array immediately, without restarting the server:

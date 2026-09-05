@@ -3346,24 +3346,22 @@ func TestKillSessionsWithEnvValue_NoMatch(t *testing.T) {
 // being force-set on every spawn.
 func TestGatedTmuxKeyOptionArgs(t *testing.T) {
 	joined := func(args []string) string { return strings.Join(args, " ") }
-	// Stand-in for the terminal-features chunk, so this test stays about the
-	// override gate. What the real chunk contains — and why it must not grow —
-	// is TestTerminalFeature*'s job.
-	features := func() []string {
-		return []string{";", "set", "-sq", "terminal-features", "stub"}
-	}
+	// The callback performs server work separately; this test checks that an
+	// explicit override prevents even invoking it.
 	featuresCalls := 0
-	countingFeatures := func() []string { featuresCalls++; return features() }
+	features := func() { featuresCalls++ }
 
-	// Default (no overrides): all four defaults are emitted, each chained with
-	// a leading ";" separator, and extended-keys is a server option (set -s).
+	// Without overrides, terminal features are configured by the callback. The
+	// other defaults are chained with ";", including server-wide extended-keys.
 	def := gatedTmuxKeyOptionArgs("sess", nil, features)
 	got := joined(def)
+	if featuresCalls != 1 {
+		t.Fatalf("default configuration callback calls = %d, want 1", featuresCalls)
+	}
 	for _, want := range []string{
 		"; set-option -t sess escape-time 10",
 		"; set -sq extended-keys on",
 		"; set -sq extended-keys-format csi-u",
-		"; set -sq terminal-features stub",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("default args missing %q; got: %s", want, got)
@@ -3391,7 +3389,8 @@ func TestGatedTmuxKeyOptionArgs(t *testing.T) {
 	// terminal-features override: agent-deck emits nothing for the key, and does
 	// not even ASK what the server holds — the read is a tmux subprocess, so a
 	// user who pinned the option must not pay for it (#2061).
-	tf := gatedTmuxKeyOptionArgs("sess", map[string]string{"terminal-features": "xterm*"}, countingFeatures)
+	featuresCalls = 0
+	tf := gatedTmuxKeyOptionArgs("sess", map[string]string{"terminal-features": "xterm*"}, features)
 	if strings.Contains(joined(tf), "terminal-features") {
 		t.Errorf("terminal-features override ignored — still sets it: %s", joined(tf))
 	}

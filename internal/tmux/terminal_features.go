@@ -16,6 +16,13 @@ import (
 // is a SERVER option, shared by every session on the socket.
 const agentDeckTerminalFeature = "*:hyperlinks:extkeys"
 
+// agentDeckTerminalFeatureIndex is a shared insertion protocol, not a free slot
+// selected from a snapshot. tmux accepts signed 32-bit array indices and stores
+// them sparsely; the highest valid index sorts after ordinary configuration
+// entries without allocating the intervening slots. Keep it stable across
+// processes and releases. An existing foreign value, including empty, wins.
+const agentDeckTerminalFeatureIndex = 2147483647
+
 // terminalFeatureState is what the target tmux server currently reports for the
 // server-wide `terminal-features` array.
 //
@@ -48,7 +55,7 @@ func readTerminalFeatures(socketName string) terminalFeatureState {
 // A clean exit with NO output is a real answer: the array is empty, which is
 // what `set -s terminal-features ""` leaves behind. It must not be confused
 // with "we could not read", because the two demand opposite actions — an empty
-// array may receive a guarded append, while an unreadable array is never written.
+// array may receive a no-overwrite insertion, while an unreadable array is never written.
 //
 // Any error is "could not read", and that includes exec.ErrWaitDelay with
 // bytes already in the buffer. Under the WaitDelay contract (see
@@ -70,36 +77,46 @@ func classifyTerminalFeatures(out []byte, err error) terminalFeatureState {
 	return terminalFeatureState{values: strings.Split(body, "\n"), known: true}
 }
 
-// terminalFeatureArgsFor keeps the cheap no-op paths, but membership is checked
-// again by the server before appending. if-shell -F and its nonwaiting set-option
-// branch run in the same client command queue, so two stale readers cannot both
-// append an entry that was absent when they read.
-//
-// tmux formats flatten arrays with spaces. A foreign value embedding our literal
-// between spaces can therefore conservatively suppress the append. That ambiguity
-// must never authorize deletion or reconstruction of another client's value.
+// terminalFeatureArgsFor only plans installation after a complete absence read.
+// All initializers target the same sparse slot. tmux's indexed -o check and
+// insertion are one server operation, including on tmux 3.4, whose unindexed
+// array format cannot be used to test membership.
 func terminalFeatureArgsFor(st terminalFeatureState) []string {
-	if !st.known {
+	if !st.known || countTerminalFeature(st.values) != 0 {
 		return nil
 	}
-	count := countTerminalFeature(st.values)
-	if count == 1 || (count > 1 && !canCleanTerminalFeatures(st.values)) {
-		return nil
-	}
-	return []string{";", "if-shell", "-F",
-		"#{==:#{m/r:(^| )[*]:hyperlinks:extkeys( |$),#{terminal-features}},0}",
-		"set-option -asq terminal-features ," + agentDeckTerminalFeature}
+	return []string{"set-option", "-soq",
+		fmt.Sprintf("terminal-features[%d]", agentDeckTerminalFeatureIndex), agentDeckTerminalFeature}
 }
 
-// terminalFeatureCleanupScript removes only exact owned entries at their actual
-// indices. Each deletion rechecks both the retained and candidate entries on the
-// server. A concurrent replacement survives, and removing the retained entry
-// prevents cleanup from deleting the last remaining owned copy.
-//
-// Only validated decimal indices and fixed literals enter tmux command syntax.
-// stdin keeps argv bounded even for thousands of duplicates; no user values are
-// copied into this script and no whole-array assignment is generated.
-func terminalFeatureCleanupScript(indexed []byte) string {
+// ensureTerminalFeature applies a previously read state without replacing any
+// occupant. A successful -o -q command can be a no-op, so only the subsequent
+// complete read can establish observed presence. No collision fallback appends
+// elsewhere, and foreign values are never included in diagnostics.
+func ensureTerminalFeature(socketName string, st terminalFeatureState) {
+	args := terminalFeatureArgsFor(st)
+	if len(args) == 0 {
+		return
+	}
+	if _, err := runBoundedOutput(socketName, args...); err != nil {
+		statusLog.Warn("terminal_features_installation_failed", slog.Any("error", err))
+		return
+	}
+	after, err := runBoundedOutput(socketName, "show-options", "-s", "terminal-features")
+	if err != nil {
+		statusLog.Warn("terminal_features_installation_unverified")
+		return
+	}
+	if len(terminalFeatureIndices(after)) == 0 {
+		statusLog.Warn("terminal_features_installation_deferred",
+			slog.Int("index", agentDeckTerminalFeatureIndex),
+			slog.String("reason", "owned_entry_absent_after_attempt"))
+	}
+}
+
+// terminalFeatureIndices recognizes only exact owned entries at their actual
+// indices in the complete indexed show-options output.
+func terminalFeatureIndices(indexed []byte) []int {
 	indices := make([]int, 0)
 	seen := make(map[int]bool)
 	for _, line := range strings.Split(string(indexed), "\n") {
@@ -116,10 +133,21 @@ func terminalFeatureCleanupScript(indexed []byte) string {
 		seen[int(index)] = true
 		indices = append(indices, int(index))
 	}
+	sort.Ints(indices)
+	return indices
+}
+
+// terminalFeatureCleanupScript rechecks both the keeper and each candidate
+// immediately before deleting only that candidate index. A concurrent replacement
+// survives, and removing the keeper prevents deletion of the last owned copy.
+// Only validated decimal indices and fixed literals enter tmux command syntax.
+// stdin keeps argv bounded even for thousands of duplicates; no user values are
+// copied into the script and no whole-array assignment is generated.
+func terminalFeatureCleanupScript(indexed []byte) string {
+	indices := terminalFeatureIndices(indexed)
 	if len(indices) < 2 {
 		return ""
 	}
-	sort.Ints(indices)
 	var script strings.Builder
 	for _, index := range indices[1:] {
 		fmt.Fprintf(&script,
@@ -152,26 +180,28 @@ func canCleanTerminalFeatures(values []string) bool {
 	return true
 }
 
-// terminalFeatureArgs deliberately reads the current server on every pass. A
+// configureTerminalFeatures deliberately reads the current server on every pass. A
 // socket name may refer to a replacement server, so process-lifetime memoization
 // cannot establish that its terminal features are configured.
-func (s *Session) terminalFeatureArgs() []string {
-	st := readTerminalFeatures(s.SocketName)
-	if !st.known {
-		return nil
+func (s *Session) configureTerminalFeatures() {
+	indexed, err := runBoundedOutput(s.SocketName, "show-options", "-s", "terminal-features")
+	if err != nil {
+		return // Partial indexed reads must not authorize any mutation.
 	}
-	if countTerminalFeature(st.values) > 1 && canCleanTerminalFeatures(st.values) {
-		indexed, err := runBoundedOutput(s.SocketName, "show-options", "-s", "terminal-features")
-		if err != nil {
-			return nil // Partial indexed reads must not authorize cleanup.
+	indices := terminalFeatureIndices(indexed)
+	if len(indices) > 1 {
+		st := readTerminalFeatures(s.SocketName)
+		if !st.known || !canCleanTerminalFeatures(st.values) {
+			return
 		}
 		if err := runTerminalFeatureCleanup(s.SocketName, terminalFeatureCleanupScript(indexed)); err != nil {
-			// Guards can skip candidates and timeouts can interrupt cleanup;
-			// neither a plan nor a successful client exit proves a removal count.
+			// Runtime guards can skip candidates; a plan is not a removal count.
 			statusLog.Debug("terminal_features_cleanup_failed", slog.Any("error", err))
 		}
 	}
-	return terminalFeatureArgsFor(st)
+	if len(indices) == 0 {
+		ensureTerminalFeature(s.SocketName, terminalFeatureState{known: true})
+	}
 }
 
 // countTerminalFeature counts occurrences of agent-deck's entry in values.
