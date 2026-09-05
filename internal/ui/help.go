@@ -54,6 +54,10 @@ type HelpOverlay struct {
 	// this overlay is part of the TUI: a user who has adopted nothing must not
 	// find a key here for a surface that does not exist for them.
 	hasAgents bool
+
+	// Runtime shortcuts follow the layout selected at startup. A saved
+	// opposite preference only takes effect after restart.
+	embeddedLayout bool
 }
 
 // SetHasAgents records whether anything has been adopted.
@@ -62,6 +66,11 @@ func (h *HelpOverlay) SetHasAgents(has bool) {
 		return
 	}
 	h.hasAgents = has
+}
+
+// SetEmbeddedLayout records the layout used by the running dashboard.
+func (h *HelpOverlay) SetEmbeddedLayout(enabled bool) {
+	h.embeddedLayout = enabled
 }
 
 // NewHelpOverlay creates a new help overlay
@@ -241,12 +250,8 @@ func (h *HelpOverlay) View() string {
 		{"1-9", "Jump to root group"},
 		{"Space", "Jump mode"},
 	}
-	embeddedLayout := false
-	if cfg, _ := session.LoadUserConfig(); cfg != nil {
-		embeddedLayout = cfg.UI.GetEmbeddedTerminal()
-	}
 	quickStartEnter := "Attach to selected session"
-	if embeddedLayout {
+	if h.embeddedLayout {
 		quickStartEnter = "Focus embedded terminal for selected session"
 		navigationItems = append(navigationItems,
 			[2]string{"Enter", "Focus embedded terminal / toggle group"},

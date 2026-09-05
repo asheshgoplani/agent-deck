@@ -2735,11 +2735,17 @@ func (h *Home) rebuildFlatItems() {
 	h.remoteSessionsMu.RUnlock()
 	sort.Strings(remoteNames)
 	if len(remotes) > 0 && h.statusFilter != FilterModeArchived {
+		collapsed := h.remoteGroupsCollapsed
+		if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+			// Flat presentation has no headers to reopen hidden descendants.
+			// Keep the saved folds for the next switch to grouped presentation.
+			collapsed = nil
+		}
 		for _, remoteName := range remoteNames {
 			// #1553: nest each remote's sessions under their Group paths
 			// instead of dumping them flat at Level 1.
 			// #1875: apply the user's manual row order for this remote.
-			h.flatItems = append(h.flatItems, buildRemoteFlatItemsOrdered(remoteName, remotes[remoteName], h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName))...)
+			h.flatItems = append(h.flatItems, buildRemoteFlatItemsOrdered(remoteName, remotes[remoteName], collapsed, h.remoteSessionOrder.forRemote(remoteName))...)
 		}
 	}
 
@@ -9591,6 +9597,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "?":
+		h.helpOverlay.SetEmbeddedLayout(h.embeddedLayout)
 		h.helpOverlay.SetSize(h.width, h.height)
 		h.helpOverlay.Show()
 		return h, nil
@@ -18232,19 +18239,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		return
 	}
 	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
-		statusIcon := "○"
-		statusStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
-		switch rs.Status {
-		case "running":
-			statusIcon = "●"
-			statusStyle = lipgloss.NewStyle().Foreground(ColorGreen)
-		case "waiting":
-			statusIcon = "◐"
-			statusStyle = lipgloss.NewStyle().Foreground(ColorYellow)
-		case "error":
-			statusIcon = "✕"
-			statusStyle = lipgloss.NewStyle().Foreground(ColorRed)
-		}
+		statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
 		indent := strings.Repeat("  ", max(0, item.Level-1))
 		marker := "  "
 		if selected {
@@ -18267,6 +18262,9 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		}
 		first = fitCellWidth(first+rs.Title, max(1, listWidth))
 		secondText := strings.TrimSpace(rs.Status)
+		if rs.Archived {
+			secondText = "archived"
+		}
 		if secondText == "" {
 			secondText = "idle"
 		}
