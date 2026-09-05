@@ -134,6 +134,14 @@ type remoteDrainResult struct {
 	Records []session.TransitionNotificationEvent `json:"records"`
 }
 
+func printRemoteDrainUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage: agent-deck remote drain <remote-name|user@host> [--into <session-id>] [--json]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Pull completion and transition records from a remote agent-deck instance")
+	fmt.Fprintln(w, "into this machine's inbox. The remote is read-only: nothing there is")
+	fmt.Fprintln(w, "consumed, so draining twice — or from two conductors — is safe.")
+}
+
 func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordFetcher) (exitCode int) {
 	trackedOut := &errorTrackingWriter{Writer: stdout}
 	trackedErr := &errorTrackingWriter{Writer: stderr}
@@ -147,13 +155,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "Emit the drain result as JSON")
 	into := fs.String("into", "", "Local session id whose inbox receives the records (default: this session)")
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: agent-deck remote drain <remote-name|user@host> [--into <session-id>] [--json]")
-		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Pull completion and transition records from a remote agent-deck instance")
-		fmt.Fprintln(stderr, "into this machine's inbox. The remote is read-only: nothing there is")
-		fmt.Fprintln(stderr, "consumed, so draining twice — or from two conductors — is safe.")
-	}
+	fs.Usage = func() { printRemoteDrainUsage(stderr) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return drainExitUsage
 	}

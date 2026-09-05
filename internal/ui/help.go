@@ -199,6 +199,7 @@ func (h *HelpOverlay) View() string {
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
 	groupViewKey := h.key(hotkeyCycleGroupView, "t")
+	timeFilterKey := h.key(hotkeyCycleTimeFilter, "*")
 	// Opt-in: empty when switch_session is unbound, so the filter drops the row.
 	switchKey := h.key(hotkeySwitchSession, "")
 	// In-attach scrollback pager (#1491). Its trigger is resolved directly (it is
@@ -343,6 +344,7 @@ func (h *HelpOverlay) View() string {
 				{"/running", "Filter running"},
 				{"/idle", "Filter idle"},
 				{groupViewKey, "Cycle view: active-on-top / populated-on-top"},
+				{timeFilterKey, "Cycle time filter: today / 3 days / 7 days / all"},
 			},
 		},
 		{

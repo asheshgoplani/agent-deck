@@ -165,6 +165,10 @@ agent-deck deepseek sessions [path] [--json]   # dsh sessions recorded for a wor
 agent-deck launch -c deepseek            # launch a session
 ```
 
+All DeepSeek subcommands accept `--help` or `-h`; bare `help` invokes help only
+in the command position. In a value position (for example, `sessions help`) it
+is treated as a workspace name.
+
 `deepseek status --json` is the machine-readable answer to "what would agent-deck
 actually run", including `resume_supported` and `fork_supported` as explicit
 booleans so an agent can tell *unsupported* from *unknown*.

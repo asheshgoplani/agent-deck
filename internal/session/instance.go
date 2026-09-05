@@ -8272,7 +8272,7 @@ func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
 	return parsePiLastAssistantMessage(data)
 }
 
-func parsePiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
+func parsePiLastAssistantMessageLinear(data []byte) (*ResponseOutput, error) {
 	type contentPart struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
