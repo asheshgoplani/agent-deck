@@ -48,7 +48,13 @@ func validateSessionTestHelper(path, digest string) error {
 }
 
 func provisionSessionTestHelper() (func(), error) {
-	if *inheritedTestHelper != "" || *inheritedTestHelperDigest != "" {
+	inherited := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "session-test-completion-helper" || f.Name == "session-test-completion-helper-sha256" {
+			inherited = true
+		}
+	})
+	if inherited {
 		if err := validateSessionTestHelper(*inheritedTestHelper, *inheritedTestHelperDigest); err != nil {
 			return nil, err
 		}
@@ -129,6 +135,9 @@ func TestSessionTestHelperInheritance(t *testing.T) {
 	tests := []struct{ name, path, digest, want string }{
 		{"same-parent-helper", completionExecutableForTests, completionTestHelperDigest, ""},
 		{"missing-path", "", completionTestHelperDigest, "helper path must be absolute"},
+		{"empty-path-only", "", "", "helper path must be absolute"},
+		{"empty-digest-only", "", "", "helper path must be absolute"},
+		{"both-empty", "", "", "helper path must be absolute"},
 		{"missing-digest", completionExecutableForTests, "", "helper digest must be SHA-256"},
 		{"relative-path", "agent-deck", completionTestHelperDigest, "helper path must be absolute"},
 		{"missing-file", filepath.Join(bin, "missing"), completionTestHelperDigest, "stat inherited helper"},
@@ -141,6 +150,11 @@ func TestSessionTestHelperInheritance(t *testing.T) {
 			cmd := sessionTestChildCommand(t, "TestSessionTestHelperChild")
 			cmd.Args[2] = "-session-test-completion-helper=" + tt.path
 			cmd.Args[3] = "-session-test-completion-helper-sha256=" + tt.digest
+			if tt.name == "empty-path-only" {
+				cmd.Args = cmd.Args[:3]
+			} else if tt.name == "empty-digest-only" {
+				cmd.Args = append(cmd.Args[:2], cmd.Args[3])
+			}
 			cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "TMPDIR="+t.TempDir())
 			output, err := cmd.CombinedOutput()
 			if tt.want == "" {
