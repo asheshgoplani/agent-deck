@@ -263,16 +263,7 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			r.mu.Unlock()
 			return n, nil
 		}
-		if r.failed == nil && r.queue != nil && r.queue.ctx.Err() != nil {
-			r.queue.mu.Lock()
-			inputFailed := r.queue.err != nil
-			r.queue.mu.Unlock()
-			if inputFailed {
-				// An asynchronous writer error stops dashboard control/mouse
-				// routing too; no further input belongs to a failed generation.
-				r.failed = make(chan struct{})
-			}
-		}
+		r.pauseFailedInputLocked(nil)
 		if failed := r.failed; failed != nil {
 			r.mu.Unlock()
 			select {
@@ -321,6 +312,12 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 		n, err := r.File.Read(buf)
 		r.mu.Lock()
 		r.reading = false
+		if readQueue != nil && readQueue == r.queue && r.pauseFailedInputLocked(buf[:n]) {
+			// Failure can arrive during poll/Read without changing generation.
+			// Do not let a completed control/mouse token bypass the writer.
+			r.mu.Unlock()
+			continue
+		}
 		if readQueue != nil && readQueue != r.queue && !r.discardPaste {
 			// Cancellation raced an unlocked fd read. Its byte belongs to
 			// the abandoned generation, never to the dashboard/new target.
@@ -449,6 +446,35 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			}
 		}
 	}
+}
+
+// pauseFailedInputLocked is checked on both sides of the unlocked raw read.
+// Retain only the paste ownership information from bytes read during failure:
+// a closing marker must end quarantine, and an opening marker must start it.
+// No completed dashboard event is routed from the failed generation.
+func (r *SessionInputRouter) pauseFailedInputLocked(justRead []byte) bool {
+	if r.queue == nil || r.queue.ctx.Err() == nil {
+		return false
+	}
+	r.queue.mu.Lock()
+	inputFailed := r.queue.err != nil
+	r.queue.mu.Unlock()
+	if !inputFailed {
+		return false
+	}
+	if len(justRead) > 0 {
+		r.rawBuf = append(r.rawBuf, justRead...)
+		if bytes.HasSuffix(r.rawBuf, []byte(bracketedPasteStart)) {
+			r.inPaste = true
+		}
+		if r.inPaste && bytes.HasSuffix(r.rawBuf, []byte(bracketedPasteEnd)) {
+			r.inPaste = false
+		}
+	}
+	if r.failed == nil {
+		r.failed = make(chan struct{})
+	}
+	return true
 }
 
 // Discard the bytes already available at cancellation, before handing Ctrl+Q
