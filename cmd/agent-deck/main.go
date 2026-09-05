@@ -397,6 +397,9 @@ func main() {
 		case "launch":
 			handleLaunch(profile, args[1:])
 			return
+		case "doctor":
+			handleDoctor(args[1:])
+			return
 		case "accounts":
 			handleAccounts(args[1:])
 			return
@@ -1053,7 +1056,7 @@ func main() {
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
 var commandRegistry = map[string]bool{
-	"add": true, "accounts": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"add": true, "accounts": true, "doctor": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
 	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
@@ -3638,6 +3641,7 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
+	fmt.Println("  doctor           Check named Claude account directory sharing")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")
 	fmt.Println("  list, ls         List all sessions")
 	fmt.Println("  remove, rm       Remove a session")
