@@ -339,6 +339,9 @@ type Home struct {
 	reloadMu            sync.Mutex // Protects reloadVersion, isReloading, and lastLoadMtime for thread-safe access
 	lastLoadMtime       time.Time  // File mtime when we last loaded (for external change detection)
 
+	// Earliest eligible membership expiry; ordinary ticks only compare clocks.
+	nextTimeFilterExpiry time.Time
+
 	// Preview cache (async fetching - View() must be pure, no blocking I/O)
 	previewCache      map[string]string    // previewKey -> cached preview content
 	previewCacheTime  map[string]time.Time // previewKey -> when cached (for expiration)
@@ -2491,7 +2494,11 @@ func (h *Home) restoreSelectedItemIdentity(identity selectedItemIdentity) bool {
 }
 
 func (h *Home) rebuildFlatItemsPreservingSelection(identity selectedItemIdentity) {
-	h.rebuildFlatItems()
+	h.rebuildFlatItemsPreservingSelectionAt(identity, time.Now())
+}
+
+func (h *Home) rebuildFlatItemsPreservingSelectionAt(identity selectedItemIdentity, now time.Time) {
+	h.rebuildFlatItemsAt(now)
 	if !h.restoreSelectedItemIdentity(identity) && len(h.flatItems) > 0 {
 		h.cursor = min(h.cursor, len(h.flatItems)-1)
 		h.cursor = max(h.cursor, 0)
@@ -2501,6 +2508,11 @@ func (h *Home) rebuildFlatItemsPreservingSelection(identity selectedItemIdentity
 
 // rebuildFlatItems rebuilds the flattened view from group tree
 func (h *Home) rebuildFlatItems() {
+	h.rebuildFlatItemsAt(time.Now())
+}
+
+func (h *Home) rebuildFlatItemsAt(now time.Time) {
+	h.nextTimeFilterExpiry = time.Time{}
 	h.jumpMode = false
 	h.jumpBuffer = ""
 
@@ -2590,7 +2602,6 @@ func (h *Home) rebuildFlatItems() {
 
 	// Decide fallback across eligible local and remote sessions before hiding
 	// rows. Full group membership keeps collapsed matches available to reopen.
-	now := time.Now()
 	remoteMatchesTime := func(remote session.RemoteSessionInfo) bool {
 		activity, known := remote.LastActivity()
 		return !known || h.timeFilter.Matches(activity, now)
@@ -2611,6 +2622,7 @@ func (h *Home) rebuildFlatItems() {
 				}
 				hasCandidates = true
 				if h.timeFilter.Matches(inst.DisplayLastActivityTime(), now) {
+					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
 					hasMatches = true
 					markGroupPathAndAncestors(groupsWithMatches, group.Path)
 				}
@@ -2621,6 +2633,9 @@ func (h *Home) rebuildFlatItems() {
 				for _, remote := range sessions {
 					hasCandidates = true
 					if remoteMatchesTime(remote) {
+						if activity, known := remote.LastActivity(); known {
+							h.recordTimeFilterExpiry(activity, now)
+						}
 						hasMatches = true
 					}
 				}
@@ -7185,9 +7200,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var remoteFetchCmd tea.Cmd
 		var remoteLatencyCmd tea.Cmd
 
-		if h.groupViewMode != session.GroupViewNormal {
+		now := time.Time(msg)
+		if now.IsZero() {
+			now = time.Now()
+		}
+		filterExpired := h.timeFilter != session.TimeFilterAll && !h.nextTimeFilterExpiry.IsZero() && !now.Before(h.nextTimeFilterExpiry)
+		if h.groupViewMode != session.GroupViewNormal || filterExpired {
 			selectedBefore := h.captureSelectedItemIdentity()
-			h.rebuildFlatItemsPreservingSelection(selectedBefore)
+			h.rebuildFlatItemsPreservingSelectionAt(selectedBefore, now)
 		}
 
 		// Auto-dismiss errors after 5 seconds

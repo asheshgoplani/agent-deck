@@ -135,3 +135,64 @@ func TestTimeFilterClockAllDoesNotRebuild(t *testing.T) {
 	require.Equal(t, "2", h.jumpBuffer)
 	require.Same(t, first, &h.flatItems[0])
 }
+
+func TestTimeFilterClockCivilMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	for _, day := range []struct {
+		month time.Month
+		day   int
+		hours time.Duration
+	}{{time.March, 8, 23}, {time.November, 1, 25}} {
+		t.Run(day.month.String(), func(t *testing.T) {
+			now := time.Date(2026, day.month, day.day, 0, 0, 0, 0, loc)
+			h := clockFilterHome(session.TimeFilterAll, []*session.Instance{clockLocal("today", now)}, nil)
+			h.timeFilter = session.TimeFilterToday
+			h.rebuildFlatItemsAt(now)
+			boundary := time.Date(2026, day.month, day.day+1, 0, 0, 0, 0, loc)
+			require.Equal(t, day.hours*time.Hour, boundary.Sub(now))
+			require.Equal(t, boundary, h.nextTimeFilterExpiry)
+			clockFilterTick(h, boundary.Add(-time.Nanosecond))
+			require.Equal(t, session.TimeFilterToday, h.timeFilter)
+			clockFilterTick(h, boundary)
+			require.Equal(t, session.TimeFilterAll, h.timeFilter)
+		})
+	}
+}
+
+func TestTimeFilterClockEligibilityAndRebuildReschedule(t *testing.T) {
+	now := time.Now()
+	near, far := now.Add(-72*time.Hour+time.Hour), now
+	for _, exclude := range []string{"scope", "status", "archive"} {
+		t.Run(exclude, func(t *testing.T) {
+			excluded, selected := clockLocal("excluded", near), clockLocal("selected", far)
+			excluded.GroupPath = "outside"
+			h := clockFilterHome(session.TimeFilter3Days, []*session.Instance{excluded, selected}, nil)
+			switch exclude {
+			case "scope":
+				h.groupScope = "work"
+			case "status":
+				h.statusFilter = session.StatusIdle
+				excluded.Status = session.StatusRunning
+			case "archive":
+				excluded.ArchivedAt = now
+			}
+			h.rebuildFlatItemsAt(now)
+			require.Equal(t, far.Add(72*time.Hour+time.Nanosecond), h.nextTimeFilterExpiry)
+			h.jumpMode, h.jumpBuffer = true, "2"
+			clockFilterTick(h, now.Add(2*time.Hour))
+			require.Equal(t, "2", h.jumpBuffer, "ineligible rows must not schedule expiry")
+			require.Equal(t, []string{"selected"}, clockVisibleIDs(h))
+			// Normal fleet/state rebuilds replace deadlines, not retain old minima.
+			selected.LastAccessedAt = now.Add(time.Hour)
+			h.rebuildFlatItemsAt(now)
+			require.Equal(t, selected.LastAccessedAt.Add(72*time.Hour+time.Nanosecond), h.nextTimeFilterExpiry)
+			h.timeFilter = session.TimeFilter7Days
+			h.rebuildFlatItemsAt(now)
+			require.Equal(t, selected.LastAccessedAt.Add(168*time.Hour+time.Nanosecond), h.nextTimeFilterExpiry)
+			h.timeFilter = session.TimeFilterAll
+			h.rebuildFlatItemsAt(now)
+			require.True(t, h.nextTimeFilterExpiry.IsZero())
+		})
+	}
+}
