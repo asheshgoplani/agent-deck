@@ -72,6 +72,8 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("\nOptions:")
 		fmt.Println("  --json")
 		fmt.Println("        Output as JSON")
+	case "drain":
+		printRemoteDrainUsage(os.Stdout)
 	case "attach":
 		fmt.Println("Usage: agent-deck remote attach <remote-name> <session-title-or-id>")
 	case "rename":
