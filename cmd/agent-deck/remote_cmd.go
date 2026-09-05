@@ -20,8 +20,14 @@ func handleRemote(profile string, args []string) {
 		printRemoteUsage()
 		return
 	}
+	if helpRequested(args) {
+		printRemoteSubcommandUsage(args[0])
+		return
+	}
 
 	switch args[0] {
+	case "help", "--help", "-h":
+		printRemoteUsage()
 	case "add":
 		handleRemoteAdd(args[1:])
 	case "remove", "rm":
@@ -42,6 +48,40 @@ func handleRemote(profile string, args []string) {
 		fmt.Printf("Unknown remote command: %s\n", args[0])
 		printRemoteUsage()
 		os.Exit(1)
+	}
+}
+
+func printRemoteSubcommandUsage(command string) {
+	switch command {
+	case "add":
+		fmt.Println("Usage: agent-deck remote add <name> <user@host> [options]")
+		fmt.Println("\nOptions:")
+		fmt.Println("  --agent-deck-path string")
+		fmt.Println("        Path to agent-deck on the remote (default: agent-deck)")
+		fmt.Println("  --profile string")
+		fmt.Println("        Remote profile to use (default: default)")
+	case "remove", "rm":
+		fmt.Println("Usage: agent-deck remote remove <name>")
+	case "list", "ls":
+		fmt.Println("Usage: agent-deck remote list [options]")
+		fmt.Println("\nOptions:")
+		fmt.Println("  --json")
+		fmt.Println("        Output as JSON")
+	case "sessions":
+		fmt.Println("Usage: agent-deck remote sessions [name] [options]")
+		fmt.Println("\nOptions:")
+		fmt.Println("  --json")
+		fmt.Println("        Output as JSON")
+	case "drain":
+		printRemoteDrainUsage(os.Stdout)
+	case "attach":
+		fmt.Println("Usage: agent-deck remote attach <remote-name> <session-title-or-id>")
+	case "rename":
+		fmt.Println("Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>")
+	case "update":
+		fmt.Println("Usage: agent-deck remote update [name]")
+	default:
+		printRemoteUsage()
 	}
 }
 
