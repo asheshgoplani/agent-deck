@@ -1381,7 +1381,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 					`%sexec %s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
 			}
-			// No session ID provided - use -r flag for interactive picker
+			// No bound picker choice exists until Claude accepts the selection.
+			extraFlags = i.buildClaudeExtraFlagsWithName(opts, "")
 			return fmt.Sprintf(`%sexec %s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 		}
 
@@ -1715,6 +1716,14 @@ func extraArgsSupplyModel(extraArgs []string) bool {
 // buildClaudeExtraFlags builds extra command-line flags string from ClaudeOptions
 // Also handles instance-level flags like --add-dir for subagent access
 func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
+	launchName := i.ClaudeLaunchName()
+	if opts != nil && ((opts.SessionMode == "continue" && i.recordedClaudeSessionID() == "") || (opts.SessionMode == "resume" && opts.ResumeSessionID == "" && i.recordedClaudeSessionID() == "")) {
+		launchName = "" // An interactive/latest selector has no bound target yet.
+	}
+	return i.buildClaudeExtraFlagsWithName(opts, launchName)
+}
+
+func (i *Instance) buildClaudeExtraFlagsWithName(opts *ClaudeOptions, launchName string) string {
 	var flags []string
 
 	// Instance-level flags (not from ClaudeOptions)
@@ -1812,6 +1821,12 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	reconcileConductorTelegramChannel(i)
 	if len(i.Channels) > 0 {
 		flags = append(flags, "--channels "+shellescape.Quote(strings.Join(i.Channels, ","))) // audit F1
+	}
+
+	// Pass the exact title as one argument to the same startup process whose
+	// account and conversation identity the caller selected.
+	if launchName != "" {
+		flags = append(flags, "--name "+shellescape.Quote(launchName))
 	}
 
 	// User-supplied extra args: each token is shellescape-quoted before
@@ -9815,7 +9830,11 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	}
 
 	// Build extra flags from options (for fork, we use ToArgsForFork which excludes session mode)
-	extraFlags := i.buildClaudeExtraFlags(opts)
+	launchName := target.ClaudeLaunchName()
+	if extraArgsSupplyName(i.ExtraArgs) || extraArgsSelectSession(i.ExtraArgs) {
+		launchName = ""
+	}
+	extraFlags := i.buildClaudeExtraFlagsWithName(opts, launchName)
 
 	// Pre-generate UUID for forked session to avoid shell uuidgen dependency.
 	// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
