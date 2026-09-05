@@ -88,13 +88,9 @@ type UserConfig struct {
 	// Default: true (nil = true)
 	SyncTitle *bool `toml:"sync_title,omitempty"`
 
-	// PushTitle is the outbound half of SyncTitle: it controls whether agent-deck
-	// tells the agent its own session name, so `claude` addresses the session by
-	// the title you gave it in the deck (--name at launch, /name on a live
-	// rename) instead of the name it derives from the cwd. Without it the deck
-	// title and the name that ListAgents/SendMessage resolve drift apart the
-	// moment you rename anything.
-	// Default: true (nil = true)
+	// PushTitle passes the exact deck title via --name on supported Claude
+	// startup commands. Live renames take effect at the next start/restart.
+	// Default: true (nil = true); unreadable config disables automatic naming.
 	PushTitle *bool `toml:"push_title,omitempty"`
 
 	// GroupSort controls the order of sessions within a group.

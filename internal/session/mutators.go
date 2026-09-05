@@ -154,18 +154,6 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		// next hook event. Unlock via `session set <id> title-locked false`.
 		inst.TitleLocked = true
 		inst.SyncTmuxDisplayName()
-		// Tell the agent its new name too (claude_title_push.go). Without this
-		// the sync is one-directional — the deck shows the title you typed while
-		// claude keeps its cwd-derived name, and the two disagree for every
-		// session you ever rename. In postCommit because it shells out to tmux;
-		// TUI callers run it after dropping instancesMu.
-		//
-		// Gated here, not just inside the push, so a rename with nothing to
-		// deliver (non-claude tool, unslugabble title, no live pane) keeps
-		// returning a nil postCommit and costs the CLI no subprocess at all.
-		if inst.claudePushName() != "" && inst.GetTmuxSession() != nil {
-			postCommit = chainPostCommit(postCommit, func() { inst.PushTitleToClaude() })
-		}
 
 	case FieldPath:
 		oldValue = inst.ProjectPath
