@@ -193,7 +193,7 @@ func TestStartupNameOwnedResumeAndScratch(t *testing.T) {
 				inst.WorkerScratchConfigDir = filepath.Join(root, "scratch")
 				configDir = inst.WorkerScratchConfigDir
 			}
-			dir := claudeProjectDirForTest(t, filepath.Join(root,"account"), root)
+			dir := claudeProjectDirForTest(t, filepath.Join(root, "account"), root)
 			if err := os.MkdirAll(dir, 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -201,7 +201,7 @@ func TestStartupNameOwnedResumeAndScratch(t *testing.T) {
 				t.Fatal(err)
 			}
 			inst.markClaudeSessionIDVerified()
-            inst.SetClaudeOptions(&ClaudeOptions{SessionMode:"resume"})
+			inst.SetClaudeOptions(&ClaudeOptions{SessionMode: "resume"})
 			command := inst.buildClaudeResumeCommand()
 			if !strings.Contains(command, "--name 'Owned 日本語'") || !strings.Contains(command, "--resume "+inst.ClaudeSessionID) || !strings.Contains(command, "CLAUDE_CONFIG_DIR="+configDir) {
 				t.Fatalf("wrong bound resume: %s", command)

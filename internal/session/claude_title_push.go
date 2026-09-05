@@ -35,8 +35,10 @@ func extraArgsSupplyName(extraArgs []string) bool {
 // Preserve these operator arguments, but do not give another target our name.
 func extraArgsSelectSession(extraArgs []string) bool {
 	for _, tok := range extraArgs {
-        // Conservatively include attached short values and option groups.
-        if strings.HasPrefix(tok, "-r") || strings.HasPrefix(tok, "-c") { return true }
+		// Conservatively include attached short values and option groups.
+		if strings.HasPrefix(tok, "-r") || strings.HasPrefix(tok, "-c") {
+			return true
+		}
 		flag, _, _ := strings.Cut(tok, "=")
 		switch flag {
 		case "--resume", "-r", "--continue", "-c", "--session-id", "--fork-session":
