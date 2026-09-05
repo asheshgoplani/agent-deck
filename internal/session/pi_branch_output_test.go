@@ -225,3 +225,11 @@ func TestPiResponseVersionTwoAndMetadataLeaves(t *testing.T) {
 		})
 	}
 }
+
+func TestPiResponseRejectsExplicitNullVersion(t *testing.T) {
+	data := []byte(`{"type":"session","id":"null-version","version":null}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"UNPROVEN VERSION"}]}}`)
+	if got, err := parsePiLastAssistantMessage(data); err == nil || got != nil {
+		t.Fatalf("explicit null version was treated as legacy: %+v, %v", got, err)
+	}
+}
