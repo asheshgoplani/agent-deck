@@ -308,11 +308,11 @@ func localSessionPaths(instances []*session.Instance) map[string]bool {
 // allProfileSessionPaths protects worktrees owned by any local profile. A
 // cleanup invocation must not remove a live checkout merely because its
 // session row belongs to a different profile.
-func allProfileSessionPaths(currentProfile string, current []*session.Instance) map[string]bool {
+func allProfileSessionPaths(currentProfile string, current []*session.Instance) (map[string]bool, error) {
 	paths := localSessionPaths(current)
 	profiles, err := session.ListProfiles()
 	if err != nil {
-		return paths
+		return nil, fmt.Errorf("list profiles for worktree ownership: %w", err)
 	}
 	for _, profile := range profiles {
 		if profile == currentProfile {
@@ -320,17 +320,18 @@ func allProfileSessionPaths(currentProfile string, current []*session.Instance) 
 		}
 		storage, err := session.NewStorageWithProfile(profile)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("open profile %q for worktree ownership: %w", profile, err)
 		}
 		instances, _, err := storage.LoadWithGroups()
 		_ = storage.Close()
-		if err == nil {
-			for path := range localSessionPaths(instances) {
-				paths[path] = true
-			}
+		if err != nil {
+			return nil, fmt.Errorf("load profile %q for worktree ownership: %w", profile, err)
+		}
+		for path := range localSessionPaths(instances) {
+			paths[path] = true
 		}
 	}
-	return paths
+	return paths, nil
 }
 
 // localSessionsAtPath returns every session that runs locally at path. Callers

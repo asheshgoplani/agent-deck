@@ -1255,15 +1255,32 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			if convertErr != nil {
 				return nil, nil, convertErr
 			}
-			s.rememberInstanceSnapshot(inst, original, byID[inst.ID])
+			stored := byID[inst.ID]
+			if stored != nil && stored.GroupPath == DefaultGroupName {
+				// Known legacy normalization is migration intent, not an incidental
+				// display difference. Commit membership with the group's path move.
+				original.GroupPath = stored.GroupPath
+			}
+			s.rememberInstanceSnapshot(inst, original, stored)
 		}
 		groupsByPath := make(map[string]*statedb.GroupRow, len(dbGroups))
 		for _, row := range dbGroups {
 			groupsByPath[row.Path] = row
 		}
+		if legacy := groupsByPath[DefaultGroupName]; legacy != nil {
+			if groupsByPath[DefaultGroupPath] != nil {
+				return nil, nil, fmt.Errorf("legacy default group migration conflicts with existing %q group", DefaultGroupPath)
+			}
+			groupsByPath[DefaultGroupPath] = legacy
+		}
 		for _, group := range groups {
+			stored := groupsByPath[group.Path]
+			original := groupDataToRow(group)
+			if stored != nil && stored.Path == DefaultGroupName {
+				original.Path = stored.Path
+			}
 			group.storageSnapshot = &groupStorageSnapshot{dbPath: s.dbPath,
-				original: groupDataToRow(group), stored: statedb.CloneGroupRow(groupsByPath[group.Path])}
+				original: original, stored: statedb.CloneGroupRow(stored)}
 		}
 	}
 	return instances, groups, err
