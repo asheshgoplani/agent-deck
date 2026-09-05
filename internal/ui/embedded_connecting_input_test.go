@@ -18,7 +18,7 @@ import (
 // The optional Install seam selects a generation-aware candidate's installation;
 // other candidates retain their existing Activate contract.
 type connectingInstallMsg struct{}
-type connectingStopMsg struct{}
+type connectingStopMsg struct{ done chan struct{} }
 
 type connectingCapture struct {
 	mu     sync.Mutex
@@ -66,11 +66,18 @@ func installConnectingCapture(r *SessionInputRouter, generation uint64, w io.Wri
 
 type connectingReadProbe struct {
 	*SessionInputRouter
-	returned chan []byte
+	returned     chan []byte
+	terminalRead chan struct{}
+	terminalOnce sync.Once
 }
 
 func (r *connectingReadProbe) Read(p []byte) (int, error) {
 	n, err := r.SessionInputRouter.Read(p)
+	if err != nil {
+		// readAnsiInputs returns immediately on a Read error, and the
+		// cancelreader makes no more fd calls after its delegated Read.
+		r.terminalOnce.Do(func() { close(r.terminalRead) })
+	}
 	if n > 0 {
 		select {
 		case r.returned <- append([]byte(nil), p[:n]...):
@@ -103,7 +110,8 @@ func (m *connectingDecoderModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch key := msg.(type) {
 	case connectingStopMsg:
 		m.home.exitInsertMode()
-		return m, tea.Quit
+		close(key.done)
+		return m, nil
 	case connectingInstallMsg:
 		m.installed <- installConnectingCapture(m.router, m.generation, m.writer)
 		return m, nil
@@ -159,7 +167,7 @@ func newConnectingDecoder(t *testing.T) (*connectingDecoderModel, *tea.Program, 
 		allowInstall: make(chan struct{}), installed: make(chan bool, 1),
 		detached: make(chan struct{}),
 	}
-	probe := &connectingReadProbe{SessionInputRouter: router, returned: make(chan []byte, 8)}
+	probe := &connectingReadProbe{SessionInputRouter: router, returned: make(chan []byte, 8), terminalRead: make(chan struct{})}
 	program := tea.NewProgram(model, tea.WithInput(probe), tea.WithOutput(io.Discard),
 		tea.WithoutRenderer(), tea.WithoutSignalHandler(), tea.WithContext(ctx))
 	done := make(chan struct{})
@@ -176,15 +184,37 @@ func newConnectingDecoder(t *testing.T) (*connectingDecoderModel, *tea.Program, 
 				close(ch)
 			}
 		}
-		cancel()
-		router.Deactivate()
+		defer cancel()
+		defer writeFile.Close()
+		// Stop Home's session on its own update goroutine before releasing
+		// stdin. EOF then proves the input loop cannot call Fd again. Run
+		// alone is insufficient: Bubble Tea skips joining on context kill
+		// and its graceful read-loop wait has a 500 ms timeout.
+		stopped := make(chan struct{})
+		go program.Send(connectingStopMsg{done: stopped})
+		select {
+		case <-stopped:
+		case <-done:
+			t.Error("decoder stopped before input cleanup could be joined")
+			return // retain the read fd rather than race an unjoined reader
+		case <-time.After(5 * time.Second):
+			t.Error("decoder did not process session cleanup")
+			return
+		}
 		_ = writeFile.Close()
-		_ = readFile.Close()
+		select {
+		case <-probe.terminalRead:
+		case <-time.After(5 * time.Second):
+			t.Error("decoder reader did not finish at EOF")
+			return // keep the read fd alive if reader completion is unknown
+		}
+		go program.Quit()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
 			t.Error("decoder program did not stop")
 		}
+		_ = readFile.Close()
 	})
 	return model, program, writeFile, probe.returned
 }
@@ -254,7 +284,7 @@ func TestEmbeddedConnectingInputRealDecoderSameRead(t *testing.T) {
 }
 
 func TestEmbeddedConnectingInputCancelledGenerationDoesNotReplay(t *testing.T) {
-	model, program, input, _ := newConnectingDecoder(t)
+	model, _, input, _ := newConnectingDecoder(t)
 	queued, detached := model.queueObserved, model.detached
 	close(model.continueEnter)
 	if _, err := io.WriteString(input, "\rdo-not-submit\r\x1b[98;7u"); err != nil {
@@ -277,7 +307,6 @@ func TestEmbeddedConnectingInputCancelledGenerationDoesNotReplay(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("late installation did not finish")
 	}
-	program.Send(connectingStopMsg{})
 }
 
 func TestEmbeddedConnectingInputSwitcherRequiresExplicitCommit(t *testing.T) {
@@ -312,13 +341,22 @@ type connectingShutdownProbe struct {
 	reads          int
 	secondRead     chan struct{}
 	secondReturned chan struct{}
+	allowReturn    chan struct{}
+	returned       chan struct{}
 }
 
 func (p *connectingShutdownProbe) Read(buf []byte) (int, error) {
 	p.reads++
 	if p.reads == 2 {
 		close(p.secondRead)
-		defer close(p.secondReturned)
+		n, err := p.SessionInputRouter.Read(buf)
+		close(p.secondReturned)
+		// Hold only the fixture's return, after the production reader has
+		// demonstrably yielded. Shutdown can now mark cancelreader cancelled
+		// before it can start another fd-using read.
+		<-p.allowReturn
+		close(p.returned)
+		return n, err
 	}
 	return p.SessionInputRouter.Read(buf)
 }
@@ -328,17 +366,36 @@ func TestEmbeddedConnectingInputProgramShutdownWithPendingReceipt(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer readFile.Close()
-	defer writeFile.Close()
 	router := NewSessionInputRouter(readFile)
 	defer router.Deactivate()
-	probe := &connectingShutdownProbe{SessionInputRouter: router, secondRead: make(chan struct{}), secondReturned: make(chan struct{})}
+	probe := &connectingShutdownProbe{SessionInputRouter: router, secondRead: make(chan struct{}), secondReturned: make(chan struct{}), allowReturn: make(chan struct{}), returned: make(chan struct{})}
 	model := connectingUnacknowledgedModel{enter: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	program := tea.NewProgram(model, tea.WithInput(probe), tea.WithOutput(io.Discard), tea.WithoutRenderer(), tea.WithoutSignalHandler(), tea.WithContext(ctx))
 	done := make(chan struct{})
 	go func() { _, _ = program.Run(); close(done) }()
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		cancel()
+		router.Deactivate()
+		_ = writeFile.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("cancelled program did not stop during cleanup")
+			return
+		}
+		releaseOnce.Do(func() { close(probe.allowReturn) })
+		select {
+		case <-probe.returned:
+			// The held read was the last possible fd-using operation:
+			// cancelreader is cancelled before its next Read can begin.
+			_ = readFile.Close()
+		case <-time.After(5 * time.Second):
+			t.Error("reader completion unknown; retaining its read fd")
+		}
+	})
 	if _, err := io.WriteString(writeFile, "\rx"); err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +406,8 @@ func TestEmbeddedConnectingInputProgramShutdownWithPendingReceipt(t *testing.T) 
 	// release the internal reader before Program.Run returns.
 	awaitConnectingSignal(t, probe.secondReturned, "internal receipt wait survived program cancellation")
 	awaitConnectingSignal(t, done, "program shutdown did not complete")
+	releaseOnce.Do(func() { close(probe.allowReturn) })
+	awaitConnectingSignal(t, probe.returned, "last fixture read did not return")
 }
 
 // Portable diagnostic, not a performance assertion: run this same file on
