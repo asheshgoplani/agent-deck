@@ -1989,11 +1989,13 @@ func handleAdd(profile string, args []string) {
 		newInstance.Wrapper = sessionWrapperResolved
 	}
 
-	// #924 per-session named account slot — captured verbatim. The
-	// resolver silently falls through when no matching [profiles.<account>]
-	// block exists, so unknown names are never an error here.
+	// Validate the selected slot before account-dependent loadout or registration.
 	if trimmed := strings.TrimSpace(*account); trimmed != "" {
 		newInstance.Account = trimmed
+	}
+	if err := newInstance.ValidateAccount(); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// Apply per-session model override after command/tool resolution so the

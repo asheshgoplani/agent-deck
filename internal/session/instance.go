@@ -1559,6 +1559,16 @@ func resolvedProcessProfile() string {
 	return resolved
 }
 
+// ensureInteractiveShellAccount updates the already-running shell as well as
+// tmux's environment. Setting a tmux option cannot change that shell's env.
+func (i *Instance) ensureInteractiveShellAccount() {
+	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
+		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
+			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
+		}
+	}
+}
+
 // ensureProfileEnv sets AGENTDECK_PROFILE host-side on the instance's tmux
 // session so a bare `agent-deck` command run inside the session resolves the
 // session's own profile rather than falling back to "default". It is the
@@ -4165,11 +4175,11 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 			configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 			// Shell-quote: configDir is a filesystem path and may contain
 			// spaces (e.g. a macOS $HOME with a space in the username).
-			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir))
+			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", i.configDirShellExpr(configDir))
 		}
 		secureStoragePrefix := ""
 		if !hasCustomClaudeCommand && i.Account != "" {
-			secureStoragePrefix = fmt.Sprintf("CLAUDE_SECURESTORAGE_CONFIG_DIR=%s ", shellescape.Quote(GetClaudeConfigDirForInstance(i)))
+			secureStoragePrefix = fmt.Sprintf("CLAUDE_SECURESTORAGE_CONFIG_DIR=%s ", i.configDirShellExpr(GetClaudeConfigDirForInstance(i)))
 		}
 		execEnvPrefix := ""
 		if flags := telegramExecEnvStripFlags(i); flags != "" {
@@ -4740,7 +4750,7 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 // SpawnAttempt helper) to preserve the structural-grep contract that
 // checks Start()'s body for the #745 IsForkAwaitingStart guard.
 func (i *Instance) Start() error {
-	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
 	beforeLock := nowFn()
@@ -4973,11 +4983,7 @@ func (i *Instance) Start() error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
-		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
-			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
-		}
-	}
+	i.ensureInteractiveShellAccount()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -5062,7 +5068,7 @@ func (i *Instance) Start() error {
 // `launch -m "..."` racing with a poller-triggered Start() must not
 // produce two parallel tmux sessions.
 func (i *Instance) StartWithMessage(message string) error {
-	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
 	beforeLock := nowFn()
@@ -5290,11 +5296,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
-		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
-			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
-		}
-	}
+	i.ensureInteractiveShellAccount()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -8635,7 +8637,7 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 }
 
 func (i *Instance) restart(env map[string]string) error {
-	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
 	beforeLock := nowFn()
@@ -9209,6 +9211,7 @@ func (i *Instance) restart(env map[string]string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	i.ensureInteractiveShellAccount()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate all known tool session IDs to the tmux environment (host-side).

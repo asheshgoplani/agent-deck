@@ -433,17 +433,10 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldAccount:
 		candidate := strings.TrimSpace(value)
-		validationTool := inst.Tool
-		if validationTool == "shell" {
-			if fields := strings.Fields(inst.Command); len(fields) > 0 {
-				validationTool = MatchTool(fields[0])
-			}
-		}
-		if err := ValidateAccountSlot(candidate, validationTool); err != nil {
+		if err := ValidateAccountSlot(candidate, inst.accountTool()); err != nil {
 			return inst.Account, nil, &MutationError{Field: field, Msg: err.Error()}
 		}
-		// #924 per-session named account slot. Stored verbatim; an
-		// unconfigured name silently falls through the resolver chain.
+		// #924 per-session named account slot, validated before assignment.
 		// Empty string clears the override (back to conductor/group/env).
 		// Restart required (see RestartPolicyFor) — the in-flight
 		// conversation is lost, that's the documented Option 1 tradeoff.

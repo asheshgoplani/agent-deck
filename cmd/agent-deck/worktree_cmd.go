@@ -461,7 +461,11 @@ func handleWorktreeCleanup(profile string, args []string) {
 			// harmful direction of #1852 site 3: a remote session's placeholder
 			// inserted here makes a genuinely orphaned worktree look in-use, so
 			// cleanup silently skips it forever.
-			sessionPaths := allProfileSessionPaths(profile, instances)
+			sessionPaths, err := allProfileSessionPaths(profile, instances)
+			if err != nil {
+				out.Error(err.Error(), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
 
 			orphanedWorktrees, protectedWorktrees = classifyUnregisteredWorktrees(worktrees, sessionPaths)
 		}
@@ -599,11 +603,12 @@ func handleWorktreeCleanup(profile string, args []string) {
 		// repository state, then inspect the candidate again at the destructive
 		// boundary. --force authorizes removal; it never bypasses this gate.
 		removed, skipReason, removeErr := removeCleanupCandidate(cleanupBackend, wt, func() (map[string]bool, error) {
-			_, currentInstances, _, err := loadSessionData(profile)
+			currentStorage, currentInstances, _, err := loadSessionData(profile)
 			if err != nil {
 				return nil, err
 			}
-			return localSessionPaths(currentInstances), nil
+			defer currentStorage.Close()
+			return allProfileSessionPaths(profile, currentInstances)
 		})
 		if !removed {
 			if removeErr != nil {
