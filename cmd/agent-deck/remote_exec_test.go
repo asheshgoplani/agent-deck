@@ -64,6 +64,39 @@ func TestRemoteCommandParity(t *testing.T) {
 	if out, stderr, code := run(controller, "", "remote", "lab", "add", remote, "-t", title, "--json"); code != 0 {
 		t.Fatalf("remote add: %d %s %s", code, out, stderr)
 	}
+	// Both sequential reads must be outside the startup grace period. The
+	// fixture has no tmux session, so crossing that boundary would change its
+	// status independently of whether the command was local or sent over SSH.
+	aged := 0
+	if err := filepath.WalkDir(remote, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Name() != "state.db" {
+			return nil
+		}
+		db, err := statedb.Open(path)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		rows, err := db.LoadInstances()
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Title == title {
+				row.CreatedAt = time.Unix(1, 0)
+				if err := db.SaveInstance(row); err != nil {
+					return err
+				}
+				aged++
+			}
+		}
+		return nil
+	}); err != nil || aged != 1 {
+		t.Fatalf("age the single parity fixture: count=%d err=%v", aged, err)
+	}
 	for _, args := range [][]string{
 		{"list", "--json"}, {"status", "--json"}, {"session", "show", title, "--json"},
 		{"session", "output", "missing", "--json"}, {"session", "start", "missing", "--json"},
