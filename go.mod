@@ -12,7 +12,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260413165052-6921c759c913
-	github.com/charmbracelet/x/vt v0.0.0-20260720091843-3eef36eaaa28
+	github.com/charmbracelet/x/vt v0.0.0-20260828171018-3c30eef5e73e
 	github.com/creack/pty v1.1.24
 	github.com/evanw/esbuild v0.28.2
 	github.com/fsnotify/fsnotify v1.10.1

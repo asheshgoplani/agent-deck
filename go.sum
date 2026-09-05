@@ -61,6 +61,8 @@ github.com/charmbracelet/x/termios v0.1.1 h1:o3Q2bT8eqzGnGPOYheoYS8eEleT5ZVNYNy8
 github.com/charmbracelet/x/termios v0.1.1/go.mod h1:rB7fnv1TgOPOyyKRJ9o+AsTU/vK5WHJ2ivHeut/Pcwo=
 github.com/charmbracelet/x/vt v0.0.0-20260720091843-3eef36eaaa28 h1:mCtuffklyfvNqk5iC+WHVulyoLTa2m6clDTotNqly2M=
 github.com/charmbracelet/x/vt v0.0.0-20260720091843-3eef36eaaa28/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
+github.com/charmbracelet/x/vt v0.0.0-20260828171018-3c30eef5e73e h1:wqAKems2rU/j6APrzesjiHEyI39Y5GI3BgxUkohjdaY=
+github.com/charmbracelet/x/vt v0.0.0-20260828171018-3c30eef5e73e/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
 github.com/charmbracelet/x/windows v0.2.2 h1:IofanmuvaxnKHuV04sC0eBy/smG6kIKrWG2/jYn2GuM=
 github.com/charmbracelet/x/windows v0.2.2/go.mod h1:/8XtdKZzedat74NQFn0NGlGL4soHB0YQZrETF96h75k=
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
