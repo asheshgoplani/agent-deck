@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -27,8 +28,8 @@ func TestEmbeddedSettingRequiresRestartOfTransport(t *testing.T) {
 			if h.embeddedLayout != enabled {
 				t.Errorf("active layout changed without replacing startup transport: %v", h.embeddedLayout)
 			}
-			if !h.settingsPanel.NeedsRestart() {
-				t.Error("setting did not disclose restart requirement")
+			if !strings.Contains(h.settingsPanel.View(), "applies at next launch") {
+				t.Error("setting did not disclose next-launch behavior")
 			}
 			cfg, err := session.LoadUserConfig()
 			if err != nil {
@@ -176,6 +177,7 @@ func TestEmbeddedUpdateBannerGeometryAcrossLayouts(t *testing.T) {
 				h.embeddedTerminal = &embeddedTerminal{ptmx: master, emulator: emu, dirty: make(chan struct{}, 1)}
 				h.sessionInput = &SessionInputRouter{}
 				h.syncEmbeddedTerminalGeometry()
+				changedGeometry := 0
 				for _, msg := range []tea.Msg{
 					updateCheckMsg{info: &update.UpdateInfo{Available: true, ReleasesBehind: 30}},
 					maintenanceCompleteMsg{result: session.MaintenanceResult{PrunedLogs: 1}},
@@ -185,8 +187,22 @@ func TestEmbeddedUpdateBannerGeometryAcrossLayouts(t *testing.T) {
 					previous := h.embeddedPaneRect()
 					h.Update(msg)
 					current := h.embeddedPaneRect()
-					if current == previous {
-						t.Fatalf("%T did not change test geometry", msg)
+					if current != previous {
+						changedGeometry++
+					}
+					switch m := msg.(type) {
+					case updateCheckMsg:
+						if h.shouldRenderUpdateNudge() != m.info.Available {
+							t.Fatal("update banner state did not change")
+						}
+					case maintenanceCompleteMsg:
+						if h.maintenanceMsg == "" {
+							t.Fatal("maintenance banner did not appear")
+						}
+					case clearMaintenanceMsg:
+						if h.maintenanceMsg != "" {
+							t.Fatal("maintenance banner did not clear")
+						}
 					}
 					rows, cols, err := pty.Getsize(master)
 					if err != nil {
@@ -201,6 +217,9 @@ func TestEmbeddedUpdateBannerGeometryAcrossLayouts(t *testing.T) {
 					if mouse != current {
 						t.Errorf("%T mouse=%+v want%+v", msg, mouse, current)
 					}
+				}
+				if changedGeometry == 0 {
+					t.Fatal("no transition exercised a changed pane rectangle")
 				}
 			})
 		}
