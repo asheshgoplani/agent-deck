@@ -627,6 +627,9 @@ func main() {
 			_ = db.ReleaseAllClaims()
 			_ = db.UnregisterInstance()
 		}
+		// Hand the outer terminal's cursor and pointer back if the embedded
+		// terminal owned them; deferred releases do not survive os.Exit.
+		runEmbeddedTerminalCleanup()
 		os.Exit(0)
 	}()
 
@@ -969,8 +972,8 @@ func main() {
 	// key reporting. Terminals that don't support the protocol ignore this
 	// sequence safely.
 	//
-	// As a belt-and-suspenders fallback, we also wrap os.Stdin with
-	// NewCSIuReader, which translates any remaining CSI u sequences (including
+	// As a belt-and-suspenders fallback, the selected compatibility input path
+	// translates any remaining CSI u sequences (including
 	// Shift+hyphen → '_', codepoint 95) to their legacy byte equivalents
 	// before Bubble Tea sees them. This handles terminals that send CSI u
 	// sequences even after the disable request (e.g. tmux with extended-keys).
@@ -1013,12 +1016,41 @@ func main() {
 	// startup; live sibling TUIs (allow_multiple=true) are preserved.
 	tmux.SweepStaleControlClients(tmux.DefaultSocketName())
 
-	p := tea.NewProgram(
-		homeModel,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithInput(ui.NewCSIuReader(os.Stdin)),
-	)
+	programOptions := []tea.ProgramOption{tea.WithAltScreen()}
+	if homeModel.EmbeddedTerminalEnabled() {
+		// The input/output wrappers let the dashboard temporarily hand terminal
+		// traffic to an embedded tmux client without giving up the outer TUI.
+		sessionOutput := ui.NewSessionOutput(os.Stdout)
+		sessionInput := ui.NewSessionInputRouter(os.Stdin)
+		// One release for every exit: the normal return below, the signal
+		// handler, and the p.Run error path (both of which os.Exit past defers).
+		setEmbeddedTerminalCleanup(func() {
+			sessionInput.Deactivate()
+			sessionOutput.ReleaseEmbeddedCursor()
+		})
+		defer runEmbeddedTerminalCleanup()
+		homeModel.SetSessionIO(sessionInput, sessionOutput)
+		programOptions = append(
+			programOptions,
+			// The embedded terminal may request all-motion mouse reporting even
+			// while Bubble Tea owns the outer TTY. The input router translates
+			// coordinates before forwarding those events to the child tmux client.
+			tea.WithMouseAllMotion(),
+			tea.WithReportFocus(),
+			tea.WithInput(sessionInput),
+			tea.WithOutput(sessionOutput),
+		)
+	} else {
+		// Preserve the original Agent Deck protocol exactly when the feature is
+		// omitted or disabled: cell-motion mouse tracking, no focus reporting,
+		// and only the existing CSI-u compatibility reader around stdin.
+		programOptions = append(
+			programOptions,
+			tea.WithMouseCellMotion(),
+			tea.WithInput(ui.NewCSIuReader(os.Stdin)),
+		)
+	}
+	p := tea.NewProgram(homeModel, programOptions...)
 
 	// Start maintenance worker (background goroutine, respects config toggle)
 	maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
@@ -1028,6 +1060,7 @@ func main() {
 	})
 
 	if _, err := p.Run(); err != nil {
+		runEmbeddedTerminalCleanup()
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -3744,7 +3777,7 @@ func printHelp() {
 	fmt.Println("Keyboard shortcuts (in TUI):")
 	fmt.Println("  n          New session")
 	fmt.Println("  g          New group")
-	fmt.Println("  Enter      Attach to session")
+	fmt.Println("  Enter      Attach to session (with [ui].embedded_terminal = true: focus the embedded terminal pane)")
 	fmt.Println("  m          MCP Manager")
 	fmt.Println("  s          Skills Manager")
 	fmt.Println("  M          Move session to group")

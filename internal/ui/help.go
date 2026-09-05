@@ -54,6 +54,10 @@ type HelpOverlay struct {
 	// this overlay is part of the TUI: a user who has adopted nothing must not
 	// find a key here for a surface that does not exist for them.
 	hasAgents bool
+
+	// Runtime shortcuts follow the layout selected at startup. A saved
+	// opposite preference only takes effect after restart.
+	embeddedLayout bool
 }
 
 // SetHasAgents records whether anything has been adopted.
@@ -62,6 +66,11 @@ func (h *HelpOverlay) SetHasAgents(has bool) {
 		return
 	}
 	h.hasAgents = has
+}
+
+// SetEmbeddedLayout records the layout used by the running dashboard.
+func (h *HelpOverlay) SetEmbeddedLayout(enabled bool) {
+	h.embeddedLayout = enabled
 }
 
 // NewHelpOverlay creates a new help overlay
@@ -228,6 +237,34 @@ func (h *HelpOverlay) View() string {
 	unarchiveKey := h.key(hotkeyUnarchiveSession, "Shift+U")
 	viewArchivedKey := h.key(hotkeyViewArchived, "^")
 	detachKey := DetachByteLabel(DetachByteFromBinding(h.key(hotkeyDetach, "ctrl+q")))
+	navigationItems := [][2]string{
+		{"j / Down", "Move down"},
+		{"k / Up", "Move up"},
+		{"Ctrl+u/d", "Half page up/down"},
+		{"PgUp / PgDn", "Half page up/down"},
+		{"Ctrl+f/b", "Full page up/down"},
+		{"Home / End", "Jump to first / last item"},
+		{"gg / G", "Jump to top / global search"},
+		{"h / Left", "Collapse / parent"},
+		{"l / Right", "Expand / toggle"},
+		{"1-9", "Jump to root group"},
+		{"Space", "Jump mode"},
+	}
+	quickStartEnter := "Attach to selected session"
+	if h.embeddedLayout {
+		quickStartEnter = "Focus embedded terminal for selected session"
+		navigationItems = append(navigationItems,
+			[2]string{"Enter", "Focus embedded terminal / toggle group"},
+			[2]string{"Alt+Enter", "Full-screen attach"},
+			[2]string{"Shift+Enter", "Open session in new iTerm window (macOS)"},
+			[2]string{"Alt+V", "Toggle grouped / flat agent sidebar"},
+		)
+	} else {
+		navigationItems = append(navigationItems,
+			[2]string{"Enter", "Attach to session / toggle group"},
+			[2]string{"Shift+Enter", "Open session in new iTerm window (macOS)"},
+		)
+	}
 
 	sections := []struct {
 		title string
@@ -236,7 +273,7 @@ func (h *HelpOverlay) View() string {
 		{
 			title: "QUICK START",
 			items: [][2]string{
-				{"Enter", "Attach to selected session"},
+				{"Enter", quickStartEnter},
 				{restartKey, "Restart selected session"},
 				{detachKey, "Detach from session"},
 				{helpKey, "Open this help"},
@@ -244,21 +281,7 @@ func (h *HelpOverlay) View() string {
 		},
 		{
 			title: "NAVIGATION",
-			items: [][2]string{
-				{"j / Down", "Move down"},
-				{"k / Up", "Move up"},
-				{"Ctrl+u/d", "Half page up/down"},
-				{"PgUp / PgDn", "Half page up/down"},
-				{"Ctrl+f/b", "Full page up/down"},
-				{"Home / End", "Jump to first / last item"},
-				{"gg / G", "Jump to top / global search"},
-				{"h / Left", "Collapse / parent"},
-				{"l / Right", "Expand / toggle"},
-				{"1-9", "Jump to root group"},
-				{"Space", "Jump mode"},
-				{"Enter", "Attach / toggle"},
-				{"Shift+Enter", "Open session in new iTerm window (macOS)"},
-			},
+			items: navigationItems,
 		},
 		{
 			title: "GROUP NAVIGATION (v1.7.60)",

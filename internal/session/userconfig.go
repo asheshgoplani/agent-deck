@@ -360,6 +360,25 @@ func (c *UserConfig) ClaimPollingEnabled() bool {
 // UISettings controls TUI layout proportions.
 // See issue #1092.
 type UISettings struct {
+	// EmbeddedTerminal enables a compact persistent session sidebar whose Enter
+	// key focuses a full-fidelity embedded tmux client. It is opt-in so an
+	// omitted setting preserves the classic layout and Enter-to-attach behavior.
+	EmbeddedTerminal *bool `toml:"embedded_terminal,omitempty"`
+
+	// SidebarDensity controls how many lines one session occupies in the
+	// embedded-layout sidebar. It has no effect on the classic layout. Valid
+	// values:
+	//   "compact" (default) — 2 lines: identity line plus one metadata line.
+	//   "full"              — 3 lines: identity line plus two metadata lines.
+	//   "minimal"           — 1 line: identity line only, with the tool marker
+	//                         moved inline so you can still tell Codex from
+	//                         Claude at a glance.
+	//   "auto"              — the widest of the three that still fits every
+	//                         visible row on screen, recomputed as groups open
+	//                         and close.
+	// Empty or unknown values fall back to "compact".
+	SidebarDensity string `toml:"sidebar_density,omitempty"`
+
 	// PreviewPct is the percentage of horizontal width allocated to the
 	// preview pane (sessions list gets the remainder). Valid range: 10-90.
 	// Default: 65 (current behavior — sessions 35 / preview 65).
@@ -449,6 +468,43 @@ type UISettings struct {
 	// `add`/`session start` are unaffected by this flag — they attach only
 	// with an explicit `--attach`.
 	AttachOnCreate bool `toml:"attach_on_create,omitempty"`
+}
+
+// GetEmbeddedTerminal reports whether the embedded terminal layout is enabled.
+// An omitted value preserves the classic layout.
+func (u UISettings) GetEmbeddedTerminal() bool {
+	return u.EmbeddedTerminal != nil && *u.EmbeddedTerminal
+}
+
+// Sidebar densities for the embedded layout. See UISettings.SidebarDensity.
+const (
+	SidebarDensityFull    = "full"
+	SidebarDensityCompact = "compact"
+	SidebarDensityMinimal = "minimal"
+	// SidebarDensityAuto spends the most height per session that still fits
+	// every visible row on screen at once, and gives it back as groups open.
+	// It is not a fourth card shape: it resolves to full, compact, or minimal.
+	SidebarDensityAuto = "auto"
+	// DefaultSidebarDensity is the two-line card: the identity line plus one
+	// metadata line.
+	DefaultSidebarDensity = SidebarDensityCompact
+)
+
+// GetSidebarDensity returns the configured sidebar density, normalized to one
+// of the known values. Empty or unknown input falls back to
+// DefaultSidebarDensity. Matching is case-insensitive.
+func (u UISettings) GetSidebarDensity() string {
+	switch strings.ToLower(strings.TrimSpace(u.SidebarDensity)) {
+	case SidebarDensityCompact:
+		return SidebarDensityCompact
+	case SidebarDensityMinimal:
+		return SidebarDensityMinimal
+	case SidebarDensityFull:
+		return SidebarDensityFull
+	case SidebarDensityAuto:
+		return SidebarDensityAuto
+	}
+	return DefaultSidebarDensity
 }
 
 // normalizeUIHiddenTools lowercases, dedupes, and drops unknown entries from
