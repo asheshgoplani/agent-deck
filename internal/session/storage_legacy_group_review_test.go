@@ -47,6 +47,18 @@ func TestLegacyGroupReviewMigrationPreservesConcurrentMetadata(t *testing.T) {
 	require.Equal(t, 7, storedGroup(t, s, DefaultGroupPath).MaxConcurrent)
 }
 
+func TestLegacyGroupReviewExistingCanonicalCollisionFailsClosed(t *testing.T) {
+	s := newTestStorage(t)
+	require.NoError(t, s.db.SaveGroups([]*statedb.GroupRow{
+		{Path: DefaultGroupName, Name: "legacy", MaxConcurrent: 2},
+		{Path: DefaultGroupPath, Name: "canonical", MaxConcurrent: 7},
+	}))
+	_, _, err := s.LoadWithGroups()
+	require.ErrorContains(t, err, "conflict")
+	require.Equal(t, 2, storedGroup(t, s, DefaultGroupName).MaxConcurrent)
+	require.Equal(t, 7, storedGroup(t, s, DefaultGroupPath).MaxConcurrent)
+}
+
 func TestLegacyGroupReviewMigrationConflictsAtomically(t *testing.T) {
 	for _, change := range []string{"target", "member", "group field"} {
 		t.Run(change, func(t *testing.T) {

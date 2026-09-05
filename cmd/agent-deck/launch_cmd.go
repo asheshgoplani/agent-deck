@@ -452,10 +452,6 @@ func handleLaunch(profile string, args []string) {
 	if trimmed := strings.TrimSpace(*account); trimmed != "" {
 		newInstance.Account = trimmed
 	}
-	if err := newInstance.ValidateAccount(); err != nil {
-		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
 
 	if parentInstance != nil {
 		newInstance.SetParentWithPath(parentInstance.ID, parentInstance.ProjectPath)
@@ -486,6 +482,10 @@ func handleLaunch(profile string, args []string) {
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		newInstance.Command = sessionCommandResolved
 		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
+	}
+	if err := newInstance.ValidateAccount(); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
