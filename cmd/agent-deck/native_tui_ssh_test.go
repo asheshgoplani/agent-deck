@@ -3,15 +3,15 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -147,22 +147,30 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		}
 	})
 	tmux("set-option", "-t", "full-tui", "remain-on-exit", "on")
-	launchNumber:=0
+	launchNumber := 0
 	var pidFile string
 	start := func() {
 		launchNumber++
-		pidFile=filepath.Join(remote,fmt.Sprintf("full-tui-%d.pid",launchNumber))
+		pidFile = filepath.Join(remote, fmt.Sprintf("full-tui-%d.pid", launchNumber))
 		// Each launch has a new exclusive private PID file. exec preserves the
 		// shell PID through env into the exact built full-TUI executable.
-		remoteCommand:="umask 077; set -C; printf '%s' \"$$\" > "+quote(pidFile)+" || exit 1; exec env TERM=xterm-256color AGENTDECK_ACCOUNT=alice "+quote(bin)+" -p default"
-		sshCommand:=quote(filepath.Join(shim,"ssh"))+" -tt test-host "+quote(remoteCommand)
+		remoteCommand := "umask 077; set -C; printf '%s' \"$$\" > " + quote(pidFile) + " || exit 1; exec env TERM=xterm-256color AGENTDECK_ACCOUNT=alice " + quote(bin) + " -p default"
+		sshCommand := quote(filepath.Join(shim, "ssh")) + " -tt test-host " + quote(remoteCommand)
 		tmux("respawn-pane", "-k", "-t", "full-tui:0.0", sshCommand)
 	}
-	readTUIProcess:=func()int {
+	readTUIProcess := func() int {
 		t.Helper()
-		raw,err:=os.ReadFile(pidFile);if err!=nil{t.Fatal(err)}
-		pid,err:=strconv.Atoi(string(raw));if err!=nil || pid<=1{t.Fatalf("invalid private TUI PID: %q %v",raw,err)}
-		if err:=syscall.Kill(pid,0);err!=nil{t.Fatalf("source-defined full TUI process not alive: %d %v",pid,err)}
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, err := strconv.Atoi(string(raw))
+		if err != nil || pid <= 1 {
+			t.Fatalf("invalid private TUI PID: %q %v", raw, err)
+		}
+		if err := syscall.Kill(pid, 0); err != nil {
+			t.Fatalf("source-defined full TUI process not alive: %d %v", pid, err)
+		}
 		return pid
 	}
 	grid := func() string { return tmux("capture-pane", "-p", "-t", "full-tui:0.0") }
@@ -182,7 +190,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		return strings.Contains(g, first) && strings.Contains(g, second) && strings.Contains(g, "alice")
 	})
 	retain("initial-grid.txt")
-	firstTUIProcess:=readTUIProcess()
+	firstTUIProcess := readTUIProcess()
 	tmux("send-keys", "-t", "full-tui:0.0", "/")
 	tmux("send-keys", "-l", "-t", "full-tui:0.0", "Beta")
 	wait("actual TUI search filters rows", func() bool { g := grid(); return strings.Contains(g, second) && !strings.Contains(g, first) })
@@ -311,7 +319,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 	wait("SSH disconnect exits full TUI client", func() bool {
 		return strings.TrimSpace(tmux("display-message", "-p", "-t", "full-tui:0.0", "#{pane_dead}")) == "1"
 	})
-	wait("source-defined server TUI process reaped after SSH loss",func()bool{return errors.Is(syscall.Kill(firstTUIProcess,0),syscall.ESRCH)})
+	wait("source-defined server TUI process reaped after SSH loss", func() bool { return errors.Is(syscall.Kill(firstTUIProcess, 0), syscall.ESRCH) })
 	assertPreserved()
 	start()
 	wait("reconnected full TUI current list", func() bool {
@@ -319,16 +327,18 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		return strings.Contains(g, first) && strings.Contains(g, second) && strings.Contains(g, "alice")
 	})
 	retain("reconnected-grid.txt")
-	secondTUIProcess:=readTUIProcess()
-	if firstTUIProcess==secondTUIProcess {t.Fatal("reconnect did not create a distinct TUI process")}
+	secondTUIProcess := readTUIProcess()
+	if firstTUIProcess == secondTUIProcess {
+		t.Fatal("reconnect did not create a distinct TUI process")
+	}
 	wait("persisted selected row restored", func() bool { return selected(grid(), second) })
 	assertPreserved()
 	tmux("send-keys", "-t", "full-tui:0.0", "q")
 	wait("graceful full TUI quit", func() bool {
 		return strings.TrimSpace(tmux("display-message", "-p", "-t", "full-tui:0.0", "#{pane_dead}")) == "1"
 	})
-	wait("source-defined server TUI process reaped after quit",func()bool{return errors.Is(syscall.Kill(secondTUIProcess,0),syscall.ESRCH)})
+	wait("source-defined server TUI process reaped after quit", func() bool { return errors.Is(syscall.Kill(secondTUIProcess, 0), syscall.ESRCH) })
 	assertPreserved()
-	t.Logf("full TUI exec PIDs %d and%d both reached ESRCH after their client lifetime",firstTUIProcess,secondTUIProcess)
+	t.Logf("full TUI exec PIDs %d and%d both reached ESRCH after their client lifetime", firstTUIProcess, secondTUIProcess)
 	t.Logf("preserved registry=%v tmux=%s nonce=%s", before, beforeIdentity, nonce)
 }
