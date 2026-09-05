@@ -1570,6 +1570,7 @@ func handleSessionShow(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	idFlag := fs.String("id", "", "Resolve only this exact session id; never matches titles")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session show [id|title] [options]")
@@ -1577,6 +1578,7 @@ func handleSessionShow(profile string, args []string) {
 		fmt.Println("Show session details. If no ID is provided, auto-detects current session.")
 		fmt.Println("Account: shows the quoted stored account slot, not a resolved account or login identity.")
 		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
+		fmt.Println("Use --id to resolve an exact session id without the flexible title/prefix/path matching.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -1597,11 +1599,24 @@ func handleSessionShow(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Resolve session (allow current session detection)
-	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
+	// Resolve session (allow current session detection). --id is the exact
+	// form: it takes the id alone, so pairing it with a positional would leave
+	// which one was meant ambiguous.
+	var inst *session.Instance
+	var errMsg, errCode string
+	if *idFlag != "" {
+		if identifier != "" {
+			out.Error("--id takes the exact id; do not also pass a positional session", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		inst, errMsg, errCode = ResolveSessionByExactID(*idFlag, instances)
+	} else {
+		inst, errMsg, errCode = ResolveSessionOrCurrent(identifier, instances)
+	}
 	if inst == nil {
-		// If no identifier was provided and we're in tmux, try fallback detection
-		if identifier == "" && os.Getenv("TMUX") != "" {
+		// If no identifier was provided and we're in tmux, try fallback detection.
+		// An exact id names one session or none, so it never auto-detects.
+		if *idFlag == "" && identifier == "" && os.Getenv("TMUX") != "" {
 			// First try current profile
 			inst = findSessionByTmux(instances)
 			if inst == nil {
@@ -2703,11 +2718,13 @@ func handleSessionSend(profile string, args []string) {
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
+	idFlag := fs.String("id", "", "Resolve only this exact session id; never matches titles (message is then the whole positional)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session send <id|title> <message> [options]")
 		fmt.Println()
 		fmt.Println("Send a message to a running session.")
+		fmt.Println("Use --id to resolve an exact session id; the session positional is then omitted and every remaining positional is the message.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2721,19 +2738,43 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
+		fmt.Println("  agent-deck session send --id abc123... \"exact id, never a title\"")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	// Split on the caller's own separator before hoisting, because normalizeArgs consumes it.
+	// Under --id every positional is message text, so no positional is left to stop flag parsing
+	// at a message that begins with a dash, and that text would parse as an undefined flag.
+	flagArgs, literal := args, []string(nil)
+	for i, arg := range args {
+		if arg == "--" {
+			flagArgs, literal = args[:i], args[i+1:]
+			break
+		}
+	}
+	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
 		os.Exit(1)
 	}
-	remaining := fs.Args()
+	remaining := append(fs.Args(), literal...)
 
 	out := NewCLIOutput(*jsonOutput, *quiet)
 
+	// --id carries the session, so it removes the session positional rather
+	// than adding a flag beside it: with it, every remaining token is message.
 	needPositionalMessage := *messageFile == ""
-	if len(remaining) < 1 || (needPositionalMessage && len(remaining) < 2) {
+	required := 0
+	if *idFlag == "" {
+		required++
+	}
+	if needPositionalMessage {
+		required++
+	}
+	if len(remaining) < required {
 		fs.Usage()
-		out.Error("session and message (or --message-file) are required", ErrCodeInvalidOperation)
+		if *idFlag != "" {
+			out.Error("a message (or --message-file) is required", ErrCodeInvalidOperation)
+		} else {
+			out.Error("session and message (or --message-file) are required", ErrCodeInvalidOperation)
+		}
 		os.Exit(1)
 	}
 
@@ -2754,8 +2795,15 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	sessionRef := remaining[0]
-	message, err := resolveMessageInput(strings.Join(remaining[1:], " "), *messageFile, os.Stdin)
+	var sessionRef, rawMessage string
+	if *idFlag != "" {
+		sessionRef = *idFlag
+		rawMessage = strings.Join(remaining, " ")
+	} else {
+		sessionRef = remaining[0]
+		rawMessage = strings.Join(remaining[1:], " ")
+	}
+	message, err := resolveMessageInput(rawMessage, *messageFile, os.Stdin)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -2768,8 +2816,14 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Resolve session
-	inst, errMsg, errCode := ResolveSession(sessionRef, instances)
+	// Resolve session. --id never matches a title; see ResolveSessionByExactID.
+	var inst *session.Instance
+	var errMsg, errCode string
+	if *idFlag != "" {
+		inst, errMsg, errCode = ResolveSessionByExactID(*idFlag, instances)
+	} else {
+		inst, errMsg, errCode = ResolveSession(sessionRef, instances)
+	}
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {

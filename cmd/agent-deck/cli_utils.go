@@ -805,6 +805,26 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
 }
 
+// ResolveSessionByExactID resolves a session by ID equality only — never by
+// title, prefix, or path. ResolveSession tries an exact title match ahead of
+// ID matching, so a session merely TITLED with another session's id captures
+// operations meant for that id (measured live: `session show <A-id>` returned
+// a different session titled with A's id, and a send to a stopped session's
+// id was silently delivered to a live impostor). A programmatic caller that
+// already has an exact id from a prior `--json` response needs a resolver
+// that cannot be redirected by title text it never asked to match.
+func ResolveSessionByExactID(id string, instances []*session.Instance) (*session.Instance, string, string) {
+	if id == "" {
+		return nil, "session id is required", ErrCodeNotFound
+	}
+	for _, inst := range instances {
+		if inst.ID == id {
+			return inst, "", ""
+		}
+	}
+	return nil, fmt.Sprintf("session '%s' not found", id), ErrCodeNotFound
+}
+
 // GetCurrentSessionID detects the current agent-deck session from tmux environment
 // Returns session ID or empty string if not in an agent-deck session
 func GetCurrentSessionID() string {
