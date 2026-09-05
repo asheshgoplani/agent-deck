@@ -141,6 +141,11 @@ func (h *Home) enterEmbeddedMode() bool {
 		h.embeddedRequest = req
 		h.insertMode = true
 		h.embeddedMode = true
+		// Attaching makes the divider inert, so drop any grab or highlight it
+		// is holding now — from here on the mouse belongs to the session and
+		// the dashboard stops hearing where it goes.
+		h.endDividerDrag()
+		h.clearDividerHover()
 		h.previewScrollOffset = 0
 		if target.isRemote() {
 			h.insertModeSessionID = ""
@@ -156,6 +161,8 @@ func (h *Home) enterEmbeddedMode() bool {
 			return false
 		}
 		h.embeddedMode = true
+		h.endDividerDrag()
+		h.clearDividerHover()
 		h.previewScrollOffset = 0
 	}
 	if inst := h.resolveInsertTarget(); inst != nil {
