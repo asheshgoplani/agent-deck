@@ -40,6 +40,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 default_tool = "claude"   # Pre-selected tool when creating sessions
 default_path = ""         # Fallback project directory for add/launch without a path
 sync_title   = true       # Let agents rename sessions from their session-name
+push_title   = true       # Use the exact deck title at supported Claude startup
 group_sort   = "creation" # within-group order: "creation" (default) or "actionable"
 ```
 
@@ -48,7 +49,16 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | `default_tool` | string | `"claude"` | Pre-selected tool when creating sessions. |
 | `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. A title you supply explicitly is already exempt: `add -t`, `launch -t`, the TUI New Session dialog, an explicit fork title, and `rename` all lock the title on creation (#1615/#1715), so only auto-derived folder-name titles follow the agent. The per-session title-lock (`agent-deck session set-title-lock <id> on|off`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
+| `push_title` | bool | `true` | Pass the exact deck title as `--name <title>` on supported Claude start/restart/resume commands. Case, punctuation, Unicode and long names are preserved; invalid UTF-8, control/bidirectional-control characters and line separators omit the default. An explicit `--name`/`-n` override wins. Missing settings default to enabled; configuration read/parse errors disable automatic naming. A deck rename applies on the next supported startup. No running prompt receives input. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
+
+### Startup naming boundaries
+
+Claude Code 2.1.261 documents `-n, --name <name>` in its installed CLI help. The normal Claude command builder, including configured Claude command aliases that forward the same arguments, passes the name to the same startup process as its conversation ID and account environment. Forks receive the child's title. Existing account and worker-scratch selection remains in the startup builder; naming does not consult any account's session registry.
+
+Automatic names are omitted for other agents, arbitrary per-session custom commands, unbound continue/resume-picker modes, and extra arguments that override conversation selection. Custom commands and older Claude versions must support their own explicit naming arguments; agent-deck does not probe or emulate them through a running prompt. Configure `push_title = false` for a Claude version without `--name` support. Configured aliases must forward Claude's documented arguments and preserve their intended account selection.
+
+Safe live rename remains a separate deliverable requiring an agent-side acknowledgement protocol. This startup behavior does not establish full naming parity or resolve every concern in #2088; that issue remains open. Existing inbound title reconciliation is unchanged.
 
 ## [shell] Section
 
