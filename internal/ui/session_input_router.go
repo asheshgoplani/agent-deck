@@ -40,8 +40,18 @@ type SessionInputRouter struct {
 
 	mu     sync.RWMutex
 	active bool
-	child  io.Writer
-	rect   terminalCellRect
+	// child is the embedded PTY. It is nil between Prepare and Activate, the
+	// interval in which Home is still opening the tmux client; bytes routed to
+	// the pane during that interval wait in held.
+	child io.Writer
+	// held collects pane-bound bytes that arrived before the child existed, or
+	// while Activate was still draining an earlier batch, so the first thing
+	// the client reads is everything the user typed, in order.
+	held []byte
+	// draining is set while Activate writes held bytes outside the lock; Read
+	// keeps appending to held until it clears so the two cannot interleave.
+	draining bool
+	rect     terminalCellRect
 	// switchByte is the configured portable Ctrl+<key> chord that returns an
 	// embedded local session to Bubble Tea's MRU switcher. Zero disables it
 	// (including remote sessions, whose switcher path is not local-tmux based).
@@ -61,15 +71,103 @@ func NewSessionInputRouter(stdin *os.File) *SessionInputRouter {
 	}
 }
 
+// Prepare switches the router into session mode before the child PTY exists.
+// Home calls it the moment Enter is accepted, so keystrokes read while the
+// tmux client is still connecting are held for the pane instead of reaching
+// Bubble Tea, where they would be dashboard hotkeys or, in embedded mode,
+// silently dropped. Ctrl+Q, the switch chord, and out-of-pane mouse still
+// return to the dashboard during this interval.
+func (r *SessionInputRouter) Prepare(rect terminalCellRect, switchByte byte) {
+	r.mu.Lock()
+	r.active = true
+	r.child = nil
+	r.rect = rect
+	r.switchByte = switchByte
+	r.rawBuf = r.rawBuf[:0]
+	r.held = r.held[:0]
+	r.draining = false
+	r.inPaste = false
+	r.mu.Unlock()
+}
+
+// Activate installs the child PTY. Bytes held since Prepare are written to it
+// first, outside the lock; Read keeps holding new pane bytes until that drain
+// completes, so the client sees the user's keystrokes in the order typed.
 func (r *SessionInputRouter) Activate(child io.Writer, rect terminalCellRect, switchByte byte) {
 	r.mu.Lock()
+	wasActive := r.active
 	r.active = child != nil
 	r.child = child
 	r.rect = rect
 	r.switchByte = switchByte
-	r.rawBuf = r.rawBuf[:0]
-	r.inPaste = false
+	if !wasActive {
+		// A fresh activation (no Prepare) starts from a clean token stream.
+		// After Prepare the partial token in rawBuf belongs to the session.
+		r.rawBuf = r.rawBuf[:0]
+		r.inPaste = false
+		r.held = r.held[:0]
+	}
+	if child == nil {
+		r.held = r.held[:0]
+		r.draining = false
+		r.mu.Unlock()
+		return
+	}
+	r.draining = true
 	r.mu.Unlock()
+	r.drainHeld(child)
+}
+
+func (r *SessionInputRouter) drainHeld(child io.Writer) {
+	for {
+		r.mu.Lock()
+		if len(r.held) == 0 || r.child != child {
+			r.held = r.held[:0]
+			r.draining = false
+			r.mu.Unlock()
+			return
+		}
+		batch := append([]byte(nil), r.held...)
+		r.held = r.held[:0]
+		r.mu.Unlock()
+		writeChild(child, batch)
+	}
+}
+
+// Forward hands the router bytes that Bubble Tea has already parsed as key
+// events before session mode began. When Enter and the following keystrokes
+// share one stdin read, the router translates the whole read for the
+// dashboard, so those keys arrive at Home as messages after the mode switch.
+// Home re-encodes them and forwards them here rather than dropping them.
+func (r *SessionInputRouter) Forward(raw []byte) {
+	if len(raw) == 0 {
+		return
+	}
+	r.mu.Lock()
+	if !r.active {
+		r.mu.Unlock()
+		return
+	}
+	if r.child == nil || r.draining {
+		r.held = append(r.held, raw...)
+		r.mu.Unlock()
+		return
+	}
+	child := r.child
+	r.mu.Unlock()
+	writeChild(child, raw)
+}
+
+// writeChild delivers pane bytes with no router lock held. A PTY write can
+// block when the client stops reading, and it fails once the client has gone;
+// neither may stall Activate/Deactivate/UpdateRect on the Bubble Tea goroutine
+// or surface as a stdin error that ends the dashboard's input loop. Home
+// notices the exited client through embeddedFrameMsg and detaches.
+func writeChild(child io.Writer, data []byte) {
+	if child == nil || len(data) == 0 {
+		return
+	}
+	_, _ = child.Write(data)
 }
 
 func (r *SessionInputRouter) Deactivate() {
@@ -81,6 +179,8 @@ func (r *SessionInputRouter) Deactivate() {
 func (r *SessionInputRouter) deactivateLocked() {
 	r.active = false
 	r.child = nil
+	r.held = r.held[:0]
+	r.draining = false
 	r.switchByte = 0
 	r.rawBuf = r.rawBuf[:0]
 	r.inPaste = false
@@ -144,59 +244,56 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			continue
 		}
 		r.rawBuf = append(r.rawBuf, buf[:n]...)
-		toDashboard, routeErr := r.routeEmbeddedLocked(err != nil)
+		child := r.child
+		toDashboard, toChild := r.routeEmbeddedLocked(err != nil)
 		if len(toDashboard) > 0 {
 			copied := copy(p, toDashboard)
 			if copied < len(toDashboard) {
 				r.pending = append(r.pending, toDashboard[copied:]...)
 			}
 			r.mu.Unlock()
+			writeChild(child, toChild)
 			return copied, nil
 		}
 		partial := len(r.rawBuf) > 0
 		r.mu.Unlock()
-		if routeErr != nil {
-			return 0, routeErr
-		}
+		writeChild(child, toChild)
 		// A lone Escape is both a valid key and the prefix of every CSI/SS3
 		// token. Give the kernel the conventional short ESC-delay window to
 		// deliver the rest of a split sequence, then forward it as-is rather
 		// than blocking until the user's next keypress.
 		if partial && !pollFdReady(int(r.File.Fd()), 50*time.Millisecond) {
 			r.mu.Lock()
-			toDashboard, routeErr = r.routeEmbeddedLocked(true)
+			child = r.child
+			toDashboard, toChild = r.routeEmbeddedLocked(true)
 			if len(toDashboard) > 0 {
 				copied := copy(p, toDashboard)
 				if copied < len(toDashboard) {
 					r.pending = append(r.pending, toDashboard[copied:]...)
 				}
 				r.mu.Unlock()
-				return copied, routeErr
+				writeChild(child, toChild)
+				return copied, nil
 			}
 			r.mu.Unlock()
-			if routeErr != nil {
-				return 0, routeErr
-			}
+			writeChild(child, toChild)
 		}
 	}
 }
 
 // routeEmbeddedLocked consumes complete tokens from rawBuf. It returns bytes
-// that should go back through Bubble Tea (detach and out-of-pane mouse).
-func (r *SessionInputRouter) routeEmbeddedLocked(final bool) ([]byte, error) {
+// that should go back through Bubble Tea (detach and out-of-pane mouse) and
+// bytes for the pane. The caller writes the pane bytes after releasing r.mu;
+// every pane byte precedes any dashboard byte in the stream, so writing them
+// first and then returning the dashboard bytes preserves the typed order.
+// While the child does not exist yet (Prepare) or Activate is still draining,
+// pane bytes are appended to held instead and nothing is returned for it.
+func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChild []byte) {
 	var child bytes.Buffer
 	var dashboard bytes.Buffer
 	data := r.rawBuf
 	i := 0
-
-	flushChild := func() error {
-		if child.Len() == 0 || r.child == nil {
-			return nil
-		}
-		_, err := r.child.Write(child.Bytes())
-		child.Reset()
-		return err
-	}
+	holdForChild := r.child == nil || r.draining
 
 	for i < len(data) {
 		if r.inPaste {
@@ -227,9 +324,6 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) ([]byte, error) {
 		}
 
 		if detachLen := ctrlQSequenceLen(data[i:]); detachLen > 0 {
-			if err := flushChild(); err != nil {
-				return nil, err
-			}
 			dashboard.WriteByte(0x11)
 			// Match the full-screen attach path: bytes coalesced after the
 			// detach chord are discarded so they cannot become accidental
@@ -243,9 +337,6 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) ([]byte, error) {
 		}
 
 		if switchLen := controlSequenceLen(data[i:], r.switchByte); switchLen > 0 {
-			if err := flushChild(); err != nil {
-				return nil, err
-			}
 			// Normalize enhanced keyboard encodings back to the configured raw
 			// control byte so Bubble Tea receives the same key in every terminal.
 			dashboard.WriteByte(r.switchByte)
@@ -260,9 +351,6 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) ([]byte, error) {
 		}
 
 		if toggleLen := sidebarToggleSequenceLen(data[i:]); toggleLen > 0 {
-			if err := flushChild(); err != nil {
-				return nil, err
-			}
 			// The raw Ctrl+Alt+B chord is deliberately consumed. Ctrl+G is a
 			// private signal to Home; a literal Ctrl+G still goes to the pane.
 			dashboard.WriteByte(embeddedSidebarToggleSignal)
@@ -294,9 +382,6 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) ([]byte, error) {
 			case ok && inside:
 				child.Write(translated)
 			case ok:
-				if err := flushChild(); err != nil {
-					return nil, err
-				}
 				dashboard.Write(seq)
 			default:
 				child.Write(seq)
@@ -310,10 +395,16 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) ([]byte, error) {
 	}
 
 	r.rawBuf = append(r.rawBuf[:0], data[i:]...)
-	if err := flushChild(); err != nil {
-		return dashboard.Bytes(), err
+	if holdForChild {
+		// A detach or switch chord while connecting already cleared held via
+		// deactivateLocked; do not resurrect bytes for a client Home is
+		// about to abandon.
+		if r.active {
+			r.held = append(r.held, child.Bytes()...)
+		}
+		return dashboard.Bytes(), nil
 	}
-	return dashboard.Bytes(), nil
+	return dashboard.Bytes(), child.Bytes()
 }
 
 func ctrlQSequenceLen(data []byte) int {
