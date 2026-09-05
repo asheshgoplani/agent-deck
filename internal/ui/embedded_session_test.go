@@ -365,66 +365,105 @@ func TestOverlayAtCellsKeepsPaneAnchorAfterWideSidebarText(t *testing.T) {
 
 func TestEmbeddedCtrlSCommitKeepsSidebarVisibleAndEmbeddedMode(t *testing.T) {
 	for _, sidebarHidden := range []bool{false, true} {
-		t.Run(fmt.Sprintf("sidebar_hidden_%v", sidebarHidden), func(t *testing.T) {
-			optInEmbeddedSessionSwitcher(t)
-			home := NewHome()
-			home.embeddedLayout = true
-			home.width = 120
-			home.height = 40
-			home.initialLoading = false
-			home.sessionInput = &SessionInputRouter{active: true, switchByte: 0x13}
-			home.sessionExists = func(*session.Instance) bool { return true }
-			home.embeddedSidebarHidden = sidebarHidden
+		for _, choice := range []struct {
+			name string
+			key  tea.KeyType
+		}{
+			{"enter target", tea.KeyEnter},
+			{"escape origin", tea.KeyEsc},
+		} {
+			t.Run(fmt.Sprintf("sidebar_hidden_%v/%s", sidebarHidden, choice.name), func(t *testing.T) {
+				optInEmbeddedSessionSwitcher(t)
+				home := NewHome()
+				t.Cleanup(home.exitInsertMode)
+				home.embeddedLayout = true
+				home.width = 120
+				home.height = 40
+				home.initialLoading = false
+				home.sessionInput = &SessionInputRouter{active: true, switchByte: 0x13}
+				home.sessionExists = func(*session.Instance) bool { return true }
+				home.embeddedSidebarHidden = sidebarHidden
 
-			now := time.Now()
-			origin := session.NewInstanceWithTool("origin", "/tmp/origin", "claude")
-			origin.Status = session.StatusRunning
-			origin.LastAccessedAt = now
-			target := session.NewInstanceWithTool("target", "/tmp/target", "claude")
-			target.Status = session.StatusIdle
-			target.LastAccessedAt = now.Add(-time.Minute)
-			home.instances = []*session.Instance{origin, target}
-			home.instanceByID = map[string]*session.Instance{origin.ID: origin, target.ID: target}
-			home.groupTree = session.NewGroupTree(home.instances)
-			home.rebuildFlatItems()
-			if !home.SelectSessionByID(origin.ID) {
-				t.Fatal("could not select origin session")
-			}
-			home.embeddedMode = true
-			home.insertMode = true
-			home.insertModeSessionID = origin.ID
+				now := time.Now()
+				origin := session.NewInstanceWithTool("origin", "/tmp/origin", "claude")
+				origin.Status = session.StatusRunning
+				origin.LastAccessedAt = now
+				target := session.NewInstanceWithTool("target", "/tmp/target", "claude")
+				target.Status = session.StatusIdle
+				target.LastAccessedAt = now.Add(-time.Minute)
+				home.instances = []*session.Instance{origin, target}
+				home.instanceByID = map[string]*session.Instance{origin.ID: origin, target.ID: target}
+				home.groupTree = session.NewGroupTree(home.instances)
+				home.rebuildFlatItems()
+				if !home.SelectSessionByID(origin.ID) {
+					t.Fatal("could not select origin session")
+				}
+				home.embeddedMode = true
+				home.insertMode = true
+				home.insertModeSessionID = origin.ID
 
-			_, _ = home.handleInsertModeKey(tea.KeyMsg{Type: tea.KeyCtrlS})
-			if home.embeddedSidebarHidden {
-				t.Fatal("Ctrl+S did not make the sidebar persistent for the next attached session")
-			}
-			home.sessionSwitcher.lastCycleAt = time.Time{}
-			_, commitTimer := home.handleSessionSwitcherKey(tea.KeyMsg{Type: tea.KeyCtrlS})
-			if commitTimer == nil {
-				t.Fatal("Ctrl+S cycle did not arm the idle release commit")
-			}
-			gen := home.sessionSwitcher.commitGen
-			cmd := home.handleSwitcherCommit(switcherCommitMsg{gen: gen})
-
-			if cmd == nil {
-				t.Fatal("embedded switch commit did not schedule the target PTY attach")
-			}
-			if !home.embeddedMode || !home.insertMode {
-				t.Fatal("embedded switch commit fell back to full-screen attach")
-			}
-			if got := home.insertModeSessionID; got != target.ID {
-				t.Fatalf("embedded target = %q, want %q", got, target.ID)
-			}
-			if home.embeddedSidebarHidden {
-				t.Fatal("sidebar returned to hidden after the Ctrl+S idle release commit")
-			}
-			if home.isAttaching.Load() {
-				t.Fatal("embedded switch entered the full-screen attaching state")
-			}
-			if got := home.embeddedRequest.Name; got != target.GetTmuxSession().Name {
-				t.Fatalf("embedded attach request = %q, want %q", got, target.GetTmuxSession().Name)
-			}
-		})
+				_, _ = home.handleInsertModeKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+				if home.embeddedSidebarHidden {
+					t.Fatal("Ctrl+S did not make the sidebar persistent for the next attached session")
+				}
+				home.sessionSwitcher.lastCycleAt = time.Time{}
+				_, commitTimer := home.handleSessionSwitcherKey(tea.KeyMsg{Type: tea.KeyCtrlS})
+				if commitTimer != nil {
+					t.Fatal("embedded Ctrl+S cycle armed an idle commit")
+				}
+				if selected := home.getSelectedSession(); selected == nil || selected.ID != target.ID {
+					t.Fatalf("Ctrl+S highlight = %v, want target %s", selected, target.ID)
+				}
+				generation := home.embeddedGeneration
+				// A queued timer with the current generation must also be inert,
+				// not merely absent from the newly returned command.
+				gen := home.sessionSwitcher.commitGen
+				if cmd := home.handleSwitcherCommit(switcherCommitMsg{gen: gen}); cmd != nil {
+					t.Fatal("embedded idle timer scheduled an attach")
+				}
+				if !home.sessionSwitcher.IsVisible() || home.embeddedMode || home.insertMode {
+					t.Fatal("idle timer left the picker or entered a session before explicit choice")
+				}
+				if home.embeddedGeneration != generation || home.embeddedRequest.Name != "" {
+					t.Fatal("idle timer changed the attach generation or target request")
+				}
+				if selected := home.getSelectedSession(); selected == nil || selected.ID != target.ID {
+					t.Fatalf("idle timer changed pending highlight: %v", selected)
+				}
+				if home.embeddedSidebarHidden {
+					t.Fatal("idle timer hid the sidebar while awaiting explicit choice")
+				}
+				_, cmd := home.handleSessionSwitcherKey(tea.KeyMsg{Type: choice.key})
+				want := target
+				if choice.key == tea.KeyEsc {
+					want = origin
+				}
+				if home.sessionSwitcher.IsVisible() {
+					t.Fatal("explicit choice did not close the switcher")
+				}
+				if selected := home.getSelectedSession(); selected == nil || selected.ID != want.ID {
+					t.Fatalf("sidebar selection after explicit choice = %v, want %s", selected, want.ID)
+				}
+				if cmd == nil {
+					t.Fatal("embedded switch commit did not schedule the target PTY attach")
+				}
+				if !home.embeddedMode || !home.insertMode {
+					t.Fatal("embedded switch commit fell back to full-screen attach")
+				}
+				if got := home.insertModeSessionID; got != want.ID {
+					t.Fatalf("embedded target = %q, want %q", got, want.ID)
+				}
+				if home.embeddedSidebarHidden {
+					t.Fatal("sidebar returned to hidden after the explicit embedded choice")
+				}
+				if home.isAttaching.Load() {
+					t.Fatal("embedded switch entered the full-screen attaching state")
+				}
+				if got := home.embeddedRequest.Name; got != want.GetTmuxSession().Name {
+					t.Fatalf("embedded attach request = %q, want %q", got, want.GetTmuxSession().Name)
+				}
+			})
+		}
 	}
 }
 
