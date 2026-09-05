@@ -1585,7 +1585,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.defaultFilter = cfg.Display.GetDefaultFilter()
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
-		tmux.SetHideCwdPrefixInTitle(!cfg.Display.GetIncludeCwdPrefix())
+		session.ConfigureTmuxDisplay(cfg.Display)
 		h.showSessionTimestamps = cfg.Display.ShowSessionTimestamps
 		h.showPaneTitles = cfg.Display.ShowPaneTitles
 		h.sysStatsConfig = cfg.SystemStats

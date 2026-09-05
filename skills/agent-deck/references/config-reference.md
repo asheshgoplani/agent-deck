@@ -525,6 +525,7 @@ active_filter_label = "Open"                      # Label for the active filter 
 active_filter_excludes = ["error", "stopped"]     # Statuses the % "Open" filter hides (default: ["error", "stopped"])
 show_pane_titles = false                          # Show the pane title (task description) on every row, not just the selected one
 include_cwd_prefix = true                         # Prefix titles with "[<cwd-basename>]"
+title_format = "{group}/{name}"                   # Template the terminal title (unset by default); placeholders {group} {project} {name}; overrides include_cwd_prefix
 ```
 
 | Key | Type | Default | Description |
@@ -535,6 +536,7 @@ include_cwd_prefix = true                         # Prefix titles with "[<cwd-ba
 | `active_filter_excludes` | []string | `["error", "stopped"]` | Statuses hidden when the `%` "Open" filter is engaged. Default matches the original hardcoded behavior. Valid values: `running`, `waiting`, `idle`, `error`, `starting`, `stopped`. Unknown entries are dropped silently; if the resulting list is empty the default applies. **Set to `["error"]`** to keep stopped/closed sessions visible while still hiding errors — fixes the over-broad "Open" semantics where closed sessions disappeared from view. Extend with `idle` for an aggressive "show only running/waiting" definition of open. |
 | `show_pane_titles` | bool | `false` | Shows the dim tmux pane-title (task description) suffix on every session row instead of only the selected row. Also toggleable in the TUI Settings panel (`S`) under **DISPLAY**. |
 | `include_cwd_prefix` | bool | `true` | Show the working-directory prefix (`[<cwd-basename>]`) on session rows/titles. Set `false` to show only the session title. (v1.9.46) |
+| `title_format` | string | `""` | Template for the outer terminal window/tab title using `{group}`, `{project}`, and `{name}` placeholders (e.g. `"{group}/{name}"`). Re-renders live on rename and move-to-group. When unset, the historical `[<project>] <name>` format (and the `include_cwd_prefix` toggle) applies; when set, it takes precedence over `include_cwd_prefix`. |
 
 ## [ui] Section
 

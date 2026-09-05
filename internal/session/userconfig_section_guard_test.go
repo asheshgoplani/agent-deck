@@ -373,3 +373,29 @@ func TestSaveUserConfig_PreservesSectionsWithDeclarativeGroups(t *testing.T) {
 		t.Error(`omitempty failed: 'default_path = "" written into a group block`)
 	}
 }
+
+// An unset [display] title_format must NOT be written to config.toml. Without
+// `,omitempty` on the toml tag, SaveUserConfig emits a literal
+// `title_format = ""` line into every user's config, reintroducing exactly the
+// zero-value bloat that #1383 removed.
+func TestSaveUserConfig_TitleFormatOmitEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
+
+	cfg := cloneDefaultUserConfig()
+	if err := SaveUserConfigWithIntent(&cfg, true); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(raw), "title_format") {
+		t.Errorf("omitempty failed: unset title_format written into config.toml:\n%s", raw)
+	}
+}

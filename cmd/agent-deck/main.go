@@ -307,6 +307,9 @@ func main() {
 	// calls use Instance.TmuxSocketName directly — this default is only
 	// the installation-wide fallback for callers without a session handle.
 	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
+	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
+		session.ConfigureTmuxDisplay(cfg.Display)
+	}
 
 	// Nudge macOS users whose tmux predates the upstream fix for the
 	// control-mode NULL-deref (tmux #4980, issue #737). Once per process,
