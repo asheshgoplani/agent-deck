@@ -224,7 +224,7 @@ func startNativeSSH(t *testing.T, remoteHome, binDir string) *nativeSSHProxy {
 	proxyPort := listener.Addr().(*net.TCPAddr).Port
 	known := write("known_hosts", []byte(fmt.Sprintf("[127.0.0.1]:%d %s", proxyPort, ssh.MarshalAuthorizedKey(hostKey))))
 	clientConfig := write("ssh_config", []byte("Host test-host\n HostName 127.0.0.1\n User "+account.Username+"\n Port "+strconv.Itoa(proxyPort)+"\n IdentityFile "+clientFile+"\n UserKnownHostsFile "+known+"\n StrictHostKeyChecking yes\n IdentitiesOnly yes\n"))
-	write("ssh", []byte("#!/bin/sh\nexec "+quote(realSSH)+" -F "+quote(clientConfig)+" -o ControlMaster=no -o ControlPath=none \"$@\"\n"))
+	write("ssh", []byte("#!/bin/sh\nif [ \"$NATIVE_SSH_MULTIPLEX\" = true ]; then\nexec "+quote(realSSH)+" -F "+quote(clientConfig)+" \"$@\"\nfi\nexec "+quote(realSSH)+" -F "+quote(clientConfig)+" -o ControlMaster=no -o ControlPath=none \"$@\"\n"))
 	return p
 }
 

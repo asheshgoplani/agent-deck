@@ -414,9 +414,10 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}()
 
 	// Block until detach or SSH exit.
+	var attachErr error
 	select {
 	case <-detachCh:
-	case <-cmdDone:
+	case attachErr = <-cmdDone:
 	}
 
 	// Cleanup: close PTY and wait for output to drain.
@@ -455,6 +456,9 @@ func (r *SSHRunner) Attach(sessionID string) error {
 		_ = p.Signal(syscall.SIGWINCH)
 	}
 
+	if attachErr != nil {
+		return fmt.Errorf("ssh attach failed: %w", attachErr)
+	}
 	return nil
 }
 
@@ -942,9 +946,21 @@ func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
 // ConnectTimeout, so an unknown host key could hang on a prompt instead of
 // failing fast). "-tt" forces a remote PTY.
 func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
-	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
+	remoteCmd := "TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand("session", "attach", sessionID)
 	args := append([]string{"-tt"}, r.sshConnOpts()...)
 	return append(args, r.Host, remoteCmd)
+}
+
+// Modern local terminals may name terminfo entries absent on the SSH host.
+// Retain portable terminal types and use the common 256-color entry otherwise.
+func remoteAttachTERM() string {
+	terminal := os.Getenv("TERM")
+	switch terminal {
+	case "xterm", "xterm-256color", "screen", "screen-256color", "tmux", "tmux-256color", "linux", "vt100", "ansi", "dumb":
+		return terminal
+	default:
+		return "xterm-256color"
+	}
 }
 
 // CreateSession creates and starts a quick new session on the remote, returning its ID.

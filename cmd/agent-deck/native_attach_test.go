@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -49,12 +50,14 @@ func TestNativeSSHAttachLifecycle(t *testing.T) {
 	socket := fmt.Sprintf("native-%d", time.Now().UnixNano())
 	write(filepath.Join(remote, ".config", "agent-deck", "config.toml"), "[tmux]\nsocket_name = '"+socket+"'\n")
 	receiver := filepath.Join(remote, "receiver.py")
-	write(receiver, `import os, tty, hashlib, uuid
+	write(receiver, `import os, tty, hashlib, uuid, sys
 # Raw receiver acknowledges bytes without canonical line limits. This is transport
 # evidence; rendered cell widths and physical-terminal behavior need a renderer.
 tty.setraw(0)
 generation = str(uuid.uuid4())
-print("\033[?2004h\033[32mREADY café 世界 e\u0301\033[0m APP:" + str(os.getpid()) + ":" + generation, flush=True)
+banner = "\033[32mREADY café 世界 e\u0301\033[0m APP:" + str(os.getpid()) + ":" + generation
+sys.stdout.write("\033[?2004h" + banner + "\r\n\033[31;44mA界e\u0301Z\033[0m")
+sys.stdout.flush()
 buf = bytearray()
 escape = bytearray()
 pasting = False
@@ -75,6 +78,10 @@ while True:
             escape.clear()
             continue
         if byte in (10, 13) and not pasting:
+            if buf == b"@identity":
+                print("\r\n" + banner, flush=True)
+                buf.clear()
+                continue
             count += 1
             print("\r\nRX:" + hashlib.sha256(buf).hexdigest() + ":" + str(len(buf)) + ":COUNT:" + str(count), flush=True)
             buf.clear()
@@ -95,7 +102,9 @@ while True:
 	}
 	run := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command(bin, args...)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = envFor(remote)
 		cmd.Dir = remote
 		out, err := cmd.CombinedOutput()
@@ -117,7 +126,9 @@ while True:
 			args = append(args, "-t", tmuxName)
 		}
 		args = append(args, format)
-		cmd := exec.Command("tmux", args...)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "tmux", args...)
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + remote}
 		out, err := cmd.Output()
 		if err != nil {
@@ -155,11 +166,18 @@ while True:
 			t.Fatal(err)
 		}
 	}
+	directSSH := false
+	multiplex := false
+	lastFrame := "READY café 世界"
 	attachNumber := 0
 	attach := func() (*os.File, *exec.Cmd, func() string, <-chan error) {
 		t.Helper()
 		cmd := exec.Command(bin, "remote", "attach", "lab", "native")
-		cmd.Env = envFor(controller)
+		if directSSH {
+			quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+			cmd = exec.Command(shimPath, "-tt", "test-host", "TERM=xterm-256color "+quote(bin)+" session attach native")
+		}
+		cmd.Env = append(envFor(controller), fmt.Sprintf("NATIVE_SSH_MULTIPLEX=%t", multiplex))
 		terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 120, Rows: 40})
 		if err != nil {
 			t.Fatal(err)
@@ -232,7 +250,11 @@ while True:
 				t.Logf("attach output: %q", snapshot())
 			}
 		})
-		waitFor("remote first frame", func() bool { return strings.Contains(snapshot(), "READY café 世界") })
+		waitFor("remote first frame", func() bool { return strings.Contains(snapshot(), lastFrame) })
+		if lastFrame != "READY café 世界" {
+			writeInput(terminal, "@identity\r")
+			waitFor("fresh application banner", func() bool { return strings.Contains(snapshot(), "READY café 世界") })
+		}
 		if !strings.Contains(snapshot(), "[32m") {
 			t.Errorf("remote colors missing: %q", snapshot())
 		}
@@ -246,11 +268,48 @@ while True:
 		t.Fatal("missing application identity")
 	}
 	waitFor("initial attach dimensions", func() bool { return probe("#{window_width}x#{window_height}") == "120x39" })
+	captureGrid := func(escaped bool) string {
+		t.Helper()
+		args := []string{"-L", socket, "capture-pane", "-p", "-t", tmuxName}
+		if escaped {
+			args = append(args, "-e")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "tmux", args...)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + remote}
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("grid capture: %v: %s", err, output)
+		}
+		return string(output)
+	}
+	waitFor("initial Unicode grid", func() bool { return strings.Contains(captureGrid(false), "A界e\u0301Z") })
+	if cursor := probe("#{cursor_x}:#{cursor_y}"); cursor != "5:1" {
+		t.Errorf("wide/combining cell cursor=%s want5:1", cursor)
+	}
+	grid := captureGrid(true)
+	foreground := regexp.MustCompile(`\x1b\[[0-9;]*31[;m]`)
+	background := regexp.MustCompile(`\x1b\[[0-9;]*44[;m]`)
+	if !foreground.MatchString(grid) || !background.MatchString(grid) {
+		t.Errorf("tmux color attributes missing: %q", grid)
+	}
+	t.Logf("initial tmux rendered grid: %q; server cells only, physical client rendering untested", grid)
 	if err := pty.Setsize(terminal, &pty.Winsize{Cols: 150, Rows: 45}); err != nil {
 		t.Fatal(err)
 	}
 	client.Process.Signal(syscall.SIGWINCH)
 	waitFor("remote resize", func() bool { return probe("#{window_width}x#{window_height}") == "150x44" })
+	for _, size := range []pty.Winsize{{Cols: 100, Rows: 35}, {Cols: 140, Rows: 48}, {Cols: 150, Rows: 45}} {
+		if err := pty.Setsize(terminal, &size); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Process.Signal(syscall.SIGWINCH); err != nil {
+			t.Fatal(err)
+		}
+		expected := fmt.Sprintf("%dx%d", size.Cols, size.Rows-1)
+		waitFor("repeated remote resize", func() bool { return probe("#{window_width}x#{window_height}") == expected })
+	}
 	// A terminal-generated OSC reply must not become application input.
 	writeInput(terminal, "\x1b]11;rgb:abcd/0000/ffff\a")
 	writeInput(terminal, "ordered-input\r")
@@ -400,4 +459,119 @@ while True:
 	case <-time.After(10 * time.Second):
 		t.Fatal("final detach hung")
 	}
+	terminal.Close()
+	lastFrame = receipt("alive-after-blackhole")
+	// Matched measurements use the same OpenSSH configuration, proxy, remote
+	// tmux pane and receiver. A 50ms p95 delta guards a new polling delay;
+	// absolute bounds remain deliberately loose for a shared test runner.
+	measure := func(label string) []time.Duration {
+		t.Helper()
+		terminal, _, snapshot, done = attach()
+		samples := make([]time.Duration, 0, 30)
+		for index := 0; index < 30; index++ {
+			frame := fmt.Sprintf("latency-%s-%02d", label, index)
+			start := time.Now()
+			writeInput(terminal, frame+"\r")
+			waitFor("latency receipt", func() bool { return strings.Contains(snapshot(), receipt(frame)) })
+			samples = append(samples, time.Since(start))
+			lastFrame = receipt(frame)
+		}
+		writeInput(terminal, "\x11")
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("%s latency detach: %v", label, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("latency detach hung")
+		}
+		terminal.Close()
+		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		t.Logf("latency %s sorted=%v median=%v p95=%v max=%v", label, samples, samples[15], samples[28], samples[29])
+		return samples
+	}
+	directSSH = true
+	direct := measure("direct")
+	directSSH = false
+	deck := measure("deck")
+	if deck[28] > direct[28]+50*time.Millisecond {
+		t.Errorf("Agent Deck p95=%v exceeds directSSH=%v plus50ms", deck[28], direct[28])
+	}
+	if deck[29] > time.Second {
+		t.Errorf("Agent Deck max latency=%v exceeds1s", deck[29])
+	}
+	// Exercise the production ControlMaster options after the isolated
+	// no-master fault tests. The runner owns the whole socket namespace.
+	multiplex = true
+	control := func(operation string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, shimPath, "-O", operation, "-o", "ControlPath=/tmp/agent-deck-ssh/%r@%h:%p", "test-host")
+		command.Env = append(envFor(controller), "NATIVE_SSH_MULTIPLEX=true")
+		out, err := command.CombinedOutput()
+		return string(out), err
+	}
+	t.Cleanup(func() { output, err := control("exit"); t.Logf("fixture master exit: %v %s", err, output) })
+	terminal, _, snapshot, done = attach()
+	master, err := control("check")
+	if err != nil {
+		t.Fatalf("production master not active: %v %s", err, master)
+	}
+	t.Logf("production master: %s", master)
+	writeInput(terminal, "multiplex-first\r")
+	waitFor("multiplex input", func() bool { return strings.Contains(snapshot(), receipt("multiplex-first")) })
+	lastFrame = receipt("multiplex-first")
+	writeInput(terminal, "\x1b[113;5u")
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("CSI-u detach: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CSI-u detach hung")
+	}
+	terminal.Close()
+	terminal, _, snapshot, done = attach()
+	reconnectMaster, err := control("check")
+	if err != nil || reconnectMaster != master {
+		t.Errorf("master changed on reconnect: %v %q want%q", err, reconnectMaster, master)
+	}
+	writeInput(terminal, "multiplex-reconnect\r")
+	waitFor("multiplex reconnect", func() bool { return strings.Contains(snapshot(), receipt("multiplex-reconnect")) })
+	lastFrame = receipt("multiplex-reconnect")
+	writeInput(terminal, "\x1b[27;5;113~")
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("modifyOtherKeys detach: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("modifyOtherKeys detach hung")
+	}
+	terminal.Close()
+	terminal, _, snapshot, done = attach()
+	// Separate writes with a transport round-trip-sized gap force the native
+	// pump to encounter a partial escape sequence before its completion.
+	writeInput(terminal, "\x1b[113;")
+	time.Sleep(100 * time.Millisecond)
+	writeInput(terminal, "5u")
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("fragmented CSI-u detach: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("fragmented CSI-u CtrlQ was forwarded instead of detaching")
+		writeInput(terminal, "\x11")
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("fallback detach hung")
+		}
+	}
+	terminal.Close()
+	if got := probe("#{pid}:#{session_id}:#{pane_id}:#{pane_pid}"); got != identity {
+		t.Errorf("final session identity changed: %s != %s", got, identity)
+	}
+
 }
