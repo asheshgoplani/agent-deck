@@ -469,6 +469,64 @@ func UnmarshalCrushOptions(data json.RawMessage) (*CrushOptions, error) {
 	return &opts, nil
 }
 
+// MuseOptions holds launch options for Muse Code CLI sessions.
+// Binary: `muse`. Interactive TUI.
+// Session resume (`muse resume <uuid>`) is a subcommand, not a flag, so it
+// is built by buildMuseResumeCommand in muse.go, not expressed here.
+type MuseOptions struct {
+	// YoloMode enables --yolo flag (disable approval + sandboxing and
+	// trust the workspace for the run).
+	// nil = inherit from config, true/false = explicit override.
+	YoloMode *bool `json:"yolo_mode,omitempty"`
+}
+
+// ToolName returns "muse"
+func (o *MuseOptions) ToolName() string {
+	return "muse"
+}
+
+// ToArgs returns command-line arguments based on options.
+func (o *MuseOptions) ToArgs() []string {
+	var args []string
+	if o.YoloMode != nil && *o.YoloMode {
+		args = append(args, "--yolo")
+	}
+	return args
+}
+
+// NewMuseOptions creates MuseOptions with defaults from global config.
+func NewMuseOptions(config *UserConfig) *MuseOptions {
+	opts := &MuseOptions{}
+	if config != nil && config.Muse.YoloMode {
+		yolo := true
+		opts.YoloMode = &yolo
+	}
+	return opts
+}
+
+// UnmarshalMuseOptions deserializes MuseOptions from JSON wrapper.
+func UnmarshalMuseOptions(data json.RawMessage) (*MuseOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+
+	if wrapper.Tool != "muse" {
+		return nil, nil
+	}
+
+	var opts MuseOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
+
+	return &opts, nil
+}
+
 // StripResumeFields removes session-specific fields (resume_session_id,
 // session_mode) from serialized ToolOptionsJSON so that a new session
 // inheriting another session's settings starts fresh instead of resuming

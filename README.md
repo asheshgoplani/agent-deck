@@ -723,6 +723,7 @@ Agent Deck works with any terminal-based AI tool:
 | **Codex** | Status detection, MCP, organization, conductor, fork |
 | **Copilot** | Organization, launch |
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
+| **Muse Code** (`muse`) | Status detection, organization, launch, resume |
 | **Cursor** (terminal) | Status detection, organization |
 | **Hermes Agent** | Organization, launch |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |

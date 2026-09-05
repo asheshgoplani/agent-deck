@@ -12231,6 +12231,8 @@ func createSessionTool(command string) (string, string) {
 		tool = "copilot"
 	case "crush":
 		tool = "crush"
+	case "muse":
+		tool = "muse"
 	case "cursor":
 		tool = "cursor"
 		command = session.GetToolCommand("cursor")

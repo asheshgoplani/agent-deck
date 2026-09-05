@@ -152,6 +152,9 @@ type UserConfig struct {
 	// Crush defines charmbracelet/crush CLI integration settings (Issue #940)
 	Crush CrushSettings `toml:"crush,omitempty"`
 
+	// Muse defines Muse Code CLI integration settings
+	Muse MuseSettings `toml:"muse,omitempty"`
+
 	// Hermes defines Hermes Agent CLI integration settings
 	Hermes HermesSettings `toml:"hermes,omitempty"`
 
@@ -2233,6 +2236,29 @@ type CrushSettings struct {
 	YoloMode bool `toml:"yolo_mode,omitempty"`
 }
 
+// MuseSettings defines Muse Code CLI configuration.
+// Binary: `muse`. Interactive TUI.
+// Key flags: --trust-workspace, --yolo, --provider, --model.
+// Resume is a subcommand (`muse resume <uuid>`), wired in a follow-up.
+type MuseSettings struct {
+	// Command overrides the default invocation for Muse sessions.
+	// Supports flags (e.g., "muse --provider echo"). Replaces the default
+	// "muse --trust-workspace" wholesale, so include --trust-workspace
+	// yourself if the override drops it: bare `muse` blocks on the
+	// workspace-trust prompt in a fresh directory.
+	Command string `toml:"command,omitempty"`
+
+	// EnvFile is a .env file specific to Muse sessions (sourced before
+	// the `muse` command runs, like [crush].env_file). Optional.
+	// Useful for provider credentials (e.g. a Meta API key): panes do not
+	// inherit interactive-shell exports.
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// YoloMode enables --yolo flag for Muse sessions (disable approval +
+	// sandboxing and trust the workspace for the run). Default: false
+	YoloMode bool `toml:"yolo_mode,omitempty"`
+}
+
 // WorktreeSettings contains git worktree preferences.
 type WorktreeSettings struct {
 	// AutoCleanup: remove worktree when session is deleted (default: true, nil = true)
@@ -3792,6 +3818,8 @@ func GetToolIcon(toolName string) string {
 		return "🐙"
 	case "crush":
 		return "💘"
+	case "muse":
+		return "🔮"
 	case "cursor":
 		return "📝"
 	case "hermes":

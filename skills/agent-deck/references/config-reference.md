@@ -15,6 +15,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[copilot] Section](#copilot-section)
 - [[cursor] Section](#cursor-section)
 - [[hermes] Section](#hermes-section)
+- [[muse] Section](#muse-section)
 - [[docker] Section](#docker-section)
 - [[worktree] Section](#worktree-section)
 - [[fork] Section](#fork-section)
@@ -320,6 +321,35 @@ yolo_mode = false
 Status detection: process-alive/dead only. Content-sniffing planned for future release.
 
 When using a different Codex home, prefer an inline command such as `CODEX_HOME=~/.codex-work codex` or export `CODEX_HOME` before starting agent-deck. Shell aliases are allowed, but agent-deck cannot infer `CODEX_HOME` hidden inside an alias for resume-file discovery.
+
+## [muse] Section
+
+Muse Code CLI integration settings (Meta's `muse` terminal agent).
+
+```toml
+[muse]
+command = "muse --trust-workspace"
+env_file = "~/.muse.env"
+yolo_mode = false
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"muse --trust-workspace"` | Override the binary/invocation. Replaces the default wholesale: bare `muse` blocks on the workspace-trust prompt in a fresh directory, so keep `--trust-workspace` in your override unless you want that prompt. |
+| `env_file` | string | `""` | A .env file sourced for Muse sessions only. Useful for provider credentials: panes do not inherit interactive-shell exports. See [Path Resolution](#path-resolution). |
+| `yolo_mode` | bool | `false` | Maps to `muse --yolo` (disable approval + sandboxing and trust the workspace for the run). |
+
+The default automatically trusts the workspace for this run, including its project rules. `--trust-workspace` does not bypass permission approvals or sandboxing; `yolo_mode` remains `false` by default. To keep the workspace-trust prompt instead, override the command with bare `muse`:
+
+```toml
+[muse]
+command = "muse"
+yolo_mode = false
+```
+
+This command override applies to fresh launches and restart-resume. An explicit per-session `yolo_mode = false` overrides a global `yolo_mode = true`.
+
+Status detection: pane content patterns (busy `◈ Thinking (… · esc to interrupt)`, idle prompt placeholder). Restart re-discovers the workspace's newest session in the muse store (`~/.local/share/muse/sessions`, `runtime.session.metadata` workspace binding) and resumes it via `muse resume <uuid>`; a pruned store boots fresh. Plain `start` always boots a fresh session, never resumes.
 
 ## [docker] Section
 
@@ -916,6 +946,11 @@ env_file = "~/.copilot.env"
 [hermes]
 command = "hermes --model gpt-5.5-pro --provider openai"
 env_file = "~/.hermes.env"
+yolo_mode = false
+
+[muse]
+command = "muse --trust-workspace"
+env_file = "~/.muse.env"
 yolo_mode = false
 
 [docker]
