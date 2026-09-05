@@ -353,3 +353,67 @@ func TestSessionInputRouterDashboardStillFiltersEscapeStringReplies(t *testing.T
 		})
 	}
 }
+
+func TestSessionInputRouterFailedGenerationDiscardsNonPasteTail(t *testing.T) {
+	for _, failure := range []string{"overflow", "write error before reader observes failure"} {
+		t.Run(failure, func(t *testing.T) {
+			readFile, writeFile, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer readFile.Close()
+			defer writeFile.Close()
+			router := NewSessionInputRouter(readFile)
+			defer router.Deactivate()
+			q := router.BeginConnecting(context.Background(), 1, terminalCellRect{}, 0)
+			wantErr := errConnectingInputOverflow
+			if failure == "overflow" {
+				if _, err := q.Write([]byte(strings.Repeat("x", maxConnectingInputBytes))); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(writeFile, "!\rdelete"); err != nil {
+					t.Fatal(err)
+				}
+				// A real read overflows on '!', leaving the apparent dashboard
+				// shortcuts unread while the error waits for Home's update.
+				buf := make([]byte, 256)
+				if n, err := router.Read(buf); n != 0 || err != nil {
+					t.Fatalf("failed read = %q, %v", buf[:n], err)
+				}
+			} else {
+				wantErr = io.ErrUnexpectedEOF
+				w := &connectingPartialErrorWriter{newConnectingCapture()}
+				if _, err := q.Write([]byte("abc")); err != nil {
+					t.Fatal(err)
+				}
+				if !router.Install(1, w) {
+					t.Fatal("install rejected")
+				}
+				awaitConnectingSignal(t, w.closed, "writer did not fail")
+				if _, err := io.WriteString(writeFile, "\rdelete"); err != nil {
+					t.Fatal(err)
+				}
+				// No router.Read has set r.failed. Deactivate must inspect the
+				// generation error, not depend on the input reader seeing it.
+			}
+			awaitConnectingSignal(t, q.ctx.Done(), "input failure not reported")
+			if err := q.result(); !errors.Is(err, wantErr) {
+				t.Fatalf("failure = %v, want %v", err, wantErr)
+			}
+			router.Deactivate() // Same router action as Home's error handler.
+			buf := make([]byte, 256)
+			if n, err := router.Read(buf); n != 0 || err != nil {
+				t.Fatalf("failed session tail became dashboard input: %q, %v", buf[:n], err)
+			}
+			if _, err := io.WriteString(writeFile, "z"); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := router.Read(buf); err != nil || string(buf[:n]) != "z" {
+				t.Fatalf("fresh dashboard key = %q, %v", buf[:n], err)
+			}
+			if err := q.result(); !errors.Is(err, wantErr) {
+				t.Fatalf("cancellation lost original error: %v", err)
+			}
+		})
+	}
+}
