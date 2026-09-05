@@ -211,7 +211,9 @@ func (h *Home) embeddedAttachRequest(target insertTargetRef) (deckterminal.Attac
 	if target.hasWindow {
 		name = fmt.Sprintf("%s:%d", name, target.windowIndex)
 	}
-	return deckterminal.AttachRequest{Name: name, SocketName: tmuxSession.SocketName}, true
+	// The embedded client inherits this process's locale, so it forces UTF-8
+	// the way the full-screen attach in internal/tmux/pty.go does.
+	return deckterminal.AttachRequest{Name: name, SocketName: tmuxSession.SocketName, ForceUTF8: true}, true
 }
 
 func (h *Home) renderEmbeddedTerminalContent(width, height int) string {
