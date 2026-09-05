@@ -37,7 +37,7 @@ func mergeGroupSnapshots(updates []GroupSnapshot, current []*GroupRow, instances
 	merged := make([]*GroupRow, len(updates))
 	removed := make(map[string]bool)
 	seen := make(map[string]bool)
-	effectiveInstances := make(map[string]*InstanceRow, len(instances)+len(mergedInstances))
+	effectiveInstances := make(map[string]*InstanceRow, len(instances))
 	for _, row := range instances {
 		effectiveInstances[row.ID] = row
 	}

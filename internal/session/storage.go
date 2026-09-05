@@ -814,26 +814,6 @@ func (s *Storage) PersistRecoveredInstances(instances []*Instance) error {
 	return errors.Join(errs...)
 }
 
-// consumeGenericSessionIDCleared drops the one-shot intentional-clear flag
-// after a successful persistence of the corresponding tool_data write.
-//
-// Without this, a long-lived TUI Instance that once ran
-// `session set tool-session-id ""` keeps genericSessionIDCleared=true forever.
-// Every later SaveWithGroups (title rename, status tick, full table save)
-// would re-emit explicit empty generic_session_id and wipe a concurrent
-// WriteGenericSessionBinding / live-capture re-bind of a new conversation id.
-//
-// Must run only after the DB write succeeds: consuming before Upsert would
-// let a failed save + retry omit the key and sticky-merge resurrect the
-// pre-clear id when write-through (GetGlobal / Persist) was not used.
-func consumeGenericSessionIDCleared(insts ...*Instance) {
-	for _, inst := range insts {
-		if inst != nil {
-			inst.genericSessionIDCleared = false
-		}
-	}
-}
-
 // instanceToRow converts a session.Instance into the statedb row shape.
 // Shared by SaveWithGroups (bulk path) and InsertSessionAndVerify
 // (targeted single-row path) so the marshal/normalize logic stays in
@@ -929,7 +909,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// intentionalClear makes sticky MergeToolDataExtras honor operator clears
 	// without breaking stale-empty full-table saves (see generic_session_persist.go).
 	// The genericSessionIDCleared flag is consumed by the save caller after a
-	// successful DB write (consumeGenericSessionIDCleared), not here: converting
+	// successful DB write, not here: converting
 	// without persisting must not drop clear intent.
 	toolData = WriteGenericSessionIDToToolData(toolData, inst.GenericSessionID, inst.GenericDetectedAt, inst.genericSessionIDCleared)
 	// The scope travels with the id, under the same omission/explicit-empty

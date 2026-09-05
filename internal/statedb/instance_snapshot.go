@@ -55,7 +55,7 @@ func (s *StateDB) LoadRegistrySnapshot() (*RegistrySnapshotResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	instances, err := loadInstances(tx.Query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load instances: %w", err)
@@ -266,7 +266,7 @@ func mergeSnapshotToolData(update InstanceSnapshot, current *InstanceRow) (json.
 	if err != nil {
 		return nil, err
 	}
-	keys := make(map[string]bool, len(original)+len(desired))
+	keys := make(map[string]bool, len(original))
 	for key := range original {
 		keys[key] = true
 	}
