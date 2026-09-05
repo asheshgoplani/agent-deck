@@ -123,14 +123,16 @@ func TestWriteGeneratedFileOrMigratePublishesOnlyCompleteContent(t *testing.T) {
 	}
 }
 
-// These fingerprints were captured from the generated assets in fffbef46^,
-// the release immediately before the guidance change. Unlike reconstructing
-// history by reversing current edits, they fail if production invents even one
-// byte of the prior release's content.
+// These fingerprints identify the rendered assets from immutable source
+// 47bb210373c87aa1a90f2a319acf9174ea4b3dae (fffbef46's parent). Its template
+// blob is aabca8afd73010bcca8b2d3d3ce65526e988b194 and its renderer is identical
+// to bf506898. Shared rendering uses an empty name and DefaultProfile; per-name
+// rendering uses upgrade-<agent> and DefaultProfile. Pinning historical bytes
+// independently of the reconstruction catches accidental migration changes.
 var priorReleaseInstructionSHA256 = map[string]struct{ shared, perName string }{
-	ConductorAgentClaude: {"17959a9f4cbf343fe0d7cba850c74f039ad2bbffd4e521a70631a3ebdb905f57", "d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2"},
-	ConductorAgentCodex:  {"cce189efca2f2c8ccedfaee4dd74bc5669fcc85e1a4d441ed7f4e49f598bd366", "b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83"},
-	ConductorAgentHermes: {"2c836f29873758c1f4fb093fe1a6f4360f33f1e22eae1bad9a573bdebef884bf", "664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b"},
+	ConductorAgentClaude: {"54e1f64b3b9966b4ef0e5d07039a94321c0124f2113ab3809563903e6f8bf46c", "d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2"},
+	ConductorAgentCodex:  {"5236dd3425ecc8ec241878678c7bed6da0ed08c9a65b14705dbc6a450f7d988e", "b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83"},
+	ConductorAgentHermes: {"570d5aa7368c2177f91ad30128fb598a73fadb0b0ab805e7c02b7d4ce381a240", "664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b"},
 }
 
 func TestGeneratedConductorInstructionsMigrateExactPriorTemplate(t *testing.T) {
