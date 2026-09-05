@@ -3579,6 +3579,9 @@ func (h *Home) syncViewport() {
 		h.viewOffset++
 	}
 
+	// Scroll back up only to reclaim blank space at the end of the list
+	// (after removals or a resize). Measuring to the end of the list — not
+	// the cursor — keeps the viewport still while the cursor moves within it.
 	for h.viewOffset > 0 {
 		candidate := h.viewOffset - 1
 		effectiveBudget := lineBudget
@@ -3586,7 +3589,7 @@ func (h *Home) syncViewport() {
 			effectiveBudget--
 		}
 		effectiveBudget = max(1, effectiveBudget)
-		if h.sidebarItemsHeight(h.flatItems, candidate, h.cursor+1, sidebarWidth) > effectiveBudget {
+		if h.sidebarItemsHeight(h.flatItems, candidate, len(h.flatItems), sidebarWidth) > effectiveBudget {
 			break
 		}
 		h.viewOffset = candidate
