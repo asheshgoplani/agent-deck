@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// RemoteSession: the OSC 52 handler decodes the emulator's output stream and
+// never inspects the attach target; a remote client's bytes arrive through the
+// same emulator. No remote-specific branch exists to exercise.
 func TestEmbeddedTerminalOSC52CopiesToHostClipboard(t *testing.T) {
 	want := "selected in codex or a shell"
 	var got string

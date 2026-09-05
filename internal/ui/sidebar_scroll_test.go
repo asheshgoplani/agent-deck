@@ -81,3 +81,42 @@ func TestSyncViewportReclaimsBlankSpaceAfterRemovals(t *testing.T) {
 		t.Fatalf("after removing %d tail items: viewOffset=%d, want %d", removed, home.viewOffset, want)
 	}
 }
+
+// The viewport arithmetic must hold when rows are not all one line: remote
+// rows in the embedded layout are two-line cards at compact density, local
+// rows too, and a group header is one line.
+func TestSyncViewportHoldsStillWithRemoteRowsInEmbeddedLayout(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 20
+	home.embeddedLayout = true
+	items := []session.Item{{Type: session.ItemTypeRemoteGroup, RemoteName: "lab", Level: 0}}
+	for i := 0; i < 12; i++ {
+		items = append(items, session.Item{
+			Type:          session.ItemTypeRemoteSession,
+			RemoteSession: &session.RemoteSessionInfo{ID: "r", Title: "remote", Status: "running", Tool: "claude"},
+			RemoteName:    "lab",
+			Level:         1,
+		})
+	}
+	home.flatItems = items
+	if h := home.sidebarItemRenderHeightAtWidth(items[1], home.sessionsPaneWidth()); h != 2 {
+		t.Fatalf("fixture remote row height = %d, want 2", h)
+	}
+
+	home.cursor = len(items) - 1
+	home.viewOffset = 0
+	home.syncViewport()
+	bottomOffset := home.viewOffset
+	if bottomOffset == 0 {
+		t.Fatal("fixture does not overflow the viewport; shrink height or add items")
+	}
+	for cursor := len(items) - 2; cursor >= bottomOffset; cursor-- {
+		home.cursor = cursor
+		home.syncViewport()
+		if home.viewOffset != bottomOffset {
+			t.Fatalf("cursor=%d: viewOffset=%d, want %d (viewport must hold still over remote rows)",
+				cursor, home.viewOffset, bottomOffset)
+		}
+	}
+}
