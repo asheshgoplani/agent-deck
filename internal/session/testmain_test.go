@@ -245,6 +245,33 @@ func runTestMain(m *testing.M) int {
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
 	os.Setenv("AGENTDECK_PROFILE", "_test")
 
+	// Build one matching CLI helper for tests that exercise the launch prelude.
+	// This is test-only state; production always uses os.Executable().
+	helperRoot, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "test helper source discovery failed: %v\n", err)
+		return 1
+	}
+	projectRoot := filepath.Clean(filepath.Join(helperRoot, "../.."))
+	if _, err := os.Stat(filepath.Join(projectRoot, "cmd", "agent-deck")); err != nil {
+		fmt.Fprintf(os.Stderr, "test helper source discovery failed: %v\n", err)
+		return 1
+	}
+	helperDir, err := os.MkdirTemp("", "agent-deck-test-helper-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "test helper temp directory failed: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(helperDir)
+	out := filepath.Join(helperDir, "agent-deck")
+	cmd := exec.Command("go", "build", "-p", "1", "-o", out, "./cmd/agent-deck")
+	cmd.Dir = projectRoot
+	if output, buildErr := cmd.CombinedOutput(); buildErr != nil {
+		fmt.Fprintf(os.Stderr, "test helper build failed: %v: %s\n", buildErr, output)
+		return 1
+	}
+	completionExecutableForTests = out
+
 	// Run tests
 	code := m.Run()
 

@@ -437,6 +437,16 @@ func main() {
 		case "hook-handler":
 			handleHookHandler()
 			return
+		case "completion-launch":
+			if len(args) != 3 {
+				fmt.Fprintln(os.Stderr, "invalid completion launch arguments")
+				os.Exit(1)
+			}
+			if err := session.RecordCompletionLaunch(args[1], args[2]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
 		case "codex-notify":
 			handleCodexNotify()
 			return
@@ -1043,7 +1053,7 @@ var globalFlagSubcommands = map[string]bool{
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
 	"remote": true, "worktree": true, "wt": true, "costs": true, "web": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
-	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
+	"completion-launch": true, "codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true, "telemetry": true,
 	"debug-dump": true, "version": true, "help": true,

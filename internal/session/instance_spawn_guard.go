@@ -19,7 +19,7 @@
 // ~/.agent-deck/locks/instance-spawn-<safeID>.lock around the spawn step,
 // with an in-lock AlreadyAlive gate so the second waiter exits with nil
 // instead of re-spawning. Mirrors acquirePluginLock (#735, plugin_install.go):
-// O_CREATE|O_EXCL marker + PID + stale-reclaim by `kill -0` or by age TTL.
+// Permanent guard plus versioned ownership; legacy markers remain deferred.
 //
 // Related-but-not-the-same: #1031 was a *storage-layer* race in
 // SaveInstances' DELETE-NOT-IN sweep during concurrent `launch`. The fix
@@ -35,7 +35,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -171,28 +170,17 @@ func acquireInstanceSpawnLock(instanceID string) (func(), error) {
 }
 
 func defaultAcquireInstanceSpawnLock(instanceID string) (func(), error) {
-	path, err := instanceSpawnLockPath(instanceID)
-	if err != nil {
-		return nil, err
-	}
 	deadline := time.Now().Add(instanceSpawnLockBudget)
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			fmt.Fprintf(f, "%d", os.Getpid())
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, nil
+		release, ok, err := tryGuardedSpawnOwnership(instanceID)
+		if err != nil {
+			return nil, err
 		}
-
-		if reclaimStaleInstanceSpawnLock(path) {
-			continue
+		if ok {
+			return release, nil
 		}
-
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf(
-				"instance spawn lock %q held by live process; gave up after %s",
-				path, instanceSpawnLockBudget,
-			)
+			return nil, fmt.Errorf("instance spawn ownership remains live or ambiguous")
 		}
 		time.Sleep(instanceSpawnLockRetryInterval)
 	}
@@ -244,37 +232,9 @@ func resolveLocksDirForSpawnLock() (string, error) {
 	return dataPath("locks", "locks")
 }
 
-// reclaimStaleInstanceSpawnLock mirrors reclaimStalePluginLock — older
-// than 2m means the holder timed out anyway; PID-not-alive means the
-// holder crashed without unlinking.
-func reclaimStaleInstanceSpawnLock(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	if time.Since(info.ModTime()) > instanceSpawnLockLegacyStaleTTL {
-		_ = os.Remove(path)
-		return true
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	pid, parseErr := parseInstanceSpawnLockPID(string(data))
-	if parseErr != nil {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		_ = os.Remove(path)
-		return true
-	}
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		_ = os.Remove(path)
-		return true
-	}
-	return false
-}
+// Legacy standalone reclamation cannot safely participate in the new guard.
+// Kept for old callers/tests; acquisition reclaims versioned owners under guard.
+func reclaimStaleInstanceSpawnLock(path string) bool { return false }
 
 func parseInstanceSpawnLockPID(content string) (int, error) {
 	trimmed := strings.TrimSpace(content)
@@ -291,23 +251,9 @@ func parseInstanceSpawnLockPID(content string) (int, error) {
 	return pid, nil
 }
 
-// tryTerminatedStatusCommit uses the same marker as Start/Restart, but never
-// waits or reclaims it on the status path. An active/ambiguous owner vetoes an
-// old terminated-pane result. The caller releases immediately after commit.
+// Status never waits on a lifecycle operation. Both status and upgraded
+// lifecycle callers hold the stable guard throughout marker ownership.
 func tryTerminatedStatusCommit(instanceID string) (func(), bool) {
-	path, err := instanceSpawnLockPath(instanceID)
-	if err != nil {
-		return nil, false
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil, false
-	}
-	_, writeErr := fmt.Fprintf(f, "%d", os.Getpid())
-	closeErr := f.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(path)
-		return nil, false
-	}
-	return func() { _ = os.Remove(path) }, true
+	release, ok, err := tryGuardedSpawnOwnership(instanceID)
+	return release, ok && err == nil
 }

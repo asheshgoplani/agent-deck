@@ -18,9 +18,10 @@ import (
 )
 
 type hermesHookControl struct {
-	Generation            string `json:"generation"`
-	NextSequence          uint64 `json:"next_sequence"`
-	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+	LaunchAt              time.Time `json:"launch_at,omitempty"`
+	Generation            string    `json:"generation"`
+	NextSequence          uint64    `json:"next_sequence"`
+	InitialMessagePending bool      `json:"initial_message_pending,omitempty"`
 }
 type hermesHookSeed struct {
 	Status                string `json:"status"`

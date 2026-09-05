@@ -16,10 +16,7 @@ import (
 // Opt-in integration: the runner builds the actual CLI and supplies its path.
 // Every process lives on this test's private socket and exits naturally.
 func TestIssue2091RealProducersAndVanishedServer(t *testing.T) {
-	binary := os.Getenv("ISSUE2091_BIN")
-	if binary == "" {
-		t.Skip("set ISSUE2091_BIN to the built agent-deck CLI")
-	}
+	binary := review2115Binary(t)
 	for _, tool := range []string{"claude", "codex"} {
 		for _, scenario := range []string{"done", "ordinary", "prior-launch"} {
 			done := scenario != "ordinary"
@@ -28,6 +25,7 @@ func TestIssue2091RealProducersAndVanishedServer(t *testing.T) {
 				t.Setenv("HOME", home)
 				t.Setenv("XDG_CONFIG_HOME", "")
 				t.Setenv("XDG_DATA_HOME", "")
+				review2115Activate(t)
 				t.Setenv("CLAUDE_CONFIG_DIR", "")
 				socket := fmt.Sprintf("i2091-%d", time.Now().UnixNano())
 				tm := func(args ...string) []byte {
@@ -41,7 +39,7 @@ func TestIssue2091RealProducersAndVanishedServer(t *testing.T) {
 				tm("new-session", "-d", "-s", "keeper", "sleep 60")
 				t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-session", "-t", "keeper").Run() })
 				id := "issue2091-real"
-				producer := &Instance{ID: id, Tool: tool}
+				producer := &Instance{ID: id, Tool: tool, completionExecutableForTest: binary}
 				if err := producer.seedCompletionLaunch(); err != nil {
 					t.Fatal(err)
 				}
@@ -70,14 +68,13 @@ func TestIssue2091RealProducersAndVanishedServer(t *testing.T) {
 				if tool == "codex" {
 					command = "export HOME=" + shellescape.Quote(home) + " AGENTDECK_INSTANCE_ID=" + id + "; sleep 2; " + shellescape.Quote(binary) + " " + subcommand + " " + shellescape.Quote(string(data))
 				}
+				if tool == "claude" && scenario != "prior-launch" {
+					script := fmt.Sprintf("import json,datetime; open(%q,'w').write(json.dumps({'timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat(),'type':'assistant','message':{'role':'assistant','content':%q}})+'\\n')", payload["transcript_path"].(string), text)
+					command = "python3 -c " + shellescape.Quote(script) + "; " + command
+				}
 				started := time.Now()
 				tm("new-session", "-d", "-s", "worker", producer.bindCompletionLaunchCommand(command))
-				if tool == "claude" && scenario != "prior-launch" {
-					record, _ := json.Marshal(map[string]any{"timestamp": time.Now().Format(time.RFC3339Nano), "type": "assistant", "message": map[string]any{"role": "assistant", "content": text}})
-					if err := os.WriteFile(payload["transcript_path"].(string), append(record, '\n'), 0600); err != nil {
-						t.Fatal(err)
-					}
-				}
+
 				deadline := time.Now().Add(10 * time.Second)
 				for exec.Command("tmux", "-L", socket, "has-session", "-t", "worker").Run() == nil {
 					if time.Now().After(deadline) {

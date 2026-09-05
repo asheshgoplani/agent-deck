@@ -134,6 +134,7 @@ func maskConsumedCodexCompletion(instanceID string, status *HookStatus) {
 
 // HookStatus holds the decoded status from a hook status file.
 type HookStatus struct {
+	CompletionLaunchAt       time.Time // Populated only from locked generation authority.
 	TimestampKnown           bool      // true only when the durable producer supplied a positive timestamp
 	Status                   string    // running, idle, waiting, dead
 	SessionID                string    // Claude session ID

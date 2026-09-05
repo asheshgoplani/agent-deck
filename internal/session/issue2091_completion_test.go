@@ -13,7 +13,7 @@ import (
 
 func TestIssue2091CompletionEvidenceControls(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	base := HookStatus{Status: "waiting", Event: "Stop", SessionID: "thread", HookGeneration: "launch", Sequence: 2, TimestampKnown: true, UpdatedAt: now.Add(-time.Second), DoneAt: now.Add(-time.Second), DoneStatus: "ok"}
+	base := HookStatus{CompletionLaunchAt: now.Add(-10 * time.Second), Status: "waiting", Event: "Stop", SessionID: "thread", HookGeneration: "launch", Sequence: 2, TimestampKnown: true, UpdatedAt: now.Add(-time.Second), DoneAt: now.Add(-time.Second), DoneStatus: "ok"}
 	for _, tc := range []struct {
 		name   string
 		change func(*HookStatus)
@@ -47,6 +47,7 @@ func TestIssue2091CompletionEvidenceControls(t *testing.T) {
 func TestIssue2091DurableColdCompletionAndContradictions(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", "")
+	review2115Activate(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	now := time.Now().Truncate(time.Second)
 	for _, tc := range []struct {
@@ -71,7 +72,7 @@ func TestIssue2091DurableColdCompletionAndContradictions(t *testing.T) {
 				t.Fatal(err)
 			}
 			gen := producer.hookLaunchGeneration
-			control, _ := json.Marshal(map[string]any{"generation": gen, "next_sequence": 2})
+			control, _ := json.Marshal(map[string]any{"generation": gen, "next_sequence": 2, "launch_at": now.Add(-10 * time.Second)})
 			if err := os.WriteFile(filepath.Join(GetHooksDir(), id+".generation.json"), control, 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +114,7 @@ func TestIssue2091PiHasNoSupportedPositiveProducer(t *testing.T) {
 
 func TestIssue2091ConsumedCodexCompletionIsNotProof(t *testing.T) {
 	now := time.Now()
-	h := &HookStatus{Status: "waiting", SessionID: "thread", HookGeneration: "launch", Sequence: 1, TimestampKnown: true, UpdatedAt: now, DoneStatus: "ok", CodexStartedGeneration: "thread:turn", CodexCompletedGeneration: "thread:turn", CodexStartedSessionID: "thread", CodexCompletedSessionID: "thread"}
+	h := &HookStatus{CompletionLaunchAt: now.Add(-time.Minute), Status: "waiting", SessionID: "thread", HookGeneration: "launch", Sequence: 1, TimestampKnown: true, UpdatedAt: now, DoneStatus: "ok", CodexStartedGeneration: "thread:turn", CodexCompletedGeneration: "thread:turn", CodexStartedSessionID: "thread", CodexCompletedSessionID: "thread"}
 	if !validTerminatedCompletion(h, "codex", "launch", "thread", now.Add(-time.Minute), now) {
 		t.Fatal("valid control rejected")
 	}
@@ -126,6 +127,7 @@ func TestIssue2091ConsumedCodexCompletionIsNotProof(t *testing.T) {
 func TestIssue2091DurableContradictionDuringServerProbe(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", "")
+	review2115Activate(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	now := time.Now().Truncate(time.Second)
 	i := &Instance{ID: "issue2091-durable-race", Tool: "claude", ClaudeSessionID: "thread", Status: StatusWaiting, LastStartedAt: now.Add(-time.Minute), tmuxSession: &tmux.Session{Name: "missing"}, paneDeadExitStatusForTest: func() (int, bool) { return 0, false }}
@@ -142,7 +144,7 @@ func TestIssue2091DurableContradictionDuringServerProbe(t *testing.T) {
 		}
 	}
 	write()
-	control, _ := json.Marshal(map[string]any{"generation": i.hookLaunchGeneration, "next_sequence": 1})
+	control, _ := json.Marshal(map[string]any{"generation": i.hookLaunchGeneration, "next_sequence": 1, "launch_at": now.Add(-10 * time.Second)})
 	if err := os.WriteFile(filepath.Join(GetHooksDir(), i.ID+".generation.json"), control, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +167,7 @@ func TestIssue2091DurableContradictionDuringServerProbe(t *testing.T) {
 func TestIssue2091SpawnOwnerVetoesTerminationCommit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", "")
+	review2115Activate(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	i := &Instance{ID: "issue2091-owned", Tool: "claude", Status: StatusWaiting}
 	release, err := acquireInstanceSpawnLock(i.ID)
@@ -185,6 +188,7 @@ func TestIssue2091LaunchPublicationVetoesOldProbe(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
+	review2115Activate(t)
 	entered, releaseProbe, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	i := &Instance{ID: "issue2091-publication", Tool: "claude", Status: StatusRunning, tmuxSession: &tmux.Session{Name: "missing"}, paneDeadExitStatusForTest: func() (int, bool) { close(entered); <-releaseProbe; return 7, true }}
 	locks, err := acquireHermesHookLocks(i.ID)

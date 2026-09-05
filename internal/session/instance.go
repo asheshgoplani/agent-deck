@@ -529,6 +529,7 @@ type Instance struct {
 	serverHasSessionsForTest       func() bool
 	terminatedCommitBarrierForTest func()
 	hookLaunchGeneration           string
+	completionExecutableForTest    string
 	paneDeadExitStatusForTest      func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
@@ -5699,18 +5700,18 @@ func (i *Instance) applyTerminatedPaneStatus() {
 	status := classifyTerminatedPane(exitCode, haveExitCode, tool)
 	var completion *HookStatus
 	serverPresent := false
-	if !haveExitCode && tmuxSession != nil && completionHookTool(tool) && authority == hookGenerationValid {
-		completion = readHookStatusFile(instanceID)
-		if completion != nil && completion.DoneStatus == "ok" {
-			if serverHasSessions == nil {
-				serverHasSessions = func() bool {
-					names, err := tmux.ListSessionNamesOnSocket(tmuxSession.SocketName)
-					_, targetExists := names[tmuxSession.Name]
-					return err == nil && len(names) > 0 && !targetExists
-				}
+	completionEligible := completionProtocolActive() && !haveExitCode && tmuxSession != nil && completionHookTool(tool) && authority == hookGenerationValid
+	if completionEligible {
+		// A producer can publish DONE after this probe begins. Probe the server
+		// independently of an early status snapshot, without holding i.mu.
+		if serverHasSessions == nil {
+			serverHasSessions = func() bool {
+				names, err := tmux.ListSessionNamesOnSocket(tmuxSession.SocketName)
+				_, targetExists := names[tmuxSession.Name]
+				return err == nil && len(names) > 0 && !targetExists
 			}
-			serverPresent = serverHasSessions()
 		}
+		serverPresent = serverHasSessions()
 	}
 	// Serialize the final evidence read/commit with cross-process lifecycle
 	// operations, without waiting on a start that already owns the marker.
@@ -5729,26 +5730,23 @@ func (i *Instance) applyTerminatedPaneStatus() {
 		i.terminatedCommitBarrierForTest()
 	}
 	i.mu.Lock()
-	if completion != nil {
+	if completionEligible {
 		locks, ok := tryCompletionWriterLocks(instanceID)
 		if !ok {
 			return
 		}
 		defer locks.release()
-		// The final authority and proof read remain protected through assignment.
-		// A writer publishes its control sequence before its status record.
-		latest := readSequencedCompletionLocked(instanceID)
+		// Accept the latest proof, including a new completion during the probe.
+		// Control/status sequence equality is checked under the writer locks,
+		// which remain held through assignment and exclude contradictions.
+		completion = readSequencedCompletionLocked(instanceID)
 		currentGeneration, currentAuthority = hookGenerationForInstance(instanceID)
-		if latest == nil || latest.HookGeneration != completion.HookGeneration || latest.Sequence != completion.Sequence {
-			completion = nil
-		} else {
-			completion = latest
-		}
 	}
+
 	if i.tmuxSession != tmuxSession || !i.LastStartedAt.Equal(started) || i.spawnGen.Load() != spawnGen || i.hookLaunchGeneration != launch || currentGeneration != generation || currentAuthority != authority {
 		return
 	}
-	if !haveExitCode && serverPresent && completion != nil && (i.Status == StatusWaiting || i.Status == StatusIdle) &&
+	if completionProtocolActive() && !haveExitCode && serverPresent && completion != nil && (i.Status == StatusWaiting || i.Status == StatusIdle) &&
 		!i.hookLastUpdate.After(completion.UpdatedAt) &&
 		validTerminatedCompletion(completion, tool, generation, sessionID, started, time.Now()) {
 		status = StatusStopped

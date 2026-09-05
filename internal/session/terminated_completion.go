@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 )
 
 const terminatedCompletionMaxAge = 30 * time.Second
+
+// Set only by TestMain to a real CLI built from this checkout.
+var completionExecutableForTests string
 
 func completionHookTool(tool string) bool {
 	return IsClaudeCompatible(tool) || IsCodexCompatible(tool)
@@ -36,7 +40,29 @@ func (i *Instance) bindCompletionLaunchCommand(command string) string {
 	generation := i.hookLaunchGeneration
 	i.mu.RUnlock()
 	if completionHookTool(i.Tool) && generation != "" && !i.IsSSH() {
-		return "export AGENTDECK_HOOK_GENERATION=" + shellescape.Quote(generation) + "; " + command
+		prefix := "export AGENTDECK_HOOK_GENERATION=" + shellescape.Quote(generation) + "; "
+		// Before the operator-declared quiescent activation, preserve ordinary
+		// launch behavior and keep completion fallback disabled.
+		if !completionProtocolActive() {
+			return prefix + command
+		}
+		// Sandboxed containers do not provide the matching Deck executable.
+		// Preserve launch behavior, but leave the boundary absent so fallback
+		// remains fail-closed.
+		if i.IsSandboxed() {
+			return prefix + command
+		}
+		executable, err := os.Executable()
+		if completionExecutableForTests != "" {
+			executable, err = completionExecutableForTests, nil
+		}
+		if i.completionExecutableForTest != "" {
+			executable, err = i.completionExecutableForTest, nil
+		}
+		if err != nil {
+			return prefix + "exit 1"
+		}
+		return prefix + shellescape.Quote(executable) + " completion-launch " + shellescape.Quote(i.ID) + " " + shellescape.Quote(generation) + " || exit $?; " + command
 	}
 	return command
 }
@@ -59,15 +85,19 @@ func validTerminatedCompletion(hook *HookStatus, tool, generation, sessionID str
 		hook.DoneStatus != "ok" || hook.Status != "waiting" {
 		return false
 	}
+	boundary := hook.CompletionLaunchAt
+	if boundary.IsZero() || boundary.After(now) {
+		return false
+	}
 	// A newly invoked Stop must not refresh a prior launch's transcript sentinel.
-	if IsClaudeCompatible(tool) && (hook.DoneAt.IsZero() || hook.DoneAt.Before(started) || hook.DoneAt.After(now)) {
+	if IsClaudeCompatible(tool) && (hook.DoneAt.IsZero() || hook.DoneAt.Before(boundary) || hook.DoneAt.After(now)) {
 		return false
 	}
 	if IsCodexCompatible(tool) && (hook.codexCompletionConsumed || hook.CodexStartedGeneration == "" ||
 		hook.CodexStartedGeneration != hook.CodexCompletedGeneration || hook.CodexStartedSessionID != sessionID || hook.CodexCompletedSessionID != sessionID) {
 		return false
 	}
-	return !hook.UpdatedAt.Before(started) && !hook.UpdatedAt.After(now) && now.Sub(hook.UpdatedAt) <= terminatedCompletionMaxAge
+	return !hook.UpdatedAt.Before(boundary.Truncate(time.Second)) && !hook.UpdatedAt.After(now) && now.Sub(hook.UpdatedAt) <= terminatedCompletionMaxAge
 }
 
 // Called with i.mu held: acquisition must never wait for a producer. The
@@ -118,6 +148,7 @@ func readSequencedCompletionLocked(instanceID string) *HookStatus {
 	root := GetHooksDir()
 	authorityPath, generation := "", ""
 	var sequence uint64
+	var launchAt time.Time
 	for _, dir := range []string{root, filepath.Join(root, "sandbox", instanceID)} {
 		path := filepath.Join(dir, instanceID+".generation.json")
 		info, err := os.Lstat(path)
@@ -129,14 +160,16 @@ func readSequencedCompletionLocked(instanceID string) *HookStatus {
 		}
 		data, err := readStatusFileNoFollow(path)
 		var control struct {
-			Generation   string  `json:"generation"`
-			NextSequence *uint64 `json:"next_sequence"`
+			Generation   string    `json:"generation"`
+			NextSequence *uint64   `json:"next_sequence"`
+			LaunchAt     time.Time `json:"launch_at"`
 		}
 		if err != nil || json.Unmarshal(data, &control) != nil || control.Generation == "" || control.NextSequence == nil || *control.NextSequence == 0 {
 			return nil
 		}
 		authorityPath = filepath.Join(dir, instanceID+".json")
 		generation, sequence = control.Generation, *control.NextSequence
+		launchAt = control.LaunchAt
 	}
 	if authorityPath == "" || hookStatusFilePath(instanceID) != authorityPath {
 		return nil
@@ -154,5 +187,50 @@ func readSequencedCompletionLocked(instanceID string) *HookStatus {
 	if hook == nil || hook.HookGeneration != generation || hook.Sequence != sequence {
 		return nil
 	}
+	hook.CompletionLaunchAt = launchAt
 	return hook
+}
+
+// RecordCompletionLaunch runs in the replacement process, before the tool.
+// The parent may still own the spawn marker; only hook writer locks are taken.
+// A missing boundary never authorizes completion, and an existing boundary is
+// never refreshed by a repeated or delayed helper.
+func RecordCompletionLaunch(instanceID, generation string) error {
+	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") || generation == "" {
+		return fmt.Errorf("invalid completion launch identity")
+	}
+	locks, ok := tryCompletionWriterLocks(instanceID)
+	if !ok {
+		return fmt.Errorf("completion writer busy or unavailable")
+	}
+	defer locks.release()
+	var path string
+	var control hermesHookControl
+	for _, dir := range []string{GetHooksDir(), filepath.Join(GetHooksDir(), "sandbox", instanceID)} {
+		candidate := filepath.Join(dir, instanceID+".generation.json")
+		info, err := os.Lstat(candidate)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() || path != "" {
+			return fmt.Errorf("ambiguous completion authority")
+		}
+		data, err := readStatusFileNoFollow(candidate)
+		var seed struct {
+			Generation   string          `json:"generation"`
+			NextSequence *uint64         `json:"next_sequence"`
+			LaunchAt     json.RawMessage `json:"launch_at"`
+		}
+		if err != nil || json.Unmarshal(data, &seed) != nil || seed.NextSequence == nil || *seed.NextSequence != 0 ||
+			json.Unmarshal(data, &control) != nil || control.Generation != generation || !control.LaunchAt.IsZero() ||
+			string(seed.LaunchAt) == "null" {
+			return fmt.Errorf("invalid or already bound completion authority")
+		}
+		path = candidate
+	}
+	if path == "" {
+		return fmt.Errorf("missing completion authority")
+	}
+	control.LaunchAt = time.Now().UTC()
+	return atomicHermesJSON(path, control)
 }

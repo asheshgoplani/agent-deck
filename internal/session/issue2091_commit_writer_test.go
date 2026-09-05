@@ -17,18 +17,19 @@ import (
 // reacquired. A real hook subprocess finishes publishing N+1 while the watcher
 // remains delayed. Cached DONE N must not authorize the later status commit.
 func TestIssue2091RealWriterBeforeStatusCommit(t *testing.T) {
-	binary := os.Getenv("ISSUE2091_BIN")
-	if binary == "" {
-		t.Skip("set ISSUE2091_BIN to the built agent-deck CLI")
-	}
+	binary := review2115Binary(t)
 	for _, event := range []string{"agent-turn-start", "turn-failed"} {
 		t.Run(event, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("XDG_CONFIG_HOME", "")
 			t.Setenv("XDG_DATA_HOME", "")
+			review2115Activate(t)
 			id := "issue2091-commit-writer"
 			producer := &Instance{ID: id, Tool: "codex"}
 			if err := producer.seedCompletionLaunch(); err != nil {
+				t.Fatal(err)
+			}
+			if err := RecordCompletionLaunch(producer.ID, producer.hookLaunchGeneration); err != nil {
 				t.Fatal(err)
 			}
 			write := func(event, turn, text string) {
@@ -73,6 +74,7 @@ func issue2091ProofObserver(t *testing.T, sandbox bool) (*Instance, string) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
+	review2115Activate(t)
 	id := "issue2091-lock-proof"
 	producer := &Instance{ID: id, Tool: "claude"}
 	if sandbox {
@@ -84,7 +86,7 @@ func issue2091ProofObserver(t *testing.T, sandbox bool) (*Instance, string) {
 	scope := hermesHookScope(id, sandbox)
 	now := time.Now().Truncate(time.Second)
 	status, _ := json.Marshal(map[string]any{"status": "waiting", "event": "Stop", "session_id": "thread", "ts": now.Unix(), "done_at": now.Format(time.RFC3339Nano), "done_status": "ok", "hook_generation": producer.hookLaunchGeneration, "sequence": 2})
-	control, _ := json.Marshal(map[string]any{"generation": producer.hookLaunchGeneration, "next_sequence": 2})
+	control, _ := json.Marshal(map[string]any{"generation": producer.hookLaunchGeneration, "next_sequence": 2, "launch_at": now.Add(-10 * time.Second)})
 	for name, data := range map[string][]byte{id + ".json": status, id + ".generation.json": control} {
 		if err := os.WriteFile(filepath.Join(scope, name), data, 0600); err != nil {
 			t.Fatal(err)
