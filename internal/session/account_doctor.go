@@ -64,7 +64,9 @@ func DiagnoseClaudeAccountDirectories(config *UserConfig) []AccountDirectoryDiag
 						report.Reason = "directory cannot be opened"
 					} else {
 						closeErr := directory.Close()
-						if closeErr != nil || info.Mode().Perm()&0111 == 0 {
+						// Keep the literal suffix: cleaning it would bypass the kernel search check.
+						_, searchErr := os.Stat(resolved + string(os.PathSeparator) + ".")
+						if closeErr != nil || searchErr != nil {
 							report.Reason = "directory access is unknown"
 						} else {
 							report.State = "ok"
