@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,8 +108,13 @@ func TestTerminalFeatures_StaleAbsenceOnReplacementServer(t *testing.T) {
 	socket, session := startPrivateTmuxServer(t)
 	before := readTerminalFeatures(socket)
 	require.True(t, before.known)
+	firstPID := tmuxServerPID(t, socket)
 	require.NoError(t, tmuxExec(socket, "kill-server").Run())
+	require.Eventually(t, func() bool {
+		return !readTerminalFeatures(socket).known
+	}, 5*time.Second, 20*time.Millisecond, "old server did not go away")
 	startPrivateTmuxSession(t, socket, session)
+	require.NotEqual(t, firstPID, tmuxServerPID(t, socket), "must be a different tmux server")
 	for range 2 {
 		ensureTerminalFeature(socket, before)
 	}
