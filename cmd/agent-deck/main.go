@@ -2344,6 +2344,10 @@ func handleList(profile string, args []string) {
 			Color             string    `json:"color,omitempty"` // issue #391
 			Archived          bool      `json:"archived"`
 			ArchivedAt        time.Time `json:"archived_at,omitempty"`
+			// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
+			// apply the local recency filter (session.TimeFilterMode) to this
+			// session, the same way it applies to a local one.
+			LastActivityAt string `json:"last_activity_at,omitempty"`
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -2372,6 +2376,7 @@ func handleList(profile string, args []string) {
 				Color:             inst.Color,
 				Archived:          inst.IsArchived(),
 				ArchivedAt:        inst.ArchivedAt,
+				LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
