@@ -2282,6 +2282,8 @@ func handleList(profile string, args []string) {
 		fmt.Println("Usage: agent-deck list [options]")
 		fmt.Println()
 		fmt.Println("List all sessions.")
+		fmt.Println("ACCOUNT shows the quoted stored account slot, not a resolved account or login identity.")
+		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()

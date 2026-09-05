@@ -1575,6 +1575,8 @@ func handleSessionShow(profile string, args []string) {
 		fmt.Println("Usage: agent-deck session show [id|title] [options]")
 		fmt.Println()
 		fmt.Println("Show session details. If no ID is provided, auto-detects current session.")
+		fmt.Println("Account: shows the quoted stored account slot, not a resolved account or login identity.")
+		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
