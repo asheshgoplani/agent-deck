@@ -140,6 +140,15 @@ IMAGE_MARKER_RE = re.compile(r"\[IMAGE:(?P<path>[^\]]+)\]")
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
 
+# issue #1981 / #1999: the interactive-state guard skips a heartbeat while a
+# picker or unsent draft is on screen. Its evidence is a single tmux pane
+# capture, which can LIE — a stale glyph buffer (#1999) keeps showing composer
+# text that is no longer really there and never repaints, so the guard would
+# report "blocked" every cycle and silence the conductor forever. After this
+# many CONSECUTIVE gated skips the heartbeat is delivered anyway (with a warning),
+# so a stale buffer or a forgotten draft cannot starve heartbeats indefinitely.
+HEARTBEAT_SKIP_LIMIT = 3
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -429,6 +438,242 @@ def get_session_output(session: str, profile: str | None = None) -> str:
     except json.JSONDecodeError:
         # Fallback: stdout might be the legacy raw-text format.
         return result.stdout.strip()
+
+
+def capture_pane(session: str, profile: str | None = None) -> str:
+    """Raw tmux pane capture for a session, via ``session output --pane``.
+
+    Unlike get_session_output (which returns the parsed "last response"), this
+    returns the live pane content WITH ANSI/SGR escapes preserved — the only
+    reliable way to see an open option-picker or the current composer contents.
+    Returns "" on any failure so callers fail OPEN (never block on an unknown
+    pane state).
+    """
+    result = run_cli(
+        "session", "output", session, "--pane", "--json", profile=profile, timeout=15
+    )
+    if result.returncode != 0:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+        return data.get("content") or ""
+    except json.JSONDecodeError:
+        # Legacy/quiet builds may print the raw pane directly.
+        return result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Interactive-state guard for automated sends (issue #1981)
+# ---------------------------------------------------------------------------
+#
+# A routine/heartbeat ``session send`` types text and presses Enter. When the
+# target Claude Code pane is mid-interaction, that Enter is destructive:
+#
+#   (a) an open AskUserQuestion option-picker resolves to its HIGHLIGHTED
+#       default — the model receives an answer the user never gave; and
+#   (b) a composer holding the user's half-typed input gets overwritten.
+#
+# Both states still report session status ``waiting`` (waiting fires on
+# AskUserQuestion / EnterPlanMode), so status alone cannot gate the send. The
+# helpers below inspect a raw pane capture and report whether an automated send
+# would clobber live interaction, so the caller can skip that cycle. Every
+# check fails OPEN: any capture/parse failure is treated as "safe to send".
+
+# Matches a full CSI escape sequence (used to strip ANSI for plain-text scans).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+# Matches only an SGR sequence and captures its parameters (for dim detection).
+_SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+
+# AskUserQuestion option-picker markers. The footer strings mirror the ones the
+# Go prompt detector already keys on ("Press Enter to select" / "Use arrow keys
+# to navigate"), so the two agree about what a picker looks like.
+_PICKER_OPTION_RE = re.compile(r"^\s*[❯>]?\s*(\d+)\.\s+(.+?)\s*$")
+_PICKER_TITLE_RE = re.compile(r"^\s*[☐☑☒◻◼▢]\s*(.+?)\s*$")
+_PICKER_FOOTER_RE = re.compile(r"enter to select|to navigate", re.I)
+_PICKER_FREETEXT_RE = re.compile(r"^type something\b", re.I)
+_PICKER_META_RES = (re.compile(r"^chat about this\b", re.I),)
+
+# Composer region markers: the hint line under the input box, and a box border
+# made of horizontal rules.
+_INPUT_FOOTER_RE = re.compile(r"⏵⏵|bypass permissions|esc to interrupt|shift\+tab", re.I)
+_BORDERISH = re.compile(r"^[│\s]*[─—-]{4,}")
+# How far above the picker footer to look for the option block. A live picker's
+# options sit directly above the footer; a numbered list that merely scrolled by
+# earlier in the transcript is well outside this window.
+_PICKER_WINDOW = 12
+
+
+def _pane_has_open_picker(pane_text: str) -> bool:
+    """True if an AskUserQuestion option-picker is currently open in the pane.
+
+    A live picker has, reading upward from the footer ("enter to select" /
+    "to navigate"): a CONTIGUOUS block of two or more real numbered answer
+    options immediately above it, and a checkbox-style title above that block.
+    Two guards stop ordinary transcript prose from matching (either would
+    otherwise starve heartbeats — issue #1981):
+
+      * an open picker REPLACES the composer, so if a composer input-footer
+        ("⏵⏵" / "bypass permissions" / "esc to interrupt") appears BELOW the
+        matched picker-footer line, that line is really prose sitting above a
+        normal composer, not a picker; and
+      * the option rows must be contiguous with the footer and within a small
+        window above it, so a numbered list elsewhere in the scrollback does not
+        count.
+
+    The "Type something" free-text row and meta rows ("Chat about this") are
+    tolerated inside the block but not counted as answer options.
+    """
+    lines = _ANSI_RE.sub("", pane_text).splitlines()
+    footer_idx = next((i for i, ln in enumerate(lines) if _PICKER_FOOTER_RE.search(ln)), None)
+    if footer_idx is None:
+        return False
+    # A genuine picker occupies the input region — a composer footer below the
+    # match means we matched prose above an ordinary composer, not a picker.
+    if any(_INPUT_FOOTER_RE.search(ln) for ln in lines[footer_idx + 1:]):
+        return False
+    window_top = max(-1, footer_idx - 1 - _PICKER_WINDOW)
+    # Skip a box border / blank lines directly beneath the footer.
+    i = footer_idx - 1
+    while i > window_top and (not lines[i].strip() or _BORDERISH.match(lines[i])):
+        i -= 1
+    # Walk the contiguous option block, tolerating blank / free-text rows.
+    real = 0
+    top_opt = None
+    while i > window_top:
+        m = _PICKER_OPTION_RE.match(lines[i])
+        if m:
+            label = m.group(2).strip()
+            if not (_PICKER_FREETEXT_RE.match(label) or any(p.match(label) for p in _PICKER_META_RES)):
+                real += 1
+            top_opt = i
+            i -= 1
+            continue
+        body = lines[i].strip().lstrip("❯>").strip()
+        if not body or _PICKER_FREETEXT_RE.match(body):
+            i -= 1
+            continue
+        break
+    if real < 2 or top_opt is None:
+        return False
+    # A checkbox-style title must sit just above the option block (blanks allowed).
+    while i > window_top and not lines[i].strip():
+        i -= 1
+    return i > window_top and bool(_PICKER_TITLE_RE.match(lines[i]))
+
+
+def _post_prompt_is_ghost(raw_line: str) -> bool:
+    """True iff the composer body on this RAW (ansi-bearing) line has visible
+    text and ALL of it is DIM.
+
+    Claude Code renders a SUGGESTED (ghost) next prompt in the composer as
+    dim/faint text (SGR 2); a real user-typed draft is bright/default. A ghost
+    is clobberable (Claude offers one nearly every turn, so protecting them
+    would starve automated sends); a real draft is not. This errs toward False
+    (i.e. "not a ghost — protect it") the moment any visible char is non-dim,
+    so real user input is never mistaken for a ghost. SGR param "2" = faint-on;
+    "0"/"22"/empty = faint-off.
+    """
+    m = re.search(r"[❯>]", raw_line)
+    seg = raw_line[m.end():] if m else raw_line
+    dim = False
+    saw_visible = False
+    i = 0
+    n = len(seg)
+    while i < n:
+        if seg[i] == "\x1b":
+            sm = _SGR_RE.match(seg, i)
+            if sm:
+                params = sm.group(1)
+                for p in (params.split(";") if params else ["0"]):
+                    if p == "2":
+                        dim = True
+                    elif p in ("0", "22", ""):
+                        dim = False
+                i = sm.end()
+                continue
+            am = _ANSI_RE.match(seg, i)  # non-SGR CSI/escape → skip it
+            if am:
+                i = am.end()
+                continue
+        ch = seg[i]
+        if not ch.isspace() and ch not in ("│", "❯", ">"):
+            saw_visible = True
+            if not dim:
+                return False
+        i += 1
+    return saw_visible
+
+
+def _composer_has_unsent_draft(pane_text: str) -> bool:
+    """True if the live composer holds the user's unsent text (mid-typing) that
+    a routine send would clobber.
+
+    Walks up from the input footer to the ``❯`` prompt, stopping at the box
+    border; an empty prompt (``❯`` with nothing after it) is not a draft. A
+    Claude-suggested ghost draft (rendered dim, SGR 2) is NOT protected — only
+    real, non-dim user input counts (see _post_prompt_is_ghost).
+    """
+    raw_lines = pane_text.splitlines()
+    text = _ANSI_RE.sub("", pane_text)
+    lines = text.splitlines()  # index-aligned with raw_lines (SGR strip keeps line count)
+    fi = None
+    for i in range(len(lines) - 1, -1, -1):
+        if _INPUT_FOOTER_RE.search(lines[i]):
+            fi = i
+            break
+    if fi is None:
+        return False
+    bi = next((j for j in range(fi - 1, -1, -1) if _BORDERISH.match(lines[j])), None)
+    if bi is None:
+        return False
+    for j in range(bi - 1, max(-1, bi - 40), -1):
+        raw = lines[j].rstrip()
+        if _BORDERISH.match(raw):  # top border / titled bar → stop before the transcript
+            break
+        s = raw.strip().lstrip("│").strip()
+        starts = s[:1] in ("❯", ">")
+        body = s[1:].strip() if starts else s
+        if body:
+            rawline = raw_lines[j] if j < len(raw_lines) else ""
+            if _post_prompt_is_ghost(rawline):
+                # dim ghost suggestion — clobberable, not a real draft
+                if starts:
+                    break     # composer prompt line holds only a ghost → no real draft
+                continue      # a dim continuation line → keep scanning up
+            return True
+        if starts:  # reached an empty ❯ prompt → no draft
+            break
+    return False
+
+
+def _pane_blocks_automated_send(pane_text: str) -> str | None:
+    """Reason string if an automated send into this pane would disrupt live
+    interaction — an AskUserQuestion picker is open (the send's Enter selects
+    its default), or the composer holds the user's unsent draft (the send
+    clobbers it) — else None. Cheapest check first.
+
+    Pure and total: an empty or unparseable capture yields None (send allowed),
+    so callers fail OPEN.
+    """
+    if not pane_text:
+        return None
+    if _pane_has_open_picker(pane_text):
+        return "askuserquestion-picker-open"
+    if _composer_has_unsent_draft(pane_text):
+        return "composer-holds-unsent-input"
+    return None
+
+
+def _heartbeat_skip_action(consecutive_skips: int, limit: int = HEARTBEAT_SKIP_LIMIT) -> str:
+    """Decide what a heartbeat should do given how many cycles the
+    interactive-state guard has blocked IN A ROW (counting the current one).
+
+    Returns ``"skip"`` to hold this cycle, or ``"override"`` to deliver anyway
+    despite the block. A real picker or draft rarely survives ``limit`` heartbeat
+    intervals; a stale pane buffer (#1999) would block forever, so at the limit
+    the heartbeat overrides the guard rather than starve (#1981/#1999).
+    """
+    return "override" if consecutive_skips >= limit else "skip"
 
 
 # Async callable type for reply notifications: (response_text: str) -> None
@@ -2763,6 +3008,11 @@ async def heartbeat_loop(
     # firing the same alert verbatim for 12+ hours.
     need_state_by_conductor: dict[str, dict] = {}
 
+    # issue #1981/#1999: consecutive interactive-state skips per conductor. Reset
+    # on any clear pane or successful send; once it reaches HEARTBEAT_SKIP_LIMIT we
+    # override the guard and deliver anyway (see the block below).
+    skip_count_by_conductor: dict[str, int] = {}
+
     log.info("Heartbeat loop started (global interval: %d minutes)", global_interval)
 
     while True:
@@ -2891,6 +3141,58 @@ async def heartbeat_loop(
                     )
                     continue
 
+                # issue #1981: a routine send types text + Enter. If the pane is
+                # mid-interaction — an AskUserQuestion picker is open, or the
+                # composer holds the user's unsent draft — that Enter selects the
+                # picker default or clobbers the draft. Skip this cycle when the
+                # pane shows either. Fail OPEN: any capture/parse failure leaves
+                # block_reason None so the send still goes out (heartbeats are
+                # never permanently blocked). The capture runs in the executor so
+                # the blocking CLI call never freezes the event loop.
+                #
+                # NOTE this narrows but does NOT close the clobber window: the
+                # capture and the send are separate steps, so a user who starts
+                # typing in the gap between them can still be clobbered. It is a
+                # best-effort guard, not a guarantee — see the bounded override
+                # below, which stops a persistently-blocking pane from starving
+                # heartbeats entirely (issue #1999).
+                try:
+                    pane_text = await loop.run_in_executor(
+                        None,
+                        functools.partial(capture_pane, session_title, profile=profile),
+                    )
+                    block_reason = _pane_blocks_automated_send(pane_text)
+                except Exception as e:  # noqa: BLE001 — fail-open: ANY capture/parse error must allow the send
+                    log.warning(
+                        "Heartbeat [%s]: interactive-state check failed (%s); allowing send",
+                        name, e,
+                    )
+                    block_reason = None
+                if block_reason:
+                    skips = skip_count_by_conductor.get(name, 0) + 1
+                    skip_count_by_conductor[name] = skips
+                    if _heartbeat_skip_action(skips) == "skip":
+                        log.info(
+                            "Heartbeat [%s]: skipping this cycle (%d/%d) — %s",
+                            name, skips, HEARTBEAT_SKIP_LIMIT, block_reason,
+                        )
+                        continue
+                    # Bounded skip: the guard has blocked HEARTBEAT_SKIP_LIMIT
+                    # cycles in a row. A real picker or draft rarely survives that
+                    # many heartbeat intervals; a stale pane buffer (#1999) would
+                    # survive forever. Deliver anyway so the conductor is never
+                    # silenced permanently, and reset the counter.
+                    log.warning(
+                        "Heartbeat [%s]: interactive-state guard blocked %d consecutive "
+                        "cycles (%s); overriding and delivering to prevent heartbeat "
+                        "starvation (guards against the #1999 stale-pane-buffer case)",
+                        name, skips, block_reason,
+                    )
+                    skip_count_by_conductor[name] = 0
+                    # fall through and deliver this cycle
+                else:
+                    skip_count_by_conductor[name] = 0  # pane read clear → reset
+
                 # Send heartbeat to conductor (wrapped in executor — blocks up to
                 # RESPONSE_TIMEOUT seconds and must not freeze the event loop)
                 ok, response, _ = await loop.run_in_executor(
@@ -2910,6 +3212,8 @@ async def heartbeat_loop(
                         name,
                     )
                     continue
+
+                skip_count_by_conductor[name] = 0  # delivered → reset skip counter
 
                 # Response is captured via get_session_output (see send_to_conductor).
                 log.info(
