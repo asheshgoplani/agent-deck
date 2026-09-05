@@ -1445,7 +1445,7 @@ func handleAdd(profile string, args []string) {
 	// [profiles.<account>.claude].config_dir in ~/.agent-deck/config.toml
 	// and becomes the most-specific level of CLAUDE_CONFIG_DIR resolution.
 	// Empty = fall through to conductor/group/env/profile/global/default.
-	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
+	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
@@ -1536,6 +1536,11 @@ func handleAdd(profile string, args []string) {
 	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, sessionCommandIsPassthrough, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
 	if cmdErr != nil {
 		fmt.Printf("Error: %v\n", cmdErr)
+		os.Exit(1)
+	}
+	selectedAccount, accountErr := resolveCLIAccountSlot(*account, sessionCommandTool, sessionCommandResolved, sessionCommandIsPassthrough)
+	if accountErr != nil {
+		NewCLIOutput(*jsonOutput, *quiet || *quietShort).Error(accountErr.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	sessionParent := mergeFlags(*parent, *parentShort)
@@ -1990,9 +1995,7 @@ func handleAdd(profile string, args []string) {
 	}
 
 	// Validate the selected slot before account-dependent loadout or registration.
-	if trimmed := strings.TrimSpace(*account); trimmed != "" {
-		newInstance.Account = trimmed
-	}
+	newInstance.Account = selectedAccount
 	if err := newInstance.ValidateAccount(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
