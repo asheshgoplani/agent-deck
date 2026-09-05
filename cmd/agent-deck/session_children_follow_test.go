@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,7 +89,10 @@ func TestChildTerminal(t *testing.T) {
 		want bool
 	}{
 		{"running is not terminal", childRow{Status: "running"}, false},
-		{"waiting is not terminal", childRow{Status: "waiting"}, false},
+		{"stale done cannot override running", childRow{Status: "running", DoneStatus: "ok"}, false},
+		{"stale done cannot override queued", childRow{Status: "queued", DoneStatus: "ok"}, false},
+		{"stale done cannot override unknown", childRow{Status: "unknown", DoneStatus: "ok"}, false},
+		{"waiting is terminal for supervision", childRow{Status: "waiting"}, true},
 		{"idle without sentinel is not terminal", childRow{Status: "idle"}, false},
 		{"done sentinel is terminal", childRow{Status: "idle", DoneStatus: "ok"}, true},
 		{"done fail sentinel is terminal", childRow{Status: "idle", DoneStatus: "fail"}, true},
@@ -101,6 +105,31 @@ func TestChildTerminal(t *testing.T) {
 				t.Errorf("childTerminal(%+v) = %v, want %v", tc.row, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunChildrenFollowWaitsForCurrentTurnFinish(t *testing.T) {
+	polls := 0
+	restore := pollChildRows
+	pollChildRows = func(string, string) ([]childRow, error) {
+		polls++
+		status := "running"
+		if polls >= 2 {
+			status = "idle"
+		}
+		return []childRow{{ID: "a", Title: "restarted", Status: status, DoneStatus: "ok", DoneSummary: "older turn"}}, nil
+	}
+	t.Cleanup(func() { pollChildRows = restore })
+
+	var out strings.Builder
+	if code := runChildrenFollow("p", "parent", time.Millisecond, 0, true, &out); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if polls != 2 {
+		t.Fatalf("polls = %d, want 2; stale completion ended the current turn early", polls)
+	}
+	if !strings.Contains(out.String(), `"from":"running","to":"idle"`) || !strings.Contains(out.String(), `"event":"complete"`) {
+		t.Fatalf("missing actual finish transition or completion:\n%s", out.String())
 	}
 }
 
@@ -198,6 +227,49 @@ func TestRunChildrenFollowStopsOnDeadStream(t *testing.T) {
 				t.Fatal("runChildrenFollow kept polling after the stream closed")
 			}
 		})
+	}
+}
+
+// Guardrail: a blocking wait must surface waiting and error transitions on the
+// poll where they are observed. Neither can be delayed until a success sentinel
+// or periodic heartbeat, or replacing model polling would increase detection
+// time for children that need intervention.
+func TestRunChildrenFollowEmitsWaitingAndErrorImmediately(t *testing.T) {
+	polls := 0
+	restore := pollChildRows
+	pollChildRows = func(profile, parentID string) ([]childRow, error) {
+		polls++
+		switch polls {
+		case 1:
+			return []childRow{
+				{ID: "waiting", Title: "needs-input", Status: "running"},
+				{ID: "error", Title: "crashed", Status: "running"},
+			}, nil
+		default:
+			return []childRow{
+				{ID: "waiting", Title: "needs-input", Status: "waiting"},
+				{ID: "error", Title: "crashed", Status: "error"},
+			}, nil
+		}
+	}
+	t.Cleanup(func() { pollChildRows = restore })
+
+	var out strings.Builder
+	if code := runChildrenFollow("p", "parent", time.Millisecond, time.Hour, true, &out); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("events = %d, want 5 (2 snapshots, waiting status, error status, complete):\n%s", len(lines), out.String())
+	}
+	for i, want := range []string{
+		`"event":"snapshot"`, `"event":"snapshot"`,
+		`"event":"status","id":"waiting"`, `"event":"status","id":"error"`,
+		`"event":"complete"`,
+	} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("line %d = %s, want substring %s", i, lines[i], want)
+		}
 	}
 }
 

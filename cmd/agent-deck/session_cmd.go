@@ -4762,11 +4762,12 @@ func handleSessionChildren(profile string, args []string) {
 	follow := fs.Bool("follow", false, "Stream child state changes as JSONL (one event per line) until interrupted")
 	interval := fs.Duration("interval", 2*time.Second, "Poll interval for --follow")
 	heartbeat := fs.Duration("heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
-	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child is terminal (done sentinel, error, or stopped)")
+	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once live state shows every child needs input or is terminal (waiting, idle with completion history, error, or stopped)")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session children [id|title] [options]")
 		fmt.Println()
-		fmt.Println("List a session's sub-sessions with live status and last completion.")
+		fmt.Println("List a session's sub-sessions with live status and last completion history.")
+		fmt.Println("Completion fields describe the last assertion; live status determines the current turn.")
 		fmt.Println("Defaults to the current session. Read-only; does not clear the inbox.")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -4779,7 +4780,7 @@ func handleSessionChildren(profile string, args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck session children --json")
 		fmt.Println("  agent-deck session children --follow                    # live fleet event stream")
-		fmt.Println("  agent-deck session children --follow --until-done      # exits when all children finish")
+		fmt.Println("  agent-deck session children --follow --until-done      # exits when every child needs input or finishes")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
