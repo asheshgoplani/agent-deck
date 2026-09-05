@@ -188,6 +188,20 @@ func helpRequested(args []string) bool {
 	return false
 }
 
+// hooksHelpRequested preserves bare help for hook subcommands, which accept
+// no positional values. Other command families must keep help usable as data.
+func hooksHelpRequested(args []string) bool {
+	if helpRequested(args) {
+		return true
+	}
+	for _, arg := range args {
+		if arg == "help" {
+			return true
+		}
+	}
+	return false
+}
+
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {

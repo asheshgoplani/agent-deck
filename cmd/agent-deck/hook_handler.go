@@ -624,7 +624,7 @@ func handleHooks(args []string) {
 	// without side effects: an install triggered by `hooks install --help`
 	// would write to another tool's settings file from a command whose
 	// documented purpose in that invocation was to describe itself (#1993).
-	if helpRequested(args) {
+	if hooksHelpRequested(args) {
 		printClaudeHooksUsage(os.Stdout)
 		return
 	}

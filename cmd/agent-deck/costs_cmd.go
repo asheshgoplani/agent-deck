@@ -25,6 +25,14 @@ func handleCosts(profile string, args []string) {
 
 	switch args[0] {
 	case "sync":
+		if helpRequested(args[1:]) || (len(args) == 2 && args[1] == "help") {
+			fmt.Println("Usage: agent-deck costs sync")
+			return
+		}
+		if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, "Usage: agent-deck costs sync")
+			os.Exit(1)
+		}
 		handleCostsSync(profile)
 	case "summary":
 		handleCostsSummary(profile, args[1:])
