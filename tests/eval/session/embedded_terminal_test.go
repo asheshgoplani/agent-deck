@@ -21,7 +21,10 @@ func TestEval_EmbeddedPTY(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	config := "theme = \"dark\"\n\n[tmux]\nsocket_name = \"" + socketName + "\"\n\n[ui]\nembedded_terminal = true\n"
+	// The explicit [hermes] command points at nothing on PATH so the Hermes
+	// hooks consent prompt never appears on hosts that have Hermes installed;
+	// the Claude hooks prompt is dismissed below like a user would.
+	config := "theme = \"dark\"\n\n[tmux]\nsocket_name = \"" + socketName + "\"\n\n[hermes]\ncommand = \"hermes-absent-for-eval\"\n\n[ui]\nembedded_terminal = true\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write embedded terminal config: %v", err)
 	}
@@ -127,7 +130,7 @@ func TestEval_ClassicTUI(t *testing.T) {
 	}
 	// Deliberately omit embedded_terminal: the unset default must retain the
 	// original Agent Deck Bubble Tea terminal protocol.
-	config := "theme = \"dark\"\n\n[tmux]\nsocket_name = \"" + socketName + "\"\n"
+	config := "theme = \"dark\"\n\n[tmux]\nsocket_name = \"" + socketName + "\"\n\n[hermes]\ncommand = \"hermes-absent-for-eval\"\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write classic UI config: %v", err)
 	}
