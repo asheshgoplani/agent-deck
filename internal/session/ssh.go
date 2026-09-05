@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -334,6 +335,7 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	sigwinch <- syscall.SIGWINCH
 
 	detachCh := make(chan struct{})
+	input := sshAttachInput{writer: ptmx}
 	outputDone := make(chan struct{})
 
 	// Copy PTY output to stdout.
@@ -391,15 +393,12 @@ func (r *SSHRunner) Attach(sessionID string) error {
 			}
 			data := buf[:n]
 
-			if idx := tmux.IndexCtrlQ(data); idx >= 0 {
-				if idx > 0 {
-					_, _ = ptmx.Write(data[:idx])
-				}
+			detached, err := input.forward(data)
+			if detached {
 				close(detachCh)
 				return
 			}
-
-			if _, err := ptmx.Write(data); err != nil {
+			if err != nil {
 				break
 			}
 		}
@@ -456,10 +455,32 @@ func (r *SSHRunner) Attach(sessionID string) error {
 		_ = p.Signal(syscall.SIGWINCH)
 	}
 
-	if attachErr != nil {
+	if attachErr = input.result(attachErr); attachErr != nil {
 		return fmt.Errorf("ssh attach failed: %w", attachErr)
 	}
 	return nil
+}
+
+// sshAttachInput owns input forwarding and intentional-detach state for one attach.
+// Keeping the writer explicit allows blocked-write ordering to be exercised.
+type sshAttachInput struct {
+	writer          io.Writer
+	detachRequested atomic.Bool
+}
+
+func (input *sshAttachInput) forward(data []byte) (bool, error) {
+	if idx := tmux.IndexCtrlQ(data); idx >= 0 {
+		if idx > 0 {
+			_, _ = input.writer.Write(data[:idx])
+		}
+		return true, nil
+	}
+	_, err := input.writer.Write(data)
+	return false, err
+}
+
+func (input *sshAttachInput) result(err error) error {
+	return err
 }
 
 // RunCommand executes an arbitrary agent-deck command on the remote.
