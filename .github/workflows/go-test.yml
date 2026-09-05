@@ -113,6 +113,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           ref: ${{ env.NATIVE_SSH_EXPECTED_SHA }}
+          persist-credentials: false
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
@@ -127,6 +128,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends openssh-server openssh-client tmux python3 2>&1 | tee "$NATIVE_SSH_ARTIFACT_DIR/apt-install.log"
           dpkg-query -W openssh-server openssh-client tmux python3 > "$NATIVE_SSH_ARTIFACT_DIR/packages.txt"
       - name: Require real native SSH execution
+        timeout-minutes: 18
         run: bash scripts/ci-native-ssh.sh
       - name: Retain native SSH evidence
         if: always()
