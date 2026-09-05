@@ -133,6 +133,8 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
+	storageSnapshot *instanceStorageSnapshot
+
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	ProjectPath string `json:"project_path"`
@@ -1090,6 +1092,7 @@ func NewInstance(title, projectPath string) *Instance {
 
 	inst := &Instance{
 		ID:               id,
+		Account:          strings.TrimSpace(os.Getenv("AGENTDECK_ACCOUNT")),
 		Title:            title,
 		ProjectPath:      projectPath,
 		GroupPath:        extractGroupPath(projectPath), // Auto-assign group from path
@@ -1176,6 +1179,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 
 	inst := &Instance{
 		ID:               id,
+		Account:          strings.TrimSpace(os.Getenv("AGENTDECK_ACCOUNT")),
 		Title:            title,
 		ProjectPath:      projectPath,
 		GroupPath:        extractGroupPath(projectPath),
@@ -1477,6 +1481,9 @@ func (i *Instance) buildBashExportPrefix(skipConfigDirForCustomCommand bool) str
 		// instead of a local path that does not exist there (#1858).
 		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", i.configDirShellExpr(configDir))
 	}
+	if i.Account != "" && !skipConfigDirForCustomCommand {
+		prefix += fmt.Sprintf("export CLAUDE_SECURESTORAGE_CONFIG_DIR=%s; ", i.configDirShellExpr(GetClaudeConfigDirForInstance(i)))
+	}
 	prefix += i.buildResolvedAccountHintExports()
 	return prefix
 }
@@ -1564,6 +1571,13 @@ func resolvedProcessProfile() string {
 func (i *Instance) ensureProfileEnv() {
 	if i.tmuxSession == nil {
 		return
+	}
+	if i.Account != "" {
+		if err := i.tmuxSession.SetEnvironment("AGENTDECK_ACCOUNT", i.Account); err != nil {
+			sessionLog.Warn("set_account_failed", slog.String("error", err.Error()))
+		}
+	} else if err := i.tmuxSession.UnsetEnvironment("AGENTDECK_ACCOUNT"); err != nil {
+		sessionLog.Warn("unset_account_failed", slog.String("error", err.Error()))
 	}
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
 		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
@@ -4153,6 +4167,10 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 			// spaces (e.g. a macOS $HOME with a space in the username).
 			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir))
 		}
+		secureStoragePrefix := ""
+		if !hasCustomClaudeCommand && i.Account != "" {
+			secureStoragePrefix = fmt.Sprintf("CLAUDE_SECURESTORAGE_CONFIG_DIR=%s ", shellescape.Quote(GetClaudeConfigDirForInstance(i)))
+		}
 		execEnvPrefix := ""
 		if flags := telegramExecEnvStripFlags(i); flags != "" {
 			execEnvPrefix = "env " + flags + " "
@@ -4193,7 +4211,7 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 			"AGENTDECK_RESOLVED_CONFIG_DIR=%s AGENTDECK_RESOLVED_GROUP=%s AGENTDECK_RESOLVED_SOURCE=%s ",
 			shellescape.Quote(resolvedConfigDir), shellescape.Quote(i.GroupPath), shellescape.Quote(resolvedSource))
 		resolvedCommand := substituteResolvedBinary(baseCommand, "claude", claudeCmd)
-		return envPrefix + instanceIDPrefix + configDirPrefix + resolvedHintPrefix + execEnvPrefix + resolvedCommand
+		return envPrefix + instanceIDPrefix + configDirPrefix + secureStoragePrefix + resolvedHintPrefix + execEnvPrefix + resolvedCommand
 	case "codex":
 		// AGENTDECK_TOOL uses `matched` ("codex"), not i.Tool (which is
 		// "shell" for this passthrough instance) — buildCodexCommand's
@@ -4722,6 +4740,9 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 // SpawnAttempt helper) to preserve the structural-grep contract that
 // checks Start()'s body for the #745 IsForkAwaitingStart guard.
 func (i *Instance) Start() error {
+	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+		return err
+	}
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -4952,6 +4973,11 @@ func (i *Instance) Start() error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
+		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
+			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
+		}
+	}
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -5036,6 +5062,9 @@ func (i *Instance) Start() error {
 // `launch -m "..."` racing with a poller-triggered Start() must not
 // produce two parallel tmux sessions.
 func (i *Instance) StartWithMessage(message string) error {
+	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+		return err
+	}
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -5261,6 +5290,11 @@ func (i *Instance) StartWithMessage(message string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
+		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
+			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
+		}
+	}
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -8601,6 +8635,9 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 }
 
 func (i *Instance) restart(env map[string]string) error {
+	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+		return err
+	}
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -9727,6 +9764,7 @@ func (i *Instance) ForkWithOptions(newTitle, newGroupPath string, opts *ClaudeOp
 		projectPath = opts.WorkDir
 	}
 	target := NewInstance(newTitle, projectPath)
+	target.Account = i.Account
 	if newGroupPath != "" {
 		target.GroupPath = newGroupPath
 	} else {
@@ -9825,6 +9863,7 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 		projectPath = opts.WorkDir
 	}
 	forked := NewInstance(newTitle, projectPath)
+	forked.Account = i.Account
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
@@ -11315,7 +11354,10 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// is itself valid syntax in any shell, so wrapping guarantees the
 	// injected bash syntax is interpreted by bash regardless of the user's
 	// default shell.
-	if i.hasEffectiveWrapper() || (i.Tool == "shell" && i.SubcommandPassthrough) {
+	if i.Account != "" {
+		wrapped = "export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account) + "; " + wrapped
+	}
+	if i.hasEffectiveWrapper() || i.Account != "" || (i.Tool == "shell" && i.SubcommandPassthrough) {
 		escaped := strings.ReplaceAll(wrapped, "'", "'\"'\"'")
 		wrapped = fmt.Sprintf("bash -c '%s'", escaped)
 	}
