@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/stretchr/testify/require"
@@ -73,7 +75,10 @@ var watcherBuildCaches map[string]string
 var watcherBuildCacheErr error
 
 func resolveWatcherBuildCaches(env []string) (map[string]string, error) {
-	cmd := exec.Command("go", "env", "-json", "GOCACHE", "GOMODCACHE")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "env", "-json", "GOCACHE", "GOMODCACHE")
+	cmd.WaitDelay = time.Second
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
@@ -115,7 +120,11 @@ func TestStorageWatcherBuildCacheDefaultsSurviveHomeIsolation(t *testing.T) {
 	caches, err := resolveWatcherBuildCaches(env)
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(harness, "go", "pkg", "mod"), caches["GOMODCACHE"])
-	require.Equal(t, filepath.Join(harness, ".cache", "go-build"), caches["GOCACHE"])
+	t.Setenv("HOME", harness)
+	t.Setenv("XDG_CACHE_HOME", "")
+	cacheRoot, err := os.UserCacheDir()
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(cacheRoot, "go-build"), caches["GOCACHE"])
 	require.NoError(t, watcherBuildCacheErr)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GOMODCACHE", "")
