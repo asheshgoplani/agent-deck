@@ -1,48 +1,53 @@
-# PR 2051 rebase and verification results
+# PR #1952 verification results
 
 ## Rebase evidence
 
-- PR head before rebase: `9961cc9e0992b96b05c5665adff8090c84163cd9`.
-- Previous merge base / GitHub base: `47bb210373c87aa1a90f2a319acf9174ea4b3dae`.
-- Fetched `origin/main`: `7771aca6` (`fix(accounts): add launch parity and slot listing (#2053)`).
-- Rebased all six PR commits onto `origin/main`; no commit was skipped.
-- The only conflicts were in `RESULTS.md`, independently added on main and repeatedly updated by the PR. Main's report was retained while replaying commits and this task-specific report replaced it after source verification. No production or test file conflicted.
-- A binary diff of every source/test/documentation change except `RESULTS.md` was captured before and after rebase. Both patches have SHA-256 `db9b357b4b080ab6ac6d6f7d5c15d83a2b8c42db1b0b20b40cdd56cb0162ad21`, and `cmp` returned success.
-- `git range-diff 47bb2103..9961cc9e origin/main..HEAD` showed commits 3–5 patch-identical. Changes reported for commits 1, 2, and 6 were exclusively removal/replacement of their historical `RESULTS.md` text; their source hunks were preserved.
-- The post-rebase diff retains all 12 non-report paths, including waiting-child completion, compact triage/blocking follow behavior, heartbeat path handling, exact generated-template migration, race-safe atomic publication, Darwin atomic exchange support, and all associated regression tests.
+- Pre-rebase head: `ce4debeb6f3ea5b1cffdc9242eb598df4a3dede5`.
+- Rebased head before the final fixes: `70bb777fd94106162f81a208764f42d4cfce84bc` on current `origin/main`.
+- `git range-diff 92bb498f..ce4debeb origin/main..70bb777f` mapped all 16 PR commits one-for-one with `=`; no prior patch changed or disappeared.
+- The rebased branch was pushed with `--force-with-lease` before findings work began.
 
-## Local verification
+## Findings addressed
 
-All Go commands ran in `golang:1.25` containers. No host `go test` was run.
+- Made `SourceRemote` part of every pending-inbox identity decision: event fingerprint, turn fingerprint, last-wins producer replacement, and consumer collapse. This keeps local `boxb:nightly-build`, remote `nightly-build`, and caller-prefixed remote IDs distinct even when their visible child spelling overlaps.
+- Removed prefix inference from `RemoteScopedChildID`; arbitrary caller-selected IDs are always scoped rather than mistaken for an already-scoped record.
+- Converted injected CLI writers to error-tracking writers so `inbox` and `remote drain` cannot return success after partial/failed output.
+- Made writer-status distinguish a missing heartbeat from permission/I/O/read failures; only `ENOENT` means “never stamped,” while other failures report unknown liveness.
+- Fixed the suppressed-session absence test to fail on `ReadInboxEvents` errors instead of passing vacuously.
+- Rechecked earlier findings on orphan export, suppression, completion-copy deduplication, corrupt ledger reads, recurring terminal turns, fetch/probe ordering, consumed-ledger bounds, and writer probe fail-closed behavior; their current-head fixes remain present after rebase.
 
-Passed:
+## Revert proofs
 
-- CLI red-path tests: `TestChildTerminal`, `TestAllChildrenTerminal`, and `TestRunChildrenFollowEmitsWaitingAndErrorImmediately`.
-- Conductor and migration red-path tests: compact triage/blocking wait, heartbeat rule path handling, generated-file migration/publication, exact prior-template migration, and preservation of edited files.
-- Darwin contract: `GOOS=darwin GOARCH=amd64 go test -c ./internal/session`.
-- Full repository build: `go build ./...`.
-- Full repository vet: `go vet ./...`.
+Only the production hunks were reverse-applied while the new tests remained, and the focused tests were run in `golang:1.25`:
 
-## CI status
+```text
+RED_EXIT=1
+TestIssue1952_OriginSeparatesEveryIdentityRule:
+  local and remote records share EventFingerprint
+TestIssue1952_OutputFailuresAreNotSuccess:
+  remote drain output failure reported success
+```
 
-The rebased branch was pushed without merging. All checks passed on rebased report head `91acb5561e934fe4bd46f0f05518f61677cfbd48`:
+The production patch was then restored. With the fix present, these tests plus `TestIssue1952_WriterStatusReadFailureIsUnknown` pass.
 
-- Full test suite (PR gate)
-- CodeQL / analyze
-- golangci
-- govulncheck
-- Python bridge-import matrix (3.8–3.12)
-- watchdog tests (3.8 and 3.12)
-- PR diff-scope guard
-- Release snapshot / PR drift check
-- PR intake gate
-- CodeRabbit review
+## Container verification
 
-The final report-only commit was then pushed and its exact-head checks were also allowed to run to completion before handoff.
+- `go build ./...`: PASS in `golang:1.25`.
+- `go vet ./...`: PASS in `golang:1.25`.
+- Focused regression tests across `./internal/session` and `./cmd/agent-deck`: PASS.
+- A raw `go test ./...` in the stock Go image reaches unrelated environment-dependent tests but lacks CI's tmux/zoxide packages and non-root permission behavior. The authoritative full race suite is the repository's GitHub Actions PR gate, which installs those dependencies.
 
-## Round-5 base refresh
+## Invariant check
 
-- The readiness repair began from the authoritative reviewed head `9961cc9e0992b96b05c5665adff8090c84163cd9` and retained the already-pushed round-5 verification commits through `40760de4f1a5f0e101726df2baaf9d577f67eec1`.
-- GitHub `main` advanced once more to `bf50689893053c6dd33a29b21e12eb36e251d94b` (`chore(release): v1.15.0 changelog (#2059)`). The eight-commit repaired PR stack was rebased onto that exact base. This refresh had no conflicts; `git range-diff 7771aca6..40760de4 github/main..HEAD` reported all eight patches identical.
-- `git merge-base --is-ancestor github/main HEAD` succeeds and `git rev-list --left-right --count github/main...HEAD` reports `0 8` before this report update. The original rebase conflict remained confined to `RESULTS.md`; no production, test, Darwin/Linux exchange, heartbeat, generated-file preservation, or child-state hunk was dropped.
-- Exact-head build/test receipts and GitHub CI state for the final pushed report head are recorded in the accompanying `fix-2051-r5.RESULT.json` handoff artifact.
+- Bounds: existing summary, inbox-line, retry, generation, and stale-record bounds are unchanged.
+- Ordering: last-wins still preserves first-seen identity order; the identity is now `(SourceRemote, ChildSessionID)`.
+- Idempotence: repeated drains of one remote retain the same structured origin and fingerprint; separate origins no longer destroy one another.
+- Fail closed: fetch, writer probe, unreadable heartbeat, unreadable export, target resolution, and output failures all return non-success rather than an empty/successful drain.
+- Sibling parity: both inbox producer replacement and consumer collapse use the same origin-aware key; both `EventFingerprint` and `TurnFingerprint` enumerate the same provenance field; both CLI entry paths track writer errors.
+
+## CI state
+
+- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
+- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
+- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
+- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.
