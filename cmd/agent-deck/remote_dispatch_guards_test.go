@@ -23,4 +23,7 @@ func TestRemoteDispatchRecordsTelemetryBeforeEarlyReturn(t *testing.T) {
 	if strings.Index(s[remote:], "handleRemote(profile, args[1:])") < call {
 		t.Fatal("remote dispatch returns before recording telemetry")
 	}
+	if strings.Count(s, "recordCLITelemetry(args[0], args[1:])") != 2 {
+		t.Fatal("expected exactly one telemetry call in each dispatch path")
+	}
 }

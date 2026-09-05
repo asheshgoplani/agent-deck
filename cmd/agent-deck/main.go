@@ -327,6 +327,7 @@ func main() {
 
 	// Handle subcommands
 	if len(args) > 0 {
+		recordCLITelemetry(args[0], args[1:])
 		switch args[0] {
 		case "telemetry":
 			handleTelemetry(args[1:])
