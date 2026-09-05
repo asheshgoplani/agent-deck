@@ -202,7 +202,11 @@ func handleCodexNotify() {
 		sessionID = strings.TrimSpace(os.Getenv("CODEX_SESSION_ID"))
 	}
 
-	writeCodexHookStatus(instanceID, status, sessionID, event, turnID)
+	var completionPayload struct {
+		LastAssistant string `json:"last-assistant-message"`
+	}
+	_ = json.Unmarshal(data, &completionPayload)
+	writeCodexHookStatus(instanceID, status, sessionID, event, turnID, completionPayload.LastAssistant)
 }
 
 func codexTurnEdge(event string) (started, completed bool) {
@@ -212,6 +216,11 @@ func codexTurnEdge(event string) (started, completed bool) {
 	}
 	return strings.Contains(canon, "start"), strings.Contains(canon, "complete") ||
 		strings.Contains(canon, "fail") || strings.Contains(canon, "abort") || strings.Contains(canon, "cancel")
+}
+
+func codexSuccessfulCompletion(event string) bool {
+	canon := strings.NewReplacer(".", "/", "-", "/", "_", "/").Replace(strings.ToLower(strings.TrimSpace(event)))
+	return canon == "agent/turn/complete" || canon == "agent/turn/completed" || canon == "turn/complete" || canon == "turn/completed"
 }
 
 // writeCodexHookStatus retains both edges of the current turn under a file
@@ -253,9 +262,6 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 		_ = json.Unmarshal(data, &prior)
 	}
 	sessionID = strings.TrimSpace(sessionID)
-	if sessionID != "" {
-		session.WriteHookSessionAnchor(instanceID, sessionID)
-	}
 	evidenceSessionID := sessionID
 	if evidenceSessionID == "" {
 		evidenceSessionID = session.ReadHookSessionAnchor(instanceID)
@@ -266,10 +272,14 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 		turnID = strings.TrimSpace(turnIDs[0])
 	}
 	if started {
+		prior.CodexStartObserved = true
 		prior.CodexCompletedGeneration = ""
 		prior.CodexCompletedSessionID = ""
 		if evidenceSessionID != "" && turnID != "" {
 			prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
+			if prior.CodexStartedGeneration != prior.CodexFailedGeneration {
+				prior.CodexFailedGeneration = ""
+			}
 			prior.CodexStartedSessionID = evidenceSessionID
 		} else {
 			prior.CodexStartedGeneration = ""
@@ -280,20 +290,36 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	if evidenceSessionID != "" && turnID != "" {
 		completionGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
 	}
-	// Codex's legacy notify contract emits only agent-turn-complete. A complete
-	// thread/turn identity therefore supplies both sides of the generation
-	// proof; waiting must not depend on a start notification that never occurs.
-	if completed && completionGeneration != "" &&
-		(prior.Status != "running" || prior.CodexStartedGeneration == "" || completionGeneration == prior.CodexStartedGeneration) {
-		prior.CodexStartedGeneration = completionGeneration
-		prior.CodexStartedSessionID = evidenceSessionID
+	// An observed start remains authoritative after failure/cancellation too.
+	// Legacy notify supplies completion only, so it may advance when no start
+	// was observed. Never infer positive proof from inherited turn fields.
+	if completed && completionGeneration != "" && prior.CodexStartObserved &&
+		prior.CodexStartedGeneration != completionGeneration {
+		return
+	}
+	if completed && completionGeneration != "" && prior.CodexFailedGeneration == completionGeneration {
+		return
+	}
+	if completed {
+		if !codexSuccessfulCompletion(event) && completionGeneration != "" {
+			prior.CodexFailedGeneration = completionGeneration
+		}
 		prior.CodexCompletedGeneration = completionGeneration
 		prior.CodexCompletedSessionID = evidenceSessionID
+		if !prior.CodexStartObserved {
+			prior.CodexStartedGeneration = completionGeneration
+			prior.CodexStartedSessionID = evidenceSessionID
+		}
 	}
 	prior.Status, prior.SessionID, prior.Event = status, sessionID, event
 	prior.Timestamp = time.Now().Unix()
 	prior.DoneStatus, prior.DoneSummary, prior.TranscriptPath, prior.Cwd = "", "", "", ""
-	writeHookStatusFile(instanceID, prior, false)
+	if len(turnIDs) > 1 && sessionID != "" && completionGeneration != "" && codexSuccessfulCompletion(event) {
+		if signal, ok := session.ScanDoneSentinel(turnIDs[1]); ok {
+			prior.DoneStatus, prior.DoneSummary = signal.Status, signal.Summary
+		}
+	}
+	writeHookStatusFile(instanceID, prior, true)
 }
 
 func handleCodexHooks(args []string) {

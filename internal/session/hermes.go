@@ -108,6 +108,10 @@ func atomicHermesJSON(path string, value any) error {
 }
 
 func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string, error) {
+	return i.seedHookGeneration(status, pending)
+}
+
+func (i *Instance) seedHookGeneration(status string, pending bool) (string, error) {
 	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
 		return "", fmt.Errorf("invalid instance id %q", i.ID)
 	}
@@ -143,6 +147,7 @@ func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string
 	// temporarily override the restart baseline until fsnotify catches up.
 	i.mu.Lock()
 	i.HermesHookGeneration = generation
+	i.hookLaunchGeneration = generation
 	i.hookStatus = status
 	i.hookEvent = seed.Event
 	i.hookLastUpdate = now

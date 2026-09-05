@@ -290,3 +290,24 @@ func parseInstanceSpawnLockPID(content string) (int, error) {
 	}
 	return pid, nil
 }
+
+// tryTerminatedStatusCommit uses the same marker as Start/Restart, but never
+// waits or reclaims it on the status path. An active/ambiguous owner vetoes an
+// old terminated-pane result. The caller releases immediately after commit.
+func tryTerminatedStatusCommit(instanceID string) (func(), bool) {
+	path, err := instanceSpawnLockPath(instanceID)
+	if err != nil {
+		return nil, false
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, false
+	}
+	_, writeErr := fmt.Fprintf(f, "%d", os.Getpid())
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		return nil, false
+	}
+	return func() { _ = os.Remove(path) }, true
+}
