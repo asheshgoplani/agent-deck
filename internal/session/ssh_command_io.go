@@ -19,10 +19,10 @@ func (r *SSHRunner) RunIO(ctx context.Context, stdin io.Reader, stdout, stderr i
 	}
 	CleanStaleSSHSockets()
 	sshArgs := r.sshBaseArgs(r.buildRemoteCommand(args...))
-	// ValidateSSHHost checks the destination and buildRemoteCommand shell-quotes
-	// every remote argument. exec receives an argv vector and never invokes a
-	// local shell, so caller input cannot be interpreted locally.
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...) //nolint:gosec // validated SSH argv, no shell
+	// #nosec G204 -- Literal ssh executable; fixed connection options and a
+	// validated non-option host. Remote executable/profile/arguments are each
+	// shell-quoted by buildRemoteCommand, with no local shell evaluation.
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	return cmd.Run()
 }
