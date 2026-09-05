@@ -24,6 +24,8 @@ func TestMain(m *testing.M) {
 // the isolated TMUX_TMPDIR and HOME temp dirs are removed (2026-06-07
 // pty-exhaustion incident class).
 func runTestMain(m *testing.M) int {
+	// Resolve tool caches before HOME isolation; only the build-dependent proof uses them.
+	watcherBuildCaches, watcherBuildCacheErr = resolveWatcherBuildCaches(os.Environ())
 	// Isolate HOME+XDG FIRST. This package was the concrete trigger of the
 	// 2026-06-04 data-loss incident (S5): it set AGENTDECK_PROFILE=_test but did
 	// NOT override HOME/XDG, so an un-sandboxed `go test ./internal/ui/...`
