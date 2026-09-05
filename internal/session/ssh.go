@@ -470,6 +470,8 @@ type sshAttachInput struct {
 
 func (input *sshAttachInput) forward(data []byte) (bool, error) {
 	if idx := tmux.IndexCtrlQ(data); idx >= 0 {
+		// Record intent before forwarding can block or SSH can exit.
+		input.detachRequested.Store(true)
 		if idx > 0 {
 			_, _ = input.writer.Write(data[:idx])
 		}
@@ -480,6 +482,9 @@ func (input *sshAttachInput) forward(data []byte) (bool, error) {
 }
 
 func (input *sshAttachInput) result(err error) error {
+	if input.detachRequested.Load() {
+		return nil
+	}
 	return err
 }
 
@@ -967,7 +972,7 @@ func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
 // ConnectTimeout, so an unknown host key could hang on a prompt instead of
 // failing fast). "-tt" forces a remote PTY.
 func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
-	remoteCmd := "TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand("session", "attach", sessionID)
+	remoteCmd := "env TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand("session", "attach", sessionID)
 	args := append([]string{"-tt"}, r.sshConnOpts()...)
 	return append(args, r.Host, remoteCmd)
 }

@@ -11,7 +11,7 @@ func TestSSHAttachPortableTERM(t *testing.T) {
 			t.Setenv("TERM", tc.input)
 			r := &SSHRunner{Host: "fixture"}
 			args := r.buildAttachArgs("quoted ' session")
-			if command := args[len(args)-1]; !strings.HasPrefix(command, "TERM="+shellQuote(tc.want)+" ") {
+			if command := args[len(args)-1]; !strings.HasPrefix(command, "env TERM="+shellQuote(tc.want)+" ") {
 				t.Fatalf("remote command: %q", command)
 			}
 		})
