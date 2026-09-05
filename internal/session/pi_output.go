@@ -42,6 +42,8 @@ func parsePiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 			header = e
 			version = 1
 			if len(e.Version) != 0 {
+				// A present null must not inherit the omitted-field v1 default.
+				version = 0
 				if err := json.Unmarshal(e.Version, &version); err != nil || version < 1 || version > 3 {
 					invalidHeader = true
 				}
