@@ -437,7 +437,8 @@ type Home struct {
 	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
 	// File watcher for external changes (auto-reload)
-	storageWatcher *StorageWatcher
+	storageWatcher      *StorageWatcher
+	sessionLoadSequence uint64 // issued only by the UI event loop
 
 	// Optional in-memory web menu data sink for web mode.
 	webMenuData   *web.MemoryMenuData
@@ -1216,13 +1217,17 @@ func (h *Home) stackedPreviewTopY() int {
 
 // Messages
 type loadSessionsMsg struct {
-	instances    []*session.Instance
-	groups       []*session.GroupData
-	err          error
-	restoreState *reloadState // Optional state to restore after reload
-	poolProxies  int          // Number of socket proxies started
-	poolError    error        // Pool initialization error
-	loadMtime    time.Time    // File mtime at load time (for external change detection)
+	loadSequence      uint64
+	loadWatcher       *StorageWatcher
+	watcherTicket     *storageLoadTicket
+	persistedSnapshot *statedb.RegistrySnapshotResult
+	instances         []*session.Instance
+	groups            []*session.GroupData
+	err               error
+	restoreState      *reloadState // Optional state to restore after reload
+	poolProxies       int          // Number of socket proxies started
+	poolError         error        // Pool initialization error
+	loadMtime         time.Time    // File mtime at load time (for external change detection)
 }
 
 type sessionCreatedMsg struct {
@@ -1241,6 +1246,7 @@ type sessionForkedMsg struct {
 }
 
 type refreshMsg struct{}
+type importReloadMsg struct{}
 
 type statusUpdateMsg struct {
 	attachedSessionID string // Session that just returned from attach (if local attach)
@@ -3194,7 +3200,7 @@ func (h *Home) Init() tea.Cmd {
 	}
 
 	cmds := []tea.Cmd{
-		h.loadSessions,
+		h.sessionLoadCmd(nil, true),
 
 		h.tick(),
 		h.reviverTick(),
@@ -3600,31 +3606,60 @@ func (h *Home) measureRemoteLatencies() tea.Msg {
 
 // loadSessions loads sessions from storage and initializes the pool
 func (h *Home) loadSessions() tea.Msg {
-	if h.storage == nil {
-		return loadSessionsMsg{instances: []*session.Instance{}, err: fmt.Errorf("storage not initialized")}
+	return h.sessionLoadCmd(nil, true)()
+}
+
+// sessionLoadCmd issues ordering without database I/O. The returned command
+// probes and reads the captured storage asynchronously, including initial loads.
+func (h *Home) sessionLoadCmd(restore *reloadState, initializePool bool) tea.Cmd {
+	h.sessionLoadSequence++
+	sequence := h.sessionLoadSequence
+	storage, watcher := h.storage, h.storageWatcher
+	var issuedTicket storageLoadTicket
+	if watcher != nil {
+		issuedTicket = watcher.issueLoad()
 	}
-
-	// Capture file mtime BEFORE loading to detect external changes later
-	loadMtime, _ := h.storage.GetFileMtime()
-
-	instances, groups, err := h.storage.LoadWithGroups()
-	msg := loadSessionsMsg{instances: instances, groups: groups, err: err, loadMtime: loadMtime}
-
-	// Initialize pool AFTER sessions are loaded
-	userConfig, configErr := session.LoadUserConfig()
-	if configErr == nil && userConfig != nil && userConfig.MCPPool.Enabled {
-		pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, instances)
-		if poolErr != nil {
-			mcpUILog.Warn("pool_init_failed", slog.String("error", poolErr.Error()))
-			msg.poolError = poolErr
-		} else if pool != nil {
-			proxies := pool.ListServers()
-			mcpUILog.Info("pool_initialized", slog.Int("proxies", len(proxies)))
-			msg.poolProxies = len(proxies)
+	return func() tea.Msg {
+		ticket := issuedTicket
+		msg := loadSessionsMsg{loadSequence: sequence, loadWatcher: watcher, restoreState: restore}
+		if storage == nil {
+			msg.err = fmt.Errorf("storage not initialized")
+			return msg
 		}
+		if watcher != nil {
+			var err error
+			ticket, err = watcher.probeLoad(ticket)
+			msg.watcherTicket = &ticket
+			if err != nil {
+				msg.err = err
+				return msg
+			}
+		}
+		msg.loadMtime, _ = storage.GetFileMtime()
+		msg.instances, msg.groups, msg.persistedSnapshot, msg.err = storage.LoadWithGroupsSnapshot()
+		if watcher != nil {
+			finished, err := watcher.endLoad(ticket)
+			msg.watcherTicket = &finished
+			if msg.err == nil {
+				msg.err = err
+			}
+		}
+		if initializePool {
+			userConfig, configErr := session.LoadUserConfig()
+			if configErr == nil && userConfig != nil && userConfig.MCPPool.Enabled {
+				pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, msg.instances)
+				if poolErr != nil {
+					mcpUILog.Warn("pool_init_failed", slog.String("error", poolErr.Error()))
+					msg.poolError = poolErr
+				} else if pool != nil {
+					proxies := pool.ListServers()
+					mcpUILog.Info("pool_initialized", slog.Int("proxies", len(proxies)))
+					msg.poolProxies = len(proxies)
+				}
+			}
+		}
+		return msg
 	}
-
-	return msg
 }
 
 // SetHeadless marks this Home as backing a headless (`web --no-tui`) server.
@@ -5646,10 +5681,19 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchPreview(inst, key, winIdx)
 
 	case loadSessionsMsg:
+		if msg.loadSequence != 0 && (msg.loadSequence != h.sessionLoadSequence || msg.loadWatcher != h.storageWatcher) {
+			return h, nil
+		}
+		if msg.watcherTicket != nil && h.storageWatcher != nil && !h.storageWatcher.current(*msg.watcherTicket) {
+			return h, nil
+		}
+		if msg.watcherTicket != nil && h.storageWatcher != nil {
+			h.storageWatcher.acknowledge(*msg.watcherTicket, msg.persistedSnapshot, msg.err == nil)
+		}
 		// Clear loading indicators and store file mtime for external change detection
 		h.reloadMu.Lock()
 		h.isReloading = false
-		if !msg.loadMtime.IsZero() {
+		if msg.err == nil && !msg.loadMtime.IsZero() {
 			h.lastLoadMtime = msg.loadMtime
 		}
 		h.reloadMu.Unlock()
@@ -5750,7 +5794,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Using tea.Cmd pattern ensures save is triggered after detection completes
 			var detectionCmds []tea.Cmd
 			for _, inst := range h.instances {
-				if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" {
+				if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" && (msg.restoreState == nil || inst.OpenCodeDetectedAt.IsZero()) {
 					detectionCmds = append(detectionCmds, h.detectOpenCodeSessionCmd(inst))
 				}
 			}
@@ -5826,7 +5870,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				// Clear pending changes and persist if any were re-applied
-				h.pendingTitleChanges = make(map[string]pendingTitle)
 				if applied {
 					h.forceSaveInstances()
 				}
@@ -6281,6 +6324,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchPreview(msg.instance, msg.instance.ID, -1)
 
 	case openCodeDetectionCompleteMsg:
+		if msg.sessionID == "" {
+			if inst := h.getInstanceByID(msg.instanceID); inst != nil && !inst.OpenCodeDetectedAt.IsZero() {
+				return h, nil
+			}
+		}
 		// OpenCode session detection completed
 		// CRITICAL: Find the CURRENT instance by ID and update it
 		// The original pointer may have been replaced by storage watcher reload
@@ -6606,7 +6654,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case refreshMsg:
-		return h, h.loadSessions
+		return h, h.sessionLoadCmd(nil, true)
+	case importReloadMsg:
+		state := h.preserveState()
+		return h, h.sessionLoadCmd(&state, false)
 
 	case systemThemeMsg:
 		theme := "light"
@@ -6641,20 +6692,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Preserve UI state before reload
 		state := h.preserveState()
 
-		// Reload from disk
-		cmd := func() tea.Msg {
-			// Capture file mtime BEFORE loading to detect external changes later
-			loadMtime, _ := h.storage.GetFileMtime()
-			instances, groups, err := h.storage.LoadWithGroups()
-			uiLog.Debug("reload_load_with_groups", slog.Int("instances", len(instances)), slog.Any("error", err))
-			return loadSessionsMsg{
-				instances:    instances,
-				groups:       groups,
-				err:          err,
-				restoreState: &state, // Pass state to restore after load
-				loadMtime:    loadMtime,
-			}
-		}
+		cmd := h.sessionLoadCmd(&state, false)
 
 		// Continue listening for next change
 		return h, tea.Batch(cmd, listenForReloads(h.storageWatcher))
@@ -10028,20 +10066,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "ctrl+r":
-		// Manual refresh (useful if watcher fails or for user preference)
+		// Manual refresh follows the same ordering as initial and watcher loads.
 		state := h.preserveState()
-
-		cmd := func() tea.Msg {
-			instances, groups, err := h.storage.LoadWithGroups()
-			return loadSessionsMsg{
-				instances:    instances,
-				groups:       groups,
-				err:          err,
-				restoreState: &state,
-			}
-		}
-
-		return h, cmd
+		return h, h.sessionLoadCmd(&state, false)
 
 	case "ctrl+s":
 		// Open the session switcher from the overview too, with the same key
@@ -11318,7 +11345,9 @@ func (h *Home) reapplyPendingGroupOps() bool {
 	defer func() { h.groupTree.DefaultMaxConcurrent = savedDefaultMaxConcurrent }()
 
 	applied := false
+	pending := make([]pendingGroupOp, 0, len(h.pendingGroupOps))
 	for _, op := range h.pendingGroupOps {
+		opApplied := false
 		switch op.kind {
 		case groupOpCreate:
 			h.groupTree.DefaultMaxConcurrent = op.maxConcurrent
@@ -11328,7 +11357,7 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				if op.defaultPath != "" {
 					h.groupTree.SetDefaultPathForGroup(g.Path, op.defaultPath)
 				}
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "create"), slog.String("name", op.name))
 			}
 		case groupOpCreateSub:
@@ -11339,7 +11368,7 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				if op.defaultPath != "" {
 					h.groupTree.SetDefaultPathForGroup(g.Path, op.defaultPath)
 				}
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "createSub"), slog.String("name", op.name))
 			}
 		case groupOpRename:
@@ -11363,7 +11392,7 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "rename"), slog.String("old_path", op.oldPath), slog.String("name", op.name))
 			}
 		case groupOpMove:
@@ -11372,12 +11401,16 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "move"), slog.String("session_id", op.sessionID), slog.String("target", op.targetPath))
 			}
 		}
+		if opApplied {
+			pending = append(pending, op)
+			applied = true
+		}
 	}
-	h.pendingGroupOps = nil
+	h.pendingGroupOps = pending
 	return applied
 }
 
@@ -14359,8 +14392,6 @@ func (h *Home) importSessions() tea.Msg {
 
 	h.instancesMu.Lock()
 	h.instances = append(h.instances, discovered...)
-	instancesCopy := make([]*session.Instance, len(h.instances))
-	copy(instancesCopy, h.instances)
 	h.instancesMu.Unlock()
 
 	// Add discovered sessions to group tree before saving
@@ -14369,8 +14400,7 @@ func (h *Home) importSessions() tea.Msg {
 	}
 	// Save both instances AND groups (critical fix: was losing groups!)
 	h.saveInstances()
-	state := h.preserveState()
-	return loadSessionsMsg{instances: instancesCopy, restoreState: &state}
+	return importReloadMsg{}
 }
 
 // countSessionStatuses counts sessions by status for the logo display

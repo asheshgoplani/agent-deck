@@ -2,6 +2,7 @@ package ui
 
 import (
 	"log/slog"
+	"reflect"
 	"sync"
 	"time"
 
@@ -11,59 +12,49 @@ import (
 
 var watcherLog = logging.ForComponent(logging.CompStorage)
 
-// StorageWatcher monitors the SQLite database for external changes
-// by polling the metadata.last_modified timestamp.
-// Replaces the previous fsnotify-based watcher which had reliability issues
-// on certain filesystems (9p, NFS, WSL).
-type StorageWatcher struct {
-	db        *statedb.StateDB
-	reloadCh  chan struct{}
-	closeCh   chan struct{}
-	closeOnce sync.Once
-
-	// lastModified tracks the last seen modification timestamp
-	lastModified int64
-	modMu        sync.RWMutex
-
-	// Tracks when TUI saved, to ignore self-triggered changes
-	lastSaveTime time.Time
-	saveMu       sync.RWMutex
-}
-
-// ignoreWindow is the time window after NotifySave during which changes are ignored.
-// Must be > pollInterval so the first poll after a self-save always falls within the window.
-const ignoreWindow = 3 * time.Second
-
-// pollInterval is how often we check for external changes.
 const pollInterval = 2 * time.Second
 
-// NewStorageWatcher creates a watcher that polls the SQLite metadata for changes.
+// StorageWatcher observes committed material registry changes on a dedicated
+// live SQLite connection. Own writes are conservatively reloaded too.
+type StorageWatcher struct {
+	observer       *statedb.RegistryObserver
+	reloadCh       chan struct{}
+	closeCh        chan struct{}
+	closeOnce      sync.Once
+	mu             sync.Mutex
+	acknowledged   *statedb.RegistrySnapshotResult
+	scannedVersion int64
+	scannedEpoch   uint64
+	pending        bool
+	sequence       uint64
+	closed         bool
+}
+
+type storageLoadTicket struct {
+	sequence                uint64
+	before, after           int64
+	beforeEpoch, afterEpoch uint64
+}
+
 func NewStorageWatcher(db *statedb.StateDB) (*StorageWatcher, error) {
 	if db == nil {
 		return nil, nil
 	}
-
-	// Get initial modification timestamp
-	lastMod, _ := db.LastModified()
-
-	return &StorageWatcher{
-		db:           db,
-		lastModified: lastMod,
-		reloadCh:     make(chan struct{}, 1), // Buffered to prevent blocking
-		closeCh:      make(chan struct{}),
-	}, nil
+	observer, err := db.NewRegistryObserver()
+	if err != nil {
+		return nil, err
+	}
+	snapshot, _, after, err := observer.Snapshot()
+	if err != nil {
+		_ = observer.Close()
+		return nil, err
+	}
+	return &StorageWatcher{observer: observer, reloadCh: make(chan struct{}, 1), closeCh: make(chan struct{}), acknowledged: snapshot, scannedVersion: after, pending: true}, nil
 }
-
-// Start begins polling for changes (non-blocking).
-func (sw *StorageWatcher) Start() {
-	go sw.pollLoop()
-}
-
-// pollLoop checks the metadata timestamp periodically.
+func (sw *StorageWatcher) Start() { go sw.pollLoop() }
 func (sw *StorageWatcher) pollLoop() {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-sw.closeCh:
@@ -73,88 +64,113 @@ func (sw *StorageWatcher) pollLoop() {
 		}
 	}
 }
-
-// checkAndNotify checks if the metadata timestamp has changed and notifies if so.
+func (sw *StorageWatcher) signalLocked() {
+	if sw.closed {
+		return
+	}
+	select {
+	case sw.reloadCh <- struct{}{}:
+	default:
+	}
+}
 func (sw *StorageWatcher) checkAndNotify() {
-	ts, err := sw.db.LastModified()
+	version, epoch, err := sw.observer.Probe()
 	if err != nil {
 		watcherLog.Debug("watcher_poll_failed", slog.String("error", err.Error()))
+		sw.mu.Lock()
+		sw.pending = true
+		sw.signalLocked()
+		sw.mu.Unlock()
 		return
 	}
-
-	sw.modMu.Lock()
-	changed := ts > sw.lastModified
-	if changed {
-		sw.lastModified = ts
-	}
-	sw.modMu.Unlock()
-
-	if !changed {
+	sw.mu.Lock()
+	unchanged := version == sw.scannedVersion && epoch == sw.scannedEpoch && !sw.pending
+	closed := sw.closed
+	sw.mu.Unlock()
+	if unchanged || closed {
 		return
 	}
-
-	// Check if we should ignore this change (TUI's own save).
-	// The ignore window must be >= pollInterval so a self-triggered change
-	// is always caught on the first poll after the save.
-	sw.saveMu.RLock()
-	lastSave := sw.lastSaveTime
-	sw.saveMu.RUnlock()
-
-	if time.Since(lastSave) < ignoreWindow {
-		watcherLog.Debug("watcher_ignoring_own_save")
+	snapshot, before, after, err := sw.observer.Snapshot()
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.closed {
 		return
 	}
-
-	watcherLog.Debug("watcher_db_changed", slog.Int64("timestamp", ts))
-
-	// Non-blocking send (drop if channel full)
-	select {
-	case sw.reloadCh <- struct{}{}:
-	default:
-		watcherLog.Debug("watcher_reload_channel_full")
+	if err != nil {
+		sw.pending = true
+		sw.signalLocked()
+		return
+	}
+	sw.scannedVersion = after
+	sw.scannedEpoch = epoch
+	if before != after || !reflect.DeepEqual(snapshot, sw.acknowledged) {
+		sw.pending = true
+	}
+	if sw.pending {
+		sw.signalLocked()
 	}
 }
+func (sw *StorageWatcher) ReloadChannel() <-chan struct{} { return sw.reloadCh }
 
-// ReloadChannel returns the channel that signals when reload is needed.
-func (sw *StorageWatcher) ReloadChannel() <-chan struct{} {
-	return sw.reloadCh
-}
-
-// NotifySave should be called by the TUI right before it saves to storage.
-// This marks the current time so the watcher can ignore the resulting change.
-func (sw *StorageWatcher) NotifySave() {
-	sw.saveMu.Lock()
-	sw.lastSaveTime = time.Now()
-	sw.saveMu.Unlock()
-}
-
-// TriggerReload sends a reload signal.
-// Used as a manual trigger for reload (e.g., after CLI command changes).
+// NotifySave remains compatible with callers. Intent is not commit provenance;
+// it never suppresses unrelated writes.
+func (sw *StorageWatcher) NotifySave() {}
 func (sw *StorageWatcher) TriggerReload() {
-	// Update lastModified to current to prevent re-triggering
-	if ts, err := sw.db.LastModified(); err == nil {
-		sw.modMu.Lock()
-		sw.lastModified = ts
-		sw.modMu.Unlock()
-	}
-	// Non-blocking send to reload channel
-	select {
-	case sw.reloadCh <- struct{}{}:
-		watcherLog.Debug("watcher_trigger_reload")
-	default:
-		watcherLog.Debug("watcher_trigger_reload_channel_full")
-	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	sw.pending = true
+	sw.signalLocked()
+}
+func (sw *StorageWatcher) issueLoad() storageLoadTicket {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	sw.sequence++
+	return storageLoadTicket{sequence: sw.sequence}
 }
 
-// Warning returns empty string. SQLite polling works on all filesystems.
-func (sw *StorageWatcher) Warning() string {
-	return ""
+func (sw *StorageWatcher) beginLoad() (storageLoadTicket, error) {
+	return sw.probeLoad(sw.issueLoad())
 }
 
-// Close stops the watcher and releases resources. Safe to call multiple times.
+func (sw *StorageWatcher) probeLoad(ticket storageLoadTicket) (storageLoadTicket, error) {
+	version, epoch, err := sw.observer.Probe()
+	ticket.beforeEpoch = epoch
+	ticket.before = version
+	return ticket, err
+}
+func (sw *StorageWatcher) endLoad(ticket storageLoadTicket) (storageLoadTicket, error) {
+	version, epoch, err := sw.observer.Probe()
+	ticket.afterEpoch = epoch
+	ticket.after = version
+	return ticket, err
+}
+func (sw *StorageWatcher) current(ticket storageLoadTicket) bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return !sw.closed && ticket.sequence == sw.sequence
+}
+func (sw *StorageWatcher) acknowledge(ticket storageLoadTicket, snapshot *statedb.RegistrySnapshotResult, success bool) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.closed || ticket.sequence != sw.sequence {
+		return
+	}
+	if !success || snapshot == nil {
+		sw.pending = true
+		return
+	}
+	sw.acknowledged = snapshot
+	// Never acknowledge a version observed after the load's own boundary.
+	sw.pending = ticket.before != ticket.after || ticket.beforeEpoch != ticket.afterEpoch || sw.scannedEpoch != ticket.beforeEpoch || sw.scannedVersion != ticket.before
+	sw.scannedVersion = ticket.before
+	sw.scannedEpoch = ticket.beforeEpoch
+	if sw.pending {
+		sw.signalLocked()
+	}
+}
+func (sw *StorageWatcher) Warning() string { return "" }
 func (sw *StorageWatcher) Close() error {
-	sw.closeOnce.Do(func() {
-		close(sw.closeCh)
-	})
-	return nil
+	var err error
+	sw.closeOnce.Do(func() { sw.mu.Lock(); sw.closed = true; close(sw.closeCh); sw.mu.Unlock(); err = sw.observer.Close() })
+	return err
 }

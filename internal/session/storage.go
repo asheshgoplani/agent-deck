@@ -1124,18 +1124,24 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 
 // LoadWithGroups reads instances and groups from SQLite, reconnects tmux sessions.
 func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
+	instances, groups, _, err := s.LoadWithGroupsSnapshot()
+	return instances, groups, err
+}
+
+// LoadWithGroupsSnapshot carries the exact persisted snapshot for reload acknowledgement.
+func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.RegistrySnapshotResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.db == nil {
 		storageLog.Debug("load_db_not_initialized", slog.String("profile", s.profile))
-		return []*Instance{}, nil, nil
+		return []*Instance{}, nil, nil, nil
 	}
 
 	// Load from SQLite
 	snapshot, err := s.db.LoadRegistrySnapshot()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	dbRows, dbGroups := snapshot.Instances, snapshot.Groups
 
@@ -1253,7 +1259,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 		for _, inst := range instances {
 			original, convertErr := instanceToRow(inst)
 			if convertErr != nil {
-				return nil, nil, convertErr
+				return nil, nil, nil, convertErr
 			}
 			stored := byID[inst.ID]
 			if stored != nil && stored.GroupPath == DefaultGroupName {
@@ -1269,7 +1275,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 		}
 		if legacy := groupsByPath[DefaultGroupName]; legacy != nil {
 			if groupsByPath[DefaultGroupPath] != nil {
-				return nil, nil, fmt.Errorf("legacy default group migration conflicts with existing %q group", DefaultGroupPath)
+				return nil, nil, nil, fmt.Errorf("legacy default group migration conflicts with existing %q group", DefaultGroupPath)
 			}
 			groupsByPath[DefaultGroupPath] = legacy
 		}
@@ -1283,7 +1289,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 				original: original, stored: statedb.CloneGroupRow(stored)}
 		}
 	}
-	return instances, groups, err
+	return instances, groups, snapshot, err
 }
 
 // SaveRecentSession captures a deleted session's config for quick re-creation.
