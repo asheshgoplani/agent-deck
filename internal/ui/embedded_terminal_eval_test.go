@@ -16,6 +16,64 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func TestEval_EmbeddedTerminalForwardsTmuxClipboardToHost(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	socket := fmt.Sprintf("agent-deck-clipboard-eval-%d", os.Getpid())
+	sessionName := "clipboard-forwarding"
+	tmux := func(args ...string) (string, error) {
+		cmdArgs := append([]string{"-L", socket}, args...)
+		out, err := exec.Command("tmux", cmdArgs...).CombinedOutput()
+		return string(out), err
+	}
+	_, _ = tmux("kill-server")
+	t.Cleanup(func() { _, _ = tmux("kill-server") })
+
+	if out, err := tmux("new-session", "-d", "-x", "40", "-y", "8", "-s", sessionName, "sh"); err != nil {
+		t.Fatalf("create isolated tmux session: %v: %s", err, out)
+	}
+	if out, err := tmux("set-option", "-sag", "terminal-features", ",*:clipboard"); err != nil {
+		t.Fatalf("advertise clipboard feature: %v: %s", err, out)
+	}
+	if out, err := tmux("set-option", "-g", "set-clipboard", "on"); err != nil {
+		t.Fatalf("enable tmux clipboard forwarding: %v: %s", err, out)
+	}
+
+	copied := make(chan string, 1)
+	terminal, err := startEmbeddedTerminalWithClipboard(
+		context.Background(),
+		deckterminal.AttachRequest{Name: sessionName, SocketName: socket},
+		embeddedTerminalSize{Cols: 40, Rows: 8},
+		func(text string) { copied <- text },
+	)
+	if err != nil {
+		t.Fatalf("start embedded attach: %v", err)
+	}
+	t.Cleanup(func() { _ = terminal.Close() })
+
+	eventually(t, 3*time.Second, func() bool {
+		out, err := tmux("list-clients", "-F", "#{client_name}")
+		return err == nil && strings.TrimSpace(out) != ""
+	}, "embedded tmux client never attached")
+
+	want := "selected through tmux"
+	load := exec.Command("tmux", "-L", socket, "load-buffer", "-w", "-")
+	load.Stdin = strings.NewReader(want)
+	if out, err := load.CombinedOutput(); err != nil {
+		t.Fatalf("send tmux clipboard selection: %v: %s", err, out)
+	}
+
+	select {
+	case got := <-copied:
+		if got != want {
+			t.Fatalf("host clipboard payload = %q, want %q", got, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("tmux clipboard selection never reached the embedded host callback")
+	}
+}
+
 func TestEval_EmbeddedTerminalIsARealTmuxClient(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")

@@ -1,9 +1,19 @@
 package clipboard
 
 import (
+	"context"
 	"encoding/base64"
 	"testing"
 )
+
+func TestCopyContextHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := CopyContext(ctx, "cancelled clipboard copy", false); err == nil {
+		t.Fatal("cancelled clipboard copy unexpectedly succeeded")
+	}
+}
 
 func TestCopy_EmptyContent(t *testing.T) {
 	_, err := Copy("", false)

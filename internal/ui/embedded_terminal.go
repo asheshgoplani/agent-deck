@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -9,8 +10,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
+	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	deckterminal "github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
@@ -30,6 +33,78 @@ type embeddedCursorState struct {
 	Visible bool
 	Style   vt.CursorStyle
 	Steady  bool
+}
+
+type embeddedClipboardFunc func(string)
+
+var (
+	embeddedClipboardOnce     sync.Once
+	embeddedClipboardRequests chan string
+	embeddedClipboardQueueMu  sync.Mutex
+)
+
+// newEmbeddedTerminalEmulator installs the host-side half of OSC 52 clipboard
+// handling. The embedded tmux client cannot write escape sequences directly to
+// the user's terminal: Charm VT consumes them while building its cell grid.
+// Decoding the request here preserves the behavior a native terminal would
+// provide and lets selections from shells and TUIs reach the system clipboard.
+func newEmbeddedTerminalEmulator(
+	size embeddedTerminalSize,
+	copyToClipboard embeddedClipboardFunc,
+) *vt.SafeEmulator {
+	emulator := vt.NewSafeEmulator(size.Cols, size.Rows)
+	if copyToClipboard == nil {
+		return emulator
+	}
+	emulator.RegisterOscHandler(52, func(data []byte) bool {
+		parts := strings.SplitN(string(data), ";", 3)
+		if len(parts) != 3 || parts[0] != "52" || parts[2] == "" || parts[2] == "?" {
+			return true
+		}
+		decoded, err := base64.StdEncoding.DecodeString(parts[2])
+		if err != nil {
+			return true
+		}
+		copyToClipboard(string(decoded))
+		return true
+	})
+	return emulator
+}
+
+func copyEmbeddedTerminalSelection(text string) {
+	embeddedClipboardOnce.Do(func() {
+		embeddedClipboardRequests = make(chan string, 1)
+		go func() {
+			for selection := range embeddedClipboardRequests {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				_, _ = clipboard.CopyContext(ctx, selection, false)
+				cancel()
+			}
+		}()
+	})
+
+	// Clipboard state is last-write-wins. Keep at most the active copy and the
+	// newest pending selection so a slow desktop service cannot create an
+	// unbounded queue or let concurrent pbcopy processes finish out of order.
+	enqueueLatestClipboardSelection(embeddedClipboardRequests, text)
+}
+
+func enqueueLatestClipboardSelection(requests chan string, text string) {
+	embeddedClipboardQueueMu.Lock()
+	defer embeddedClipboardQueueMu.Unlock()
+
+	select {
+	case requests <- text:
+	default:
+		select {
+		case <-requests:
+		default:
+		}
+		select {
+		case requests <- text:
+		default:
+		}
+	}
 }
 
 // embeddedTerminal is a real tmux attach client running in a child PTY. tmux
@@ -67,6 +142,15 @@ func startEmbeddedTerminal(
 	req deckterminal.AttachRequest,
 	size embeddedTerminalSize,
 ) (*embeddedTerminal, error) {
+	return startEmbeddedTerminalWithClipboard(parent, req, size, copyEmbeddedTerminalSelection)
+}
+
+func startEmbeddedTerminalWithClipboard(
+	parent context.Context,
+	req deckterminal.AttachRequest,
+	size embeddedTerminalSize,
+	copyToClipboard embeddedClipboardFunc,
+) (*embeddedTerminal, error) {
 	command := deckterminal.BuildAttachCommand(req)
 	if command == "" {
 		return nil, errors.New("embedded terminal: invalid attach target")
@@ -101,7 +185,7 @@ func startEmbeddedTerminal(
 	}
 
 	t := &embeddedTerminal{
-		emulator:   vt.NewSafeEmulator(size.Cols, size.Rows),
+		emulator:   newEmbeddedTerminalEmulator(size, copyToClipboard),
 		ptmx:       ptmx,
 		cmd:        cmd,
 		cancel:     cancel,
