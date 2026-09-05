@@ -256,6 +256,7 @@ func (h *Home) exitInsertMode() {
 		_ = h.embeddedTerminal.Close()
 		h.embeddedTerminal = nil
 	}
+	h.embeddedAppliedRect = terminalCellRect{}
 	h.embeddedRequest = terminal.AttachRequest{}
 	h.insertMode = false
 	h.embeddedMode = false

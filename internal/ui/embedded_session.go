@@ -126,6 +126,10 @@ func (h *Home) installEmbeddedTerminal(msg embeddedStartMsg) tea.Cmd {
 		return nil
 	}
 	h.embeddedTerminal = msg.terminal
+	// The PTY was created at the size the pane had when Enter was pressed;
+	// start from an unknown applied rectangle so the install pass resizes it
+	// if the chrome moved during the connect.
+	h.embeddedAppliedRect = terminalCellRect{}
 	if h.sessionInput != nil {
 		switchByte := byte(0)
 		if h.insertModeSessionID != "" {
@@ -155,13 +159,22 @@ func (h *Home) updateEmbeddedFrame(msg embeddedFrameMsg) tea.Cmd {
 	return waitEmbeddedTerminalCmd(h.embeddedGeneration, h.embeddedTerminal)
 }
 
+// syncEmbeddedTerminalGeometry re-derives the pane rectangle from the current
+// dashboard chrome and pushes it to the child PTY, the input router, and the
+// hardware cursor. It is safe to call on every event that might have moved the
+// pane: the PTY is resized only when the rectangle actually changed, so a
+// redundant call costs one comparison, never a SIGWINCH storm into tmux.
 func (h *Home) syncEmbeddedTerminalGeometry() {
 	if h.embeddedTerminal == nil {
 		return
 	}
 	rect := h.embeddedPaneRect()
-	if err := h.embeddedTerminal.Resize(embeddedTerminalSize{Cols: rect.Width, Rows: rect.Height}); err != nil {
-		h.setError(fmt.Errorf("embedded session: %w", err))
+	if rect != h.embeddedAppliedRect {
+		if err := h.embeddedTerminal.Resize(embeddedTerminalSize{Cols: rect.Width, Rows: rect.Height}); err != nil {
+			h.setError(fmt.Errorf("embedded session: %w", err))
+		} else {
+			h.embeddedAppliedRect = rect
+		}
 	}
 	if h.sessionInput != nil {
 		h.sessionInput.UpdateRect(rect)
