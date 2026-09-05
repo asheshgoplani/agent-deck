@@ -982,19 +982,16 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	d.rebuildFocusTargets()
 }
 
-// filterPathSuggestions filters allPathSuggestions by the current path input value
+// filterPathSuggestions filters allPathSuggestions by the current path input
+// value. Matching is fuzzy ("adk" → /home/me/agent-deck), ranked by match
+// score; path-shaped queries ("/ho", "~/dev") additionally pull live
+// filesystem subdirectory completions.
 func (d *NewDialog) filterPathSuggestions() {
-	query := strings.ToLower(strings.TrimSpace(d.pathInput.Value()))
+	query := strings.TrimSpace(d.pathInput.Value())
 	if query == "" {
 		d.pathSuggestions = d.allPathSuggestions
 	} else {
-		filtered := make([]string, 0)
-		for _, p := range d.allPathSuggestions {
-			if strings.Contains(strings.ToLower(p), query) {
-				filtered = append(filtered, p)
-			}
-		}
-		d.pathSuggestions = filtered
+		d.pathSuggestions = filterPathSuggestions(d.allPathSuggestions, query)
 	}
 	// Cursor space: 0 = "Type custom", 1..N = pathSuggestions[0..N-1]
 	if d.pathSuggestionCursor > len(d.pathSuggestions) {
