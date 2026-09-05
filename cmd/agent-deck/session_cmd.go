@@ -2654,6 +2654,25 @@ func handleSessionSetTitleLock(profile string, args []string) {
 // reload each poll is deliberate: a fresh OS process has no StatusFileWatcher,
 // so the only way to observe the target's newest hook edge is to re-read it
 // from disk.
+// hookDrivenBusy reports the target's FRESH hook-driven busy state as
+// (busy, known). known is false when no fresh hook signal exists — non-hook
+// tools, or a stale/absent hook file — in which case the caller must fall back
+// to its own evidence rather than treat silence as idle (issue #2033). It
+// deliberately does not fall through to UpdateStatus the way
+// fetchHookDrivenStatus does: that is the spike-filtered heuristic whose decay
+// to idle is the very thing this signal exists to override.
+func hookDrivenBusy(inst *session.Instance) (busy, known bool) {
+	if inst == nil {
+		return false, false
+	}
+	session.RefreshInstancesForCLIStatus([]*session.Instance{inst})
+	hs, fresh := inst.GetHookStatus()
+	if !fresh || hs == "" {
+		return false, false
+	}
+	return send.StatusIsBusy(hs), true
+}
+
 func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
@@ -2858,9 +2877,35 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
-	// Record send time before the actual send so we can verify output freshness.
-	// Captured early to avoid false negatives from clock skew.
+	// Record send time before the actual send for the last-sent self-heal clock.
+	// Reply selection below uses durable turn identity, never this timestamp.
 	sentAt := time.Now()
+	var turnPath string
+	var turnCursor int64
+	useTurnIdentity := *stream || (*wait && session.IsClaudeCompatible(inst.Tool))
+	if useTurnIdentity {
+		if fresh := inst.GetSessionIDFromTmux(); fresh != "" {
+			inst.ClaudeSessionID = fresh
+			// #1815: own pane env — weak vouch.
+			session.NoteClaudeSessionIDFromOwnPane(inst)
+			inst.ClaudeDetectedAt = time.Now()
+		}
+		var pathErr error
+		turnPath, pathErr = inst.GetJSONLPathChecked(instances)
+		if pathErr != nil {
+			out.Error(fmt.Sprintf("cannot establish turn identity: %v", pathErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if turnPath == "" {
+			out.Error("cannot establish turn identity: transcript path unavailable before send", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		turnCursor, pathErr = session.TranscriptCursor(turnPath)
+		if pathErr != nil {
+			out.Error(fmt.Sprintf("cannot capture turn identity cursor: %v", pathErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
 
 	// --draft: type text into the prompt without pressing Enter, letting the
 	// user review and submit manually.
@@ -2890,6 +2935,12 @@ func handleSessionSend(profile string, args []string) {
 	tun := defaultSendTuning()
 	if *noWait {
 		tun = noWaitSendTuning()
+	}
+	// #2033: give the verification loop the hook-driven busy signal so the
+	// Ctrl+C-and-resend recovery can tell a queued message on a live turn
+	// from a message lost during TUI init. Same signal --defer-if-busy reads.
+	tun.retry.targetBusyByHook = func() (bool, bool) {
+		return hookDrivenBusy(inst)
 	}
 	sendRes, sendErr := executeSend(tmuxSess, inst.Tool, message, *noWait, tun)
 	if sendErr != nil {
@@ -2934,6 +2985,21 @@ func handleSessionSend(profile string, args []string) {
 			sendRes.draftSaved)
 	}
 
+	// #2043: delivery acknowledgement is not reply identity. A hook-busy send
+	// may sit behind another live turn, so bind wait/stream to the durable user
+	// transcript record before observing completion or assistant output.
+	var turnID session.TurnIdentity
+	if useTurnIdentity {
+		identityDeadline := time.Now().Add(*timeout)
+		remaining := time.Until(identityDeadline)
+		var identityErr error
+		turnID, identityErr = session.AwaitTurnIdentity(turnPath, message, turnCursor, remaining, 100*time.Millisecond)
+		if identityErr != nil {
+			out.Error(fmt.Sprintf("turn identity not established: %v", identityErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
 	if !*stream {
 		data := map[string]interface{}{
 			"success":       true,
@@ -2950,7 +3016,7 @@ func handleSessionSend(profile string, args []string) {
 	// --stream: tail the Claude transcript and pipe JSONL events to
 	// stdout until end_turn, idle timeout, or error. Issue #689.
 	if *stream {
-		if err := streamSessionSend(inst, sessionRef, profile, sentAt, streamOptions{
+		if err := streamSessionSend(inst, sessionRef, profile, turnID, streamOptions{
 			idle:       *streamIdle,
 			charBudget: *streamCharBudget,
 			toolBudget: *streamToolBudget,
@@ -2984,21 +3050,19 @@ func handleSessionSend(profile string, args []string) {
 			}
 		}
 
-		// Wait for the JSONL to contain a response newer than sentAt.
-		// The status check (waitForCompletion) detects the UI prompt reappearing,
-		// but the JSONL file may not be flushed yet — poll until it is.
-		response, err := waitForFreshOutput(inst, sentAt, instances)
-		if err != nil {
-			// Fallback: reload session from DB in case tmux env was also stale
-			// (e.g., /clear created a new session that TUI or hooks detected)
-			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
-				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
-					response, err = waitForFreshOutput(freshInst, sentAt, freshInstances)
-				}
-			}
+		// The status check detects the UI prompt reappearing, but the JSONL may
+		// not be flushed yet. Poll for this exact turn's end_turn record.
+		var response *session.ResponseOutput
+		var responseErr error
+		if useTurnIdentity {
+			response, responseErr = session.AwaitTurnResponse(turnID, *timeout, 100*time.Millisecond)
+		} else {
+			// Preserve the pre-#2043 contract for non-Claude tools, whose output
+			// adapters do not expose Claude transcript UUIDs.
+			response, responseErr = waitForFreshOutput(inst, sentAt, instances)
 		}
-		if err != nil {
-			out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
+		if responseErr != nil {
+			out.Error(fmt.Sprintf("failed to get response: %v", responseErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		fmt.Println(response.Content)
@@ -3086,6 +3150,13 @@ const (
 	deliveryNoEvidence = "no_evidence"
 	// deliverySendFailed: the initial tmux send-keys itself failed.
 	deliverySendFailed = "send_failed"
+	// deliveryQueued: the message was typed and Entered once, and the
+	// target's hook-driven status reports it mid-turn (issue #2033). Claude
+	// holds such input as a queued message and takes it up when the turn
+	// ends, so this is a successful single delivery — but NOT a confirmed
+	// submit, and the verification loop must not Ctrl+C the target to find
+	// out. Exit 0, `"submitted": false`.
+	deliveryQueued = "queued"
 )
 
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
@@ -3386,6 +3457,15 @@ type sendRetryOptions struct {
 	// composer paste marker counts as foreign content and no nudge fires —
 	// the fail-safe default for callers that cannot establish provenance.
 	composerPasteFreeBeforeSend bool
+
+	// targetBusyByHook, when non-nil, reports the target's hook-driven busy
+	// state (the #1578 `--defer-if-busy` signal) as (busy, known). It is
+	// consulted before the Ctrl+C-and-resend recovery may fire (issue
+	// #2033): known && busy means the message is queued behind a live turn
+	// and the loop returns deliveryQueued instead of interrupting. known ==
+	// false (hooks absent or not firing) falls through to the #1980 pane
+	// check. nil means no hook signal is wired for this caller.
+	targetBusyByHook func() (busy, known bool)
 }
 
 // composerPasteFree captures the pane and reports whether the composer is
@@ -3529,6 +3609,15 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	}
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
+		// Hook-busy is itself positive evidence that the one submitted message
+		// is queued behind the live turn. Classification must not depend on the
+		// Ctrl+C resend threshold or budget: --no-wait deliberately has no such
+		// budget, but must still report this successful queued delivery.
+		if opts.targetBusyByHook != nil {
+			if busy, known := opts.targetBusyByHook(); known && busy {
+				return deliveryQueued, nil
+			}
+		}
 
 		unsentPromptDetected := false
 		// bodyInPaneNow is this iteration's answer to "is the body on screen
@@ -3621,6 +3710,18 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// double-send on the --no-wait path, which noWaitSendOptions
 				// disables outright; this keeps the recovery for the case it was
 				// written for.
+				//
+				// #2033: the pane check reads the VISIBLE pane only, so its
+				// evidence expires once the body scrolls off the top — and a
+				// target that is in fact generating satisfies every other
+				// condition here, because the spike-filtered status decays
+				// through waiting to idle without ever reporting active. So
+				// the hook-driven busy signal (the same one --defer-if-busy
+				// polls, #1578) is consulted FIRST: busy means the message is
+				// queued behind a live turn, and the loop returns queued
+				// without sending a single interrupt key. The pane check is
+				// kept as the secondary gate for tools whose hooks are absent
+				// or not firing, which is where it is the better signal.
 				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends &&
 					paneNow.OK && !bodyInPaneNow {
 					// The resend types the message and presses Enter, so it
@@ -4307,7 +4408,7 @@ type streamOptions struct {
 //
 // Overall budget: streamOptions.timeout bounds the entire stream (not just
 // idle gaps), matching the semantics of --wait's --timeout.
-func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentAt time.Time, opts streamOptions) error {
+func streamSessionSend(inst *session.Instance, sessionRef, profile string, turnID session.TurnIdentity, opts streamOptions) error {
 	// Resolve JSONL path. Claude writes the file after the first
 	// assistant chunk, so we poll briefly for its existence.
 	resolvedInst := inst
@@ -4381,7 +4482,12 @@ func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentA
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
 
-	return session.StreamTranscript(ctx, jsonlPath, resolvedInst.ClaudeSessionID, sentAt, os.Stdout, session.StreamConfig{
+	// The path resolved above must be the same transcript that supplied the
+	// durable turn identity. A rebind here would stream an unrelated turn.
+	if jsonlPath != turnID.Path {
+		return fmt.Errorf("turn transcript changed after submission; refusing guessed stream output")
+	}
+	return session.StreamTranscriptForTurn(ctx, turnID, resolvedInst.ClaudeSessionID, os.Stdout, session.StreamConfig{
 		IdleTimeout: opts.idle,
 		CharBudget:  opts.charBudget,
 		ToolBudget:  opts.toolBudget,

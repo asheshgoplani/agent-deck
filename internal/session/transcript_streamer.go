@@ -108,6 +108,17 @@ type claudeMessageEnvelope struct {
 // Returns nil on natural end_turn stop, ctx.Err on cancel, or
 // ErrStreamTimeout on idle timeout (with an error event already written).
 func StreamTranscript(ctx context.Context, path, sessionID string, sentAt time.Time, w io.Writer, cfg StreamConfig) error {
+	return streamTranscript(ctx, path, sessionID, sentAt, 0, w, cfg)
+}
+
+// StreamTranscriptForTurn streams only records after the durable user record
+// identified by id. This is the turn-safe entry point for session send
+// --stream; unlike StreamTranscript it has no timestamp freshness heuristic.
+func StreamTranscriptForTurn(ctx context.Context, id TurnIdentity, sessionID string, w io.Writer, cfg StreamConfig) error {
+	return streamTranscript(ctx, id.Path, sessionID, time.Time{}, id.StartOffset, w, cfg)
+}
+
+func streamTranscript(ctx context.Context, path, sessionID string, sentAt time.Time, initialOffset int64, w io.Writer, cfg StreamConfig) error {
 	cfg = cfg.WithDefaults()
 
 	enc := newEventEncoder(w)
@@ -125,7 +136,7 @@ func StreamTranscript(ctx context.Context, path, sessionID string, sentAt time.T
 
 	// Tail loop: re-open on missing-file (Claude may not have flushed
 	// yet for a fresh session) but never block if the file exists.
-	var offset int64
+	offset := initialOffset
 	lastProgress := time.Now()
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
@@ -222,8 +233,12 @@ type streamerState struct {
 }
 
 func newStreamerState(sentAt time.Time, cfg StreamConfig, enc *eventEncoder) *streamerState {
+	sentAtSkew := time.Time{}
+	if !sentAt.IsZero() {
+		sentAtSkew = sentAt.Add(-250 * time.Millisecond)
+	}
 	return &streamerState{
-		sentAtSkew: sentAt.Add(-250 * time.Millisecond),
+		sentAtSkew: sentAtSkew,
 		cfg:        cfg,
 		enc:        enc,
 		seen:       make(map[string]struct{}),
@@ -304,6 +319,9 @@ func (s *streamerState) consumeFile(path string, offset int64) (int64, bool, boo
 }
 
 func (s *streamerState) isFresh(ts string) bool {
+	if s.sentAtSkew.IsZero() {
+		return true
+	}
 	if ts == "" {
 		return true // no timestamp = assume fresh
 	}
