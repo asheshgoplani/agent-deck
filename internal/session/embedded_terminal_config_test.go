@@ -50,3 +50,43 @@ func TestMergePanelConfigPropagatesEmbeddedTerminalOff(t *testing.T) {
 		t.Fatal("settings merge dropped explicit embedded_terminal=false")
 	}
 }
+
+func TestSidebarDensityNormalizesAndDefaults(t *testing.T) {
+	cases := map[string]string{
+		"":          SidebarDensityCompact,
+		"nonsense":  SidebarDensityCompact,
+		"full":      SidebarDensityFull,
+		" Compact ": SidebarDensityCompact,
+		"MINIMAL":   SidebarDensityMinimal,
+		"auto":      SidebarDensityAuto,
+	}
+	for raw, want := range cases {
+		if got := (UISettings{SidebarDensity: raw}).GetSidebarDensity(); got != want {
+			t.Fatalf("sidebar_density %q resolved to %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestMergePanelConfigPropagatesSidebarDensity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	if err := SaveUserConfig(&UserConfig{UI: UISettings{SidebarDensity: SidebarDensityFull}}); err != nil {
+		t.Fatalf("save starting config: %v", err)
+	}
+	merged, err := MergePanelConfigOntoDisk(&UserConfig{UI: UISettings{SidebarDensity: SidebarDensityAuto}})
+	if err != nil {
+		t.Fatalf("merge settings panel config: %v", err)
+	}
+	if merged.UI.SidebarDensity != SidebarDensityAuto {
+		t.Fatalf("settings merge dropped sidebar_density=auto, got %q", merged.UI.SidebarDensity)
+	}
+	merged, err = MergePanelConfigOntoDisk(&UserConfig{})
+	if err != nil {
+		t.Fatalf("merge empty panel config: %v", err)
+	}
+	if merged.UI.SidebarDensity != SidebarDensityFull {
+		t.Fatalf("empty panel density overwrote the stored value, got %q", merged.UI.SidebarDensity)
+	}
+}
