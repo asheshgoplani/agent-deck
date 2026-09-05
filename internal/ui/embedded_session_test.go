@@ -212,6 +212,9 @@ func TestEnterProductionPathBuildsPTYAttachWithoutKeySender(t *testing.T) {
 	if tmuxSession == nil {
 		t.Fatal("test session has no tmux target")
 	}
+	if !home.embeddedRequest.ForceUTF8 {
+		t.Fatal("embedded attach request must force UTF-8 like the full-screen attach path")
+	}
 	if got := home.embeddedRequest.Name; got != tmuxSession.Name {
 		t.Fatalf("attach request target = %q, want %q", got, tmuxSession.Name)
 	}
