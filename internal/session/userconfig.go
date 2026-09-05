@@ -3157,6 +3157,12 @@ func (d DisplaySettings) GetTitleFormat() string {
 	return strings.TrimSpace(d.TitleFormat)
 }
 
+// ConfigureTmuxDisplay applies the shared CLI, TUI and headless-web title policy.
+func ConfigureTmuxDisplay(display DisplaySettings) {
+	tmux.SetHideCwdPrefixInTitle(!display.GetIncludeCwdPrefix())
+	tmux.SetTitleFormat(display.GetTitleFormat())
+}
+
 // Default user config (empty maps)
 var defaultUserConfig = UserConfig{
 	Tools:   make(map[string]ToolDef),

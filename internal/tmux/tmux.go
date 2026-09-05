@@ -1047,11 +1047,12 @@ type Session struct {
 	// option so a custom [display] title_format can render the group hierarchy
 	// in the outer terminal title. Empty when the session has no group. Kept in
 	// sync by the session layer (construction, reconnect, rename, regroup).
-	GroupPath  string
-	Command    string
-	Created    time.Time
-	InstanceID string // Agent-deck instance ID for hook callbacks
-	startupAt  time.Time
+	GroupPath    string
+	groupTitleMu sync.Mutex
+	Command      string
+	Created      time.Time
+	InstanceID   string // Agent-deck instance ID for hook callbacks
+	startupAt    time.Time
 
 	// WorkDirIsPlaceholder marks a session whose local WorkDir is not where the
 	// work happens — today that means an SSH session, whose pane only runs an
@@ -3056,7 +3057,7 @@ func (s *Session) buildTerminalTitleArgs() []string {
 	defaults := []option{
 		{"@agentdeck_project_name", s.projectDisplayName()},
 		{"@agentdeck_display_name", s.DisplayName},
-		{"@agentdeck_group_path", s.GroupPath},
+		{"@agentdeck_group_path", s.GetGroupPath()},
 	}
 	if _, overridden := s.OptionOverrides["set-titles"]; !overridden {
 		defaults = append(defaults, option{key: "set-titles", value: "on"})
@@ -3088,7 +3089,27 @@ func (s *Session) ConfigureTerminalTitle() {
 	if len(args) == 0 {
 		return
 	}
-	_ = s.tmuxCmd(args...).Run()
+	_ = s.runBoundedRun(args...)
+}
+
+// GetGroupPath and SetGroupPath synchronize the cached title metadata without
+// contending with the tmux status/capture lock.
+func (s *Session) GetGroupPath() string {
+	s.groupTitleMu.Lock()
+	defer s.groupTitleMu.Unlock()
+	return s.GroupPath
+}
+
+func (s *Session) SetGroupPath(path string) {
+	s.groupTitleMu.Lock()
+	s.GroupPath = path
+	s.groupTitleMu.Unlock()
+}
+
+// SetGroupTitleMetadata refreshes only the committed group option. It leaves
+// per-session title formats and other user overrides intact.
+func (s *Session) SetGroupTitleMetadata(groupPath string) error {
+	return s.runBoundedRun("set-option", "-t", s.Name, "@agentdeck_group_path", groupPath)
 }
 
 // ConfigureStatusBar sets up the tmux status bar with session info.

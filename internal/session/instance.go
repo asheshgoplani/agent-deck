@@ -1157,6 +1157,7 @@ func (i *Instance) applyVimModeFromConfig() {
 func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 	inst := NewInstance(title, projectPath)
 	inst.GroupPath = groupPath
+	inst.tmuxSession.GroupPath = groupPath
 	return inst
 }
 
@@ -10158,7 +10159,7 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
 		tmuxSess.DisplayName = i.Title
-		tmuxSess.GroupPath = i.GroupPath
+		tmuxSess.SetGroupPath(i.GroupPath)
 		tmuxSess.ConfigureStatusBar()
 		tmuxSess.ConfigureTerminalTitle()
 	}
