@@ -4201,9 +4201,11 @@ type sessionRenderState struct {
 	// the residual "Ctrl+Q → black screen" on large decks with a big group
 	// expanded. Carrying the labels in the snapshot makes row rendering
 	// lock-free.
-	title        string // Instance.Title at snapshot time
-	autoName     bool   // session displays a captured/live task description
-	autoNameDesc string // last persisted auto-name description (fallback when paneTitle empty)
+	account        string // Stored slot; empty means inherited, not a login identity.
+	accountDisplay accountPresentation
+	title          string // Instance.Title at snapshot time
+	autoName       bool   // session displays a captured/live task description
+	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
 }
 
 // displaySessionTitle returns the label to render for a session row. For an
@@ -4330,6 +4332,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 	}
 
 	snap := make(map[string]sessionRenderState, len(instances))
+	accounts := make(map[string]accountPresentation)
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -4343,10 +4346,17 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/
 			// pending-title reapply can mutate it concurrently from the Bubble
 			// Tea event-loop goroutine.
+			account:      inst.GetAccountThreadSafe(),
 			title:        inst.GetTitleThreadSafe(),
 			autoName:     inst.GetAutoName(),
 			autoNameDesc: inst.GetAutoNameDescription(),
 		}
+		display, ok := accounts[state.account]
+		if !ok {
+			display = newAccountPresentation(state.account)
+			accounts[state.account] = display
+		}
+		state.accountDisplay = display
 		// Look up pane title from the already-refreshed tmux cache.
 		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
 		// the cache fresh; processStatusUpdate and other rebuild paths run on
@@ -4386,12 +4396,15 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	// Fallback for newly-added sessions before snapshot refresh. This path DOES
 	// take Instance.mu (briefly, as a reader); it is bounded to sessions that a
 	// snapshot refresh has not seen yet, never the steady-state whole list.
+	account := inst.GetAccountThreadSafe()
 	return sessionRenderState{
-		status:       inst.GetStatusThreadSafe(),
-		tool:         inst.GetToolThreadSafe(),
-		title:        inst.GetTitleThreadSafe(),
-		autoName:     inst.GetAutoName(),
-		autoNameDesc: inst.GetAutoNameDescription(),
+		status:         inst.GetStatusThreadSafe(),
+		tool:           inst.GetToolThreadSafe(),
+		account:        account,
+		accountDisplay: newAccountPresentation(account),
+		title:          inst.GetTitleThreadSafe(),
+		autoName:       inst.GetAutoName(),
+		autoNameDesc:   inst.GetAutoNameDescription(),
 	}
 }
 
@@ -17402,18 +17415,29 @@ func (h *Home) renderSessionItem(
 	if isMaestro {
 		displayTitle = "⬢ " + displayTitle
 	}
-	if instState.autoName && listWidth > 0 {
-		// Task descriptions can be long; truncate to the row's free width so the
-		// tool label and badges stay on-row. Keep the reserved terms below in
-		// sync with the row format that follows.
-		reserved := leftGutterWidth + cellWidth(baseIndent) + cellWidth(selectionPrefix) +
-			cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
-			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
-			cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
-			cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
-			cellWidth(agentBadge) + cellWidth(timestampBadge)
-		budget := listWidth - reserved - 1 // -1 trailing margin
-		if budget > 0 && cellWidth(displayTitle) > budget {
+	// Include the stored slot in the existing badge/title cell budget. Normal
+	// titles need the same reservation as auto-names so the badge stays visible.
+	reserved := leftGutterWidth + cellWidth(baseIndent) + cellWidth(selectionPrefix) +
+		cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
+		cellWidth(status) + 1 + cellWidth(tool) +
+		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
+		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
+		cellWidth(agentBadge) + cellWidth(timestampBadge)
+	accountBudget := instState.accountDisplay.width
+	if listWidth > 0 {
+		accountBudget = min(accountBudget, max(0, listWidth-reserved-2))
+	}
+	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
+	if accountBadge != "" {
+		accountStyle := DimStyle
+		if selected {
+			accountStyle = SessionStatusSelStyle
+		}
+		accountBadge = accountStyle.Render(accountBadge)
+	}
+	if listWidth > 0 {
+		budget := max(0, listWidth-reserved-accountWidth-1)
+		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
 	}
@@ -17423,7 +17447,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -17439,6 +17463,7 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 		agentBadge,
+		accountBadge,
 		timestampBadge,
 	)
 
@@ -18136,6 +18161,11 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 
 	// Tool
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
+
+	// Use the same cached metadata as the row; no account/config resolution.
+	account := h.getSessionRenderState(inst).accountDisplay.label
+	account = cellTruncate(account, max(0, width-cellWidth("Account slot: ")), "…")
+	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Account slot:"), valueStyle.Render(account)))
 
 	// Session ID (if available) - Claude, Gemini, OpenCode, or generic (Hermes/custom tools)
 	sessionID := inst.ClaudeSessionID
