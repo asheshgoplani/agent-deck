@@ -3087,6 +3087,25 @@ func (h *Home) cleanupNotifications() {
 	h.boundKeysMu.Unlock()
 }
 
+// applySavedLayoutSettings applies the [ui] values the settings panel just
+// saved. sidebar_density is live. embedded_terminal is not: main negotiates
+// the terminal protocol for the layout once, at startup (all-motion mouse,
+// focus reporting, the stdin router and stdout wrapper), and the classic path
+// stays byte-identical when the option is off. Flipping h.embeddedLayout here
+// would advertise the embedded terminal while Enter fell back to the legacy
+// key-sender, so a changed value is stored and takes effect at the next
+// launch, and the user is told so.
+func (h *Home) applySavedLayoutSettings(ui session.UISettings) {
+	h.sidebarDensity = ui.GetSidebarDensity()
+	if want := ui.GetEmbeddedTerminal(); want != h.embeddedLayout {
+		state := "off"
+		if want {
+			state = "on"
+		}
+		h.setError(fmt.Errorf("embedded terminal %s saved: restart agent-deck to switch layouts", state))
+	}
+}
+
 // getVisibleHeight returns the number of visible items in the session list
 // Used for vi-style pagination (Ctrl+u/d/f/b)
 func (h *Home) getVisibleHeight() int {
@@ -7587,12 +7606,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.reloadHotkeysFromConfig()
 				h.showSessionTimestamps = config.Display.ShowSessionTimestamps
 				h.showPaneTitles = config.Display.ShowPaneTitles
-				wasEmbeddedLayout := h.embeddedLayout
-				h.embeddedLayout = config.UI.GetEmbeddedTerminal()
-				h.sidebarDensity = config.UI.GetSidebarDensity()
-				if h.embeddedLayout != wasEmbeddedLayout {
-					h.compactSidebar = h.embeddedLayout
-				}
+				h.applySavedLayoutSettings(config.UI)
 				h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 
 				// Apply theme changes live

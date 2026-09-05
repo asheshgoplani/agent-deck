@@ -2,6 +2,7 @@ package ui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -709,6 +710,36 @@ func TestSettingsPanel_ThemeToggle(t *testing.T) {
 	// Theme changes should not require restart (applied live)
 	if panel.needsRestart {
 		t.Error("Theme change should not require restart")
+	}
+}
+
+// The embedded layout is bound to the terminal protocol main negotiated at
+// startup, so saving the checkbox stores the value for the next launch and
+// says so, instead of switching a dashboard that has no PTY router into a
+// layout it cannot honor.
+func TestSavedEmbeddedTerminalSettingWaitsForRestart(t *testing.T) {
+	home := NewHome()
+	home.embeddedLayout = false
+	home.sidebarDensity = session.DefaultSidebarDensity
+
+	enabled := true
+	home.applySavedLayoutSettings(session.UISettings{EmbeddedTerminal: &enabled, SidebarDensity: session.SidebarDensityFull})
+	if home.embeddedLayout {
+		t.Fatal("embedded layout switched on live without the startup router")
+	}
+	if home.err == nil || !strings.Contains(home.err.Error(), "restart") {
+		t.Fatalf("user was not told the layout applies at the next launch: %v", home.err)
+	}
+	if home.sidebarDensity != session.SidebarDensityFull {
+		t.Fatalf("sidebar density = %q, want live update to full", home.sidebarDensity)
+	}
+
+	// Saving the value the process already runs with is not a restart event.
+	home.clearError()
+	disabled := false
+	home.applySavedLayoutSettings(session.UISettings{EmbeddedTerminal: &disabled})
+	if home.err != nil {
+		t.Fatalf("unchanged layout raised a notice: %v", home.err)
 	}
 }
 
