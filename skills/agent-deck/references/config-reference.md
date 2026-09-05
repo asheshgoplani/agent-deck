@@ -339,6 +339,16 @@ yolo_mode = false
 | `env_file` | string | `""` | A .env file sourced for Muse sessions only. Useful for provider credentials: panes do not inherit interactive-shell exports. See [Path Resolution](#path-resolution). |
 | `yolo_mode` | bool | `false` | Maps to `muse --yolo` (disable approval + sandboxing and trust the workspace for the run). |
 
+The default automatically trusts the workspace for this run, including its project rules. `--trust-workspace` does not bypass permission approvals or sandboxing; `yolo_mode` remains `false` by default. To keep the workspace-trust prompt instead, override the command with bare `muse`:
+
+```toml
+[muse]
+command = "muse"
+yolo_mode = false
+```
+
+This command override applies to fresh launches and restart-resume. An explicit per-session `yolo_mode = false` overrides a global `yolo_mode = true`.
+
 Status detection: pane content patterns (busy `◈ Thinking (… · esc to interrupt)`, idle prompt placeholder). Restart re-discovers the workspace's newest session in the muse store (`~/.local/share/muse/sessions`, `runtime.session.metadata` workspace binding) and resumes it via `muse resume <uuid>`; a pruned store boots fresh. Plain `start` always boots a fresh session, never resumes.
 
 ## [docker] Section
