@@ -185,13 +185,22 @@ func (h *Home) pageStepItems(lines, dir int) int {
 	rowLines := h.sidebarRowLines()
 	steps := 0
 	for i := h.cursor + dir; i >= 0 && i < len(h.flatItems); i += dir {
-		height := sidebarItemRenderHeightAtWidthDensity(h.flatItems[i], sidebarWidth, rowLines)
+		heightIndex := i
+		if dir > 0 {
+			heightIndex = i - dir
+		}
+		height := sidebarItemRenderHeightAtWidthDensity(h.flatItems[heightIndex], sidebarWidth, rowLines)
 		if height > lines && steps > 0 {
 			break
 		}
 		lines -= height
-		steps++
-		if lines <= 0 {
+		// Charge dividers to the budget, but only commit selectable rows.
+		// With no destination yet, allow the first selectable row to exceed
+		// a tiny budget so paging still makes progress.
+		if h.flatItems[i].Type != session.ItemTypeDivider {
+			steps = (i - h.cursor) * dir
+		}
+		if lines <= 0 && steps > 0 {
 			break
 		}
 	}

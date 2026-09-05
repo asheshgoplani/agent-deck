@@ -3391,6 +3391,12 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	// renderer used to rescan per header per frame (finding 11).
 	h.remoteHeaderCounts = make(map[string]remoteHeaderCount)
 	if len(remotes) > 0 {
+		collapsed := h.remoteGroupsCollapsed
+		if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+			// Flat presentation has no headers to reopen hidden descendants.
+			// Keep the saved folds for the next switch to grouped presentation.
+			collapsed = nil
+		}
 		for _, remoteName := range remoteNames {
 			sessions := remotes[remoteName]
 			for path, counts := range remoteHeaderCounts(remoteName, sessions) {
@@ -3417,7 +3423,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			// active view, empty remote groups get a header row too, like an
 			// empty local group; any filter or the archived view hides them.
 			showEmptyGroups := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
-			rows := buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups)
+			rows := buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, collapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups)
 			for _, row := range rows {
 				// An empty group's header has no session to count; give it
 				// a zero entry so the renderer never falls back to a scan.
@@ -11645,6 +11651,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "?":
+		h.helpOverlay.SetEmbeddedLayout(h.embeddedLayout)
 		h.helpOverlay.SetSize(h.width, h.height)
 		h.helpOverlay.Show()
 		return h, nil
@@ -21214,19 +21221,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		return
 	}
 	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
-		statusIcon := "○"
-		statusStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
-		switch rs.Status {
-		case "running":
-			statusIcon = "●"
-			statusStyle = lipgloss.NewStyle().Foreground(ColorGreen)
-		case "waiting":
-			statusIcon = "◐"
-			statusStyle = lipgloss.NewStyle().Foreground(ColorYellow)
-		case "error":
-			statusIcon = "✕"
-			statusStyle = lipgloss.NewStyle().Foreground(ColorRed)
-		}
+		statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
 		indent := strings.Repeat("  ", max(0, item.Level-1))
 		marker := "  "
 		if selected {
@@ -21249,6 +21244,9 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		}
 		first = fitCellWidth(first+rs.Title, max(1, listWidth))
 		secondText := strings.TrimSpace(rs.Status)
+		if rs.Archived {
+			secondText = "archived"
+		}
 		if secondText == "" {
 			secondText = "idle"
 		}
