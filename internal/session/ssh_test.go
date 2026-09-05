@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -333,6 +334,70 @@ func TestParseRemoteVersion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := parseRemoteVersion(tt.raw); got != tt.want {
 				t.Errorf("parseRemoteVersion(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseGroupListPaths pins the group-list flattener that backs
+// SSHRunner.FetchGroupPaths: `group list --json` returns a recursive tree
+// whose paths (including EMPTY groups — session_count 0) must all surface,
+// deduped and sorted, for the remote move/create dialogs.
+func TestParseGroupListPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "empty list",
+			input: `{"groups":[],"total_groups":0,"total_sessions":0}`,
+			want:  []string{},
+		},
+		{
+			name: "flat groups incl. an empty one",
+			input: `{"groups":[
+				{"name":"emptytest","path":"emptytest","session_count":0},
+				{"name":"work","path":"work","session_count":3}
+			],"total_groups":2,"total_sessions":3}`,
+			want: []string{"emptytest", "work"},
+		},
+		{
+			name: "nested children flattened with full paths",
+			input: `{"groups":[
+				{"name":"my-sessions","path":"my-sessions","session_count":7,
+				 "children":[
+					{"name":"done","path":"my-sessions/done","session_count":6,
+					 "children":[
+						{"name":"deep","path":"my-sessions/done/deep","session_count":0}
+					 ]}
+				 ]}
+			],"total_groups":3,"total_sessions":7}`,
+			want: []string{"my-sessions", "my-sessions/done", "my-sessions/done/deep"},
+		},
+		{
+			name: "slashes and whitespace normalized",
+			input: `{"groups":[
+				{"name":"a","path":"/a/","session_count":0}
+			],"total_groups":1,"total_sessions":0}`,
+			want: []string{"a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var parsed groupListJSON
+			if err := json.Unmarshal([]byte(tt.input), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := parseGroupListPaths(parsed)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseGroupListPaths = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("parseGroupListPaths[%d] = %q, want %q (all: %v)", i, got[i], tt.want[i], got)
+				}
 			}
 		})
 	}

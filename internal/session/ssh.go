@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -617,6 +618,69 @@ func (r *SSHRunner) FetchSessionPane(ctx context.Context, sessionID string) (str
 	}
 
 	return parseRemoteSessionOutput(output)
+}
+
+// groupListJSON mirrors the subset of `agent-deck group list --json` output
+// the TUI needs: the recursive group path tree. Counts and status are
+// ignored — a group with zero sessions is still a valid move/create target.
+type groupListJSON struct {
+	Groups []groupListEntryJSON `json:"groups"`
+}
+
+type groupListEntryJSON struct {
+	Path     string               `json:"path"`
+	Children []groupListEntryJSON `json:"children,omitempty"`
+}
+
+// FetchGroupPaths retrieves the remote's full group path list from its own
+// state DB via `agent-deck group list --json`. Unlike session-derived group
+// buckets (which can only ever contain groups that currently hold sessions),
+// the remote's group list includes EMPTY groups, so the local move dialog (M
+// key on a remote session) can still offer a folder after every session has
+// been moved out of it. Paths are normalized, deduped and sorted.
+//
+// Returns nil with no error when the remote returns empty output (older
+// agent-deck builds that predate the JSON shape); callers fall back to the
+// groups observed on the fetched sessions.
+func (r *SSHRunner) FetchGroupPaths(ctx context.Context) ([]string, error) {
+	output, err := r.Run(ctx, "group", "list", "--json")
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, nil
+	}
+
+	var parsed groupListJSON
+	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse remote group list: %w", err)
+	}
+
+	return parseGroupListPaths(parsed), nil
+}
+
+// parseGroupListPaths flattens the recursive group tree from `group list
+// --json` into normalized, deduped, sorted group paths. Extracted as a pure
+// function so the parsing is unit-testable without an SSH round-trip.
+func parseGroupListPaths(parsed groupListJSON) []string {
+	seen := make(map[string]bool)
+	var paths []string
+	var walk func(entries []groupListEntryJSON)
+	walk = func(entries []groupListEntryJSON) {
+		for _, e := range entries {
+			p := strings.Trim(strings.TrimSpace(e.Path), "/")
+			if p != "" && !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+			walk(e.Children)
+		}
+	}
+	walk(parsed.Groups)
+	sort.Strings(paths)
+	return paths
 }
 
 // FetchCostSummary retrieves the remote agent-deck's cost summary as JSON.
