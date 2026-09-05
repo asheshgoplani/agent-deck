@@ -12,6 +12,8 @@ func TestUISettings_GetShellSplit(t *testing.T) {
 		{"iTerm", ShellSplitITerm},
 		{"tmux", ShellSplitTmux},
 		{"TMUX", ShellSplitTmux},
+		{"window", ShellSplitWindow},
+		{"WINDOW", ShellSplitWindow},
 		{"", ""},
 		{"unknown", ""},
 		{"auto", ""},

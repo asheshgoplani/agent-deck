@@ -35,6 +35,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/procfd"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -5013,6 +5014,10 @@ func (i *Instance) Start() error {
 		go i.detectCopilotSessionAsync()
 	}
 
+	// Opt-in usage telemetry: counts only when the user has consented
+	// (no-op otherwise), tool name normalised to the built-in list.
+	telemetry.RecordSessionStarted(i.Tool)
+
 	return nil
 }
 
@@ -5292,6 +5297,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	if IsCodexCompatible(i.Tool) {
 		go i.detectCodexSessionAsync()
 	}
+
+	telemetry.RecordSessionStarted(i.Tool)
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
