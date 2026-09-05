@@ -180,6 +180,12 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		nativeRetainFile(t, name, path)
 	}
 	t.Cleanup(func() {
+		_ = filepath.WalkDir(remote, func(path string, entry os.DirEntry, err error) error {
+			if err == nil && !entry.IsDir() && entry.Name() == "debug.log" {
+				nativeRetainFile(t, "tui-debug.log", path)
+			}
+			return nil
+		})
 		if t.Failed() {
 			retain("failure-grid.txt")
 		}
@@ -191,8 +197,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 	})
 	retain("initial-grid.txt")
 	firstTUIProcess := readTUIProcess()
-	tmux("send-keys", "-t", "full-tui:0.0", "/")
-	tmux("send-keys", "-l", "-t", "full-tui:0.0", "Beta")
+	tmux("send-keys", "-l", "-t", "full-tui:0.0", "/Beta")
 	wait("actual TUI search filters rows", func() bool { g := grid(); return strings.Contains(g, second) && !strings.Contains(g, first) })
 	retain("search-grid.txt")
 	tmux("send-keys", "-t", "full-tui:0.0", "Escape")

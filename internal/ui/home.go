@@ -5493,6 +5493,20 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 // clears (issue #607). Under the default (full_repaint = false) this wrapper
 // is a pass-through — no regression for users who never opt in.
 func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Terminal reads may combine rapid printable keystrokes. Route them in
+	// order so a shortcut can open the text field that receives the tail.
+	// Bracketed paste and Alt input retain their original event semantics.
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyRunes && len(key.Runes) > 1 && !key.Alt && !key.Paste {
+		var commands []tea.Cmd
+		for _, r := range key.Runes {
+			_, cmd := h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			commands = append(commands, cmd)
+			if h.isQuitting {
+				break
+			}
+		}
+		return h, tea.Sequence(commands...)
+	}
 	defer h.recordFocusedSession()
 	model, cmd := h.updateInner(msg)
 	if !h.fullRepaint {
