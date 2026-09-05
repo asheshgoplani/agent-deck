@@ -301,8 +301,14 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 		return
 	}
 	if completed {
-		if !codexSuccessfulCompletion(event) && completionGeneration != "" {
-			prior.CodexFailedGeneration = completionGeneration
+		if !codexSuccessfulCompletion(event) {
+			failedGeneration := completionGeneration
+			if failedGeneration == "" {
+				failedGeneration = prior.CodexStartedGeneration
+			}
+			if failedGeneration != "" {
+				prior.CodexFailedGeneration = failedGeneration
+			}
 		}
 		prior.CodexCompletedGeneration = completionGeneration
 		prior.CodexCompletedSessionID = evidenceSessionID

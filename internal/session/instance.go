@@ -526,9 +526,10 @@ type Instance struct {
 
 	tmuxSession *tmux.Session // Internal tmux session
 
-	serverHasSessionsForTest  func() bool
-	hookLaunchGeneration      string
-	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
+	serverHasSessionsForTest       func() bool
+	terminatedCommitBarrierForTest func()
+	hookLaunchGeneration           string
+	paneDeadExitStatusForTest      func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
@@ -5723,16 +5724,27 @@ func (i *Instance) applyTerminatedPaneStatus() {
 		}
 	}
 	defer releaseCommit()
+	currentGeneration, currentAuthority := hookGenerationForInstance(instanceID)
+	if i.terminatedCommitBarrierForTest != nil {
+		i.terminatedCommitBarrierForTest()
+	}
+	i.mu.Lock()
 	if completion != nil {
-		latest := readHookStatusFile(instanceID)
+		locks, ok := tryCompletionWriterLocks(instanceID)
+		if !ok {
+			return
+		}
+		defer locks.release()
+		// The final authority and proof read remain protected through assignment.
+		// A writer publishes its control sequence before its status record.
+		latest := readSequencedCompletionLocked(instanceID)
+		currentGeneration, currentAuthority = hookGenerationForInstance(instanceID)
 		if latest == nil || latest.HookGeneration != completion.HookGeneration || latest.Sequence != completion.Sequence {
 			completion = nil
 		} else {
 			completion = latest
 		}
 	}
-	currentGeneration, currentAuthority := hookGenerationForInstance(instanceID)
-	i.mu.Lock()
 	if i.tmuxSession != tmuxSession || !i.LastStartedAt.Equal(started) || i.spawnGen.Load() != spawnGen || i.hookLaunchGeneration != launch || currentGeneration != generation || currentAuthority != authority {
 		return
 	}

@@ -1,7 +1,11 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
@@ -64,4 +68,91 @@ func validTerminatedCompletion(hook *HookStatus, tool, generation, sessionID str
 		return false
 	}
 	return !hook.UpdatedAt.Before(started) && !hook.UpdatedAt.After(now) && now.Sub(hook.UpdatedAt) <= terminatedCompletionMaxAge
+}
+
+// Called with i.mu held: acquisition must never wait for a producer. The
+// root-then-scoped order matches launch seeding; spawn ownership excludes a
+// concurrent scope migration. Reject symlinked directories and lock files.
+func tryCompletionWriterLocks(instanceID string) (*hermesHookLocks, bool) {
+	root := GetHooksDir()
+	dirs := []string{root}
+	for _, dir := range []string{root, filepath.Join(root, "sandbox"), filepath.Join(root, "sandbox", instanceID)} {
+		info, err := os.Lstat(dir)
+		if os.IsNotExist(err) && dir != root {
+			break
+		}
+		if err != nil || !info.IsDir() {
+			return nil, false
+		}
+		if dir == filepath.Join(root, "sandbox", instanceID) {
+			dirs = append(dirs, dir)
+		}
+	}
+	locks := &hermesHookLocks{}
+	for _, dir := range dirs {
+		f, err := os.OpenFile(filepath.Join(dir, instanceID+".lock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+		if err != nil {
+			locks.release()
+			return nil, false
+		}
+		info, err := f.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			_ = f.Close()
+			locks.release()
+			return nil, false
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = f.Close()
+			locks.release()
+			return nil, false
+		}
+		locks.files = append(locks.files, f)
+	}
+	return locks, true
+}
+
+// All possible writer scopes must be locked. A single authoritative control
+// must match the selected status scope and sequence exactly; a newer control
+// with an old DONE record is a torn publication, not completion evidence.
+func readSequencedCompletionLocked(instanceID string) *HookStatus {
+	root := GetHooksDir()
+	authorityPath, generation := "", ""
+	var sequence uint64
+	for _, dir := range []string{root, filepath.Join(root, "sandbox", instanceID)} {
+		path := filepath.Join(dir, instanceID+".generation.json")
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() || authorityPath != "" {
+			return nil
+		}
+		data, err := readStatusFileNoFollow(path)
+		var control struct {
+			Generation   string  `json:"generation"`
+			NextSequence *uint64 `json:"next_sequence"`
+		}
+		if err != nil || json.Unmarshal(data, &control) != nil || control.Generation == "" || control.NextSequence == nil || *control.NextSequence == 0 {
+			return nil
+		}
+		authorityPath = filepath.Join(dir, instanceID+".json")
+		generation, sequence = control.Generation, *control.NextSequence
+	}
+	if authorityPath == "" || hookStatusFilePath(instanceID) != authorityPath {
+		return nil
+	}
+	for _, dir := range []string{root, filepath.Join(root, "sandbox", instanceID)} {
+		path := filepath.Join(dir, instanceID+".json")
+		if path == authorityPath {
+			continue
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			return nil
+		}
+	}
+	hook := readHookStatusFile(instanceID)
+	if hook == nil || hook.HookGeneration != generation || hook.Sequence != sequence {
+		return nil
+	}
+	return hook
 }

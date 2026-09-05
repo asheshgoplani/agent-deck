@@ -71,6 +71,10 @@ func TestIssue2091DurableColdCompletionAndContradictions(t *testing.T) {
 				t.Fatal(err)
 			}
 			gen := producer.hookLaunchGeneration
+			control, _ := json.Marshal(map[string]any{"generation": gen, "next_sequence": 2})
+			if err := os.WriteFile(filepath.Join(GetHooksDir(), id+".generation.json"), control, 0600); err != nil {
+				t.Fatal(err)
+			}
 			if !strings.Contains(producer.bindCompletionLaunchCommand("codex"), gen) {
 				t.Fatal("launch token missing from real command")
 			}
@@ -138,6 +142,10 @@ func TestIssue2091DurableContradictionDuringServerProbe(t *testing.T) {
 		}
 	}
 	write()
+	control, _ := json.Marshal(map[string]any{"generation": i.hookLaunchGeneration, "next_sequence": 1})
+	if err := os.WriteFile(filepath.Join(GetHooksDir(), i.ID+".generation.json"), control, 0600); err != nil {
+		t.Fatal(err)
+	}
 	i.serverHasSessionsForTest = func() bool {
 		record["status"] = "running"
 		record["sequence"] = 2

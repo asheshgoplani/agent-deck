@@ -117,7 +117,7 @@ func TestIssue2091DelayedCodexDoneCannotReplaceNewTurn(t *testing.T) {
 }
 
 func TestIssue2091CodexFailureAndMissingTurnVeto(t *testing.T) {
-	for _, terminal := range []string{"turn-failed", "turn-cancelled", "metadata-after-failure", "unknown-failure-after-failure", "duplicate-start-after-failure", "missing-turn"} {
+	for _, terminal := range []string{"turn-failed", "turn-cancelled", "metadata-after-failure", "unknown-failure-after-failure", "first-unknown-failure", "duplicate-start-after-failure", "missing-turn"} {
 		t.Run(terminal, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("XDG_DATA_HOME", "")
@@ -128,12 +128,14 @@ func TestIssue2091CodexFailureAndMissingTurnVeto(t *testing.T) {
 			writeCodexHookStatus(id, "waiting", "thread", "agent-turn-complete", "A", "===AGENTDECK_DONE=== status=ok summary=A")
 			if terminal != "missing-turn" {
 				writeCodexHookStatus(id, "running", "thread", "agent-turn-start", "B")
-				if terminal == "metadata-after-failure" || terminal == "unknown-failure-after-failure" || terminal == "duplicate-start-after-failure" {
-					writeCodexHookStatus(id, "waiting", "thread", "turn-failed", "B")
+				if terminal == "metadata-after-failure" || terminal == "unknown-failure-after-failure" || terminal == "first-unknown-failure" || terminal == "duplicate-start-after-failure" {
+					if terminal != "first-unknown-failure" {
+						writeCodexHookStatus(id, "waiting", "thread", "turn-failed", "B")
+					}
 					switch terminal {
 					case "metadata-after-failure":
 						writeCodexHookStatus(id, "waiting", "thread", "session.configured")
-					case "unknown-failure-after-failure":
+					case "unknown-failure-after-failure", "first-unknown-failure":
 						writeCodexHookStatus(id, "waiting", "thread", "turn-failed", "")
 					case "duplicate-start-after-failure":
 						writeCodexHookStatus(id, "running", "thread", "agent-turn-start", "B")
@@ -143,7 +145,7 @@ func TestIssue2091CodexFailureAndMissingTurnVeto(t *testing.T) {
 				}
 			}
 			turn := "A"
-			if terminal == "metadata-after-failure" || terminal == "unknown-failure-after-failure" || terminal == "duplicate-start-after-failure" {
+			if terminal == "metadata-after-failure" || terminal == "unknown-failure-after-failure" || terminal == "first-unknown-failure" || terminal == "duplicate-start-after-failure" {
 				turn = "B"
 			}
 			if terminal == "missing-turn" {
@@ -162,5 +164,28 @@ func TestIssue2091CodexFailureAndMissingTurnVeto(t *testing.T) {
 				t.Fatalf("ambiguous/contradicted completion became DONE: %+v", got)
 			}
 		})
+	}
+}
+
+func TestIssue2091NewTurnRecoversFromUnidentifiedFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "")
+	id := "issue2091-new-valid-turn"
+	writeCodexHookStatus(id, "running", "thread", "agent-turn-start", "B")
+	writeCodexHookStatus(id, "waiting", "thread", "turn-failed", "")
+	writeCodexHookStatus(id, "running", "thread", "agent-turn-start", "C")
+	writeCodexHookStatus(id, "waiting", "thread", "agent-turn-complete", "C", "===AGENTDECK_DONE=== status=ok summary=C")
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hookStatusFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.DoneStatus != "ok" || got.CodexCompletedGeneration != "thread:C" {
+		t.Fatalf("new valid turn did not recover: %+v", got)
 	}
 }
