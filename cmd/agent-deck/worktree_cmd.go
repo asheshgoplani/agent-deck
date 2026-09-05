@@ -461,7 +461,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 			// harmful direction of #1852 site 3: a remote session's placeholder
 			// inserted here makes a genuinely orphaned worktree look in-use, so
 			// cleanup silently skips it forever.
-			sessionPaths := localSessionPaths(instances)
+			sessionPaths := allProfileSessionPaths(profile, instances)
 
 			orphanedWorktrees, protectedWorktrees = classifyUnregisteredWorktrees(worktrees, sessionPaths)
 		}

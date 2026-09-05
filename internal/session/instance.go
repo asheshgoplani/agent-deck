@@ -133,6 +133,8 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
+	storageSnapshot *instanceStorageSnapshot
+
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	ProjectPath string `json:"project_path"`
@@ -1090,6 +1092,7 @@ func NewInstance(title, projectPath string) *Instance {
 
 	inst := &Instance{
 		ID:               id,
+		Account:          strings.TrimSpace(os.Getenv("AGENTDECK_ACCOUNT")),
 		Title:            title,
 		ProjectPath:      projectPath,
 		GroupPath:        extractGroupPath(projectPath), // Auto-assign group from path
@@ -1100,6 +1103,7 @@ func NewInstance(title, projectPath string) *Instance {
 		tmuxSession:      tmuxSess,
 		addedThisProcess: true,
 	}
+	tmuxSess.GroupPath = inst.GroupPath
 	logSessionCreated(inst)
 	return inst
 }
@@ -1157,6 +1161,7 @@ func (i *Instance) applyVimModeFromConfig() {
 func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 	inst := NewInstance(title, projectPath)
 	inst.GroupPath = groupPath
+	inst.tmuxSession.GroupPath = groupPath
 	return inst
 }
 
@@ -1174,6 +1179,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 
 	inst := &Instance{
 		ID:               id,
+		Account:          strings.TrimSpace(os.Getenv("AGENTDECK_ACCOUNT")),
 		Title:            title,
 		ProjectPath:      projectPath,
 		GroupPath:        extractGroupPath(projectPath),
@@ -1184,6 +1190,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 		tmuxSession:      tmuxSess,
 		addedThisProcess: true,
 	}
+	tmuxSess.GroupPath = inst.GroupPath
 
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
@@ -1196,6 +1203,9 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 func NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool string) *Instance {
 	inst := NewInstanceWithTool(title, projectPath, tool)
 	inst.GroupPath = groupPath
+	if inst.tmuxSession != nil {
+		inst.tmuxSession.GroupPath = groupPath
+	}
 	return inst
 }
 
@@ -1471,6 +1481,9 @@ func (i *Instance) buildBashExportPrefix(skipConfigDirForCustomCommand bool) str
 		// instead of a local path that does not exist there (#1858).
 		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", i.configDirShellExpr(configDir))
 	}
+	if i.Account != "" && !skipConfigDirForCustomCommand {
+		prefix += fmt.Sprintf("export CLAUDE_SECURESTORAGE_CONFIG_DIR=%s; ", i.configDirShellExpr(GetClaudeConfigDirForInstance(i)))
+	}
 	prefix += i.buildResolvedAccountHintExports()
 	return prefix
 }
@@ -1558,6 +1571,13 @@ func resolvedProcessProfile() string {
 func (i *Instance) ensureProfileEnv() {
 	if i.tmuxSession == nil {
 		return
+	}
+	if i.Account != "" {
+		if err := i.tmuxSession.SetEnvironment("AGENTDECK_ACCOUNT", i.Account); err != nil {
+			sessionLog.Warn("set_account_failed", slog.String("error", err.Error()))
+		}
+	} else if err := i.tmuxSession.UnsetEnvironment("AGENTDECK_ACCOUNT"); err != nil {
+		sessionLog.Warn("unset_account_failed", slog.String("error", err.Error()))
 	}
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
 		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
@@ -4147,6 +4167,10 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 			// spaces (e.g. a macOS $HOME with a space in the username).
 			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir))
 		}
+		secureStoragePrefix := ""
+		if !hasCustomClaudeCommand && i.Account != "" {
+			secureStoragePrefix = fmt.Sprintf("CLAUDE_SECURESTORAGE_CONFIG_DIR=%s ", shellescape.Quote(GetClaudeConfigDirForInstance(i)))
+		}
 		execEnvPrefix := ""
 		if flags := telegramExecEnvStripFlags(i); flags != "" {
 			execEnvPrefix = "env " + flags + " "
@@ -4187,7 +4211,7 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 			"AGENTDECK_RESOLVED_CONFIG_DIR=%s AGENTDECK_RESOLVED_GROUP=%s AGENTDECK_RESOLVED_SOURCE=%s ",
 			shellescape.Quote(resolvedConfigDir), shellescape.Quote(i.GroupPath), shellescape.Quote(resolvedSource))
 		resolvedCommand := substituteResolvedBinary(baseCommand, "claude", claudeCmd)
-		return envPrefix + instanceIDPrefix + configDirPrefix + resolvedHintPrefix + execEnvPrefix + resolvedCommand
+		return envPrefix + instanceIDPrefix + configDirPrefix + secureStoragePrefix + resolvedHintPrefix + execEnvPrefix + resolvedCommand
 	case "codex":
 		// AGENTDECK_TOOL uses `matched` ("codex"), not i.Tool (which is
 		// "shell" for this passthrough instance) — buildCodexCommand's
@@ -4716,6 +4740,9 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 // SpawnAttempt helper) to preserve the structural-grep contract that
 // checks Start()'s body for the #745 IsForkAwaitingStart guard.
 func (i *Instance) Start() error {
+	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+		return err
+	}
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -4946,6 +4973,11 @@ func (i *Instance) Start() error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
+		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
+			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
+		}
+	}
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -5030,6 +5062,9 @@ func (i *Instance) Start() error {
 // `launch -m "..."` racing with a poller-triggered Start() must not
 // produce two parallel tmux sessions.
 func (i *Instance) StartWithMessage(message string) error {
+	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+		return err
+	}
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -5255,6 +5290,11 @@ func (i *Instance) StartWithMessage(message string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
+		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
+			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
+		}
+	}
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -7204,6 +7244,7 @@ func (i *Instance) recreateTmuxSession() {
 	// ProjectPath (which is a symlink into that parent dir). Delegates to
 	// EffectiveWorkingDir so single-repo sessions keep using ProjectPath.
 	i.tmuxSession = tmux.NewSession(i.Title, i.EffectiveWorkingDir())
+	i.tmuxSession.GroupPath = i.GroupPath
 	// Preserve the socket the instance was originally created on (issue
 	// #687). A restart/respawn cycle must NOT silently relocate the session
 	// to the current default socket — that would strand the old tmux pane
@@ -7305,6 +7346,9 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 	if i.Tool == "gemini" {
 		return i.getGeminiLastResponse()
 	}
+	if i.Tool == "pi" {
+		return i.getPiLastResponse()
+	}
 	return i.getTerminalLastResponse()
 }
 
@@ -7403,13 +7447,16 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 
 	// Final fallback: terminal parsing (works for all tools).
 	if i.tmuxSession != nil {
-		if terminalResp, terminalErr := i.getTerminalLastResponse(); terminalErr == nil {
+		terminalResp, terminalErr := i.getTerminalLastResponse()
+		if terminalErr == nil {
 			return terminalResp, nil
 		}
+		err = terminalErr
 	}
 
-	// For Claude and Gemini, prefer a graceful empty response instead of a hard error.
-	if IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
+	// A vanished terminal is benign for every tool. Preserve the existing
+	// graceful-empty behavior for Claude and Gemini when recovery fails.
+	if errors.Is(err, tmux.ErrCaptureGone) || IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
 		toolName := i.Tool
 		if IsClaudeCompatible(toolName) {
 			toolName = "claude"
@@ -8173,6 +8220,90 @@ func parseGeminiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 	return nil, fmt.Errorf("no assistant response found in session")
 }
 
+func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
+	if i.IsSSH() || i.IsSandboxed() {
+		return nil, fmt.Errorf("instance %s runs outside this host; its Pi transcript is not on this machine", i.ID)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var latest string
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && (latest == "" || info.ModTime().After(latestTime)) {
+			latest = filepath.Join(dir, entry.Name())
+			latestTime = info.ModTime()
+		}
+	}
+	if latest == "" {
+		return nil, fmt.Errorf("no Pi session transcript found")
+	}
+	data, err := os.ReadFile(latest)
+	if err != nil {
+		return nil, err
+	}
+	return parsePiLastAssistantMessage(data)
+}
+
+func parsePiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
+	type contentPart struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var sessionID string
+	var last *ResponseOutput
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Role    string        `json:"role"`
+				Content []contentPart `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &event) != nil {
+			continue
+		}
+		if event.Type == "session" {
+			sessionID = event.ID
+			continue
+		}
+		if event.Type != "message" || event.Message.Role != "assistant" {
+			continue
+		}
+		var text []string
+		for _, part := range event.Message.Content {
+			if part.Type == "text" {
+				text = append(text, part.Text)
+			}
+		}
+		if len(text) != 0 {
+			last = &ResponseOutput{
+				Tool: "pi", Role: "assistant", Content: strings.Join(text, "\n"),
+				Timestamp: event.Timestamp, SessionID: sessionID,
+			}
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("no assistant response found in Pi session")
+	}
+	return last, nil
+}
+
 // getTerminalLastResponse extracts the last response from terminal output
 // This is used for Gemini, Codex, and other tools without structured output
 func (i *Instance) getTerminalLastResponse() (*ResponseOutput, error) {
@@ -8504,6 +8635,9 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 }
 
 func (i *Instance) restart(env map[string]string) error {
+	if err := ValidateAccountSlot(i.Account, i.Tool); err != nil {
+		return err
+	}
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -9630,11 +9764,13 @@ func (i *Instance) ForkWithOptions(newTitle, newGroupPath string, opts *ClaudeOp
 		projectPath = opts.WorkDir
 	}
 	target := NewInstance(newTitle, projectPath)
+	target.Account = i.Account
 	if newGroupPath != "" {
 		target.GroupPath = newGroupPath
 	} else {
 		target.GroupPath = i.GroupPath
 	}
+	target.tmuxSession.SetGroupPath(target.GroupPath)
 	target.Tool = "claude"
 
 	return i.buildClaudeForkCommandForTarget(target, opts)
@@ -9727,11 +9863,13 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 		projectPath = opts.WorkDir
 	}
 	forked := NewInstance(newTitle, projectPath)
+	forked.Account = i.Account
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = "claude"
 	if IsClaudeCompatible(i.Tool) {
 		forked.Tool = i.Tool
@@ -9895,6 +10033,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	// Defer the one-shot fork script via ForkStartCommand (Pi/Codex pattern): the
 	// script self-deletes after first run, so storing it as the persistent Command
 	// would make a later restart re-run a missing file. Command holds a stable base
@@ -9943,6 +10082,7 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = "pi"
 	forked.Wrapper = i.Wrapper
 
@@ -10028,6 +10168,7 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+	forked.tmuxSession.SetGroupPath(forked.GroupPath)
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
 	// #1929: a fork runs against the parent's thread, so it must run under the
@@ -10159,6 +10300,7 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
 		tmuxSess.DisplayName = i.Title
+		tmuxSess.SetGroupPath(i.GroupPath)
 		tmuxSess.ConfigureStatusBar()
 		tmuxSess.ConfigureTerminalTitle()
 	}
@@ -11212,7 +11354,10 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// is itself valid syntax in any shell, so wrapping guarantees the
 	// injected bash syntax is interpreted by bash regardless of the user's
 	// default shell.
-	if i.hasEffectiveWrapper() || (i.Tool == "shell" && i.SubcommandPassthrough) {
+	if i.Account != "" {
+		wrapped = "export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account) + "; " + wrapped
+	}
+	if i.hasEffectiveWrapper() || i.Account != "" || (i.Tool == "shell" && i.SubcommandPassthrough) {
 		escaped := strings.ReplaceAll(wrapped, "'", "'\"'\"'")
 		wrapped = fmt.Sprintf("bash -c '%s'", escaped)
 	}
