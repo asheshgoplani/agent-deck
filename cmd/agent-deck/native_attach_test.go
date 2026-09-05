@@ -24,7 +24,7 @@ import (
 func TestNativeSSHAttachLifecycle(t *testing.T) {
 	for _, tool := range []string{"ssh", "tmux", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Fatal(tool + " required for native SSH acceptance")
+			nativeSSHMissingTool(t, tool)
 		}
 	}
 	bin := channelsCLIBinary(t)
