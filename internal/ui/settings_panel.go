@@ -1211,7 +1211,7 @@ func (s *SettingsPanel) View() string {
 	content.WriteString(sectionStyle.Render("INTERFACE"))
 	content.WriteString("\n")
 
-	line = s.renderCheckbox("Embedded terminal", s.embeddedLayout) + " - Persistent sidebar with an interactive tmux pane"
+	line = s.renderCheckbox("Embedded terminal", s.embeddedLayout) + " - Persistent sidebar with an interactive tmux pane (applies at next launch)"
 	if s.cursor == int(SettingEmbeddedTerminal) {
 		line = highlightStyle.Render(line)
 	}
