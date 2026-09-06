@@ -1051,6 +1051,33 @@ func TestHandleMainKeyEditNotesStartsEditor(t *testing.T) {
 	}
 }
 
+func TestHandleMainKeyCyclesTimeFilter(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.storage = nil // Avoid touching persistence in this unit test.
+
+	inst := &session.Instance{ID: "s1", Title: "s1", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: time.Now()}
+	home.groupTree = session.NewGroupTree([]*session.Instance{inst})
+
+	wantCycle := []session.TimeFilterMode{
+		session.TimeFilterToday,
+		session.TimeFilter3Days,
+		session.TimeFilter7Days,
+		session.TimeFilterAll,
+	}
+	for i, want := range wantCycle {
+		model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'*'}})
+		h, ok := model.(*Home)
+		if !ok {
+			t.Fatalf("step %d: handleMainKey should return *Home", i)
+		}
+		if h.timeFilter != want {
+			t.Errorf("step %d: timeFilter = %v, want %v", i, h.timeFilter, want)
+		}
+	}
+}
+
 func TestHandleNotesEditorKeySave(t *testing.T) {
 	home := NewHome()
 	home.width = 100
@@ -1567,16 +1594,53 @@ func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
 	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
 	home.cursor = 0
 
+	// Replace the two SSH paths the dialog can reach. Creating a session must
+	// not happen here; the only command `n` may return is the read-only
+	// account-slot fetch for the selected remote, answered under test control.
+	capture := &remoteCreateCapture{}
+	home.remoteCreateSink = capture.sink
+	home.remoteAccountsFetcher = func(remoteName string) tea.Cmd {
+		capture.accountsFetchedFor = append(capture.accountsFetchedFor, remoteName)
+		return func() tea.Msg {
+			return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: []string{"srv-alice"}}
+		}
+	}
+
 	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	h, ok := model.(*Home)
 	if !ok {
 		t.Fatal("handleMainKey should return *Home")
 	}
-	if cmd != nil {
-		t.Fatal("pressing n on a remote session should open the dialog, not quick-create")
-	}
 	if !h.newDialog.IsVisible() {
 		t.Fatal("pressing n on a remote session should open the new-session dialog")
+	}
+	if capture.calls != 0 {
+		t.Fatalf("pressing n on a remote session quick-created a session (%d create call(s)); it must only open the dialog", capture.calls)
+	}
+	if len(capture.accountsFetchedFor) != 1 || capture.accountsFetchedFor[0] != "myserver" {
+		t.Fatalf("account fetch requested for %v, want exactly [myserver]", capture.accountsFetchedFor)
+	}
+	if cmd == nil {
+		t.Fatal("pressing n on a remote session should return the account-slot fetch command")
+	}
+	// n batches the account-slot fetch with the MCP-list fetch; the MCP
+	// fetcher is not stubbed here and yields nothing, so the account fetch
+	// is the one message the batch must carry.
+	fetched, isFetch := findAccountsFetched(cmd())
+	if !isFetch {
+		t.Fatalf("the command returned by n must carry the account-slot fetch, got %T", cmd())
+	}
+	if fetched.remoteName != "myserver" {
+		t.Fatalf("account fetch answered for %q, want myserver", fetched.remoteName)
+	}
+	if updated, _ := h.Update(fetched); updated != nil {
+		h = updated.(*Home)
+	}
+	if capture.calls != 0 {
+		t.Fatalf("processing the account fetch result created a session (%d create call(s))", capture.calls)
+	}
+	if !h.newDialog.IsVisible() {
+		t.Fatal("processing the account fetch result must leave the dialog open")
 	}
 	if h.pendingRemoteName != "myserver" {
 		t.Fatalf("pendingRemoteName = %q, want myserver", h.pendingRemoteName)
@@ -3382,7 +3446,7 @@ func TestRebuildFlatItemsCollapsedGroupKeepsHeaderInArchivedView(t *testing.T) {
 	}
 }
 
-func TestRebuildFlatItemsArchivedViewOmitsRemoteSessions(t *testing.T) {
+func TestRebuildFlatItemsArchivedViewPartitionsRemoteSessions(t *testing.T) {
 	h := NewHome()
 	h.statusFilter = FilterModeArchived
 
@@ -3398,16 +3462,108 @@ func TestRebuildFlatItemsArchivedViewOmitsRemoteSessions(t *testing.T) {
 
 	h.remoteSessionsMu.Lock()
 	h.remoteSessions = map[string][]session.RemoteSessionInfo{
-		"dev": {{ID: "remote-1", Title: "remote-session", RemoteName: "dev"}},
+		"dev":  {{ID: "remote-1", Title: "remote-live", RemoteName: "dev"}, {ID: "remote-2", Title: "remote-archived", RemoteName: "dev", Archived: true}},
+		"live": {{ID: "remote-3", Title: "live-only", RemoteName: "live"}},
 	}
 	h.remoteSessionsMu.Unlock()
 
-	h.rebuildFlatItems()
-
-	for _, item := range h.flatItems {
-		if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
-			t.Fatalf("archived view should omit remote rows, got %+v", item)
+	remoteRows := func() (sessions []string, headers []string) {
+		for _, item := range h.flatItems {
+			switch item.Type {
+			case session.ItemTypeRemoteSession:
+				sessions = append(sessions, item.RemoteSession.ID)
+			case session.ItemTypeRemoteGroup:
+				if item.Level == 0 {
+					headers = append(headers, item.RemoteName)
+				}
+			}
 		}
+		return sessions, headers
+	}
+
+	// Archived view: only the remote sessions the remote reports archived, and
+	// only headers for remotes that have one (mirrors the local group rule).
+	h.rebuildFlatItems()
+	sessions, headers := remoteRows()
+	if strings.Join(sessions, ",") != "remote-2" {
+		t.Fatalf("archived view remote sessions = %v, want [remote-2]", sessions)
+	}
+	if strings.Join(headers, ",") != "dev" {
+		t.Fatalf("archived view remote headers = %v, want [dev]", headers)
+	}
+
+	// Active view: the archived remote session is hidden, like a local one.
+	h.statusFilter = ""
+	h.rebuildFlatItems()
+	sessions, headers = remoteRows()
+	if strings.Join(sessions, ",") != "remote-1,remote-3" {
+		t.Fatalf("active view remote sessions = %v, want [remote-1 remote-3]", sessions)
+	}
+	if strings.Join(headers, ",") != "dev,live" {
+		t.Fatalf("active view remote headers = %v, want [dev live]", headers)
+	}
+}
+
+// A / Shift+U on a remote row open the same archive / unarchive confirmation
+// the local row gets, scoped to the remote, and confirming returns a command
+// (the SSH round trip) instead of touching any local instance.
+func TestRemoteArchiveAndUnarchiveUseConfirmDialog(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	live := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver"}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &live, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	h := model.(*Home)
+	if !h.confirmDialog.IsVisible() {
+		t.Fatal("A on a remote row should show the archive confirmation")
+	}
+	if got := h.confirmDialog.GetConfirmType(); got != ConfirmArchiveRemoteSession {
+		t.Fatalf("confirm type after A = %v, want %v", got, ConfirmArchiveRemoteSession)
+	}
+	if got := h.confirmDialog.GetRemoteName(); got != "myserver" {
+		t.Fatalf("remote name after A = %q, want %q", got, "myserver")
+	}
+	if got := h.confirmDialog.GetTargetID(); got != "remote-123" {
+		t.Fatalf("target id after A = %q, want %q", got, "remote-123")
+	}
+	if cmd := h.confirmAction(); cmd == nil {
+		t.Fatal("confirming a remote archive should return the SSH command")
+	}
+	if h.confirmDialog.IsVisible() {
+		t.Fatal("confirming should hide the dialog")
+	}
+
+	// Shift+U is gated on the archived view, exactly like the local path.
+	archived := session.RemoteSessionInfo{ID: "remote-456", Title: "old-session", RemoteName: "myserver", Archived: true}
+	h.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &archived, RemoteName: "myserver"}}
+	model, _ = h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
+	h = model.(*Home)
+	if h.confirmDialog.IsVisible() {
+		t.Fatal("Shift+U outside the archived view must not open a dialog")
+	}
+	h.statusFilter = FilterModeArchived
+	model, _ = h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
+	h = model.(*Home)
+	if got := h.confirmDialog.GetConfirmType(); !h.confirmDialog.IsVisible() || got != ConfirmUnarchiveRemoteSession {
+		t.Fatalf("Shift+U on an archived remote row: visible=%v type=%v, want %v", h.confirmDialog.IsVisible(), got, ConfirmUnarchiveRemoteSession)
+	}
+	if got := h.confirmDialog.GetRemoteName(); got != "myserver" {
+		t.Fatalf("remote name after Shift+U = %q, want %q", got, "myserver")
+	}
+	if cmd := h.confirmAction(); cmd == nil {
+		t.Fatal("confirming a remote unarchive should return the SSH command")
+	}
+
+	// A on a row the remote already reports archived is a no-op.
+	h.confirmDialog.Hide()
+	model, _ = h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	h = model.(*Home)
+	if h.confirmDialog.IsVisible() {
+		t.Fatal("A on an already archived remote row must not open a dialog")
 	}
 }
 
@@ -3439,6 +3595,166 @@ func TestRebuildFlatItemsGroupScopeComposesWithStatusFilter(t *testing.T) {
 				t.Errorf("found non-running session %q, expected only running", item.Session.Title)
 			}
 		}
+	}
+}
+
+func TestRebuildFlatItemsTimeFilter(t *testing.T) {
+	now := time.Now()
+
+	// instToday uses now itself (not now.Add(-time.Hour)): TimeFilterToday's
+	// calendar-day boundary means an hour-old timestamp can fall into
+	// yesterday when the suite happens to run in the first hour after local
+	// midnight, making the "today" case flaky. now is always >= its own
+	// day's start, so it's unconditionally "today".
+	instToday := &session.Instance{ID: "s-today", Title: "today", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now}
+	inst2DaysAgo := &session.Instance{ID: "s-2days", Title: "2days", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.AddDate(0, 0, -2)}
+	inst5DaysAgo := &session.Instance{ID: "s-5days", Title: "5days", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.AddDate(0, 0, -5)}
+	inst30DaysAgo := &session.Instance{ID: "s-30days", Title: "30days", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now.AddDate(0, 0, -30)}
+	all := []*session.Instance{instToday, inst2DaysAgo, inst5DaysAgo, inst30DaysAgo}
+
+	sessionIDs := func(h *Home) []string {
+		var ids []string
+		for _, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				ids = append(ids, item.Session.ID)
+			}
+		}
+		return ids
+	}
+
+	tests := []struct {
+		name string
+		mode session.TimeFilterMode
+		want []string
+	}{
+		{"all", session.TimeFilterAll, []string{"s-today", "s-2days", "s-5days", "s-30days"}},
+		{"today", session.TimeFilterToday, []string{"s-today"}},
+		{"3 days", session.TimeFilter3Days, []string{"s-today", "s-2days"}},
+		{"7 days", session.TimeFilter7Days, []string{"s-today", "s-2days", "s-5days"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Home{}
+			h.timeFilter = tt.mode
+			h.groupTree = session.NewGroupTree(all)
+			h.windowsCollapsed = make(map[string]bool)
+			h.rebuildFlatItems()
+
+			got := sessionIDs(h)
+			if len(got) != len(tt.want) {
+				t.Fatalf("session count = %v, want %v", got, tt.want)
+			}
+			gotSet := make(map[string]bool, len(got))
+			for _, id := range got {
+				gotSet[id] = true
+			}
+			for _, id := range tt.want {
+				if !gotSet[id] {
+					t.Errorf("expected session %q in filtered list, got %v", id, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRebuildFlatItemsAutoClearsEmptyTimeFilter(t *testing.T) {
+	h := &Home{}
+	// Only session is 30 days old; "today" should match nothing.
+	inst := &session.Instance{ID: "s1", Title: "old", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: time.Now().AddDate(0, 0, -30)}
+	h.timeFilter = session.TimeFilterToday
+	h.groupTree = session.NewGroupTree([]*session.Instance{inst})
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	if h.timeFilter != session.TimeFilterAll {
+		t.Errorf("timeFilter should be auto-cleared when it matches nothing, got %v", h.timeFilter)
+	}
+	sessionCount := 0
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession {
+			sessionCount++
+		}
+	}
+	if sessionCount != 1 {
+		t.Errorf("expected 1 session in flatItems after auto-clear, got %d", sessionCount)
+	}
+}
+
+func TestRebuildFlatItemsTimeFilterComposesWithStatusFilter(t *testing.T) {
+	h := &Home{}
+	now := time.Now()
+	// now itself, not now.Add(-time.Hour): see the comment on instToday in
+	// TestRebuildFlatItemsTimeFilter for why an hour-old "today" fixture is
+	// flaky around local midnight.
+	recentRunning := &session.Instance{ID: "s1", Title: "recent-running", Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now}
+	recentIdle := &session.Instance{ID: "s2", Title: "recent-idle", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: now}
+	oldRunning := &session.Instance{ID: "s3", Title: "old-running", Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now.AddDate(0, 0, -30)}
+
+	h.statusFilter = session.StatusRunning
+	h.timeFilter = session.TimeFilterToday
+	h.groupTree = session.NewGroupTree([]*session.Instance{recentRunning, recentIdle, oldRunning})
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	var ids []string
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			ids = append(ids, item.Session.ID)
+		}
+	}
+	if len(ids) != 1 || ids[0] != "s1" {
+		t.Errorf("expected only s1 (running AND today), got %v", ids)
+	}
+}
+
+// TestRebuildFlatItemsTimeFilterAppliesToRemoteSessions covers the gap a
+// review caught: remote rows are appended after the local time-filter pass
+// runs (they skip local group-tree/window-injection entirely), so without a
+// second, remote-scoped pass they'd stay visible regardless of the selected
+// time range. Also covers the backward-compat case: a remote session with no
+// LastActivityAt (an older remote binary that predates the field) must
+// still match, not be treated as arbitrarily old.
+func TestRebuildFlatItemsTimeFilterAppliesToRemoteSessions(t *testing.T) {
+	h := NewHome()
+	h.timeFilter = session.TimeFilterToday
+
+	now := time.Now()
+	h.remoteSessionsMu.Lock()
+	h.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"dev": {
+			{ID: "r-recent", Title: "recent", RemoteName: "dev", LastActivityAt: now.Format(time.RFC3339)},
+			{ID: "r-old", Title: "old", RemoteName: "dev", LastActivityAt: now.AddDate(0, 0, -30).Format(time.RFC3339)},
+			{ID: "r-unknown", Title: "unknown-activity", RemoteName: "dev", LastActivityAt: ""},
+		},
+	}
+	h.remoteSessionsMu.Unlock()
+
+	h.groupTree = session.NewGroupTree(nil)
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	var ids []string
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+			ids = append(ids, item.RemoteSession.ID)
+		}
+	}
+	got := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got["r-recent"] {
+		t.Errorf("expected r-recent (matches today) to remain visible, got %v", ids)
+	}
+	if !got["r-unknown"] {
+		t.Errorf("expected r-unknown (no LastActivityAt, unknown treated as always-matching) to remain visible, got %v", ids)
+	}
+	if got["r-old"] {
+		t.Errorf("expected r-old (30 days ago) to be filtered out under Today, got %v", ids)
 	}
 }
 
@@ -4029,4 +4345,23 @@ func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
 	if h.err != nil {
 		t.Errorf("non-default group delete must not set an error, got %v", h.err)
 	}
+}
+
+// findAccountsFetched digs the account-slot fetch result out of a message
+// that may be a tea.BatchMsg (n batches the account fetch with the MCP fetch).
+func findAccountsFetched(msg tea.Msg) (remoteAccountsFetchedMsg, bool) {
+	switch m := msg.(type) {
+	case remoteAccountsFetchedMsg:
+		return m, true
+	case tea.BatchMsg:
+		for _, c := range m {
+			if c == nil {
+				continue
+			}
+			if found, ok := findAccountsFetched(c()); ok {
+				return found, true
+			}
+		}
+	}
+	return remoteAccountsFetchedMsg{}, false
 }

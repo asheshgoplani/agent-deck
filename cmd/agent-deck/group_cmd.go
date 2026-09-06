@@ -210,37 +210,28 @@ func handleGroupList(profile string, args []string) {
 			return gj
 		}
 
-		// Build top-level groups with their children
-		groupsJSON := []groupJSON{}
-		processedPaths := make(map[string]bool)
-
-		for _, g := range groupTree.GroupList {
-			// Skip if already processed as a child
-			if processedPaths[g.Path] {
-				continue
-			}
-
-			// Only process root-level groups here
-			if session.GetGroupLevel(g.Path) > 0 {
-				continue
-			}
-
+		// Build the tree recursively: each group carries its direct children
+		// (one level deeper, same prefix), which carry theirs, so a group at
+		// any depth appears, including empty ones the session list cannot
+		// reveal. GroupList is already ordered (a parent before its children,
+		// siblings by their persisted Order), so sibling order is preserved.
+		var buildSubtree func(g *session.Group) groupJSON
+		buildSubtree = func(g *session.Group) groupJSON {
 			gj := buildGroupJSON(g)
-
-			// Find children
+			childLevel := session.GetGroupLevel(g.Path) + 1
 			for _, child := range groupTree.GroupList {
-				if strings.HasPrefix(child.Path, g.Path+"/") {
-					// Direct child (one level deeper)
-					childLevel := session.GetGroupLevel(child.Path)
-					if childLevel == session.GetGroupLevel(g.Path)+1 {
-						gj.Children = append(gj.Children, buildGroupJSON(child))
-						processedPaths[child.Path] = true
-					}
+				if strings.HasPrefix(child.Path, g.Path+"/") && session.GetGroupLevel(child.Path) == childLevel {
+					gj.Children = append(gj.Children, buildSubtree(child))
 				}
 			}
+			return gj
+		}
 
-			groupsJSON = append(groupsJSON, gj)
-			processedPaths[g.Path] = true
+		groupsJSON := []groupJSON{}
+		for _, g := range groupTree.GroupList {
+			if session.GetGroupLevel(g.Path) == 0 {
+				groupsJSON = append(groupsJSON, buildSubtree(g))
+			}
 		}
 
 		// Count totals
@@ -938,13 +929,6 @@ func handleGroupDelete(profile string, args []string) {
 		groupTree.SyncWithInstances(groupTree.GetAllInstances())
 	}
 
-	// SaveGroups is additive (never prunes), so the deleted group's rows must be
-	// removed explicitly or the group resurrects on the next reload.
-	if err := storage.DeleteGroupSubtree(groupPath); err != nil {
-		out.Error(fmt.Sprintf("failed to delete group rows: %v", err), ErrCodeNotFound)
-		os.Exit(1)
-	}
-
 	// Save
 	if err := storage.SaveWithGroups(groupTree.GetAllInstances(), groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeNotFound)
@@ -1489,14 +1473,6 @@ func handleGroupChange(profile string, args []string) {
 	newPath := baseName
 	if destPath != "" {
 		newPath = destPath + "/" + baseName
-	}
-
-	// A move re-paths the group and its subgroups; the old source path rows must
-	// be deleted explicitly (additive SaveGroups won't prune them) before the
-	// save re-adds the new paths, or the group lingers under its old path.
-	if err := storage.DeleteGroupSubtree(sourcePath); err != nil {
-		out.Error(fmt.Sprintf("failed to delete old group rows: %v", err), ErrCodeNotFound)
-		os.Exit(1)
 	}
 
 	// Persist.

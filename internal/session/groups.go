@@ -76,6 +76,10 @@ func (it Item) IsCreatingPlaceholder() bool {
 
 // Group represents a group of sessions
 type Group struct {
+	storageSnapshot atomic.Pointer[groupStorageSnapshot]
+	saveOwner       *Group
+	derived         bool
+
 	Name        string
 	Path        string // Full path like "projects" or "projects/devops"
 	Expanded    bool
@@ -91,6 +95,10 @@ type Group struct {
 
 // GroupTree manages hierarchical session organization
 type GroupTree struct {
+	groupDeletes  *groupDeletionQueue
+	frozenDeletes bool
+	savedDeletes  []*groupDeletion
+
 	Groups    map[string]*Group // path -> group
 	GroupList []*Group          // Ordered list of groups
 	Expanded  map[string]bool   // Collapsed state persistence
@@ -269,8 +277,9 @@ func currentGroupSortMode() string {
 // NewGroupTree creates a new group tree from instances
 func NewGroupTree(instances []*Instance) *GroupTree {
 	tree := &GroupTree{
-		Groups:   make(map[string]*Group),
-		Expanded: make(map[string]bool),
+		groupDeletes: &groupDeletionQueue{},
+		Groups:       make(map[string]*Group),
+		Expanded:     make(map[string]bool),
 	}
 
 	// Build groups from instances
@@ -290,6 +299,7 @@ func NewGroupTree(instances []*Instance) *GroupTree {
 				name = DefaultGroupName
 			}
 			group = &Group{
+				derived:  true,
 				Name:     name,
 				Path:     groupPath,
 				Expanded: true, // Default expanded
@@ -317,14 +327,16 @@ func NewGroupTree(instances []*Instance) *GroupTree {
 		tree.updateGroupDefaultPath(groupPath)
 	}
 
+	tree.initializeDerivedSnapshots()
 	return tree
 }
 
 // NewGroupTreeWithGroups creates a group tree from instances and stored group data
 func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *GroupTree {
 	tree := &GroupTree{
-		Groups:   make(map[string]*Group),
-		Expanded: make(map[string]bool),
+		groupDeletes: &groupDeletionQueue{},
+		Groups:       make(map[string]*Group),
+		Expanded:     make(map[string]bool),
 	}
 
 	// First, create groups from stored data (preserves empty groups)
@@ -338,6 +350,7 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 			DefaultPath:   gd.DefaultPath,
 			MaxConcurrent: gd.MaxConcurrent,
 		}
+		group.storageSnapshot.Store(gd.storageSnapshot)
 		tree.Groups[gd.Path] = group
 		tree.Expanded[gd.Path] = gd.Expanded
 	}
@@ -360,6 +373,7 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 				name = DefaultGroupName
 			}
 			group = &Group{
+				derived:  true,
 				Name:     name,
 				Path:     groupPath,
 				Expanded: true,
@@ -387,6 +401,7 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 		tree.updateGroupDefaultPath(groupPath)
 	}
 
+	tree.initializeDerivedSnapshots()
 	return tree
 }
 
@@ -546,6 +561,7 @@ func (t *GroupTree) ensureParentGroupsExist(path string) {
 		if _, exists := t.Groups[currentPath]; !exists {
 			name := extractGroupName(currentPath)
 			group := &Group{
+				derived:  true,
 				Name:     name,
 				Path:     currentPath,
 				Expanded: true,
@@ -1047,6 +1063,7 @@ func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 	newGroup, exists := t.Groups[newGroupPath]
 	if !exists {
 		newGroup = &Group{
+			derived:  true,
 			Name:     newGroupPath,
 			Path:     newGroupPath,
 			Expanded: true,
@@ -1061,6 +1078,7 @@ func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 	// Update default paths for both old and new groups
 	t.updateGroupDefaultPath(oldGroupPath)
 	t.updateGroupDefaultPath(newGroupPath)
+	t.initializeDerivedSnapshots()
 }
 
 // sanitizeGroupName removes dangerous characters from group names
@@ -1396,11 +1414,14 @@ func (t *GroupTree) DeleteGroup(path string) []*Instance {
 	// Collect sessions from subgroups and delete them
 	for _, subPath := range subgroupPaths {
 		if subGroup, exists := t.Groups[subPath]; exists {
+			t.queueGroupDeletion(subGroup)
 			allMovedSessions = append(allMovedSessions, subGroup.Sessions...)
 			delete(t.Groups, subPath)
 			delete(t.Expanded, subPath)
 		}
 	}
+
+	t.queueGroupDeletion(group)
 
 	// Add sessions from the main group
 	allMovedSessions = append(allMovedSessions, group.Sessions...)
@@ -1416,6 +1437,7 @@ func (t *GroupTree) DeleteGroup(path string) []*Instance {
 		defaultGroup, exists := t.Groups[DefaultGroupPath]
 		if !exists {
 			defaultGroup = &Group{
+				derived:  true,
 				Name:     DefaultGroupName,
 				Path:     DefaultGroupPath,
 				Expanded: true,
@@ -1431,6 +1453,7 @@ func (t *GroupTree) DeleteGroup(path string) []*Instance {
 	delete(t.Expanded, path)
 	t.rebuildGroupList()
 
+	t.initializeDerivedSnapshots()
 	return allMovedSessions
 }
 
@@ -1497,6 +1520,7 @@ func (t *GroupTree) AddSession(inst *Instance) {
 			name = DefaultGroupName
 		}
 		group = &Group{
+			derived:  true,
 			Name:     name,
 			Path:     groupPath,
 			Expanded: true,
@@ -1510,6 +1534,7 @@ func (t *GroupTree) AddSession(inst *Instance) {
 	inst.Order = len(group.Sessions)
 	group.Sessions = append(group.Sessions, inst)
 	t.updateGroupDefaultPath(groupPath)
+	t.initializeDerivedSnapshots()
 }
 
 // RemoveSession removes a session from its group
@@ -1566,6 +1591,7 @@ func (t *GroupTree) SyncWithInstances(instances []*Instance) {
 				name = DefaultGroupName
 			}
 			group = &Group{
+				derived:  true,
 				Name:     name,
 				Path:     groupPath,
 				Expanded: true,
@@ -1596,6 +1622,7 @@ func (t *GroupTree) SyncWithInstances(instances []*Instance) {
 	for groupPath := range t.Groups {
 		t.updateGroupDefaultPath(groupPath)
 	}
+	t.initializeDerivedSnapshots()
 }
 
 // ShallowCopyForSave creates a copy of the GroupTree that's safe to use
@@ -1613,6 +1640,7 @@ func (t *GroupTree) ShallowCopyForSave() *GroupTree {
 	groupListCopy := make([]*Group, len(t.GroupList))
 	for i, g := range t.GroupList {
 		groupListCopy[i] = &Group{
+			saveOwner: g, derived: g.derived,
 			Name:          g.Name,
 			Path:          g.Path,
 			Expanded:      g.Expanded,
@@ -1621,9 +1649,11 @@ func (t *GroupTree) ShallowCopyForSave() *GroupTree {
 			MaxConcurrent: g.MaxConcurrent,
 			// Don't copy Sessions - not needed for save, only metadata is saved
 		}
+		groupListCopy[i].storageSnapshot.Store(g.storageSnapshot.Load())
 	}
 
 	return &GroupTree{
+		groupDeletes: t.groupDeletes, frozenDeletes: true, savedDeletes: t.deletionSnapshot(),
 		GroupList: groupListCopy,
 		// Groups and Expanded maps not needed since only GroupList is iterated in save
 	}

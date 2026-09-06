@@ -12,6 +12,7 @@ type fakeStorage struct {
 	instances []*session.Instance
 	groups    []*session.GroupData
 	loadErr   error
+	updatedAt time.Time
 	closed    bool
 	// profile, if set, is what Profile() reports was actually opened. Left
 	// "" in most fixtures so SessionDataService.resolveAndOpenStorage
@@ -24,6 +25,10 @@ func (f *fakeStorage) LoadWithGroups() ([]*session.Instance, []*session.GroupDat
 		return nil, nil, f.loadErr
 	}
 	return f.instances, f.groups, nil
+}
+
+func (f *fakeStorage) GetUpdatedAt() (time.Time, error) {
+	return f.updatedAt, nil
 }
 
 func (f *fakeStorage) Close() error {
@@ -132,6 +137,26 @@ func TestSessionDataService_LoadMenuSnapshot(t *testing.T) {
 	if snapshot.Items[3].Session.Model != "Gemini Pro" || snapshot.Items[3].Session.ModelVersion != "3.1 Preview" {
 		t.Fatalf("unexpected model fields: model=%q version=%q",
 			snapshot.Items[3].Session.Model, snapshot.Items[3].Session.ModelVersion)
+	}
+}
+
+func TestSessionDataService_MenuDataRevision(t *testing.T) {
+	updatedAt := time.Date(2026, time.September, 1, 12, 0, 0, 123, time.UTC)
+	fake := &fakeStorage{updatedAt: updatedAt}
+	svc := &SessionDataService{
+		profile:     "test-profile",
+		openStorage: func(string) (storageLoader, error) { return fake, nil },
+	}
+
+	revision, err := svc.MenuDataRevision()
+	if err != nil {
+		t.Fatalf("MenuDataRevision() error = %v", err)
+	}
+	if revision != updatedAt.UnixNano() {
+		t.Fatalf("MenuDataRevision() = %d, want %d", revision, updatedAt.UnixNano())
+	}
+	if !fake.closed {
+		t.Fatal("expected storage Close() to be called")
 	}
 }
 

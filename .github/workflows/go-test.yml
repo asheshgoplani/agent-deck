@@ -33,6 +33,8 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/go-test.yml'
+      - 'scripts/ci-native-ssh.sh'
+      - 'scripts/ci-shared-state-proof.sh'
 
 # One in-flight run per PR (or per branch on push). Rapid follow-up pushes
 # cancel the stale run instead of stacking 20-minute jobs.
@@ -44,19 +46,20 @@ permissions:
   contents: read
 
 jobs:
-  full-test-suite:
-    name: Full test suite (PR gate)
+  # Docs-only PRs still need the required check to REPORT, but running the
+  # full race suite for a README tweak is waste. Decide once here; the shards
+  # and the gate below read the answer.
+  changes:
+    name: Detect Go-relevant changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.gochanges.outputs.go }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-
-      # Docs-only PRs still need this required check to REPORT, but running the
-      # full race suite for a README tweak is waste. Detect whether anything
-      # Go-related changed; later steps skip (and the job passes) when not.
       - name: Detect Go-relevant changes
         id: gochanges
         run: |
@@ -64,25 +67,64 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           base="${{ github.event.pull_request.base.sha }}"
-          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$)'; then
+          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$|^scripts/ci-shared-state-proof\.sh$)'; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
             echo "go=false" >> "$GITHUB_OUTPUT"
             echo "No Go-relevant changes; passing the gate without running the suite."
           fi
 
+  # The suite, split by package group across runners (#2169). `go test`
+  # already runs every package in its own process, so a split changes
+  # nothing about what each package sees; it only lets the heavy groups
+  # (cmd, session, ui) run side by side instead of one after another.
+  # Every shard uses the exact release-gate invocation (same gotestsum
+  # flags, -race, 20m per-package timeout, PERF_BUDGET_MULTIPLIER).
+  shard:
+    name: Test shard (${{ matrix.shard.name }})
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # cmd/agent-deck alone takes ~9 min, so it is cut three ways by test
+        # name; the other groups fit one runner each.
+        shard:
+          - name: cmd-a
+            packages: ./cmd/...
+            run: '^Test[A-F]'
+          - name: cmd-b
+            packages: ./cmd/...
+            run: '^Test[G-R]'
+          - name: cmd-c
+            packages: ./cmd/...
+            run: '^Test[S-Z_a-z0-9]'
+          - name: session
+            packages: ./internal/session/...
+          - name: ui-web
+            packages: ./internal/ui/... ./internal/web/... ./tests/...
+          - name: rest
+            packages: REST
+          # The shared-state ordering proof (scripts/ci-shared-state-proof.sh)
+          # runs beside the shards instead of after them.
+          - name: proof
+            packages: PROOF
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
       - name: Set up Go
-        if: steps.gochanges.outputs.go == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version-file: go.mod
 
       # tmux + zoxide back the session and quick-open picker tests that the
-      # full `./...` run exercises. tmux is preinstalled on ubuntu-latest (the
-      # release gate relies on that); install both explicitly here so this gate
-      # is never weaker than the release gate it mirrors.
+      # suite exercises for real; mirror release.yml.
       - name: Install tmux and zoxide
-        if: steps.gochanges.outputs.go == 'true'
         timeout-minutes: 5
         run: |
           sudo apt-get update -qq
@@ -90,13 +132,128 @@ jobs:
           tmux -V
           zoxide --version
 
-      # Mirrors release.yml "Run tests" exactly — same gotestsum flags, same
-      # -race, same 20m per-package timeout, same PERF_BUDGET_MULTIPLIER.
+      - name: Resolve packages
+        id: pkgs
+        run: |
+          if [ "${{ matrix.shard.packages }}" = "REST" ]; then
+            pkgs=$(go list ./... | grep -vE '/cmd/|/internal/session|/internal/ui|/internal/web|/tests/' | tr '\n' ' ')
+          elif [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
+            pkgs="PROOF"
+          else
+            pkgs="${{ matrix.shard.packages }}"
+          fi
+          echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
+          echo "$pkgs" | tr ' ' '\n'
+
       - name: Run tests
-        if: steps.gochanges.outputs.go == 'true'
         timeout-minutes: 30
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
         run: |
           go install gotest.tools/gotestsum@v1.13.0
-          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="./..." -- -race -timeout 20m
+          if [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
+            bash scripts/ci-shared-state-proof.sh
+          elif [ -n "${{ matrix.shard.run }}" ]; then
+            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m -run '${{ matrix.shard.run }}'
+          else
+            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m
+          fi
+
+  # The single required context the main ruleset names. It passes when the
+  # diff is not Go-relevant, or when every shard passed; it fails (and never
+  # skips) otherwise, so a docs-only PR still reports and a broken shard
+  # still blocks.
+  full-test-suite:
+    name: Full test suite (PR gate)
+    needs: [changes, shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Gate on shard results
+        run: |
+          echo "go-relevant: ${{ needs.changes.outputs.go }}"
+          echo "shards: ${{ needs.shard.result }}"
+          if [ "${{ needs.changes.outputs.go }}" != "true" ]; then
+            echo "No Go-relevant changes; gate passes."; exit 0
+          fi
+          if [ "${{ needs.shard.result }}" = "success" ]; then
+            echo "All shards passed."; exit 0
+          fi
+          echo "A shard failed or was cancelled."; exit 1
+
+
+  native-ssh:
+    name: Required native SSH acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NATIVE_SSH_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.NATIVE_SSH_EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - name: Set native evidence path
+        run: echo "NATIVE_SSH_ARTIFACT_DIR=$RUNNER_TEMP/native-ssh-evidence" >> "$GITHUB_ENV"
+      - name: Install real SSH fixture tools
+        run: |
+          mkdir -p "$NATIVE_SSH_ARTIFACT_DIR"
+          id | tee "$NATIVE_SSH_ARTIFACT_DIR/runner-user.txt"
+          sudo apt-get update -qq 2>&1 | tee "$NATIVE_SSH_ARTIFACT_DIR/apt-update.log"
+          sudo apt-get install -y --no-install-recommends openssh-server openssh-client tmux python3 2>&1 | tee "$NATIVE_SSH_ARTIFACT_DIR/apt-install.log"
+          dpkg-query -W openssh-server openssh-client tmux python3 > "$NATIVE_SSH_ARTIFACT_DIR/packages.txt"
+      - name: Require real native SSH execution
+        timeout-minutes: 18
+        run: bash scripts/ci-native-ssh.sh
+      - name: Retain native SSH evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-ssh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_SSH_ARTIFACT_DIR }}
+          if-no-files-found: error
+
+
+  native-ssh-macos:
+    name: Required macOS native SSH acceptance
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      NATIVE_SSH_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.NATIVE_SSH_EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - name: Prepare disposable runner tools and evidence
+        run: |
+          evidence=$(python3 -c 'import os; print(os.path.realpath(os.environ["RUNNER_TEMP"]) + "/native-ssh-macos-evidence")')
+          mkdir "$evidence"
+          echo "NATIVE_SSH_ARTIFACT_DIR=$evidence" >> "$GITHUB_ENV"
+          id > "$evidence/runner-user.txt"
+          sw_vers > "$evidence/os.txt"
+          uname -m >> "$evidence/os.txt"
+          if ! command -v tmux; then brew install tmux; fi
+          tmux -V > "$evidence/tmux-version.txt"
+          command -v tmux > "$evidence/tmux-path.txt"
+      - name: Require real native SSH execution
+        timeout-minutes: 20
+        run: bash scripts/ci-native-ssh.sh
+      - name: Retain macOS native SSH evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-ssh-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_SSH_ARTIFACT_DIR }}
+          if-no-files-found: error

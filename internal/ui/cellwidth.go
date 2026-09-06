@@ -178,3 +178,104 @@ func fitDialogWidth(preferred, minWidth, termWidth int) int {
 	}
 	return w
 }
+
+// terminalTabWidth is the tab-stop interval every terminal we target uses: a
+// TAB advances the cursor to the next column that is a multiple of 8.
+const terminalTabWidth = 8
+
+// expandTabs replaces every TAB in s with the spaces a terminal would render in
+// its place, counting columns from the start of each line.
+//
+// Why this exists. ansi.StringWidth — and therefore cellWidth, fitCellWidth and
+// every width gate built on them — measures a TAB as ZERO cells, while the
+// terminal expands it to the next multiple-of-8 column. A captured pane line
+// carrying tabs (git status, `ls` column output) therefore passes the frame's
+// width clamp measuring exactly h.width while rendering 8 to 90 cells wider.
+// That row wraps, the alternate screen scrolls, and the header / filter bar /
+// SESSIONS title are pushed off the top. Bubble Tea's renderer repaints only
+// rows whose content changed, so the static rows never come back — they stay
+// blank until an attach/detach forces a full repaint. Expanding tabs to spaces
+// makes the measurement and the rendering agree, which is the only way a
+// fixed-cell frame can hold a tab at all.
+//
+// Escape sequences occupy no columns and are copied through untouched, so an
+// ANSI-coloured line expands at the same stops as its plain-text equivalent.
+// Column accounting is per grapheme cluster via cellWidth, so a wide glyph
+// before a tab moves the stop by the cells it actually occupies. CR and LF
+// reset the column, which makes the function safe on whole multi-line captures
+// as well as on single frame rows.
+func expandTabs(s string) string {
+	if !strings.ContainsRune(s, '\t') {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s) + terminalTabWidth)
+
+	col := 0
+	state := -1
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			n := escapeSequenceLen(s[i:])
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+
+		cluster, _, _, newState := uniseg.FirstGraphemeClusterInString(s[i:], state)
+		state = newState
+		if cluster == "" { // defensive: never spin on a malformed tail
+			b.WriteString(s[i:])
+			break
+		}
+		i += len(cluster)
+
+		switch cluster {
+		case "\t":
+			pad := terminalTabWidth - col%terminalTabWidth
+			b.WriteString(strings.Repeat(" ", pad))
+			col += pad
+		case "\n", "\r", "\r\n":
+			b.WriteString(cluster)
+			col = 0
+		default:
+			b.WriteString(cluster)
+			col += cellWidth(cluster)
+		}
+	}
+
+	return b.String()
+}
+
+// escapeSequenceLen returns the byte length of the escape sequence at the start
+// of s, which must begin with ESC. Handles CSI (ESC [ … final byte 0x40-0x7E),
+// OSC (ESC ] … BEL or ST) — the two shapes captured pane content actually
+// carries, SGR colour and OSC 8 hyperlinks — and treats anything else as a
+// two-byte escape. An unterminated sequence consumes the remainder, which
+// matches how a terminal would swallow it.
+func escapeSequenceLen(s string) int {
+	if len(s) < 2 {
+		return len(s)
+	}
+	switch s[1] {
+	case '[':
+		for i := 2; i < len(s); i++ {
+			if s[i] >= 0x40 && s[i] <= 0x7e {
+				return i + 1
+			}
+		}
+		return len(s)
+	case ']':
+		for i := 2; i < len(s); i++ {
+			if s[i] == 0x07 {
+				return i + 1
+			}
+			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+				return i + 2
+			}
+		}
+		return len(s)
+	default:
+		return 2
+	}
+}

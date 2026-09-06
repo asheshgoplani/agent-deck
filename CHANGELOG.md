@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.3] - 2026-09-06
+
+Changes on a remote deck reach the local TUI within about a second instead of at the next poll, and the PR gate runs in a third of the time.
+
+### Added
+
+- One persistent channel per remote: the TUI opens a single ssh session to the new `agent-deck remote-agent` and sends every remote command over it as JSON lines; the agent pushes the fresh listings whenever the remote's state changes (content-gated, so the TUI's own reads never feed back), and the TUI applies them at once. A remote running an older build keeps working over per-command ssh; `AGENT_DECK_REMOTE_CHANNEL=0` disables the channel ([#2177](https://github.com/asheshgoplani/agent-deck/pull/2177), part of #2174).
+
+### Changed
+
+- CI: the `Full test suite (PR gate)` runs as seven shards (cmd split three ways by test name, session, ui+web+tests, the rest, and the shared-state proof) with an aggregating gate under the same required name; wall clock about 6.5 minutes instead of 12 ([#2175](https://github.com/asheshgoplani/agent-deck/pull/2175), part of #2169).
+
+## [1.16.2] - 2026-09-06
+
+A remote deck no longer waits on the network to update the screen, and every remote action reports how long it took.
+
+### Added
+
+- Remote actions show their keypress-to-confirmation time in the footer ("moved to 'work' on agentbox in 0.4s") and log it as `remote_action`; move and rename now confirm with a footer line ([#2173](https://github.com/asheshgoplani/agent-deck/pull/2173)).
+- Rows with a remote action underway carry a marker ("· deleting…", "· archiving…", "· restarting…") until the remote answers, and the remote host header shows "· refreshing…" while a fleet fetch is in flight, including for `ctrl+r` ([#2173](https://github.com/asheshgoplani/agent-deck/pull/2173)).
+- `session start --no-wait` returns as soon as the process is spawned; the TUI uses it when creating a remote session so the attach begins about 3s sooner for Claude, with a fallback for remotes that predate the flag ([#2171](https://github.com/asheshgoplani/agent-deck/pull/2171), closes #2167).
+- `ctrl+r` refreshes remote decks together with the local reload ([#2171](https://github.com/asheshgoplani/agent-deck/pull/2171)).
+
+### Fixed
+
+- A fleet poll that started before an action can no longer land after it and resurrect a deleted, archived or moved row; fetches carry a sequence number ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- An unreadable `config.toml` no longer wipes every remote from the tree and the on-disk cache; the error is reported instead ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- A refused or unreachable remote rename reverts the title with a message instead of snapping back silently on the next poll ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- Creating a session in a remote group at `max_concurrent` shows "created ... queued" and refreshes, instead of a red failure that invited a duplicate ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- Create and attach failures on a remote name the remote, run the terminal cleanup after `tea.Exec`, and are never silent; Enter on a stopped remote session restarts it like a dead local one ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- Confirmed remote actions apply to the cached row at once (dropped, archived, running) instead of waiting for the next poll ([#2173](https://github.com/asheshgoplani/agent-deck/pull/2173)).
+- The fleet poll runs `costs summary` and `group list` concurrently with `list`, one round trip per poll instead of three ([#2171](https://github.com/asheshgoplani/agent-deck/pull/2171)).
+
+## [1.16.1] - 2026-09-06
+
+Remote decks are fully manageable from the local TUI: every key that works on a local row now works on a remote row and lands on the remote's own state.
+
+### Added
+
+- Remote session management from the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163), closes #2156): `A` / `Shift+U` archive and unarchive a remote session and the `^` view lists archived remote sessions; `f` forks a remote session on the remote; the new-session dialog offers the remote's MCPs to attach at creation; `Shift+Up/Down` reorders remote group headers in the remote's own order; `session set` is forwarded through the CLI passthrough.
+
+### Fixed
+
+- Empty remote groups are shown as `name (0)` like empty local groups, so a group created with `g` (or emptied by moves) no longer vanishes from the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
+- `n` on a remote group header creates the session in that group instead of the remote's my-sessions; `d` on a remote group header deletes the group on the remote after confirmation ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
+- A remote with no active session keeps its host header and its empty groups in the active view, so a fresh remote or one whose last session was archived stays a target for `n`, `N` and `g`; a group created with `g` gets its row immediately instead of after the next poll.
+- `group list --json` emits the full group tree, so empty groups below the second level reach the move dialog and the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
+
+## [1.16.0] - 2026-09-06
+
+Remote sessions with the full configuration, account switching from the TUI, and a community wave: 38 merged PRs since v1.15.0, twelve of them from contributors. The maintainer-pipeline batch tracked in [#2138](https://github.com/asheshgoplani/agent-deck/issues/2138) started landing in this release and continues on main.
+
+### Added
+
+- Remote sessions created from the TUI carry the full configuration: account slot (offered from the remote's own slots), model, Claude toggles and extra args, session mode, worktree, Docker sandbox and yolo. Unsafe values are refused with a clear error; local credentials are never copied ([#2155](https://github.com/asheshgoplani/agent-deck/pull/2155), building on [#2127](https://github.com/asheshgoplani/agent-deck/pull/2127) by @Djeeteg007).
+- Remote group management from the TUI: `M` moves a remote session between groups and offers empty groups, `g` creates a group on the remote, and a missing remote directory can be created on confirmation with the new opt-in `add --create-dir` ([#2157](https://github.com/asheshgoplani/agent-deck/pull/2157), by @barjatiyasaurabh, adopted from [#2081](https://github.com/asheshgoplani/agent-deck/pull/2081)).
+- Pick and switch the Claude account from the TUI ([#2152](https://github.com/asheshgoplani/agent-deck/pull/2152), closes #924).
+- Opt-in, consent-first usage telemetry, off by default ([#2106](https://github.com/asheshgoplani/agent-deck/pull/2106)).
+- `agent-deck remote drain` pulls cross-machine completions ([#1952](https://github.com/asheshgoplani/agent-deck/pull/1952)).
+- Scoped CLI commands are forwarded over SSH ([#2116](https://github.com/asheshgoplani/agent-deck/pull/2116)).
+- Configurable terminal title with group and tree context via `title_format` ([#2074](https://github.com/asheshgoplani/agent-deck/pull/2074), by @efenex).
+- Window mode for the open-shell-here hotkey ([#2068](https://github.com/asheshgoplani/agent-deck/pull/2068), by @AlanRezende).
+- Sessions can be filtered by recency, and expired windows refresh ([#2098](https://github.com/asheshgoplani/agent-deck/pull/2098)).
+- Fable 5.1 is offered in both model pickers ([#2109](https://github.com/asheshgoplani/agent-deck/pull/2109)).
+- Exact Deck titles are used at Claude startup ([#2075](https://github.com/asheshgoplani/agent-deck/pull/2075)).
+- `doctor` warns about shared named Claude account directories ([#2124](https://github.com/asheshgoplani/agent-deck/pull/2124)).
+- Stored account slots are shown in session rows and in `list` and `show` ([#2122](https://github.com/asheshgoplani/agent-deck/pull/2122), [#2121](https://github.com/asheshgoplani/agent-deck/pull/2121)).
+
+### Fixed
+
+- Rapid SSH input is preserved, verified by native macOS acceptance ([#2125](https://github.com/asheshgoplani/agent-deck/pull/2125)).
+- Native attach input, detach and terminal behavior over SSH are preserved ([#2117](https://github.com/asheshgoplani/agent-deck/pull/2117)).
+- Shared session state refreshes without losing concurrent updates ([#2123](https://github.com/asheshgoplani/agent-deck/pull/2123)); account slots survive concurrent storage changes ([#2114](https://github.com/asheshgoplani/agent-deck/pull/2114)).
+- Pi: output is read from the persisted conversation branch, and sends are confirmed before being reported ([#2119](https://github.com/asheshgoplani/agent-deck/pull/2119), [#2083](https://github.com/asheshgoplani/agent-deck/pull/2083), by @jwiegley).
+- tmux: terminal-feature growth across concurrent clients is prevented ([#2063](https://github.com/asheshgoplani/agent-deck/pull/2063)); vanished-pane captures degrade cleanly with an `ErrCaptureGone` sentinel ([#2090](https://github.com/asheshgoplani/agent-deck/pull/2090), by @ttunguz).
+- Help requests are read-only ([#2055](https://github.com/asheshgoplani/agent-deck/pull/2055)).
+- Update checks scope the gh token lookup to github.com ([#2105](https://github.com/asheshgoplani/agent-deck/pull/2105)).
+- Web: the menu refreshes after external session changes ([#2092](https://github.com/asheshgoplani/agent-deck/pull/2092), by @lpage-positron).
+- Path completion is case-insensitive with a visible match list ([#2027](https://github.com/asheshgoplani/agent-deck/pull/2027), by @AlanRezende).
+- Captured lines with tabs no longer overflow the frame ([#2073](https://github.com/asheshgoplani/agent-deck/pull/2073), by @efenex).
+- Conductor: the PEP 668 remediation works ([#2076](https://github.com/asheshgoplani/agent-deck/pull/2076), by @efenex).
+- Live client identity test fixtures are stable ([#2113](https://github.com/asheshgoplani/agent-deck/pull/2113)).
+
+### Changed
+
+- Web: the api, state and Toast modules no longer form an import cycle ([#2151](https://github.com/asheshgoplani/agent-deck/pull/2151)).
+- Workers are taught to narrow source reads ([#2049](https://github.com/asheshgoplani/agent-deck/pull/2049)).
+- Grouped Go dependency updates ([#2087](https://github.com/asheshgoplani/agent-deck/pull/2087)).
+
+### Repository automation
+
+- Silent `needs-info` PRs get one comment-only nudge after ten days ([#2140](https://github.com/asheshgoplani/agent-deck/pull/2140)).
+- New issues get a `triage` label and a type hint automatically ([#2139](https://github.com/asheshgoplani/agent-deck/pull/2139)).
+- The workflows README lists the four checks the branch ruleset actually requires ([#2143](https://github.com/asheshgoplani/agent-deck/pull/2143)).
+
 ## [1.15.0] - 2026-08-23
 
 Fail-closed inbox delivery, safer session navigation, and CLI parity across ten commits merged after v1.14.0.

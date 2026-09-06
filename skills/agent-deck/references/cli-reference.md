@@ -27,6 +27,10 @@ Complete reference for all agent-deck CLI commands.
 -q, --quiet             Minimal output
 ```
 
+`--help` and `-h` are read-only on every human-facing command. Bare `help` is
+recognized only in a command position; in a value position it remains usable
+as a workspace, remote, session, or other identifier.
+
 ## Basic Commands
 
 ### add - Create session
@@ -92,7 +96,9 @@ Notes:
 agent-deck accounts [--json]
 ```
 
-Lists profiles that configure a Claude `config_dir`; these names are accepted by `add --account` and `launch --account`.
+Lists profiles that configure a Claude `config_dir`; these names are accepted by `add --account`, `launch --account`, `session set <id> account`, `session switch-account`, and the account rows in the TUI's New Session and Edit Session dialogs.
+
+Each row reports the slot name, its config dir, and whether that directory exists yet — a configured account with no directory has never been logged in (`CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`). The `--json` form carries the same three fields (`name`, `config_dir`, `exists`).
 
 ### list - List sessions
 
@@ -100,6 +106,8 @@ Lists profiles that configure a Claude `config_dir`; these names are accepted by
 agent-deck list [--json] [--all]
 agent-deck ls  # Alias
 ```
+
+Both JSON forms always include `account`: the exact stored per-session slot, including an empty string when no slot is explicitly stored. Human tables show the slot in a quoted `ACCOUNT` column, escaping controls. This is stored metadata, not a resolved account or login identity.
 
 ### remove - Remove session
 
@@ -226,6 +234,7 @@ Auto-detects current session if no ID provided.
 
 **JSON output includes:**
 - Session details (id, title, status, path, group, tool)
+- `account`: the exact stored slot, always present including an empty string. Human output shows a quoted, control-escaped `Account:` field; neither form resolves login identity.
 - Claude/Gemini session ID
 - Attached MCPs (local, global, project)
 - tmux session name

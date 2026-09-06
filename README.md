@@ -235,6 +235,15 @@ configured under `[profiles.<name>.claude].config_dir`.
 
 `agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too.
 
+The TUI exposes the same two moments. The **New Session** dialog's Claude options
+carry an `Account` row (`←`/`→` or `Space` to cycle, `inherit` = today's
+conductor/group/env chain), so a session can be created straight onto the right
+login. The **Edit Session** dialog (`e`) carries a `Claude account` row for a
+session that already exists; committing it runs the same
+migrate-and-resume flow as `session switch-account`, and the session card's
+`[account:"…"]` badge follows. Both rows are hidden when no
+`[profiles.<name>.claude].config_dir` blocks are configured.
+
 ### Session naming
 
 Titles and groups answer different questions — "what is this, at a glance?" versus "why do these sessions belong together?" — and each has its own controls.
@@ -247,6 +256,7 @@ By default, agent-deck syncs a session's displayed title from the tool's own ses
 | --- | --- |
 | This one session keeps the title I gave it | `--title-lock` (alias `--no-title-sync`) on `agent-deck add` / `agent-deck launch`, or `agent-deck session set-title-lock <id> on` at runtime |
 | No session in this installation ever gets renamed by its agent | `sync_title = false` in `config.toml` |
+| Claude should receive the exact deck title at startup | supported Claude launch/restart/resume commands get `--name`; `push_title = false` opts out. A deck rename takes effect on the next start, not immediately. |
 | A throwaway session where the live task description matters more than a fixed name | `agent-deck add --quick` (`-Q` short flag) — the list shows the session's current Claude task in place of the generated handle |
 
 An explicit `-t/--title` locks the title automatically, the same as passing `--title-lock` — there's no separate opt-in needed. There's also no create-time opt-out: if you want a session with an explicit title to still pick up the agent's renames, unlock it afterward with `agent-deck session set-title-lock <id> off`. A locked title is never silently overwritten by the sync path — it only changes via an explicit rename or `session set-title-lock <id> off`.
@@ -862,6 +872,16 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 - If `gh` fails (auth required, not installed, network), the CLI prints an error and exits non-zero. No clipboard or browser fallback is triggered on the CLI path.
 
 **Feedback prompt frequency** (v1.7.41+): the TUI's auto-prompt is paced so brand-new users aren't asked on their first few launches. The first prompt appears only after **7 launches or 3 days** of use, whichever comes later. If you dismiss it, agent-deck waits **14 days** before asking again. You'll see at most **3 prompts per version**, and pressing `n` at any step opts you out permanently — use `agent-deck feedback` or `Ctrl+E` to re-enable on demand. Opt-out always wins over every pacing gate.
+
+### Usage telemetry (opt-in, off by default)
+
+agent-deck can send one small anonymous usage report per day (random install id, version, OS/arch, feature counters) so the maintainer can see which features are used. **It is off until you explicitly say yes** in the one-time TUI prompt or with `agent-deck telemetry enable`; declining is remembered and nothing is ever sent or counted without consent. `AGENTDECK_TELEMETRY=0` or `DO_NOT_TRACK=1` hard-disable it regardless. Full details, the exact payload, and every control: [TELEMETRY.md](TELEMETRY.md).
+
+```bash
+agent-deck telemetry status      # on/off and why
+agent-deck telemetry show-last   # the exact JSON that was last sent
+agent-deck telemetry disable     # off, install id deleted
+```
 
 ### Remote Instances
 

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"al.essio.dev/pkg/shellescape"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -1278,6 +1280,7 @@ type pipFailureDiagnostic struct {
 	Packages        []string // packages pip was asked to install
 	HasMise         bool     // mise binary on PATH at install time
 	RawStderr       string   // captured stderr from the failing pip call
+	VenvDir         string   // conductor venv path findPython3 prefers (session.ConductorVenvDir)
 }
 
 // formatPipFailureMessage renders the user-facing error block. The PEP 668
@@ -1287,6 +1290,18 @@ type pipFailureDiagnostic struct {
 // without speculating on the cause.
 func formatPipFailureMessage(d pipFailureDiagnostic) string {
 	pkgs := strings.Join(d.Packages, " ")
+
+	// Never print a venv path the resolver would not look at. Falling back to
+	// the resolver keeps the message correct even when the caller forgot to
+	// populate the field.
+	venvDir := d.VenvDir
+	if venvDir == "" {
+		venvDir = session.ConductorVenvDir()
+	}
+	venvCommandDir := shellescape.Quote(venvDir)
+	if venvDir == "" {
+		venvCommandDir = `"$HOME"/.agent-deck/conductor/venv`
+	}
 
 	if d.Kind != pipFailurePEP668 {
 		var b strings.Builder
@@ -1335,10 +1350,10 @@ func formatPipFailureMessage(d pipFailureDiagnostic) string {
 	b.WriteString("         # <VERSION> is any Python 3.11+ — e.g. 3.12 or 3.13.\n")
 	b.WriteString("         # agent-deck does not pin a specific version.\n\n")
 	fmt.Fprintf(&b, "    %s\n", venvHeader)
-	b.WriteString("         python3 -m venv ~/.agent-deck/conductor/.venv\n")
-	fmt.Fprintf(&b, "         ~/.agent-deck/conductor/.venv/bin/pip install %s\n", pkgs)
-	b.WriteString("         # (manual: edit ~/Library/LaunchAgents/com.agentdeck.conductor-bridge.plist\n")
-	b.WriteString("         #  to point at ~/.agent-deck/conductor/.venv/bin/python3)\n\n")
+	fmt.Fprintf(&b, "         python3 -m venv %s\n", venvCommandDir)
+	fmt.Fprintf(&b, "         %s/bin/pip install %s\n", venvCommandDir, pkgs)
+	b.WriteString("         # agent-deck prefers this interpreter automatically once it\n")
+	b.WriteString("         # exists — no plist or unit file to edit by hand.\n\n")
 	b.WriteString("    3. Override the policy (works, but the policy exists for a reason):\n")
 	fmt.Fprintf(&b, "         python3 -m pip install --user --break-system-packages %s\n\n", pkgs)
 	b.WriteString("  After fixing, verify with:  agent-deck conductor status\n")
@@ -1376,13 +1391,26 @@ func installPythonDeps() bool {
 	// Try with --user first; fall back to no --user (venvs, containers).
 	// We capture stderr on the second attempt so a failure can be classified
 	// and surfaced with a remediation message.
+	// Resolve the interpreter the generated daemon unit will actually run
+	// (session.FindPython3 prefers the conductor venv) instead of whatever
+	// "python3" means on the current PATH. Installing into a different
+	// interpreter than the daemon uses is how a "successful" setup still
+	// produced a bridge that could not import aiogram — and, in the PEP 668
+	// case, how the remediation the message printed could not take effect:
+	// the user built the venv, re-ran setup, and setup went straight back to
+	// the externally-managed PATH python and refused to install the daemon.
+	python := session.FindPython3()
+	if python == "" {
+		python = "python3"
+	}
+
 	args := append([]string{"-m", "pip", "install", "--quiet", "--user"}, packages...)
-	if err := exec.Command("python3", args...).Run(); err == nil {
+	if err := exec.Command(python, args...).Run(); err == nil {
 		return true
 	}
 	var stderrBuf bytes.Buffer
 	args = append([]string{"-m", "pip", "install"}, packages...)
-	cmd := exec.Command("python3", args...)
+	cmd := exec.Command(python, args...)
 	cmd.Stderr = &stderrBuf
 	if err := cmd.Run(); err == nil {
 		return true
@@ -1393,7 +1421,8 @@ func installPythonDeps() bool {
 		Packages:  packages,
 		RawStderr: stderrBuf.String(),
 	}
-	diag.InterpreterPath, diag.InterpreterVer = probePythonInterpreter()
+	diag.InterpreterPath, diag.InterpreterVer = probePythonInterpreter(python)
+	diag.VenvDir = session.ConductorVenvDir()
 	if _, err := exec.LookPath("mise"); err == nil {
 		diag.HasMise = true
 	}
@@ -1410,8 +1439,11 @@ func installPythonDeps() bool {
 // probePythonInterpreter returns (path, version) by asking python3 to print
 // sys.executable and sys.version. Empty strings on any probe failure — the
 // formatter renders gracefully without them.
-func probePythonInterpreter() (path, version string) {
-	out, err := exec.Command("python3", "-c",
+func probePythonInterpreter(python string) (path, version string) {
+	if python == "" {
+		python = "python3"
+	}
+	out, err := exec.Command(python, "-c",
 		"import sys; print(sys.executable); print(sys.version.split()[0])").Output()
 	if err != nil {
 		return "", ""

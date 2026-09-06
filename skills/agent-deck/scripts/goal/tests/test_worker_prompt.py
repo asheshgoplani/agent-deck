@@ -83,5 +83,51 @@ class TestWorkerPromptTrustButVerify(unittest.TestCase):
         )
 
 
+class TestWorkerPromptSkeletonFirstReading(unittest.TestCase):
+    """The worker must narrow the repository before reading full bodies."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Load the shared prompt once for the skeleton-first assertions."""
+        cls.text = WORKER_PROMPT.read_text(encoding="utf-8")
+
+    def test_reading_stages_are_present_and_ordered(self) -> None:
+        """Require the funnel's three stages in their execution order."""
+        stages = [
+            "Repository tree",
+            "Declaration skeletons",
+            "Narrowed full code",
+        ]
+        positions = [self.text.find(stage) for stage in stages]
+        self.assertTrue(
+            all(position >= 0 for position in positions),
+            f"Worker contract must name every skeleton-first stage: {stages}",
+        )
+        self.assertEqual(
+            positions,
+            sorted(positions),
+            "Worker contract must order tree, skeletons, then narrowed full code",
+        )
+
+    def test_full_file_reads_are_forbidden_before_narrowing(self) -> None:
+        """Keep full bodies gated behind tree and skeleton inspection."""
+        self.assertIn(
+            "Do not read full source files before completing stages 1 and 2",
+            self.text,
+            "Without an explicit gate, workers can bypass skeleton-first reading",
+        )
+
+    def test_protocol_gives_grep_first_commands(self) -> None:
+        """Bind each discovery command to its stage before full-code reads."""
+        tree_start = self.text.index("Repository tree")
+        skeleton_start = self.text.index("Declaration skeletons")
+        full_code_start = self.text.index("Narrowed full code")
+
+        tree_instructions = self.text[tree_start:skeleton_start]
+        skeleton_instructions = self.text[skeleton_start:full_code_start]
+        self.assertIn("rg --files --hidden -g '!.git'", tree_instructions)
+        self.assertIn("rg -n", skeleton_instructions)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

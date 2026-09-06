@@ -15,6 +15,23 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
+// resolveCLIAccountSlot validates the final command provenance before callers
+// create worktrees or run setup scripts. Empty commands keep NewInstance's
+// default shell; selecting a configured default tool here would change behavior.
+func resolveCLIAccountSlot(explicitAccount, resolvedTool, resolvedCommand string, passthrough bool) (string, error) {
+	account := strings.TrimSpace(explicitAccount)
+	if account == "" {
+		account = strings.TrimSpace(os.Getenv("AGENTDECK_ACCOUNT"))
+	}
+	candidate := session.Instance{
+		Account:               account,
+		Tool:                  firstNonEmpty(resolvedTool, "shell"),
+		Command:               resolvedCommand,
+		SubcommandPassthrough: passthrough,
+	}
+	return account, candidate.ValidateAccount()
+}
+
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
 // the caller's own session. These deliberately omit -L so tmux auto-routes via
 // $TMUX (see the display-message entries in TestNoRawTmuxExec_OutsideAllowlist),
@@ -173,6 +190,33 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 		}
 	}
 	return append(flags, positional...)
+}
+
+// helpRequested reports whether an argument list contains an unambiguous help
+// flag. Bare "help" is intentionally not recognized here: it can be a session,
+// remote, workspace, or other user-supplied value. Dispatchers that expose a
+// help command recognize it explicitly in their command-position switch.
+func helpRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+// hooksHelpRequested preserves bare help for hook subcommands, which accept
+// no positional values. Other command families must keep help usable as data.
+func hooksHelpRequested(args []string) bool {
+	if helpRequested(args) {
+		return true
+	}
+	for _, arg := range args {
+		if arg == "help" {
+			return true
+		}
+	}
+	return false
 }
 
 // firstNonEmpty returns the first non-empty string after trimming whitespace.

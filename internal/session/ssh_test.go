@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSSHRunnerBuildRemoteCommand_QuotesAllDynamicArgs(t *testing.T) {
@@ -171,9 +173,9 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 // argument is sent.
 func TestRemoteAddArgs(t *testing.T) {
 	cases := []struct {
-		name                     string
-		tool, title, path, group string
-		want                     []string
+		name string
+		opts RemoteAddOptions
+		want []string
 	}{
 		{
 			name: "defaults (quick shell, remote CWD)",
@@ -181,40 +183,141 @@ func TestRemoteAddArgs(t *testing.T) {
 		},
 		{
 			name: "tool and title from dialog",
-			tool: "claude", title: "my task", path: ".",
+			opts: RemoteAddOptions{Tool: "claude", Title: "my task", Path: "."},
 			want: []string{"add", "--json", "-t", "my task", "-c", "claude"},
 		},
 		{
 			name: "group from dialog",
-			tool: "claude", title: "my task", group: "work", path: ".",
+			opts: RemoteAddOptions{Tool: "claude", Title: "my task", Group: "work", Path: "."},
 			want: []string{"add", "--json", "-t", "my task", "-g", "work", "-c", "claude"},
 		},
 		{
 			name: "explicit remote path",
-			tool: "codex", title: "fix", path: "/srv/project",
+			opts: RemoteAddOptions{Tool: "codex", Title: "fix", Path: "/srv/project"},
 			want: []string{"add", "--json", "-t", "fix", "-c", "codex", "/srv/project"},
 		},
 		{
+			name: "create a missing remote directory only after confirmation",
+			opts: RemoteAddOptions{Tool: "codex", Title: "fix", Path: "/srv/new", CreateDir: true},
+			want: []string{"add", "--json", "-t", "fix", "-c", "codex", "--create-dir", "/srv/new"},
+		},
+		{
 			name: "tool without title auto-names via --quick",
-			tool: "pi",
+			opts: RemoteAddOptions{Tool: "pi"},
 			want: []string{"add", "--json", "--quick", "-c", "pi"},
 		},
 		{
 			name: "whitespace-only values fall back to defaults",
-			tool: "  ", title: " ", group: " ", path: " . ",
+			opts: RemoteAddOptions{Tool: "  ", Title: " ", Group: " ", Path: " . ", Account: " ", Model: " ", WorktreeBranch: " ", MCPs: []string{" "}, ExtraArgs: []string{""}},
 			want: []string{"add", "--json", "--quick"},
+		},
+		{
+			name: "docker sandbox checkbox is forwarded before the path",
+			opts: RemoteAddOptions{Tool: "claude", Title: "sandboxed", Path: "/srv/project", Sandbox: true},
+			want: []string{"add", "--json", "-t", "sandboxed", "-c", "claude", "-sandbox", "/srv/project"},
+		},
+		{
+			name: "docker sandbox with quick name and remote CWD",
+			opts: RemoteAddOptions{Tool: "claude", Sandbox: true},
+			want: []string{"add", "--json", "--quick", "-c", "claude", "-sandbox"},
+		},
+		{
+			name: "account slot is forwarded by name for the server to resolve",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", Account: "alice"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--account", "alice"},
+		},
+		{
+			name: "model override is forwarded",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", Model: "opus"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--model", "opus"},
+		},
+		{
+			name: "MCP names are forwarded as repeated --mcp",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", MCPs: []string{"memory", "github"}},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--mcp", "memory", "--mcp", "github"},
+		},
+		{
+			name: "resume session id is forwarded",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", ResumeSessionID: "abc-123"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--resume-session", "abc-123"},
+		},
+		{
+			name: "claude toggles travel as repeated --extra-arg tokens",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", ExtraArgs: []string{"--dangerously-skip-permissions", "--effort", "high", "--chrome"}},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--extra-arg", "--dangerously-skip-permissions", "--extra-arg", "--effort", "--extra-arg", "high", "--extra-arg", "--chrome"},
+		},
+		{
+			name: "yolo is forwarded for codex and gemini",
+			opts: RemoteAddOptions{Tool: "codex", Title: "t", Yolo: true},
+			want: []string{"add", "--json", "-t", "t", "-c", "codex", "--yolo"},
+		},
+		{
+			name: "worktree branch is forwarded as -w before the path",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", Path: "/srv/repo", WorktreeBranch: "feature/x"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "-w", "feature/x", "/srv/repo"},
+		},
+		{
+			name: "everything at once keeps a stable order",
+			opts: RemoteAddOptions{
+				Tool: "claude", Title: "all", Path: "/srv/repo", Group: "work", Sandbox: true,
+				Account: "alice", Model: "opus", MCPs: []string{"memory"}, ResumeSessionID: "abc",
+				ExtraArgs: []string{"--chrome"}, Yolo: true, WorktreeBranch: "feature/all",
+			},
+			want: []string{"add", "--json", "-t", "all", "-g", "work", "-c", "claude", "-sandbox",
+				"--account", "alice", "--model", "opus", "--mcp", "memory", "--resume-session", "abc",
+				"--extra-arg", "--chrome", "--yolo", "-w", "feature/all", "/srv/repo"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := remoteAddArgs(tc.tool, tc.title, tc.path, tc.group)
-			if len(got) != len(tc.want) {
-				t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
+			got, err := remoteAddArgs(tc.opts)
+			if err != nil {
+				t.Fatalf("remoteAddArgs(%+v) error = %v", tc.opts, err)
 			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
-				}
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("remoteAddArgs(%+v) = %q, want %q", tc.opts, got, tc.want)
+			}
+		})
+	}
+}
+
+// Values that would silently mean something else on the server are refused
+// before any SSH round trip, with an error that names the value.
+func TestRemoteAddArgs_RejectsUnforwardableValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		opts    RemoteAddOptions
+		wantErr string
+	}{
+		{
+			name:    "absolute config directory as account",
+			opts:    RemoteAddOptions{Tool: "claude", Account: "/Users/me/.claude-work"},
+			wantErr: "config directory",
+		},
+		{
+			name:    "home-relative config directory as account",
+			opts:    RemoteAddOptions{Tool: "claude", Account: "~/.claude-work"},
+			wantErr: "config directory",
+		},
+		{
+			name:    "relative config directory as account",
+			opts:    RemoteAddOptions{Tool: "claude", Account: "./claude-work"},
+			wantErr: "config directory",
+		},
+		{
+			name:    "flag and value fused into one extra-arg token",
+			opts:    RemoteAddOptions{Tool: "claude", ExtraArgs: []string{"--model opus"}},
+			wantErr: "separate --extra-arg tokens",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := remoteAddArgs(tc.opts)
+			if err == nil {
+				t.Fatalf("remoteAddArgs(%+v) = %q, want error containing %q", tc.opts, got, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("remoteAddArgs(%+v) error = %q, want it to contain %q", tc.opts, err, tc.wantErr)
 			}
 		})
 	}
@@ -235,7 +338,9 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 		},
 	}
 
-	id, err := runner.CreateSessionWithOptions(context.Background(), "codex", "Remote Work", "~/project", "work")
+	id, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{
+		Tool: "codex", Title: "Remote Work", Path: "~/project", Group: "work", Sandbox: true, Model: "gpt-5-codex", Yolo: true,
+	})
 	if err != nil {
 		t.Fatalf("CreateSessionWithOptions unexpected error: %v", err)
 	}
@@ -246,7 +351,7 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 		t.Fatalf("calls = %v, want add and start", calls)
 	}
 	add := strings.Join(calls[0], " ")
-	for _, want := range []string{"add", "--json", "-t", "Remote Work", "-g", "work", "-c", "codex", "~/project"} {
+	for _, want := range []string{"add", "--json", "-t", "Remote Work", "-g", "work", "-c", "codex", "-sandbox", "--model", "gpt-5-codex", "--yolo", "~/project"} {
 		if !strings.Contains(add, want) {
 			t.Fatalf("remote add call = %q, want token %q", add, want)
 		}
@@ -275,7 +380,7 @@ func TestSSHRunnerCreateSessionWithOptions_QueuedStartIsNotAttachable(t *testing
 		},
 	}
 
-	_, err := runner.CreateSessionWithOptions(context.Background(), "claude", "", "", "")
+	_, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Tool: "claude"})
 	if err == nil || !strings.Contains(err.Error(), "queued") {
 		t.Fatalf("CreateSessionWithOptions error = %v, want queued error", err)
 	}
@@ -335,5 +440,432 @@ func TestParseRemoteVersion(t *testing.T) {
 				t.Errorf("parseRemoteVersion(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRemoteSessionInfoLastActivity(t *testing.T) {
+	now := time.Now()
+
+	t.Run("valid RFC3339Nano round-trips exactly, sub-second included", func(t *testing.T) {
+		// Sub-second precision matters here: RemoteSessionInfo is formatted
+		// with RFC3339Nano (not RFC3339) specifically so a session sitting
+		// right on a TimeFilterMode 3/7-day cutoff isn't misclassified by
+		// rounding down to the nearest second. now (not now.Truncate(time.
+		// Second)) exercises that: it round-trips only if fractional seconds
+		// actually survive the format/parse.
+		r := RemoteSessionInfo{LastActivityAt: now.Format(time.RFC3339Nano)}
+		got, ok := r.LastActivity()
+		if !ok {
+			t.Fatalf("LastActivity() ok = false, want true")
+		}
+		if !got.Equal(now) {
+			t.Errorf("LastActivity() = %v, want %v (sub-second precision lost)", got, now)
+		}
+	})
+
+	t.Run("empty is unknown, not zero-time", func(t *testing.T) {
+		r := RemoteSessionInfo{}
+		if _, ok := r.LastActivity(); ok {
+			t.Errorf("LastActivity() ok = true for empty field, want false (older remote, field never sent)")
+		}
+	})
+
+	t.Run("malformed value is unknown, not an error a caller must handle", func(t *testing.T) {
+		r := RemoteSessionInfo{LastActivityAt: "not-a-timestamp"}
+		if _, ok := r.LastActivity(); ok {
+			t.Errorf("LastActivity() ok = true for malformed field, want false")
+		}
+	})
+}
+
+// TestRemoteSessionInfoLastActivity_BoundaryPrecision covers the scenario a
+// review caught: a session active a few hundred milliseconds inside a
+// TimeFilterMode 3-day cutoff round-trips as "inside" the window. Formatting
+// with RFC3339 (whole seconds only) can round down across the cutoff and
+// misclassify it as outside; RFC3339Nano cannot.
+func TestRemoteSessionInfoLastActivity_BoundaryPrecision(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(-3 * 24 * time.Hour)
+	// 300ms inside the 3-day window (i.e. after the cutoff). A whole-second
+	// truncation could floor this across the cutoff if the sub-second part
+	// were dropped and the second itself landed exactly on it.
+	justInside := cutoff.Add(300 * time.Millisecond)
+
+	r := RemoteSessionInfo{LastActivityAt: justInside.Format(time.RFC3339Nano)}
+	got, ok := r.LastActivity()
+	if !ok {
+		t.Fatalf("LastActivity() ok = false, want true")
+	}
+	if got.Before(cutoff) {
+		t.Fatalf("LastActivity() = %v, which is before the 3-day cutoff %v (precision lost)", got, cutoff)
+	}
+	if !TimeFilter3Days.Matches(got, now) {
+		t.Errorf("TimeFilter3Days.Matches(%v, %v) = false, want true (300ms inside the window)", got, now)
+	}
+}
+
+// A refused value must never reach the remote: no add, no start, no cleanup.
+// FetchAccounts asks the remote for its slot names only; config_dir values in
+// the answer are dropped and never offered as something to pick.
+func TestSSHRunnerFetchAccounts(t *testing.T) {
+	var gotArgs []string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			gotArgs = args
+			return []byte(`[{"name":"alice","config_dir":"/home/alice/.claude-work","exists":true},{"name":"bob","config_dir":"/home/bob/.claude","exists":false}]` + "\n"), nil
+		},
+	}
+	names, err := runner.FetchAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("FetchAccounts: %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "accounts --json" {
+		t.Fatalf("remote command = %q, want \"accounts --json\"", strings.Join(gotArgs, " "))
+	}
+	if strings.Join(names, ",") != "alice,bob" {
+		t.Fatalf("names = %v, want [alice bob]", names)
+	}
+	for _, n := range names {
+		if strings.ContainsAny(n, `/\`) {
+			t.Fatalf("name %q looks like a config directory; only slot names may be offered", n)
+		}
+	}
+}
+
+// A remote too old for `accounts` (unknown command) or one that answers with
+// something other than a JSON list is an error, never a silent empty list
+// that would look like "no slots configured".
+func TestSSHRunnerFetchAccounts_ErrorsAreNotEmptyLists(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		err    error
+	}{
+		{name: "unknown command on old remote", output: "", err: errors.New("exit status 2")},
+		{name: "human text instead of json", output: "No named account slots configured.\n"},
+		{name: "empty stdout", output: ""},
+		{name: "malformed json", output: "[{"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &SSHRunner{
+				runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+					return []byte(tc.output), tc.err
+				},
+			}
+			names, err := runner.FetchAccounts(context.Background())
+			if err == nil {
+				t.Fatalf("FetchAccounts = %v, want an error", names)
+			}
+			if len(names) != 0 {
+				t.Fatalf("names = %v on error, want none", names)
+			}
+		})
+	}
+}
+
+// FetchMCPs asks the remote for its MCP names only, through the quiet form
+// that prints one name per line: `mcp list --json` would ship every
+// definition, env included, and credentials commonly live there. Names come
+// back sorted.
+func TestSSHRunnerFetchMCPs(t *testing.T) {
+	var gotArgs []string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			gotArgs = args
+			return []byte("memory\ngithub\n  \n"), nil
+		},
+	}
+	names, err := runner.FetchMCPs(context.Background())
+	if err != nil {
+		t.Fatalf("FetchMCPs: %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "mcp list --quiet" {
+		t.Fatalf("remote command = %q, want \"mcp list --quiet\" (names only; --json would ship definitions and env)", strings.Join(gotArgs, " "))
+	}
+	if strings.Join(names, ",") != "github,memory" {
+		t.Fatalf("names = %v, want [github memory]", names)
+	}
+}
+
+// A remote too old for `mcp list --quiet` exits non-zero (unknown flag); that
+// is an error, never a silent empty list that would look like "no MCPs
+// configured". The payload is not echoed into the error.
+func TestSSHRunnerFetchMCPs_ErrorsAreNotEmptyLists(t *testing.T) {
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			return []byte("flag provided but not defined: -quiet\n"), errors.New("exit status 2")
+		},
+	}
+	names, err := runner.FetchMCPs(context.Background())
+	if err == nil {
+		t.Fatalf("FetchMCPs = %v, want an error", names)
+	}
+	if len(names) != 0 {
+		t.Fatalf("names = %v on error, want none", names)
+	}
+}
+
+// A remote with no MCPs prints nothing in quiet mode: that is a real, empty
+// list.
+func TestSSHRunnerFetchMCPs_EmptyListIsNotAnError(t *testing.T) {
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			return []byte(""), nil
+		},
+	}
+	names, err := runner.FetchMCPs(context.Background())
+	if err != nil || len(names) != 0 {
+		t.Fatalf("FetchMCPs = %v, %v; want an empty list and no error", names, err)
+	}
+}
+
+func TestSSHRunnerCreateSessionWithOptions_RefusedValueNeverContactsRemote(t *testing.T) {
+	calls := 0
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls++
+			return nil, errors.New("must not be called")
+		},
+	}
+	_, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Tool: "claude", Account: "/home/me/.claude"})
+	if err == nil || !strings.Contains(err.Error(), "config directory") {
+		t.Fatalf("CreateSessionWithOptions error = %v, want config directory refusal", err)
+	}
+	if calls != 0 {
+		t.Fatalf("remote contacted %d times for a refused value, want 0", calls)
+	}
+}
+
+// TestParseGroupListPaths pins the group-list flattener that backs
+// SSHRunner.FetchGroupPaths: `group list --json` returns a recursive tree
+// whose paths (including EMPTY groups — session_count 0) must all surface,
+// deduped and in the remote's own order (siblings as listed, a parent before
+// its children), for the remote move/create dialogs and the group headers.
+func TestParseGroupListPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "empty list",
+			input: `{"groups":[],"total_groups":0,"total_sessions":0}`,
+			want:  []string{},
+		},
+		{
+			name: "flat groups incl. an empty one",
+			input: `{"groups":[
+				{"name":"emptytest","path":"emptytest","session_count":0},
+				{"name":"work","path":"work","session_count":3}
+			],"total_groups":2,"total_sessions":3}`,
+			want: []string{"emptytest", "work"},
+		},
+		{
+			name: "nested children flattened with full paths",
+			input: `{"groups":[
+				{"name":"my-sessions","path":"my-sessions","session_count":7,
+				 "children":[
+					{"name":"done","path":"my-sessions/done","session_count":6,
+					 "children":[
+						{"name":"deep","path":"my-sessions/done/deep","session_count":0}
+					 ]}
+				 ]}
+			],"total_groups":3,"total_sessions":7}`,
+			want: []string{"my-sessions", "my-sessions/done", "my-sessions/done/deep"},
+		},
+		{
+			name: "slashes and whitespace normalized",
+			input: `{"groups":[
+				{"name":"a","path":"/a/","session_count":0}
+			],"total_groups":1,"total_sessions":0}`,
+			want: []string{"a"},
+		},
+		{
+			// The remote lists siblings by their persisted Order, which is
+			// not name order once someone has reordered them; that order is
+			// the whole point of the list and must survive the flattening.
+			name: "remote order kept, not re-sorted by name",
+			input: `{"groups":[
+				{"name":"work","path":"work","session_count":1,
+				 "children":[
+					{"name":"zeta","path":"work/zeta","session_count":0},
+					{"name":"alpha","path":"work/alpha","session_count":0}
+				 ]},
+				{"name":"archive","path":"archive","session_count":0}
+			],"total_groups":4,"total_sessions":1}`,
+			want: []string{"work", "work/zeta", "work/alpha", "archive"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var parsed groupListJSON
+			if err := json.Unmarshal([]byte(tt.input), &parsed); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := parseGroupListPaths(parsed)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseGroupListPaths = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("parseGroupListPaths[%d] = %q, want %q (all: %v)", i, got[i], tt.want[i], got)
+				}
+			}
+		})
+	}
+}
+
+// The remote `add` reports a missing project directory on stdout; the TUI
+// recognises that refusal to offer creating the directory, and nothing else.
+func TestIsRemotePathMissing(t *testing.T) {
+	if !IsRemotePathMissing(errors.New("ssh command failed: exit status 1: Error: path does not exist: /srv/new")) {
+		t.Fatal("missing-path refusal not recognised")
+	}
+	if IsRemotePathMissing(errors.New("ssh command failed: exit status 255: connection refused")) {
+		t.Fatal("unrelated failure treated as a missing path")
+	}
+	if IsRemotePathMissing(nil) {
+		t.Fatal("nil error treated as a missing path")
+	}
+}
+
+// Archive/unarchive forward to the remote's own `session archive` /
+// `session unarchive` verbs with the session id as the only operand, so the
+// remote's archived list stays the single source of truth.
+func TestSSHRunnerArchiveSession_ForwardsRemoteVerbs(t *testing.T) {
+	var calls [][]string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return []byte(`{"success":true}`), nil
+		},
+	}
+	if err := runner.ArchiveSession(context.Background(), "abc123"); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+	if err := runner.UnarchiveSession(context.Background(), "abc123"); err != nil {
+		t.Fatalf("UnarchiveSession: %v", err)
+	}
+	want := "session archive abc123|session unarchive abc123"
+	got := make([]string, 0, len(calls))
+	for _, c := range calls {
+		got = append(got, strings.Join(c, " "))
+	}
+	if strings.Join(got, "|") != want {
+		t.Fatalf("remote commands = %q, want %q", strings.Join(got, "|"), want)
+	}
+
+	failing := &SSHRunner{runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+		return nil, errors.New("session 'abc123' is already archived")
+	}}
+	if err := failing.ArchiveSession(context.Background(), "abc123"); err == nil {
+		t.Fatal("a remote refusal must surface as an error")
+	}
+}
+
+// ForkSession forwards exactly the remote's own `session fork --json <id>`
+// (title and group stay server decisions) and returns the new_id it reports.
+func TestSSHRunnerForkSession_ForwardsForkVerb(t *testing.T) {
+	var calls [][]string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return []byte(`{"success":true,"parent_id":"parent-abc","new_id":"child-def","new_title":"task-fork"}` + "\n"), nil
+		},
+	}
+
+	newID, err := runner.ForkSession(context.Background(), "parent-abc")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if newID != "child-def" {
+		t.Fatalf("new ID = %q, want child-def", newID)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one remote call, got %v", calls)
+	}
+	want := []string{"session", "fork", "--json", "parent-abc"}
+	if strings.Join(calls[0], " ") != strings.Join(want, " ") {
+		t.Fatalf("forwarded args = %v, want %v", calls[0], want)
+	}
+}
+
+// A remote fork that fails (unforkable tool, unknown session, SSH error) must
+// surface the error and never report a session ID.
+func TestSSHRunnerForkSession_ErrorsAreNotIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		err    error
+	}{
+		{name: "ssh error", err: errors.New("session 'x' is not a forkable session (tool: gemini)")},
+		{name: "empty id", output: `{"success":true,"new_id":""}`},
+		{name: "not json", output: "Forked session: a -> b (c)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &SSHRunner{
+				runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+					return []byte(tt.output), tt.err
+				},
+			}
+			newID, err := runner.ForkSession(context.Background(), "parent-abc")
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if newID != "" {
+				t.Fatalf("new ID = %q on error, want empty", newID)
+			}
+		})
+	}
+}
+
+// The TUI forwards shift+up/down on a remote group header as `group reorder`
+// with the full path, and reads the remote's from/to positions back so a
+// refused edge move is never announced as a move.
+func TestRemoteGroupReorderArgsAndResult(t *testing.T) {
+	if got := strings.Join(remoteGroupReorderArgs("work/api", -1), " "); got != "group reorder work/api --up --json" {
+		t.Fatalf("up args = %q", got)
+	}
+	if got := strings.Join(remoteGroupReorderArgs("work", 1), " "); got != "group reorder work --down --json" {
+		t.Fatalf("down args = %q", got)
+	}
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"moved", `{"success":true,"name":"work","path":"work","from_position":1,"to_position":0}`, true},
+		{"already at edge", `{"success":true,"name":"work","path":"work","from_position":0,"to_position":0}`, false},
+		{"older remote, human output", "✓ Reordered group 'work': position 1 → 0\n", true},
+		{"empty output", "", true},
+	} {
+		if got := parseGroupReorderMoved([]byte(tc.output)); got != tc.want {
+			t.Errorf("%s: parseGroupReorderMoved = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The remote create path asks `session start` not to wait for the tool's
+// session id (#2167) and falls back to the plain start on a remote that
+// predates the flag.
+func TestRemoteStartArgs_NoWaitAndFallback(t *testing.T) {
+	got := remoteStartArgs("abc-1", true)
+	want := []string{"session", "start", "--json", "--no-wait", "abc-1"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("remoteStartArgs(noWait) = %v, want %v", got, want)
+	}
+	got = remoteStartArgs("abc-1", false)
+	want = []string{"session", "start", "--json", "abc-1"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("remoteStartArgs(plain) = %v, want %v", got, want)
+	}
+	if !isUnknownFlagError(errors.New("ssh command failed: exit status 2: flag provided but not defined: -no-wait")) {
+		t.Fatal("an unknown-flag failure must be recognised so the create path retries without --no-wait")
+	}
+	if isUnknownFlagError(errors.New("ssh command failed: exit status 1: session not found")) {
+		t.Fatal("an ordinary failure must not be mistaken for an unknown flag")
 	}
 }

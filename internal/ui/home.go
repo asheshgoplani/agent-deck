@@ -44,6 +44,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -277,6 +278,7 @@ type Home struct {
 	scrollbackPager      *ScrollbackPager      // In-attach scrollback pager for the deck's control-mode view (#1491)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
+	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
 	feedbackState        *feedback.State       // Loaded at first show, avoids repeated disk I/O
 	feedbackSender       *feedback.Sender      // Sender constructed once in NewHome (Phase 3, per D-05)
@@ -316,17 +318,18 @@ type Home struct {
 	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor              int                   // Selected item index in flatItems
-	viewOffset          int                   // First visible item index (for scrolling)
-	previewScrollOffset int                   // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
-	isAttaching         atomic.Bool           // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	lastRenderedFrame   string                // Last non-empty frame View produced; re-served while isAttaching so no frame is ever black (#1753). Event-loop goroutine only.
-	statusFilter        session.Status        // Filter sessions by status ("" = all, or specific status)
-	groupScope          string                // Limit TUI to a specific group path ("" = all groups)
-	initialSelect       string                // Session ID or title to preselect on first load (#709). Does NOT scope groups.
-	initialSelectDone   bool                  // Guard so preselection only fires once
-	previewMode         PreviewMode           // What to show in preview pane (both, output-only, analytics-only)
-	groupViewMode       session.GroupViewMode // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
+	cursor              int                    // Selected item index in flatItems
+	viewOffset          int                    // First visible item index (for scrolling)
+	previewScrollOffset int                    // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
+	isAttaching         atomic.Bool            // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	lastRenderedFrame   string                 // Last non-empty frame View produced; re-served while isAttaching so no frame is ever black (#1753). Event-loop goroutine only.
+	statusFilter        session.Status         // Filter sessions by status ("" = all, or specific status)
+	groupScope          string                 // Limit TUI to a specific group path ("" = all groups)
+	initialSelect       string                 // Session ID or title to preselect on first load (#709). Does NOT scope groups.
+	initialSelectDone   bool                   // Guard so preselection only fires once
+	previewMode         PreviewMode            // What to show in preview pane (both, output-only, analytics-only)
+	groupViewMode       session.GroupViewMode  // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
+	timeFilter          session.TimeFilterMode // Recency filter: all, today, 3 days, 7 days (cycled by hotkey '*')
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
 	isReloading         bool       // Visual feedback during auto-reload
@@ -335,6 +338,9 @@ type Home struct {
 	reloadVersion       uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu            sync.Mutex // Protects reloadVersion, isReloading, and lastLoadMtime for thread-safe access
 	lastLoadMtime       time.Time  // File mtime when we last loaded (for external change detection)
+
+	// Earliest eligible membership expiry; ordinary ticks only compare clocks.
+	nextTimeFilterExpiry time.Time
 
 	// Preview cache (async fetching - View() must be pure, no blocking I/O)
 	previewCache      map[string]string    // previewKey -> cached preview content
@@ -431,7 +437,8 @@ type Home struct {
 	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
 	// File watcher for external changes (auto-reload)
-	storageWatcher *StorageWatcher
+	storageWatcher      *StorageWatcher
+	sessionLoadSequence uint64 // issued only by the UI event loop
 
 	// Optional in-memory web menu data sink for web mode.
 	webMenuData   *web.MemoryMenuData
@@ -457,6 +464,7 @@ type Home struct {
 	launchingSessions    map[string]time.Time        // sessionID -> creation time
 	resumingSessions     map[string]time.Time        // sessionID -> resume time (for restart/resume)
 	remoteRestarting     map[string]struct{}         // remote restart operation ID -> in flight
+	remoteForking        map[string]struct{}         // remote fork operation ID -> in flight
 	mcpLoadingSessions   map[string]time.Time        // sessionID -> MCP reload time
 	forkingSessions      map[string]time.Time        // sessionID -> fork start time (fork in progress)
 	setupRunningSessions map[string]time.Time        // sessionID -> setup script start time
@@ -617,12 +625,37 @@ type Home struct {
 	uiStateSaveTicks     int      // Counter for periodic UI state saves in tick handler
 
 	// Remote sessions (Phase 2: Agent-Deck Remotes)
-	remoteSessions     map[string][]session.RemoteSessionInfo // remoteName -> sessions
-	remoteFromCache    map[string]bool                        // remoteName -> data is a startup cache snapshot, not live yet
-	remoteFetchedAt    map[string]time.Time                   // remoteName -> when its sessions last came from a live fetch
+	remoteSessions map[string][]session.RemoteSessionInfo // remoteName -> sessions
+	// remoteGroups holds each remote's FULL group path list as reported by
+	// its own state DB (`agent-deck group list --json`, fetched on the same
+	// fleet poll). Unlike session-derived buckets it includes EMPTY groups,
+	// so the M move dialog can still offer a remote folder after every
+	// session has been moved out of it. Guarded by remoteSessionsMu.
+	remoteGroups       map[string][]string  // remoteName -> group paths in the remote's own order (incl. empty groups)
+	remoteFromCache    map[string]bool      // remoteName -> data is a startup cache snapshot, not live yet
+	remoteFetchedAt    map[string]time.Time // remoteName -> when its sessions last came from a live fetch
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
+	// remoteFetchSeq numbers every fleet fetch as it starts; the handler
+	// applies a result only if no newer fetch has been applied already, so a
+	// slow periodic poll cannot overwrite the refresh a delete, move or
+	// archive just triggered (a stale snapshot would resurrect the row).
+	remoteFetchSeq     uint64
+	remoteFetchApplied uint64
+	// remoteActionStarted records when each remote action was requested
+	// (keyed by remote, verb and target) so its footer line can report the
+	// time from keypress to the remote's confirmation, the number that
+	// tells whether a remote deck feels local.
+	remoteActionStarted map[string]time.Time
+	// remoteRefetchWanted is set when a remote pushed "changed" while a
+	// fetch was already in flight: that fetch may predate the change, so
+	// another one starts as soon as it lands.
+	remoteRefetchWanted bool
+	// remotePending marks remote session rows with an action underway
+	// (sessionID -> "deleting…"), drawn on the row so the screen says what
+	// is happening while the remote answers instead of freezing.
+	remotePending map[string]string
 	// remoteSessionRefreshSec is the poll cadence (seconds) for re-fetching
 	// the remote session list, resolved once at construction from
 	// [ui] remote_session_refresh_secs. Issue #1170.
@@ -694,6 +727,24 @@ type Home struct {
 	// (Backspace, arrows, Tab, Ctrl-C, Ctrl-D — #1094). When nil, named keys
 	// are sent via the session's tmux pane (SendNamedKey).
 	insertNamedKeySink func(inst *session.Instance, key string) error
+	// remoteCreateSink is an optional override used by tests to capture what
+	// the new-session dialog forwards to the remote-create path (#1353) without
+	// opening an SSH connection. When nil, createRemoteSessionWithOptions runs.
+	remoteCreateSink func(remoteName string, opts session.RemoteAddOptions) tea.Cmd
+	// remoteAccountsFetcher is an optional override used by tests to replace
+	// the SSH fetch of a remote's account slots when its dialog opens.
+	remoteAccountsFetcher func(remoteName string) tea.Cmd
+	// remoteMCPsFetcher is the same override for the fetch of a remote's MCP
+	// names (its `mcp list --quiet`, names only) when its dialog opens.
+	remoteMCPsFetcher func(remoteName string) tea.Cmd
+	// remoteAccountsGen numbers each opening of the remote new-session dialog;
+	// an account or MCP fetch answers for the opening that requested it and
+	// is dropped otherwise, so a slow answer for an earlier opening can never
+	// replace the list the user is choosing from now.
+	remoteAccountsGen uint64
+	// pendingRemoteCreate holds the remote create whose path the server
+	// reported missing, while the create-directory confirmation is open.
+	pendingRemoteCreate *remoteCreateDirNeededMsg
 	// insertKeySender is the persistent dispatch path opened on
 	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
 	// remote support). Local sessions get a tmux.KeySender (control-mode
@@ -761,6 +812,7 @@ type uiState struct {
 	PreviewMode     int    `json:"preview_mode"`
 	StatusFilter    string `json:"status_filter,omitempty"`
 	GroupViewMode   int    `json:"group_view_mode,omitempty"`
+	TimeFilterMode  int    `json:"time_filter_mode,omitempty"`
 	// Collapsed remote headers, keyed like Item.Path. Local group folds live in
 	// groupTree, which is persisted separately by saveGroupState; remote groups
 	// are synthetic UI rows and have no home there.
@@ -962,13 +1014,14 @@ func (h *Home) openInSplitPane(req terminal.AttachRequest) error {
 }
 
 // resolveShellSplitMode returns session.ShellSplitITerm when an iTerm2 split
-// should be used, session.ShellSplitTmux otherwise. Reads [ui].shell_split
-// first; falls back to auto-detection via TERM_PROGRAM / LC_TERMINAL. Issue #1470.
+// should be used, session.ShellSplitWindow for a tmux window (tab), and
+// session.ShellSplitTmux otherwise. Reads [ui].shell_split first; falls back
+// to auto-detection via TERM_PROGRAM / LC_TERMINAL. Issue #1470.
 func resolveShellSplitMode() string {
 	cfg, _ := session.LoadUserConfig()
 	if cfg != nil {
 		mode := cfg.UI.GetShellSplit()
-		if mode == session.ShellSplitITerm || mode == session.ShellSplitTmux {
+		if mode == session.ShellSplitITerm || mode == session.ShellSplitTmux || mode == session.ShellSplitWindow {
 			return mode
 		}
 	}
@@ -996,7 +1049,17 @@ func (h *Home) openShellHere(inst *session.Instance) tea.Cmd {
 		Name:       tmuxSess.Name,
 		SocketName: tmuxSess.SocketName,
 	}
-	if resolveShellSplitMode() == session.ShellSplitITerm {
+	mode := resolveShellSplitMode()
+	if mode == session.ShellSplitWindow {
+		// Shell as a tmux window (tab) instead of a split pane; attach so
+		// the new window is visible immediately.
+		if err := tmuxSess.NewShellWindow(workdir); err != nil {
+			h.setError(fmt.Errorf("open shell here: %w", err))
+			return nil
+		}
+		return h.attachSession(inst)
+	}
+	if mode == session.ShellSplitITerm {
 		// Launch iTerm2 split before mutating tmux so a failed osascript
 		// call does not leave an orphaned pane. Issue #1470.
 		if err := h.openInSplitPane(req); err != nil {
@@ -1198,13 +1261,17 @@ func (h *Home) stackedPreviewTopY() int {
 
 // Messages
 type loadSessionsMsg struct {
-	instances    []*session.Instance
-	groups       []*session.GroupData
-	err          error
-	restoreState *reloadState // Optional state to restore after reload
-	poolProxies  int          // Number of socket proxies started
-	poolError    error        // Pool initialization error
-	loadMtime    time.Time    // File mtime at load time (for external change detection)
+	loadSequence      uint64
+	loadWatcher       *StorageWatcher
+	watcherTicket     *storageLoadTicket
+	persistedSnapshot *statedb.RegistrySnapshotResult
+	instances         []*session.Instance
+	groups            []*session.GroupData
+	err               error
+	restoreState      *reloadState // Optional state to restore after reload
+	poolProxies       int          // Number of socket proxies started
+	poolError         error        // Pool initialization error
+	loadMtime         time.Time    // File mtime at load time (for external change detection)
 }
 
 type sessionCreatedMsg struct {
@@ -1223,6 +1290,7 @@ type sessionForkedMsg struct {
 }
 
 type refreshMsg struct{}
+type importReloadMsg struct{}
 
 type statusUpdateMsg struct {
 	attachedSessionID string // Session that just returned from attach (if local attach)
@@ -1326,6 +1394,47 @@ type maintenanceCompleteMsg struct {
 	result session.MaintenanceResult
 }
 
+// remoteMoveResultMsg reports the outcome of an SSH-routed "move to group"
+// for a remote session (M key → GroupDialogMove). The session's row lives in
+// the remote's own state DB, so the move is executed there and the local
+// fleet cache is patched only after the remote confirms.
+type remoteMoveResultMsg struct {
+	remoteName string
+	sessionID  string
+	groupPath  string
+	err        error
+}
+
+// remoteGroupResultMsg reports the outcome of an SSH-routed "create group"
+// for a remote context (g key on a remote row → GroupDialogCreate). The
+// group must be created in the remote's own state DB; groupPath is the full
+// path the remote assigned (parent/name, or name for a root-level group).
+type remoteGroupResultMsg struct {
+	remoteName string
+	groupPath  string
+	err        error
+}
+
+// remoteGroupDeleteResultMsg reports the outcome of an SSH-routed group
+// delete (TUI 'd' on a remote group header).
+type remoteGroupDeleteResultMsg struct {
+	remoteName string
+	groupPath  string
+	err        error
+}
+
+// remoteGroupReorderResultMsg reports the outcome of an SSH-routed group
+// reorder (shift+up/down on a remote group header → `group reorder` on the
+// remote). delta is -1 for up and +1 for down; moved is the remote's own
+// verdict, false when the group was already at the edge of its siblings.
+type remoteGroupReorderResultMsg struct {
+	remoteName string
+	groupPath  string
+	delta      int
+	moved      bool
+	err        error
+}
+
 // clearMaintenanceMsg signals auto-clear of maintenance banner
 type clearMaintenanceMsg struct{}
 
@@ -1346,9 +1455,22 @@ type sendOutputResultMsg struct {
 
 // remoteSessionsFetchedMsg is sent when async remote sessions fetch completes.
 type remoteSessionsFetchedMsg struct {
-	sessions map[string][]session.RemoteSessionInfo
+	// gen is the fetch's sequence number (see Home.remoteFetchSeq).
+	gen uint64
+	// configErr is set when the user config could not be read; the handler
+	// then keeps every cached remote instead of treating them as removed.
+	configErr error
+	sessions  map[string][]session.RemoteSessionInfo
 	// #1101: per-remote cost summary collected on the same SSH fanout.
 	costs map[string]*costs.RemoteCostSummary
+	// groups holds each remote's FULL group path list (incl. empty groups)
+	// from `group list --json`, so the move/create dialogs can offer folders
+	// that currently hold no sessions. Only remotes that reported a fresh
+	// list appear here.
+	groups map[string][]string
+	// groupsFailed marks remotes whose group-list fetch errored this round;
+	// the handler keeps their last-good cached group paths.
+	groupsFailed map[string]bool
 	// failed marks remotes whose fetch errored this round (issue #1170).
 	// The handler keeps their last-good sessions instead of wiping them,
 	// so one slow/offline remote can't flicker the whole list.
@@ -1506,6 +1628,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		scrollbackPager:           NewScrollbackPager(),
 		worktreeFinishDialog:      NewWorktreeFinishDialog(),
 		feedbackDialog:            NewFeedbackDialog(),
+		telemetryDialog:           NewTelemetryDialog(),
 		zoxidePicker:              NewZoxidePicker(),
 		feedbackSender:            feedback.NewSender(),
 		watcherPanel:              NewWatcherPanel(),
@@ -1530,6 +1653,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		launchingSessions:         make(map[string]time.Time),
 		resumingSessions:          make(map[string]time.Time),
 		remoteRestarting:          make(map[string]struct{}),
+		remoteForking:             make(map[string]struct{}),
 		mcpLoadingSessions:        make(map[string]time.Time),
 		forkingSessions:           make(map[string]time.Time),
 		setupRunningSessions:      make(map[string]time.Time),
@@ -1571,7 +1695,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.defaultFilter = cfg.Display.GetDefaultFilter()
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
-		tmux.SetHideCwdPrefixInTitle(!cfg.Display.GetIncludeCwdPrefix())
+		session.ConfigureTmuxDisplay(cfg.Display)
 		h.showSessionTimestamps = cfg.Display.ShowSessionTimestamps
 		h.showPaneTitles = cfg.Display.ShowPaneTitles
 		h.sysStatsConfig = cfg.SystemStats
@@ -2072,6 +2196,270 @@ func (h *Home) scopedGroupPaths() []string {
 	return scoped
 }
 
+// remoteGroupPaths returns the distinct, normalized group paths available as
+// move targets on a remote, sorted for the move dialog (M key on a remote
+// session). The remote's own group list (fetched on the fleet poll via
+// `group list --json`) is the primary source: unlike session-derived buckets
+// it includes EMPTY groups, so a folder that currently holds no sessions is
+// still offered after every session has been moved out of it. Groups observed
+// on the fetched sessions are unioned in as a fallback for remotes whose
+// group-list fetch failed or predates the JSON shape.
+func (h *Home) remoteGroupPaths(remoteName string) []string {
+	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	seen := make(map[string]bool)
+	var paths []string
+	add := func(p string) {
+		p = normalizeRemoteGroupPath(p)
+		if !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	for _, p := range h.remoteGroups[remoteName] {
+		add(p)
+	}
+	for _, s := range h.remoteSessions[remoteName] {
+		add(s.Group)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// moveRemoteSessionToGroup routes a TUI "move to group" for a remote session
+// over SSH: the session's row lives in the remote's own state DB, so the
+// local tree cannot move it. Runs `agent-deck group move <id> <group>` on the
+// remote (the same command the remote's own TUI would run) and returns a
+// remoteMoveResultMsg so the fleet cache is updated only on remote
+// confirmation. Mirrors the remote-rename path in GroupDialogRenameSession.
+func (h *Home) moveRemoteSessionToGroup(title, remoteName, sessionID, targetGroupPath string) tea.Cmd {
+	h.markRemoteAction(remoteName, "move", sessionID)
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath,
+				err: fmt.Errorf("cannot move '%s': failed to load remotes config: %v", title, err)}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath,
+				err: fmt.Errorf("cannot move '%s': remote '%s' is not configured", title, remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := runner.RunCommand(ctx, "group", "move", sessionID, targetGroupPath); err != nil {
+			return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath,
+				err: fmt.Errorf("failed to move '%s' on %s: %v", title, remoteName, err)}
+		}
+		return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath}
+	}
+}
+
+// createRemoteGroup routes a TUI "create group" (g key on a remote row) over
+// SSH: the group must be created in the remote's own state DB, not the local
+// tree. Runs `agent-deck group create <name> [--parent <parent>]` on the
+// remote and returns a remoteGroupResultMsg so the local group-path cache is
+// updated only on remote confirmation. Mirrors moveRemoteSessionToGroup and
+// the remote-rename path in GroupDialogRenameSession.
+// remoteGroupCreateArgs builds the `group create` argv sent to a remote. The
+// dialog's Default Path is forwarded as --default-path, the way the local
+// create persists it, so what the dialog shows is what the server stores; a
+// blank field sends nothing. The path is a server path and is not expanded
+// locally.
+func remoteGroupCreateArgs(name, parentPath, defaultPath string) []string {
+	args := []string{"group", "create", name}
+	if parentPath != "" {
+		args = append(args, "--parent", parentPath)
+	}
+	if defaultPath != "" {
+		args = append(args, "--default-path", defaultPath)
+	}
+	return args
+}
+
+func (h *Home) createRemoteGroup(name, remoteName, parentPath, defaultPath string) tea.Cmd {
+	h.markRemoteAction(remoteName, "create-group", name)
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteGroupResultMsg{remoteName: remoteName,
+				err: fmt.Errorf("cannot create group '%s': failed to load remotes config: %v", name, err)}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteGroupResultMsg{remoteName: remoteName,
+				err: fmt.Errorf("cannot create group '%s': remote '%s' is not configured", name, remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		args := remoteGroupCreateArgs(name, parentPath, defaultPath)
+		if _, err := runner.RunCommand(ctx, args...); err != nil {
+			return remoteGroupResultMsg{remoteName: remoteName,
+				err: fmt.Errorf("failed to create group '%s' on %s: %v", name, remoteName, err)}
+		}
+		full := name
+		if parentPath != "" {
+			full = parentPath + "/" + name
+		}
+		return remoteGroupResultMsg{remoteName: remoteName, groupPath: full}
+	}
+}
+
+// deleteRemoteGroup routes a TUI "delete group" for one of the remote's own
+// groups over SSH: `agent-deck group delete <path>` on the remote, without
+// --force, so a group that still holds sessions is refused by the remote with
+// its own message instead of silently moving sessions around.
+func (h *Home) deleteRemoteGroup(groupPath, remoteName string) tea.Cmd {
+	h.markRemoteAction(remoteName, "delete-group", groupPath)
+	return func() tea.Msg {
+		result := func(err error) tea.Msg {
+			return remoteGroupDeleteResultMsg{remoteName: remoteName, groupPath: groupPath, err: err}
+		}
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return result(fmt.Errorf("cannot delete group '%s': %v", groupPath, err))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := runner.RunCommand(ctx, "group", "delete", groupPath); err != nil {
+			return result(fmt.Errorf("failed to delete group '%s' on %s: %v", groupPath, remoteName, err))
+		}
+		return result(nil)
+	}
+}
+
+// remoteGroupBaseName is the last segment of a remote group path, the name
+// createRemoteGroup was asked for.
+func remoteGroupBaseName(path string) string {
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		return path[idx+1:]
+	}
+	return path
+}
+
+// setRemotePending marks (verb != "") or clears a remote session row's
+// in-flight action and redraws.
+func (h *Home) setRemotePending(sessionID, verb string) {
+	if h.remotePending == nil {
+		h.remotePending = make(map[string]string)
+	}
+	if verb == "" {
+		delete(h.remotePending, sessionID)
+	} else {
+		h.remotePending[sessionID] = verb
+	}
+	// Read at draw time by renderRemoteSessionItem; no row rebuild needed.
+}
+
+// patchRemoteSession applies fn to the cached copy of one remote session and
+// redraws, so the screen reflects a confirmed action now rather than at the
+// next poll; the next fetch reconciles from the remote's truth.
+func (h *Home) patchRemoteSession(remoteName, sessionID string, fn func(*session.RemoteSessionInfo)) {
+	h.remoteSessionsMu.Lock()
+	if sessions, ok := h.remoteSessions[remoteName]; ok {
+		for i := range sessions {
+			if sessions[i].ID == sessionID {
+				fn(&sessions[i])
+				break
+			}
+		}
+	}
+	h.remoteSessionsMu.Unlock()
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
+}
+
+// insertRemoteSession adds (or replaces by id) one session in the cache and
+// redraws, so a session the remote just confirmed is on screen before any
+// fetch. Ungrouped sessions land in the default group like the remote does.
+func (h *Home) insertRemoteSession(info session.RemoteSessionInfo) {
+	if info.Group == "" {
+		info.Group = session.DefaultGroupPath
+	}
+	h.remoteSessionsMu.Lock()
+	if h.remoteSessions == nil {
+		h.remoteSessions = make(map[string][]session.RemoteSessionInfo)
+	}
+	sessions := h.remoteSessions[info.RemoteName]
+	replaced := false
+	for i := range sessions {
+		if sessions[i].ID == info.ID {
+			sessions[i] = info
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		sessions = append(sessions, info)
+	}
+	h.remoteSessions[info.RemoteName] = sessions
+	h.remoteSessionsMu.Unlock()
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
+}
+
+// dropRemoteSession removes one session from the cache and redraws.
+func (h *Home) dropRemoteSession(remoteName, sessionID string) {
+	h.remoteSessionsMu.Lock()
+	if sessions, ok := h.remoteSessions[remoteName]; ok {
+		kept := sessions[:0]
+		for _, s := range sessions {
+			if s.ID != sessionID {
+				kept = append(kept, s)
+			}
+		}
+		h.remoteSessions[remoteName] = kept
+	}
+	h.remoteSessionsMu.Unlock()
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
+}
+
+// remoteActionKey identifies one in-flight remote action for timing.
+func remoteActionKey(remoteName, verb, target string) string {
+	return remoteName + "|" + verb + "|" + target
+}
+
+// markRemoteAction records the moment a remote action was requested.
+func (h *Home) markRemoteAction(remoteName, verb, target string) {
+	if h.remoteActionStarted == nil {
+		h.remoteActionStarted = make(map[string]time.Time)
+	}
+	h.remoteActionStarted[remoteActionKey(remoteName, verb, target)] = time.Now()
+}
+
+// remoteActionTook returns " in 0.4s" for an action recorded by
+// markRemoteAction, and "" when the start is unknown. The entry is dropped so
+// a later action with the same key measures itself afresh. The raw number
+// also goes to the debug log as remote_action, so latency can be compared
+// across builds without reading the screen.
+func (h *Home) remoteActionTook(remoteName, verb, target string) string {
+	key := remoteActionKey(remoteName, verb, target)
+	start, ok := h.remoteActionStarted[key]
+	if !ok {
+		return ""
+	}
+	delete(h.remoteActionStarted, key)
+	elapsed := time.Since(start)
+	uiLog.Debug("remote_action", slog.String("remote", remoteName), slog.String("verb", verb), slog.String("target", target), slog.Int64("took_ms", elapsed.Milliseconds()))
+	return fmt.Sprintf(" in %.1fs", elapsed.Seconds())
+}
+
+// remoteGroupPathFromItem extracts the remote-relative group path from a
+// remote group header's Item.Path ("remotes/<name>/<group-path>"); returns
+// "" for the level-0 host header (Path == "remotes/<name>"). Used by the g
+// key handler to decide the parent for a remote subgroup create.
+func remoteGroupPathFromItem(item session.Item) string {
+	prefix := "remotes/" + item.RemoteName + "/"
+	p := strings.TrimPrefix(item.Path, prefix)
+	if p == item.Path {
+		return "" // level-0 host header
+	}
+	return p
+}
+
 // groupScopeDisplayName returns the human-readable name for the active group scope.
 // Falls back to the raw scope path if the group is not found in the tree.
 func (h *Home) groupScopeDisplayName() string {
@@ -2475,7 +2863,11 @@ func (h *Home) restoreSelectedItemIdentity(identity selectedItemIdentity) bool {
 }
 
 func (h *Home) rebuildFlatItemsPreservingSelection(identity selectedItemIdentity) {
-	h.rebuildFlatItems()
+	h.rebuildFlatItemsPreservingSelectionAt(identity, time.Now())
+}
+
+func (h *Home) rebuildFlatItemsPreservingSelectionAt(identity selectedItemIdentity, now time.Time) {
+	h.rebuildFlatItemsAt(now)
 	if !h.restoreSelectedItemIdentity(identity) && len(h.flatItems) > 0 {
 		h.cursor = min(h.cursor, len(h.flatItems)-1)
 		h.cursor = max(h.cursor, 0)
@@ -2485,6 +2877,11 @@ func (h *Home) rebuildFlatItemsPreservingSelection(identity selectedItemIdentity
 
 // rebuildFlatItems rebuilds the flattened view from group tree
 func (h *Home) rebuildFlatItems() {
+	h.rebuildFlatItemsAt(time.Now())
+}
+
+func (h *Home) rebuildFlatItemsAt(now time.Time) {
+	h.nextTimeFilterExpiry = time.Time{}
 	h.jumpMode = false
 	h.jumpBuffer = ""
 
@@ -2520,19 +2917,17 @@ func (h *Home) rebuildFlatItems() {
 
 	// Apply status filter if active (skip when browsing archived list).
 	if h.statusFilter != "" && h.statusFilter != FilterModeArchived {
-		// First pass: identify groups that have matching sessions
+		// Use full membership so a collapsed match retains a header. The
+		// recency pass below must not count sessions whose status header was
+		// discarded merely because their group is folded.
 		groupsWithMatches := make(map[string]bool)
-		for _, item := range allItems {
-			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if h.matchesStatusFilter(h.statusFilter, item.Session.Status) {
-					// Mark this session's group and all parent groups as having matches
-					groupsWithMatches[item.Path] = true
-					// Also mark parent paths
-					parts := strings.Split(item.Path, "/")
-					for i := range parts {
-						parentPath := strings.Join(parts[:i+1], "/")
-						groupsWithMatches[parentPath] = true
-					}
+		for _, group := range h.groupTree.GroupList {
+			if group == nil {
+				continue
+			}
+			for _, inst := range group.Sessions {
+				if inst != nil && !inst.IsArchived() && h.matchesStatusFilter(h.statusFilter, inst.Status) {
+					markGroupPathAndAncestors(groupsWithMatches, group.Path)
 				}
 			}
 		}
@@ -2561,6 +2956,90 @@ func (h *Home) rebuildFlatItems() {
 		}
 	} else {
 		h.flatItems = allItems
+	}
+
+	// Use one remote snapshot for recency fallback and row construction.
+	h.remoteSessionsMu.RLock()
+	remoteNames := make([]string, 0, len(h.remoteSessions))
+	remotes := make(map[string][]session.RemoteSessionInfo, len(h.remoteSessions))
+	remoteGroupLists := make(map[string][]string, len(h.remoteGroups))
+	for name, sessions := range h.remoteSessions {
+		// Partition remote rows the way local ones were above: the active
+		// view hides remote sessions the remote reports archived, and the ^
+		// archived view shows only those. In the plain active view a remote
+		// keeps its host header (and its empty groups) even with no active
+		// session, like an empty local group renders "name (0)", so a fresh
+		// remote or one whose last session was archived stays a target for
+		// n, N and g. The archived view and any filter hide such a remote.
+		partitioned := make([]session.RemoteSessionInfo, 0, len(sessions))
+		for _, remote := range sessions {
+			if remote.Archived == viewArchived {
+				partitioned = append(partitioned, remote)
+			}
+		}
+		plainActiveView := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
+		if len(partitioned) == 0 && !plainActiveView {
+			continue
+		}
+		remoteNames = append(remoteNames, name)
+		remotes[name] = partitioned
+		remoteGroupLists[name] = append([]string(nil), h.remoteGroups[name]...)
+	}
+	h.remoteSessionsMu.RUnlock()
+	sort.Strings(remoteNames)
+
+	// Decide fallback across eligible local and remote sessions before hiding
+	// rows. Full group membership keeps collapsed matches available to reopen.
+	remoteMatchesTime := func(remote session.RemoteSessionInfo) bool {
+		activity, known := remote.LastActivity()
+		return !known || h.timeFilter.Matches(activity, now)
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		groupsWithMatches := make(map[string]bool)
+		hasCandidates, hasMatches := false, false
+		for _, group := range h.groupTree.GroupList {
+			if group == nil || !h.isInGroupScope(group.Path) {
+				continue
+			}
+			for _, inst := range group.Sessions {
+				if inst == nil || inst.IsArchived() != viewArchived {
+					continue
+				}
+				if h.statusFilter != "" && !viewArchived && !h.matchesStatusFilter(h.statusFilter, inst.Status) {
+					continue
+				}
+				hasCandidates = true
+				if h.timeFilter.Matches(inst.DisplayLastActivityTime(), now) {
+					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
+					hasMatches = true
+					markGroupPathAndAncestors(groupsWithMatches, group.Path)
+				}
+			}
+		}
+		for _, sessions := range remotes {
+			for _, remote := range sessions {
+				hasCandidates = true
+				if remoteMatchesTime(remote) {
+					if activity, known := remote.LastActivity(); known {
+						h.recordTimeFilterExpiry(activity, now)
+					}
+					hasMatches = true
+				}
+			}
+		}
+		if hasCandidates && !hasMatches {
+			h.timeFilter = session.TimeFilterAll
+		} else {
+			filtered := make([]session.Item, 0, len(h.flatItems))
+			for _, item := range h.flatItems {
+				if item.Type == session.ItemTypeGroup && groupsWithMatches[item.Path] {
+					filtered = append(filtered, item)
+				} else if item.Type == session.ItemTypeSession && item.Session != nil && h.timeFilter.Matches(item.Session.DisplayLastActivityTime(), now) {
+					filtered = append(filtered, item)
+				}
+			}
+			h.flatItems = filtered
+		}
 	}
 
 	// Apply group scope filter (composes with status filter above)
@@ -2656,22 +3135,31 @@ func (h *Home) rebuildFlatItems() {
 		h.flatItems = expanded
 	}
 
-	// Append remote sessions as selectable items
-	h.remoteSessionsMu.RLock()
-	remoteNames := make([]string, 0, len(h.remoteSessions))
-	remotes := make(map[string][]session.RemoteSessionInfo, len(h.remoteSessions))
-	for name, sessions := range h.remoteSessions {
-		remoteNames = append(remoteNames, name)
-		remotes[name] = append([]session.RemoteSessionInfo(nil), sessions...)
-	}
-	h.remoteSessionsMu.RUnlock()
-	sort.Strings(remoteNames)
-	if len(remotes) > 0 && h.statusFilter != FilterModeArchived {
+	if len(remotes) > 0 {
 		for _, remoteName := range remoteNames {
+			sessions := remotes[remoteName]
+			if h.timeFilter != session.TimeFilterAll {
+				filtered := make([]session.RemoteSessionInfo, 0, len(sessions))
+				for _, remote := range sessions {
+					if remoteMatchesTime(remote) {
+						filtered = append(filtered, remote)
+					}
+				}
+				if len(filtered) == 0 {
+					continue
+				}
+				sessions = filtered
+			}
+			// Filter before building rows so collapsed headers and connectors
+			// describe the surviving sessions.
 			// #1553: nest each remote's sessions under their Group paths
 			// instead of dumping them flat at Level 1.
-			// #1875: apply the user's manual row order for this remote.
-			h.flatItems = append(h.flatItems, buildRemoteFlatItemsOrdered(remoteName, remotes[remoteName], h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName))...)
+			// #1875: apply the user's manual row order for this remote, and
+			// the remote's own group order to the group headers. In the plain
+			// active view, empty remote groups get a header row too, like an
+			// empty local group; any filter or the archived view hides them.
+			showEmptyGroups := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
+			h.flatItems = append(h.flatItems, buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups)...)
 		}
 	}
 
@@ -3096,12 +3584,17 @@ func (h *Home) Init() tea.Cmd {
 	}
 
 	cmds := []tea.Cmd{
-		h.loadSessions,
+		h.sessionLoadCmd(nil, true),
 
 		h.tick(),
 		h.reviverTick(),
 		h.checkForUpdate(),
 		h.fetchRemoteSessions,
+		h.waitRemoteChange,
+		// Opt-in telemetry daily report. MaybeSend re-reads consent from
+		// disk and the kill switches from env, so this is a no-op for
+		// everyone who has not said yes.
+		telemetrySendCmd(Version),
 	}
 
 	// Start listening for storage changes
@@ -3336,11 +3829,139 @@ func (h *Home) propagateThemeToSessions() {
 	})
 }
 
+// applyRemoteFetch folds one fleet fetch result (or a pushed change shaped
+// like one) into the cache, the on-disk snapshot and the rows.
+func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cmd) {
+	if msg.configErr != nil || (msg.gen != 0 && msg.gen < h.remoteFetchApplied) {
+		// Config unreadable, or a fetch that started before one already
+		// applied: keep the current tree. Only release the in-flight
+		// guard so the next poll runs.
+		h.remoteSessionsMu.Lock()
+		h.remotesFetchActive = false
+		h.remoteSessionsMu.Unlock()
+		if msg.configErr != nil {
+			h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
+		}
+		return h, nil
+	}
+	h.remoteFetchApplied = msg.gen
+	h.remoteSessionsMu.Lock()
+	// #1170: merge rather than wholesale-replace so a remote that errored
+	// this round keeps its last-good sessions instead of flickering out.
+	h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
+	// Remote group lists: replace wholesale for remotes that reported a
+	// fresh list; failed remotes keep their last-good cached paths so the
+	// move dialog doesn't lose empty-group targets on a transient SSH
+	// hiccup. Remotes absent from BOTH lists are dropped (deconfigured).
+	if h.remoteGroups == nil {
+		h.remoteGroups = make(map[string][]string)
+	}
+	keepGroups := make(map[string]bool, len(msg.groups)+len(msg.groupsFailed))
+	for name, paths := range msg.groups {
+		h.remoteGroups[name] = paths
+		keepGroups[name] = true
+	}
+	for name := range msg.groupsFailed {
+		keepGroups[name] = true
+	}
+	for name := range h.remoteGroups {
+		if !keepGroups[name] {
+			delete(h.remoteGroups, name)
+		}
+	}
+	for name := range msg.sessions {
+		if !msg.failed[name] {
+			delete(h.remoteFromCache, name)
+		}
+	}
+	h.lastRemoteFetch = time.Now()
+	h.remotesFetchActive = false
+	h.remoteSessionsMu.Unlock()
+	h.saveRemoteSessionsCache(msg.sessions)
+	// #1101: store remote cost summaries so renderCostLine can fold them
+	// into the displayed totals on the next paint.
+	if msg.costs != nil {
+		h.remoteCostsMu.Lock()
+		h.remoteCosts = msg.costs
+		h.remoteCostsMu.Unlock()
+	}
+	// #1112 bug 1: a remote running→waiting transition wouldn't update
+	// the header pill ("[◐ Waiting N]") because countSessionStatuses
+	// caches for 500ms. The row icon updated (read from the map
+	// directly), but the pill froze on the previous fetch's totals.
+	// Invalidate so the next View() recomputes.
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
+	h.remoteSessionsMu.Lock()
+	again := h.remoteRefetchWanted
+	h.remoteRefetchWanted = false
+	if again {
+		h.remotesFetchActive = true
+	}
+	h.remoteSessionsMu.Unlock()
+	if again {
+		return h, h.fetchRemoteSessions
+	}
+	return h, nil
+}
+
+// remoteChangedMsg says a remote pushed "changed" over its persistent
+// channel (#2174): its state DB was written by someone, so refetch now.
+type remoteChangedMsg struct {
+	remoteName string
+	change     session.RemoteChange
+}
+
+// waitRemoteChange blocks on the fan-in of remote change pushes and turns the
+// next one into a message. It re-arms itself from the handler.
+func (h *Home) waitRemoteChange() tea.Msg {
+	change, ok := <-session.RemoteChangeEvents()
+	if !ok {
+		return nil
+	}
+	return remoteChangedMsg{remoteName: change.Remote, change: change}
+}
+
+// pushedRemoteFetch shapes a pushed change as a fetch result for that one
+// remote: every other remote is marked failed (the merge keeps its rows),
+// costs are absent (left untouched), and the sequence number advances so an
+// older poll cannot overwrite this newer state.
+func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedMsg {
+	msg := remoteSessionsFetchedMsg{
+		gen:          atomic.AddUint64(&h.remoteFetchSeq, 1),
+		sessions:     map[string][]session.RemoteSessionInfo{ch.Remote: ch.Sessions},
+		failed:       map[string]bool{},
+		groups:       map[string][]string{},
+		groupsFailed: map[string]bool{},
+	}
+	if ch.Groups != nil {
+		msg.groups[ch.Remote] = ch.Groups
+	} else {
+		msg.groupsFailed[ch.Remote] = true
+	}
+	h.remoteSessionsMu.RLock()
+	for name := range h.remoteSessions {
+		if name != ch.Remote {
+			msg.failed[name] = true
+			msg.groupsFailed[name] = true
+		}
+	}
+	h.remoteSessionsMu.RUnlock()
+	return msg
+}
+
 // fetchRemoteSessions fetches sessions from all configured remotes.
 func (h *Home) fetchRemoteSessions() tea.Msg {
+	gen := atomic.AddUint64(&h.remoteFetchSeq, 1)
 	config, err := session.LoadUserConfig()
-	if err != nil || config == nil || len(config.Remotes) == 0 {
-		return remoteSessionsFetchedMsg{sessions: nil}
+	if err != nil {
+		// A hand-edited config.toml that fails to parse must not wipe the
+		// remotes from the tree (and the on-disk cache) as if they had been
+		// deconfigured; keep everything and say why.
+		return remoteSessionsFetchedMsg{gen: gen, configErr: err}
+	}
+	if config == nil || len(config.Remotes) == 0 {
+		return remoteSessionsFetchedMsg{gen: gen, sessions: nil}
 	}
 
 	// #1421: sweep orphaned SSH ControlMaster sockets before fetching. A stale
@@ -3358,6 +3979,14 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 	// as "remote contributes zero" so a single broken remote can't poison
 	// the displayed total.
 	costResults := make(map[string]*costs.RemoteCostSummary, len(config.Remotes))
+	// Remote group lists (group list --json) ride the same fanout so the
+	// move/create dialogs can offer EMPTY remote folders — a folder that
+	// currently holds no sessions is invisible to session-derived buckets
+	// but is still a valid target. Successful fetches land in groupResults;
+	// failures in groupsFailed keep last-good cache entries (same contract
+	// as the sessions map, issue #1170).
+	groupResults := make(map[string][]string, len(config.Remotes))
+	groupsFailed := make(map[string]bool, len(config.Remotes))
 	// #1170: track remotes that errored so the handler keeps their last-good
 	// sessions instead of dropping them.
 	failed := make(map[string]bool, len(config.Remotes))
@@ -3383,30 +4012,63 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			if err != nil {
 				mu.Lock()
 				failed[name] = true
+				// The group list can't be trusted either — keep last-good.
+				groupsFailed[name] = true
 				mu.Unlock()
 				return
 			}
 			for i := range sessions {
 				sessions[i].RemoteName = name
 			}
-			// #1912 follow-up: the session-list fetch may have consumed most
-			// of the shared budget on a slow remote, which silently dropped
-			// that remote's spend from the totals. Give costs their own bound.
-			costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
-			summary, costErr := runner.FetchCostSummary(costCtx)
-			costCancel()
+			// The cost summary and the group list are independent of the
+			// session list and of each other, so they run concurrently over
+			// the same ControlMaster connection: one round trip per poll
+			// instead of three in a row (#2167). Each keeps its own bound so
+			// a slow `costs summary` or `group list` on one remote cannot
+			// starve the others, and a failure degrades as before: costs to
+			// "contributes zero", groups to the session-derived fallback in
+			// remoteGroupPaths.
+			var (
+				summary    *costs.RemoteCostSummary
+				costErr    error
+				groupPaths []string
+				groupErr   error
+				side       sync.WaitGroup
+			)
+			side.Add(2)
+			go func() {
+				defer side.Done()
+				costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+				defer costCancel()
+				summary, costErr = runner.FetchCostSummary(costCtx)
+			}()
+			go func() {
+				defer side.Done()
+				groupCtx, groupCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+				defer groupCancel()
+				groupPaths, groupErr = runner.FetchGroupPaths(groupCtx)
+			}()
+			side.Wait()
 
 			mu.Lock()
 			results[name] = sessions
 			if costErr == nil && summary != nil {
 				costResults[name] = summary
 			}
+			if groupErr == nil {
+				if groupPaths == nil {
+					groupPaths = []string{}
+				}
+				groupResults[name] = groupPaths
+			} else {
+				groupsFailed[name] = true
+			}
 			mu.Unlock()
 		}(name, rc)
 	}
 	wg.Wait()
 
-	return remoteSessionsFetchedMsg{sessions: results, costs: costResults, failed: failed}
+	return remoteSessionsFetchedMsg{gen: gen, sessions: results, costs: costResults, groups: groupResults, groupsFailed: groupsFailed, failed: failed}
 }
 
 // mergeRemoteSessions reconciles a freshly fetched remote-session map against
@@ -3498,31 +4160,60 @@ func (h *Home) measureRemoteLatencies() tea.Msg {
 
 // loadSessions loads sessions from storage and initializes the pool
 func (h *Home) loadSessions() tea.Msg {
-	if h.storage == nil {
-		return loadSessionsMsg{instances: []*session.Instance{}, err: fmt.Errorf("storage not initialized")}
+	return h.sessionLoadCmd(nil, true)()
+}
+
+// sessionLoadCmd issues ordering without database I/O. The returned command
+// probes and reads the captured storage asynchronously, including initial loads.
+func (h *Home) sessionLoadCmd(restore *reloadState, initializePool bool) tea.Cmd {
+	h.sessionLoadSequence++
+	sequence := h.sessionLoadSequence
+	storage, watcher := h.storage, h.storageWatcher
+	var issuedTicket storageLoadTicket
+	if watcher != nil {
+		issuedTicket = watcher.issueLoad()
 	}
-
-	// Capture file mtime BEFORE loading to detect external changes later
-	loadMtime, _ := h.storage.GetFileMtime()
-
-	instances, groups, err := h.storage.LoadWithGroups()
-	msg := loadSessionsMsg{instances: instances, groups: groups, err: err, loadMtime: loadMtime}
-
-	// Initialize pool AFTER sessions are loaded
-	userConfig, configErr := session.LoadUserConfig()
-	if configErr == nil && userConfig != nil && userConfig.MCPPool.Enabled {
-		pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, instances)
-		if poolErr != nil {
-			mcpUILog.Warn("pool_init_failed", slog.String("error", poolErr.Error()))
-			msg.poolError = poolErr
-		} else if pool != nil {
-			proxies := pool.ListServers()
-			mcpUILog.Info("pool_initialized", slog.Int("proxies", len(proxies)))
-			msg.poolProxies = len(proxies)
+	return func() tea.Msg {
+		ticket := issuedTicket
+		msg := loadSessionsMsg{loadSequence: sequence, loadWatcher: watcher, restoreState: restore}
+		if storage == nil {
+			msg.err = fmt.Errorf("storage not initialized")
+			return msg
 		}
+		if watcher != nil {
+			var err error
+			ticket, err = watcher.probeLoad(ticket)
+			msg.watcherTicket = &ticket
+			if err != nil {
+				msg.err = err
+				return msg
+			}
+		}
+		msg.loadMtime, _ = storage.GetFileMtime()
+		msg.instances, msg.groups, msg.persistedSnapshot, msg.err = storage.LoadWithGroupsSnapshot()
+		if watcher != nil {
+			finished, err := watcher.endLoad(ticket)
+			msg.watcherTicket = &finished
+			if msg.err == nil {
+				msg.err = err
+			}
+		}
+		if initializePool {
+			userConfig, configErr := session.LoadUserConfig()
+			if configErr == nil && userConfig != nil && userConfig.MCPPool.Enabled {
+				pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, msg.instances)
+				if poolErr != nil {
+					mcpUILog.Warn("pool_init_failed", slog.String("error", poolErr.Error()))
+					msg.poolError = poolErr
+				} else if pool != nil {
+					proxies := pool.ListServers()
+					mcpUILog.Info("pool_initialized", slog.Int("proxies", len(proxies)))
+					msg.poolProxies = len(proxies)
+				}
+			}
+		}
+		return msg
 	}
-
-	return msg
 }
 
 // SetHeadless marks this Home as backing a headless (`web --no-tui`) server.
@@ -4099,9 +4790,11 @@ type sessionRenderState struct {
 	// the residual "Ctrl+Q → black screen" on large decks with a big group
 	// expanded. Carrying the labels in the snapshot makes row rendering
 	// lock-free.
-	title        string // Instance.Title at snapshot time
-	autoName     bool   // session displays a captured/live task description
-	autoNameDesc string // last persisted auto-name description (fallback when paneTitle empty)
+	account        string // Stored slot; empty means inherited, not a login identity.
+	accountDisplay accountPresentation
+	title          string // Instance.Title at snapshot time
+	autoName       bool   // session displays a captured/live task description
+	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
 }
 
 // displaySessionTitle returns the label to render for a session row. For an
@@ -4228,6 +4921,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 	}
 
 	snap := make(map[string]sessionRenderState, len(instances))
+	accounts := make(map[string]accountPresentation)
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -4241,10 +4935,17 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/
 			// pending-title reapply can mutate it concurrently from the Bubble
 			// Tea event-loop goroutine.
+			account:      inst.GetAccountThreadSafe(),
 			title:        inst.GetTitleThreadSafe(),
 			autoName:     inst.GetAutoName(),
 			autoNameDesc: inst.GetAutoNameDescription(),
 		}
+		display, ok := accounts[state.account]
+		if !ok {
+			display = newAccountPresentation(state.account)
+			accounts[state.account] = display
+		}
+		state.accountDisplay = display
 		// Look up pane title from the already-refreshed tmux cache.
 		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
 		// the cache fresh; processStatusUpdate and other rebuild paths run on
@@ -4284,12 +4985,15 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	// Fallback for newly-added sessions before snapshot refresh. This path DOES
 	// take Instance.mu (briefly, as a reader); it is bounded to sessions that a
 	// snapshot refresh has not seen yet, never the steady-state whole list.
+	account := inst.GetAccountThreadSafe()
 	return sessionRenderState{
-		status:       inst.GetStatusThreadSafe(),
-		tool:         inst.GetToolThreadSafe(),
-		title:        inst.GetTitleThreadSafe(),
-		autoName:     inst.GetAutoName(),
-		autoNameDesc: inst.GetAutoNameDescription(),
+		status:         inst.GetStatusThreadSafe(),
+		tool:           inst.GetToolThreadSafe(),
+		account:        account,
+		accountDisplay: newAccountPresentation(account),
+		title:          inst.GetTitleThreadSafe(),
+		autoName:       inst.GetAutoName(),
+		autoNameDesc:   inst.GetAutoNameDescription(),
 	}
 }
 
@@ -5343,6 +6047,20 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 // clears (issue #607). Under the default (full_repaint = false) this wrapper
 // is a pass-through — no regression for users who never opt in.
 func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Terminal reads may combine rapid printable keystrokes. Route them in
+	// order so a shortcut can open the text field that receives the tail.
+	// Bracketed paste and Alt input retain their original event semantics.
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyRunes && len(key.Runes) > 1 && !key.Alt && !key.Paste {
+		var commands []tea.Cmd
+		for _, r := range key.Runes {
+			_, cmd := h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			commands = append(commands, cmd)
+			if h.isQuitting {
+				break
+			}
+		}
+		return h, tea.Sequence(commands...)
+	}
 	defer h.recordFocusedSession()
 	model, cmd := h.updateInner(msg)
 	if !h.fullRepaint {
@@ -5401,6 +6119,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case tea.MouseMsg:
+		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+			return h, nil
+		}
 		// Route mouse wheel events to the active scrollable area.
 		// Priority: setup wizard > settings > help > global search > MCP dialog > new/fork dialogs > main list.
 		// Non-wheel events are silently ignored (O(1), no blocking I/O).
@@ -5541,13 +6262,23 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchPreview(inst, key, winIdx)
 
 	case loadSessionsMsg:
+		if msg.loadSequence != 0 && (msg.loadSequence != h.sessionLoadSequence || msg.loadWatcher != h.storageWatcher) {
+			return h, nil
+		}
+		if msg.watcherTicket != nil && h.storageWatcher != nil && !h.storageWatcher.current(*msg.watcherTicket) {
+			return h, nil
+		}
+		if msg.watcherTicket != nil && h.storageWatcher != nil {
+			h.storageWatcher.acknowledge(*msg.watcherTicket, msg.persistedSnapshot, msg.err == nil)
+		}
 		// Clear loading indicators and store file mtime for external change detection
 		h.reloadMu.Lock()
 		h.isReloading = false
-		if !msg.loadMtime.IsZero() {
+		if msg.err == nil && !msg.loadMtime.IsZero() {
 			h.lastLoadMtime = msg.loadMtime
 		}
 		h.reloadMu.Unlock()
+		firstLoad := h.initialLoading
 		h.initialLoading = false // First load complete, hide splash
 		h.reloadHotkeysFromConfig()
 
@@ -5556,10 +6287,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.showPendingHooksPrompt()
 		}
 
+		// One-time telemetry consent prompt (TELEMETRY.md). Shown only on the
+		// FIRST load of this process (never on a storage-watcher reload or
+		// ctrl+r, which could pop it up while the user is typing into an
+		// agent), only when telemetry.ShouldPrompt says so (undecided,
+		// interactive, no kill switch), never in insert mode, and only when
+		// no other dialog is on screen; otherwise it waits for a later
+		// launch. It takes precedence over the feedback prompt so the two
+		// never stack.
+		if firstLoad && h.telemetryDialog != nil && !h.telemetryDialog.IsVisible() && !h.insertMode && !h.hasModalVisible() {
+			if h.telemetryDialog.Show(Version, telemetry.LoadState()) {
+				h.telemetryDialog.SetSize(h.width, h.height)
+			}
+		}
+
 		// Show feedback popup if user has a new version and hasn't rated yet (D-11/D-12).
 		// v1.7.38: also skip when the user's config.toml has [feedback].disabled=true,
 		// so a user who opts out via config edit (not just state.json) is honoured.
-		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() {
+		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() && (h.telemetryDialog == nil || !h.telemetryDialog.IsVisible()) {
 			fbState, _ := feedback.LoadState()
 			cfg, _ := session.LoadUserConfig()
 			configDisabled := cfg != nil && cfg.Feedback.Disabled
@@ -5630,7 +6375,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Using tea.Cmd pattern ensures save is triggered after detection completes
 			var detectionCmds []tea.Cmd
 			for _, inst := range h.instances {
-				if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" {
+				if inst.Tool == "opencode" && inst.OpenCodeSessionID == "" && (msg.restoreState == nil || inst.OpenCodeDetectedAt.IsZero()) {
 					detectionCmds = append(detectionCmds, h.detectOpenCodeSessionCmd(inst))
 				}
 			}
@@ -5706,7 +6451,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				// Clear pending changes and persist if any were re-applied
-				h.pendingTitleChanges = make(map[string]pendingTitle)
 				if applied {
 					h.forceSaveInstances()
 				}
@@ -6161,6 +6905,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchPreview(msg.instance, msg.instance.ID, -1)
 
 	case openCodeDetectionCompleteMsg:
+		if msg.sessionID == "" {
+			if inst := h.getInstanceByID(msg.instanceID); inst != nil && !inst.OpenCodeDetectedAt.IsZero() {
+				return h, nil
+			}
+		}
 		// OpenCode session detection completed
 		// CRITICAL: Find the CURRENT instance by ID and update it
 		// The original pointer may have been replaced by storage watcher reload
@@ -6187,6 +6936,36 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// This uses forceSaveInstances() to bypass isReloading check, preventing
 		// the race condition where detection completes during a storage watcher reload
 		h.forceSaveInstances()
+		return h, nil
+
+	case accountSwitchedMsg:
+		delete(h.resumingSessions, msg.sessionID)
+		if msg.committed {
+			// The slot (and any conversation move) is already applied in
+			// memory; persist it and repaint the row's account badge.
+			h.rebuildFlatItems()
+			h.forceSaveInstances()
+			h.invalidatePreviewCache(msg.sessionID)
+		}
+		for _, warning := range msg.warnings {
+			uiLog.Warn("account_switch_warning", slog.String("session_id", msg.sessionID), slog.String("detail", warning))
+		}
+		if msg.err != nil {
+			// A refused switch explains why in a paragraph the footer banner
+			// would clip, and the session may be left stopped — show it in the
+			// modal instead, where it cannot be missed.
+			h.confirmDialog.ShowNotice("Account switch failed", msg.err.Error())
+			return h, nil
+		}
+		if len(msg.warnings) > 0 {
+			// The CLI prints these on stderr; dropping them here would leave a
+			// failed folder-trust pre-seed to surface as a session that stalls
+			// on a trust prompt with no explanation.
+			h.confirmDialog.ShowNotice("Account switched with warnings",
+				fmt.Sprintf("Switched to %q — %s\n\n%s", msg.account, msg.summary, strings.Join(msg.warnings, "\n")))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("account switched to %q — %s", msg.account, msg.summary))
 		return h, nil
 
 	case sessionRestartedMsg:
@@ -6270,32 +7049,30 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteSessionsFetchedMsg:
-		h.remoteSessionsMu.Lock()
-		// #1170: merge rather than wholesale-replace so a remote that errored
-		// this round keeps its last-good sessions instead of flickering out.
-		h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
-		for name := range msg.sessions {
-			if !msg.failed[name] {
-				delete(h.remoteFromCache, name)
-			}
+		return h.applyRemoteFetch(msg)
+
+	case remoteChangedMsg:
+		if msg.change.HasData {
+			// The event brought the listings: apply them now, no round trip.
+			uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("pushed_data", true))
+			_, cmd := h.applyRemoteFetch(h.pushedRemoteFetch(msg.change))
+			return h, tea.Batch(cmd, h.waitRemoteChange)
 		}
-		h.lastRemoteFetch = time.Now()
-		h.remotesFetchActive = false
+		// A pushed change without data: refetch at once unless a fetch is
+		// already in flight (then one more runs after it).
+		h.remoteSessionsMu.Lock()
+		active := h.remotesFetchActive
+		if active {
+			h.remoteRefetchWanted = true
+		} else {
+			h.remotesFetchActive = true
+		}
 		h.remoteSessionsMu.Unlock()
-		h.saveRemoteSessionsCache(msg.sessions)
-		// #1101: store remote cost summaries so renderCostLine can fold them
-		// into the displayed totals on the next paint.
-		h.remoteCostsMu.Lock()
-		h.remoteCosts = msg.costs
-		h.remoteCostsMu.Unlock()
-		// #1112 bug 1: a remote running→waiting transition wouldn't update
-		// the header pill ("[◐ Waiting N]") because countSessionStatuses
-		// caches for 500ms. The row icon updated (read from the map
-		// directly), but the pill froze on the previous fetch's totals.
-		// Invalidate so the next View() recomputes.
-		h.cachedStatusCounts.valid.Store(false)
-		h.rebuildFlatItems()
-		return h, nil
+		uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("fetch_in_flight", active))
+		if active {
+			return h, h.waitRemoteChange
+		}
+		return h, tea.Batch(h.fetchRemoteSessions, h.waitRemoteChange)
 
 	case remoteLatenciesFetchedMsg:
 		h.remoteLatencyMu.Lock()
@@ -6311,34 +7088,93 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteSessionDeletedMsg:
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to delete remote session: %w", msg.err))
+			h.setError(fmt.Errorf("failed to delete '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("deleted '%s' on %s", msg.title, msg.remoteName))
+		h.dropRemoteSession(msg.remoteName, msg.sessionID)
+		h.setError(fmt.Errorf("deleted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionClosedMsg:
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to close remote session: %w", msg.err))
+			h.setError(fmt.Errorf("failed to close '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("closed '%s' on %s", msg.title, msg.remoteName))
+		h.setError(fmt.Errorf("closed '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "close", msg.sessionID)))
+		return h, h.fetchRemoteSessions
+
+	case remoteSessionArchivedMsg:
+		verb := "archive"
+		if !msg.archived {
+			verb = "unarchive"
+		}
+		h.setRemotePending(msg.sessionID, "")
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to %s '%s' on %s: %w", verb, msg.title, msg.remoteName, msg.err))
+			return h, nil
+		}
+		archived := msg.archived
+		h.patchRemoteSession(msg.remoteName, msg.sessionID, func(s *session.RemoteSessionInfo) {
+			s.Archived = archived
+			if archived {
+				s.Status = string(session.StatusStopped)
+			}
+		})
+		h.setError(fmt.Errorf("%sd '%s' on %s%s", verb, msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "archive", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionRestartedMsg:
 		delete(h.remoteRestarting, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.resumingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to restart remote session: %w", msg.err))
+			h.setError(fmt.Errorf("failed to restart '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
+		h.patchRemoteSession(msg.remoteName, msg.sessionID, func(s *session.RemoteSessionInfo) { s.Status = string(session.StatusRunning) })
+		h.setError(fmt.Errorf("restarted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "restart", msg.sessionID)))
 		return h, h.fetchRemoteSessions
+
+	case remoteSessionForkedMsg:
+		delete(h.remoteForking, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
+		delete(h.forkingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
+		h.setRemotePending(msg.sessionID, "")
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to fork '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("forked '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "fork", msg.sessionID)))
+		return h, h.fetchRemoteSessions
+
+	case remoteAccountsFetchedMsg:
+		h.applyRemoteAccounts(msg)
+	case remoteMCPsFetchedMsg:
+		h.applyRemoteMCPs(msg)
+		return h, nil
+
+	case remoteCreateDirNeededMsg:
+		// The server refused the path; ask before retrying with --create-dir
+		// so a typo never silently creates a directory on the remote.
+		pending := msg
+		h.pendingRemoteCreate = &pending
+		h.confirmDialog.ShowCreateRemoteDirectory(msg.remoteName, msg.opts.Path)
+		h.beginAttachReturnGrace(time.Now())
+		return h, tea.Batch(tea.EnableMouseCellMotion, RestoreLegacyKeyboardCmd(os.Stdout), tea.WindowSize())
 
 	case remoteSessionCreatedMsg:
 		if msg.err != nil {
 			h.setError(msg.err)
+		} else if msg.notice != "" {
+			h.setError(errors.New(msg.notice))
+		}
+		if msg.created != nil {
+			// Draw the confirmed row now; the fetch below reconciles the
+			// remote's own title (a quick-create gets its name there) and
+			// status.
+			h.insertRemoteSession(*msg.created)
 		}
 		// This message is returned after tea.Exec finishes the remote
 		// create+attach. Mirror the statusUpdateMsg attach-return cleanup so
@@ -6386,6 +7222,119 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case remoteRenameResultMsg:
+		if msg.err != nil {
+			h.setRemoteSessionTitle(msg.remoteName, msg.sessionID, msg.oldTitle)
+			h.setError(fmt.Errorf("failed to rename '%s' on %s: %v", msg.oldTitle, msg.remoteName, msg.err))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("renamed to '%s' on %s%s", msg.newTitle, msg.remoteName, h.remoteActionTook(msg.remoteName, "rename", msg.sessionID)))
+		return h, nil
+
+	case remoteMoveResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		// Remote confirmed; patch the local fleet cache so the row moves
+		// groups immediately, before the next poll re-fetches the truth.
+		// The persisted local order overlay for the old bucket is harmless:
+		// applyRemoteSessionOrder skips overlay IDs the remote no longer
+		// reports in that bucket.
+		h.remoteSessionsMu.Lock()
+		if sessions, ok := h.remoteSessions[msg.remoteName]; ok {
+			for i := range sessions {
+				if sessions[i].ID == msg.sessionID {
+					sessions[i].Group = msg.groupPath
+					break
+				}
+			}
+		}
+		h.remoteSessionsMu.Unlock()
+		h.rebuildFlatItems()
+		h.setError(fmt.Errorf("moved to '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "move", msg.sessionID)))
+		return h, nil
+
+	case remoteGroupResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		// Remote confirmed the group exists; add it to the cached group list
+		// so the M move dialog (and subsequent subgroup creates) offer it
+		// immediately, before the next fleet poll re-confirms from the
+		// remote's own DB. The sessions map is untouched — creating a group
+		// moves no sessions.
+		h.remoteSessionsMu.Lock()
+		if h.remoteGroups == nil {
+			h.remoteGroups = make(map[string][]string)
+		}
+		seen := false
+		for _, p := range h.remoteGroups[msg.remoteName] {
+			if p == msg.groupPath {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			// Appended, not sorted: the list is in the remote's own group
+			// order, and a new group joins the end of it there too.
+			h.remoteGroups[msg.remoteName] = append(h.remoteGroups[msg.remoteName], msg.groupPath)
+		}
+		h.remoteSessionsMu.Unlock()
+		// Show the new (empty) group's row now instead of after the next poll.
+		h.rebuildFlatItems()
+		h.setError(fmt.Errorf("created group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "create-group", remoteGroupBaseName(msg.groupPath))))
+		return h, nil
+
+	case remoteGroupDeleteResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		// Drop the group (and any of its sub-groups) from the cached list so
+		// its header row disappears now; the next fleet poll re-confirms
+		// from the remote's own DB.
+		h.remoteSessionsMu.Lock()
+		cached := h.remoteGroups[msg.remoteName]
+		kept := make([]string, 0, len(cached))
+		for _, p := range cached {
+			if p != msg.groupPath && !strings.HasPrefix(p, msg.groupPath+"/") {
+				kept = append(kept, p)
+			}
+		}
+		h.remoteGroups[msg.remoteName] = kept
+		h.remoteSessionsMu.Unlock()
+		h.rebuildFlatItems()
+		h.setError(fmt.Errorf("deleted group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete-group", msg.groupPath)))
+		return h, h.fetchRemoteSessions
+
+	case remoteGroupReorderResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		direction := "up"
+		if msg.delta > 0 {
+			direction = "down"
+		}
+		if !msg.moved {
+			h.setError(fmt.Errorf("'%s' did not move %s on %s: it is already at the edge of its siblings there", msg.groupPath, direction, msg.remoteName))
+			return h, nil
+		}
+		// Remote confirmed and persisted the new order; patch the cached
+		// group list the same way so the header moves now, before the next
+		// fleet poll re-reads the truth from `group list`.
+		h.remoteSessionsMu.Lock()
+		if h.remoteGroups == nil {
+			h.remoteGroups = make(map[string][]string)
+		}
+		h.remoteGroups[msg.remoteName] = swapRemoteGroupSibling(h.remoteGroups[msg.remoteName], msg.groupPath, msg.delta)
+		h.remoteSessionsMu.Unlock()
+		h.clearError()
+		h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
+		return h, nil
+
 	case reviverTickMsg:
 		// Fire-and-forget reviver sweep for instances whose tmux server
 		// survived an SSH scope cleanup but whose pipe was reaped. Runs in
@@ -6413,6 +7362,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.feedbackDialog != nil && h.feedbackDialog.IsVisible() {
 			h.feedbackDialog.Hide()
 		}
+		return h, nil
+
+	case telemetryDismissMsg:
+		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+			h.telemetryDialog.Hide()
+		}
+		return h, nil
+
+	case telemetrySentMsg:
+		// Background daily report finished (or was refused by the package's
+		// own gates). Deliberately silent either way.
 		return h, nil
 
 	case modelsFetchedMsg:
@@ -6475,7 +7435,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case refreshMsg:
-		return h, h.loadSessions
+		return h, h.sessionLoadCmd(nil, true)
+	case importReloadMsg:
+		state := h.preserveState()
+		return h, h.sessionLoadCmd(&state, false)
 
 	case systemThemeMsg:
 		theme := "light"
@@ -6510,20 +7473,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Preserve UI state before reload
 		state := h.preserveState()
 
-		// Reload from disk
-		cmd := func() tea.Msg {
-			// Capture file mtime BEFORE loading to detect external changes later
-			loadMtime, _ := h.storage.GetFileMtime()
-			instances, groups, err := h.storage.LoadWithGroups()
-			uiLog.Debug("reload_load_with_groups", slog.Int("instances", len(instances)), slog.Any("error", err))
-			return loadSessionsMsg{
-				instances:    instances,
-				groups:       groups,
-				err:          err,
-				restoreState: &state, // Pass state to restore after load
-				loadMtime:    loadMtime,
-			}
-		}
+		cmd := h.sessionLoadCmd(&state, false)
 
 		// Continue listening for next change
 		return h, tea.Batch(cmd, listenForReloads(h.storageWatcher))
@@ -6836,7 +7786,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.previewFetchingID = ""
 		h.previewCacheTime[msg.previewKey] = time.Now()
 		if msg.err == nil {
-			h.previewCache[msg.previewKey] = msg.content
+			// Tabs cannot survive into a fixed-cell frame: ansi.StringWidth
+			// measures a TAB as zero cells while the terminal expands it to the
+			// next multiple-of-8 column, so a captured `git status` or `ls` line
+			// passes every width gate and still overflows the pane. Expand at
+			// ingest — one chokepoint for local and remote previews alike — so
+			// the cached content is already what the terminal will render.
+			h.previewCache[msg.previewKey] = expandTabs(msg.content)
 		}
 		h.previewCacheMu.Unlock()
 		return h, nil
@@ -7063,9 +8019,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var remoteFetchCmd tea.Cmd
 		var remoteLatencyCmd tea.Cmd
 
-		if h.groupViewMode != session.GroupViewNormal {
+		now := time.Time(msg)
+		if now.IsZero() {
+			now = time.Now()
+		}
+		filterExpired := h.timeFilter != session.TimeFilterAll && !h.nextTimeFilterExpiry.IsZero() && !now.Before(h.nextTimeFilterExpiry)
+		if h.groupViewMode != session.GroupViewNormal || filterExpired {
 			selectedBefore := h.captureSelectedItemIdentity()
-			h.rebuildFlatItemsPreservingSelection(selectedBefore)
+			h.rebuildFlatItemsPreservingSelectionAt(selectedBefore, now)
 		}
 
 		// Auto-dismiss errors after 5 seconds
@@ -7483,6 +8444,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.feedbackDialog = d
 			return h, cmd
 		}
+		if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+			d, cmd := h.telemetryDialog.Update(msg)
+			h.telemetryDialog = d
+			return h, cmd
+		}
 		if h.zoxidePicker.IsVisible() {
 			return h.handleZoxidePickerKey(msg)
 		}
@@ -7815,14 +8781,25 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// filesystem (#743).
 		if h.pendingRemoteName != "" {
 			remoteName := h.pendingRemoteName
-			name, path, command := h.newDialog.GetRemoteValues()
-			groupPath := h.newDialog.GetSelectedGroup()
+			// Everything the dialog collected travels to the remote's own
+			// `add` (account slot, model, Claude toggles, sandbox, worktree,
+			// yolo); a field that command cannot express is refused here,
+			// while the dialog is still open to show the message.
+			opts, optsErr := h.newDialog.GetRemoteCreateOptions()
+			if optsErr != "" {
+				h.newDialog.SetError(optsErr)
+				return h, nil
+			}
 			// Remember the submitted tool for the next dialog open (UX top-3 #2).
-			rememberTool(h.stateDB(), command)
+			rememberTool(h.stateDB(), opts.Tool)
 			h.newDialog.Hide()
 			h.pendingRemoteName = ""
 			h.clearError()
-			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path, groupPath)
+			create := h.createRemoteSessionWithOptions
+			if h.remoteCreateSink != nil {
+				create = h.remoteCreateSink
+			}
+			return h, create(remoteName, opts)
 		}
 
 		// Get values including worktree settings.
@@ -7891,6 +8868,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var toolOptionsJSON json.RawMessage
 		var claudeExtraArgs []string
 		var claudeStartQuery string
+		var claudeAccount string
 		if command == "claude" && claudeOpts != nil {
 			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
 			claudeExtraArgs = h.newDialog.GetClaudeExtraArgs()
@@ -7909,6 +8887,14 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON, _ = session.MarshalToolOptions(hermesOpts)
 		}
 
+		// The account row is offered for every claude-compatible tool (the
+		// options panel's own gate), so harvest it on the same terms rather
+		// than only for the literal "claude" preset — otherwise a custom
+		// claude-compatible tool silently drops the pick.
+		if session.IsClaudeCompatible(command) {
+			claudeAccount = h.newDialog.GetClaudeAccount()
+		}
+
 		parentSessionID := h.newDialog.GetParentSessionID()
 		parentProjectPath := h.newDialog.GetParentProjectPath()
 
@@ -7916,7 +8902,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, launchModelID, parentSessionID, parentProjectPath)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, claudeAccount, launchModelID, parentSessionID, parentProjectPath)
 				return h, nil
 			}
 		}
@@ -7969,6 +8955,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON,
 			claudeExtraArgs,
 			claudeStartQuery,
+			claudeAccount,
 			launchModelID,
 			multiRepoEnabled,
 			additionalPaths,
@@ -7999,10 +8986,14 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-func (h *Home) showRemoteNewSessionDialog(item session.Item) {
+// showRemoteNewSessionDialog opens the new-session dialog for a remote target
+// and returns the command that fetches the remote's account slots and MCP
+// names for the dialog's account and MCP rows (see remoteAccountsFetchedMsg
+// and remoteMCPsFetchedMsg).
+func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	remoteName := item.RemoteName
 	if remoteName == "" {
-		return
+		return nil
 	}
 
 	paths := h.remotePathSuggestions(remoteName)
@@ -8022,11 +9013,19 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) {
 		}
 		defaultPath = item.RemoteSession.Path
 	} else if item.Type == session.ItemTypeRemoteGroup {
-		// "remotes/<host>" is a synthetic local UI bucket, not a user-defined
-		// remote group. Keep the default group so handleNewDialogKey doesn't
-		// forward it to CreateSessionWithOptions and create a bogus remote group.
-		groupPath = session.DefaultGroupPath
-		groupName = session.DefaultGroupName
+		// Level 0 is the "remotes/<host>" header, a synthetic local UI bucket,
+		// not a user-defined remote group: keep the default group so
+		// handleNewDialogKey doesn't forward it and create a bogus remote
+		// group. A deeper header is one of the remote's own groups, so the new
+		// session is offered in that group, exactly as n on a local group
+		// header does.
+		if gp := remoteGroupPathFromItem(item); item.Level > 0 && gp != "" {
+			groupPath = gp
+			groupName = displayGroupName(gp)
+		} else {
+			groupPath = session.DefaultGroupPath
+			groupName = session.DefaultGroupName
+		}
 		defaultPath = "."
 	} else if len(paths) > 0 {
 		defaultPath = paths[0]
@@ -8037,14 +9036,139 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) {
 		h.newDialog.pathInput.SetValue(".")
 		h.newDialog.pathSoftSelected = true
 	}
-	// Remote creation goes through the remote CLI. Disable local-only defaults
-	// that ShowInGroup may have inherited from this machine's config.
-	h.newDialog.worktreeEnabled = false
-	h.newDialog.worktreeToggled = false
-	h.newDialog.sandboxEnabled = false
-	h.newDialog.multiRepoEnabled = false
-	h.newDialog.multiRepoPaths = nil
-	h.newDialog.rebuildFocusTargets()
+	// Remote creation goes through the remote CLI, which applies the server's
+	// own defaults. Drop everything ShowInGroup inherited from this machine's
+	// config so only what the user sets in the dialog is forwarded.
+	h.newDialog.ResetRemoteDefaults()
+	// The account and MCP rows now list the server's slots and MCPs, not this
+	// machine's: they arrive asynchronously so opening the dialog never
+	// blocks on SSH.
+	fetchAccounts := h.fetchRemoteAccounts
+	if h.remoteAccountsFetcher != nil {
+		fetchAccounts = h.remoteAccountsFetcher
+	}
+	fetchMCPs := h.fetchRemoteMCPs
+	if h.remoteMCPsFetcher != nil {
+		fetchMCPs = h.remoteMCPsFetcher
+	}
+	h.remoteAccountsGen++
+	gen := h.remoteAccountsGen
+	return tea.Batch(
+		stampRemoteFetch(gen, fetchAccounts(remoteName)),
+		stampRemoteFetch(gen, fetchMCPs(remoteName)),
+	)
+}
+
+// stampRemoteFetch marks a remote dialog fetch's answer with the generation
+// of the opening that asked, so the apply step can tell a late answer for a
+// previous opening from the current one. A nil cmd stays nil.
+func stampRemoteFetch(gen uint64, cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		switch fetched := cmd().(type) {
+		case remoteAccountsFetchedMsg:
+			fetched.gen = gen
+			return fetched
+		case remoteMCPsFetchedMsg:
+			fetched.gen = gen
+			return fetched
+		default:
+			return fetched
+		}
+	}
+}
+
+// remoteRunnerFor builds the SSH runner for a configured remote, or explains
+// why it cannot.
+func remoteRunnerFor(remoteName string) (*session.SSHRunner, error) {
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil || config.Remotes == nil {
+		return nil, fmt.Errorf("failed to load remote config")
+	}
+	rc, ok := config.Remotes[remoteName]
+	if !ok {
+		return nil, fmt.Errorf("remote '%s' not found", remoteName)
+	}
+	return session.NewSSHRunner(remoteName, rc), nil
+}
+
+// remoteAccountsFetchedMsg carries the account slot names configured on a
+// remote, for the new-session dialog opened on that remote.
+type remoteAccountsFetchedMsg struct {
+	remoteName string
+	accounts   []string
+	err        error
+	// gen is the remoteAccountsGen value of the dialog opening that asked.
+	gen uint64
+}
+
+// fetchRemoteAccounts asks the remote for its configured Claude account slots
+// (`accounts --json`, read-only). Only names come back; nothing local is sent.
+func (h *Home) fetchRemoteAccounts(remoteName string) tea.Cmd {
+	return func() tea.Msg {
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return remoteAccountsFetchedMsg{remoteName: remoteName, err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		accounts, err := runner.FetchAccounts(ctx)
+		return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: accounts, err: err}
+	}
+}
+
+// remoteMCPsFetchedMsg carries the MCP names defined on a remote, for the
+// new-session dialog opened on that remote.
+type remoteMCPsFetchedMsg struct {
+	remoteName string
+	mcps       []string
+	err        error
+	// gen is the remoteAccountsGen value of the dialog opening that asked.
+	gen uint64
+}
+
+// fetchRemoteMCPs asks the remote for the MCP names in its own config
+// (`mcp list --quiet`, read-only, names only; no definition or env travels). Nothing local is sent.
+func (h *Home) fetchRemoteMCPs(remoteName string) tea.Cmd {
+	return func() tea.Msg {
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return remoteMCPsFetchedMsg{remoteName: remoteName, err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		mcps, err := runner.FetchMCPs(ctx)
+		return remoteMCPsFetchedMsg{remoteName: remoteName, mcps: mcps, err: err}
+	}
+}
+
+// applyRemoteMCPs is applyRemoteAccounts for the MCP row: the names reach
+// the dialog only when it is still open for that remote and this opening
+// asked; a failed fetch (offline host, or a remote too old for
+// `mcp list --quiet`) leaves the row hidden rather than offering local names.
+func (h *Home) applyRemoteMCPs(msg remoteMCPsFetchedMsg) {
+	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName || msg.gen != h.remoteAccountsGen {
+		return
+	}
+	h.newDialog.SetRemoteMCPs(msg.mcps)
+}
+
+// applyRemoteAccounts hands the fetched slot names to the dialog when it is
+// still open for that remote and this opening asked for it; a late answer
+// for a closed dialog, a different remote or an earlier opening is dropped. A failed fetch (offline host, or a remote too
+// old for `accounts`) leaves the row hidden rather than offering local names.
+func (h *Home) applyRemoteAccounts(msg remoteAccountsFetchedMsg) {
+	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName {
+		return
+	}
+	// Same remote, dialog still open, but asked by an earlier opening: the
+	// user may already be choosing from a newer list, so keep it.
+	if msg.gen != h.remoteAccountsGen {
+		return
+	}
+	h.newDialog.SetRemoteAccounts(msg.accounts)
 }
 
 func (h *Home) remotePathSuggestions(remoteName string) []string {
@@ -8257,6 +9381,7 @@ func (h *Home) hasModalVisible() bool {
 		h.sessionSwitcher.IsVisible() || h.scrollbackPager.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
+		(h.telemetryDialog != nil && h.telemetryDialog.IsVisible()) ||
 		h.zoxidePicker.IsVisible()
 }
 
@@ -8812,7 +9937,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
-				// Attach to remote session via SSH
+				// A stopped remote session is restarted first, as Enter on a
+				// dead local session restarts it; the row refreshes when the
+				// remote confirms. Otherwise attach over SSH.
+				if strings.EqualFold(item.RemoteSession.Status, string(session.StatusStopped)) {
+					return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+				}
 				return h, h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
 			}
 		}
@@ -8860,8 +9990,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// carry a local order overlay instead. Returning here also
 				// skips the forceSaveInstances below, which has nothing to do
 				// with a remote reorder.
-				h.moveRemoteItem(item, -1)
-				return h, nil
+				return h, h.moveRemoteItem(item, -1)
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupUp(item.Path)
 				h.rebuildFlatItems()
@@ -8897,8 +10026,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch item.Type {
 			case session.ItemTypeRemoteSession, session.ItemTypeRemoteGroup:
 				// #1875 — see the shift+up twin above.
-				h.moveRemoteItem(item, 1)
-				return h, nil
+				return h, h.moveRemoteItem(item, 1)
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupDown(item.Path)
 				h.rebuildFlatItems()
@@ -9054,6 +10182,22 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if item.Session.CanFork() {
 					return h, h.quickForkSession(item.Session)
 				}
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Remote session: fork it on the remote itself through its own
+				// `session fork`. The remote decides title, group and whether
+				// the tool is forkable; the row appears on the next fetch.
+				// The in-flight guard lives in remoteForking (mirrors
+				// remoteRestarting): forkingSessions is an animation map whose
+				// expired entries are dropped by cleanupExpiredAnimations, and
+				// remote keys are never in instanceByID, so it cannot be the guard.
+				forkID := remoteRestartAnimationID(item.RemoteName, item.RemoteSession.ID)
+				if _, forking := h.remoteForking[forkID]; forking {
+					h.setError(fmt.Errorf("remote session is forking, please wait..."))
+					return h, nil
+				}
+				h.remoteForking[forkID] = struct{}{}
+				h.forkingSessions[forkID] = time.Now()
+				return h, h.forkRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -9076,6 +10220,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if item.Session.CanFork() {
 					return h, h.forkSessionWithDialog(item.Session)
 				}
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// The fork dialog inspects local git state for its worktree
+				// and branch fields, which does not apply to a remote checkout.
+				h.setError(fmt.Errorf("fork dialog is not available for remote sessions; press f to fork on %s", item.RemoteName))
 			}
 		}
 		return h, nil
@@ -9103,6 +10251,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.setError(errSessionStillCreating)
 			} else if item.Type == session.ItemTypeSession {
 				h.groupDialog.ShowMove(h.scopedGroupPaths())
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Remote sessions live in the remote's own state DB, so the
+				// local tree cannot move them. Offer the group paths currently
+				// observed on that remote (the only groups the remote knows
+				// about); the confirmed move is routed over SSH in
+				// GroupDialogMove (see moveRemoteSessionToGroup).
+				h.groupDialog.ShowMove(h.remoteGroupPaths(item.RemoteName))
 			}
 		}
 		return h, nil
@@ -9189,7 +10344,32 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeGroup {
+			if item.Type == session.ItemTypeRemoteGroup {
+				// Remote group header (incl. the level-0 host header): create
+				// the group on the remote itself. The parent defaults to the
+				// header's own group path so Enter creates a remote subgroup;
+				// Tab toggles to root-level remote create (issue #111 parity).
+				parentPath := remoteGroupPathFromItem(item)
+				parentName := parentPath
+				if idx := strings.LastIndex(parentPath, "/"); idx >= 0 {
+					parentName = parentPath[idx+1:]
+				}
+				h.groupDialog.ShowCreateRemoteWithContext(parentPath, parentName, item.RemoteName)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Remote session: default to a root-level group on the remote;
+				// Tab toggles to a subgroup under the session's current group.
+				if gPath := item.RemoteSession.Group; gPath != "" {
+					gName := gPath
+					if idx := strings.LastIndex(gPath, "/"); idx >= 0 {
+						gName = gPath[idx+1:]
+					}
+					h.groupDialog.ShowCreateRemoteWithContextDefaultRoot(gPath, gName, item.RemoteName)
+				} else {
+					// Ungrouped remote session: root only, no toggle (mirrors
+					// the local ungrouped case below).
+					h.groupDialog.ShowCreateRemoteWithContext("", "", item.RemoteName)
+				}
+			} else if item.Type == session.ItemTypeGroup {
 				// On group header: default to subgroup mode
 				h.groupDialog.ShowCreateWithContext(item.Group.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.GroupPath != "" {
@@ -9327,8 +10507,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
-				h.showRemoteNewSessionDialog(item)
-				return h, nil
+				return h, h.showRemoteNewSessionDialog(item)
 			}
 		}
 
@@ -9453,6 +10632,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.IsWorktree())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else if item.Type == session.ItemTypeRemoteGroup && item.Level > 0 {
+				// One of the remote's own groups: delete it there, the way d on
+				// a local group header does here. The Level-0 host header is a
+				// local UI bucket and has nothing to delete.
+				gp := remoteGroupPathFromItem(item)
+				h.confirmDialog.ShowDeleteRemoteGroup(item.RemoteName, gp, displayGroupName(gp))
 			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
 				// Protected default group: surface the block in the same centered modal
 				// used for the delete confirmation, so it can't be clamped off the bottom
@@ -9489,6 +10674,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil && !item.Session.IsArchived() {
 				h.confirmDialog.ShowArchiveSession(item.Session.ID, item.Session.Title)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && !item.RemoteSession.Archived {
+				h.confirmDialog.ShowArchiveRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -9501,6 +10688,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsArchived() {
 				h.confirmDialog.ShowUnarchiveSession(item.Session.ID, item.Session.Title)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && item.RemoteSession.Archived {
+				h.confirmDialog.ShowUnarchiveRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -9642,6 +10831,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.groupViewMode = session.GroupViewMode((int(h.groupViewMode) + 1) % session.GroupViewModeCount)
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.skipDivider(1)
+		h.syncViewport()
+		h.saveUIState()
+		return h, h.fetchSelectedPreview()
+
+	case "*":
+		// Cycle time-range filter: all → today → 3 days → 7 days → all.
+		// Preserve the cursor's row identity across the rebuild, same as the
+		// 't' view-mode cycle above.
+		selectedBefore := h.captureSelectedItemIdentity()
+		h.timeFilter = session.TimeFilterMode((int(h.timeFilter) + 1) % session.TimeFilterModeCount)
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.syncViewport()
 		h.saveUIState()
 		return h, h.fetchSelectedPreview()
@@ -9869,20 +11069,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "ctrl+r":
-		// Manual refresh (useful if watcher fails or for user preference)
+		// Manual refresh follows the same ordering as initial and watcher loads.
+		// Remote decks refresh in the same keystroke, so a change made on a
+		// remote (or from another machine) shows up now, not at the next poll.
 		state := h.preserveState()
-
-		cmd := func() tea.Msg {
-			instances, groups, err := h.storage.LoadWithGroups()
-			return loadSessionsMsg{
-				instances:    instances,
-				groups:       groups,
-				err:          err,
-				restoreState: &state,
-			}
-		}
-
-		return h, cmd
+		h.remoteSessionsMu.Lock()
+		h.remotesFetchActive = true // so the remote headers show "refreshing…"
+		h.remoteSessionsMu.Unlock()
+		return h, tea.Batch(h.sessionLoadCmd(&state, false), h.fetchRemoteSessions)
 
 	case "ctrl+s":
 		// Open the session switcher from the overview too, with the same key
@@ -10052,9 +11246,11 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if h.confirmDialog.GetFocusedButton() == 0 {
 				return h, h.confirmCreateDirectory()
 			}
+			h.pendingRemoteCreate = nil
 			h.confirmDialog.Hide()
 			return h, nil
 		case "n", "N", "esc":
+			h.pendingRemoteCreate = nil
 			h.confirmDialog.Hide()
 			return h, nil
 		}
@@ -10145,9 +11341,7 @@ func (h *Home) confirmAction() tea.Cmd {
 	case ConfirmDeleteGroup:
 		groupPath := h.confirmDialog.GetTargetID()
 		h.groupTree.DeleteGroup(groupPath)
-		// SaveGroups is additive (never prunes), so the removed group's rows must
-		// be deleted explicitly or it would resurrect on the next reload.
-		h.deleteGroupRows(groupPath)
+
 		h.instancesMu.Lock()
 		h.instances = h.groupTree.GetAllInstances()
 		h.instancesMu.Unlock()
@@ -10159,12 +11353,24 @@ func (h *Home) confirmAction() tea.Cmd {
 		title := h.confirmDialog.targetName
 		h.confirmDialog.Hide()
 		return h.deleteRemoteSession(remoteName, sessionID, title)
+	case ConfirmDeleteRemoteGroup:
+		groupPath := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		h.confirmDialog.Hide()
+		return h.deleteRemoteGroup(groupPath, remoteName)
 	case ConfirmCloseRemoteSession:
 		sessionID := h.confirmDialog.GetTargetID()
 		remoteName := h.confirmDialog.GetRemoteName()
 		title := h.confirmDialog.targetName
 		h.confirmDialog.Hide()
 		return h.closeRemoteSession(remoteName, sessionID, title)
+	case ConfirmArchiveRemoteSession, ConfirmUnarchiveRemoteSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		title := h.confirmDialog.targetName
+		archive := h.confirmDialog.GetConfirmType() == ConfirmArchiveRemoteSession
+		h.confirmDialog.Hide()
+		return h.setRemoteSessionArchived(remoteName, sessionID, title, archive)
 	case ConfirmRemoveSession:
 		sessionID := h.confirmDialog.GetTargetID()
 		if inst := h.getInstanceByID(sessionID); inst != nil {
@@ -10181,7 +11387,18 @@ func (h *Home) confirmAction() tea.Cmd {
 
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
-	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
+	if pending := h.pendingRemoteCreate; pending != nil {
+		h.pendingRemoteCreate = nil
+		h.confirmDialog.Hide()
+		opts := pending.opts
+		opts.CreateDir = true
+		create := h.createRemoteSessionWithOptions
+		if h.remoteCreateSink != nil {
+			create = h.remoteCreateSink
+		}
+		return create(pending.remoteName, opts)
+	}
+	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingAccount, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 	h.confirmDialog.Hide()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -10200,6 +11417,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		pendingToolOpts,
 		pendingExtraArgs,
 		pendingStartQuery,
+		pendingAccount,
 		pendingLaunchModelID,
 		false,
 		nil,
@@ -10927,13 +12145,46 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
+		// The account slot is NOT a plain field write: moving a session to
+		// another Claude login has to carry its conversation into that
+		// account's config dir, or the restarted `claude --resume` finds no
+		// conversation. It is pulled out here and handed to
+		// session.SwitchAccount (the same flow as `agent-deck session
+		// switch-account`) once the ordinary field writes are persisted.
+		// Clearing the slot back to "inherit" is NOT a switch: there is no
+		// target config dir to migrate into, and SetField already treats an
+		// empty value as "drop the override" (back to the conductor/group/env
+		// chain). Only a named target goes through the switch flow; the empty
+		// value stays in the ordinary field loop below.
+		accountSwitch := ""
+		switchAccount := false
+		for _, c := range changes {
+			if c.Field == session.FieldAccount && strings.TrimSpace(c.Value) != "" {
+				accountSwitch, switchAccount = c.Value, true
+			}
+		}
+
+		// A switch to another Claude account and a change of tool cannot both
+		// land in one submit: session.SwitchAccount only supports claude, so
+		// applying the tool first would persist it and then refuse the switch,
+		// leaving the session half-edited and unrestarted. Refuse the pair up
+		// front, with nothing written.
+		if switchAccount {
+			for _, c := range changes {
+				if c.Field == session.FieldTool && c.Value != "claude" {
+					h.editSessionDialog.SetError("an account switch only applies to claude sessions — change the tool and the account in separate edits")
+					return h, nil
+				}
+			}
+		}
+
 		// Apply Tool last so claude-only validation (Skip/Auto/ExtraArgs)
 		// sees the pre-edit Tool — otherwise Tool=claude→shell with a
 		// Skip toggle in the same submit fails IsClaudeCompatible on
 		// the toggle.
 		orderedChanges := make([]Change, 0, len(changes))
 		for _, c := range changes {
-			if c.Field != session.FieldTool {
+			if c.Field != session.FieldTool && !(c.Field == session.FieldAccount && switchAccount) {
 				orderedChanges = append(orderedChanges, c)
 			}
 		}
@@ -10984,6 +12235,17 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.forceSaveInstances()
 
 		h.editSessionDialog.Hide()
+
+		// An account change owns the restart: SwitchAccount stops the
+		// session, migrates the conversation and starts it again, so the
+		// generic restart below would either double-start it or race the
+		// migration. Every other edit in the same submit is already saved
+		// above, so the switch's restart picks those up too.
+		if switchAccount {
+			h.resumingSessions[sessionID] = time.Now()
+			return h, h.switchSessionAccount(sessionID, accountSwitch)
+		}
+
 		// Auto-restart on restart-required edits — Tool/Skip/Auto/ExtraArgs
 		// only take effect on next launch, so deferring would just leave
 		// the user staring at old behavior. Mirrors the manual `R` path,
@@ -11161,7 +12423,9 @@ func (h *Home) reapplyPendingGroupOps() bool {
 	defer func() { h.groupTree.DefaultMaxConcurrent = savedDefaultMaxConcurrent }()
 
 	applied := false
+	pending := make([]pendingGroupOp, 0, len(h.pendingGroupOps))
 	for _, op := range h.pendingGroupOps {
+		opApplied := false
 		switch op.kind {
 		case groupOpCreate:
 			h.groupTree.DefaultMaxConcurrent = op.maxConcurrent
@@ -11171,7 +12435,7 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				if op.defaultPath != "" {
 					h.groupTree.SetDefaultPathForGroup(g.Path, op.defaultPath)
 				}
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "create"), slog.String("name", op.name))
 			}
 		case groupOpCreateSub:
@@ -11182,7 +12446,7 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				if op.defaultPath != "" {
 					h.groupTree.SetDefaultPathForGroup(g.Path, op.defaultPath)
 				}
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "createSub"), slog.String("name", op.name))
 			}
 		case groupOpRename:
@@ -11206,7 +12470,7 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "rename"), slog.String("old_path", op.oldPath), slog.String("name", op.name))
 			}
 		case groupOpMove:
@@ -11215,12 +12479,16 @@ func (h *Home) reapplyPendingGroupOps() bool {
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
-				applied = true
+				opApplied = true
 				uiLog.Info("pending_group_reapplied", slog.String("kind", "move"), slog.String("session_id", op.sessionID), slog.String("target", op.targetPath))
 			}
 		}
+		if opApplied {
+			pending = append(pending, op)
+			applied = true
+		}
 	}
-	h.pendingGroupOps = nil
+	h.pendingGroupOps = pending
 	return applied
 }
 
@@ -11235,10 +12503,29 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.clearError() // Clear any previous validation error
 
+		// remoteCmd is set when the confirmed action runs over SSH against a
+		// remote's own state DB (remote-session move, remote group create) and
+		// reports back via remoteMoveResultMsg / remoteGroupResultMsg.
+		var remoteCmd tea.Cmd
+
 		switch h.groupDialog.Mode() {
 		case GroupDialogCreate:
 			name := h.groupDialog.GetValue()
 			if name != "" {
+				if remoteName := h.groupDialog.RemoteName(); remoteName != "" {
+					// g was pressed on a REMOTE row: the group must be created
+					// in the remote's own state DB, not the local tree. Run
+					// `agent-deck group create` there over SSH (mirrors the
+					// remote-move and remote-rename paths); the local group
+					// path cache updates when the remote confirms via
+					// remoteGroupResultMsg.
+					parentPath := ""
+					if h.groupDialog.HasParent() {
+						parentPath = h.groupDialog.GetParentPath()
+					}
+					remoteCmd = h.createRemoteGroup(name, remoteName, parentPath, h.groupDialog.GetDefaultPath())
+					break
+				}
 				// Seed the new-group default from [group_defaults].max_concurrent.
 				if cfg, _ := session.LoadUserConfig(); cfg != nil {
 					h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
@@ -11281,10 +12568,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
 					kind: groupOpRename, oldPath: oldPath, name: name,
 				})
-				// A rename re-paths the group and its subgroups; the old path rows
-				// must be deleted explicitly (additive SaveGroups won't prune them)
-				// or the group reappears under its old name on the next reload.
-				h.deleteGroupRows(oldPath)
+
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
@@ -11308,6 +12592,12 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.instancesMu.Unlock()
 					h.rebuildFlatItems()
 					h.saveInstances()
+				} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && item.RemoteName != "" {
+					// The row lives in the remote's own DB; run
+					// `agent-deck group move` there over SSH (mirrors the
+					// remote-rename path) and refresh the fleet cache when the
+					// remote confirms via remoteMoveResultMsg.
+					remoteCmd = h.moveRemoteSessionToGroup(item.RemoteSession.Title, item.RemoteName, item.RemoteSession.ID, targetGroupPath)
 				}
 			}
 		case GroupDialogRenameSession:
@@ -11320,32 +12610,11 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					parts := strings.SplitN(sessionID, ":", 3) // "remote", remoteName, actualID
 					if len(parts) == 3 {
 						remoteName, remoteID := parts[1], parts[2]
-						go func() {
-							config, err := session.LoadUserConfig()
-							if err != nil || config == nil || config.Remotes == nil {
-								return
-							}
-							rc, ok := config.Remotes[remoteName]
-							if !ok {
-								return
-							}
-							runner := session.NewSSHRunner(remoteName, rc)
-							ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-							defer cancel()
-							_, _ = runner.RunCommand(ctx, "rename", remoteID, newName)
-						}()
-						// Update local cache immediately for responsiveness
-						h.remoteSessionsMu.Lock()
-						if sessions, ok := h.remoteSessions[remoteName]; ok {
-							for i := range sessions {
-								if sessions[i].ID == parts[2] {
-									sessions[i].Title = newName
-									break
-								}
-							}
-						}
-						h.remoteSessionsMu.Unlock()
-						h.rebuildFlatItems()
+						// Show the new title now; the remote's answer arrives as
+						// remoteRenameResultMsg, which reverts it with a message
+						// if the remote refused or could not be reached.
+						oldTitle := h.setRemoteSessionTitle(remoteName, remoteID, newName)
+						remoteCmd = h.renameRemoteSession(remoteName, remoteID, oldTitle, newName)
 					}
 				} else {
 					// Local session rename
@@ -11396,7 +12665,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.groupDialog.Hide()
 		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
-		return h, nil
+		return h, remoteCmd
 	case "esc":
 		h.groupDialog.Hide()
 		h.clearError()            // Clear any validation error
@@ -11695,19 +12964,6 @@ func (h *Home) adoptRestartRecord(sessionID string) {
 	}
 }
 
-// deleteGroupRows removes a group and its descendants from the groups table.
-// SaveGroups is additive (upsert, never prune), so an intentional removal —
-// delete or the old path of a rename/move — must be persisted explicitly here,
-// otherwise the stale rows resurrect the group on the next reload.
-func (h *Home) deleteGroupRows(path string) {
-	if h.storage == nil || path == "" {
-		return
-	}
-	if err := h.storage.DeleteGroupSubtree(path); err != nil {
-		uiLog.Warn("delete_group_rows_failed", slog.String("path", path), slog.String("error", err.Error()))
-	}
-}
-
 // saveGroupState saves only group expanded/collapsed state to SQLite.
 // This is lightweight (no Touch, no StorageWatcher trigger) and safe to call after every toggle.
 func (h *Home) saveGroupState() {
@@ -11748,6 +13004,7 @@ func (h *Home) saveUIStateErr() error {
 		PreviewMode:        int(h.previewMode),
 		StatusFilter:       string(h.statusFilter),
 		GroupViewMode:      int(h.groupViewMode),
+		TimeFilterMode:     int(h.timeFilter),
 		RemoteSessionOrder: h.remoteSessionOrder,
 	}
 
@@ -11830,6 +13087,10 @@ func (h *Home) loadUIState() {
 	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
 		h.groupViewMode = session.GroupViewNormal
 	}
+	h.timeFilter = session.TimeFilterMode(state.TimeFilterMode)
+	if h.timeFilter < session.TimeFilterAll || h.timeFilter >= session.TimeFilterModeCount {
+		h.timeFilter = session.TimeFilterAll
+	}
 
 	// #1875: restore the manual remote row order. Entries for remotes that no
 	// longer exist are harmless — a bucket key nobody builds is never read —
@@ -11855,6 +13116,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	toolOptionsJSON json.RawMessage,
 	claudeExtraArgs []string,
 	claudeStartQuery string,
+	claudeAccount string,
 	launchModelID string,
 	multiRepoEnabled bool,
 	additionalPaths []string,
@@ -11986,6 +13248,15 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// single shell-quoted positional arg on the new-session command.
 		if tool == "claude" && claudeStartQuery != "" {
 			inst.StartupQuery = claudeStartQuery
+		}
+
+		// Apply the named account slot (#924). The Claude config-dir resolver
+		// reads Instance.Account as the most specific level of the chain, so a
+		// session created under an account spawns on that login's auth. A new
+		// session has no conversation yet, so there is nothing to migrate —
+		// changing the slot LATER goes through session.SwitchAccount.
+		if claudeAccount != "" && session.IsClaudeCompatible(tool) {
+			inst.Account = claudeAccount
 		}
 
 		// Apply sandbox config.
@@ -12445,6 +13716,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		geminiYoloMode, false, toolOptionsJSON,
 		nil,        // no extra claude args (recent-session path)
 		"",         // no claude startup query (recent-session path)
+		"",         // no account slot (inherit)
 		"",         // no explicit model override
 		false, nil, // no multi-repo
 		"", "", // no parent
@@ -12569,6 +13841,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		false, false, nil,
 		nil, // no extra claude args
 		"",  // no claude startup query
+		"",  // no account slot (inherit)
 		"",  // no explicit model override
 		false, nil,
 		"", "",
@@ -13448,6 +14721,54 @@ func (h *Home) bulkRemoveErrored() tea.Cmd {
 }
 
 // sessionRestartedMsg signals that a session was restarted.
+// accountSwitchedMsg reports the outcome of a TUI account switch (#924).
+// committed says whether the account field was actually changed on the
+// instance — the caller must persist session state exactly when it is true,
+// including the partial case where the switch succeeded but the restart did
+// not.
+type accountSwitchedMsg struct {
+	sessionID string
+	account   string
+	summary   string
+	committed bool
+	warnings  []string
+	err       error
+}
+
+// switchSessionAccount moves a session to another named Claude account,
+// carrying its conversation across, and reports the outcome as an
+// accountSwitchedMsg. Same flow as `agent-deck session switch-account`: it
+// stops the session, copies the conversation into the target account's config
+// dir, verifies the copy, commits the slot and restarts with `--resume`.
+//
+// Runs as a tea.Cmd because the stop/copy/start sequence talks to tmux and the
+// filesystem; doing it inline would freeze the UI for the duration.
+func (h *Home) switchSessionAccount(sessionID, account string) tea.Cmd {
+	return func() tea.Msg {
+		// Resolve by ID at execution time: a storage reload can replace the
+		// pointer captured when the dialog was submitted.
+		h.instancesMu.RLock()
+		inst := h.instanceByID[sessionID]
+		h.instancesMu.RUnlock()
+		if inst == nil {
+			return accountSwitchedMsg{sessionID: sessionID, account: account, err: fmt.Errorf("session no longer exists")}
+		}
+
+		cfg, cfgErr := session.LoadUserConfig()
+		if cfgErr != nil {
+			return accountSwitchedMsg{sessionID: sessionID, account: account, err: cfgErr}
+		}
+		result, err := session.SwitchAccount(cfg, inst, account, session.AccountSwitchOptions{})
+		msg := accountSwitchedMsg{sessionID: sessionID, account: account, err: err}
+		if result != nil {
+			msg.committed = true
+			msg.summary = result.Conversation
+			msg.warnings = result.Warnings
+		}
+		return msg
+	}
+}
+
 type sessionRestartedMsg struct {
 	sessionID  string
 	err        error
@@ -13583,6 +14904,16 @@ type remoteSessionClosedMsg struct {
 	err        error
 }
 
+// remoteSessionArchivedMsg reports the outcome of a remote archive (archived
+// true) or unarchive (archived false).
+type remoteSessionArchivedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	archived   bool
+	err        error
+}
+
 type remoteSessionRestartedMsg struct {
 	remoteName string
 	sessionID  string
@@ -13596,10 +14927,85 @@ func remoteRestartAnimationID(remoteName, sessionID string) string {
 
 type remoteSessionCreatedMsg struct {
 	err error
+	// notice is a non-error outcome worth a footer line (e.g. queued).
+	notice string
+	// created describes the session the remote confirmed, drawn at once.
+	created *session.RemoteSessionInfo
+}
+
+// remoteRenameResultMsg reports the remote's answer to a rename started from
+// the rename dialog on a remote session row.
+type remoteRenameResultMsg struct {
+	remoteName string
+	sessionID  string
+	oldTitle   string
+	newTitle   string
+	err        error
+}
+
+// setRemoteSessionTitle patches the cached title of a remote session and
+// rebuilds the rows; it returns the previous title so a refused rename can
+// be reverted.
+func (h *Home) setRemoteSessionTitle(remoteName, sessionID, title string) string {
+	old := ""
+	h.remoteSessionsMu.Lock()
+	if sessions, ok := h.remoteSessions[remoteName]; ok {
+		for i := range sessions {
+			if sessions[i].ID == sessionID {
+				old = sessions[i].Title
+				sessions[i].Title = title
+				break
+			}
+		}
+	}
+	h.remoteSessionsMu.Unlock()
+	h.rebuildFlatItems()
+	return old
+}
+
+// renameRemoteSession runs `agent-deck rename` on the remote and reports the
+// outcome, instead of firing it and forgetting (a refused or unreachable
+// rename used to show the new title and silently snap back on the next poll).
+func (h *Home) renameRemoteSession(remoteName, sessionID, oldTitle, newTitle string) tea.Cmd {
+	h.markRemoteAction(remoteName, "rename", sessionID)
+	return func() tea.Msg {
+		result := remoteRenameResultMsg{remoteName: remoteName, sessionID: sessionID, oldTitle: oldTitle, newTitle: newTitle}
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			result.err = err
+			return result
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := runner.RunCommand(ctx, "rename", sessionID, newTitle); err != nil {
+			result.err = err
+		}
+		return result
+	}
+}
+
+// remoteSessionForkedMsg reports the outcome of an SSH-routed quick fork (f
+// key on a remote session row). newID is the session the remote created.
+type remoteSessionForkedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	newID      string
+	err        error
+}
+
+// remoteCreateDirNeededMsg reports a remote create refused because the
+// dialog's path does not exist on the server; Home offers to create it.
+type remoteCreateDirNeededMsg struct {
+	remoteName string
+	opts       session.RemoteAddOptions
+	err        error
 }
 
 // deleteRemoteSession deletes a remote session and refreshes the remote list.
 func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "delete", sessionID)
+	h.setRemotePending(sessionID, "deleting…")
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -13629,6 +15035,8 @@ func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd 
 
 // closeRemoteSession stops a remote session process without deleting metadata.
 func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "close", sessionID)
+	h.setRemotePending(sessionID, "closing…")
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -13656,8 +15064,72 @@ func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	}
 }
 
+// setRemoteSessionArchived archives (archive true) or unarchives a remote
+// session through the remote's own `session archive` / `session unarchive`,
+// then refreshes the remote list so the row moves between the active and
+// archived (^) views the way a local session does.
+func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, archive bool) tea.Cmd {
+	h.markRemoteAction(remoteName, "archive", sessionID)
+	if archive {
+		h.setRemotePending(sessionID, "archiving…")
+	} else {
+		h.setRemotePending(sessionID, "restoring…")
+	}
+	return func() tea.Msg {
+		result := remoteSessionArchivedMsg{remoteName: remoteName, sessionID: sessionID, title: title, archived: archive}
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			result.err = fmt.Errorf("failed to load remote config")
+			return result
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			result.err = fmt.Errorf("remote '%s' not found", remoteName)
+			return result
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), rc.GetCommandTimeout())
+		defer cancel()
+		if archive {
+			result.err = runner.ArchiveSession(ctx, sessionID)
+		} else {
+			result.err = runner.UnarchiveSession(ctx, sessionID)
+		}
+		return result
+	}
+}
+
+// forkRemoteSession forks a remote session through the remote's own
+// `session fork` (mirrors restartRemoteSession). Title, group and tool
+// eligibility are decided on the server; the fleet list is refreshed when
+// the remote confirms via remoteSessionForkedMsg so the new row appears.
+func (h *Home) forkRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "fork", sessionID)
+	h.setRemotePending(sessionID, "forking…")
+	return func() tea.Msg {
+		result := remoteSessionForkedMsg{remoteName: remoteName, sessionID: sessionID, title: title}
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			result.err = fmt.Errorf("failed to load remote config")
+			return result
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			result.err = fmt.Errorf("remote '%s' not found", remoteName)
+			return result
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), rc.GetCommandTimeout())
+		defer cancel()
+		result.newID, result.err = runner.ForkSession(ctx, sessionID)
+		return result
+	}
+}
+
 // restartRemoteSession restarts a remote session.
 func (h *Home) restartRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "restart", sessionID)
+	h.setRemotePending(sessionID, "restarting…")
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -13934,17 +15406,18 @@ func (a attachCmd) SetStderr(w io.Writer) {}
 // createRemoteSession creates a new session on a remote and auto-attaches to it.
 // Used by quick-create (N): auto-generated name, remote defaults (shell).
 func (h *Home) createRemoteSession(remoteName string) tea.Cmd {
-	return h.createRemoteSessionWithOptions(remoteName, "", "", "", "")
+	return h.createRemoteSessionWithOptions(remoteName, session.RemoteAddOptions{})
 }
 
 // remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
 type remoteCreateAndAttachCmd struct {
 	runner    *session.SSHRunner
-	tool      string
-	title     string
-	path      string
-	group     string
+	opts      session.RemoteAddOptions
 	createCtx context.Context
+	// created receives the remote's session id once `add` succeeded, so
+	// the row can be drawn the moment the attach returns, before any
+	// fetch confirms it.
+	created *string
 	// onExit: same contract as attachCmd.onExit (#1753) — clear the attach flag
 	// while Bubble Tea's loop is still parked, so the first View() after resume
 	// never races the ExecCallback goroutine and renders blank.
@@ -13963,6 +15436,10 @@ func (e remoteAttachFailedError) Unwrap() error {
 	return e.err
 }
 
+// Run creates the session on the remote with the dialog's choices, then
+// attaches to it. A create failure is returned as-is; an attach failure after
+// a successful create is wrapped in remoteAttachFailedError so the caller can
+// tell the two apart.
 func (r remoteCreateAndAttachCmd) Run() error {
 	if r.onExit != nil {
 		defer r.onExit()
@@ -13973,9 +15450,12 @@ func (r remoteCreateAndAttachCmd) Run() error {
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Second)
 	defer cancel()
-	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path, r.group)
+	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.opts)
 	if err != nil {
 		return err
+	}
+	if r.created != nil {
+		*r.created = sessionID
 	}
 	if err := r.runner.Attach(sessionID); err != nil {
 		return remoteAttachFailedError{err: err}
@@ -13987,11 +15467,10 @@ func (r remoteCreateAndAttachCmd) SetStdin(reader io.Reader)  {}
 func (r remoteCreateAndAttachCmd) SetStdout(writer io.Writer) {}
 func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
 
-// createRemoteSessionWithOptions creates a new session on a remote with an
-// explicit tool/title/path/group from the new-session dialog (#1353), then
-// auto-attaches to it. Empty values fall back to remote defaults (shell,
-// auto-generated name, remote CWD).
-func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, group string) tea.Cmd {
+// createRemoteSessionWithOptions creates a new session on a remote with the
+// new-session dialog's choices (#1353), then auto-attaches to it. Zero values
+// fall back to remote defaults (shell, auto-generated name, remote CWD).
+func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.RemoteAddOptions) tea.Cmd {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || config.Remotes == nil {
 		return func() tea.Msg {
@@ -14006,22 +15485,45 @@ func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, gro
 	}
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
+	var createdID string
 	return tea.Exec(remoteCreateAndAttachCmd{
-		runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx,
+		runner: runner, opts: opts, createCtx: h.ctx, created: &createdID,
 		// Clear the flag inside Run(), before Bubble Tea restores the terminal
 		// and resumes the loop (#1753); the callback below is only the belt for
 		// the path where Run() never executes.
 		onExit: func() { h.isAttaching.Store(false) },
 	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
+		var created *session.RemoteSessionInfo
+		if createdID != "" {
+			tool := opts.Tool
+			if tool == "" {
+				tool = "shell"
+			}
+			created = &session.RemoteSessionInfo{
+				ID: createdID, Title: opts.Title, Group: opts.Group, Tool: tool,
+				Path: opts.Path, Status: string(session.StatusRunning), RemoteName: remoteName,
+			}
+		}
 		if err != nil {
 			var attachErr remoteAttachFailedError
 			if errors.As(err, &attachErr) {
 				return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to remote session after creating it: %w", attachErr)}
 			}
-			return sessionCreatedMsg{err: fmt.Errorf("failed to create remote session: %w", err)}
+			if !opts.CreateDir && strings.TrimSpace(opts.Path) != "" && session.IsRemotePathMissing(err) {
+				return remoteCreateDirNeededMsg{remoteName: remoteName, opts: opts, err: err}
+			}
+			var queued *session.RemoteSessionQueuedError
+			if errors.As(err, &queued) {
+				// The session exists on the remote; it starts when the group
+				// has a free slot. Not a failure, and the row must show now.
+				return remoteSessionCreatedMsg{notice: fmt.Sprintf("created '%s' on %s, queued until group '%s' has a free slot", queued.Title, remoteName, opts.Group)}
+			}
+			// Routed as the remote message so the terminal cleanup after
+			// tea.Exec (mouse, keyboard mode, resize) runs on failure too.
+			return remoteSessionCreatedMsg{err: fmt.Errorf("on %s: %w", remoteName, err)}
 		}
-		return remoteSessionCreatedMsg{}
+		return remoteSessionCreatedMsg{created: created}
 	})
 }
 
@@ -14055,15 +15557,11 @@ func (a attachWindowCmd) SetStderr(w io.Writer) {}
 // being fixed — a remote row that swallows the keystroke is indistinguishable
 // from a stuck key.
 //
-// Remote GROUP headers deliberately do not reorder. buildRemoteFlatItems emits
-// them by walking the bucket paths in lexicographic order, which is what makes
-// a parent header land immediately before its descendants and lets the
-// intermediate headers of "a/b/c" be synthesized on the fly; a manual group
-// order would have to replace that walk with a real tree. Remote groups also
-// have no identity of their own — they exist only as the Group strings of the
-// sessions inside them, so a group with no sessions cannot even be addressed.
-// The header therefore says so instead of going quiet.
-func (h *Home) moveRemoteItem(item session.Item, delta int) {
+// Remote GROUP headers are different: their order lives in the remote's own
+// state DB, so the move is forwarded as `group reorder` and the header only
+// moves once the remote confirms (see reorderRemoteGroup); the returned
+// command carries that round trip. Session moves return nil.
+func (h *Home) moveRemoteItem(item session.Item, delta int) tea.Cmd {
 	direction := "up"
 	edge := "first"
 	if delta > 0 {
@@ -14072,17 +15570,16 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	}
 
 	if item.Type == session.ItemTypeRemoteGroup {
-		h.setError(fmt.Errorf("cannot move %s: remote group rows are ordered by name — reorder the sessions inside instead", direction))
-		return
+		return h.reorderRemoteGroup(item, delta)
 	}
 	if item.RemoteSession == nil || item.RemoteName == "" {
 		h.setError(fmt.Errorf("cannot move %s: this remote session row is malformed", direction))
-		return
+		return nil
 	}
 	moved := item.RemoteSession
 	if moved.ID == "" {
 		h.setError(fmt.Errorf("cannot move '%s' %s: %s did not report an id for it", moved.Title, direction, item.RemoteName))
-		return
+		return nil
 	}
 
 	// The bucket is the one buildRemoteFlatItems put this row in: same remote,
@@ -14105,7 +15602,7 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	for _, id := range natural {
 		if id == "" {
 			h.setError(fmt.Errorf("cannot move '%s' %s: %s lists a session without an id in this group, so its order cannot be tracked", moved.Title, direction, item.RemoteName))
-			return
+			return nil
 		}
 	}
 
@@ -14117,7 +15614,7 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	// answering to the same ID cannot be told apart. Report it instead.
 	if dup, ok := firstDuplicateID(natural); ok {
 		h.setError(fmt.Errorf("cannot move '%s' %s: %s lists more than one session with id %q in this group, so their order cannot be tracked", moved.Title, direction, item.RemoteName, dup))
-		return
+		return nil
 	}
 
 	// Start from what is actually on screen — the fetched list with the
@@ -14133,13 +15630,13 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	}
 	if pos < 0 {
 		h.setError(fmt.Errorf("cannot move '%s' %s: it is no longer listed on %s", moved.Title, direction, item.RemoteName))
-		return
+		return nil
 	}
 
 	target := pos + delta
 	if target < 0 || target >= len(current) {
 		h.setError(fmt.Errorf("'%s' is already %s in its group on %s", moved.Title, edge, item.RemoteName))
-		return
+		return nil
 	}
 	current[pos], current[target] = current[target], current[pos]
 
@@ -14159,19 +15656,142 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	if err := h.saveUIStateErr(); err != nil {
 		h.setError(fmt.Errorf("moved '%s' %s, but the order could not be saved and will not survive a restart: %w", moved.Title, direction, err))
 	}
+	return nil
+}
+
+// reorderRemoteGroup forwards shift+up/down on a remote group header to the
+// remote as `group reorder <path> --up|--down`, the same command the remote's
+// own TUI runs for the same keystroke, so the order is persisted in the
+// remote's state DB and every viewer of that remote sees it. The level-0 host
+// header is not a remote group: remotes are listed in config order.
+//
+// The edge check runs locally first, against the sibling headers actually on
+// screen, so a group that is already first or last gets an immediate answer
+// without an SSH round trip. The remote's own verdict still decides the rest
+// (see remoteGroupReorderResultMsg).
+func (h *Home) reorderRemoteGroup(item session.Item, delta int) tea.Cmd {
+	direction := "up"
+	edge := "first"
+	if delta > 0 {
+		direction = "down"
+		edge = "last"
+	}
+	groupPath := remoteGroupPathFromItem(item)
+	if groupPath == "" || item.RemoteName == "" {
+		h.setError(fmt.Errorf("cannot move %s: remote hosts are listed in the order of [remotes] in config.toml", direction))
+		return nil
+	}
+
+	siblings := h.visibleRemoteGroupSiblings(item.RemoteName, groupPath)
+	pos := -1
+	for i, p := range siblings {
+		if p == groupPath {
+			pos = i
+			break
+		}
+	}
+	target := pos + delta
+	if pos >= 0 && (target < 0 || target >= len(siblings)) {
+		h.setError(fmt.Errorf("group '%s' is already %s among its siblings on %s", groupPath, edge, item.RemoteName))
+		return nil
+	}
+
+	remoteName := item.RemoteName
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta,
+				err: fmt.Errorf("cannot move '%s' %s: failed to load remotes config: %v", groupPath, direction, err)}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta,
+				err: fmt.Errorf("cannot move '%s' %s: remote '%s' is not configured", groupPath, direction, remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		moved, err := runner.ReorderGroup(ctx, groupPath, delta)
+		if err != nil {
+			return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta,
+				err: fmt.Errorf("failed to move '%s' %s on %s: %v", groupPath, direction, remoteName, err)}
+		}
+		return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta, moved: moved}
+	}
+}
+
+// visibleRemoteGroupSiblings lists the group headers currently on screen for
+// one remote that share groupPath's parent, in screen order.
+func (h *Home) visibleRemoteGroupSiblings(remoteName, groupPath string) []string {
+	parent := ""
+	if i := strings.LastIndex(groupPath, "/"); i >= 0 {
+		parent = groupPath[:i]
+	}
+	var siblings []string
+	for _, it := range h.flatItems {
+		if it.Type != session.ItemTypeRemoteGroup || it.RemoteName != remoteName {
+			continue
+		}
+		p := remoteGroupPathFromItem(it)
+		if p == "" {
+			continue
+		}
+		pp := ""
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			pp = p[:i]
+		}
+		if pp == parent {
+			siblings = append(siblings, p)
+		}
+	}
+	return siblings
+}
+
+// swapRemoteGroupSibling returns paths with groupPath exchanged against its
+// nearest sibling (same parent) in the given direction, mirroring what
+// GroupTree.MoveGroupUp/Down did on the remote. A path that is missing or has
+// no sibling in that direction leaves the list unchanged.
+func swapRemoteGroupSibling(paths []string, groupPath string, delta int) []string {
+	out := append([]string(nil), paths...)
+	parentOf := func(p string) string {
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			return p[:i]
+		}
+		return ""
+	}
+	pos := -1
+	for i, p := range out {
+		if p == groupPath {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		return out
+	}
+	parent := parentOf(groupPath)
+	step := 1
+	if delta < 0 {
+		step = -1
+	}
+	for j := pos + step; j >= 0 && j < len(out); j += step {
+		if parentOf(out[j]) == parent {
+			out[pos], out[j] = out[j], out[pos]
+			return out
+		}
+	}
+	return out
 }
 
 // attachRemoteSession attaches to a remote session via SSH, suspending the TUI.
 func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
-	config, err := session.LoadUserConfig()
-	if err != nil || config == nil || config.Remotes == nil {
-		return nil
+	runner, err := remoteRunnerFor(remoteName)
+	if err != nil {
+		// Say so instead of a silent no-op on Enter.
+		return func() tea.Msg {
+			return remoteSessionCreatedMsg{err: fmt.Errorf("cannot attach on %s: %w", remoteName, err)}
+		}
 	}
-	rc, ok := config.Remotes[remoteName]
-	if !ok {
-		return nil
-	}
-	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteAttachCmd{
 		runner:    runner,
@@ -14181,6 +15801,11 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 		onExit: func() { h.isAttaching.Store(false) },
 	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
+		if err != nil {
+			// An unreachable host or a session the remote refuses to attach
+			// used to flash the screen and say nothing.
+			return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to '%s' on %s: %w", sessionID, remoteName, err)}
+		}
 		return statusUpdateMsg{}
 	})
 }
@@ -14213,8 +15838,6 @@ func (h *Home) importSessions() tea.Msg {
 
 	h.instancesMu.Lock()
 	h.instances = append(h.instances, discovered...)
-	instancesCopy := make([]*session.Instance, len(h.instances))
-	copy(instancesCopy, h.instances)
 	h.instancesMu.Unlock()
 
 	// Add discovered sessions to group tree before saving
@@ -14223,8 +15846,7 @@ func (h *Home) importSessions() tea.Msg {
 	}
 	// Save both instances AND groups (critical fix: was losing groups!)
 	h.saveInstances()
-	state := h.preserveState()
-	return loadSessionsMsg{instances: instancesCopy, restoreState: &state}
+	return importReloadMsg{}
 }
 
 // countSessionStatuses counts sessions by status for the logo display
@@ -14469,6 +16091,9 @@ func (h *Home) updateSizes() {
 	if h.feedbackDialog != nil {
 		h.feedbackDialog.SetSize(h.width, h.height)
 	}
+	if h.telemetryDialog != nil {
+		h.telemetryDialog.SetSize(h.width, h.height)
+	}
 }
 
 // View renders the UI
@@ -14617,6 +16242,9 @@ func (h *Home) renderFrame() string {
 	}
 	if h.feedbackDialog.IsVisible() {
 		return h.feedbackDialog.View()
+	}
+	if h.telemetryDialog != nil && h.telemetryDialog.IsVisible() {
+		return h.telemetryDialog.View()
 	}
 	if h.zoxidePicker.IsVisible() {
 		return h.zoxidePicker.View()
@@ -15277,8 +16905,16 @@ func clampViewToViewport(content string, width, height int) string {
 		if i > 0 {
 			rendered.WriteByte('\n')
 		}
+		//
+		// expandTabs before fitting: a TAB measures zero cells through
+		// cellWidth but advances the terminal's cursor to the next
+		// multiple-of-8 column, so an un-expanded tab makes this clamp pad a
+		// row to width that the terminal then renders wider, wrapping it and
+		// scrolling the header off the alternate screen. Every row starts at
+		// column 0 here, so per-row expansion lands on the same stops the
+		// terminal would use.
 		rendered.WriteString(sgrReset)
-		rendered.WriteString(fitCellWidth(line, width))
+		rendered.WriteString(fitCellWidth(expandTabs(line), width))
 		rendered.WriteString(sgrReset)
 	}
 
@@ -17242,18 +18878,29 @@ func (h *Home) renderSessionItem(
 	if isMaestro {
 		displayTitle = "⬢ " + displayTitle
 	}
-	if instState.autoName && listWidth > 0 {
-		// Task descriptions can be long; truncate to the row's free width so the
-		// tool label and badges stay on-row. Keep the reserved terms below in
-		// sync with the row format that follows.
-		reserved := leftGutterWidth + cellWidth(baseIndent) + cellWidth(selectionPrefix) +
-			cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
-			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
-			cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
-			cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
-			cellWidth(agentBadge) + cellWidth(timestampBadge)
-		budget := listWidth - reserved - 1 // -1 trailing margin
-		if budget > 0 && cellWidth(displayTitle) > budget {
+	// Include the stored slot in the existing badge/title cell budget. Normal
+	// titles need the same reservation as auto-names so the badge stays visible.
+	reserved := leftGutterWidth + cellWidth(baseIndent) + cellWidth(selectionPrefix) +
+		cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
+		cellWidth(status) + 1 + cellWidth(tool) +
+		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
+		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
+		cellWidth(agentBadge) + cellWidth(timestampBadge)
+	accountBudget := instState.accountDisplay.width
+	if listWidth > 0 {
+		accountBudget = min(accountBudget, max(0, listWidth-reserved-2))
+	}
+	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
+	if accountBadge != "" {
+		accountStyle := DimStyle
+		if selected {
+			accountStyle = SessionStatusSelStyle
+		}
+		accountBadge = accountStyle.Render(accountBadge)
+	}
+	if listWidth > 0 {
+		budget := max(0, listWidth-reserved-accountWidth-1)
+		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
 	}
@@ -17263,7 +18910,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -17279,6 +18926,7 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 		agentBadge,
+		accountBadge,
 		timestampBadge,
 	)
 
@@ -17381,13 +19029,28 @@ func (h *Home) renderWindowItem(b *strings.Builder, item session.Item, selected 
 
 // renderLaunchingState renders the animated launching/resuming indicator for sessions
 // renderRemotePreview renders the preview pane for a remote group or session
+// remoteSessionsInView returns the remote's sessions on the current side of
+// the archive partition (active view hides archived rows, the ^ view shows
+// only them), matching the rows rebuildFlatItems actually emits. Header and
+// preview counts must be taken from this slice, not h.remoteSessions, or the
+// active and archived views both advertise the remote's grand total.
+// Caller holds h.remoteSessionsMu (read).
+func (h *Home) remoteSessionsInView(remoteName string) []session.RemoteSessionInfo {
+	all := h.remoteSessions[remoteName]
+	viewArchived := h.statusFilter == FilterModeArchived
+	inView := make([]session.RemoteSessionInfo, 0, len(all))
+	for _, rs := range all {
+		if rs.Archived == viewArchived {
+			inView = append(inView, rs)
+		}
+	}
+	return inView
+}
+
 func (h *Home) renderRemotePreview(item session.Item, width, height int) string {
 	if item.Type == session.ItemTypeRemoteGroup {
 		h.remoteSessionsMu.RLock()
-		count := 0
-		if sessions, ok := h.remoteSessions[item.RemoteName]; ok {
-			count = len(sessions)
-		}
+		count := len(h.remoteSessionsInView(item.RemoteName))
 		h.remoteSessionsMu.RUnlock()
 
 		config, _ := session.LoadUserConfig()
@@ -17499,7 +19162,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	// no host-latency marker (latency is a host-level metric shown on Level 0).
 	if item.Level > 0 {
 		h.remoteSessionsMu.RLock()
-		sessions := h.remoteSessions[item.RemoteName]
+		sessions := h.remoteSessionsInView(item.RemoteName)
 		groupPath := strings.TrimPrefix(item.Path, "remotes/"+item.RemoteName+"/")
 		count := remoteSubGroupCount(sessions, groupPath)
 		running, waiting := remoteStatusCounts(sessions, groupPath)
@@ -17521,21 +19184,23 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		return
 	}
 
-	// Level 0: the remote host header. Count all sessions for this remote.
+	// Level 0: the remote host header. Count the sessions this view shows.
 	h.remoteSessionsMu.RLock()
-	count := 0
-	running, waiting := 0, 0
-	if sessions, ok := h.remoteSessions[item.RemoteName]; ok {
-		count = len(sessions)
-		running, waiting = remoteStatusCounts(sessions, "")
-	}
+	sessions := h.remoteSessionsInView(item.RemoteName)
+	count := len(sessions)
+	running, waiting := remoteStatusCounts(sessions, "")
 	fromCache := h.remoteFromCache[item.RemoteName]
+	fetching := h.remotesFetchActive
 	h.remoteSessionsMu.RUnlock()
 
 	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
 	if fromCache {
 		// Honest staleness: this is the startup snapshot, not live state yet.
 		trailer = " " + DimStyle.Render("— cached, refreshing…")
+	} else if fetching {
+		// A fetch is in flight: what is shown is the last answer, and the
+		// header says so instead of leaving the user to guess.
+		trailer += " " + DimStyle.Render("· refreshing…")
 	}
 
 	b.WriteString(fmt.Sprintf("%s%s %s%s%s%s\n",
@@ -17647,13 +19312,21 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		indent = "  " // defensive: never dedent past the old flat baseline
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s\n",
+	pendingStr := ""
+	if item.RemoteSession != nil {
+		if verb, ok := h.remotePending[item.RemoteSession.ID]; ok {
+			pendingStr = " " + DimStyle.Render("· "+verb)
+		}
+	}
+
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
 		titleStyle.Render(titleStr),
 		toolStr,
+		pendingStr,
 	))
 }
 
@@ -17976,6 +19649,11 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 
 	// Tool
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
+
+	// Use the same cached metadata as the row; no account/config resolution.
+	account := h.getSessionRenderState(inst).accountDisplay.label
+	account = cellTruncate(account, max(0, width-cellWidth("Account slot: ")), "…")
+	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Account slot:"), valueStyle.Render(account)))
 
 	// Session ID (if available) - Claude, Gemini, OpenCode, or generic (Hermes/custom tools)
 	sessionID := inst.ClaudeSessionID
@@ -20416,6 +22094,17 @@ func (h *Home) renderFilterBarHint() string {
 		hint += dim.Render(" • ") + mark("t", true) + dim.Render(" "+h.groupViewMode.Label())
 	} else {
 		hint += dim.Render(" • ") + mark("t", false) + dim.Render(" view")
+	}
+
+	// Time-range filter indicator (today / 3 days / 7 days), only when active.
+	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeFilterKey == "" {
+		timeFilterKey = "*"
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		hint += dim.Render(" • ") + mark(timeFilterKey, true) + dim.Render(" "+h.timeFilter.Label())
+	} else {
+		hint += dim.Render(" • ") + mark(timeFilterKey, false) + dim.Render(" time")
 	}
 	return hint
 }

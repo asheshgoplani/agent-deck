@@ -46,6 +46,79 @@ func TestSend_NonClaudeTool_NotReportedDropped(t *testing.T) {
 	}
 }
 
+func TestSend_PiComposerDistinguishesSubmittedFromTyped(t *testing.T) {
+	const ordinaryMessage = "Reply with exactly this text and nothing else"
+	border := strings.Repeat("─", 40)
+	cases := []struct {
+		name, message, pane, status, want string
+		wantErr                           bool
+	}{
+		{
+			name: "submitted", message: ordinaryMessage,
+			pane: "transcript\n" + ordinaryMessage + "\n\nHello, world!\n" + border + "\n  \n" + border + "\n~/src/project",
+			want: deliverySubmitted,
+		},
+		{
+			name: "still in composer", message: ordinaryMessage,
+			pane: "transcript\n" + border + "\n" + ordinaryMessage + "\n" + border + "\n~/src/project",
+			want: deliveryTyped, wantErr: true,
+		},
+		{
+			name: "unsent divider tail", message: ordinaryMessage + "\n" + border,
+			pane: "transcript\n" + border + "\n" + ordinaryMessage + "\n" + border + "\n" + border + "\n~/src/project",
+			want: deliveryTyped, wantErr: true,
+		},
+		{
+			name: "unsent divider and blank tail", message: ordinaryMessage + "\n" + border + "\n  ",
+			pane: "transcript\n" + border + "\n" + ordinaryMessage + "\n" + border + "\n  \n" + border + "\n~/src/project",
+			want: deliveryTyped, wantErr: true,
+		},
+		{
+			name: "ambiguous accepted divider requires evidence", message: ordinaryMessage + "\n" + border,
+			pane: "transcript\n" + ordinaryMessage + "\n" + border + "\nanswer\n" + border + "\n  \n" + border + "\n~/src/project",
+			want: deliveryTyped, wantErr: true,
+		},
+		{
+			name: "transcript divider is not payload", message: ordinaryMessage,
+			pane: "earlier transcript\n" + border + "\n" + ordinaryMessage + "\nanswer\n" + border + "\n  \n" + border,
+			want: deliverySubmitted,
+		},
+		{
+			name: "missing editor border", message: ordinaryMessage,
+			pane: ordinaryMessage + "\n" + border,
+			want: deliveryTyped, wantErr: true,
+		},
+		{
+			name: "narrow editor", message: ordinaryMessage,
+			pane: ordinaryMessage + "\n" + strings.Repeat("─", 19) + "\n  \n" + strings.Repeat("─", 19),
+			want: deliveryTyped, wantErr: true,
+		},
+		{
+			name: "divider with activity evidence", message: ordinaryMessage + "\n" + border,
+			pane:   "transcript\n" + ordinaryMessage + "\n" + border,
+			status: "active", want: deliverySubmitted,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			statuses := []string{"waiting"}
+			if tc.status != "" {
+				statuses = append(statuses, tc.status)
+			}
+			mock := &mockSendRetryTarget{statuses: statuses, panes: []string{"transcript", tc.pane}}
+			res, err := executeSend(mock, "pi", tc.message, false, sendExecTuning{
+				retry: sendRetryOptions{maxRetries: 1, checkDelay: 0, verifyDelivery: true},
+			})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if res.delivery != tc.want {
+				t.Fatalf("delivery = %q, want %q", res.delivery, tc.want)
+			}
+		})
+	}
+}
+
 // TestSend_ClaudeTool_VerifyPreserved guards against over-skipping: Claude tools
 // must still run the #876 verify, so a genuinely silent drop (no markers, never
 // active) is still surfaced as an error.

@@ -25,7 +25,9 @@ export const themeSignal = signal(
 export const settingsSignal = signal(null)
 
 // Auth token for API calls (set by app.js after reading from URL)
-export const authTokenSignal = signal('')
+// Defined in auth.js (leaf module) so api.js can read it without importing
+// state.js; re-exported here so existing imports keep working.
+export { authTokenSignal } from './auth.js'
 
 // Per-session costs from GET /api/costs/batch (map of sessionId -> costUSD)
 export const sessionCostsSignal = signal({})
@@ -111,28 +113,13 @@ export const infoDrawerOpenSignal = signal(false)
 export const searchQuerySignal = signal('')
 export const searchVisibleSignal = signal(false)
 
-// Global error toasts (Issue F)
-export const toastsSignal = signal([])
+// Global error toasts (Issue F) and toast history (WEB-P0-4 + POL-7) live
+// in toasts.js (leaf module) so api.js can raise toasts without importing
+// state.js; re-exported here so existing imports keep working.
+export { toastsSignal, toastHistorySignal } from './toasts.js'
 
 // Keyboard shortcuts overlay open/close (BUG #14 / UX-03)
 export const shortcutsOverlaySignal = signal(false)
-
-// Toast history (WEB-P0-4 + POL-7): capped at 50 dismissed toasts.
-// Persisted to localStorage key `agentdeck_toast_history`.
-// Schema is localStorage-only per milestone rule: NO SQLite schema changes.
-function initialToastHistory() {
-  try {
-    const stored = localStorage.getItem('agentdeck_toast_history')
-    if (stored) {
-      const parsed = JSON.parse(stored)
-      if (Array.isArray(parsed)) return parsed.slice(-50)
-    }
-  } catch (_) {
-    // localStorage may throw in incognito/privacy modes; start empty.
-  }
-  return []
-}
-export const toastHistorySignal = signal(initialToastHistory())
 
 // Toast history drawer open/close (WEB-P0-4 + POL-7)
 export const toastHistoryOpenSignal = signal(false)

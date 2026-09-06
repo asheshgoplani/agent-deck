@@ -353,18 +353,24 @@ func TestIsLiveTmuxClientOrServer_ServerItself(t *testing.T) {
 // test by simply always returning live=true, which would silently restore
 // the original 2026-08-01 bug (the sweep reaps nothing).
 //
-// The client is frozen with SIGSTOP immediately after starting, mid-flight,
-// to stand in for the tmux-3.0a fd leak this sweep exists to mop up: verified
-// live that a SIGSTOPped one-shot list-clients client does not appear in the
-// server's own list-clients output even while its process is still alive —
-// one-shot cadence commands never register as persistent clients the way an
-// attach does, whether or not they are hung.
+// The command queue signals readiness and then waits, proving the real client
+// has completed startup before we freeze it. Start followed immediately by
+// SIGSTOP can expose a transient empty /proc environ during exec, which the
+// classifier must refuse. Holding the queue also prevents a fast query from
+// exiting before the stop signal is observed.
 func TestIsLiveTmuxClientOrServer_OneShotClient_NotLive(t *testing.T) {
 	socket := orphanLiveTestSocket(t)
 	const session = "agentdeck_1832_oneshot"
 	startOrphanLiveSession(t, socket, session)
 
-	cmd := exec.Command("tmux", "-L", socket, "list-clients", "-F", "#{client_pid}")
+	ready, release := socket+"-ready", socket+"-release"
+	waitFor := func(args ...string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return exec.CommandContext(ctx, "tmux", append([]string{"-L", socket, "wait-for"}, args...)...).Run()
+	}
+	cmd := exec.Command("tmux", "-L", socket,
+		"wait-for", "-S", ready, ";", "wait-for", release, ";", "list-clients", "-F", "#{client_pid}")
 	devnull, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatalf("open devnull: %v", err)
@@ -376,14 +382,58 @@ func TestIsLiveTmuxClientOrServer_OneShotClient_NotLive(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 	t.Cleanup(func() {
+		if err := waitFor("-S", release); err != nil {
+			t.Errorf("release one-shot client: %v", err)
+		}
 		_ = cmd.Process.Signal(syscall.SIGCONT)
-		_, _ = cmd.Process.Wait()
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("one-shot client exit: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+			t.Error("one-shot client did not exit after release")
+		}
 	})
+	if err := waitFor(ready); err != nil {
+		t.Fatalf("one-shot client readiness: %v", err)
+	}
+	if _, err := readProcessEnviron(pid); err != nil {
+		t.Fatalf("ready client environment: %v", err)
+	}
 	if err := cmd.Process.Signal(syscall.SIGSTOP); err != nil {
 		t.Fatalf("SIGSTOP one-shot client: %v", err)
 	}
 
-	live, ok := isLiveTmuxClientOrServer(context.Background(), pid, []string{"tmux", "-L", socket, "list-clients", "-F", "#{client_pid}"})
+	// A successful signal syscall is not an acknowledgement that the child is
+	// stopped. Observe the stop without reaping it before releasing its queue.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var status syscall.WaitStatus
+		waited, err := syscall.Wait4(pid, &status, syscall.WUNTRACED|syscall.WNOHANG, nil)
+		if err != nil {
+			t.Fatalf("wait for one-shot client stop: %v", err)
+		}
+		if waited == pid {
+			if !status.Stopped() {
+				t.Fatalf("one-shot client exited before stop: %v", status)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("one-shot client did not acknowledge SIGSTOP")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := waitFor("-S", release); err != nil {
+		t.Fatalf("release frozen client queue: %v", err)
+	}
+
+	live, ok := isLiveTmuxClientOrServer(context.Background(), pid, cmd.Args)
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify the frozen one-shot client %d", pid)
 	}

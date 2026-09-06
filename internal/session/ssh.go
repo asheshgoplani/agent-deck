@@ -14,8 +14,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -158,6 +160,10 @@ type SSHRunner struct {
 	// runFn lets tests stub out command execution. nil = real SSH.
 	runFn func(ctx context.Context, args ...string) ([]byte, error)
 
+	// name is the remote's config name; it keys the shared persistent
+	// channel (#2174). Empty for runners built without a name.
+	name string
+
 	// openStreamFn lets tests stub out the persistent-stream subprocess
 	// without spawning real ssh. nil = real SSH (#1112 bug 2).
 	openStreamFn func(ctx context.Context, args ...string) (io.WriteCloser, func() error, error)
@@ -176,6 +182,7 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 		configuredPath: rc.AgentDeckPath,
 		Profile:        rc.GetProfile(),
 		commandTimeout: rc.GetCommandTimeout(),
+		name:           name,
 	}
 }
 
@@ -242,6 +249,15 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	if r.runFn != nil {
 		return r.runFn(ctx, args...)
 	}
+	// Persistent channel first (#2174): one ssh session per remote carries
+	// every command. A transport failure falls through to a plain exec, so
+	// the channel can only make things faster, never break them.
+	if ch := channelFor(r); ch != nil && ch.Connected() {
+		out, err := ch.Request(ctx, args)
+		if !errors.Is(err, errChannelDown) {
+			return out, err
+		}
+	}
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, err
 	}
@@ -256,7 +272,13 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ssh command failed: %w: %s", err, stderr.String())
+		// The remote CLI reports refusals such as "path does not exist" on
+		// stdout; fall back to it so the failure is not a bare exit status.
+		detail := stderr.String()
+		if strings.TrimSpace(detail) == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		return nil, fmt.Errorf("ssh command failed: %w: %s", err, detail)
 	}
 
 	return stdout.Bytes(), nil
@@ -334,6 +356,7 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	sigwinch <- syscall.SIGWINCH
 
 	detachCh := make(chan struct{})
+	input := sshAttachInput{writer: ptmx}
 	outputDone := make(chan struct{})
 
 	// Copy PTY output to stdout.
@@ -391,15 +414,12 @@ func (r *SSHRunner) Attach(sessionID string) error {
 			}
 			data := buf[:n]
 
-			if idx := tmux.IndexCtrlQ(data); idx >= 0 {
-				if idx > 0 {
-					_, _ = ptmx.Write(data[:idx])
-				}
+			detached, err := input.forward(data)
+			if detached {
 				close(detachCh)
 				return
 			}
-
-			if _, err := ptmx.Write(data); err != nil {
+			if err != nil {
 				break
 			}
 		}
@@ -414,9 +434,10 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}()
 
 	// Block until detach or SSH exit.
+	var attachErr error
 	select {
 	case <-detachCh:
-	case <-cmdDone:
+	case attachErr = <-cmdDone:
 	}
 
 	// Cleanup: close PTY and wait for output to drain.
@@ -455,7 +476,37 @@ func (r *SSHRunner) Attach(sessionID string) error {
 		_ = p.Signal(syscall.SIGWINCH)
 	}
 
+	if attachErr = input.result(attachErr); attachErr != nil {
+		return fmt.Errorf("ssh attach failed: %w", attachErr)
+	}
 	return nil
+}
+
+// sshAttachInput owns input forwarding and intentional-detach state for one attach.
+// Keeping the writer explicit allows blocked-write ordering to be exercised.
+type sshAttachInput struct {
+	writer          io.Writer
+	detachRequested atomic.Bool
+}
+
+func (input *sshAttachInput) forward(data []byte) (bool, error) {
+	if idx := tmux.IndexCtrlQ(data); idx >= 0 {
+		// Record intent before forwarding can block or SSH can exit.
+		input.detachRequested.Store(true)
+		if idx > 0 {
+			_, _ = input.writer.Write(data[:idx])
+		}
+		return true, nil
+	}
+	_, err := input.writer.Write(data)
+	return false, err
+}
+
+func (input *sshAttachInput) result(err error) error {
+	if input.detachRequested.Load() {
+		return nil
+	}
+	return err
 }
 
 // RunCommand executes an arbitrary agent-deck command on the remote.
@@ -481,19 +532,90 @@ func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, err
 	if err != nil {
 		return nil, err
 	}
+	return parseRemoteSessions(output)
+}
 
-	// Handle empty/non-JSON output (e.g., "No sessions found" message)
+// parseRemoteSessions decodes `list --json` output; empty or non-JSON output
+// (an older remote, or "No sessions found") is an empty list, not an error.
+func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	trimmed := bytes.TrimSpace(output)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, nil
 	}
-
 	var sessions []RemoteSessionInfo
 	if err := json.Unmarshal(trimmed, &sessions); err != nil {
 		return nil, fmt.Errorf("failed to parse remote sessions: %w", err)
 	}
-
 	return sessions, nil
+}
+
+// FetchAccounts lists the named Claude account slots configured on the remote
+// (its `accounts --json`), so the TUI's remote new-session dialog offers the
+// server's slots rather than this machine's. Read-only: only names travel back;
+// no config directory or credential file is copied in either direction. A
+// remote too old for `accounts` fails the call, and the caller then hides the
+// account row instead of offering local names the server would reject.
+func (r *SSHRunner) FetchAccounts(ctx context.Context) ([]string, error) {
+	output, err := r.Run(ctx, "accounts", "--json")
+	if err != nil {
+		return nil, err
+	}
+	return parseRemoteAccountNames(output)
+}
+
+// parseRemoteAccountNames extracts the slot names from `accounts --json`
+// output. The remote's config_dir values are deliberately dropped: a path on
+// the server means nothing here and must never be shown as something to pick.
+func parseRemoteAccountNames(output []byte) ([]string, error) {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("unexpected remote accounts output: %q", string(trimmed))
+	}
+	var entries []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(trimmed, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse remote accounts: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if name := strings.TrimSpace(e.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// FetchMCPs lists the MCP names defined in the remote's own config.toml (its
+// `mcp list --quiet`, one name per line), so the TUI's remote new-session
+// dialog offers the server's MCPs rather than this machine's. Read-only and
+// names only: the quiet form never serializes a definition, so no command,
+// args, URL or env (where credentials commonly live) crosses SSH at all,
+// unlike `--json`, which ships every field. Nothing local is sent. A remote
+// too old for `mcp list --quiet` fails the call (unknown flag exits non-zero),
+// and the caller then hides the row instead of offering local names the
+// server would reject.
+func (r *SSHRunner) FetchMCPs(ctx context.Context) ([]string, error) {
+	output, err := r.Run(ctx, "mcp", "list", "--quiet")
+	if err != nil {
+		return nil, err
+	}
+	return parseRemoteMCPNames(output), nil
+}
+
+// parseRemoteMCPNames splits `mcp list --quiet` output (one name per line)
+// into a sorted list. A remote with no MCPs prints nothing in quiet mode, so
+// empty output is a real, empty list. The payload is never echoed into an
+// error or log.
+func parseRemoteMCPNames(output []byte) []string {
+	names := make([]string, 0)
+	for _, line := range strings.Split(string(output), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // FetchPendingRecords retrieves the remote host's completion and transition
@@ -617,6 +739,125 @@ func (r *SSHRunner) FetchSessionPane(ctx context.Context, sessionID string) (str
 	}
 
 	return parseRemoteSessionOutput(output)
+}
+
+// groupListJSON mirrors the subset of `agent-deck group list --json` output
+// the TUI needs: the recursive group path tree. Counts and status are
+// ignored — a group with zero sessions is still a valid move/create target.
+type groupListJSON struct {
+	Groups []groupListEntryJSON `json:"groups"`
+}
+
+type groupListEntryJSON struct {
+	Path     string               `json:"path"`
+	Children []groupListEntryJSON `json:"children,omitempty"`
+}
+
+// FetchGroupPaths retrieves the remote's full group path list from its own
+// state DB via `agent-deck group list --json`. Unlike session-derived group
+// buckets (which can only ever contain groups that currently hold sessions),
+// the remote's group list includes EMPTY groups, so the local move dialog (M
+// key on a remote session) can still offer a folder after every session has
+// been moved out of it. Paths are normalized and deduped, and they keep the
+// order the remote listed them in: that listing is the remote's own group
+// order (siblings by their persisted Order, a parent before its children),
+// which is what the TUI renders remote group headers in and what
+// ReorderGroup changes.
+//
+// Returns nil with no error when the remote returns empty output (older
+// agent-deck builds that predate the JSON shape); callers fall back to the
+// groups observed on the fetched sessions.
+func (r *SSHRunner) FetchGroupPaths(ctx context.Context) ([]string, error) {
+	output, err := r.Run(ctx, "group", "list", "--json")
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, nil
+	}
+
+	var parsed groupListJSON
+	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse remote group list: %w", err)
+	}
+
+	return parseGroupListPaths(parsed), nil
+}
+
+// parseGroupListPaths flattens the recursive group tree from `group list
+// --json` into normalized, deduped group paths in the remote's own order (a
+// pre-order walk: parent, then its children as listed). Extracted as a pure
+// function so the parsing is unit-testable without an SSH round-trip.
+func parseGroupListPaths(parsed groupListJSON) []string {
+	seen := make(map[string]bool)
+	var paths []string
+	var walk func(entries []groupListEntryJSON)
+	walk = func(entries []groupListEntryJSON) {
+		for _, e := range entries {
+			p := strings.Trim(strings.TrimSpace(e.Path), "/")
+			if p != "" && !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+			walk(e.Children)
+		}
+	}
+	walk(parsed.Groups)
+	return paths
+}
+
+// remoteGroupReorderArgs builds the argv for moving one remote group among
+// its siblings: `group reorder <path> --up|--down --json`. delta < 0 moves
+// up, anything else moves down. The full path is passed, which the remote
+// resolves exactly, so two groups sharing a leaf name in different parents
+// cannot be confused.
+func remoteGroupReorderArgs(groupPath string, delta int) []string {
+	direction := "--down"
+	if delta < 0 {
+		direction = "--up"
+	}
+	return []string{"group", "reorder", groupPath, direction, "--json"}
+}
+
+// groupReorderResultJSON is the payload of `group reorder --json`.
+type groupReorderResultJSON struct {
+	FromPosition int `json:"from_position"`
+	ToPosition   int `json:"to_position"`
+}
+
+// ReorderGroup moves one group of the remote up (delta < 0) or down among its
+// siblings by running `agent-deck group reorder` there, the same command the
+// remote's own TUI runs for shift+up/down on a group header. The order is
+// persisted in the remote's state DB, so every viewer of that remote sees it.
+//
+// The returned bool reports whether the remote actually changed the position:
+// the remote refuses silently when the group is already at the edge of its
+// siblings, and the caller must not announce a move that did not happen. An
+// older remote whose reorder prints no JSON is treated as moved, since it
+// exited 0.
+func (r *SSHRunner) ReorderGroup(ctx context.Context, groupPath string, delta int) (bool, error) {
+	output, err := r.Run(ctx, remoteGroupReorderArgs(groupPath, delta)...)
+	if err != nil {
+		return false, err
+	}
+	return parseGroupReorderMoved(output), nil
+}
+
+// parseGroupReorderMoved reads the from/to positions out of a `group reorder
+// --json` payload. Output that is not JSON reports true: the command exited 0
+// and nothing says the group stayed put.
+func parseGroupReorderMoved(output []byte) bool {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return true
+	}
+	var parsed groupReorderResultJSON
+	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+		return true
+	}
+	return parsed.FromPosition != parsed.ToPosition
 }
 
 // FetchCostSummary retrieves the remote agent-deck's cost summary as JSON.
@@ -942,45 +1183,154 @@ func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
 // ConnectTimeout, so an unknown host key could hang on a prompt instead of
 // failing fast). "-tt" forces a remote PTY.
 func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
-	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
+	remoteCmd := "env TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand("session", "attach", sessionID)
 	args := append([]string{"-tt"}, r.sshConnOpts()...)
 	return append(args, r.Host, remoteCmd)
 }
 
+// Modern local terminals may name terminfo entries absent on the SSH host.
+// Retain portable terminal types and use the common 256-color entry otherwise.
+func remoteAttachTERM() string {
+	terminal := os.Getenv("TERM")
+	switch terminal {
+	case "xterm", "xterm-256color", "screen", "screen-256color", "tmux", "tmux-256color", "linux", "vt100", "ansi", "dumb":
+		return terminal
+	default:
+		return "xterm-256color"
+	}
+}
+
 // CreateSession creates and starts a quick new session on the remote, returning its ID.
 func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
-	return r.CreateSessionWithOptions(ctx, "", "", "", "")
+	return r.CreateSessionWithOptions(ctx, RemoteAddOptions{})
+}
+
+// RemoteAddOptions carries the new-session dialog's choices to the remote's
+// own `agent-deck add`. Every name in it (account slot, MCP, branch) is
+// resolved by the server against its own config and filesystem; nothing from
+// this machine's config or credentials is copied. Zero values mean "remote
+// default" so an untouched dialog behaves exactly as before.
+type RemoteAddOptions struct {
+	Tool  string // -c; empty means shell
+	Title string // -t; empty means --quick (auto-generated name)
+	Path  string // positional; empty or "." means remote CWD
+	Group string // -g
+
+	// Sandbox forwards the "Run in Docker sandbox" checkbox as -sandbox; the
+	// image and other Docker settings come from the remote's own config.
+	Sandbox bool
+	// Account is a named slot ([profiles.<name>.claude].config_dir) that must
+	// exist in the server's config.toml. A config directory path is refused.
+	Account string
+	// Model is the per-session model/version override (--model).
+	Model string
+	// MCPs are attached by name at creation (--mcp, repeatable).
+	MCPs []string
+	// ResumeSessionID resumes an existing Claude conversation on the server.
+	ResumeSessionID string
+	// ExtraArgs are already-tokenised claude CLI flags (--extra-arg,
+	// repeatable). The dialog's Claude toggles travel here as the same flags
+	// a local session would launch with.
+	ExtraArgs []string
+	// Yolo enables YOLO mode for Gemini or Codex (--yolo).
+	Yolo bool
+	// WorktreeBranch creates the session in a git worktree for this branch on
+	// the server (-w); the branch is created there when it does not exist.
+	WorktreeBranch string
+	// CreateDir asks the server to create a missing Path (--create-dir). The
+	// TUI sets it only after the server reported the path missing and the
+	// user confirmed; a remote too old for the flag refuses the command.
+	CreateDir bool
+}
+
+// remoteMissingPathMarker is the text the remote `add` prints when its
+// project directory does not exist (see the add command's os.Stat check).
+const remoteMissingPathMarker = "path does not exist"
+
+// IsRemotePathMissing reports whether a remote create failed because the
+// project directory does not exist on the server, so the caller can offer to
+// create it and retry with RemoteAddOptions.CreateDir.
+func IsRemotePathMissing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), remoteMissingPathMarker)
 }
 
 // remoteAddArgs builds the `agent-deck add` argument list for creating a
 // session on a remote with explicit dialog values (#1353). Empty values fall
 // back to remote defaults: no -c means shell, no -t means --quick
 // (auto-generated name), and an empty or "." path means remote CWD.
-func remoteAddArgs(tool, title, path, group string) []string {
+//
+// Values that cannot be forwarded safely are refused here, before any SSH
+// round trip, instead of being dropped: an account given as a config
+// directory (a local path means nothing on the server and its credentials are
+// never copied) and an --extra-arg token that would fail the server's own
+// validation.
+func remoteAddArgs(o RemoteAddOptions) ([]string, error) {
 	args := []string{"add", "--json"}
-	if t := strings.TrimSpace(title); t != "" {
+	if t := strings.TrimSpace(o.Title); t != "" {
 		args = append(args, "-t", t)
 	} else {
 		args = append(args, "--quick")
 	}
-	if g := strings.TrimSpace(group); g != "" {
+	if g := strings.TrimSpace(o.Group); g != "" {
 		args = append(args, "-g", g)
 	}
-	if c := strings.TrimSpace(tool); c != "" {
+	if c := strings.TrimSpace(o.Tool); c != "" {
 		args = append(args, "-c", c)
 	}
-	if p := strings.TrimSpace(path); p != "" && p != "." {
+	if o.Sandbox {
+		args = append(args, "-sandbox")
+	}
+	if a := strings.TrimSpace(o.Account); a != "" {
+		if strings.ContainsAny(a, `/\`) || strings.HasPrefix(a, "~") || strings.HasPrefix(a, ".") {
+			return nil, fmt.Errorf("account %q looks like a config directory; pass a named account slot that exists in the remote's config.toml (local config directories and credentials are never copied to a remote)", a)
+		}
+		args = append(args, "--account", a)
+	}
+	if m := strings.TrimSpace(o.Model); m != "" {
+		args = append(args, "--model", m)
+	}
+	for _, mcp := range o.MCPs {
+		if name := strings.TrimSpace(mcp); name != "" {
+			args = append(args, "--mcp", name)
+		}
+	}
+	if id := strings.TrimSpace(o.ResumeSessionID); id != "" {
+		args = append(args, "--resume-session", id)
+	}
+	for _, token := range o.ExtraArgs {
+		if token == "" {
+			continue
+		}
+		if err := ValidateClaudeExtraArgToken(token); err != nil {
+			return nil, err
+		}
+		args = append(args, "--extra-arg", token)
+	}
+	if o.Yolo {
+		args = append(args, "--yolo")
+	}
+	if b := strings.TrimSpace(o.WorktreeBranch); b != "" {
+		args = append(args, "-w", b)
+	}
+	if o.CreateDir {
+		args = append(args, "--create-dir")
+	}
+	if p := strings.TrimSpace(o.Path); p != "" && p != "." {
 		args = append(args, p)
 	}
-	return args
+	return args, nil
 }
 
 // CreateSessionWithOptions creates and starts a new session on the remote with
-// an explicit tool/title/path/group from the new-session dialog (#1353),
-// returning its ID. Empty values fall back to remote defaults (see remoteAddArgs).
-func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, path, group string) (string, error) {
+// the new-session dialog's choices (#1353), returning its ID. Zero values fall
+// back to remote defaults (see remoteAddArgs).
+func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAddOptions) (string, error) {
+	addArgs, err := remoteAddArgs(opts)
+	if err != nil {
+		return "", err
+	}
 	// Step 1: Create the session
-	output, err := r.Run(ctx, remoteAddArgs(tool, title, path, group)...)
+	output, err := r.Run(ctx, addArgs...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create remote session: %w", err)
 	}
@@ -1000,7 +1350,14 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, p
 	// Use ID to avoid ambiguity when titles are duplicated.
 	startCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	startOutput, err := r.run(startCtx, "session", "start", "--json", result.ID)
+	// The TUI attaches the moment this returns, so ask the remote not to
+	// wait for the tool's session id (about 3s for claude). A remote whose
+	// agent-deck predates --no-wait rejects the flag; fall back to the plain
+	// start so an older remote keeps working.
+	startOutput, err := r.run(startCtx, remoteStartArgs(result.ID, true)...)
+	if err != nil && isUnknownFlagError(err) {
+		startOutput, err = r.run(startCtx, remoteStartArgs(result.ID, false)...)
+	}
 	if err != nil {
 		// Compensate: the remote DB has the row but no tmux process. Best-effort
 		// delete with a fresh context so an upstream cancellation doesn't skip
@@ -1014,10 +1371,40 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, p
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(startOutput), &startResult); err == nil && startResult.Status == string(StatusQueued) {
-		return "", fmt.Errorf("remote session %q was queued and is not ready to attach", result.Title)
+		return "", &RemoteSessionQueuedError{ID: result.ID, Title: result.Title}
 	}
 
 	return result.ID, nil
+}
+
+// remoteStartArgs builds the remote `session start` invocation the create
+// path runs right before attaching. noWait asks the remote to return as soon
+// as the process is spawned (see `session start --no-wait`).
+func remoteStartArgs(sessionID string, noWait bool) []string {
+	args := []string{"session", "start", "--json"}
+	if noWait {
+		args = append(args, "--no-wait")
+	}
+	return append(args, sessionID)
+}
+
+// isUnknownFlagError reports whether a remote command failed because its
+// agent-deck does not know a flag this build sends (Go's flag package prints
+// "flag provided but not defined: -name").
+func isUnknownFlagError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "flag provided but not defined")
+}
+
+// RemoteSessionQueuedError reports that `add` succeeded but `session start`
+// queued the session because its group is at max_concurrent. The session
+// exists on the remote; it is not attachable yet.
+type RemoteSessionQueuedError struct {
+	ID    string
+	Title string
+}
+
+func (e *RemoteSessionQueuedError) Error() string {
+	return fmt.Sprintf("remote session %q was queued and is not ready to attach", e.Title)
 }
 
 // DeleteSession removes a session on the remote host.
@@ -1036,6 +1423,43 @@ func (r *SSHRunner) StopSession(ctx context.Context, sessionID string) error {
 func (r *SSHRunner) RestartSession(ctx context.Context, sessionID string) error {
 	_, err := r.Run(ctx, "session", "restart", sessionID)
 	return err
+}
+
+// ArchiveSession stops a session on the remote host and marks it archived
+// there (the remote's own `session archive`), so the remote's archived list
+// is the one source of truth and the next `list --json` reports it archived.
+func (r *SSHRunner) ArchiveSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "archive", sessionID)
+	return err
+}
+
+// UnarchiveSession clears the archive flag on the remote host without
+// restarting the session (the remote's own `session unarchive`).
+func (r *SSHRunner) UnarchiveSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "unarchive", sessionID)
+	return err
+}
+
+// ForkSession forks a session on the remote host through the remote's own
+// `session fork` and returns the new session's ID. Title and group are left
+// to the server (parent title with a "-fork" suffix, parent's group), so the
+// result matches what `agent-deck remote <name> session fork <id>` produces;
+// the server also decides whether the tool is forkable and starts the fork.
+func (r *SSHRunner) ForkSession(ctx context.Context, sessionID string) (string, error) {
+	output, err := r.Run(ctx, "session", "fork", "--json", sessionID)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		NewID string `json:"new_id"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output), &result); err != nil {
+		return "", fmt.Errorf("failed to parse remote fork output: %w", err)
+	}
+	if result.NewID == "" {
+		return "", fmt.Errorf("remote fork returned empty session ID")
+	}
+	return result.NewID, nil
 }
 
 // RemoteSessionInfo represents a session from a remote agent-deck instance.
@@ -1058,8 +1482,34 @@ type RemoteSessionInfo struct {
 	Substate string `json:"substate"`
 	Archived bool   `json:"archived"`
 
+	// LastActivityAt is the remote session's Instance.DisplayLastActivityTime(),
+	// RFC3339Nano-formatted (fractional seconds kept: TimeFilterMode's 3/7-day
+	// cutoffs are exact instants, and truncating to whole seconds could flip a
+	// session sitting right on one), so the local recency filter
+	// (session.TimeFilterMode) can apply to remote rows the same way it
+	// applies to local ones. Same degradation story as Substate/Archived
+	// above: a remote too old to send it omits the key, which unmarshals to
+	// "" — see LastActivity below.
+	LastActivityAt string `json:"last_activity_at,omitempty"`
+
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
+}
+
+// LastActivity parses LastActivityAt. ok is false when the field is empty or
+// unparseable — a remote agent-deck build too old to send it, or a malformed
+// value — and callers should treat that as "unknown" (matches any recency
+// filter) rather than "very old", so an old remote's sessions don't just
+// vanish under a time filter.
+func (r RemoteSessionInfo) LastActivity() (t time.Time, ok bool) {
+	if r.LastActivityAt == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, r.LastActivityAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
 }
 
 // RemoteLatency is a live round-trip-time sample for a configured remote.

@@ -24,6 +24,8 @@ tests/eval/
 │   └── tmux_shim.go        # wrapper that forces `-S <sock>` on every tmux call
 ├── feedback/
 │   └── cli_test.go         # PTY-driven feedback CLI eval cases
+├── helpconsent/
+│   └── cli_test.go         # real-binary, read-only command-family help
 ├── session/
 │   └── lifecycle_test.go   # real-tmux inject_status_line eval case
 └── testdata/               # reserved for future fixture files

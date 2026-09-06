@@ -45,6 +45,7 @@ func TestIssue1830_TUICreateResumeByIDVouchesOwnership(t *testing.T) {
 		nil,
 		"",
 		"",
+		"",
 		false,
 		nil,
 		"", "",

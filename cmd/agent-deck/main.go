@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -39,7 +41,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.15.0" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.3" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -66,6 +68,50 @@ func initUpdateSettings() {
 	update.SetCheckInterval(settings.CheckIntervalHours)
 	update.SetBridgeScriptInstaller(session.InstallBridgeScript)
 	update.SetConductorDirResolver(session.ConductorDir)
+}
+
+// initTelemetrySettings passes the config.toml [telemetry] section to the
+// telemetry package. Config can only turn telemetry OFF or change the
+// receiver URL; consent itself lives in telemetry-state.json (TELEMETRY.md).
+func initTelemetrySettings() {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		// Fail closed: the user may have written [telemetry].disabled = true
+		// in a file we cannot parse right now.
+		telemetry.SetConfigUnreadable()
+		return
+	}
+	telemetry.SetConfigDisabled(cfg.Telemetry.Disabled)
+	telemetry.SetEndpoint(cfg.Telemetry.Endpoint)
+}
+
+// recordCLITelemetry bumps the opt-in usage counters for a CLI subcommand.
+// No-op unless the user has consented (telemetry.Record checks). Hook
+// handlers and daemons are excluded: they fire on every agent turn and
+// would swamp the human-driven counts.
+func recordCLITelemetry(subcommand string, rest []string) {
+	for _, a := range rest {
+		if a == "-h" || a == "--help" || a == "help" {
+			return
+		}
+	}
+	switch subcommand {
+	case "add", "list", "ls", "remove", "rm", "rename", "mv", "status", "profile", "update",
+		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
+		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
+		"remote", "worktree", "wt", "costs", "web", "uninstall", "migrate-paths", "hooks",
+		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "deepseek", "feedback", "creds-refresh":
+	default:
+		return
+	}
+	telemetry.Record(telemetry.CounterCLIInvocations)
+	switch subcommand {
+	case "remote":
+		telemetry.Record(telemetry.CounterRemoteUsed)
+	case "conductor":
+		telemetry.Record(telemetry.CounterConductorUsed)
+
+	}
 }
 
 // writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending
@@ -224,6 +270,7 @@ func main() {
 	// Configure update checking before any command path can reach an update
 	// check (printUpdateNotice, `update`, `version`). See the doc comment.
 	initUpdateSettings()
+	initTelemetrySettings()
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
@@ -232,11 +279,16 @@ func main() {
 		// resolve consistently across all command paths in this process.
 		_ = os.Setenv("AGENTDECK_PROFILE", profile)
 	}
-
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer
 	// a prompt and would otherwise fail closed under the "prompt" default.
+	// Remote arguments belong to the server, including its script-consent flag.
+	if len(args) > 0 && args[0] == "remote" {
+		recordCLITelemetry(args[0], args[1:])
+		handleRemote(profile, args[1:])
+		return
+	}
 	allowRepoScripts, args2 := extractAllowRepoScriptsFlag(args)
 	args = args2
 	if envVal := strings.TrimSpace(os.Getenv("AGENT_DECK_ALLOW_REPO_SCRIPTS")); envVal != "" {
@@ -261,6 +313,9 @@ func main() {
 	// calls use Instance.TmuxSocketName directly — this default is only
 	// the installation-wide fallback for callers without a session handle.
 	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
+	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
+		session.ConfigureTmuxDisplay(cfg.Display)
+	}
 
 	// Nudge macOS users whose tmux predates the upstream fix for the
 	// control-mode NULL-deref (tmux #4980, issue #737). Once per process,
@@ -275,7 +330,11 @@ func main() {
 
 	// Handle subcommands
 	if len(args) > 0 {
+		recordCLITelemetry(args[0], args[1:])
 		switch args[0] {
+		case "telemetry":
+			handleTelemetry(args[1:])
+			return
 		case "version", "--version", "-v":
 			writeVersionOutput(os.Stdout, Version)
 			return
@@ -319,6 +378,10 @@ func main() {
 			handleSkill(profile, args[1:])
 			return
 		case "mcp-proxy":
+			if helpRequested(args[1:]) {
+				fmt.Println("Usage: agent-deck mcp-proxy <socket-path>")
+				return
+			}
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "Usage: agent-deck mcp-proxy <socket-path>")
 				os.Exit(1)
@@ -333,6 +396,9 @@ func main() {
 			return
 		case "launch":
 			handleLaunch(profile, args[1:])
+			return
+		case "doctor":
+			handleDoctor(args[1:])
 			return
 		case "accounts":
 			handleAccounts(args[1:])
@@ -357,6 +423,9 @@ func main() {
 			return
 		case "remote":
 			handleRemote(profile, args[1:])
+			return
+		case "remote-agent":
+			handleRemoteAgent(profile, args[1:])
 			return
 		case "worktree", "wt":
 			handleWorktree(profile, args[1:])
@@ -424,6 +493,10 @@ func main() {
 			handleCredsRefresh(args[1:])
 			return
 		case "debug-dump":
+			if helpRequested(args[1:]) {
+				fmt.Println("Usage: agent-deck debug-dump")
+				return
+			}
 			handleDebugDump()
 			return
 		}
@@ -669,6 +742,12 @@ func main() {
 	// min-launches threshold for new users. Non-TUI subcommands (add, list,
 	// feedback, etc.) deliberately skip this so scripted usage doesn't
 	// inflate the counter.
+	// Opt-in usage telemetry: count the TUI launch (no-op without consent).
+	// Headless `web --no-tui` never boots the TUI and is not counted.
+	if !webHeadless {
+		telemetry.Record(telemetry.CounterTUILaunches)
+	}
+
 	if fbSt, _ := feedback.LoadState(); fbSt != nil {
 		feedback.RecordLaunch(fbSt, time.Now())
 		// #967: migrate pre-existing forever-opt-outs to per-release-series.
@@ -974,23 +1053,25 @@ func main() {
 	}
 }
 
-// globalFlagSubcommands lists every token that main()'s dispatch switch treats
+// commandRegistry lists every token that main()'s dispatch switch treats
 // as a subcommand. extractProfileFlag stops honoring the global -p/--profile
 // flag once it reaches one of these, so a subcommand that defines its own -p
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
-var globalFlagSubcommands = map[string]bool{
-	"add": true, "list": true, "ls": true, "remove": true, "rm": true,
+var commandRegistry = map[string]bool{
+	"add": true, "accounts": true, "doctor": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
-	"session": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
+	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
+	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "worktree": true, "wt": true, "costs": true, "web": true,
+	"remote": true, "remote-agent": true, "worktree": true, "wt": true, "costs": true, "web": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
-	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true,
-	"debug-dump": true, "version": true, "help": true,
+	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true, "telemetry": true,
+	"debug-dump": true, "version": true, "--version": true, "-v": true,
+	"help": true, "--help": true, "-h": true,
 }
 
 // extractProfileFlag extracts the global -p or --profile flag from args,
@@ -1012,7 +1093,7 @@ func extractProfileFlag(args []string) (string, []string) {
 
 		// Reached the subcommand: global flag parsing is over. Everything from
 		// here belongs to the subcommand, which may define its own -p.
-		if globalFlagSubcommands[arg] {
+		if commandRegistry[arg] {
 			remaining = append(remaining, args[i:]...)
 			return profile, remaining
 		}
@@ -1362,6 +1443,11 @@ func handleAdd(profile string, args []string) {
 		return nil
 	})
 
+	// --create-dir is what the TUI's remote new-session dialog forwards after
+	// the user confirms creating a missing directory on the server; the local
+	// dialog asks the same question and calls os.MkdirAll itself.
+	createDir := fs.Bool("create-dir", false, "Create the project directory when it does not exist (like mkdir -p)")
+
 	// Sandbox flags
 	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
@@ -1386,7 +1472,7 @@ func handleAdd(profile string, args []string) {
 	// [profiles.<account>.claude].config_dir in ~/.agent-deck/config.toml
 	// and becomes the most-specific level of CLAUDE_CONFIG_DIR resolution.
 	// Empty = fall through to conductor/group/env/profile/global/default.
-	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
+	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
@@ -1477,6 +1563,11 @@ func handleAdd(profile string, args []string) {
 	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, sessionCommandIsPassthrough, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
 	if cmdErr != nil {
 		fmt.Printf("Error: %v\n", cmdErr)
+		os.Exit(1)
+	}
+	selectedAccount, accountErr := resolveCLIAccountSlot(*account, sessionCommandTool, sessionCommandResolved, sessionCommandIsPassthrough)
+	if accountErr != nil {
+		NewCLIOutput(*jsonOutput, *quiet || *quietShort).Error(accountErr.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	sessionParent := mergeFlags(*parent, *parentShort)
@@ -1642,6 +1733,13 @@ func handleAdd(profile string, args []string) {
 		path = localPlaceholder
 	} else {
 		info, err := os.Stat(path)
+		if err != nil && *createDir {
+			if mkErr := os.MkdirAll(path, 0o755); mkErr != nil {
+				fmt.Printf("Error: failed to create directory %s: %v\n", path, mkErr)
+				os.Exit(1)
+			}
+			info, err = os.Stat(path)
+		}
 		if err != nil {
 			fmt.Printf("Error: path does not exist: %s\n", path)
 			os.Exit(1)
@@ -1749,7 +1847,9 @@ func handleAdd(profile string, args []string) {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 
-			fmt.Printf("Created worktree at: %s\n", worktreePath)
+			if !*jsonOutput {
+				fmt.Printf("Created worktree at: %s\n", worktreePath)
+			}
 		}
 		worktreeRepoRoot = repoRoot
 		// Update path to point to worktree so session uses worktree as working directory
@@ -1930,11 +2030,11 @@ func handleAdd(profile string, args []string) {
 		newInstance.Wrapper = sessionWrapperResolved
 	}
 
-	// #924 per-session named account slot — captured verbatim. The
-	// resolver silently falls through when no matching [profiles.<account>]
-	// block exists, so unknown names are never an error here.
-	if trimmed := strings.TrimSpace(*account); trimmed != "" {
-		newInstance.Account = trimmed
+	// Validate the selected slot before account-dependent loadout or registration.
+	newInstance.Account = selectedAccount
+	if err := newInstance.ValidateAccount(); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// Apply per-session model override after command/tool resolution so the
@@ -2208,6 +2308,8 @@ func handleList(profile string, args []string) {
 		fmt.Println("Usage: agent-deck list [options]")
 		fmt.Println()
 		fmt.Println("List all sessions.")
+		fmt.Println("ACCOUNT shows the quoted stored account slot, not a resolved account or login identity.")
+		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2255,6 +2357,7 @@ func handleList(profile string, args []string) {
 			Path              string    `json:"path"`
 			Group             string    `json:"group"`
 			Tool              string    `json:"tool"`
+			Account           string    `json:"account"`
 			Command           string    `json:"command,omitempty"`
 			ModelID           string    `json:"model_id,omitempty"`
 			Model             string    `json:"model,omitempty"`
@@ -2271,6 +2374,10 @@ func handleList(profile string, args []string) {
 			Color             string    `json:"color,omitempty"` // issue #391
 			Archived          bool      `json:"archived"`
 			ArchivedAt        time.Time `json:"archived_at,omitempty"`
+			// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
+			// apply the local recency filter (session.TimeFilterMode) to this
+			// session, the same way it applies to a local one.
+			LastActivityAt string `json:"last_activity_at,omitempty"`
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -2287,6 +2394,7 @@ func handleList(profile string, args []string) {
 				Path:              inst.ProjectPath,
 				Group:             inst.GroupPath,
 				Tool:              inst.Tool,
+				Account:           inst.Account,
 				Command:           inst.Command,
 				Status:            StatusString(inst.Status),
 				Substate:          string(inst.Substate()),
@@ -2299,6 +2407,7 @@ func handleList(profile string, args []string) {
 				Color:             inst.Color,
 				Archived:          inst.IsArchived(),
 				ArchivedAt:        inst.ArchivedAt,
+				LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
@@ -2321,7 +2430,7 @@ func handleList(profile string, args []string) {
 
 	// Table output
 	fmt.Printf("Profile: %s\n\n", storage.Profile())
-	fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", "ID")
+	fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
 	fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
 	for _, inst := range instances {
 		title := truncate(inst.Title, tableColTitle)
@@ -2332,7 +2441,7 @@ func handleList(profile string, args []string) {
 		if len(idDisplay) > tableColIDDisplay {
 			idDisplay = idDisplay[:tableColIDDisplay]
 		}
-		fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, idDisplay)
+		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
 	}
 	fmt.Printf("\nTotal: %d sessions\n", len(instances))
 
@@ -2362,6 +2471,7 @@ func handleListAllProfiles(jsonOutput bool) {
 			Path              string    `json:"path"`
 			Group             string    `json:"group"`
 			Tool              string    `json:"tool"`
+			Account           string    `json:"account"`
 			Command           string    `json:"command,omitempty"`
 			Profile           string    `json:"profile"`
 			CreatedAt         time.Time `json:"created_at"`
@@ -2388,6 +2498,7 @@ func handleListAllProfiles(jsonOutput bool) {
 					Path:              inst.ProjectPath,
 					Group:             inst.GroupPath,
 					Tool:              inst.Tool,
+					Account:           inst.Account,
 					Command:           inst.Command,
 					Profile:           profileName,
 					CreatedAt:         inst.CreatedAt,
@@ -2423,7 +2534,7 @@ func handleListAllProfiles(jsonOutput bool) {
 		}
 
 		fmt.Printf("\n═══ Profile: %s ═══\n\n", profileName)
-		fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", "ID")
+		fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", tableColIDDisplay, "ID", "ACCOUNT")
 		fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
 
 		for _, inst := range instances {
@@ -2434,7 +2545,7 @@ func handleListAllProfiles(jsonOutput bool) {
 			if len(idDisplay) > tableColIDDisplay {
 				idDisplay = idDisplay[:tableColIDDisplay]
 			}
-			fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, idDisplay)
+			fmt.Printf("%-*s %-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, tableColIDDisplay, idDisplay, strconv.Quote(inst.Account))
 		}
 		fmt.Printf("(%d sessions)\n", len(instances))
 		totalSessions += len(instances)
@@ -3545,6 +3656,7 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
+	fmt.Println("  doctor           Check named Claude account directory sharing")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")
 	fmt.Println("  list, ls         List all sessions")
 	fmt.Println("  remove, rm       Remove a session")
@@ -3569,6 +3681,7 @@ func printHelp() {
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
+	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
 	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths")
 	fmt.Println("  uninstall        Uninstall Agent Deck")

@@ -75,7 +75,7 @@ func GetDirectoryCompletions(input string) ([]string, error) {
 		}
 
 		name := entry.Name()
-		if strings.HasPrefix(name, prefix) {
+		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
 			match := filepath.Join(dir, name)
 
 			// If original input used tilde, convert back
@@ -114,6 +114,20 @@ func (c *CompletionCycler) Reset() {
 func (c *CompletionCycler) SetMatches(matches []string) {
 	c.matches = matches
 	c.index = -1
+}
+
+// Matches returns the current completion matches (nil when inactive).
+func (c *CompletionCycler) Matches() []string {
+	return c.matches
+}
+
+// Index returns the index of the currently selected match, or -1 when
+// inactive or before the first Next() call.
+func (c *CompletionCycler) Index() int {
+	if !c.IsActive() || c.index < 0 || c.index >= len(c.matches) {
+		return -1
+	}
+	return c.index
 }
 
 // Next returns the next match in the cycle.
