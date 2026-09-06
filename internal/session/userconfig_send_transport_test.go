@@ -14,10 +14,10 @@ func TestGetSendTransport_DefaultAndOverrides(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{"absent (zero value)", "", "auto"},
+		{"absent (zero value)", "", "tmux"},
 		{"explicit tmux", "tmux", "tmux"},
-		{"wrong case TMUX normalizes to auto", "TMUX", "auto"},
-		{"garbage normalizes to auto", "garbage", "auto"},
+		{"wrong case AUTO normalizes to tmux", "AUTO", "tmux"},
+		{"garbage normalizes to tmux", "garbage", "tmux"},
 		{"explicit auto stays auto", "auto", "auto"},
 	}
 	for _, tc := range cases {
@@ -44,7 +44,7 @@ func TestGetSendTransport_RoundTripsThroughWrittenConfig(t *testing.T) {
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("send_transport = \"tmux\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("send_transport = \"auto\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// LoadUserConfig's cache key is the file's mtime alone, not its path
@@ -59,15 +59,16 @@ func TestGetSendTransport_RoundTripsThroughWrittenConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadUserConfig: %v", err)
 	}
-	if got := cfg.GetSendTransport(); got != "tmux" {
-		t.Errorf("GetSendTransport() after round-trip = %q, want %q", got, "tmux")
+	if got := cfg.GetSendTransport(); got != "auto" {
+		t.Errorf("GetSendTransport() after round-trip = %q, want %q", got, "auto")
 	}
 }
 
-// TestGetSendTransport_AbsentFromWrittenConfig_DefaultsAuto confirms a
-// config.toml with no send_transport key at all resolves to "auto", the
-// same default-on-absence guarantee existing installs get for group_sort.
-func TestGetSendTransport_AbsentFromWrittenConfig_DefaultsAuto(t *testing.T) {
+// TestGetSendTransport_AbsentFromWrittenConfig_DefaultsTmux confirms a
+// config.toml with no send_transport key at all resolves to "tmux": existing
+// installs keep the keystroke transport they already had, and the socket is
+// reached only by opting in (maintainer review of #2100).
+func TestGetSendTransport_AbsentFromWrittenConfig_DefaultsTmux(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cfgDir := filepath.Join(home, ".agent-deck")
@@ -88,7 +89,7 @@ func TestGetSendTransport_AbsentFromWrittenConfig_DefaultsAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadUserConfig: %v", err)
 	}
-	if got := cfg.GetSendTransport(); got != "auto" {
-		t.Errorf("GetSendTransport() with no send_transport key = %q, want %q", got, "auto")
+	if got := cfg.GetSendTransport(); got != "tmux" {
+		t.Errorf("GetSendTransport() with no send_transport key = %q, want %q", got, "tmux")
 	}
 }

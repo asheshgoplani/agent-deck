@@ -100,9 +100,9 @@ type UserConfig struct {
 	GroupSort string `toml:"group_sort,omitempty"`
 
 	// SendTransport selects how `agent-deck session send` delivers to a
-	// Claude-compatible target. "auto" (default) uses Claude Code's messaging
-	// socket when one is available and falls back to tmux keystrokes otherwise;
-	// "tmux" pins the historical keystroke path. Discussion #2089.
+	// Claude-compatible target. "tmux" (default) pins the historical keystroke
+	// path; "auto" opts in to Claude Code's messaging socket when one is
+	// available, falling back to tmux keystrokes otherwise. Discussion #2089.
 	SendTransport string `toml:"send_transport,omitempty"`
 
 	// MCPs defines available MCP servers for the MCP Manager
@@ -1485,15 +1485,17 @@ func (c *UserConfig) GetGroupSort() string {
 	return "creation"
 }
 
-// GetSendTransport returns the normalized send transport: "tmux" only when
-// explicitly set, otherwise "auto" (the default). Unknown values (e.g. a
-// typo'd "TMUX" or "garbage") normalize to "auto" rather than erroring, the
-// same fail-open shape as GetGroupSort.
+// GetSendTransport returns the normalized send transport: "auto" only when
+// explicitly set to it, otherwise "tmux" (the default). The socket transport
+// is opt-in, so this is fail-closed, unlike GetGroupSort: an empty value and
+// every unrecognized value (a typo'd "AUTO", "garbage") normalize to the
+// existing keystroke transport rather than silently opting a user in
+// (maintainer review of #2100).
 func (c *UserConfig) GetSendTransport() string {
-	if c.SendTransport == "tmux" {
-		return "tmux"
+	if c.SendTransport == "auto" {
+		return "auto"
 	}
-	return "auto"
+	return "tmux"
 }
 
 // ClaudeSettings defines Claude Code configuration

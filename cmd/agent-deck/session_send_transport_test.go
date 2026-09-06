@@ -140,12 +140,23 @@ func TestChooseSendTransport(t *testing.T) {
 			wantTransport: transportSocket, wantReason: "",
 		},
 		{
-			name: "config value empty string behaves like auto",
+			// The socket is opt-in: only a literal "auto" selects it, so an
+			// empty value takes tmux here too, not just at
+			// sendTransportFromConfig (maintainer review of #2100).
+			name: "config value empty string takes tmux, not socket",
 			in: transportInputs{
 				tool: "claude", configValue: "", message: "do the thing",
 				claudeSessionID: "sid", resolve: alwaysSocketOK(nil),
 			},
-			wantTransport: transportSocket, wantReason: "",
+			wantTransport: transportTmux, wantReason: reasonConfigPinnedTmux,
+		},
+		{
+			name: "unrecognized config value takes tmux",
+			in: transportInputs{
+				tool: "claude", configValue: "AUTO", message: "do the thing",
+				claudeSessionID: "sid", resolve: alwaysSocketOK(nil),
+			},
+			wantTransport: transportTmux, wantReason: reasonConfigPinnedTmux,
 		},
 	}
 
@@ -302,11 +313,27 @@ func TestSendTransportFromConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("clean load, no pin -> auto", func(t *testing.T) {
+	t.Run("clean load, no key -> tmux (socket is opt-in)", func(t *testing.T) {
 		orig := loadUserConfigForSend
 		t.Cleanup(func() { loadUserConfigForSend = orig })
 		loadUserConfigForSend = func() (*session.UserConfig, error) {
 			return &session.UserConfig{}, nil
+		}
+
+		value, warn := sendTransportFromConfig()
+		if value != "tmux" {
+			t.Errorf("value = %q, want %q", value, "tmux")
+		}
+		if warn != "" {
+			t.Errorf("warn = %q, want empty on a clean load", warn)
+		}
+	})
+
+	t.Run("clean load, explicit auto opt-in", func(t *testing.T) {
+		orig := loadUserConfigForSend
+		t.Cleanup(func() { loadUserConfigForSend = orig })
+		loadUserConfigForSend = func() (*session.UserConfig, error) {
+			return &session.UserConfig{SendTransport: "auto"}, nil
 		}
 
 		value, warn := sendTransportFromConfig()
@@ -318,7 +345,26 @@ func TestSendTransportFromConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("nil config, no error -> auto, no warning", func(t *testing.T) {
+	t.Run("unknown value -> tmux, with a warning naming it", func(t *testing.T) {
+		orig := loadUserConfigForSend
+		t.Cleanup(func() { loadUserConfigForSend = orig })
+		loadUserConfigForSend = func() (*session.UserConfig, error) {
+			return &session.UserConfig{SendTransport: "AUTO"}, nil
+		}
+
+		value, warn := sendTransportFromConfig()
+		if value != "tmux" {
+			t.Errorf("value = %q, want %q", value, "tmux")
+		}
+		if !strings.Contains(warn, "AUTO") {
+			t.Errorf("warning %q should name the unrecognized value", warn)
+		}
+		if !strings.Contains(warn, "tmux") {
+			t.Errorf("warning %q should say it's using the tmux transport", warn)
+		}
+	})
+
+	t.Run("nil config, no error -> tmux, no warning", func(t *testing.T) {
 		orig := loadUserConfigForSend
 		t.Cleanup(func() { loadUserConfigForSend = orig })
 		loadUserConfigForSend = func() (*session.UserConfig, error) {
@@ -326,8 +372,8 @@ func TestSendTransportFromConfig(t *testing.T) {
 		}
 
 		value, warn := sendTransportFromConfig()
-		if value != "auto" {
-			t.Errorf("value = %q, want %q", value, "auto")
+		if value != "tmux" {
+			t.Errorf("value = %q, want %q", value, "tmux")
 		}
 		if warn != "" {
 			t.Errorf("warn = %q, want empty", warn)
