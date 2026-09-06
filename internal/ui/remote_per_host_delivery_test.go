@@ -7,6 +7,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -208,6 +209,7 @@ func TestRemoteFetch_ActiveClearsWhenLastResultLands(t *testing.T) {
 	result := func(name string, other string) remoteSessionsFetchedMsg {
 		return remoteSessionsFetchedMsg{
 			gen:      1,
+			inRound:  true,
 			sessions: map[string][]session.RemoteSessionInfo{name: {}},
 			failed:   map[string]bool{other: true},
 		}
@@ -217,9 +219,17 @@ func TestRemoteFetch_ActiveClearsWhenLastResultLands(t *testing.T) {
 	if !h.remotesFetchActive {
 		t.Fatal("one of two results must leave the round in flight")
 	}
+	// A config error from a refetch started outside this round must not
+	// take the slow remote's slot: the round is still in flight.
+	model, _ = h.Update(remoteSessionsFetchedMsg{gen: 2, configErr: errors.New("toml: bad key")})
+	h = model.(*Home)
+	if !h.remotesFetchActive {
+		t.Fatal("a message from outside the round must not end it while a fetch is outstanding")
+	}
 	// A pushed change in between is not part of the round.
 	pushed := result("a", "b")
 	pushed.pushed = true
+	pushed.inRound = false
 	model, _ = h.Update(pushed)
 	h = model.(*Home)
 	if !h.remotesFetchActive {
@@ -229,5 +239,38 @@ func TestRemoteFetch_ActiveClearsWhenLastResultLands(t *testing.T) {
 	h = model.(*Home)
 	if h.remotesFetchActive {
 		t.Fatal("the second of two results must end the round")
+	}
+}
+
+func TestRemoteFetch_DeconfiguredRemoteDoesNotReturnFromOlderRound(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"gone": {{ID: "g-1", Title: "gone-cached", RemoteName: "gone"}},
+	}
+	// Round 6 was built from a config that no longer lists "gone": its
+	// only result names "a" and marks nobody else failed, so "gone" drops.
+	model, _ := home.Update(remoteSessionsFetchedMsg{
+		gen:      6,
+		inRound:  true,
+		sessions: map[string][]session.RemoteSessionInfo{"a": {{ID: "a-1", Title: "a-6"}}},
+		failed:   map[string]bool{},
+	})
+	h := model.(*Home)
+	if got := remoteTitles(h, "gone"); len(got) != 0 {
+		t.Fatalf("a remote absent from the config must drop; got %v", got)
+	}
+	// A slow result for "gone" from the older round 5 lands afterwards.
+	model, _ = h.Update(remoteSessionsFetchedMsg{
+		gen:      5,
+		inRound:  true,
+		sessions: map[string][]session.RemoteSessionInfo{"gone": {{ID: "g-2", Title: "gone-5"}}},
+		failed:   map[string]bool{"a": true},
+	})
+	h = model.(*Home)
+	if got := remoteTitles(h, "gone"); len(got) != 0 {
+		t.Fatalf("an older round's result must not resurrect a deconfigured remote; got %v", got)
+	}
+	if got := remoteTitles(h, "a"); len(got) != 1 || got[0] != "a-6" {
+		t.Fatalf("the newer round's rows must stay; got %v", got)
 	}
 }

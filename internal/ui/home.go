@@ -1489,8 +1489,13 @@ type remoteSessionsFetchedMsg struct {
 	gen uint64
 	// pushed marks a result that did not come from a poll round (a change
 	// the remote pushed over its channel), so it is not counted against the
-	// round's outstanding fetches.
+	// round's outstanding fetches and never touches the in-flight guard.
 	pushed bool
+	// inRound marks one of the per-remote results a remoteFetchRoundMsg
+	// fanned out; only those count down remoteFetchOutstanding. A message
+	// from outside a round (config unreadable, no remotes configured) must
+	// not steal a slot from a round still in flight.
+	inRound bool
 	// configErr is set when the user config could not be read; the handler
 	// then keeps every cached remote instead of treating them as removed.
 	configErr error
@@ -3879,6 +3884,11 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 		}
 		return h, nil
 	}
+	h.remoteSessionsMu.Lock()
+	prevSessions := h.remoteSessions
+	// #1170: merge rather than wholesale-replace so a remote that errored
+	// this round keeps its last-good sessions instead of flickering out.
+	h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
 	if msg.gen != 0 {
 		if h.remoteFetchApplied == nil {
 			h.remoteFetchApplied = make(map[string]uint64)
@@ -3886,11 +3896,14 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 		for name := range msg.sessions {
 			h.remoteFetchApplied[name] = msg.gen
 		}
+		// A remote this message deconfigured (absent from both lists) must
+		// not come back when a slower result from an older round lands.
+		for name := range prevSessions {
+			if _, fetched := msg.sessions[name]; !fetched && !msg.failed[name] {
+				h.remoteFetchApplied[name] = msg.gen
+			}
+		}
 	}
-	h.remoteSessionsMu.Lock()
-	// #1170: merge rather than wholesale-replace so a remote that errored
-	// this round keeps its last-good sessions instead of flickering out.
-	h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
 	// Remote group lists: replace wholesale for remotes that reported a
 	// fresh list; failed remotes keep their last-good cached paths so the
 	// move dialog doesn't lose empty-group targets on a transient SSH
@@ -3965,15 +3978,17 @@ func (h *Home) remoteFetchIsStale(msg remoteSessionsFetchedMsg) bool {
 	return false
 }
 
-// remoteFetchLanded accounts for one per-remote result and reports whether
-// that completed the round (no fetch outstanding), clearing the in-flight
-// guard when it did. Pushed changes are not part of any round. Called with
-// remoteSessionsMu held.
+// remoteFetchLanded accounts for one fetch result and reports whether that
+// left no fetch outstanding, clearing the in-flight guard when it did. Only
+// a round's own per-remote results count down the outstanding total; a
+// message from outside a round (config unreadable, no remotes) releases the
+// guard only when no round is in flight. Pushed changes are not part of any
+// round and never touch the guard. Called with remoteSessionsMu held.
 func (h *Home) remoteFetchLanded(msg remoteSessionsFetchedMsg) bool {
 	if msg.pushed {
 		return false
 	}
-	if h.remoteFetchOutstanding > 0 {
+	if msg.inRound && h.remoteFetchOutstanding > 0 {
 		h.remoteFetchOutstanding--
 	}
 	if h.remoteFetchOutstanding > 0 {
@@ -4097,6 +4112,7 @@ func (h *Home) remoteFetchCmds(gen uint64, remotes map[string]session.RemoteConf
 func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, configured []string) remoteSessionsFetchedMsg {
 	msg := remoteSessionsFetchedMsg{
 		gen:          gen,
+		inRound:      true,
 		sessions:     make(map[string][]session.RemoteSessionInfo, 1),
 		costs:        make(map[string]*costs.RemoteCostSummary, 1),
 		groups:       make(map[string][]string, 1),
