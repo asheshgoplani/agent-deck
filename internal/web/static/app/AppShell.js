@@ -15,15 +15,7 @@ import { RightRail } from './RightRail.js'
 import { MobileTabs } from './MobileTabs.js'
 import { CommandPalette } from './CommandPalette.js'
 import { TweaksPanel } from './TweaksPanel.js'
-import { TerminalPane } from './panes/TerminalPane.js'
-import { CostsPane } from './panes/CostsPane.js'
-import { FleetPane } from './panes/FleetPane.js'
-import { CommandCenterPane } from './panes/CommandCenterPane.js'
-import { ArchivedPane } from './panes/ArchivedPane.js'
-import { StubPane } from './panes/StubPane.js'
-import { SearchPane } from './panes/SearchPane.js'
-import { McpPane } from './panes/McpPane.js'
-import { SkillsPane } from './panes/SkillsPane.js'
+import { PANES, resolvePane } from './paneRegistry.js'
 import { Icon, ICONS } from './icons.js'
 import {
   menuModelSignal, sidebarRowsSignal, isGroupOpen, toggleGroupOpen,
@@ -119,6 +111,12 @@ function WorkHead() {
 // when another tab is active. This preserves the xterm.js + WebSocket lifecycle
 // across tab switches; unmounting would trigger a reconnect storm and lose
 // scrollback. Other panes are cheap enough to mount/unmount on demand.
+//
+// Which tab panes exist, and what each renders, lives in paneRegistry.js.
+// The group stats panel is not a tab pane -- it takes over the work area
+// whenever a group is selected, regardless of which tab is active -- so it
+// stays wired here rather than in the registry.
+
 // The group stats panel and its data module are only reachable once a viewer
 // selects a group, so they are fetched on demand rather than shipped in the
 // initial payload -- the page is under a hard total-byte-weight budget
@@ -165,22 +163,17 @@ function Panes({ tab }) {
   const groupPath = selectedGroupSignal.value
   const t = groupPath ? null : tab
   const GroupPanel = useLazyGroupStatsPanel(!!groupPath)
+  const terminal = resolvePane('terminal')
   return html`
     <div style=${{ display: t === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
-      <${TerminalPane}/>
+      <${terminal.component} ...${terminal.props}/>
     </div>
     ${groupPath && GroupPanel && html`<${GroupPanel} path=${groupPath}/>`}
-    ${t === 'command-center' && html`<${CommandCenterPane}/>`}
-    ${t === 'fleet'     && html`<${FleetPane}/>`}
-    ${t === 'costs'     && html`<${CostsPane}/>`}
-    ${t === 'search'    && html`<${SearchPane}/>`}
-    ${t === 'archived'  && html`<${ArchivedPane}/>`}
-    ${t === 'mcp'       && html`<${McpPane}/>`}
-    ${t === 'skills'    && html`<${SkillsPane}/>`}
-    ${t === 'conductor' && html`<${StubPane} title="Conductor"
-                              message="Conductor orchestration view is TUI-only. The web API does not expose child topology, bridges, or NEED escalation."/>`}
-    ${t === 'watchers'  && html`<${StubPane} title="Watchers"
-                              message="Watcher framework events are routed in the backend; the web API does not surface event streams or routing config."/>`}
+    ${Object.keys(PANES).map(id => {
+      if (id === 'terminal' || id !== t) return null
+      const pane = resolvePane(id)
+      return html`<${pane.component} key=${id} ...${pane.props}/>`
+    })}
   `
 }
 

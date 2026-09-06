@@ -209,3 +209,9 @@ func (s *Server) skillsServiceOrDefault() SkillsService {
 	}
 	return defaultSkillsService{}
 }
+
+func init() {
+	registerFeatureRoutes(func(s *Server, mux *http.ServeMux) {
+		mux.HandleFunc("/api/skills", s.handleSkillsCatalog)
+	})
+}
