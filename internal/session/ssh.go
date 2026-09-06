@@ -1334,7 +1334,14 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAdd
 	// Use ID to avoid ambiguity when titles are duplicated.
 	startCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	startOutput, err := r.run(startCtx, "session", "start", "--json", result.ID)
+	// The TUI attaches the moment this returns, so ask the remote not to
+	// wait for the tool's session id (about 3s for claude). A remote whose
+	// agent-deck predates --no-wait rejects the flag; fall back to the plain
+	// start so an older remote keeps working.
+	startOutput, err := r.run(startCtx, remoteStartArgs(result.ID, true)...)
+	if err != nil && isUnknownFlagError(err) {
+		startOutput, err = r.run(startCtx, remoteStartArgs(result.ID, false)...)
+	}
 	if err != nil {
 		// Compensate: the remote DB has the row but no tmux process. Best-effort
 		// delete with a fresh context so an upstream cancellation doesn't skip
@@ -1352,6 +1359,24 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAdd
 	}
 
 	return result.ID, nil
+}
+
+// remoteStartArgs builds the remote `session start` invocation the create
+// path runs right before attaching. noWait asks the remote to return as soon
+// as the process is spawned (see `session start --no-wait`).
+func remoteStartArgs(sessionID string, noWait bool) []string {
+	args := []string{"session", "start", "--json"}
+	if noWait {
+		args = append(args, "--no-wait")
+	}
+	return append(args, sessionID)
+}
+
+// isUnknownFlagError reports whether a remote command failed because its
+// agent-deck does not know a flag this build sends (Go's flag package prints
+// "flag provided but not defined: -name").
+func isUnknownFlagError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "flag provided but not defined")
 }
 
 // DeleteSession removes a session on the remote host.

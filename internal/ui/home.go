@@ -3747,20 +3747,35 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			for i := range sessions {
 				sessions[i].RemoteName = name
 			}
-			// #1912 follow-up: the session-list fetch may have consumed most
-			// of the shared budget on a slow remote, which silently dropped
-			// that remote's spend from the totals. Give costs their own bound.
-			costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
-			summary, costErr := runner.FetchCostSummary(costCtx)
-			costCancel()
-
-			// Group list fetch has the same isolation: a slow `group list`
-			// on one remote must not starve the session/cost data of any
-			// other remote, and a failure degrades to the session-derived
-			// group fallback in remoteGroupPaths.
-			groupCtx, groupCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
-			groupPaths, groupErr := runner.FetchGroupPaths(groupCtx)
-			groupCancel()
+			// The cost summary and the group list are independent of the
+			// session list and of each other, so they run concurrently over
+			// the same ControlMaster connection: one round trip per poll
+			// instead of three in a row (#2167). Each keeps its own bound so
+			// a slow `costs summary` or `group list` on one remote cannot
+			// starve the others, and a failure degrades as before: costs to
+			// "contributes zero", groups to the session-derived fallback in
+			// remoteGroupPaths.
+			var (
+				summary    *costs.RemoteCostSummary
+				costErr    error
+				groupPaths []string
+				groupErr   error
+				side       sync.WaitGroup
+			)
+			side.Add(2)
+			go func() {
+				defer side.Done()
+				costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+				defer costCancel()
+				summary, costErr = runner.FetchCostSummary(costCtx)
+			}()
+			go func() {
+				defer side.Done()
+				groupCtx, groupCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+				defer groupCancel()
+				groupPaths, groupErr = runner.FetchGroupPaths(groupCtx)
+			}()
+			side.Wait()
 
 			mu.Lock()
 			results[name] = sessions
@@ -10767,8 +10782,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+r":
 		// Manual refresh follows the same ordering as initial and watcher loads.
+		// Remote decks refresh in the same keystroke, so a change made on a
+		// remote (or from another machine) shows up now, not at the next poll.
 		state := h.preserveState()
-		return h, h.sessionLoadCmd(&state, false)
+		return h, tea.Batch(h.sessionLoadCmd(&state, false), h.fetchRemoteSessions)
 
 	case "ctrl+s":
 		// Open the session switcher from the overview too, with the same key

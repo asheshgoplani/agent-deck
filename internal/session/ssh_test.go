@@ -847,3 +847,25 @@ func TestRemoteGroupReorderArgsAndResult(t *testing.T) {
 		}
 	}
 }
+
+// The remote create path asks `session start` not to wait for the tool's
+// session id (#2167) and falls back to the plain start on a remote that
+// predates the flag.
+func TestRemoteStartArgs_NoWaitAndFallback(t *testing.T) {
+	got := remoteStartArgs("abc-1", true)
+	want := []string{"session", "start", "--json", "--no-wait", "abc-1"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("remoteStartArgs(noWait) = %v, want %v", got, want)
+	}
+	got = remoteStartArgs("abc-1", false)
+	want = []string{"session", "start", "--json", "abc-1"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("remoteStartArgs(plain) = %v, want %v", got, want)
+	}
+	if !isUnknownFlagError(errors.New("ssh command failed: exit status 2: flag provided but not defined: -no-wait")) {
+		t.Fatal("an unknown-flag failure must be recognised so the create path retries without --no-wait")
+	}
+	if isUnknownFlagError(errors.New("ssh command failed: exit status 1: session not found")) {
+		t.Fatal("an ordinary failure must not be mistaken for an unknown flag")
+	}
+}

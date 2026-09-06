@@ -193,6 +193,7 @@ func handleSessionStart(profile string, args []string) {
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
 	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
+	noWait := fs.Bool("no-wait", false, "Return as soon as the process is spawned instead of waiting up to 3s for the tool's session id (a caller that attaches right away; the id is still captured by hooks)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session start <id|title> [options]")
@@ -294,8 +295,13 @@ func handleSessionStart(profile string, args []string) {
 	}
 
 	// Capture session ID from tmux env before saving to JSON
-	// Claude: UUID is set by bash capture-resume pattern before exec
-	inst.PostStartSync(3 * time.Second)
+	// Claude: UUID is set by bash capture-resume pattern before exec.
+	// --no-wait skips this bounded wait for a caller that attaches at once
+	// (the remote TUI create path); hooks and the status loop capture the
+	// id shortly after.
+	if !*noWait {
+		inst.PostStartSync(3 * time.Second)
+	}
 
 	// Save updated state
 	if err := saveSessionData(storage, instances, groups); err != nil {
