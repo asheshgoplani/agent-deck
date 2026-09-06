@@ -1118,6 +1118,13 @@ type UpdateSettings struct {
 	// Default: false
 	AutoUpdate bool `toml:"auto_update,omitempty"`
 
+	// AutoUpdateRemotes pushes the controller's version to every configured
+	// remote that reports an older agent-deck: after a successful
+	// `agent-deck update`, and in the background on startup (throttled by
+	// CheckIntervalHours). Never prompts; a remote that fails stays on its
+	// version and is logged. Default: false (issue #2164).
+	AutoUpdateRemotes bool `toml:"auto_update_remotes,omitempty"`
+
 	// CheckEnabled enables automatic update checks on startup
 	// Default: true (nil = true)
 	CheckEnabled *bool `toml:"check_enabled,omitempty"`

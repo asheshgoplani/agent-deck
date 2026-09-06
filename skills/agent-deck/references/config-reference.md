@@ -478,6 +478,7 @@ Auto-update settings.
 ```toml
 [updates]
 auto_update = false           # Auto-install updates
+auto_update_remotes = false   # Push the controller's version to older remotes
 check_enabled = true          # Check on startup
 check_interval_hours = 24     # Check frequency
 notify_in_cli = true          # Show in CLI commands
@@ -486,6 +487,7 @@ notify_in_cli = true          # Show in CLI commands
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `auto_update` | bool | `false` | Install updates without prompting. |
+| `auto_update_remotes` | bool | `false` | Keep configured remotes on the controller's version: after a successful `agent-deck update`, and in the background on startup (at most once per `check_interval_hours`), every remote whose `agent-deck version` is older than the controller's gets the same verified binary deploy as `agent-deck remote update --all`. Never prompts; a remote that fails stays on its version and is logged. Remotes without a reachable binary are skipped (install them once with `agent-deck remote update <name>`). |
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
