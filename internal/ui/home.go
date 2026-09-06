@@ -705,6 +705,9 @@ type Home struct {
 	// the new-session dialog forwards to the remote-create path (#1353) without
 	// opening an SSH connection. When nil, createRemoteSessionWithOptions runs.
 	remoteCreateSink func(remoteName string, opts session.RemoteAddOptions) tea.Cmd
+	// remoteAccountsFetcher is an optional override used by tests to replace
+	// the SSH fetch of a remote's account slots when its dialog opens.
+	remoteAccountsFetcher func(remoteName string) tea.Cmd
 	// insertKeySender is the persistent dispatch path opened on
 	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
 	// remote support). Local sessions get a tmux.KeySender (control-mode
@@ -6565,6 +6568,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
 		return h, h.fetchRemoteSessions
 
+	case remoteAccountsFetchedMsg:
+		h.applyRemoteAccounts(msg)
+		return h, nil
+
 	case remoteSessionCreatedMsg:
 		if msg.err != nil {
 			h.setError(msg.err)
@@ -8266,10 +8273,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-func (h *Home) showRemoteNewSessionDialog(item session.Item) {
+// showRemoteNewSessionDialog opens the new-session dialog for a remote target
+// and returns the command that fetches the remote's account slots for the
+// dialog's account row (see remoteAccountsFetchedMsg).
+func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	remoteName := item.RemoteName
 	if remoteName == "" {
-		return
+		return nil
 	}
 
 	paths := h.remotePathSuggestions(remoteName)
@@ -8308,6 +8318,52 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) {
 	// own defaults. Drop everything ShowInGroup inherited from this machine's
 	// config so only what the user sets in the dialog is forwarded.
 	h.newDialog.ResetRemoteDefaults()
+	// The account row now lists the server's slots, not this machine's: they
+	// arrive asynchronously so opening the dialog never blocks on SSH.
+	fetch := h.fetchRemoteAccounts
+	if h.remoteAccountsFetcher != nil {
+		fetch = h.remoteAccountsFetcher
+	}
+	return fetch(remoteName)
+}
+
+// remoteAccountsFetchedMsg carries the account slot names configured on a
+// remote, for the new-session dialog opened on that remote.
+type remoteAccountsFetchedMsg struct {
+	remoteName string
+	accounts   []string
+	err        error
+}
+
+// fetchRemoteAccounts asks the remote for its configured Claude account slots
+// (`accounts --json`, read-only). Only names come back; nothing local is sent.
+func (h *Home) fetchRemoteAccounts(remoteName string) tea.Cmd {
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteAccountsFetchedMsg{remoteName: remoteName, err: fmt.Errorf("failed to load remote config")}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteAccountsFetchedMsg{remoteName: remoteName, err: fmt.Errorf("remote '%s' not found", remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		accounts, err := runner.FetchAccounts(ctx)
+		return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: accounts, err: err}
+	}
+}
+
+// applyRemoteAccounts hands the fetched slot names to the dialog when it is
+// still open for that remote; a late answer for a closed dialog or a
+// different remote is dropped. A failed fetch (offline host, or a remote too
+// old for `accounts`) leaves the row hidden rather than offering local names.
+func (h *Home) applyRemoteAccounts(msg remoteAccountsFetchedMsg) {
+	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName {
+		return
+	}
+	h.newDialog.SetRemoteAccounts(msg.accounts)
 }
 
 func (h *Home) remotePathSuggestions(remoteName string) []string {
@@ -9591,8 +9647,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
-				h.showRemoteNewSessionDialog(item)
-				return h, nil
+				return h, h.showRemoteNewSessionDialog(item)
 			}
 		}
 

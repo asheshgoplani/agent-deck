@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -15,10 +16,15 @@ import (
 // toggles, sandbox and worktree never reached the remote's `add`. These tests
 // drive the real dialog and capture what the submit handler forwards.
 
+var errUnavailable = errors.New("ssh: connect failed")
+
 type remoteCreateCapture struct {
 	calls      int
 	remoteName string
 	opts       session.RemoteAddOptions
+	// accountsFetchedFor records the remotes whose account slots the dialog
+	// asked for when it opened; the real fetch goes over SSH.
+	accountsFetchedFor []string
 }
 
 func (c *remoteCreateCapture) sink(remoteName string, opts session.RemoteAddOptions) tea.Cmd {
@@ -27,22 +33,40 @@ func (c *remoteCreateCapture) sink(remoteName string, opts session.RemoteAddOpti
 	return nil
 }
 
-// openRemoteDialogAndTypeName opens the dialog via `n` on a remote group,
-// selects the tool and types a session name, leaving focus on the Name field.
-func openRemoteDialogAndTypeName(t *testing.T, remoteName, tool, name string) (*Home, *remoteCreateCapture) {
+func (c *remoteCreateCapture) accountsFetcher(remoteName string) tea.Cmd {
+	c.accountsFetchedFor = append(c.accountsFetchedFor, remoteName)
+	return nil
+}
+
+// newRemoteHome builds a Home whose cursor sits on the given remote item, with
+// this machine's config.toml set to configTOML (empty for none) and the two
+// SSH paths the dialog can reach (create, account fetch) replaced by captures.
+func newRemoteHome(t *testing.T, item session.Item, configTOML string) (*Home, *remoteCreateCapture) {
 	t.Helper()
-	setXDGTestHome(t)
-	home := NewHome()
-	home.width = 100
-	home.height = 30
-	home.flatItems = []session.Item{remoteGroupItem(remoteName)}
-	home.cursor = 0
+	home := setXDGTestHome(t)
+	if configTOML != "" {
+		writeXDGTestConfig(t, home, configTOML)
+	}
+	h := NewHome()
+	h.width = 100
+	h.height = 30
+	h.flatItems = []session.Item{item}
+	h.cursor = 0
 	capture := &remoteCreateCapture{}
-	home.remoteCreateSink = capture.sink
+	h.remoteCreateSink = capture.sink
+	h.remoteAccountsFetcher = capture.accountsFetcher
+	return h, capture
+}
+
+// openRemoteDialogOn opens the dialog via `n` on the given remote item,
+// selects the tool and types a session name, leaving focus on the Name field.
+func openRemoteDialogOn(t *testing.T, item session.Item, configTOML, tool, name string) (*Home, *remoteCreateCapture) {
+	t.Helper()
+	home, capture := newRemoteHome(t, item, configTOML)
 
 	h := pressN(t, home)
 	if !h.newDialog.IsVisible() {
-		t.Fatal("precondition: n on a remote group must open the dialog")
+		t.Fatal("precondition: n on a remote item must open the dialog")
 	}
 	h.newDialog.SetDefaultTool(tool)
 	if got := h.newDialog.GetSelectedCommand(); got != tool {
@@ -52,6 +76,13 @@ func openRemoteDialogAndTypeName(t *testing.T, remoteName, tool, name string) (*
 		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	return h, capture
+}
+
+// openRemoteDialogAndTypeName is openRemoteDialogOn for a remote group with
+// no local config.toml.
+func openRemoteDialogAndTypeName(t *testing.T, remoteName, tool, name string) (*Home, *remoteCreateCapture) {
+	t.Helper()
+	return openRemoteDialogOn(t, remoteGroupItem(remoteName), "", tool, name)
 }
 
 func submitRemoteDialog(t *testing.T, h *Home) *Home {
@@ -111,14 +142,7 @@ func TestRemoteDialog_UntouchedOptions_ForwardOnlyBasics(t *testing.T) {
 // default_model or extra_args) must not leak into a remote create: the dialog
 // starts from the server's defaults when the target is a remote.
 func TestRemoteDialog_LocalConfigDefaults_NotForwarded(t *testing.T) {
-	setXDGTestHome(t)
-	home := NewHome()
-	home.width = 100
-	home.height = 30
-	home.flatItems = []session.Item{remoteGroupItem("myserver")}
-	home.cursor = 0
-	capture := &remoteCreateCapture{}
-	home.remoteCreateSink = capture.sink
+	home, _ := newRemoteHome(t, remoteGroupItem("myserver"), "")
 
 	h := pressN(t, home)
 	h.newDialog.SetDefaultTool("claude")
@@ -240,6 +264,165 @@ func TestRemoteDialog_UnforwardableFields_Refused(t *testing.T) {
 		h, capture := openRemoteDialogAndTypeName(t, "myserver", "hermes", "hermes-task")
 		h.newDialog.hermesOptions.SetDefaults(true)
 		submitRemoteDialogExpectingError(t, h, capture, "Hermes YOLO")
+	})
+}
+
+// The dialog opened from a remote session item (not just the remote group
+// header) keeps that session's group and path and forwards them after
+// ResetRemoteDefaults has run.
+func TestRemoteDialog_RemoteSessionItem_ForwardsGroupAndPath(t *testing.T) {
+	rs := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver", Group: "work", Path: "/srv/repo"}
+	item := session.Item{Type: session.ItemTypeRemoteSession, RemoteSession: &rs, RemoteName: "myserver"}
+	h, capture := openRemoteDialogOn(t, item, "", "claude", "sibling-task")
+
+	submitRemoteDialog(t, h)
+
+	if capture.calls != 1 || capture.remoteName != "myserver" {
+		t.Fatalf("remote create called %d times for %q, want once for myserver", capture.calls, capture.remoteName)
+	}
+	if capture.opts.Group != "work" || capture.opts.Path != "/srv/repo" {
+		t.Fatalf("opts = %+v, want the remote session's group work and path /srv/repo", capture.opts)
+	}
+	if capture.opts.Title != "sibling-task" || capture.opts.Tool != "claude" {
+		t.Fatalf("opts = %+v, want title sibling-task with tool claude", capture.opts)
+	}
+}
+
+// The worktree branch prefix is applied exactly once, by the remote. An
+// auto-filled branch must not carry this machine's [worktree].branch_prefix,
+// or the server (which applies its own) would create remote/local/name.
+func TestRemoteDialog_WorktreeBranch_PrefixAppliedOnceByRemote(t *testing.T) {
+	const controllerConfig = "[worktree]\nbranch_prefix = \"ctl/\"\n"
+	remotePrefix := "srv/"
+	remote := session.WorktreeSettings{BranchPrefix: &remotePrefix}
+
+	t.Run("auto-filled branch travels as the bare slug", func(t *testing.T) {
+		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), controllerConfig, "claude", "wt-task")
+		h.newDialog.ToggleWorktree()
+		if got := h.newDialog.branchInput.Value(); got != "wt-task" {
+			t.Fatalf("auto-filled branch = %q, want the bare slug wt-task (no controller prefix)", got)
+		}
+
+		submitRemoteDialog(t, h)
+
+		if capture.opts.WorktreeBranch != "wt-task" {
+			t.Fatalf("forwarded branch = %q, want wt-task", capture.opts.WorktreeBranch)
+		}
+		if got := remote.ApplyBranchPrefix(capture.opts.WorktreeBranch); got != "srv/wt-task" {
+			t.Fatalf("remote add -w %q creates %q, want srv/wt-task (remote prefix once, never ctl/)", capture.opts.WorktreeBranch, got)
+		}
+	})
+
+	t.Run("typed branch is forwarded as entered", func(t *testing.T) {
+		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), controllerConfig, "claude", "wt-task")
+		h.newDialog.ToggleWorktree()
+		h.newDialog.branchInput.SetValue("srv/hotfix-urgent")
+
+		submitRemoteDialog(t, h)
+
+		if capture.opts.WorktreeBranch != "srv/hotfix-urgent" {
+			t.Fatalf("forwarded branch = %q, want the typed srv/hotfix-urgent", capture.opts.WorktreeBranch)
+		}
+		if got := remote.ApplyBranchPrefix(capture.opts.WorktreeBranch); got != "srv/hotfix-urgent" {
+			t.Fatalf("remote add -w %q creates %q, want the typed name unchanged", capture.opts.WorktreeBranch, got)
+		}
+	})
+
+	t.Run("local dialog keeps the controller prefix", func(t *testing.T) {
+		h, _ := openRemoteDialogOn(t, remoteGroupItem("myserver"), controllerConfig, "claude", "wt-task")
+		h.newDialog.Hide()
+		h.newDialog.ShowInGroup(session.DefaultGroupPath, session.DefaultGroupName, t.TempDir(), nil, "")
+		if h.newDialog.branchPrefix != "ctl/" {
+			t.Fatalf("local dialog prefix = %q after a remote open, want ctl/", h.newDialog.branchPrefix)
+		}
+	})
+}
+
+// A Codex-compatible custom tool shows the same effort selector as codex, so
+// a selected effort is refused with the same message rather than dropped.
+func TestRemoteDialog_CodexCompatibleCustomTool_EffortRefused(t *testing.T) {
+	const config = "[tools.mycodex]\ncommand = \"codex-wrapper\"\ncompatible_with = \"codex\"\n"
+	h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), config, "mycodex", "custom-effort")
+	if !h.newDialog.selectedToolSupportsReasoningEffort() {
+		t.Fatal("precondition: a Codex-compatible custom tool must offer the effort selector")
+	}
+	h.newDialog.cycleReasoningEffort(1)
+	if h.newDialog.GetLaunchReasoningEffort() == "" {
+		t.Fatal("precondition: cycling the selector must pick an effort")
+	}
+
+	submitRemoteDialogExpectingError(t, h, capture, "Reasoning effort")
+
+	// With no effort selected the same tool is created, with its YOLO flag.
+	h.newDialog.reasoningEffort = ""
+	h.newDialog.codexOptions.SetDefaults(true)
+	submitRemoteDialog(t, h)
+	if capture.opts.Tool != "mycodex" || !capture.opts.Yolo {
+		t.Fatalf("opts = %+v, want mycodex with yolo once the effort is cleared", capture.opts)
+	}
+}
+
+// The account row lists the target remote's slots, not this machine's: a
+// slot configured only locally is never offered (the server would reject
+// it), and one configured only on the server can be picked.
+func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
+	const localConfig = "[profiles.local-only.claude]\nconfig_dir = \"~/.claude-local\"\n"
+
+	t.Run("local-only slot is not offered and the remote is asked", func(t *testing.T) {
+		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
+		if cfg, _ := session.LoadUserConfig(); strings.Join(session.ConfiguredAccountNames(cfg), ",") != "local-only" {
+			t.Fatal("precondition: this machine's config must define the local-only slot")
+		}
+		if h.newDialog.claudeOptions.hasAccountRow() {
+			t.Fatalf("remote dialog offers %v, want no local slots", h.newDialog.claudeOptions.accounts)
+		}
+		if strings.Join(capture.accountsFetchedFor, ",") != "myserver" {
+			t.Fatalf("account slots fetched for %v, want myserver once", capture.accountsFetchedFor)
+		}
+		h.newDialog.claudeOptions.SetAccount("local-only")
+		submitRemoteDialog(t, h)
+		if capture.opts.Account != "" {
+			t.Fatalf("account = %q, want none: a local-only slot must never travel", capture.opts.Account)
+		}
+	})
+
+	t.Run("remote-only slot is offered and forwarded", func(t *testing.T) {
+		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
+		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}})
+		h = model.(*Home)
+		if !h.newDialog.claudeOptions.hasAccountRow() {
+			t.Fatal("the remote's slots must populate the account row")
+		}
+		if got := strings.Join(h.newDialog.claudeOptions.accounts, ","); got != "srv-alice,srv-bob" {
+			t.Fatalf("offered slots = %q, want exactly the remote's", got)
+		}
+		h.newDialog.claudeOptions.SetAccount("srv-bob")
+
+		submitRemoteDialog(t, h)
+
+		if capture.opts.Account != "srv-bob" {
+			t.Fatalf("account = %q, want srv-bob", capture.opts.Account)
+		}
+	})
+
+	t.Run("answers for another remote, a failed fetch or a closed dialog are dropped", func(t *testing.T) {
+		h, _ := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
+		for _, msg := range []remoteAccountsFetchedMsg{
+			{remoteName: "otherserver", accounts: []string{"stale"}},
+			{remoteName: "myserver", accounts: []string{"stale"}, err: errUnavailable},
+		} {
+			model, _ := h.Update(msg)
+			h = model.(*Home)
+			if h.newDialog.claudeOptions.hasAccountRow() {
+				t.Fatalf("msg %+v must not populate the account row", msg)
+			}
+		}
+		h.newDialog.Hide()
+		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"late"}})
+		h = model.(*Home)
+		if h.newDialog.claudeOptions.hasAccountRow() {
+			t.Fatal("a late answer for a closed dialog must be dropped")
+		}
 	})
 }
 

@@ -121,7 +121,12 @@ describe("Remote Session Creation", () => {
     if (shown.tool !== "claude") {
       throw new Error(`Expected tool claude, got ${shown.tool}`);
     }
-    console.log(`  Created with options: ${shown.title} (${result.id}) tool=${shown.tool}`);
+    // `session show --json` reports the persisted per-session override as
+    // `model`; a remote that accepted --model but ignored it fails here.
+    if (shown.model !== "sonnet") {
+      throw new Error(`Expected persisted model sonnet, got ${shown.model}`);
+    }
+    console.log(`  Created with options: ${shown.title} (${result.id}) tool=${shown.tool} model=${shown.model}`);
   });
 
   test("session is attachable after create+start", async ({ terminal }) => {

@@ -1465,9 +1465,19 @@ func (d *NewDialog) GetClaudeAccount() string {
 // only what the user switches on. Without this reset a local
 // [claude].dangerous_mode or default_model would silently travel to a host
 // whose administrator configured otherwise.
+//
+// The worktree branch prefix is cleared too: the remote's own `add -w` applies
+// the server's [worktree].branch_prefix, so an auto-filled branch travels as
+// the bare slug and is prefixed exactly once, on the server. A branch the user
+// types is forwarded verbatim. The account row is emptied because it listed
+// this machine's slots; the server's slots arrive via SetRemoteAccounts.
 func (d *NewDialog) ResetRemoteDefaults() {
 	d.worktreeEnabled = false
 	d.worktreeToggled = false
+	d.branchInput.SetValue("")
+	d.branchAutoSet = false
+	d.branchPrefix = ""
+	d.branchInput.Placeholder = "branch-name"
 	d.sandboxEnabled = false
 	d.multiRepoEnabled = false
 	d.multiRepoPaths = nil
@@ -1475,9 +1485,20 @@ func (d *NewDialog) ResetRemoteDefaults() {
 	d.reasoningEffort = ""
 	d.claudeOptions.SetFromOptions(&session.ClaudeOptions{SessionMode: "new"})
 	d.claudeOptions.SetExtraArgs(nil)
+	d.claudeOptions.SetAccounts(nil)
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
+	d.rebuildFocusTargets()
+}
+
+// SetRemoteAccounts populates the account row with the slot names configured
+// on the target remote (its `accounts --json`). Only names are offered; the
+// server resolves the chosen one against its own config.toml. An empty list
+// hides the row, so a remote without named slots (or one too old to report
+// them) never shows a control whose value it would reject.
+func (d *NewDialog) SetRemoteAccounts(names []string) {
+	d.claudeOptions.SetAccounts(names)
 	d.rebuildFocusTargets()
 }
 
@@ -1520,9 +1541,12 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 			return opts, "Claude options and extra args can only be forwarded to a remote for the claude tool"
 		}
 		opts.ExtraArgs = extra
-	case command == "codex":
+	case session.IsCodexCompatible(command):
+		// Same predicate the effort selector uses, so a Codex-compatible
+		// custom tool that could pick an effort is refused rather than
+		// silently created without it.
 		if d.GetLaunchReasoningEffort() != "" {
-			return opts, "Reasoning effort for codex is not sent to a remote; set it in the server's config"
+			return opts, "Reasoning effort for " + command + " is not sent to a remote; set it in the server's config"
 		}
 		opts.Yolo = d.GetCodexYoloMode()
 	case command == "gemini":

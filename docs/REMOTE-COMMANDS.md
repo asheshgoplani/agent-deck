@@ -42,17 +42,17 @@ Pressing `n` on a remote group or session opens the same new-session dialog as f
 | Dialog field | Sent to the server as |
 | --- | --- |
 | Name, path, tool, group | `-t`, positional path, `-c`, `-g` (path is a server path, `~` is not expanded locally) |
-| Claude account slot | `--account <name>`; the slot must exist in the server's `config.toml` |
+| Claude account slot | `--account <name>`; the row lists the server's own slots (read over SSH with `accounts --json` when the dialog opens, names only), so a slot configured only on the server can be picked and a slot configured only locally is never offered |
 | Model | `--model <id>` |
 | Claude effort, skip permissions, auto mode, Chrome, teammate mode, extra args | one `--extra-arg` per token, the same flags a local session launches with; these add to the server's own `[claude]` defaults and cannot switch a server default off |
 | Claude session mode | resume with an id: `--resume-session <id>`; continue or bare resume: `--extra-arg -c` / `--extra-arg --resume` |
 | Docker sandbox | `-sandbox`; the image comes from the server's config |
-| Worktree | `-w <branch>`; the worktree and, when missing, the branch are created in the server's repository |
+| Worktree | `-w <branch>`; the worktree and, when missing, the branch are created in the server's repository. An auto-filled branch travels as the bare slug and the server applies its own `[worktree].branch_prefix` once; a branch you type is sent as entered |
 | Codex and Gemini YOLO | `--yolo` |
 
 Because the server applies its own defaults, the dialog opens with these options cleared for a remote target instead of pre-filled from your local `config.toml`; a local `[claude].dangerous_mode` or `default_model` never reaches a remote unless you set it in the dialog.
 
-Fields the remote `add` cannot express are refused with a message in the dialog rather than dropped silently: a startup query (send it with `remote lab send` once the session runs), multi-repo paths, a reasoning effort for Codex, and Hermes YOLO mode. MCP and skill attachment are not dialog fields; attach them after creation with `remote lab mcp attach` and `remote lab skill attach`, or pass `--mcp` on the command line form above.
+Fields the remote `add` cannot express are refused with a message in the dialog rather than dropped silently: a startup query (send it with `remote lab send` once the session runs), multi-repo paths, a reasoning effort for Codex or a Codex-compatible custom tool, and Hermes YOLO mode. MCP and skill attachment are not dialog fields; attach them after creation with `remote lab mcp attach` and `remote lab skill attach`, or pass `--mcp` on the command line form above.
 
 Remote-management commands such as `remote list` and `remote remove lab` operate on your local configuration. New remote names cannot match those command names. For an existing conflicting name, use the explicit execution form, for example `remote exec remove list --json`; ambiguous shorthand refuses to act. Rename the conflicting entry in your configuration before using the matching management command.
 

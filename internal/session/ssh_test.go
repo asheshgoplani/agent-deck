@@ -499,6 +499,65 @@ func TestRemoteSessionInfoLastActivity_BoundaryPrecision(t *testing.T) {
 }
 
 // A refused value must never reach the remote: no add, no start, no cleanup.
+// FetchAccounts asks the remote for its slot names only; config_dir values in
+// the answer are dropped and never offered as something to pick.
+func TestSSHRunnerFetchAccounts(t *testing.T) {
+	var gotArgs []string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			gotArgs = args
+			return []byte(`[{"name":"alice","config_dir":"/home/alice/.claude-work","exists":true},{"name":"bob","config_dir":"/home/bob/.claude","exists":false}]` + "\n"), nil
+		},
+	}
+	names, err := runner.FetchAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("FetchAccounts: %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "accounts --json" {
+		t.Fatalf("remote command = %q, want \"accounts --json\"", strings.Join(gotArgs, " "))
+	}
+	if strings.Join(names, ",") != "alice,bob" {
+		t.Fatalf("names = %v, want [alice bob]", names)
+	}
+	for _, n := range names {
+		if strings.ContainsAny(n, `/\`) {
+			t.Fatalf("name %q looks like a config directory; only slot names may be offered", n)
+		}
+	}
+}
+
+// A remote too old for `accounts` (unknown command) or one that answers with
+// something other than a JSON list is an error, never a silent empty list
+// that would look like "no slots configured".
+func TestSSHRunnerFetchAccounts_ErrorsAreNotEmptyLists(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		err    error
+	}{
+		{name: "unknown command on old remote", output: "", err: errors.New("exit status 2")},
+		{name: "human text instead of json", output: "No named account slots configured.\n"},
+		{name: "empty stdout", output: ""},
+		{name: "malformed json", output: "[{"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &SSHRunner{
+				runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+					return []byte(tc.output), tc.err
+				},
+			}
+			names, err := runner.FetchAccounts(context.Background())
+			if err == nil {
+				t.Fatalf("FetchAccounts = %v, want an error", names)
+			}
+			if len(names) != 0 {
+				t.Fatalf("names = %v on error, want none", names)
+			}
+		})
+	}
+}
+
 func TestSSHRunnerCreateSessionWithOptions_RefusedValueNeverContactsRemote(t *testing.T) {
 	calls := 0
 	runner := &SSHRunner{

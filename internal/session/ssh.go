@@ -526,6 +526,43 @@ func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, err
 	return sessions, nil
 }
 
+// FetchAccounts lists the named Claude account slots configured on the remote
+// (its `accounts --json`), so the TUI's remote new-session dialog offers the
+// server's slots rather than this machine's. Read-only: only names travel back;
+// no config directory or credential file is copied in either direction. A
+// remote too old for `accounts` fails the call, and the caller then hides the
+// account row instead of offering local names the server would reject.
+func (r *SSHRunner) FetchAccounts(ctx context.Context) ([]string, error) {
+	output, err := r.Run(ctx, "accounts", "--json")
+	if err != nil {
+		return nil, err
+	}
+	return parseRemoteAccountNames(output)
+}
+
+// parseRemoteAccountNames extracts the slot names from `accounts --json`
+// output. The remote's config_dir values are deliberately dropped: a path on
+// the server means nothing here and must never be shown as something to pick.
+func parseRemoteAccountNames(output []byte) ([]string, error) {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("unexpected remote accounts output: %q", string(trimmed))
+	}
+	var entries []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(trimmed, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse remote accounts: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if name := strings.TrimSpace(e.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // FetchPendingRecords retrieves the remote host's completion and transition
 // records over the SAME ssh path every other remote fetch uses (issue #1948).
 //
