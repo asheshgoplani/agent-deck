@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -221,5 +222,45 @@ func TestRemoteGroupResultMsgPatchesCache(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("remoteGroups[lab][%d] = %q, want %q (all: %v)", i, got[i], want[i], got)
 		}
+	}
+}
+
+// TestRemoteCreateGroup_ForwardsDefaultPath pins the P2 from review: the
+// dialog renders and accepts a Default Path for a remote create too, so the
+// value must travel as `--default-path` (the remote `group create` accepts
+// it) instead of being silently dropped while the group is reported created.
+func TestRemoteCreateGroup_ForwardsDefaultPath(t *testing.T) {
+	cases := []struct {
+		name, parent, path string
+		want               string
+	}{
+		{name: "root", want: "group create root"},
+		{name: "sub", parent: "work", want: "group create sub --parent work"},
+		{name: "root", path: "/srv/root", want: "group create root --default-path /srv/root"},
+		{name: "sub", parent: "work", path: "/srv/sub", want: "group create sub --parent work --default-path /srv/sub"},
+	}
+	for _, tc := range cases {
+		got := strings.Join(remoteGroupCreateArgs(tc.name, tc.parent, tc.path), " ")
+		if got != tc.want {
+			t.Errorf("remoteGroupCreateArgs(%q, %q, %q) = %q, want %q", tc.name, tc.parent, tc.path, got, tc.want)
+		}
+	}
+
+	// End to end through the dialog: the path typed into Default Path is the
+	// one the SSH-routed create carries.
+	home := armHomeWithOneRemoteSessionInGroups(t)
+	if _, _ = home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}}); !home.groupDialog.IsVisible() {
+		t.Fatal("g on a remote session did not open the create dialog")
+	}
+	home.groupDialog.nameInput.SetValue("newgroup")
+	home.groupDialog.pathInput.SetValue("/srv/newgroup")
+	if got := home.groupDialog.GetDefaultPath(); got != "/srv/newgroup" {
+		t.Fatalf("dialog default path = %q, want /srv/newgroup", got)
+	}
+	if _, cmd := home.handleGroupDialogKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Fatal("Enter on the remote create dialog returned a nil cmd; expected the SSH-routed create")
+	}
+	if len(home.instances) != 0 {
+		t.Fatalf("local instances mutated by remote group create: %d rows", len(home.instances))
 	}
 }

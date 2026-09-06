@@ -2229,7 +2229,23 @@ func (h *Home) moveRemoteSessionToGroup(title, remoteName, sessionID, targetGrou
 // remote and returns a remoteGroupResultMsg so the local group-path cache is
 // updated only on remote confirmation. Mirrors moveRemoteSessionToGroup and
 // the remote-rename path in GroupDialogRenameSession.
-func (h *Home) createRemoteGroup(name, remoteName, parentPath string) tea.Cmd {
+// remoteGroupCreateArgs builds the `group create` argv sent to a remote. The
+// dialog's Default Path is forwarded as --default-path, the way the local
+// create persists it, so what the dialog shows is what the server stores; a
+// blank field sends nothing. The path is a server path and is not expanded
+// locally.
+func remoteGroupCreateArgs(name, parentPath, defaultPath string) []string {
+	args := []string{"group", "create", name}
+	if parentPath != "" {
+		args = append(args, "--parent", parentPath)
+	}
+	if defaultPath != "" {
+		args = append(args, "--default-path", defaultPath)
+	}
+	return args
+}
+
+func (h *Home) createRemoteGroup(name, remoteName, parentPath, defaultPath string) tea.Cmd {
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -2244,10 +2260,7 @@ func (h *Home) createRemoteGroup(name, remoteName, parentPath string) tea.Cmd {
 		runner := session.NewSSHRunner(remoteName, rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		args := []string{"group", "create", name}
-		if parentPath != "" {
-			args = append(args, "--parent", parentPath)
-		}
+		args := remoteGroupCreateArgs(name, parentPath, defaultPath)
 		if _, err := runner.RunCommand(ctx, args...); err != nil {
 			return remoteGroupResultMsg{remoteName: remoteName,
 				err: fmt.Errorf("failed to create group '%s' on %s: %v", name, remoteName, err)}
@@ -12122,7 +12135,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if h.groupDialog.HasParent() {
 						parentPath = h.groupDialog.GetParentPath()
 					}
-					remoteCmd = h.createRemoteGroup(name, remoteName, parentPath)
+					remoteCmd = h.createRemoteGroup(name, remoteName, parentPath, h.groupDialog.GetDefaultPath())
 					break
 				}
 				// Seed the new-group default from [group_defaults].max_concurrent.
