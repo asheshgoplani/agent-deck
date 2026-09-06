@@ -1396,6 +1396,14 @@ type remoteGroupResultMsg struct {
 	err        error
 }
 
+// remoteGroupDeleteResultMsg reports the outcome of an SSH-routed group
+// delete (TUI 'd' on a remote group header).
+type remoteGroupDeleteResultMsg struct {
+	remoteName string
+	groupPath  string
+	err        error
+}
+
 // remoteGroupReorderResultMsg reports the outcome of an SSH-routed group
 // reorder (shift+up/down on a remote group header → `group reorder` on the
 // remote). delta is -1 for up and +1 for down; moved is the remote's own
@@ -2273,6 +2281,28 @@ func (h *Home) createRemoteGroup(name, remoteName, parentPath, defaultPath strin
 	}
 }
 
+// deleteRemoteGroup routes a TUI "delete group" for one of the remote's own
+// groups over SSH: `agent-deck group delete <path>` on the remote, without
+// --force, so a group that still holds sessions is refused by the remote with
+// its own message instead of silently moving sessions around.
+func (h *Home) deleteRemoteGroup(groupPath, remoteName string) tea.Cmd {
+	return func() tea.Msg {
+		result := func(err error) tea.Msg {
+			return remoteGroupDeleteResultMsg{remoteName: remoteName, groupPath: groupPath, err: err}
+		}
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return result(fmt.Errorf("cannot delete group '%s': %v", groupPath, err))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := runner.RunCommand(ctx, "group", "delete", groupPath); err != nil {
+			return result(fmt.Errorf("failed to delete group '%s' on %s: %v", groupPath, remoteName, err))
+		}
+		return result(nil)
+	}
+}
+
 // remoteGroupPathFromItem extracts the remote-relative group path from a
 // remote group header's Item.Path ("remotes/<name>/<group-path>"); returns
 // "" for the level-0 host header (Path == "remotes/<name>"). Used by the g
@@ -2977,8 +3007,11 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			// #1553: nest each remote's sessions under their Group paths
 			// instead of dumping them flat at Level 1.
 			// #1875: apply the user's manual row order for this remote, and
-			// the remote's own group order to the group headers.
-			h.flatItems = append(h.flatItems, buildRemoteFlatItemsWithGroups(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName])...)
+			// the remote's own group order to the group headers. In the plain
+			// active view, empty remote groups get a header row too, like an
+			// empty local group; any filter or the archived view hides them.
+			showEmptyGroups := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
+			h.flatItems = append(h.flatItems, buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups)...)
 		}
 	}
 
@@ -6950,6 +6983,28 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("created group '%s' on %s", msg.groupPath, msg.remoteName))
 		return h, nil
 
+	case remoteGroupDeleteResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		// Drop the group (and any of its sub-groups) from the cached list so
+		// its header row disappears now; the next fleet poll re-confirms
+		// from the remote's own DB.
+		h.remoteSessionsMu.Lock()
+		cached := h.remoteGroups[msg.remoteName]
+		kept := make([]string, 0, len(cached))
+		for _, p := range cached {
+			if p != msg.groupPath && !strings.HasPrefix(p, msg.groupPath+"/") {
+				kept = append(kept, p)
+			}
+		}
+		h.remoteGroups[msg.remoteName] = kept
+		h.remoteSessionsMu.Unlock()
+		h.rebuildFlatItems()
+		h.setError(fmt.Errorf("deleted group '%s' on %s", msg.groupPath, msg.remoteName))
+		return h, h.fetchRemoteSessions
+
 	case remoteGroupReorderResultMsg:
 		if msg.err != nil {
 			h.setError(msg.err)
@@ -8654,11 +8709,19 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 		}
 		defaultPath = item.RemoteSession.Path
 	} else if item.Type == session.ItemTypeRemoteGroup {
-		// "remotes/<host>" is a synthetic local UI bucket, not a user-defined
-		// remote group. Keep the default group so handleNewDialogKey doesn't
-		// forward it to CreateSessionWithOptions and create a bogus remote group.
-		groupPath = session.DefaultGroupPath
-		groupName = session.DefaultGroupName
+		// Level 0 is the "remotes/<host>" header, a synthetic local UI bucket,
+		// not a user-defined remote group: keep the default group so
+		// handleNewDialogKey doesn't forward it and create a bogus remote
+		// group. A deeper header is one of the remote's own groups, so the new
+		// session is offered in that group, exactly as n on a local group
+		// header does.
+		if gp := remoteGroupPathFromItem(item); item.Level > 0 && gp != "" {
+			groupPath = gp
+			groupName = displayGroupName(gp)
+		} else {
+			groupPath = session.DefaultGroupPath
+			groupName = session.DefaultGroupName
+		}
 		defaultPath = "."
 	} else if len(paths) > 0 {
 		defaultPath = paths[0]
@@ -10260,6 +10323,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.IsWorktree())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else if item.Type == session.ItemTypeRemoteGroup && item.Level > 0 {
+				// One of the remote's own groups: delete it there, the way d on
+				// a local group header does here. The Level-0 host header is a
+				// local UI bucket and has nothing to delete.
+				gp := remoteGroupPathFromItem(item)
+				h.confirmDialog.ShowDeleteRemoteGroup(item.RemoteName, gp, displayGroupName(gp))
 			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
 				// Protected default group: surface the block in the same centered modal
 				// used for the delete confirmation, so it can't be clamped off the bottom
@@ -10970,6 +11039,11 @@ func (h *Home) confirmAction() tea.Cmd {
 		title := h.confirmDialog.targetName
 		h.confirmDialog.Hide()
 		return h.deleteRemoteSession(remoteName, sessionID, title)
+	case ConfirmDeleteRemoteGroup:
+		groupPath := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		h.confirmDialog.Hide()
+		return h.deleteRemoteGroup(groupPath, remoteName)
 	case ConfirmCloseRemoteSession:
 		sessionID := h.confirmDialog.GetTargetID()
 		remoteName := h.confirmDialog.GetRemoteName()
@@ -15229,7 +15303,7 @@ func (h *Home) reorderRemoteGroup(item session.Item, delta int) tea.Cmd {
 	}
 	target := pos + delta
 	if pos >= 0 && (target < 0 || target >= len(siblings)) {
-		h.setError(fmt.Errorf("'%s' is already %s among its siblings on %s", groupPath, edge, item.RemoteName))
+		h.setError(fmt.Errorf("group '%s' is already %s among its siblings on %s", groupPath, edge, item.RemoteName))
 		return nil
 	}
 

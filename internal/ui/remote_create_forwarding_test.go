@@ -553,3 +553,34 @@ func TestRemoteDialog_SandboxUnchecked_NotForwarded(t *testing.T) {
 		t.Fatalf("title = %q, want plain-task", capture.opts.Title)
 	}
 }
+
+// n on one of the remote's OWN group headers (Level > 0) offers the new
+// session in that group, the way n on a local group header does. Before this
+// the dialog forced the default group for every remote header, so a session
+// created from "remotes/box/work" landed in the remote's my-sessions.
+func TestRemoteDialog_RemoteGroupHeader_ForwardsThatGroup(t *testing.T) {
+	item := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "myserver", Path: "remotes/myserver/work/api", Level: 2}
+	h, capture := openRemoteDialogOn(t, item, "", "claude", "grouped-task")
+
+	submitRemoteDialog(t, h)
+
+	if capture.calls != 1 || capture.remoteName != "myserver" {
+		t.Fatalf("remote create called %d times for %q, want once for myserver", capture.calls, capture.remoteName)
+	}
+	if capture.opts.Group != "work/api" {
+		t.Fatalf("opts = %+v, want the header's own remote group work/api", capture.opts)
+	}
+}
+
+// The Level-0 "remotes/<host>" header is a local UI bucket, not a remote
+// group: the dialog keeps the default group so nothing bogus is created.
+func TestRemoteDialog_RemoteHostHeader_KeepsDefaultGroup(t *testing.T) {
+	item := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "myserver", Path: "remotes/myserver", Level: 0}
+	h, capture := openRemoteDialogOn(t, item, "", "claude", "root-task")
+
+	submitRemoteDialog(t, h)
+
+	if capture.calls != 1 || capture.opts.Group != session.DefaultGroupPath {
+		t.Fatalf("opts = %+v (calls=%d), want the default group for the host header", capture.opts, capture.calls)
+	}
+}

@@ -1623,9 +1623,12 @@ func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("pressing n on a remote session should return the account-slot fetch command")
 	}
-	fetched, isFetch := cmd().(remoteAccountsFetchedMsg)
+	// n batches the account-slot fetch with the MCP-list fetch; the MCP
+	// fetcher is not stubbed here and yields nothing, so the account fetch
+	// is the one message the batch must carry.
+	fetched, isFetch := findAccountsFetched(cmd())
 	if !isFetch {
-		t.Fatalf("the command returned by n must be the account-slot fetch, got %T", cmd())
+		t.Fatalf("the command returned by n must carry the account-slot fetch, got %T", cmd())
 	}
 	if fetched.remoteName != "myserver" {
 		t.Fatalf("account fetch answered for %q, want myserver", fetched.remoteName)
@@ -4342,4 +4345,23 @@ func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
 	if h.err != nil {
 		t.Errorf("non-default group delete must not set an error, got %v", h.err)
 	}
+}
+
+// findAccountsFetched digs the account-slot fetch result out of a message
+// that may be a tea.BatchMsg (n batches the account fetch with the MCP fetch).
+func findAccountsFetched(msg tea.Msg) (remoteAccountsFetchedMsg, bool) {
+	switch m := msg.(type) {
+	case remoteAccountsFetchedMsg:
+		return m, true
+	case tea.BatchMsg:
+		for _, c := range m {
+			if c == nil {
+				continue
+			}
+			if found, ok := findAccountsFetched(c()); ok {
+				return found, true
+			}
+		}
+	}
+	return remoteAccountsFetchedMsg{}, false
 }

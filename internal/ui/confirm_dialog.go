@@ -29,6 +29,7 @@ const (
 	ConfirmUnarchiveSession
 	ConfirmNotice // acknowledge-only message (single OK button), e.g. protected-action blocks
 	ConfirmInstallHermesHooks
+	ConfirmDeleteRemoteGroup // delete a group on a remote deck (TUI 'd' on a remote group header)
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -125,6 +126,19 @@ func (c *ConfirmDialog) ShowDeleteRemoteSession(remoteName, sessionID, sessionNa
 	c.confirmType = ConfirmDeleteRemoteSession
 	c.targetID = sessionID
 	c.targetName = sessionName
+	c.remoteName = remoteName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowDeleteRemoteGroup shows the delete confirmation for one of a remote's
+// own groups. targetID carries the remote-relative group path the remote's
+// `group delete` expects.
+func (c *ConfirmDialog) ShowDeleteRemoteGroup(remoteName, groupPath, groupName string) {
+	c.visible = true
+	c.confirmType = ConfirmDeleteRemoteGroup
+	c.targetID = groupPath
+	c.targetName = groupName
 	c.remoteName = remoteName
 	c.buttonCount = 2
 	c.focusedButton = 1
@@ -459,6 +473,17 @@ func (c *ConfirmDialog) View() string {
 		title = "⚠  Delete Remote Session?"
 		warning = fmt.Sprintf("This will permanently delete the remote session:\n\n  \"%s\" on %s", c.targetName, c.remoteName)
 		details = "• The remote tmux session will be terminated\n• Any running processes on the remote will be killed\n• Terminal history will be lost"
+		borderColor = ColorRed
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmDeleteRemoteGroup:
+		title = "⚠  Delete Remote Group?"
+		warning = fmt.Sprintf("This will delete the group on the remote:\n\n  \"%s\" on %s", c.targetID, c.remoteName)
+		details = "• Only an empty group is deleted\n• A group that still holds sessions is refused by the\n  remote; move them out first (M)"
 		borderColor = ColorRed
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",
