@@ -14643,7 +14643,7 @@ func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, arc
 			return result
 		}
 		runner := session.NewSSHRunner(remoteName, rc)
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), rc.GetCommandTimeout())
 		defer cancel()
 		if archive {
 			result.err = runner.ArchiveSession(ctx, sessionID)
@@ -14672,7 +14672,7 @@ func (h *Home) forkRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 			return result
 		}
 		runner := session.NewSSHRunner(remoteName, rc)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), rc.GetCommandTimeout())
 		defer cancel()
 		result.newID, result.err = runner.ForkSession(ctx, sessionID)
 		return result
@@ -18550,13 +18550,28 @@ func (h *Home) renderWindowItem(b *strings.Builder, item session.Item, selected 
 
 // renderLaunchingState renders the animated launching/resuming indicator for sessions
 // renderRemotePreview renders the preview pane for a remote group or session
+// remoteSessionsInView returns the remote's sessions on the current side of
+// the archive partition (active view hides archived rows, the ^ view shows
+// only them), matching the rows rebuildFlatItems actually emits. Header and
+// preview counts must be taken from this slice, not h.remoteSessions, or the
+// active and archived views both advertise the remote's grand total.
+// Caller holds h.remoteSessionsMu (read).
+func (h *Home) remoteSessionsInView(remoteName string) []session.RemoteSessionInfo {
+	all := h.remoteSessions[remoteName]
+	viewArchived := h.statusFilter == FilterModeArchived
+	inView := make([]session.RemoteSessionInfo, 0, len(all))
+	for _, rs := range all {
+		if rs.Archived == viewArchived {
+			inView = append(inView, rs)
+		}
+	}
+	return inView
+}
+
 func (h *Home) renderRemotePreview(item session.Item, width, height int) string {
 	if item.Type == session.ItemTypeRemoteGroup {
 		h.remoteSessionsMu.RLock()
-		count := 0
-		if sessions, ok := h.remoteSessions[item.RemoteName]; ok {
-			count = len(sessions)
-		}
+		count := len(h.remoteSessionsInView(item.RemoteName))
 		h.remoteSessionsMu.RUnlock()
 
 		config, _ := session.LoadUserConfig()
@@ -18668,7 +18683,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	// no host-latency marker (latency is a host-level metric shown on Level 0).
 	if item.Level > 0 {
 		h.remoteSessionsMu.RLock()
-		sessions := h.remoteSessions[item.RemoteName]
+		sessions := h.remoteSessionsInView(item.RemoteName)
 		groupPath := strings.TrimPrefix(item.Path, "remotes/"+item.RemoteName+"/")
 		count := remoteSubGroupCount(sessions, groupPath)
 		running, waiting := remoteStatusCounts(sessions, groupPath)
@@ -18690,14 +18705,11 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		return
 	}
 
-	// Level 0: the remote host header. Count all sessions for this remote.
+	// Level 0: the remote host header. Count the sessions this view shows.
 	h.remoteSessionsMu.RLock()
-	count := 0
-	running, waiting := 0, 0
-	if sessions, ok := h.remoteSessions[item.RemoteName]; ok {
-		count = len(sessions)
-		running, waiting = remoteStatusCounts(sessions, "")
-	}
+	sessions := h.remoteSessionsInView(item.RemoteName)
+	count := len(sessions)
+	running, waiting := remoteStatusCounts(sessions, "")
 	fromCache := h.remoteFromCache[item.RemoteName]
 	h.remoteSessionsMu.RUnlock()
 
