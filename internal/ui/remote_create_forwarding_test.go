@@ -388,7 +388,7 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 
 	t.Run("remote-only slot is offered and forwarded", func(t *testing.T) {
 		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
-		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}})
+		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}, gen: h.remoteAccountsGen})
 		h = model.(*Home)
 		if !h.newDialog.claudeOptions.hasAccountRow() {
 			t.Fatal("the remote's slots must populate the account row")
@@ -408,8 +408,8 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 	t.Run("answers for another remote, a failed fetch or a closed dialog are dropped", func(t *testing.T) {
 		h, _ := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
 		for _, msg := range []remoteAccountsFetchedMsg{
-			{remoteName: "otherserver", accounts: []string{"stale"}},
-			{remoteName: "myserver", accounts: []string{"stale"}, err: errUnavailable},
+			{remoteName: "otherserver", accounts: []string{"stale"}, gen: h.remoteAccountsGen},
+			{remoteName: "myserver", accounts: []string{"stale"}, err: errUnavailable, gen: h.remoteAccountsGen},
 		} {
 			model, _ := h.Update(msg)
 			h = model.(*Home)
@@ -418,10 +418,51 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 			}
 		}
 		h.newDialog.Hide()
-		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"late"}})
+		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"late"}, gen: h.remoteAccountsGen})
 		h = model.(*Home)
 		if h.newDialog.claudeOptions.hasAccountRow() {
 			t.Fatal("a late answer for a closed dialog must be dropped")
+		}
+	})
+
+	t.Run("a late answer for an earlier opening of the same remote never replaces the current list", func(t *testing.T) {
+		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
+		firstGen := h.remoteAccountsGen
+		if firstGen == 0 {
+			t.Fatal("precondition: opening the remote dialog must number the account fetch")
+		}
+		// Close and reopen on the same remote while fetch A is still pending.
+		h.newDialog.Hide()
+		h.pendingRemoteName = ""
+		model, cmd := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+		h = model.(*Home)
+		if cmd == nil || h.remoteAccountsGen != firstGen+1 {
+			t.Fatalf("reopening must request a new numbered fetch (gen %d -> %d)", firstGen, h.remoteAccountsGen)
+		}
+		if strings.Join(capture.accountsFetchedFor, ",") != "myserver,myserver" {
+			t.Fatalf("fetches requested for %v, want myserver twice", capture.accountsFetchedFor)
+		}
+		h.newDialog.SetDefaultTool("claude")
+		for _, r := range "acct-task" {
+			h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+		// Fetch B (this opening) answers first and the user picks a slot.
+		model, _ = h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}, gen: h.remoteAccountsGen})
+		h = model.(*Home)
+		h.newDialog.claudeOptions.SetAccount("srv-bob")
+		// Fetch A (the earlier opening) answers late with a different list in
+		// which the same cursor position would name another account.
+		model, _ = h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-zed", "srv-alice", "srv-bob"}, gen: firstGen})
+		h = model.(*Home)
+		if got := strings.Join(h.newDialog.claudeOptions.accounts, ","); got != "srv-alice,srv-bob" {
+			t.Fatalf("offered slots = %q after the late answer, want the current opening's list unchanged", got)
+		}
+		if got := h.newDialog.GetClaudeAccount(); got != "srv-bob" {
+			t.Fatalf("selected account = %q after the late answer, want srv-bob", got)
+		}
+		submitRemoteDialog(t, h)
+		if capture.opts.Account != "srv-bob" {
+			t.Fatalf("forwarded account = %q, want srv-bob", capture.opts.Account)
 		}
 	})
 }

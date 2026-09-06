@@ -708,6 +708,11 @@ type Home struct {
 	// remoteAccountsFetcher is an optional override used by tests to replace
 	// the SSH fetch of a remote's account slots when its dialog opens.
 	remoteAccountsFetcher func(remoteName string) tea.Cmd
+	// remoteAccountsGen numbers each opening of the remote new-session dialog;
+	// an account fetch answers for the opening that requested it and is
+	// dropped otherwise, so a slow answer for an earlier opening can never
+	// replace the slot list the user is choosing from now.
+	remoteAccountsGen uint64
 	// insertKeySender is the persistent dispatch path opened on
 	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
 	// remote support). Local sessions get a tmux.KeySender (control-mode
@@ -8324,7 +8329,22 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	if h.remoteAccountsFetcher != nil {
 		fetch = h.remoteAccountsFetcher
 	}
-	return fetch(remoteName)
+	h.remoteAccountsGen++
+	gen := h.remoteAccountsGen
+	cmd := fetch(remoteName)
+	if cmd == nil {
+		return nil
+	}
+	// Stamp the answer with this opening's generation so applyRemoteAccounts
+	// can tell a late answer for a previous opening from the current one.
+	return func() tea.Msg {
+		msg := cmd()
+		if fetched, ok := msg.(remoteAccountsFetchedMsg); ok {
+			fetched.gen = gen
+			return fetched
+		}
+		return msg
+	}
 }
 
 // remoteAccountsFetchedMsg carries the account slot names configured on a
@@ -8333,6 +8353,8 @@ type remoteAccountsFetchedMsg struct {
 	remoteName string
 	accounts   []string
 	err        error
+	// gen is the remoteAccountsGen value of the dialog opening that asked.
+	gen uint64
 }
 
 // fetchRemoteAccounts asks the remote for its configured Claude account slots
@@ -8356,11 +8378,16 @@ func (h *Home) fetchRemoteAccounts(remoteName string) tea.Cmd {
 }
 
 // applyRemoteAccounts hands the fetched slot names to the dialog when it is
-// still open for that remote; a late answer for a closed dialog or a
-// different remote is dropped. A failed fetch (offline host, or a remote too
+// still open for that remote and this opening asked for it; a late answer
+// for a closed dialog, a different remote or an earlier opening is dropped. A failed fetch (offline host, or a remote too
 // old for `accounts`) leaves the row hidden rather than offering local names.
 func (h *Home) applyRemoteAccounts(msg remoteAccountsFetchedMsg) {
 	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName {
+		return
+	}
+	// Same remote, dialog still open, but asked by an earlier opening: the
+	// user may already be choosing from a newer list, so keep it.
+	if msg.gen != h.remoteAccountsGen {
 		return
 	}
 	h.newDialog.SetRemoteAccounts(msg.accounts)
