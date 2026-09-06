@@ -65,12 +65,14 @@ import (
 // older than the stamp of a mutating command's reply predates that command.
 //
 // Liveness: the agent pushes {"event":"ping"} every remoteAgentPingEvery
-// and exits when a write to stdout fails, when its outbound queue backs up
-// (the peer stopped reading), or when nothing arrives on stdin for
+// and exits when a write to stdout fails, when its outbound queue stays
+// full for remoteAgentWriteStall (the peer stopped reading), or when
+// nothing arrives on stdin for
 // remoteAgentIdleAfter. Any line counts as inbound: a request, a cancel or
 // {"id":N,"ping":true} (answered with {"id":N,"code":0}; without an id it
 // is silently absorbed). Writes go through a bounded queue drained by one
-// goroutine, so a dead pipe can never block the watcher or a reply.
+// goroutine, so a dead pipe can hold the watcher or a reply for at most
+// that stall, never for good; a slow live pipe merely backpressures them.
 //
 // Pane watch (#2177 follow-up): {"id":2,"watch":"<sessionID>","lines":200}
 // asks the agent to follow one session's tmux pane. The agent captures it
@@ -158,6 +160,9 @@ const (
 	// remoteAgentCloseWait is how long the exit waits for queued lines to
 	// reach a stdout that may no longer be read.
 	remoteAgentCloseWait = 2 * time.Second
+	// remoteAgentWriteStall is how long a producer may wait for room in a
+	// full outbound queue before the peer counts as gone.
+	remoteAgentWriteStall = 30 * time.Second
 )
 
 // remoteAgentConfig wires serveRemoteAgent. Zero durations and counts take
@@ -173,6 +178,8 @@ type remoteAgentConfig struct {
 	PaneEvery  time.Duration
 	PingEvery  time.Duration
 	IdleAfter  time.Duration
+	// WriteStall bounds how long a write may wait for a full outbound queue.
+	WriteStall time.Duration
 	// MaxConcurrent caps subprocesses; MaxPushBytes caps pushed listings.
 	MaxConcurrent int
 	MaxPushBytes  int
@@ -187,6 +194,9 @@ func (c remoteAgentConfig) withDefaults() remoteAgentConfig {
 	}
 	if c.IdleAfter <= 0 {
 		c.IdleAfter = remoteAgentIdleAfter
+	}
+	if c.WriteStall <= 0 {
+		c.WriteStall = remoteAgentWriteStall
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = remoteAgentMaxConcurrent
@@ -358,23 +368,29 @@ func remoteAgentPaneCapturer(profile string) func(context.Context, string) (stri
 }
 
 // remoteAgentWriter is the one path to stdout: a bounded queue drained by a
-// single goroutine. write never blocks; when the queue is full or a write
-// fails the peer counts as gone and fail runs once (it ends the agent).
+// single goroutine. write blocks for at most stall when the queue is full:
+// a slow but live pipe (a large listing on a thin link while pane pushes
+// keep coming) only backpressures the producers, as the old blocking write
+// did; a pipe nobody reads any more, or one whose write fails, makes the
+// peer count as gone and fail runs once (it ends the agent). After that
+// every write returns at once so the shutdown never waits on the pipe.
 type remoteAgentWriter struct {
 	q        chan []byte
 	done     chan struct{}
+	failed   chan struct{}
 	failOnce sync.Once
 	fail     func()
 	closed   sync.Once
+	stall    time.Duration
 }
 
-func newRemoteAgentWriter(out io.Writer, size int, fail func()) *remoteAgentWriter {
-	w := &remoteAgentWriter{q: make(chan []byte, size), done: make(chan struct{}), fail: fail}
+func newRemoteAgentWriter(out io.Writer, size int, stall time.Duration, fail func()) *remoteAgentWriter {
+	w := &remoteAgentWriter{q: make(chan []byte, size), done: make(chan struct{}), failed: make(chan struct{}), fail: fail, stall: stall}
 	go func() {
 		defer close(w.done)
 		for b := range w.q {
 			if _, err := out.Write(b); err != nil {
-				w.failOnce.Do(w.fail)
+				w.giveUp()
 				for range w.q { // drain until the producers stop
 				}
 				return
@@ -384,15 +400,33 @@ func newRemoteAgentWriter(out io.Writer, size int, fail func()) *remoteAgentWrit
 	return w
 }
 
+func (w *remoteAgentWriter) giveUp() {
+	w.failOnce.Do(func() {
+		close(w.failed)
+		w.fail()
+	})
+}
+
 func (w *remoteAgentWriter) write(r remoteAgentReply) {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
 	}
+	line := append(b, '\n')
 	select {
-	case w.q <- append(b, '\n'):
+	case w.q <- line:
+		return
+	case <-w.failed:
+		return
 	default:
-		w.failOnce.Do(w.fail)
+	}
+	t := time.NewTimer(w.stall)
+	defer t.Stop()
+	select {
+	case w.q <- line:
+	case <-w.failed:
+	case <-t.C:
+		w.giveUp()
 	}
 }
 
@@ -415,7 +449,7 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, cfg remo
 	cfg = cfg.withDefaults()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	w := newRemoteAgentWriter(out, remoteAgentWriteQueue, cancel)
+	w := newRemoteAgentWriter(out, remoteAgentWriteQueue, cfg.WriteStall, cancel)
 	write := w.write
 
 	write(remoteAgentReply{Event: "ready"})
@@ -552,13 +586,16 @@ loop:
 			write(remoteAgentReply{ID: req.ID, Code: 2, Error: "verb not allowed over the channel"})
 			continue
 		}
+		// Register before handing off so a cancel line that follows the
+		// request line on stdin always finds it.
+		f := requests.start(ctx, req)
 		wg.Add(1)
-		go func(req remoteAgentRequest) {
+		go func(req remoteAgentRequest, f *remoteAgentFlight) {
 			defer wg.Done()
-			if reply, ok := requests.run(ctx, req); ok {
+			if reply, ok := requests.wait(req, f); ok {
 				write(reply)
 			}
-		}(req)
+		}(req, f)
 	}
 	cancel()
 	setWatch("", 0)
@@ -714,11 +751,11 @@ func remoteAgentReadOnly(args []string) bool {
 	return false
 }
 
-// run executes req (or joins an identical read-only run in flight) and
-// returns its reply; ok is false when the request was cancelled, in which
-// case nothing is answered.
-func (r *remoteAgentRequests) run(ctx context.Context, req remoteAgentRequest) (remoteAgentReply, bool) {
+// start registers req and begins its run (or joins an identical read-only
+// run in flight). It returns at once; wait collects the reply.
+func (r *remoteAgentRequests) start(ctx context.Context, req remoteAgentRequest) *remoteAgentFlight {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	key := ""
 	if remoteAgentReadOnly(req.Args) {
 		key = strings.Join(req.Args, "\x00")
@@ -734,8 +771,12 @@ func (r *remoteAgentRequests) run(ctx context.Context, req remoteAgentRequest) (
 	}
 	f.waiters++
 	r.byID[req.ID] = f
-	r.mu.Unlock()
+	return f
+}
 
+// wait blocks until req's run ends and returns its reply; ok is false when
+// the request was cancelled meanwhile, in which case nothing is answered.
+func (r *remoteAgentRequests) wait(req remoteAgentRequest, f *remoteAgentFlight) (remoteAgentReply, bool) {
 	<-f.done
 	r.mu.Lock()
 	cancelled := r.byID[req.ID] != f

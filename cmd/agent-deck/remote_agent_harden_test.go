@@ -496,8 +496,9 @@ func TestRemoteAgent_ExitsWhenPeerStopsReading(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		serveRemoteAgent(context.Background(), inR, out, remoteAgentConfig{
-			Run:       func(context.Context, []string) (string, string, int) { return "", "", 0 },
-			PingEvery: time.Millisecond,
+			Run:        func(context.Context, []string) (string, string, int) { return "", "", 0 },
+			PingEvery:  time.Millisecond,
+			WriteStall: 50 * time.Millisecond,
 		})
 		close(done)
 	}()
@@ -511,6 +512,73 @@ func TestRemoteAgent_ExitsWhenPeerStopsReading(t *testing.T) {
 		t.Fatal("agent did not exit after its outbound queue filled")
 	}
 	close(blocked)
+}
+
+// Finding 6, the other way round: a pipe that is slow but alive (a thin
+// link swallowing a large listing while pane pushes keep coming) must only
+// backpressure the producers, not end the agent; every line still arrives.
+func TestRemoteAgent_SlowPipeBackpressuresWithoutExit(t *testing.T) {
+	var got atomic.Int32
+	out := writerFunc(func(b []byte) (int, error) {
+		// Far slower than the 1ms ping cadence: the 64-line queue fills
+		// within the stall window many times over.
+		time.Sleep(5 * time.Millisecond)
+		got.Add(1)
+		return len(b), nil
+	})
+	inR, inW := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		serveRemoteAgent(context.Background(), inR, out, remoteAgentConfig{
+			Run:        func(context.Context, []string) (string, string, int) { return "ok", "", 0 },
+			PingEvery:  time.Millisecond,
+			WriteStall: 2 * time.Second,
+		})
+		close(done)
+	}()
+	time.Sleep(600 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("a slow but live pipe must not end the agent")
+	default:
+	}
+	_ = inW.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent did not exit when stdin closed")
+	}
+	if n := got.Load(); n < 64 {
+		t.Fatalf("expected the queue to have been drained past its size, got %d writes", n)
+	}
+}
+
+// Finding 4: a cancel that follows its request on the very next line must
+// still find it (the request is registered before its goroutine starts).
+func TestRemoteAgent_CancelRightAfterRequest(t *testing.T) {
+	var cancelled atomic.Int32
+	run := func(ctx context.Context, args []string) (string, string, int) {
+		select {
+		case <-ctx.Done():
+			cancelled.Add(1)
+			return "", "killed", 137
+		case <-time.After(2 * time.Second):
+			return "finished", "", 0
+		}
+	}
+	h := startAgent(t, remoteAgentConfig{Run: run})
+	h.send(remoteAgentRequest{ID: 1, Args: []string{"rename", "s1", "t"}})
+	h.send(remoteAgentRequest{ID: 1, Cancel: true})
+	h.send(remoteAgentRequest{ID: 2, Ping: true})
+	if r := h.next("ping ack"); r.ID != 2 {
+		t.Fatalf("expected the ping ack, got %+v", r)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if got := cancelled.Load(); got != 1 {
+		t.Fatalf("the cancel right after the request must kill it, got %d kills", got)
+	}
+	h.noneWithin(50*time.Millisecond, "no reply for the cancelled request")
+	h.closeAndWait()
 }
 
 type writerFunc func([]byte) (int, error)
