@@ -7802,6 +7802,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case updateInstallFinishedMsg:
+		return h, h.handleUpdateInstallFinished(msg)
+
 	case binaryVersionProbedMsg:
 		if h.binaryWatch != nil {
 			h.binaryWatch.recordProbe(msg.fingerprint, msg.version, msg.err)
@@ -11987,6 +11990,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// takes effect (restart.go). Refuses with a footer message while a
 		// dialog is open or a session action is running.
 		return h.tryRestartDeck()
+
+	case "ctrl+y":
+		// Run `agent-deck update` on the terminal (TUI suspended); a
+		// successful install flips the banner to the restart hint.
+		return h.tryInstallUpdate()
 
 	case "ctrl+s":
 		// Open the session switcher from the overview too, with the same key

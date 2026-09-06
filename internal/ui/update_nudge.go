@@ -66,9 +66,10 @@ func (h *Home) renderUpdateNudgeText() string {
 	if h.updateInfo == nil {
 		return ""
 	}
-	return fmt.Sprintf(" ⬆ Update available: v%s → v%s (%d releases behind — run: agent-deck update · press Esc to dismiss) ",
+	return fmt.Sprintf(" ⬆ Update available: v%s → v%s (%d releases behind — press %s to install (agent-deck update) · Esc to dismiss) ",
 		h.updateInfo.CurrentVersion,
 		h.updateInfo.LatestVersion,
 		h.updateInfo.ReleasesBehind,
+		h.installUpdateKeyLabel(),
 	)
 }
