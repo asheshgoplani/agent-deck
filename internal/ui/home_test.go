@@ -1594,16 +1594,50 @@ func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
 	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
 	home.cursor = 0
 
+	// Replace the two SSH paths the dialog can reach. Creating a session must
+	// not happen here; the only command `n` may return is the read-only
+	// account-slot fetch for the selected remote, answered under test control.
+	capture := &remoteCreateCapture{}
+	home.remoteCreateSink = capture.sink
+	home.remoteAccountsFetcher = func(remoteName string) tea.Cmd {
+		capture.accountsFetchedFor = append(capture.accountsFetchedFor, remoteName)
+		return func() tea.Msg {
+			return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: []string{"srv-alice"}}
+		}
+	}
+
 	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	h, ok := model.(*Home)
 	if !ok {
 		t.Fatal("handleMainKey should return *Home")
 	}
-	if cmd != nil {
-		t.Fatal("pressing n on a remote session should open the dialog, not quick-create")
-	}
 	if !h.newDialog.IsVisible() {
 		t.Fatal("pressing n on a remote session should open the new-session dialog")
+	}
+	if capture.calls != 0 {
+		t.Fatalf("pressing n on a remote session quick-created a session (%d create call(s)); it must only open the dialog", capture.calls)
+	}
+	if len(capture.accountsFetchedFor) != 1 || capture.accountsFetchedFor[0] != "myserver" {
+		t.Fatalf("account fetch requested for %v, want exactly [myserver]", capture.accountsFetchedFor)
+	}
+	if cmd == nil {
+		t.Fatal("pressing n on a remote session should return the account-slot fetch command")
+	}
+	fetched, isFetch := cmd().(remoteAccountsFetchedMsg)
+	if !isFetch {
+		t.Fatalf("the command returned by n must be the account-slot fetch, got %T", cmd())
+	}
+	if fetched.remoteName != "myserver" {
+		t.Fatalf("account fetch answered for %q, want myserver", fetched.remoteName)
+	}
+	if updated, _ := h.Update(fetched); updated != nil {
+		h = updated.(*Home)
+	}
+	if capture.calls != 0 {
+		t.Fatalf("processing the account fetch result created a session (%d create call(s))", capture.calls)
+	}
+	if !h.newDialog.IsVisible() {
+		t.Fatal("processing the account fetch result must leave the dialog open")
 	}
 	if h.pendingRemoteName != "myserver" {
 		t.Fatalf("pendingRemoteName = %q, want myserver", h.pendingRemoteName)
