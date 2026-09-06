@@ -2440,6 +2440,11 @@ type ToolDef struct {
 	// Icon is the emoji/symbol to display
 	Icon string `toml:"icon,omitempty"`
 
+	// Color is an optional lipgloss color value (hex like "#ff9e64" or an
+	// ANSI index like "208") the TUI paints this tool's name with. Empty
+	// keeps the default dim text color.
+	Color string `toml:"color,omitempty"`
+
 	// BusyPatterns are strings that indicate the tool is busy
 	BusyPatterns []string `toml:"busy_patterns,omitempty"`
 
@@ -4796,6 +4801,7 @@ auto_cleanup = true
 # Each tool can have:
 #   command      - The shell command to run
 #   icon         - Emoji/symbol shown in the UI
+#   color        - Optional lipgloss color for the tool name (hex like "#ff9e64" or ANSI index)
 #   compatible_with - Built-in compatibility to mirror ("claude" or "codex")
 #   busy_patterns - Strings that indicate the tool is processing
 
