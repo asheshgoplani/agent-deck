@@ -9,6 +9,7 @@ CONDUCTOR_DIR="${AGENT_DECK_DIR}/conductor"
 CONFIG_PATH="${AGENT_DECK_DIR}/config.toml"
 PLIST_NAME="com.agentdeck.conductor-bridge"
 PLIST_PATH="${HOME}/Library/LaunchAgents/${PLIST_NAME}.plist"
+GHW_PLIST_PATH="${HOME}/Library/LaunchAgents/com.agentdeck.gh-watcher.plist"
 
 # Colors
 RED='\033[0;31m'
@@ -32,6 +33,13 @@ if [[ -f "${PLIST_PATH}" ]]; then
     ok "Daemon stopped and plist removed"
 else
     info "No daemon plist found (already removed)"
+fi
+
+# Opt-in GitHub watcher unit (issue #2134); present only when it was enabled.
+if [[ -f "${GHW_PLIST_PATH}" ]]; then
+    launchctl unload "${GHW_PLIST_PATH}" 2>/dev/null || true
+    /usr/bin/trash "${GHW_PLIST_PATH}" 2>/dev/null || true
+    ok "gh-watcher unit stopped and plist moved to Trash"
 fi
 
 # --------------------------------------------------------------------------

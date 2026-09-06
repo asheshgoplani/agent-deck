@@ -10,6 +10,8 @@ CONFIG_PATH="${AGENT_DECK_DIR}/config.toml"
 PLIST_NAME="com.agentdeck.conductor-bridge"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${PLIST_DIR}/${PLIST_NAME}.plist"
+GHW_PLIST_NAME="com.agentdeck.gh-watcher"
+GHW_PLIST_PATH="${PLIST_DIR}/${GHW_PLIST_NAME}.plist"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Colors
@@ -237,6 +239,66 @@ if launchctl list | grep -q "${PLIST_NAME}" 2>/dev/null; then
 fi
 launchctl load "${PLIST_PATH}"
 ok "Daemon loaded and running"
+
+# --------------------------------------------------------------------------
+# Step 6: GitHub event watcher (opt-in, issue #2134)
+# --------------------------------------------------------------------------
+# Only acts when config.toml carries [conductor.github_watcher] enabled = true.
+# Files go to ${CONDUCTOR_DIR}/gh-watcher; an existing watcher.toml is kept.
+
+GHW_ENABLED=$(python3 -c "
+import toml
+cfg = toml.load('${CONFIG_PATH}').get('conductor', {}).get('github_watcher', {})
+print('true' if cfg.get('enabled') else 'false')
+" 2>/dev/null || echo "false")
+
+if [[ "${GHW_ENABLED}" == "true" ]]; then
+    GHW_SRC="${SCRIPT_DIR}/gh-watcher"
+    GHW_HOME="${CONDUCTOR_DIR}/gh-watcher"
+    info "GitHub watcher enabled in config; installing to ${GHW_HOME}"
+    mkdir -p "${GHW_HOME}/scripts"
+    cp "${GHW_SRC}"/scripts/* "${GHW_HOME}/scripts/"
+    cp "${GHW_SRC}/schema.sql" "${GHW_SRC}/classes.json" "${GHW_SRC}/README.md" "${GHW_HOME}/"
+    if [[ ! -f "${GHW_HOME}/watcher.toml" ]]; then
+        cp "${GHW_SRC}/watcher.example.toml" "${GHW_HOME}/watcher.toml"
+        warn "  Wrote ${GHW_HOME}/watcher.toml from the example; set [repo] and [routing] before the first tick"
+    fi
+    GHW_INTERVAL=$(python3 -c "
+import toml
+print(int(toml.load('${GHW_HOME}/watcher.toml').get('cadence', {}).get('events_seconds', 30)))
+" 2>/dev/null || echo 30)
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        sed \
+            -e "s|__TICK_PATH__|${GHW_HOME}/scripts/tick.sh|g" \
+            -e "s|__WATCHER_HOME__|${GHW_HOME}|g" \
+            -e "s|__LOG_PATH__|${GHW_HOME}/launchd.log|g" \
+            -e "s|__INTERVAL__|${GHW_INTERVAL}|g" \
+            -e "s|__HOME__|${HOME}|g" \
+            "${GHW_SRC}/${GHW_PLIST_NAME}.plist" > "${GHW_PLIST_PATH}"
+        if launchctl list | grep -q "${GHW_PLIST_NAME}" 2>/dev/null; then
+            launchctl unload "${GHW_PLIST_PATH}" 2>/dev/null || true
+        fi
+        launchctl load "${GHW_PLIST_PATH}"
+        ok "gh-watcher launchd unit loaded (every ${GHW_INTERVAL}s): ${GHW_PLIST_PATH}"
+    else
+        GHW_UNIT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+        mkdir -p "${GHW_UNIT_DIR}"
+        for unit in agent-deck-gh-watcher.service agent-deck-gh-watcher.timer; do
+            sed \
+                -e "s|__TICK_PATH__|${GHW_HOME}/scripts/tick.sh|g" \
+                -e "s|__WATCHER_HOME__|${GHW_HOME}|g" \
+                -e "s|__LOG_PATH__|${GHW_HOME}/systemd.log|g" \
+                -e "s|__INTERVAL__|${GHW_INTERVAL}|g" \
+                "${GHW_SRC}/systemd/${unit}" > "${GHW_UNIT_DIR}/${unit}"
+        done
+        ok "gh-watcher systemd units written to ${GHW_UNIT_DIR}"
+        echo "  Enable with: systemctl --user daemon-reload && systemctl --user enable --now agent-deck-gh-watcher.timer"
+    fi
+    echo "  Mode and liveness: ${GHW_HOME}/scripts/status.sh (see ${GHW_HOME}/README.md)"
+else
+    info "GitHub watcher not enabled ([conductor.github_watcher] enabled = false); skipping"
+fi
 
 # --------------------------------------------------------------------------
 # Done
