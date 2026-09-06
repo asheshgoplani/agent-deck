@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"hash/fnv"
 	"log/slog"
 	"time"
 
@@ -41,12 +42,52 @@ type remoteSessionsCache struct {
 	FetchedAt map[string]time.Time `json:"fetched_at,omitempty"`
 }
 
-// saveRemoteSessionsCache persists the current remote session map. Called from
-// the fetch-completion path; a dropped save is recoverable on the next fetch.
-// liveFetched names the remotes whose data came from a successful fetch THIS
-// cycle — only their freshness stamps advance. Failed or merely-carried-over
-// remotes keep their previous stamp so stale data still ages out.
+// remoteSessionsCacheSaveInterval is the shortest gap between two writes of
+// the snapshot. A pushing remote can deliver several listings a second and
+// each used to JSON-encode the whole fleet and rewrite it into state.db on
+// the UI goroutine; the on-disk copy only has to be right at the next start.
+const remoteSessionsCacheSaveInterval = 30 * time.Second
+
+// remoteSessionsCacheRefreshAge bounds how long an unchanged fleet goes
+// without a rewrite, so the on-disk stamps keep ahead of the load-time
+// expiry (remoteSessionsCacheMaxAge) on a quiet fleet.
+const remoteSessionsCacheRefreshAge = time.Hour
+
+// remoteSessionsCacheDoc is the snapshot as written: the sessions are
+// encoded once and hashed, so an unchanged fleet is not rewritten.
+type remoteSessionsCacheDoc struct {
+	SavedAt   time.Time            `json:"saved_at"`
+	Sessions  json.RawMessage      `json:"sessions"`
+	FetchedAt map[string]time.Time `json:"fetched_at,omitempty"`
+}
+
+// saveRemoteSessionsCache records that the remote session map changed and
+// writes it when the debounce allows (see flushRemoteSessionsCache; a dropped
+// save is recoverable on the next fetch). liveFetched names the remotes whose
+// data came from a successful fetch THIS cycle — only their freshness stamps
+// advance. Failed or merely-carried-over remotes keep their previous stamp so
+// stale data still ages out.
 func (h *Home) saveRemoteSessionsCache(liveFetched map[string][]session.RemoteSessionInfo) {
+	if !remoteSessionsCacheEnabled || h.storage == nil {
+		return
+	}
+	h.remoteSessionsMu.Lock()
+	if h.remoteFetchedAt == nil {
+		h.remoteFetchedAt = make(map[string]time.Time)
+	}
+	for name := range liveFetched {
+		h.remoteFetchedAt[name] = time.Now()
+	}
+	h.remoteCacheDirty = true
+	h.remoteSessionsMu.Unlock()
+	h.flushRemoteSessionsCache(false)
+}
+
+// flushRemoteSessionsCache writes the pending snapshot if there is one and
+// the last write is at least remoteSessionsCacheSaveInterval old (force skips
+// the wait: quit). The sessions are hashed so a fleet that has not changed
+// since the last write is not rewritten until remoteSessionsCacheRefreshAge.
+func (h *Home) flushRemoteSessionsCache(force bool) {
 	if !remoteSessionsCacheEnabled || h.storage == nil {
 		return
 	}
@@ -54,20 +95,36 @@ func (h *Home) saveRemoteSessionsCache(liveFetched map[string][]session.RemoteSe
 	if db == nil {
 		return
 	}
-	h.remoteSessionsMu.RLock()
-	if h.remoteFetchedAt == nil {
-		h.remoteFetchedAt = make(map[string]time.Time)
+	now := time.Now()
+	h.remoteSessionsMu.Lock()
+	if !h.remoteCacheDirty || (!force && now.Sub(h.remoteCacheLastSave) < remoteSessionsCacheSaveInterval) {
+		h.remoteSessionsMu.Unlock()
+		return
 	}
-	for name := range liveFetched {
-		h.remoteFetchedAt[name] = time.Now()
+	sessions, err := json.Marshal(h.remoteSessions)
+	if err != nil {
+		h.remoteSessionsMu.Unlock()
+		uiLog.Warn("save_remote_cache_marshal_failed", slog.String("error", err.Error()))
+		return
 	}
-	snap := remoteSessionsCache{
-		SavedAt:   time.Now(),
-		Sessions:  h.remoteSessions,
+	hash := fnv.New64a()
+	_, _ = hash.Write(sessions)
+	sum := hash.Sum64()
+	h.remoteCacheDirty = false
+	unchanged := sum == h.remoteCacheLastHash && now.Sub(h.remoteCacheLastSave) < remoteSessionsCacheRefreshAge
+	if unchanged {
+		h.remoteSessionsMu.Unlock()
+		return
+	}
+	h.remoteCacheLastSave = now
+	h.remoteCacheLastHash = sum
+	doc := remoteSessionsCacheDoc{
+		SavedAt:   now,
+		Sessions:  sessions,
 		FetchedAt: h.remoteFetchedAt,
 	}
-	data, err := json.Marshal(snap)
-	h.remoteSessionsMu.RUnlock()
+	data, err := json.Marshal(doc)
+	h.remoteSessionsMu.Unlock()
 	if err != nil {
 		uiLog.Warn("save_remote_cache_marshal_failed", slog.String("error", err.Error()))
 		return

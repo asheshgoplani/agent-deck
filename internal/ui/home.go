@@ -662,6 +662,29 @@ type Home struct {
 	// fast host must not make a slower host's still-valid answer look stale.
 	remoteFetchSeq     uint64
 	remoteFetchApplied map[string]uint64 // remoteName -> last applied generation
+	// remoteGroupsGen records which generation each remote's held group
+	// list came from. A poll result superseded by a push still carries the
+	// remote's cost summary and group list, which the push may not have;
+	// costs always apply, and the group list applies unless a newer message
+	// already brought one.
+	remoteGroupsGen map[string]uint64
+	// remoteActionSettled is when each remote last confirmed a user action
+	// (delete, close, archive, restart, fork) and remoteActionRemoved lists
+	// the sessions those actions removed and when. For a short grace after
+	// a confirmation a push from that remote is treated as suspect: the
+	// agent's probe may have listed before the action ran, and applying it
+	// would resurrect the row the user just watched disappear (finding 10).
+	remoteActionSettled map[string]time.Time
+	remoteActionRemoved map[string]map[string]remoteActionRecord
+	// remoteHeaderCounts holds the session and status counts of every remote
+	// header row, keyed by Item.Path and rebuilt with the rows, so a frame
+	// does not rescan every remote session for every visible header.
+	remoteHeaderCounts map[string]remoteHeaderCount
+	// Remote snapshot save debounce (see flushRemoteSessionsCache). Guarded
+	// by remoteSessionsMu.
+	remoteCacheDirty    bool
+	remoteCacheLastSave time.Time
+	remoteCacheLastHash uint64
 	// newRemoteFetchRunner builds the runner one per-remote fetch talks to.
 	// nil means a real SSHRunner; tests inject stubs to prove delivery
 	// timing without ssh.
@@ -2477,6 +2500,7 @@ func (h *Home) dropRemoteSession(remoteName, sessionID string) {
 		h.remoteSessions[remoteName] = kept
 	}
 	h.remoteSessionsMu.Unlock()
+	h.noteRemoteSessionRemoved(remoteName, sessionID)
 	h.cachedStatusCounts.valid.Store(false)
 	h.rebuildFlatItems()
 }
@@ -3199,9 +3223,15 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		h.flatItems = expanded
 	}
 
+	// Header counts are taken once here from the same in-view slices the
+	// renderer used to rescan per header per frame (finding 11).
+	h.remoteHeaderCounts = make(map[string]remoteHeaderCount)
 	if len(remotes) > 0 {
 		for _, remoteName := range remoteNames {
 			sessions := remotes[remoteName]
+			for path, counts := range remoteHeaderCounts(remoteName, sessions) {
+				h.remoteHeaderCounts[path] = counts
+			}
 			if h.timeFilter != session.TimeFilterAll {
 				filtered := make([]session.RemoteSessionInfo, 0, len(sessions))
 				for _, remote := range sessions {
@@ -3223,7 +3253,17 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			// active view, empty remote groups get a header row too, like an
 			// empty local group; any filter or the archived view hides them.
 			showEmptyGroups := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
-			h.flatItems = append(h.flatItems, buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups)...)
+			rows := buildRemoteFlatItemsWithEmptyGroups(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName], showEmptyGroups)
+			for _, row := range rows {
+				// An empty group's header has no session to count; give it
+				// a zero entry so the renderer never falls back to a scan.
+				if row.Type == session.ItemTypeRemoteGroup {
+					if _, ok := h.remoteHeaderCounts[row.Path]; !ok {
+						h.remoteHeaderCounts[row.Path] = remoteHeaderCount{}
+					}
+				}
+			}
+			h.flatItems = append(h.flatItems, rows...)
 		}
 	}
 
@@ -3898,13 +3938,31 @@ func (h *Home) propagateThemeToSessions() {
 func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cmd) {
 	if msg.configErr != nil || h.remoteFetchIsStale(msg) {
 		// Config unreadable, or a fetch that started before one already
-		// applied for the same remote: keep the current tree. Only account
-		// for the landed fetch so the round can finish and the next poll
-		// runs.
+		// applied for the same remote: keep the current rows. Account for
+		// the landed fetch so the round can finish, and advance the poll
+		// clock for a poll result, or the next tick would start another
+		// round at once and a remote whose pushes keep outrunning the poll
+		// would be listed every two seconds for nothing (finding 1).
 		h.remoteSessionsMu.Lock()
 		h.remoteFetchLanded(msg)
+		if !msg.pushed {
+			h.lastRemoteFetch = time.Now()
+		}
+		// A superseded poll result still carries what the push did not:
+		// the cost summary always, the group list when nothing newer
+		// brought one. Without this a remote whose pushes always beat the
+		// poll never shows a cost figure.
+		staleGroups := make(map[string][]string, len(msg.groups))
+		for name, paths := range msg.groups {
+			if msg.gen >= h.remoteGroupsGen[name] {
+				staleGroups[name] = paths
+			}
+		}
+		h.applyRemoteGroupLists(msg.gen, staleGroups, nil, false)
 		h.remoteSessionsMu.Unlock()
-		if msg.configErr != nil {
+		if msg.configErr == nil {
+			h.applyRemoteCosts(msg)
+		} else {
 			h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
 		}
 		return h, nil
@@ -3929,42 +3987,22 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 			}
 		}
 	}
-	// Remote group lists: replace wholesale for remotes that reported a
-	// fresh list; failed remotes keep their last-good cached paths so the
-	// move dialog doesn't lose empty-group targets on a transient SSH
-	// hiccup. Remotes absent from BOTH lists are dropped (deconfigured).
-	if h.remoteGroups == nil {
-		h.remoteGroups = make(map[string][]string)
-	}
-	keepGroups := make(map[string]bool, len(msg.groups)+len(msg.groupsFailed))
-	for name, paths := range msg.groups {
-		h.remoteGroups[name] = paths
-		keepGroups[name] = true
-	}
-	for name := range msg.groupsFailed {
-		keepGroups[name] = true
-	}
-	for name := range h.remoteGroups {
-		if !keepGroups[name] {
-			delete(h.remoteGroups, name)
-		}
-	}
+	h.applyRemoteGroupLists(msg.gen, msg.groups, msg.groupsFailed, true)
 	for name := range msg.sessions {
 		if !msg.failed[name] {
 			delete(h.remoteFromCache, name)
 		}
 	}
-	h.lastRemoteFetch = time.Now()
+	// Only a poll advances the poll clock: a push says nothing about the
+	// other remotes, and a chatty remote must not keep the fleet poll from
+	// ever running for the quiet ones (finding 1).
+	if !msg.pushed {
+		h.lastRemoteFetch = time.Now()
+	}
 	roundDone := h.remoteFetchLanded(msg)
 	h.remoteSessionsMu.Unlock()
 	h.saveRemoteSessionsCache(msg.sessions)
-	// #1101: store remote cost summaries so renderCostLine can fold them
-	// into the displayed totals on the next paint.
-	if msg.costs != nil {
-		h.remoteCostsMu.Lock()
-		h.remoteCosts = mergeRemoteCosts(h.remoteCosts, msg)
-		h.remoteCostsMu.Unlock()
-	}
+	h.applyRemoteCosts(msg)
 	// #1112 bug 1: a remote running→waiting transition wouldn't update
 	// the header pill ("[◐ Waiting N]") because countSessionStatuses
 	// caches for 500ms. The row icon updated (read from the map
@@ -4001,6 +4039,47 @@ func (h *Home) remoteFetchIsStale(msg remoteSessionsFetchedMsg) bool {
 		}
 	}
 	return false
+}
+
+// applyRemoteGroupLists stores the group lists a message brought. Remotes
+// with a fresh list are replaced wholesale; failed remotes keep their
+// last-good cached paths so the move dialog doesn't lose empty-group targets
+// on a transient SSH hiccup. With prune set, remotes absent from BOTH lists
+// are dropped (deconfigured); a superseded result passes false because it
+// knows nothing about who is still configured. Called with remoteSessionsMu
+// held.
+func (h *Home) applyRemoteGroupLists(gen uint64, groups map[string][]string, groupsFailed map[string]bool, prune bool) {
+	if h.remoteGroups == nil {
+		h.remoteGroups = make(map[string][]string)
+	}
+	if h.remoteGroupsGen == nil {
+		h.remoteGroupsGen = make(map[string]uint64)
+	}
+	for name, paths := range groups {
+		h.remoteGroups[name] = paths
+		h.remoteGroupsGen[name] = gen
+	}
+	if !prune {
+		return
+	}
+	for name := range h.remoteGroups {
+		if _, fresh := groups[name]; fresh || groupsFailed[name] {
+			continue
+		}
+		delete(h.remoteGroups, name)
+		delete(h.remoteGroupsGen, name)
+	}
+}
+
+// applyRemoteCosts folds a message's cost summaries into the per-remote map
+// (#1101) so renderCostLine can show them on the next paint.
+func (h *Home) applyRemoteCosts(msg remoteSessionsFetchedMsg) {
+	if msg.costs == nil {
+		return
+	}
+	h.remoteCostsMu.Lock()
+	h.remoteCosts = mergeRemoteCosts(h.remoteCosts, msg)
+	h.remoteCostsMu.Unlock()
 }
 
 // remoteFetchLanded accounts for one fetch result and reports whether that
@@ -4079,6 +4158,13 @@ func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedM
 	} else {
 		msg.groupsFailed[ch.Remote] = true
 	}
+	// Every other remote the TUI knows is marked failed: the ones with rows,
+	// and the ones known only by a group list or a cost figure (a remote
+	// with zero sessions still has a host header and folders to keep,
+	// finding 12). A remote the config lists but nothing has fetched yet
+	// has nothing to lose.
+	// TODO(#2181 follow-up): once session.ReconcileRemoteChannels(config)
+	// exists, take the configured names from it here instead.
 	h.remoteSessionsMu.RLock()
 	for name := range h.remoteSessions {
 		if name != ch.Remote {
@@ -4086,8 +4172,128 @@ func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedM
 			msg.groupsFailed[name] = true
 		}
 	}
+	for name := range h.remoteGroups {
+		if name != ch.Remote {
+			msg.failed[name] = true
+			msg.groupsFailed[name] = true
+		}
+	}
 	h.remoteSessionsMu.RUnlock()
+	h.remoteCostsMu.RLock()
+	for name := range h.remoteCosts {
+		if name != ch.Remote {
+			msg.failed[name] = true
+			msg.groupsFailed[name] = true
+		}
+	}
+	h.remoteCostsMu.RUnlock()
 	return msg
+}
+
+// remoteActionGrace is how long after a remote confirms a user action its
+// pushes are checked against the sessions that action removed. The agent's
+// probe lists the state DB on a timer, so a listing snapshotted just before
+// the action ran can arrive just after its confirmation.
+const remoteActionGrace = 3 * time.Second
+
+// noteRemoteActionSettled records that remote just confirmed a user action.
+func (h *Home) noteRemoteActionSettled(remoteName string) {
+	if h.remoteActionSettled == nil {
+		h.remoteActionSettled = make(map[string]time.Time)
+	}
+	h.remoteActionSettled[remoteName] = time.Now()
+}
+
+// remoteActionRecord is what a confirmed action did to one session: took
+// it off the remote's rows (delete), or moved it between the active and the
+// archived view (archive, unarchive: archived says which way).
+type remoteActionRecord struct {
+	at       time.Time
+	archived *bool
+}
+
+// contradicts reports whether a pushed listing still shows the session as
+// it was before the action: a removed session listed at all, an archived
+// one listed active or the reverse.
+func (r remoteActionRecord) contradicts(s *session.RemoteSessionInfo) bool {
+	return r.archived == nil || s.Archived != *r.archived
+}
+
+// noteRemoteSessionRemoved records that a confirmed action removed sessionID
+// from remoteName's rows, so a push still listing it is known to be stale.
+func (h *Home) noteRemoteSessionRemoved(remoteName, sessionID string) {
+	h.noteRemoteAction(remoteName, sessionID, remoteActionRecord{at: time.Now()})
+}
+
+// noteRemoteSessionArchived records that a confirmed action archived (or
+// unarchived) sessionID, so a push still listing it the old way is stale.
+func (h *Home) noteRemoteSessionArchived(remoteName, sessionID string, archived bool) {
+	h.noteRemoteAction(remoteName, sessionID, remoteActionRecord{at: time.Now(), archived: &archived})
+}
+
+func (h *Home) noteRemoteAction(remoteName, sessionID string, rec remoteActionRecord) {
+	if h.remoteActionRemoved == nil {
+		h.remoteActionRemoved = make(map[string]map[string]remoteActionRecord)
+	}
+	if h.remoteActionRemoved[remoteName] == nil {
+		h.remoteActionRemoved[remoteName] = make(map[string]remoteActionRecord)
+	}
+	h.remoteActionRemoved[remoteName][sessionID] = rec
+}
+
+// remoteActionInProgress reports whether a user action on remoteName is
+// still waiting for the remote's answer.
+func (h *Home) remoteActionInProgress(remoteName string) bool {
+	if len(h.remotePending) == 0 {
+		return false
+	}
+	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	for _, s := range h.remoteSessions[remoteName] {
+		if _, pending := h.remotePending[s.ID]; pending {
+			return true
+		}
+	}
+	return false
+}
+
+// stalePushedChange reports whether a pushed listing for ch.Remote predates
+// a user action and must not be applied (finding 10). While an action on
+// that remote is in flight, or within remoteActionGrace of its confirmation,
+// a listing that still contains a session the action removed, or shows one
+// it archived as active (or the reverse), is stale: the probe read the DB
+// before the action ran. Outside that window, or when the listing agrees
+// with the action, the push applies as usual. Entries older than the grace
+// are dropped as they are met.
+//
+// TODO(channel owner): when RemoteChange carries the DB stamp the listing was
+// taken at, compare stamps here instead of session membership.
+func (h *Home) stalePushedChange(ch session.RemoteChange, now time.Time) bool {
+	removed := h.remoteActionRemoved[ch.Remote]
+	if len(removed) == 0 {
+		return false
+	}
+	inGrace := h.remoteActionInProgress(ch.Remote) || now.Sub(h.remoteActionSettled[ch.Remote]) < remoteActionGrace
+	stale := false
+	for id, rec := range removed {
+		if now.Sub(rec.at) >= remoteActionGrace {
+			delete(removed, id)
+			continue
+		}
+		if !inGrace {
+			continue
+		}
+		for i := range ch.Sessions {
+			if ch.Sessions[i].ID == id && rec.contradicts(&ch.Sessions[i]) {
+				stale = true
+				break
+			}
+		}
+	}
+	if len(removed) == 0 {
+		delete(h.remoteActionRemoved, ch.Remote)
+	}
+	return stale
 }
 
 // fetchRemoteSessions starts a fleet poll. It reads the config, sweeps stale
@@ -4226,7 +4432,10 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 //   - remotes present in fetched → replaced wholesale (new sessions appear,
 //     removed sessions drop);
 //   - remotes in failed (errored this round) → keep their last-good sessions
-//     from prev, so a transient SSH hiccup never wipes a remote;
+//     from prev, so a transient SSH hiccup never wipes a remote; a remote
+//     known with ZERO sessions (fresh, or fully archived) is kept too, so its
+//     host header and folders survive a result that did not cover it
+//     (finding 12);
 //   - remotes absent from both fetched and failed → dropped (deconfigured).
 //
 // It is a pure function so the reconciliation logic is unit-testable without
@@ -4241,7 +4450,7 @@ func mergeRemoteSessions(prev, fetched map[string][]session.RemoteSessionInfo, f
 			// A successful result for this remote (if any) always wins.
 			continue
 		}
-		if prevSess, ok := prev[name]; ok && len(prevSess) > 0 {
+		if prevSess, ok := prev[name]; ok {
 			merged[name] = prevSess
 		}
 	}
@@ -7371,11 +7580,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return h, h.waitRemoteChange
 		}
-		if msg.change.HasData {
+		if msg.change.HasData && !h.stalePushedChange(msg.change, time.Now()) {
 			// The event brought the listings: apply them now, no round trip.
 			uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("pushed_data", true))
 			_, cmd := h.applyRemoteFetch(h.pushedRemoteFetch(msg.change))
 			return h, tea.Batch(cmd, h.waitRemoteChange)
+		}
+		if msg.change.HasData {
+			// The listing predates an action the user just completed on
+			// this remote: applying it would bring the removed row back.
+			// Drop it and let a fetch settle the truth instead.
+			uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("stale_push_dropped", true))
 		}
 		// A pushed change without data: refetch at once unless a fetch is
 		// already in flight (then one more runs after it).
@@ -7417,6 +7632,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteSessionDeletedMsg:
 		h.setRemotePending(msg.sessionID, "")
+		h.noteRemoteActionSettled(msg.remoteName)
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to delete '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7427,6 +7643,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteSessionClosedMsg:
 		h.setRemotePending(msg.sessionID, "")
+		h.noteRemoteActionSettled(msg.remoteName)
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to close '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7440,6 +7657,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			verb = "unarchive"
 		}
 		h.setRemotePending(msg.sessionID, "")
+		h.noteRemoteActionSettled(msg.remoteName)
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to %s '%s' on %s: %w", verb, msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7451,6 +7669,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				s.Status = string(session.StatusStopped)
 			}
 		})
+		h.noteRemoteSessionArchived(msg.remoteName, msg.sessionID, archived)
 		h.setError(fmt.Errorf("%sd '%s' on %s%s", verb, msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "archive", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
@@ -7458,6 +7677,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(h.remoteRestarting, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.resumingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		h.setRemotePending(msg.sessionID, "")
+		h.noteRemoteActionSettled(msg.remoteName)
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to restart '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7470,6 +7690,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(h.remoteForking, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.forkingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		h.setRemotePending(msg.sessionID, "")
+		h.noteRemoteActionSettled(msg.remoteName)
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to fork '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -8406,6 +8627,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.uiStateSaveTicks = 0
 			h.saveUIState()
 		}
+		// A remote snapshot held back by the save debounce lands here once
+		// its interval has passed.
+		h.flushRemoteSessionsCache(false)
 
 		// Periodic remote session fetch (issue #1170). Cadence is configurable
 		// via [ui] remote_session_refresh_secs (default 15s); see
@@ -11951,6 +12175,9 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		h.cleanupNotifications()
 		// Save UI state (cursor, preview mode, filter) before saving instances
 		h.saveUIState()
+		// The remote snapshot is written on a 30 s debounce; quit writes
+		// whatever is pending so the next start renders the fleet as last seen.
+		h.flushRemoteSessionsCache(true)
 		// Save both instances AND groups on quit (critical fix: was losing groups!)
 		h.saveInstances()
 
@@ -19501,12 +19728,8 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	// Render the last path segment with a subtree count, indented by level, and
 	// no host-latency marker (latency is a host-level metric shown on Level 0).
 	if item.Level > 0 {
-		h.remoteSessionsMu.RLock()
-		sessions := h.remoteSessionsInView(item.RemoteName)
 		groupPath := strings.TrimPrefix(item.Path, "remotes/"+item.RemoteName+"/")
-		count := remoteSubGroupCount(sessions, groupPath)
-		running, waiting := remoteStatusCounts(sessions, groupPath)
-		h.remoteSessionsMu.RUnlock()
+		counts := h.remoteHeaderCount(item)
 
 		segName := groupPath
 		if idx := strings.LastIndex(groupPath, "/"); idx >= 0 {
@@ -19518,17 +19741,15 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			strings.Repeat("  ", item.Level), // nest under the remote header
 			expandIcon,
 			nameStyle.Render(segName),
-			countStyle.Render(fmt.Sprintf(" (%d)", count)),
-			remoteStatusSuffix(running, waiting),
+			countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
+			remoteStatusSuffix(counts.running, counts.waiting),
 		))
 		return
 	}
 
 	// Level 0: the remote host header. Count the sessions this view shows.
+	counts := h.remoteHeaderCount(item)
 	h.remoteSessionsMu.RLock()
-	sessions := h.remoteSessionsInView(item.RemoteName)
-	count := len(sessions)
-	running, waiting := remoteStatusCounts(sessions, "")
 	fromCache := h.remoteFromCache[item.RemoteName]
 	fetching := h.remotesFetchActive
 	h.remoteSessionsMu.RUnlock()
@@ -19547,10 +19768,33 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		remoteRowGutter(selected), // align with group hotkey gutter (flush with local root groups)
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
-		countStyle.Render(fmt.Sprintf(" (%d)", count)),
-		remoteStatusSuffix(running, waiting),
+		countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
+		remoteStatusSuffix(counts.running, counts.waiting),
 		trailer,
 	))
+}
+
+// remoteHeaderCount returns the counts for a remote header row: the ones
+// rebuildFlatItems computed with the rows when it has them, otherwise (rows
+// built by hand, as tests do) the same numbers scanned from the in-view
+// sessions the way the renderer always did.
+func (h *Home) remoteHeaderCount(item session.Item) remoteHeaderCount {
+	if counts, ok := h.remoteHeaderCounts[item.Path]; ok {
+		return counts
+	}
+	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	sessions := h.remoteSessionsInView(item.RemoteName)
+	groupPath := ""
+	if item.Level > 0 {
+		groupPath = strings.TrimPrefix(item.Path, "remotes/"+item.RemoteName+"/")
+	}
+	counts := remoteHeaderCount{total: len(sessions)}
+	if groupPath != "" {
+		counts.total = remoteSubGroupCount(sessions, groupPath)
+	}
+	counts.running, counts.waiting = remoteStatusCounts(sessions, groupPath)
+	return counts
 }
 
 // remoteStatusSuffix renders the same running/waiting glyph counts local
