@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-09-06
+
+Remote sessions with the full configuration, account switching from the TUI, and a community wave: 38 merged PRs since v1.15.0, twelve of them from contributors. The maintainer-pipeline batch tracked in [#2138](https://github.com/asheshgoplani/agent-deck/issues/2138) started landing in this release and continues on main.
+
+### Added
+
+- Remote sessions created from the TUI carry the full configuration: account slot (offered from the remote's own slots), model, Claude toggles and extra args, session mode, worktree, Docker sandbox and yolo. Unsafe values are refused with a clear error; local credentials are never copied ([#2155](https://github.com/asheshgoplani/agent-deck/pull/2155), building on [#2127](https://github.com/asheshgoplani/agent-deck/pull/2127) by @Djeeteg007).
+- Remote group management from the TUI: `M` moves a remote session between groups and offers empty groups, `g` creates a group on the remote, and a missing remote directory can be created on confirmation with the new opt-in `add --create-dir` ([#2157](https://github.com/asheshgoplani/agent-deck/pull/2157), by @barjatiyasaurabh, adopted from [#2081](https://github.com/asheshgoplani/agent-deck/pull/2081)).
+- Pick and switch the Claude account from the TUI ([#2152](https://github.com/asheshgoplani/agent-deck/pull/2152), closes #924).
+- Opt-in, consent-first usage telemetry, off by default ([#2106](https://github.com/asheshgoplani/agent-deck/pull/2106)).
+- `agent-deck remote drain` pulls cross-machine completions ([#1952](https://github.com/asheshgoplani/agent-deck/pull/1952)).
+- Scoped CLI commands are forwarded over SSH ([#2116](https://github.com/asheshgoplani/agent-deck/pull/2116)).
+- Configurable terminal title with group and tree context via `title_format` ([#2074](https://github.com/asheshgoplani/agent-deck/pull/2074), by @efenex).
+- Window mode for the open-shell-here hotkey ([#2068](https://github.com/asheshgoplani/agent-deck/pull/2068), by @AlanRezende).
+- Sessions can be filtered by recency, and expired windows refresh ([#2098](https://github.com/asheshgoplani/agent-deck/pull/2098)).
+- Fable 5.1 is offered in both model pickers ([#2109](https://github.com/asheshgoplani/agent-deck/pull/2109)).
+- Exact Deck titles are used at Claude startup ([#2075](https://github.com/asheshgoplani/agent-deck/pull/2075)).
+- `doctor` warns about shared named Claude account directories ([#2124](https://github.com/asheshgoplani/agent-deck/pull/2124)).
+- Stored account slots are shown in session rows and in `list` and `show` ([#2122](https://github.com/asheshgoplani/agent-deck/pull/2122), [#2121](https://github.com/asheshgoplani/agent-deck/pull/2121)).
+
+### Fixed
+
+- Rapid SSH input is preserved, verified by native macOS acceptance ([#2125](https://github.com/asheshgoplani/agent-deck/pull/2125)).
+- Native attach input, detach and terminal behavior over SSH are preserved ([#2117](https://github.com/asheshgoplani/agent-deck/pull/2117)).
+- Shared session state refreshes without losing concurrent updates ([#2123](https://github.com/asheshgoplani/agent-deck/pull/2123)); account slots survive concurrent storage changes ([#2114](https://github.com/asheshgoplani/agent-deck/pull/2114)).
+- Pi: output is read from the persisted conversation branch, and sends are confirmed before being reported ([#2119](https://github.com/asheshgoplani/agent-deck/pull/2119), [#2083](https://github.com/asheshgoplani/agent-deck/pull/2083), by @jwiegley).
+- tmux: terminal-feature growth across concurrent clients is prevented ([#2063](https://github.com/asheshgoplani/agent-deck/pull/2063)); vanished-pane captures degrade cleanly with an `ErrCaptureGone` sentinel ([#2090](https://github.com/asheshgoplani/agent-deck/pull/2090), by @ttunguz).
+- Help requests are read-only ([#2055](https://github.com/asheshgoplani/agent-deck/pull/2055)).
+- Update checks scope the gh token lookup to github.com ([#2105](https://github.com/asheshgoplani/agent-deck/pull/2105)).
+- Web: the menu refreshes after external session changes ([#2092](https://github.com/asheshgoplani/agent-deck/pull/2092), by @lpage-positron).
+- Path completion is case-insensitive with a visible match list ([#2027](https://github.com/asheshgoplani/agent-deck/pull/2027), by @AlanRezende).
+- Captured lines with tabs no longer overflow the frame ([#2073](https://github.com/asheshgoplani/agent-deck/pull/2073), by @efenex).
+- Conductor: the PEP 668 remediation works ([#2076](https://github.com/asheshgoplani/agent-deck/pull/2076), by @efenex).
+- Live client identity test fixtures are stable ([#2113](https://github.com/asheshgoplani/agent-deck/pull/2113)).
+
+### Changed
+
+- Web: the api, state and Toast modules no longer form an import cycle ([#2151](https://github.com/asheshgoplani/agent-deck/pull/2151)).
+- Workers are taught to narrow source reads ([#2049](https://github.com/asheshgoplani/agent-deck/pull/2049)).
+- Grouped Go dependency updates ([#2087](https://github.com/asheshgoplani/agent-deck/pull/2087)).
+
+### Repository automation
+
+- Silent `needs-info` PRs get one comment-only nudge after ten days ([#2140](https://github.com/asheshgoplani/agent-deck/pull/2140)).
+- New issues get a `triage` label and a type hint automatically ([#2139](https://github.com/asheshgoplani/agent-deck/pull/2139)).
+- The workflows README lists the four checks the branch ruleset actually requires ([#2143](https://github.com/asheshgoplani/agent-deck/pull/2143)).
+
 ## [1.15.0] - 2026-08-23
 
 Fail-closed inbox delivery, safer session navigation, and CLI parity across ten commits merged after v1.14.0.
