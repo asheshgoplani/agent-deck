@@ -151,6 +151,67 @@ func ClaudeSessionRecordIn(claudeDir, sessionID string) (ClaudeSessionRecord, bo
 	}, true
 }
 
+// ClaudeSessionRecordsIn scans claudeDir/sessions/*.json and returns EVERY
+// record whose sessionId matches sessionID, in no particular order — the
+// per-PID files mean a resumed or forked conversation legitimately matches
+// several. Unlike ClaudeSessionRecordIn it applies no freshest-wins rule:
+// the send path must see all the candidates so it can disambiguate them by
+// pane-tree membership rather than by timestamp, which can point at the
+// wrong live process (maintainer review of #2100). Returns nil when there
+// is no match or the sessions dir is unreadable.
+func ClaudeSessionRecordsIn(claudeDir, sessionID string) []ClaudeSessionRecord {
+	claudeDir = strings.TrimSpace(claudeDir)
+	sessionID = strings.TrimSpace(sessionID)
+	if claudeDir == "" || sessionID == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join(claudeDir, "sessions"))
+	if err != nil {
+		return nil
+	}
+	var records []ClaudeSessionRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(claudeDir, "sessions", entry.Name()))
+		if err != nil {
+			continue
+		}
+		var meta claudeSessionMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			continue
+		}
+		if meta.SessionID != sessionID {
+			continue
+		}
+		records = append(records, ClaudeSessionRecord{
+			Pid:                 meta.Pid,
+			SessionID:           meta.SessionID,
+			ProcStart:           meta.ProcStart,
+			ProcStartFt:         meta.ProcStartFt,
+			PeerProtocol:        meta.PeerProtocol,
+			MessagingSocketPath: meta.MessagingSocketPath,
+		})
+	}
+	return records
+}
+
+// ClaudeConfigDirForSend returns the Claude config directory a send to inst
+// must resolve session records under: the instance's own resolved dir
+// (account > conductor > group > env > profile > global > ~/.claude), with
+// the worker-scratch override applied exactly as the spawn path applies it.
+// The send path used $HOME/.claude unconditionally, which reads a different
+// account's records than the session it is addressing (maintainer review of
+// #2100). Kept next to the record readers because it is the dir they must
+// be given.
+func ClaudeConfigDirForSend(inst *Instance) string {
+	if inst == nil {
+		return ""
+	}
+	return inst.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(inst))
+}
+
 // ClaudeSessionRecordFor resolves the user's ~/.claude and returns the
 // Claude session record for sessionID. Mirrors ClaudeSessionName.
 func ClaudeSessionRecordFor(sessionID string) (ClaudeSessionRecord, bool) {

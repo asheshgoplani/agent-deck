@@ -3,8 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/send"
@@ -52,18 +50,21 @@ var selectorLevelReasons = map[send.UnavailableReason]bool{
 
 // transportInputs bundles chooseSendTransport's inputs so it stays a pure,
 // table-testable decision function. resolve is a seam: production code
-// passes resolveClaudeSocketTargetForSession, tests pass a stub so resolver
-// branches (dead pid, procStart drift, ...) don't need real filesystem state
-// or a live process. isSSH is a plain bool (not *session.Instance) so this
-// stays decoupled from the Instance type; performSend is the one that reads
-// inst.IsSSH().
+// passes a closure over resolveClaudeSocketTargetForInstance, tests pass a
+// stub so resolver branches (dead pid, procStart drift, out-of-tree record,
+// ...) don't need real filesystem state or a live process. It takes no
+// arguments because resolution is per-INSTANCE, not per-session-ID: the
+// config dir and the pane process tree both come from the instance
+// (maintainer review of #2100). isSSH is a plain bool (not
+// *session.Instance) so this stays decoupled from the Instance type;
+// performSend is the one that reads inst.IsSSH().
 type transportInputs struct {
 	tool            string
 	configValue     string
 	message         string
 	claudeSessionID string
 	isSSH           bool
-	resolve         func(sessionID string) (send.ClaudeSocketTarget, error)
+	resolve         func() (send.ClaudeSocketTarget, error)
 }
 
 // isBareSlashCommand reports whether message, after trimming leading
@@ -130,9 +131,11 @@ func chooseSendTransport(in transportInputs) (sendTransport, send.UnavailableRea
 	}
 	resolve := in.resolve
 	if resolve == nil {
-		resolve = resolveClaudeSocketTargetForSession
+		// No instance to resolve against and no stub: a socket send is not
+		// something this function can arrange on its own.
+		return transportTmux, send.ReasonNoRecord, send.ClaudeSocketTarget{}
 	}
-	target, err := resolve(in.claudeSessionID)
+	target, err := resolve()
 	if err != nil {
 		var unavail *send.Unavailable
 		if errors.As(err, &unavail) {
@@ -145,22 +148,51 @@ func chooseSendTransport(in transportInputs) (sendTransport, send.UnavailableRea
 	return transportSocket, "", target
 }
 
-// resolveClaudeSocketTargetForSession is chooseSendTransport's production
-// resolve implementation: look up the session record for sessionID under
-// the real ~/.claude and vet it. session.ClaudeSessionRecordFor already
-// returns send.ClaudeSocketRecord (a type alias, not a separate struct — see
-// claude_title_reconcile.go), so no field-by-field conversion is needed.
-func resolveClaudeSocketTargetForSession(sessionID string) (send.ClaudeSocketTarget, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: send.ReasonNoRecord, Err: err}
-	}
-	claudeDir := filepath.Join(home, ".claude")
-
-	rec, ok := session.ClaudeSessionRecordFor(sessionID)
-	if !ok {
+// resolveClaudeSocketTargetForInstance is chooseSendTransport's production
+// resolve implementation. It resolves against the INSTANCE, not a bare
+// session ID: the config dir is the one this instance actually runs under
+// (account, conductor, group, profile, worker scratch — not $HOME/.claude,
+// which is a different account's records whenever the session selects one),
+// and the record is disambiguated by membership in this session's own tmux
+// pane process tree rather than by which per-PID file was written most
+// recently. Both corrections come from the maintainer review of #2100: the
+// old resolver could address a live process belonging to another account or
+// another window on the same conversation id.
+//
+// Every failure here is a pre-write refusal (*send.Unavailable), so the
+// caller falls back to tmux exactly as it does for a dead pid. In
+// particular a pane-tree probe error is ReasonNotInPaneTree, not a silent
+// pass: an incomplete forest cannot prove membership, and guessing is the
+// failure mode this function exists to remove.
+//
+// session.ClaudeSessionRecordsIn returns send.ClaudeSocketRecord (a type
+// alias, not a separate struct — see claude_title_reconcile.go), so no
+// field-by-field conversion is needed.
+func resolveClaudeSocketTargetForInstance(inst *session.Instance) (send.ClaudeSocketTarget, error) {
+	if inst == nil {
 		return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: send.ReasonNoRecord}
 	}
+	claudeDir := session.ClaudeConfigDirForSend(inst)
+	if claudeDir == "" {
+		return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: send.ReasonNoRecord}
+	}
+
+	records := session.ClaudeSessionRecordsIn(claudeDir, inst.ClaudeSessionID)
+	if len(records) == 0 {
+		return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: send.ReasonNoRecord}
+	}
+
+	panePIDs, err := inst.PaneProcessTreePIDs()
+	if err != nil {
+		return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: send.ReasonNotInPaneTree, Err: err}
+	}
+
+	rec, err := send.SelectClaudeSocketRecord(records, panePIDs)
+	if err != nil {
+		return send.ClaudeSocketTarget{}, err
+	}
+	// Same claudeDir the records came from: liveness, procStart, uid and the
+	// key file must all be keyed to the account this instance runs under.
 	return send.ResolveClaudeSocketTarget(rec, claudeDir)
 }
 
@@ -203,7 +235,12 @@ func sendTransportFromConfig() (value string, warn string) {
 // it. resolve and sendFn are seams (both nil in production, defaulting to
 // resolveClaudeSocketTargetForSession and send.SendOverClaudeSocket) so
 // tests can exercise the socket-write-failure / no-tmux-call and
-// explicit-tmux-pin cases without a real live Claude process.
+// explicit-tmux-pin cases without a real live Claude process. resolve is nil
+// in production, defaulting to resolveClaudeSocketTargetForInstance.
+//
+// resolve is a func(*session.Instance) here rather than the no-argument
+// closure chooseSendTransport takes, so tests can stub it without building
+// the closure themselves; performSend binds inst into it.
 //
 // A socket send that fails with *send.Unavailable — discovered only at
 // SendOverClaudeSocket time, after chooseSendTransport's own resolve()
@@ -226,16 +263,19 @@ func performSend(
 	noWait bool,
 	tun sendExecTuning,
 	sendTransportValue string,
-	resolve func(string) (send.ClaudeSocketTarget, error),
+	resolve func(*session.Instance) (send.ClaudeSocketTarget, error),
 	sendFn func(send.ClaudeSocketTarget, string) (string, error),
 ) (sendDeliveryResult, error) {
+	if resolve == nil {
+		resolve = resolveClaudeSocketTargetForInstance
+	}
 	transport, fallbackReason, target := chooseSendTransport(transportInputs{
 		tool:            inst.Tool,
 		configValue:     sendTransportValue,
 		message:         message,
 		claudeSessionID: inst.ClaudeSessionID,
 		isSSH:           inst.IsSSH(),
-		resolve:         resolve,
+		resolve:         func() (send.ClaudeSocketTarget, error) { return resolve(inst) },
 	})
 	if transport == transportSocket {
 		busy := targetBusyAtSend(tmuxTarget)

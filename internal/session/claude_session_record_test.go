@@ -158,3 +158,83 @@ func TestClaudeSessionRecordFor_ResolvesRealHome(t *testing.T) {
 		t.Errorf("unexpected record: %+v", rec)
 	}
 }
+
+// TestClaudeSessionRecordsIn_ReturnsEveryMatch pins the difference from
+// ClaudeSessionRecordIn: no freshest-wins rule, because the #2100 send path
+// disambiguates by pane-tree membership and needs every candidate to choose
+// from. Non-matching, unreadable and non-JSON files are skipped, not fatal.
+func TestClaudeSessionRecordsIn_ReturnsEveryMatch(t *testing.T) {
+	claudeDir := t.TempDir()
+	writeClaudeSessionFile(t, claudeDir, "1111.json", `{
+		"pid":1111,"sessionId":"sid-1","updatedAt":1000,
+		"procStart":"a","peerProtocol":1,"messagingSocketPath":"/tmp/1111.sock"
+	}`)
+	writeClaudeSessionFile(t, claudeDir, "2222.json", `{
+		"pid":2222,"sessionId":"sid-1","updatedAt":2000,
+		"procStart":"b","peerProtocol":1,"messagingSocketPath":"/tmp/2222.sock"
+	}`)
+	writeClaudeSessionFile(t, claudeDir, "3333.json", `{
+		"pid":3333,"sessionId":"other","updatedAt":3000,
+		"procStart":"c","peerProtocol":1,"messagingSocketPath":"/tmp/3333.sock"
+	}`)
+	writeClaudeSessionFile(t, claudeDir, "4444.json", `not json at all`)
+	writeClaudeSessionFile(t, claudeDir, "notes.txt", `{"pid":5555,"sessionId":"sid-1"}`)
+
+	got := ClaudeSessionRecordsIn(claudeDir, "sid-1")
+	if len(got) != 2 {
+		t.Fatalf("got %d records, want 2: %+v", len(got), got)
+	}
+	byPid := map[int]ClaudeSessionRecord{}
+	for _, rec := range got {
+		byPid[rec.Pid] = rec
+	}
+	for _, pid := range []int{1111, 2222} {
+		rec, ok := byPid[pid]
+		if !ok {
+			t.Fatalf("record for pid %d missing from %+v", pid, got)
+		}
+		if rec.SessionID != "sid-1" || rec.PeerProtocol != 1 || rec.MessagingSocketPath == "" {
+			t.Errorf("record for pid %d is not fully populated: %+v", pid, rec)
+		}
+	}
+}
+
+// TestClaudeSessionRecordsIn_EmptyCases: nothing to return is nil, never a
+// partial or fabricated record.
+func TestClaudeSessionRecordsIn_EmptyCases(t *testing.T) {
+	claudeDir := t.TempDir()
+	writeClaudeSessionFile(t, claudeDir, "1111.json", `{"pid":1111,"sessionId":"sid-1","peerProtocol":1}`)
+
+	if got := ClaudeSessionRecordsIn(claudeDir, "nope"); got != nil {
+		t.Errorf("no matching session id: got %+v, want nil", got)
+	}
+	if got := ClaudeSessionRecordsIn("", "sid-1"); got != nil {
+		t.Errorf("empty claudeDir: got %+v, want nil", got)
+	}
+	if got := ClaudeSessionRecordsIn(claudeDir, ""); got != nil {
+		t.Errorf("empty sessionID: got %+v, want nil", got)
+	}
+	if got := ClaudeSessionRecordsIn(t.TempDir(), "sid-1"); got != nil {
+		t.Errorf("unreadable sessions dir: got %+v, want nil", got)
+	}
+}
+
+// TestClaudeConfigDirForSend_UsesTheInstanceChain confirms a send resolves
+// records under the dir the instance actually runs in, not $HOME/.claude
+// (maintainer review of #2100).
+func TestClaudeConfigDirForSend_UsesTheInstanceChain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	accountDir := filepath.Join(t.TempDir(), "account-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", accountDir)
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	inst := &Instance{ID: "i1", Title: "target", Tool: "claude", ClaudeSessionID: "sid-1"}
+	if got := ClaudeConfigDirForSend(inst); got != accountDir {
+		t.Errorf("ClaudeConfigDirForSend = %q, want the instance's dir %q", got, accountDir)
+	}
+	if got := ClaudeConfigDirForSend(nil); got != "" {
+		t.Errorf("ClaudeConfigDirForSend(nil) = %q, want empty", got)
+	}
+}
