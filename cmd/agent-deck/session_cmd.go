@@ -3124,9 +3124,10 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, sendTransportWarn)
 	}
 	// The busy probe reads the same hook-driven status --defer-if-busy holds
-	// on, so it needs the same lookup closure.
+	// on, so it needs the same lookup closure. performSend only calls it
+	// under --wait, which is the only caller that acts on the answer.
 	hookStatus := func() (string, error) { return fetchHookDrivenStatus(profile, sessionRef) }
-	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, hookStatus, nil, nil)
+	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, *wait, hookStatus, nil, nil)
 	if acceptanceGuard != nil {
 		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, time.Now()); markerErr != nil {
 			acceptanceGuard.Release()

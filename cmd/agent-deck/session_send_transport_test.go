@@ -258,7 +258,7 @@ func TestPerformSend_SSHBackedInstance_TakesTmuxWithEmptyFallbackReason(t *testi
 		t.Fatal("test setup: inst should be SSH-backed")
 	}
 
-	res, err := performSend(inst, mock, "hello", false, defaultSendTuning(), "auto", nil, instResolveOK, nil)
+	res, err := performSend(inst, mock, "hello", false, defaultSendTuning(), "auto", false, nil, instResolveOK, nil)
 	if err != nil {
 		t.Fatalf("performSend: %v", err)
 	}
@@ -571,7 +571,7 @@ func TestRunTmuxSend_SurfacesRecordSelectionReasons(t *testing.T) {
 				t.Fatalf("%s must not be a selector-level reason: a socket WAS attempted", reason)
 			}
 			mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
-			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", nil,
+			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", false, nil,
 				func(*session.Instance) (send.ClaudeSocketTarget, error) {
 					return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: reason}
 				}, nil)
