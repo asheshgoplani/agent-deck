@@ -643,6 +643,11 @@ type Home struct {
 	// archive just triggered (a stale snapshot would resurrect the row).
 	remoteFetchSeq     uint64
 	remoteFetchApplied uint64
+	// remoteActionStarted records when each remote action was requested
+	// (keyed by remote, verb and target) so its footer line can report the
+	// time from keypress to the remote's confirmation, the number that
+	// tells whether a remote deck feels local.
+	remoteActionStarted map[string]time.Time
 	// remoteSessionRefreshSec is the poll cadence (seconds) for re-fetching
 	// the remote session list, resolved once at construction from
 	// [ui] remote_session_refresh_secs. Issue #1170.
@@ -2220,6 +2225,7 @@ func (h *Home) remoteGroupPaths(remoteName string) []string {
 // remoteMoveResultMsg so the fleet cache is updated only on remote
 // confirmation. Mirrors the remote-rename path in GroupDialogRenameSession.
 func (h *Home) moveRemoteSessionToGroup(title, remoteName, sessionID, targetGroupPath string) tea.Cmd {
+	h.markRemoteAction(remoteName, "move", sessionID)
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -2265,6 +2271,7 @@ func remoteGroupCreateArgs(name, parentPath, defaultPath string) []string {
 }
 
 func (h *Home) createRemoteGroup(name, remoteName, parentPath, defaultPath string) tea.Cmd {
+	h.markRemoteAction(remoteName, "create-group", name)
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -2297,6 +2304,7 @@ func (h *Home) createRemoteGroup(name, remoteName, parentPath, defaultPath strin
 // --force, so a group that still holds sessions is refused by the remote with
 // its own message instead of silently moving sessions around.
 func (h *Home) deleteRemoteGroup(groupPath, remoteName string) tea.Cmd {
+	h.markRemoteAction(remoteName, "delete-group", groupPath)
 	return func() tea.Msg {
 		result := func(err error) tea.Msg {
 			return remoteGroupDeleteResultMsg{remoteName: remoteName, groupPath: groupPath, err: err}
@@ -2312,6 +2320,45 @@ func (h *Home) deleteRemoteGroup(groupPath, remoteName string) tea.Cmd {
 		}
 		return result(nil)
 	}
+}
+
+// remoteGroupBaseName is the last segment of a remote group path, the name
+// createRemoteGroup was asked for.
+func remoteGroupBaseName(path string) string {
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		return path[idx+1:]
+	}
+	return path
+}
+
+// remoteActionKey identifies one in-flight remote action for timing.
+func remoteActionKey(remoteName, verb, target string) string {
+	return remoteName + "|" + verb + "|" + target
+}
+
+// markRemoteAction records the moment a remote action was requested.
+func (h *Home) markRemoteAction(remoteName, verb, target string) {
+	if h.remoteActionStarted == nil {
+		h.remoteActionStarted = make(map[string]time.Time)
+	}
+	h.remoteActionStarted[remoteActionKey(remoteName, verb, target)] = time.Now()
+}
+
+// remoteActionTook returns " in 0.4s" for an action recorded by
+// markRemoteAction, and "" when the start is unknown. The entry is dropped so
+// a later action with the same key measures itself afresh. The raw number
+// also goes to the debug log as remote_action, so latency can be compared
+// across builds without reading the screen.
+func (h *Home) remoteActionTook(remoteName, verb, target string) string {
+	key := remoteActionKey(remoteName, verb, target)
+	start, ok := h.remoteActionStarted[key]
+	if !ok {
+		return ""
+	}
+	delete(h.remoteActionStarted, key)
+	elapsed := time.Since(start)
+	uiLog.Debug("remote_action", slog.String("remote", remoteName), slog.String("verb", verb), slog.String("target", target), slog.Int64("took_ms", elapsed.Milliseconds()))
+	return fmt.Sprintf(" in %.1fs", elapsed.Seconds())
 }
 
 // remoteGroupPathFromItem extracts the remote-relative group path from a
@@ -6872,7 +6919,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to delete remote session: %w", msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("deleted '%s' on %s", msg.title, msg.remoteName))
+		h.setError(fmt.Errorf("deleted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionClosedMsg:
@@ -6880,7 +6927,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to close remote session: %w", msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("closed '%s' on %s", msg.title, msg.remoteName))
+		h.setError(fmt.Errorf("closed '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "close", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionArchivedMsg:
@@ -6892,7 +6939,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to %s remote session: %w", verb, msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("%sd '%s' on %s", verb, msg.title, msg.remoteName))
+		h.setError(fmt.Errorf("%sd '%s' on %s%s", verb, msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "archive", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionRestartedMsg:
@@ -6902,7 +6949,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to restart remote session: %w", msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
+		h.setError(fmt.Errorf("restarted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "restart", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionForkedMsg:
@@ -6912,7 +6959,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to fork remote session: %w", msg.err))
 			return h, nil
 		}
-		h.setError(fmt.Errorf("forked '%s' on %s", msg.title, msg.remoteName))
+		h.setError(fmt.Errorf("forked '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "fork", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteAccountsFetchedMsg:
@@ -6986,7 +7033,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			h.setRemoteSessionTitle(msg.remoteName, msg.sessionID, msg.oldTitle)
 			h.setError(fmt.Errorf("failed to rename '%s' on %s: %v", msg.oldTitle, msg.remoteName, msg.err))
+			return h, nil
 		}
+		h.setError(fmt.Errorf("renamed to '%s' on %s%s", msg.newTitle, msg.remoteName, h.remoteActionTook(msg.remoteName, "rename", msg.sessionID)))
 		return h, nil
 
 	case remoteMoveResultMsg:
@@ -7010,6 +7059,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.remoteSessionsMu.Unlock()
 		h.rebuildFlatItems()
+		h.setError(fmt.Errorf("moved to '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "move", msg.sessionID)))
 		return h, nil
 
 	case remoteGroupResultMsg:
@@ -7041,7 +7091,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.remoteSessionsMu.Unlock()
 		// Show the new (empty) group's row now instead of after the next poll.
 		h.rebuildFlatItems()
-		h.setError(fmt.Errorf("created group '%s' on %s", msg.groupPath, msg.remoteName))
+		h.setError(fmt.Errorf("created group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "create-group", remoteGroupBaseName(msg.groupPath))))
 		return h, nil
 
 	case remoteGroupDeleteResultMsg:
@@ -7063,7 +7113,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.remoteGroups[msg.remoteName] = kept
 		h.remoteSessionsMu.Unlock()
 		h.rebuildFlatItems()
-		h.setError(fmt.Errorf("deleted group '%s' on %s", msg.groupPath, msg.remoteName))
+		h.setError(fmt.Errorf("deleted group '%s' on %s%s", msg.groupPath, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete-group", msg.groupPath)))
 		return h, h.fetchRemoteSessions
 
 	case remoteGroupReorderResultMsg:
@@ -14719,6 +14769,7 @@ func (h *Home) setRemoteSessionTitle(remoteName, sessionID, title string) string
 // outcome, instead of firing it and forgetting (a refused or unreachable
 // rename used to show the new title and silently snap back on the next poll).
 func (h *Home) renameRemoteSession(remoteName, sessionID, oldTitle, newTitle string) tea.Cmd {
+	h.markRemoteAction(remoteName, "rename", sessionID)
 	return func() tea.Msg {
 		result := remoteRenameResultMsg{remoteName: remoteName, sessionID: sessionID, oldTitle: oldTitle, newTitle: newTitle}
 		runner, err := remoteRunnerFor(remoteName)
@@ -14755,6 +14806,7 @@ type remoteCreateDirNeededMsg struct {
 
 // deleteRemoteSession deletes a remote session and refreshes the remote list.
 func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "delete", sessionID)
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -14784,6 +14836,7 @@ func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd 
 
 // closeRemoteSession stops a remote session process without deleting metadata.
 func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "close", sessionID)
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -14816,6 +14869,7 @@ func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 // then refreshes the remote list so the row moves between the active and
 // archived (^) views the way a local session does.
 func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, archive bool) tea.Cmd {
+	h.markRemoteAction(remoteName, "archive", sessionID)
 	return func() tea.Msg {
 		result := remoteSessionArchivedMsg{remoteName: remoteName, sessionID: sessionID, title: title, archived: archive}
 		config, err := session.LoadUserConfig()
@@ -14845,6 +14899,7 @@ func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, arc
 // eligibility are decided on the server; the fleet list is refreshed when
 // the remote confirms via remoteSessionForkedMsg so the new row appears.
 func (h *Home) forkRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "fork", sessionID)
 	return func() tea.Msg {
 		result := remoteSessionForkedMsg{remoteName: remoteName, sessionID: sessionID, title: title}
 		config, err := session.LoadUserConfig()
@@ -14867,6 +14922,7 @@ func (h *Home) forkRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 
 // restartRemoteSession restarts a remote session.
 func (h *Home) restartRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	h.markRemoteAction(remoteName, "restart", sessionID)
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
