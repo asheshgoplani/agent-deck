@@ -136,6 +136,7 @@ const (
 	focusInherited                   // inherited Docker settings toggle (conditional).
 	focusBranch                      // branch input (conditional — only when worktree enabled).
 	focusOptions                     // tool-specific options panel (conditional).
+	focusRemoteMCPs                  // MCPs defined on the target remote (conditional, remote targets only).
 )
 
 // New session dialog: outer box and textinput widths stay in sync so long
@@ -223,6 +224,15 @@ type NewDialog struct {
 	// Name/Branch fields submits the form. True makes Enter advance focus
 	// instead, with Ctrl+S as the explicit submit. Ctrl+S submits in both modes.
 	enterAdvances bool
+
+	// remoteMCPs lists the MCP names defined on the target remote (its
+	// `mcp list --json`), set only by SetRemoteMCPs for a remote target; a
+	// local opening never populates it, so the row is absent for local
+	// sessions. remoteMCPChecked marks the picks; remoteMCPCursor is the
+	// highlighted name.
+	remoteMCPs       []string
+	remoteMCPChecked map[string]bool
+	remoteMCPCursor  int
 }
 
 // viewportDialogContent keeps the dialog's identity and primary action pinned
@@ -552,6 +562,9 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.sandboxEnabled = false
 	d.inheritedExpanded = false
 	d.inheritedSettings = nil
+	// Remote MCPs belong to one opening on one remote; a local opening never
+	// sets them, so the row disappears until SetRemoteMCPs runs again.
+	d.SetRemoteMCPs(nil)
 	// Set path input to group's default path if provided, otherwise use current working directory.
 	if defaultPath != "" {
 		d.pathInput.SetValue(defaultPath)
@@ -1502,6 +1515,55 @@ func (d *NewDialog) SetRemoteAccounts(names []string) {
 	d.rebuildFocusTargets()
 }
 
+// SetRemoteMCPs populates the MCP row with the names defined on the target
+// remote (its `mcp list --json`). Only names are offered; the server resolves
+// each pick against its own config.toml when it runs `add --mcp`. An empty
+// list hides the row, so a remote without MCPs (or one too old to report
+// them) never shows a control whose value it would reject. Earlier picks
+// are cleared: they were made against another list.
+func (d *NewDialog) SetRemoteMCPs(names []string) {
+	d.remoteMCPs = names
+	d.remoteMCPChecked = nil
+	d.remoteMCPCursor = 0
+	d.rebuildFocusTargets()
+}
+
+// GetRemoteMCPs returns the picked remote MCP names in the remote's order,
+// for RemoteAddOptions.MCPs. A local opening never has any.
+func (d *NewDialog) GetRemoteMCPs() []string {
+	var picked []string
+	for _, name := range d.remoteMCPs {
+		if d.remoteMCPChecked[name] {
+			picked = append(picked, name)
+		}
+	}
+	return picked
+}
+
+// hasRemoteMCPRow reports whether the remote MCP row is rendered and focusable.
+func (d *NewDialog) hasRemoteMCPRow() bool {
+	return len(d.remoteMCPs) > 0
+}
+
+// toggleRemoteMCP flips the pick under the cursor.
+func (d *NewDialog) toggleRemoteMCP() {
+	if d.remoteMCPCursor < 0 || d.remoteMCPCursor >= len(d.remoteMCPs) {
+		return
+	}
+	if d.remoteMCPChecked == nil {
+		d.remoteMCPChecked = make(map[string]bool)
+	}
+	name := d.remoteMCPs[d.remoteMCPCursor]
+	d.remoteMCPChecked[name] = !d.remoteMCPChecked[name]
+}
+
+// moveRemoteMCPCursor moves the highlight along the row, wrapping.
+func (d *NewDialog) moveRemoteMCPCursor(step int) {
+	if n := len(d.remoteMCPs); n > 0 {
+		d.remoteMCPCursor = ((d.remoteMCPCursor+step)%n + n) % n
+	}
+}
+
 // GetRemoteCreateOptions collects everything the dialog forwards to a session
 // created on a remote (the TUI counterpart of `remote <name> add ...`). Paths
 // and names are passed through untouched for the server to resolve. A field
@@ -1517,6 +1579,7 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		Group:   d.GetSelectedGroup(),
 		Sandbox: d.IsSandboxEnabled(),
 		Model:   d.GetLaunchModelID(),
+		MCPs:    d.GetRemoteMCPs(),
 	}
 	if d.multiRepoEnabled {
 		return opts, "Multi-repo sessions cannot be created on a remote; add the extra paths on the server after creation"
@@ -1704,6 +1767,9 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
 		targets = append(targets, focusInherited)
 	}
+	if d.hasRemoteMCPRow() {
+		targets = append(targets, focusRemoteMCPs)
+	}
 	if d.worktreeEnabled {
 		targets = append(targets, focusBranch)
 	}
@@ -1790,7 +1856,7 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusModel:
 		d.modelInput.Focus()
-	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited:
+	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs:
 		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
@@ -2388,6 +2454,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.cycleReasoningEffort(-1)
 				return d, nil
 			}
+			if cur == focusRemoteMCPs {
+				d.moveRemoteMCPCursor(-1)
+				return d, nil
+			}
 			if cur == focusOptions && d.toolOptions != nil {
 				return d, d.toolOptions.Update(msg)
 			}
@@ -2402,6 +2472,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 			if cur == focusReasoningEffort {
 				d.cycleReasoningEffort(1)
+				return d, nil
+			}
+			if cur == focusRemoteMCPs {
+				d.moveRemoteMCPCursor(1)
 				return d, nil
 			}
 			if cur == focusOptions && d.toolOptions != nil {
@@ -2526,6 +2600,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.inheritedExpanded = !d.inheritedExpanded
 				return d, nil
 			}
+			if cur == focusRemoteMCPs {
+				d.toggleRemoteMCP()
+				return d, nil
+			}
 			if cur == focusOptions && d.toolOptions != nil {
 				return d, d.toolOptions.Update(msg)
 			}
@@ -2577,7 +2655,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.filterPathSuggestions()
 			}
 		}
-	case focusWorktree, focusSandbox, focusConductor, focusInherited:
+	case focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs:
 		// Checkbox/toggle rows and conductor dropdown — no text input to update.
 	case focusBranch:
 		oldBranch := d.branchInput.Value()
@@ -2610,6 +2688,31 @@ func dialogOrigin(termWidth, termHeight, dialogWidth, dialogHeight int) (row, co
 
 // renderCommandSection renders the Tool (command) pill selector, the
 // show_only_installed_tools fallback hint, and the custom-command input (shell).
+// renderRemoteMCPRow draws the remote's MCP names as a row of checkboxes;
+// the highlighted name is the one Space toggles.
+func (d *NewDialog) renderRemoteMCPRow(focused bool) string {
+	activeStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	var b strings.Builder
+	if focused {
+		b.WriteString(activeStyle.Render("▶ ") + labelStyle.Render("MCPs (remote):"))
+	} else {
+		b.WriteString("  " + labelStyle.Render("MCPs (remote):"))
+	}
+	for i, name := range d.remoteMCPs {
+		b.WriteString(" ")
+		b.WriteString(renderCheckboxMark(d.remoteMCPChecked[name], focused && i == d.remoteMCPCursor))
+		b.WriteString(" ")
+		if focused && i == d.remoteMCPCursor {
+			b.WriteString(activeStyle.Render(name))
+		} else {
+			b.WriteString(labelStyle.Render(name))
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarget) {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
 	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
@@ -3003,6 +3106,12 @@ func (d *NewDialog) View() string {
 	markFocusedRow(focusSandbox)
 	content.WriteString(renderCheckboxLine(sandboxLabel, d.sandboxEnabled, cur == focusSandbox))
 
+	// Remote MCP picks (only for a remote target that reported MCPs).
+	if d.hasRemoteMCPRow() {
+		markFocusedRow(focusRemoteMCPs)
+		content.WriteString(d.renderRemoteMCPRow(cur == focusRemoteMCPs))
+	}
+
 	// Inherited Docker settings (only visible when sandbox is enabled).
 	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
 		focused := cur == focusInherited
@@ -3182,6 +3291,8 @@ func (d *NewDialog) View() string {
 		helpText = "Space toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	} else if cur == focusInherited {
 		helpText = "Space expand/collapse │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
+	} else if cur == focusRemoteMCPs {
+		helpText = "←→ choose MCP │ Space attach/detach │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	} else if cur == focusOptions && d.toolOptions != nil {
 		helpText = "Space/y toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	}

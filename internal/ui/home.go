@@ -714,10 +714,13 @@ type Home struct {
 	// remoteAccountsFetcher is an optional override used by tests to replace
 	// the SSH fetch of a remote's account slots when its dialog opens.
 	remoteAccountsFetcher func(remoteName string) tea.Cmd
+	// remoteMCPsFetcher is the same override for the fetch of a remote's MCP
+	// names (its `mcp list --json`) when its dialog opens.
+	remoteMCPsFetcher func(remoteName string) tea.Cmd
 	// remoteAccountsGen numbers each opening of the remote new-session dialog;
-	// an account fetch answers for the opening that requested it and is
-	// dropped otherwise, so a slow answer for an earlier opening can never
-	// replace the slot list the user is choosing from now.
+	// an account or MCP fetch answers for the opening that requested it and
+	// is dropped otherwise, so a slow answer for an earlier opening can never
+	// replace the list the user is choosing from now.
 	remoteAccountsGen uint64
 	// pendingRemoteCreate holds the remote create whose path the server
 	// reported missing, while the create-directory confirmation is open.
@@ -6768,6 +6771,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteAccountsFetchedMsg:
 		h.applyRemoteAccounts(msg)
+	case remoteMCPsFetchedMsg:
+		h.applyRemoteMCPs(msg)
 		return h, nil
 
 	case remoteCreateDirNeededMsg:
@@ -8533,8 +8538,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // showRemoteNewSessionDialog opens the new-session dialog for a remote target
-// and returns the command that fetches the remote's account slots for the
-// dialog's account row (see remoteAccountsFetchedMsg).
+// and returns the command that fetches the remote's account slots and MCP
+// names for the dialog's account and MCP rows (see remoteAccountsFetchedMsg
+// and remoteMCPsFetchedMsg).
 func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	remoteName := item.RemoteName
 	if remoteName == "" {
@@ -8577,28 +8583,58 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	// own defaults. Drop everything ShowInGroup inherited from this machine's
 	// config so only what the user sets in the dialog is forwarded.
 	h.newDialog.ResetRemoteDefaults()
-	// The account row now lists the server's slots, not this machine's: they
-	// arrive asynchronously so opening the dialog never blocks on SSH.
-	fetch := h.fetchRemoteAccounts
+	// The account and MCP rows now list the server's slots and MCPs, not this
+	// machine's: they arrive asynchronously so opening the dialog never
+	// blocks on SSH.
+	fetchAccounts := h.fetchRemoteAccounts
 	if h.remoteAccountsFetcher != nil {
-		fetch = h.remoteAccountsFetcher
+		fetchAccounts = h.remoteAccountsFetcher
+	}
+	fetchMCPs := h.fetchRemoteMCPs
+	if h.remoteMCPsFetcher != nil {
+		fetchMCPs = h.remoteMCPsFetcher
 	}
 	h.remoteAccountsGen++
 	gen := h.remoteAccountsGen
-	cmd := fetch(remoteName)
+	return tea.Batch(
+		stampRemoteFetch(gen, fetchAccounts(remoteName)),
+		stampRemoteFetch(gen, fetchMCPs(remoteName)),
+	)
+}
+
+// stampRemoteFetch marks a remote dialog fetch's answer with the generation
+// of the opening that asked, so the apply step can tell a late answer for a
+// previous opening from the current one. A nil cmd stays nil.
+func stampRemoteFetch(gen uint64, cmd tea.Cmd) tea.Cmd {
 	if cmd == nil {
 		return nil
 	}
-	// Stamp the answer with this opening's generation so applyRemoteAccounts
-	// can tell a late answer for a previous opening from the current one.
 	return func() tea.Msg {
-		msg := cmd()
-		if fetched, ok := msg.(remoteAccountsFetchedMsg); ok {
+		switch fetched := cmd().(type) {
+		case remoteAccountsFetchedMsg:
 			fetched.gen = gen
 			return fetched
+		case remoteMCPsFetchedMsg:
+			fetched.gen = gen
+			return fetched
+		default:
+			return fetched
 		}
-		return msg
 	}
+}
+
+// remoteRunnerFor builds the SSH runner for a configured remote, or explains
+// why it cannot.
+func remoteRunnerFor(remoteName string) (*session.SSHRunner, error) {
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil || config.Remotes == nil {
+		return nil, fmt.Errorf("failed to load remote config")
+	}
+	rc, ok := config.Remotes[remoteName]
+	if !ok {
+		return nil, fmt.Errorf("remote '%s' not found", remoteName)
+	}
+	return session.NewSSHRunner(remoteName, rc), nil
 }
 
 // remoteAccountsFetchedMsg carries the account slot names configured on a
@@ -8615,20 +8651,51 @@ type remoteAccountsFetchedMsg struct {
 // (`accounts --json`, read-only). Only names come back; nothing local is sent.
 func (h *Home) fetchRemoteAccounts(remoteName string) tea.Cmd {
 	return func() tea.Msg {
-		config, err := session.LoadUserConfig()
-		if err != nil || config == nil || config.Remotes == nil {
-			return remoteAccountsFetchedMsg{remoteName: remoteName, err: fmt.Errorf("failed to load remote config")}
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return remoteAccountsFetchedMsg{remoteName: remoteName, err: err}
 		}
-		rc, ok := config.Remotes[remoteName]
-		if !ok {
-			return remoteAccountsFetchedMsg{remoteName: remoteName, err: fmt.Errorf("remote '%s' not found", remoteName)}
-		}
-		runner := session.NewSSHRunner(remoteName, rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		accounts, err := runner.FetchAccounts(ctx)
 		return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: accounts, err: err}
 	}
+}
+
+// remoteMCPsFetchedMsg carries the MCP names defined on a remote, for the
+// new-session dialog opened on that remote.
+type remoteMCPsFetchedMsg struct {
+	remoteName string
+	mcps       []string
+	err        error
+	// gen is the remoteAccountsGen value of the dialog opening that asked.
+	gen uint64
+}
+
+// fetchRemoteMCPs asks the remote for the MCP names in its own config
+// (`mcp list --json`, read-only). Only names come back; nothing local is sent.
+func (h *Home) fetchRemoteMCPs(remoteName string) tea.Cmd {
+	return func() tea.Msg {
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return remoteMCPsFetchedMsg{remoteName: remoteName, err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		mcps, err := runner.FetchMCPs(ctx)
+		return remoteMCPsFetchedMsg{remoteName: remoteName, mcps: mcps, err: err}
+	}
+}
+
+// applyRemoteMCPs is applyRemoteAccounts for the MCP row: the names reach
+// the dialog only when it is still open for that remote and this opening
+// asked; a failed fetch (offline host, or a remote too old for
+// `mcp list --json`) leaves the row hidden rather than offering local names.
+func (h *Home) applyRemoteMCPs(msg remoteMCPsFetchedMsg) {
+	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName || msg.gen != h.remoteAccountsGen {
+		return
+	}
+	h.newDialog.SetRemoteMCPs(msg.mcps)
 }
 
 // applyRemoteAccounts hands the fetched slot names to the dialog when it is
