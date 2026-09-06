@@ -28,6 +28,8 @@ Run the same command through `remote lab`. Output, JSON fields, diagnostics and 
 | `worktree cleanup --json` | `remote lab worktree cleanup --json` |
 | `mcp attach task memory` | `remote lab mcp attach task memory` |
 | `skill attach task review` | `remote lab skill attach task review` |
+| `group list --json` | `remote lab group list --json` |
+| `group reorder work --up` | `remote lab group reorder work --up` |
 
 Prefix every entry with `agent-deck`. The full `session show/output/send` forms also work remotely. Interactive attach uses the existing `agent-deck remote attach lab task` command. Other commands are rejected before execution; there is no local fallback. Interactive options such as `session start --attach` need a terminal and are better run from an SSH login.
 
@@ -58,3 +60,7 @@ Fields the remote `add` cannot express are refused with a message in the dialog 
 Remote-management commands such as `remote list` and `remote remove lab` operate on your local configuration. New remote names cannot match those command names. For an existing conflicting name, use the explicit execution form, for example `remote exec remove list --json`; ambiguous shorthand refuses to act. Rename the conflicting entry in your configuration before using the matching management command.
 
 If a worktree operation needs an approved repository setup script, pass `--allow-repo-scripts` after the remote name. The server applies that explicit consent. Normal cleanup confirmation still applies to destructive cleanup.
+
+## Reordering remote groups from the TUI
+
+Shift+Up/Down (and the K/J aliases) on a remote group header run `group reorder <path> --up|--down` on that remote, the same command its own TUI runs, so the new order is stored in the remote's state DB and is shown to everyone who lists that remote. Remote group headers follow the order the remote reports in `group list --json`; the footer says when the remote refused because the group is already first or last among its siblings. A remote running an agent-deck older than `group list --json` keeps listing its groups by name. Sessions inside a remote group keep their local, per-viewer order. The remote host header itself follows the `[remotes]` order in `config.toml`.

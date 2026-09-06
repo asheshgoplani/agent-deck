@@ -584,7 +584,8 @@ func TestSSHRunnerCreateSessionWithOptions_RefusedValueNeverContactsRemote(t *te
 // TestParseGroupListPaths pins the group-list flattener that backs
 // SSHRunner.FetchGroupPaths: `group list --json` returns a recursive tree
 // whose paths (including EMPTY groups — session_count 0) must all surface,
-// deduped and sorted, for the remote move/create dialogs.
+// deduped and in the remote's own order (siblings as listed, a parent before
+// its children), for the remote move/create dialogs and the group headers.
 func TestParseGroupListPaths(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -624,6 +625,21 @@ func TestParseGroupListPaths(t *testing.T) {
 			],"total_groups":1,"total_sessions":0}`,
 			want: []string{"a"},
 		},
+		{
+			// The remote lists siblings by their persisted Order, which is
+			// not name order once someone has reordered them; that order is
+			// the whole point of the list and must survive the flattening.
+			name: "remote order kept, not re-sorted by name",
+			input: `{"groups":[
+				{"name":"work","path":"work","session_count":1,
+				 "children":[
+					{"name":"zeta","path":"work/zeta","session_count":0},
+					{"name":"alpha","path":"work/alpha","session_count":0}
+				 ]},
+				{"name":"archive","path":"archive","session_count":0}
+			],"total_groups":4,"total_sessions":1}`,
+			want: []string{"work", "work/zeta", "work/alpha", "archive"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -656,5 +672,31 @@ func TestIsRemotePathMissing(t *testing.T) {
 	}
 	if IsRemotePathMissing(nil) {
 		t.Fatal("nil error treated as a missing path")
+	}
+}
+
+// The TUI forwards shift+up/down on a remote group header as `group reorder`
+// with the full path, and reads the remote's from/to positions back so a
+// refused edge move is never announced as a move.
+func TestRemoteGroupReorderArgsAndResult(t *testing.T) {
+	if got := strings.Join(remoteGroupReorderArgs("work/api", -1), " "); got != "group reorder work/api --up --json" {
+		t.Fatalf("up args = %q", got)
+	}
+	if got := strings.Join(remoteGroupReorderArgs("work", 1), " "); got != "group reorder work --down --json" {
+		t.Fatalf("down args = %q", got)
+	}
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"moved", `{"success":true,"name":"work","path":"work","from_position":1,"to_position":0}`, true},
+		{"already at edge", `{"success":true,"name":"work","path":"work","from_position":0,"to_position":0}`, false},
+		{"older remote, human output", "✓ Reordered group 'work': position 1 → 0\n", true},
+		{"empty output", "", true},
+	} {
+		if got := parseGroupReorderMoved([]byte(tc.output)); got != tc.want {
+			t.Errorf("%s: parseGroupReorderMoved = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

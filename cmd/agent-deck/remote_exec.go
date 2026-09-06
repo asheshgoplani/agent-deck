@@ -39,6 +39,13 @@ func remoteCommandArgs(args []string) ([]string, error) {
 			if len(args) > 1 && args[1] == "attach" {
 				return append([]string(nil), args...), nil
 			}
+		case "group":
+			if len(args) > 1 {
+				switch args[1] {
+				case "list", "reorder":
+					return append([]string(nil), args...), nil
+				}
+			}
 		}
 	}
 	return nil, fmt.Errorf("unsupported remote command %q; run 'agent-deck remote' for supported commands", strings.Join(args, " "))
