@@ -1529,8 +1529,12 @@ func (d *NewDialog) SetRemoteMCPs(names []string) {
 }
 
 // GetRemoteMCPs returns the picked remote MCP names in the remote's order,
-// for RemoteAddOptions.MCPs. A local opening never has any.
+// for RemoteAddOptions.MCPs. A local opening never has any, and neither does
+// a tool the remote `add --mcp` would refuse (the row is hidden for those).
 func (d *NewDialog) GetRemoteMCPs() []string {
+	if !d.hasRemoteMCPRow() {
+		return nil
+	}
 	var picked []string
 	for _, name := range d.remoteMCPs {
 		if d.remoteMCPChecked[name] {
@@ -1540,9 +1544,23 @@ func (d *NewDialog) GetRemoteMCPs() []string {
 	return picked
 }
 
-// hasRemoteMCPRow reports whether the remote MCP row is rendered and focusable.
+// hasRemoteMCPRow reports whether the remote MCP row is rendered and focusable:
+// the remote reported MCPs and the selected tool can attach them. The gate is
+// the same predicate the local m key uses (ToolSupportsMCPManager); without it
+// the remote `add` registers the session and then fails on the MCP write,
+// leaving an unstarted session behind on the server.
 func (d *NewDialog) hasRemoteMCPRow() bool {
-	return len(d.remoteMCPs) > 0
+	return len(d.remoteMCPs) > 0 && session.ToolSupportsMCPManager(d.resolveCommand())
+}
+
+// dropRemoteMCPPicksIfUnsupported clears the picks when the selected tool
+// cannot attach MCPs, so a pick made under claude never travels after the
+// user switches to shell or another tool without MCP support.
+func (d *NewDialog) dropRemoteMCPPicksIfUnsupported() {
+	if len(d.remoteMCPs) > 0 && !session.ToolSupportsMCPManager(d.resolveCommand()) {
+		d.remoteMCPChecked = nil
+		d.remoteMCPCursor = 0
+	}
 }
 
 // toggleRemoteMCP flips the pick under the cursor.
@@ -1819,6 +1837,7 @@ func (d *NewDialog) updateToolOptions() {
 	default:
 		d.toolOptions = nil
 	}
+	d.dropRemoteMCPPicksIfUnsupported()
 	d.rebuildFocusTargets()
 }
 

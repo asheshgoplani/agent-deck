@@ -195,3 +195,60 @@ func TestNewDialog_LocalOpening_HasNoRemoteMCPRow(t *testing.T) {
 		t.Fatalf("GetRemoteMCPs = %v for a local opening, want none", got)
 	}
 }
+
+// The row is offered only for a tool that can attach MCPs (the same predicate
+// the local m key uses). Switching to a tool without MCP support hides the
+// row and drops the picks, so the remote `add` never registers a session and
+// then fails on the MCP write.
+func TestRemoteDialog_MCPs_OnlyOfferedForToolsWithMCPSupport(t *testing.T) {
+	h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), "", "claude", "mcp-task")
+	model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen})
+	h = model.(*Home)
+	h.newDialog.SetSize(100, 50)
+	if !session.ToolSupportsMCPManager("claude") {
+		t.Fatal("precondition: claude must support MCP attach")
+	}
+	if !h.newDialog.hasRemoteMCPRow() || !strings.Contains(h.newDialog.View(), "MCPs (remote):") {
+		t.Fatal("claude must be offered the remote MCP row")
+	}
+	pickRemoteMCP(t, h, "github")
+
+	// Switch the tool to shell (preset index 0, never MCP-capable) the way a
+	// user does: focus the Tool pill and press Left from claude.
+	idx := h.newDialog.indexOf(focusCommand)
+	if idx < 0 {
+		t.Fatal("tool selector is not focusable")
+	}
+	h.newDialog.focusIndex = idx
+	h.newDialog.updateFocus()
+	for i := 0; i < len(h.newDialog.presetCommands) && h.newDialog.GetSelectedCommand() != ""; i++ {
+		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyLeft})
+	}
+	if got := h.newDialog.GetSelectedCommand(); got != "" {
+		t.Fatalf("selected tool = %q, want shell", got)
+	}
+	if session.ToolSupportsMCPManager(h.newDialog.resolveCommand()) {
+		t.Fatal("precondition: shell must not support MCP attach")
+	}
+	if h.newDialog.hasRemoteMCPRow() || h.newDialog.indexOf(focusRemoteMCPs) >= 0 {
+		t.Fatal("a tool without MCP support must not be offered the remote MCP row")
+	}
+	if strings.Contains(h.newDialog.View(), "MCPs (remote):") {
+		t.Fatal("the MCP row must not be rendered for a tool without MCP support")
+	}
+	opts, _ := h.newDialog.GetRemoteCreateOptions()
+	if len(opts.MCPs) != 0 {
+		t.Fatalf("MCPs = %v for a tool without MCP support, want none", opts.MCPs)
+	}
+
+	// Back to claude: the row returns, but the earlier pick was dropped, so
+	// nothing is forwarded unless the user picks again.
+	h.newDialog.SetDefaultTool("claude")
+	if !h.newDialog.hasRemoteMCPRow() {
+		t.Fatal("claude must be offered the remote MCP row again")
+	}
+	submitRemoteDialog(t, h)
+	if len(capture.opts.MCPs) != 0 {
+		t.Fatalf("MCPs = %v after switching tools, want none: the pick made under claude was dropped", capture.opts.MCPs)
+	}
+}
