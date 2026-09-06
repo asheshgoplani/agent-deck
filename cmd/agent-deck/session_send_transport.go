@@ -212,6 +212,13 @@ func sendTransportFromConfig() (value string, warn string) {
 // was written to the socket in that case, so it is exactly as safe as a
 // resolve()-time refusal. Only a *send.CommittedError (a write actually
 // started) is a hard failure with no fallback.
+//
+// On the socket branch it also records whether the target was mid-turn at
+// the moment of the write (targetBusyAtSend). A socket write does not
+// interrupt a running turn, so the completion that follows belongs to the
+// turn that was already in flight, not to this message — the --wait branch
+// uses this to refuse to attribute one to the other (maintainer review of
+// #2100).
 func performSend(
 	inst *session.Instance,
 	tmuxTarget sendRetryTarget,
@@ -231,7 +238,9 @@ func performSend(
 		resolve:         resolve,
 	})
 	if transport == transportSocket {
+		busy := targetBusyAtSend(tmuxTarget)
 		res, err := executeSocketSend(target, message, sendFn)
+		res.targetBusyAtSend = busy
 		if err != nil {
 			var unavail *send.Unavailable
 			if errors.As(err, &unavail) {
@@ -292,4 +301,32 @@ func executeSocketSend(
 		return sendDeliveryResult{delivery: deliverySocketWriteFailed, transport: "socket"}, err
 	}
 	return sendDeliveryResult{delivery: deliveryQueuedSocket, transport: "socket", socketMsgID: msgID}, nil
+}
+
+// targetBusyAtSend probes the target's status immediately before a socket
+// write and reports whether it is mid-turn. Conservative on a probe error or
+// an unreadable status: unknown counts as busy, because the cost of guessing
+// wrong is --wait attributing someone else's turn completion to this message
+// (maintainer review of #2100). Only the socket branch calls this; the tmux
+// path's own delivery semantics are unchanged.
+func targetBusyAtSend(checker statusChecker) bool {
+	if checker == nil {
+		return true
+	}
+	status, err := checker.GetStatus()
+	if err != nil {
+		return true
+	}
+	return status == "active"
+}
+
+// shouldSkipWaitForBusyTarget reports whether `--wait` must decline to wait
+// for this send's completion. Only the socket transport can hit it: a socket
+// write lands in the target's inbox without interrupting a running turn, so
+// a target that was already mid-turn will finish THAT turn next, and
+// attributing it to this message would be wrong. The tmux path submits into
+// the composer and is unaffected, so it never consults the probe (maintainer
+// review of #2100).
+func shouldSkipWaitForBusyTarget(res sendDeliveryResult) bool {
+	return res.transport == "socket" && res.targetBusyAtSend
 }

@@ -2699,7 +2699,7 @@ func handleSessionSend(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
-	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (on a socket send, first waits up to 30s for the turn to start)")
+	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (on a socket send, first waits up to 30s for the turn to start; returns immediately with wait_outcome=unverified_busy_target if the target was already mid-turn)")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
@@ -2968,6 +2968,18 @@ func handleSessionSend(profile string, args []string) {
 			sendRes.draftSaved)
 	}
 
+	// A socket write does not interrupt a running turn: it lands in the
+	// target's inbox and is picked up at the next turn boundary. So when the
+	// target was already mid-turn at the moment of the write, the next
+	// completion --wait would observe is the completion of the turn that was
+	// ALREADY running, and printing its output as this message's response is
+	// a wrong attribution. There is no in-band receipt to correlate against
+	// (§Step 3, maintainer review of #2100), so --wait reports the outcome as
+	// explicitly unverified rather than guessing. It is not an error — the
+	// write itself succeeded — so the exit code stays 0, and the message is
+	// never resent on tmux.
+	waitUnverifiedBusy := *wait && shouldSkipWaitForBusyTarget(sendRes)
+
 	if !*stream {
 		data := map[string]interface{}{
 			"success":       true,
@@ -2977,6 +2989,9 @@ func handleSessionSend(profile string, args []string) {
 		}
 		for k, v := range sendRes.jsonFields() {
 			data[k] = v
+		}
+		if waitUnverifiedBusy {
+			data["wait_outcome"] = waitOutcomeUnverifiedBusyTarget
 		}
 		// The socket path cannot claim delivery the way tmux's submit
 		// verification can: the write completed, and Claude's inbox says
@@ -3005,6 +3020,16 @@ func handleSessionSend(profile string, args []string) {
 
 	// If --wait, block until the agent finishes processing, then print output
 	if *wait {
+		if waitUnverifiedBusy {
+			// No completion wait, no session-ID refresh, no output: see the
+			// waitUnverifiedBusy comment above. The stderr line is the only
+			// signal for a non-JSON caller, which would otherwise see --wait
+			// return instantly with nothing.
+			fmt.Fprintf(os.Stderr,
+				"Warning: '%s' was mid-turn when this message was written to its inbox, so its next completion cannot be attributed to this message; --wait returned without waiting (wait_outcome: %s)\n",
+				inst.Title, waitOutcomeUnverifiedBusyTarget)
+			return
+		}
 		finalStatus, err := waitAfterSend(tmuxSess, sendRes.transport, *timeout)
 		if err != nil {
 			out.Error(fmt.Sprintf("timeout waiting for completion: %v", err), ErrCodeInvalidOperation)
@@ -3140,6 +3165,13 @@ const (
 	deliverySocketWriteFailed = "socket_write_failed"
 )
 
+// waitOutcomeUnverifiedBusyTarget is the `wait_outcome` value `session send
+// --wait` reports when it declined to wait at all: the target was mid-turn
+// when the message was written to its socket inbox, so no completion it
+// observes can be attributed to this message (maintainer review of #2100).
+// Part of the --json contract; exit code stays 0.
+const waitOutcomeUnverifiedBusyTarget = "unverified_busy_target"
+
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
 type sendDeliveryResult struct {
 	// delivery is one of the delivery* constants above.
@@ -3173,6 +3205,11 @@ type sendDeliveryResult struct {
 	// socketMsgID is the msg_id SendOverClaudeSocket generated, set only on
 	// a successful socket send.
 	socketMsgID string
+	// targetBusyAtSend reports that the target was mid-turn when the socket
+	// write happened (socket transport only). Set from a status probe taken
+	// immediately before the write; a failed probe sets it too, since
+	// "unknown" has to count as busy here (maintainer review of #2100).
+	targetBusyAtSend bool
 }
 
 // jsonFields returns the delivery-status fields added to `session send`
@@ -3196,6 +3233,11 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 		// flip this today. The field exists so a caller can distinguish
 		// "written, unconfirmed" from a future receipt path that confirms.
 		fields["acknowledged"] = false
+		if r.targetBusyAtSend {
+			// Only surfaced when true: its absence is the common case and
+			// carries no information.
+			fields["target_busy_at_send"] = true
+		}
 	}
 	if ms := r.held.Milliseconds(); ms > 0 {
 		fields["held_for_composer_ms"] = ms
