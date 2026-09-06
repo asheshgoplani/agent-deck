@@ -103,8 +103,8 @@ func TestRemoteCommandParity(t *testing.T) {
 		{"session", "stop", "missing", "--json"}, {"session", "restart", "missing", "--json"},
 		{"session", "archive", "missing", "--json"}, {"session", "unarchive", "missing", "--json"},
 		{"session", "fork", "missing", "--json"},
-		{"worktree", "info", "missing", "--json"}, {"mcp", "attach", "missing", "none", "--json"},
-		{"skill", "attach", "missing", "none"},
+		{"worktree", "info", "missing", "--json"}, {"mcp", "list", "--json"}, {"mcp", "attach", "missing", "none", "--json"},
+		{"skill", "list", "--json"}, {"skill", "attach", "missing", "none"},
 	} {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
 			local, localErr, localCode := run(remote, "", args...)

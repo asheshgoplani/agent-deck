@@ -25,6 +25,8 @@ type remoteCreateCapture struct {
 	// accountsFetchedFor records the remotes whose account slots the dialog
 	// asked for when it opened; the real fetch goes over SSH.
 	accountsFetchedFor []string
+	// mcpsFetchedFor is the same for the remote's MCP names.
+	mcpsFetchedFor []string
 }
 
 func (c *remoteCreateCapture) sink(remoteName string, opts session.RemoteAddOptions) tea.Cmd {
@@ -38,9 +40,15 @@ func (c *remoteCreateCapture) accountsFetcher(remoteName string) tea.Cmd {
 	return nil
 }
 
+func (c *remoteCreateCapture) mcpsFetcher(remoteName string) tea.Cmd {
+	c.mcpsFetchedFor = append(c.mcpsFetchedFor, remoteName)
+	return func() tea.Msg { return nil }
+}
+
 // newRemoteHome builds a Home whose cursor sits on the given remote item, with
-// this machine's config.toml set to configTOML (empty for none) and the two
-// SSH paths the dialog can reach (create, account fetch) replaced by captures.
+// this machine's config.toml set to configTOML (empty for none) and the three
+// SSH paths the dialog can reach (create, account fetch, MCP fetch) replaced
+// by captures.
 func newRemoteHome(t *testing.T, item session.Item, configTOML string) (*Home, *remoteCreateCapture) {
 	t.Helper()
 	home := setXDGTestHome(t)
@@ -55,6 +63,7 @@ func newRemoteHome(t *testing.T, item session.Item, configTOML string) (*Home, *
 	capture := &remoteCreateCapture{}
 	h.remoteCreateSink = capture.sink
 	h.remoteAccountsFetcher = capture.accountsFetcher
+	h.remoteMCPsFetcher = capture.mcpsFetcher
 	return h, capture
 }
 
