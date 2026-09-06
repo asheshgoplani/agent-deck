@@ -12178,6 +12178,8 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		// The remote snapshot is written on a 30 s debounce; quit writes
 		// whatever is pending so the next start renders the fleet as last seen.
 		h.flushRemoteSessionsCache(true)
+		// TODO(channel owner): call session.CloseRemoteChannels() here once
+		// it exists, so no ssh child or remote agent outlives the TUI.
 		// Save both instances AND groups on quit (critical fix: was losing groups!)
 		h.saveInstances()
 
