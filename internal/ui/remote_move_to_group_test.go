@@ -32,6 +32,7 @@ agent_deck_path = "/usr/local/bin/agent-deck"
 profile = "work"
 `)
 
+	setXDGTestHome(t)
 	home := NewHome()
 	home.width = 120
 	home.height = 40
@@ -129,6 +130,7 @@ func TestRemoteMoveToGroup_MKeyIncludesEmptyGroups(t *testing.T) {
 // Home.remoteGroups (guarded by remoteSessionsMu), which is what the M move
 // dialog reads to offer empty remote folders.
 func TestRemoteSessionsFetchedMsgPopulatesGroupCache(t *testing.T) {
+	setXDGTestHome(t)
 	home := NewHome()
 	home.width = 120
 	home.height = 40
@@ -193,6 +195,7 @@ func TestRemoteMoveToGroup_EnterReturnsMoveCmd(t *testing.T) {
 func TestRemoteMoveToGroup_LocalSessionStillUsesLocalTree(t *testing.T) {
 	withTempAgentDeckHome(t, "")
 
+	setXDGTestHome(t)
 	home := NewHome()
 	home.width = 120
 	home.height = 40

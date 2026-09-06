@@ -73,6 +73,7 @@ agent_deck_path = "/usr/local/bin/agent-deck"
 profile = "work"
 `)
 
+	setXDGTestHome(t)
 	home := NewHome()
 	home.width = 120
 	home.height = 40
@@ -126,6 +127,7 @@ agent_deck_path = "/usr/local/bin/agent-deck"
 profile = "work"
 `)
 
+	setXDGTestHome(t)
 	home := NewHome()
 	home.width = 120
 	home.height = 40
@@ -153,6 +155,7 @@ profile = "work"
 func TestRemoteCreateGroup_LocalSessionStillCreatesLocally(t *testing.T) {
 	withTempAgentDeckHome(t, "")
 
+	setXDGTestHome(t)
 	home := NewHome()
 	home.width = 120
 	home.height = 40
@@ -190,6 +193,7 @@ func TestRemoteCreateGroup_LocalSessionStillCreatesLocally(t *testing.T) {
 // cached group list so the M move dialog offers it immediately (before the
 // next fleet poll re-confirms from the remote's own DB).
 func TestRemoteGroupResultMsgPatchesCache(t *testing.T) {
+	setXDGTestHome(t)
 	home := NewHome()
 	home.width = 120
 	home.height = 40
