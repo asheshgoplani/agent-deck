@@ -263,34 +263,9 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
 
-	// Command Center (the embedded live fleet god-view — see
-	// conductor/agent-deck/COMMAND-CENTER-DESIGN.md). Two read endpoints and
-	// one write endpoint, all behind the existing authorize/CSRF/mutation gates.
-	mux.HandleFunc("/api/command-center/status", s.handleCommandCenterStatus)
-	mux.HandleFunc("/events/command-center", s.handleCommandCenterEvents)
-	mux.HandleFunc("POST /api/command-center/ask", s.handleCommandCenterAsk)
-
-	mux.HandleFunc("/api/costs/summary", s.handleCostsSummary)
-	mux.HandleFunc("/api/costs/daily", s.handleCostsDaily)
-	mux.HandleFunc("/api/costs/sessions", s.handleCostsSessions)
-	mux.HandleFunc("/api/costs/models", s.handleCostsModels)
-	mux.HandleFunc("/api/costs/export", s.handleCostsExport)
-	mux.HandleFunc("/api/costs/groups", s.handleCostsGroups)
-	mux.HandleFunc("/api/costs/session", s.handleCostsSessionDetail)
-	mux.HandleFunc("/api/costs/batch", s.handleCostsBatch)
-	mux.HandleFunc("/api/costs/stream", s.handleCostsStream)
-
-	mux.HandleFunc("/api/system/stats", s.handleSystemStats)
-
-	mux.HandleFunc("/api/skills", s.handleSkillsCatalog)
-
-	// MCP management (Web UI parity with TUI `m` key dialog). Closes the
-	// four MISSING rows under "MCP MANAGEMENT" in PARITY_MATRIX.md.
-	mux.HandleFunc("/api/mcps", s.handleMCPsCatalog)
-	mux.HandleFunc("GET /api/sessions/{id}/mcps", s.handleSessionMCPsRouter)
-	mux.HandleFunc("POST /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
-	mux.HandleFunc("DELETE /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
-	mux.HandleFunc("PATCH /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
+	// Feature routes (command center, costs, system, skills, MCPs) register
+	// themselves from their handlers_<feature>.go files; see routes.go.
+	s.mountFeatureRoutes(mux)
 
 	handler := withRecover(s.csrfProtect(mux))
 
