@@ -3063,6 +3063,11 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(response.Content)
+		if sendRes.transport == "socket" {
+			// The payload already says verified: false; say it on stderr too
+			// so a human reading the terminal sees the same caveat.
+			fmt.Fprintln(os.Stderr, sendUncorrelatedOutputNote())
+		}
 
 		// Exit 1 for error/inactive status
 		if finalStatus == "inactive" || finalStatus == "error" {
@@ -3160,27 +3165,56 @@ const (
 	deliverySocketWriteFailed = "socket_write_failed"
 )
 
-// The `wait_outcome` values `session send --wait` reports when it declined
-// to wait at all, because no completion it observed could be attributed to
-// this message. Part of the --json contract; exit code stays 0 for both, and
-// neither ever retries on tmux — the socket write is already committed.
+// The `wait_outcome` values `session send --wait` reports on the socket
+// transport. There are three, and NONE of them claims the observed turn
+// belongs to this message, because nothing on this transport can establish
+// that: Claude's inbox returns no receipt, so waitForTurnStart,
+// waitForCompletion and waitForFreshOutput all key off target status and
+// wall-clock timestamps that are not tied to any message id (CodeRabbit on
+// e94b296c). Every socket --wait therefore also carries `verified: false`.
+// Part of the --json contract; exit code stays 0 for all three, and none
+// ever retries on tmux — the socket write is already committed. The tmux
+// transport reports neither key: its submit verification is a real
+// pane-observed signal for the message it just typed.
 const (
 	// waitOutcomeUnverifiedBusyTarget: the target was confirmed mid-turn
 	// when the message was written to its socket inbox, so the next
-	// completion belongs to the turn already in flight.
+	// completion belongs to the turn already in flight. --wait declines to
+	// wait and prints no output.
 	waitOutcomeUnverifiedBusyTarget = "unverified_busy_target"
 	// waitOutcomeUnverifiedBusyProbeFailed: the pre-write probe could read
 	// no status, so the target could not be confirmed idle. Distinct from
 	// the above because nothing established that it was generating (round-2
-	// review of #2100).
+	// review of #2100). --wait declines to wait and prints no output.
 	waitOutcomeUnverifiedBusyProbeFailed = "unverified_busy_probe_failed"
+	// waitOutcomeObservedNotCorrelated: the probe read idle, so --wait ran
+	// the normal turn-start-then-completion pipeline and printed real
+	// output. The output is a turn that was observed after the write, not a
+	// turn proven to be this message's: a turn starting in the window
+	// between the idle probe and the write would be reported here just the
+	// same. Honest naming for the case that DOES return output, rather than
+	// letting its silence imply a correlation that was never established.
+	waitOutcomeObservedNotCorrelated = "observed_not_correlated"
 )
+
+// sendUncorrelatedOutputNote is the stderr line printed after a socket
+// --wait prints output: the payload says `verified: false`, and a human
+// reading the terminal deserves the same caveat.
+func sendUncorrelatedOutputNote() string {
+	return "Note: output is turn-observed, not correlated to this message (socket delivery has no receipt); a turn that started between the idle probe and the write would be misattributed."
+}
 
 // sendSuccessData assembles the --json success payload for one completed
 // send: the identity fields, every delivery field jsonFields reports, and —
-// when --wait was asked for but declined to wait — the wait_outcome naming
-// why. handleSessionSend calls exactly this, so a test of this function is a
-// test of what the CLI actually emits (round-2 review of #2100).
+// on a socket send with --wait — the wait_outcome plus `verified: false`.
+//
+// Every socket --wait gets both keys, including the one that returns real
+// output (waitOutcomeObservedNotCorrelated): see the wait_outcome constants
+// for why none of the three can claim correlation. A tmux --wait gets
+// neither, and no send without --wait gets either, since there is no wait
+// outcome to describe. handleSessionSend calls exactly this, so a test of
+// this function is a test of what the CLI actually emits (round-2 review of
+// #2100; CodeRabbit on e94b296c).
 func sendSuccessData(inst *session.Instance, message string, res sendDeliveryResult, wait bool) map[string]interface{} {
 	data := map[string]interface{}{
 		"success":       true,
@@ -3192,8 +3226,9 @@ func sendSuccessData(inst *session.Instance, message string, res sendDeliveryRes
 		data[k] = v
 	}
 	if wait {
-		if outcome := skippedWaitOutcome(res); outcome != "" {
+		if outcome := socketWaitOutcome(res); outcome != "" {
 			data["wait_outcome"] = outcome
+			data["verified"] = false
 		}
 	}
 	return data

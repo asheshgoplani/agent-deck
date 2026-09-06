@@ -536,16 +536,20 @@ func TestSendSuccessData(t *testing.T) {
 		wantFailPresent bool
 	}{
 		{
-			name:        "tmux send never carries a wait outcome",
+			// tmux submit verification IS correlated to the message it just
+			// typed, so neither key appears on that path.
+			name:        "tmux send carries neither wait_outcome nor verified",
 			res:         sendDeliveryResult{delivery: deliverySubmitted, transport: "tmux"},
 			wait:        true,
 			wantOutcome: nil,
 		},
 		{
-			name:        "idle socket send waits normally",
+			// The idle-probe path returns real output, and still cannot
+			// claim the turn it observed was this message's.
+			name:        "idle socket send waits, but reports observed_not_correlated",
 			res:         sendDeliveryResult{delivery: deliveryQueuedSocket, transport: "socket", socketMsgID: "m1"},
 			wait:        true,
-			wantOutcome: nil,
+			wantOutcome: waitOutcomeObservedNotCorrelated,
 		},
 		{
 			name:            "busy socket send is unverified_busy_target",
@@ -588,18 +592,83 @@ func TestSendSuccessData(t *testing.T) {
 				t.Errorf("identity fields wrong: %+v", data)
 			}
 			got, present := data["wait_outcome"]
+			verified, verifiedPresent := data["verified"]
 			if tc.wantOutcome == nil {
 				if present {
 					t.Errorf("wait_outcome = %v, want absent", got)
 				}
-			} else if got != tc.wantOutcome {
-				t.Errorf("wait_outcome = %v, want %v", got, tc.wantOutcome)
+				// verified rides with wait_outcome: both or neither.
+				if verifiedPresent {
+					t.Errorf("verified = %v, want absent when there is no wait_outcome", verified)
+				}
+			} else {
+				if got != tc.wantOutcome {
+					t.Errorf("wait_outcome = %v, want %v", got, tc.wantOutcome)
+				}
+				// Every socket --wait outcome is unverified, including the
+				// one that returns output.
+				if verified != false {
+					t.Errorf("verified = %v (present=%v), want false alongside wait_outcome %v", verified, verifiedPresent, got)
+				}
 			}
 			if _, p := data["target_busy_at_send"]; p != tc.wantBusyPresent {
 				t.Errorf("target_busy_at_send present = %v, want %v", p, tc.wantBusyPresent)
 			}
 			if _, p := data["busy_probe_failed"]; p != tc.wantFailPresent {
 				t.Errorf("busy_probe_failed present = %v, want %v", p, tc.wantFailPresent)
+			}
+		})
+	}
+}
+
+// TestSendUncorrelatedOutputNote pins the wording of the stderr caveat that
+// follows a socket --wait's output: it must say the output is turn-observed
+// rather than correlated, and name the probe-to-write window as the reason.
+func TestSendUncorrelatedOutputNote(t *testing.T) {
+	note := sendUncorrelatedOutputNote()
+	for _, want := range []string{
+		"turn-observed",
+		"not correlated to this message",
+		"no receipt",
+		"between the idle probe and the write",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note %q is missing %q", note, want)
+		}
+	}
+}
+
+// TestSocketWaitOutcome: the tmux transport reports no outcome; each socket
+// probe state maps to exactly one of the three, and the idle state is the
+// one that still runs the wait (so skippedWaitOutcome filters it out).
+func TestSocketWaitOutcome(t *testing.T) {
+	cases := []struct {
+		name        string
+		res         sendDeliveryResult
+		want        string
+		wantSkipped string
+	}{
+		{"tmux", sendDeliveryResult{transport: "tmux"}, "", ""},
+		{
+			"socket idle probe", sendDeliveryResult{transport: "socket"},
+			waitOutcomeObservedNotCorrelated, "",
+		},
+		{
+			"socket confirmed busy", sendDeliveryResult{transport: "socket", targetBusyAtSend: true},
+			waitOutcomeUnverifiedBusyTarget, waitOutcomeUnverifiedBusyTarget,
+		},
+		{
+			"socket probe failed", sendDeliveryResult{transport: "socket", busyProbeFailed: true},
+			waitOutcomeUnverifiedBusyProbeFailed, waitOutcomeUnverifiedBusyProbeFailed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := socketWaitOutcome(tc.res); got != tc.want {
+				t.Errorf("socketWaitOutcome = %q, want %q", got, tc.want)
+			}
+			if got := skippedWaitOutcome(tc.res); got != tc.wantSkipped {
+				t.Errorf("skippedWaitOutcome = %q, want %q", got, tc.wantSkipped)
 			}
 		})
 	}

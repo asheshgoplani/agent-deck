@@ -452,18 +452,12 @@ func classifyBusyStatus(status string) busyProbeResult {
 	return busyProbeIdle
 }
 
-// skippedWaitOutcome returns the `wait_outcome` value for a send whose
-// `--wait` must not wait, or "" when --wait proceeds normally. Only the
-// socket transport can hit it: a socket write lands in the target's inbox
-// without interrupting a running turn, so a target that was already mid-turn
-// will finish THAT turn next, and attributing it to this message would be
-// wrong. The tmux path submits into the composer and is unaffected, so it
-// never consults the probe (maintainer review of #2100).
-//
-// A failed probe declines to wait for the same reason but reports a
-// different outcome: nothing established that the target was generating, so
-// saying it was would be a fabricated fact (round-2 review of #2100).
-func skippedWaitOutcome(res sendDeliveryResult) string {
+// socketWaitOutcome returns the `wait_outcome` a socket send reports under
+// --wait, or "" for the tmux transport, which reports none. All three socket
+// values are named at the constants; the common thread is that none of them
+// claims the observed turn is this message's, because the transport has no
+// receipt to correlate against (CodeRabbit on e94b296c).
+func socketWaitOutcome(res sendDeliveryResult) string {
 	if res.transport != "socket" {
 		return ""
 	}
@@ -472,6 +466,28 @@ func skippedWaitOutcome(res sendDeliveryResult) string {
 		return waitOutcomeUnverifiedBusyProbeFailed
 	case res.targetBusyAtSend:
 		return waitOutcomeUnverifiedBusyTarget
+	}
+	return waitOutcomeObservedNotCorrelated
+}
+
+// skippedWaitOutcome returns the `wait_outcome` value for a send whose
+// `--wait` must not wait at all, or "" when --wait proceeds normally. Only
+// the socket transport can hit it: a socket write lands in the target's
+// inbox without interrupting a running turn, so a target that was already
+// mid-turn will finish THAT turn next, and attributing it to this message
+// would be wrong. The tmux path submits into the composer and is unaffected,
+// so it never consults the probe (maintainer review of #2100).
+//
+// A failed probe declines to wait for the same reason but reports a
+// different outcome: nothing established that the target was generating, so
+// saying it was would be a fabricated fact (round-2 review of #2100).
+//
+// An idle probe is NOT skipped — --wait runs normally and prints output —
+// so waitOutcomeObservedNotCorrelated is filtered out here. It still reaches
+// the payload, via socketWaitOutcome.
+func skippedWaitOutcome(res sendDeliveryResult) string {
+	if outcome := socketWaitOutcome(res); outcome != waitOutcomeObservedNotCorrelated {
+		return outcome
 	}
 	return ""
 }
