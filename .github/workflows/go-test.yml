@@ -107,6 +107,10 @@ jobs:
             packages: ./internal/ui/... ./internal/web/... ./tests/...
           - name: rest
             packages: REST
+          # The shared-state ordering proof (scripts/ci-shared-state-proof.sh)
+          # runs beside the shards instead of after them.
+          - name: proof
+            packages: PROOF
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -133,6 +137,8 @@ jobs:
         run: |
           if [ "${{ matrix.shard.packages }}" = "REST" ]; then
             pkgs=$(go list ./... | grep -vE '/cmd/|/internal/session|/internal/ui|/internal/web|/tests/' | tr '\n' ' ')
+          elif [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
+            pkgs="PROOF"
           else
             pkgs="${{ matrix.shard.packages }}"
           fi
@@ -145,7 +151,9 @@ jobs:
           PERF_BUDGET_MULTIPLIER: '2.0'
         run: |
           go install gotest.tools/gotestsum@v1.13.0
-          if [ -n "${{ matrix.shard.run }}" ]; then
+          if [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
+            bash scripts/ci-shared-state-proof.sh
+          elif [ -n "${{ matrix.shard.run }}" ]; then
             gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m -run '${{ matrix.shard.run }}'
           else
             gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m
@@ -174,31 +182,6 @@ jobs:
           fi
           echo "A shard failed or was cancelled."; exit 1
 
-      - name: Checkout
-        if: needs.changes.outputs.go == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        if: needs.changes.outputs.go == 'true'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
-        with:
-          go-version-file: go.mod
-
-      - name: Install tmux and zoxide
-        if: needs.changes.outputs.go == 'true'
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y tmux zoxide
-
-      # The ordinary suite above covers shared-state and real-process tests.
-      # This bounded additional gate includes the test-only observer lock fixture.
-      - name: Verify shared-state ordering proofs
-        if: needs.changes.outputs.go == 'true'
-        timeout-minutes: 5
-        run: bash scripts/ci-shared-state-proof.sh
 
   native-ssh:
     name: Required native SSH acceptance
