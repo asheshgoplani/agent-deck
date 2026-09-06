@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.3] - 2026-09-06
+
+Changes on a remote deck reach the local TUI within about a second instead of at the next poll, and the PR gate runs in a third of the time.
+
+### Added
+
+- One persistent channel per remote: the TUI opens a single ssh session to the new `agent-deck remote-agent` and sends every remote command over it as JSON lines; the agent pushes the fresh listings whenever the remote's state changes (content-gated, so the TUI's own reads never feed back), and the TUI applies them at once. A remote running an older build keeps working over per-command ssh; `AGENT_DECK_REMOTE_CHANNEL=0` disables the channel ([#2177](https://github.com/asheshgoplani/agent-deck/pull/2177), part of #2174).
+
+### Changed
+
+- CI: the `Full test suite (PR gate)` runs as seven shards (cmd split three ways by test name, session, ui+web+tests, the rest, and the shared-state proof) with an aggregating gate under the same required name; wall clock about 6.5 minutes instead of 12 ([#2175](https://github.com/asheshgoplani/agent-deck/pull/2175), part of #2169).
+
 ## [1.16.2] - 2026-09-06
 
 A remote deck no longer waits on the network to update the screen, and every remote action reports how long it took.
