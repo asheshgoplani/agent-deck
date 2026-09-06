@@ -91,6 +91,39 @@ describe("Remote Session Creation", () => {
     console.log(`  Created+started: ${newSession.title} (${sessionId}) status=${newSession.status}`);
   });
 
+  // The TUI's remote new-session dialog forwards its fields as explicit
+  // `add` flags (title, tool, model, account, worktree, sandbox, ...). Exercise
+  // the non-default shape too, so a remote whose `add` rejects one of the
+  // forwarded flags shows up here rather than as a silent TUI failure.
+  test("add with explicit title, tool and model creates the configured session", async ({ terminal }) => {
+    if (!ensureConfigured()) return;
+
+    const title = `e2e-remote-options-${Date.now()}`;
+    const create = await terminal.run(
+      remoteCmd(`add --json -t '${title}' -c claude --model sonnet`),
+    );
+    if (create.code !== 0) {
+      throw new Error(`add with options failed (exit ${create.code}): ${create.stderr || create.stdout}`);
+    }
+    let result: any;
+    try {
+      result = JSON.parse(create.stdout);
+    } catch {
+      throw new Error(`Failed to parse add output: ${create.stdout}`);
+    }
+    if (!result.id) throw new Error("add returned empty session ID");
+    if (result.title !== title) {
+      throw new Error(`Expected title ${title}, got ${result.title}`);
+    }
+
+    const show = await terminal.run(remoteCmd(`session show ${result.id} --json`), { silent: true });
+    const shown = JSON.parse(show.stdout);
+    if (shown.tool !== "claude") {
+      throw new Error(`Expected tool claude, got ${shown.tool}`);
+    }
+    console.log(`  Created with options: ${shown.title} (${result.id}) tool=${shown.tool}`);
+  });
+
   test("session is attachable after create+start", async ({ terminal }) => {
     if (!ensureConfigured()) return;
 

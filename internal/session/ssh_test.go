@@ -172,10 +172,9 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 // argument is sent.
 func TestRemoteAddArgs(t *testing.T) {
 	cases := []struct {
-		name                     string
-		tool, title, path, group string
-		sandbox                  bool
-		want                     []string
+		name string
+		opts RemoteAddOptions
+		want []string
 	}{
 		{
 			name: "defaults (quick shell, remote CWD)",
@@ -183,50 +182,136 @@ func TestRemoteAddArgs(t *testing.T) {
 		},
 		{
 			name: "tool and title from dialog",
-			tool: "claude", title: "my task", path: ".",
+			opts: RemoteAddOptions{Tool: "claude", Title: "my task", Path: "."},
 			want: []string{"add", "--json", "-t", "my task", "-c", "claude"},
 		},
 		{
 			name: "group from dialog",
-			tool: "claude", title: "my task", group: "work", path: ".",
+			opts: RemoteAddOptions{Tool: "claude", Title: "my task", Group: "work", Path: "."},
 			want: []string{"add", "--json", "-t", "my task", "-g", "work", "-c", "claude"},
 		},
 		{
 			name: "explicit remote path",
-			tool: "codex", title: "fix", path: "/srv/project",
+			opts: RemoteAddOptions{Tool: "codex", Title: "fix", Path: "/srv/project"},
 			want: []string{"add", "--json", "-t", "fix", "-c", "codex", "/srv/project"},
 		},
 		{
 			name: "tool without title auto-names via --quick",
-			tool: "pi",
+			opts: RemoteAddOptions{Tool: "pi"},
 			want: []string{"add", "--json", "--quick", "-c", "pi"},
 		},
 		{
 			name: "whitespace-only values fall back to defaults",
-			tool: "  ", title: " ", group: " ", path: " . ",
+			opts: RemoteAddOptions{Tool: "  ", Title: " ", Group: " ", Path: " . ", Account: " ", Model: " ", WorktreeBranch: " ", MCPs: []string{" "}, ExtraArgs: []string{""}},
 			want: []string{"add", "--json", "--quick"},
 		},
 		{
 			name: "docker sandbox checkbox is forwarded before the path",
-			tool: "claude", title: "sandboxed", path: "/srv/project", sandbox: true,
+			opts: RemoteAddOptions{Tool: "claude", Title: "sandboxed", Path: "/srv/project", Sandbox: true},
 			want: []string{"add", "--json", "-t", "sandboxed", "-c", "claude", "-sandbox", "/srv/project"},
 		},
 		{
 			name: "docker sandbox with quick name and remote CWD",
-			tool: "claude", sandbox: true,
+			opts: RemoteAddOptions{Tool: "claude", Sandbox: true},
 			want: []string{"add", "--json", "--quick", "-c", "claude", "-sandbox"},
+		},
+		{
+			name: "account slot is forwarded by name for the server to resolve",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", Account: "alice"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--account", "alice"},
+		},
+		{
+			name: "model override is forwarded",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", Model: "opus"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--model", "opus"},
+		},
+		{
+			name: "MCP names are forwarded as repeated --mcp",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", MCPs: []string{"memory", "github"}},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--mcp", "memory", "--mcp", "github"},
+		},
+		{
+			name: "resume session id is forwarded",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", ResumeSessionID: "abc-123"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--resume-session", "abc-123"},
+		},
+		{
+			name: "claude toggles travel as repeated --extra-arg tokens",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", ExtraArgs: []string{"--dangerously-skip-permissions", "--effort", "high", "--chrome"}},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "--extra-arg", "--dangerously-skip-permissions", "--extra-arg", "--effort", "--extra-arg", "high", "--extra-arg", "--chrome"},
+		},
+		{
+			name: "yolo is forwarded for codex and gemini",
+			opts: RemoteAddOptions{Tool: "codex", Title: "t", Yolo: true},
+			want: []string{"add", "--json", "-t", "t", "-c", "codex", "--yolo"},
+		},
+		{
+			name: "worktree branch is forwarded as -w before the path",
+			opts: RemoteAddOptions{Tool: "claude", Title: "t", Path: "/srv/repo", WorktreeBranch: "feature/x"},
+			want: []string{"add", "--json", "-t", "t", "-c", "claude", "-w", "feature/x", "/srv/repo"},
+		},
+		{
+			name: "everything at once keeps a stable order",
+			opts: RemoteAddOptions{
+				Tool: "claude", Title: "all", Path: "/srv/repo", Group: "work", Sandbox: true,
+				Account: "alice", Model: "opus", MCPs: []string{"memory"}, ResumeSessionID: "abc",
+				ExtraArgs: []string{"--chrome"}, Yolo: true, WorktreeBranch: "feature/all",
+			},
+			want: []string{"add", "--json", "-t", "all", "-g", "work", "-c", "claude", "-sandbox",
+				"--account", "alice", "--model", "opus", "--mcp", "memory", "--resume-session", "abc",
+				"--extra-arg", "--chrome", "--yolo", "-w", "feature/all", "/srv/repo"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := remoteAddArgs(tc.tool, tc.title, tc.path, tc.group, tc.sandbox)
-			if len(got) != len(tc.want) {
-				t.Fatalf("remoteAddArgs(%q,%q,%q,%q,%v) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, tc.sandbox, got, tc.want)
+			got, err := remoteAddArgs(tc.opts)
+			if err != nil {
+				t.Fatalf("remoteAddArgs(%+v) error = %v", tc.opts, err)
 			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("remoteAddArgs(%q,%q,%q,%q,%v) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, tc.sandbox, got, tc.want)
-				}
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("remoteAddArgs(%+v) = %q, want %q", tc.opts, got, tc.want)
+			}
+		})
+	}
+}
+
+// Values that would silently mean something else on the server are refused
+// before any SSH round trip, with an error that names the value.
+func TestRemoteAddArgs_RejectsUnforwardableValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		opts    RemoteAddOptions
+		wantErr string
+	}{
+		{
+			name:    "absolute config directory as account",
+			opts:    RemoteAddOptions{Tool: "claude", Account: "/Users/me/.claude-work"},
+			wantErr: "config directory",
+		},
+		{
+			name:    "home-relative config directory as account",
+			opts:    RemoteAddOptions{Tool: "claude", Account: "~/.claude-work"},
+			wantErr: "config directory",
+		},
+		{
+			name:    "relative config directory as account",
+			opts:    RemoteAddOptions{Tool: "claude", Account: "./claude-work"},
+			wantErr: "config directory",
+		},
+		{
+			name:    "flag and value fused into one extra-arg token",
+			opts:    RemoteAddOptions{Tool: "claude", ExtraArgs: []string{"--model opus"}},
+			wantErr: "separate --extra-arg tokens",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := remoteAddArgs(tc.opts)
+			if err == nil {
+				t.Fatalf("remoteAddArgs(%+v) = %q, want error containing %q", tc.opts, got, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("remoteAddArgs(%+v) error = %q, want it to contain %q", tc.opts, err, tc.wantErr)
 			}
 		})
 	}
@@ -247,7 +332,9 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 		},
 	}
 
-	id, err := runner.CreateSessionWithOptions(context.Background(), "codex", "Remote Work", "~/project", "work", true)
+	id, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{
+		Tool: "codex", Title: "Remote Work", Path: "~/project", Group: "work", Sandbox: true, Model: "gpt-5-codex", Yolo: true,
+	})
 	if err != nil {
 		t.Fatalf("CreateSessionWithOptions unexpected error: %v", err)
 	}
@@ -258,7 +345,7 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 		t.Fatalf("calls = %v, want add and start", calls)
 	}
 	add := strings.Join(calls[0], " ")
-	for _, want := range []string{"add", "--json", "-t", "Remote Work", "-g", "work", "-c", "codex", "-sandbox", "~/project"} {
+	for _, want := range []string{"add", "--json", "-t", "Remote Work", "-g", "work", "-c", "codex", "-sandbox", "--model", "gpt-5-codex", "--yolo", "~/project"} {
 		if !strings.Contains(add, want) {
 			t.Fatalf("remote add call = %q, want token %q", add, want)
 		}
@@ -287,7 +374,7 @@ func TestSSHRunnerCreateSessionWithOptions_QueuedStartIsNotAttachable(t *testing
 		},
 	}
 
-	_, err := runner.CreateSessionWithOptions(context.Background(), "claude", "", "", "", false)
+	_, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Tool: "claude"})
 	if err == nil || !strings.Contains(err.Error(), "queued") {
 		t.Fatalf("CreateSessionWithOptions error = %v, want queued error", err)
 	}
@@ -408,5 +495,23 @@ func TestRemoteSessionInfoLastActivity_BoundaryPrecision(t *testing.T) {
 	}
 	if !TimeFilter3Days.Matches(got, now) {
 		t.Errorf("TimeFilter3Days.Matches(%v, %v) = false, want true (300ms inside the window)", got, now)
+	}
+}
+
+// A refused value must never reach the remote: no add, no start, no cleanup.
+func TestSSHRunnerCreateSessionWithOptions_RefusedValueNeverContactsRemote(t *testing.T) {
+	calls := 0
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls++
+			return nil, errors.New("must not be called")
+		},
+	}
+	_, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Tool: "claude", Account: "/home/me/.claude"})
+	if err == nil || !strings.Contains(err.Error(), "config directory") {
+		t.Fatalf("CreateSessionWithOptions error = %v, want config directory refusal", err)
+	}
+	if calls != 0 {
+		t.Fatalf("remote contacted %d times for a refused value, want 0", calls)
 	}
 }

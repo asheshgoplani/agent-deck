@@ -33,7 +33,26 @@ Prefix every entry with `agent-deck`. The full `session show/output/send` forms 
 
 `--message-file` is the path exception: the file is read on your computer and streamed through SSH stdin. Use `--message-file -` for a pipeline. Inline messages and all other path arguments retain their ordinary meanings on the server. Repeated message-file options use the last value, matching the local flag parser.
 
-The configured remote profile selects the server registry. An explicit `--account` on add/launch selects a server account slot. Your computer's account environment is not copied to the server. Long-running sends are not limited by the background remote status-probe timeout.
+The configured remote profile selects the server registry. An explicit `--account` on add/launch selects a server account slot. Your computer's account environment is not copied to the server: no config directory, credentials, MCP definition or skill source travels over SSH, only the names, which the server resolves against its own `config.toml`. An account given as a directory path is refused before the command is sent. Long-running sends are not limited by the background remote status-probe timeout.
+
+## Creating a session from the TUI
+
+Pressing `n` on a remote group or session opens the same new-session dialog as for a local session and creates the session on that remote through its own `add`. The dialog forwards what you set in it; a field left alone is decided by the server's own configuration, so a dialog you do not touch behaves exactly as before.
+
+| Dialog field | Sent to the server as |
+| --- | --- |
+| Name, path, tool, group | `-t`, positional path, `-c`, `-g` (path is a server path, `~` is not expanded locally) |
+| Claude account slot | `--account <name>`; the slot must exist in the server's `config.toml` |
+| Model | `--model <id>` |
+| Claude effort, skip permissions, auto mode, Chrome, teammate mode, extra args | one `--extra-arg` per token, the same flags a local session launches with; these add to the server's own `[claude]` defaults and cannot switch a server default off |
+| Claude session mode | resume with an id: `--resume-session <id>`; continue or bare resume: `--extra-arg -c` / `--extra-arg --resume` |
+| Docker sandbox | `-sandbox`; the image comes from the server's config |
+| Worktree | `-w <branch>`; the worktree and, when missing, the branch are created in the server's repository |
+| Codex and Gemini YOLO | `--yolo` |
+
+Because the server applies its own defaults, the dialog opens with these options cleared for a remote target instead of pre-filled from your local `config.toml`; a local `[claude].dangerous_mode` or `default_model` never reaches a remote unless you set it in the dialog.
+
+Fields the remote `add` cannot express are refused with a message in the dialog rather than dropped silently: a startup query (send it with `remote lab send` once the session runs), multi-repo paths, a reasoning effort for Codex, and Hermes YOLO mode. MCP and skill attachment are not dialog fields; attach them after creation with `remote lab mcp attach` and `remote lab skill attach`, or pass `--mcp` on the command line form above.
 
 Remote-management commands such as `remote list` and `remote remove lab` operate on your local configuration. New remote names cannot match those command names. For an existing conflicting name, use the explicit execution form, for example `remote exec remove list --json`; ambiguous shorthand refuses to act. Rename the conflicting entry in your configuration before using the matching management command.
 

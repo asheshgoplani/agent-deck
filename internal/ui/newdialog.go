@@ -1458,6 +1458,103 @@ func (d *NewDialog) GetClaudeAccount() string {
 	return d.claudeOptions.GetAccount()
 }
 
+// ResetRemoteDefaults clears every option the dialog pre-filled from THIS
+// machine's config.toml before a remote target is shown. A remote session is
+// created by the server's own `agent-deck add`, which applies the server's
+// defaults; the dialog therefore starts from "server default" and forwards
+// only what the user switches on. Without this reset a local
+// [claude].dangerous_mode or default_model would silently travel to a host
+// whose administrator configured otherwise.
+func (d *NewDialog) ResetRemoteDefaults() {
+	d.worktreeEnabled = false
+	d.worktreeToggled = false
+	d.sandboxEnabled = false
+	d.multiRepoEnabled = false
+	d.multiRepoPaths = nil
+	d.modelInput.SetValue("")
+	d.reasoningEffort = ""
+	d.claudeOptions.SetFromOptions(&session.ClaudeOptions{SessionMode: "new"})
+	d.claudeOptions.SetExtraArgs(nil)
+	d.geminiOptions.SetDefaults(false)
+	d.codexOptions.SetDefaults(false)
+	d.hermesOptions.SetDefaults(false)
+	d.rebuildFocusTargets()
+}
+
+// GetRemoteCreateOptions collects everything the dialog forwards to a session
+// created on a remote (the TUI counterpart of `remote <name> add ...`). Paths
+// and names are passed through untouched for the server to resolve. A field
+// the remote `add` command cannot express is refused with a message for the
+// dialog instead of being dropped, so what the user sees is what the server
+// gets.
+func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) {
+	name, path, command := d.GetRemoteValues()
+	opts := session.RemoteAddOptions{
+		Tool:    command,
+		Title:   name,
+		Path:    path,
+		Group:   d.GetSelectedGroup(),
+		Sandbox: d.IsSandboxEnabled(),
+		Model:   d.GetLaunchModelID(),
+	}
+	if d.multiRepoEnabled {
+		return opts, "Multi-repo sessions cannot be created on a remote; add the extra paths on the server after creation"
+	}
+	if d.worktreeEnabled {
+		opts.WorktreeBranch = strings.TrimSpace(d.branchInput.Value())
+	}
+
+	switch {
+	case d.isClaudeSelected():
+		opts.Account = d.GetClaudeAccount()
+		if q := d.GetClaudeStartQuery(); q != "" {
+			return opts, "Startup query is not sent to a remote; send it with 'agent-deck remote <name> send' once the session runs"
+		}
+		claudeOpts := d.GetClaudeOptions()
+		extra := remoteClaudeExtraArgs(claudeOpts)
+		if claudeOpts.SessionMode == "resume" && claudeOpts.ResumeSessionID != "" {
+			opts.ResumeSessionID = strings.TrimSpace(claudeOpts.ResumeSessionID)
+		}
+		extra = append(extra, d.GetClaudeExtraArgs()...)
+		if len(extra) > 0 && command != "claude" {
+			return opts, "Claude options and extra args can only be forwarded to a remote for the claude tool"
+		}
+		opts.ExtraArgs = extra
+	case command == "codex":
+		if d.GetLaunchReasoningEffort() != "" {
+			return opts, "Reasoning effort for codex is not sent to a remote; set it in the server's config"
+		}
+		opts.Yolo = d.GetCodexYoloMode()
+	case command == "gemini":
+		opts.Yolo = d.IsGeminiYoloMode()
+	case command == "hermes":
+		if d.GetHermesYoloMode() {
+			return opts, "Hermes YOLO mode is not sent to a remote; set it in the server's config"
+		}
+	}
+	return opts, ""
+}
+
+// remoteClaudeExtraArgs turns the dialog's Claude toggles into the same CLI
+// tokens a local session launches with, minus --model (a first-class `add`
+// flag). A resume with an id travels as --resume-session instead; a bare
+// resume asks claude for its picker on the server.
+func remoteClaudeExtraArgs(opts *session.ClaudeOptions) []string {
+	if opts == nil {
+		return nil
+	}
+	flags := *opts
+	flags.Model = ""
+	var args []string
+	if flags.SessionMode == "resume" {
+		if strings.TrimSpace(flags.ResumeSessionID) == "" {
+			args = append(args, "--resume")
+		}
+		flags.SessionMode = "new"
+	}
+	return append(args, flags.ToArgs()...)
+}
+
 // isClaudeSelected returns true if the selected command is Claude or a claude-compatible custom tool
 func (d *NewDialog) isClaudeSelected() bool {
 	if d.commandCursor < 0 || d.commandCursor >= len(d.presetCommands) {
