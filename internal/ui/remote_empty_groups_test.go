@@ -133,3 +133,41 @@ func TestRemoteEmptyGroups_NilListIsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A remote with no active session keeps its host header in the plain active
+// view (regression from #2163: the archive partition dropped the whole
+// remote), and the group it just created gets a row before the next poll.
+func TestRemoteEmptyGroups_EmptyRemoteKeepsHostHeader(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 40
+	home.refreshSessionRenderSnapshot(nil)
+	home.remoteSessionsMu.Lock()
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{"box": {}}
+	home.remoteGroups = map[string][]string{"box": {"semantic"}}
+	home.remoteSessionsMu.Unlock()
+
+	home.rebuildFlatItems()
+	headers := remoteHeaderPaths(home.flatItems)
+	if _, ok := headers["remotes/box"]; !ok {
+		t.Fatalf("an empty remote must keep its host header in the active view; headers=%v", headers)
+	}
+	if _, ok := headers["remotes/box/semantic"]; !ok {
+		t.Fatalf("an empty remote must still list its empty groups; headers=%v", headers)
+	}
+
+	// The archived view has nothing to show for it.
+	home.statusFilter = FilterModeArchived
+	home.rebuildFlatItems()
+	if _, ok := remoteHeaderPaths(home.flatItems)["remotes/box"]; ok {
+		t.Fatalf("an empty remote must not appear in the archived view")
+	}
+	home.statusFilter = ""
+
+	// A group created on the remote shows up immediately on the result message.
+	model, _ := home.Update(remoteGroupResultMsg{remoteName: "box", groupPath: "fresh"})
+	h := model.(*Home)
+	if _, ok := remoteHeaderPaths(h.flatItems)["remotes/box/fresh"]; !ok {
+		t.Fatalf("a group just created on the remote must get a row without waiting for the poll; headers=%v", remoteHeaderPaths(h.flatItems))
+	}
+}

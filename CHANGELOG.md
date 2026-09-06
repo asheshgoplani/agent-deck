@@ -19,6 +19,7 @@ Remote decks are fully manageable from the local TUI: every key that works on a 
 
 - Empty remote groups are shown as `name (0)` like empty local groups, so a group created with `g` (or emptied by moves) no longer vanishes from the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
 - `n` on a remote group header creates the session in that group instead of the remote's my-sessions; `d` on a remote group header deletes the group on the remote after confirmation ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
+- A remote with no active session keeps its host header and its empty groups in the active view, so a fresh remote or one whose last session was archived stays a target for `n`, `N` and `g`; a group created with `g` gets its row immediately instead of after the next poll.
 - `group list --json` emits the full group tree, so empty groups below the second level reach the move dialog and the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
 
 ## [1.16.0] - 2026-09-06

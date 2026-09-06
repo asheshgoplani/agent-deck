@@ -2822,15 +2822,19 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	for name, sessions := range h.remoteSessions {
 		// Partition remote rows the way local ones were above: the active
 		// view hides remote sessions the remote reports archived, and the ^
-		// archived view shows only those. A remote with nothing on the
-		// current side of that split contributes no rows, header included.
+		// archived view shows only those. In the plain active view a remote
+		// keeps its host header (and its empty groups) even with no active
+		// session, like an empty local group renders "name (0)", so a fresh
+		// remote or one whose last session was archived stays a target for
+		// n, N and g. The archived view and any filter hide such a remote.
 		partitioned := make([]session.RemoteSessionInfo, 0, len(sessions))
 		for _, remote := range sessions {
 			if remote.Archived == viewArchived {
 				partitioned = append(partitioned, remote)
 			}
 		}
-		if len(partitioned) == 0 {
+		plainActiveView := !viewArchived && h.timeFilter == session.TimeFilterAll && h.statusFilter == ""
+		if len(partitioned) == 0 && !plainActiveView {
 			continue
 		}
 		remoteNames = append(remoteNames, name)
@@ -6980,6 +6984,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.remoteGroups[msg.remoteName] = append(h.remoteGroups[msg.remoteName], msg.groupPath)
 		}
 		h.remoteSessionsMu.Unlock()
+		// Show the new (empty) group's row now instead of after the next poll.
+		h.rebuildFlatItems()
 		h.setError(fmt.Errorf("created group '%s' on %s", msg.groupPath, msg.remoteName))
 		return h, nil
 
