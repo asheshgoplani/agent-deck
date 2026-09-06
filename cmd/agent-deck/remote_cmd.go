@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -97,6 +98,8 @@ func printRemoteSubcommandUsage(command string) {
 	case "list", "ls":
 		fmt.Println("Usage: agent-deck remote list [options]")
 		fmt.Println("\nOptions:")
+		fmt.Println("  --check")
+		fmt.Println("        Ask each remote for its agent-deck version now (one SSH call per remote)")
 		fmt.Println("  --json")
 		fmt.Println("        Output as JSON")
 	case "sessions":
@@ -111,7 +114,12 @@ func printRemoteSubcommandUsage(command string) {
 	case "rename":
 		fmt.Println("Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>")
 	case "update":
-		fmt.Println("Usage: agent-deck remote update [name]")
+		fmt.Println("Usage: agent-deck remote update [name | --all]")
+		fmt.Println("\nUpdates every remote that is older than this controller (v" + Version + ") when no name is given.")
+		fmt.Println("Exit status is 1 when any remote failed.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  --all")
+		fmt.Println("        Update every configured remote that is older than this controller")
 	default:
 		printRemoteUsage()
 	}
@@ -135,7 +143,7 @@ func printRemoteUsage() {
 	fmt.Println("                            into this machine's inbox (read-only on the remote)")
 	fmt.Println("  attach <name> <session>   Attach to a remote session")
 	fmt.Println("  rename <name> <session> <new-title>  Rename a remote session")
-	fmt.Println("  update [name]             Install/update agent-deck on remote(s)")
+	fmt.Println("  update [name | --all]     Install/update agent-deck on remote(s)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck remote add dev user@dev-box")
@@ -145,7 +153,7 @@ func printRemoteUsage() {
 	fmt.Println("  agent-deck remote drain dev       # pull finished/stalled reports from dev")
 	fmt.Println("  agent-deck remote attach dev my-session")
 	fmt.Println("  agent-deck remote rename dev my-session new-name")
-	fmt.Println("  agent-deck remote update          # Update all remotes")
+	fmt.Println("  agent-deck remote update --all    # Update every remote older than this controller")
 	fmt.Println("  agent-deck remote update dev      # Update specific remote")
 }
 
@@ -285,6 +293,7 @@ func handleRemoteRemove(args []string) {
 func handleRemoteList(args []string) {
 	fs := flag.NewFlagSet("remote list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	check := fs.Bool("check", false, "Ask each remote for its agent-deck version now")
 	_ = fs.Parse(args)
 
 	config, err := session.LoadUserConfig()
@@ -299,22 +308,39 @@ func handleRemoteList(args []string) {
 		return
 	}
 
+	versions := session.LoadRemoteVersions()
+	if *check {
+		versions = probeRemoteVersions(context.Background(), config.Remotes)
+	}
+
 	if *jsonOutput {
 		type remoteJSON struct {
 			Name          string `json:"name"`
 			Host          string `json:"host"`
 			AgentDeckPath string `json:"agent_deck_path"`
 			Profile       string `json:"profile"`
+			// Version is the last agent-deck version the remote reported
+			// (empty when never checked); Outdated is true when it is older
+			// than this controller.
+			Version          string `json:"version,omitempty"`
+			VersionCheckedAt string `json:"version_checked_at,omitempty"`
+			Outdated         bool   `json:"outdated"`
 		}
 
 		var remotes []remoteJSON
 		for name, rc := range config.Remotes {
-			remotes = append(remotes, remoteJSON{
+			row := remoteJSON{
 				Name:          name,
 				Host:          rc.Host,
 				AgentDeckPath: rc.GetAgentDeckPath(),
 				Profile:       rc.GetProfile(),
-			})
+			}
+			if state, ok := versions[name]; ok && state.Found {
+				row.Version = state.Version
+				row.VersionCheckedAt = state.CheckedAt.Format(time.RFC3339)
+				row.Outdated = state.Outdated(Version)
+			}
+			remotes = append(remotes, row)
 		}
 
 		output, err := json.MarshalIndent(remotes, "", "  ")
@@ -326,12 +352,36 @@ func handleRemoteList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-15s %-30s %-20s %s\n", "NAME", "HOST", "PATH", "PROFILE")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION")
+	fmt.Println(strings.Repeat("-", 84))
 	for name, rc := range config.Remotes {
-		fmt.Printf("%-15s %-30s %-20s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile())
+		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), remoteVersionColumn(versions[name], Version))
 	}
-	fmt.Printf("\nTotal: %d remotes\n", len(config.Remotes))
+	fmt.Printf("\nTotal: %d remotes (controller v%s)\n", len(config.Remotes), Version)
+}
+
+// remoteVersionColumn renders the VERSION cell of `remote list`: the cached
+// version, "↑" appended when it is older than controller, "-" when unknown.
+func remoteVersionColumn(state session.RemoteVersionState, controller string) string {
+	if !state.Found || state.Version == "" {
+		return "-"
+	}
+	if state.Outdated(controller) {
+		return "v" + state.Version + " ↑"
+	}
+	return "v" + state.Version
+}
+
+// probeRemoteVersions asks every remote for its version now and refreshes
+// the shared cache so the TUI and later list calls see the same answer.
+func probeRemoteVersions(ctx context.Context, remotes map[string]session.RemoteConfig) map[string]session.RemoteVersionState {
+	states := make(map[string]session.RemoteVersionState, len(remotes))
+	for name, rc := range remotes {
+		version, found := session.NewSSHRunner(name, rc).CheckBinary(ctx)
+		states[name] = session.RemoteVersionState{Version: version, Found: found, CheckedAt: time.Now()}
+	}
+	_ = session.RecordRemoteVersions(states)
+	return states
 }
 
 func handleRemoteSessions(args []string) {
@@ -539,6 +589,10 @@ func handleRemoteRename(args []string) {
 }
 
 func handleRemoteUpdate(args []string) {
+	fs := flag.NewFlagSet("remote update", flag.ExitOnError)
+	all := fs.Bool("all", false, "Update every configured remote that is older than this controller")
+	_ = fs.Parse(reorderRemoteArgs(fs, args))
+
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Printf("Error: failed to load config: %v\n", err)
@@ -550,88 +604,118 @@ func handleRemoteUpdate(args []string) {
 		return
 	}
 
-	// Filter to specific remote if name provided
-	remoteName := ""
-	if len(args) > 0 {
-		remoteName = args[0]
-	}
-
-	ctx := context.Background()
-
-	for name, rc := range config.Remotes {
-		if remoteName != "" && name != remoteName {
-			continue
+	remotes := config.Remotes
+	if name := fs.Arg(0); name != "" {
+		if *all {
+			fmt.Fprintln(os.Stderr, "Error: pass either a remote name or --all, not both")
+			os.Exit(2)
 		}
-
-		fmt.Printf("\n═══ Remote: %s (%s) ═══\n", name, rc.Host)
-
-		runner := session.NewSSHRunner(name, rc)
-
-		// Check current version
-		remoteVersion, found := runner.CheckBinary(ctx)
-		if found {
-			fmt.Printf("  Current version: v%s\n", remoteVersion)
-			if update.CompareVersions(remoteVersion, Version) >= 0 {
-				fmt.Printf("  ✓ Up to date (local: v%s)\n", Version)
-				continue
-			}
-			fmt.Printf("  Updating to v%s...\n", Version)
-		} else {
-			fmt.Printf("  agent-deck not found, installing v%s...\n", Version)
-		}
-
-		if err := installOnRemote(runner, ctx); err != nil {
-			fmt.Printf("  ✗ Failed: %v\n", err)
-		} else {
-			fmt.Printf("  ✓ Installed v%s\n", Version)
-		}
-	}
-
-	if remoteName != "" {
-		if _, exists := config.Remotes[remoteName]; !exists {
-			fmt.Printf("\nError: remote '%s' not found\n", remoteName)
+		rc, exists := config.Remotes[name]
+		if !exists {
+			fmt.Printf("Error: remote '%s' not found\n", name)
 			os.Exit(1)
 		}
+		remotes = map[string]session.RemoteConfig{name: rc}
+	}
+
+	results := runRemoteUpdates(context.Background(), remotes, Version, true)
+	if failed := session.CountRemoteUpdateFailures(results); failed > 0 {
+		fmt.Printf("\n%s\n", remoteUpdateSummary(results))
+		os.Exit(1)
+	}
+	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
+}
+
+// runRemoteUpdates drives session.UpdateRemotes with the CLI's progress and
+// per-remote reporting. installMissing mirrors the explicit CLI contract
+// (a remote without agent-deck gets it installed); the unattended paths
+// pass false.
+func runRemoteUpdates(ctx context.Context, remotes map[string]session.RemoteConfig, target string, installMissing bool) []session.RemoteUpdateResult {
+	return session.UpdateRemotes(ctx, remotes, target, session.RemoteUpdateOptions{
+		InstallMissing: installMissing,
+		Progress: func(line string) {
+			fmt.Printf("  %s\n", line)
+		},
+		OnResult: func(r session.RemoteUpdateResult) {
+			fmt.Printf("  %s\n", formatRemoteUpdateResult(r))
+		},
+		NewRunner: func(name string, rc session.RemoteConfig) session.RemoteBinaryInstaller {
+			fmt.Printf("\n═══ Remote: %s (%s) ═══\n", name, rc.Host)
+			return session.NewSSHRunner(name, rc)
+		},
+	})
+}
+
+// formatRemoteUpdateResult renders one remote's outcome with the CLI's glyphs.
+func formatRemoteUpdateResult(r session.RemoteUpdateResult) string {
+	switch r.Outcome {
+	case session.RemoteUpdateOutcomeUpdated:
+		if r.From == "" {
+			return fmt.Sprintf("✓ Installed v%s", r.To)
+		}
+		return fmt.Sprintf("✓ Updated v%s → v%s", r.From, r.To)
+	case session.RemoteUpdateOutcomeCurrent:
+		return fmt.Sprintf("✓ Up to date (v%s)", r.From)
+	case session.RemoteUpdateOutcomeSkipped:
+		return fmt.Sprintf("– Skipped: %v", r.Err)
+	default:
+		return fmt.Sprintf("✗ Failed: %v", r.Err)
 	}
 }
 
-// updateRemotesAfterLocalUpdate prompts the user to update remotes after a successful local update.
+// remoteUpdateSummary is the closing line of a multi-remote run:
+// "3 remotes: 1 updated, 1 already current, 1 failed".
+func remoteUpdateSummary(results []session.RemoteUpdateResult) string {
+	counts := map[session.RemoteUpdateOutcome]int{}
+	for _, r := range results {
+		counts[r.Outcome]++
+	}
+	parts := []string{}
+	if n := counts[session.RemoteUpdateOutcomeUpdated]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d updated", n))
+	}
+	if n := counts[session.RemoteUpdateOutcomeCurrent]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d already current", n))
+	}
+	if n := counts[session.RemoteUpdateOutcomeSkipped]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", n))
+	}
+	if n := counts[session.RemoteUpdateOutcomeFailed]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", n))
+	}
+	noun := "remotes"
+	if len(results) == 1 {
+		noun = "remote"
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("%d %s", len(results), noun)
+	}
+	return fmt.Sprintf("%d %s: %s", len(results), noun, strings.Join(parts, ", "))
+}
+
+// updateRemotesAfterLocalUpdate runs after a successful local update. With
+// [updates] auto_update_remotes it pushes newVersion to every older remote
+// without asking; otherwise it prompts as before.
 func updateRemotesAfterLocalUpdate(newVersion string) {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || len(config.Remotes) == 0 {
 		return
 	}
 
-	fmt.Printf("\nYou have %d remote(s) configured. Update them too? [Y/n] ", len(config.Remotes))
-	reader := bufio.NewReader(os.Stdin)
-	response, readErr := reader.ReadString('\n')
-	if !shouldProceedWithRemoteUpdate(response, readErr) {
-		return
-	}
-
-	ctx := context.Background()
-	for name, rc := range config.Remotes {
-		fmt.Printf("\n═══ Remote: %s (%s) ═══\n", name, rc.Host)
-		runner := session.NewSSHRunner(name, rc)
-
-		remoteVersion, found := runner.CheckBinary(ctx)
-		if found {
-			fmt.Printf("  Current version: v%s\n", remoteVersion)
-			if update.CompareVersions(remoteVersion, newVersion) >= 0 {
-				fmt.Printf("  ✓ Up to date\n")
-				continue
-			}
-			fmt.Printf("  Updating to v%s...\n", newVersion)
-		} else {
-			fmt.Printf("  agent-deck not found, installing v%s...\n", newVersion)
-		}
-
-		if err := installOnRemote(runner, ctx); err != nil {
-			fmt.Printf("  ✗ Failed: %v\n", err)
-		} else {
-			fmt.Printf("  ✓ Installed v%s\n", newVersion)
+	if session.GetUpdateSettings().AutoUpdateRemotes {
+		fmt.Printf("\nauto_update_remotes is on: updating %d remote(s) to v%s\n", len(config.Remotes), newVersion)
+	} else {
+		fmt.Printf("\nYou have %d remote(s) configured. Update them too? [Y/n] ", len(config.Remotes))
+		reader := bufio.NewReader(os.Stdin)
+		response, readErr := reader.ReadString('\n')
+		if !shouldProceedWithRemoteUpdate(response, readErr) {
+			return
 		}
 	}
+
+	results := runRemoteUpdates(context.Background(), config.Remotes, newVersion, true)
+	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
+	_ = session.MarkRemoteAutoUpdateRan(time.Now())
 }
 
 func shouldProceedWithRemoteUpdate(response string, readErr error) bool {
@@ -651,41 +735,13 @@ func shouldProceedWithRemoteUpdate(response string, readErr error) bool {
 	return false
 }
 
-// installOnRemote detects the remote platform and deploys the matching agent-deck binary.
-// It first tries to find a matching release on GitHub. If no release is available for the
-// local version, it falls back to downloading the latest release for the remote platform.
+// installOnRemote deploys the controller's version onto one remote with the
+// CLI's progress lines (used by `remote add` when the binary is missing).
 func installOnRemote(runner *session.SSHRunner, ctx context.Context) error {
-	// Detect remote platform
-	goos, goarch, err := runner.DetectPlatform(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("  Platform: %s/%s\n", goos, goarch)
-
-	// Fetch latest release from GitHub
-	release, err := update.FetchLatestRelease()
-	if err != nil {
-		return fmt.Errorf("failed to fetch release info: %w", err)
-	}
-
-	// Download, verify SHA-256 against the release's checksums.txt, and extract.
-	// We NEVER pipe an unverified artifact to a remote: a missing checksums.txt,
-	// a missing entry, or a hash mismatch aborts the deploy (#1206).
-	fmt.Printf("  Downloading + verifying %s/%s binary...\n", goos, goarch)
-	binaryData, err := update.DownloadVerifiedBinary(release, goos, goarch)
-	if err != nil {
-		return fmt.Errorf("download/verify failed: %w", err)
-	}
-
-	// Deploy to remote and verify the remote actually runs the new version
-	// before we report success (#1171: deploy + version-check used to target
-	// different files, producing a false "✓ Installed").
-	fmt.Printf("  Deploying to %s...\n", runner.Host)
-	if err := runner.InstallBinary(ctx, binaryData, Version); err != nil {
-		return fmt.Errorf("deploy failed: %w", err)
-	}
-
-	return nil
+	_, err := session.DeployRemoteBinary(ctx, runner, Version, session.RemoteUpdateOptions{
+		Progress: func(line string) { fmt.Printf("  %s\n", line) },
+	})
+	return err
 }
 
 // reorderRemoteArgs moves flags before positional args for Go's flag package.
