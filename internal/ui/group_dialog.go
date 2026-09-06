@@ -38,6 +38,17 @@ type GroupDialog struct {
 	// Tab toggle between Root and Subgroup modes (Issue #111)
 	contextParentPath string // Original cursor context parent path (for toggling back)
 	contextParentName string // Original cursor context parent name (for toggling back)
+
+	// Fzf-like live suggestions for the Default Path field in Create mode.
+	// suggestProvider supplies the candidate corpus (recents + group defaults)
+	// each time the dialog opens; typing fuzzy-filters it live, and path-shaped
+	// queries additionally pull filesystem subdirectory completions.
+	suggestProvider        func() []string
+	allPathSuggestions     []string // full candidate corpus from the provider
+	pathSuggestions        []string // filtered subset shown in the dropdown
+	pathSuggestionCursor   int      // highlighted index into pathSuggestions (-1 = none)
+	pathSuggestionsHidden  bool     // true after Esc until the user types again
+	pathDropdownLineOffset int      // content line of the Default Path row (View-computed)
 }
 
 // NewGroupDialog creates a new group dialog
@@ -163,6 +174,7 @@ func (g *GroupDialog) ShowRename(currentPath, currentName string) {
 	g.nameInput.CursorEnd() // Issue #604: place cursor at end of pre-filled name.
 	// Issue #1068: must reset focusIndex and blur pathInput, otherwise stale
 	// state from a prior Create-dialog Tab routes keys to the invisible path.
+	g.resetPathInput() // also drops stale suggestion corpus (rename has no path field)
 	g.focusName()
 }
 
@@ -185,6 +197,7 @@ func (g *GroupDialog) ShowRenameSession(sessionID, currentName string) {
 	g.nameInput.CursorEnd() // Issue #604: place cursor at end of pre-filled name.
 	// Issue #1068: must reset focusIndex and blur pathInput, otherwise stale
 	// state from a prior Create-dialog Tab routes keys to the invisible path.
+	g.resetPathInput() // also drops stale suggestion corpus (rename has no path field)
 	g.focusName()
 }
 
@@ -221,12 +234,114 @@ func (g *GroupDialog) GetDefaultPath() string {
 	return strings.TrimSpace(g.pathInput.Value())
 }
 
+// SetSuggestProvider wires the candidate corpus source for the Default Path
+// suggestions. It is consulted each time the dialog opens in Create mode, so
+// recents captured since the last open are included.
+func (g *GroupDialog) SetSuggestProvider(fn func() []string) {
+	g.suggestProvider = fn
+}
+
+// SetPathSuggestions overrides the candidate corpus directly (used by tests
+// and by callers that want to pin the list for a single dialog session).
+func (g *GroupDialog) SetPathSuggestions(paths []string) {
+	g.allPathSuggestions = paths
+	g.filterPathSuggestions()
+}
+
+// refreshPathSuggestions pulls a fresh corpus from the provider (when wired)
+// and refilters. Called on every Create-mode open so stale candidates never
+// linger across dialogs.
+func (g *GroupDialog) refreshPathSuggestions() {
+	if g.suggestProvider != nil {
+		g.allPathSuggestions = g.suggestProvider()
+	}
+	g.pathSuggestionsHidden = false
+	g.filterPathSuggestions()
+}
+
+// filterPathSuggestions fuzzy-filters the corpus against the current input.
+// The first match stays highlighted, fzf-style, so Tab/Enter accept without
+// any arrow keys when the top hit is already right.
+func (g *GroupDialog) filterPathSuggestions() {
+	query := strings.TrimSpace(g.pathInput.Value())
+	if query == "" {
+		g.pathSuggestions = g.allPathSuggestions
+	} else {
+		g.pathSuggestions = filterPathSuggestions(g.allPathSuggestions, query)
+	}
+	switch {
+	case len(g.pathSuggestions) == 0:
+		g.pathSuggestionCursor = -1
+	case g.pathSuggestionCursor < 0 || g.pathSuggestionCursor >= len(g.pathSuggestions):
+		g.pathSuggestionCursor = 0
+	}
+}
+
+// IsPathDropdownVisible reports whether the live suggestion dropdown should be
+// rendered: Create mode, path field focused, at least one candidate, and not
+// explicitly dismissed with Esc.
+func (g *GroupDialog) IsPathDropdownVisible() bool {
+	return g.mode == GroupDialogCreate &&
+		g.focusIndex == 1 &&
+		!g.pathSuggestionsHidden &&
+		len(g.pathSuggestions) > 0
+}
+
+// navigatePathSuggestions moves the dropdown highlight by delta. Returns
+// false (caller falls through to other bindings, e.g. Root/Subgroup toggle)
+// when the dropdown has nothing to navigate.
+func (g *GroupDialog) navigatePathSuggestions(delta int) bool {
+	if !g.IsPathDropdownVisible() {
+		return false
+	}
+	total := len(g.pathSuggestions)
+	g.pathSuggestionCursor = ((g.pathSuggestionCursor+delta)%total + total) % total
+	return true
+}
+
+// ApplyHighlightedPathSuggestion writes the highlighted suggestion into the
+// input and hides the dropdown so the next Enter submits instead of
+// re-accepting. Returns false when no suggestion was highlighted (caller
+// proceeds with its own handling).
+func (g *GroupDialog) ApplyHighlightedPathSuggestion() bool {
+	if !g.IsPathDropdownVisible() || g.pathSuggestionCursor < 0 ||
+		g.pathSuggestionCursor >= len(g.pathSuggestions) {
+		return false
+	}
+	g.pathInput.SetValue(g.pathSuggestions[g.pathSuggestionCursor])
+	g.pathInput.SetCursor(len(g.pathInput.Value()))
+	g.pathSuggestionsHidden = true
+	return true
+}
+
+// DismissPathSuggestions hides the dropdown until the user types again.
+// Returns true when a visible dropdown was dismissed, so the parent can treat
+// Esc as "dismiss picker first, close dialog second".
+func (g *GroupDialog) DismissPathSuggestions() bool {
+	if !g.IsPathDropdownVisible() {
+		return false
+	}
+	g.pathSuggestionsHidden = true
+	return true
+}
+
 // resetPathInput clears the path field and blurs it. Called by every Show*
 // entry point so a previous Create dialog never leaks its path into a Rename.
+// In Create mode it also refreshes the suggestion corpus from the provider.
 func (g *GroupDialog) resetPathInput() {
 	g.pathInput.SetValue("")
 	g.pathInput.CursorEnd()
 	g.pathInput.Blur()
+	if g.mode == GroupDialogCreate {
+		g.refreshPathSuggestions() // also unhides and refilters (cursor clamped)
+		return
+	}
+	// Non-create modes expose no path field: drop any suggestion state so a
+	// stale dropdown can never be resurrected by a later Tab traversal.
+	g.allPathSuggestions = nil
+	g.pathSuggestions = nil
+	g.pathSuggestionsHidden = false
+	g.pathSuggestionCursor = -1
 }
 
 // focusName focuses the name input and updates the focus index accordingly.
@@ -340,6 +455,11 @@ func (g *GroupDialog) Update(msg tea.KeyMsg) (*GroupDialog, tea.Cmd) {
 	if g.mode == GroupDialogCreate {
 		switch msg.String() {
 		case "tab":
+			// Accept the highlighted path suggestion instead of advancing
+			// focus; the dropdown closes so the next Enter submits the form.
+			if g.ApplyHighlightedPathSuggestion() {
+				return g, nil
+			}
 			if g.focusIndex == 0 {
 				g.focusPath()
 			} else {
@@ -354,21 +474,47 @@ func (g *GroupDialog) Update(msg tea.KeyMsg) (*GroupDialog, tea.Cmd) {
 			}
 			return g, nil
 		case "up", "down":
-			// Issue #1536: Root/Subgroup toggle, rebound off Tab. No-op (falls
-			// through to the text input, which ignores Up/Down) when there is no
-			// group context to toggle into.
+			// Navigate the suggestion dropdown while it has matches to show;
+			// only when it does not (or the field is not focused) does Up/Down
+			// keep its Issue #1536 Root/Subgroup toggle role. No-op (falls
+			// through to the text input, which ignores Up/Down) when there is
+			// neither a dropdown nor a group context to toggle into.
+			delta := 1
+			if msg.String() == "up" {
+				delta = -1
+			}
+			if g.focusIndex == 1 && g.navigatePathSuggestions(delta) {
+				return g, nil
+			}
 			if g.CanToggle() {
 				g.ToggleRootSubgroup()
+				return g, nil
+			}
+		case "ctrl+n", "ctrl+p":
+			// Emacs-style navigation that never collides with the Root/Subgroup
+			// toggle or text cursor movement.
+			delta := 1
+			if msg.String() == "ctrl+p" {
+				delta = -1
+			}
+			if g.navigatePathSuggestions(delta) {
 				return g, nil
 			}
 		}
 	}
 
 	var cmd tea.Cmd
+	prevPath := g.pathInput.Value()
 	if g.focusIndex == 1 {
 		g.pathInput, cmd = g.pathInput.Update(msg)
 	} else {
 		g.nameInput, cmd = g.nameInput.Update(msg)
+	}
+	// Live filtering: any edit to the path field re-runs the fuzzy match and
+	// re-opens a dropdown previously dismissed with Esc.
+	if g.mode == GroupDialogCreate && g.pathInput.Value() != prevPath {
+		g.pathSuggestionsHidden = false
+		g.filterPathSuggestions()
 	}
 	return g, cmd
 }
@@ -449,10 +595,26 @@ func (g *GroupDialog) View() string {
 	dialogWidth := fitDialogWidth(44, 30, g.width)
 	titleWidth := dialogWidth - 4
 
+	// Content line of the Default Path row (for anchoring the suggestion
+	// dropdown overlay): title + blank, then the optional toggle tabs block
+	// (2 lines) and parent info block (2 lines), then the Name row.
+	g.pathDropdownLineOffset = 2
+	if g.mode == GroupDialogCreate {
+		if g.CanToggle() {
+			g.pathDropdownLineOffset += 2
+		}
+		if g.parentName != "" {
+			g.pathDropdownLineOffset += 2
+		}
+		g.pathDropdownLineOffset += 1 // Name row
+	}
+
 	titleStyle := DialogTitleStyle.Width(titleWidth)
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	var hint string
 	switch {
+	case g.mode == GroupDialogCreate && g.IsPathDropdownVisible():
+		hint = hintStyle.Render("↑↓ select │ Tab/Enter accept │ Esc dismiss")
 	case g.mode == GroupDialogCreate && g.CanToggle():
 		hint = hintStyle.Render("↑↓ Root/Subgroup │ Tab next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
 	case g.mode == GroupDialogCreate:
@@ -481,12 +643,118 @@ func (g *GroupDialog) View() string {
 		Width(dialogWidth).
 		Render(dialogContent)
 
-	// Center the dialog
-	return lipgloss.Place(
+	placed := lipgloss.Place(
 		g.width,
 		g.height,
 		lipgloss.Center,
 		lipgloss.Center,
 		dialog,
 	)
+
+	// Overlay the path suggestion dropdown as a floating menu anchored to the
+	// Default Path row, so its appearance/disappearance never shifts layout.
+	if suggestionsOverlay := g.renderPathDropdown(); suggestionsOverlay != "" {
+		topRow, leftCol := dialogOrigin(g.width, g.height, lipgloss.Width(dialog), lipgloss.Height(dialog))
+		// Rows: border (1) + vertical padding (1) + content offset. Columns:
+		// measure the rendered row's own leading spaces so JoinVertical's
+		// centering can never skew the anchor.
+		overlayRow := topRow + 1 + 1 + g.pathDropdownLineOffset
+		dialogLines := strings.Split(dialog, "\n")
+		lineIdx := overlayRow - topRow
+		leading := 0
+		if lineIdx >= 0 && lineIdx < len(dialogLines) {
+			leading = leadingVisibleSpaces(stripAnsi(dialogLines[lineIdx]))
+		}
+		overlayCol := leftCol + leading
+
+		placed = overlayDropdown(placed, suggestionsOverlay, overlayRow, overlayCol)
+	}
+
+	return placed
+}
+
+// renderPathDropdown renders the Default Path suggestions as a standalone
+// bordered block for overlay positioning. Empty when nothing should show.
+func (g *GroupDialog) renderPathDropdown() string {
+	if !g.IsPathDropdownVisible() {
+		return ""
+	}
+
+	menuBg := dropdownMenuBg()
+	suggestionStyle := lipgloss.NewStyle().Foreground(ColorComment).Background(menuBg)
+	selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Background(menuBg)
+
+	var b strings.Builder
+
+	maxShow := 5
+	if g.height > 0 && g.height <= 30 {
+		maxShow = 3
+	}
+	total := len(g.pathSuggestions)
+	startIdx := 0
+	endIdx := total
+	if total > maxShow {
+		startIdx = g.pathSuggestionCursor - maxShow/2
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		endIdx = startIdx + maxShow
+		if endIdx > total {
+			endIdx = total
+			startIdx = endIdx - maxShow
+		}
+	}
+
+	if startIdx > 0 {
+		b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↑ %d more above", startIdx)))
+		b.WriteString("\n")
+	}
+	for i := startIdx; i < endIdx; i++ {
+		if i > startIdx {
+			b.WriteString("\n")
+		}
+		style := suggestionStyle
+		prefix := "  "
+		if i == g.pathSuggestionCursor {
+			style = selectedStyle
+			prefix = "▶ "
+		}
+		b.WriteString(style.Render(prefix + g.pathSuggestions[i]))
+	}
+	if endIdx < total {
+		b.WriteString("\n")
+		b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↓ %d more below", total-endIdx)))
+	}
+
+	// Footer: match count when filtered, plus the key hints.
+	var footerText string
+	if len(g.pathSuggestions) < len(g.allPathSuggestions) {
+		footerText = fmt.Sprintf(" %d/%d matches │ ↑↓ select │ Tab/Enter accept │ Esc dismiss ",
+			len(g.pathSuggestions), len(g.allPathSuggestions))
+	} else {
+		footerText = " ↑↓ select │ Tab/Enter accept │ Esc dismiss "
+	}
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
+
+	menuStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBorder).
+		Background(menuBg).
+		Padding(0, 1)
+
+	return menuStyle.Render(b.String())
+}
+
+// leadingVisibleSpaces counts the space characters before the first
+// non-space character of an ANSI-stripped line.
+func leadingVisibleSpaces(s string) int {
+	n := 0
+	for _, r := range s {
+		if r != ' ' {
+			break
+		}
+		n++
+	}
+	return n
 }
