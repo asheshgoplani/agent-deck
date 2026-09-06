@@ -35,6 +35,9 @@ on:
       - '.github/workflows/go-test.yml'
       - 'scripts/ci-native-ssh.sh'
       - 'scripts/ci-shared-state-proof.sh'
+      - 'scripts/ci-test-summary.py'
+      - 'tests/known-flaky.txt'
+      - 'tests/ci/ci-test-summary.test.sh'
 
 # One in-flight run per PR (or per branch on push). Rapid follow-up pushes
 # cancel the stale run instead of stacking 20-minute jobs.
@@ -75,7 +78,7 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           base="${{ github.event.pull_request.base.sha }}"
-          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$|^scripts/ci-shared-state-proof\.sh$)'; then
+          if git diff --name-only "$base"...HEAD | grep -qE '(\.go$|^go\.mod$|^go\.sum$|^\.github/workflows/go-test\.yml$|^scripts/ci-shared-state-proof\.sh$|^scripts/ci-test-summary\.py$|^tests/known-flaky\.txt$|^tests/ci/ci-test-summary\.test\.sh$)'; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
             echo "go=false" >> "$GITHUB_OUTPUT"
@@ -162,10 +165,30 @@ jobs:
           if [ "${{ matrix.shard.packages }}" = "PROOF" ]; then
             bash scripts/ci-shared-state-proof.sh
           elif [ -n "${{ matrix.shard.run }}" ]; then
-            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m -run '${{ matrix.shard.run }}'
+            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m -run '${{ matrix.shard.run }}'
           else
-            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m
+            gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --jsonfile test-output.json --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m
           fi
+
+      # Name the failing tests in the job summary (#2133) so a red shard says
+      # whether it was a known flake or a real break, with the exact repro
+      # line. Reads only the JSON above; never changes the job's result. The
+      # PROOF shard runs a shell script, not gotestsum, so it has no JSON to
+      # summarise.
+      - name: Summarise failing tests
+        if: always() && matrix.shard.packages != 'PROOF'
+        run: |
+          bash tests/ci/ci-test-summary.test.sh
+          python3 scripts/ci-test-summary.py --json test-output.json --known-flaky tests/known-flaky.txt
+
+      - name: Upload gotestsum JSON
+        if: always() && matrix.shard.packages != 'PROOF'
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-test-output-${{ matrix.shard.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-output.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   # The single required context the main ruleset names. It passes when the
   # diff is not Go-relevant, or when every shard passed; it fails (and never
