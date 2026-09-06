@@ -37,7 +37,7 @@ func remoteCommandArgs(args []string) ([]string, error) {
 			}
 		case "mcp", "skill":
 			// list is read-only: the TUI's remote new-session dialog offers
-			// the server's MCP names from it (mcp list --json).
+			// the server's MCP names from it (mcp list --quiet, names only).
 			if len(args) > 1 && (args[1] == "attach" || args[1] == "list") {
 				return append([]string(nil), args...), nil
 			}

@@ -10,7 +10,7 @@ import (
 )
 
 // The remote new-session dialog offers the target remote's MCPs (its
-// `mcp list --json`, fetched when the dialog opens) as a row of checkboxes
+// `mcp list --quiet`, names only, fetched when the dialog opens) as a row of checkboxes
 // and forwards the picks as RemoteAddOptions.MCPs (one --mcp each). The row
 // never lists this machine's MCPs: the server resolves every name against
 // its own config.toml and would reject a local-only one.

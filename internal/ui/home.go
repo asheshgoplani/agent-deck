@@ -716,7 +716,7 @@ type Home struct {
 	// the SSH fetch of a remote's account slots when its dialog opens.
 	remoteAccountsFetcher func(remoteName string) tea.Cmd
 	// remoteMCPsFetcher is the same override for the fetch of a remote's MCP
-	// names (its `mcp list --json`) when its dialog opens.
+	// names (its `mcp list --quiet`, names only) when its dialog opens.
 	remoteMCPsFetcher func(remoteName string) tea.Cmd
 	// remoteAccountsGen numbers each opening of the remote new-session dialog;
 	// an account or MCP fetch answers for the opening that requested it and
@@ -8750,7 +8750,7 @@ type remoteMCPsFetchedMsg struct {
 }
 
 // fetchRemoteMCPs asks the remote for the MCP names in its own config
-// (`mcp list --json`, read-only). Only names come back; nothing local is sent.
+// (`mcp list --quiet`, read-only, names only; no definition or env travels). Nothing local is sent.
 func (h *Home) fetchRemoteMCPs(remoteName string) tea.Cmd {
 	return func() tea.Msg {
 		runner, err := remoteRunnerFor(remoteName)
@@ -8767,7 +8767,7 @@ func (h *Home) fetchRemoteMCPs(remoteName string) tea.Cmd {
 // applyRemoteMCPs is applyRemoteAccounts for the MCP row: the names reach
 // the dialog only when it is still open for that remote and this opening
 // asked; a failed fetch (offline host, or a remote too old for
-// `mcp list --json`) leaves the row hidden rather than offering local names.
+// `mcp list --quiet`) leaves the row hidden rather than offering local names.
 func (h *Home) applyRemoteMCPs(msg remoteMCPsFetchedMsg) {
 	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName || msg.gen != h.remoteAccountsGen {
 		return

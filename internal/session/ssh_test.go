@@ -564,67 +564,54 @@ func TestSSHRunnerFetchAccounts_ErrorsAreNotEmptyLists(t *testing.T) {
 	}
 }
 
-// FetchMCPs asks the remote for its MCP names only; the command, args, env
-// and URL of each definition describe processes on the server and are never
-// offered as something to pick. Names come back sorted because the remote
-// lists them in map order.
+// FetchMCPs asks the remote for its MCP names only, through the quiet form
+// that prints one name per line: `mcp list --json` would ship every
+// definition, env included, and credentials commonly live there. Names come
+// back sorted.
 func TestSSHRunnerFetchMCPs(t *testing.T) {
 	var gotArgs []string
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
 			gotArgs = args
-			return []byte(`{"mcps":[{"name":"memory","transport":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"github","transport":"http","url":"http://127.0.0.1:9000/mcp","env":{"TOKEN":"secret"}},{"name":"  ","transport":"stdio"}]}` + "\n"), nil
+			return []byte("memory\ngithub\n  \n"), nil
 		},
 	}
 	names, err := runner.FetchMCPs(context.Background())
 	if err != nil {
 		t.Fatalf("FetchMCPs: %v", err)
 	}
-	if strings.Join(gotArgs, " ") != "mcp list --json" {
-		t.Fatalf("remote command = %q, want \"mcp list --json\"", strings.Join(gotArgs, " "))
+	if strings.Join(gotArgs, " ") != "mcp list --quiet" {
+		t.Fatalf("remote command = %q, want \"mcp list --quiet\" (names only; --json would ship definitions and env)", strings.Join(gotArgs, " "))
 	}
 	if strings.Join(names, ",") != "github,memory" {
 		t.Fatalf("names = %v, want [github memory]", names)
 	}
 }
 
-// A remote too old for `mcp list --json`, one whose answer is not the JSON
-// object the command prints, or one that says nothing is an error, never a
-// silent empty list that would look like "no MCPs configured".
+// A remote too old for `mcp list --quiet` exits non-zero (unknown flag); that
+// is an error, never a silent empty list that would look like "no MCPs
+// configured". The payload is not echoed into the error.
 func TestSSHRunnerFetchMCPs_ErrorsAreNotEmptyLists(t *testing.T) {
-	cases := []struct {
-		name   string
-		output string
-		err    error
-	}{
-		{name: "unknown command on old remote", output: "", err: errors.New("exit status 2")},
-		{name: "human text instead of json", output: "No MCPs configured.\n"},
-		{name: "empty stdout", output: ""},
-		{name: "malformed json", output: `{"mcps":[`},
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			return []byte("flag provided but not defined: -quiet\n"), errors.New("exit status 2")
+		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			runner := &SSHRunner{
-				runFn: func(ctx context.Context, args ...string) ([]byte, error) {
-					return []byte(tc.output), tc.err
-				},
-			}
-			names, err := runner.FetchMCPs(context.Background())
-			if err == nil {
-				t.Fatalf("FetchMCPs = %v, want an error", names)
-			}
-			if len(names) != 0 {
-				t.Fatalf("names = %v on error, want none", names)
-			}
-		})
+	names, err := runner.FetchMCPs(context.Background())
+	if err == nil {
+		t.Fatalf("FetchMCPs = %v, want an error", names)
+	}
+	if len(names) != 0 {
+		t.Fatalf("names = %v on error, want none", names)
 	}
 }
 
-// A remote with no MCPs answers {"mcps":[]}: that is a real, empty list.
+// A remote with no MCPs prints nothing in quiet mode: that is a real, empty
+// list.
 func TestSSHRunnerFetchMCPs_EmptyListIsNotAnError(t *testing.T) {
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
-			return []byte(`{"mcps":[]}` + "\n"), nil
+			return []byte(""), nil
 		},
 	}
 	names, err := runner.FetchMCPs(context.Background())

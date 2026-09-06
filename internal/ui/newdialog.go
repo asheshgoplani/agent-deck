@@ -226,7 +226,7 @@ type NewDialog struct {
 	enterAdvances bool
 
 	// remoteMCPs lists the MCP names defined on the target remote (its
-	// `mcp list --json`), set only by SetRemoteMCPs for a remote target; a
+	// `mcp list --quiet`, names only), set only by SetRemoteMCPs for a remote target; a
 	// local opening never populates it, so the row is absent for local
 	// sessions. remoteMCPChecked marks the picks; remoteMCPCursor is the
 	// highlighted name.
@@ -1516,7 +1516,7 @@ func (d *NewDialog) SetRemoteAccounts(names []string) {
 }
 
 // SetRemoteMCPs populates the MCP row with the names defined on the target
-// remote (its `mcp list --json`). Only names are offered; the server resolves
+// remote (its `mcp list --quiet`, names only). Only names are offered; the server resolves
 // each pick against its own config.toml when it runs `add --mcp`. An empty
 // list hides the row, so a remote without MCPs (or one too old to report
 // them) never shows a control whose value it would reject. Earlier picks

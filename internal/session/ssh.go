@@ -571,45 +571,35 @@ func parseRemoteAccountNames(output []byte) ([]string, error) {
 }
 
 // FetchMCPs lists the MCP names defined in the remote's own config.toml (its
-// `mcp list --json`), so the TUI's remote new-session dialog offers the
-// server's MCPs rather than this machine's. Read-only: only names travel
-// back; commands, args, env and URLs in the answer are dropped, and nothing
-// local is sent. A remote too old for `mcp list --json` fails the call, and
-// the caller then hides the row instead of offering local names the server
-// would reject.
+// `mcp list --quiet`, one name per line), so the TUI's remote new-session
+// dialog offers the server's MCPs rather than this machine's. Read-only and
+// names only: the quiet form never serializes a definition, so no command,
+// args, URL or env (where credentials commonly live) crosses SSH at all,
+// unlike `--json`, which ships every field. Nothing local is sent. A remote
+// too old for `mcp list --quiet` fails the call (unknown flag exits non-zero),
+// and the caller then hides the row instead of offering local names the
+// server would reject.
 func (r *SSHRunner) FetchMCPs(ctx context.Context) ([]string, error) {
-	output, err := r.Run(ctx, "mcp", "list", "--json")
+	output, err := r.Run(ctx, "mcp", "list", "--quiet")
 	if err != nil {
 		return nil, err
 	}
-	return parseRemoteMCPNames(output)
+	return parseRemoteMCPNames(output), nil
 }
 
-// parseRemoteMCPNames extracts the names from `mcp list --json` output
-// ({"mcps":[{"name":...},...]}), sorted, since the remote lists them in map
-// order. Everything else in an entry describes a process on the server and
-// is deliberately dropped.
-func parseRemoteMCPNames(output []byte) ([]string, error) {
-	trimmed := bytes.TrimSpace(output)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, fmt.Errorf("unexpected remote mcp list output: %q", string(trimmed))
-	}
-	var result struct {
-		MCPs []struct {
-			Name string `json:"name"`
-		} `json:"mcps"`
-	}
-	if err := json.Unmarshal(trimmed, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse remote mcp list: %w", err)
-	}
-	names := make([]string, 0, len(result.MCPs))
-	for _, e := range result.MCPs {
-		if name := strings.TrimSpace(e.Name); name != "" {
+// parseRemoteMCPNames splits `mcp list --quiet` output (one name per line)
+// into a sorted list. A remote with no MCPs prints nothing in quiet mode, so
+// empty output is a real, empty list. The payload is never echoed into an
+// error or log.
+func parseRemoteMCPNames(output []byte) []string {
+	names := make([]string, 0)
+	for _, line := range strings.Split(string(output), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
 			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
-	return names, nil
+	return names
 }
 
 // FetchPendingRecords retrieves the remote host's completion and transition
