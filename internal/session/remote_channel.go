@@ -38,11 +38,20 @@ type RemoteChannel struct {
 	lastAttempt      time.Time
 	backoff          time.Duration
 	dialing          bool
+	// watching is the session whose pane the remote agent is pushing for
+	// this channel ("" for none); reset when the transport drops, because
+	// the agent's watch dies with it. watchUnsupported is set when the
+	// agent answered a watch request with an error (a build that predates
+	// pane watching): the caller then polls the preview as before.
+	watching         string
+	watchUnsupported bool
 }
 
 type remoteChannelRequest struct {
-	ID   int64    `json:"id"`
-	Args []string `json:"args"`
+	ID      int64    `json:"id"`
+	Args    []string `json:"args,omitempty"`
+	Watch   string   `json:"watch,omitempty"`
+	Unwatch bool     `json:"unwatch,omitempty"`
 }
 
 type remoteChannelReply struct {
@@ -55,16 +64,28 @@ type remoteChannelReply struct {
 	Sessions string `json:"sessions,omitempty"`
 	Groups   string `json:"groups,omitempty"`
 	ProbeMS  int64  `json:"probe_ms,omitempty"`
+	Session  string `json:"session,omitempty"`
 }
 
-// RemoteChange is one pushed change from a remote. Sessions and Groups are
-// the remote's fresh listings when the agent sent them (nil when it did
-// not, in which case the receiver fetches).
+// RemoteChange is one pushed event from a remote. For a "changed" event,
+// Sessions and Groups are the remote's fresh listings when the agent sent
+// them (nil when it did not, in which case the receiver fetches). For a
+// "pane" event, Pane is set and the listing fields are empty.
 type RemoteChange struct {
 	Remote   string
 	Sessions []RemoteSessionInfo
 	Groups   []string
 	HasData  bool
+	Pane     *RemotePaneEvent
+}
+
+// RemotePaneEvent is one pushed pane capture for the watched session: the
+// pane text after a change, or the capture failure (Err) when the pane
+// could not be read.
+type RemotePaneEvent struct {
+	Session string
+	Content string
+	Err     string
 }
 
 // errChannelDown means the transport failed, not the remote command; callers
@@ -83,6 +104,15 @@ var (
 	remoteChannelsMu sync.Mutex
 	remoteChannels   = map[string]*RemoteChannel{}
 )
+
+// RemoteChannelFor returns the channel already opened for a named remote,
+// or nil when none has been started yet (the first command to that remote
+// starts it). It never dials.
+func RemoteChannelFor(name string) *RemoteChannel {
+	remoteChannelsMu.Lock()
+	defer remoteChannelsMu.Unlock()
+	return remoteChannels[name]
+}
 
 // remoteChannelsEnabled lets AGENT_DECK_REMOTE_CHANNEL=0 turn the channel off
 // (every command then runs as its own ssh exec, the pre-#2174 behaviour).
@@ -234,10 +264,11 @@ func (c *RemoteChannel) readLoop(r *bufio.Reader) {
 				slog.String("remote", c.name),
 				slog.Bool("pushed_data", strings.TrimSpace(reply.Sessions) != ""),
 				slog.Int64("probe_ms", reply.ProbeMS))
-			select {
-			case c.events <- c.changeFromReply(reply):
-			default:
-			}
+			c.publish(c.changeFromReply(reply))
+			continue
+		}
+		if reply.Event == "pane" {
+			c.publish(RemoteChange{Remote: c.name, Pane: &RemotePaneEvent{Session: reply.Session, Content: reply.Stdout, Err: reply.Error}})
 			continue
 		}
 		if reply.ID == 0 {
@@ -250,6 +281,16 @@ func (c *RemoteChannel) readLoop(r *bufio.Reader) {
 		if ok {
 			ch <- reply
 		}
+	}
+}
+
+// publish hands an event to the fan-in without ever blocking the reader: a
+// full buffer drops the event (a "changed" push is followed by a poll, a
+// "pane" push by the next change of that pane).
+func (c *RemoteChannel) publish(ch RemoteChange) {
+	select {
+	case c.events <- ch:
+	default:
 	}
 }
 
@@ -289,6 +330,7 @@ func (c *RemoteChannel) markDown() {
 		c.closeFn = nil
 	}
 	c.stdin = nil
+	c.watching = ""
 	pending := c.pending
 	c.pending = map[int64]chan remoteChannelReply{}
 	c.mu.Unlock()
@@ -301,11 +343,87 @@ func (c *RemoteChannel) markDown() {
 // stdout, or an error that names the exit status and stderr (the same shape
 // SSHRunner.run produces), or errChannelDown when the transport failed.
 func (c *RemoteChannel) Request(ctx context.Context, args []string) ([]byte, error) {
+	r, err := c.roundTrip(ctx, remoteChannelRequest{Args: args})
+	if err != nil {
+		return nil, err
+	}
+	return []byte(r.Stdout), nil
+}
+
+// Watching returns the session whose pane the remote is pushing over this
+// channel, or "" when none is (also after a reconnect: the agent's watch
+// did not survive, so the caller asks again).
+func (c *RemoteChannel) Watching() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.watching
+}
+
+// PaneWatchSupported is false once the remote agent refused a watch request
+// (older build); callers then keep polling the preview.
+func (c *RemoteChannel) PaneWatchSupported() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.watchUnsupported
+}
+
+// Watch asks the remote agent to push pane events for sessionID (replacing
+// any previous watch on this channel; the agent follows one pane at a
+// time). A watch already in place for the same session is a no-op. The
+// session is recorded as watched before the request goes out so concurrent
+// callers do not send it twice; a refusal by the agent clears it and marks
+// pane watching unsupported on this channel.
+func (c *RemoteChannel) Watch(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return c.Unwatch(ctx)
+	}
+	c.mu.Lock()
+	if c.watchUnsupported {
+		c.mu.Unlock()
+		return errors.New("pane watch not supported by this remote")
+	}
+	if c.watching == sessionID {
+		c.mu.Unlock()
+		return nil
+	}
+	c.watching = sessionID
+	c.mu.Unlock()
+	_, err := c.roundTrip(ctx, remoteChannelRequest{Watch: sessionID})
+	if err != nil {
+		c.mu.Lock()
+		if c.watching == sessionID {
+			c.watching = ""
+		}
+		if !errors.Is(err, errChannelDown) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			c.watchUnsupported = true
+		}
+		c.mu.Unlock()
+	}
+	return err
+}
+
+// Unwatch stops the pane watch on this channel, if any.
+func (c *RemoteChannel) Unwatch(ctx context.Context) error {
+	c.mu.Lock()
+	if c.watching == "" {
+		c.mu.Unlock()
+		return nil
+	}
+	c.watching = ""
+	c.mu.Unlock()
+	_, err := c.roundTrip(ctx, remoteChannelRequest{Unwatch: true})
+	return err
+}
+
+// roundTrip sends one request and waits for its reply, mapping a failed
+// command to the same error shape SSHRunner.run produces and a dead
+// transport to errChannelDown.
+func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest) (remoteChannelReply, error) {
 	if !c.up.Load() {
 		// The channel outlives this request, so its dial is not bound to
 		// the request's context.
 		go c.ensureConnected() //nolint:gosec // see comment above
-		return nil, errChannelDown
+		return remoteChannelReply{}, errChannelDown
 	}
 	id := c.nextID.Add(1)
 	reply := make(chan remoteChannelReply, 1)
@@ -313,37 +431,38 @@ func (c *RemoteChannel) Request(ctx context.Context, args []string) ([]byte, err
 	stdin := c.stdin
 	if stdin == nil {
 		c.mu.Unlock()
-		return nil, errChannelDown
+		return remoteChannelReply{}, errChannelDown
 	}
 	c.pending[id] = reply
 	c.mu.Unlock()
 
-	line, _ := json.Marshal(remoteChannelRequest{ID: id, Args: args})
+	req.ID = id
+	line, _ := json.Marshal(req)
 	if _, err := stdin.Write(append(line, '\n')); err != nil {
 		c.markDown()
-		return nil, errChannelDown
+		return remoteChannelReply{}, errChannelDown
 	}
 	select {
 	case r := <-reply:
 		if r.Code == -1 && r.Error == errChannelDown.Error() {
-			return nil, errChannelDown
+			return r, errChannelDown
 		}
 		if r.Error != "" {
-			return nil, fmt.Errorf("ssh command failed: %s", r.Error)
+			return r, fmt.Errorf("ssh command failed: %s", r.Error)
 		}
 		if r.Code != 0 {
 			detail := r.Stderr
 			if strings.TrimSpace(detail) == "" {
 				detail = strings.TrimSpace(r.Stdout)
 			}
-			return nil, fmt.Errorf("ssh command failed: exit status %d: %s", r.Code, detail)
+			return r, fmt.Errorf("ssh command failed: exit status %d: %s", r.Code, detail)
 		}
-		return []byte(r.Stdout), nil
+		return r, nil
 	case <-ctx.Done():
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
-		return nil, ctx.Err()
+		return remoteChannelReply{}, ctx.Err()
 	}
 }
 

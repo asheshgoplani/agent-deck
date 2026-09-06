@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -47,7 +49,7 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond)
+		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond, nil, 0)
 		_ = outW.Close()
 		close(done)
 	}()
@@ -140,7 +142,7 @@ func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond)
+		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond, nil, 0)
 		_ = outW.Close()
 		close(done)
 	}()
@@ -201,4 +203,154 @@ func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("agent did not exit when stdin closed")
 	}
+}
+
+// A watch request starts pushing the session's pane: the first capture at
+// once, then only when the text changes; a new watch replaces the old one,
+// a capture failure is pushed once, and unwatch stops the pushes.
+func TestRemoteAgent_WatchPushesPaneOnChange(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	var mu sync.Mutex
+	panes := map[string]string{"s1": "one-a", "s2": "two-a"}
+	var captures atomic.Int32
+	capture := func(_ context.Context, id string) (string, error) {
+		captures.Add(1)
+		mu.Lock()
+		defer mu.Unlock()
+		p, ok := panes[id]
+		if !ok {
+			return "", errors.New("session '" + id + "' not found")
+		}
+		return p, nil
+	}
+	setPane := func(id, text string) {
+		mu.Lock()
+		panes[id] = text
+		mu.Unlock()
+	}
+	run := func(ctx context.Context, args []string) (string, string, int) { return "", "", 0 }
+	done := make(chan struct{})
+	go func() {
+		serveRemoteAgent(context.Background(), inR, outW, run, nil, "", 0, capture, 10*time.Millisecond)
+		_ = outW.Close()
+		close(done)
+	}()
+	sc := bufio.NewScanner(outR)
+	replies := make(chan remoteAgentReply, 64)
+	go func() {
+		for sc.Scan() {
+			var r remoteAgentReply
+			if json.Unmarshal(sc.Bytes(), &r) == nil {
+				replies <- r
+			}
+		}
+		close(replies)
+	}()
+	next := func(what string) remoteAgentReply {
+		t.Helper()
+		select {
+		case r, ok := <-replies:
+			if !ok {
+				t.Fatalf("agent closed while waiting for %s", what)
+			}
+			return r
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout waiting for %s", what)
+		}
+		return remoteAgentReply{}
+	}
+	noneWithin := func(d time.Duration, what string) {
+		t.Helper()
+		select {
+		case r := <-replies:
+			t.Fatalf("unexpected %+v while expecting %s", r, what)
+		case <-time.After(d):
+		}
+	}
+	send := func(req remoteAgentRequest) {
+		b, _ := json.Marshal(req)
+		if _, err := inW.Write(append(b, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := next("ready"); r.Event != "ready" {
+		t.Fatalf("first line must announce ready, got %+v", r)
+	}
+
+	send(remoteAgentRequest{ID: 1, Watch: "s1"})
+	if r := next("watch ack"); r.ID != 1 || r.Code != 0 || r.Error != "" {
+		t.Fatalf("watch ack = %+v", r)
+	}
+	if r := next("first pane"); r.Event != "pane" || r.Session != "s1" || r.Stdout != "one-a" {
+		t.Fatalf("first pane push = %+v, want the current screen of s1", r)
+	}
+	// Unchanged pane: silence, however often it is captured.
+	noneWithin(60*time.Millisecond, "silence on an unchanged pane")
+	if captures.Load() < 3 {
+		t.Fatalf("the pane must be polled while watched, got %d captures", captures.Load())
+	}
+	setPane("s1", "one-b")
+	if r := next("changed pane"); r.Event != "pane" || r.Session != "s1" || r.Stdout != "one-b" {
+		t.Fatalf("changed pane push = %+v", r)
+	}
+
+	// Replacing the watch: s2's screen arrives, s1 changes go unnoticed.
+	send(remoteAgentRequest{ID: 2, Watch: "s2"})
+	if r := next("watch ack"); r.ID != 2 || r.Code != 0 {
+		t.Fatalf("second watch ack = %+v", r)
+	}
+	if r := next("pane of s2"); r.Event != "pane" || r.Session != "s2" || r.Stdout != "two-a" {
+		t.Fatalf("pane after rewatch = %+v", r)
+	}
+	setPane("s1", "one-c")
+	noneWithin(50*time.Millisecond, "silence for the replaced session")
+
+	// A capture failure is pushed once, as an error on the pane event.
+	mu.Lock()
+	delete(panes, "s2")
+	mu.Unlock()
+	if r := next("pane error"); r.Event != "pane" || r.Session != "s2" || !strings.Contains(r.Error, "not found") || r.Stdout != "" {
+		t.Fatalf("pane failure push = %+v", r)
+	}
+	noneWithin(50*time.Millisecond, "one push per distinct failure")
+
+	// Unwatch: acknowledged, then nothing more even when the pane changes.
+	send(remoteAgentRequest{ID: 3, Unwatch: true})
+	if r := next("unwatch ack"); r.ID != 3 || r.Code != 0 {
+		t.Fatalf("unwatch ack = %+v", r)
+	}
+	setPane("s2", "two-b")
+	noneWithin(50*time.Millisecond, "silence after unwatch")
+
+	_ = inW.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent did not exit when stdin closed")
+	}
+}
+
+// An agent started without a capture func (or an old build, which sees a
+// request with no args) refuses the watch so the local side keeps polling.
+func TestRemoteAgent_WatchRefusedWithoutCapture(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	go func() {
+		serveRemoteAgent(context.Background(), inR, outW, func(context.Context, []string) (string, string, int) { return "", "", 0 }, nil, "", 0, nil, 0)
+		_ = outW.Close()
+	}()
+	sc := bufio.NewScanner(outR)
+	sc.Scan() // ready
+	b, _ := json.Marshal(remoteAgentRequest{ID: 4, Watch: "s1"})
+	_, _ = inW.Write(append(b, '\n'))
+	if !sc.Scan() {
+		t.Fatal("no reply")
+	}
+	var r remoteAgentReply
+	_ = json.Unmarshal(sc.Bytes(), &r)
+	if r.ID != 4 || r.Code == 0 || r.Error == "" {
+		t.Fatalf("watch without capture must be refused with an error, got %+v", r)
+	}
+	_ = inW.Close()
 }

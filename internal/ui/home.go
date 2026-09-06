@@ -353,6 +353,17 @@ type Home struct {
 	pendingPreviewKey string     // Preview key waiting for debounced fetch
 	previewDebounceMu sync.Mutex // Protects pendingPreviewKey
 
+	// Remote preview over the channel (#2177 follow-up): the remote agent
+	// pushes the focused remote session's pane, so no ssh poll runs for it
+	// while the watch holds. remotePaneWatch is what the TUI last asked a
+	// remote to watch; it is read and written only from Update.
+	remotePaneWatch remotePaneWatchTarget
+	// remotePaneUnsupported remembers, per remote, that `session output
+	// --pane` is unknown to that remote's build, so the poll path takes the
+	// transcript fallback directly instead of trying --pane every cycle.
+	remotePaneUnsupported   map[string]bool
+	remotePaneUnsupportedMu sync.Mutex
+
 	// Round-robin status updates (Priority 1A optimization)
 	// Instead of updating ALL sessions every tick, we update batches of 5-10 sessions
 	// This reduces CPU usage by 90%+ while maintaining responsiveness
@@ -1377,6 +1388,20 @@ type previewFetchedMsg struct {
 	previewKey string // cache key: sessionID or sessionID:windowIndex
 	content    string
 	err        error
+}
+
+// remotePaneWatchTarget names the remote session whose pane the TUI asked
+// the remote agent to push ("" fields when none).
+type remotePaneWatchTarget struct {
+	remote  string
+	session string
+}
+
+// remotePaneWatchMsg reports the outcome of a Watch request on a remote
+// channel; on failure the preview poll takes over for that session.
+type remotePaneWatchMsg struct {
+	target remotePaneWatchTarget
+	err    error
 }
 
 // previewDebounceMsg signals debounce period elapsed for preview fetch
@@ -4711,16 +4736,136 @@ func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 		// tool UI chrome) instead of FetchSessionOutput (parsed transcript
 		// text) so claude-formatted previews render the same way local
 		// sessions do. If the remote agent-deck predates --pane, fall back
-		// to the transcript path so the preview is at least non-empty.
-		content, fetchErr := runner.FetchSessionPane(ctx, sessionID)
-		if fetchErr != nil || strings.TrimSpace(content) == "" {
-			if fallback, fbErr := runner.FetchSessionOutput(ctx, sessionID); fbErr == nil && strings.TrimSpace(fallback) != "" {
-				content = fallback
-				fetchErr = nil
+		// to the transcript path so the preview is at least non-empty, and
+		// remember that for the remote so later cycles go there directly.
+		var content string
+		var fetchErr error
+		if h.remotePaneIsUnsupported(remoteName) {
+			content, fetchErr = runner.FetchSessionOutput(ctx, sessionID)
+		} else {
+			content, fetchErr = runner.FetchSessionPane(ctx, sessionID)
+			if fetchErr != nil && remotePaneFlagUnknown(fetchErr) {
+				h.setRemotePaneUnsupported(remoteName)
+			}
+			if fetchErr != nil || strings.TrimSpace(content) == "" {
+				if fallback, fbErr := runner.FetchSessionOutput(ctx, sessionID); fbErr == nil && strings.TrimSpace(fallback) != "" {
+					content = fallback
+					fetchErr = nil
+				}
 			}
 		}
 		content = truncateRemotePreviewContent(content)
 		return previewFetchedMsg{previewKey: key, content: content, err: fetchErr}
+	}
+}
+
+// remotePaneFlagUnknown recognises the flag package's complaint from a remote
+// build that predates `session output --pane`.
+func remotePaneFlagUnknown(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "flag provided but not defined") && strings.Contains(msg, "pane")
+}
+
+func (h *Home) remotePaneIsUnsupported(remoteName string) bool {
+	h.remotePaneUnsupportedMu.Lock()
+	defer h.remotePaneUnsupportedMu.Unlock()
+	return h.remotePaneUnsupported[remoteName]
+}
+
+func (h *Home) setRemotePaneUnsupported(remoteName string) {
+	h.remotePaneUnsupportedMu.Lock()
+	defer h.remotePaneUnsupportedMu.Unlock()
+	if h.remotePaneUnsupported == nil {
+		h.remotePaneUnsupported = map[string]bool{}
+	}
+	h.remotePaneUnsupported[remoteName] = true
+}
+
+// remotePaneWatchActive reports whether the remote agent is pushing the
+// pane of this remote session over a live channel, in which case the
+// preview needs no poll.
+func remotePaneWatchActive(remoteName, sessionID string) bool {
+	ch := session.RemoteChannelFor(remoteName)
+	return ch != nil && ch.Connected() && ch.Watching() == sessionID
+}
+
+// syncRemotePaneWatch makes the remote agents' pane watch follow the cursor:
+// the focused remote session is watched over its channel (when the channel
+// is up and the agent knows how), any previously watched session on another
+// remote is released, and a channel that reconnected (its watch died with
+// the transport) is asked again. Returns the commands that talk to the
+// remotes; callers batch them.
+func (h *Home) syncRemotePaneWatch() tea.Cmd {
+	var want remotePaneWatchTarget
+	if remoteName, sessionID, _, ok := h.selectedRemotePreviewTarget(); ok && h.getLayoutMode() != LayoutModeSingle {
+		want = remotePaneWatchTarget{remote: remoteName, session: sessionID}
+	}
+	var cmds []tea.Cmd
+	have := h.remotePaneWatch
+	h.remotePaneWatch = remotePaneWatchTarget{}
+	// Another session on the same remote needs no release: the agent
+	// replaces its watch when the new one arrives.
+	if have.remote != "" && have.remote != want.remote {
+		if ch := session.RemoteChannelFor(have.remote); ch != nil {
+			cmds = append(cmds, h.remotePaneUnwatchCmd(ch))
+		}
+	}
+	if want.remote == "" {
+		return batchCmds(cmds)
+	}
+	ch := session.RemoteChannelFor(want.remote)
+	if ch == nil || !ch.Connected() || !ch.PaneWatchSupported() {
+		return batchCmds(cmds)
+	}
+	h.remotePaneWatch = want
+	if ch.Watching() != want.session {
+		cmds = append(cmds, h.remotePaneWatchCmd(ch, want))
+	}
+	return batchCmds(cmds)
+}
+
+func batchCmds(cmds []tea.Cmd) tea.Cmd {
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+func (h *Home) remotePaneWatchCmd(ch *session.RemoteChannel, target remotePaneWatchTarget) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
+		defer cancel()
+		err := ch.Watch(ctx, target.session)
+		if err != nil {
+			uiLog.Debug("remote_pane_watch_failed", slog.String("remote", target.remote), slog.String("session", target.session), slog.String("err", err.Error()))
+		}
+		return remotePaneWatchMsg{target: target, err: err}
+	}
+}
+
+func (h *Home) remotePaneUnwatchCmd(ch *session.RemoteChannel) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
+		defer cancel()
+		_ = ch.Unwatch(ctx)
+		return nil
+	}
+}
+
+// applyRemotePane stores a pushed pane capture as the preview of that
+// remote session, the same way a fetched preview lands, so the renderer and
+// the TTL logic see no difference. A capture failure counts as a fetch
+// failure: the last content stays, the TTL advances.
+func (h *Home) applyRemotePane(remoteName string, pane *session.RemotePaneEvent) {
+	key := remotePreviewCacheKey(remoteName, pane.Session)
+	h.previewCacheMu.Lock()
+	defer h.previewCacheMu.Unlock()
+	if h.previewFetchingID == key {
+		h.previewFetchingID = ""
+	}
+	h.previewCacheTime[key] = time.Now()
+	if pane.Err == "" {
+		h.previewCache[key] = expandTabs(truncateRemotePreviewContent(pane.Content))
 	}
 }
 
@@ -7186,6 +7331,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.applyRemoteFetch(msg)
 
 	case remoteChangedMsg:
+		if msg.change.Pane != nil {
+			// The focused remote session's pane, pushed by the agent: apply
+			// it to the preview and re-arm. Pushes for a session no longer
+			// under the cursor are ignored (the unwatch may still be in
+			// flight).
+			if h.remotePaneWatch.remote == msg.remoteName && h.remotePaneWatch.session == msg.change.Pane.Session {
+				h.applyRemotePane(msg.remoteName, msg.change.Pane)
+			}
+			return h, h.waitRemoteChange
+		}
 		if msg.change.HasData {
 			// The event brought the listings: apply them now, no round trip.
 			uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("pushed_data", true))
@@ -7207,6 +7362,28 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, h.waitRemoteChange
 		}
 		return h, tea.Batch(h.fetchRemoteSessions, h.waitRemoteChange)
+
+	case remotePaneWatchMsg:
+		if msg.err == nil || h.remotePaneWatch != msg.target {
+			return h, nil
+		}
+		// The agent refused or the channel dropped: poll this preview as
+		// before. The next tick re-evaluates once the channel is back.
+		h.remotePaneWatch = remotePaneWatchTarget{}
+		_, _, key, ok := h.selectedRemotePreviewTarget()
+		if !ok || key != remotePreviewCacheKey(msg.target.remote, msg.target.session) {
+			return h, nil
+		}
+		h.previewCacheMu.Lock()
+		needsFetch := h.previewFetchingID != key
+		if needsFetch {
+			h.previewFetchingID = key
+		}
+		h.previewCacheMu.Unlock()
+		if needsFetch {
+			return h, h.fetchRemotePreview(msg.target.remote, msg.target.session, key)
+		}
+		return h, nil
 
 	case remoteLatenciesFetchedMsg:
 		h.remoteLatencyMu.Lock()
@@ -7798,6 +7975,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.remoteName != "" {
 			var cmds []tea.Cmd
 
+			// Over a live channel the agent pushes this pane (the first
+			// capture arrives as soon as the watch is set), so no fetch.
+			if cmd := h.syncRemotePaneWatch(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			if h.remotePaneWatch == (remotePaneWatchTarget{remote: msg.remoteName, session: msg.sessionID}) {
+				return h, batchCmds(cmds)
+			}
+
 			// Preview fetch
 			h.previewCacheMu.Lock()
 			needsPreviewFetch := h.previewFetchingID != msg.previewKey
@@ -8360,7 +8546,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.previewCacheMu.Unlock()
 		} else {
 			remoteName, remoteSessionID, remoteKey, ok := h.selectedRemotePreviewTarget()
-			if ok {
+			// The remote agent pushes the focused pane over the channel;
+			// the ssh poll only runs while that is not the case (channel
+			// down, old remote, watch still being set up).
+			if ok && !remotePaneWatchActive(remoteName, remoteSessionID) {
 				h.previewCacheMu.Lock()
 				cachedTime, hasCached := h.previewCacheTime[remoteKey]
 				cacheExpired := !hasCached || time.Since(cachedTime) > remotePreviewCacheTTL
@@ -8371,7 +8560,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.previewCacheMu.Unlock()
 			}
 		}
-		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd}
+		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch()}
 		if h.fullRepaint {
 			cmds = append(cmds, tea.ClearScreen)
 		}
