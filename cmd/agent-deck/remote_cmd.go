@@ -8,10 +8,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
@@ -768,3 +770,52 @@ func reorderRemoteArgs(fs *flag.FlagSet, args []string) []string {
 	}
 	return append(flags, positional...)
 }
+
+// startRemoteAutoUpdate is the unattended half of [updates]
+// auto_update_remotes: on TUI startup, push the controller's version to every
+// remote that reports an older one. It never blocks startup (the sweep runs
+// in a goroutine), never prompts, and only writes to the debug log because
+// the TUI owns the screen by then. Throttled to once per check interval via
+// the shared version cache; the explicit `agent-deck update` path resets
+// that stamp too, so a fresh controller version still sweeps promptly.
+func startRemoteAutoUpdate() {
+	settings := session.GetUpdateSettings()
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil {
+		return
+	}
+	if !session.ShouldAutoUpdateRemotes(settings, len(config.Remotes), session.RemoteAutoUpdateRanAt(), time.Now()) {
+		return
+	}
+	remotes := config.Remotes
+	go runRemoteAutoUpdate(remotes, Version)
+}
+
+// runRemoteAutoUpdate is the body of the startup sweep, split out so a test
+// can run it synchronously against a stubbed runner.
+func runRemoteAutoUpdate(remotes map[string]session.RemoteConfig, target string) []session.RemoteUpdateResult {
+	log := logging.ForComponent(logging.CompSession)
+	// Stamp first so a crash mid-sweep does not retry on every restart.
+	if err := session.MarkRemoteAutoUpdateRan(time.Now()); err != nil {
+		log.Warn("remote_auto_update_stamp_failed", slog.String("error", err.Error()))
+	}
+	log.Info("remote_auto_update_start", slog.Int("remotes", len(remotes)), slog.String("target", target))
+	results := session.UpdateRemotes(context.Background(), remotes, target, session.RemoteUpdateOptions{
+		InstallMissing: false,
+		NewRunner:      remoteAutoUpdateRunner,
+		OnResult: func(r session.RemoteUpdateResult) {
+			attrs := []any{slog.String("remote", r.Name), slog.String("host", r.Host), slog.String("outcome", r.String())}
+			if r.Outcome == session.RemoteUpdateOutcomeFailed {
+				log.Warn("remote_auto_update_result", attrs...)
+			} else {
+				log.Info("remote_auto_update_result", attrs...)
+			}
+		},
+	})
+	log.Info("remote_auto_update_done", slog.String("summary", remoteUpdateSummary(results)))
+	return results
+}
+
+// remoteAutoUpdateRunner builds the installer for the startup sweep. A
+// package variable so tests substitute a stub; nil means NewSSHRunner.
+var remoteAutoUpdateRunner func(name string, rc session.RemoteConfig) session.RemoteBinaryInstaller
