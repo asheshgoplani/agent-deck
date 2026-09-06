@@ -79,3 +79,28 @@ func TestRemoteCreate_QueuedIsNoticeNotError(t *testing.T) {
 		t.Fatal("the queued outcome must be a typed error the TUI can tell apart from a failure")
 	}
 }
+
+// A session the remote just confirmed is drawn the moment the attach
+// returns, not at the next fetch (the maintainer saw the row arrive "after
+// some time" when detaching from a freshly created remote session).
+func TestRemoteCreate_ConfirmedRowIsDrawnAtOnce(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{"box": {{ID: "a", Title: "old", Group: "work"}}}
+
+	model, cmd := home.Update(remoteSessionCreatedMsg{created: &session.RemoteSessionInfo{ID: "new", Title: "fresh", Tool: "claude", RemoteName: "box"}})
+	h := model.(*Home)
+
+	got := remoteTitles(h, "box")
+	if len(got) != 2 || got[1] != "fresh" {
+		t.Fatalf("confirmed session must be in the cache at once; titles = %v", got)
+	}
+	h.remoteSessionsMu.RLock()
+	group := h.remoteSessions["box"][1].Group
+	h.remoteSessionsMu.RUnlock()
+	if group != session.DefaultGroupPath {
+		t.Fatalf("an ungrouped session lands in the default group like the remote does; got %q", group)
+	}
+	if cmd == nil {
+		t.Fatal("the create return must still schedule the reconciling fetch")
+	}
+}

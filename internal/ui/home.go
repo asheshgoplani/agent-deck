@@ -2371,6 +2371,35 @@ func (h *Home) patchRemoteSession(remoteName, sessionID string, fn func(*session
 	h.rebuildFlatItems()
 }
 
+// insertRemoteSession adds (or replaces by id) one session in the cache and
+// redraws, so a session the remote just confirmed is on screen before any
+// fetch. Ungrouped sessions land in the default group like the remote does.
+func (h *Home) insertRemoteSession(info session.RemoteSessionInfo) {
+	if info.Group == "" {
+		info.Group = session.DefaultGroupPath
+	}
+	h.remoteSessionsMu.Lock()
+	if h.remoteSessions == nil {
+		h.remoteSessions = make(map[string][]session.RemoteSessionInfo)
+	}
+	sessions := h.remoteSessions[info.RemoteName]
+	replaced := false
+	for i := range sessions {
+		if sessions[i].ID == info.ID {
+			sessions[i] = info
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		sessions = append(sessions, info)
+	}
+	h.remoteSessions[info.RemoteName] = sessions
+	h.remoteSessionsMu.Unlock()
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
+}
+
 // dropRemoteSession removes one session from the cache and redraws.
 func (h *Home) dropRemoteSession(remoteName, sessionID string) {
 	h.remoteSessionsMu.Lock()
@@ -7140,6 +7169,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(msg.err)
 		} else if msg.notice != "" {
 			h.setError(errors.New(msg.notice))
+		}
+		if msg.created != nil {
+			// Draw the confirmed row now; the fetch below reconciles the
+			// remote's own title (a quick-create gets its name there) and
+			// status.
+			h.insertRemoteSession(*msg.created)
 		}
 		// This message is returned after tea.Exec finishes the remote
 		// create+attach. Mirror the statusUpdateMsg attach-return cleanup so
@@ -14894,6 +14929,8 @@ type remoteSessionCreatedMsg struct {
 	err error
 	// notice is a non-error outcome worth a footer line (e.g. queued).
 	notice string
+	// created describes the session the remote confirmed, drawn at once.
+	created *session.RemoteSessionInfo
 }
 
 // remoteRenameResultMsg reports the remote's answer to a rename started from
@@ -15377,6 +15414,10 @@ type remoteCreateAndAttachCmd struct {
 	runner    *session.SSHRunner
 	opts      session.RemoteAddOptions
 	createCtx context.Context
+	// created receives the remote's session id once `add` succeeded, so
+	// the row can be drawn the moment the attach returns, before any
+	// fetch confirms it.
+	created *string
 	// onExit: same contract as attachCmd.onExit (#1753) — clear the attach flag
 	// while Bubble Tea's loop is still parked, so the first View() after resume
 	// never races the ExecCallback goroutine and renders blank.
@@ -15413,6 +15454,9 @@ func (r remoteCreateAndAttachCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if r.created != nil {
+		*r.created = sessionID
+	}
 	if err := r.runner.Attach(sessionID); err != nil {
 		return remoteAttachFailedError{err: err}
 	}
@@ -15441,14 +15485,26 @@ func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.Re
 	}
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
+	var createdID string
 	return tea.Exec(remoteCreateAndAttachCmd{
-		runner: runner, opts: opts, createCtx: h.ctx,
+		runner: runner, opts: opts, createCtx: h.ctx, created: &createdID,
 		// Clear the flag inside Run(), before Bubble Tea restores the terminal
 		// and resumes the loop (#1753); the callback below is only the belt for
 		// the path where Run() never executes.
 		onExit: func() { h.isAttaching.Store(false) },
 	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
+		var created *session.RemoteSessionInfo
+		if createdID != "" {
+			tool := opts.Tool
+			if tool == "" {
+				tool = "shell"
+			}
+			created = &session.RemoteSessionInfo{
+				ID: createdID, Title: opts.Title, Group: opts.Group, Tool: tool,
+				Path: opts.Path, Status: string(session.StatusRunning), RemoteName: remoteName,
+			}
+		}
 		if err != nil {
 			var attachErr remoteAttachFailedError
 			if errors.As(err, &attachErr) {
@@ -15467,7 +15523,7 @@ func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.Re
 			// tea.Exec (mouse, keyboard mode, resize) runs on failure too.
 			return remoteSessionCreatedMsg{err: fmt.Errorf("on %s: %w", remoteName, err)}
 		}
-		return remoteSessionCreatedMsg{}
+		return remoteSessionCreatedMsg{created: created}
 	})
 }
 
