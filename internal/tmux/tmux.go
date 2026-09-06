@@ -1053,27 +1053,55 @@ func (sat *SpinnerActivityTracker) InGracePeriod() bool {
 // Skips box-drawing lines (UI borders) and empty lines.
 func findSpinnerInContent(content string, spinnerChars []string) (char string, line string, found bool) {
 	lines := strings.Split(content, "\n")
-	// Check last 10 lines (status line is always near bottom)
-	start := len(lines) - 10
-	if start < 0 {
-		start = 0
-	}
-	for i := len(lines) - 1; i >= start; i-- {
+	// Scan the whole visible pane, not just the bottom N lines. CLI tools
+	// anchor their spinner to a bottom status line, but pi renders its
+	// "── ⠹ Working ──" activity banner at the TOP of its UI region with
+	// output streaming below it — a bottom-only window misses the banner
+	// whenever the pane is tall enough that the banner sits more than a few
+	// lines above the footer.
+	//
+	// UI-border protection is preserved per line: a spinner inside a vertical
+	// box frame or after real text (e.g. "│ ⠋ content") is decorative and
+	// skipped, while a spinner at the line start — or immediately after a
+	// short horizontal rule, as in pi's banner — is a genuine activity
+	// indicator.
+	for i := len(lines) - 1; i >= 0; i-- {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
-		// Skip box-drawing lines (UI borders)
-		if startsWithBoxDrawing(lines[i]) {
-			continue
-		}
 		for _, ch := range spinnerChars {
-			if strings.Contains(lines[i], ch) {
+			idx := strings.Index(lines[i], ch)
+			if idx < 0 {
+				continue
+			}
+			prefix := strings.TrimSpace(lines[i][:idx])
+			if prefix == "" || isHorizontalRuleBannerPrefix(prefix) {
 				return ch, lines[i], true
 			}
 		}
 	}
 	return "", "", false
+}
+
+// isHorizontalRuleBannerPrefix reports whether s is a short run of horizontal
+// box-drawing dashes — the frame pi puts around its activity label
+// ("── ⠹ Working ──"). A line whose spinner is immediately preceded by such a
+// rule is an active status banner (the spinner leads the label), not a border
+// or a box whose content happens to contain a spinner glyph.
+func isHorizontalRuleBannerPrefix(s string) bool {
+	const horizontal = "─━═"
+	n := 0
+	for _, r := range s {
+		if !strings.ContainsRune(horizontal, r) {
+			return false
+		}
+		n++
+		if n > 8 {
+			return false
+		}
+	}
+	return n > 0
 }
 
 // isBrailleSpinnerChar returns true for the classic 10-frame braille spinner.
