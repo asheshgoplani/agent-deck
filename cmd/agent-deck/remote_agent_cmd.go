@@ -40,14 +40,17 @@ import (
 // change on the remote and the local screen; the event carries the probe's
 // duration as probe_ms so that cost stays visible.
 //
-// Pane watch (#2177 follow-up): {"id":2,"watch":"<sessionID>"} asks the
-// agent to follow one session's tmux pane. The agent captures it in-process
-// every ~300ms and pushes {"event":"pane","session":"<id>","stdout":<text>}
-// whenever the capture differs from the last push (the first capture is
-// always pushed); a capture failure is pushed once as {"event":"pane",
-// "session":"<id>","error":"..."}. Only one session is watched at a time:
-// a new watch replaces the previous one, {"id":3,"unwatch":true} stops it,
-// and closing stdin stops it. Both are acknowledged with {"id":N,"code":0}.
+// Pane watch (#2177 follow-up): {"id":2,"watch":"<sessionID>","lines":200}
+// asks the agent to follow one session's tmux pane. The agent captures it
+// in-process every ~300ms, keeps the last "lines" lines (all of them when
+// the field is absent) and pushes {"event":"pane","session":"<id>",
+// "stdout":<text>} whenever that text differs from the last push (the
+// first capture is always pushed); a capture failure is pushed once as
+// {"event":"pane","session":"<id>","error":"..."}. Only one session is
+// watched at a time: a new watch replaces the previous one (a watch for the
+// session already watched restarts it, so the current screen is pushed
+// again), {"id":3,"unwatch":true} stops it, and closing stdin stops it.
+// Both are acknowledged with {"id":N,"code":0}.
 // The local TUI uses this for the preview pane of the focused remote row
 // instead of polling `session output --pane` over ssh.
 
@@ -55,6 +58,7 @@ type remoteAgentRequest struct {
 	ID      int64    `json:"id"`
 	Args    []string `json:"args,omitempty"`
 	Watch   string   `json:"watch,omitempty"`
+	Lines   int      `json:"lines,omitempty"`
 	Unwatch bool     `json:"unwatch,omitempty"`
 }
 
@@ -98,7 +102,7 @@ func handleRemoteAgent(profile string, args []string) {
 			fmt.Println()
 			fmt.Println("Serve JSON-line requests on stdin for a local agent-deck TUI (one persistent")
 			fmt.Println("channel per remote) and push {\"event\":\"changed\"} when the profile's state changes.")
-			fmt.Println("{\"id\":N,\"watch\":\"<session>\"} follows one session's pane ({\"event\":\"pane\"} on change);")
+			fmt.Println("{\"id\":N,\"watch\":\"<session>\",\"lines\":200} follows one session's pane ({\"event\":\"pane\"} on change);")
 			fmt.Println("{\"id\":N,\"unwatch\":true} stops it.")
 			return
 		}
@@ -188,10 +192,13 @@ func remoteAgentPaneCapturer(profile string) func(context.Context, string) (stri
 	)
 	const reloadAfter = 5 * time.Second
 	find := func(sessionID string) (*session.Instance, error) {
-		_, instances, _, err := loadSessionData(profile)
+		storage, instances, _, err := loadSessionData(profile)
 		if err != nil {
 			return nil, err
 		}
+		// The instances are fully in memory; this process lives as long as
+		// the channel, so the DB handle must not be left open per reload.
+		_ = storage.Close()
 		for _, inst := range instances {
 			if inst.ID == sessionID {
 				return inst, nil
@@ -282,26 +289,23 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 		}()
 	}
 
-	// Pane watch: one goroutine at a time, replaced by the next watch and
+	// Pane watch: one goroutine at a time, replaced by the next watch
+	// (every watch request starts afresh, so the peer always gets the
+	// current screen back even when it re-asks for the same session) and
 	// stopped by unwatch or by stdin closing (ctx).
 	var (
-		watchMu     sync.Mutex
-		stopWatch   context.CancelFunc
-		watchDone   chan struct{}
-		watchTarget string
+		watchMu   sync.Mutex
+		stopWatch context.CancelFunc
+		watchDone chan struct{}
 	)
-	setWatch := func(sessionID string) {
+	setWatch := func(sessionID string, lines int) {
 		watchMu.Lock()
 		defer watchMu.Unlock()
-		if sessionID == watchTarget {
-			return
-		}
 		if stopWatch != nil {
 			stopWatch()
 			<-watchDone
 			stopWatch, watchDone = nil, nil
 		}
-		watchTarget = sessionID
 		if sessionID == "" {
 			return
 		}
@@ -310,10 +314,10 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 		stopWatch, watchDone = wcancel, done
 		go func() {
 			defer close(done)
-			watchRemotePane(wctx, sessionID, capture, paneEvery, write)
+			watchRemotePane(wctx, sessionID, lines, capture, paneEvery, write)
 		}()
 	}
-	defer setWatch("")
+	defer setWatch("", 0)
 
 	var wg sync.WaitGroup
 	sc := bufio.NewScanner(in)
@@ -333,13 +337,13 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 			case capture == nil:
 				write(remoteAgentReply{ID: req.ID, Code: 2, Error: "pane watch not available"})
 			case req.Unwatch:
-				setWatch("")
+				setWatch("", 0)
 				write(remoteAgentReply{ID: req.ID})
 			default:
 				// Acknowledge first so the first pane push always follows
 				// the ack on the wire.
 				write(remoteAgentReply{ID: req.ID})
-				setWatch(req.Watch)
+				setWatch(req.Watch, req.Lines)
 			}
 			continue
 		}
@@ -362,9 +366,11 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 
 // watchRemotePane captures sessionID's pane every paneEvery until ctx ends
 // and pushes a "pane" event when the text (or the failure) differs from the
-// last push. The first capture is always pushed so the watcher starts with
-// the current screen.
-func watchRemotePane(ctx context.Context, sessionID string, capture func(context.Context, string) (string, error), paneEvery time.Duration, write func(remoteAgentReply)) {
+// last push. Only the last lines lines are kept (all when lines <= 0): the
+// capture is up to 2000 lines of scrollback and a busy pane changes on
+// every tick, so the peer says how much of it it renders. The first capture
+// is always pushed so the watcher starts with the current screen.
+func watchRemotePane(ctx context.Context, sessionID string, lines int, capture func(context.Context, string) (string, error), paneEvery time.Duration, write func(remoteAgentReply)) {
 	var lastHash string
 	first := true
 	t := time.NewTicker(paneEvery)
@@ -374,7 +380,7 @@ func watchRemotePane(ctx context.Context, sessionID string, capture func(context
 		if ctx.Err() != nil {
 			return
 		}
-		reply := remoteAgentReply{Event: "pane", Session: sessionID, Stdout: content}
+		reply := remoteAgentReply{Event: "pane", Session: sessionID, Stdout: tailLines(content, lines)}
 		if err != nil {
 			reply = remoteAgentReply{Event: "pane", Session: sessionID, Error: err.Error()}
 		}
@@ -391,6 +397,25 @@ func watchRemotePane(ctx context.Context, sessionID string, capture func(context
 		case <-t.C:
 		}
 	}
+}
+
+// tailLines keeps the last n lines of s (all of s when n <= 0).
+func tailLines(s string, n int) string {
+	if n <= 0 || s == "" {
+		return s
+	}
+	end := len(s)
+	if strings.HasSuffix(s, "\n") {
+		end--
+	}
+	for i := 0; i < n; i++ {
+		cut := strings.LastIndexByte(s[:end], '\n')
+		if cut < 0 {
+			return s
+		}
+		end = cut
+	}
+	return s[end+1:]
 }
 
 // remoteAgentArgsAllowed admits only a known CLI verb that is not on the

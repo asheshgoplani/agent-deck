@@ -66,6 +66,40 @@ func TestRemotePaneWatch_PushedPaneUpdatesPreview(t *testing.T) {
 	}
 }
 
+// A pushed pane that leaves the preview blank (the session is stopped and
+// has no pane, or its screen is empty) starts one poll, whose transcript
+// fallback fills the preview as it did before pushes existed; the watch
+// stays. A blank push for a session with cached content polls nothing.
+func TestRemotePaneWatch_BlankPanePollsOnce(t *testing.T) {
+	home := remotePaneTestHome(t, "box", "s1")
+	target := remotePaneWatchTarget{remote: "box", session: "s1"}
+	home.remotePaneWatch = target
+	key := remotePreviewCacheKey("box", "s1")
+
+	_, cmd := home.Update(remoteChangedMsg{remoteName: "box", change: session.RemoteChange{Remote: "box", Pane: &session.RemotePaneEvent{Session: "s1", Err: "tmux session not initialized"}}})
+	if cmd == nil {
+		t.Fatal("a capture failure with nothing cached must poll the preview")
+	}
+	home.previewCacheMu.RLock()
+	fetching := home.previewFetchingID
+	home.previewCacheMu.RUnlock()
+	if fetching != key {
+		t.Fatalf("poll must be marked in flight for the remote key, got %q", fetching)
+	}
+	if home.remotePaneWatch != target {
+		t.Fatalf("the watch must survive a capture failure, got %+v", home.remotePaneWatch)
+	}
+	// The poll lands: from now on a blank push keeps the transcript.
+	home.Update(previewFetchedMsg{previewKey: key, content: "transcript text"})
+	home.Update(remoteChangedMsg{remoteName: "box", change: session.RemoteChange{Remote: "box", Pane: &session.RemotePaneEvent{Session: "s1", Content: "  \n"}}})
+	home.previewCacheMu.RLock()
+	content, fetching := home.previewCache[key], home.previewFetchingID
+	home.previewCacheMu.RUnlock()
+	if content != "transcript text" || fetching != "" {
+		t.Fatalf("an empty screen must keep the transcript and not poll again; content=%q fetching=%q", content, fetching)
+	}
+}
+
 // When the watch request fails the TUI forgets the watch and polls that
 // preview once more, so the pane is never left blank on an old remote or a
 // dropped channel.

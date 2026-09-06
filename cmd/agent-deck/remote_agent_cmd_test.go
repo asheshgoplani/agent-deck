@@ -295,6 +295,30 @@ func TestRemoteAgent_WatchPushesPaneOnChange(t *testing.T) {
 		t.Fatalf("changed pane push = %+v", r)
 	}
 
+	// Asking again for the watched session restarts the watch: the current
+	// screen is pushed again even though it did not change (the local side
+	// re-asks after a lost ack and needs a frame to start from).
+	send(remoteAgentRequest{ID: 5, Watch: "s1"})
+	if r := next("rewatch ack"); r.ID != 5 || r.Code != 0 {
+		t.Fatalf("rewatch ack = %+v", r)
+	}
+	if r := next("pane after rewatch"); r.Event != "pane" || r.Session != "s1" || r.Stdout != "one-b" {
+		t.Fatalf("a repeated watch must push the current screen again, got %+v", r)
+	}
+
+	// The peer says how many lines it renders; the push keeps only those.
+	setPane("s1", "l1\nl2\nl3\nl4\n")
+	send(remoteAgentRequest{ID: 6, Watch: "s1", Lines: 2})
+	if r := next("lines ack"); r.ID != 6 || r.Code != 0 {
+		t.Fatalf("lines watch ack = %+v", r)
+	}
+	if r := next("trimmed pane"); r.Event != "pane" || r.Stdout != "l3\nl4\n" {
+		t.Fatalf("pane push must be trimmed to the last 2 lines, got %q", r.Stdout)
+	}
+	// A change above the kept tail is not a change on the wire.
+	setPane("s1", "L1\nl2\nl3\nl4\n")
+	noneWithin(50*time.Millisecond, "silence when only trimmed lines changed")
+
 	// Replacing the watch: s2's screen arrives, s1 changes go unnoticed.
 	send(remoteAgentRequest{ID: 2, Watch: "s2"})
 	if r := next("watch ack"); r.ID != 2 || r.Code != 0 {
@@ -353,4 +377,27 @@ func TestRemoteAgent_WatchRefusedWithoutCapture(t *testing.T) {
 		t.Fatalf("watch without capture must be refused with an error, got %+v", r)
 	}
 	_ = inW.Close()
+}
+
+func TestTailLines(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"", 3, ""},
+		{"a", 3, "a"},
+		{"a\nb\nc", 0, "a\nb\nc"},
+		{"a\nb\nc", 5, "a\nb\nc"},
+		{"a\nb\nc", 2, "b\nc"},
+		{"a\nb\nc\n", 2, "b\nc\n"},
+		{"a\nb\nc", 1, "c"},
+		{"\nb", 1, "b"},
+		{"\n", 1, "\n"},
+	}
+	for _, c := range cases {
+		if got := tailLines(c.in, c.n); got != c.want {
+			t.Errorf("tailLines(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
 }

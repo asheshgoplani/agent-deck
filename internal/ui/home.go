@@ -4835,7 +4835,7 @@ func (h *Home) remotePaneWatchCmd(ch *session.RemoteChannel, target remotePaneWa
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
 		defer cancel()
-		err := ch.Watch(ctx, target.session)
+		err := ch.Watch(ctx, target.session, remotePreviewMaxLines)
 		if err != nil {
 			uiLog.Debug("remote_pane_watch_failed", slog.String("remote", target.remote), slog.String("session", target.session), slog.String("err", err.Error()))
 		}
@@ -4854,9 +4854,13 @@ func (h *Home) remotePaneUnwatchCmd(ch *session.RemoteChannel) tea.Cmd {
 
 // applyRemotePane stores a pushed pane capture as the preview of that
 // remote session, the same way a fetched preview lands, so the renderer and
-// the TTL logic see no difference. A capture failure counts as a fetch
-// failure: the last content stays, the TTL advances.
-func (h *Home) applyRemotePane(remoteName string, pane *session.RemotePaneEvent) {
+// the TTL logic see no difference. A capture failure or an empty screen
+// counts as a fetch failure, as on the poll path: the last content stays,
+// the TTL advances. It reports whether the preview is blank afterwards
+// (nothing cached and no pane text: the session is stopped, or its screen
+// is empty), in which case the caller polls once so the transcript fallback
+// of the poll path still shows something, as it did before pushes existed.
+func (h *Home) applyRemotePane(remoteName string, pane *session.RemotePaneEvent) (blank bool) {
 	key := remotePreviewCacheKey(remoteName, pane.Session)
 	h.previewCacheMu.Lock()
 	defer h.previewCacheMu.Unlock()
@@ -4864,9 +4868,30 @@ func (h *Home) applyRemotePane(remoteName string, pane *session.RemotePaneEvent)
 		h.previewFetchingID = ""
 	}
 	h.previewCacheTime[key] = time.Now()
-	if pane.Err == "" {
-		h.previewCache[key] = expandTabs(truncateRemotePreviewContent(pane.Content))
+	if content := expandTabs(truncateRemotePreviewContent(pane.Content)); pane.Err == "" && strings.TrimSpace(content) != "" {
+		h.previewCache[key] = content
 	}
+	return strings.TrimSpace(h.previewCache[key]) == ""
+}
+
+// pollRemotePreviewIfSelected starts one ssh poll of the remote session's
+// preview when that session is still under the cursor and no poll for it
+// is in flight; nil otherwise.
+func (h *Home) pollRemotePreviewIfSelected(target remotePaneWatchTarget) tea.Cmd {
+	_, _, key, ok := h.selectedRemotePreviewTarget()
+	if !ok || key != remotePreviewCacheKey(target.remote, target.session) {
+		return nil
+	}
+	h.previewCacheMu.Lock()
+	needsFetch := h.previewFetchingID != key
+	if needsFetch {
+		h.previewFetchingID = key
+	}
+	h.previewCacheMu.Unlock()
+	if !needsFetch {
+		return nil
+	}
+	return h.fetchRemotePreview(target.remote, target.session, key)
 }
 
 // selectedPreviewTarget returns the instance, cache key, and window index for the currently
@@ -7337,7 +7362,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// under the cursor are ignored (the unwatch may still be in
 			// flight).
 			if h.remotePaneWatch.remote == msg.remoteName && h.remotePaneWatch.session == msg.change.Pane.Session {
-				h.applyRemotePane(msg.remoteName, msg.change.Pane)
+				if h.applyRemotePane(msg.remoteName, msg.change.Pane) {
+					// Nothing to show from the pane (stopped session, empty
+					// screen): one poll, whose transcript fallback fills
+					// the preview the way it did before pushes existed.
+					return h, tea.Batch(h.waitRemoteChange, h.pollRemotePreviewIfSelected(h.remotePaneWatch))
+				}
 			}
 			return h, h.waitRemoteChange
 		}
@@ -7370,20 +7400,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The agent refused or the channel dropped: poll this preview as
 		// before. The next tick re-evaluates once the channel is back.
 		h.remotePaneWatch = remotePaneWatchTarget{}
-		_, _, key, ok := h.selectedRemotePreviewTarget()
-		if !ok || key != remotePreviewCacheKey(msg.target.remote, msg.target.session) {
-			return h, nil
-		}
-		h.previewCacheMu.Lock()
-		needsFetch := h.previewFetchingID != key
-		if needsFetch {
-			h.previewFetchingID = key
-		}
-		h.previewCacheMu.Unlock()
-		if needsFetch {
-			return h, h.fetchRemotePreview(msg.target.remote, msg.target.session, key)
-		}
-		return h, nil
+		return h, h.pollRemotePreviewIfSelected(msg.target)
 
 	case remoteLatenciesFetchedMsg:
 		h.remoteLatencyMu.Lock()

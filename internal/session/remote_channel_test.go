@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -18,8 +19,10 @@ type fakeAgentT struct {
 	push     func(string)
 	pushData func(string, string)
 	pushPane func(session, content, errText string)
-	// watched receives every watch ("<id>") and unwatch ("") request.
+	// watched receives every watch ("<id>") and unwatch ("") request;
+	// lines is what the last watch asked for.
 	watched chan string
+	lines   atomic.Int64
 	// refuseWatch makes the agent answer watch requests like an old build.
 	refuseWatch bool
 }
@@ -61,6 +64,7 @@ func newFakeAgent(t *testing.T, ready, refuseWatch bool) *fakeAgentT {
 					write(remoteChannelReply{ID: req.ID, Code: 2, Error: "verb not allowed over the channel"})
 					continue
 				}
+				a.lines.Store(int64(req.Lines))
 				a.watched <- req.Watch
 				write(remoteChannelReply{ID: req.ID})
 				continue
@@ -176,14 +180,17 @@ func TestRemoteChannel_WatchAndPaneEvents(t *testing.T) {
 			t.Fatalf("agent never received the watch request for %q", want)
 		}
 	}
-	if err := ch.Watch(ctx, "s1"); err != nil {
+	if err := ch.Watch(ctx, "s1", 200); err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
 	expectWatched("s1")
 	if ch.Watching() != "s1" {
 		t.Fatalf("Watching = %q, want s1", ch.Watching())
 	}
-	if err := ch.Watch(ctx, "s1"); err != nil {
+	if got := agent.lines.Load(); got != 200 {
+		t.Fatalf("the watch request must carry the line budget, agent got %d", got)
+	}
+	if err := ch.Watch(ctx, "s1", 200); err != nil {
 		t.Fatalf("repeat Watch: %v", err)
 	}
 	select {
@@ -221,7 +228,7 @@ func TestRemoteChannel_WatchAndPaneEvents(t *testing.T) {
 		t.Fatal("changed push did not reach the events channel")
 	}
 
-	if err := ch.Watch(ctx, "s2"); err != nil {
+	if err := ch.Watch(ctx, "s2", 200); err != nil {
 		t.Fatalf("Watch s2: %v", err)
 	}
 	expectWatched("s2")
@@ -243,7 +250,7 @@ func TestRemoteChannel_WatchAndPaneEvents(t *testing.T) {
 
 	// The watch dies with the transport: after markDown nothing is watched,
 	// so the caller asks again once reconnected.
-	if err := ch.Watch(ctx, "s3"); err != nil {
+	if err := ch.Watch(ctx, "s3", 200); err != nil {
 		t.Fatalf("Watch s3: %v", err)
 	}
 	expectWatched("s3")
@@ -251,7 +258,7 @@ func TestRemoteChannel_WatchAndPaneEvents(t *testing.T) {
 	if ch.Watching() != "" {
 		t.Fatalf("Watching after the transport dropped = %q, want none", ch.Watching())
 	}
-	if err := ch.Watch(ctx, "s3"); !errors.Is(err, errChannelDown) {
+	if err := ch.Watch(ctx, "s3", 200); !errors.Is(err, errChannelDown) {
 		t.Fatalf("Watch on a down channel must report errChannelDown, got %v", err)
 	}
 	if !ch.PaneWatchSupported() {
@@ -267,14 +274,14 @@ func TestRemoteChannel_WatchRefusedMarksUnsupported(t *testing.T) {
 	ch.ensureConnected()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := ch.Watch(ctx, "s1")
+	err := ch.Watch(ctx, "s1", 200)
 	if err == nil || errors.Is(err, errChannelDown) {
 		t.Fatalf("a refused watch must fail without looking like a transport failure, got %v", err)
 	}
 	if ch.Watching() != "" || ch.PaneWatchSupported() {
 		t.Fatalf("after a refusal: Watching=%q supported=%v, want none/false", ch.Watching(), ch.PaneWatchSupported())
 	}
-	if err := ch.Watch(ctx, "s2"); err == nil {
+	if err := ch.Watch(ctx, "s2", 200); err == nil {
 		t.Fatal("watch must not be retried on a remote that refused it")
 	}
 	if ch.Connected() {

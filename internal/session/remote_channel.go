@@ -51,6 +51,7 @@ type remoteChannelRequest struct {
 	ID      int64    `json:"id"`
 	Args    []string `json:"args,omitempty"`
 	Watch   string   `json:"watch,omitempty"`
+	Lines   int      `json:"lines,omitempty"`
 	Unwatch bool     `json:"unwatch,omitempty"`
 }
 
@@ -369,11 +370,12 @@ func (c *RemoteChannel) PaneWatchSupported() bool {
 
 // Watch asks the remote agent to push pane events for sessionID (replacing
 // any previous watch on this channel; the agent follows one pane at a
-// time). A watch already in place for the same session is a no-op. The
-// session is recorded as watched before the request goes out so concurrent
-// callers do not send it twice; a refusal by the agent clears it and marks
-// pane watching unsupported on this channel.
-func (c *RemoteChannel) Watch(ctx context.Context, sessionID string) error {
+// time), trimmed to the last lines lines (0 for the whole capture). A watch
+// already in place for the same session is a no-op. The session is recorded
+// as watched before the request goes out so concurrent callers do not send
+// it twice; a refusal by the agent clears it and marks pane watching
+// unsupported on this channel.
+func (c *RemoteChannel) Watch(ctx context.Context, sessionID string, lines int) error {
 	if sessionID == "" {
 		return c.Unwatch(ctx)
 	}
@@ -388,7 +390,7 @@ func (c *RemoteChannel) Watch(ctx context.Context, sessionID string) error {
 	}
 	c.watching = sessionID
 	c.mu.Unlock()
-	_, err := c.roundTrip(ctx, remoteChannelRequest{Watch: sessionID})
+	_, err := c.roundTrip(ctx, remoteChannelRequest{Watch: sessionID, Lines: lines})
 	if err != nil {
 		c.mu.Lock()
 		if c.watching == sessionID {
