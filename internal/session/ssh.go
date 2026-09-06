@@ -1355,7 +1355,7 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAdd
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(startOutput), &startResult); err == nil && startResult.Status == string(StatusQueued) {
-		return "", fmt.Errorf("remote session %q was queued and is not ready to attach", result.Title)
+		return "", &RemoteSessionQueuedError{ID: result.ID, Title: result.Title}
 	}
 
 	return result.ID, nil
@@ -1377,6 +1377,18 @@ func remoteStartArgs(sessionID string, noWait bool) []string {
 // "flag provided but not defined: -name").
 func isUnknownFlagError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "flag provided but not defined")
+}
+
+// RemoteSessionQueuedError reports that `add` succeeded but `session start`
+// queued the session because its group is at max_concurrent. The session
+// exists on the remote; it is not attachable yet.
+type RemoteSessionQueuedError struct {
+	ID    string
+	Title string
+}
+
+func (e *RemoteSessionQueuedError) Error() string {
+	return fmt.Sprintf("remote session %q was queued and is not ready to attach", e.Title)
 }
 
 // DeleteSession removes a session on the remote host.

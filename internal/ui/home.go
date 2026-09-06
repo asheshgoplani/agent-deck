@@ -637,6 +637,12 @@ type Home struct {
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
+	// remoteFetchSeq numbers every fleet fetch as it starts; the handler
+	// applies a result only if no newer fetch has been applied already, so a
+	// slow periodic poll cannot overwrite the refresh a delete, move or
+	// archive just triggered (a stale snapshot would resurrect the row).
+	remoteFetchSeq     uint64
+	remoteFetchApplied uint64
 	// remoteSessionRefreshSec is the poll cadence (seconds) for re-fetching
 	// the remote session list, resolved once at construction from
 	// [ui] remote_session_refresh_secs. Issue #1170.
@@ -1436,7 +1442,12 @@ type sendOutputResultMsg struct {
 
 // remoteSessionsFetchedMsg is sent when async remote sessions fetch completes.
 type remoteSessionsFetchedMsg struct {
-	sessions map[string][]session.RemoteSessionInfo
+	// gen is the fetch's sequence number (see Home.remoteFetchSeq).
+	gen uint64
+	// configErr is set when the user config could not be read; the handler
+	// then keeps every cached remote instead of treating them as removed.
+	configErr error
+	sessions  map[string][]session.RemoteSessionInfo
 	// #1101: per-remote cost summary collected on the same SSH fanout.
 	costs map[string]*costs.RemoteCostSummary
 	// groups holds each remote's FULL group path list (incl. empty groups)
@@ -3686,9 +3697,16 @@ func (h *Home) propagateThemeToSessions() {
 
 // fetchRemoteSessions fetches sessions from all configured remotes.
 func (h *Home) fetchRemoteSessions() tea.Msg {
+	gen := atomic.AddUint64(&h.remoteFetchSeq, 1)
 	config, err := session.LoadUserConfig()
-	if err != nil || config == nil || len(config.Remotes) == 0 {
-		return remoteSessionsFetchedMsg{sessions: nil}
+	if err != nil {
+		// A hand-edited config.toml that fails to parse must not wipe the
+		// remotes from the tree (and the on-disk cache) as if they had been
+		// deconfigured; keep everything and say why.
+		return remoteSessionsFetchedMsg{gen: gen, configErr: err}
+	}
+	if config == nil || len(config.Remotes) == 0 {
+		return remoteSessionsFetchedMsg{gen: gen, sessions: nil}
 	}
 
 	// #1421: sweep orphaned SSH ControlMaster sockets before fetching. A stale
@@ -3795,7 +3813,7 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 	}
 	wg.Wait()
 
-	return remoteSessionsFetchedMsg{sessions: results, costs: costResults, groups: groupResults, groupsFailed: groupsFailed, failed: failed}
+	return remoteSessionsFetchedMsg{gen: gen, sessions: results, costs: costResults, groups: groupResults, groupsFailed: groupsFailed, failed: failed}
 }
 
 // mergeRemoteSessions reconciles a freshly fetched remote-session map against
@@ -6776,6 +6794,19 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteSessionsFetchedMsg:
+		if msg.configErr != nil || (msg.gen != 0 && msg.gen < h.remoteFetchApplied) {
+			// Config unreadable, or a fetch that started before one already
+			// applied: keep the current tree. Only release the in-flight
+			// guard so the next poll runs.
+			h.remoteSessionsMu.Lock()
+			h.remotesFetchActive = false
+			h.remoteSessionsMu.Unlock()
+			if msg.configErr != nil {
+				h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
+			}
+			return h, nil
+		}
+		h.remoteFetchApplied = msg.gen
 		h.remoteSessionsMu.Lock()
 		// #1170: merge rather than wholesale-replace so a remote that errored
 		// this round keeps its last-good sessions instead of flickering out.
@@ -6902,6 +6933,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case remoteSessionCreatedMsg:
 		if msg.err != nil {
 			h.setError(msg.err)
+		} else if msg.notice != "" {
+			h.setError(errors.New(msg.notice))
 		}
 		// This message is returned after tea.Exec finishes the remote
 		// create+attach. Mirror the statusUpdateMsg attach-return cleanup so
@@ -6946,6 +6979,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, tea.Tick(30*time.Second, func(_ time.Time) tea.Msg {
 				return clearMaintenanceMsg{}
 			})
+		}
+		return h, nil
+
+	case remoteRenameResultMsg:
+		if msg.err != nil {
+			h.setRemoteSessionTitle(msg.remoteName, msg.sessionID, msg.oldTitle)
+			h.setError(fmt.Errorf("failed to rename '%s' on %s: %v", msg.oldTitle, msg.remoteName, msg.err))
 		}
 		return h, nil
 
@@ -9654,7 +9694,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
-				// Attach to remote session via SSH
+				// A stopped remote session is restarted first, as Enter on a
+				// dead local session restarts it; the row refreshes when the
+				// remote confirms. Otherwise attach over SSH.
+				if strings.EqualFold(item.RemoteSession.Status, string(session.StatusStopped)) {
+					return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+				}
 				return h, h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
 			}
 		}
@@ -12319,32 +12364,11 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					parts := strings.SplitN(sessionID, ":", 3) // "remote", remoteName, actualID
 					if len(parts) == 3 {
 						remoteName, remoteID := parts[1], parts[2]
-						go func() {
-							config, err := session.LoadUserConfig()
-							if err != nil || config == nil || config.Remotes == nil {
-								return
-							}
-							rc, ok := config.Remotes[remoteName]
-							if !ok {
-								return
-							}
-							runner := session.NewSSHRunner(remoteName, rc)
-							ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-							defer cancel()
-							_, _ = runner.RunCommand(ctx, "rename", remoteID, newName)
-						}()
-						// Update local cache immediately for responsiveness
-						h.remoteSessionsMu.Lock()
-						if sessions, ok := h.remoteSessions[remoteName]; ok {
-							for i := range sessions {
-								if sessions[i].ID == parts[2] {
-									sessions[i].Title = newName
-									break
-								}
-							}
-						}
-						h.remoteSessionsMu.Unlock()
-						h.rebuildFlatItems()
+						// Show the new title now; the remote's answer arrives as
+						// remoteRenameResultMsg, which reverts it with a message
+						// if the remote refused or could not be reached.
+						oldTitle := h.setRemoteSessionTitle(remoteName, remoteID, newName)
+						remoteCmd = h.renameRemoteSession(remoteName, remoteID, oldTitle, newName)
 					}
 				} else {
 					// Local session rename
@@ -14657,6 +14681,58 @@ func remoteRestartAnimationID(remoteName, sessionID string) string {
 
 type remoteSessionCreatedMsg struct {
 	err error
+	// notice is a non-error outcome worth a footer line (e.g. queued).
+	notice string
+}
+
+// remoteRenameResultMsg reports the remote's answer to a rename started from
+// the rename dialog on a remote session row.
+type remoteRenameResultMsg struct {
+	remoteName string
+	sessionID  string
+	oldTitle   string
+	newTitle   string
+	err        error
+}
+
+// setRemoteSessionTitle patches the cached title of a remote session and
+// rebuilds the rows; it returns the previous title so a refused rename can
+// be reverted.
+func (h *Home) setRemoteSessionTitle(remoteName, sessionID, title string) string {
+	old := ""
+	h.remoteSessionsMu.Lock()
+	if sessions, ok := h.remoteSessions[remoteName]; ok {
+		for i := range sessions {
+			if sessions[i].ID == sessionID {
+				old = sessions[i].Title
+				sessions[i].Title = title
+				break
+			}
+		}
+	}
+	h.remoteSessionsMu.Unlock()
+	h.rebuildFlatItems()
+	return old
+}
+
+// renameRemoteSession runs `agent-deck rename` on the remote and reports the
+// outcome, instead of firing it and forgetting (a refused or unreachable
+// rename used to show the new title and silently snap back on the next poll).
+func (h *Home) renameRemoteSession(remoteName, sessionID, oldTitle, newTitle string) tea.Cmd {
+	return func() tea.Msg {
+		result := remoteRenameResultMsg{remoteName: remoteName, sessionID: sessionID, oldTitle: oldTitle, newTitle: newTitle}
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			result.err = err
+			return result
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := runner.RunCommand(ctx, "rename", sessionID, newTitle); err != nil {
+			result.err = err
+		}
+		return result
+	}
 }
 
 // remoteSessionForkedMsg reports the outcome of an SSH-routed quick fork (f
@@ -15155,7 +15231,15 @@ func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.Re
 			if !opts.CreateDir && strings.TrimSpace(opts.Path) != "" && session.IsRemotePathMissing(err) {
 				return remoteCreateDirNeededMsg{remoteName: remoteName, opts: opts, err: err}
 			}
-			return sessionCreatedMsg{err: fmt.Errorf("failed to create remote session: %w", err)}
+			var queued *session.RemoteSessionQueuedError
+			if errors.As(err, &queued) {
+				// The session exists on the remote; it starts when the group
+				// has a free slot. Not a failure, and the row must show now.
+				return remoteSessionCreatedMsg{notice: fmt.Sprintf("created '%s' on %s, queued until group '%s' has a free slot", queued.Title, remoteName, opts.Group)}
+			}
+			// Routed as the remote message so the terminal cleanup after
+			// tea.Exec (mouse, keyboard mode, resize) runs on failure too.
+			return remoteSessionCreatedMsg{err: fmt.Errorf("on %s: %w", remoteName, err)}
 		}
 		return remoteSessionCreatedMsg{}
 	})
@@ -15419,15 +15503,13 @@ func swapRemoteGroupSibling(paths []string, groupPath string, delta int) []strin
 
 // attachRemoteSession attaches to a remote session via SSH, suspending the TUI.
 func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
-	config, err := session.LoadUserConfig()
-	if err != nil || config == nil || config.Remotes == nil {
-		return nil
+	runner, err := remoteRunnerFor(remoteName)
+	if err != nil {
+		// Say so instead of a silent no-op on Enter.
+		return func() tea.Msg {
+			return remoteSessionCreatedMsg{err: fmt.Errorf("cannot attach on %s: %w", remoteName, err)}
+		}
 	}
-	rc, ok := config.Remotes[remoteName]
-	if !ok {
-		return nil
-	}
-	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteAttachCmd{
 		runner:    runner,
@@ -15437,6 +15519,11 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 		onExit: func() { h.isAttaching.Store(false) },
 	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
+		if err != nil {
+			// An unreachable host or a session the remote refuses to attach
+			// used to flash the screen and say nothing.
+			return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to '%s' on %s: %w", sessionID, remoteName, err)}
+		}
 		return statusUpdateMsg{}
 	})
 }
