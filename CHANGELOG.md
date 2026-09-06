@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.2] - 2026-09-06
+
+A remote deck no longer waits on the network to update the screen, and every remote action reports how long it took.
+
+### Added
+
+- Remote actions show their keypress-to-confirmation time in the footer ("moved to 'work' on agentbox in 0.4s") and log it as `remote_action`; move and rename now confirm with a footer line ([#2173](https://github.com/asheshgoplani/agent-deck/pull/2173)).
+- Rows with a remote action underway carry a marker ("· deleting…", "· archiving…", "· restarting…") until the remote answers, and the remote host header shows "· refreshing…" while a fleet fetch is in flight, including for `ctrl+r` ([#2173](https://github.com/asheshgoplani/agent-deck/pull/2173)).
+- `session start --no-wait` returns as soon as the process is spawned; the TUI uses it when creating a remote session so the attach begins about 3s sooner for Claude, with a fallback for remotes that predate the flag ([#2171](https://github.com/asheshgoplani/agent-deck/pull/2171), closes #2167).
+- `ctrl+r` refreshes remote decks together with the local reload ([#2171](https://github.com/asheshgoplani/agent-deck/pull/2171)).
+
+### Fixed
+
+- A fleet poll that started before an action can no longer land after it and resurrect a deleted, archived or moved row; fetches carry a sequence number ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- An unreadable `config.toml` no longer wipes every remote from the tree and the on-disk cache; the error is reported instead ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- A refused or unreachable remote rename reverts the title with a message instead of snapping back silently on the next poll ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- Creating a session in a remote group at `max_concurrent` shows "created ... queued" and refreshes, instead of a red failure that invited a duplicate ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- Create and attach failures on a remote name the remote, run the terminal cleanup after `tea.Exec`, and are never silent; Enter on a stopped remote session restarts it like a dead local one ([#2172](https://github.com/asheshgoplani/agent-deck/pull/2172)).
+- Confirmed remote actions apply to the cached row at once (dropped, archived, running) instead of waiting for the next poll ([#2173](https://github.com/asheshgoplani/agent-deck/pull/2173)).
+- The fleet poll runs `costs summary` and `group list` concurrently with `list`, one round trip per poll instead of three ([#2171](https://github.com/asheshgoplani/agent-deck/pull/2171)).
+
 ## [1.16.1] - 2026-09-06
 
 Remote decks are fully manageable from the local TUI: every key that works on a local row now works on a remote row and lands on the remote's own state.
