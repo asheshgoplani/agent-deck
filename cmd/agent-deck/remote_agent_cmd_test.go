@@ -21,7 +21,7 @@ import (
 func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "state.db")
-	if err := os.WriteFile(db, []byte("v1"), 0o600); err != nil {
+	if err := writeFileAtomic(db, "v1"); err != nil {
 		t.Fatal(err)
 	}
 	inR, inW := io.Pipe()
@@ -90,7 +90,7 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 	// A write that does not change the listing (same content, new mtime)
 	// produces no event; a write that does produces one.
 	time.Sleep(30 * time.Millisecond)
-	if err := os.WriteFile(db, []byte("v1"), 0o600); err != nil {
+	if err := writeFileAtomic(db, "v1"); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(120 * time.Millisecond)
@@ -98,7 +98,7 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 	if r := next(); r.ID != 10 || r.Event != "" {
 		t.Fatalf("a content-preserving write must not push an event; got %+v before the noop reply", r)
 	}
-	if err := os.WriteFile(db, []byte("v2-longer"), 0o600); err != nil {
+	if err := writeFileAtomic(db, "v2-longer"); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.After(2 * time.Second)
@@ -126,7 +126,7 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "state.db")
-	if err := os.WriteFile(db, []byte("v1"), 0o600); err != nil {
+	if err := writeFileAtomic(db, "v1"); err != nil {
 		t.Fatal(err)
 	}
 	inR, inW := io.Pipe()
@@ -175,7 +175,7 @@ func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
 	}
 
 	time.Sleep(30 * time.Millisecond)
-	if err := os.WriteFile(db, []byte("v2-longer"), 0o600); err != nil {
+	if err := writeFileAtomic(db, "v2-longer"); err != nil {
 		t.Fatal(err)
 	}
 	r := next()
@@ -189,7 +189,7 @@ func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
 	// The feed re-reads the stamp after a probe to absorb the probe's own
 	// writes; give it that moment so this write is not taken as seen.
 	time.Sleep(30 * time.Millisecond)
-	if err := os.WriteFile(db, []byte("broken"), 0o600); err != nil {
+	if err := writeFileAtomic(db, "broken"); err != nil {
 		t.Fatal(err)
 	}
 	r = next()
@@ -400,4 +400,14 @@ func TestTailLines(t *testing.T) {
 			t.Errorf("tailLines(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
 		}
 	}
+}
+
+// writeFileAtomic replaces the watched file in one rename, so a probe running
+// concurrently never observes a truncated, half-written file.
+func writeFileAtomic(path, content string) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
