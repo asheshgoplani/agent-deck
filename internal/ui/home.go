@@ -6789,6 +6789,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
 		return h, h.fetchRemoteSessions
 
+	case remoteSessionForkedMsg:
+		delete(h.forkingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to fork remote session: %w", msg.err))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("forked '%s' on %s", msg.title, msg.remoteName))
+		return h, h.fetchRemoteSessions
+
 	case remoteAccountsFetchedMsg:
 		h.applyRemoteAccounts(msg)
 		return h, nil
@@ -9678,6 +9687,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if item.Session.CanFork() {
 					return h, h.quickForkSession(item.Session)
 				}
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Remote session: fork it on the remote itself through its own
+				// `session fork`. The remote decides title, group and whether
+				// the tool is forkable; the row appears on the next fetch.
+				forkID := remoteRestartAnimationID(item.RemoteName, item.RemoteSession.ID)
+				if _, forking := h.forkingSessions[forkID]; forking {
+					h.setError(fmt.Errorf("remote session is forking, please wait..."))
+					return h, nil
+				}
+				h.forkingSessions[forkID] = time.Now()
+				return h, h.forkRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -9700,6 +9720,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if item.Session.CanFork() {
 					return h, h.forkSessionWithDialog(item.Session)
 				}
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// The fork dialog inspects local git state for its worktree
+				// and branch fields, which does not apply to a remote checkout.
+				h.setError(fmt.Errorf("fork dialog is not available for remote sessions; press f to fork on %s", item.RemoteName))
 			}
 		}
 		return h, nil
@@ -14410,6 +14434,16 @@ type remoteSessionCreatedMsg struct {
 	err error
 }
 
+// remoteSessionForkedMsg reports the outcome of an SSH-routed quick fork (f
+// key on a remote session row). newID is the session the remote created.
+type remoteSessionForkedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	newID      string
+	err        error
+}
+
 // remoteCreateDirNeededMsg reports a remote create refused because the
 // dialog's path does not exist on the server; Home offers to create it.
 type remoteCreateDirNeededMsg struct {
@@ -14501,6 +14535,31 @@ func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, arc
 		} else {
 			result.err = runner.UnarchiveSession(ctx, sessionID)
 		}
+		return result
+	}
+}
+
+// forkRemoteSession forks a remote session through the remote's own
+// `session fork` (mirrors restartRemoteSession). Title, group and tool
+// eligibility are decided on the server; the fleet list is refreshed when
+// the remote confirms via remoteSessionForkedMsg so the new row appears.
+func (h *Home) forkRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	return func() tea.Msg {
+		result := remoteSessionForkedMsg{remoteName: remoteName, sessionID: sessionID, title: title}
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			result.err = fmt.Errorf("failed to load remote config")
+			return result
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			result.err = fmt.Errorf("remote '%s' not found", remoteName)
+			return result
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		result.newID, result.err = runner.ForkSession(ctx, sessionID)
 		return result
 	}
 }
