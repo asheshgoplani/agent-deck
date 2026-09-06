@@ -6384,6 +6384,36 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.forceSaveInstances()
 		return h, nil
 
+	case accountSwitchedMsg:
+		delete(h.resumingSessions, msg.sessionID)
+		if msg.committed {
+			// The slot (and any conversation move) is already applied in
+			// memory; persist it and repaint the row's account badge.
+			h.rebuildFlatItems()
+			h.forceSaveInstances()
+			h.invalidatePreviewCache(msg.sessionID)
+		}
+		for _, warning := range msg.warnings {
+			uiLog.Warn("account_switch_warning", slog.String("session_id", msg.sessionID), slog.String("detail", warning))
+		}
+		if msg.err != nil {
+			// A refused switch explains why in a paragraph the footer banner
+			// would clip, and the session may be left stopped — show it in the
+			// modal instead, where it cannot be missed.
+			h.confirmDialog.ShowNotice("Account switch failed", msg.err.Error())
+			return h, nil
+		}
+		if len(msg.warnings) > 0 {
+			// The CLI prints these on stderr; dropping them here would leave a
+			// failed folder-trust pre-seed to surface as a session that stalls
+			// on a trust prompt with no explanation.
+			h.confirmDialog.ShowNotice("Account switched with warnings",
+				fmt.Sprintf("Switched to %q — %s\n\n%s", msg.account, msg.summary, strings.Join(msg.warnings, "\n")))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("account switched to %q — %s", msg.account, msg.summary))
+		return h, nil
+
 	case sessionRestartedMsg:
 		if msg.err != nil {
 			// Restart failed - clear resuming animation immediately so user can retry.
@@ -8103,6 +8133,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var toolOptionsJSON json.RawMessage
 		var claudeExtraArgs []string
 		var claudeStartQuery string
+		var claudeAccount string
 		if command == "claude" && claudeOpts != nil {
 			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
 			claudeExtraArgs = h.newDialog.GetClaudeExtraArgs()
@@ -8121,6 +8152,14 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON, _ = session.MarshalToolOptions(hermesOpts)
 		}
 
+		// The account row is offered for every claude-compatible tool (the
+		// options panel's own gate), so harvest it on the same terms rather
+		// than only for the literal "claude" preset — otherwise a custom
+		// claude-compatible tool silently drops the pick.
+		if session.IsClaudeCompatible(command) {
+			claudeAccount = h.newDialog.GetClaudeAccount()
+		}
+
 		parentSessionID := h.newDialog.GetParentSessionID()
 		parentProjectPath := h.newDialog.GetParentProjectPath()
 
@@ -8128,7 +8167,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, launchModelID, parentSessionID, parentProjectPath)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, claudeAccount, launchModelID, parentSessionID, parentProjectPath)
 				return h, nil
 			}
 		}
@@ -8181,6 +8220,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON,
 			claudeExtraArgs,
 			claudeStartQuery,
+			claudeAccount,
 			launchModelID,
 			multiRepoEnabled,
 			additionalPaths,
@@ -10392,7 +10432,7 @@ func (h *Home) confirmAction() tea.Cmd {
 
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
-	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
+	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingAccount, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 	h.confirmDialog.Hide()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -10411,6 +10451,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		pendingToolOpts,
 		pendingExtraArgs,
 		pendingStartQuery,
+		pendingAccount,
 		pendingLaunchModelID,
 		false,
 		nil,
@@ -11138,13 +11179,46 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
+		// The account slot is NOT a plain field write: moving a session to
+		// another Claude login has to carry its conversation into that
+		// account's config dir, or the restarted `claude --resume` finds no
+		// conversation. It is pulled out here and handed to
+		// session.SwitchAccount (the same flow as `agent-deck session
+		// switch-account`) once the ordinary field writes are persisted.
+		// Clearing the slot back to "inherit" is NOT a switch: there is no
+		// target config dir to migrate into, and SetField already treats an
+		// empty value as "drop the override" (back to the conductor/group/env
+		// chain). Only a named target goes through the switch flow; the empty
+		// value stays in the ordinary field loop below.
+		accountSwitch := ""
+		switchAccount := false
+		for _, c := range changes {
+			if c.Field == session.FieldAccount && strings.TrimSpace(c.Value) != "" {
+				accountSwitch, switchAccount = c.Value, true
+			}
+		}
+
+		// A switch to another Claude account and a change of tool cannot both
+		// land in one submit: session.SwitchAccount only supports claude, so
+		// applying the tool first would persist it and then refuse the switch,
+		// leaving the session half-edited and unrestarted. Refuse the pair up
+		// front, with nothing written.
+		if switchAccount {
+			for _, c := range changes {
+				if c.Field == session.FieldTool && c.Value != "claude" {
+					h.editSessionDialog.SetError("an account switch only applies to claude sessions — change the tool and the account in separate edits")
+					return h, nil
+				}
+			}
+		}
+
 		// Apply Tool last so claude-only validation (Skip/Auto/ExtraArgs)
 		// sees the pre-edit Tool — otherwise Tool=claude→shell with a
 		// Skip toggle in the same submit fails IsClaudeCompatible on
 		// the toggle.
 		orderedChanges := make([]Change, 0, len(changes))
 		for _, c := range changes {
-			if c.Field != session.FieldTool {
+			if c.Field != session.FieldTool && !(c.Field == session.FieldAccount && switchAccount) {
 				orderedChanges = append(orderedChanges, c)
 			}
 		}
@@ -11195,6 +11269,17 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.forceSaveInstances()
 
 		h.editSessionDialog.Hide()
+
+		// An account change owns the restart: SwitchAccount stops the
+		// session, migrates the conversation and starts it again, so the
+		// generic restart below would either double-start it or race the
+		// migration. Every other edit in the same submit is already saved
+		// above, so the switch's restart picks those up too.
+		if switchAccount {
+			h.resumingSessions[sessionID] = time.Now()
+			return h, h.switchSessionAccount(sessionID, accountSwitch)
+		}
+
 		// Auto-restart on restart-required edits — Tool/Skip/Auto/ExtraArgs
 		// only take effect on next launch, so deferring would just leave
 		// the user staring at old behavior. Mirrors the manual `R` path,
@@ -12061,6 +12146,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	toolOptionsJSON json.RawMessage,
 	claudeExtraArgs []string,
 	claudeStartQuery string,
+	claudeAccount string,
 	launchModelID string,
 	multiRepoEnabled bool,
 	additionalPaths []string,
@@ -12192,6 +12278,15 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// single shell-quoted positional arg on the new-session command.
 		if tool == "claude" && claudeStartQuery != "" {
 			inst.StartupQuery = claudeStartQuery
+		}
+
+		// Apply the named account slot (#924). The Claude config-dir resolver
+		// reads Instance.Account as the most specific level of the chain, so a
+		// session created under an account spawns on that login's auth. A new
+		// session has no conversation yet, so there is nothing to migrate —
+		// changing the slot LATER goes through session.SwitchAccount.
+		if claudeAccount != "" && session.IsClaudeCompatible(tool) {
+			inst.Account = claudeAccount
 		}
 
 		// Apply sandbox config.
@@ -12651,6 +12746,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		geminiYoloMode, false, toolOptionsJSON,
 		nil,        // no extra claude args (recent-session path)
 		"",         // no claude startup query (recent-session path)
+		"",         // no account slot (inherit)
 		"",         // no explicit model override
 		false, nil, // no multi-repo
 		"", "", // no parent
@@ -12775,6 +12871,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		false, false, nil,
 		nil, // no extra claude args
 		"",  // no claude startup query
+		"",  // no account slot (inherit)
 		"",  // no explicit model override
 		false, nil,
 		"", "",
@@ -13654,6 +13751,54 @@ func (h *Home) bulkRemoveErrored() tea.Cmd {
 }
 
 // sessionRestartedMsg signals that a session was restarted.
+// accountSwitchedMsg reports the outcome of a TUI account switch (#924).
+// committed says whether the account field was actually changed on the
+// instance — the caller must persist session state exactly when it is true,
+// including the partial case where the switch succeeded but the restart did
+// not.
+type accountSwitchedMsg struct {
+	sessionID string
+	account   string
+	summary   string
+	committed bool
+	warnings  []string
+	err       error
+}
+
+// switchSessionAccount moves a session to another named Claude account,
+// carrying its conversation across, and reports the outcome as an
+// accountSwitchedMsg. Same flow as `agent-deck session switch-account`: it
+// stops the session, copies the conversation into the target account's config
+// dir, verifies the copy, commits the slot and restarts with `--resume`.
+//
+// Runs as a tea.Cmd because the stop/copy/start sequence talks to tmux and the
+// filesystem; doing it inline would freeze the UI for the duration.
+func (h *Home) switchSessionAccount(sessionID, account string) tea.Cmd {
+	return func() tea.Msg {
+		// Resolve by ID at execution time: a storage reload can replace the
+		// pointer captured when the dialog was submitted.
+		h.instancesMu.RLock()
+		inst := h.instanceByID[sessionID]
+		h.instancesMu.RUnlock()
+		if inst == nil {
+			return accountSwitchedMsg{sessionID: sessionID, account: account, err: fmt.Errorf("session no longer exists")}
+		}
+
+		cfg, cfgErr := session.LoadUserConfig()
+		if cfgErr != nil {
+			return accountSwitchedMsg{sessionID: sessionID, account: account, err: cfgErr}
+		}
+		result, err := session.SwitchAccount(cfg, inst, account, session.AccountSwitchOptions{})
+		msg := accountSwitchedMsg{sessionID: sessionID, account: account, err: err}
+		if result != nil {
+			msg.committed = true
+			msg.summary = result.Conversation
+			msg.warnings = result.Warnings
+		}
+		return msg
+	}
+}
+
 type sessionRestartedMsg struct {
 	sessionID  string
 	err        error

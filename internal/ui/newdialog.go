@@ -529,6 +529,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.modelInput.Blur()
 	d.claudeOptions.Blur()
 	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
+	d.claudeOptions.SetAccount("")    // #924: the account pick is per-session too
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 	if d.branchPicker != nil {
@@ -1445,6 +1446,16 @@ func (d *NewDialog) GetClaudeStartQuery() string {
 		return ""
 	}
 	return d.claudeOptions.GetStartQuery()
+}
+
+// GetClaudeAccount returns the named account slot picked in the options
+// panel (#924), or "" when the session should inherit the existing
+// conductor/group/env chain. Assigned by the caller to Instance.Account.
+func (d *NewDialog) GetClaudeAccount() string {
+	if !d.isClaudeSelected() {
+		return ""
+	}
+	return d.claudeOptions.GetAccount()
 }
 
 // isClaudeSelected returns true if the selected command is Claude or a claude-compatible custom tool

@@ -235,6 +235,15 @@ configured under `[profiles.<name>.claude].config_dir`.
 
 `agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too.
 
+The TUI exposes the same two moments. The **New Session** dialog's Claude options
+carry an `Account` row (`←`/`→` or `Space` to cycle, `inherit` = today's
+conductor/group/env chain), so a session can be created straight onto the right
+login. The **Edit Session** dialog (`e`) carries a `Claude account` row for a
+session that already exists; committing it runs the same
+migrate-and-resume flow as `session switch-account`, and the session card's
+`[account:"…"]` badge follows. Both rows are hidden when no
+`[profiles.<name>.claude].config_dir` blocks are configured.
+
 ### Session naming
 
 Titles and groups answer different questions — "what is this, at a glance?" versus "why do these sessions belong together?" — and each has its own controls.

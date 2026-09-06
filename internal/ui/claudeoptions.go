@@ -32,6 +32,13 @@ type ClaudeOptionsPanel struct {
 	useTeammateMode      bool
 	// Focus tracking
 	focusIndex int
+	// Named Claude account slots (#924) configured as
+	// [profiles.<name>.claude].config_dir, sorted. Empty means the machine
+	// has no named accounts and the row is hidden entirely.
+	accounts []string
+	// accountCursor indexes accounts+1: 0 selects "inherit" (no per-session
+	// slot, i.e. the conductor/group/env chain), i+1 selects accounts[i].
+	accountCursor int
 	// Whether this panel is for fork dialog (fewer options)
 	isForkMode bool
 	// Total number of focusable elements
@@ -96,7 +103,57 @@ func (p *ClaudeOptionsPanel) SetDefaults(config *session.UserConfig) {
 		p.SetExtraArgs(config.Claude.ExtraArgs)
 		p.useChrome = config.Claude.UseChrome
 		p.useTeammateMode = config.Claude.UseTeammateMode
+		p.SetAccounts(session.ConfiguredAccountNames(config))
 	}
+}
+
+// SetAccounts populates the account row. Callers pass the configured Claude
+// account slots; an empty list hides the row, so a machine with a single
+// login never sees a control it cannot use.
+func (p *ClaudeOptionsPanel) SetAccounts(accounts []string) {
+	p.accounts = accounts
+	if p.accountCursor > len(accounts) {
+		p.accountCursor = 0
+	}
+	p.focusCount = p.getFocusCount()
+}
+
+// SetAccount preselects a slot by name. An unknown name (or "") lands on
+// "inherit", matching what an unset Instance.Account resolves to.
+func (p *ClaudeOptionsPanel) SetAccount(account string) {
+	p.accountCursor = 0
+	for i, name := range p.accounts {
+		if name == account {
+			p.accountCursor = i + 1
+			return
+		}
+	}
+}
+
+// GetAccount returns the selected account slot, or "" for "inherit". The
+// caller assigns it to Instance.Account, which the Claude config-dir resolver
+// reads as the most specific level of the chain (#924).
+func (p *ClaudeOptionsPanel) GetAccount() string {
+	if p.accountCursor <= 0 || p.accountCursor > len(p.accounts) {
+		return ""
+	}
+	return p.accounts[p.accountCursor-1]
+}
+
+// hasAccountRow reports whether the account selector is rendered and
+// focusable. Fork inherits the parent session's slot, so the row is
+// NewDialog-only.
+func (p *ClaudeOptionsPanel) hasAccountRow() bool {
+	return !p.isForkMode && len(p.accounts) > 0
+}
+
+// cycleAccount advances the selection, wrapping through "inherit".
+func (p *ClaudeOptionsPanel) cycleAccount(step int) {
+	span := len(p.accounts) + 1
+	if span <= 1 {
+		return
+	}
+	p.accountCursor = ((p.accountCursor+step)%span + span) % span
 }
 
 // SetFromOptions applies persisted ClaudeOptions to the panel fields.
@@ -276,6 +333,15 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 			return nil
 
 		case "left", "right":
+			// Account slot pills (#924)
+			if p.getFocusType() == "account" {
+				if msg.String() == "left" {
+					p.cycleAccount(-1)
+				} else {
+					p.cycleAccount(1)
+				}
+				return nil
+			}
 			// For session mode radio buttons
 			if !p.isForkMode && p.focusIndex == 0 {
 				if msg.String() == "left" {
@@ -338,6 +404,8 @@ func (p *ClaudeOptionsPanel) handleSpaceKey() {
 			p.useChrome = !p.useChrome
 		case "teammateMode":
 			p.useTeammateMode = !p.useTeammateMode
+		case "account":
+			p.cycleAccount(1)
 		}
 	}
 }
@@ -392,6 +460,10 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 		if idx == 6 {
 			return "startQueryInput"
 		}
+		// 8: account slot (#924), only when accounts are configured
+		if idx == 7 && p.hasAccountRow() {
+			return "account"
+		}
 	}
 	return ""
 }
@@ -405,6 +477,9 @@ func (p *ClaudeOptionsPanel) getFocusCount() int {
 	count := 7 // session mode, skip, auto, chrome, teammate, extra-args, start-query
 	if p.sessionMode == 2 {
 		count++ // resume input
+	}
+	if p.hasAccountRow() {
+		count++ // account slot selector
 	}
 	return count
 }
@@ -551,8 +626,28 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 	} else {
 		content += "    Start query: " + p.startQueryInput.View() + "\n"
 	}
+	focusIdx++
+
+	// Account slot (#924): which Claude login this session runs under.
+	// Hidden when no [profiles.<name>.claude].config_dir blocks exist.
+	if p.hasAccountRow() {
+		label := "    Account: "
+		if p.focusIndex == focusIdx {
+			label = activeStyle.Render("  ▶ Account: ")
+		}
+		content += label + renderLabelPills(accountPillLabels(p.accounts), p.accountCursor) + "\n"
+	}
 
 	return content
+}
+
+// accountPillLabels renders the account row's options: the inherit slot
+// first, then every configured account in config order.
+func accountPillLabels(accounts []string) []string {
+	labels := make([]string, 0, len(accounts)+1)
+	labels = append(labels, "inherit")
+	labels = append(labels, accounts...)
+	return labels
 }
 
 // renderCheckboxMark renders a checkbox mark [x] or [ ] with consistent styling.

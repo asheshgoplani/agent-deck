@@ -63,6 +63,7 @@ type ConfirmDialog struct {
 	pendingToolOptionsJSON   json.RawMessage // Generic tool options (claude, codex, etc.)
 	pendingClaudeExtraArgs   []string        // User-supplied claude CLI tokens
 	pendingClaudeStartQuery  string          // Per-session claude startup query (v1.7.67, #725)
+	pendingClaudeAccount     string          // Per-session named account slot (#924)
 	pendingLaunchModelID     string          // Optional per-session model/version override.
 	pendingParentSessionID   string
 	pendingParentProjectPath string
@@ -209,6 +210,7 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	toolOptionsJSON json.RawMessage,
 	claudeExtraArgs []string,
 	claudeStartQuery string,
+	claudeAccount string,
 	launchModelID string,
 	parentSessionID string,
 	parentProjectPath string,
@@ -224,6 +226,7 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	c.pendingToolOptionsJSON = toolOptionsJSON
 	c.pendingClaudeExtraArgs = claudeExtraArgs
 	c.pendingClaudeStartQuery = claudeStartQuery
+	c.pendingClaudeAccount = claudeAccount
 	c.pendingLaunchModelID = launchModelID
 	c.pendingParentSessionID = parentSessionID
 	c.pendingParentProjectPath = parentProjectPath
@@ -253,8 +256,8 @@ func (c *ConfirmDialog) ShowInstallHermesHooks(configPath string, events []strin
 }
 
 // GetPendingSession returns the pending session creation data
-func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, claudeExtraArgs []string, claudeStartQuery, launchModelID string, parentSessionID, parentProjectPath string) {
-	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingClaudeExtraArgs, c.pendingClaudeStartQuery, c.pendingLaunchModelID, c.pendingParentSessionID, c.pendingParentProjectPath
+func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, claudeExtraArgs []string, claudeStartQuery, claudeAccount, launchModelID string, parentSessionID, parentProjectPath string) {
+	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingClaudeExtraArgs, c.pendingClaudeStartQuery, c.pendingClaudeAccount, c.pendingLaunchModelID, c.pendingParentSessionID, c.pendingParentProjectPath
 }
 
 // Hide hides the dialog.

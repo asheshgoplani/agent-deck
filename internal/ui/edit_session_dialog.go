@@ -78,6 +78,25 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 			pillLabels:  []string{"Off", "Top", "Bottom"},
 			pillCursor:  pinCursorFor(inst.Pin)},
 	}
+	// Named account slot (#924). Strictly claude-only: committing this row
+	// runs session.SwitchAccount, whose conversation migration is specific to
+	// `claude --resume` reading a .jsonl out of the account's config dir.
+	// Hidden when the machine has no [profiles.<name>.claude].config_dir
+	// blocks — there would be nothing to switch between.
+	if inst.Tool == "claude" {
+		cfg, _ := session.LoadUserConfig()
+		if accounts := session.ConfiguredAccountNames(cfg); len(accounts) > 0 {
+			opts, labels, cursor := accountPillsForInstance(inst.Account, accounts)
+			d.fields = append(d.fields, editField{
+				key:         session.FieldAccount,
+				label:       "Claude account (restart, moves the conversation)",
+				kind:        editFieldPills,
+				pillOptions: opts,
+				pillLabels:  labels,
+				pillCursor:  cursor,
+			})
+		}
+	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		skip, auto := readClaudeFlags(inst)
 		d.fields = append(d.fields,
@@ -124,6 +143,31 @@ func readClaudeFlags(inst *session.Instance) (skip, auto bool) {
 		return false, false
 	}
 	return cfg.Claude.GetDangerousMode(), cfg.Claude.AutoMode
+}
+
+// accountPillsForInstance returns the account row's options, their display
+// labels, and the cursor for the session's stored slot. Index 0 is always
+// "inherit" (the empty slot, i.e. the conductor/group/env chain).
+//
+// A stored slot whose profile has since been dropped from config.toml is
+// appended as its own pill rather than folded into "inherit" — the same guard
+// toolPillsForInstance applies to an unknown tool, and for the same reason: a
+// save-without-editing must stay a no-op instead of silently rewriting the
+// field to whatever slot 0 happens to be.
+func accountPillsForInstance(account string, accounts []string) (opts, labels []string, cursor int) {
+	opts = append([]string{""}, accounts...)
+	labels = append([]string{"inherit"}, accounts...)
+	for i, name := range accounts {
+		if name == account {
+			return opts, labels, i + 1
+		}
+	}
+	if account != "" {
+		opts = append(opts, account)
+		labels = append(labels, account+" (not configured)")
+		return opts, labels, len(opts) - 1
+	}
+	return opts, labels, 0
 }
 
 // displayGroupName returns the human label for a group path. Mirrors
@@ -281,6 +325,8 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 		return strconv.FormatBool(auto)
 	case session.FieldPin:
 		return string(inst.Pin)
+	case session.FieldAccount:
+		return inst.Account
 	}
 	return ""
 }

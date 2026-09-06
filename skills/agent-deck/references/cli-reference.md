@@ -96,7 +96,9 @@ Notes:
 agent-deck accounts [--json]
 ```
 
-Lists profiles that configure a Claude `config_dir`; these names are accepted by `add --account` and `launch --account`.
+Lists profiles that configure a Claude `config_dir`; these names are accepted by `add --account`, `launch --account`, `session set <id> account`, `session switch-account`, and the account rows in the TUI's New Session and Edit Session dialogs.
+
+Each row reports the slot name, its config dir, and whether that directory exists yet — a configured account with no directory has never been logged in (`CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`). The `--json` form carries the same three fields (`name`, `config_dir`, `exists`).
 
 ### list - List sessions
 
