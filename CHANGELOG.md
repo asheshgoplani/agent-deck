@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-09-06
+
+Remote decks are fully manageable from the local TUI: every key that works on a local row now works on a remote row and lands on the remote's own state.
+
+### Added
+
+- Remote session management from the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163), closes #2156): `A` / `Shift+U` archive and unarchive a remote session and the `^` view lists archived remote sessions; `f` forks a remote session on the remote; the new-session dialog offers the remote's MCPs to attach at creation; `Shift+Up/Down` reorders remote group headers in the remote's own order; `session set` is forwarded through the CLI passthrough.
+
+### Fixed
+
+- Empty remote groups are shown as `name (0)` like empty local groups, so a group created with `g` (or emptied by moves) no longer vanishes from the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
+- `n` on a remote group header creates the session in that group instead of the remote's my-sessions; `d` on a remote group header deletes the group on the remote after confirmation ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
+- `group list --json` emits the full group tree, so empty groups below the second level reach the move dialog and the TUI ([#2163](https://github.com/asheshgoplani/agent-deck/pull/2163)).
+
 ## [1.16.0] - 2026-09-06
 
 Remote sessions with the full configuration, account switching from the TUI, and a community wave: 38 merged PRs since v1.15.0, twelve of them from contributors. The maintainer-pipeline batch tracked in [#2138](https://github.com/asheshgoplani/agent-deck/issues/2138) started landing in this release and continues on main.
