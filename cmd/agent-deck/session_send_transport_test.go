@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,19 +17,19 @@ import (
 // routes to tmux. resolveCalls counts invocations so tests can assert
 // resolve runs exactly once per chooseSendTransport call (NIT: one resolve
 // per send, not two).
-func alwaysSocketOK(resolveCalls *int) func(string) (send.ClaudeSocketTarget, error) {
-	return func(sessionID string) (send.ClaudeSocketTarget, error) {
+func alwaysSocketOK(resolveCalls *int) func() (send.ClaudeSocketTarget, error) {
+	return func() (send.ClaudeSocketTarget, error) {
 		if resolveCalls != nil {
 			*resolveCalls++
 		}
-		return send.ClaudeSocketTarget{SocketPath: "/tmp/whatever.sock", Pid: 1, SessionID: sessionID}, nil
+		return send.ClaudeSocketTarget{SocketPath: "/tmp/whatever.sock", Pid: 1, SessionID: "sid"}, nil
 	}
 }
 
 // alwaysSocketUnavailable is a resolve stub simulating a specific pre-write
 // refusal, e.g. a dead pid.
-func alwaysSocketUnavailable(reason send.UnavailableReason) func(string) (send.ClaudeSocketTarget, error) {
-	return func(string) (send.ClaudeSocketTarget, error) {
+func alwaysSocketUnavailable(reason send.UnavailableReason) func() (send.ClaudeSocketTarget, error) {
+	return func() (send.ClaudeSocketTarget, error) {
 		return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: reason}
 	}
 }
@@ -248,7 +249,7 @@ func TestPerformSend_SSHBackedInstance_TakesTmuxWithEmptyFallbackReason(t *testi
 		t.Fatal("test setup: inst should be SSH-backed")
 	}
 
-	res, err := performSend(inst, mock, "hello", false, defaultSendTuning(), "auto", alwaysSocketOK(nil), nil)
+	res, err := performSend(inst, mock, "hello", false, defaultSendTuning(), "auto", instResolveOK, nil)
 	if err != nil {
 		t.Fatalf("performSend: %v", err)
 	}
@@ -398,5 +399,111 @@ func TestIsBareSlashCommand(t *testing.T) {
 		if got := isBareSlashCommand(tc.msg); got != tc.want {
 			t.Errorf("isBareSlashCommand(%q) = %v, want %v", tc.msg, got, tc.want)
 		}
+	}
+}
+
+// writeSessionRecord drops a Claude sessions/<pid>.json under claudeDir, the
+// on-disk shape resolveClaudeSocketTargetForInstance reads.
+func writeSessionRecord(t *testing.T, claudeDir string, pid int, sessionID string) {
+	t.Helper()
+	dir := filepath.Join(claudeDir, "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"pid":` + strconv.Itoa(pid) + `,"sessionId":"` + sessionID +
+		`","updatedAt":1000,"procStart":"x","peerProtocol":1,"messagingSocketPath":"/tmp/x.sock"}`
+	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(pid)+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestResolveClaudeSocketTargetForInstance_UsesInstanceConfigDir is the
+// #2100 correction: the resolver must read the dir the instance runs under,
+// never $HOME/.claude. The two halves discriminate: a record present ONLY in
+// the instance's dir gets past the record lookup (failing later, at the pane
+// probe, which has no tmux session in a test), while a record present ONLY
+// in $HOME/.claude is never seen at all.
+func TestResolveClaudeSocketTargetForInstance_UsesInstanceConfigDir(t *testing.T) {
+	newInst := func() *session.Instance {
+		return &session.Instance{ID: "i1", Title: "target", Tool: "claude", ClaudeSessionID: "sid-1"}
+	}
+
+	t.Run("record in the instance's dir is found", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		instDir := filepath.Join(t.TempDir(), "account-claude")
+		t.Setenv("CLAUDE_CONFIG_DIR", instDir)
+		session.ClearUserConfigCache()
+		t.Cleanup(session.ClearUserConfigCache)
+		writeSessionRecord(t, instDir, 4242, "sid-1")
+
+		_, err := resolveClaudeSocketTargetForInstance(newInst())
+		var unavail *send.Unavailable
+		if !errors.As(err, &unavail) {
+			t.Fatalf("err = %v, want *send.Unavailable", err)
+		}
+		// Got past the record lookup: the failure is the pane probe, which
+		// cannot run without a live tmux session.
+		if unavail.Reason != send.ReasonNotInPaneTree {
+			t.Errorf("reason = %q, want %q (the record in the instance's dir was found)", unavail.Reason, send.ReasonNotInPaneTree)
+		}
+	})
+
+	t.Run("record only under $HOME/.claude is not used", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		instDir := filepath.Join(t.TempDir(), "account-claude")
+		t.Setenv("CLAUDE_CONFIG_DIR", instDir)
+		session.ClearUserConfigCache()
+		t.Cleanup(session.ClearUserConfigCache)
+		writeSessionRecord(t, filepath.Join(home, ".claude"), 4242, "sid-1")
+
+		_, err := resolveClaudeSocketTargetForInstance(newInst())
+		var unavail *send.Unavailable
+		if !errors.As(err, &unavail) {
+			t.Fatalf("err = %v, want *send.Unavailable", err)
+		}
+		if unavail.Reason != send.ReasonNoRecord {
+			t.Errorf("reason = %q, want %q ($HOME/.claude must not be consulted)", unavail.Reason, send.ReasonNoRecord)
+		}
+	})
+
+	t.Run("nil instance", func(t *testing.T) {
+		_, err := resolveClaudeSocketTargetForInstance(nil)
+		var unavail *send.Unavailable
+		if !errors.As(err, &unavail) || unavail.Reason != send.ReasonNoRecord {
+			t.Errorf("err = %v, want *send.Unavailable(%s)", err, send.ReasonNoRecord)
+		}
+	})
+}
+
+// TestRunTmuxSend_SurfacesRecordSelectionReasons: the two #2100 selection
+// refusals are genuine "a socket was attempted and refused" reasons, so they
+// must reach the --json fallback_reason field rather than being filtered out
+// as selector-level reasons the way an explicit pin is.
+func TestRunTmuxSend_SurfacesRecordSelectionReasons(t *testing.T) {
+	for _, reason := range []send.UnavailableReason{send.ReasonNotInPaneTree, send.ReasonAmbiguousRecord} {
+		t.Run(string(reason), func(t *testing.T) {
+			if selectorLevelReasons[reason] {
+				t.Fatalf("%s must not be a selector-level reason: a socket WAS attempted", reason)
+			}
+			mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
+			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto",
+				func(*session.Instance) (send.ClaudeSocketTarget, error) {
+					return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: reason}
+				}, nil)
+			if err != nil {
+				t.Fatalf("performSend: %v", err)
+			}
+			if res.transport != "tmux" {
+				t.Errorf("transport = %q, want tmux (a pre-write refusal falls back)", res.transport)
+			}
+			if res.fallbackReason != reason {
+				t.Errorf("fallbackReason = %q, want %q", res.fallbackReason, reason)
+			}
+			if got := res.jsonFields()["fallback_reason"]; got != string(reason) {
+				t.Errorf("fallback_reason = %v, want %q", got, reason)
+			}
+		})
 	}
 }

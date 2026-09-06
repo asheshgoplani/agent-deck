@@ -36,6 +36,16 @@ const (
 	ReasonNoKey          UnavailableReason = "key_unreadable"
 	ReasonDialFailed     UnavailableReason = "dial_failed"
 	ReasonTooLarge       UnavailableReason = "message_too_large"
+	// ReasonNotInPaneTree: no session record for the target's conversation
+	// belongs to a process running in the target session's own tmux pane
+	// tree. Either the conversation is live somewhere else entirely, or only
+	// stale per-PID files remain (maintainer review of #2100).
+	ReasonNotInPaneTree UnavailableReason = "pid_not_in_pane_tree"
+	// ReasonAmbiguousRecord: more than one live record for the conversation
+	// belongs to the target's pane tree, so which process would receive the
+	// message is a guess. Refuse rather than pick (maintainer review of
+	// #2100).
+	ReasonAmbiguousRecord UnavailableReason = "ambiguous_record"
 )
 
 // Unavailable means the socket cannot be used for this target for a reason
@@ -375,4 +385,44 @@ func SendOverClaudeSocket(t ClaudeSocketTarget, message string) (msgID string, e
 	// the server's read; applied unconditionally (§1.4).
 	time.Sleep(150 * time.Millisecond)
 	return id, nil
+}
+
+// SelectClaudeSocketRecord picks the one session record that belongs to the
+// target session's own tmux pane process tree, and refuses to guess
+// otherwise (maintainer review of #2100). Claude writes one
+// sessions/<pid>.json per process, so a resumed or forked conversation can
+// match several records: the freshest-wins rule the title-sync path uses is
+// fine for reading a name, but for a send it can address a DIFFERENT live
+// process holding the same conversation id, or an account's process that is
+// not the session the operator named. Pane-tree membership is the
+// disambiguator, because it is the one fact that ties a record to the
+// session agent-deck was asked to send to.
+//
+// Records whose Pid is outside panePIDs are ignored, not an error — they are
+// simply other processes. Zero survivors is ReasonNotInPaneTree, more than
+// one is ReasonAmbiguousRecord; both are pre-write refusals, so both fall
+// back to tmux. ResolveClaudeSocketTarget still runs afterwards on the
+// selected record: this function establishes WHICH process, not that the
+// process is usable.
+func SelectClaudeSocketRecord(records []ClaudeSocketRecord, panePIDs []int) (ClaudeSocketRecord, error) {
+	inTree := make(map[int]bool, len(panePIDs))
+	for _, pid := range panePIDs {
+		inTree[pid] = true
+	}
+	var candidates []ClaudeSocketRecord
+	for _, rec := range records {
+		if rec.Pid > 0 && inTree[rec.Pid] {
+			candidates = append(candidates, rec)
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return ClaudeSocketRecord{}, &Unavailable{Reason: ReasonNotInPaneTree,
+			Err: fmt.Errorf("none of %d session record(s) belong to the target pane process tree", len(records))}
+	case 1:
+		return candidates[0], nil
+	default:
+		return ClaudeSocketRecord{}, &Unavailable{Reason: ReasonAmbiguousRecord,
+			Err: fmt.Errorf("%d session records in the target pane process tree", len(candidates))}
+	}
 }

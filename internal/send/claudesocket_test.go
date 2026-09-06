@@ -513,3 +513,85 @@ func assertUnavailable(t *testing.T, err error, want UnavailableReason) {
 		t.Errorf("Reason = %q, want %q", u.Reason, want)
 	}
 }
+
+// TestSelectClaudeSocketRecord covers the #2100 disambiguator: a
+// conversation can have several per-PID records, and only one belonging to
+// the target's own tmux pane process tree is safe to address.
+func TestSelectClaudeSocketRecord(t *testing.T) {
+	rec := func(pid int) ClaudeSocketRecord {
+		return ClaudeSocketRecord{Pid: pid, SessionID: "sid", PeerProtocol: 1, MessagingSocketPath: "/tmp/s.sock"}
+	}
+
+	cases := []struct {
+		name       string
+		records    []ClaudeSocketRecord
+		panePIDs   []int
+		wantPid    int
+		wantReason UnavailableReason
+	}{
+		{
+			name:     "one record in the tree wins",
+			records:  []ClaudeSocketRecord{rec(101)},
+			panePIDs: []int{99, 101, 102},
+			wantPid:  101,
+		},
+		{
+			name:     "records outside the tree are ignored, not errors",
+			records:  []ClaudeSocketRecord{rec(500), rec(101), rec(600)},
+			panePIDs: []int{101},
+			wantPid:  101,
+		},
+		{
+			name:       "no record in the tree",
+			records:    []ClaudeSocketRecord{rec(500), rec(600)},
+			panePIDs:   []int{101},
+			wantReason: ReasonNotInPaneTree,
+		},
+		{
+			name:       "two records in the tree is ambiguous, never a guess",
+			records:    []ClaudeSocketRecord{rec(101), rec(102)},
+			panePIDs:   []int{101, 102},
+			wantReason: ReasonAmbiguousRecord,
+		},
+		{
+			name:       "no records at all",
+			records:    nil,
+			panePIDs:   []int{101},
+			wantReason: ReasonNotInPaneTree,
+		},
+		{
+			name:       "empty pane tree cannot prove membership",
+			records:    []ClaudeSocketRecord{rec(101)},
+			panePIDs:   nil,
+			wantReason: ReasonNotInPaneTree,
+		},
+		{
+			name:       "pid 0 never matches",
+			records:    []ClaudeSocketRecord{rec(0)},
+			panePIDs:   []int{0},
+			wantReason: ReasonNotInPaneTree,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SelectClaudeSocketRecord(tc.records, tc.panePIDs)
+			if tc.wantReason != "" {
+				var unavail *Unavailable
+				if !errors.As(err, &unavail) {
+					t.Fatalf("err = %v, want *Unavailable(%s)", err, tc.wantReason)
+				}
+				if unavail.Reason != tc.wantReason {
+					t.Errorf("reason = %q, want %q", unavail.Reason, tc.wantReason)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SelectClaudeSocketRecord: %v", err)
+			}
+			if got.Pid != tc.wantPid {
+				t.Errorf("selected pid = %d, want %d", got.Pid, tc.wantPid)
+			}
+		})
+	}
+}

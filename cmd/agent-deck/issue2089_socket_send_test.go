@@ -24,7 +24,9 @@ func claudeInst(sessionID string) *session.Instance {
 	return &session.Instance{ID: "i1", Title: "target", Tool: "claude", ClaudeSessionID: sessionID}
 }
 
-func alwaysResolveOK(string) (send.ClaudeSocketTarget, error) {
+// instResolveOK is performSend's resolve seam: per-INSTANCE since #2100, so
+// tests never have to build the real config dir / pane-tree machinery.
+func instResolveOK(*session.Instance) (send.ClaudeSocketTarget, error) {
 	return send.ClaudeSocketTarget{SocketPath: "/tmp/whatever.sock", Pid: 1, SessionID: "sid"}, nil
 }
 
@@ -108,7 +110,7 @@ func TestPerformSend_SocketWriteFailure_NoTmuxCall(t *testing.T) {
 		return "", &send.CommittedError{Err: errors.New("simulated write failure")}
 	}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", alwaysResolveOK, failingSend)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", instResolveOK, failingSend)
 	if err == nil {
 		t.Fatal("expected an error from a failing socket write")
 	}
@@ -134,7 +136,7 @@ func TestPerformSend_TmuxPin_TakesTheTmuxPath(t *testing.T) {
 	// shape as TestSendWithRetryTarget_StopsWhenActive in session_send_test.go.
 	mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "tmux", alwaysResolveOK, nil)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "tmux", instResolveOK, nil)
 	if err != nil {
 		t.Fatalf("performSend with a tmux pin: %v", err)
 	}
@@ -173,7 +175,7 @@ func TestPerformSend_SocketDialFailedAtSendTime_FallsBackToTmux(t *testing.T) {
 	}
 	mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", alwaysResolveOK, dialFailed)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", instResolveOK, dialFailed)
 	if err != nil {
 		t.Fatalf("performSend should succeed via the tmux fallback, got: %v", err)
 	}
@@ -209,7 +211,7 @@ func TestPerformSend_SocketMessageTooLargeAtSendTime_FallsBackToTmux_TmuxOwnVerd
 	// through.
 	mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}, sendKeysErr: tmux.ErrCanonicalLineOverflow}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", alwaysResolveOK, tooLarge)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", instResolveOK, tooLarge)
 	if err == nil {
 		t.Fatal("expected an error: tmux's own line-length guard refuses this send")
 	}
@@ -391,7 +393,7 @@ func TestPerformSend_SocketRecordsBusyAtSend(t *testing.T) {
 	}{{"active", true}, {"waiting", false}} {
 		t.Run(tc.status, func(t *testing.T) {
 			mock := &mockSendRetryTarget{statuses: []string{tc.status}, panes: []string{""}}
-			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", alwaysResolveOK, okSend)
+			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", instResolveOK, okSend)
 			if err != nil {
 				t.Fatalf("performSend: %v", err)
 			}

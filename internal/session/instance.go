@@ -3373,8 +3373,19 @@ func (i *Instance) shouldRunCodexProcessProbe(force bool) bool {
 	return true
 }
 
+// PaneProcessTreePIDs exports collectTmuxPaneProcessTreePIDs for callers
+// outside internal/session — the #2100 send path, which uses pane-tree
+// membership to decide which of several Claude session records addresses
+// THIS session. Same contract as the unexported method: a non-nil error
+// means the forest may be incomplete.
+func (i *Instance) PaneProcessTreePIDs() ([]int, error) {
+	return i.collectTmuxPaneProcessTreePIDs()
+}
+
 // collectTmuxPaneProcessTreePIDs returns every pane PID and descendant. A
-// non-nil error means the returned process forest may be incomplete.
+// non-nil error means the returned process forest may be incomplete. Its
+// error strings are prefixed "codex process probe" for historical reasons
+// (its first caller); it is not codex-specific — see PaneProcessTreePIDs.
 func (i *Instance) collectTmuxPaneProcessTreePIDs() ([]int, error) {
 	if i.tmuxSession == nil || !i.tmuxSession.Exists() {
 		return nil, errors.New("codex process probe: tmux session is unavailable")
