@@ -25,6 +25,7 @@ Run the same command through `remote lab`. Output, JSON fields, diagnostics and 
 | `session restart task` | `remote lab session restart task` |
 | `session fork task -t "task 2"` | `remote lab session fork task -t "task 2"` |
 | `session archive task` | `remote lab session archive task` |
+| `session set task title "task 2"` | `remote lab session set task title "task 2"` |
 | `session unarchive task` | `remote lab session unarchive task` |
 | `worktree list --json` | `remote lab worktree list --json` |
 | `worktree info task --json` | `remote lab worktree info task --json` |

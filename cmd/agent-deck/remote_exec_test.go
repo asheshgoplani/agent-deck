@@ -409,3 +409,13 @@ func TestRemoteCommandArgsSessionArchiveVerbs(t *testing.T) {
 		t.Fatal("session remove must stay unsupported")
 	}
 }
+
+// `session set` (title, title lock, parent, tool session id) is a plain
+// registry update the server owns, so the passthrough forwards it verbatim.
+func TestRemoteCommandArgsSessionSet(t *testing.T) {
+	args := []string{"session", "set", "task", "title", "task 2"}
+	got, err := remoteCommandArgs(args)
+	if err != nil || !reflect.DeepEqual(got, args) {
+		t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+	}
+}
