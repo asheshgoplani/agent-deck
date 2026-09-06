@@ -21,6 +21,8 @@ const (
 	ConfirmInstallHooks
 	ConfirmDeleteRemoteSession
 	ConfirmCloseRemoteSession
+	ConfirmArchiveRemoteSession
+	ConfirmUnarchiveRemoteSession
 	ConfirmRemoveSession     // status-gated registry-only remove (TUI 'X')
 	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
 	ConfirmArchiveSession
@@ -132,6 +134,29 @@ func (c *ConfirmDialog) ShowDeleteRemoteSession(remoteName, sessionID, sessionNa
 func (c *ConfirmDialog) ShowCloseRemoteSession(remoteName, sessionID, sessionName string) {
 	c.visible = true
 	c.confirmType = ConfirmCloseRemoteSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.remoteName = remoteName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowArchiveRemoteSession shows the archive confirmation for a remote session.
+// Same wording and keys as the local archive dialog, plus the remote name.
+func (c *ConfirmDialog) ShowArchiveRemoteSession(remoteName, sessionID, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmArchiveRemoteSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.remoteName = remoteName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowUnarchiveRemoteSession shows the unarchive confirmation for a remote session.
+func (c *ConfirmDialog) ShowUnarchiveRemoteSession(remoteName, sessionID, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmUnarchiveRemoteSession
 	c.targetID = sessionID
 	c.targetName = sessionName
 	c.remoteName = remoteName
@@ -385,10 +410,15 @@ func (c *ConfirmDialog) View() string {
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
 
-	case ConfirmArchiveSession:
+	case ConfirmArchiveSession, ConfirmArchiveRemoteSession:
 		title = "Archive Session?"
 		warning = fmt.Sprintf("Archive this session:\n\n  \"%s\"", c.targetName)
 		details = "• The tmux process will be stopped\n• The session will move to the archived list\n• You can unarchive later (^ view, Shift+U restore)"
+		if c.confirmType == ConfirmArchiveRemoteSession {
+			title = "Archive Remote Session?"
+			warning = fmt.Sprintf("Archive this session:\n\n  \"%s\" on %s", c.targetName, c.remoteName)
+			details = "• The remote tmux process will be stopped\n• The session will move to the remote's archived list\n• You can unarchive later (^ view, Shift+U restore)"
+		}
 		borderColor = ColorYellow
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Archive", ColorYellow, c.focusedButton == 0), "  ",
@@ -396,9 +426,13 @@ func (c *ConfirmDialog) View() string {
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y archive · n cancel · ←/→ navigate · Enter select · Esc"))
 
-	case ConfirmUnarchiveSession:
+	case ConfirmUnarchiveSession, ConfirmUnarchiveRemoteSession:
 		title = "Unarchive Session?"
 		warning = fmt.Sprintf("Restore this session to the active list:\n\n  \"%s\"", c.targetName)
+		if c.confirmType == ConfirmUnarchiveRemoteSession {
+			title = "Unarchive Remote Session?"
+			warning = fmt.Sprintf("Restore this session to the active list:\n\n  \"%s\" on %s", c.targetName, c.remoteName)
+		}
 		details = "• Metadata returns to the main session list\n• The process is not started automatically"
 		borderColor = ColorGreen
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
