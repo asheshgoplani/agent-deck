@@ -149,7 +149,8 @@ func TestChooseSendTransport(t *testing.T) {
 				tool: "claude", configValue: "", message: "do the thing",
 				claudeSessionID: "sid", resolve: alwaysSocketOK(nil),
 			},
-			wantTransport: transportTmux, wantReason: reasonConfigPinnedTmux,
+			// Nobody opted in; that is not the same fact as an explicit pin.
+			wantTransport: transportTmux, wantReason: reasonTransportNotOptedIn,
 		},
 		{
 			name: "unrecognized config value takes tmux",
@@ -157,7 +158,15 @@ func TestChooseSendTransport(t *testing.T) {
 				tool: "claude", configValue: "AUTO", message: "do the thing",
 				claudeSessionID: "sid", resolve: alwaysSocketOK(nil),
 			},
-			wantTransport: transportTmux, wantReason: reasonConfigPinnedTmux,
+			wantTransport: transportTmux, wantReason: reasonTransportNotOptedIn,
+		},
+		{
+			name: "nil resolve seam reports a selector-level reason",
+			in: transportInputs{
+				tool: "claude", configValue: "auto", message: "do the thing",
+				claudeSessionID: "sid", resolve: nil,
+			},
+			wantTransport: transportTmux, wantReason: reasonNoResolver,
 		},
 	}
 
@@ -249,7 +258,7 @@ func TestPerformSend_SSHBackedInstance_TakesTmuxWithEmptyFallbackReason(t *testi
 		t.Fatal("test setup: inst should be SSH-backed")
 	}
 
-	res, err := performSend(inst, mock, "hello", false, defaultSendTuning(), "auto", instResolveOK, nil)
+	res, err := performSend(inst, mock, "hello", false, defaultSendTuning(), "auto", nil, instResolveOK, nil)
 	if err != nil {
 		t.Fatalf("performSend: %v", err)
 	}
@@ -468,6 +477,80 @@ func TestResolveClaudeSocketTargetForInstance_UsesInstanceConfigDir(t *testing.T
 		}
 	})
 
+	t.Run("the account layer beats the env var", func(t *testing.T) {
+		// The env rung alone does not prove the resolver walks the real
+		// chain — an account-scoped session is the case #2100 is about.
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		envDir := filepath.Join(t.TempDir(), "env-claude")
+		accountDir := filepath.Join(t.TempDir(), "work-account-claude")
+		t.Setenv("CLAUDE_CONFIG_DIR", envDir)
+
+		if err := os.MkdirAll(filepath.Join(home, ".agent-deck"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.SaveUserConfig(&session.UserConfig{
+			Profiles: map[string]session.ProfileSettings{
+				"work": {Claude: session.ProfileClaudeSettings{ConfigDir: accountDir}},
+			},
+		}); err != nil {
+			t.Fatalf("SaveUserConfig: %v", err)
+		}
+		session.ClearUserConfigCache()
+		t.Cleanup(session.ClearUserConfigCache)
+
+		// Record only under the ACCOUNT's dir; a decoy under the env dir.
+		writeSessionRecord(t, accountDir, 4242, "sid-1")
+		writeSessionRecord(t, envDir, 5353, "sid-1")
+
+		inst := newInst()
+		inst.Account = "work"
+		_, err := resolveClaudeSocketTargetForInstance(inst)
+		var unavail *send.Unavailable
+		if !errors.As(err, &unavail) {
+			t.Fatalf("err = %v, want *send.Unavailable", err)
+		}
+		// Got past the record lookup using the account's dir; the failure
+		// is the pane probe, which has no live tmux session in a test.
+		if unavail.Reason != send.ReasonNotInPaneTree {
+			t.Errorf("reason = %q, want %q (the account's dir must be scanned)", unavail.Reason, send.ReasonNotInPaneTree)
+		}
+	})
+
+	t.Run("an account with no record is not rescued by the env dir", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		envDir := filepath.Join(t.TempDir(), "env-claude")
+		accountDir := filepath.Join(t.TempDir(), "work-account-claude")
+		t.Setenv("CLAUDE_CONFIG_DIR", envDir)
+
+		if err := os.MkdirAll(filepath.Join(home, ".agent-deck"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.SaveUserConfig(&session.UserConfig{
+			Profiles: map[string]session.ProfileSettings{
+				"work": {Claude: session.ProfileClaudeSettings{ConfigDir: accountDir}},
+			},
+		}); err != nil {
+			t.Fatalf("SaveUserConfig: %v", err)
+		}
+		session.ClearUserConfigCache()
+		t.Cleanup(session.ClearUserConfigCache)
+
+		// Only the env dir has the record; the account's dir has none.
+		writeSessionRecord(t, envDir, 5353, "sid-1")
+
+		inst := newInst()
+		inst.Account = "work"
+		_, err := resolveClaudeSocketTargetForInstance(inst)
+		var unavail *send.Unavailable
+		if !errors.As(err, &unavail) || unavail.Reason != send.ReasonNoRecord {
+			t.Errorf("err = %v, want *send.Unavailable(%s): another dir's record must not be used", err, send.ReasonNoRecord)
+		}
+	})
+
 	t.Run("nil instance", func(t *testing.T) {
 		_, err := resolveClaudeSocketTargetForInstance(nil)
 		var unavail *send.Unavailable
@@ -488,7 +571,7 @@ func TestRunTmuxSend_SurfacesRecordSelectionReasons(t *testing.T) {
 				t.Fatalf("%s must not be a selector-level reason: a socket WAS attempted", reason)
 			}
 			mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
-			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto",
+			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", nil,
 				func(*session.Instance) (send.ClaudeSocketTarget, error) {
 					return send.ClaudeSocketTarget{}, &send.Unavailable{Reason: reason}
 				}, nil)

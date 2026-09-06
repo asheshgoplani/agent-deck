@@ -2699,7 +2699,7 @@ func handleSessionSend(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
-	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (on a socket send, first waits up to 30s for the turn to start; returns immediately with wait_outcome=unverified_busy_target if the target was already mid-turn)")
+	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (on a socket send, first waits up to 30s for the turn to start; returns immediately with wait_outcome=unverified_busy_target/unverified_busy_probe_failed if the target could not be shown idle)")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
@@ -2919,7 +2919,10 @@ func handleSessionSend(profile string, args []string) {
 	if sendTransportWarn != "" {
 		fmt.Fprintln(os.Stderr, sendTransportWarn)
 	}
-	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, nil, nil)
+	// The busy probe reads the same hook-driven status --defer-if-busy holds
+	// on, so it needs the same lookup closure.
+	hookStatus := func() (string, error) { return fetchHookDrivenStatus(profile, sessionRef) }
+	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, hookStatus, nil, nil)
 	if sendErr != nil {
 		extra := sendRes.jsonFields()
 		extra["session_id"] = inst.ID
@@ -2970,29 +2973,22 @@ func handleSessionSend(profile string, args []string) {
 
 	// A socket write does not interrupt a running turn: it lands in the
 	// target's inbox and is picked up at the next turn boundary. So when the
-	// target was already mid-turn at the moment of the write, the next
-	// completion --wait would observe is the completion of the turn that was
-	// ALREADY running, and printing its output as this message's response is
-	// a wrong attribution. There is no in-band receipt to correlate against
-	// (§Step 3, maintainer review of #2100), so --wait reports the outcome as
+	// target was already mid-turn at the moment of the write — or when the
+	// probe could not establish that it was idle — the next completion
+	// --wait would observe cannot be shown to belong to this message, and
+	// printing its output as this message's response is a wrong
+	// attribution. There is no in-band receipt to correlate against (§Step
+	// 3, maintainer review of #2100), so --wait reports the outcome as
 	// explicitly unverified rather than guessing. It is not an error — the
 	// write itself succeeded — so the exit code stays 0, and the message is
 	// never resent on tmux.
-	waitUnverifiedBusy := *wait && shouldSkipWaitForBusyTarget(sendRes)
+	skippedOutcome := ""
+	if *wait {
+		skippedOutcome = skippedWaitOutcome(sendRes)
+	}
 
 	if !*stream {
-		data := map[string]interface{}{
-			"success":       true,
-			"session_id":    inst.ID,
-			"session_title": inst.Title,
-			"message":       message,
-		}
-		for k, v := range sendRes.jsonFields() {
-			data[k] = v
-		}
-		if waitUnverifiedBusy {
-			data["wait_outcome"] = waitOutcomeUnverifiedBusyTarget
-		}
+		data := sendSuccessData(inst, message, sendRes, *wait)
 		// The socket path cannot claim delivery the way tmux's submit
 		// verification can: the write completed, and Claude's inbox says
 		// nothing back (maintainer review of #2100).
@@ -3020,14 +3016,12 @@ func handleSessionSend(profile string, args []string) {
 
 	// If --wait, block until the agent finishes processing, then print output
 	if *wait {
-		if waitUnverifiedBusy {
+		if skippedOutcome != "" {
 			// No completion wait, no session-ID refresh, no output: see the
-			// waitUnverifiedBusy comment above. The stderr line is the only
+			// skippedOutcome comment above. The stderr line is the only
 			// signal for a non-JSON caller, which would otherwise see --wait
 			// return instantly with nothing.
-			fmt.Fprintf(os.Stderr,
-				"Warning: '%s' was mid-turn when this message was written to its inbox, so its next completion cannot be attributed to this message; --wait returned without waiting (wait_outcome: %s)\n",
-				inst.Title, waitOutcomeUnverifiedBusyTarget)
+			fmt.Fprintln(os.Stderr, sendSkippedWaitWarning(inst.Title, skippedOutcome))
 			return
 		}
 		finalStatus, err := waitAfterSend(tmuxSess, sendRes.transport, *timeout)
@@ -3165,12 +3159,57 @@ const (
 	deliverySocketWriteFailed = "socket_write_failed"
 )
 
-// waitOutcomeUnverifiedBusyTarget is the `wait_outcome` value `session send
-// --wait` reports when it declined to wait at all: the target was mid-turn
-// when the message was written to its socket inbox, so no completion it
-// observes can be attributed to this message (maintainer review of #2100).
-// Part of the --json contract; exit code stays 0.
-const waitOutcomeUnverifiedBusyTarget = "unverified_busy_target"
+// The `wait_outcome` values `session send --wait` reports when it declined
+// to wait at all, because no completion it observed could be attributed to
+// this message. Part of the --json contract; exit code stays 0 for both, and
+// neither ever retries on tmux — the socket write is already committed.
+const (
+	// waitOutcomeUnverifiedBusyTarget: the target was confirmed mid-turn
+	// when the message was written to its socket inbox, so the next
+	// completion belongs to the turn already in flight.
+	waitOutcomeUnverifiedBusyTarget = "unverified_busy_target"
+	// waitOutcomeUnverifiedBusyProbeFailed: the pre-write probe could read
+	// no status, so the target could not be confirmed idle. Distinct from
+	// the above because nothing established that it was generating (round-2
+	// review of #2100).
+	waitOutcomeUnverifiedBusyProbeFailed = "unverified_busy_probe_failed"
+)
+
+// sendSuccessData assembles the --json success payload for one completed
+// send: the identity fields, every delivery field jsonFields reports, and —
+// when --wait was asked for but declined to wait — the wait_outcome naming
+// why. handleSessionSend calls exactly this, so a test of this function is a
+// test of what the CLI actually emits (round-2 review of #2100).
+func sendSuccessData(inst *session.Instance, message string, res sendDeliveryResult, wait bool) map[string]interface{} {
+	data := map[string]interface{}{
+		"success":       true,
+		"session_id":    inst.ID,
+		"session_title": inst.Title,
+		"message":       message,
+	}
+	for k, v := range res.jsonFields() {
+		data[k] = v
+	}
+	if wait {
+		if outcome := skippedWaitOutcome(res); outcome != "" {
+			data["wait_outcome"] = outcome
+		}
+	}
+	return data
+}
+
+// sendSkippedWaitWarning is the stderr line for a --wait that declined to
+// wait. The two outcomes get different words on purpose: only the confirmed
+// case may say the target was mid-turn (round-2 review of #2100).
+func sendSkippedWaitWarning(title, outcome string) string {
+	reason := "was mid-turn"
+	if outcome == waitOutcomeUnverifiedBusyProbeFailed {
+		reason = "could not be confirmed idle"
+	}
+	return fmt.Sprintf(
+		"Warning: '%s' %s when this message was written to its inbox, so its next completion cannot be attributed to this message; --wait returned without waiting (wait_outcome: %s)",
+		title, reason, outcome)
+}
 
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
 type sendDeliveryResult struct {
@@ -3205,11 +3244,15 @@ type sendDeliveryResult struct {
 	// socketMsgID is the msg_id SendOverClaudeSocket generated, set only on
 	// a successful socket send.
 	socketMsgID string
-	// targetBusyAtSend reports that the target was mid-turn when the socket
-	// write happened (socket transport only). Set from a status probe taken
-	// immediately before the write; a failed probe sets it too, since
-	// "unknown" has to count as busy here (maintainer review of #2100).
+	// targetBusyAtSend reports that the target was CONFIRMED mid-turn when
+	// the socket write happened (socket transport only), from a status probe
+	// taken immediately before the write.
 	targetBusyAtSend bool
+	// busyProbeFailed reports that the same probe could read no status at
+	// all, so busyness is unknown. Kept separate from targetBusyAtSend:
+	// both make --wait decline to wait, but only one of them is a fact about
+	// the target (round-2 review of #2100).
+	busyProbeFailed bool
 }
 
 // jsonFields returns the delivery-status fields added to `session send`
@@ -3233,10 +3276,14 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 		// flip this today. The field exists so a caller can distinguish
 		// "written, unconfirmed" from a future receipt path that confirms.
 		fields["acknowledged"] = false
+		// Each surfaced only when true: absence is the common case and
+		// carries no information. They are mutually exclusive — a probe
+		// that failed established nothing about the target.
 		if r.targetBusyAtSend {
-			// Only surfaced when true: its absence is the common case and
-			// carries no information.
 			fields["target_busy_at_send"] = true
+		}
+		if r.busyProbeFailed {
+			fields["busy_probe_failed"] = true
 		}
 	}
 	if ms := r.held.Milliseconds(); ms > 0 {
