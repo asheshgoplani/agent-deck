@@ -90,6 +90,7 @@ anything — they can fail silently without affecting merges.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `weekly-regression.yml` | Sunday 00:00 UTC cron, or `workflow_dispatch` | Runs the Playwright visual-regression suite (`tests/e2e/pw-visual-regression.config.ts`) and Lighthouse CI (`.lighthouserc.json`) against a freshly built `agent-deck web` server. On failure, opens or appends to a single `Weekly regression check: … [date]` issue labelled `regression,automated` (idempotent — no duplicate issues on back-to-back failures). **Alert-only** — does not block any PR. |
+| `needs-info-nudge.yml` | Daily 06:00 UTC cron, or `workflow_dispatch` | Day-10 step of the intake silence ladder (#2132). For each open PR labelled `needs-info` (and not `keep-open`) whose last activity (PR update, last commit, last author comment) is older than 10 days, posts one gentle reminder comment linking `.github/INTAKE.md`. Idempotent via the `<!-- needs-info-nudge -->` marker. **Comment-only**: no label changes, no closing. |
 
 > **Note on the v1.7.70 fix:** the bubbletea cancel-reader failure that broke
 > `agent-deck web` on headless CI (`error creating cancelreader: bubbletea:
