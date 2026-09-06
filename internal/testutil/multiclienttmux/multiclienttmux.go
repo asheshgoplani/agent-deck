@@ -11,8 +11,9 @@
 // Usage:
 //
 //	h := multiclienttmux.New(t, "myscratch")
-//	h.AddClient(88, 71)
+//	h.AddClient(88, 62)
 //	h.AddClient(189, 62)
+//	h.ResizeClient(0, 88, 71)
 //	w, hgt, _ := h.WindowSize() // expect 88x61 (smallest, minus status row)
 package multiclienttmux
 
@@ -82,7 +83,7 @@ func New(t *testing.T, sessionName string) *Harness {
 		"set-option", "-t", sessionName, "window-size", "smallest", ";",
 		"set-window-option", "-t", sessionName, "aggressive-resize", "on",
 	).CombinedOutput(); err != nil {
-		t.Fatalf("multiclienttmux: set size policy: %v\n%s", err, out)
+		t.Fatalf("multiclienttmux: set window-size/aggressive-resize: %v\n%s", err, out)
 	}
 
 	h := &Harness{
