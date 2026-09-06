@@ -41,15 +41,19 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 		return "ran:" + strings.Join(args, " "), "", 0
 	}
 	// The probe is what the change feed compares; here it is the same
-	// listing the request path returns, so the two stay in step.
+	// listing the request path returns, so the two stay in step. It is
+	// wrapped in the shapes a real listing has (an array, an object) since
+	// anything else counts as a failed probe and is pushed bare.
 	probe := func() (string, string, error) {
 		l, _, _ := run(context.Background(), []string{"list", "--json"})
 		g, _, _ := run(context.Background(), []string{"group", "list", "--json"})
-		return l, g, nil
+		lb, _ := json.Marshal([]string{l})
+		gb, _ := json.Marshal(map[string]string{"groups": g})
+		return string(lb), string(gb), nil
 	}
 	done := make(chan struct{})
 	go func() {
-		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond, nil, 0)
+		serveRemoteAgent(context.Background(), inR, outW, remoteAgentConfig{Run: run, Probe: probe, WatchPath: db, WatchEvery: 20 * time.Millisecond, ProbeQuiet: 30 * time.Millisecond})
 		_ = outW.Close()
 		close(done)
 	}()
@@ -138,11 +142,11 @@ func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
 			return "", "", errors.New("storage gone")
 		}
 		time.Sleep(5 * time.Millisecond)
-		return "[" + string(content) + "]", "{}", nil
+		return "[\"" + string(content) + "\"]", "{}", nil
 	}
 	done := make(chan struct{})
 	go func() {
-		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond, nil, 0)
+		serveRemoteAgent(context.Background(), inR, outW, remoteAgentConfig{Run: run, Probe: probe, WatchPath: db, WatchEvery: 20 * time.Millisecond, ProbeQuiet: 30 * time.Millisecond})
 		_ = outW.Close()
 		close(done)
 	}()
@@ -179,7 +183,7 @@ func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := next()
-	if r.Event != "changed" || r.Sessions != "[v2-longer]" || r.Groups != "{}" {
+	if r.Event != "changed" || r.Sessions != `["v2-longer"]` || r.Groups != "{}" {
 		t.Fatalf("expected a changed event with listings, got %+v", r)
 	}
 	if r.ProbeMS < 5 {
@@ -232,7 +236,7 @@ func TestRemoteAgent_WatchPushesPaneOnChange(t *testing.T) {
 	run := func(ctx context.Context, args []string) (string, string, int) { return "", "", 0 }
 	done := make(chan struct{})
 	go func() {
-		serveRemoteAgent(context.Background(), inR, outW, run, nil, "", 0, capture, 10*time.Millisecond)
+		serveRemoteAgent(context.Background(), inR, outW, remoteAgentConfig{Run: run, Capture: capture, PaneEvery: 10 * time.Millisecond})
 		_ = outW.Close()
 		close(done)
 	}()
@@ -361,7 +365,7 @@ func TestRemoteAgent_WatchRefusedWithoutCapture(t *testing.T) {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	go func() {
-		serveRemoteAgent(context.Background(), inR, outW, func(context.Context, []string) (string, string, int) { return "", "", 0 }, nil, "", 0, nil, 0)
+		serveRemoteAgent(context.Background(), inR, outW, remoteAgentConfig{Run: func(context.Context, []string) (string, string, int) { return "", "", 0 }})
 		_ = outW.Close()
 	}()
 	sc := bufio.NewScanner(outR)

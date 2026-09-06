@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // The in-process probe must produce exactly what `list --json` and `group
@@ -48,9 +51,27 @@ func TestRemoteAgent_InProcessProbeMatchesCLI(t *testing.T) {
 		t.Fatalf("newRemoteAgentProbe: %v", err)
 	}
 	defer closeProbe()
+	// The probe is read-only: it relies on no global state DB being
+	// registered in the agent process, and it must leave the stamp the
+	// watcher compares untouched (finding 2: a probe that moved the stamp
+	// would trigger itself).
+	if statedb.GetGlobal() != nil {
+		t.Fatal("the agent process must not register a global state DB")
+	}
+	dbPath, err := session.GetDBPathForProfile("ch_support_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stampBefore := remoteAgentStamp(dbPath)
 	gotList, gotGroups, err := probe()
 	if err != nil {
 		t.Fatalf("probe: %v", err)
+	}
+	if _, _, err := probe(); err != nil {
+		t.Fatalf("second probe: %v", err)
+	}
+	if got := remoteAgentStamp(dbPath); got != stampBefore {
+		t.Fatalf("a probe must not write to the state DB: stamp %q -> %q", stampBefore, got)
 	}
 	if gotList != wantList {
 		t.Errorf("probe list differs from `list --json`:\n--- probe\n%s\n--- cli\n%s", gotList, wantList)
