@@ -96,7 +96,12 @@ func isBareSlashCommand(message string) bool {
 //     (plan §4: remote/cross-machine sessions are out of scope); resolving a
 //     local ~/.claude record for a remote instance's claudeSessionID would
 //     be a coincidental collision at best, not the target the operator means.
-//  2. An explicit send_transport = "tmux" pin always wins, no exceptions.
+//  2. Anything but a literal send_transport = "auto" takes tmux. The socket
+//     is opt-in (maintainer review of #2100), so an explicit "tmux" pin, an
+//     absent key and an unrecognized value all land on the historical
+//     keystroke path; sendTransportFromConfig has already normalized and
+//     warned, and this check is the same rule restated at the decision
+//     boundary so a future caller cannot opt a user in by accident.
 //  3. Non-Claude-compatible tools have no Claude messaging socket at all.
 //  4. A bare slash command (e.g. "/compact") arrives over the socket as
 //     literal text (skipSlashCommands=true is baked into the receiver —
@@ -111,7 +116,7 @@ func chooseSendTransport(in transportInputs) (sendTransport, send.UnavailableRea
 	if in.isSSH {
 		return transportTmux, reasonRemoteSession, send.ClaudeSocketTarget{}
 	}
-	if in.configValue == "tmux" {
+	if in.configValue != "auto" {
 		return transportTmux, reasonConfigPinnedTmux, send.ClaudeSocketTarget{}
 	}
 	if !session.IsClaudeCompatible(in.tool) {
@@ -165,24 +170,30 @@ func resolveClaudeSocketTargetForSession(sessionID string) (send.ClaudeSocketTar
 var loadUserConfigForSend = session.LoadUserConfig
 
 // sendTransportFromConfig resolves the send_transport config value for one
-// `session send` call. session.LoadUserConfig's own contract: a malformed
-// config.toml returns a default config PLUS a non-nil error (it caches the
-// default and the error together precisely so every call sees the failure,
-// not just the first one after the file changes). Silently falling through
-// to "auto" on that error would mean a user who pinned
-// send_transport = "tmux" and later made an unrelated typo elsewhere in the
-// file would silently get the socket transport instead of the pin they set.
-// Conservative on error: report "tmux" and a one-line warning for the
-// caller to print — unconditionally, matching how the existing
-// draftRestoreFailed warning in handleSessionSend is not gated by -q/--json
-// either.
+// `session send` call. Every uncertain case resolves to "tmux": the socket
+// transport is opt-in, so only a literal send_transport = "auto" selects it
+// (maintainer review of #2100 — an empty or unreadable config used to select
+// the socket, which is not opt-in).
+//
+// session.LoadUserConfig's own contract: a malformed config.toml returns a
+// default config PLUS a non-nil error (it caches the default and the error
+// together precisely so every call sees the failure, not just the first one
+// after the file changes), so a load error can hide a pin either way and
+// reports a one-line warning for the caller to print — unconditionally,
+// matching how the existing draftRestoreFailed warning in handleSessionSend
+// is not gated by -q/--json either. A non-empty value that is neither "auto"
+// nor "tmux" is a typo, not an intent, and gets its own warning naming the
+// value so it does not fail silently.
 func sendTransportFromConfig() (value string, warn string) {
 	cfg, err := loadUserConfigForSend()
 	if err != nil {
 		return "tmux", fmt.Sprintf("Warning: could not load config.toml (%v); using the tmux transport for this send", err)
 	}
 	if cfg == nil {
-		return "auto", ""
+		return "tmux", ""
+	}
+	if raw := cfg.SendTransport; raw != "" && raw != "auto" && raw != "tmux" {
+		return "tmux", fmt.Sprintf("Warning: unknown send_transport %q in config.toml; using the tmux transport for this send", raw)
 	}
 	return cfg.GetSendTransport(), ""
 }
