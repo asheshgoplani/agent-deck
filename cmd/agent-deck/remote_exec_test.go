@@ -105,6 +105,7 @@ func TestRemoteCommandParity(t *testing.T) {
 		{"session", "fork", "missing", "--json"},
 		{"worktree", "info", "missing", "--json"}, {"mcp", "list", "--json"}, {"mcp", "attach", "missing", "none", "--json"},
 		{"skill", "list", "--json"}, {"skill", "attach", "missing", "none"},
+		{"group", "list", "--json"}, {"group", "reorder", "missing", "--up", "--json"},
 	} {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
 			local, localErr, localCode := run(remote, "", args...)
@@ -132,7 +133,7 @@ func TestRemoteCommandParity(t *testing.T) {
 	if out, _, _ := run(controller, "", "list", "--json"); strings.Contains(out, title) {
 		t.Fatalf("remote add wrote controller registry: %s", out)
 	}
-	for _, args := range [][]string{{"version"}, {"session", "remove", title}, {"remote", "list"}, {"--help"}} {
+	for _, args := range [][]string{{"version"}, {"session", "remove", title}, {"remote", "list"}, {"--help"}, {"group", "delete", "work"}} {
 		sentinel := filepath.Join(remote, "unsupported-ssh-called")
 		write(filepath.Join(shim, "sentinel"), "#!/bin/sh\nprintf called > '"+sentinel+"'\n", 0700)
 		write(filepath.Join(controller, ".config", "agent-deck", "config.toml"), fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = '%s'\n", filepath.Join(shim, "sentinel")), 0600)

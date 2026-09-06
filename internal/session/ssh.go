@@ -752,7 +752,11 @@ type groupListEntryJSON struct {
 // buckets (which can only ever contain groups that currently hold sessions),
 // the remote's group list includes EMPTY groups, so the local move dialog (M
 // key on a remote session) can still offer a folder after every session has
-// been moved out of it. Paths are normalized, deduped and sorted.
+// been moved out of it. Paths are normalized and deduped, and they keep the
+// order the remote listed them in: that listing is the remote's own group
+// order (siblings by their persisted Order, a parent before its children),
+// which is what the TUI renders remote group headers in and what
+// ReorderGroup changes.
 //
 // Returns nil with no error when the remote returns empty output (older
 // agent-deck builds that predate the JSON shape); callers fall back to the
@@ -777,7 +781,8 @@ func (r *SSHRunner) FetchGroupPaths(ctx context.Context) ([]string, error) {
 }
 
 // parseGroupListPaths flattens the recursive group tree from `group list
-// --json` into normalized, deduped, sorted group paths. Extracted as a pure
+// --json` into normalized, deduped group paths in the remote's own order (a
+// pre-order walk: parent, then its children as listed). Extracted as a pure
 // function so the parsing is unit-testable without an SSH round-trip.
 func parseGroupListPaths(parsed groupListJSON) []string {
 	seen := make(map[string]bool)
@@ -794,8 +799,59 @@ func parseGroupListPaths(parsed groupListJSON) []string {
 		}
 	}
 	walk(parsed.Groups)
-	sort.Strings(paths)
 	return paths
+}
+
+// remoteGroupReorderArgs builds the argv for moving one remote group among
+// its siblings: `group reorder <path> --up|--down --json`. delta < 0 moves
+// up, anything else moves down. The full path is passed, which the remote
+// resolves exactly, so two groups sharing a leaf name in different parents
+// cannot be confused.
+func remoteGroupReorderArgs(groupPath string, delta int) []string {
+	direction := "--down"
+	if delta < 0 {
+		direction = "--up"
+	}
+	return []string{"group", "reorder", groupPath, direction, "--json"}
+}
+
+// groupReorderResultJSON is the payload of `group reorder --json`.
+type groupReorderResultJSON struct {
+	FromPosition int `json:"from_position"`
+	ToPosition   int `json:"to_position"`
+}
+
+// ReorderGroup moves one group of the remote up (delta < 0) or down among its
+// siblings by running `agent-deck group reorder` there, the same command the
+// remote's own TUI runs for shift+up/down on a group header. The order is
+// persisted in the remote's state DB, so every viewer of that remote sees it.
+//
+// The returned bool reports whether the remote actually changed the position:
+// the remote refuses silently when the group is already at the edge of its
+// siblings, and the caller must not announce a move that did not happen. An
+// older remote whose reorder prints no JSON is treated as moved, since it
+// exited 0.
+func (r *SSHRunner) ReorderGroup(ctx context.Context, groupPath string, delta int) (bool, error) {
+	output, err := r.Run(ctx, remoteGroupReorderArgs(groupPath, delta)...)
+	if err != nil {
+		return false, err
+	}
+	return parseGroupReorderMoved(output), nil
+}
+
+// parseGroupReorderMoved reads the from/to positions out of a `group reorder
+// --json` payload. Output that is not JSON reports true: the command exited 0
+// and nothing says the group stayed put.
+func parseGroupReorderMoved(output []byte) bool {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return true
+	}
+	var parsed groupReorderResultJSON
+	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+		return true
+	}
+	return parsed.FromPosition != parsed.ToPosition
 }
 
 // FetchCostSummary retrieves the remote agent-deck's cost summary as JSON.

@@ -36,6 +36,18 @@ func buildRemoteFlatItems(remoteName string, sessions []session.RemoteSessionInf
 // session IDs (i.e. remoteOrder.forRemote(remoteName)) and may be nil, in
 // which case each bucket keeps the order the remote listed.
 func buildRemoteFlatItemsOrdered(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string) []session.Item {
+	return buildRemoteFlatItemsWithGroups(remoteName, sessions, collapsed, order, nil)
+}
+
+// buildRemoteFlatItemsWithGroups is buildRemoteFlatItemsOrdered with the
+// remote's OWN group order applied to the group headers. groupPaths is the
+// remote's group list as `group list --json` returned it (see
+// SSHRunner.FetchGroupPaths): siblings in the remote's persisted order, a
+// parent before its children. It may be nil or incomplete, in which case the
+// groups it does not mention keep their lexicographic order, so a remote too
+// old to report the list, or a group seen only on a session, renders exactly
+// as before.
+func buildRemoteFlatItemsWithGroups(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string, groupPaths []string) []session.Item {
 	items := make([]session.Item, 0, len(sessions)+2)
 
 	remoteRoot := "remotes/" + remoteName
@@ -61,18 +73,19 @@ func buildRemoteFlatItemsOrdered(remoteName string, sessions []session.RemoteSes
 		buckets[g] = append(buckets[g], i)
 	}
 
-	// Sort group paths lexicographically. Lexicographic order places a parent
-	// path directly before all of its descendants ("a" < "a/b" < "a/c" < "b"),
-	// which lets us emit intermediate headers with a simple prefix walk.
-	groupPaths := make([]string, 0, len(buckets))
+	// Sort group paths so that a parent path lands directly before all of its
+	// descendants ("a" < "a/b" < "a/c" < "b"), which lets us emit intermediate
+	// headers with a simple prefix walk. Siblings follow the remote's own
+	// group order where it is known and their names otherwise.
+	bucketPaths := make([]string, 0, len(buckets))
 	for g := range buckets {
-		groupPaths = append(groupPaths, g)
+		bucketPaths = append(bucketPaths, g)
 	}
-	sort.Strings(groupPaths)
+	sortRemoteGroupPaths(bucketPaths, remoteGroupRank(groupPaths))
 
 	emitted := make(map[string]bool) // group paths whose header we already wrote
 
-	for _, gp := range groupPaths {
+	for _, gp := range bucketPaths {
 		// Emit a header for every not-yet-emitted prefix of this group path so
 		// nested "a/b/c" gets headers for "a", "a/b", "a/b/c" in order.
 		segments := strings.Split(gp, "/")
@@ -111,8 +124,7 @@ func buildRemoteFlatItemsOrdered(remoteName string, sessions []session.RemoteSes
 
 		// Sessions sit one level below their owning group header.
 		sessionLevel := len(segments) + 1
-		// #1875: the user's manual order for this bucket, if any. Group
-		// headers keep their lexicographic order; only sessions move.
+		// #1875: the user's manual order for this bucket, if any.
 		idxs := orderRemoteBucket(sessions, buckets[gp], order[gp])
 		for j, idx := range idxs {
 			items = append(items, session.Item{
@@ -127,6 +139,64 @@ func buildRemoteFlatItemsOrdered(remoteName string, sessions []session.RemoteSes
 	}
 
 	return items
+}
+
+// remoteGroupRank maps each remote group path to its index in the remote's
+// own listing. A nil or empty listing yields an empty map, and every path
+// then falls back to name order in sortRemoteGroupPaths.
+func remoteGroupRank(groupPaths []string) map[string]int {
+	rank := make(map[string]int, len(groupPaths))
+	for i, p := range groupPaths {
+		p = normalizeRemoteGroupPath(p)
+		if _, seen := rank[p]; !seen {
+			rank[p] = i
+		}
+	}
+	return rank
+}
+
+// sortRemoteGroupPaths orders group paths for the header walk in
+// buildRemoteFlatItemsWithGroups: a parent always precedes its descendants,
+// and two paths that part ways at some segment are ordered by the remote's
+// rank of the prefixes ending in that segment. Prefixes the remote did not
+// rank compare by name, and a ranked prefix precedes an unranked one, which
+// mirrors how the remote's own list puts persisted groups before anything
+// that exists only as a session's Group string.
+func sortRemoteGroupPaths(paths []string, rank map[string]int) {
+	sort.SliceStable(paths, func(i, j int) bool {
+		return remoteGroupPathLess(paths[i], paths[j], rank)
+	})
+}
+
+func remoteGroupPathLess(a, b string, rank map[string]int) bool {
+	sa := strings.Split(a, "/")
+	sb := strings.Split(b, "/")
+	prefixA, prefixB := "", ""
+	for k := 0; k < len(sa) && k < len(sb); k++ {
+		prefixA = joinGroupSegment(prefixA, sa[k])
+		prefixB = joinGroupSegment(prefixB, sb[k])
+		if sa[k] == sb[k] {
+			continue
+		}
+		ra, okA := rank[prefixA]
+		rb, okB := rank[prefixB]
+		switch {
+		case okA && okB:
+			return ra < rb
+		case okA != okB:
+			return okA
+		default:
+			return sa[k] < sb[k]
+		}
+	}
+	return len(sa) < len(sb) // the shorter path is the ancestor
+}
+
+func joinGroupSegment(prefix, seg string) string {
+	if prefix == "" {
+		return seg
+	}
+	return prefix + "/" + seg
 }
 
 // normalizeRemoteGroupPath maps an empty remote group to the default group

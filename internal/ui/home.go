@@ -630,7 +630,7 @@ type Home struct {
 	// fleet poll). Unlike session-derived buckets it includes EMPTY groups,
 	// so the M move dialog can still offer a remote folder after every
 	// session has been moved out of it. Guarded by remoteSessionsMu.
-	remoteGroups       map[string][]string  // remoteName -> sorted group paths (incl. empty groups)
+	remoteGroups       map[string][]string  // remoteName -> group paths in the remote's own order (incl. empty groups)
 	remoteFromCache    map[string]bool      // remoteName -> data is a startup cache snapshot, not live yet
 	remoteFetchedAt    map[string]time.Time // remoteName -> when its sessions last came from a live fetch
 	remoteSessionsMu   sync.RWMutex
@@ -1392,6 +1392,18 @@ type remoteMoveResultMsg struct {
 type remoteGroupResultMsg struct {
 	remoteName string
 	groupPath  string
+	err        error
+}
+
+// remoteGroupReorderResultMsg reports the outcome of an SSH-routed group
+// reorder (shift+up/down on a remote group header → `group reorder` on the
+// remote). delta is -1 for up and +1 for down; moved is the remote's own
+// verdict, false when the group was already at the edge of its siblings.
+type remoteGroupReorderResultMsg struct {
+	remoteName string
+	groupPath  string
+	delta      int
+	moved      bool
 	err        error
 }
 
@@ -2761,6 +2773,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	h.remoteSessionsMu.RLock()
 	remoteNames := make([]string, 0, len(h.remoteSessions))
 	remotes := make(map[string][]session.RemoteSessionInfo, len(h.remoteSessions))
+	remoteGroupLists := make(map[string][]string, len(h.remoteGroups))
 	for name, sessions := range h.remoteSessions {
 		// Partition remote rows the way local ones were above: the active
 		// view hides remote sessions the remote reports archived, and the ^
@@ -2777,6 +2790,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		}
 		remoteNames = append(remoteNames, name)
 		remotes[name] = partitioned
+		remoteGroupLists[name] = append([]string(nil), h.remoteGroups[name]...)
 	}
 	h.remoteSessionsMu.RUnlock()
 	sort.Strings(remoteNames)
@@ -2947,8 +2961,9 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			// describe the surviving sessions.
 			// #1553: nest each remote's sessions under their Group paths
 			// instead of dumping them flat at Level 1.
-			// #1875: apply the user's manual row order for this remote.
-			h.flatItems = append(h.flatItems, buildRemoteFlatItemsOrdered(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName))...)
+			// #1875: apply the user's manual row order for this remote, and
+			// the remote's own group order to the group headers.
+			h.flatItems = append(h.flatItems, buildRemoteFlatItemsWithGroups(remoteName, sessions, h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName), remoteGroupLists[remoteName])...)
 		}
 	}
 
@@ -6911,11 +6926,38 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if !seen {
+			// Appended, not sorted: the list is in the remote's own group
+			// order, and a new group joins the end of it there too.
 			h.remoteGroups[msg.remoteName] = append(h.remoteGroups[msg.remoteName], msg.groupPath)
-			sort.Strings(h.remoteGroups[msg.remoteName])
 		}
 		h.remoteSessionsMu.Unlock()
 		h.setError(fmt.Errorf("created group '%s' on %s", msg.groupPath, msg.remoteName))
+		return h, nil
+
+	case remoteGroupReorderResultMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+			return h, nil
+		}
+		direction := "up"
+		if msg.delta > 0 {
+			direction = "down"
+		}
+		if !msg.moved {
+			h.setError(fmt.Errorf("'%s' did not move %s on %s: it is already at the edge of its siblings there", msg.groupPath, direction, msg.remoteName))
+			return h, nil
+		}
+		// Remote confirmed and persisted the new order; patch the cached
+		// group list the same way so the header moves now, before the next
+		// fleet poll re-reads the truth from `group list`.
+		h.remoteSessionsMu.Lock()
+		if h.remoteGroups == nil {
+			h.remoteGroups = make(map[string][]string)
+		}
+		h.remoteGroups[msg.remoteName] = swapRemoteGroupSibling(h.remoteGroups[msg.remoteName], msg.groupPath, msg.delta)
+		h.remoteSessionsMu.Unlock()
+		h.clearError()
+		h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 		return h, nil
 
 	case reviverTickMsg:
@@ -9560,8 +9602,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// carry a local order overlay instead. Returning here also
 				// skips the forceSaveInstances below, which has nothing to do
 				// with a remote reorder.
-				h.moveRemoteItem(item, -1)
-				return h, nil
+				return h, h.moveRemoteItem(item, -1)
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupUp(item.Path)
 				h.rebuildFlatItems()
@@ -9597,8 +9638,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch item.Type {
 			case session.ItemTypeRemoteSession, session.ItemTypeRemoteGroup:
 				// #1875 — see the shift+up twin above.
-				h.moveRemoteItem(item, 1)
-				return h, nil
+				return h, h.moveRemoteItem(item, 1)
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupDown(item.Path)
 				h.rebuildFlatItems()
@@ -15033,15 +15073,11 @@ func (a attachWindowCmd) SetStderr(w io.Writer) {}
 // being fixed — a remote row that swallows the keystroke is indistinguishable
 // from a stuck key.
 //
-// Remote GROUP headers deliberately do not reorder. buildRemoteFlatItems emits
-// them by walking the bucket paths in lexicographic order, which is what makes
-// a parent header land immediately before its descendants and lets the
-// intermediate headers of "a/b/c" be synthesized on the fly; a manual group
-// order would have to replace that walk with a real tree. Remote groups also
-// have no identity of their own — they exist only as the Group strings of the
-// sessions inside them, so a group with no sessions cannot even be addressed.
-// The header therefore says so instead of going quiet.
-func (h *Home) moveRemoteItem(item session.Item, delta int) {
+// Remote GROUP headers are different: their order lives in the remote's own
+// state DB, so the move is forwarded as `group reorder` and the header only
+// moves once the remote confirms (see reorderRemoteGroup); the returned
+// command carries that round trip. Session moves return nil.
+func (h *Home) moveRemoteItem(item session.Item, delta int) tea.Cmd {
 	direction := "up"
 	edge := "first"
 	if delta > 0 {
@@ -15050,17 +15086,16 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	}
 
 	if item.Type == session.ItemTypeRemoteGroup {
-		h.setError(fmt.Errorf("cannot move %s: remote group rows are ordered by name — reorder the sessions inside instead", direction))
-		return
+		return h.reorderRemoteGroup(item, delta)
 	}
 	if item.RemoteSession == nil || item.RemoteName == "" {
 		h.setError(fmt.Errorf("cannot move %s: this remote session row is malformed", direction))
-		return
+		return nil
 	}
 	moved := item.RemoteSession
 	if moved.ID == "" {
 		h.setError(fmt.Errorf("cannot move '%s' %s: %s did not report an id for it", moved.Title, direction, item.RemoteName))
-		return
+		return nil
 	}
 
 	// The bucket is the one buildRemoteFlatItems put this row in: same remote,
@@ -15083,7 +15118,7 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	for _, id := range natural {
 		if id == "" {
 			h.setError(fmt.Errorf("cannot move '%s' %s: %s lists a session without an id in this group, so its order cannot be tracked", moved.Title, direction, item.RemoteName))
-			return
+			return nil
 		}
 	}
 
@@ -15095,7 +15130,7 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	// answering to the same ID cannot be told apart. Report it instead.
 	if dup, ok := firstDuplicateID(natural); ok {
 		h.setError(fmt.Errorf("cannot move '%s' %s: %s lists more than one session with id %q in this group, so their order cannot be tracked", moved.Title, direction, item.RemoteName, dup))
-		return
+		return nil
 	}
 
 	// Start from what is actually on screen — the fetched list with the
@@ -15111,13 +15146,13 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	}
 	if pos < 0 {
 		h.setError(fmt.Errorf("cannot move '%s' %s: it is no longer listed on %s", moved.Title, direction, item.RemoteName))
-		return
+		return nil
 	}
 
 	target := pos + delta
 	if target < 0 || target >= len(current) {
 		h.setError(fmt.Errorf("'%s' is already %s in its group on %s", moved.Title, edge, item.RemoteName))
-		return
+		return nil
 	}
 	current[pos], current[target] = current[target], current[pos]
 
@@ -15137,6 +15172,131 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	if err := h.saveUIStateErr(); err != nil {
 		h.setError(fmt.Errorf("moved '%s' %s, but the order could not be saved and will not survive a restart: %w", moved.Title, direction, err))
 	}
+	return nil
+}
+
+// reorderRemoteGroup forwards shift+up/down on a remote group header to the
+// remote as `group reorder <path> --up|--down`, the same command the remote's
+// own TUI runs for the same keystroke, so the order is persisted in the
+// remote's state DB and every viewer of that remote sees it. The level-0 host
+// header is not a remote group: remotes are listed in config order.
+//
+// The edge check runs locally first, against the sibling headers actually on
+// screen, so a group that is already first or last gets an immediate answer
+// without an SSH round trip. The remote's own verdict still decides the rest
+// (see remoteGroupReorderResultMsg).
+func (h *Home) reorderRemoteGroup(item session.Item, delta int) tea.Cmd {
+	direction := "up"
+	edge := "first"
+	if delta > 0 {
+		direction = "down"
+		edge = "last"
+	}
+	groupPath := remoteGroupPathFromItem(item)
+	if groupPath == "" || item.RemoteName == "" {
+		h.setError(fmt.Errorf("cannot move %s: remote hosts are listed in the order of [remotes] in config.toml", direction))
+		return nil
+	}
+
+	siblings := h.visibleRemoteGroupSiblings(item.RemoteName, groupPath)
+	pos := -1
+	for i, p := range siblings {
+		if p == groupPath {
+			pos = i
+			break
+		}
+	}
+	target := pos + delta
+	if pos >= 0 && (target < 0 || target >= len(siblings)) {
+		h.setError(fmt.Errorf("'%s' is already %s among its siblings on %s", groupPath, edge, item.RemoteName))
+		return nil
+	}
+
+	remoteName := item.RemoteName
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta,
+				err: fmt.Errorf("cannot move '%s' %s: failed to load remotes config: %v", groupPath, direction, err)}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta,
+				err: fmt.Errorf("cannot move '%s' %s: remote '%s' is not configured", groupPath, direction, remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		moved, err := runner.ReorderGroup(ctx, groupPath, delta)
+		if err != nil {
+			return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta,
+				err: fmt.Errorf("failed to move '%s' %s on %s: %v", groupPath, direction, remoteName, err)}
+		}
+		return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta, moved: moved}
+	}
+}
+
+// visibleRemoteGroupSiblings lists the group headers currently on screen for
+// one remote that share groupPath's parent, in screen order.
+func (h *Home) visibleRemoteGroupSiblings(remoteName, groupPath string) []string {
+	parent := ""
+	if i := strings.LastIndex(groupPath, "/"); i >= 0 {
+		parent = groupPath[:i]
+	}
+	var siblings []string
+	for _, it := range h.flatItems {
+		if it.Type != session.ItemTypeRemoteGroup || it.RemoteName != remoteName {
+			continue
+		}
+		p := remoteGroupPathFromItem(it)
+		if p == "" {
+			continue
+		}
+		pp := ""
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			pp = p[:i]
+		}
+		if pp == parent {
+			siblings = append(siblings, p)
+		}
+	}
+	return siblings
+}
+
+// swapRemoteGroupSibling returns paths with groupPath exchanged against its
+// nearest sibling (same parent) in the given direction, mirroring what
+// GroupTree.MoveGroupUp/Down did on the remote. A path that is missing or has
+// no sibling in that direction leaves the list unchanged.
+func swapRemoteGroupSibling(paths []string, groupPath string, delta int) []string {
+	out := append([]string(nil), paths...)
+	parentOf := func(p string) string {
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			return p[:i]
+		}
+		return ""
+	}
+	pos := -1
+	for i, p := range out {
+		if p == groupPath {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		return out
+	}
+	parent := parentOf(groupPath)
+	step := 1
+	if delta < 0 {
+		step = -1
+	}
+	for j := pos + step; j >= 0 && j < len(out); j += step {
+		if parentOf(out[j]) == parent {
+			out[pos], out[j] = out[j], out[pos]
+			return out
+		}
+	}
+	return out
 }
 
 // attachRemoteSession attaches to a remote session via SSH, suspending the TUI.
