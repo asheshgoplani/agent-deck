@@ -36,8 +36,11 @@ func TestSendDeliveryResult_JSONFields_QueuedSocket(t *testing.T) {
 	if fields["delivery"] != deliveryQueuedSocket {
 		t.Errorf("delivery = %v, want %q", fields["delivery"], deliveryQueuedSocket)
 	}
-	if fields["submitted"] != true {
-		t.Errorf("submitted = %v, want true (a socket enqueue is a stronger signal than any pane heuristic)", fields["submitted"])
+	if fields["submitted"] != false {
+		t.Errorf("submitted = %v, want false (a socket write is not evidence the inbox accepted the message)", fields["submitted"])
+	}
+	if fields["acknowledged"] != false {
+		t.Errorf("acknowledged = %v, want false (Claude's inbox never confirms delivery)", fields["acknowledged"])
 	}
 	if fields["transport"] != "socket" {
 		t.Errorf("transport = %v, want %q", fields["transport"], "socket")
@@ -59,6 +62,9 @@ func TestSendDeliveryResult_JSONFields_SocketWriteFailed(t *testing.T) {
 	if fields["submitted"] != false {
 		t.Errorf("submitted = %v, want false", fields["submitted"])
 	}
+	if fields["acknowledged"] != false {
+		t.Errorf("acknowledged = %v, want false", fields["acknowledged"])
+	}
 	if fields["transport"] != "socket" {
 		t.Errorf("transport = %v, want %q", fields["transport"], "socket")
 	}
@@ -70,6 +76,12 @@ func TestSendDeliveryResult_JSONFields_SocketWriteFailed(t *testing.T) {
 func TestSendDeliveryResult_JSONFields_TmuxFallback_HasReason(t *testing.T) {
 	r := sendDeliveryResult{delivery: deliverySubmitted, transport: "tmux", fallbackReason: send.ReasonDeadPid}
 	fields := r.jsonFields()
+	if fields["submitted"] != true {
+		t.Errorf("submitted = %v, want true (tmux submit verification is positive evidence)", fields["submitted"])
+	}
+	if _, present := fields["acknowledged"]; present {
+		t.Errorf("acknowledged is a socket-only field, got %v on tmux", fields["acknowledged"])
+	}
 	if fields["transport"] != "tmux" {
 		t.Errorf("transport = %v, want %q", fields["transport"], "tmux")
 	}

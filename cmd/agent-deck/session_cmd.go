@@ -3237,6 +3237,12 @@ func handleSessionSend(profile string, args []string) {
 			if sendRes.delivery == deliveryQueued {
 				summary = fmt.Sprintf("Queued message for '%s' (target is mid-turn; it takes the message up when the current turn ends)", inst.Title)
 			}
+			// The socket path cannot claim delivery the way tmux's submit
+			// verification can: the write completed, and Claude's inbox says
+			// nothing back (maintainer review of #2100).
+			if sendRes.transport == "socket" {
+				summary = fmt.Sprintf("Wrote message to '%s' inbox (unacknowledged: Claude's inbox never confirms delivery)", inst.Title)
+			}
 			out.Success(summary, sendData)
 		}
 	}
@@ -3630,9 +3636,11 @@ const (
 	deliveryQueued = "queued"
 	// deliveryQueuedSocket: the message was written to the target's Claude Code
 	// messaging socket after the endpoint's identity was verified (issue
-	// #2089). Claude's inbox sends no in-band ack (verified against 2.1.259),
-	// so this means "accepted for the target's next turn boundary", not
-	// "consumed".
+	// #2089). Claude's inbox sends no in-band ack or refusal (verified
+	// against 2.1.259) and it can drop or hold what it received, so this
+	// means only "the bytes were written" — reported as `submitted: false,
+	// acknowledged: false` (maintainer review of #2100). It is not the
+	// positive-acceptance claim deliverySubmitted makes for tmux.
 	deliveryQueuedSocket = "queued_socket"
 	// deliverySocketWriteFailed: the write started and failed. The message may
 	// or may not have been queued, so it is NEVER retried on tmux.
@@ -4007,12 +4015,19 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 	if r.delivery != "" {
 		fields["delivery"] = r.delivery
 		// Explicit, machine-checkable: a caller must not have to know which
-		// delivery strings imply an accepted turn. deliverySubmitted (tmux)
-		// and deliveryQueuedSocket (#2089) both do; `typed` in particular
-		// means the bytes arrived and nothing confirmed the agent took them
-		// up (issue #1793). A socket enqueue is a stronger acceptance signal
-		// than any pane heuristic, so it counts as submitted too.
-		fields["submitted"] = r.delivery == deliverySubmitted || r.delivery == deliveryQueuedSocket
+		// delivery strings imply an accepted turn. Only deliverySubmitted
+		// does — it rests on positive evidence the agent took the message up.
+		// `typed` in particular means the bytes arrived and nothing confirmed
+		// that (issue #1793), and a socket write is in the same class: it
+		// proves the write completed, not that the inbox accepted it
+		// (maintainer review of #2100).
+		fields["submitted"] = r.delivery == deliverySubmitted
+	}
+	if r.transport == "socket" {
+		// Claude's inbox never confirms delivery in-band, so nothing can
+		// flip this today. The field exists so a caller can distinguish
+		// "written, unconfirmed" from a future receipt path that confirms.
+		fields["acknowledged"] = false
 	}
 	if ms := r.held.Milliseconds(); ms > 0 {
 		fields["held_for_composer_ms"] = ms
