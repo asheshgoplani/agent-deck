@@ -260,6 +260,19 @@ func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath stri
 	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingClaudeExtraArgs, c.pendingClaudeStartQuery, c.pendingClaudeAccount, c.pendingLaunchModelID, c.pendingParentSessionID, c.pendingParentProjectPath
 }
 
+// ShowCreateRemoteDirectory asks whether to create a directory the remote
+// reported missing (see session.IsRemotePathMissing) and retry the create
+// there with --create-dir. The pending dialog values stay on Home.
+func (c *ConfirmDialog) ShowCreateRemoteDirectory(remoteName, path string) {
+	c.visible = true
+	c.confirmType = ConfirmCreateDirectory
+	c.targetID = path
+	c.targetName = path
+	c.remoteName = remoteName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
 // Hide hides the dialog.
 func (c *ConfirmDialog) Hide() {
 	c.visible = false
@@ -477,6 +490,9 @@ func (c *ConfirmDialog) View() string {
 	case ConfirmCreateDirectory:
 		title = "📁  Directory Not Found"
 		warning = fmt.Sprintf("The path does not exist:\n\n  %s", c.targetName)
+		if c.remoteName != "" {
+			warning = fmt.Sprintf("The path does not exist on remote %s:\n\n  %s", c.remoteName, c.targetName)
+		}
 		details = "Create this directory and start the session?"
 		borderColor = ColorAccent
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,

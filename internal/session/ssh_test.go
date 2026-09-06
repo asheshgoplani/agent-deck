@@ -197,6 +197,11 @@ func TestRemoteAddArgs(t *testing.T) {
 			want: []string{"add", "--json", "-t", "fix", "-c", "codex", "/srv/project"},
 		},
 		{
+			name: "create a missing remote directory only after confirmation",
+			opts: RemoteAddOptions{Tool: "codex", Title: "fix", Path: "/srv/new", CreateDir: true},
+			want: []string{"add", "--json", "-t", "fix", "-c", "codex", "--create-dir", "/srv/new"},
+		},
+		{
 			name: "tool without title auto-names via --quick",
 			opts: RemoteAddOptions{Tool: "pi"},
 			want: []string{"add", "--json", "--quick", "-c", "pi"},
@@ -637,5 +642,19 @@ func TestParseGroupListPaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The remote `add` reports a missing project directory on stdout; the TUI
+// recognises that refusal to offer creating the directory, and nothing else.
+func TestIsRemotePathMissing(t *testing.T) {
+	if !IsRemotePathMissing(errors.New("ssh command failed: exit status 1: Error: path does not exist: /srv/new")) {
+		t.Fatal("missing-path refusal not recognised")
+	}
+	if IsRemotePathMissing(errors.New("ssh command failed: exit status 255: connection refused")) {
+		t.Fatal("unrelated failure treated as a missing path")
+	}
+	if IsRemotePathMissing(nil) {
+		t.Fatal("nil error treated as a missing path")
 	}
 }

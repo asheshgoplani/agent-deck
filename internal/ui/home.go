@@ -719,6 +719,9 @@ type Home struct {
 	// dropped otherwise, so a slow answer for an earlier opening can never
 	// replace the slot list the user is choosing from now.
 	remoteAccountsGen uint64
+	// pendingRemoteCreate holds the remote create whose path the server
+	// reported missing, while the create-directory confirmation is open.
+	pendingRemoteCreate *remoteCreateDirNeededMsg
 	// insertKeySender is the persistent dispatch path opened on
 	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
 	// remote support). Local sessions get a tmux.KeySender (control-mode
@@ -6767,6 +6770,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.applyRemoteAccounts(msg)
 		return h, nil
 
+	case remoteCreateDirNeededMsg:
+		// The server refused the path; ask before retrying with --create-dir
+		// so a typo never silently creates a directory on the remote.
+		pending := msg
+		h.pendingRemoteCreate = &pending
+		h.confirmDialog.ShowCreateRemoteDirectory(msg.remoteName, msg.opts.Path)
+		h.beginAttachReturnGrace(time.Now())
+		return h, tea.Batch(tea.EnableMouseCellMotion, RestoreLegacyKeyboardCmd(os.Stdout), tea.WindowSize())
+
 	case remoteSessionCreatedMsg:
 		if msg.err != nil {
 			h.setError(msg.err)
@@ -10672,9 +10684,11 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if h.confirmDialog.GetFocusedButton() == 0 {
 				return h, h.confirmCreateDirectory()
 			}
+			h.pendingRemoteCreate = nil
 			h.confirmDialog.Hide()
 			return h, nil
 		case "n", "N", "esc":
+			h.pendingRemoteCreate = nil
 			h.confirmDialog.Hide()
 			return h, nil
 		}
@@ -10799,6 +10813,17 @@ func (h *Home) confirmAction() tea.Cmd {
 
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
+	if pending := h.pendingRemoteCreate; pending != nil {
+		h.pendingRemoteCreate = nil
+		h.confirmDialog.Hide()
+		opts := pending.opts
+		opts.CreateDir = true
+		create := h.createRemoteSessionWithOptions
+		if h.remoteCreateSink != nil {
+			create = h.remoteCreateSink
+		}
+		return create(pending.remoteName, opts)
+	}
 	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingAccount, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 	h.confirmDialog.Hide()
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -14341,6 +14366,14 @@ type remoteSessionCreatedMsg struct {
 	err error
 }
 
+// remoteCreateDirNeededMsg reports a remote create refused because the
+// dialog's path does not exist on the server; Home offers to create it.
+type remoteCreateDirNeededMsg struct {
+	remoteName string
+	opts       session.RemoteAddOptions
+	err        error
+}
+
 // deleteRemoteSession deletes a remote session and refreshes the remote list.
 func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	return func() tea.Msg {
@@ -14761,6 +14794,9 @@ func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.Re
 			var attachErr remoteAttachFailedError
 			if errors.As(err, &attachErr) {
 				return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to remote session after creating it: %w", attachErr)}
+			}
+			if !opts.CreateDir && strings.TrimSpace(opts.Path) != "" && session.IsRemotePathMissing(err) {
+				return remoteCreateDirNeededMsg{remoteName: remoteName, opts: opts, err: err}
 			}
 			return sessionCreatedMsg{err: fmt.Errorf("failed to create remote session: %w", err)}
 		}
