@@ -238,3 +238,81 @@ func TestClaudeConfigDirForSend_UsesTheInstanceChain(t *testing.T) {
 		t.Errorf("ClaudeConfigDirForSend(nil) = %q, want empty", got)
 	}
 }
+
+// TestClaudeConfigDirForSend_AccountBeatsEnv exercises the top of the
+// resolution chain rather than only the env rung: an instance carrying an
+// Account resolves to that account's [profiles.<account>.claude].config_dir,
+// even with CLAUDE_CONFIG_DIR exported to something else. This is the case
+// the #2100 correction is really about — a send addressed at an
+// account-scoped session must scan that account's records (round-2 review).
+func TestClaudeConfigDirForSend_AccountBeatsEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	envDir := filepath.Join(t.TempDir(), "env-claude")
+	accountDir := filepath.Join(t.TempDir(), "work-account-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", envDir)
+
+	if err := os.MkdirAll(filepath.Join(home, ".agent-deck"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveUserConfig(&UserConfig{
+		Profiles: map[string]ProfileSettings{
+			"work": {Claude: ProfileClaudeSettings{ConfigDir: accountDir}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	withAccount := &Instance{ID: "i1", Title: "target", Tool: "claude", ClaudeSessionID: "sid-1", Account: "work"}
+	if got := ClaudeConfigDirForSend(withAccount); got != accountDir {
+		t.Errorf("ClaudeConfigDirForSend with Account=work = %q, want the account dir %q (account must beat CLAUDE_CONFIG_DIR)", got, accountDir)
+	}
+
+	// Same config, no account on the instance: the env var is the winner
+	// again, proving the account rung is what moved the result above.
+	noAccount := &Instance{ID: "i2", Title: "other", Tool: "claude", ClaudeSessionID: "sid-1"}
+	if got := ClaudeConfigDirForSend(noAccount); got != envDir {
+		t.Errorf("ClaudeConfigDirForSend without an account = %q, want the env dir %q", got, envDir)
+	}
+}
+
+// TestClaudeSessionRecordsIn_ScopedToTheAccountDir is the end-to-end pairing
+// of the two helpers: the same conversation id has a record under the
+// account's dir and a decoy under the env dir, and a send to the
+// account-scoped instance must see only its own.
+func TestClaudeSessionRecordsIn_ScopedToTheAccountDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	envDir := filepath.Join(t.TempDir(), "env-claude")
+	accountDir := filepath.Join(t.TempDir(), "work-account-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", envDir)
+
+	if err := os.MkdirAll(filepath.Join(home, ".agent-deck"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveUserConfig(&UserConfig{
+		Profiles: map[string]ProfileSettings{
+			"work": {Claude: ProfileClaudeSettings{ConfigDir: accountDir}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	writeClaudeSessionFile(t, accountDir, "111.json", `{"pid":111,"sessionId":"sid-1","peerProtocol":1,"messagingSocketPath":"/tmp/a.sock"}`)
+	writeClaudeSessionFile(t, envDir, "222.json", `{"pid":222,"sessionId":"sid-1","peerProtocol":1,"messagingSocketPath":"/tmp/b.sock"}`)
+
+	inst := &Instance{ID: "i1", Title: "target", Tool: "claude", ClaudeSessionID: "sid-1", Account: "work"}
+	records := ClaudeSessionRecordsIn(ClaudeConfigDirForSend(inst), inst.ClaudeSessionID)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want exactly the account's one: %+v", len(records), records)
+	}
+	if records[0].Pid != 111 {
+		t.Errorf("selected pid %d, want 111 (the env dir's decoy must not be scanned)", records[0].Pid)
+	}
+}

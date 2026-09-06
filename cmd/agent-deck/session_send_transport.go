@@ -34,6 +34,15 @@ const (
 	reasonNotClaudeCompatible send.UnavailableReason = "not_claude_compatible"
 	reasonSlashCommand        send.UnavailableReason = "slash_command"
 	reasonNoClaudeSessionID   send.UnavailableReason = "no_claude_session_id"
+	// reasonTransportNotOptedIn: send_transport is neither "auto" nor an
+	// explicit "tmux" pin — an absent key or an unrecognized value. Distinct
+	// from reasonConfigPinnedTmux so "the operator pinned tmux" and "nobody
+	// opted in" stay legible as different facts (round-2 review of #2100).
+	reasonTransportNotOptedIn send.UnavailableReason = "transport_not_opted_in"
+	// reasonNoResolver: chooseSendTransport was given no resolve seam and no
+	// instance to build one from, so a socket send is not something it can
+	// arrange. A caller-shape problem, never a statement about the target.
+	reasonNoResolver send.UnavailableReason = "no_resolver"
 )
 
 // selectorLevelReasons is exactly the set above: reasons that do NOT mean "a
@@ -46,6 +55,8 @@ var selectorLevelReasons = map[send.UnavailableReason]bool{
 	reasonNotClaudeCompatible: true,
 	reasonSlashCommand:        true,
 	reasonNoClaudeSessionID:   true,
+	reasonTransportNotOptedIn: true,
+	reasonNoResolver:          true,
 }
 
 // transportInputs bundles chooseSendTransport's inputs so it stays a pure,
@@ -102,7 +113,10 @@ func isBareSlashCommand(message string) bool {
 //     absent key and an unrecognized value all land on the historical
 //     keystroke path; sendTransportFromConfig has already normalized and
 //     warned, and this check is the same rule restated at the decision
-//     boundary so a future caller cannot opt a user in by accident.
+//     boundary so a future caller cannot opt a user in by accident. The pin
+//     and the not-opted-in cases report different reasons: both are
+//     selector-level, but conflating them would describe a default as a
+//     decision the operator made.
 //  3. Non-Claude-compatible tools have no Claude messaging socket at all.
 //  4. A bare slash command (e.g. "/compact") arrives over the socket as
 //     literal text (skipSlashCommands=true is baked into the receiver —
@@ -117,8 +131,11 @@ func chooseSendTransport(in transportInputs) (sendTransport, send.UnavailableRea
 	if in.isSSH {
 		return transportTmux, reasonRemoteSession, send.ClaudeSocketTarget{}
 	}
-	if in.configValue != "auto" {
+	if in.configValue == "tmux" {
 		return transportTmux, reasonConfigPinnedTmux, send.ClaudeSocketTarget{}
+	}
+	if in.configValue != "auto" {
+		return transportTmux, reasonTransportNotOptedIn, send.ClaudeSocketTarget{}
 	}
 	if !session.IsClaudeCompatible(in.tool) {
 		return transportTmux, reasonNotClaudeCompatible, send.ClaudeSocketTarget{}
@@ -132,8 +149,10 @@ func chooseSendTransport(in transportInputs) (sendTransport, send.UnavailableRea
 	resolve := in.resolve
 	if resolve == nil {
 		// No instance to resolve against and no stub: a socket send is not
-		// something this function can arrange on its own.
-		return transportTmux, send.ReasonNoRecord, send.ClaudeSocketTarget{}
+		// something this function can arrange on its own. Selector-level —
+		// no socket was ever attempted, so this must not surface as a
+		// fallback_reason (round-2 review of #2100).
+		return transportTmux, reasonNoResolver, send.ClaudeSocketTarget{}
 	}
 	target, err := resolve()
 	if err != nil {
@@ -232,11 +251,11 @@ func sendTransportFromConfig() (value string, warn string) {
 
 // performSend is the delivery-leg core of handleSessionSend (#2089): decide
 // tmux vs. Claude's messaging socket via chooseSendTransport, then execute
-// it. resolve and sendFn are seams (both nil in production, defaulting to
-// resolveClaudeSocketTargetForSession and send.SendOverClaudeSocket) so
-// tests can exercise the socket-write-failure / no-tmux-call and
-// explicit-tmux-pin cases without a real live Claude process. resolve is nil
-// in production, defaulting to resolveClaudeSocketTargetForInstance.
+// it. hookStatus, resolve and sendFn are seams (all nil in production,
+// defaulting to no hook-driven status, resolveClaudeSocketTargetForInstance
+// and send.SendOverClaudeSocket) so tests can exercise the
+// socket-write-failure / no-tmux-call and explicit-tmux-pin cases without a
+// real live Claude process.
 //
 // resolve is a func(*session.Instance) here rather than the no-argument
 // closure chooseSendTransport takes, so tests can stub it without building
@@ -250,12 +269,11 @@ func sendTransportFromConfig() (value string, warn string) {
 // resolve()-time refusal. Only a *send.CommittedError (a write actually
 // started) is a hard failure with no fallback.
 //
-// On the socket branch it also records whether the target was mid-turn at
-// the moment of the write (targetBusyAtSend). A socket write does not
-// interrupt a running turn, so the completion that follows belongs to the
-// turn that was already in flight, not to this message — the --wait branch
-// uses this to refuse to attribute one to the other (maintainer review of
-// #2100).
+// On the socket branch it also probes whether the target was mid-turn at the
+// moment of the write. A socket write does not interrupt a running turn, so
+// the completion that follows belongs to the turn that was already in
+// flight, not to this message — the --wait branch uses this to refuse to
+// attribute one to the other (maintainer review of #2100).
 func performSend(
 	inst *session.Instance,
 	tmuxTarget sendRetryTarget,
@@ -263,6 +281,7 @@ func performSend(
 	noWait bool,
 	tun sendExecTuning,
 	sendTransportValue string,
+	hookStatus func() (string, error),
 	resolve func(*session.Instance) (send.ClaudeSocketTarget, error),
 	sendFn func(send.ClaudeSocketTarget, string) (string, error),
 ) (sendDeliveryResult, error) {
@@ -278,9 +297,10 @@ func performSend(
 		resolve:         func() (send.ClaudeSocketTarget, error) { return resolve(inst) },
 	})
 	if transport == transportSocket {
-		busy := targetBusyAtSend(tmuxTarget)
+		probe := probeTargetBusy(hookStatus, tmuxTarget)
 		res, err := executeSocketSend(target, message, sendFn)
-		res.targetBusyAtSend = busy
+		res.targetBusyAtSend = probe == busyProbeBusy
+		res.busyProbeFailed = probe == busyProbeFailed
 		if err != nil {
 			var unavail *send.Unavailable
 			if errors.As(err, &unavail) {
@@ -343,30 +363,104 @@ func executeSocketSend(
 	return sendDeliveryResult{delivery: deliveryQueuedSocket, transport: "socket", socketMsgID: msgID}, nil
 }
 
-// targetBusyAtSend probes the target's status immediately before a socket
-// write and reports whether it is mid-turn. Conservative on a probe error or
-// an unreadable status: unknown counts as busy, because the cost of guessing
-// wrong is --wait attributing someone else's turn completion to this message
-// (maintainer review of #2100). Only the socket branch calls this; the tmux
-// path's own delivery semantics are unchanged.
-func targetBusyAtSend(checker statusChecker) bool {
-	if checker == nil {
-		return true
+// busyProbeResult is the outcome of the pre-write busy probe. It is
+// deliberately tri-state: "we could not tell" is a different fact from "the
+// target was generating", and reporting the first as the second puts a
+// claim in the operator's --json payload that nothing established (round-2
+// review of #2100).
+type busyProbeResult int
+
+const (
+	// busyProbeIdle: the target was confirmed not mid-turn.
+	busyProbeIdle busyProbeResult = iota
+	// busyProbeBusy: the target was confirmed mid-turn.
+	busyProbeBusy
+	// busyProbeFailed: neither status source could be read, so busyness is
+	// unknown. Treated like busy for the purpose of declining to wait — an
+	// unverifiable target cannot be given a verified completion — but
+	// reported as its own outcome, never as confirmed busy.
+	busyProbeFailed
+)
+
+// probeTargetBusy reads the target's status immediately before a socket
+// write and classifies it.
+//
+// It reads the SAME signal --defer-if-busy holds on (fetchHookDrivenStatus,
+// i.e. Claude's UserPromptSubmit/Stop hook edges, classified by
+// send.StatusIsBusy) rather than the tmux pane heuristic. That matters:
+// #1578 chose the hook signal precisely because the pane-content heuristic
+// false-positives to idle during tool calls and thinking pauses, so probing
+// the pane here would have told --wait the target was free at exactly the
+// moments it was not. The two paths now share one notion of busy — a target
+// --defer-if-busy would hold for is a target --wait refuses to attribute a
+// completion to (round-2 review of #2100).
+//
+// The tmux pane status is the fallback for targets the hook signal cannot
+// speak for (non-hook tools, an absent or stale hook file, a failed load),
+// and only when BOTH are unreadable is the result busyProbeFailed.
+//
+// Residual race, not closed by this probe: a turn that starts in the window
+// between the probe returning idle and the write landing in the inbox is
+// still misattributed, because --wait would then observe that turn's
+// completion and report it as this message's. The probe narrows the window;
+// only an in-band receipt keyed to the message id could close it, and
+// Claude's inbox provides none (see the #2089 CommittedError note).
+//
+// hookStatus is a seam (nil in tests that only exercise the pane fallback,
+// and in any caller with no session reference to resolve).
+func probeTargetBusy(hookStatus func() (string, error), paneChecker statusChecker) busyProbeResult {
+	if hookStatus != nil {
+		if status, err := hookStatus(); err == nil && status != "" {
+			return classifyBusyStatus(status)
+		}
 	}
-	status, err := checker.GetStatus()
-	if err != nil {
-		return true
+	if paneChecker != nil {
+		if status, err := paneChecker.GetStatus(); err == nil && status != "" {
+			return classifyBusyStatus(status)
+		}
 	}
-	return status == "active"
+	return busyProbeFailed
+}
+
+// classifyBusyStatus maps a status string from either source onto the
+// probe's idle/busy split. It accepts both vocabularies because
+// fetchHookDrivenStatus itself falls through to the list --json pipeline
+// when no fresh hook edge exists: send.StatusIsBusy covers the hook words
+// ("running", "starting") and "active" is the pane/list word for the same
+// state.
+func classifyBusyStatus(status string) busyProbeResult {
+	if send.StatusIsBusy(status) || status == "active" {
+		return busyProbeBusy
+	}
+	return busyProbeIdle
+}
+
+// skippedWaitOutcome returns the `wait_outcome` value for a send whose
+// `--wait` must not wait, or "" when --wait proceeds normally. Only the
+// socket transport can hit it: a socket write lands in the target's inbox
+// without interrupting a running turn, so a target that was already mid-turn
+// will finish THAT turn next, and attributing it to this message would be
+// wrong. The tmux path submits into the composer and is unaffected, so it
+// never consults the probe (maintainer review of #2100).
+//
+// A failed probe declines to wait for the same reason but reports a
+// different outcome: nothing established that the target was generating, so
+// saying it was would be a fabricated fact (round-2 review of #2100).
+func skippedWaitOutcome(res sendDeliveryResult) string {
+	if res.transport != "socket" {
+		return ""
+	}
+	switch {
+	case res.busyProbeFailed:
+		return waitOutcomeUnverifiedBusyProbeFailed
+	case res.targetBusyAtSend:
+		return waitOutcomeUnverifiedBusyTarget
+	}
+	return ""
 }
 
 // shouldSkipWaitForBusyTarget reports whether `--wait` must decline to wait
-// for this send's completion. Only the socket transport can hit it: a socket
-// write lands in the target's inbox without interrupting a running turn, so
-// a target that was already mid-turn will finish THAT turn next, and
-// attributing it to this message would be wrong. The tmux path submits into
-// the composer and is unaffected, so it never consults the probe (maintainer
-// review of #2100).
+// for this send's completion — the boolean face of skippedWaitOutcome.
 func shouldSkipWaitForBusyTarget(res sendDeliveryResult) bool {
-	return res.transport == "socket" && res.targetBusyAtSend
+	return skippedWaitOutcome(res) != ""
 }
