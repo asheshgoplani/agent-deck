@@ -648,6 +648,10 @@ type Home struct {
 	// time from keypress to the remote's confirmation, the number that
 	// tells whether a remote deck feels local.
 	remoteActionStarted map[string]time.Time
+	// remotePending marks remote session rows with an action underway
+	// (sessionID -> "deleting…"), drawn on the row so the screen says what
+	// is happening while the remote answers instead of freezing.
+	remotePending map[string]string
 	// remoteSessionRefreshSec is the poll cadence (seconds) for re-fetching
 	// the remote session list, resolved once at construction from
 	// [ui] remote_session_refresh_secs. Issue #1170.
@@ -2329,6 +2333,55 @@ func remoteGroupBaseName(path string) string {
 		return path[idx+1:]
 	}
 	return path
+}
+
+// setRemotePending marks (verb != "") or clears a remote session row's
+// in-flight action and redraws.
+func (h *Home) setRemotePending(sessionID, verb string) {
+	if h.remotePending == nil {
+		h.remotePending = make(map[string]string)
+	}
+	if verb == "" {
+		delete(h.remotePending, sessionID)
+	} else {
+		h.remotePending[sessionID] = verb
+	}
+	// Read at draw time by renderRemoteSessionItem; no row rebuild needed.
+}
+
+// patchRemoteSession applies fn to the cached copy of one remote session and
+// redraws, so the screen reflects a confirmed action now rather than at the
+// next poll; the next fetch reconciles from the remote's truth.
+func (h *Home) patchRemoteSession(remoteName, sessionID string, fn func(*session.RemoteSessionInfo)) {
+	h.remoteSessionsMu.Lock()
+	if sessions, ok := h.remoteSessions[remoteName]; ok {
+		for i := range sessions {
+			if sessions[i].ID == sessionID {
+				fn(&sessions[i])
+				break
+			}
+		}
+	}
+	h.remoteSessionsMu.Unlock()
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
+}
+
+// dropRemoteSession removes one session from the cache and redraws.
+func (h *Home) dropRemoteSession(remoteName, sessionID string) {
+	h.remoteSessionsMu.Lock()
+	if sessions, ok := h.remoteSessions[remoteName]; ok {
+		kept := sessions[:0]
+		for _, s := range sessions {
+			if s.ID != sessionID {
+				kept = append(kept, s)
+			}
+		}
+		h.remoteSessions[remoteName] = kept
+	}
+	h.remoteSessionsMu.Unlock()
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
 }
 
 // remoteActionKey identifies one in-flight remote action for timing.
@@ -6915,16 +6968,19 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteSessionDeletedMsg:
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to delete remote session: %w", msg.err))
+			h.setError(fmt.Errorf("failed to delete '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
+		h.dropRemoteSession(msg.remoteName, msg.sessionID)
 		h.setError(fmt.Errorf("deleted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "delete", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionClosedMsg:
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to close remote session: %w", msg.err))
+			h.setError(fmt.Errorf("failed to close '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
 		h.setError(fmt.Errorf("closed '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "close", msg.sessionID)))
@@ -6935,28 +6991,39 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !msg.archived {
 			verb = "unarchive"
 		}
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to %s remote session: %w", verb, msg.err))
+			h.setError(fmt.Errorf("failed to %s '%s' on %s: %w", verb, msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
+		archived := msg.archived
+		h.patchRemoteSession(msg.remoteName, msg.sessionID, func(s *session.RemoteSessionInfo) {
+			s.Archived = archived
+			if archived {
+				s.Status = string(session.StatusStopped)
+			}
+		})
 		h.setError(fmt.Errorf("%sd '%s' on %s%s", verb, msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "archive", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionRestartedMsg:
 		delete(h.remoteRestarting, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.resumingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to restart remote session: %w", msg.err))
+			h.setError(fmt.Errorf("failed to restart '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
+		h.patchRemoteSession(msg.remoteName, msg.sessionID, func(s *session.RemoteSessionInfo) { s.Status = string(session.StatusRunning) })
 		h.setError(fmt.Errorf("restarted '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "restart", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionForkedMsg:
 		delete(h.remoteForking, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.forkingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
+		h.setRemotePending(msg.sessionID, "")
 		if msg.err != nil {
-			h.setError(fmt.Errorf("failed to fork remote session: %w", msg.err))
+			h.setError(fmt.Errorf("failed to fork '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
 		}
 		h.setError(fmt.Errorf("forked '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "fork", msg.sessionID)))
@@ -10880,6 +10947,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Remote decks refresh in the same keystroke, so a change made on a
 		// remote (or from another machine) shows up now, not at the next poll.
 		state := h.preserveState()
+		h.remoteSessionsMu.Lock()
+		h.remotesFetchActive = true // so the remote headers show "refreshing…"
+		h.remoteSessionsMu.Unlock()
 		return h, tea.Batch(h.sessionLoadCmd(&state, false), h.fetchRemoteSessions)
 
 	case "ctrl+s":
@@ -14807,6 +14877,7 @@ type remoteCreateDirNeededMsg struct {
 // deleteRemoteSession deletes a remote session and refreshes the remote list.
 func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	h.markRemoteAction(remoteName, "delete", sessionID)
+	h.setRemotePending(sessionID, "deleting…")
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -14837,6 +14908,7 @@ func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd 
 // closeRemoteSession stops a remote session process without deleting metadata.
 func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	h.markRemoteAction(remoteName, "close", sessionID)
+	h.setRemotePending(sessionID, "closing…")
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -14870,6 +14942,11 @@ func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 // archived (^) views the way a local session does.
 func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, archive bool) tea.Cmd {
 	h.markRemoteAction(remoteName, "archive", sessionID)
+	if archive {
+		h.setRemotePending(sessionID, "archiving…")
+	} else {
+		h.setRemotePending(sessionID, "restoring…")
+	}
 	return func() tea.Msg {
 		result := remoteSessionArchivedMsg{remoteName: remoteName, sessionID: sessionID, title: title, archived: archive}
 		config, err := session.LoadUserConfig()
@@ -14900,6 +14977,7 @@ func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, arc
 // the remote confirms via remoteSessionForkedMsg so the new row appears.
 func (h *Home) forkRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	h.markRemoteAction(remoteName, "fork", sessionID)
+	h.setRemotePending(sessionID, "forking…")
 	return func() tea.Msg {
 		result := remoteSessionForkedMsg{remoteName: remoteName, sessionID: sessionID, title: title}
 		config, err := session.LoadUserConfig()
@@ -14923,6 +15001,7 @@ func (h *Home) forkRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 // restartRemoteSession restarts a remote session.
 func (h *Home) restartRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	h.markRemoteAction(remoteName, "restart", sessionID)
+	h.setRemotePending(sessionID, "restarting…")
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -18964,12 +19043,17 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	count := len(sessions)
 	running, waiting := remoteStatusCounts(sessions, "")
 	fromCache := h.remoteFromCache[item.RemoteName]
+	fetching := h.remotesFetchActive
 	h.remoteSessionsMu.RUnlock()
 
 	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
 	if fromCache {
 		// Honest staleness: this is the startup snapshot, not live state yet.
 		trailer = " " + DimStyle.Render("— cached, refreshing…")
+	} else if fetching {
+		// A fetch is in flight: what is shown is the last answer, and the
+		// header says so instead of leaving the user to guess.
+		trailer += " " + DimStyle.Render("· refreshing…")
 	}
 
 	b.WriteString(fmt.Sprintf("%s%s %s%s%s%s\n",
@@ -19081,13 +19165,21 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		indent = "  " // defensive: never dedent past the old flat baseline
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s\n",
+	pendingStr := ""
+	if item.RemoteSession != nil {
+		if verb, ok := h.remotePending[item.RemoteSession.ID]; ok {
+			pendingStr = " " + DimStyle.Render("· "+verb)
+		}
+	}
+
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
 		titleStyle.Render(titleStr),
 		toolStr,
+		pendingStr,
 	))
 }
 
