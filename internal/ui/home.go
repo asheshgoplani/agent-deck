@@ -336,6 +336,7 @@ type Home struct {
 	isReloading         bool       // Visual feedback during auto-reload
 	initialLoading      bool       // True until first loadSessionsMsg received (shows splash screen)
 	isQuitting          bool       // True when user pressed q, shows quitting splash
+	restartRequested    bool       // True when the quit sequence should end in an in-place exec (restart.go)
 	reloadVersion       uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu            sync.Mutex // Protects reloadVersion, isReloading, and lastLoadMtime for thread-safe access
 	lastLoadMtime       time.Time  // File mtime when we last loaded (for external change detection)
@@ -11981,6 +11982,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.remoteSessionsMu.Unlock()
 		return h, tea.Batch(h.sessionLoadCmd(&state, false), h.fetchRemoteSessions)
 
+	case "ctrl+t":
+		// Restart the TUI in place so an update installed while it was open
+		// takes effect (restart.go). Refuses with a footer message while a
+		// dialog is open or a session action is running.
+		return h.tryRestartDeck()
+
 	case "ctrl+s":
 		// Open the session switcher from the overview too, with the same key
 		// used while attached. Pre-highlight the session under the cursor (if
@@ -17303,6 +17310,9 @@ func (h *Home) renderFrame() string {
 
 	// Show quitting splash during shutdown
 	if h.isQuitting {
+		if h.restartRequested {
+			return renderShutdownSplash(h.width, h.height, h.animationFrame, "Restarting...")
+		}
 		return renderQuittingSplash(h.width, h.height, h.animationFrame)
 	}
 
@@ -17791,6 +17801,11 @@ func renderLoadingSplash(width, height int, frame int) string {
 
 // renderQuittingSplash renders a splash screen during application shutdown
 func renderQuittingSplash(width, height int, frame int) string {
+	return renderShutdownSplash(width, height, frame, "Shutting down...")
+}
+
+// renderShutdownSplash draws the quit/restart splash with the given subtitle.
+func renderShutdownSplash(width, height int, frame int, subtitle string) string {
 	// Status indicator cycle (matches loading splash for consistency)
 	phase := (frame / 2) % 4
 
@@ -17832,11 +17847,11 @@ func renderQuittingSplash(width, height int, frame int) string {
 		content.WriteString("\n")
 		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
 		content.WriteString("\n")
-		content.WriteString(subtitleStyle.Render("Shutting down..."))
+		content.WriteString(subtitleStyle.Render(subtitle))
 	} else {
 		// Compact/Minimal
 		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
-		content.WriteString(subtitleStyle.Render("Shutting down..."))
+		content.WriteString(subtitleStyle.Render(subtitle))
 	}
 
 	contentStyle := lipgloss.NewStyle().

@@ -1056,6 +1056,16 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// In-place restart (restart_deck hotkey): the TUI has flushed its state
+	// and restored the terminal, so replace this process with the executable
+	// on disk using the same args and environment. Only returns on failure.
+	if exe, ok := homeModel.RestartTarget(); ok {
+		maintenanceCancel()
+		if err := ui.ExecSelf(exe); err != nil {
+			fmt.Printf("Could not restart in place (%v). Run `agent-deck` again to use the new version.\n", err)
+		}
+	}
 }
 
 // commandRegistry lists every token that main()'s dispatch switch treats
