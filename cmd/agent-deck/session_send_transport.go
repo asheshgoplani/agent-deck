@@ -269,11 +269,16 @@ func sendTransportFromConfig() (value string, warn string) {
 // resolve()-time refusal. Only a *send.CommittedError (a write actually
 // started) is a hard failure with no fallback.
 //
-// On the socket branch it also probes whether the target was mid-turn at the
-// moment of the write. A socket write does not interrupt a running turn, so
-// the completion that follows belongs to the turn that was already in
-// flight, not to this message — the --wait branch uses this to refuse to
-// attribute one to the other (maintainer review of #2100).
+// On the socket branch, and only when wait is set, it also probes whether
+// the target was mid-turn at the moment of the write. A socket write does
+// not interrupt a running turn, so the completion that follows belongs to
+// the turn that was already in flight, not to this message — the --wait
+// branch uses this to refuse to attribute one to the other (maintainer
+// review of #2100). Without --wait nothing consults the answer, so the
+// probe is skipped entirely: it costs a status round trip, and skipping it
+// keeps the resolve-to-write window on a plain send exactly as narrow as it
+// was before the probe existed. A skipped probe reports neither
+// targetBusyAtSend nor busyProbeFailed, since it established nothing.
 func performSend(
 	inst *session.Instance,
 	tmuxTarget sendRetryTarget,
@@ -281,6 +286,7 @@ func performSend(
 	noWait bool,
 	tun sendExecTuning,
 	sendTransportValue string,
+	wait bool,
 	hookStatus func() (string, error),
 	resolve func(*session.Instance) (send.ClaudeSocketTarget, error),
 	sendFn func(send.ClaudeSocketTarget, string) (string, error),
@@ -297,10 +303,15 @@ func performSend(
 		resolve:         func() (send.ClaudeSocketTarget, error) { return resolve(inst) },
 	})
 	if transport == transportSocket {
-		probe := probeTargetBusy(hookStatus, tmuxTarget)
+		// Probe only when --wait will act on the answer (see doc comment).
+		probe := busyProbeIdle
+		probed := wait
+		if probed {
+			probe = probeTargetBusy(hookStatus, tmuxTarget)
+		}
 		res, err := executeSocketSend(target, message, sendFn)
-		res.targetBusyAtSend = probe == busyProbeBusy
-		res.busyProbeFailed = probe == busyProbeFailed
+		res.targetBusyAtSend = probed && probe == busyProbeBusy
+		res.busyProbeFailed = probed && probe == busyProbeFailed
 		if err != nil {
 			var unavail *send.Unavailable
 			if errors.As(err, &unavail) {
@@ -385,15 +396,21 @@ const (
 // probeTargetBusy reads the target's status immediately before a socket
 // write and classifies it.
 //
-// It reads the SAME signal --defer-if-busy holds on (fetchHookDrivenStatus,
-// i.e. Claude's UserPromptSubmit/Stop hook edges, classified by
-// send.StatusIsBusy) rather than the tmux pane heuristic. That matters:
-// #1578 chose the hook signal precisely because the pane-content heuristic
-// false-positives to idle during tool calls and thinking pauses, so probing
-// the pane here would have told --wait the target was free at exactly the
-// moments it was not. The two paths now share one notion of busy — a target
-// --defer-if-busy would hold for is a target --wait refuses to attribute a
-// completion to (round-2 review of #2100).
+// It reads the SAME source --defer-if-busy holds on (fetchHookDrivenStatus,
+// i.e. Claude's UserPromptSubmit/Stop hook edges) rather than the tmux pane
+// heuristic. That matters: #1578 chose the hook signal precisely because the
+// pane-content heuristic false-positives to idle during tool calls and
+// thinking pauses, so probing the pane here would have told --wait the
+// target was free at exactly the moments it was not.
+//
+// The classification is a strict SUPERSET of --defer-if-busy's, not the
+// same predicate: that path uses send.StatusIsBusy alone ("running",
+// "starting"), while this one also counts "active", the word the pane and
+// list --json pipelines use for the same state (see classifyBusyStatus).
+// The extra state only ever moves a target from idle to busy, which is the
+// conservative direction here — a target --defer-if-busy would hold for is
+// always a target --wait refuses to attribute a completion to, and a few
+// more besides (round-2 review of #2100).
 //
 // The tmux pane status is the fallback for targets the hook signal cannot
 // speak for (non-hook tools, an absent or stale hook file, a failed load),
@@ -457,10 +474,4 @@ func skippedWaitOutcome(res sendDeliveryResult) string {
 		return waitOutcomeUnverifiedBusyTarget
 	}
 	return ""
-}
-
-// shouldSkipWaitForBusyTarget reports whether `--wait` must decline to wait
-// for this send's completion — the boolean face of skippedWaitOutcome.
-func shouldSkipWaitForBusyTarget(res sendDeliveryResult) bool {
-	return skippedWaitOutcome(res) != ""
 }

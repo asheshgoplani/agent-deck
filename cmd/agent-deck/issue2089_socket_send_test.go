@@ -111,7 +111,7 @@ func TestPerformSend_SocketWriteFailure_NoTmuxCall(t *testing.T) {
 		return "", &send.CommittedError{Err: errors.New("simulated write failure")}
 	}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", nil, instResolveOK, failingSend)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", false, nil, instResolveOK, failingSend)
 	if err == nil {
 		t.Fatal("expected an error from a failing socket write")
 	}
@@ -140,7 +140,7 @@ func TestPerformSend_TmuxPin_TakesTheTmuxPath(t *testing.T) {
 	// shape as TestSendWithRetryTarget_StopsWhenActive in session_send_test.go.
 	mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "tmux", nil, instResolveOK, nil)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "tmux", false, nil, instResolveOK, nil)
 	if err != nil {
 		t.Fatalf("performSend with a tmux pin: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestPerformSend_SocketDialFailedAtSendTime_FallsBackToTmux(t *testing.T) {
 	}
 	mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", nil, instResolveOK, dialFailed)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", false, nil, instResolveOK, dialFailed)
 	if err != nil {
 		t.Fatalf("performSend should succeed via the tmux fallback, got: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPerformSend_SocketMessageTooLargeAtSendTime_FallsBackToTmux_TmuxOwnVerd
 	// through.
 	mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}, sendKeysErr: tmux.ErrCanonicalLineOverflow}
 
-	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", nil, instResolveOK, tooLarge)
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", false, nil, instResolveOK, tooLarge)
 	if err == nil {
 		t.Fatal("expected an error: tmux's own line-length guard refuses this send")
 	}
@@ -456,7 +456,7 @@ func TestPerformSend_SocketRecordsProbeOutcome(t *testing.T) {
 			if tc.paneErr != nil {
 				mock.statusErrs = []error{tc.paneErr}
 			}
-			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", tc.hook, instResolveOK, okSend)
+			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", true, tc.hook, instResolveOK, okSend)
 			if err != nil {
 				t.Fatalf("performSend: %v", err)
 			}
@@ -477,6 +477,46 @@ func TestPerformSend_SocketRecordsProbeOutcome(t *testing.T) {
 				t.Errorf("busy_probe_failed present = %v, want %v", present, tc.wantProbeFail)
 			}
 		})
+	}
+}
+
+// TestPerformSend_SocketSkipsProbeWithoutWait: nothing consults the probe
+// on a plain send, so it never runs — no status round trip, and neither flag
+// set, because a probe that did not happen established nothing (round-2
+// re-review of #2100).
+func TestPerformSend_SocketSkipsProbeWithoutWait(t *testing.T) {
+	okSend := func(send.ClaudeSocketTarget, string) (string, error) { return "msg-1", nil }
+	hookCalls := 0
+	hook := func() (string, error) {
+		hookCalls++
+		return "running", nil
+	}
+	// Pane says active too: if the probe ran by either route, the flags
+	// below would be set.
+	mock := &mockSendRetryTarget{statuses: []string{"active"}, panes: []string{""}}
+
+	res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", false, hook, instResolveOK, okSend)
+	if err != nil {
+		t.Fatalf("performSend: %v", err)
+	}
+	if res.transport != "socket" {
+		t.Fatalf("transport = %q, want socket", res.transport)
+	}
+	if hookCalls != 0 {
+		t.Errorf("hook status fetched %d times without --wait, want 0", hookCalls)
+	}
+	if got := mock.statusIdx.Load(); got != 0 {
+		t.Errorf("pane status polled %d times without --wait, want 0", got)
+	}
+	if res.targetBusyAtSend || res.busyProbeFailed {
+		t.Errorf("flags set without a probe: targetBusyAtSend=%v busyProbeFailed=%v", res.targetBusyAtSend, res.busyProbeFailed)
+	}
+	fields := res.jsonFields()
+	if _, present := fields["target_busy_at_send"]; present {
+		t.Error("target_busy_at_send must be absent when the probe was skipped")
+	}
+	if _, present := fields["busy_probe_failed"]; present {
+		t.Error("busy_probe_failed must be absent when the probe was skipped")
 	}
 }
 
@@ -522,7 +562,17 @@ func TestSendSuccessData(t *testing.T) {
 			wantFailPresent: true,
 		},
 		{
-			name:            "without --wait there is no outcome to report",
+			// The probe does not run without --wait, so a real no-wait send
+			// carries neither flag and reports no outcome.
+			name:        "without --wait there is no probe and no outcome",
+			res:         sendDeliveryResult{delivery: deliveryQueuedSocket, transport: "socket", socketMsgID: "m1"},
+			wait:        false,
+			wantOutcome: nil,
+		},
+		{
+			// Defensive: even if a flag somehow rode along, wait_outcome is
+			// only reported for a --wait the caller actually asked for.
+			name:            "a busy flag without --wait still reports no outcome",
 			res:             sendDeliveryResult{delivery: deliveryQueuedSocket, transport: "socket", targetBusyAtSend: true},
 			wait:            false,
 			wantOutcome:     nil,
@@ -593,12 +643,8 @@ func TestSkippedWaitOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := skippedWaitOutcome(tc.res)
-			if got != tc.want {
+			if got := skippedWaitOutcome(tc.res); got != tc.want {
 				t.Errorf("skippedWaitOutcome = %q, want %q", got, tc.want)
-			}
-			if want := got != ""; shouldSkipWaitForBusyTarget(tc.res) != want {
-				t.Errorf("shouldSkipWaitForBusyTarget disagrees with skippedWaitOutcome for %+v", tc.res)
 			}
 		})
 	}
