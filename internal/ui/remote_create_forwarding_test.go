@@ -434,9 +434,11 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 		// Close and reopen on the same remote while fetch A is still pending.
 		h.newDialog.Hide()
 		h.pendingRemoteName = ""
-		model, cmd := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+		model, _ := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 		h = model.(*Home)
-		if cmd == nil || h.remoteAccountsGen != firstGen+1 {
+		// The stub fetcher returns no command, so only the numbering and the
+		// recorded request prove that a fresh fetch was asked for.
+		if h.remoteAccountsGen != firstGen+1 {
 			t.Fatalf("reopening must request a new numbered fetch (gen %d -> %d)", firstGen, h.remoteAccountsGen)
 		}
 		if strings.Join(capture.accountsFetchedFor, ",") != "myserver,myserver" {
