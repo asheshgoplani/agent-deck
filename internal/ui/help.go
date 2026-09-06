@@ -188,6 +188,7 @@ func (h *HelpOverlay) View() string {
 	quitKey := h.key(hotkeyQuit, "q")
 	importKey := h.key(hotkeyImport, "i")
 	reloadKey := h.key(hotkeyReload, "Ctrl+R")
+	restartDeckKey := h.key(hotkeyRestartDeck, "Ctrl+T")
 	deleteKey := h.key(hotkeyDelete, "d")
 	closeKey := h.key(hotkeyCloseSession, "D")
 	restartKey := h.key(hotkeyRestart, "Shift+R")
@@ -352,6 +353,7 @@ func (h *HelpOverlay) View() string {
 			items: [][2]string{
 				{settingsKey, "Settings"},
 				{reloadKey, "Reload from disk"},
+				{restartDeckKey, "Restart agent-deck in place (picks up an installed update)"},
 				{importKey, "Import tmux sessions"},
 				{switchKey, "Switch session (here or attached)"},
 				{scrollbackKey, "Scrollback pager (while attached)"},
