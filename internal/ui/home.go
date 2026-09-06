@@ -464,6 +464,7 @@ type Home struct {
 	launchingSessions    map[string]time.Time        // sessionID -> creation time
 	resumingSessions     map[string]time.Time        // sessionID -> resume time (for restart/resume)
 	remoteRestarting     map[string]struct{}         // remote restart operation ID -> in flight
+	remoteForking        map[string]struct{}         // remote fork operation ID -> in flight
 	mcpLoadingSessions   map[string]time.Time        // sessionID -> MCP reload time
 	forkingSessions      map[string]time.Time        // sessionID -> fork start time (fork in progress)
 	setupRunningSessions map[string]time.Time        // sessionID -> setup script start time
@@ -1620,6 +1621,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		launchingSessions:         make(map[string]time.Time),
 		resumingSessions:          make(map[string]time.Time),
 		remoteRestarting:          make(map[string]struct{}),
+		remoteForking:             make(map[string]struct{}),
 		mcpLoadingSessions:        make(map[string]time.Time),
 		forkingSessions:           make(map[string]time.Time),
 		setupRunningSessions:      make(map[string]time.Time),
@@ -6808,6 +6810,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchRemoteSessions
 
 	case remoteSessionForkedMsg:
+		delete(h.remoteForking, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.forkingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to fork remote session: %w", msg.err))
@@ -9798,11 +9801,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Remote session: fork it on the remote itself through its own
 				// `session fork`. The remote decides title, group and whether
 				// the tool is forkable; the row appears on the next fetch.
+				// The in-flight guard lives in remoteForking (mirrors
+				// remoteRestarting): forkingSessions is an animation map whose
+				// expired entries are dropped by cleanupExpiredAnimations, and
+				// remote keys are never in instanceByID, so it cannot be the guard.
 				forkID := remoteRestartAnimationID(item.RemoteName, item.RemoteSession.ID)
-				if _, forking := h.forkingSessions[forkID]; forking {
+				if _, forking := h.remoteForking[forkID]; forking {
 					h.setError(fmt.Errorf("remote session is forking, please wait..."))
 					return h, nil
 				}
+				h.remoteForking[forkID] = struct{}{}
 				h.forkingSessions[forkID] = time.Now()
 				return h, h.forkRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}

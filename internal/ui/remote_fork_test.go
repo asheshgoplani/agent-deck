@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -64,8 +65,12 @@ func TestRemoteFork_FKeyReturnsForkCmd(t *testing.T) {
 	if _, ok := model.(*Home); !ok {
 		t.Fatalf("unexpected model type %T", model)
 	}
-	if _, forking := home.forkingSessions[remoteRestartAnimationID("lab", "remote-id-xyz")]; !forking {
-		t.Fatal("remote row was not marked as forking")
+	forkID := remoteRestartAnimationID("lab", "remote-id-xyz")
+	if _, forking := home.remoteForking[forkID]; !forking {
+		t.Fatal("remote row was not marked as forking (in-flight guard)")
+	}
+	if _, animated := home.forkingSessions[forkID]; !animated {
+		t.Fatal("remote row was not marked as forking (animation)")
 	}
 	if len(home.instances) != 0 {
 		t.Fatalf("local instances mutated by remote fork: %d rows", len(home.instances))
@@ -109,8 +114,11 @@ func TestRemoteFork_ForkedMsgRefreshesFleet(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("successful remote fork returned a nil cmd; expected a remote session refresh")
 	}
-	if _, forking := h.forkingSessions[forkID]; forking {
+	if _, forking := h.remoteForking[forkID]; forking {
 		t.Fatal("in-flight guard not cleared after the remote confirmed the fork")
+	}
+	if _, animated := h.forkingSessions[forkID]; animated {
+		t.Fatal("fork animation not cleared after the remote confirmed the fork")
 	}
 
 	// A second f must be accepted again now that the first fork finished.
@@ -134,8 +142,11 @@ func TestRemoteFork_ForkedMsgErrorClearsGuard(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("failed remote fork returned a cmd; expected no refresh")
 	}
-	if _, forking := h.forkingSessions[forkID]; forking {
+	if _, forking := h.remoteForking[forkID]; forking {
 		t.Fatal("in-flight guard not cleared after the remote refused the fork")
+	}
+	if _, animated := h.forkingSessions[forkID]; animated {
+		t.Fatal("fork animation not cleared after the remote refused the fork")
 	}
 	if h.err == nil {
 		t.Fatal("remote fork failure was not surfaced")
@@ -157,5 +168,41 @@ func TestRemoteFork_ShiftFExplainsInsteadOfDialog(t *testing.T) {
 	}
 	if home.err == nil {
 		t.Fatal("F on a remote session gave no hint")
+	}
+}
+
+// TestRemoteFork_GuardOutlivesAnimationCleanup pins the P1 from review: the
+// in-flight guard must not live in forkingSessions alone, because
+// cleanupExpiredAnimations drops every key absent from instanceByID on the
+// next tick and remote keys are never there. A slow SSH fork that outlives
+// the animation must still refuse a second f.
+func TestRemoteFork_GuardOutlivesAnimationCleanup(t *testing.T) {
+	home := armHomeWithOneRemoteSessionForFork(t)
+	forkID := remoteRestartAnimationID("lab", "remote-id-xyz")
+	if _, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}); cmd == nil {
+		t.Fatal("first f returned a nil cmd")
+	}
+
+	// Model the 2-second tick running while SSH is still in flight.
+	home.forkingSessions[forkID] = time.Now().Add(-time.Minute)
+	home.cleanupExpiredAnimations(home.forkingSessions, 20*time.Second, 5*time.Second)
+	if _, animated := home.forkingSessions[forkID]; animated {
+		t.Fatal("expired remote fork animation was not cleaned up")
+	}
+	if _, inFlight := home.remoteForking[forkID]; !inFlight {
+		t.Fatal("animation cleanup released the in-flight remote fork guard")
+	}
+
+	if _, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}); cmd != nil {
+		t.Fatal("second f after animation cleanup started a duplicate remote fork")
+	}
+	if home.err == nil {
+		t.Fatal("second f after animation cleanup did not explain why it was refused")
+	}
+
+	// The remote's answer (success or error) is the only thing that clears it.
+	home.Update(remoteSessionForkedMsg{remoteName: "lab", sessionID: "remote-id-xyz", title: "remote session", newID: "child-1"})
+	if _, inFlight := home.remoteForking[forkID]; inFlight {
+		t.Fatal("remoteSessionForkedMsg did not clear the in-flight guard")
 	}
 }
