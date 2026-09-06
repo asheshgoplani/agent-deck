@@ -341,3 +341,118 @@ func TestWaitAfterSend_TmuxPath_UnchangedSingleBudget(t *testing.T) {
 		t.Errorf("waitAfterSend(tmux) took %s, want close to waitForCompletion's ~1s grace period alone", elapsed)
 	}
 }
+
+// --- busy-at-send probe and the unverified --wait outcome -----------------
+
+// TestTargetBusyAtSend covers the pre-write status probe, including its
+// fail-conservative cases: an unknown status has to count as busy, because
+// guessing wrong means --wait attributing an unrelated turn's completion to
+// this message.
+func TestTargetBusyAtSend(t *testing.T) {
+	cases := []struct {
+		name   string
+		mock   *mockSendRetryTarget
+		want   bool
+		nilChk bool
+	}{
+		{name: "active is busy", mock: &mockSendRetryTarget{statuses: []string{"active"}}, want: true},
+		{name: "waiting is idle", mock: &mockSendRetryTarget{statuses: []string{"waiting"}}, want: false},
+		{name: "idle is idle", mock: &mockSendRetryTarget{statuses: []string{"idle"}}, want: false},
+		{
+			name: "probe error counts as busy",
+			mock: &mockSendRetryTarget{statuses: []string{"waiting"}, statusErrs: []error{errors.New("no such pane")}},
+			want: true,
+		},
+		{name: "nil checker counts as busy", nilChk: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got bool
+			if tc.nilChk {
+				got = targetBusyAtSend(nil)
+			} else {
+				got = targetBusyAtSend(tc.mock)
+			}
+			if got != tc.want {
+				t.Errorf("targetBusyAtSend = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPerformSend_SocketRecordsBusyAtSend confirms the probe result rides
+// out on the delivery result for both statuses, and reaches --json.
+func TestPerformSend_SocketRecordsBusyAtSend(t *testing.T) {
+	okSend := func(send.ClaudeSocketTarget, string) (string, error) { return "msg-1", nil }
+
+	for _, tc := range []struct {
+		status string
+		want   bool
+	}{{"active", true}, {"waiting", false}} {
+		t.Run(tc.status, func(t *testing.T) {
+			mock := &mockSendRetryTarget{statuses: []string{tc.status}, panes: []string{""}}
+			res, err := performSend(claudeInst("sid"), mock, "hello", false, defaultSendTuning(), "auto", alwaysResolveOK, okSend)
+			if err != nil {
+				t.Fatalf("performSend: %v", err)
+			}
+			if res.transport != "socket" {
+				t.Fatalf("transport = %q, want socket", res.transport)
+			}
+			if res.targetBusyAtSend != tc.want {
+				t.Errorf("targetBusyAtSend = %v, want %v", res.targetBusyAtSend, tc.want)
+			}
+			_, present := res.jsonFields()["target_busy_at_send"]
+			if present != tc.want {
+				t.Errorf("target_busy_at_send present = %v, want %v (absent when false)", present, tc.want)
+			}
+		})
+	}
+}
+
+// TestShouldSkipWaitForBusyTarget is the --wait gate: only a busy-at-send
+// socket write declines to wait. In particular the tmux path never consults
+// the probe, so a busy tmux target waits exactly as it always has.
+func TestShouldSkipWaitForBusyTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		res  sendDeliveryResult
+		want bool
+	}{
+		{"socket, busy", sendDeliveryResult{transport: "socket", targetBusyAtSend: true}, true},
+		{"socket, idle", sendDeliveryResult{transport: "socket", targetBusyAtSend: false}, false},
+		{"tmux, busy flag set", sendDeliveryResult{transport: "tmux", targetBusyAtSend: true}, false},
+		{"tmux, idle", sendDeliveryResult{transport: "tmux"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldSkipWaitForBusyTarget(tc.res); got != tc.want {
+				t.Errorf("shouldSkipWaitForBusyTarget = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWaitAfterSend_SkippedForBusySocketTarget pins the property the skip
+// exists for: behind the gate no status polling happens at all, so nothing
+// can be mistaken for this message's completion — while the same helper on
+// an idle-at-send result does poll, exactly as before #2100.
+func TestWaitAfterSend_SkippedForBusySocketTarget(t *testing.T) {
+	waitIfNotSkipped := func(res sendDeliveryResult, checker *mockSendRetryTarget) {
+		if shouldSkipWaitForBusyTarget(res) {
+			return
+		}
+		_, _ = waitAfterSend(checker, res.transport, 50*time.Millisecond)
+	}
+
+	busyMock := &mockSendRetryTarget{statuses: []string{"active"}}
+	waitIfNotSkipped(sendDeliveryResult{transport: "socket", targetBusyAtSend: true}, busyMock)
+	if got := busyMock.statusIdx.Load(); got != 0 {
+		t.Errorf("status polled %d times for a busy socket target, want 0", got)
+	}
+
+	idleMock := &mockSendRetryTarget{statuses: []string{"active"}}
+	waitIfNotSkipped(sendDeliveryResult{transport: "socket", targetBusyAtSend: false}, idleMock)
+	if got := idleMock.statusIdx.Load(); got == 0 {
+		t.Error("idle-at-send socket target should still run the completion pipeline")
+	}
+}
