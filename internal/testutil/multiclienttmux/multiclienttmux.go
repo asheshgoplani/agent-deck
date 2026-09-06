@@ -11,7 +11,7 @@
 // Usage:
 //
 //	h := multiclienttmux.New(t, "myscratch")
-//	h.AddClient(88, 62)
+//	h.AddClient(100, 62)
 //	h.AddClient(189, 62)
 //	h.ResizeClient(0, 88, 71)
 //	w, hgt, _ := h.WindowSize() // expect 88x61 (smallest, minus status row)
@@ -19,6 +19,7 @@ package multiclienttmux
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
@@ -117,6 +118,10 @@ func (h *Harness) AddClient(cols, rows int) error {
 // ResizeClient changes an attached client's PTY dimensions and waits briefly
 // for tmux to process the resulting SIGWINCH.
 func (h *Harness) ResizeClient(index, cols, rows int) error {
+	if cols < 1 || cols > math.MaxUint16 || rows < 1 || rows > math.MaxUint16 {
+		return fmt.Errorf("multiclienttmux: dimensions out of range: cols=%d rows=%d (want 1..%d)", cols, rows, math.MaxUint16)
+	}
+
 	h.mu.Lock()
 	if index < 0 || index >= len(h.clients) {
 		h.mu.Unlock()
@@ -125,7 +130,7 @@ func (h *Harness) ResizeClient(index, cols, rows int) error {
 	clientPTY := h.clients[index].pty
 	h.mu.Unlock()
 
-	if err := pty.Setsize(clientPTY, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil { // #nosec G115 -- test helper, sizes provided by caller fit uint16
+	if err := pty.Setsize(clientPTY, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
 		return fmt.Errorf("multiclienttmux: pty.Setsize: %w", err)
 	}
 	time.Sleep(100 * time.Millisecond)

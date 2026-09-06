@@ -1,7 +1,9 @@
 package multiclienttmux_test
 
 import (
+	"math"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,12 +62,13 @@ func TestAggregateSize_FitsCrossedClientDimensions(t *testing.T) {
 
 	h := multiclienttmux.New(t, "agg")
 
-	if err := h.AddClient(88, 62); err != nil {
-		t.Fatalf("AddClient 88x62: %v", err)
+	if err := h.AddClient(100, 62); err != nil {
+		t.Fatalf("AddClient 100x62: %v", err)
 	}
 	if err := h.AddClient(189, 62); err != nil {
 		t.Fatalf("AddClient 189x62: %v", err)
 	}
+	requireWindowSize(t, h, 100, 61)
 
 	// Simulate a font-size change making the narrow client taller. Neither
 	// client now dominates both axes; with a one-row status line, their usable
@@ -77,6 +80,35 @@ func TestAggregateSize_FitsCrossedClientDimensions(t *testing.T) {
 	// The component-wise minimum is the only shared size both viewers can show
 	// completely.
 	requireWindowSize(t, h, 88, 61)
+}
+
+func TestResizeClient_RejectsInvalidDimensions(t *testing.T) {
+	skipIfNoTmux(t)
+
+	h := multiclienttmux.New(t, "invalid-resize")
+	if err := h.AddClient(80, 24); err != nil {
+		t.Fatalf("AddClient 80x24: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		cols int
+		rows int
+	}{
+		{name: "zero columns", cols: 0, rows: 24},
+		{name: "negative columns", cols: -1, rows: 24},
+		{name: "oversized columns", cols: math.MaxUint16 + 1, rows: 24},
+		{name: "zero rows", cols: 80, rows: 0},
+		{name: "negative rows", cols: 80, rows: -1},
+		{name: "oversized rows", cols: 80, rows: math.MaxUint16 + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := h.ResizeClient(0, tc.cols, tc.rows)
+			if err == nil || !strings.Contains(err.Error(), "dimensions out of range") {
+				t.Fatalf("ResizeClient(0, %d, %d) error = %v; want dimensions-out-of-range error", tc.cols, tc.rows, err)
+			}
+		})
+	}
 }
 
 func TestNew_Cleanup(t *testing.T) {
