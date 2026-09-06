@@ -77,6 +77,10 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 
 		status, err := target.GetStatus()
 		if err != nil {
+			// A poll that could not read the session is not evidence the
+			// prompt is still up. Only an unbroken run of sightings counts,
+			// so an unreadable poll restarts it rather than carrying it.
+			startupPromptSeen = 0
 			readyCount = 0
 			continue
 		}
@@ -99,6 +103,10 @@ func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Durat
 			readyCount = 0
 			continue
 		}
+
+		// Out of the startup window. A later return to "starting" is a fresh
+		// startup, not a continuation of the run we were counting.
+		startupPromptSeen = 0
 
 		if status == "active" {
 			sawActive = true

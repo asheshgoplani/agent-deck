@@ -1,6 +1,7 @@
 package send
 
 import (
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -174,5 +175,54 @@ func TestWaitForAgentReady_StartupPromptSettlesAfterRepaint(t *testing.T) {
 	if err := WaitForAgentReady(mock, "claude", 5*time.Second,
 		PromptGates{ClaudeComposer: true}); err != nil {
 		t.Fatalf("a composer that settles should be ready, got: %v", err)
+	}
+}
+
+// statusScriptChecker replays a scripted series of GetStatus results - an empty
+// string means the call fails - alongside a pane that steadily shows the
+// composer. It models a poll that could not read the session, which is a
+// different thing from a poll that watched the prompt disappear.
+type statusScriptChecker struct {
+	statuses []string
+	statusIx atomic.Int64
+	pane     string
+}
+
+func (s *statusScriptChecker) GetStatus() (string, error) {
+	i := int(s.statusIx.Add(1)) - 1
+	if i >= len(s.statuses) || s.statuses[i] == "" {
+		return "", errors.New("status unavailable")
+	}
+	return s.statuses[i], nil
+}
+
+func (s *statusScriptChecker) CapturePaneFresh() (string, error) { return s.pane, nil }
+
+// An unreadable poll must not carry the confirmation count across it. Without
+// the reset, prompt / error / prompt / prompt reaches three sightings and the
+// bypass fires, even though nothing observed the pane during the gap.
+func TestWaitForAgentReady_StartupPromptCountResetsOnStatusError(t *testing.T) {
+	mock := &statusScriptChecker{
+		statuses: []string{"starting", "", "starting", "starting"},
+		pane:     claudeComposerPane,
+	}
+
+	if err := WaitForAgentReady(mock, "claude", 1500*time.Millisecond,
+		PromptGates{ClaudeComposer: true}); err == nil {
+		t.Fatal("an interrupted run of sightings must not satisfy the confirmation count")
+	}
+}
+
+// Leaving the startup window ends the run too: a session that goes back to
+// "starting" is starting again, not continuing the run we were counting.
+func TestWaitForAgentReady_StartupPromptCountResetsOnLeavingStartup(t *testing.T) {
+	mock := &statusScriptChecker{
+		statuses: []string{"starting", "active", "starting", "starting"},
+		pane:     claudeComposerPane,
+	}
+
+	if err := WaitForAgentReady(mock, "claude", 1500*time.Millisecond,
+		PromptGates{ClaudeComposer: true}); err == nil {
+		t.Fatal("a run broken by a non-starting status must not satisfy the confirmation count")
 	}
 }
