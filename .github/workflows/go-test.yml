@@ -46,19 +46,20 @@ permissions:
   contents: read
 
 jobs:
-  full-test-suite:
-    name: Full test suite (PR gate)
+  # Docs-only PRs still need the required check to REPORT, but running the
+  # full race suite for a README tweak is waste. Decide once here; the shards
+  # and the gate below read the answer.
+  changes:
+    name: Detect Go-relevant changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.gochanges.outputs.go }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-
-      # Docs-only PRs still need this required check to REPORT, but running the
-      # full race suite for a README tweak is waste. Detect whether anything
-      # Go-related changed; later steps skip (and the job passes) when not.
       - name: Detect Go-relevant changes
         id: gochanges
         run: |
@@ -73,18 +74,44 @@ jobs:
             echo "No Go-relevant changes; passing the gate without running the suite."
           fi
 
+  # The suite, split by package group across runners (#2169). `go test`
+  # already runs every package in its own process, so a split changes
+  # nothing about what each package sees; it only lets the heavy groups
+  # (cmd, session, ui) run side by side instead of one after another.
+  # Every shard uses the exact release-gate invocation (same gotestsum
+  # flags, -race, 20m per-package timeout, PERF_BUDGET_MULTIPLIER).
+  shard:
+    name: Test shard (${{ matrix.shard.name }})
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: cmd
+            packages: ./cmd/...
+          - name: session
+            packages: ./internal/session/...
+          - name: ui-web
+            packages: ./internal/ui/... ./internal/web/... ./tests/...
+          - name: rest
+            packages: REST
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
       - name: Set up Go
-        if: steps.gochanges.outputs.go == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
           go-version-file: go.mod
 
       # tmux + zoxide back the session and quick-open picker tests that the
-      # full `./...` run exercises. tmux is preinstalled on ubuntu-latest (the
-      # release gate relies on that); install both explicitly here so this gate
-      # is never weaker than the release gate it mirrors.
+      # suite exercises for real; mirror release.yml.
       - name: Install tmux and zoxide
-        if: steps.gochanges.outputs.go == 'true'
         timeout-minutes: 5
         run: |
           sudo apt-get update -qq
@@ -92,21 +119,71 @@ jobs:
           tmux -V
           zoxide --version
 
-      # Mirrors release.yml "Run tests" exactly — same gotestsum flags, same
-      # -race, same 20m per-package timeout, same PERF_BUDGET_MULTIPLIER.
+      - name: Resolve packages
+        id: pkgs
+        run: |
+          if [ "${{ matrix.shard.packages }}" = "REST" ]; then
+            pkgs=$(go list ./... | grep -vE '/cmd/|/internal/session|/internal/ui|/internal/web|/tests/' | tr '\n' ' ')
+          else
+            pkgs="${{ matrix.shard.packages }}"
+          fi
+          echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
+          echo "$pkgs" | tr ' ' '\n'
+
       - name: Run tests
-        if: steps.gochanges.outputs.go == 'true'
         timeout-minutes: 30
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
         run: |
           go install gotest.tools/gotestsum@v1.13.0
-          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="./..." -- -race -timeout 20m
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="${{ steps.pkgs.outputs.packages }}" -- -race -timeout 20m
+
+  # The single required context the main ruleset names. It passes when the
+  # diff is not Go-relevant, or when every shard passed; it fails (and never
+  # skips) otherwise, so a docs-only PR still reports and a broken shard
+  # still blocks.
+  full-test-suite:
+    name: Full test suite (PR gate)
+    needs: [changes, shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Gate on shard results
+        run: |
+          echo "go-relevant: ${{ needs.changes.outputs.go }}"
+          echo "shards: ${{ needs.shard.result }}"
+          if [ "${{ needs.changes.outputs.go }}" != "true" ]; then
+            echo "No Go-relevant changes; gate passes."; exit 0
+          fi
+          if [ "${{ needs.shard.result }}" = "success" ]; then
+            echo "All shards passed."; exit 0
+          fi
+          echo "A shard failed or was cancelled."; exit 1
+
+      - name: Checkout
+        if: needs.changes.outputs.go == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        if: needs.changes.outputs.go == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install tmux and zoxide
+        if: needs.changes.outputs.go == 'true'
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux zoxide
 
       # The ordinary suite above covers shared-state and real-process tests.
       # This bounded additional gate includes the test-only observer lock fixture.
       - name: Verify shared-state ordering proofs
-        if: steps.gochanges.outputs.go == 'true'
+        if: needs.changes.outputs.go == 'true'
         timeout-minutes: 5
         run: bash scripts/ci-shared-state-proof.sh
 
