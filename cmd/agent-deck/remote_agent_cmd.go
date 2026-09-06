@@ -44,6 +44,10 @@ type remoteAgentReply struct {
 	Stderr string `json:"stderr,omitempty"`
 	Code   int    `json:"code"`
 	Error  string `json:"error,omitempty"`
+	// A "changed" event carries the fresh listings so the local side can
+	// apply them at once instead of asking again.
+	Sessions string `json:"sessions,omitempty"`
+	Groups   string `json:"groups,omitempty"`
 }
 
 // remoteAgentDeniedVerbs are never run through the channel: they need a
@@ -74,7 +78,11 @@ func handleRemoteAgent(profile string, args []string) {
 	}
 	runner := func(ctx context.Context, reqArgs []string) (string, string, int) {
 		full := append([]string{"-p", profile}, reqArgs...)
-		cmd := exec.CommandContext(ctx, self, full...)
+		// The peer is the ssh-authenticated user who could run any of these
+		// verbs as `ssh host agent-deck ...` anyway; the verb is checked
+		// against the CLI's own registry and the deny list above, and the
+		// arguments are passed as argv, never through a shell.
+		cmd := exec.CommandContext(ctx, self, full...) //nolint:gosec // see comment above
 		var out, errb strings.Builder
 		cmd.Stdout = &out
 		cmd.Stderr = &errb
@@ -131,11 +139,9 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					cur := remoteAgentStamp(watchPath)
-					if cur == last {
+					if remoteAgentStamp(watchPath) == last {
 						continue
 					}
-					last = cur
 					pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
 					l, _, _ := run(pctx, []string{"list", "--json"})
 					g, _, _ := run(pctx, []string{"group", "list", "--json"})
@@ -143,7 +149,7 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 					h := remoteAgentContentHash(l, g)
 					if h != lastHash {
 						lastHash = h
-						write(remoteAgentReply{Event: "changed"})
+						write(remoteAgentReply{Event: "changed", Sessions: l, Groups: g})
 					}
 					// The probe's own status refresh may have touched the
 					// DB again; take that stamp as seen.
@@ -166,7 +172,7 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 			write(remoteAgentReply{Code: 2, Error: "bad request: " + err.Error()})
 			continue
 		}
-		if len(req.Args) == 0 || remoteAgentDeniedVerbs[req.Args[0]] {
+		if !remoteAgentArgsAllowed(req.Args) {
 			write(remoteAgentReply{ID: req.ID, Code: 2, Error: "verb not allowed over the channel"})
 			continue
 		}
@@ -181,6 +187,20 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 	}
 	cancel()
 	wg.Wait()
+}
+
+// remoteAgentArgsAllowed admits only a known CLI verb that is not on the
+// deny list, with arguments that cannot break the line protocol.
+func remoteAgentArgsAllowed(args []string) bool {
+	if len(args) == 0 || remoteAgentDeniedVerbs[args[0]] || !commandRegistry[args[0]] {
+		return false
+	}
+	for _, a := range args {
+		if strings.ContainsAny(a, "\n\r") {
+			return false
+		}
+	}
+	return true
 }
 
 // remoteAgentContentHash hashes what the TUI would see, ignoring the

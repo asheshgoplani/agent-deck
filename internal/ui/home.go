@@ -3800,18 +3800,125 @@ func (h *Home) propagateThemeToSessions() {
 	})
 }
 
+// applyRemoteFetch folds one fleet fetch result (or a pushed change shaped
+// like one) into the cache, the on-disk snapshot and the rows.
+func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cmd) {
+	if msg.configErr != nil || (msg.gen != 0 && msg.gen < h.remoteFetchApplied) {
+		// Config unreadable, or a fetch that started before one already
+		// applied: keep the current tree. Only release the in-flight
+		// guard so the next poll runs.
+		h.remoteSessionsMu.Lock()
+		h.remotesFetchActive = false
+		h.remoteSessionsMu.Unlock()
+		if msg.configErr != nil {
+			h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
+		}
+		return h, nil
+	}
+	h.remoteFetchApplied = msg.gen
+	h.remoteSessionsMu.Lock()
+	// #1170: merge rather than wholesale-replace so a remote that errored
+	// this round keeps its last-good sessions instead of flickering out.
+	h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
+	// Remote group lists: replace wholesale for remotes that reported a
+	// fresh list; failed remotes keep their last-good cached paths so the
+	// move dialog doesn't lose empty-group targets on a transient SSH
+	// hiccup. Remotes absent from BOTH lists are dropped (deconfigured).
+	if h.remoteGroups == nil {
+		h.remoteGroups = make(map[string][]string)
+	}
+	keepGroups := make(map[string]bool, len(msg.groups)+len(msg.groupsFailed))
+	for name, paths := range msg.groups {
+		h.remoteGroups[name] = paths
+		keepGroups[name] = true
+	}
+	for name := range msg.groupsFailed {
+		keepGroups[name] = true
+	}
+	for name := range h.remoteGroups {
+		if !keepGroups[name] {
+			delete(h.remoteGroups, name)
+		}
+	}
+	for name := range msg.sessions {
+		if !msg.failed[name] {
+			delete(h.remoteFromCache, name)
+		}
+	}
+	h.lastRemoteFetch = time.Now()
+	h.remotesFetchActive = false
+	h.remoteSessionsMu.Unlock()
+	h.saveRemoteSessionsCache(msg.sessions)
+	// #1101: store remote cost summaries so renderCostLine can fold them
+	// into the displayed totals on the next paint.
+	if msg.costs != nil {
+		h.remoteCostsMu.Lock()
+		h.remoteCosts = msg.costs
+		h.remoteCostsMu.Unlock()
+	}
+	// #1112 bug 1: a remote running→waiting transition wouldn't update
+	// the header pill ("[◐ Waiting N]") because countSessionStatuses
+	// caches for 500ms. The row icon updated (read from the map
+	// directly), but the pill froze on the previous fetch's totals.
+	// Invalidate so the next View() recomputes.
+	h.cachedStatusCounts.valid.Store(false)
+	h.rebuildFlatItems()
+	h.remoteSessionsMu.Lock()
+	again := h.remoteRefetchWanted
+	h.remoteRefetchWanted = false
+	if again {
+		h.remotesFetchActive = true
+	}
+	h.remoteSessionsMu.Unlock()
+	if again {
+		return h, h.fetchRemoteSessions
+	}
+	return h, nil
+}
+
 // remoteChangedMsg says a remote pushed "changed" over its persistent
 // channel (#2174): its state DB was written by someone, so refetch now.
-type remoteChangedMsg struct{ remoteName string }
+type remoteChangedMsg struct {
+	remoteName string
+	change     session.RemoteChange
+}
 
 // waitRemoteChange blocks on the fan-in of remote change pushes and turns the
 // next one into a message. It re-arms itself from the handler.
 func (h *Home) waitRemoteChange() tea.Msg {
-	name, ok := <-session.RemoteChangeEvents()
+	change, ok := <-session.RemoteChangeEvents()
 	if !ok {
 		return nil
 	}
-	return remoteChangedMsg{remoteName: name}
+	return remoteChangedMsg{remoteName: change.Remote, change: change}
+}
+
+// pushedRemoteFetch shapes a pushed change as a fetch result for that one
+// remote: every other remote is marked failed (the merge keeps its rows),
+// costs are absent (left untouched), and the sequence number advances so an
+// older poll cannot overwrite this newer state.
+func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedMsg {
+	msg := remoteSessionsFetchedMsg{
+		gen:          atomic.AddUint64(&h.remoteFetchSeq, 1),
+		sessions:     map[string][]session.RemoteSessionInfo{ch.Remote: ch.Sessions},
+		failed:       map[string]bool{},
+		groups:       map[string][]string{},
+		groupsFailed: map[string]bool{},
+	}
+	if ch.Groups != nil {
+		msg.groups[ch.Remote] = ch.Groups
+	} else {
+		msg.groupsFailed[ch.Remote] = true
+	}
+	h.remoteSessionsMu.RLock()
+	for name := range h.remoteSessions {
+		if name != ch.Remote {
+			msg.failed[name] = true
+			msg.groupsFailed[name] = true
+		}
+	}
+	h.remoteSessionsMu.RUnlock()
+	return msg
 }
 
 // fetchRemoteSessions fetches sessions from all configured remotes.
@@ -6913,79 +7020,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteSessionsFetchedMsg:
-		if msg.configErr != nil || (msg.gen != 0 && msg.gen < h.remoteFetchApplied) {
-			// Config unreadable, or a fetch that started before one already
-			// applied: keep the current tree. Only release the in-flight
-			// guard so the next poll runs.
-			h.remoteSessionsMu.Lock()
-			h.remotesFetchActive = false
-			h.remoteSessionsMu.Unlock()
-			if msg.configErr != nil {
-				h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
-			}
-			return h, nil
-		}
-		h.remoteFetchApplied = msg.gen
-		h.remoteSessionsMu.Lock()
-		// #1170: merge rather than wholesale-replace so a remote that errored
-		// this round keeps its last-good sessions instead of flickering out.
-		h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
-		// Remote group lists: replace wholesale for remotes that reported a
-		// fresh list; failed remotes keep their last-good cached paths so the
-		// move dialog doesn't lose empty-group targets on a transient SSH
-		// hiccup. Remotes absent from BOTH lists are dropped (deconfigured).
-		if h.remoteGroups == nil {
-			h.remoteGroups = make(map[string][]string)
-		}
-		keepGroups := make(map[string]bool, len(msg.groups)+len(msg.groupsFailed))
-		for name, paths := range msg.groups {
-			h.remoteGroups[name] = paths
-			keepGroups[name] = true
-		}
-		for name := range msg.groupsFailed {
-			keepGroups[name] = true
-		}
-		for name := range h.remoteGroups {
-			if !keepGroups[name] {
-				delete(h.remoteGroups, name)
-			}
-		}
-		for name := range msg.sessions {
-			if !msg.failed[name] {
-				delete(h.remoteFromCache, name)
-			}
-		}
-		h.lastRemoteFetch = time.Now()
-		h.remotesFetchActive = false
-		h.remoteSessionsMu.Unlock()
-		h.saveRemoteSessionsCache(msg.sessions)
-		// #1101: store remote cost summaries so renderCostLine can fold them
-		// into the displayed totals on the next paint.
-		h.remoteCostsMu.Lock()
-		h.remoteCosts = msg.costs
-		h.remoteCostsMu.Unlock()
-		// #1112 bug 1: a remote running→waiting transition wouldn't update
-		// the header pill ("[◐ Waiting N]") because countSessionStatuses
-		// caches for 500ms. The row icon updated (read from the map
-		// directly), but the pill froze on the previous fetch's totals.
-		// Invalidate so the next View() recomputes.
-		h.cachedStatusCounts.valid.Store(false)
-		h.rebuildFlatItems()
-		h.remoteSessionsMu.Lock()
-		again := h.remoteRefetchWanted
-		h.remoteRefetchWanted = false
-		if again {
-			h.remotesFetchActive = true
-		}
-		h.remoteSessionsMu.Unlock()
-		if again {
-			return h, h.fetchRemoteSessions
-		}
-		return h, nil
+		return h.applyRemoteFetch(msg)
 
 	case remoteChangedMsg:
-		// A pushed change: refetch at once unless a fetch is already in
-		// flight (its sequence number makes the next poll pick up the rest).
+		if msg.change.HasData {
+			// The event brought the listings: apply them now, no round trip.
+			uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("pushed_data", true))
+			_, cmd := h.applyRemoteFetch(h.pushedRemoteFetch(msg.change))
+			return h, tea.Batch(cmd, h.waitRemoteChange)
+		}
+		// A pushed change without data: refetch at once unless a fetch is
+		// already in flight (then one more runs after it).
 		h.remoteSessionsMu.Lock()
 		active := h.remotesFetchActive
 		if active {

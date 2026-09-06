@@ -26,8 +26,10 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 	// The listing probe reflects the state file's content, so a write that
 	// changes what the TUI would see produces exactly one "changed".
 	run := func(ctx context.Context, args []string) (string, string, int) {
-		if args[0] == "fail" {
-			return "", "boom", 3
+		for _, a := range args {
+			if a == "--fail" {
+				return "", "boom", 3
+			}
 		}
 		if args[0] == "list" {
 			content, _ := os.ReadFile(db)
@@ -66,7 +68,7 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 	if r := next(); r.ID != 7 || r.Code != 0 || r.Stdout != "ran:list --json:v1" {
 		t.Fatalf("list reply = %+v", r)
 	}
-	send(8, "fail")
+	send(8, "status", "--fail")
 	if r := next(); r.ID != 8 || r.Code != 3 || r.Stderr != "boom" {
 		t.Fatalf("failing command reply = %+v", r)
 	}
@@ -82,7 +84,7 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(120 * time.Millisecond)
-	send(10, "noop")
+	send(10, "status", "--noop")
 	if r := next(); r.ID != 10 || r.Event != "" {
 		t.Fatalf("a content-preserving write must not push an event; got %+v before the noop reply", r)
 	}

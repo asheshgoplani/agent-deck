@@ -24,7 +24,7 @@ import (
 type RemoteChannel struct {
 	name    string
 	dial    func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)
-	events  chan<- string
+	events  chan<- RemoteChange
 	mu      sync.Mutex
 	stdin   io.WriteCloser
 	closeFn func()
@@ -45,12 +45,24 @@ type remoteChannelRequest struct {
 }
 
 type remoteChannelReply struct {
-	ID     int64  `json:"id,omitempty"`
-	Event  string `json:"event,omitempty"`
-	Stdout string `json:"stdout,omitempty"`
-	Stderr string `json:"stderr,omitempty"`
-	Code   int    `json:"code"`
-	Error  string `json:"error,omitempty"`
+	ID       int64  `json:"id,omitempty"`
+	Event    string `json:"event,omitempty"`
+	Stdout   string `json:"stdout,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+	Code     int    `json:"code"`
+	Error    string `json:"error,omitempty"`
+	Sessions string `json:"sessions,omitempty"`
+	Groups   string `json:"groups,omitempty"`
+}
+
+// RemoteChange is one pushed change from a remote. Sessions and Groups are
+// the remote's fresh listings when the agent sent them (nil when it did
+// not, in which case the receiver fetches).
+type RemoteChange struct {
+	Remote   string
+	Sessions []RemoteSessionInfo
+	Groups   []string
+	HasData  bool
 }
 
 // errChannelDown means the transport failed, not the remote command; callers
@@ -60,10 +72,10 @@ var errChannelDown = errors.New("remote channel down")
 // remoteChangeEvents fans in "changed" pushes from every remote for the TUI.
 // Buffered and non-blocking on the sending side: a burst collapses into a few
 // pending refreshes, never a stall on the reader goroutine.
-var remoteChangeEvents = make(chan string, 32)
+var remoteChangeEvents = make(chan RemoteChange, 32)
 
-// RemoteChangeEvents delivers the name of a remote whose state changed.
-func RemoteChangeEvents() <-chan string { return remoteChangeEvents }
+// RemoteChangeEvents delivers pushed changes, one per remote change.
+func RemoteChangeEvents() <-chan RemoteChange { return remoteChangeEvents }
 
 var (
 	remoteChannelsMu sync.Mutex
@@ -111,7 +123,9 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 		return nil, nil, nil, err
 	}
 	_ = os.MkdirAll(sshControlDir, 0700)
-	cmd := exec.CommandContext(ctx, "ssh", r.sshBaseArgs(r.buildRemoteCommand("remote-agent"))...)
+	// Same argv construction as every other ssh exec in this file (host
+	// validated above, options fixed, remote command shell-quoted).
+	cmd := exec.CommandContext(ctx, "ssh", r.sshBaseArgs(r.buildRemoteCommand("remote-agent"))...) //nolint:gosec // see comment above
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, nil, err
@@ -215,7 +229,7 @@ func (c *RemoteChannel) readLoop(r *bufio.Reader) {
 		}
 		if reply.Event == "changed" {
 			select {
-			case c.events <- c.name:
+			case c.events <- c.changeFromReply(reply):
 			default:
 			}
 			continue
@@ -231,6 +245,32 @@ func (c *RemoteChannel) readLoop(r *bufio.Reader) {
 			ch <- reply
 		}
 	}
+}
+
+// changeFromReply parses the listings a "changed" event carries; a payload
+// that does not parse is dropped so the receiver fetches instead.
+func (c *RemoteChannel) changeFromReply(r remoteChannelReply) RemoteChange {
+	ch := RemoteChange{Remote: c.name}
+	if strings.TrimSpace(r.Sessions) == "" {
+		return ch
+	}
+	sessions, err := parseRemoteSessions([]byte(r.Sessions))
+	if err != nil {
+		return ch
+	}
+	for i := range sessions {
+		sessions[i].RemoteName = c.name
+	}
+	ch.Sessions = sessions
+	ch.HasData = true
+	trimmed := strings.TrimSpace(r.Groups)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var parsed groupListJSON
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			ch.Groups = parseGroupListPaths(parsed)
+		}
+	}
+	return ch
 }
 
 // markDown closes the transport and fails every request in flight so the
@@ -256,7 +296,9 @@ func (c *RemoteChannel) markDown() {
 // SSHRunner.run produces), or errChannelDown when the transport failed.
 func (c *RemoteChannel) Request(ctx context.Context, args []string) ([]byte, error) {
 	if !c.up.Load() {
-		go c.ensureConnected()
+		// The channel outlives this request, so its dial is not bound to
+		// the request's context.
+		go c.ensureConnected() //nolint:gosec // see comment above
 		return nil, errChannelDown
 	}
 	id := c.nextID.Add(1)

@@ -532,18 +532,20 @@ func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, err
 	if err != nil {
 		return nil, err
 	}
+	return parseRemoteSessions(output)
+}
 
-	// Handle empty/non-JSON output (e.g., "No sessions found" message)
+// parseRemoteSessions decodes `list --json` output; empty or non-JSON output
+// (an older remote, or "No sessions found") is an empty list, not an error.
+func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	trimmed := bytes.TrimSpace(output)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, nil
 	}
-
 	var sessions []RemoteSessionInfo
 	if err := json.Unmarshal(trimmed, &sessions); err != nil {
 		return nil, fmt.Errorf("failed to parse remote sessions: %w", err)
 	}
-
 	return sessions, nil
 }
 
