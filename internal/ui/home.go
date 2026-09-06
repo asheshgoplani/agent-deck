@@ -648,6 +648,10 @@ type Home struct {
 	// time from keypress to the remote's confirmation, the number that
 	// tells whether a remote deck feels local.
 	remoteActionStarted map[string]time.Time
+	// remoteRefetchWanted is set when a remote pushed "changed" while a
+	// fetch was already in flight: that fetch may predate the change, so
+	// another one starts as soon as it lands.
+	remoteRefetchWanted bool
 	// remotePending marks remote session rows with an action underway
 	// (sessionID -> "deleting…"), drawn on the row so the screen says what
 	// is happening while the remote answers instead of freezing.
@@ -3557,6 +3561,7 @@ func (h *Home) Init() tea.Cmd {
 		h.reviverTick(),
 		h.checkForUpdate(),
 		h.fetchRemoteSessions,
+		h.waitRemoteChange,
 		// Opt-in telemetry daily report. MaybeSend re-reads consent from
 		// disk and the kill switches from env, so this is a no-op for
 		// everyone who has not said yes.
@@ -3793,6 +3798,20 @@ func (h *Home) propagateThemeToSessions() {
 			}
 		}
 	})
+}
+
+// remoteChangedMsg says a remote pushed "changed" over its persistent
+// channel (#2174): its state DB was written by someone, so refetch now.
+type remoteChangedMsg struct{ remoteName string }
+
+// waitRemoteChange blocks on the fan-in of remote change pushes and turns the
+// next one into a message. It re-arms itself from the handler.
+func (h *Home) waitRemoteChange() tea.Msg {
+	name, ok := <-session.RemoteChangeEvents()
+	if !ok {
+		return nil
+	}
+	return remoteChangedMsg{remoteName: name}
 }
 
 // fetchRemoteSessions fetches sessions from all configured remotes.
@@ -6952,7 +6971,34 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate so the next View() recomputes.
 		h.cachedStatusCounts.valid.Store(false)
 		h.rebuildFlatItems()
+		h.remoteSessionsMu.Lock()
+		again := h.remoteRefetchWanted
+		h.remoteRefetchWanted = false
+		if again {
+			h.remotesFetchActive = true
+		}
+		h.remoteSessionsMu.Unlock()
+		if again {
+			return h, h.fetchRemoteSessions
+		}
 		return h, nil
+
+	case remoteChangedMsg:
+		// A pushed change: refetch at once unless a fetch is already in
+		// flight (its sequence number makes the next poll pick up the rest).
+		h.remoteSessionsMu.Lock()
+		active := h.remotesFetchActive
+		if active {
+			h.remoteRefetchWanted = true
+		} else {
+			h.remotesFetchActive = true
+		}
+		h.remoteSessionsMu.Unlock()
+		uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("fetch_in_flight", active))
+		if active {
+			return h, h.waitRemoteChange
+		}
+		return h, tea.Batch(h.fetchRemoteSessions, h.waitRemoteChange)
 
 	case remoteLatenciesFetchedMsg:
 		h.remoteLatencyMu.Lock()
