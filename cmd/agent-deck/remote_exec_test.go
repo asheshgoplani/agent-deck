@@ -101,6 +101,7 @@ func TestRemoteCommandParity(t *testing.T) {
 		{"list", "--json"}, {"status", "--json"}, {"session", "show", title, "--json"},
 		{"session", "output", "missing", "--json"}, {"session", "start", "missing", "--json"},
 		{"session", "stop", "missing", "--json"}, {"session", "restart", "missing", "--json"},
+		{"session", "archive", "missing", "--json"}, {"session", "unarchive", "missing", "--json"},
 		{"worktree", "info", "missing", "--json"}, {"mcp", "attach", "missing", "none", "--json"},
 		{"skill", "attach", "missing", "none"},
 	} {
@@ -391,4 +392,18 @@ func TestRemoteCommandParity(t *testing.T) {
 		t.Errorf("explicit exec: %d %q %q", code, out, stderr)
 	}
 
+}
+
+// The passthrough allow-list must admit the session archive/unarchive verbs
+// the TUI forwards, and keep refusing anything it does not name.
+func TestRemoteCommandArgsSessionArchiveVerbs(t *testing.T) {
+	for _, args := range [][]string{{"session", "archive", "id"}, {"session", "unarchive", "id", "--json"}} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	if _, err := remoteCommandArgs([]string{"session", "remove", "id"}); err == nil {
+		t.Fatal("session remove must stay unsupported")
+	}
 }

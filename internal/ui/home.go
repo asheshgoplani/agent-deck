@@ -2759,8 +2759,21 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	remoteNames := make([]string, 0, len(h.remoteSessions))
 	remotes := make(map[string][]session.RemoteSessionInfo, len(h.remoteSessions))
 	for name, sessions := range h.remoteSessions {
+		// Partition remote rows the way local ones were above: the active
+		// view hides remote sessions the remote reports archived, and the ^
+		// archived view shows only those. A remote with nothing on the
+		// current side of that split contributes no rows, header included.
+		partitioned := make([]session.RemoteSessionInfo, 0, len(sessions))
+		for _, remote := range sessions {
+			if remote.Archived == viewArchived {
+				partitioned = append(partitioned, remote)
+			}
+		}
+		if len(partitioned) == 0 {
+			continue
+		}
 		remoteNames = append(remoteNames, name)
-		remotes[name] = append([]session.RemoteSessionInfo(nil), sessions...)
+		remotes[name] = partitioned
 	}
 	h.remoteSessionsMu.RUnlock()
 	sort.Strings(remoteNames)
@@ -2793,16 +2806,14 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 			}
 		}
-		if !viewArchived {
-			for _, sessions := range remotes {
-				for _, remote := range sessions {
-					hasCandidates = true
-					if remoteMatchesTime(remote) {
-						if activity, known := remote.LastActivity(); known {
-							h.recordTimeFilterExpiry(activity, now)
-						}
-						hasMatches = true
+		for _, sessions := range remotes {
+			for _, remote := range sessions {
+				hasCandidates = true
+				if remoteMatchesTime(remote) {
+					if activity, known := remote.LastActivity(); known {
+						h.recordTimeFilterExpiry(activity, now)
 					}
+					hasMatches = true
 				}
 			}
 		}
@@ -2914,7 +2925,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		h.flatItems = expanded
 	}
 
-	if len(remotes) > 0 && h.statusFilter != FilterModeArchived {
+	if len(remotes) > 0 {
 		for _, remoteName := range remoteNames {
 			sessions := remotes[remoteName]
 			if h.timeFilter != session.TimeFilterAll {
@@ -6756,6 +6767,18 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("closed '%s' on %s", msg.title, msg.remoteName))
 		return h, h.fetchRemoteSessions
 
+	case remoteSessionArchivedMsg:
+		verb := "archive"
+		if !msg.archived {
+			verb = "unarchive"
+		}
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to %s remote session: %w", verb, msg.err))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("%sd '%s' on %s", verb, msg.title, msg.remoteName))
+		return h, h.fetchRemoteSessions
+
 	case remoteSessionRestartedMsg:
 		delete(h.remoteRestarting, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		delete(h.resumingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
@@ -10121,6 +10144,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil && !item.Session.IsArchived() {
 				h.confirmDialog.ShowArchiveSession(item.Session.ID, item.Session.Title)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && !item.RemoteSession.Archived {
+				h.confirmDialog.ShowArchiveRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -10133,6 +10158,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsArchived() {
 				h.confirmDialog.ShowUnarchiveSession(item.Session.ID, item.Session.Title)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && item.RemoteSession.Archived {
+				h.confirmDialog.ShowUnarchiveRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -10797,6 +10824,13 @@ func (h *Home) confirmAction() tea.Cmd {
 		title := h.confirmDialog.targetName
 		h.confirmDialog.Hide()
 		return h.closeRemoteSession(remoteName, sessionID, title)
+	case ConfirmArchiveRemoteSession, ConfirmUnarchiveRemoteSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		title := h.confirmDialog.targetName
+		archive := h.confirmDialog.GetConfirmType() == ConfirmArchiveRemoteSession
+		h.confirmDialog.Hide()
+		return h.setRemoteSessionArchived(remoteName, sessionID, title, archive)
 	case ConfirmRemoveSession:
 		sessionID := h.confirmDialog.GetTargetID()
 		if inst := h.getInstanceByID(sessionID); inst != nil {
@@ -14351,6 +14385,16 @@ type remoteSessionClosedMsg struct {
 	err        error
 }
 
+// remoteSessionArchivedMsg reports the outcome of a remote archive (archived
+// true) or unarchive (archived false).
+type remoteSessionArchivedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	archived   bool
+	err        error
+}
+
 type remoteSessionRestartedMsg struct {
 	remoteName string
 	sessionID  string
@@ -14429,6 +14473,35 @@ func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 		defer cancel()
 		err = runner.StopSession(ctx, sessionID)
 		return remoteSessionClosedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: err}
+	}
+}
+
+// setRemoteSessionArchived archives (archive true) or unarchives a remote
+// session through the remote's own `session archive` / `session unarchive`,
+// then refreshes the remote list so the row moves between the active and
+// archived (^) views the way a local session does.
+func (h *Home) setRemoteSessionArchived(remoteName, sessionID, title string, archive bool) tea.Cmd {
+	return func() tea.Msg {
+		result := remoteSessionArchivedMsg{remoteName: remoteName, sessionID: sessionID, title: title, archived: archive}
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			result.err = fmt.Errorf("failed to load remote config")
+			return result
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			result.err = fmt.Errorf("remote '%s' not found", remoteName)
+			return result
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if archive {
+			result.err = runner.ArchiveSession(ctx, sessionID)
+		} else {
+			result.err = runner.UnarchiveSession(ctx, sessionID)
+		}
+		return result
 	}
 }
 

@@ -1284,6 +1284,21 @@ func (r *SSHRunner) RestartSession(ctx context.Context, sessionID string) error 
 	return err
 }
 
+// ArchiveSession stops a session on the remote host and marks it archived
+// there (the remote's own `session archive`), so the remote's archived list
+// is the one source of truth and the next `list --json` reports it archived.
+func (r *SSHRunner) ArchiveSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "archive", sessionID)
+	return err
+}
+
+// UnarchiveSession clears the archive flag on the remote host without
+// restarting the session (the remote's own `session unarchive`).
+func (r *SSHRunner) UnarchiveSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "unarchive", sessionID)
+	return err
+}
+
 // RemoteSessionInfo represents a session from a remote agent-deck instance.
 type RemoteSessionInfo struct {
 	ID        string `json:"id"`

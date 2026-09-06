@@ -658,3 +658,37 @@ func TestIsRemotePathMissing(t *testing.T) {
 		t.Fatal("nil error treated as a missing path")
 	}
 }
+
+// Archive/unarchive forward to the remote's own `session archive` /
+// `session unarchive` verbs with the session id as the only operand, so the
+// remote's archived list stays the single source of truth.
+func TestSSHRunnerArchiveSession_ForwardsRemoteVerbs(t *testing.T) {
+	var calls [][]string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return []byte(`{"success":true}`), nil
+		},
+	}
+	if err := runner.ArchiveSession(context.Background(), "abc123"); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+	if err := runner.UnarchiveSession(context.Background(), "abc123"); err != nil {
+		t.Fatalf("UnarchiveSession: %v", err)
+	}
+	want := "session archive abc123|session unarchive abc123"
+	got := make([]string, 0, len(calls))
+	for _, c := range calls {
+		got = append(got, strings.Join(c, " "))
+	}
+	if strings.Join(got, "|") != want {
+		t.Fatalf("remote commands = %q, want %q", strings.Join(got, "|"), want)
+	}
+
+	failing := &SSHRunner{runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+		return nil, errors.New("session 'abc123' is already archived")
+	}}
+	if err := failing.ArchiveSession(context.Background(), "abc123"); err == nil {
+		t.Fatal("a remote refusal must surface as an error")
+	}
+}
