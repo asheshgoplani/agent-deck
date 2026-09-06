@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -37,9 +38,16 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 		}
 		return "ran:" + strings.Join(args, " "), "", 0
 	}
+	// The probe is what the change feed compares; here it is the same
+	// listing the request path returns, so the two stay in step.
+	probe := func() (string, string, error) {
+		l, _, _ := run(context.Background(), []string{"list", "--json"})
+		g, _, _ := run(context.Background(), []string{"group", "list", "--json"})
+		return l, g, nil
+	}
 	done := make(chan struct{})
 	go func() {
-		serveRemoteAgent(context.Background(), inR, outW, run, db, 20*time.Millisecond)
+		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond)
 		_ = outW.Close()
 		close(done)
 	}()
@@ -101,6 +109,90 @@ func TestRemoteAgent_RequestsEventsAndDenyList(t *testing.T) {
 		}
 	case <-deadline:
 		t.Fatal("no changed event after the state file was written")
+	}
+
+	_ = inW.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent did not exit when stdin closed")
+	}
+}
+
+// The "changed" event reports how long the probe took, and a probe that
+// fails still tells the TUI to refetch: an event without listings.
+func TestRemoteAgent_ProbeTimingAndFailureFallback(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "state.db")
+	if err := os.WriteFile(db, []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	run := func(context.Context, []string) (string, string, int) { return "", "", 0 }
+	probe := func() (string, string, error) {
+		content, _ := os.ReadFile(db)
+		if string(content) == "broken" {
+			return "", "", errors.New("storage gone")
+		}
+		time.Sleep(5 * time.Millisecond)
+		return "[" + string(content) + "]", "{}", nil
+	}
+	done := make(chan struct{})
+	go func() {
+		serveRemoteAgent(context.Background(), inR, outW, run, probe, db, 20*time.Millisecond)
+		_ = outW.Close()
+		close(done)
+	}()
+	sc := bufio.NewScanner(outR)
+	next := func() remoteAgentReply {
+		t.Helper()
+		got := make(chan remoteAgentReply, 1)
+		go func() {
+			if !sc.Scan() {
+				t.Errorf("agent closed early: %v", sc.Err())
+				got <- remoteAgentReply{}
+				return
+			}
+			var r remoteAgentReply
+			if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+				t.Errorf("bad reply %q: %v", sc.Text(), err)
+			}
+			got <- r
+		}()
+		select {
+		case r := <-got:
+			return r
+		case <-time.After(2 * time.Second):
+			t.Fatal("no line from the agent within 2s")
+			return remoteAgentReply{}
+		}
+	}
+	if r := next(); r.Event != "ready" {
+		t.Fatalf("first line must announce ready, got %+v", r)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	if err := os.WriteFile(db, []byte("v2-longer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := next()
+	if r.Event != "changed" || r.Sessions != "[v2-longer]" || r.Groups != "{}" {
+		t.Fatalf("expected a changed event with listings, got %+v", r)
+	}
+	if r.ProbeMS < 5 {
+		t.Fatalf("probe_ms = %d, want the probe's duration (>= 5ms)", r.ProbeMS)
+	}
+
+	// The feed re-reads the stamp after a probe to absorb the probe's own
+	// writes; give it that moment so this write is not taken as seen.
+	time.Sleep(30 * time.Millisecond)
+	if err := os.WriteFile(db, []byte("broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = next()
+	if r.Event != "changed" || r.Sessions != "" || r.Groups != "" {
+		t.Fatalf("a failing probe must push a bare changed event, got %+v", r)
 	}
 
 	_ = inW.Close()

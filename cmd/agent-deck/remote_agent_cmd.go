@@ -31,6 +31,14 @@ import (
 // the answer is byte-for-byte what `ssh host agent-deck <args>` would print;
 // only the ssh handshake and channel setup per command are gone, and the
 // change feed is new. Requests run concurrently; answers carry their id.
+//
+// The change feed's probe does not fork: it keeps the profile's storage open
+// in this process and builds the two listings through the same functions
+// `list --json` and `group list --json` print through (buildListJSON,
+// buildGroupListJSON). Booting the binary twice per change, each opening
+// storage and refreshing every status, was most of the second between a
+// change on the remote and the local screen; the event carries the probe's
+// duration as probe_ms so that cost stays visible.
 
 type remoteAgentRequest struct {
 	ID   int64    `json:"id"`
@@ -48,7 +56,14 @@ type remoteAgentReply struct {
 	// apply them at once instead of asking again.
 	Sessions string `json:"sessions,omitempty"`
 	Groups   string `json:"groups,omitempty"`
+	// ProbeMS is how long the "changed" event's listings took to build.
+	ProbeMS int64 `json:"probe_ms,omitempty"`
 }
+
+// remoteAgentProbeFunc builds the current `list --json` and `group list
+// --json` bodies for the change feed. The in-process one is the default;
+// tests inject their own.
+type remoteAgentProbeFunc func() (listJSON, groupJSON string, err error)
 
 // remoteAgentDeniedVerbs are never run through the channel: they need a
 // terminal, or must not be reachable from a remote TUI at all.
@@ -76,6 +91,15 @@ func handleRemoteAgent(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
 		os.Exit(1)
 	}
+	// The in-process probe refreshes statuses through tmux like `list` does,
+	// and `list` fixes up PATH for tmux before it starts.
+	ensureTmuxOnPath()
+	probe, closeProbe, err := newRemoteAgentProbe(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
+		os.Exit(1)
+	}
+	defer closeProbe()
 	runner := func(ctx context.Context, reqArgs []string) (string, string, int) {
 		full := append([]string{"-p", profile}, reqArgs...)
 		// The peer is the ssh-authenticated user who could run any of these
@@ -95,12 +119,41 @@ func handleRemoteAgent(profile string, args []string) {
 		}
 		return out.String(), errb.String(), code
 	}
-	serveRemoteAgent(context.Background(), os.Stdin, os.Stdout, runner, dbPath, 250*time.Millisecond)
+	serveRemoteAgent(context.Background(), os.Stdin, os.Stdout, runner, probe, dbPath, 250*time.Millisecond)
+}
+
+// newRemoteAgentProbe opens the profile's storage once and returns a probe
+// that loads it, refreshes statuses, and formats both listings exactly as
+// the CLI would, plus the close for the storage handle. Like `list --json`
+// it warms the tmux and hook-status caches once per probe, then formats
+// both listings from that one load.
+func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func(), error) {
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		return nil, nil, err
+	}
+	probe := func() (string, string, error) {
+		instances, groups, err := storage.LoadWithGroups()
+		if err != nil {
+			return "", "", err
+		}
+		session.RefreshInstancesForCLIStatus(instances)
+		l, err := buildListJSON(storage.Profile(), instances)
+		if err != nil {
+			return "", "", err
+		}
+		g, err := buildGroupListJSON(session.NewGroupTreeWithGroups(instances, groups))
+		if err != nil {
+			return "", "", err
+		}
+		return string(l), string(g), nil
+	}
+	return probe, func() { _ = storage.Close() }, nil
 }
 
 // serveRemoteAgent is the agent loop, separated from process wiring so it is
 // testable with pipes. It returns when stdin closes.
-func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func(context.Context, []string) (string, string, int), watchPath string, watchEvery time.Duration) {
+func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func(context.Context, []string) (string, string, int), probe remoteAgentProbeFunc, watchPath string, watchEvery time.Duration) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wmu sync.Mutex
@@ -119,18 +172,15 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 	// Change feed. A cheap mtime/size poll on state.db notices any write by
 	// any process on the remote; but a status refresh by `list` itself also
 	// writes, so a bare stamp would feed back into the TUI's own refetch
-	// forever. The stamp only triggers a probe: the agent runs the two
+	// forever. The stamp only triggers a probe: the agent builds the two
 	// listings the TUI fetches and pushes "changed" only when their content
 	// differs from what it last pushed.
-	if watchPath != "" && watchEvery > 0 {
+	if watchPath != "" && watchEvery > 0 && probe != nil {
 		go func() {
 			last := remoteAgentStamp(watchPath)
 			// Seed with the current content so the first stamp change is
 			// judged against what the TUI already fetched at startup.
-			sctx, scancel := context.WithTimeout(ctx, 30*time.Second)
-			l0, _, _ := run(sctx, []string{"list", "--json"})
-			g0, _, _ := run(sctx, []string{"group", "list", "--json"})
-			scancel()
+			l0, g0, _ := probe()
 			lastHash := remoteAgentContentHash(l0, g0)
 			t := time.NewTicker(watchEvery)
 			defer t.Stop()
@@ -142,14 +192,17 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, run func
 					if remoteAgentStamp(watchPath) == last {
 						continue
 					}
-					pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-					l, _, _ := run(pctx, []string{"list", "--json"})
-					g, _, _ := run(pctx, []string{"group", "list", "--json"})
-					pcancel()
-					h := remoteAgentContentHash(l, g)
-					if h != lastHash {
+					started := time.Now()
+					l, g, err := probe()
+					elapsed := time.Since(started).Milliseconds()
+					if err != nil {
+						// No listings to compare or push: tell the TUI
+						// something changed and let it fetch.
+						fmt.Fprintf(os.Stderr, "remote-agent: probe: %v\n", err)
+						write(remoteAgentReply{Event: "changed", ProbeMS: elapsed})
+					} else if h := remoteAgentContentHash(l, g); h != lastHash {
 						lastHash = h
-						write(remoteAgentReply{Event: "changed", Sessions: l, Groups: g})
+						write(remoteAgentReply{Event: "changed", Sessions: l, Groups: g, ProbeMS: elapsed})
 					}
 					// The probe's own status refresh may have touched the
 					// DB again; take that stamp as seen.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -53,6 +54,7 @@ type remoteChannelReply struct {
 	Error    string `json:"error,omitempty"`
 	Sessions string `json:"sessions,omitempty"`
 	Groups   string `json:"groups,omitempty"`
+	ProbeMS  int64  `json:"probe_ms,omitempty"`
 }
 
 // RemoteChange is one pushed change from a remote. Sessions and Groups are
@@ -228,6 +230,10 @@ func (c *RemoteChannel) readLoop(r *bufio.Reader) {
 			continue
 		}
 		if reply.Event == "changed" {
+			sessionLog.Debug("remote_channel_changed",
+				slog.String("remote", c.name),
+				slog.Bool("pushed_data", strings.TrimSpace(reply.Sessions) != ""),
+				slog.Int64("probe_ms", reply.ProbeMS))
 			select {
 			case c.events <- c.changeFromReply(reply):
 			default:
