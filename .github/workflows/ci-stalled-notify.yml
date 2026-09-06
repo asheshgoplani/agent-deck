@@ -1,0 +1,122 @@
+name: CI stalled notify
+
+# Fork PRs from first-time contributors sit with every workflow at
+# `action_required` until a maintainer clicks "Approve and run". Nothing else
+# surfaces that state; the PR just looks like CI never reported. This workflow
+# listens to the gating workflows, labels the PR `needs-ci` while a run is
+# waiting for approval, posts to the same ntfy topic pr-notify.yml uses, and
+# clears the label once any run for that head completes. It never comments on
+# the PR.
+
+on:
+  workflow_run:
+    workflows: ["Go tests", "golangci-lint", "CodeQL"]
+    types: [requested, completed]
+
+permissions:
+  pull-requests: write
+  actions: read
+  contents: read
+
+env:
+  STALL_LABEL: needs-ci
+
+jobs:
+  stalled:
+    runs-on: ubuntu-latest
+    # Only two states matter: a run waiting for approval, or a run that finished.
+    # A plain `requested` event with no conclusion yet is a normal start.
+    if: >-
+      github.event.workflow_run.conclusion == 'action_required' ||
+      github.event.action == 'completed'
+    steps:
+      - name: Find PR and reconcile label
+        id: reconcile
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const label = process.env.STALL_LABEL;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Prefer the PRs GitHub attached to the run. That list is empty for
+            // fork PRs, which is exactly the case this workflow exists for, so
+            // fall back to the open PRs whose head sha matches the run.
+            let prs = (run.pull_requests || []).map(p => p.number);
+            if (prs.length === 0) {
+              const open = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              prs = open.filter(p => p.head.sha === run.head_sha).map(p => p.number);
+            }
+            if (prs.length === 0) {
+              const found = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${owner}/${repo} is:pr is:open sha:${run.head_sha}`,
+                per_page: 5,
+              });
+              prs = found.data.items.map(i => i.number);
+            }
+            if (prs.length === 0) {
+              core.info(`No open PR for ${run.head_sha} (${run.name} #${run.run_number}); nothing to do.`);
+              core.setOutput('notify', 'false');
+              return;
+            }
+
+            const stalled = run.conclusion === 'action_required';
+            const notify = [];
+
+            for (const number of prs) {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+              if (pr.state !== 'open') continue;
+              const labeled = pr.labels.some(l => l.name === label);
+
+              if (stalled) {
+                if (labeled) {
+                  core.info(`#${number} already labeled ${label}; skipping duplicate notification.`);
+                  continue;
+                }
+                await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [label] });
+                core.info(`Labeled #${number} ${label} (${run.name} is action_required).`);
+                notify.push({
+                  type: 'ci_stalled',
+                  number,
+                  title: pr.title,
+                  url: pr.html_url,
+                  author: pr.user.login,
+                  head_branch: pr.head.ref,
+                  head_sha: run.head_sha,
+                  workflow: run.name,
+                  run_url: run.html_url,
+                  conclusion: run.conclusion,
+                });
+              } else if (labeled) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: label });
+                core.info(`Removed ${label} from #${number} (${run.name} concluded ${run.conclusion}).`);
+              }
+            }
+
+            core.setOutput('notify', notify.length > 0 ? 'true' : 'false');
+            // Base64 so the JSON survives the outputs boundary unchanged, as pr-notify.yml does.
+            core.setOutput('context_b64', Buffer.from(JSON.stringify(notify)).toString('base64'));
+
+      - name: Send to ntfy
+        if: steps.reconcile.outputs.notify == 'true'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          CONTEXT_B64: ${{ steps.reconcile.outputs.context_b64 }}
+        run: |
+          # Decode the list; one notification per newly labeled PR.
+          CONTEXT=$(echo "$CONTEXT_B64" | base64 -d)
+
+          echo "$CONTEXT" | jq -c '.[]' | while read -r ITEM; do
+            PR_NUM=$(echo "$ITEM" | jq -r '.number')
+            PR_TITLE=$(echo "$ITEM" | jq -r '.title')
+
+            curl -s \
+              -H "Title: CI needs approval: #${PR_NUM} ${PR_TITLE}" \
+              -H "Priority: high" \
+              -H "Tags: github,ci,approval" \
+              -d "$ITEM" \
+              "https://ntfy.sh/${NTFY_TOPIC}"
+          done
