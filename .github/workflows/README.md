@@ -81,8 +81,9 @@ token), not that the release is bad.
 |---|---|---|
 | `issue-notify.yml` | issue opened | Posts issue context (title, body, labels, related issues, recent commits) to the configured ntfy topic so the conductor picks it up. |
 | `pr-notify.yml` | PR opened or marked ready-for-review | Posts PR context (files, commits, reviews, comments) to the same ntfy topic. |
+| `issue-intake.yml` | issue opened | Adds `triage` plus one advisory type label (`bug`, `feature`, `documentation`, `question`) from the same keyword heuristic as `issue-notify.yml`, only when the issue has no labels at all. Never removes labels, never comments. Needs no secret. (#2128) |
 
-Both expect `secrets.NTFY_TOPIC` to be set on the repo. Neither blocks
+The two notify workflows expect `secrets.NTFY_TOPIC` to be set on the repo. None of these block
 anything — they can fail silently without affecting merges.
 
 ## Schedule-only (alert-only, not a PR gate)
