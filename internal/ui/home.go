@@ -637,12 +637,24 @@ type Home struct {
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
+	// remoteFetchOutstanding counts the per-remote fetches of the running
+	// round(s) that have not answered yet; remotesFetchActive clears when
+	// the last one lands, so one wedged host cannot hold the others back
+	// but the "refreshing…" trailer still tells the truth for the round.
+	remoteFetchOutstanding int
 	// remoteFetchSeq numbers every fleet fetch as it starts; the handler
-	// applies a result only if no newer fetch has been applied already, so a
-	// slow periodic poll cannot overwrite the refresh a delete, move or
-	// archive just triggered (a stale snapshot would resurrect the row).
+	// applies a remote's result only if no newer fetch has been applied for
+	// THAT remote already, so a slow periodic poll cannot overwrite the
+	// refresh a delete, move or archive just triggered (a stale snapshot
+	// would resurrect the row). Generations are tracked per remote because
+	// each remote's result now arrives on its own: a newer answer from a
+	// fast host must not make a slower host's still-valid answer look stale.
 	remoteFetchSeq     uint64
-	remoteFetchApplied uint64
+	remoteFetchApplied map[string]uint64 // remoteName -> last applied generation
+	// newRemoteFetchRunner builds the runner one per-remote fetch talks to.
+	// nil means a real SSHRunner; tests inject stubs to prove delivery
+	// timing without ssh.
+	newRemoteFetchRunner func(name string, rc session.RemoteConfig) remoteFetchRunner
 	// remoteActionStarted records when each remote action was requested
 	// (keyed by remote, verb and target) so its footer line can report the
 	// time from keypress to the remote's confirmation, the number that
@@ -1453,10 +1465,32 @@ type sendOutputResultMsg struct {
 	err         error
 }
 
-// remoteSessionsFetchedMsg is sent when async remote sessions fetch completes.
+// remoteFetchRoundMsg starts one fleet poll: the config was read and every
+// remote gets its own fetch Cmd. Each Cmd answers with a
+// remoteSessionsFetchedMsg for that remote alone, as soon as that host
+// replies, so a slow or wedged host never delays the others (#2177).
+type remoteFetchRoundMsg struct {
+	gen     uint64
+	fetches []tea.Cmd
+}
+
+// remoteFetchRunner is what one per-remote fetch needs from an SSHRunner.
+type remoteFetchRunner interface {
+	FetchSessions(context.Context) ([]session.RemoteSessionInfo, error)
+	FetchCostSummary(context.Context) (*costs.RemoteCostSummary, error)
+	FetchGroupPaths(context.Context) ([]string, error)
+}
+
+// remoteSessionsFetchedMsg carries one remote's fetch result (or a pushed
+// change shaped like one). Every other configured remote is listed in
+// failed/groupsFailed so the merge keeps their rows untouched.
 type remoteSessionsFetchedMsg struct {
 	// gen is the fetch's sequence number (see Home.remoteFetchSeq).
 	gen uint64
+	// pushed marks a result that did not come from a poll round (a change
+	// the remote pushed over its channel), so it is not counted against the
+	// round's outstanding fetches.
+	pushed bool
 	// configErr is set when the user config could not be read; the handler
 	// then keeps every cached remote instead of treating them as removed.
 	configErr error
@@ -3829,22 +3863,30 @@ func (h *Home) propagateThemeToSessions() {
 	})
 }
 
-// applyRemoteFetch folds one fleet fetch result (or a pushed change shaped
+// applyRemoteFetch folds one remote's fetch result (or a pushed change shaped
 // like one) into the cache, the on-disk snapshot and the rows.
 func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cmd) {
-	if msg.configErr != nil || (msg.gen != 0 && msg.gen < h.remoteFetchApplied) {
+	if msg.configErr != nil || h.remoteFetchIsStale(msg) {
 		// Config unreadable, or a fetch that started before one already
-		// applied: keep the current tree. Only release the in-flight
-		// guard so the next poll runs.
+		// applied for the same remote: keep the current tree. Only account
+		// for the landed fetch so the round can finish and the next poll
+		// runs.
 		h.remoteSessionsMu.Lock()
-		h.remotesFetchActive = false
+		h.remoteFetchLanded(msg)
 		h.remoteSessionsMu.Unlock()
 		if msg.configErr != nil {
 			h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
 		}
 		return h, nil
 	}
-	h.remoteFetchApplied = msg.gen
+	if msg.gen != 0 {
+		if h.remoteFetchApplied == nil {
+			h.remoteFetchApplied = make(map[string]uint64)
+		}
+		for name := range msg.sessions {
+			h.remoteFetchApplied[name] = msg.gen
+		}
+	}
 	h.remoteSessionsMu.Lock()
 	// #1170: merge rather than wholesale-replace so a remote that errored
 	// this round keeps its last-good sessions instead of flickering out.
@@ -3875,14 +3917,14 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 		}
 	}
 	h.lastRemoteFetch = time.Now()
-	h.remotesFetchActive = false
+	roundDone := h.remoteFetchLanded(msg)
 	h.remoteSessionsMu.Unlock()
 	h.saveRemoteSessionsCache(msg.sessions)
 	// #1101: store remote cost summaries so renderCostLine can fold them
 	// into the displayed totals on the next paint.
 	if msg.costs != nil {
 		h.remoteCostsMu.Lock()
-		h.remoteCosts = msg.costs
+		h.remoteCosts = mergeRemoteCosts(h.remoteCosts, msg)
 		h.remoteCostsMu.Unlock()
 	}
 	// #1112 bug 1: a remote running→waiting transition wouldn't update
@@ -3892,6 +3934,9 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	// Invalidate so the next View() recomputes.
 	h.cachedStatusCounts.valid.Store(false)
 	h.rebuildFlatItems()
+	if !roundDone {
+		return h, nil
+	}
 	h.remoteSessionsMu.Lock()
 	again := h.remoteRefetchWanted
 	h.remoteRefetchWanted = false
@@ -3903,6 +3948,60 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 		return h, h.fetchRemoteSessions
 	}
 	return h, nil
+}
+
+// remoteFetchIsStale reports whether a newer fetch has already been applied
+// for any remote this message carries data for. Remotes listed only as
+// failed carry no data, so they never make a message stale.
+func (h *Home) remoteFetchIsStale(msg remoteSessionsFetchedMsg) bool {
+	if msg.gen == 0 {
+		return false
+	}
+	for name := range msg.sessions {
+		if msg.gen < h.remoteFetchApplied[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteFetchLanded accounts for one per-remote result and reports whether
+// that completed the round (no fetch outstanding), clearing the in-flight
+// guard when it did. Pushed changes are not part of any round. Called with
+// remoteSessionsMu held.
+func (h *Home) remoteFetchLanded(msg remoteSessionsFetchedMsg) bool {
+	if msg.pushed {
+		return false
+	}
+	if h.remoteFetchOutstanding > 0 {
+		h.remoteFetchOutstanding--
+	}
+	if h.remoteFetchOutstanding > 0 {
+		return false
+	}
+	h.remotesFetchActive = false
+	return true
+}
+
+// mergeRemoteCosts folds one remote's cost summary into the per-remote map
+// without blanking the other remotes' figures: a remote whose result this
+// message carries either gets its fresh summary or, when its cost fetch
+// failed, contributes zero (as before); remotes still marked failed keep
+// their last-good figure; remotes absent from both lists were deconfigured.
+func mergeRemoteCosts(prev map[string]*costs.RemoteCostSummary, msg remoteSessionsFetchedMsg) map[string]*costs.RemoteCostSummary {
+	merged := make(map[string]*costs.RemoteCostSummary, len(prev)+len(msg.costs))
+	for name, summary := range prev {
+		if _, fetched := msg.sessions[name]; fetched {
+			continue
+		}
+		if msg.failed[name] {
+			merged[name] = summary
+		}
+	}
+	for name, summary := range msg.costs {
+		merged[name] = summary
+	}
+	return merged
 }
 
 // remoteChangedMsg says a remote pushed "changed" over its persistent
@@ -3929,6 +4028,7 @@ func (h *Home) waitRemoteChange() tea.Msg {
 func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedMsg {
 	msg := remoteSessionsFetchedMsg{
 		gen:          atomic.AddUint64(&h.remoteFetchSeq, 1),
+		pushed:       true,
 		sessions:     map[string][]session.RemoteSessionInfo{ch.Remote: ch.Sessions},
 		failed:       map[string]bool{},
 		groups:       map[string][]string{},
@@ -3950,7 +4050,10 @@ func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedM
 	return msg
 }
 
-// fetchRemoteSessions fetches sessions from all configured remotes.
+// fetchRemoteSessions starts a fleet poll. It reads the config, sweeps stale
+// ssh sockets and returns one fetch Cmd per remote; the handler batches
+// them, and each answers on its own, so the tree updates host by host as
+// answers arrive instead of after the slowest one (#2177).
 func (h *Home) fetchRemoteSessions() tea.Msg {
 	gen := atomic.AddUint64(&h.remoteFetchSeq, 1)
 	config, err := session.LoadUserConfig()
@@ -3971,104 +4074,109 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 	// make every remote session vanish until the TUI restarts.
 	session.CleanStaleSSHSockets()
 
-	results := make(map[string][]session.RemoteSessionInfo, len(config.Remotes))
-	// #1101: remote cost summaries piggy-back on the existing remote-fetch
-	// channel so the status-line cost segment doesn't lag behind the session
-	// list. nil-valued entries indicate fetch failures (e.g., older remote
-	// agent-deck without `costs summary --json`); the renderer treats those
-	// as "remote contributes zero" so a single broken remote can't poison
-	// the displayed total.
-	costResults := make(map[string]*costs.RemoteCostSummary, len(config.Remotes))
-	// Remote group lists (group list --json) ride the same fanout so the
-	// move/create dialogs can offer EMPTY remote folders — a folder that
-	// currently holds no sessions is invisible to session-derived buckets
-	// but is still a valid target. Successful fetches land in groupResults;
-	// failures in groupsFailed keep last-good cache entries (same contract
-	// as the sessions map, issue #1170).
-	groupResults := make(map[string][]string, len(config.Remotes))
-	groupsFailed := make(map[string]bool, len(config.Remotes))
-	// #1170: track remotes that errored so the handler keeps their last-good
-	// sessions instead of dropping them.
-	failed := make(map[string]bool, len(config.Remotes))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
+	return remoteFetchRoundMsg{gen: gen, fetches: h.remoteFetchCmds(gen, config.Remotes)}
+}
 
-	// #1170: fetch every remote in parallel, each with its OWN timeout, so a
-	// single slow/offline remote can't starve the others. The previous code
-	// shared one 15s budget across all remotes fetched sequentially, which
-	// made healthy remotes drop out of the result map (and flicker in the
-	// TUI) whenever an earlier remote was slow.
-	for name, rc := range config.Remotes {
-		wg.Add(1)
-		go func(name string, rc session.RemoteConfig) {
-			defer wg.Done()
-			// Honor the per-remote command_timeout_seconds: hosts with large
-			// session fleets legitimately need more than the old flat 15s.
-			ctx, cancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
-			defer cancel()
-
-			runner := session.NewSSHRunner(name, rc)
-			sessions, err := runner.FetchSessions(ctx)
-			if err != nil {
-				mu.Lock()
-				failed[name] = true
-				// The group list can't be trusted either — keep last-good.
-				groupsFailed[name] = true
-				mu.Unlock()
-				return
-			}
-			for i := range sessions {
-				sessions[i].RemoteName = name
-			}
-			// The cost summary and the group list are independent of the
-			// session list and of each other, so they run concurrently over
-			// the same ControlMaster connection: one round trip per poll
-			// instead of three in a row (#2167). Each keeps its own bound so
-			// a slow `costs summary` or `group list` on one remote cannot
-			// starve the others, and a failure degrades as before: costs to
-			// "contributes zero", groups to the session-derived fallback in
-			// remoteGroupPaths.
-			var (
-				summary    *costs.RemoteCostSummary
-				costErr    error
-				groupPaths []string
-				groupErr   error
-				side       sync.WaitGroup
-			)
-			side.Add(2)
-			go func() {
-				defer side.Done()
-				costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
-				defer costCancel()
-				summary, costErr = runner.FetchCostSummary(costCtx)
-			}()
-			go func() {
-				defer side.Done()
-				groupCtx, groupCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
-				defer groupCancel()
-				groupPaths, groupErr = runner.FetchGroupPaths(groupCtx)
-			}()
-			side.Wait()
-
-			mu.Lock()
-			results[name] = sessions
-			if costErr == nil && summary != nil {
-				costResults[name] = summary
-			}
-			if groupErr == nil {
-				if groupPaths == nil {
-					groupPaths = []string{}
-				}
-				groupResults[name] = groupPaths
-			} else {
-				groupsFailed[name] = true
-			}
-			mu.Unlock()
-		}(name, rc)
+// remoteFetchCmds builds one Cmd per configured remote for fetch round gen.
+func (h *Home) remoteFetchCmds(gen uint64, remotes map[string]session.RemoteConfig) []tea.Cmd {
+	names := make([]string, 0, len(remotes))
+	for name := range remotes {
+		names = append(names, name)
 	}
-	wg.Wait()
+	cmds := make([]tea.Cmd, 0, len(remotes))
+	for name, rc := range remotes {
+		cmds = append(cmds, func() tea.Msg { return h.fetchOneRemote(gen, name, rc, names) })
+	}
+	return cmds
+}
 
-	return remoteSessionsFetchedMsg{gen: gen, sessions: results, costs: costResults, groups: groupResults, groupsFailed: groupsFailed, failed: failed}
+// fetchOneRemote fetches one remote's sessions, cost summary and group list
+// and shapes them as a result for that remote alone: every other configured
+// remote is marked failed so the merge keeps its rows, and a remote missing
+// from the config altogether is absent from both lists and so drops out.
+func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, configured []string) remoteSessionsFetchedMsg {
+	msg := remoteSessionsFetchedMsg{
+		gen:          gen,
+		sessions:     make(map[string][]session.RemoteSessionInfo, 1),
+		costs:        make(map[string]*costs.RemoteCostSummary, 1),
+		groups:       make(map[string][]string, 1),
+		groupsFailed: make(map[string]bool, len(configured)),
+		failed:       make(map[string]bool, len(configured)),
+	}
+	for _, other := range configured {
+		if other != name {
+			msg.failed[other] = true
+			msg.groupsFailed[other] = true
+		}
+	}
+
+	// Honor the per-remote command_timeout_seconds: hosts with large
+	// session fleets legitimately need more than the old flat 15s. Each
+	// remote runs under its own bound (#1170) and answers on its own
+	// (#2177), so one slow or offline host starves nobody.
+	ctx, cancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+	defer cancel()
+
+	var runner remoteFetchRunner
+	if h.newRemoteFetchRunner != nil {
+		runner = h.newRemoteFetchRunner(name, rc)
+	} else {
+		runner = session.NewSSHRunner(name, rc)
+	}
+	sessions, err := runner.FetchSessions(ctx)
+	if err != nil {
+		// #1170: the handler keeps this remote's last-good sessions; the
+		// group list can't be trusted either, so keep that too.
+		msg.failed[name] = true
+		msg.groupsFailed[name] = true
+		return msg
+	}
+	for i := range sessions {
+		sessions[i].RemoteName = name
+	}
+	// The cost summary and the group list are independent of the session
+	// list and of each other, so they run concurrently over the same
+	// ControlMaster connection: one round trip per poll instead of three in
+	// a row (#2167). Each keeps its own bound, and a failure degrades as
+	// before: costs to "contributes zero", groups to the session-derived
+	// fallback in remoteGroupPaths.
+	var (
+		summary    *costs.RemoteCostSummary
+		costErr    error
+		groupPaths []string
+		groupErr   error
+		side       sync.WaitGroup
+	)
+	side.Add(2)
+	go func() {
+		defer side.Done()
+		costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+		defer costCancel()
+		summary, costErr = runner.FetchCostSummary(costCtx)
+	}()
+	go func() {
+		defer side.Done()
+		groupCtx, groupCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+		defer groupCancel()
+		groupPaths, groupErr = runner.FetchGroupPaths(groupCtx)
+	}()
+	side.Wait()
+
+	msg.sessions[name] = sessions
+	// #1101: a nil summary (older remote without `costs summary --json`)
+	// is left out so the renderer treats the remote as contributing zero.
+	if costErr == nil && summary != nil {
+		msg.costs[name] = summary
+	}
+	if groupErr == nil {
+		if groupPaths == nil {
+			groupPaths = []string{}
+		}
+		msg.groups[name] = groupPaths
+	} else {
+		msg.groupsFailed[name] = true
+	}
+	return msg
 }
 
 // mergeRemoteSessions reconciles a freshly fetched remote-session map against
@@ -7047,6 +7155,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.updateInfo = msg.info
 		}
 		return h, nil
+
+	case remoteFetchRoundMsg:
+		// Fan out: each remote answers with its own remoteSessionsFetchedMsg.
+		// Outstanding counts add up so an overlapping round (ctrl+r during
+		// a poll) keeps the guard until every fetch of both has landed.
+		h.remoteSessionsMu.Lock()
+		h.remotesFetchActive = true
+		h.remoteFetchOutstanding += len(msg.fetches)
+		h.remoteSessionsMu.Unlock()
+		return h, tea.Batch(msg.fetches...)
 
 	case remoteSessionsFetchedMsg:
 		return h.applyRemoteFetch(msg)

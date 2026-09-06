@@ -1527,20 +1527,27 @@ type RemoteLatency struct {
 	MeasuredAt time.Time
 }
 
-// MeasureLatency measures the round-trip time of a lightweight noop call
-// to the remote agent-deck binary. Returns the elapsed duration on success.
+// MeasureLatency measures the transport round trip to the remote host and
+// returns the elapsed duration on success.
 //
-// Implementation note: we run `agent-deck --version` because it is the
-// cheapest possible call (no DB read, no tmux probe, no network back to
-// services). The ControlMaster socket is persisted across calls so we
-// measure mostly network RTT after the first hit, which is exactly what
-// the user wants to see in the header per #1103.
+// It times the shell builtin `true` over the same ssh options (and the same
+// ControlMaster socket) every other command uses, so the number is the
+// network round trip plus ssh channel setup and nothing else. It used to run
+// `agent-deck --version`, which also paid for the remote process to start:
+// the header showed ~110 ms on a 97 ms link, and ~215 ms before the
+// persistent channel (#2177) existed. Users read the header figure as "how
+// far away is this host", and only the transport answers that (#1103).
 func (r *SSHRunner) MeasureLatency(ctx context.Context) (time.Duration, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	start := time.Now()
-	if _, err := r.run(timeoutCtx, "--version"); err != nil {
+	if _, err := r.remoteExec(timeoutCtx, latencyProbeCommand, nil); err != nil {
 		return 0, err
 	}
 	return time.Since(start), nil
 }
+
+// latencyProbeCommand is the remote command MeasureLatency times: a shell
+// builtin, so no process is forked on the remote and the timing is pure
+// transport.
+const latencyProbeCommand = "true"
