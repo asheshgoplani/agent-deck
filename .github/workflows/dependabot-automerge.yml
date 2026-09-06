@@ -1,0 +1,81 @@
+name: Dependabot auto-merge
+
+# Enables GitHub auto-merge (squash) on Dependabot pull requests that only bump
+# a dependency by a patch or minor version, so they land the moment CI is green
+# instead of waiting days for a human to press the button (#2131).
+#
+# What this workflow does NOT do:
+#   - It never approves the PR. The ruleset's required review is still supplied
+#     by a human. The workflow only flips the auto-merge flag, and GitHub merges
+#     the PR once the required review and all four required status checks
+#     (intake, Full test suite (PR gate), golangci, analyze) are satisfied.
+#   - It never bypasses or edits the ruleset. Auto-merge honours every branch
+#     rule exactly as a manual merge would.
+#   - It skips major bumps and any PR that touches .github/ (workflows, actions,
+#     intake config); those keep the normal review path.
+#
+# Security posture: pull_request_target runs with base-repo permissions. This
+# job never checks out or executes PR code. It reads PR metadata via
+# dependabot/fetch-metadata and the gh CLI, and it is gated on the actor being
+# dependabot[bot], so a fork PR from anyone else is a no-op.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Decide whether the bump qualifies for auto-merge
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "update-type: ${UPDATE_TYPE}"
+          case "${UPDATE_TYPE}" in
+            version-update:semver-patch|version-update:semver-minor) ;;
+            *)
+              echo "Not a patch or minor bump; leaving the PR on the normal review path."
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          changed="$(gh pr diff "${PR_NUMBER}" --repo "${REPO}" --name-only)"
+          echo "Changed files:"
+          echo "${changed}"
+          if printf '%s\n' "${changed}" | grep -q '^\.github/'; then
+            echo "PR touches .github/; leaving the PR on the normal review path."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge (squash)
+        if: steps.decide.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          gh pr merge --auto --squash "${PR_URL}"
+          echo "Auto-merge enabled. GitHub merges once the required review and required checks pass."
