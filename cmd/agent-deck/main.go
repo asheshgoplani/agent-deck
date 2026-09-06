@@ -1440,6 +1440,11 @@ func handleAdd(profile string, args []string) {
 		return nil
 	})
 
+	// --create-dir is what the TUI's remote new-session dialog forwards after
+	// the user confirms creating a missing directory on the server; the local
+	// dialog asks the same question and calls os.MkdirAll itself.
+	createDir := fs.Bool("create-dir", false, "Create the project directory when it does not exist (like mkdir -p)")
+
 	// Sandbox flags
 	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
@@ -1725,6 +1730,13 @@ func handleAdd(profile string, args []string) {
 		path = localPlaceholder
 	} else {
 		info, err := os.Stat(path)
+		if err != nil && *createDir {
+			if mkErr := os.MkdirAll(path, 0o755); mkErr != nil {
+				fmt.Printf("Error: failed to create directory %s: %v\n", path, mkErr)
+				os.Exit(1)
+			}
+			info, err = os.Stat(path)
+		}
 		if err != nil {
 			fmt.Printf("Error: path does not exist: %s\n", path)
 			os.Exit(1)

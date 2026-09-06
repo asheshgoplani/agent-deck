@@ -49,6 +49,7 @@ Pressing `n` on a remote group or session opens the same new-session dialog as f
 | Docker sandbox | `-sandbox`; the image comes from the server's config |
 | Worktree | `-w <branch>`; the worktree and, when missing, the branch are created in the server's repository. An auto-filled branch travels as the bare slug and the server applies its own `[worktree].branch_prefix` once; a branch you type is sent as entered |
 | Codex and Gemini YOLO | `--yolo` |
+| A path that does not exist on the server | the server refuses the create; the TUI then asks "create this directory on remote `<name>`?" and, only if you confirm, retries with `--create-dir` so the server runs the equivalent of `mkdir -p`. A remote running an agent-deck older than `--create-dir` refuses the retry with an unknown-flag error; create the directory there by hand |
 
 Because the server applies its own defaults, the dialog opens with these options cleared for a remote target instead of pre-filled from your local `config.toml`; a local `[claude].dangerous_mode` or `default_model` never reaches a remote unless you set it in the dialog.
 
