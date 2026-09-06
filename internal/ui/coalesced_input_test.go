@@ -130,3 +130,50 @@ func TestCoalescedInputNavigationRetainsFocusAndRepaintCommands(t *testing.T) {
 		t.Fatalf("focused session = %q, want %q", name, want)
 	}
 }
+
+// A remote row deliberately has no local Instance. Both search and a subsequent
+// creation dialog must retain that routing context while processing a burst.
+func TestCoalescedInputRemoteRowPreservesSearchAndCreationTarget(t *testing.T) {
+	for _, burst := range []bool{false, true} {
+		name := "sequential"
+		if burst {
+			name = "coalesced"
+		}
+		t.Run(name, func(t *testing.T) {
+			setXDGTestHome(t)
+			h := NewHome()
+			h.width, h.height = 100, 30
+			h.globalSearchIndex = nil
+			remote := session.RemoteSessionInfo{ID: "remote-proof", Title: "Remoteé界", RemoteName: "shared", Tool: "shell"}
+			h.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "shared"}}
+			h.cursor = 0
+			input := func(text string) {
+				if burst {
+					h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+				} else {
+					for _, r := range text {
+						h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					}
+				}
+			}
+			input("/Remoteé界")
+			if !h.search.IsVisible() || h.search.input.Value() != "Remoteé界" {
+				t.Fatal("remote-row search lost shortcut or Unicode query")
+			}
+			h.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			if h.search.IsVisible() || len(h.flatItems) != 1 || h.flatItems[h.cursor].RemoteSession != &remote {
+				t.Fatal("search escape lost remote selection")
+			}
+			input("nDrafté界")
+			if !h.newDialog.IsVisible() || h.pendingRemoteName != "shared" {
+				t.Fatalf("creation lost remote routing: visible=%v remote=%q", h.newDialog.IsVisible(), h.pendingRemoteName)
+			}
+			if got := h.newDialog.nameInput.Value(); got != "Drafté界" {
+				t.Fatalf("remote dialog title=%q", got)
+			}
+			if len(h.instances) != 0 || remote.Title != "Remoteé界" {
+				t.Fatal("remote input mutated a local instance or existing remote title")
+			}
+		})
+	}
+}
