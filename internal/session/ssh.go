@@ -164,6 +164,10 @@ type SSHRunner struct {
 	// channel (#2174). Empty for runners built without a name.
 	name string
 
+	// dialChannelFn lets tests stub the persistent channel's ssh subprocess
+	// (channelFor). nil = real SSH.
+	dialChannelFn func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)
+
 	// openStreamFn lets tests stub out the persistent-stream subprocess
 	// without spawning real ssh. nil = real SSH (#1112 bug 2).
 	openStreamFn func(ctx context.Context, args ...string) (io.WriteCloser, func() error, error)
@@ -254,7 +258,16 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	// the channel can only make things faster, never break them.
 	if ch := channelFor(r); ch != nil && ch.Connected() {
 		out, err := ch.Request(ctx, args)
-		if !errors.Is(err, errChannelDown) {
+		switch {
+		case err == nil:
+			return out, nil
+		case errors.Is(err, errChannelDown):
+			// Never reached the agent: an exec is the same request.
+		case errors.Is(err, errChannelInterrupted) && remoteVerbReadOnly(args):
+			// Written, reply lost. Re-running a listing is harmless; a
+			// mutating verb may already have run on the remote (#3), so
+			// its error goes to the caller, who refetches.
+		default:
 			return out, err
 		}
 	}
@@ -1175,6 +1188,44 @@ func ValidateSSHHost(host string) error {
 // sshBaseArgs returns common SSH args for running a raw command on the remote.
 func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
 	return append(r.sshConnOpts(), r.Host, remoteCmd)
+}
+
+// sshChannelArgs is sshBaseArgs for the persistent channel (#2174). It adds
+// ServerAlive probes so a link that died under the session (laptop sleep,
+// VPN flap, NAT expiry) is torn down by ssh within about 45 s instead of
+// the OS keepalive's hours (#5). One-shot execs do not need them: their
+// command timeout already bounds them.
+func (r *SSHRunner) sshChannelArgs(remoteCmd string) []string {
+	args := append(r.sshConnOpts(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
+	return append(args, r.Host, remoteCmd)
+}
+
+// remoteVerbReadOnly reports whether args is a verb that only reads remote
+// state, so running it twice is harmless. Anything not listed here counts
+// as mutating.
+func remoteVerbReadOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	second := ""
+	if len(args) > 1 {
+		second = args[1]
+	}
+	switch args[0] {
+	case "list", "ls", "accounts", "version", "status":
+		return true
+	case "group":
+		return second == "list"
+	case "costs":
+		return second == "summary"
+	case "mcp", "skill":
+		return second == "list"
+	case "inbox":
+		return second == "export" || second == "writer-status"
+	case "session":
+		return second == "show" || second == "output" || second == "pane"
+	}
+	return false
 }
 
 // buildAttachArgs builds the ssh argv for an interactive attach. It shares

@@ -869,3 +869,22 @@ func TestRemoteStartArgs_NoWaitAndFallback(t *testing.T) {
 		t.Fatal("an ordinary failure must not be mistaken for an unknown flag")
 	}
 }
+
+// The channel dial carries ServerAlive probes so a dead link is noticed in
+// under a minute (#5); one-shot execs keep the shared options only.
+func TestSSHRunnerChannelArgs_AddServerAlive(t *testing.T) {
+	r := &SSHRunner{Host: "user@host"}
+	args := strings.Join(r.sshChannelArgs("cmd"), " ")
+	if !strings.Contains(args, "-o ServerAliveInterval=15 -o ServerAliveCountMax=3 user@host cmd") {
+		t.Fatalf("channel args = %q", args)
+	}
+	base := strings.Join(r.sshBaseArgs("cmd"), " ")
+	if strings.Contains(base, "ServerAlive") {
+		t.Fatalf("exec args must stay unchanged, got %q", base)
+	}
+	for _, opt := range []string{"ControlMaster=auto", "BatchMode=yes", "ConnectTimeout=10"} {
+		if !strings.Contains(args, opt) {
+			t.Fatalf("channel args must keep %s, got %q", opt, args)
+		}
+	}
+}
