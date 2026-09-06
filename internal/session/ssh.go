@@ -1284,6 +1284,28 @@ func (r *SSHRunner) RestartSession(ctx context.Context, sessionID string) error 
 	return err
 }
 
+// ForkSession forks a session on the remote host through the remote's own
+// `session fork` and returns the new session's ID. Title and group are left
+// to the server (parent title with a "-fork" suffix, parent's group), so the
+// result matches what `agent-deck remote <name> session fork <id>` produces;
+// the server also decides whether the tool is forkable and starts the fork.
+func (r *SSHRunner) ForkSession(ctx context.Context, sessionID string) (string, error) {
+	output, err := r.Run(ctx, "session", "fork", "--json", sessionID)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		NewID string `json:"new_id"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output), &result); err != nil {
+		return "", fmt.Errorf("failed to parse remote fork output: %w", err)
+	}
+	if result.NewID == "" {
+		return "", fmt.Errorf("remote fork returned empty session ID")
+	}
+	return result.NewID, nil
+}
+
 // RemoteSessionInfo represents a session from a remote agent-deck instance.
 type RemoteSessionInfo struct {
 	ID        string `json:"id"`

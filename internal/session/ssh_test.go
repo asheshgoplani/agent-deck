@@ -658,3 +658,60 @@ func TestIsRemotePathMissing(t *testing.T) {
 		t.Fatal("nil error treated as a missing path")
 	}
 }
+
+// ForkSession forwards exactly the remote's own `session fork --json <id>`
+// (title and group stay server decisions) and returns the new_id it reports.
+func TestSSHRunnerForkSession_ForwardsForkVerb(t *testing.T) {
+	var calls [][]string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return []byte(`{"success":true,"parent_id":"parent-abc","new_id":"child-def","new_title":"task-fork"}` + "\n"), nil
+		},
+	}
+
+	newID, err := runner.ForkSession(context.Background(), "parent-abc")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if newID != "child-def" {
+		t.Fatalf("new ID = %q, want child-def", newID)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one remote call, got %v", calls)
+	}
+	want := []string{"session", "fork", "--json", "parent-abc"}
+	if strings.Join(calls[0], " ") != strings.Join(want, " ") {
+		t.Fatalf("forwarded args = %v, want %v", calls[0], want)
+	}
+}
+
+// A remote fork that fails (unforkable tool, unknown session, SSH error) must
+// surface the error and never report a session ID.
+func TestSSHRunnerForkSession_ErrorsAreNotIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		err    error
+	}{
+		{name: "ssh error", err: errors.New("session 'x' is not a forkable session (tool: gemini)")},
+		{name: "empty id", output: `{"success":true,"new_id":""}`},
+		{name: "not json", output: "Forked session: a -> b (c)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &SSHRunner{
+				runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+					return []byte(tt.output), tt.err
+				},
+			}
+			newID, err := runner.ForkSession(context.Background(), "parent-abc")
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if newID != "" {
+				t.Fatalf("new ID = %q on error, want empty", newID)
+			}
+		})
+	}
+}

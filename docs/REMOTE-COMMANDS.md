@@ -23,6 +23,7 @@ Run the same command through `remote lab`. Output, JSON fields, diagnostics and 
 | `session start task` | `remote lab session start task` |
 | `session stop task` | `remote lab session stop task` |
 | `session restart task` | `remote lab session restart task` |
+| `session fork task -t "task 2"` | `remote lab session fork task -t "task 2"` |
 | `worktree list --json` | `remote lab worktree list --json` |
 | `worktree info task --json` | `remote lab worktree info task --json` |
 | `worktree cleanup --json` | `remote lab worktree cleanup --json` |

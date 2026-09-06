@@ -24,7 +24,7 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		case "session":
 			if len(args) > 1 {
 				switch args[1] {
-				case "show", "output", "send", "start", "stop", "restart":
+				case "show", "output", "send", "start", "stop", "restart", "fork":
 					return append([]string(nil), args...), nil
 				}
 			}
