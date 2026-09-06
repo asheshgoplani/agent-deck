@@ -3,6 +3,7 @@ package multiclienttmux_test
 import (
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/testutil/multiclienttmux"
 )
@@ -36,27 +37,46 @@ func TestNew_BootsIsolatedServer(t *testing.T) {
 	}
 }
 
-func TestAggregateSize_ReportsLargestClient(t *testing.T) {
+func requireWindowSize(t *testing.T, h *multiclienttmux.Harness, wantWidth, wantHeight int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		width, height, err := h.WindowSize()
+		if err == nil && width == wantWidth && height == wantHeight {
+			return
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("WindowSize: %v", err)
+			}
+			t.Fatalf("WindowSize=%dx%d; want %dx%d", width, height, wantWidth, wantHeight)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestAggregateSize_FitsCrossedClientDimensions(t *testing.T) {
 	skipIfNoTmux(t)
 
 	h := multiclienttmux.New(t, "agg")
 
-	// Spawn two clients of different sizes; aggregate-size = largest.
-	if err := h.AddClient(80, 24); err != nil {
-		t.Fatalf("AddClient 80x24: %v", err)
+	if err := h.AddClient(88, 62); err != nil {
+		t.Fatalf("AddClient 88x62: %v", err)
 	}
-	if err := h.AddClient(120, 40); err != nil {
-		t.Fatalf("AddClient 120x40: %v", err)
+	if err := h.AddClient(189, 62); err != nil {
+		t.Fatalf("AddClient 189x62: %v", err)
 	}
 
-	// With aggressive-resize=on, the window resizes to the largest client.
-	w, hgt, err := h.WindowSize()
-	if err != nil {
-		t.Fatalf("WindowSize: %v", err)
+	// Simulate a font-size change making the narrow client taller. Neither
+	// client now dominates both axes; with a one-row status line, their usable
+	// sizes are 88x70 and 189x61.
+	if err := h.ResizeClient(0, 88, 71); err != nil {
+		t.Fatalf("ResizeClient 88x71: %v", err)
 	}
-	if w < 80 || hgt < 24 {
-		t.Fatalf("WindowSize=%dx%d; expected at least 80x24", w, hgt)
-	}
+
+	// The component-wise minimum is the only shared size both viewers can show
+	// completely.
+	requireWindowSize(t, h, 88, 61)
 }
 
 func TestNew_Cleanup(t *testing.T) {

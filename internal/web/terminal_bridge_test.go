@@ -12,9 +12,9 @@ import (
 // flipping the session option to `window-size=manual`, dragging the window
 // for ALL attached clients (Ghostty, iTerm) — the dots-in-window bug.
 // With ignore-size removed and resize-window dropped, the web client
-// participates in tmux's `window-size=largest` arbitration set at
-// Session.Start (internal/tmux/tmux.go), so every client sees content sized
-// to the biggest viewer.
+// participates in tmux's `window-size=smallest` arbitration set at
+// Session.Start (internal/tmux/tmux.go), so every client can display the
+// complete shared pane.
 func TestTmuxAttachCommand_NoIgnoreSize(t *testing.T) {
 	t.Setenv("TMUX", "")
 
@@ -72,8 +72,8 @@ func TestTmuxAttachCommand_SocketNameOverridesEnv(t *testing.T) {
 // TestResize_RejectsNonsensicalDimensions: the web bridge must reject resize
 // requests with dimensions too small to be a real terminal. When xterm.js
 // calls fitAddon.fit() on a display:none container, it computes cols≈2 rows≈1
-// which, if forwarded to the PTY, shrinks the tmux window via window-size=largest
-// and corrupts all session output until a session restart.
+// which, if forwarded to the PTY, shrinks the tmux window via
+// window-size=smallest and corrupts all session output until a session restart.
 func TestResize_RejectsNonsensicalDimensions(t *testing.T) {
 	bridge := &tmuxPTYBridge{}
 

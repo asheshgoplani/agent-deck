@@ -1,6 +1,7 @@
 // Package multiclienttmux boots an isolated tmux server with
-// aggressive-resize=on and lets a test attach N pty clients at chosen
-// sizes — the harness from TEST-PLAN.md §6.1 / TUI-TEST-PLAN.md §6.8
+// window-size=smallest and aggressive-resize=on, then lets a test attach N
+// pty clients at chosen sizes — the harness from TEST-PLAN.md §6.1 /
+// TUI-TEST-PLAN.md §6.8
 // for the "two web clients hijacking pane size" regression (J4 / F2).
 //
 // Every harness instance gets its own socket under a short isolated temp
@@ -10,13 +11,14 @@
 // Usage:
 //
 //	h := multiclienttmux.New(t, "myscratch")
-//	h.AddClient(80, 24)
-//	h.AddClient(120, 40)
-//	w, hgt, _ := h.WindowSize() // expect 120x40 (largest)
+//	h.AddClient(88, 71)
+//	h.AddClient(189, 62)
+//	w, hgt, _ := h.WindowSize() // expect 88x61 (smallest, minus status row)
 package multiclienttmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -41,11 +43,12 @@ type Harness struct {
 
 type clientProc struct {
 	cmd *exec.Cmd
-	pty interface{ Close() error }
+	pty *os.File
 }
 
-// New boots a fresh tmux server on a per-test isolated socket and
-// creates a detached session named sessionName with aggressive-resize=on.
+// New boots a fresh tmux server on a per-test isolated socket and creates a
+// detached session named sessionName with Agent Deck's multi-client sizing
+// defaults.
 // The server and all spawned clients are torn down via t.Cleanup.
 //
 // Skips the test (via t.Skip) if the tmux binary is unavailable.
@@ -72,13 +75,14 @@ func New(t *testing.T, sessionName string) *Harness {
 		t.Fatalf("multiclienttmux: new-session: %v\n%s", err, out)
 	}
 
-	// aggressive-resize=on lets the active window match the smallest
-	// attached client *that's looking at it*; for cross-client size
-	// regression tests this is what we want.
+	// Explicitly mirror Session.Start. tmux defaults to window-size=latest,
+	// which would make this harness depend on client attach/input order instead
+	// of exercising Agent Deck's policy.
 	if out, err := exec.Command("tmux", "-S", socketPath,
+		"set-option", "-t", sessionName, "window-size", "smallest", ";",
 		"set-window-option", "-t", sessionName, "aggressive-resize", "on",
 	).CombinedOutput(); err != nil {
-		t.Fatalf("multiclienttmux: set aggressive-resize: %v\n%s", err, out)
+		t.Fatalf("multiclienttmux: set size policy: %v\n%s", err, out)
 	}
 
 	h := &Harness{
@@ -105,6 +109,24 @@ func (h *Harness) AddClient(cols, rows int) error {
 	h.mu.Unlock()
 
 	// Give tmux a beat to register the client.
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
+// ResizeClient changes an attached client's PTY dimensions and waits briefly
+// for tmux to process the resulting SIGWINCH.
+func (h *Harness) ResizeClient(index, cols, rows int) error {
+	h.mu.Lock()
+	if index < 0 || index >= len(h.clients) {
+		h.mu.Unlock()
+		return fmt.Errorf("multiclienttmux: client index %d out of range", index)
+	}
+	clientPTY := h.clients[index].pty
+	h.mu.Unlock()
+
+	if err := pty.Setsize(clientPTY, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil { // #nosec G115 -- test helper, sizes provided by caller fit uint16
+		return fmt.Errorf("multiclienttmux: pty.Setsize: %w", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 	return nil
 }
