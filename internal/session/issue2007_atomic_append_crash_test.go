@@ -61,7 +61,7 @@ func TestIssue2007_SIGKILLDuringAppendLeavesOldOrNewCompleteFile(t *testing.T) {
 	}
 
 	marker := filepath.Join(t.TempDir(), "append-fsync.marker")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestIssue2007_AppendCrashHelper$")
+	cmd := sessionTestChildCommand(t, "TestIssue2007_AppendCrashHelper")
 	cmd.Env = append(os.Environ(), issue2007CrashHelperEnv+"=1", "AGENTDECK_TEST_2007_CRASH_MARKER="+marker)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start append helper: %v", err)

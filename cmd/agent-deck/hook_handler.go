@@ -68,6 +68,8 @@ type hookStatusFile struct {
 	SessionID                string `json:"session_id,omitempty"`
 	Event                    string `json:"event"`
 	Timestamp                int64  `json:"ts"`
+	CodexFailedGeneration    string `json:"codex_failed_generation,omitempty"`
+	CodexStartObserved       bool   `json:"codex_start_observed,omitempty"`
 	CodexStartedGeneration   string `json:"codex_started_generation,omitempty"`
 	CodexCompletedGeneration string `json:"codex_completed_generation,omitempty"`
 	CodexStartedSessionID    string `json:"codex_started_session_id,omitempty"`
@@ -79,8 +81,9 @@ type hookStatusFile struct {
 	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
 	// (no sentinel) leave the fields absent, which the daemon reads as
 	// "no finished event to emit."
-	DoneStatus  string `json:"done_status,omitempty"`
-	DoneSummary string `json:"done_summary,omitempty"`
+	DoneAt      time.Time `json:"done_at,omitempty"`
+	DoneStatus  string    `json:"done_status,omitempty"`
+	DoneSummary string    `json:"done_summary,omitempty"`
 	// TranscriptPath is persisted ONLY when the Stop-edge sentinel scan was
 	// inconclusive because the turn's assistant record had not flushed yet
 	// (issue #1186 flush race). The daemon re-scans this path on its poll
@@ -96,9 +99,10 @@ type hookStatusFile struct {
 }
 
 type hookGenerationControl struct {
-	Generation            string `json:"generation"`
-	NextSequence          uint64 `json:"next_sequence"`
-	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+	LaunchAt              time.Time `json:"launch_at,omitempty"`
+	Generation            string    `json:"generation"`
+	NextSequence          uint64    `json:"next_sequence"`
+	InitialMessagePending bool      `json:"initial_message_pending,omitempty"`
 }
 
 // normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
@@ -373,6 +377,7 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 	if scan.signal != nil {
 		statusFile.DoneStatus = scan.signal.Status
 		statusFile.DoneSummary = scan.signal.Summary
+		statusFile.DoneAt = scan.signal.Timestamp
 	}
 	statusFile.TranscriptPath = scan.pendingTranscript
 	writeHookStatusFile(instanceID, statusFile, true)
@@ -381,6 +386,11 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnchor bool) bool {
 	hooksDir := getHooksDir()
 	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
+	if generation == "" {
+		if _, err := os.Lstat(filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")); err == nil || !os.IsNotExist(err) {
+			return false
+		}
+	}
 	if generation != "" {
 		lockPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".lock")
 		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)

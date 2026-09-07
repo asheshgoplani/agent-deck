@@ -1,6 +1,9 @@
 package session
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // DoneSentinelMarker is the token a worker prints to assert that it has
 // finished its assigned task. Issue #1186: the conductor previously had no
@@ -14,8 +17,10 @@ const DoneSentinelMarker = "===AGENTDECK_DONE==="
 
 // DoneSignal is the parsed payload of a completion sentinel.
 type DoneSignal struct {
-	Status  string // "ok" or "fail"
-	Summary string // free text to end of line; may be empty
+	// Timestamp is populated only from a transcript record, never a hook receipt.
+	Timestamp time.Time
+	Status    string // "ok" or "fail"
+	Summary   string // free text to end of line; may be empty
 }
 
 // ParseDoneSentinel parses a single line. It returns the signal and true only

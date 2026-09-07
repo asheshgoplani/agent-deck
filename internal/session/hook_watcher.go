@@ -134,6 +134,8 @@ func maskConsumedCodexCompletion(instanceID string, status *HookStatus) {
 
 // HookStatus holds the decoded status from a hook status file.
 type HookStatus struct {
+	CompletionLaunchAt       time.Time // Populated only from locked generation authority.
+	TimestampKnown           bool      // true only when the durable producer supplied a positive timestamp
 	Status                   string    // running, idle, waiting, dead
 	SessionID                string    // Claude session ID
 	Event                    string    // Hook event name
@@ -147,8 +149,9 @@ type HookStatus struct {
 	codexCompletionConsumed  bool
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). Empty for ordinary turns.
-	DoneStatus  string // "ok" or "fail" when a completion sentinel was seen
-	DoneSummary string // free-text completion summary
+	DoneAt      time.Time // Timestamp of the sentinel-bearing transcript record.
+	DoneStatus  string    // "ok" or "fail" when a completion sentinel was seen
+	DoneSummary string    // free-text completion summary
 	// TranscriptPath is set when the Stop-edge sentinel scan was inconclusive
 	// because the turn's assistant record had not flushed yet (issue #1186
 	// flush race). The transition daemon re-scans this path on its poll loop.
@@ -485,20 +488,21 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			continue
 		}
 		var raw struct {
-			Status                   string `json:"status"`
-			SessionID                string `json:"session_id"`
-			Event                    string `json:"event"`
-			Timestamp                int64  `json:"ts"`
-			DoneStatus               string `json:"done_status"`
-			DoneSummary              string `json:"done_summary"`
-			TranscriptPath           string `json:"transcript_path"`
-			Cwd                      string `json:"cwd"`
-			CodexStartedGeneration   string `json:"codex_started_generation"`
-			CodexCompletedGeneration string `json:"codex_completed_generation"`
-			CodexStartedSessionID    string `json:"codex_started_session_id"`
-			CodexCompletedSessionID  string `json:"codex_completed_session_id"`
-			HookGeneration           string `json:"hook_generation"`
-			Sequence                 uint64 `json:"sequence"`
+			Status                   string    `json:"status"`
+			SessionID                string    `json:"session_id"`
+			Event                    string    `json:"event"`
+			Timestamp                int64     `json:"ts"`
+			DoneAt                   time.Time `json:"done_at"`
+			DoneStatus               string    `json:"done_status"`
+			DoneSummary              string    `json:"done_summary"`
+			TranscriptPath           string    `json:"transcript_path"`
+			Cwd                      string    `json:"cwd"`
+			CodexStartedGeneration   string    `json:"codex_started_generation"`
+			CodexCompletedGeneration string    `json:"codex_completed_generation"`
+			CodexStartedSessionID    string    `json:"codex_started_session_id"`
+			CodexCompletedSessionID  string    `json:"codex_completed_session_id"`
+			HookGeneration           string    `json:"hook_generation"`
+			Sequence                 uint64    `json:"sequence"`
 		}
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
@@ -511,6 +515,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			SessionID:                raw.SessionID,
 			Event:                    raw.Event,
 			UpdatedAt:                time.Unix(raw.Timestamp, 0),
+			DoneAt:                   raw.DoneAt,
 			DoneStatus:               raw.DoneStatus,
 			DoneSummary:              raw.DoneSummary,
 			TranscriptPath:           raw.TranscriptPath,
@@ -654,20 +659,21 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 
 	var status struct {
-		Status                   string `json:"status"`
-		SessionID                string `json:"session_id"`
-		Event                    string `json:"event"`
-		Timestamp                int64  `json:"ts"`
-		DoneStatus               string `json:"done_status"`
-		DoneSummary              string `json:"done_summary"`
-		TranscriptPath           string `json:"transcript_path"`
-		Cwd                      string `json:"cwd"`
-		CodexStartedGeneration   string `json:"codex_started_generation"`
-		CodexCompletedGeneration string `json:"codex_completed_generation"`
-		CodexStartedSessionID    string `json:"codex_started_session_id"`
-		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
-		HookGeneration           string `json:"hook_generation"`
-		Sequence                 uint64 `json:"sequence"`
+		Status                   string    `json:"status"`
+		SessionID                string    `json:"session_id"`
+		Event                    string    `json:"event"`
+		Timestamp                int64     `json:"ts"`
+		DoneAt                   time.Time `json:"done_at"`
+		DoneStatus               string    `json:"done_status"`
+		DoneSummary              string    `json:"done_summary"`
+		TranscriptPath           string    `json:"transcript_path"`
+		Cwd                      string    `json:"cwd"`
+		CodexStartedGeneration   string    `json:"codex_started_generation"`
+		CodexCompletedGeneration string    `json:"codex_completed_generation"`
+		CodexStartedSessionID    string    `json:"codex_started_session_id"`
+		CodexCompletedSessionID  string    `json:"codex_completed_session_id"`
+		HookGeneration           string    `json:"hook_generation"`
+		Sequence                 uint64    `json:"sequence"`
 	}
 	if err := json.Unmarshal(data, &status); err != nil {
 		hookLog.Warn("hook_file_corrupt",
@@ -687,6 +693,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		SessionID:                status.SessionID,
 		Event:                    status.Event,
 		UpdatedAt:                time.Unix(status.Timestamp, 0),
+		DoneAt:                   status.DoneAt,
 		DoneStatus:               status.DoneStatus,
 		DoneSummary:              status.DoneSummary,
 		TranscriptPath:           status.TranscriptPath,
