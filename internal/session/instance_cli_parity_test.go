@@ -204,6 +204,49 @@ func TestUpdateStatus_CLIvsTUIParity_SameTmuxState(t *testing.T) {
 	}
 }
 
+// TestUpdateStatus_CodexWaitingExpiresOnCLIAndTUIPaths keeps the two status
+// refresh surfaces aligned for legacy Codex hooks, which report completion but
+// no turn-start event. An old waiting hook must yield to the live tmux state.
+func TestUpdateStatus_CodexWaitingExpiresOnCLIAndTUIPaths(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	base := NewInstanceWithTool("codex-waiting-surface", tmpHome, "codex")
+	if err := base.tmuxSession.Start("sleep 3600"); err != nil {
+		t.Fatalf("tmux start: %v", err)
+	}
+	defer func() { _ = base.tmuxSession.Kill() }()
+	writeHookFile(t, base.ID, "waiting", 6)
+
+	cliInst := reloadInstanceForParityTestWithPrev(base, "waiting")
+	cliInst.Status = StatusRunning
+	RefreshInstancesForCLIStatus([]*Instance{cliInst})
+	if err := cliInst.UpdateStatus(); err != nil {
+		t.Fatalf("CLI UpdateStatus: %v", err)
+	}
+	cliStatus := cliInst.GetStatusThreadSafe()
+	if cliStatus == StatusWaiting {
+		t.Fatal("CLI path retained an expired Codex waiting hook")
+	}
+
+	tuiInst := reloadInstanceForParityTestWithPrev(base, "waiting")
+	tuiInst.Status = StatusRunning
+	tmux.RefreshPaneInfoCache()
+	if hs := readHookStatusFile(tuiInst.ID); hs != nil {
+		tuiInst.UpdateHookStatus(hs)
+	}
+	if err := tuiInst.UpdateStatus(); err != nil {
+		t.Fatalf("TUI UpdateStatus: %v", err)
+	}
+	if tuiStatus := tuiInst.GetStatusThreadSafe(); tuiStatus == StatusWaiting {
+		t.Fatal("TUI path retained an expired Codex waiting hook")
+	} else if tuiStatus != cliStatus {
+		t.Fatalf("CLI/TUI status mismatch: CLI=%q TUI=%q", cliStatus, tuiStatus)
+	}
+}
+
 // reloadInstanceForParityTest constructs a second Instance wrapper pointing
 // at the same underlying tmux session as base — simulates what
 // ReconnectSessionLazy does across process boundaries (TUI vs CLI as
