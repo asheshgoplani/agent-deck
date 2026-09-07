@@ -201,11 +201,16 @@ type remoteChangeMailbox struct {
 	notify chan struct{}
 	out    chan RemoteChange
 	once   sync.Once
+	// seq numbers every put so the pump can tell whether the slot it is
+	// about to hand over was replaced or dropped while it waited.
+	seq  uint64
+	seqs map[string]uint64
 }
 
 func newRemoteChangeMailbox() *remoteChangeMailbox {
 	return &remoteChangeMailbox{
 		slots:  map[string]RemoteChange{},
+		seqs:   map[string]uint64{},
 		notify: make(chan struct{}, 1),
 		out:    make(chan RemoteChange),
 	}
@@ -227,7 +232,15 @@ func (m *remoteChangeMailbox) put(ch RemoteChange) {
 		m.queue = append(m.queue, key)
 	}
 	m.slots[key] = ch
+	m.seq++
+	m.seqs[key] = m.seq
 	m.mu.Unlock()
+	m.wake()
+}
+
+// wake nudges the pump without blocking: a put has new content, or a drop
+// has removed what the pump may be waiting to deliver.
+func (m *remoteChangeMailbox) wake() {
 	select {
 	case m.notify <- struct{}{}:
 	default:
@@ -242,11 +255,17 @@ func (m *remoteChangeMailbox) drop(remote string) {
 	for _, key := range m.queue {
 		if m.slots[key].Remote == remote {
 			delete(m.slots, key)
+			delete(m.seqs, key)
 			continue
 		}
 		kept = append(kept, key)
 	}
 	m.queue = kept
+	m.mu.Unlock()
+	// The pump may be parked offering a slot of this remote; make it look
+	// again so a dropped remote's push is never delivered.
+	m.wake()
+	m.mu.Lock()
 }
 
 // Events returns the delivery channel, starting the pump on first use.
@@ -261,17 +280,31 @@ func (m *remoteChangeMailbox) Events() <-chan RemoteChange {
 func (m *remoteChangeMailbox) pump() {
 	for range m.notify {
 		for {
+			// Peek, do not take: the slot stays in the mailbox while the
+			// receiver is busy, so a newer put replaces it in place and a
+			// drop removes it, and either makes the pump look again.
 			m.mu.Lock()
 			if len(m.queue) == 0 {
 				m.mu.Unlock()
 				break
 			}
 			key := m.queue[0]
-			m.queue = m.queue[1:]
-			ch := m.slots[key]
-			delete(m.slots, key)
+			ch, seq := m.slots[key], m.seqs[key]
 			m.mu.Unlock()
-			m.out <- ch
+			select {
+			case m.out <- ch:
+				m.mu.Lock()
+				if cur, ok := m.seqs[key]; ok && cur == seq {
+					delete(m.slots, key)
+					delete(m.seqs, key)
+					if len(m.queue) > 0 && m.queue[0] == key {
+						m.queue = m.queue[1:]
+					}
+				}
+				m.mu.Unlock()
+			case <-m.notify:
+				// Replaced or dropped meanwhile: look again.
+			}
 		}
 	}
 }

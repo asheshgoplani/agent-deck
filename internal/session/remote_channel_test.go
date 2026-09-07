@@ -705,15 +705,19 @@ func TestRemoteChangeMailbox_LatestWinsPerSlot(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	// A push during a slow receive still arrives after the one in flight.
+	// A push during a slow receive replaces the snapshot still waiting to
+	// be handed over: the receiver gets the newest state once, and the
+	// superseded one is never delivered.
 	m.put(RemoteChange{Remote: "a", HasData: true, Sessions: one("a4")})
 	time.Sleep(20 * time.Millisecond)
 	m.put(RemoteChange{Remote: "a", HasData: true, Sessions: one("a5")})
-	if ev := next(); ev.Sessions[0].ID != "a4" {
-		t.Fatalf("in-flight delivery = %+v, want a4", ev)
-	}
 	if ev := next(); ev.Sessions[0].ID != "a5" {
-		t.Fatalf("follow-up delivery = %+v, want a5", ev)
+		t.Fatalf("delivery after a slow receive = %+v, want the newest a5", ev)
+	}
+	select {
+	case ev := <-m.Events():
+		t.Fatalf("the superseded a4 must not be delivered, got %+v", ev)
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	// drop discards a remote's waiting slots and nothing else.
