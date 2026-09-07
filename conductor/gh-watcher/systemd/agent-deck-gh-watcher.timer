@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the agent-deck GitHub event watcher every cadence.events_seconds
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=__INTERVAL__
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

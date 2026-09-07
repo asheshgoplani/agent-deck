@@ -1,0 +1,36 @@
+# conductor/gh-watcher example config.
+# Copy to <conductor dir>/gh-watcher/watcher.toml and edit. No secrets live here:
+# GitHub auth comes from `gh auth login` or the GH_TOKEN environment variable.
+
+[repo]
+owner = "example-org"
+name  = "example-repo"
+
+[routing]
+# agent-deck profile and the exact title of the conductor session to ring.
+profile   = "default"
+conductor = "conductor-default"
+
+[watcher]
+# "log": poll, classify and queue, but only write "would send" lines to the log.
+# "dispatch": actually run `agent-deck session send` for each queued trigger.
+mode = "log"
+
+# Relative paths resolve against the directory holding watcher.toml.
+db_path       = "watcher.db"
+log_path      = "task-log.md"
+liveness_path = "last-poll"
+
+[cadence]
+# How often the poll runs (the launchd StartInterval / systemd timer period).
+events_seconds = 30
+# Liveness is stale when last-poll is older than this. Default 3 x events_seconds.
+stale_after_seconds = 90
+
+[dispatcher]
+# Paced (priority >= 10) triggers wait at least this long between sends.
+min_interval_seconds = 30
+# Above this many pending rows one burst summary replaces one-by-one delivery.
+high_water = 25
+# Once a day, local time HH:MM, flush the digest bucket as one low priority row.
+digest_flush_local_time = "18:00"

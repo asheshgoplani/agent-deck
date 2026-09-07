@@ -1,0 +1,9 @@
+[Unit]
+Description=agent-deck GitHub event watcher tick (poll, classify, dispatch)
+
+[Service]
+Type=oneshot
+Environment=AD_GH_WATCHER_HOME=__WATCHER_HOME__
+ExecStart=/bin/bash __TICK_PATH__
+StandardOutput=append:__LOG_PATH__
+StandardError=append:__LOG_PATH__
