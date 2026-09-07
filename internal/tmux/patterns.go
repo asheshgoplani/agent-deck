@@ -200,6 +200,29 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				"Switch modes",
 			},
 		}
+	case "muse":
+		// Muse Code CLI (`muse`). All patterns CAPTURED live from 1.0.2
+		// in a tmux pane (echo provider):
+		//
+		//   busy:  "◈ Thinking (2s · esc to interrupt)"
+		//   idle:  "⟩" + placeholder "Type @ to search and insert workspace
+		//           file paths", status bar "<provider> · /abs/path"
+		//   reply: "◆ <text>" assistant marker
+		//
+		// Deliberately NOT a prompt pattern: the bare "⟩" (U+27E9). Submitted
+		// prompts stay in history as "⟩ <text>", so it describes a state that
+		// is not necessarily waiting; the placeholder only ever renders in
+		// the live input box. Busy is checked before prompt in the detector,
+		// so the history lines cannot mask a working session.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"◈ Thinking (",
+				"esc to interrupt",
+			},
+			PromptPatterns: []string{
+				"Type @ to search and insert workspace file paths",
+			},
+		}
 	case "shell":
 		return &RawPatterns{
 			PromptPatterns: []string{"$ ", "# ", "% "},

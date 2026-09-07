@@ -609,6 +609,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Copilot.EnvFile
 	case "crush":
 		return config.Crush.EnvFile
+	case "muse":
+		return config.Muse.EnvFile
 	case "cursor":
 		return config.Cursor.EnvFile
 	case "hermes":

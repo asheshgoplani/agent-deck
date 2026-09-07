@@ -34,6 +34,14 @@ type builtinTool struct {
 	// "epic"/"tapioca". Mirrors detectTool()'s hasCommandToken() arm.
 	detectTokens []string
 
+	// executableOnly restricts token matching to the executable position
+	// (first shellwords field, basename-compared). For collision-prone
+	// names like "muse" (vs "amuse", "museum", or `echo muse`) even a
+	// whole-token match is too loose anywhere but the executable slot.
+	// Unset preserves the legacy whole-line token match, so every other
+	// tool is byte-identical in behavior.
+	executableOnly bool
+
 	// Installed reports whether this tool's command resolved on the host PATH at
 	// registry-init time. It is ONLY populated when the show_only_installed_tools
 	// filter is on (issue #1259); with the filter off the probe is skipped
@@ -62,6 +70,12 @@ func builtinTools() []builtinTool {
 		{Name: "pi", Icon: "π", detectTokens: []string{"pi"}},
 		{Name: "copilot", Icon: "🐙", detectSubstrings: []string{"copilot"}},
 		{Name: "crush", Icon: "💘", detectSubstrings: []string{"crush"}},
+		// Executable-position token match only: substring "muse" would
+		// false-match "amuse", "museum", and paths like
+		// "/tmp/muse-project", and even a whole-token match fires on
+		// `echo muse`. Basename comparison keeps bare paths
+		// ("/x/bin/muse") working.
+		{Name: "muse", Icon: "🔮", detectTokens: []string{"muse"}, executableOnly: true},
 		// detectTokens includes bare "agent" (standalone Cursor Agent CLI).
 		// Token match only: substring "agent" would false-match "agent-deck".
 		{Name: "cursor", Icon: "📝", detectSubstrings: []string{"cursor"}, detectTokens: []string{"agent"}},
