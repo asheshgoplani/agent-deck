@@ -2827,21 +2827,19 @@ async def heartbeat_loop(
                     parts.append(f"Waiting sessions: {', '.join(waiting_details)}.")
                 if error_details:
                     parts.append(f"Error sessions: {', '.join(error_details)}.")
-                # Append HEARTBEAT_RULES.md (per-conductor, per-profile, then global fallback)
-                rules_text = None
+                # Reference HEARTBEAT_RULES.md by path. Inlining the whole file
+                # on every tick bloats prompts and destabilizes the cache prefix.
+                rules_path_ref = None
                 for rules_path in [
                     CONDUCTOR_DIR / name / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / profile / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / "HEARTBEAT_RULES.md",
                 ]:
-                    if rules_path.exists():
-                        try:
-                            rules_text = rules_path.read_text().strip()
-                        except Exception as e:
-                            log.warning("Failed to read %s: %s", rules_path, e)
+                    if rules_path.is_file():
+                        rules_path_ref = rules_path.resolve()
                         break
-                if rules_text:
-                    parts.append(f"\n\n{rules_text}")
+                if rules_path_ref:
+                    parts.append(f"Read heartbeat rules from {rules_path_ref}.")
                 else:
                     parts.append("Check if any need auto-response or user attention.")
 

@@ -884,7 +884,8 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 			perNameTemplate = conductorPerNameClaudeMDTemplate
 		}
 		content := renderConductorInstructionsTemplate(perNameTemplate, name, profile, spec)
-		if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
+		oldContent := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(perNameTemplate), name, profile, spec)
+		if err := writeGeneratedFileOrMigrate(targetPath, oldContent, content, 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
 		}
 	}
@@ -1295,12 +1296,7 @@ done
 
 MSG="{HEARTBEAT_PREFIX} Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention."
 if [ -n "$RULES_FILE" ]; then
-    RULES=$(cat "$RULES_FILE")
-    if [ -n "$RULES" ]; then
-        MSG="$MSG
-
-$RULES"
-    fi
+    MSG="$MSG Read heartbeat rules from $RULES_FILE."
 fi
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
@@ -1408,6 +1404,105 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 	return closeErr
 }
 
+// exchangeGeneratedFiles atomically swaps two pathnames. After the exchange,
+// the temporary pathname holds the displaced destination, which lets the
+// caller validate and retain the exact file it replaced for recovery.
+var exchangeGeneratedFiles = exchangeGeneratedFile
+
+// writeGeneratedFileOrMigrate creates a generated file when absent and upgrades
+// it only when its contents exactly match the previous generated template.
+// Edited files and existing symlinks remain user-owned. Migration retains the
+// displaced inode so an editor with an open descriptor cannot lose its writes.
+func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMode) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return writeFileIfAbsent(path, []byte(current), perm)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to replace unsafe generated-file target %q (%s)", path, info.Mode().Type())
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !matchesTemplateContent(string(content), previous) {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".previous-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	exchanged := false
+	defer func() {
+		if !exchanged {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	fail := func(op string, opErr error) error {
+		_ = tmp.Close()
+		return fmt.Errorf("%s generated replacement: %w", op, opErr)
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		return fail("chmod", err)
+	}
+	if _, err := tmp.Write([]byte(current)); err != nil {
+		return fail("write", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail("sync", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close generated replacement: %w", err)
+	}
+
+	// Avoid needless exchanges when a change is already visible. This recheck is
+	// only an optimization: correctness comes from validating the file displaced
+	// by the atomic exchange below.
+	latestInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("recheck generated target: %w", err)
+	}
+	if !latestInfo.Mode().IsRegular() || !os.SameFile(info, latestInfo) {
+		return fmt.Errorf("generated target changed during migration: %s", path)
+	}
+	latest, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("recheck generated content: %w", err)
+	}
+	if !matchesTemplateContent(string(latest), previous) {
+		return fmt.Errorf("generated target was edited during migration: %s", path)
+	}
+	if err := exchangeGeneratedFiles(tmpPath, path); err != nil {
+		return fmt.Errorf("replace generated target: %w", err)
+	}
+	// From this point tmpPath belongs to the displaced inode, which may still
+	// have an editor writing through an open descriptor. Never unlink it.
+	exchanged = true
+	fsyncDir(dir)
+	displacedInfo, statErr := os.Lstat(tmpPath)
+	var displaced []byte
+	var readErr error
+	if statErr == nil && displacedInfo.Mode().IsRegular() {
+		displaced, readErr = os.ReadFile(tmpPath)
+	}
+	if statErr != nil || !displacedInfo.Mode().IsRegular() || readErr != nil ||
+		!os.SameFile(info, displacedInfo) || !matchesTemplateContent(string(displaced), previous) {
+		// A second exchange could overwrite a newer visible edit. Keep both
+		// paths and make the publication conflict actionable instead.
+		return fmt.Errorf("generated target %q changed during publication; publication occurred, displaced file retained at %q for reconciliation", path, tmpPath)
+	}
+	sessionLog.Info("generated_instructions_migrated", slog.String("path", path), slog.String("previous_path", tmpPath))
+	return nil
+}
+
 // InstallSharedConductorInstructions writes the shared instructions file for the given conductor agent,
 // or creates a symlink if customPath is provided.
 func InstallSharedConductorInstructions(agent, customPath string) error {
@@ -1429,12 +1524,12 @@ func InstallSharedConductorInstructions(agent, customPath string) error {
 		return createSymlinkWithExpansion(targetPath, customPath)
 	}
 
-	// No custom path - write the default template only if nothing is there yet.
-	// An existing file is preserved: a symlink keeps the user's customization,
-	// and a regular file may carry in-place edits we must not clobber on re-run.
-	// writeFileIfAbsent's O_EXCL makes both cases a no-op.
+	// No custom path: create the current generated template, or migrate an exact
+	// copy of the previous generated template. Customized files and symlinks are
+	// preserved.
 	content := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-	if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
+	oldContent := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
+	if err := writeGeneratedFileOrMigrate(targetPath, oldContent, content, 0o644); err != nil {
 		return fmt.Errorf("failed to write shared %s: %w", spec.InstructionsFileName, err)
 	}
 	return nil
