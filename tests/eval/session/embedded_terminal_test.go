@@ -32,18 +32,21 @@ func TestEval_EmbeddedPTY(t *testing.T) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		t.Fatalf("mkdir workdir: %v", err)
 	}
-	runBin(t, sb, "add", "-c", "bash", "-t", "embedded-eval", workDir)
-	runBin(t, sb, "session", "start", "embedded-eval")
-	registerTUIEvalCleanup(t, sb, "embedded-eval", socketName)
+	// A short title: the compact rail is about 21 cells at this width and,
+	// since #2122, every classic row truncates its title to the cell budget
+	// left beside the tool label, so a long one would render as "embed…".
+	runBin(t, sb, "add", "-c", "bash", "-t", "evtui", workDir)
+	runBin(t, sb, "session", "start", "evtui")
+	registerTUIEvalCleanup(t, sb, "evtui", socketName)
 
-	p := sb.Spawn("--select", "embedded-eval")
+	p := sb.Spawn("--select", "evtui")
 	defer p.Close()
 	p.Resize(120, 30)
 	// The explicit config skips the first-run wizard; dismiss the normal hooks
 	// prompt before exercising the deck.
 	p.ExpectOutput("Claude Code Hooks", 8*time.Second)
 	p.Send("\x1b")
-	p.ExpectOutput("embedded-eval", 8*time.Second)
+	p.ExpectOutput("evtui", 8*time.Second)
 	assertStartupProtocol(t, p.Output(), true)
 	p.Send("\r")
 	p.ExpectOutput("Ctrl+Q detach", 5*time.Second)
