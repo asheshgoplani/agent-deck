@@ -1,0 +1,46 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`paneRegistry > renders the same tab names in the same order as before 1`] = `
+[
+  {
+    "id": "command-center",
+    "label": "Command Center",
+  },
+  {
+    "id": "fleet",
+    "label": "Fleet",
+  },
+  {
+    "id": "terminal",
+    "label": "Terminal",
+  },
+  {
+    "id": "mcp",
+    "label": "MCPs",
+  },
+  {
+    "id": "skills",
+    "label": "Skills",
+  },
+  {
+    "id": "conductor",
+    "label": "Conductor",
+  },
+  {
+    "id": "watchers",
+    "label": "Watchers",
+  },
+  {
+    "id": "costs",
+    "label": "Costs",
+  },
+  {
+    "id": "search",
+    "label": "Search",
+  },
+  {
+    "id": "archived",
+    "label": "Archived",
+  },
+]
+`;

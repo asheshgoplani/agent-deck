@@ -677,3 +677,14 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// Command Center (the embedded live fleet god-view — see
+// conductor/agent-deck/COMMAND-CENTER-DESIGN.md). Two read endpoints and
+// one write endpoint, all behind the existing authorize/CSRF/mutation gates.
+func init() {
+	registerFeatureRoutes(func(s *Server, mux *http.ServeMux) {
+		mux.HandleFunc("/api/command-center/status", s.handleCommandCenterStatus)
+		mux.HandleFunc("/events/command-center", s.handleCommandCenterEvents)
+		mux.HandleFunc("POST /api/command-center/ask", s.handleCommandCenterAsk)
+	})
+}

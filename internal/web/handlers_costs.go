@@ -611,3 +611,17 @@ func (s *Server) computeBatchCosts(ids []string) map[string]float64 {
 func microToUSD(microdollars int64) float64 {
 	return float64(microdollars) / 1_000_000
 }
+
+func init() {
+	registerFeatureRoutes(func(s *Server, mux *http.ServeMux) {
+		mux.HandleFunc("/api/costs/summary", s.handleCostsSummary)
+		mux.HandleFunc("/api/costs/daily", s.handleCostsDaily)
+		mux.HandleFunc("/api/costs/sessions", s.handleCostsSessions)
+		mux.HandleFunc("/api/costs/models", s.handleCostsModels)
+		mux.HandleFunc("/api/costs/export", s.handleCostsExport)
+		mux.HandleFunc("/api/costs/groups", s.handleCostsGroups)
+		mux.HandleFunc("/api/costs/session", s.handleCostsSessionDetail)
+		mux.HandleFunc("/api/costs/batch", s.handleCostsBatch)
+		mux.HandleFunc("/api/costs/stream", s.handleCostsStream)
+	})
+}

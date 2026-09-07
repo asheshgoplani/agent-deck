@@ -67,3 +67,9 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, resp)
 }
+
+func init() {
+	registerFeatureRoutes(func(s *Server, mux *http.ServeMux) {
+		mux.HandleFunc("/api/system/stats", s.handleSystemStats)
+	})
+}
