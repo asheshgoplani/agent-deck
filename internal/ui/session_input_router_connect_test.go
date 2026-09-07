@@ -32,6 +32,7 @@ func TestSessionInputRouterHoldsInputUntilTheChildExists(t *testing.T) {
 
 	var child bytes.Buffer
 	router.Activate(&child, terminalCellRect{Width: 80, Height: 24}, 0)
+	awaitPaneIdle(t, router)
 	if got := child.String(); got != "ls -la" {
 		t.Fatalf("child received %q after activation, want the held keystrokes", got)
 	}
@@ -55,12 +56,14 @@ func TestSessionInputRouterForwardedKeysPrecedeLiveBytes(t *testing.T) {
 
 	var child bytes.Buffer
 	router.Activate(&child, terminalCellRect{Width: 80, Height: 24}, 0)
+	awaitPaneIdle(t, router)
 	if got := child.String(); got != "echo hi" {
 		t.Fatalf("child received %q, want forwarded keys before raw keys", got)
 	}
 
 	// Once the client exists, forwarded stragglers go straight through.
 	router.Forward([]byte("\r"))
+	awaitPaneIdle(t, router)
 	if got := child.String(); got != "echo hi\r" {
 		t.Fatalf("child received %q after live forward", got)
 	}
@@ -77,13 +80,14 @@ func TestSessionInputRouterDetachWhileConnectingDropsHeldInput(t *testing.T) {
 	if router.active {
 		t.Fatal("detach chord while connecting left the router in session mode")
 	}
-	if len(router.held) != 0 {
-		t.Fatalf("held bytes survived the detach: %q", router.held)
+	if router.out == nil || !router.out.isClosed() {
+		t.Fatal("pane writer stayed open across the detach; its queue would replay into a later client")
 	}
 
 	// Home abandons the connect; a late Activate must not replay stale keys.
 	var child bytes.Buffer
 	router.Activate(&child, terminalCellRect{Width: 80, Height: 24}, 0)
+	awaitPaneIdle(t, router)
 	if child.Len() != 0 {
 		t.Fatalf("stale held bytes reached a later client: %q", child.String())
 	}
@@ -92,8 +96,66 @@ func TestSessionInputRouterDetachWhileConnectingDropsHeldInput(t *testing.T) {
 func TestSessionInputRouterForwardOutsideSessionModeIsDropped(t *testing.T) {
 	router := NewSessionInputRouter(nil)
 	router.Forward([]byte("stray"))
-	if len(router.held) != 0 {
-		t.Fatalf("dashboard-mode forward was held: %q", router.held)
+	if router.out != nil {
+		t.Fatal("dashboard-mode forward created a pane queue")
+	}
+}
+
+// CodeRabbit on #2112: one stdin read may carry pane bytes and then Ctrl+Q.
+// Read must hand Ctrl+Q to Bubble Tea without waiting for the pane write; a
+// client that has stopped reading would otherwise hold the detach hostage.
+// The pane bytes typed ahead of the chord still reach the client once it
+// reads again, as they did when the write was synchronous.
+func TestSessionInputRouterReturnsDetachBeforeABlockedPaneWrite(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+
+	child := &blockingWriter{release: make(chan struct{}), entered: make(chan struct{})}
+	router := NewSessionInputRouter(readFile)
+	router.Activate(child, terminalCellRect{Width: 80, Height: 24}, 0)
+
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	results := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, err := router.Read(buf)
+		results <- readResult{data: buf[:n], err: err}
+	}()
+	if _, err := io.WriteString(writeFile, "x\x11"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-results:
+		if got.err != nil || !bytes.Equal(got.data, []byte{0x11}) {
+			t.Fatalf("Read = %q, %v; want the detach byte alone", got.data, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read waited on the stalled pane write before returning Ctrl+Q")
+	}
+	if router.active {
+		t.Fatal("detach chord left the router in session mode")
+	}
+
+	select {
+	case <-child.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pane writer never attempted the write")
+	}
+	close(child.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for child.contents() != "x" {
+		if time.Now().After(deadline) {
+			t.Fatalf("child received %q, want the byte typed before the detach", child.contents())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -103,13 +165,22 @@ type blockingWriter struct {
 	release chan struct{}
 	entered chan struct{}
 	once    sync.Once
+	mu      sync.Mutex
 	buf     bytes.Buffer
 }
 
 func (w *blockingWriter) Write(p []byte) (int, error) {
 	w.once.Do(func() { close(w.entered) })
 	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.buf.Write(p)
+}
+
+func (w *blockingWriter) contents() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 func TestSessionInputRouterWritesToTheChildOutsideItsLock(t *testing.T) {
@@ -206,8 +277,8 @@ func TestEmbeddedModeReplaysKeysTypedWhileConnecting(t *testing.T) {
 	if !home.enterEmbeddedMode() {
 		t.Fatalf("enterEmbeddedMode failed: %v", home.err)
 	}
-	if !router.active || router.child != nil {
-		t.Fatalf("router after Enter: active=%v child=%v, want session mode with no child yet", router.active, router.child)
+	if !router.active || router.hasChild() {
+		t.Fatalf("router after Enter: active=%v child=%v, want session mode with no child yet", router.active, router.hasChild())
 	}
 
 	// A KeyMsg that shared Enter's stdin read arrives through Bubble Tea.
@@ -232,7 +303,7 @@ func TestEmbeddedModeReplaysKeysTypedWhileConnecting(t *testing.T) {
 	terminal := &embeddedTerminal{ptmx: ptmx, emulator: emulator, dirty: make(chan struct{}, 1)}
 
 	_ = home.installEmbeddedTerminal(embeddedStartMsg{generation: home.embeddedGeneration, terminal: terminal})
-	if router.child == nil {
+	if !router.hasChild() {
 		t.Fatal("install did not activate the router")
 	}
 

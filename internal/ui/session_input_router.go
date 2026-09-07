@@ -40,18 +40,13 @@ type SessionInputRouter struct {
 
 	mu     sync.RWMutex
 	active bool
-	// child is the embedded PTY. It is nil between Prepare and Activate, the
-	// interval in which Home is still opening the tmux client; bytes routed to
-	// the pane during that interval wait in held.
-	child io.Writer
-	// held collects pane-bound bytes that arrived before the child existed, or
-	// while Activate was still draining an earlier batch, so the first thing
-	// the client reads is everything the user typed, in order.
-	held []byte
-	// draining is set while Activate writes held bytes outside the lock; Read
-	// keeps appending to held until it clears so the two cannot interleave.
-	draining bool
-	rect     terminalCellRect
+	// out carries every pane-bound byte to the embedded PTY. Prepare (or
+	// Activate) installs it; between Prepare and Activate it has no child yet
+	// and simply queues what the user types. Deactivation closes it but leaves
+	// it in place, still delivering what was queued, until the next Prepare or
+	// Activate replaces it.
+	out  *paneWriter
+	rect terminalCellRect
 	// switchByte is the configured portable Ctrl+<key> chord that returns an
 	// embedded local session to Bubble Tea's MRU switcher. Zero disables it
 	// (including remote sessions, whose switcher path is not local-tmux based).
@@ -80,24 +75,26 @@ func NewSessionInputRouter(stdin *os.File) *SessionInputRouter {
 func (r *SessionInputRouter) Prepare(rect terminalCellRect, switchByte byte) {
 	r.mu.Lock()
 	r.active = true
-	r.child = nil
+	if r.out != nil {
+		// A client Home is abandoning never reads what was queued for it.
+		r.out.close(false)
+	}
+	r.out = newPaneWriter()
 	r.rect = rect
 	r.switchByte = switchByte
 	r.rawBuf = r.rawBuf[:0]
-	r.held = r.held[:0]
-	r.draining = false
 	r.inPaste = false
 	r.mu.Unlock()
 }
 
-// Activate installs the child PTY. Bytes held since Prepare are written to it
-// first, outside the lock; Read keeps holding new pane bytes until that drain
-// completes, so the client sees the user's keystrokes in the order typed.
+// Activate installs the child PTY. Bytes queued since Prepare reach it first,
+// then everything routed afterwards, in the order typed; the delivery runs on
+// the pane writer's goroutine, so neither this call nor Read waits on the PTY.
 func (r *SessionInputRouter) Activate(child io.Writer, rect terminalCellRect, switchByte byte) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	wasActive := r.active
 	r.active = child != nil
-	r.child = child
 	r.rect = rect
 	r.switchByte = switchByte
 	if !wasActive {
@@ -105,33 +102,56 @@ func (r *SessionInputRouter) Activate(child io.Writer, rect terminalCellRect, sw
 		// After Prepare the partial token in rawBuf belongs to the session.
 		r.rawBuf = r.rawBuf[:0]
 		r.inPaste = false
-		r.held = r.held[:0]
 	}
 	if child == nil {
-		r.held = r.held[:0]
-		r.draining = false
-		r.mu.Unlock()
+		if r.out != nil {
+			r.out.close(false)
+			r.out = nil
+		}
 		return
 	}
-	r.draining = true
-	r.mu.Unlock()
-	r.drainHeld(child)
+	if r.out != nil && (r.out.isClosed() || (r.out.hasChild() && !r.out.writesTo(child))) {
+		// A closed writer is finishing an earlier client's bytes; replacing
+		// one live client with another leaves the old client's queue its own.
+		// Either way the new client starts empty.
+		r.out.close(true)
+		r.out = nil
+	}
+	if r.out == nil {
+		r.out = newPaneWriter()
+	}
+	r.out.attach(child)
 }
 
-func (r *SessionInputRouter) drainHeld(child io.Writer) {
-	for {
-		r.mu.Lock()
-		if len(r.held) == 0 || r.child != child {
-			r.held = r.held[:0]
-			r.draining = false
-			r.mu.Unlock()
-			return
-		}
-		batch := append([]byte(nil), r.held...)
-		r.held = r.held[:0]
-		r.mu.Unlock()
-		writeChild(child, batch)
+// enqueuePaneLocked queues pane bytes for delivery. Called with r.mu held. A
+// router that is active without Prepare (tests, or Activate alone) gets its
+// writer lazily; the bytes wait there until a child is attached.
+func (r *SessionInputRouter) enqueuePaneLocked(data []byte) {
+	if len(data) == 0 || !r.active {
+		return
 	}
+	if r.out == nil || r.out.isClosed() {
+		r.out = newPaneWriter()
+	}
+	r.out.enqueue(data)
+}
+
+// hasChild reports whether a client PTY is installed; false during the
+// Prepare..Activate interval and in dashboard mode.
+func (r *SessionInputRouter) hasChild() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.out != nil && r.out.hasChild()
+}
+
+// paneIdle reports whether every queued pane byte has been handed to the
+// child (bytes parked while no child exists count as idle). Tests use it to
+// wait for the asynchronous delivery.
+func (r *SessionInputRouter) paneIdle() bool {
+	r.mu.RLock()
+	out := r.out
+	r.mu.RUnlock()
+	return out == nil || out.idle()
 }
 
 // Forward hands the router bytes that Bubble Tea has already parsed as key
@@ -140,34 +160,132 @@ func (r *SessionInputRouter) drainHeld(child io.Writer) {
 // dashboard, so those keys arrive at Home as messages after the mode switch.
 // Home re-encodes them and forwards them here rather than dropping them.
 func (r *SessionInputRouter) Forward(raw []byte) {
-	if len(raw) == 0 {
-		return
-	}
 	r.mu.Lock()
-	if !r.active {
-		r.mu.Unlock()
-		return
-	}
-	if r.child == nil || r.draining {
-		r.held = append(r.held, raw...)
-		r.mu.Unlock()
-		return
-	}
-	child := r.child
+	r.enqueuePaneLocked(raw)
 	r.mu.Unlock()
-	writeChild(child, raw)
 }
 
-// writeChild delivers pane bytes with no router lock held. A PTY write can
-// block when the client stops reading, and it fails once the client has gone;
-// neither may stall Activate/Deactivate/UpdateRect on the Bubble Tea goroutine
-// or surface as a stdin error that ends the dashboard's input loop. Home
-// notices the exited client through embeddedFrameMsg and detaches.
-func writeChild(child io.Writer, data []byte) {
-	if child == nil || len(data) == 0 {
+// paneWriter delivers pane-bound bytes to the embedded PTY from its own
+// goroutine, in arrival order. A PTY write blocks when the client stops
+// reading and fails once the client has gone; neither may delay the dashboard
+// bytes Read returns (Ctrl+Q after a pane byte in the same read, the switch
+// chord, out-of-pane mouse), stall Activate/Deactivate/UpdateRect on the
+// Bubble Tea goroutine, or surface as a stdin error that ends the dashboard's
+// input loop. Home notices an exited client through embeddedFrameMsg.
+type paneWriter struct {
+	mu     sync.Mutex
+	child  io.Writer
+	queue  []byte
+	busy   bool // a batch is being written
+	closed bool
+	// wake has capacity one: enqueue and close poke the goroutine through it,
+	// and a poke that finds it full is already covered by the pending one.
+	wake chan struct{}
+}
+
+// paneWriterMaxQueue bounds what a client that has stopped reading can pile
+// up. Beyond it further pane bytes are dropped; the client was never going to
+// read them, and the user sees a frozen pane, not a leaking process.
+const paneWriterMaxQueue = 1 << 20
+
+func newPaneWriter() *paneWriter {
+	return &paneWriter{wake: make(chan struct{}, 1)}
+}
+
+func (w *paneWriter) enqueue(data []byte) {
+	if len(data) == 0 {
 		return
 	}
-	_, _ = child.Write(data)
+	w.mu.Lock()
+	if w.closed || len(w.queue)+len(data) > paneWriterMaxQueue {
+		w.mu.Unlock()
+		return
+	}
+	w.queue = append(w.queue, data...)
+	w.mu.Unlock()
+	w.poke()
+}
+
+// attach installs the client and starts delivery. The first batch it writes is
+// everything queued since Prepare, ahead of anything routed later.
+func (w *paneWriter) attach(child io.Writer) {
+	w.mu.Lock()
+	start := w.child == nil && child != nil && !w.closed
+	if start {
+		w.child = child
+	}
+	w.mu.Unlock()
+	if start {
+		go w.run(child)
+	}
+}
+
+// close stops accepting bytes. With flush set the goroutine still delivers
+// what was queued before the close (keys typed ahead of a detach chord reach
+// the pane, as they did when the write was synchronous) and then exits;
+// otherwise the queue is dropped.
+func (w *paneWriter) close(flush bool) {
+	w.mu.Lock()
+	w.closed = true
+	if !flush || w.child == nil {
+		w.queue = nil
+	}
+	w.mu.Unlock()
+	w.poke()
+}
+
+func (w *paneWriter) hasChild() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.child != nil
+}
+
+func (w *paneWriter) writesTo(child io.Writer) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.child == child
+}
+
+func (w *paneWriter) isClosed() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closed
+}
+
+func (w *paneWriter) idle() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.child == nil || (len(w.queue) == 0 && !w.busy)
+}
+
+func (w *paneWriter) poke() {
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (w *paneWriter) run(child io.Writer) {
+	for {
+		w.mu.Lock()
+		if len(w.queue) == 0 {
+			if w.closed {
+				w.mu.Unlock()
+				return
+			}
+			w.mu.Unlock()
+			<-w.wake
+			continue
+		}
+		batch := w.queue
+		w.queue = nil
+		w.busy = true
+		w.mu.Unlock()
+		_, _ = child.Write(batch)
+		w.mu.Lock()
+		w.busy = false
+		w.mu.Unlock()
+	}
 }
 
 func (r *SessionInputRouter) Deactivate() {
@@ -178,9 +296,11 @@ func (r *SessionInputRouter) Deactivate() {
 
 func (r *SessionInputRouter) deactivateLocked() {
 	r.active = false
-	r.child = nil
-	r.held = r.held[:0]
-	r.draining = false
+	if r.out != nil {
+		// Bytes already accepted for the pane still reach a live client;
+		// nothing queued while only connecting has anywhere to go.
+		r.out.close(r.out.hasChild())
+	}
 	r.switchByte = 0
 	r.rawBuf = r.rawBuf[:0]
 	r.inPaste = false
@@ -244,56 +364,49 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			continue
 		}
 		r.rawBuf = append(r.rawBuf, buf[:n]...)
-		child := r.child
-		toDashboard, toChild := r.routeEmbeddedLocked(err != nil)
+		toDashboard := r.routeEmbeddedLocked(err != nil)
 		if len(toDashboard) > 0 {
 			copied := copy(p, toDashboard)
 			if copied < len(toDashboard) {
 				r.pending = append(r.pending, toDashboard[copied:]...)
 			}
 			r.mu.Unlock()
-			writeChild(child, toChild)
 			return copied, nil
 		}
 		partial := len(r.rawBuf) > 0
 		r.mu.Unlock()
-		writeChild(child, toChild)
 		// A lone Escape is both a valid key and the prefix of every CSI/SS3
 		// token. Give the kernel the conventional short ESC-delay window to
 		// deliver the rest of a split sequence, then forward it as-is rather
 		// than blocking until the user's next keypress.
 		if partial && !pollFdReady(int(r.File.Fd()), 50*time.Millisecond) {
 			r.mu.Lock()
-			child = r.child
-			toDashboard, toChild = r.routeEmbeddedLocked(true)
+			toDashboard = r.routeEmbeddedLocked(true)
 			if len(toDashboard) > 0 {
 				copied := copy(p, toDashboard)
 				if copied < len(toDashboard) {
 					r.pending = append(r.pending, toDashboard[copied:]...)
 				}
 				r.mu.Unlock()
-				writeChild(child, toChild)
 				return copied, nil
 			}
 			r.mu.Unlock()
-			writeChild(child, toChild)
 		}
 	}
 }
 
-// routeEmbeddedLocked consumes complete tokens from rawBuf. It returns bytes
-// that should go back through Bubble Tea (detach and out-of-pane mouse) and
-// bytes for the pane. The caller writes the pane bytes after releasing r.mu;
-// every pane byte precedes any dashboard byte in the stream, so writing them
-// first and then returning the dashboard bytes preserves the typed order.
-// While the child does not exist yet (Prepare) or Activate is still draining,
-// pane bytes are appended to held instead and nothing is returned for it.
-func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChild []byte) {
+// routeEmbeddedLocked consumes complete tokens from rawBuf. It returns the
+// bytes that go back through Bubble Tea (detach, switch chord, sidebar
+// toggle, out-of-pane mouse) and queues the pane's bytes on the pane writer,
+// which delivers them in order on its own goroutine. A detach or switch chord
+// deactivates the router, so pane bytes that preceded it in the same read are
+// queued for delivery before the writer is closed, and bytes after it are
+// discarded.
+func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard []byte) {
 	var child bytes.Buffer
 	var dashboard bytes.Buffer
 	data := r.rawBuf
 	i := 0
-	holdForChild := r.child == nil || r.draining
 
 	for i < len(data) {
 		if r.inPaste {
@@ -329,6 +442,8 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 			// detach chord are discarded so they cannot become accidental
 			// dashboard hotkeys, and never leak to the dying client.
 			i = len(data)
+			r.enqueuePaneLocked(child.Bytes())
+			child.Reset()
 			r.deactivateLocked()
 			break
 		}
@@ -343,6 +458,8 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 			// Match full-screen attach: discard bytes coalesced after the switch
 			// chord and stop routing into the client that Home is about to close.
 			i = len(data)
+			r.enqueuePaneLocked(child.Bytes())
+			child.Reset()
 			r.deactivateLocked()
 			break
 		}
@@ -395,16 +512,8 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 	}
 
 	r.rawBuf = append(r.rawBuf[:0], data[i:]...)
-	if holdForChild {
-		// A detach or switch chord while connecting already cleared held via
-		// deactivateLocked; do not resurrect bytes for a client Home is
-		// about to abandon.
-		if r.active {
-			r.held = append(r.held, child.Bytes()...)
-		}
-		return dashboard.Bytes(), nil
-	}
-	return dashboard.Bytes(), child.Bytes()
+	r.enqueuePaneLocked(child.Bytes())
+	return dashboard.Bytes()
 }
 
 func ctrlQSequenceLen(data []byte) int {

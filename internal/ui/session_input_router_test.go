@@ -10,26 +10,34 @@ import (
 
 func newRoutingTestInput(rect terminalCellRect) (*SessionInputRouter, *bytes.Buffer) {
 	child := new(bytes.Buffer)
-	router := &SessionInputRouter{
-		active: true,
-		child:  child,
-		rect:   rect,
-		rawBuf: make([]byte, 0, 256),
-	}
+	router := NewSessionInputRouter(nil)
+	router.Activate(child, rect, 0)
 	return router, child
 }
 
+// awaitPaneIdle waits for the pane writer's goroutine to hand every queued
+// byte to the child, so assertions on the child's buffer are deterministic.
+func awaitPaneIdle(t *testing.T, router *SessionInputRouter) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !router.paneIdle() {
+		if time.Now().After(deadline) {
+			t.Fatal("pane writer never drained its queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // routeTestBytes runs one routing pass the way Read does: route under the
-// lock, then deliver the pane bytes to the child that was installed when the
-// pass began (a detach chord clears r.child before the pass returns).
+// lock, then let the pane writer deliver the pane bytes to the child before
+// returning the dashboard bytes.
 func routeTestBytes(t *testing.T, router *SessionInputRouter, data string) []byte {
 	t.Helper()
 	router.mu.Lock()
 	router.rawBuf = append(router.rawBuf, data...)
-	child := router.child
-	dashboard, toChild := router.routeEmbeddedLocked(false)
+	dashboard := router.routeEmbeddedLocked(false)
 	router.mu.Unlock()
-	writeChild(child, toChild)
+	awaitPaneIdle(t, router)
 	return dashboard
 }
 
@@ -202,12 +210,16 @@ func TestSessionInputRouterFlushesStandaloneEscape(t *testing.T) {
 	router, child := newRoutingTestInput(terminalCellRect{Width: 80, Height: 24})
 	router.mu.Lock()
 	router.rawBuf = append(router.rawBuf, '\x1b')
-	if _, toChild := router.routeEmbeddedLocked(false); len(toChild) != 0 {
-		t.Fatalf("ambiguous Escape forwarded before timeout: %q", toChild)
-	}
-	_, toChild := router.routeEmbeddedLocked(true)
+	_ = router.routeEmbeddedLocked(false)
 	router.mu.Unlock()
-	writeChild(child, toChild)
+	awaitPaneIdle(t, router)
+	if child.Len() != 0 {
+		t.Fatalf("ambiguous Escape forwarded before timeout: %q", child.String())
+	}
+	router.mu.Lock()
+	_ = router.routeEmbeddedLocked(true)
+	router.mu.Unlock()
+	awaitPaneIdle(t, router)
 	if got := child.String(); got != "\x1b" {
 		t.Fatalf("standalone Escape = %q, want raw ESC", got)
 	}
@@ -247,6 +259,7 @@ func TestSessionInputRouterActivationDuringBlockedReadPreservesRawBytes(t *testi
 	case <-time.After(time.Second):
 		t.Fatal("router did not return detach key")
 	}
+	awaitPaneIdle(t, router)
 	if child.String() != raw {
 		t.Fatalf("child bytes = %q, want exact raw sequence %q", child.String(), raw)
 	}
