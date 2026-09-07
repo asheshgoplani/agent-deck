@@ -119,6 +119,25 @@ func TestRefreshSnapshotHookStatuses_StaleRunningDoesNotOverride(t *testing.T) {
 	}
 }
 
+func TestRefreshSnapshotHookStatuses_StaleCodexWaitingPreservesLiveStatus(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 7, 13, 0, 0, 0, time.UTC)
+	hooks := map[string]*session.HookStatus{
+		"sess-A": {
+			Status:    "waiting",
+			Event:     "agent-turn-complete",
+			UpdatedAt: now.Add(-30 * time.Minute),
+		},
+	}
+	for _, liveStatus := range []session.Status{session.StatusRunning, session.StatusError} {
+		snap := snapshotWithSession("sess-A", "codex", liveStatus)
+		refreshSnapshotHookStatusesAt(snap, hooks, now)
+		if got := snap.Items[0].Session.Status; got != liveStatus {
+			t.Fatalf("stale Codex waiting replaced live %q with %q", liveStatus, got)
+		}
+	}
+}
+
 // TestRefreshSnapshotHookStatuses_StoppedNeverOverridden encodes the
 // user-intentional rule from Instance.UpdateStatus: a stopped session is
 // stopped no matter what the hook says, because the user explicitly stopped it.

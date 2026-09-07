@@ -40,6 +40,12 @@ type menuDataRevisionLoader interface {
 	MenuDataRevision() (int64, error)
 }
 
+// liveStateMenuDataLoader marks fallbacks whose snapshots include process state
+// that can change without a persisted menu-data revision.
+type liveStateMenuDataLoader interface {
+	refreshesLiveState() bool
+}
+
 // NewMemoryMenuData creates an in-memory menu data store.
 func NewMemoryMenuData(fallback MenuDataLoader) *MemoryMenuData {
 	return &MemoryMenuData{
@@ -47,8 +53,8 @@ func NewMemoryMenuData(fallback MenuDataLoader) *MemoryMenuData {
 	}
 }
 
-// LoadMenuSnapshot returns the latest complete snapshot.
-// It rate-limits storage checks for fallback-owned snapshots.
+// LoadMenuSnapshot returns the latest complete snapshot. It rate-limits
+// storage checks and live-state reloads for fallback-owned snapshots.
 func (m *MemoryMenuData) LoadMenuSnapshot() (snapshot *MenuSnapshot, err error) {
 	if m == nil {
 		return nil, fmt.Errorf("menu snapshot is unavailable")
@@ -80,6 +86,9 @@ func (m *MemoryMenuData) LoadMenuSnapshot() (snapshot *MenuSnapshot, err error) 
 	revisionLoader, ok := m.fallback.(menuDataRevisionLoader)
 	if !ok || time.Since(m.lastRevisionCheck) < memoryMenuRevisionCheckInterval {
 		return cloneMenuSnapshot(m.snapshot), nil
+	}
+	if liveState, ok := m.fallback.(liveStateMenuDataLoader); ok && liveState.refreshesLiveState() {
+		return m.loadFallbackSnapshotLocked()
 	}
 
 	revision, err := revisionLoader.MenuDataRevision()

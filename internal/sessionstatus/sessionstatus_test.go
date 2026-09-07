@@ -69,13 +69,17 @@ func TestDerive_FreshHookOverridesStaleSnapshotError(t *testing.T) {
 	t.Parallel()
 	for _, tool := range []string{"claude", "codex", "gemini"} {
 		t.Run(tool, func(t *testing.T) {
+			hookAge := 30 * time.Second
+			if tool == "codex" {
+				hookAge = 4 * time.Second
+			}
 			out := sessionstatus.Derive(sessionstatus.Input{
 				Tool:        tool,
 				PriorStatus: session.StatusError,
 				Hook: &session.HookStatus{
 					Status:    "waiting",
 					Event:     "Stop",
-					UpdatedAt: fixedNow.Add(-30 * time.Second),
+					UpdatedAt: fixedNow.Add(-hookAge),
 				},
 				Now: fixedNow,
 			})
@@ -204,21 +208,18 @@ func TestDerive_CodexRunning20sWindow(t *testing.T) {
 	}
 }
 
-// TestDerive_CodexWaiting2mWindow asserts codex "waiting" uses the longer
-// window. instance.go has used 2-minutes for codex waiting since v1.7.x; the
-// shared helper must preserve that to avoid a regression in codex
-// attention-needed signaling.
-func TestDerive_CodexWaiting2mWindow(t *testing.T) {
+// TestDerive_CodexWaitingShortWindow keeps the completion hook authoritative
+// long enough for the next status refresh, but lets tmux detect a new turn
+// promptly because legacy Codex notify emits no turn-start edge (#2189).
+func TestDerive_CodexWaitingShortWindow(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
 		hookAge time.Duration
 		want    session.Status
 	}{
-		{"fresh-1m", 1 * time.Minute, session.StatusWaiting},
-		{"fresh-119s", 119 * time.Second, session.StatusWaiting},
-		// instance-mode (no AllowStaleWaiting): 2m1s is stale → falls through.
-		{"stale-2m1s", 2*time.Minute + time.Second, session.StatusIdle},
+		{"fresh-4s", 4 * time.Second, session.StatusWaiting},
+		{"stale-6s", 6 * time.Second, session.StatusIdle},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -278,7 +279,7 @@ func TestDerive_CodexWaiting_AcknowledgedStillWaiting(t *testing.T) {
 		Acknowledged: true,
 		Hook: &session.HookStatus{
 			Status:    "waiting",
-			UpdatedAt: fixedNow.Add(-10 * time.Second),
+			UpdatedAt: fixedNow.Add(-4 * time.Second),
 		},
 		Now: fixedNow,
 	})
