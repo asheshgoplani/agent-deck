@@ -25,3 +25,11 @@ embedded canonical file is the only place to change the bridge. Tests under
 `conductor/tests/` load that same canonical file (see
 `conductor/tests/conftest.py`), so the tested bytes are exactly the deployed
 bytes.
+
+## Stage events
+
+Per-PR pipeline timing is recorded as JSONL, one line per stage transition,
+instead of per-merge receipts and metrics prose. The schema, the
+`scripts/stage-event.sh` recorder and the `scripts/stage-report.py` summary
+(median and p90 per transition, maintainer versus external) are documented in
+[STAGE-EVENTS.md](STAGE-EVENTS.md).
