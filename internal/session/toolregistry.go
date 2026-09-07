@@ -227,6 +227,34 @@ func (r *Registry) Get(name string) *ToolDef {
 	return nil
 }
 
+// Icon returns the display icon for name: a custom tool's configured icon
+// when set, otherwise the built-in icon, otherwise "" for names the registry
+// does not know. Callers treat "" as "use your own fallback".
+func (r *Registry) Icon(name string) string {
+	if def, ok := r.custom[name]; ok && def.Icon != "" {
+		return def.Icon
+	}
+	if bt, ok := r.builtins[name]; ok {
+		return bt.Icon
+	}
+	return ""
+}
+
+// Color returns the display color for name. For custom tools it is the
+// [tools.<name>] color value verbatim (a lipgloss color such as "#ff9e64");
+// for built-ins it is a theme palette slot name (see builtinTool.Color).
+// "" means the registry has no color for name and the caller should use its
+// default.
+func (r *Registry) Color(name string) string {
+	if def, ok := r.custom[name]; ok && def.Color != "" {
+		return def.Color
+	}
+	if bt, ok := r.builtins[name]; ok {
+		return bt.Color
+	}
+	return ""
+}
+
 // Match resolves a command string to a tool name. Replaces detectTool().
 //
 // Resolution order, preserving the legacy semantics exactly:
@@ -414,6 +442,18 @@ func currentRegistry() *Registry {
 // dialogs would hide (issue #1259 non-goal: display filter only, not a gate).
 func MatchTool(cmd string) string {
 	return currentRegistry().Match(cmd)
+}
+
+// ToolIconFor returns the process registry's icon for name ("" if unknown).
+// It is the seam internal/ui's ToolIcon() reads before its static fallback.
+func ToolIconFor(name string) string {
+	return currentRegistry().Icon(name)
+}
+
+// ToolColorFor returns the process registry's color for name ("" if unknown).
+// It is the seam internal/ui's ToolColor() reads before its static fallback.
+func ToolColorFor(name string) string {
+	return currentRegistry().Color(name)
 }
 
 // --- process-wide show_only_installed_tools accessors (issue #1259) ----------
