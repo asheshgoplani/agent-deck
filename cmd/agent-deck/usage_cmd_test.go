@@ -15,10 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// usageSentinelToken stands in for a provider credential in the environment: it
-// is exported into every `usage` subprocess so the JSON and human renderings
-// can be checked for a leak against something that would only be there by
-// mistake.
+// usageSentinelToken stands in for the user's Z.ai credential: it is exported
+// into every `usage` subprocess so the JSON and human renderings can be checked
+// for a leak against something that would only be there by mistake.
 const usageSentinelToken = "SENTINEL-USAGE-TOKEN-do-not-leak"
 
 type usageResult struct {
@@ -29,6 +28,9 @@ type usageResult struct {
 
 // runUsageCLI runs `agent-deck <args...>` in a subprocess with an isolated HOME
 // and XDG tree, so a test never reads or writes the developer's real cache.
+// ANTHROPIC_BASE_URL is cleared on purpose: `usage` must reach no network in
+// the suite, and an unconfigured Z.ai provider is exactly the state that
+// guarantees it.
 func runUsageCLI(t *testing.T, home string, stdin string, args ...string) usageResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -46,6 +48,7 @@ func runUsageCLI(t *testing.T, home string, stdin string, args ...string) usageR
 		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
 		"AGENTDECK_PROFILE=",
 		"CLAUDE_CONFIG_DIR=",
+		"ANTHROPIC_BASE_URL=",
 		"ANTHROPIC_AUTH_TOKEN="+usageSentinelToken,
 	)
 	cmd.Stdin = strings.NewReader(stdin)

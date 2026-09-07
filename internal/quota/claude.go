@@ -36,8 +36,8 @@ type statusLinePayload struct {
 
 type statusLineWindow struct {
 	UsedPercentage float64 `json:"used_percentage"`
-	// ResetsAt is epoch SECONDS here, matching Snapshot's unit, so it is
-	// carried through without conversion.
+	// ResetsAt is epoch SECONDS here. Z.ai reports MILLISECONDS for the same
+	// concept, which is why the two providers do not share a decoder.
 	ResetsAt *int64 `json:"resets_at"`
 }
 

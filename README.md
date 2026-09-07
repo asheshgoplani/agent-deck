@@ -825,9 +825,13 @@ $ agent-deck usage
 Claude  updated 2m ago
   5h       23.5%  resets in 2h14m
   7d       41.2%  resets in 3d6h
+Z.ai (pro)  updated 1m ago
+  5h        0.0%
+  7d       22.0%  resets in 4d3h
 ```
 
-`agent-deck usage --json` prints the same report for scripting.
+`agent-deck usage --json` prints the same report for scripting. `--refresh`
+forces a fetch for pull-based providers.
 
 **Claude** is read from the documented `rate_limits` block in the JSON Claude
 Code pipes to a `statusLine` command. Wire the ingester into
@@ -848,8 +852,12 @@ passed through and your command's output and exit status are forwarded verbatim:
 Only `rate_limits` is kept. The transcript path, cwd, prompt and model in that
 payload are never stored or printed.
 
-`agent-deck usage` itself makes no network request: it reads the cache the
-ingester wrote.
+**Z.ai / GLM Coding Plan** is read from the monitor endpoint the vendor's own
+coding plugin calls, on the host you configured in `ANTHROPIC_BASE_URL`, using
+`ANTHROPIC_AUTH_TOKEN`. There is no default host: if `ANTHROPIC_BASE_URL` is
+unset or does not point at a Z.ai host, the provider is skipped and no request
+is made. Run `agent-deck usage` inside a session where those variables are set
+(an agent-deck-launched session has already sourced its profile's env file).
 
 Snapshots are cached under `$XDG_CACHE_HOME/agent-deck/quota/<profile>/`. A
 snapshot older than the freshness bound is still shown, marked `(stale)` — a
