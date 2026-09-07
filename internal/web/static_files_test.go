@@ -427,3 +427,23 @@ func TestNoTailwindPlayCDN(t *testing.T) {
 		t.Errorf("GET /static/vendor/tailwind.js: expected 404, got %d", w2.Code)
 	}
 }
+
+// TestIndexServesGroupRoute pins that /g/{path} serves the SPA shell rather
+// than 404ing, so a selected group is linkable and survives a reload.
+func TestIndexServesGroupRoute(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+
+	for _, path := range []string{"/g/work", "/g/work%2Finnotrade"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want %d", path, rr.Code, http.StatusOK)
+		}
+		if !strings.Contains(rr.Body.String(), "<!doctype html") &&
+			!strings.Contains(rr.Body.String(), "<!DOCTYPE html") {
+			t.Errorf("GET %s did not serve the SPA shell", path)
+		}
+	}
+}

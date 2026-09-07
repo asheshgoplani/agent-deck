@@ -6,7 +6,8 @@
 // Terminal tab is only reached after the user selects a session.
 // This component is the fallback when they haven't.
 import { html } from 'htm/preact'
-import { sessionsSignal, createSessionDialogSignal, mutationsEnabledSignal } from './state.js'
+import { sessionsSignal, mutationsEnabledSignal } from './state.js'
+import { openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
 import { activeTabSignal } from './uiState.js'
 import { Logo, Icon, ICONS } from './icons.js'
 
@@ -36,7 +37,7 @@ export function EmptyStateDashboard() {
             Open Fleet
           </button>
           ${canMutate && html`
-            <button class="btn primary" onClick=${() => (createSessionDialogSignal.value = true)}>
+            <button class="btn primary" onClick=${() => openCreateSessionForGroup(currentGroupPath())}>
               <${Icon} d=${ICONS.plus} size=${12}/>New session <span class="kbd">n</span>
             </button>
           `}

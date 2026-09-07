@@ -1,15 +1,16 @@
 // main.js -- Preact app entry point and full boot sequence
 // Handles: auth token extraction, SSE connection, route sync, service worker registration
 import { render, html } from 'htm/preact'
-import { App } from './App.js'
+import { App, applyPath } from './App.js'
 import { apiFetch } from './api.js'
 import {
   sessionsSignal,
   sessionsLoadedSignal,
-  selectedIdSignal,
   connectionSignal,
   authTokenSignal,
   commandCenterSignal,
+  selectedGroupSignal,
+  loadArchivedSessions,
 } from './state.js'
 import { addToast } from './Toast.js'
 
@@ -63,6 +64,17 @@ export function startSSE() {
         // POL-1: first SSE snapshot counts as loaded. Skeleton unmounts
         // even if the snapshot is empty — the server has spoken.
         sessionsLoadedSignal.value = true
+        // The group stats panel shows archived members, which arrive from a
+        // SEPARATE endpoint that no SSE event touches. Archiving a session
+        // changes the active list (so the fingerprint changes and we land
+        // here), but left the panel's archived half stale until the user
+        // navigated away and back (PR #2047 review, item 2).
+        //
+        // Only refetched while a group is actually selected: nothing else on
+        // screen reads this feed live, and the menu stream is change-driven
+        // (handlers_events.go compares fingerprints), so this costs one
+        // request per real change while a panel is open, not a poll.
+        if (selectedGroupSignal.value) loadArchivedSessions()
       }
       connectionSignal.value = 'connected'
     } catch (_) {
@@ -157,22 +169,13 @@ export async function loadMenu() {
   }
 }
 
-// ---------- Route sync: URL -> selectedIdSignal ----------
+// ---------- Route sync: URL -> selection ----------
 
 export function applyRouteSelection() {
   const path = window.location.pathname || '/'
-  if (path.startsWith('/s/')) {
-    const raw = path.slice(3)
-    if (raw && !raw.includes('/')) {
-      try {
-        selectedIdSignal.value = decodeURIComponent(raw)
-      } catch (_) {
-        selectedIdSignal.value = null
-      }
-      return
-    }
-  }
-  // Don't force-clear selection at boot if no /s/ path; leave it null
+  // Don't force-clear at boot when the path is neither /s/ nor /g/.
+  if (path === '/') return
+  applyPath(path)
 }
 
 // ---------- Service worker registration ----------

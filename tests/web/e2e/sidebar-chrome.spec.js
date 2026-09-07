@@ -9,13 +9,13 @@
 //   sess-004 "scratch"       tool=shell  status=idle    group=personal
 //
 // Notes on intentionally-locked-in behavior (audited against Sidebar.js):
-//   - Group expand/collapse is plain useState — it does NOT persist across
-//     reload (no localStorage key). The reload assertion pins that.
-//   - The seeded `personal` group has Expanded:false, but the Sidebar's
-//     `expanded` useState initializer runs on first render BEFORE the async
-//     /api/menu fetch resolves (groups=[] at that point), so every group
-//     defaults open (`expanded[path] !== false` with an empty map). All 4
-//     seeded sessions are therefore visible on load.
+//   - Group expand/collapse lives in uiState.groupExpandedSignal and DOES
+//     persist across reload (localStorage key `agentdeck.groupExpanded`).
+//   - The seeded `personal` group has Expanded:false, but the web never
+//     honors the server's `expanded` field — there is no API to write it
+//     back from the browser, so respecting it would leak TUI collapse
+//     one-way. Absent a stored entry every group renders open, so all 4
+//     seeded sessions are visible on a fresh load.
 //   - Column visibility persists via localStorage key `agentdeck.showCols`
 //     (uiState.js showColsSignal + persist()).
 //   - Sidebar width: state.js exports sidebarWidthSignal (localStorage key
@@ -107,27 +107,63 @@ test.describe('sidebar chrome', () => {
     await expect(page.locator('.sess')).toHaveCount(ALL_TITLES.length) // rows themselves unaffected
   })
 
-  test('group collapse hides member sessions; expand restores; no reload persistence', async ({ page }) => {
+  test('group collapse hides member sessions; expand restores; persists across reload', async ({ page }) => {
     const workHead = page.locator('[data-testid="group-head-work"]')
+    const workChev = page.locator('[data-testid="group-chev-work"]')
 
     // Collapse "work" → its 2 members (agent-deck, frontend) disappear.
     // work/innotrade is a distinct group path, so innotrade-api stays.
-    await workHead.click()
+    await workChev.click()
     await expect(workHead.locator('.chev')).toHaveText('▸')
     await expect(page.locator('.sess')).toHaveCount(2)
     await expect(page.locator('.sess .tt')).toHaveText(['innotrade-api', 'scratch'])
 
     // Expand restores the members.
-    await workHead.click()
+    await workChev.click()
     await expect(workHead.locator('.chev')).toHaveText('▾')
     await expect(page.locator('.sess')).toHaveCount(ALL_TITLES.length)
 
-    // Collapse again, then reload: expansion is useState-only (audit:
-    // Sidebar.js has no localStorage write for it), so it resets to open.
-    await workHead.click()
+    // Collapse again, then reload: groupExpandedSignal persists to
+    // localStorage `agentdeck.groupExpanded`, so it stays collapsed.
+    await workChev.click()
     await expect(page.locator('.sess')).toHaveCount(2)
-    await gotoSidebar(page)
-    await expect(page.locator('.sess')).toHaveCount(ALL_TITLES.length)
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('agentdeck.groupExpanded')))
+    expect(stored.work).toBe(false)
+
+    await page.goto('/')
+    await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▸', { timeout: 5000 })
+    await expect(page.locator('.sess')).toHaveCount(2)
+  })
+
+  // The chip set mirrors the five status buckets the group panel uses. A
+  // `stopped` chip was missing entirely, so a parked session could not be
+  // filtered for from the web at all -- the TUI surfaces stopped with the same
+  // filled-square glyph.
+  test('stopped chip exists and filters to parked sessions', async ({ page }) => {
+    const chip = page.locator('[data-testid="status-chip-stopped"]')
+    await expect(chip).toHaveCount(1)
+    await expect(chip).toHaveText('■')
+
+    // No stopped sessions in the seed, so the chip alone yields an empty list.
+    await chip.click()
+    await expect(page.locator('.sess')).toHaveCount(0)
+    await chip.click()
+
+    // Park one for real through the same endpoint the Stop button uses, then
+    // restore it so sibling tests keep the 4-session seed.
+    await page.request.post('/api/sessions/sess-002/stop')
+    try {
+      await gotoSidebar(page)
+      await chip.click()
+      await expect(page.locator('.sess')).toHaveCount(1)
+      await expect(page.locator('.sess .tt')).toHaveText(['frontend'])
+    } finally {
+      await page.request.post('/api/sessions/sess-002/start')
+    }
+  })
+
+  test('chips sit in status-bucket order', async ({ page }) => {
+    await expect(page.locator('.side-filter .side-chip')).toHaveText(['●', '◐', '○', '■', '✕'])
   })
 
   test('side-filter input filters rows by title and hides empty groups', async ({ page }) => {

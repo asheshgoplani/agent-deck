@@ -201,8 +201,8 @@ func (s *fixtureStore) seed() {
 	defer s.mu.Unlock()
 	s.remotesEnabled = false
 	s.groups = map[string]*web.MenuGroup{
-		"work":           {Name: "work", Path: "work", Expanded: true, Order: 0, SessionCount: 2},
-		"work/innotrade": {Name: "innotrade", Path: "work/innotrade", Expanded: true, Order: 1, SessionCount: 1},
+		"work":           {Name: "work", Path: "work", Expanded: true, Order: 0, SessionCount: 2, DefaultPath: "/srv/work"},
+		"work/innotrade": {Name: "innotrade", Path: "work/innotrade", Expanded: true, Order: 1, SessionCount: 1, DefaultPath: "/srv/innotrade"},
 		"personal":       {Name: "personal", Path: "personal", Expanded: false, Order: 2, SessionCount: 1},
 	}
 	now := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)

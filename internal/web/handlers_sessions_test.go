@@ -1239,3 +1239,36 @@ func TestArchivedSessionsList(t *testing.T) {
 		t.Errorf("archived list: expected arch-1 in body: %s", rr.Body.String())
 	}
 }
+
+// TestSessionsCollectionPOSTForwardsGroupPath pins that a create request
+// naming a group actually creates the session there. The handler has always
+// threaded GroupPath, but the web client never sent it — so every
+// browser-created session silently landed in the default group.
+func TestSessionsCollectionPOSTForwardsGroupPath(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotGroup string
+	srv.mutator = &fakeMutator{
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+			gotGroup = groupPath
+			return "new-id", nil
+		},
+	}
+
+	body := strings.NewReader(`{"title":"Test","tool":"claude","projectPath":"/tmp","groupPath":"work/innotrade"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if gotGroup != "work/innotrade" {
+		t.Fatalf("groupPath = %q, want %q", gotGroup, "work/innotrade")
+	}
+}
