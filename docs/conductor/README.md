@@ -134,6 +134,14 @@ agent-deck conductor teardown <name> --remove     # stop and delete dir
 agent-deck conductor teardown --all --remove      # nuke every conductor on this host
 ```
 
+`session output` is safe to feed back into an agent by default: it strips ANSI
+terminal escapes and caps content at approximately 25,000 tokens. Long output
+keeps both its beginning and end and finishes with the path of the full output
+retained on disk. Use `--max-tokens N` to set a smaller positive budget;
+`--pane` follows the same rules. Compatibility/transport modes (`--json`,
+`-q`/`--quiet`, and `--copy`) preserve the complete source; in particular,
+remote pane previews fetched with `--pane --json` retain raw ANSI styling.
+
 The `--remove` flag is destructive: it deletes `~/.local/share/agent-deck/conductor/<name>/`.
 Your `LEARNINGS.md` and `task-log.md` go with it.
 Snapshot them first if they matter.
