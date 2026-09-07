@@ -248,7 +248,14 @@ func TestKeyMsgRawBytesReEncodesLegacyKeys(t *testing.T) {
 		{"ctrl+c", tea.KeyMsg{Type: tea.KeyCtrlC}, "\x03", true},
 		{"up", tea.KeyMsg{Type: tea.KeyUp}, "\x1b[A", true},
 		{"shift+tab", tea.KeyMsg{Type: tea.KeyShiftTab}, "\x1b[Z", true},
-		{"f1 has no legacy form", tea.KeyMsg{Type: tea.KeyF1}, "", false},
+		{"f1", tea.KeyMsg{Type: tea.KeyF1}, "\x1bOP", true},
+		{"f5", tea.KeyMsg{Type: tea.KeyF5}, "\x1b[15~", true},
+		{"f12", tea.KeyMsg{Type: tea.KeyF12}, "\x1b[24~", true},
+		{"ctrl+right", tea.KeyMsg{Type: tea.KeyCtrlRight}, "\x1b[1;5C", true},
+		{"shift+home", tea.KeyMsg{Type: tea.KeyShiftHome}, "\x1b[1;2H", true},
+		{"ctrl+shift+end", tea.KeyMsg{Type: tea.KeyCtrlShiftEnd}, "\x1b[1;6F", true},
+		{"ctrl+pgdown", tea.KeyMsg{Type: tea.KeyCtrlPgDown}, "\x1b[6;5~", true},
+		{"alt+f1", tea.KeyMsg{Type: tea.KeyF1, Alt: true}, "\x1b\x1bOP", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -260,6 +267,25 @@ func TestKeyMsgRawBytesReEncodesLegacyKeys(t *testing.T) {
 				t.Fatalf("bytes = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// Every named key Bubble Tea can parse must re-encode, or a keystroke of that
+// kind typed while the embedded client connects is silently lost. Named keys
+// are the negative KeyType values; KeyType.String is empty past the last one.
+func TestKeyMsgRawBytesCoversEveryNamedKey(t *testing.T) {
+	seen := 0
+	for kt := tea.KeyRunes; kt > tea.KeyRunes-512; kt-- {
+		if kt.String() == "" || kt == tea.KeyRunes {
+			continue
+		}
+		seen++
+		if _, ok := keyMsgRawBytes(tea.KeyMsg{Type: kt}); !ok {
+			t.Errorf("named key %q (%d) has no legacy encoding", kt.String(), kt)
+		}
+	}
+	if seen < 40 {
+		t.Fatalf("enumerated only %d named keys; the KeyType walk is broken", seen)
 	}
 }
 
