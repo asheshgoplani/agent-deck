@@ -220,8 +220,12 @@ func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *Gem
 			Type   string `json:"type"`
 			Model  string `json:"model,omitempty"`
 			Tokens struct {
-				Input  int `json:"input"`
-				Output int `json:"output"`
+				Input    int `json:"input"`
+				Output   int `json:"output"`
+				Cached   int `json:"cached"`   // subset of Input served from cache
+				Thoughts int `json:"thoughts"` // reasoning tokens
+				Tool     int `json:"tool"`
+				Total    int `json:"total"` // Gemini's own sum: input+output+thoughts+tool
 			} `json:"tokens"`
 		} `json:"messages"`
 	}
@@ -246,20 +250,34 @@ func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *Gem
 		analytics.Duration = lastUpdated.Sub(startTime)
 	}
 
-	// Reset and accumulate tokens
+	// Reset and accumulate tokens. Every counter Gemini records is kept:
+	// dropping thoughts/tool understates the session total, and dropping cached
+	// hides how much of the prompt was served from cache.
 	analytics.InputTokens = 0
 	analytics.OutputTokens = 0
+	analytics.CachedTokens = 0
+	analytics.ThoughtsTokens = 0
+	analytics.ToolTokens = 0
+	analytics.ReportedTotalTokens = 0
+	analytics.CurrentContextTokens = 0
+	analytics.CurrentContextCachedTokens = 0
 	analytics.TotalTurns = 0
 	analytics.Model = ""
 	for _, msg := range session.Messages {
 		if msg.Type == "gemini" {
 			analytics.InputTokens += msg.Tokens.Input
 			analytics.OutputTokens += msg.Tokens.Output
+			analytics.CachedTokens += msg.Tokens.Cached
+			analytics.ThoughtsTokens += msg.Tokens.Thoughts
+			analytics.ToolTokens += msg.Tokens.Tool
+			analytics.ReportedTotalTokens += msg.Tokens.Total
 			analytics.TotalTurns++
 
 			// For Gemini, the input tokens of the last message represent the total context size
-			// including history and current prompt.
+			// including history and current prompt. The cached portion is a subset
+			// of that same number, tracked alongside it rather than added to it.
 			analytics.CurrentContextTokens = msg.Tokens.Input
+			analytics.CurrentContextCachedTokens = msg.Tokens.Cached
 
 			// Extract model from the last gemini message that has one
 			if msg.Model != "" {

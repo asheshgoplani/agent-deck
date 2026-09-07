@@ -288,6 +288,24 @@ func workerScratchDirFor(instanceID string) string {
 	return filepath.Join(workerScratchDirRoot(), instanceID)
 }
 
+// WorkerScratchConfigDirFor returns the path a scratch config dir for this
+// instance id would occupy, whether or not one exists.
+//
+// It is exported for readers rather than writers. Instance.WorkerScratchConfigDir
+// is set by the process that prepared the scratch and is NOT a column in the
+// instances table, so a fresh CLI process that loads the same session from
+// state.db sees it empty and would conclude the session runs under its profile
+// dir — which is exactly wrong for every session agent-deck hands a scratch
+// home. The path is deterministic, so a reader can recover it and confirm it
+// against the filesystem. Callers must check that the directory exists before
+// claiming anything about it; a path is not evidence.
+func WorkerScratchConfigDirFor(instanceID string) string {
+	if strings.TrimSpace(instanceID) == "" {
+		return ""
+	}
+	return workerScratchDirFor(instanceID)
+}
+
 // pathUnderWorkerScratch reports whether p resolves inside the worker-scratch
 // root. Both p and the root are resolved through symlinks first so a /tmp →
 // /private/tmp style indirection (or a symlinked HOME) does not defeat the

@@ -2,7 +2,10 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -16,8 +19,12 @@ type SessionAnalytics struct {
 	CacheReadTokens  int `json:"cache_read_input_tokens"`
 	CacheWriteTokens int `json:"cache_creation_input_tokens"`
 
-	// Current context size (last turn's input + cache read tokens)
-	// This represents the actual context window usage, not cumulative totals
+	// Current context size: the last turn's input_tokens +
+	// cache_creation_input_tokens + cache_read_input_tokens. All three are
+	// prompt-side tokens, so all three occupy the context window. Omitting
+	// cache_creation makes a cache-write turn (input=6, cache_creation=125207,
+	// cache_read=0) report a 6-token context. This is the same sum Claude Code's
+	// own /context uses.
 	CurrentContextTokens int `json:"current_context_tokens"`
 
 	// Session metrics
@@ -40,6 +47,35 @@ type SessionAnalytics struct {
 
 	// 5-hour billing blocks
 	BillingBlocks []BillingBlock `json:"billing_blocks"`
+
+	// ParseGaps counts transcript lines that were read but could not be
+	// interpreted (malformed JSON, or a line longer than the read limit).
+	// A non-zero value means every number above may be stale: the skipped line
+	// can be the most recent usage record. Callers must surface this rather
+	// than presenting the totals as complete.
+	ParseGaps int `json:"parse_gaps"`
+
+	// ParseGapSample holds the first maxParseGapSamples gaps, for diagnostics.
+	ParseGapSample []ParseGap `json:"parse_gap_sample,omitempty"`
+}
+
+// ParseGap records a transcript line that could not be parsed.
+type ParseGap struct {
+	Line   int    `json:"line"`   // 1-indexed line number within the transcript
+	Reason string `json:"reason"` // ParseGapMalformed | ParseGapOversize
+	Bytes  int    `json:"bytes"`  // byte length of the offending line
+}
+
+// Parse gap reasons.
+const (
+	ParseGapMalformed = "malformed json"
+	ParseGapOversize  = "line exceeds read limit"
+)
+
+// HasParseGaps reports whether any transcript line was skipped, i.e. whether
+// the totals should be labelled as possibly stale.
+func (a *SessionAnalytics) HasParseGaps() bool {
+	return a != nil && a.ParseGaps > 0
 }
 
 // ToolCall represents a tool and its usage count
@@ -111,6 +147,12 @@ func contextWindowForModel(model string) int {
 		}
 	}
 	return 200000 // Default Claude limit
+}
+
+// ContextWindowForModel is the exported form of contextWindowForModel, so other
+// packages resolve a window from the same table instead of hardcoding a number.
+func ContextWindowForModel(model string) int {
+	return contextWindowForModel(model)
 }
 
 // ContextPercent returns the percentage of context window used
@@ -186,7 +228,59 @@ type jsonlEntry struct {
 	AgentID string `json:"agent_id,omitempty"`
 }
 
-// ParseSessionJSONL parses a Claude session JSONL file and returns analytics
+const (
+	// maxParseGapSamples caps the per-file gap detail retained for diagnostics.
+	maxParseGapSamples = 20
+
+	// transcriptReaderBufBytes is the read-ahead buffer for the line reader.
+	transcriptReaderBufBytes = 256 * 1024
+)
+
+// maxTranscriptLineBytes caps how much of a single JSONL line is buffered.
+// A longer line is skipped and recorded as a ParseGap instead of aborting the
+// read: bufio.Scanner reports ErrTooLong and stops, which would silently discard
+// every record after the oversize line — including the newest usage record.
+// A var (never mutated at runtime) so tests can shrink it, as geminiConfigDirOverride does.
+var maxTranscriptLineBytes = 16 * 1024 * 1024
+
+// readTranscriptLine reads one newline-terminated line from r, buffering at most
+// limit bytes of it. When the line is longer than limit its remainder is drained
+// and discarded and tooLong is true; size is the full byte length of the line
+// either way. The returned error is io.EOF once the reader is exhausted.
+func readTranscriptLine(r *bufio.Reader, limit int) (line []byte, size int, tooLong bool, err error) {
+	for {
+		chunk, readErr := r.ReadSlice('\n')
+		size += len(chunk)
+		if !tooLong {
+			if len(line)+len(chunk) > limit {
+				tooLong = true
+				line = nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue // partial line; keep draining until the newline
+		}
+		return line, size, tooLong, readErr
+	}
+}
+
+// recordParseGap notes a transcript line that could not be interpreted.
+func (a *SessionAnalytics) recordParseGap(line int, reason string, size int) {
+	a.ParseGaps++
+	if len(a.ParseGapSample) < maxParseGapSamples {
+		a.ParseGapSample = append(a.ParseGapSample, ParseGap{
+			Line:   line,
+			Reason: reason,
+			Bytes:  size,
+		})
+	}
+}
+
+// ParseSessionJSONL parses a Claude session JSONL file and returns analytics.
+// Lines that cannot be parsed are counted in SessionAnalytics.ParseGaps rather
+// than silently dropped, so callers can label the totals as possibly stale.
 func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -200,20 +294,10 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 	toolCounts := make(map[string]int)
 	var firstTime, lastTime time.Time
 
-	scanner := bufio.NewScanner(file)
-	// Increase buffer for large lines (some tool outputs can be huge)
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	for scanner.Scan() {
-		var entry jsonlEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue // Skip malformed lines
-		}
-
+	apply := func(entry jsonlEntry) {
 		// Only count assistant messages
 		if entry.Type != "assistant" {
-			continue
+			return
 		}
 
 		// Track timing
@@ -231,16 +315,22 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 			analytics.Model = entry.Message.Model
 		}
 
-		// Accumulate tokens (cumulative totals for cost calculation)
-		analytics.InputTokens += entry.Message.Usage.InputTokens
-		analytics.OutputTokens += entry.Message.Usage.OutputTokens
-		analytics.CacheReadTokens += entry.Message.Usage.CacheReadInputTokens
-		analytics.CacheWriteTokens += entry.Message.Usage.CacheCreationInputTokens
+		usage := entry.Message.Usage
 
-		// Track current context size (last turn's input + cache read)
-		// This represents the actual context window usage
-		analytics.CurrentContextTokens = entry.Message.Usage.InputTokens +
-			entry.Message.Usage.CacheReadInputTokens
+		// Accumulate tokens (cumulative totals for cost calculation)
+		analytics.InputTokens += usage.InputTokens
+		analytics.OutputTokens += usage.OutputTokens
+		analytics.CacheReadTokens += usage.CacheReadInputTokens
+		analytics.CacheWriteTokens += usage.CacheCreationInputTokens
+
+		// Track current context size from the last record that actually carries
+		// usage. All three prompt-side counters occupy the context window; a
+		// cache-write turn puts nearly all of them in cache_creation, so leaving
+		// it out reports a near-empty context. Records with no usage at all
+		// (synthetic/error assistant messages) must not reset the number to 0.
+		if prompt := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens; prompt > 0 {
+			analytics.CurrentContextTokens = prompt
+		}
 
 		// Count turn
 		analytics.TotalTurns++
@@ -250,6 +340,35 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 			if content.Type == "tool_use" && content.Name != "" {
 				toolCounts[content.Name]++
 			}
+		}
+	}
+
+	reader := bufio.NewReaderSize(file, transcriptReaderBufBytes)
+	lineNo := 0
+	for {
+		raw, size, tooLong, readErr := readTranscriptLine(reader, maxTranscriptLineBytes)
+		if size > 0 {
+			lineNo++
+			trimmed := bytes.TrimSpace(raw)
+			switch {
+			case tooLong:
+				analytics.recordParseGap(lineNo, ParseGapOversize, size)
+			case len(trimmed) == 0:
+				// Blank separator line, not a gap.
+			default:
+				var entry jsonlEntry
+				if err := json.Unmarshal(trimmed, &entry); err != nil {
+					analytics.recordParseGap(lineNo, ParseGapMalformed, size)
+				} else {
+					apply(entry)
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return analytics, readErr
 		}
 	}
 
@@ -268,7 +387,7 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 		analytics.Duration = lastTime.Sub(firstTime)
 	}
 
-	return analytics, scanner.Err()
+	return analytics, nil
 }
 
 // CalculateBillingBlocks groups timestamps into billing windows.

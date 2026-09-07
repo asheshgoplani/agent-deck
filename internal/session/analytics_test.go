@@ -264,6 +264,11 @@ this is not valid json
 	assert.Equal(t, 300, analytics.InputTokens)
 	assert.Equal(t, 150, analytics.OutputTokens)
 	assert.Equal(t, 2, analytics.TotalTurns)
+
+	// Skipped lines are recorded, not silently dropped: a bad line can be the
+	// most recent usage record, so callers must be able to say "totals may be stale".
+	assert.Equal(t, 2, analytics.ParseGaps)
+	assert.True(t, analytics.HasParseGaps())
 }
 
 func TestParseJSONL_EmptyFile(t *testing.T) {

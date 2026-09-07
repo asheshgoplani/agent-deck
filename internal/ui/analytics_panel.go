@@ -65,6 +65,13 @@ func (p *AnalyticsPanel) View() string {
 	b.WriteString(p.renderHeader())
 	b.WriteString("\n")
 
+	// Parse gaps: some transcript lines could not be read, so every number
+	// below may be stale. Always shown, independent of display settings.
+	if warning := p.renderParseGapWarning(); warning != "" {
+		b.WriteString(warning)
+		b.WriteString("\n")
+	}
+
 	// Context bar (default: ON)
 	if p.displaySettings.GetShowContextBar() {
 		b.WriteString(p.renderContextBar())
@@ -162,9 +169,10 @@ func (p *AnalyticsPanel) renderGeminiContextBar() string {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 
-	// Gemini 2.0 Flash has 1M context window
-	contextLimit := 1000000
-	percent := float64(p.geminiAnalytics.CurrentContextTokens) / float64(contextLimit) * 100
+	// Resolve the window from the session's own model ID. Hardcoding 1M was
+	// wrong for every model with a different window (e.g. gemini-1.5-pro is 2M),
+	// and silently wrong whenever the model changed.
+	percent := p.geminiAnalytics.ContextPercent(0)
 	if percent > 100 {
 		percent = 100
 	}
@@ -231,6 +239,24 @@ func (p *AnalyticsPanel) renderGeminiTokens() string {
 		dimStyle.Render("Out:"),
 		valueStyle.Render(outputStr),
 	))
+
+	// Cached/thoughts row (only when Gemini reported either)
+	if p.geminiAnalytics.CachedTokens > 0 || p.geminiAnalytics.ThoughtsTokens > 0 {
+		b.WriteString(fmt.Sprintf("  %s %s  %s %s\n",
+			dimStyle.Render("Cached:"),
+			valueStyle.Render(formatNumber(p.geminiAnalytics.CachedTokens)),
+			dimStyle.Render("Thinking:"),
+			valueStyle.Render(formatNumber(p.geminiAnalytics.ThoughtsTokens)),
+		))
+	}
+
+	// Tool row (only when Gemini reported tool tokens)
+	if p.geminiAnalytics.ToolTokens > 0 {
+		b.WriteString(fmt.Sprintf("  %s %s\n",
+			dimStyle.Render("Tool:"),
+			valueStyle.Render(formatNumber(p.geminiAnalytics.ToolTokens)),
+		))
+	}
 
 	// Total row
 	totalStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
@@ -337,12 +363,30 @@ func (p *AnalyticsPanel) renderHeader() string {
 	return b.String()
 }
 
+// renderParseGapWarning reports transcript lines that ParseSessionJSONL could
+// not read. Returns "" when the transcript parsed cleanly. A skipped line can be
+// the most recent usage record, so the totals must not be presented as complete.
+func (p *AnalyticsPanel) renderParseGapWarning() string {
+	if !p.analytics.HasParseGaps() {
+		return ""
+	}
+	warnStyle := lipgloss.NewStyle().Foreground(ColorYellow)
+	plural := "lines"
+	if p.analytics.ParseGaps == 1 {
+		plural = "line"
+	}
+	return warnStyle.Render(fmt.Sprintf(
+		"⚠ %d transcript %s unparsed — totals may be stale",
+		p.analytics.ParseGaps, plural,
+	))
+}
+
 // renderContextBar renders a visual bar showing context window usage
 func (p *AnalyticsPanel) renderContextBar() string {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 
-	percent := p.analytics.ContextPercent(0) // Use default 200k limit
+	percent := p.analytics.ContextPercent(0) // 0 => resolve the window from the model ID
 	if percent > 100 {
 		percent = 100
 	}

@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/agents"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -687,14 +686,4 @@ func fetchRemoteAgents(skip bool) []agents.RemoteMachineData {
 		})
 	}
 	return result
-}
-
-// truncateCell shortens a table cell to max runes with an ellipsis. Local
-// copy: the shared one lives on the context-inspector branch (PR #2011) and
-// arrives with it; same 6 lines, same semantics.
-func truncateCell(s string, max int) string {
-	if max < 4 || utf8.RuneCountInString(s) <= max {
-		return s
-	}
-	return string([]rune(s)[:max-1]) + "…"
 }

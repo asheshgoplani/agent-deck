@@ -1,0 +1,514 @@
+{
+  "harness": "claude",
+  "adapter": "claude",
+  "session_id": "00000000-0000-4000-8000-000000005ec5",
+  "project_path": "<FIXTURE_ROOT>/project",
+  "model": "claude-opus-4-7",
+  "window": {
+    "tokens": 1000000,
+    "source": "model-default",
+    "detail": "model prefix \"claude-opus-4-7\""
+  },
+  "basis": "observed",
+  "anchor": {
+    "tokens": {
+      "tokens": 27008,
+      "provenance": "provider-measured",
+      "method": "message.usage.input_tokens + cache_creation_input_tokens + cache_read_input_tokens"
+    },
+    "source": "first assistant turn: message.usage.input_tokens + cache_creation_input_tokens + cache_read_input_tokens (input 8 + cache creation 24000 + cache read 3000)",
+    "at": "2026-07-01T09:00:04Z"
+  },
+  "categories": [
+    {
+      "name": "system-tools",
+      "title": "system tools",
+      "description": "tools whose names sit in the prefix while their schemas load only when the agent asks for one",
+      "items": [
+        {
+          "id": "system-tools:builtin",
+          "label": "Claude Code built-in tools",
+          "detail": "5 deferred names",
+          "content": {
+            "provenance": "captured",
+            "kind": "path",
+            "text": "WebFetch, WebSearch, NotebookEdit, TaskCreate, TaskList",
+            "chars": 55
+          },
+          "load": {
+            "state": "on-demand",
+            "actual": {
+              "tokens": 19,
+              "provenance": "estimated",
+              "method": "sum of the built-in deferred tool names",
+              "rel_err": 0.3,
+              "tokens_low": 13,
+              "tokens_high": 25
+            }
+          },
+          "origin": "harness-builtin",
+          "lever": {
+            "kind": "immovable",
+            "line_range": [
+              0,
+              0
+            ],
+            "why": "shipped inside Claude Code"
+          },
+          "children": [
+            {
+              "id": "system-tools:builtin:WebFetch",
+              "label": "WebFetch",
+              "detail": "harness built-in",
+              "content": {
+                "provenance": "captured",
+                "kind": "path",
+                "text": "WebFetch",
+                "chars": 8
+              },
+              "load": {
+                "state": "on-demand",
+                "actual": {
+                  "tokens": 3,
+                  "provenance": "estimated",
+                  "method": "chars/token calibrated on a Claude Code /context capture: 9 chars / 2.66 (path, ±30%, divisor not measured for this kind; midpoint of the two measured corpora)",
+                  "rel_err": 0.3,
+                  "tokens_low": 2,
+                  "tokens_high": 4
+                }
+              },
+              "origin": "harness-builtin",
+              "lever": {
+                "kind": "immovable",
+                "line_range": [
+                  0,
+                  0
+                ],
+                "why": "shipped inside Claude Code; the name is injected whether or not the tool is used"
+              }
+            },
+            {
+              "id": "system-tools:builtin:WebSearch",
+              "label": "WebSearch",
+              "detail": "harness built-in",
+              "content": {
+                "provenance": "captured",
+                "kind": "path",
+                "text": "WebSearch",
+                "chars": 9
+              },
+              "load": {
+                "state": "on-demand",
+                "actual": {
+                  "tokens": 4,
+                  "provenance": "estimated",
+                  "method": "chars/token calibrated on a Claude Code /context capture: 10 chars / 2.66 (path, ±30%, divisor not measured for this kind; midpoint of the two measured corpora)",
+                  "rel_err": 0.3,
+                  "tokens_low": 3,
+                  "tokens_high": 5
+                }
+              },
+              "origin": "harness-builtin",
+              "lever": {
+                "kind": "immovable",
+                "line_range": [
+                  0,
+                  0
+                ],
+                "why": "shipped inside Claude Code; the name is injected whether or not the tool is used"
+              }
+            },
+            {
+              "id": "system-tools:builtin:NotebookEdit",
+              "label": "NotebookEdit",
+              "detail": "harness built-in",
+              "content": {
+                "provenance": "captured",
+                "kind": "path",
+                "text": "NotebookEdit",
+                "chars": 12
+              },
+              "load": {
+                "state": "on-demand",
+                "actual": {
+                  "tokens": 5,
+                  "provenance": "estimated",
+                  "method": "chars/token calibrated on a Claude Code /context capture: 13 chars / 2.66 (path, ±30%, divisor not measured for this kind; midpoint of the two measured corpora)",
+                  "rel_err": 0.3,
+                  "tokens_low": 4,
+                  "tokens_high": 7
+                }
+              },
+              "origin": "harness-builtin",
+              "lever": {
+                "kind": "immovable",
+                "line_range": [
+                  0,
+                  0
+                ],
+                "why": "shipped inside Claude Code; the name is injected whether or not the tool is used"
+              }
+            },
+            {
+              "id": "system-tools:builtin:TaskCreate",
+              "label": "TaskCreate",
+              "detail": "harness built-in",
+              "content": {
+                "provenance": "captured",
+                "kind": "path",
+                "text": "TaskCreate",
+                "chars": 10
+              },
+              "load": {
+                "state": "on-demand",
+                "actual": {
+                  "tokens": 4,
+                  "provenance": "estimated",
+                  "method": "chars/token calibrated on a Claude Code /context capture: 11 chars / 2.66 (path, ±30%, divisor not measured for this kind; midpoint of the two measured corpora)",
+                  "rel_err": 0.3,
+                  "tokens_low": 3,
+                  "tokens_high": 5
+                }
+              },
+              "origin": "harness-builtin",
+              "lever": {
+                "kind": "immovable",
+                "line_range": [
+                  0,
+                  0
+                ],
+                "why": "shipped inside Claude Code; the name is injected whether or not the tool is used"
+              }
+            },
+            {
+              "id": "system-tools:builtin:TaskList",
+              "label": "TaskList",
+              "detail": "harness built-in",
+              "content": {
+                "provenance": "captured",
+                "kind": "path",
+                "text": "TaskList",
+                "chars": 8
+              },
+              "load": {
+                "state": "on-demand",
+                "actual": {
+                  "tokens": 3,
+                  "provenance": "estimated",
+                  "method": "chars/token calibrated on a Claude Code /context capture: 9 chars / 2.66 (path, ±30%, divisor not measured for this kind; midpoint of the two measured corpora)",
+                  "rel_err": 0.3,
+                  "tokens_low": 2,
+                  "tokens_high": 4
+                }
+              },
+              "origin": "harness-builtin",
+              "lever": {
+                "kind": "immovable",
+                "line_range": [
+                  0,
+                  0
+                ],
+                "why": "shipped inside Claude Code; the name is injected whether or not the tool is used"
+              }
+            }
+          ],
+          "rollup": true
+        }
+      ],
+      "notes": [
+        "only the names are injected up front, so only the names are priced here; the schemas load on invocation and are part of the unattributed remainder until then"
+      ]
+    },
+    {
+      "name": "mcp",
+      "title": "MCP instructions",
+      "description": "the instruction block each MCP server contributed to the prefix, verbatim",
+      "items": [
+        {
+          "id": "mcp:fixture-mcp",
+          "label": "fixture-mcp",
+          "detail": "163 characters of instructions",
+          "content": {
+            "provenance": "captured",
+            "kind": "markdown",
+            "text": "Instructions contributed by the fixture MCP server. They are injected verbatim into the prefix, which is why the inspector can quote them rather than rebuild them.",
+            "chars": 163
+          },
+          "load": {
+            "state": "loaded",
+            "actual": {
+              "tokens": 70,
+              "provenance": "estimated",
+              "method": "chars/token calibrated on a Claude Code /context capture: 163 chars / 2.34 (markdown, ±8%, divisor measured on 62,591 chars of memory files against Claude Code's own count)",
+              "rel_err": 0.08,
+              "tokens_low": 64,
+              "tokens_high": 76
+            }
+          },
+          "origin": "mcp-server",
+          "lever": {
+            "kind": "immovable",
+            "line_range": [
+              0,
+              0
+            ],
+            "why": "agent-deck has no record of configuring this server, so it offers no command for it"
+          }
+        }
+      ],
+      "notes": [
+        "tool schemas are negotiated at runtime and never written to disk; they stay inside the unattributed remainder rather than being guessed at here"
+      ]
+    },
+    {
+      "name": "memory-files",
+      "title": "memory files",
+      "description": "the CLAUDE.md hierarchy, in load order from managed policy down to this project's auto-memory",
+      "items": null,
+      "notes": [
+        "rebuilt by re-walking Claude Code's own discovery rules: the injected memory text goes into the system prompt and is not written to the transcript",
+        "AGENTS.md is not listed: Claude Code does not read it",
+        "each file is priced with the wrapper line Claude Code injects above it, because those bytes are in the prompt too",
+        "no auto-memory index exists yet; Claude Code would keep this session's at <FIXTURE_ROOT>/home/.claude/projects/<FIXTURE_ROOT_KEY>-project/memory/MEMORY.md",
+        "no memory file was found for this session"
+      ]
+    },
+    {
+      "name": "skills",
+      "title": "skills",
+      "description": "the startup skill catalogue, plus the skills on disk that it did not list",
+      "items": [
+        {
+          "id": "skill:alpha",
+          "label": "alpha",
+          "detail": "listed at startup",
+          "content": {
+            "provenance": "captured",
+            "kind": "listing",
+            "text": "- alpha: A fixture skill that is listed at startup.",
+            "chars": 51
+          },
+          "load": {
+            "state": "loaded",
+            "actual": {
+              "tokens": 17,
+              "provenance": "estimated",
+              "method": "chars/token calibrated on a Claude Code /context capture: 51 chars / 2.98 (listing, ±5%, divisor measured on 16,856 chars of skill catalogue against Claude Code's own count)",
+              "rel_err": 0.05,
+              "tokens_low": 16,
+              "tokens_high": 18
+            }
+          },
+          "origin": "harness-builtin",
+          "lever": {
+            "kind": "immovable",
+            "line_range": [
+              0,
+              0
+            ],
+            "why": "agent-deck could not locate this skill on disk, so it offers no way to remove it"
+          }
+        }
+      ],
+      "notes": [
+        "a listed skill costs its catalogue line in the prefix; its body is the potential cost and loads only when the skill is invoked"
+      ]
+    },
+    {
+      "name": "agents",
+      "title": "agents",
+      "description": "the agents made available at startup, one catalogue line each",
+      "items": [
+        {
+          "id": "agent:general-purpose",
+          "label": "general-purpose",
+          "detail": "built-in",
+          "content": {
+            "provenance": "captured",
+            "kind": "listing",
+            "text": "- general-purpose: A built-in agent for open-ended work.",
+            "chars": 56
+          },
+          "load": {
+            "state": "loaded",
+            "actual": {
+              "tokens": 19,
+              "provenance": "estimated",
+              "method": "chars/token calibrated on a Claude Code /context capture: 56 chars / 2.98 (listing, ±5%, divisor measured on 16,856 chars of skill catalogue against Claude Code's own count)",
+              "rel_err": 0.05,
+              "tokens_low": 18,
+              "tokens_high": 20
+            }
+          },
+          "origin": "harness-builtin",
+          "lever": {
+            "kind": "immovable",
+            "line_range": [
+              0,
+              0
+            ],
+            "why": "no definition file on disk, so this agent is built into Claude Code"
+          }
+        },
+        {
+          "id": "agent:fixture-reviewer",
+          "label": "fixture-reviewer",
+          "detail": "built-in",
+          "content": {
+            "provenance": "captured",
+            "kind": "listing",
+            "text": "- fixture-reviewer: A fixture agent defined on disk, used to check that an agent with a definition file is reported as removable.",
+            "chars": 129
+          },
+          "load": {
+            "state": "loaded",
+            "actual": {
+              "tokens": 43,
+              "provenance": "estimated",
+              "method": "chars/token calibrated on a Claude Code /context capture: 129 chars / 2.98 (listing, ±5%, divisor measured on 16,856 chars of skill catalogue against Claude Code's own count)",
+              "rel_err": 0.05,
+              "tokens_low": 41,
+              "tokens_high": 45
+            }
+          },
+          "origin": "harness-builtin",
+          "lever": {
+            "kind": "immovable",
+            "line_range": [
+              0,
+              0
+            ],
+            "why": "no definition file on disk, so this agent is built into Claude Code"
+          }
+        }
+      ],
+      "notes": [
+        "an agent with a definition file on disk is yours and can be removed; one without is built into Claude Code",
+        "2 of 2 agents are built into the harness and cannot be removed"
+      ]
+    }
+  ],
+  "unaccounted": {
+    "id": "unaccounted",
+    "label": "system prompt + built-in tool schemas",
+    "detail": "unattributed remainder",
+    "content": {
+      "provenance": "absent",
+      "kind": "prose",
+      "chars": 0,
+      "note": "Content the harness sends but never writes to disk — the base system prompt and the built-in tool schemas. Measured by subtraction from the provider-reported total, not estimated."
+    },
+    "load": {
+      "state": "loaded",
+      "actual": {
+        "tokens": 26840,
+        "provenance": "residual",
+        "method": "anchor − Σ(attributed)"
+      }
+    },
+    "origin": "harness-builtin",
+    "lever": {
+      "kind": "immovable",
+      "line_range": [
+        0,
+        0
+      ],
+      "why": "shipped inside the agent binary; not configurable"
+    }
+  },
+  "reconciliation": {
+    "status": "ok",
+    "anchor": {
+      "tokens": 27008,
+      "provenance": "provider-measured",
+      "method": "message.usage.input_tokens + cache_creation_input_tokens + cache_read_input_tokens"
+    },
+    "attributed": {
+      "tokens": 168,
+      "provenance": "estimated",
+      "method": "sum of attributed item costs",
+      "rel_err": 0.09077380952380952,
+      "tokens_low": 153,
+      "tokens_high": 183
+    },
+    "unaccounted": {
+      "tokens": 26840,
+      "provenance": "residual",
+      "method": "anchor − Σ(attributed)"
+    },
+    "coverage_pct": 0.6220379146919431,
+    "message": "attributed costs plus the unattributed remainder equal the measured total"
+  },
+  "caveats": [
+    {
+      "code": "anchor-warm-cache",
+      "message": "3000 of the measured 27008 prompt tokens were served from Anthropic's prompt cache. The cache is shared between sessions, so this is normal for a fresh session and does not change the prompt's size.",
+      "severity": "info"
+    },
+    {
+      "code": "model-switched",
+      "message": "this session booted on claude-opus-4-5 and switched to claude-opus-4-7 at 2026-07-01 09:02:00 UTC. The model and window above follow the most recent recorded turn — they describe the session now. The measured first-turn total (the anchor) is not moved by the switch: that request was served by claude-opus-4-5, and it is still the request the anchor measures.",
+      "severity": "info"
+    },
+    {
+      "code": "residual-includes-turn-inputs",
+      "message": "the measured total covers the whole first request, so the unattributed remainder also contains this session's first typed message (30 characters) alongside the base system prompt and the built-in tool schemas.",
+      "severity": "info"
+    }
+  ],
+  "capabilities": {
+    "adapter": "claude",
+    "can_anchor": true,
+    "can_verbatim_system": false,
+    "categories": [
+      {
+        "name": "system-prompt",
+        "title": "system prompt + built-in tool schemas",
+        "text": "absent",
+        "token": "residual",
+        "note": "not written to disk by Claude Code; reported as the reconciliation residual against the provider-measured first-turn total rather than as a category"
+      },
+      {
+        "name": "system-tools",
+        "title": "system tools",
+        "text": "captured",
+        "token": "estimated",
+        "note": "the transcript records deferred tool names verbatim; the schemas themselves are not recorded, so only the names are priced"
+      },
+      {
+        "name": "mcp",
+        "title": "MCP instructions",
+        "text": "captured",
+        "token": "estimated",
+        "note": "each server's instruction block is recorded verbatim; its tool schemas are not, and stay inside the residual"
+      },
+      {
+        "name": "memory-files",
+        "title": "memory files",
+        "text": "reconstructed",
+        "token": "estimated",
+        "note": "the CLAUDE.md chain goes into the system prompt and is absent from the transcript, so it is rebuilt by re-walking Claude Code's own discovery rules; a file Claude Code recorded as nested memory is upgraded to captured"
+      },
+      {
+        "name": "skills",
+        "title": "skills",
+        "text": "captured",
+        "token": "estimated",
+        "note": "the startup catalogue is recorded verbatim and split per skill; each skill's body is reported as potential cost, since it loads only when invoked"
+      },
+      {
+        "name": "agents",
+        "title": "agents",
+        "text": "captured",
+        "token": "estimated",
+        "note": "the startup catalogue is recorded verbatim; an agent with a definition file on disk is yours and carries a lever, one without is built into the harness"
+      }
+    ],
+    "notes": [
+      "Per-item token figures are estimates: there is no offline Anthropic tokenizer, and the provider's counting endpoint needs credentials.",
+      "The first-turn total is provider-measured, so the unattributed remainder is obtained by subtraction rather than guessed.",
+      "AGENTS.md is not listed: Claude Code does not read it."
+    ]
+  },
+  "generated_at": "2026-07-01T12:00:00Z"
+}
