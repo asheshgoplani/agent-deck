@@ -307,8 +307,9 @@ func TestRemoteAgent_SingleFlightReadOnlyRequests(t *testing.T) {
 // Finding 4: {"id":N,"cancel":true} ends request N's subprocess and no
 // reply follows; a shared run survives until its last sharer cancels.
 func TestRemoteAgent_CancelKillsRequest(t *testing.T) {
-	var cancelled atomic.Int32
+	var started, cancelled atomic.Int32
 	run := func(ctx context.Context, args []string) (string, string, int) {
+		started.Add(1)
 		select {
 		case <-ctx.Done():
 			cancelled.Add(1)
@@ -556,8 +557,9 @@ func TestRemoteAgent_SlowPipeBackpressuresWithoutExit(t *testing.T) {
 // Finding 4: a cancel that follows its request on the very next line must
 // still find it (the request is registered before its goroutine starts).
 func TestRemoteAgent_CancelRightAfterRequest(t *testing.T) {
-	var cancelled atomic.Int32
+	var started, cancelled atomic.Int32
 	run := func(ctx context.Context, args []string) (string, string, int) {
+		started.Add(1)
 		select {
 		case <-ctx.Done():
 			cancelled.Add(1)
@@ -574,8 +576,11 @@ func TestRemoteAgent_CancelRightAfterRequest(t *testing.T) {
 		t.Fatalf("expected the ping ack, got %+v", r)
 	}
 	time.Sleep(30 * time.Millisecond)
-	if got := cancelled.Load(); got != 1 {
-		t.Fatalf("the cancel right after the request must kill it, got %d kills", got)
+	// Either the cancel arrived before the subprocess started (it never
+	// runs) or after (it is killed); both are correct, and in neither case
+	// may the request run to completion or produce a reply.
+	if s, c := started.Load(), cancelled.Load(); s != c {
+		t.Fatalf("a started request must be killed by its cancel: started=%d killed=%d", s, c)
 	}
 	h.noneWithin(50*time.Millisecond, "no reply for the cancelled request")
 	h.closeAndWait()
