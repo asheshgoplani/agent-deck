@@ -37,6 +37,12 @@ type fakeAgentT struct {
 	// closeOut ends the agent's output (the transport dies from the far
 	// side).
 	closeOut func()
+	// stamp is what every reply carries as its "stamp" (0 for an agent
+	// that predates stamps); pushDataStamped pushes a listing with one.
+	stamp           atomic.Int64
+	pushDataStamped func(sessions, groups string, stamp int64)
+	// cancelled receives the id of every cancel line.
+	cancelled chan int64
 }
 
 // fakeAgent answers requests like the remote agent would, over pipes.
@@ -51,7 +57,7 @@ func newFakeAgent(t *testing.T, ready, refuseWatch bool) *fakeAgentT {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	var wmu sync.Mutex
-	a := &fakeAgentT{watched: make(chan string, 16), refuseWatch: refuseWatch, hung: make(chan int64, 16)}
+	a := &fakeAgentT{watched: make(chan string, 16), refuseWatch: refuseWatch, hung: make(chan int64, 16), cancelled: make(chan int64, 16)}
 	write := func(v any) {
 		if a.mute.Load() {
 			return
@@ -73,6 +79,10 @@ func newFakeAgent(t *testing.T, ready, refuseWatch bool) *fakeAgentT {
 		for sc.Scan() {
 			var req remoteChannelRequest
 			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				continue
+			}
+			if req.Cancel {
+				a.cancelled <- req.ID
 				continue
 			}
 			if req.Ping {
@@ -100,9 +110,9 @@ func newFakeAgent(t *testing.T, ready, refuseWatch bool) *fakeAgentT {
 			case req.Args[0] == "hang" || (hangOn != "" && req.Args[0] == hangOn):
 				a.hung <- req.ID
 			case req.Args[0] == "fail":
-				write(remoteChannelReply{ID: req.ID, Code: 1, Stderr: "no such session"})
+				write(remoteChannelReply{ID: req.ID, Code: 1, Stderr: "no such session", Stamp: a.stamp.Load()})
 			default:
-				write(remoteChannelReply{ID: req.ID, Stdout: "out:" + strings.Join(req.Args, " ")})
+				write(remoteChannelReply{ID: req.ID, Stdout: "out:" + strings.Join(req.Args, " "), Stamp: a.stamp.Load()})
 			}
 		}
 	}()
@@ -112,6 +122,9 @@ func newFakeAgent(t *testing.T, ready, refuseWatch bool) *fakeAgentT {
 	a.push = func(event string) { write(remoteChannelReply{Event: event}) }
 	a.pushData = func(sessions, groups string) {
 		write(remoteChannelReply{Event: "changed", Sessions: sessions, Groups: groups})
+	}
+	a.pushDataStamped = func(sessions, groups string, stamp int64) {
+		write(remoteChannelReply{Event: "changed", Sessions: sessions, Groups: groups, Stamp: stamp})
 	}
 	a.pushPane = func(session, content, errText string) {
 		write(remoteChannelReply{Event: "pane", Session: session, Stdout: content, Error: errText})
@@ -802,5 +815,140 @@ func TestRemoteChannel_ClosedDropsPushes(t *testing.T) {
 	case ev := <-events:
 		t.Fatalf("closed channel must publish nothing, got %+v", ev)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// Finding 10: a pushed listing stamped before the reply to the last
+// mutating command was taken before that command ran. Its data is dropped
+// (the bare "changed" still goes out so the receiver fetches); a listing
+// stamped at or after it applies, and read-only verbs never move the bar.
+func TestRemoteChannel_StampGateDropsListingOlderThanMutation(t *testing.T) {
+	agent := newFakeAgent(t, true, false)
+	ch, events := newTestChannel(agent.dial)
+	ch.ensureConnected()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	next := func() RemoteChange {
+		t.Helper()
+		select {
+		case c := <-events:
+			return c
+		case <-time.After(2 * time.Second):
+			t.Fatal("no event")
+			return RemoteChange{}
+		}
+	}
+	listing := `[{"id":"s1","title":"one","tool":"claude","status":"running"}]`
+
+	// A read-only verb's stamp is not a mutation.
+	agent.stamp.Store(500)
+	if _, err := ch.Request(ctx, []string{"list", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ch.LastMutationStamp(); got != 0 {
+		t.Fatalf("a listing must not record a mutation stamp, got %d", got)
+	}
+	agent.pushDataStamped(listing, "", 100)
+	if c := next(); !c.HasData || c.Stamp != 100 {
+		t.Fatalf("with no mutation yet every listing applies; got %+v", c)
+	}
+
+	// A mutating verb records its reply's stamp, a refused one too.
+	agent.stamp.Store(1000)
+	if _, err := ch.Request(ctx, []string{"remove", "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ch.LastMutationStamp(); got != 1000 {
+		t.Fatalf("LastMutationStamp = %d, want 1000", got)
+	}
+	agent.stamp.Store(1200)
+	_, _ = ch.Request(ctx, []string{"fail"})
+	if got := ch.LastMutationStamp(); got != 1200 {
+		t.Fatalf("a refused mutating verb still moves the bar: got %d, want 1200", got)
+	}
+	agent.stamp.Store(900)
+	_, _ = ch.Request(ctx, []string{"rename", "s1", "x"})
+	if got := ch.LastMutationStamp(); got != 1200 {
+		t.Fatalf("the bar never goes backwards: got %d, want 1200", got)
+	}
+
+	// Older listing: data dropped, event kept.
+	agent.pushDataStamped(listing, "", 1100)
+	if c := next(); c.HasData || c.Sessions != nil || c.Remote != "box" || c.Stamp != 1100 {
+		t.Fatalf("a listing older than the last mutation must arrive bare; got %+v", c)
+	}
+	// Same stamp (the probe listed right after the command): applies.
+	agent.pushDataStamped(listing, "", 1200)
+	if c := next(); !c.HasData || len(c.Sessions) != 1 {
+		t.Fatalf("a listing stamped at the mutation applies; got %+v", c)
+	}
+	// Newer: applies. Unstamped (old agent): applies, the receiver decides.
+	agent.pushDataStamped(listing, "", 1300)
+	if c := next(); !c.HasData || c.Stamp != 1300 {
+		t.Fatalf("a newer listing applies; got %+v", c)
+	}
+	agent.pushData(listing, "")
+	if c := next(); !c.HasData || c.Stamp != 0 {
+		t.Fatalf("an unstamped listing is left to the receiver; got %+v", c)
+	}
+}
+
+// A request whose context ends before its reply tells the agent to cancel
+// it, so the remote does not keep running a verb nobody waits for.
+func TestRemoteChannel_CancelSentWhenContextEnds(t *testing.T) {
+	agent := newFakeAgent(t, true, false)
+	ch, _ := newTestChannel(agent.dial)
+	ch.pingEvery = time.Hour
+	ch.ensureConnected()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := ch.Request(ctx, []string{"hang"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want deadline exceeded, got %v", err)
+	}
+	var hungID int64
+	select {
+	case hungID = <-agent.hung:
+	case <-time.After(time.Second):
+		t.Fatal("agent never received the request")
+	}
+	select {
+	case id := <-agent.cancelled:
+		if id != hungID {
+			t.Fatalf("cancel names request %d, want %d", id, hungID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no cancel line reached the agent")
+	}
+	if !ch.Connected() {
+		t.Fatal("one cancelled request must not take the channel down")
+	}
+	// A late reply for the cancelled id is ignored, not delivered to the
+	// next request.
+	if out, err := ch.Request(context.Background(), []string{"list"}); err != nil || string(out) != "out:list" {
+		t.Fatalf("list after a cancel = %q, %v", out, err)
+	}
+}
+
+// HasData is set only when the payload parsed to a listing: a JSON null,
+// garbage or an absent payload leave it unset so the receiver fetches; an
+// empty listing is data (the remote has no sessions).
+func TestRemoteChannel_ChangeFromReplyHasDataOnlyForListings(t *testing.T) {
+	ch, _ := newTestChannel(nil)
+	cases := map[string]bool{
+		"":                          false,
+		"null":                      false,
+		"{not a list}":              false,
+		`[{"id":"s1","title":"x"}]`: true,
+		"[]":                        true,
+	}
+	for payload, want := range cases {
+		got := ch.changeFromReply(remoteChannelReply{Event: "changed", Sessions: payload, Stamp: 7})
+		if got.HasData != want {
+			t.Errorf("payload %q: HasData = %v, want %v", payload, got.HasData, want)
+		}
+		if got.Stamp != 7 {
+			t.Errorf("payload %q: stamp not carried", payload)
+		}
 	}
 }

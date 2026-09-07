@@ -8,10 +8,13 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -444,5 +447,145 @@ func TestRemotePush_EmptyRemoteKeepsHeaderAndGroups(t *testing.T) {
 	}
 	if !header || !inbox {
 		t.Fatalf("the empty remote's host header and its folder must still render; header=%v inbox=%v", header, inbox)
+	}
+}
+
+// Finding 10, stamped: when the listing says which DB state it was taken
+// from and the channel knows the stamp of the last mutating command, the
+// stamps decide, membership does not. A listing newer than the delete that
+// still contains the id (recreated with the same id) applies; an older
+// listing without the id is still stale.
+func TestRemotePush_StampDecidesOverMembership(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"box": {remoteInfo("box", "s1", "doomed", "running"), remoteInfo("box", "s2", "kept", "running")},
+	}
+	var last int64
+	home.remoteMutationStamp = func(string) int64 { return last }
+	model, _ := home.Update(remoteSessionDeletedMsg{remoteName: "box", sessionID: "s1", title: "doomed"})
+	h := model.(*Home)
+
+	// The channel does not know a stamp yet: membership decides, as before.
+	model, _ = h.Update(pushWithData("box", []session.RemoteSessionInfo{{ID: "s1", Title: "doomed"}, {ID: "s2", Title: "kept"}}, nil))
+	h = model.(*Home)
+	if got := remoteTitles(h, "box"); len(got) != 1 || got[0] != "kept" {
+		t.Fatalf("without stamps membership gates the push; got %v", got)
+	}
+
+	last = 1000
+	older := pushWithData("box", []session.RemoteSessionInfo{{ID: "s2", Title: "older"}}, nil)
+	older.change.Stamp = 900
+	model, _ = h.Update(older)
+	h = model.(*Home)
+	if got := remoteTitles(h, "box"); len(got) != 1 || got[0] != "kept" {
+		t.Fatalf("a listing stamped before the delete is stale even when it agrees; got %v", got)
+	}
+	newer := pushWithData("box", []session.RemoteSessionInfo{{ID: "s1", Title: "reborn"}, {ID: "s2", Title: "kept"}}, nil)
+	newer.change.Stamp = 1000
+	model, _ = h.Update(newer)
+	h = model.(*Home)
+	if got := remoteTitles(h, "box"); len(got) != 2 || got[0] != "reborn" {
+		t.Fatalf("a listing stamped at or after the delete is the truth, id or not; got %v", got)
+	}
+
+	// Unstamped after a stamped world: the membership gate is the fallback.
+	model, _ = h.Update(remoteSessionDeletedMsg{remoteName: "box", sessionID: "s2", title: "kept"})
+	h = model.(*Home)
+	model, _ = h.Update(pushWithData("box", []session.RemoteSessionInfo{{ID: "s1", Title: "reborn"}, {ID: "s2", Title: "kept"}}, nil))
+	h = model.(*Home)
+	if got := remoteTitles(h, "box"); len(got) != 1 || got[0] != "reborn" {
+		t.Fatalf("an unstamped push falls back to the membership gate; got %v", got)
+	}
+}
+
+// A mutating command whose reply was lost with the channel (#3) has an
+// unknown outcome: nothing is confirmed or reverted on faith (a delete
+// keeps its row, a rename goes back to the old title), the footer says what
+// happened, and a fetch is started to settle it.
+func TestRemoteAction_InterruptedOutcomeIsUnknown(t *testing.T) {
+	interrupted := fmt.Errorf("ssh wrapper: %w", session.ErrRemoteInterrupted)
+	if !session.IsRemoteInterrupted(interrupted) {
+		t.Fatal("IsRemoteInterrupted must see through wrapping")
+	}
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"box": {remoteInfo("box", "s1", "maybe-gone", "running"), remoteInfo("box", "s2", "old-name", "running")},
+	}
+	home.setRemotePending("s1", "deleting…")
+	model, cmd := home.Update(remoteSessionDeletedMsg{remoteName: "box", sessionID: "s1", title: "maybe-gone", err: interrupted})
+	h := model.(*Home)
+	if cmd == nil {
+		t.Fatal("an interrupted delete must start a fetch")
+	}
+	if got := remoteTitles(h, "box"); len(got) != 2 || got[0] != "maybe-gone" {
+		t.Fatalf("an interrupted delete must keep the row until the fetch decides; got %v", got)
+	}
+	if _, pending := h.remotePending["s1"]; pending {
+		t.Fatal("the pending marker must be cleared")
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "on box: connection dropped before the reply, refreshing") {
+		t.Fatalf("footer = %v", h.err)
+	}
+	if _, removed := h.remoteActionRemoved["box"]["s1"]; removed {
+		t.Fatal("an unconfirmed delete must not gate pushes that still list the session")
+	}
+
+	h.setRemoteSessionTitle("box", "s2", "new-name")
+	model, cmd = h.Update(remoteRenameResultMsg{remoteName: "box", sessionID: "s2", oldTitle: "old-name", newTitle: "new-name", err: interrupted})
+	h = model.(*Home)
+	if cmd == nil {
+		t.Fatal("an interrupted rename must start a fetch")
+	}
+	if got := remoteTitles(h, "box"); got[1] != "old-name" {
+		t.Fatalf("an interrupted rename reverts to the old title; got %v", got)
+	}
+
+	for _, msg := range []tea.Msg{
+		remoteSessionClosedMsg{remoteName: "box", sessionID: "s1", err: interrupted},
+		remoteSessionArchivedMsg{remoteName: "box", sessionID: "s1", archived: true, err: interrupted},
+		remoteSessionRestartedMsg{remoteName: "box", sessionID: "s1", err: interrupted},
+		remoteSessionForkedMsg{remoteName: "box", sessionID: "s1", err: interrupted},
+		remoteMoveResultMsg{remoteName: "box", sessionID: "s1", groupPath: "g", err: interrupted},
+		remoteGroupResultMsg{remoteName: "box", groupPath: "g", err: interrupted},
+		remoteGroupDeleteResultMsg{remoteName: "box", groupPath: "g", err: interrupted},
+		remoteGroupReorderResultMsg{remoteName: "box", groupPath: "g", err: interrupted},
+	} {
+		h.clearError()
+		model, cmd = h.Update(msg)
+		h = model.(*Home)
+		if cmd == nil || h.err == nil || !strings.Contains(h.err.Error(), "connection dropped before the reply") {
+			t.Fatalf("%T: want the unknown-outcome footer and a fetch; got cmd=%v err=%v", msg, cmd != nil, h.err)
+		}
+	}
+	if got := remoteTitles(h, "box"); len(got) != 2 || h.remoteSessions["box"][0].Archived {
+		t.Fatalf("interrupted actions must not patch rows; got %v", got)
+	}
+}
+
+// Finding 8: a push from a remote the config no longer lists is dropped,
+// and a push from a configured remote keeps every other configured remote
+// as it was, even one nothing has fetched rows for yet.
+func TestRemotePush_FollowsConfiguredRemotes(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, nil)
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"a": {remoteInfo("a", "s1", "a-cached", "running")},
+	}
+	home.remoteConfigured = map[string]struct{}{"a": {}, "c": {}}
+	model, _ := home.Update(pushWithData("gone", []session.RemoteSessionInfo{{ID: "g1", Title: "ghost"}}, nil))
+	h := model.(*Home)
+	if _, ok := h.remoteSessions["gone"]; ok {
+		t.Fatal("a push from a remote not in the config must not add it to the tree")
+	}
+	msg := h.pushedRemoteFetch(pushWithData("a", []session.RemoteSessionInfo{{ID: "s1", Title: "a-pushed"}}, nil).change)
+	if !msg.failed["c"] || !msg.groupsFailed["c"] {
+		t.Fatalf("configured remote c must be marked failed (kept) by a push from a; failed=%v", msg.failed)
+	}
+	if msg.failed["a"] {
+		t.Fatal("the pusher itself is fresh, not failed")
+	}
+	model, _ = h.Update(pushWithData("a", []session.RemoteSessionInfo{{ID: "s1", Title: "a-pushed"}}, nil))
+	h = model.(*Home)
+	if got := remoteTitles(h, "a"); len(got) != 1 || got[0] != "a-pushed" {
+		t.Fatalf("a push from a configured remote applies; got %v", got)
 	}
 }

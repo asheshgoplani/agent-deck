@@ -698,6 +698,16 @@ type Home struct {
 	// fetch was already in flight: that fetch may predate the change, so
 	// another one starts as soon as it lands.
 	remoteRefetchWanted bool
+	// remoteConfigured is the set of remote names the last successfully
+	// read config listed (nil before the first read). A push from a name
+	// outside it is from a remote that was removed from the config and is
+	// dropped; every name in it other than the pusher is kept as is when a
+	// push is applied. Guarded by remoteSessionsMu.
+	remoteConfigured map[string]struct{}
+	// remoteMutationStamp returns the stamp (remote DB mtime, unix ns) of
+	// the last mutating command confirmed over a remote's channel, 0 when
+	// unknown. nil means ask the channel; tests inject a stub.
+	remoteMutationStamp func(remoteName string) int64
 	// remotePending marks remote session rows with an action underway
 	// (sessionID -> "deleting…"), drawn on the row so the screen says what
 	// is happening while the remote answers instead of freezing.
@@ -2337,7 +2347,7 @@ func (h *Home) moveRemoteSessionToGroup(title, remoteName, sessionID, targetGrou
 		defer cancel()
 		if _, err := runner.RunCommand(ctx, "group", "move", sessionID, targetGroupPath); err != nil {
 			return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath,
-				err: fmt.Errorf("failed to move '%s' on %s: %v", title, remoteName, err)}
+				err: fmt.Errorf("failed to move '%s' on %s: %w", title, remoteName, err)}
 		}
 		return remoteMoveResultMsg{remoteName: remoteName, sessionID: sessionID, groupPath: targetGroupPath}
 	}
@@ -2384,7 +2394,7 @@ func (h *Home) createRemoteGroup(name, remoteName, parentPath, defaultPath strin
 		args := remoteGroupCreateArgs(name, parentPath, defaultPath)
 		if _, err := runner.RunCommand(ctx, args...); err != nil {
 			return remoteGroupResultMsg{remoteName: remoteName,
-				err: fmt.Errorf("failed to create group '%s' on %s: %v", name, remoteName, err)}
+				err: fmt.Errorf("failed to create group '%s' on %s: %w", name, remoteName, err)}
 		}
 		full := name
 		if parentPath != "" {
@@ -2411,7 +2421,7 @@ func (h *Home) deleteRemoteGroup(groupPath, remoteName string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if _, err := runner.RunCommand(ctx, "group", "delete", groupPath); err != nil {
-			return result(fmt.Errorf("failed to delete group '%s' on %s: %v", groupPath, remoteName, err))
+			return result(fmt.Errorf("failed to delete group '%s' on %s: %w", groupPath, remoteName, err))
 		}
 		return result(nil)
 	}
@@ -4140,10 +4150,24 @@ func (h *Home) waitRemoteChange() tea.Msg {
 	return remoteChangedMsg{remoteName: change.Remote, change: change}
 }
 
+// remoteIsConfigured reports whether remoteName is in the last config read.
+// Before the first read every name passes: the startup cache may hold rows
+// for remotes the config has not been consulted about yet.
+func (h *Home) remoteIsConfigured(remoteName string) bool {
+	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	if h.remoteConfigured == nil {
+		return true
+	}
+	_, ok := h.remoteConfigured[remoteName]
+	return ok
+}
+
 // pushedRemoteFetch shapes a pushed change as a fetch result for that one
 // remote: every other remote is marked failed (the merge keeps its rows),
 // costs are absent (left untouched), and the sequence number advances so an
-// older poll cannot overwrite this newer state.
+// older poll cannot overwrite this newer state. The caller has checked that
+// the pusher is still configured (remoteIsConfigured).
 func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedMsg {
 	msg := remoteSessionsFetchedMsg{
 		gen:          atomic.AddUint64(&h.remoteFetchSeq, 1),
@@ -4158,14 +4182,18 @@ func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedM
 	} else {
 		msg.groupsFailed[ch.Remote] = true
 	}
-	// Every other remote the TUI knows is marked failed: the ones with rows,
-	// and the ones known only by a group list or a cost figure (a remote
-	// with zero sessions still has a host header and folders to keep,
-	// finding 12). A remote the config lists but nothing has fetched yet
-	// has nothing to lose.
-	// TODO(#2181 follow-up): once session.ReconcileRemoteChannels(config)
-	// exists, take the configured names from it here instead.
+	// Every other remote is marked failed: the ones the config lists, and
+	// the ones the TUI still knows by rows, a group list or a cost figure
+	// (a remote with zero sessions still has a host header and folders to
+	// keep, finding 12; the startup cache may know remotes the config has
+	// not been read for yet).
 	h.remoteSessionsMu.RLock()
+	for name := range h.remoteConfigured {
+		if name != ch.Remote {
+			msg.failed[name] = true
+			msg.groupsFailed[name] = true
+		}
+	}
 	for name := range h.remoteSessions {
 		if name != ch.Remote {
 			msg.failed[name] = true
@@ -4195,6 +4223,16 @@ func (h *Home) pushedRemoteFetch(ch session.RemoteChange) remoteSessionsFetchedM
 // probe lists the state DB on a timer, so a listing snapshotted just before
 // the action ran can arrive just after its confirmation.
 const remoteActionGrace = 3 * time.Second
+
+// remoteOutcomeUnknown is the handler's answer when the channel dropped
+// after a mutating command was written to remoteName and before its reply
+// (session.IsRemoteInterrupted): the remote may or may not have run it, so
+// nothing is confirmed or reverted on faith, the footer says so, and a
+// fetch settles the tree.
+func (h *Home) remoteOutcomeUnknown(remoteName string) tea.Cmd {
+	h.setError(fmt.Errorf("on %s: connection dropped before the reply, refreshing", remoteName))
+	return h.fetchRemoteSessions
+}
 
 // noteRemoteActionSettled records that remote just confirmed a user action.
 func (h *Home) noteRemoteActionSettled(remoteName string) {
@@ -4257,41 +4295,68 @@ func (h *Home) remoteActionInProgress(remoteName string) bool {
 	return false
 }
 
+// lastRemoteMutationStamp is the stamp of the last mutating command the
+// remote confirmed over its channel, 0 when there is no channel or it does
+// not know.
+func (h *Home) lastRemoteMutationStamp(remoteName string) int64 {
+	if h.remoteMutationStamp != nil {
+		return h.remoteMutationStamp(remoteName)
+	}
+	if ch := session.RemoteChannelFor(remoteName); ch != nil {
+		return ch.LastMutationStamp()
+	}
+	return 0
+}
+
 // stalePushedChange reports whether a pushed listing for ch.Remote predates
-// a user action and must not be applied (finding 10). While an action on
-// that remote is in flight, or within remoteActionGrace of its confirmation,
-// a listing that still contains a session the action removed, or shows one
-// it archived as active (or the reverse), is stale: the probe read the DB
-// before the action ran. Outside that window, or when the listing agrees
-// with the action, the push applies as usual. Entries older than the grace
-// are dropped as they are met.
+// a user action and must not be applied (finding 10).
 //
-// TODO(channel owner): when RemoteChange carries the DB stamp the listing was
-// taken at, compare stamps here instead of session membership.
+// When the listing carries the DB stamp it was taken at and the remote's
+// channel knows the stamp of the last mutating command it confirmed, the
+// two decide it: a listing stamped before the command is stale, one stamped
+// at or after it is the truth (the channel already drops the former before
+// it gets here; the check is repeated so the verdict does not depend on
+// which side saw the stamps).
+//
+// Without stamps (an agent that predates them, a command that ran as a
+// plain ssh exec while the channel was down), session membership decides:
+// while an action on that remote is in flight, or within remoteActionGrace
+// of its confirmation, a listing that still contains a session the action
+// removed, or shows one it archived as active (or the reverse), is stale:
+// the probe read the DB before the action ran. Outside that window, or
+// when the listing agrees with the action, the push applies as usual.
+// Entries older than the grace are dropped as they are met.
 func (h *Home) stalePushedChange(ch session.RemoteChange, now time.Time) bool {
 	removed := h.remoteActionRemoved[ch.Remote]
 	if len(removed) == 0 {
 		return false
 	}
-	inGrace := h.remoteActionInProgress(ch.Remote) || now.Sub(h.remoteActionSettled[ch.Remote]) < remoteActionGrace
-	stale := false
 	for id, rec := range removed {
 		if now.Sub(rec.at) >= remoteActionGrace {
 			delete(removed, id)
-			continue
 		}
-		if !inGrace {
-			continue
+	}
+	if len(removed) == 0 {
+		delete(h.remoteActionRemoved, ch.Remote)
+		return false
+	}
+	if ch.Stamp > 0 {
+		if last := h.lastRemoteMutationStamp(ch.Remote); last > 0 {
+			return ch.Stamp < last
 		}
+	}
+	inGrace := h.remoteActionInProgress(ch.Remote) || now.Sub(h.remoteActionSettled[ch.Remote]) < remoteActionGrace
+	if !inGrace {
+		return false
+	}
+	stale := false
+	for id, rec := range removed {
 		for i := range ch.Sessions {
 			if ch.Sessions[i].ID == id && rec.contradicts(&ch.Sessions[i]) {
 				stale = true
 				break
 			}
 		}
-	}
-	if len(removed) == 0 {
-		delete(h.remoteActionRemoved, ch.Remote)
 	}
 	return stale
 }
@@ -4309,7 +4374,23 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 		// deconfigured; keep everything and say why.
 		return remoteSessionsFetchedMsg{gen: gen, configErr: err}
 	}
-	if config == nil || len(config.Remotes) == 0 {
+	// The config is the truth about which remotes exist: close the channel
+	// of any remote that was removed or re-pointed at another host, so it
+	// stops pushing rows into the tree, and remember the names so a push
+	// can be checked against them (#8).
+	var remotes map[string]session.RemoteConfig
+	if config != nil {
+		remotes = config.Remotes
+	}
+	session.ReconcileRemoteChannels(remotes)
+	configured := make(map[string]struct{}, len(remotes))
+	for name := range remotes {
+		configured[name] = struct{}{}
+	}
+	h.remoteSessionsMu.Lock()
+	h.remoteConfigured = configured
+	h.remoteSessionsMu.Unlock()
+	if len(remotes) == 0 {
 		return remoteSessionsFetchedMsg{gen: gen, sessions: nil}
 	}
 
@@ -7580,6 +7661,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return h, h.waitRemoteChange
 		}
+		if !h.remoteIsConfigured(msg.remoteName) {
+			// The remote was removed from the config (its channel is being
+			// closed by the next fetch round): nothing it says belongs in
+			// the tree any more.
+			uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("deconfigured_dropped", true))
+			return h, h.waitRemoteChange
+		}
 		if msg.change.HasData && !h.stalePushedChange(msg.change, time.Now()) {
 			// The event brought the listings: apply them now, no round trip.
 			uiLog.Debug("remote_changed", slog.String("remote", msg.remoteName), slog.Bool("pushed_data", true))
@@ -7633,6 +7721,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case remoteSessionDeletedMsg:
 		h.setRemotePending(msg.sessionID, "")
 		h.noteRemoteActionSettled(msg.remoteName)
+		if session.IsRemoteInterrupted(msg.err) {
+			// The remote may have deleted it: the row stays until the
+			// fetch says.
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to delete '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7644,6 +7737,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case remoteSessionClosedMsg:
 		h.setRemotePending(msg.sessionID, "")
 		h.noteRemoteActionSettled(msg.remoteName)
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to close '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7658,6 +7754,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.setRemotePending(msg.sessionID, "")
 		h.noteRemoteActionSettled(msg.remoteName)
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to %s '%s' on %s: %w", verb, msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7678,6 +7777,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(h.resumingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		h.setRemotePending(msg.sessionID, "")
 		h.noteRemoteActionSettled(msg.remoteName)
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to restart '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7691,6 +7793,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(h.forkingSessions, remoteRestartAnimationID(msg.remoteName, msg.sessionID))
 		h.setRemotePending(msg.sessionID, "")
 		h.noteRemoteActionSettled(msg.remoteName)
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to fork '%s' on %s: %w", msg.title, msg.remoteName, msg.err))
 			return h, nil
@@ -7772,6 +7877,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteRenameResultMsg:
+		if session.IsRemoteInterrupted(msg.err) {
+			// Reverting is safe: the fetch brings the title the remote
+			// actually has.
+			h.setRemoteSessionTitle(msg.remoteName, msg.sessionID, msg.oldTitle)
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setRemoteSessionTitle(msg.remoteName, msg.sessionID, msg.oldTitle)
 			h.setError(fmt.Errorf("failed to rename '%s' on %s: %v", msg.oldTitle, msg.remoteName, msg.err))
@@ -7781,6 +7892,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteMoveResultMsg:
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(msg.err)
 			return h, nil
@@ -7805,6 +7919,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteGroupResultMsg:
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(msg.err)
 			return h, nil
@@ -7837,6 +7954,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case remoteGroupDeleteResultMsg:
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(msg.err)
 			return h, nil
@@ -7859,6 +7979,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.fetchRemoteSessions
 
 	case remoteGroupReorderResultMsg:
+		if session.IsRemoteInterrupted(msg.err) {
+			return h, h.remoteOutcomeUnknown(msg.remoteName)
+		}
 		if msg.err != nil {
 			h.setError(msg.err)
 			return h, nil
@@ -12178,8 +12301,9 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		// The remote snapshot is written on a 30 s debounce; quit writes
 		// whatever is pending so the next start renders the fleet as last seen.
 		h.flushRemoteSessionsCache(true)
-		// TODO(channel owner): call session.CloseRemoteChannels() here once
-		// it exists, so no ssh child or remote agent outlives the TUI.
+		// End every remote agent now rather than leaving it to sshd's
+		// keepalive: no ssh child outlives the TUI.
+		session.CloseRemoteChannels()
 		// Save both instances AND groups on quit (critical fix: was losing groups!)
 		h.saveInstances()
 
@@ -16283,7 +16407,7 @@ func (h *Home) reorderRemoteGroup(item session.Item, delta int) tea.Cmd {
 		moved, err := runner.ReorderGroup(ctx, groupPath, delta)
 		if err != nil {
 			return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta,
-				err: fmt.Errorf("failed to move '%s' %s on %s: %v", groupPath, direction, remoteName, err)}
+				err: fmt.Errorf("failed to move '%s' %s on %s: %w", groupPath, direction, remoteName, err)}
 		}
 		return remoteGroupReorderResultMsg{remoteName: remoteName, groupPath: groupPath, delta: delta, moved: moved}
 	}

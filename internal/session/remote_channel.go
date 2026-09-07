@@ -61,6 +61,13 @@ type RemoteChannel struct {
 	// still succeed, so only silence gives it away.
 	timeouts int
 	lastRead time.Time
+	// lastMutation is the stamp (remote state DB mtime, unix ns) the agent
+	// reported with its reply to the most recent mutating verb. A pushed
+	// listing stamped before it was taken before that command ran, so its
+	// data is dropped and only the bare "changed" goes out (finding 10).
+	// Stamps come from the remote's clock and outlive a transport, so a
+	// redial keeps it.
+	lastMutation int64
 	// Tunables, zero for the defaults below (tests shrink them).
 	pingEvery    time.Duration
 	pingTimeout  time.Duration
@@ -98,6 +105,9 @@ type remoteChannelRequest struct {
 	// it with a "verb not allowed" error, which proves the link just as
 	// well.
 	Ping bool `json:"ping,omitempty"`
+	// Cancel tells the agent to kill request ID's subprocess (no reply
+	// follows); sent when a request's context ends before its reply.
+	Cancel bool `json:"cancel,omitempty"`
 }
 
 type remoteChannelReply struct {
@@ -111,6 +121,10 @@ type remoteChannelReply struct {
 	Groups   string `json:"groups,omitempty"`
 	ProbeMS  int64  `json:"probe_ms,omitempty"`
 	Session  string `json:"session,omitempty"`
+	// Stamp is the remote state DB's mtime (unix ns) when the listing of a
+	// "changed" event was taken, or after a command finished (0 from an
+	// agent that predates stamps).
+	Stamp int64 `json:"stamp,omitempty"`
 }
 
 // RemoteChange is one pushed event from a remote. For a "changed" event,
@@ -123,6 +137,10 @@ type RemoteChange struct {
 	Groups   []string
 	HasData  bool
 	Pane     *RemotePaneEvent
+	// Stamp is the remote state DB's mtime (unix ns) the listing was taken
+	// at, 0 when the agent did not say. A receiver that knows the stamp of
+	// its own last mutating command can tell a stale listing by it.
+	Stamp int64
 }
 
 // RemotePaneEvent is one pushed pane capture for the watched session: the
@@ -152,6 +170,19 @@ var errChannelFrameTooLarge = errors.New("remote channel frame too large")
 // transport failures rather than a verdict from the remote command.
 func isChannelTransportErr(err error) bool {
 	return errors.Is(err, errChannelDown) || errors.Is(err, errChannelInterrupted)
+}
+
+// ErrRemoteInterrupted is errChannelInterrupted for callers outside the
+// package (tests that stage the outcome, mainly); IsRemoteInterrupted is
+// the check to use.
+var ErrRemoteInterrupted = errChannelInterrupted
+
+// IsRemoteInterrupted reports whether err (possibly wrapped) says the
+// channel dropped after a command was written to the remote and before its
+// reply came back. The command may or may not have run: callers treat the
+// outcome as unknown and refetch rather than retry or revert.
+func IsRemoteInterrupted(err error) bool {
+	return errors.Is(err, errChannelInterrupted)
 }
 
 // remoteChangeMailbox is the fan-in for pushed events (#14). It keeps the
@@ -585,11 +616,21 @@ func (c *RemoteChannel) readLoop(r *bufio.Reader, gen uint64, maxFrame int) {
 			continue
 		}
 		if reply.Event == "changed" {
+			change := c.changeFromReply(reply)
+			stale := c.staleListing(change)
+			if stale {
+				// The listing predates the last mutating command's
+				// completion: drop its data so the receiver fetches (the
+				// bare event still says something changed).
+				change = RemoteChange{Remote: c.name, Stamp: change.Stamp}
+			}
 			sessionLog.Debug("remote_channel_changed",
 				slog.String("remote", c.name),
-				slog.Bool("pushed_data", strings.TrimSpace(reply.Sessions) != ""),
+				slog.Bool("pushed_data", change.HasData),
+				slog.Bool("stale_dropped", stale),
+				slog.Int64("stamp", reply.Stamp),
 				slog.Int64("probe_ms", reply.ProbeMS))
-			c.publish(c.changeFromReply(reply))
+			c.publish(change)
 			continue
 		}
 		if reply.Event == "pane" {
@@ -621,15 +662,52 @@ func (c *RemoteChannel) publish(ch RemoteChange) {
 	c.events.put(ch)
 }
 
+// staleListing reports whether a pushed listing carries a stamp older than
+// the reply to this channel's last mutating command, i.e. it was taken
+// before that command ran. A listing without a stamp, or without data, is
+// never stale here.
+func (c *RemoteChannel) staleListing(ch RemoteChange) bool {
+	if !ch.HasData || ch.Stamp == 0 {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastMutation > 0 && ch.Stamp < c.lastMutation
+}
+
+// LastMutationStamp is the stamp the agent reported with its reply to the
+// most recent mutating command over this channel (0 when none, or when the
+// agent predates stamps). A pushed listing stamped before it is stale.
+func (c *RemoteChannel) LastMutationStamp() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastMutation
+}
+
+// noteReplyStamp records the stamp of a reply to a mutating verb. Any reply
+// counts, a refused command included: the stamp only says "listings taken
+// before this are older than the command", which is true either way.
+func (c *RemoteChannel) noteReplyStamp(args []string, stamp int64) {
+	if stamp == 0 || len(args) == 0 || remoteVerbReadOnly(args) {
+		return
+	}
+	c.mu.Lock()
+	if stamp > c.lastMutation {
+		c.lastMutation = stamp
+	}
+	c.mu.Unlock()
+}
+
 // changeFromReply parses the listings a "changed" event carries; a payload
-// that does not parse is dropped so the receiver fetches instead.
+// that does not parse is dropped so the receiver fetches instead. HasData
+// is set only when the sessions payload parsed to a listing.
 func (c *RemoteChannel) changeFromReply(r remoteChannelReply) RemoteChange {
-	ch := RemoteChange{Remote: c.name}
+	ch := RemoteChange{Remote: c.name, Stamp: r.Stamp}
 	if strings.TrimSpace(r.Sessions) == "" {
 		return ch
 	}
 	sessions, err := parseRemoteSessions([]byte(r.Sessions))
-	if err != nil {
+	if err != nil || sessions == nil {
 		return ch
 	}
 	for i := range sessions {
@@ -802,6 +880,7 @@ func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest)
 			// markDownGen's verdict for a request that was on the wire.
 			return r, errChannelInterrupted
 		}
+		c.noteReplyStamp(req.Args, r.Stamp)
 		if r.Error != "" {
 			return r, fmt.Errorf("ssh command failed: %s", r.Error)
 		}
@@ -814,6 +893,12 @@ func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest)
 		}
 		return r, nil
 	case <-ctx.Done():
+		// Tell the agent to kill the request's subprocess before forgetting
+		// it, so a slow verb does not keep running (and keep holding a
+		// request slot) on the remote after its caller gave up. Best
+		// effort: a failed write means the transport is going anyway.
+		cancelLine, _ := json.Marshal(remoteChannelRequest{ID: id, Cancel: true})
+		_, _ = stdin.Write(append(cancelLine, '\n'))
 		c.mu.Lock()
 		delete(c.pending, id)
 		drop := false
