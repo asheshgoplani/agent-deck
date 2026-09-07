@@ -1,53 +1,58 @@
-# PR #1952 verification results
+# PR #2043 verification results
 
-## Rebase evidence
+## Rebase evidence (second rebase, onto v1.15.0 main)
 
-- Pre-rebase head: `ce4debeb6f3ea5b1cffdc9242eb598df4a3dede5`.
-- Rebased head before the final fixes: `70bb777fd94106162f81a208764f42d4cfce84bc` on current `origin/main`.
-- `git range-diff 92bb498f..ce4debeb origin/main..70bb777f` mapped all 16 PR commits one-for-one with `=`; no prior patch changed or disappeared.
-- The rebased branch was pushed with `--force-with-lease` before findings work began.
+- Pre-rebase head: `e34144d6b7a8880cedba151567f259419ad2fc8f` (the head cold verification passed on).
+- Rebased onto fetched `origin/main` at `01c011b5` (v1.15.0 changelog/version bump plus the #1952 remote-drain merge).
+- `git range-diff 7771aca6..e34144d6 01c011b5..HEAD` mapped all three functional commits one-for-one with `=`; only the docs commit differed, and only in RESULTS.md.
+- Single conflict: RESULTS.md (main carries PR #1952's record; this file is a per-PR record, so the PR's version was kept unchanged — `git diff` against the pre-rebase copy is empty).
+- `git diff 7771aca6..e34144d6 -- ':!RESULTS.md'` and `git diff 01c011b5..HEAD -- ':!RESULTS.md'` produce the identical stable patch-id `596b03dd`, proving the full functional content — including the wait/stream turn-identity work and every earlier review fix — survived the rebase byte-for-byte.
+- CHANGELOG.md and cmd/agent-deck/main.go took main's v1.15.0 state untouched; the PR never modified either relative to its merge-base.
+
+## Rebase evidence (first rebase)
+
+- Pre-rebase head: `be59b0b3ddd0b5571afc55d318346a3b65bb4a32`.
+- Rebased onto fetched `origin/main` at `7771aca6c5a40d775fa96ecf15cd9df16ec23af6`.
+- Initial post-rebase head: `b291fad1f134cf402b86d31674fe82f54fa28af1`.
+- `git range-diff 47bb2103...be59b0b3 7771aca6...b291fad1` reported both PR commits patch-equivalent (`=`), confirming neither earlier fix was dropped.
+- The rebased branch was force-pushed with lease before review remediation began.
 
 ## Findings addressed
 
-- Made `SourceRemote` part of every pending-inbox identity decision: event fingerprint, turn fingerprint, last-wins producer replacement, and consumer collapse. This keeps local `boxb:nightly-build`, remote `nightly-build`, and caller-prefixed remote IDs distinct even when their visible child spelling overlaps.
-- Removed prefix inference from `RemoteScopedChildID`; arbitrary caller-selected IDs are always scoped rather than mistaken for an already-scoped record.
-- Converted injected CLI writers to error-tracking writers so `inbox` and `remote drain` cannot return success after partial/failed output.
-- Made writer-status distinguish a missing heartbeat from permission/I/O/read failures; only `ENOENT` means “never stamped,” while other failures report unknown liveness.
-- Fixed the suppressed-session absence test to fail on `ReadInboxEvents` errors instead of passing vacuously.
-- Rechecked earlier findings on orphan export, suppression, completion-copy deduplication, corrupt ledger reads, recurring terminal turns, fetch/probe ordering, consumed-ledger bounds, and writer probe fail-closed behavior; their current-head fixes remain present after rebase.
+- Read the complete PR conversation and all five inline review comments through `gh pr view 2043 --comments` and the paginated pull-review-comments API.
+- Made hook-busy delivery classification independent of retry thresholds and full-resend budgets. This covers `--no-wait`, whose Ctrl+C/full-resend budget intentionally remains disabled.
+- Kept `--wait` working for non-Claude tools through its prior best-effort adapter instead of accepting the proposed breaking Claude-only restriction. Claude `--wait` and `--stream` use durable turn identity.
+- Resolve and validate the Claude transcript path before transport submission, capture a non-guessed cursor, and remove post-send cursor-zero recovery.
+- Record own-pane session-ID provenance and detection time when adopting a fresh tmux session ID.
+- Preserve partial trailing JSONL records between polls; the identity cursor advances only for newline-terminated records.
+- Added an explicit `RemoteSession` skip: `session send` accepts local `Instance` targets; remote delivery runs this local command over SSH on the owning host, while `RemoteSessionInfo` is only a TUI cache row.
 
 ## Revert proofs
 
-Only the production hunks were reverse-applied while the new tests remained, and the focused tests were run in `golang:1.25`:
+All commands ran in `golang:1.25`; no host `go test` was used.
 
-```text
-RED_EXIT=1
-TestIssue1952_OriginSeparatesEveryIdentityRule:
-  local and remote records share EventFingerprint
-TestIssue1952_OutputFailuresAreNotSuccess:
-  remote drain output failure reported success
-```
-
-The production patch was then restored. With the fix present, these tests plus `TestIssue1952_WriterStatusReadFailureIsUnknown` pass.
+- Reverted only the remediation production hunks while retaining their tests.
+- `TestAwaitTurnIdentity_RetainsPartialTrailingRecord` failed with `turn identity not established within 1s`.
+- `TestNoWaitClassifiesHookBusyAsQueued` failed because the no-wait send exhausted all 30 checks with `no evidence of delivery` instead of returning `queued`.
+- Combined red-proof exit: `1`.
+- Restored the exact production patch and reran both tests: both packages passed.
+- The earlier turn-correlation suite also passes: interleaved sends return only their own nonce, streaming excludes the preceding turn, missing UUIDs fail closed, busy suppresses interrupts, idle preserves recovery, unknown hooks preserve pane fallback, and nil probes preserve prior behavior.
 
 ## Container verification
 
-- `go build ./...`: PASS in `golang:1.25`.
-- `go vet ./...`: PASS in `golang:1.25`.
-- Focused regression tests across `./internal/session` and `./cmd/agent-deck`: PASS.
-- A raw `go test ./...` in the stock Go image reaches unrelated environment-dependent tests but lacks CI's tmux/zoxide packages and non-root permission behavior. The authoritative full race suite is the repository's GitHub Actions PR gate, which installs those dependencies.
+- Targeted command: `go test ./internal/session ./cmd/agent-deck -run "Test(TurnIdentity|AwaitTurnIdentity|StreamTranscriptForTurn|Interrupt|NoWaitClassifiesHookBusy)" -count=1` — PASS.
+- Required `go build ./...` — PASS.
+- Required `go vet ./...` — PASS.
+- A broader local `go test ./...` was also attempted. Its relevant packages/tests passed, but the minimal Go image lacks `tmux`, nested test builds cannot VCS-stamp the bind-mounted repository, and three unrelated filesystem/time-sensitive tests failed. The authoritative full-suite result is the repository CI environment recorded below.
 
 ## Invariant check
 
-- Bounds: existing summary, inbox-line, retry, generation, and stale-record bounds are unchanged.
-- Ordering: last-wins still preserves first-seen identity order; the identity is now `(SourceRemote, ChildSessionID)`.
-- Idempotence: repeated drains of one remote retain the same structured origin and fingerprint; separate origins no longer destroy one another.
-- Fail closed: fetch, writer probe, unreadable heartbeat, unreadable export, target resolution, and output failures all return non-success rather than an empty/successful drain.
-- Sibling parity: both inbox producer replacement and consumer collapse use the same origin-aware key; both `EventFingerprint` and `TurnFingerprint` enumerate the same provenance field; both CLI entry paths track writer errors.
+- Bounds: transcript polling retains the existing 8 MiB record limit for response scanning and remains timeout-bounded; identity scanning consumes only complete newline-delimited records.
+- Ordering/identity: cursor capture occurs before send; consumers start after the exact user record and refuse to cross a later user turn.
+- Idempotence: hook-busy and `--no-wait` paths issue exactly one `SendKeysAndEnter` and zero interrupts/resends.
+- Fail closed: missing path, missing UUID, changed stream transcript, and absent `end_turn` all error rather than returning guessed output.
+- Sibling parity: verified default, `--no-wait`, `--wait`, and `--stream`; preserved non-Claude `--wait`; documented the remote execution boundary with an explicit skip/enumeration test.
 
 ## CI state
 
-- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
-- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
-- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
-- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.
+The final commit is pushed before CI observation. PR #2043's required checks must complete green on that exact remote `headRefOid`; the final handoff reports the observed SHA and check conclusions without creating a post-CI commit.
