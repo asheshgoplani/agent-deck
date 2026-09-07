@@ -436,10 +436,14 @@ func TestCheckHealthDistinguishesUnknownFromDown(t *testing.T) {
 }
 
 func TestCheckHealthFreshAndStale(t *testing.T) {
-	now := time.Now()
+	now := time.Unix(1755000000, 0)
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "seen.db")
 	writeTestFile(t, seen, "x")
+	// Pin freshness to the reference time instead of the filesystem write clock.
+	if err := os.Chtimes(seen, now, now); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
 
 	fresh := CheckHealth("gmail", "mail", dir, 30*time.Minute, now)
 	if fresh.State != HealthOK {
