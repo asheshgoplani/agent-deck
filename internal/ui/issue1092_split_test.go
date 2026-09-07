@@ -108,6 +108,24 @@ func TestIssue1092_KeybindingShiftsBy5Pct(t *testing.T) {
 	}
 }
 
+func TestSplitAdjustmentOptsOutOfCompactSidebar(t *testing.T) {
+	setIsolatedAgentDeckDir(t)
+
+	home := NewHome()
+	home.embeddedLayout = true
+	home.compactSidebar = true
+	if !home.compactSidebar {
+		t.Fatal("precondition: new home should use compact sidebar")
+	}
+	home.adjustPreviewPct(previewPctStep)
+	if home.compactSidebar {
+		t.Fatal("split adjustment should opt out of compact sidebar")
+	}
+	if got := home.getPreviewPct(); got != 87 {
+		t.Fatalf("preview percent after growing compact 82%% split = %d, want 87", got)
+	}
+}
+
 func TestIssue1092_KeybindingClampsToBounds(t *testing.T) {
 	setIsolatedAgentDeckDir(t)
 

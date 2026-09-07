@@ -2,6 +2,7 @@ package ui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -712,6 +713,59 @@ func TestSettingsPanel_ThemeToggle(t *testing.T) {
 	}
 }
 
+// The embedded layout is bound to the terminal protocol main negotiated at
+// startup, so saving the checkbox stores the value for the next launch and
+// says so, instead of switching a dashboard that has no PTY router into a
+// layout it cannot honor.
+func TestSavedEmbeddedTerminalSettingWaitsForRestart(t *testing.T) {
+	home := NewHome()
+	home.embeddedLayout = false
+	home.sidebarDensity = session.DefaultSidebarDensity
+
+	enabled := true
+	home.applySavedLayoutSettings(session.UISettings{EmbeddedTerminal: &enabled, SidebarDensity: session.SidebarDensityFull})
+	if home.embeddedLayout {
+		t.Fatal("embedded layout switched on live without the startup router")
+	}
+	if home.err == nil || !strings.Contains(home.err.Error(), "restart") {
+		t.Fatalf("user was not told the layout applies at the next launch: %v", home.err)
+	}
+	if home.sidebarDensity != session.SidebarDensityFull {
+		t.Fatalf("sidebar density = %q, want live update to full", home.sidebarDensity)
+	}
+
+	// Saving the value the process already runs with is not a restart event.
+	home.clearError()
+	disabled := false
+	home.applySavedLayoutSettings(session.UISettings{EmbeddedTerminal: &disabled})
+	if home.err != nil {
+		t.Fatalf("unchanged layout raised a notice: %v", home.err)
+	}
+}
+
+func TestSettingsPanelEmbeddedTerminalDefaultsOffAndCanBeEnabled(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{})
+	if panel.embeddedLayout {
+		t.Fatal("settings panel should preserve the classic layout by default")
+	}
+
+	panel.visible = true
+	panel.cursor = int(SettingEmbeddedTerminal)
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed || !panel.embeddedLayout {
+		t.Fatal("embedded terminal checkbox did not toggle on")
+	}
+
+	cfg := panel.GetConfig()
+	if cfg.UI.EmbeddedTerminal == nil || !*cfg.UI.EmbeddedTerminal {
+		t.Fatal("settings panel did not persist explicit embedded_terminal=true")
+	}
+	if view := panel.View(); !containsString(view, "Embedded terminal") {
+		t.Fatal("settings panel does not render the embedded terminal checkbox")
+	}
+}
+
 func TestSettingsPanel_LoadConfig_Theme(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1068,5 +1122,36 @@ func TestSettingsPanel_ViewShowsUnboundMCPHotkeyHint(t *testing.T) {
 	view := panel.View()
 	if !containsString(view, "MCP Manager hotkey is unbound.") {
 		t.Fatalf("settings view should show unbound MCP key hint, got %q", view)
+	}
+}
+
+// RemoteSession: sidebar_density is a layout setting that sizes every row
+// type through sidebarItemRenderHeightDensity; remote rows are measured at
+// min(2, density) and covered by TestEmbeddedRemoteRowMinimalDensityIsOneLineWithoutTool
+// and TestSyncViewportHoldsStillWithRemoteRowsInEmbeddedLayout.
+func TestSettingsPanelSidebarDensityRoundTrips(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{})
+	if got := sidebarDensityValues[panel.sidebarDensity]; got != session.DefaultSidebarDensity {
+		t.Fatalf("settings panel default sidebar density = %q, want %q", got, session.DefaultSidebarDensity)
+	}
+
+	panel.LoadConfig(&session.UserConfig{UI: session.UISettings{SidebarDensity: "minimal"}})
+	if got := sidebarDensityValues[panel.sidebarDensity]; got != session.SidebarDensityMinimal {
+		t.Fatalf("settings panel did not load sidebar_density=minimal, got %q", got)
+	}
+
+	panel.visible = true
+	panel.cursor = int(SettingSidebarDensity)
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Fatal("space did not cycle the sidebar density radio group")
+	}
+	cfg := panel.GetConfig()
+	if cfg.UI.SidebarDensity != sidebarDensityValues[panel.sidebarDensity] {
+		t.Fatalf("settings panel persisted sidebar_density=%q, want %q", cfg.UI.SidebarDensity, sidebarDensityValues[panel.sidebarDensity])
+	}
+	if view := panel.View(); !containsString(view, "Sidebar density") {
+		t.Fatal("settings panel does not render the sidebar density radio group")
 	}
 }

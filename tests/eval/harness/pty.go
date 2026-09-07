@@ -24,11 +24,13 @@ type PTYSession struct {
 	cmd *exec.Cmd
 	f   *os.File // master side of the PTY
 
-	mu     sync.Mutex
-	buf    bytes.Buffer // accumulated output since start
-	closed bool
-	exit   error
-	wg     sync.WaitGroup
+	mu   sync.Mutex
+	buf  bytes.Buffer // accumulated output since start
+	exit error
+
+	drainWG   sync.WaitGroup
+	waitDone  chan struct{}
+	closeOnce sync.Once
 }
 
 // Spawn starts the agent-deck binary with args attached to a PTY. The caller
@@ -53,9 +55,14 @@ func (s *Sandbox) SpawnWithEnv(extraEnv []string, args ...string) *PTYSession {
 		s.t.Fatalf("pty.Start: %v", err)
 	}
 
-	p := &PTYSession{t: s.t, cmd: cmd, f: f}
-	p.wg.Add(1)
+	p := &PTYSession{t: s.t, cmd: cmd, f: f, waitDone: make(chan struct{})}
+	p.drainWG.Add(1)
 	go p.drain()
+	go p.wait()
+	// Register immediately after the process starts so it is always reaped
+	// before Sandbox TempDir cleanup, including fatal test exits and callers
+	// that forget an explicit defer. Close is idempotent.
+	s.t.Cleanup(p.Close)
 	return p
 }
 
@@ -84,7 +91,7 @@ func mergeEnv(base, overlay []string) []string {
 }
 
 func (p *PTYSession) drain() {
-	defer p.wg.Done()
+	defer p.drainWG.Done()
 	buf := make([]byte, 4096)
 	for {
 		n, err := p.f.Read(buf)
@@ -99,6 +106,20 @@ func (p *PTYSession) drain() {
 	}
 }
 
+func (p *PTYSession) wait() {
+	err := p.cmd.Wait()
+	p.mu.Lock()
+	p.exit = err
+	p.mu.Unlock()
+	close(p.waitDone)
+}
+
+func (p *PTYSession) exitError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.exit
+}
+
 // Output returns a snapshot of everything read from the PTY so far.
 func (p *PTYSession) Output() string {
 	p.mu.Lock()
@@ -111,6 +132,16 @@ func (p *PTYSession) Send(s string) {
 	p.t.Helper()
 	if _, err := io.WriteString(p.f, s); err != nil {
 		p.t.Fatalf("pty write: %v", err)
+	}
+}
+
+// Resize gives the child a real terminal size and delivers SIGWINCH. Some
+// full-screen programs intentionally defer layout until that first size is
+// known, while pty.Start may leave a synthetic PTY at 0x0.
+func (p *PTYSession) Resize(cols, rows uint16) {
+	p.t.Helper()
+	if err := pty.Setsize(p.f, &pty.Winsize{Cols: cols, Rows: rows}); err != nil {
+		p.t.Fatalf("pty resize to %dx%d: %v", cols, rows, err)
 	}
 }
 
@@ -174,12 +205,9 @@ func (p *PTYSession) ExpectOutputBefore(want, before string, timeout time.Durati
 // exit code.
 func (p *PTYSession) ExpectExit(wantCode int, timeout time.Duration) {
 	p.t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- p.cmd.Wait() }()
 	select {
-	case err := <-done:
-		p.exit = err
-		p.closed = true
+	case <-p.waitDone:
+		err := p.exitError()
 		code := 0
 		if err != nil {
 			if ee, ok := err.(*exec.ExitError); ok {
@@ -200,25 +228,17 @@ func (p *PTYSession) ExpectExit(wantCode int, timeout time.Duration) {
 
 // Close tears down the PTY session. Idempotent.
 func (p *PTYSession) Close() {
-	p.mu.Lock()
-	already := p.closed
-	p.closed = true
-	p.mu.Unlock()
-	if already {
-		return
-	}
-	_ = p.f.Close()
-	if p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
-	// drain goroutine exits once f is closed.
-	done := make(chan struct{})
-	go func() { p.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		// Leak the goroutine rather than hang the test.
-	}
+	p.closeOnce.Do(func() {
+		_ = p.f.Close()
+		if p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+		}
+		// Wait reaps the child before sandbox TempDir cleanup. Killing without
+		// waiting leaves a short window where the process can recreate files
+		// under HOME while testing removes it.
+		<-p.waitDone
+		p.drainWG.Wait()
+	})
 }
 
 // Dump is a helper for `t.Logf(p.Dump())` when a test is failing.

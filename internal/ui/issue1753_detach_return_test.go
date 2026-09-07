@@ -393,8 +393,10 @@ func TestIssue1753_AttachReturnHandlersHaveNoInlineTmuxCalls(t *testing.T) {
 			cmd:  "attachCmd{",
 		},
 		{
+			// The classic Enter path routes local attaches through
+			// attachSelectedLegacy, so the window attach lives there.
 			name: "window",
-			body: braceBlock(t, handlerBlock(t, mainKeyBody, `case "enter":`), "attachWindowCmd{"),
+			body: braceBlock(t, funcBody(t, text, "func (h *Home) attachSelectedLegacy("), "attachWindowCmd{"),
 			cmd:  "attachWindowCmd{",
 		},
 		{
@@ -425,6 +427,15 @@ func TestIssue1753_AttachReturnHandlersHaveNoInlineTmuxCalls(t *testing.T) {
 		t.Error("attachSession no longer returns before GetWorkDir when follow-CWD is disabled " +
 			"or the tmux session is nil (#1753)")
 	}
+
+	// RemoteSession: onExit clears isAttaching for the local tmux attach
+	// commands scanned above. Remote attaches run through
+	// attachRemoteSession's ssh ExecCallback, which never set isAttaching
+	// via these command literals, so there is no remote site to scan.
+	t.Run("RemoteSession", func(t *testing.T) {
+		t.Skip("RemoteSession N/A: the onExit wiring under test belongs to the local attachCmd/attachWindowCmd " +
+			"literals; the remote attach uses a separate ssh ExecCallback path.")
+	})
 }
 
 // funcBody returns the source text of one top-level function, from its signature to

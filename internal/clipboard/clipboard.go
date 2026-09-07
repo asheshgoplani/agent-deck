@@ -1,6 +1,7 @@
 package clipboard
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -21,6 +22,12 @@ type CopyResult struct {
 // The fallback chain is: native clipboard tool → OSC 52 escape sequence.
 // supportsOSC52 should come from tmux.GetTerminalInfo().SupportsOSC52.
 func Copy(text string, supportsOSC52 bool) (*CopyResult, error) {
+	return CopyContext(context.Background(), text, supportsOSC52)
+}
+
+// CopyContext copies text like Copy, but cancels native clipboard subprocesses
+// when ctx expires. OSC 52 fallback remains a direct terminal write.
+func CopyContext(ctx context.Context, text string, supportsOSC52 bool) (*CopyResult, error) {
 	if text == "" {
 		return nil, fmt.Errorf("no content to copy")
 	}
@@ -29,7 +36,7 @@ func Copy(text string, supportsOSC52 bool) (*CopyResult, error) {
 	byteSize := len(text)
 
 	// Try native clipboard command first
-	method, err := copyNative(text)
+	method, err := copyNative(ctx, text)
 	if err == nil {
 		return &CopyResult{
 			Method:    method,
@@ -55,29 +62,29 @@ func Copy(text string, supportsOSC52 bool) (*CopyResult, error) {
 
 // copyNative attempts to copy using a platform-native clipboard command.
 // Returns the method name on success.
-func copyNative(text string) (string, error) {
+func copyNative(ctx context.Context, text string) (string, error) {
 	p := platform.Detect()
 
 	switch p {
 	case platform.PlatformMacOS:
-		return "pbcopy", runClipCmd("pbcopy", nil, text)
+		return "pbcopy", runClipCmd(ctx, "pbcopy", nil, text)
 
 	case platform.PlatformWSL1, platform.PlatformWSL2:
-		return "clip.exe", runClipCmd("clip.exe", nil, text)
+		return "clip.exe", runClipCmd(ctx, "clip.exe", nil, text)
 
 	case platform.PlatformLinux:
 		// Wayland takes priority over X11
 		if os.Getenv("WAYLAND_DISPLAY") != "" {
 			if path, err := exec.LookPath("wl-copy"); err == nil {
-				return "wl-copy", runClipCmd(path, nil, text)
+				return "wl-copy", runClipCmd(ctx, path, nil, text)
 			}
 		}
 		// X11: try xclip first, then xsel
 		if path, err := exec.LookPath("xclip"); err == nil {
-			return "xclip", runClipCmd(path, []string{"-selection", "clipboard"}, text)
+			return "xclip", runClipCmd(ctx, path, []string{"-selection", "clipboard"}, text)
 		}
 		if path, err := exec.LookPath("xsel"); err == nil {
-			return "xsel", runClipCmd(path, []string{"--clipboard", "--input"}, text)
+			return "xsel", runClipCmd(ctx, path, []string{"--clipboard", "--input"}, text)
 		}
 		return "", fmt.Errorf("no clipboard command found on Linux")
 
@@ -87,8 +94,8 @@ func copyNative(text string) (string, error) {
 }
 
 // runClipCmd executes a clipboard command, piping text to its stdin.
-func runClipCmd(name string, args []string, text string) error {
-	cmd := exec.Command(name, args...)
+func runClipCmd(ctx context.Context, name string, args []string, text string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = strings.NewReader(text)
 	return cmd.Run()
 }
