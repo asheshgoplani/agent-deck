@@ -230,18 +230,21 @@ terminal-features = "*:hyperlinks:extkeys"
 
 ### One tmux Window Stuck at 80x24 While Its Siblings Are Full Width
 
-`window-size` is a tmux **window** option, and agent-deck sets its
-`window-size largest` default with a *session* target at session start — which
-lands on the window that exists at that moment. A window created later in the
-same session (by the agent, or by hand with `prefix c`) keeps tmux's global
-default, `latest`, so it is sized by whichever client most recently sent input
-instead of by the largest attached client. With a mix of client sizes that shows
-up as one window clipped to 80x24 while its siblings are full width, and the
-resize cycle bakes wrong wrap points into scrollback that replay as corruption
-later.
+`window-size` is a tmux **window** option. Agent Deck applies `largest` and
+`aggressive-resize on` to the initial session window and windows created by
+**Open Shell Here** in window mode. Explicit `[tmux.options]` values replace
+those defaults. For a new shell window, a local option installed by your
+`after-new-window` hook takes precedence.
 
-Until agent-deck propagates the policy to later windows, set the default for
-every window yourself:
+Windows created outside that Deck action, including `prefix c` or an agent's
+own `tmux new-window`, still inherit tmux's global window defaults. If that
+default is `latest`, windows with different active clients can have different
+sizes. This policy difference does not by itself establish that a size-less
+control client caused a collapse to 80x24; capture window dimensions and client
+flags when diagnosing that symptom.
+
+To choose `largest` for all newly created windows, including native tmux
+windows, set your own global default:
 
 ```conf
 # ~/.tmux.conf
