@@ -40,8 +40,8 @@ const maxProviderIDLen = 64
 // Store is the on-disk quota cache for one profile.
 //
 // ONE FILE PER PROVIDER, deliberately. Claude's snapshot is PUSHED by the
-// statusLine ingester, potentially by several concurrent Claude sessions, and a
-// second provider would have a writer of its own. Separate files mean those
+// statusLine ingester — potentially by several concurrent Claude sessions —
+// while Z.ai's is PULLED by `agent-deck usage`. Separate files mean those
 // writers never read-modify-write the same file, so there is no lock to hold
 // and no lost update to reason about. Load simply reads the directory.
 //
@@ -172,6 +172,8 @@ func ProviderLabel(id string) string {
 	switch id {
 	case ProviderClaude:
 		return claudeLabel
+	case ProviderZai:
+		return "Z.ai"
 	default:
 		return id
 	}

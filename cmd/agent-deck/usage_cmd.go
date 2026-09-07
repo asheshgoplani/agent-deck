@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,7 +16,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-const usageUsage = `Usage: agent-deck usage [--json]
+const usageUsage = `Usage: agent-deck usage [--json] [--refresh]
        agent-deck usage ingest claude [-- <command> [args...]]
 
 Show how much of each provider's subscription quota is left, from the
@@ -22,6 +24,7 @@ provider's own numbers.
 
 Options:
   --json      Print the report as JSON
+  --refresh   Force a fetch for pull-based providers, ignoring the cache
 
 Subcommands:
   ingest claude   Read a Claude Code statusLine payload on stdin and cache the
@@ -40,6 +43,7 @@ func handleUsage(profile string, args []string) {
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() { fmt.Println(usageUsage) }
 	asJSON := flags.Bool("json", false, "print the report as JSON")
+	refresh := flags.Bool("refresh", false, "force a fetch for pull-based providers")
 	if len(args) > 0 && args[0] == "help" {
 		flags.Usage()
 		return
@@ -57,7 +61,7 @@ func handleUsage(profile string, args []string) {
 	}
 
 	store := openQuotaStore(profile)
-	report := quota.Report{Providers: collectQuota(store)}
+	report := quota.Report{Providers: collectQuota(store, *refresh)}
 
 	if *asJSON {
 		encoded, err := json.MarshalIndent(report, "", "  ")
@@ -91,27 +95,85 @@ func openQuotaStore(profile string) *quota.Store {
 	return store
 }
 
-// collectQuota reads the cached snapshots.
+// collectQuota merges what is cached with a live fetch of the pull-based
+// providers.
 //
 // Claude is PUSH-only: its snapshot arrives from whatever statusLine invocation
-// last ran, and there is no endpoint to ask. So this reads the cache and
-// nothing else — `agent-deck usage` makes no network request. A pull-based
-// provider would fetch here, on this user-triggered path, and never on a TUI
-// render path.
-//
-// A cache that cannot be read at all is a warning on stderr, not a failure: the
-// providers that did load still print.
-func collectQuota(store *quota.Store) []quota.Snapshot {
+// last ran, and there is no endpoint to ask. Z.ai is PULL-based, so it is
+// fetched when its cache is older than the store's staleness bound, or on
+// --refresh. That split is what gives --refresh a real meaning instead of being
+// a flag that sometimes does nothing.
+func collectQuota(store *quota.Store, refresh bool) []quota.Snapshot {
 	cached, err := store.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: reading quota cache: %v\n", err)
 	}
-	// Never nil: `--json` must emit "providers": [] rather than null so a
-	// consumer can range over it without a nil check.
-	if cached == nil {
-		return []quota.Snapshot{}
+
+	byID := make(map[string]quota.Snapshot, len(cached))
+	order := make([]string, 0, len(cached)+1)
+	for _, snapshot := range cached {
+		byID[snapshot.ID] = snapshot
+		order = append(order, snapshot.ID)
 	}
-	return cached
+
+	existing, haveZai := byID[quota.ProviderZai]
+	if refresh || !haveZai || existing.Stale {
+		if fetched, ok := fetchZaiSnapshot(existing, haveZai); ok {
+			if _, known := byID[quota.ProviderZai]; !known {
+				order = append(order, quota.ProviderZai)
+			}
+			byID[quota.ProviderZai] = fetched
+			if fetched.Error == "" {
+				if err := store.Save(fetched); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: caching Z.ai quota: %v\n", err)
+				}
+			}
+		}
+	}
+
+	providers := make([]quota.Snapshot, 0, len(order))
+	for _, id := range order {
+		providers = append(providers, byID[id])
+	}
+	return providers
+}
+
+// fetchZaiSnapshot performs the one outbound request this feature makes.
+//
+// It is user-triggered (only from `agent-deck usage`), bounded by an explicit
+// client timeout, cached, and never on a TUI render path. The destination is
+// the host the user configured in ANTHROPIC_BASE_URL; there is no hardcoded
+// fallback, so a machine that never configured Z.ai generates no traffic.
+//
+// ok is false when the provider is simply not configured — that is not a
+// failure worth a line in the output, it is a provider the user does not use.
+//
+// A fetch failure is NOT persisted: the cache holds numbers, and overwriting a
+// good snapshot with a transient timeout would turn one bad minute into a
+// permanently blank provider. The last known numbers are kept and shown with
+// the failure attached.
+func fetchZaiSnapshot(cachedSnapshot quota.Snapshot, haveCached bool) (quota.Snapshot, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), quota.DefaultZaiTimeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: quota.DefaultZaiTimeout}
+	fetched, err := quota.FetchZai(ctx, client)
+	switch {
+	case err == nil:
+		return fetched, true
+	case errors.Is(err, quota.ErrNotConfigured):
+		return quota.Snapshot{}, false
+	case haveCached:
+		cachedSnapshot.Error = err.Error()
+		return cachedSnapshot, true
+	default:
+		return quota.Snapshot{
+			ID:        quota.ProviderZai,
+			Label:     quota.ProviderLabel(quota.ProviderZai),
+			Error:     err.Error(),
+			UpdatedAt: time.Now().Unix(),
+		}, true
+	}
 }
 
 // renderUsage is the human rendering. It is a pure function of the report and a
@@ -119,12 +181,16 @@ func collectQuota(store *quota.Store) []quota.Snapshot {
 func renderUsage(report quota.Report, now time.Time) string {
 	if len(report.Providers) == 0 {
 		return "No provider quota cached yet.\n" +
-			"Claude: wire `agent-deck usage ingest claude` into your statusLine.\n"
+			"Claude: wire `agent-deck usage ingest claude` into your statusLine.\n" +
+			"Z.ai:   run this inside a session whose ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN are set.\n"
 	}
 
 	var out strings.Builder
 	for _, provider := range report.Providers {
 		header := provider.Label
+		if provider.Plan != "" {
+			header += " (" + provider.Plan + ")"
+		}
 		if provider.Error != "" {
 			// The failing provider names itself, so a reader can tell which one
 			// is out without inferring it from which line went missing.
