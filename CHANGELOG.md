@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.4] - 2026-09-07
+
+The persistent remote channel is production-grade: bounded, self-healing and honest at fleet scale, with faster pushes and a live preview pane.
+
+### Added
+
+- The remote agent's change probe lists in-process instead of spawning the CLI twice, cutting the time from a change on the remote to the local screen by roughly two thirds; events carry `probe_ms` ([#2182](https://github.com/asheshgoplani/agent-deck/pull/2182)).
+- Each remote's poll result is delivered as it lands, so a slow host never delays a fast one; the header latency figure now measures the transport round trip, not a remote process start ([#2181](https://github.com/asheshgoplani/agent-deck/pull/2181)).
+- The focused remote session's pane is pushed over the channel instead of polled ([#2183](https://github.com/asheshgoplani/agent-deck/pull/2183)).
+- A remote session you just created is drawn the moment you detach from it ([#2179](https://github.com/asheshgoplani/agent-deck/pull/2179)).
+
+### Fixed
+
+- Channel hardening for large fleets ([#2187](https://github.com/asheshgoplani/agent-deck/pull/2187), closes #2180): the agent debounces probes, never writes to the remote DB, caps concurrent requests, honours cancels, keeps itself alive with pings and an idle deadline, pushes only well-formed compact listings capped at 4 MB, and stamps every event and reply; the client never re-runs a mutating command after a lost reply, detects half-open links, backs off on transient failures instead of disabling itself, reconciles channels against config, closes them on quit, caps frames, and keeps only the latest push per remote; the TUI never lets pushes starve the poll, saves the remote cache at most every 30 s, computes group counts once per rebuild, keeps empty remotes, and refuses stale pushes that would resurrect a row you just removed.
+
 ## [1.16.3] - 2026-09-06
 
 Changes on a remote deck reach the local TUI within about a second instead of at the next poll, and the PR gate runs in a third of the time.
