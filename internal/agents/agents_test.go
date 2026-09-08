@@ -436,10 +436,10 @@ func TestCheckHealthDistinguishesUnknownFromDown(t *testing.T) {
 }
 
 func TestCheckHealthFreshAndStale(t *testing.T) {
-	now := time.Now()
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "seen.db")
 	writeTestFile(t, seen, "x")
+	now := time.Now()
 
 	fresh := CheckHealth("gmail", "mail", dir, 30*time.Minute, now)
 	if fresh.State != HealthOK {

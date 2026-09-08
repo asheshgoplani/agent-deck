@@ -184,13 +184,13 @@ func TestRemoteCDPrefix_IdentityAndExecutionAgree(t *testing.T) {
 			continue
 		}
 		got := strings.TrimSpace(string(out))
-		if got != c.wantDir {
+		if !sameClaudeCWD(got, c.wantDir) {
 			t.Errorf("remote path %q ran in %q, want %q (prefix was %q)", c.remotePath, got, c.wantDir, RemoteCDPrefix(c.remotePath))
 		}
 
 		// ...and the identity rule must agree with where it actually ran.
 		canonical := CanonicalRemotePath(c.remotePath)
-		if canonical == "" && got != home {
+		if canonical == "" && !sameClaudeCWD(got, home) {
 			t.Errorf("remote path %q canonicalises to the remote home but ran in %q", c.remotePath, got)
 		}
 	}

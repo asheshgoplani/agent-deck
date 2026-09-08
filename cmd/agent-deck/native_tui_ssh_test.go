@@ -81,7 +81,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 	first, second := "Alpha界", "Betaé"
 	nonce := fmt.Sprintf("TUI-NONCE-%d", time.Now().UnixNano())
 	receiver := filepath.Join(remote, "receiver.sh")
-	write(receiver, "#!/bin/sh\nprintf '%s\\n' "+quote(nonce)+"\nexec sleep 600\n")
+	write(receiver, "#!/bin/sh\nprintf '\\n%s\\n' "+quote(nonce)+"\nexec sleep 600\n")
 	cli("add", remote, "--title", first, "--cmd", "shell", "--wrapper", "sh "+quote(receiver), "--account", "alice", "--json")
 	cli("add", remote, "--title", second, "--cmd", "shell", "--account", "alice", "--json")
 	cli("session", "start", first, "--json")
@@ -115,6 +115,18 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		return strings.TrimSpace(run(remote, "tmux", "-L", inner, "list-panes", "-a", "-F", "#{pid}:#{session_id}:#{pane_id}:#{pane_pid}"))
 	}
 	beforeIdentity := identity()
+	stateDB, err := sql.Open("sqlite", filepath.Join(remote, ".local", "share", "agent-deck", "profiles", "default", "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateDB.Exec("INSERT OR REPLACE INTO metadata (key, value) VALUES ('hermes_hooks_prompted', 'declined')"); err != nil {
+		_ = stateDB.Close()
+		t.Fatal(err)
+	}
+	if err := stateDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitDetail := ""
 	wait := func(label string, condition func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
@@ -124,10 +136,11 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 			}
 			time.Sleep(40 * time.Millisecond)
 		}
-		t.Fatalf("timed out: %s", label)
+		t.Fatalf("timed out: %s\n%s", label, waitDetail)
 	}
 	hasNonce := func() bool {
-		for _, line := range strings.Split(cli("session", "output", first), "\n") {
+		waitDetail = cli("session", "output", first)
+		for _, line := range strings.Split(waitDetail, "\n") {
 			if strings.TrimSpace(ansi.Strip(line)) == nonce {
 				return true
 			}
