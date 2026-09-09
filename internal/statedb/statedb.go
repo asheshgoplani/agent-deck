@@ -1594,6 +1594,22 @@ func (s *StateDB) touchWithRetry() error {
 
 // SetAcknowledged sets or clears the acknowledged flag for an instance.
 func (s *StateDB) SetAcknowledged(id string, ack bool) error {
+	_, err := s.SetAcknowledgedStamped(id, ack)
+	return err
+}
+
+// SetAcknowledgedStamped is SetAcknowledged for a caller that is also a reader
+// of this database: it returns the WriteStamps identifying the last_modified
+// bump this write produced.
+//
+// The TUI decides whether to save by comparing last_modified against the value
+// it captured when it last loaded. This write moves last_modified, so a TUI
+// that cannot recognise its own bump reads it as another process's change and
+// abandons the save that would have persisted the status change accompanying
+// it — then reloads, which rebuilds the session's acknowledged state from the
+// STALE stored status. Same self-inflicted false positive WriteRestartOutcome's
+// stamps exist to prevent (#1868).
+func (s *StateDB) SetAcknowledgedStamped(id string, ack bool) (WriteStamps, error) {
 	v := 0
 	if ack {
 		v = 1
@@ -1602,9 +1618,9 @@ func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 		_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
 		return err
 	}); err != nil {
-		return err
+		return WriteStamps{}, err
 	}
-	return s.touchWithRetry()
+	return s.touchStamp()
 }
 
 // SetArchived sets or clears the archive timestamp for a single instance via a

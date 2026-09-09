@@ -11434,9 +11434,20 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				tmuxSess := item.Session.GetTmuxSession()
 				if tmuxSess != nil {
 					tmuxSess.ResetAcknowledged()
-					// Persist to SQLite so background sync doesn't overwrite
+					// Persist to SQLite so background sync doesn't overwrite.
+					//
+					// Adopt the write: it moves last_modified, and without that
+					// the save below reads this TUI's OWN bump as an external
+					// change, aborts, and reloads instead. The reload rebuilds
+					// acknowledged from the stored status -- still "idle",
+					// precisely because the save that would have written
+					// "waiting" was the one that aborted -- so the row went
+					// straight back to gray and the key looked like it did
+					// nothing. Same self-inflicted false positive as #1868.
 					if db := statedb.GetGlobal(); db != nil {
-						_ = db.SetAcknowledged(item.Session.ID, false)
+						if stamps, err := db.SetAcknowledgedStamped(item.Session.ID, false); err == nil {
+							h.adoptOwnWrite(stamps, "mark_unread")
+						}
 					}
 					// Clear idle optimization so UpdateStatus does a full check
 					item.Session.ForceNextStatusCheck()
@@ -13615,46 +13626,58 @@ func (h *Home) saveInstancesWithForce(force bool) {
 // the dedup pass) for no reason. That self-inflicted false positive is what
 // #1868 was really hitting.
 //
-// The marker is advanced only when the restart's write was the sole change
-// since this TUI loaded: nothing landed between the load and the write, and
-// nothing has landed since. Anything else means the database really has moved
-// on, the abort is correct, and it stays -- the reload picks up what the other
-// process wrote, and the restart's own outcome is durable either way because
-// the targeted write already landed.
-//
-// last_modified is a UnixNano stamp, so this is an exact identity test on our
-// own write rather than a time window that could swallow somebody else's.
+// The conditions under which the marker actually moves live on adoptOwnWrite,
+// which the mark-unread path shares.
 func (h *Home) adoptRestartRecord(sessionID string) {
-	if h.storage == nil {
-		return
-	}
 	inst := h.getInstanceByID(sessionID)
 	if inst == nil {
 		return
 	}
-	stamps := inst.RestartRecordStamps()
-	if stamps.After == 0 {
-		return
+	h.adoptOwnWrite(inst.RestartRecordStamps(), "restart_record")
+}
+
+// adoptOwnWrite advances this TUI's freshness marker past a targeted write it
+// just made itself, so the save that follows does not read its own bump as
+// another process's change.
+//
+// Shared by every caller that makes a targeted write and then saves. `what`
+// names the write for the diagnostic log only.
+//
+// The marker moves only when this write was the sole change since this TUI
+// loaded: nothing landed between the load and the write, and nothing has landed
+// since. Anything else means the database really has moved on, the abort is
+// correct, and it stays -- the reload picks up what the other process wrote,
+// and the targeted write's own outcome is durable either way because it already
+// landed.
+//
+// last_modified is a UnixNano stamp, so this is an exact identity test on our
+// own write rather than a time window that could swallow somebody else's.
+// Returns true when the marker moved.
+func (h *Home) adoptOwnWrite(stamps statedb.WriteStamps, what string) bool {
+	if h.storage == nil || stamps.After == 0 {
+		return false
 	}
 	current, err := h.storage.GetFileMtime()
 	if err != nil || current.IsZero() {
-		return
+		return false
 	}
 
 	h.reloadMu.Lock()
 	defer h.reloadMu.Unlock()
 	if !stamps.SoleWriterSince(h.lastLoadMtime.UnixNano(), current.UnixNano()) {
-		uiLog.Debug("restart_record_not_sole_writer",
+		uiLog.Debug("own_write_not_sole_writer",
+			slog.String("write", what),
 			slog.Int64("before", stamps.Before),
 			slog.Int64("after", stamps.After),
 			slog.Int64("current", current.UnixNano()))
-		return
+		return false
 	}
 	h.lastLoadMtime = current
 	if h.storageWatcher != nil {
 		// Our own bump should not make the watcher schedule a reload either.
 		h.storageWatcher.NotifySave()
 	}
+	return true
 }
 
 // saveGroupState saves only group expanded/collapsed state to SQLite.
