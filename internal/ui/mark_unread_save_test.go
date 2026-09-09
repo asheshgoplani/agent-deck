@@ -118,3 +118,23 @@ func TestMarkUnread_ForeignWriteStillAbortsTheSave(t *testing.T) {
 			"whatever that process changed")
 	}
 }
+
+// RemoteSession parity for the `u` action: mark-unread is local-only by
+// construction, so there is no remote path to cover.
+//
+// Everything the handler does is local state a remote row does not have. It
+// clears the acknowledged flag on the local tmux.Session, writes the local
+// SQLite `acknowledged` column, and reads the recomputed local status back.
+// RemoteSessionInfo (internal/session/ssh.go) carries no acknowledged field --
+// it ships id/title/path/group/tool/status/substate/archived/last-activity and
+// nothing about whether the viewer has seen the session -- and the SSH surface
+// exposes no acknowledge or unread verb to forward the action to.
+//
+// Routing `u` to a remote would mean designing that protocol first, which is
+// well outside a fix for the local save aborting on its own write. Recorded as
+// a documented skip rather than a silent omission, per the repository's
+// RemoteSession parity guideline.
+func TestMarkUnread_RemoteSessionIsOutOfScope(t *testing.T) {
+	t.Skip("mark-unread is local-only: RemoteSessionInfo has no acknowledged field and the " +
+		"remote surface has no acknowledge/unread operation to route the action to")
+}
