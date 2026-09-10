@@ -165,11 +165,18 @@ func TestDefaultRawPatterns_PiSubagentSignals(t *testing.T) {
 		"delegate_task agent=researcher",
 		"[subagent] researching",
 		"[running] subagent-1",
-		"  → delegated task",
 	} {
 		if !matchesBusy(content) {
 			t.Errorf("active Pi subagent marker was not detected: %q", content)
 		}
+	}
+
+	// Assistant markdown nests/continues prose with a bare line-leading
+	// "→". Those lines remain visible after the turn ends, so treating
+	// them as subagent activity pinned a finished, idle session at
+	// "running" indefinitely. A line-leading arrow must NOT be busy.
+	if matchesBusy("Two committed files:\n1. migration.org\n    → renames the platform row\n2. help.org\n    → adds a paragraph") {
+		t.Fatal("assistant markdown arrow bullets must not mark an idle Pi session busy")
 	}
 }
 
