@@ -747,7 +747,15 @@ func handleLaunch(profile string, args []string) {
 				tool:                        newInstance.Tool,
 				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
 			}); err != nil {
-				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
+				// Check whether the pane died before delivery was attempted.
+				// When it did, the paste-buffer failure is a symptom of the
+				// dead pane, not a transport fault. The spawn-failure sidecar
+				// already has the real cause, so report that instead and make
+				// it clear delivery definitively did not happen (not
+				// indeterminate).
+				paneGone := !tmuxSess.Exists() || tmuxSess.IsPaneDead()
+				out.Error(fmt.Sprintf("failed to send initial message: %v",
+					sendErrOrSpawnDied(err, paneGone, newInstance.SpawnFailure())), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
 			verifyPromptConsumedAfterLaunchAttributed(
@@ -851,4 +859,19 @@ func resolveLaunchPath(rawPathArg, groupSelector, profile string) (string, error
 	}
 
 	return os.Getwd()
+}
+
+// sendErrOrSpawnDied returns a clear "pane exited before delivery" error when
+// the send failure is explained by the pane having died (paneGone is true and
+// a spawn-failure record exists). In that case the paste-buffer error is a
+// symptom of the dead pane, not a transport fault, and the "delivery is
+// indeterminate" wording is wrong: delivery definitively did not happen.
+//
+// When the pane is still alive, or when no spawn-failure record is available,
+// the original send error is returned unchanged.
+func sendErrOrSpawnDied(sendErr error, paneGone bool, rec *session.SpawnFailureRecord) error {
+	if !paneGone || rec == nil {
+		return sendErr
+	}
+	return fmt.Errorf("pane exited before delivery (reason: %s, elapsed_ms: %d); delivery did not happen", rec.Reason, rec.ElapsedMs)
 }
