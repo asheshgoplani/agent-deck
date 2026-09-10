@@ -343,3 +343,29 @@ func deletedPaneCwdError(socketName, workDir, panePath string) error {
 			"them (issue #1713)",
 		ErrPaneCwdDeleted, panePath, workDir, socketLabel(socketName), SpawnBaseDir)
 }
+
+// wrapCommandForCwdAssert wraps cmd so the pane changes into dir before running
+// the original command. This is the recovery path for issue #2214: when a tmux
+// server's own cwd has been deleted, tmux ignores the -c start directory for
+// every new pane. Passing -c <good dir> does not rescue the child because the
+// pane inherits the server's dead vnode before the new-session call can chdir
+// it. Having the command itself cd into the project directory works because the
+// shell builtin cd operates on the filesystem directly, bypassing the broken
+// cwd the pane was born in.
+//
+// /bin/sh is used rather than the user's login shell so the wrapper is available
+// on every POSIX platform. The outer bash -c layer from startCommandSpec is not
+// involved in the cd: bash forks /bin/sh, which cds, then execs the original
+// command (even when that command starts with "exec ").
+func wrapCommandForCwdAssert(dir, cmd string) string {
+	// Escape single quotes for safe embedding inside a single-quoted string.
+	// Pattern: end quote, escaped literal quote, restart quote.
+	// Example: it's -> it'"'"'s
+	escapedDir := strings.ReplaceAll(dir, "'", "'\"'\"'")
+	inner := "cd -- " + escapedDir
+	if cmd != "" {
+		escapedCmd := strings.ReplaceAll(cmd, "'", "'\"'\"'")
+		inner += " && " + escapedCmd
+	}
+	return "/bin/sh -c '" + inner + "'"
+}

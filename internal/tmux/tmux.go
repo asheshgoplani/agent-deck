@@ -2463,13 +2463,50 @@ func (s *Session) Start(command string) error {
 	// already be poisoned, so confirm where the pane actually landed. Reporting
 	// such a session as started is the exact "looked created, never ran the
 	// agent" failure from the report — tear it down and say why instead.
+	//
+	// #2214: when the pane IS born in a deleted cwd (poisoned server), killing
+	// and returning the error is not the end of the story. The pane's shell
+	// landed in a dead directory because the server ignored -c; but the target
+	// directory itself is fine. Rather than surfacing an unrecoverable error,
+	// retry once with the command wrapped so the pane asserts its own directory:
+	//   /bin/sh -c 'cd -- <dir> && <original command>'
+	// The shell builtin cd bypasses the inherited dead vnode and puts the agent
+	// in the right tree. This pattern survives "exec "-prefixed commands because
+	// cd is a builtin inside the /bin/sh wrapper, not an external binary.
 	if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
 		if killErr := s.Kill(); killErr != nil {
 			statusLog.Warn("deleted_cwd_session_cleanup_failed",
 				slog.String("session", logging.SanitizeValue(s.Name)),
 				slog.String("error", killErr.Error()))
 		}
-		return cwdErr
+		if !errors.Is(cwdErr, ErrPaneCwdDeleted) {
+			return cwdErr
+		}
+		// Poisoned server: retry once with a cd-wrapped command (#2214).
+		statusLog.Warn("tmux_start_retry_cwd_assert",
+			slog.String("session", logging.SanitizeValue(s.Name)),
+			slog.String("workdir", logging.SanitizeValue(workDir)),
+			slog.String("issue", "2214"))
+		wrappedCommand := wrapCommandForCwdAssert(workDir, command)
+		s.Command = wrappedCommand
+		if s.Exists() {
+			sanitized := sanitizeName(s.DisplayName)
+			s.Name = SessionPrefix + sanitized + "_" + generateShortID()
+		}
+		retryLauncher, retryArgs := s.startCommandSpec(workDir, wrappedCommand)
+		retryOutput, retryErr := newSpawnCommand(retryLauncher, retryArgs...).CombinedOutput()
+		if retryErr != nil {
+			return fmt.Errorf("failed to create tmux session (cwd-assert retry): %w (output: %s)", retryErr, string(retryOutput))
+		}
+		registerSessionInCache(s.Name)
+		if verifyCwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); verifyCwdErr != nil {
+			if killErr := s.Kill(); killErr != nil {
+				statusLog.Warn("deleted_cwd_session_cleanup_failed",
+					slog.String("session", logging.SanitizeValue(s.Name)),
+					slog.String("error", killErr.Error()))
+			}
+			return verifyCwdErr
+		}
 	}
 
 	// PERFORMANCE: Batch all session options into a single subprocess call.
