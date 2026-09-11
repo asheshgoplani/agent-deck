@@ -35,6 +35,12 @@ const (
 	// callers that haven't been wired to populate LastOutputHash still
 	// get the legacy guarantee.
 	shortWindowDedupSeconds = 90
+
+	// codexTurnSignalPrefix distinguishes a validated Codex completion
+	// generation from transcript-size and legacy pane signals carried in the
+	// existing LastOutputHash field. Only signals minted after
+	// codexCompletionConverged may bypass the legacy short-window guard.
+	codexTurnSignalPrefix = "codex:"
 )
 
 type TransitionNotificationEvent struct {
@@ -53,8 +59,8 @@ type TransitionNotificationEvent struct {
 	// applies. Observability hook only — does not affect delivery/dedup.
 	Substate string `json:"substate,omitempty"`
 
-	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
-	// bytes of the child's tmux pane at transition time) used by the
+	// LastOutputHash is a cheap stable signal (for example, transcript size or
+	// a validated Codex completion generation) used by the
 	// notifier's #1142 dedup to suppress repeated [EVENT] notifications
 	// for a dormant child whose pane content hasn't changed. Optional —
 	// empty string disables hash-based dedup and falls back to the legacy
@@ -431,7 +437,8 @@ func isLiveSessionStatus(status Status) bool {
 //
 //  1. Short-window (legacy): identical (from→to) within shortWindowDedupSeconds.
 //     Catches duplicate polls inside one daemon tick and back-compat callers
-//     that don't populate LastOutputHash.
+//     that don't populate LastOutputHash. Distinct validated Codex turn
+//     signals bypass this layer; same-turn retries continue to layer 2.
 //
 //  2. Output-hash (issue #1142): identical to_status AND identical
 //     LastOutputHash within outputHashDedupTTL. Suppresses a dormant child
@@ -453,7 +460,9 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	elapsed := event.Timestamp.Unix() - record.At
 
 	if record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
-		return true
+		if !distinctCodexTurnSignals(record.OutputHash, event.LastOutputHash) {
+			return true
+		}
 	}
 
 	if event.LastOutputHash != "" &&
@@ -464,6 +473,21 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	}
 
 	return false
+}
+
+func distinctCodexTurnSignals(previous, current string) bool {
+	previous = strings.TrimSpace(previous)
+	current = strings.TrimSpace(current)
+	return isCodexTurnSignal(previous) && isCodexTurnSignal(current) && previous != current
+}
+
+func isCodexTurnSignal(signal string) bool {
+	generation, ok := strings.CutPrefix(strings.TrimSpace(signal), codexTurnSignalPrefix)
+	if !ok {
+		return false
+	}
+	threadID, turnID, ok := strings.Cut(generation, ":")
+	return ok && strings.TrimSpace(threadID) != "" && strings.TrimSpace(turnID) != ""
 }
 
 // outputHashTTL returns the active TTL for the output-hash dedup layer. The
@@ -497,7 +521,23 @@ func transitionEventOutputHash(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
+	if signal := codexCompletionTurnSignal(inst); signal != "" {
+		return signal
+	}
 	return transitionContentSignal(inst)
+}
+
+// codexCompletionTurnSignal snapshots the retained hook evidence under the
+// instance lock. codexCompletionConverged is the fail-closed authority check:
+// only matching start/completion generations for the session currently bound
+// to this Instance may identify a completed turn.
+func codexCompletionTurnSignal(inst *Instance) string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	if !inst.codexCompletionConverged() {
+		return ""
+	}
+	return codexTurnSignalPrefix + inst.codexCompletedGeneration
 }
 
 // transitionContentSignal returns a dedup signal derived from the child's
