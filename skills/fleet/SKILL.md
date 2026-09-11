@@ -2,7 +2,7 @@
 name: fleet
 description: Fan out a fleet of independent agent-deck child sessions from inside a session and check their progress non-blockingly. Use when the user wants to "launch several/N sessions", "fan out", "run agents in parallel", "spin up a fleet", "kick off background agents", or "check progress from the main session" without blocking — covers launching parented children, polling status + completion via `session children`, and collecting results via `session output`.
 metadata:
-  compatibility: "claude, opencode"
+  compatibility: "claude, codex, opencode"
 ---
 
 # Fleet
