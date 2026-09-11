@@ -148,16 +148,9 @@ async function handleRuntimeRequest(req, pathname) {
     return await fetch(req)
   } catch (_err) {
     if (pathname.startsWith("/events/")) {
-      return new Response(
-        'event: error\ndata: {"error":{"code":"SERVER_UNAVAILABLE","message":"Agent Deck server unavailable"}}\n\n',
-        {
-          status: 503,
-          headers: {
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-          },
-        },
-      )
+      // EventSource retries network failures, but a synthetic HTTP error
+      // permanently closes the stream and strands its application singleton.
+      throw _err
     }
 
     if (pathname.startsWith("/api/")) {
