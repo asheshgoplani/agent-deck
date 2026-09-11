@@ -139,3 +139,53 @@ func TestWrapWithHangingIndent_ZeroOrNegativeWidth_ReturnsInput(t *testing.T) {
 		}
 	}
 }
+
+// The copy family (#1595, #1412, #791) was previously scattered through the
+// 30-row SESSIONS block, where nobody found it — the recurring user question
+// was "why can't I select text?". The keys now live in their own section that
+// also documents the terminal-level Shift+drag bypass of agent-deck's mouse
+// capture (tea.WithMouseCellMotion), which is the actual answer to that
+// question and is not a keybinding at all.
+func TestHelpOverlayShowsCopySection(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetSize(100, 200) // tall enough to render every section
+	overlay.Show()
+
+	view := overlay.View()
+
+	if !strings.Contains(view, "COPY & TEXT SELECTION") {
+		t.Fatalf("help overlay should carry a dedicated copy section, got %q", view)
+	}
+
+	for _, want := range []string{
+		"Copy last AI response",
+		"Copy session info (repo / path / branch)",
+		"Copy visible terminal text, including links",
+		"Copy a fenced code block (picker if several)",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("copy section missing description %q, got %q", want, view)
+		}
+	}
+
+	// The Shift+drag row is a terminal-level hint, not a binding: agent-deck
+	// holds mouse mode 1002 so the terminal never sees a drag as selection.
+	if !strings.Contains(view, "Shift+drag") {
+		t.Fatalf("copy section must document the Shift+drag selection bypass, got %q", view)
+	}
+	if !strings.Contains(view, "Option+drag in iTerm2") {
+		t.Fatalf("copy section must document the iTerm2 bypass, got %q", view)
+	}
+}
+
+// y is bound in defaultHotkeyBindings but appeared in neither the help overlay
+// nor any reference doc — the only fully undocumented shortcut in the keymap.
+func TestHelpOverlayShowsYoloToggle(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetSize(100, 200)
+	overlay.Show()
+
+	if view := overlay.View(); !strings.Contains(view, "Toggle YOLO mode") {
+		t.Fatalf("help overlay should document the yolo toggle, got %q", view)
+	}
+}
