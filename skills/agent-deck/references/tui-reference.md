@@ -4,71 +4,169 @@ Complete reference for agent-deck Terminal UI features.
 
 ## Keyboard Shortcuts
 
+Reconciled against the in-app help overlay (`?`), which is the source of truth
+(`internal/ui/help.go`). Keys marked **rebindable** can be remapped under
+`[hotkeys]` in `config.toml`; the rest are fixed.
+
 ### Navigation
 
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
+| `Ctrl+u` / `Ctrl+d` | Half page up / down |
+| `PgUp` / `PgDn` | Half page up / down |
+| `Ctrl+f` / `Ctrl+b` | Full page up / down |
+| `Home` / `End` | Jump to first / last item |
+| `gg` | Jump to top |
+| `G` | Global search |
 | `h` / `←` | Collapse group / go to parent |
 | `l` / `→` / `Tab` | Toggle expand/collapse group |
 | `1-9` | Jump to Nth root group |
+| `Space` | Jump mode |
+| `Enter` | Attach to session OR toggle group |
+| `Shift+Enter` | Open session in new iTerm window (macOS) |
+
+### Group Navigation
+
+| Key | Action |
+|-----|--------|
+| `Alt+j` / `Alt+k` | Next / previous session in group |
+| `Alt+1` - `Alt+9` | Jump to Nth session in group |
+| `Alt+g` / `Alt+G` | First / last session in group |
+| `Alt+/` | Filter search within group |
 
 ### Session Actions
 
 | Key | Action |
 |-----|--------|
 | `Enter` | Attach to session OR toggle group |
-| `n` | New session (inherits current group) |
-| `r` | Rename session or group |
-| `R` | Restart session (reloads MCPs) |
-| `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level when at the parent's first child) |
-| `-` / `J` / `Shift+↓` | Move item down (auto-promotes a sub-session to top-level when at the parent's last child) |
+| `n` / `N` | New session / quick create (**rebindable**) |
+| `r` | Rename session or group (**rebindable**) |
+| `R` | Restart session, reloads MCPs (**rebindable**) |
+| `T` | Restart with a new session ID (**rebindable**) |
+| `d` | Delete session or group (**rebindable**) |
+| `D` | Close session process (**rebindable**) |
+| `Ctrl+Z` | Undo delete (**rebindable**) |
+| `A` | Archive session — stops tmux, hides from default list; conversations/metadata untouched (**rebindable**) |
+| `Shift+U` | Unarchive session; does NOT auto-start tmux (**rebindable**) |
+| `^` | Toggle archived view (**rebindable**) |
+| `M` | Move session to a different group (**rebindable**) |
+| `m` | MCP Manager (Claude/Gemini/Cursor) (**rebindable**) |
+| `L` | Plugin Manager (Claude) (**rebindable**) |
+| `s` | Skills Manager (**rebindable**) |
+| `$` | Cost Dashboard |
+| `v` | Cycle preview mode: output / stats / both (**rebindable**) |
+| `O` | Toggle preview orientation (right / below — portrait monitors) |
+| `<` / `>` | Shrink / grow preview pane by 5% (or drag the divider with the mouse) |
+| `u` | Mark unread, idle -> waiting (**rebindable**) |
+| `a` | Quick approve — sends `1` to Claude (**rebindable**) |
+| `o` | Prompt session — send a one-line prompt without attaching (**rebindable**) |
+| `y` | Toggle YOLO mode (**rebindable**) |
+| `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level at the parent's first child) |
+| `-` / `J` / `Shift+↓` | Move item down (auto-promotes a sub-session to top-level at the parent's last child) |
 | `Shift+→` / `Shift+←` | Indent / outdent within current group (single-level nesting) |
-| `M` | Move session to different group |
-| `m` | Open MCP Manager (Claude/Gemini) |
-| `s` | Open Skills Manager |
-| `d` | Delete session or group |
-| `A` | Archive session (stops tmux, hides from default list; conversations/metadata untouched) |
-| `Shift+U` | Unarchive session (restores to list; does NOT auto-start tmux) |
-| `b` | Re-run worktree setup script (`.agent-deck/worktree-setup.sh`) |
-| `u` | Mark unread (idle -> waiting) |
-| `f` | Quick fork (Claude/OpenCode/Pi/Codex) |
-| `F` | Fork with options (Claude/OpenCode/Pi/Codex) |
+| `,` | Pin (cycles off -> top -> bottom -> off) |
+| `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex) (**rebindable**) |
+| `x` | Send output to another session (**rebindable**) |
+| `E` | Exec shell in sandbox container (**rebindable**) |
+| `H` | Open shell in session's worktree, split pane / window (**rebindable**) |
+| `p` | Edit multi-repo paths (**rebindable**) |
+| `P` | Edit session settings — title / color / ... (**rebindable**) |
+| `e` | Edit notes; hidden when notes are disabled (**rebindable**) |
+| `b` | Re-run worktree setup script `.agent-deck/worktree-setup.sh` (**rebindable**) |
+| `W` | Finish worktree — merge + cleanup (**rebindable**) |
+| `w` | Watcher panel (**rebindable**) |
 
 For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. Remote-session reorder keys move only within the current remote group; the order is saved on the viewing machine, while remote group headers remain name-sorted.
+
+### Copy & Text Selection
+
+Dragging with the mouse does **not** select text: the TUI puts the terminal in
+mouse reporting mode (`tea.WithMouseCellMotion`) so that click-to-select,
+wheel scrolling and the divider drag work, which means the terminal never sees
+your drag as a selection gesture.
+
+| Key | Action |
+|-----|--------|
+| `c` | Copy last AI response (**rebindable**) |
+| `C` | Copy session info — repo / path / branch |
+| `V` | Copy visible terminal text, links included (**rebindable**) |
+| `Y` | Copy a fenced code block from output; opens a picker when there are several |
+| `Shift+drag` | Native terminal selection — bypasses mouse reporting |
+| `Option+drag` | Native terminal selection in iTerm2 |
+
+Note the family is only half-rebindable: `c` and `V` are `copy_output` and
+`copy_pane` under `[hotkeys]`, while `C` and `Y` are fixed.
+
+All four copy paths use the same clipboard chain, falling back to OSC 52 so they
+work over SSH. If your terminal offers no selection bypass at all, you can turn
+off tmux mouse mode for attached sessions — at the cost of tmux scrolling, pane
+resize and mouse copy mode:
+
+```toml
+[tmux]
+mouse = false
+```
+
+That setting affects **attached sessions only**; the agent-deck list view keeps
+its own mouse capture regardless.
 
 ### Group Actions
 
 | Key | Action |
 |-----|--------|
-| `g` | Create group (subgroup if on group) |
-| `r` | Rename group |
+| `g` | Create group (subgroup if on group) (**rebindable**) |
+| `r` | Rename group (**rebindable**) |
+| `Tab` | Toggle expand |
 
 ### Search & Filter
 
 | Key | Action |
 |-----|--------|
-| `/` | Local search (fuzzy) |
+| `/` | Local search, fuzzy (**rebindable**) |
 | `G` | Global search (all Claude conversations) |
 | `Tab` | Switch between local/global search |
 | `0` | Clear filter (show all) |
-| `!` | Filter: running only (toggle) |
-| `@` | Filter: waiting only (toggle) |
-| `#` | Filter: idle only (toggle) |
-| `&` | Filter: error only (toggle) |
+| `!` / `Shift+1` | Filter: running only (toggle) |
+| `@` / `Shift+2` | Filter: waiting only (toggle) |
+| `#` / `Shift+3` | Filter: idle only (toggle) |
+| `&` | Filter: errors only (toggle) |
+| `%` | Filter: open only, hides errors (toggle) |
 | `^` | Filter: view archived sessions (toggle) |
+| `t` | Cycle group view: active-on-top / populated-on-top (**rebindable**) |
+| `*` | Cycle time filter: today / 3 days / 7 days / all (**rebindable**) |
+
+Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 
 ### Global
 
 | Key | Action |
 |-----|--------|
-| `?` | Help overlay |
-| `i` | Import existing tmux sessions |
-| `Ctrl+R` | Manual refresh |
-| `Ctrl+Q` | Detach (keep tmux running) |
+| `?` | Help overlay (**rebindable**) |
+| `S` | Settings (**rebindable**) |
+| `i` | Import existing tmux sessions (**rebindable**) |
+| `Ctrl+R` | Manual refresh / reload from disk (**rebindable**) |
+| `Ctrl+Q` | Detach, keeps tmux running (**rebindable**) |
+| `Ctrl+S` | Switch session, here or attached — unbound by default (**rebindable**) |
+| `PageUp` | Scrollback pager, while attached |
+| `Alt+A` | Agents panel; appears once an agent is adopted (**rebindable**) |
 | `$` | Cost Dashboard |
-| `q` / `Ctrl+C` | Quit |
+| `q` / `Ctrl+C` | Quit (**rebindable**) |
+
+### Worktree Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `n` -> `w` | Create session in a worktree |
+| `F` -> `w` | Fork session into a worktree |
+
+### Startup Flags
+
+| Flag | Action |
+|------|--------|
+| `--group <name>` | Launch scoped to a group |
+| `--profile <name>` | Use a specific profile |
 
 ## Local Status Indicators
 

@@ -25,6 +25,11 @@ Option while dragging in iTerm2. Hold Shift while dragging in most Linux
 terminals and Windows Terminal, including WSL2. This bypasses application mouse
 reporting and lets the terminal perform native selection.
 
+The full explanation of why mouse capture blocks selection, plus the complete
+copy-key table (`c` / `C` / `V` / `Y`), lives in
+[Terminal shortcuts](../../../docs/terminal-shortcuts.md#text-selection-and-copying)
+and the [TUI Reference](tui-reference.md#copy--text-selection).
+
 If your terminal has no selection bypass, disable mouse mode for new and
 reconnected sessions:
 

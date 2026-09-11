@@ -4,6 +4,51 @@ This page documents keyboard shortcuts that interact with agent-deck's
 tmux-backed session model — and the small set of platform / terminal
 quirks that can surprise users.
 
+## Text selection and copying
+
+**Why dragging doesn't select text.** The agent-deck TUI starts with mouse
+reporting enabled (`tea.WithMouseCellMotion`, mouse mode 1002), so button
+presses, releases and drag motion are delivered to the application as escape
+sequences. That is what powers click-to-select a row, double-click to attach,
+wheel scrolling and dragging the preview divider — and it is also why your
+terminal never interprets a drag as a selection gesture. This is expected
+behavior, not a bug.
+
+There are two ways around it.
+
+**1. Bypass mouse reporting at the terminal level:**
+
+| Keystroke | Where |
+| --------- | ----- |
+| `Shift`+drag | Most Linux terminals, Windows Terminal, WSL2 |
+| `Option`+drag | iTerm2 |
+
+**2. Use the built-in copy keys**, which go through the system clipboard with an
+OSC 52 fallback so they also work over SSH:
+
+| Key | Copies |
+| --- | ------ |
+| `c` | Last AI response |
+| `C` | Session info — repo / path / branch |
+| `V` | Current visible terminal pane, links included |
+| `Y` | A fenced code block from output (picker when there are several) |
+
+`c` and `V` are rebindable under `[hotkeys]` as `copy_output` and `copy_pane`;
+`C` and `Y` are fixed.
+
+If your terminal has no selection bypass, you can disable tmux mouse mode for
+new and reconnected sessions — this trades away tmux scrolling, pane resizing
+and mouse copy mode:
+
+```toml
+[tmux]
+mouse = false
+```
+
+Note that this applies to **attached sessions only**. The agent-deck list view
+keeps its own mouse capture either way, so `Shift`+drag and the copy keys remain
+the route there.
+
 ## Detach from an attached session
 
 | Keystroke | What happens |

@@ -379,7 +379,8 @@ Key constraints:
 | Key | Action |
 |-----|--------|
 | `n` | New session |
-| `r/R` | Restart (reloads MCPs) |
+| `r` | Rename session |
+| `R` | Restart session (reloads MCPs) |
 | `m` | MCP Manager |
 | `s` | Skills Manager |
 | `f/F` | Fork Claude/OpenCode/Pi/Codex session |
@@ -387,6 +388,18 @@ Key constraints:
 | `A` | Archive (stops tmux, hides from default list) |
 | `Shift+U` | Unarchive (does not auto-start tmux) |
 | `M` | Move to group |
+
+### Copy & Text Selection
+Mouse drag does not select text — the TUI holds the terminal in mouse reporting
+mode so clicks, scrolling and the divider drag work. Hold `Shift` while dragging
+(`Option` in iTerm2) for native selection, or use these:
+
+| Key | Copies |
+|-----|--------|
+| `c` | Last AI response |
+| `C` | Session info (repo / path / branch) |
+| `V` | Visible terminal text, links included |
+| `Y` | A fenced code block (picker if several) |
 
 ### Search & Filter
 | Key | Action |

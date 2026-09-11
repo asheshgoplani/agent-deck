@@ -210,6 +210,7 @@ func (h *HelpOverlay) View() string {
 	promptSessionKey := h.key(hotkeyPromptSession, "o")
 	copyKey := h.key(hotkeyCopyOutput, "c")
 	copyPaneKey := h.key(hotkeyCopyPane, "V")
+	yoloKey := h.key(hotkeyToggleYolo, "y")
 	sendKey := h.key(hotkeySendOutput, "x")
 	execShellKey := h.key(hotkeyExecShell, "E")
 	openShellHereKey := h.key(hotkeyOpenShellHere, "h")
@@ -299,16 +300,30 @@ func (h *HelpOverlay) View() string {
 				{indentKeys, "Indent / outdent (in group)"},
 				{pinKeys, "Pin (cycle off→top→bottom→off)"},
 				{forkKeys, "Fork session (Claude/Pi)"},
-				{copyKey, "Copy output to clipboard"},
-				{"C", "Copy preview info (Repo / Path / Branch)"},
-				{"Y", "Copy a code block from output"},
-				{copyPaneKey, "Copy visible terminal text, including links"},
+				{yoloKey, "Toggle YOLO mode"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
 				{openShellHereKey, "Open shell in session's worktree (split pane / window)"},
 				{editPathsKey, "Edit multi-repo paths"},
 				{editSessionKey, "Edit session settings (title/color/...)"},
 				{notesKey, "Edit notes"},
+			},
+		},
+		{
+			// The copy family used to sit mid-way down the 30-row SESSIONS list,
+			// where it went unfound: the recurring user question was "why can't I
+			// select text?" rather than "which key copies?". Its own section, with
+			// the Shift+drag row, answers that question where people look for it.
+			title: "COPY & TEXT SELECTION",
+			items: [][2]string{
+				{copyKey, "Copy last AI response"},
+				{"C", "Copy session info (repo / path / branch)"},
+				{copyPaneKey, "Copy visible terminal text, including links"},
+				{"Y", "Copy a fenced code block (picker if several)"},
+				// Not a binding: agent-deck holds the terminal in mouse mode 1002
+				// (tea.WithMouseCellMotion) so drags arrive as events and the
+				// terminal never renders a selection. Shift/Option bypasses that.
+				{"Shift+drag", "Native terminal selection (Option+drag in iTerm2)"},
 			},
 		},
 		{
