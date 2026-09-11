@@ -114,7 +114,17 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 | `d` | Delete |
 | `b` | Re-run worktree setup script |
 | `E` | Container shell (sandboxed sessions) |
+| `c` / `C` | Copy last AI response / session info (repo, path, branch) |
+| `V` / `Y` | Copy visible terminal text / a fenced code block |
+| `Shift+drag` | Select text natively (`Option+drag` in iTerm2) — see below |
 | `?` | Full help |
+
+> **Why can't I drag-select text?** The TUI holds the terminal in mouse
+> reporting mode so clicks, wheel scrolling and the divider drag work, which
+> means your terminal never sees a drag as a selection. Hold `Shift` while
+> dragging (`Option` in iTerm2) to bypass it, or use the `c` / `C` / `V` / `Y`
+> copy keys above. Full detail in
+> [Terminal shortcuts](docs/terminal-shortcuts.md#text-selection-and-copying).
 
 See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all shortcuts and [CLI Reference](skills/agent-deck/references/cli-reference.md) for all commands.
 
