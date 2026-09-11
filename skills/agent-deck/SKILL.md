@@ -2,7 +2,7 @@
 name: agent-deck
 description: Terminal session manager for AI coding agents. Use when user mentions "agent-deck", "session", "sub-agent", "MCP attach", "git worktree", or needs to (1) create/start/stop/restart/fork sessions, (2) attach/detach MCPs, (3) manage groups/profiles, (4) get session output, (5) configure agent-deck, (6) troubleshoot issues, (7) launch sub-agents, or (8) create/manage worktree sessions. Covers CLI commands, TUI shortcuts, config.toml options, and automation.
 metadata:
-  compatibility: "claude, opencode"
+  compatibility: "claude, codex, opencode"
 ---
 
 # Agent Deck
@@ -66,7 +66,7 @@ What agent-deck does, at the noun level (independent of which surface — CLI / 
 | **Worktree workflows** | `--worktree` to create isolated git-worktree-backed sessions for parallel branch work | CLI ✅ |
 | **Channel routing** | Telegram / Slack inbound delivery to the right conductor, with `--channels` per-session binding | CLI ✅ |
 | **Attach MCPs** | Per-session or global MCP plugin attach / detach / status, with optional pooling | CLI ✅ · TUI ✅ · Web UI ⚪ |
-| **Attach skills** | Pool-based on-demand skill loading per Claude session | CLI ✅ · TUI ✅ |
+| **Attach skills** | Pool-based on-demand skill loading; attached skills materialize in the runtime's project skill root | CLI ✅ · TUI ✅ |
 | **Session-metadata mutation** | `session set` for `claude-session-id`, `path`, `wrapper`, `channels`, `parent`; `session unset-parent` | CLI ✅ |
 | **State persistence** | `state.json` + `task-log.md` + `LEARNINGS.md` + `HANDOFF.md` survive Claude Code compaction/restart | CLI ✅ |
 | **GitHub pipeline oversight** | Conductor-driven release flow: PR merge → tag → goreleaser → release | CLI ✅ |
@@ -84,8 +84,8 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 
 | In-session capability | claude (Claude Code) | codex | gemini |
 |---|---|---|---|
-| **Multi-agent fan-out *inside one session*** | ✅ **Agent tool** (parallel subagents, each its own context window; `run_in_background`) **and Workflow tool** (deterministic JS: `agent()`/`pipeline()`/`parallel()` over item lists, structured-output schemas, phases) | ❌ single-agent — fan out by launching codex *peers* via agent-deck | ❌ not exposed — fan out via agent-deck peers |
-| **Skills** | ✅ Skill tool + agent-deck pool skills (`~/.agent-deck/skills/pool/`; new installs `$XDG_DATA_HOME/agent-deck/skills/pool/`, default `~/.local/share/agent-deck/skills/pool/`) | ❌ | ✅ `gemini skills` |
+| **Multi-agent fan-out *inside one session*** | ✅ **Agent tool** (parallel subagents, each its own context window; `run_in_background`) **and Workflow tool** (deterministic JS: `agent()`/`pipeline()`/`parallel()` over item lists, structured-output schemas, phases) | ✅ native subagents/helpers when exposed by the active Codex runtime; use Agent Deck when work needs separately managed visible sessions | ❌ not exposed — use separately managed sessions when needed |
+| **Skills** | ✅ Skill tool + agent-deck pool skills (`~/.agent-deck/skills/pool/`; new installs `$XDG_DATA_HOME/agent-deck/skills/pool/`, default `~/.local/share/agent-deck/skills/pool/`) | ✅ `agent-deck skill attach` materializes project skills in `.agents/skills` | ✅ `gemini skills` |
 | **MCP servers** | ✅ `claude mcp` / `--mcp-config`; agent-deck `mcp attach` | ✅ `codex mcp`; also runs **as** a server (`codex mcp-server`) | ✅ `gemini mcp`, `--allowed-mcp-server-names` |
 | **Built-in code review** | ✅ `ultrareview` (cloud multi-agent) + `/code-review` skill | ✅ `codex review` / `codex exec review --uncommitted` | via prompt only |
 | **Plan / read-only mode** | `--permission-mode plan` | `-s read-only` | `--approval-mode plan` |
@@ -98,7 +98,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | **Resume / fork conversation** | `-r/--resume`, `--fork-session` | `codex resume` / `codex fork` | `--resume`, `--session-file` |
 | **Local / OSS models** | 3P providers (Bedrock/Vertex) | `--oss`, `--local-provider lmstudio\|ollama` | `gemini gemma` routing |
 
-**Choosing the `-c` tool for a child:** default to **claude** — only it has in-session multi-agent fan-out (Agent + Workflow tools) *and* pool skills, so it can own a whole task end-to-end and orchestrate its own sub-work. Reach for **codex** for a fast non-interactive second opinion or code review (`codex review`) and sandboxed exec; **gemini** for a third opinion or large-context reads. For codex/gemini, parallelism comes from launching multiple agent-deck *peers*, not from inside the session.
+**Choosing the `-c` tool for a child:** default to **claude** when its Agent and Workflow tools fit the task. Reach for **codex** for a fast non-interactive second opinion, code review (`codex review`), sandboxed exec, or native in-process helpers when exposed by that runtime; use Agent Deck when work needs a separately managed visible session. Reach for **gemini** for a third opinion or large-context reads.
 
 **agent-deck powers every child also has** (independent of CLI): `agent-deck mcp attach/detach` then `session restart`; `launch` further child or peer sessions (`-no-parent` for peers); load pool skills on demand; `session send` to talk to sibling sessions. See [Sub-Agent Launch](#sub-agent-launch), [Peer (Root) Sessions vs Sub-Agents](#peer-root-sessions-vs-sub-agents), [MCP Management](#mcp-management).
 
