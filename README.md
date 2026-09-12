@@ -908,9 +908,12 @@ agent-deck remote attach dev my-session
 agent-deck remote drain dev
 
 # Keep remote binaries up to date
-agent-deck remote update          # all remotes
+agent-deck remote update --all    # every remote older than this controller
 agent-deck remote update dev      # specific remote
+agent-deck remote list            # includes each remote's version, ↑ when behind
 ```
+
+By default the controller pushes its version to older remotes on its own: after `agent-deck update`, and in the background on startup (`[updates] auto_update_remotes = false` in `config.toml` opts out). The TUI shows `v1.15.0 ↑` on a remote header that is behind; `u` on that header updates it after a confirmation. A remote whose binary lives in a directory its user cannot write (a root-owned `/usr/local/bin`) is updated through passwordless `sudo -n` when the remote grants it; otherwise the update reports `install path <path> is not writable by <user>` and the fix: move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo.
 
 A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. `remote drain <name>` closes that gap by pulling — it reads the remote's records over the same SSH path (consuming nothing there) and writes them into the local inbox, safe to run on every heartbeat and safe to repeat.
 

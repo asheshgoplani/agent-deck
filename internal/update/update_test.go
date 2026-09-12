@@ -29,6 +29,24 @@ func TestCompareVersions(t *testing.T) {
 		{"patch difference", "0.8.84", "0.8.85", -1},
 		{"two-part version padded", "1.0", "1.0.0", 0},
 		{"single-part version", "2", "1.9.9", 1},
+		// #2164: a pre-release is older than the release it previews, so a
+		// preview controller never judges a remote on that release as behind.
+		{"pre-release below its release", "1.16.4-switch-preview.abc1234", "1.16.4", -1},
+		{"release above its pre-release", "1.16.4", "1.16.4-switch-preview.abc1234", 1},
+		{"pre-release above the previous release", "1.16.4-rc.1", "1.16.3", 1},
+		{"pre-release below the next release", "1.16.4-rc.1", "1.16.5", -1},
+		{"same pre-release", "v1.16.4-rc.1", "1.16.4-rc.1", 0},
+		{"pre-releases of one core compare by tag", "1.16.4-rc.1", "1.16.4-rc.2", -1},
+		{"numeric identifiers compare as numbers", "1.16.4-rc.2", "1.16.4-rc.10", -1},
+		{"numeric below alphanumeric", "1.16.4-1", "1.16.4-alpha", -1},
+		{"alphanumeric identifiers compare as text", "1.16.4-alpha", "1.16.4-beta", -1},
+		{"a prefix tag sorts first", "1.16.4-rc.1", "1.16.4-rc.1.1", -1},
+		{"preview build with sha tag", "1.16.4-switch-preview.abc", "1.16.4-switch-preview.abd", -1},
+		{"numeric identifier past int64 is still larger", "1.0.0-rc.9223372036854775808", "1.0.0-rc.2", 1},
+		{"numeric identifier past int64 above int64 max", "1.0.0-rc.9223372036854775808", "1.0.0-rc.9223372036854775807", 1},
+		{"numeric identifier far past int64", "1.0.0-rc.99999999999999999999999", "1.0.0-rc.3", 1},
+		{"leading zeros do not change the value", "1.0.0-rc.010", "1.0.0-rc.10", 0},
+		{"build metadata is ignored", "1.16.4+abc", "1.16.4", 0},
 	}
 
 	for _, tt := range tests {

@@ -1118,6 +1118,14 @@ type UpdateSettings struct {
 	// Default: false
 	AutoUpdate bool `toml:"auto_update,omitempty"`
 
+	// AutoUpdateRemotes pushes the controller's version to every configured
+	// remote that reports an older agent-deck: after a successful
+	// `agent-deck update`, and in the background on startup (throttled by
+	// CheckIntervalHours). Never prompts; a remote that fails stays on its
+	// version and is logged. Default: true (nil = true); opt out with
+	// auto_update_remotes = false (issue #2164).
+	AutoUpdateRemotes *bool `toml:"auto_update_remotes,omitempty"`
+
 	// CheckEnabled enables automatic update checks on startup
 	// Default: true (nil = true)
 	CheckEnabled *bool `toml:"check_enabled,omitempty"`
@@ -1137,6 +1145,15 @@ func (u UpdateSettings) GetCheckEnabled() bool {
 		return true
 	}
 	return *u.CheckEnabled
+}
+
+// GetAutoUpdateRemotes returns whether older remotes follow the controller's
+// version on their own (default: true).
+func (u UpdateSettings) GetAutoUpdateRemotes() bool {
+	if u.AutoUpdateRemotes == nil {
+		return true
+	}
+	return *u.AutoUpdateRemotes
 }
 
 // GetNotifyInCLI returns whether CLI update notifications are enabled (default: true).

@@ -635,11 +635,11 @@ Removes a remote from configuration.
 ### remote list / ls
 
 ```bash
-agent-deck remote list [--json]
-agent-deck remote ls [--json]
+agent-deck remote list [--json] [--check]
+agent-deck remote ls [--json] [--check]
 ```
 
-Lists all configured remotes. Use `--json` for scripting.
+Lists all configured remotes. The VERSION column shows the agent-deck version each remote last reported (learned by the TUI poll, `remote update`, or `--check`), with `↑` when it is older than this controller; `-` means never checked. `--check` asks every remote now (one SSH call each) and refreshes that cache. Use `--json` for scripting (`version`, `version_checked_at`, `outdated`).
 
 ### remote sessions
 
@@ -694,10 +694,10 @@ Renames a session on a remote instance.
 ### remote update
 
 ```bash
-agent-deck remote update [name]
+agent-deck remote update [name | --all]
 ```
 
-Downloads and installs the correct agent-deck binary (detected platform/arch) on all remotes, or on a specific remote if `name` is provided. Prompts for confirmation before updating.
+Downloads and installs the correct agent-deck binary (detected platform/arch) on a specific remote, or with `--all` (or no name) on every configured remote whose version is older than this controller's. Remotes run one at a time and each is reported as updated, already current, or failed with the reason; a remote that fails stays on its version (the archive is checksum-verified before deploy and the remote is re-checked afterwards, never a partial binary). Exit status is 1 when any remote failed. Remotes follow the controller's version automatically unless `[updates] auto_update_remotes = false` is set (see the config reference). When the remote user cannot write the install directory (a root-owned `/usr/local/bin`), the deploy runs through `sudo -n` if the remote allows passwordless sudo; otherwise it fails with `install path <path> is not writable by <user>` and the remedy (move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo). `agent-deck update` on the remote itself reports the same error for that case. The deploy stages to a temp file unique to that run, takes a lock directory next to the binary (`<path>.lock`, treated as abandoned after 15 minutes) so two controllers cannot interleave writes, and installs with mode 0755 regardless of umask; a second deploy that meets the lock is refused as busy and can simply be retried.
 
 ### Examples
 
@@ -708,7 +708,7 @@ agent-deck remote list
 agent-deck remote sessions dev
 agent-deck remote attach dev my-session
 agent-deck remote rename dev my-session new-name
-agent-deck remote update          # update all remotes
+agent-deck remote update --all    # update every remote older than this controller
 agent-deck remote update dev      # update specific remote
 ```
 

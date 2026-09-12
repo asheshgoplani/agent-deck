@@ -6,11 +6,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -425,13 +428,22 @@ func FetchReleaseByTag(tag string) (*Release, error) {
 
 // CompareVersions compares two semantic versions
 // Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+//
+// A pre-release ("1.16.4-switch-preview.abc") sorts BELOW its release
+// ("1.16.4"), as semver orders them: a preview controller is older than the
+// release it previews, so it never judges a remote on that release as
+// behind, and it never keeps a remote from moving to it (#2164). Two
+// pre-releases of the same core compare by their suffix.
 func CompareVersions(v1, v2 string) int {
 	// Remove 'v' prefix if present
 	v1 = strings.TrimPrefix(v1, "v")
 	v2 = strings.TrimPrefix(v2, "v")
 
-	parts1 := strings.Split(v1, ".")
-	parts2 := strings.Split(v2, ".")
+	core1, pre1 := splitPreRelease(v1)
+	core2, pre2 := splitPreRelease(v2)
+
+	parts1 := strings.Split(core1, ".")
+	parts2 := strings.Split(core2, ".")
 
 	// Pad with zeros
 	for len(parts1) < 3 {
@@ -454,7 +466,83 @@ func CompareVersions(v1, v2 string) int {
 		}
 	}
 
+	switch {
+	case pre1 == pre2:
+		return 0
+	case pre1 == "":
+		return 1 // release > pre-release of the same core
+	case pre2 == "":
+		return -1
+	}
+	return comparePreRelease(pre1, pre2)
+}
+
+// splitPreRelease separates "1.2.3-rc.1+build" into its numeric core "1.2.3"
+// and pre-release tag "rc.1". Build metadata after "+" is ignored either way.
+func splitPreRelease(v string) (core, pre string) {
+	v, _, _ = strings.Cut(v, "+")
+	core, pre, _ = strings.Cut(v, "-")
+	return core, pre
+}
+
+// comparePreRelease orders two pre-release tags the way semver 2.0 §11
+// does: dot-separated identifiers compared left to right, numeric ones as
+// numbers (so rc.2 < rc.10), numeric below alphanumeric, and a tag that is
+// a prefix of the other sorts first (rc.1 < rc.1.1).
+func comparePreRelease(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		aNum, bNum := isNumericIdentifier(as[i]), isNumericIdentifier(bs[i])
+		switch {
+		case aNum && bNum:
+			if c := compareNumericIdentifiers(as[i], bs[i]); c != 0 {
+				return c
+			}
+		case aNum:
+			return -1
+		case bNum:
+			return 1
+		default:
+			if c := strings.Compare(as[i], bs[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	switch {
+	case len(as) < len(bs):
+		return -1
+	case len(as) > len(bs):
+		return 1
+	}
 	return 0
+}
+
+// isNumericIdentifier reports whether id is one or more ASCII digits.
+func isNumericIdentifier(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// compareNumericIdentifiers orders two digit strings by value without
+// converting them: leading zeros dropped, then longer is larger, then
+// lexical. No integer width is involved, so an identifier past int64
+// (a build counter, a timestamp) still sorts correctly.
+func compareNumericIdentifiers(a, b string) int {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	}
+	return strings.Compare(a, b)
 }
 
 // CheckForUpdate checks if a new version is available
@@ -646,10 +734,38 @@ func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
 	return installSelfUpdateBinary(execPath, binaryData)
 }
 
+// InstallPathNotWritableError says the running user cannot replace the
+// binary at Path: a root-owned /usr/local/bin/agent-deck, typically. It is
+// returned instead of a bare EACCES so the self-update, the controller-driven
+// remote deploy and the unattended sweep all report the same remedy (#2164).
+type InstallPathNotWritableError struct {
+	Path string
+	User string
+}
+
+func (e *InstallPathNotWritableError) Error() string {
+	return fmt.Sprintf("install path %s is not writable by %s; move the binary to ~/.local/bin and leave a symlink at %s, or run the update with sudo",
+		e.Path, e.User, e.Path)
+}
+
+// currentUserName names the user for InstallPathNotWritableError.
+func currentUserName() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if name := os.Getenv("USER"); name != "" {
+		return name
+	}
+	return fmt.Sprintf("uid %d", os.Getuid())
+}
+
 func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 	// Create temp file for new binary
 	newBinaryPath := execPath + ".new"
 	if err := os.WriteFile(newBinaryPath, binaryData, 0755); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return &InstallPathNotWritableError{Path: execPath, User: currentUserName()}
+		}
 		return fmt.Errorf("failed to write new binary: %w", err)
 	}
 
@@ -657,6 +773,9 @@ func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 	oldBinaryPath := execPath + ".old"
 	if err := os.Rename(execPath, oldBinaryPath); err != nil {
 		os.Remove(newBinaryPath)
+		if errors.Is(err, fs.ErrPermission) {
+			return &InstallPathNotWritableError{Path: execPath, User: currentUserName()}
+		}
 		return fmt.Errorf("failed to backup old binary: %w", err)
 	}
 
