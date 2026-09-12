@@ -555,6 +555,16 @@ type Home struct {
 	// one. Cached here so all rows of a frame agree; reloaded after panel save.
 	showPaneTitles bool
 
+	// accountSlotsConfigured mirrors len(session.ConfiguredAccountNames(cfg)) > 0,
+	// the same gate the New/Edit Session dialogs use to hide their account rows
+	// (#2152). A machine with no [profiles.<name>.claude].config_dir block has
+	// one login, so "which slot is this session on" is not a question that can
+	// have two answers — the inherited badge would be dead width on every row.
+	// Atomic because refreshSessionRenderSnapshot reads it from the background
+	// refresher goroutine while the settings panel writes it from the Bubble Tea
+	// event loop. Explicit slots ignore this gate; see newAccountPresentation.
+	accountSlotsConfigured atomic.Bool
+
 	// Sessions/Preview split (issue #1092): percentage of width allocated to
 	// preview pane. Loaded from config.toml [ui] preview_pct, adjustable
 	// live via < and > keybindings, persisted back to config on adjustment.
@@ -1947,6 +1957,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	// Hook-based status detection (Claude Code lifecycle hooks)
 	userConfig, _ := session.LoadUserConfig()
+	// Seed the account-badge gate from the same config read; the settings panel
+	// refreshes it on save so adding a slot lights the badges without a restart.
+	h.accountSlotsConfigured.Store(len(session.ConfiguredAccountNames(userConfig)) > 0)
 	hooksEnabled := userConfig == nil || userConfig.Claude.GetHooksEnabled()
 	if homeBackgroundWorkersEnabled && hooksEnabled {
 		configDir := session.GetClaudeConfigDir()
@@ -5506,6 +5519,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 
 	snap := make(map[string]sessionRenderState, len(instances))
 	accounts := make(map[string]accountPresentation)
+	slotsConfigured := h.accountSlotsConfigured.Load()
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -5526,7 +5540,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		}
 		display, ok := accounts[state.account]
 		if !ok {
-			display = newAccountPresentation(state.account)
+			display = newAccountPresentation(state.account, slotsConfigured)
 			accounts[state.account] = display
 		}
 		state.accountDisplay = display
@@ -5574,7 +5588,7 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 		status:         inst.GetStatusThreadSafe(),
 		tool:           inst.GetToolThreadSafe(),
 		account:        account,
-		accountDisplay: newAccountPresentation(account),
+		accountDisplay: newAccountPresentation(account, h.accountSlotsConfigured.Load()),
 		title:          inst.GetTitleThreadSafe(),
 		autoName:       inst.GetAutoName(),
 		autoNameDesc:   inst.GetAutoNameDescription(),
@@ -9038,6 +9052,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.reloadHotkeysFromConfig()
 				h.showSessionTimestamps = config.Display.ShowSessionTimestamps
 				h.showPaneTitles = config.Display.ShowPaneTitles
+				// A slot added here must light the badges now; the next snapshot
+				// refresh reads this flag.
+				h.accountSlotsConfigured.Store(len(session.ConfiguredAccountNames(config)) > 0)
 
 				// Apply theme changes live
 				h.stopThemeWatcher()
@@ -20361,9 +20378,12 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
 
 	// Use the same cached metadata as the row; no account/config resolution.
-	account := h.getSessionRenderState(inst).accountDisplay.label
-	account = cellTruncate(account, max(0, width-cellWidth("Account slot: ")), "…")
-	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Account slot:"), valueStyle.Render(account)))
+	// An empty label means the row suppressed the badge (single-login machine,
+	// inherited slot) — drop the whole line rather than print an empty value.
+	if account := h.getSessionRenderState(inst).accountDisplay.label; account != "" {
+		account = cellTruncate(account, max(0, width-cellWidth("Account slot: ")), "…")
+		b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Account slot:"), valueStyle.Render(account)))
+	}
 
 	// Session ID (if available) - Claude, Gemini, OpenCode, or generic (Hermes/custom tools)
 	sessionID := inst.ClaudeSessionID
