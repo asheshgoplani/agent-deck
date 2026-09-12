@@ -73,7 +73,7 @@ var (
 // to explicit secret-shaped names plus Authorization Bearer/Basic headers; it
 // intentionally does not attempt to identify arbitrary prose as a secret.
 func redactSpawnFailureDiagnostic(s string) string {
-	s = authorizationHeaderPattern.ReplaceAllString(s, `${1}${2}${3} [redacted]${5}`)
+	s = authorizationHeaderPattern.ReplaceAllString(s, `${1}${2}${3} [redacted]${4}`)
 	s = redactSensitiveValues(s, shellAssignmentPattern)
 	return redactSensitiveValues(s, sensitiveOptionPattern)
 }
