@@ -253,3 +253,134 @@ func ownerOf(t *testing.T, info os.FileInfo) string {
 	}
 	return fmt.Sprintf("%d:%d", st.Uid, st.Gid)
 }
+
+// Review of #2245: a $PATH binary that is already newer than (or equal to)
+// the version being deployed is left alone; the configured path is still
+// updated and the report says what was left where. Overwriting it would be
+// the downgrade the sweep guards against everywhere else.
+func TestInstallBinary_NeverDowngradesANewerPathBinary(t *testing.T) {
+	l := newRemoteLayout(t)
+	configured := filepath.Join(l.home, "opt", "agent-deck")
+	fakeAgentDeck(t, configured, "1.16.5", 0o755)
+	onPath := filepath.Join(l.pathDir, "agent-deck")
+	fakeAgentDeck(t, onPath, "1.16.7", 0o755)
+	r := l.runner(t, configured, noSudo)
+
+	if err := r.InstallBinary(context.Background(), []byte(fakeAgentDeckPayload("1.16.6")), "1.16.6"); err != nil {
+		t.Fatalf("InstallBinary: %v", err)
+	}
+	if got, _ := os.ReadFile(onPath); string(got) != fakeAgentDeckPayload("1.16.7") {
+		t.Fatalf("the newer $PATH binary was overwritten: %q", got)
+	}
+	if got, _ := os.ReadFile(configured); string(got) != fakeAgentDeckPayload("1.16.6") {
+		t.Fatalf("configured path not updated: %q", got)
+	}
+	report := r.LastInstallReport()
+	if !strings.Contains(report, onPath) || !strings.Contains(report, "v1.16.7") || !strings.Contains(report, "left") {
+		t.Errorf("report must say the newer $PATH binary was left as is: %q", report)
+	}
+}
+
+// When the second of two deploys fails, the report already names the one
+// that succeeded, so the operator knows what changed.
+func TestInstallBinary_ReportsPartialDeployOnSecondFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write anywhere")
+	}
+	l := newRemoteLayout(t)
+	configured := filepath.Join(l.home, "locked", "agent-deck")
+	fakeAgentDeck(t, configured, "1.16.5", 0o755)
+	onPath := filepath.Join(l.pathDir, "agent-deck")
+	fakeAgentDeck(t, onPath, "1.16.5", 0o755)
+	if err := os.Chmod(filepath.Dir(configured), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(configured), 0o755) })
+	r := l.runner(t, configured, noSudo)
+
+	err := r.InstallBinary(context.Background(), []byte(fakeAgentDeckPayload("1.16.6")), "1.16.6")
+	if err == nil {
+		t.Fatal("the configured path is unwritable; expected a failure")
+	}
+	if got, _ := os.ReadFile(onPath); string(got) != fakeAgentDeckPayload("1.16.6") {
+		t.Fatalf("the $PATH binary should have been updated first: %q", got)
+	}
+	if report := r.LastInstallReport(); !strings.Contains(report, "deployed to "+onPath) {
+		t.Errorf("report must record the deploy that did happen: %q", report)
+	}
+}
+
+// A $PATH agent-deck that reports the right version but is not the file
+// that was deployed (a wrapper, a second copy) is a verification failure,
+// not a success.
+func TestInstallBinary_RejectsSameVersionDifferentInodeOnPath(t *testing.T) {
+	r, _ := recordingRunner(func(cmd string) (string, error) {
+		switch {
+		case strings.Contains(cmd, "resolve '/home/tester/.local/bin/agent-deck'"):
+			return "/home/tester/.local/bin/agent-deck\n", nil
+		case strings.Contains(cmd, "command -v agent-deck 2>/dev/null); [ -n \"$pb\" ] && resolve"):
+			return "", errors.New("exit status 1") // nothing on PATH at resolve time
+		case strings.Contains(cmd, "-ef"):
+			return "", errors.New("exit status 1") // PATH runs a different inode
+		case strings.Contains(cmd, "command -v agent-deck"):
+			return "/home/tester/.local/bin/agent-deck\n", nil
+		case strings.Contains(cmd, "'agent-deck' version"):
+			return "Agent Deck v1.16.6\n", nil
+		}
+		return "", nil
+	})
+	err := r.InstallBinary(context.Background(), []byte("BINARY"), "1.16.6")
+	if err == nil || !strings.Contains(err.Error(), "is not the file deployed to") {
+		t.Fatalf("got %v, want the different-inode rejection", err)
+	}
+}
+
+// chown failing under root is a deploy failure, not a silently changed
+// owner: the original file stays and the staging file is removed.
+func TestDeployScript_ChownFailureAbortsBeforeReplacing(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prelude := "id() { echo 0; }; chown() { return 1; }; "
+	cmd := exec.Command("sh", "-c", prelude+remoteDeployScript, "sh", dir, target)
+	cmd.Stdin = strings.NewReader("new")
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 5 {
+		t.Fatalf("script must fail with exit 5 when chown fails; got %v: %s", err, out)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "old" {
+		t.Fatalf("original replaced despite chown failure: %q", got)
+	}
+	if entries, _ := filepath.Glob(filepath.Join(dir, "*.new.*")); len(entries) != 0 {
+		t.Errorf("staging left behind: %v", entries)
+	}
+}
+
+// The symlink guard runs again right before the rename: a link that
+// appears while the bytes are streaming is not replaced either.
+func TestDeployScript_RechecksSymlinkBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "agent-deck")
+	elsewhere := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(elsewhere, []byte("other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// cat streams the payload and then someone turns the path into a link.
+	prelude := "cat() { command cat; ln -s " + shellQuote(elsewhere) + " " + shellQuote(target) + "; }; "
+	cmd := exec.Command("sh", "-c", prelude+remoteDeployScript, "sh", dir, target)
+	cmd.Stdin = strings.NewReader("new")
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != remoteDeploySymlinkExit {
+		t.Fatalf("script must refuse the late symlink with exit %d; got %v: %s", remoteDeploySymlinkExit, err, out)
+	}
+	if info, lerr := os.Lstat(target); lerr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("symlink replaced: %v %v", info, lerr)
+	}
+	if got, _ := os.ReadFile(elsewhere); string(got) != "other" {
+		t.Fatalf("link target touched: %q", got)
+	}
+}

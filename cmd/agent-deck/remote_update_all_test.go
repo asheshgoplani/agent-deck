@@ -19,6 +19,11 @@ func TestFormatRemoteUpdateResult(t *testing.T) {
 		{session.RemoteUpdateResult{Name: "a", From: "1.16.0", Outcome: session.RemoteUpdateOutcomeCurrent}, "✓ Up to date (v1.16.0)"},
 		{session.RemoteUpdateResult{Name: "a", Outcome: session.RemoteUpdateOutcomeSkipped, Err: session.ErrRemoteBinaryMissing}, "– Skipped: agent-deck not found on remote or host unreachable"},
 		{session.RemoteUpdateResult{Name: "a", Outcome: session.RemoteUpdateOutcomeFailed, Err: errors.New("deploy failed: permission denied")}, "✗ Failed: deploy failed: permission denied"},
+		// #2244: the installer's report (where the binary went, what was
+		// left alone) is part of the line on every outcome that has one.
+		{session.RemoteUpdateResult{Name: "a", From: "1.15.0", To: "1.16.0", Outcome: session.RemoteUpdateOutcomeUpdated, Note: "deployed to /home/x/.local/bin/agent-deck"}, "✓ Updated v1.15.0 → v1.16.0; deployed to /home/x/.local/bin/agent-deck"},
+		{session.RemoteUpdateResult{Name: "a", Outcome: session.RemoteUpdateOutcomeFailed, Err: errors.New("deploy failed"), Note: "deployed to /home/x/.local/bin/agent-deck"}, "✗ Failed: deploy failed; deployed to /home/x/.local/bin/agent-deck"},
+		{session.RemoteUpdateResult{Name: "a", Outcome: session.RemoteUpdateOutcomeSkipped, Note: "sweep already in progress, remote a is being updated by 42"}, "– Skipped: sweep already in progress, remote a is being updated by 42"},
 	}
 	for _, tc := range cases {
 		if got := formatRemoteUpdateResult(tc.r); got != tc.want {

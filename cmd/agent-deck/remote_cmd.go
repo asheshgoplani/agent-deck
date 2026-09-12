@@ -724,22 +724,30 @@ var remoteUpdateRunner func(name string, rc session.RemoteConfig) session.Remote
 
 // formatRemoteUpdateResult renders one remote's outcome with the CLI's glyphs.
 func formatRemoteUpdateResult(r session.RemoteUpdateResult) string {
+	line := ""
 	switch r.Outcome {
 	case session.RemoteUpdateOutcomeUpdated:
 		if r.From == "" {
-			return fmt.Sprintf("✓ Installed v%s", r.To)
+			line = fmt.Sprintf("✓ Installed v%s", r.To)
+		} else {
+			line = fmt.Sprintf("✓ Updated v%s → v%s", r.From, r.To)
 		}
-		return fmt.Sprintf("✓ Updated v%s → v%s", r.From, r.To)
 	case session.RemoteUpdateOutcomeCurrent:
-		return fmt.Sprintf("✓ Up to date (v%s)", r.From)
+		line = fmt.Sprintf("✓ Up to date (v%s)", r.From)
 	case session.RemoteUpdateOutcomeSkipped:
 		if r.Err == nil {
 			return "– Skipped: " + r.Note
 		}
-		return fmt.Sprintf("– Skipped: %v", r.Err)
+		line = fmt.Sprintf("– Skipped: %v", r.Err)
 	default:
-		return fmt.Sprintf("✗ Failed: %v", r.Err)
+		line = fmt.Sprintf("✗ Failed: %v", r.Err)
 	}
+	// The installer's report: where the binary went, what was left alone,
+	// what a failing second deploy still changed (#2244).
+	if r.Note != "" {
+		line += "; " + r.Note
+	}
+	return line
 }
 
 // remoteUpdateSummary is the closing line of a multi-remote run:

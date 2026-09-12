@@ -1133,9 +1133,14 @@ func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte,
 	// with the exit code parseInstallPathNotWritable recognises.
 	report := fmt.Sprintf("printf '%s%%s%s%%s\\n' %s \"$(id -un)\" >&2; exit %d",
 		installPathNotWritablePrefix, installPathNotWritableInfix, shellQuote(remotePath), installPathNotWritableExit)
-	cmd := fmt.Sprintf("mkdir -p %s 2>/dev/null; if [ -w %s ]; then sh -c %s sh %s; "+
+	// The direct route needs a writable directory and, when the file
+	// exists, ownership of it: a non-root deploy over someone else's file
+	// would silently change its owner, so that case takes the sudo route,
+	// where the script restores the owner.
+	quotedPath := shellQuote(remotePath)
+	cmd := fmt.Sprintf("mkdir -p %s 2>/dev/null; if [ -w %s ] && { [ ! -e %s ] || [ -O %s ]; }; then sh -c %s sh %s; "+
 		"elif sudo -n sh -c true 2>/dev/null; then sudo -n sh -c %s sh %s || { rc=$?; case $rc in 4|5|6) exit $rc;; esac; %s; }; else %s; fi",
-		shellQuote(dir), shellQuote(dir), script, args, script, args, report, report)
+		shellQuote(dir), shellQuote(dir), quotedPath, quotedPath, script, args, script, args, report, report)
 
 	deployCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
@@ -1222,12 +1227,14 @@ const remoteDeployBusyMarker = "agent-deck: another deploy holds "
 // name carries the shell's PID and a lock directory next to PATH serialises
 // deploys; a lock older than 15 minutes is treated as abandoned.
 //
-// The script never puts a regular file over a symlink (exit 6): the caller
-// resolves links first, and this guard keeps a race or a stale resolution
-// from orphaning the link target (#2244). The previous file's mode and,
-// when running as root over a user-owned file, its owner are kept, and the
-// mode is then made readable and executable for everyone so a root umask
-// of 077 under sudo still leaves the binary runnable by the remote user.
+// The script never puts a regular file over a symlink (exit 6), checked
+// before streaming and again right before the rename: the caller resolves
+// links first, and the guard keeps a race or a stale resolution from
+// orphaning the link target (#2244). The previous file's mode and, when
+// running as root over a user-owned file, its owner are kept (a chown that
+// fails aborts the deploy with the original in place), and the mode is
+// then made readable and executable for everyone so a root umask of 077
+// under sudo still leaves the binary runnable by the remote user.
 const remoteDeployScript = `d="$1"; p="$2"; lock="$p.lock"; t="$p.new.$$"
 if [ -L "$p" ]; then printf '` + remoteDeploySymlinkMarker + `%s\n' "$p" >&2; exit ` + remoteDeploySymlinkExitStr + `; fi
 mkdir -p "$d"
@@ -1240,7 +1247,8 @@ if [ -e "$p" ]; then
   own=$(stat -c %u:%g "$p" 2>/dev/null || stat -f %u:%g "$p" 2>/dev/null)
 fi
 if cat > "$t" && chmod "$mode" "$t" && chmod a+rx "$t"; then
-  if [ "$(id -u)" = 0 ] && [ -n "$own" ]; then chown "$own" "$t" || true; fi
+  if [ "$(id -u)" = 0 ] && [ -n "$own" ] && ! chown "$own" "$t"; then printf 'agent-deck: could not keep owner %s on %s\n' "$own" "$p" >&2; exit 5; fi
+  if [ -L "$p" ]; then printf '` + remoteDeploySymlinkMarker + `%s\n' "$p" >&2; exit ` + remoteDeploySymlinkExitStr + `; fi
   if mv -f "$t" "$p"; then exit 0; fi
 fi
 printf 'agent-deck: deploy to %s failed\n' "$p" >&2; exit 5`
@@ -1287,28 +1295,46 @@ func parseInstallPathNotWritable(output string) *update.InstallPathNotWritableEr
 // reports expectedVersion.
 func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expectedVersion string) error {
 	r.installReport = ""
+	want := strings.TrimPrefix(expectedVersion, "v")
 	configured := r.ResolveRemotePath(ctx)
 	if resolved := r.resolveRemoteFile(ctx, configured); resolved != "" {
 		configured = resolved
 	}
 	onPath := r.remotePathBinary(ctx)
 
-	targets := []string{configured}
+	// The $PATH binary is a second target only when it is a different file
+	// and older than what is being deployed: the remote's own binary may be
+	// ahead of the controller (the no-downgrade rule the sweep applies to
+	// the configured path holds for it too).
+	var targets []string
+	pathLeft := ""
 	if onPath != "" && onPath != configured {
-		targets = []string{onPath, configured}
-	}
-	for _, target := range targets {
-		if err := r.deployResolvedBinary(ctx, binaryData, target); err != nil {
-			return err
+		if pathVer, found := r.versionAt(ctx, onPath); found && isVersionString(pathVer) && update.CompareVersions(pathVer, want) >= 0 {
+			pathLeft = fmt.Sprintf("left the remote's $PATH binary %s at v%s (not older than v%s)", onPath, pathVer, want)
+		} else {
+			targets = append(targets, onPath)
 		}
 	}
-	if len(targets) == 2 {
-		r.installReport = fmt.Sprintf("deployed to %s (the remote's $PATH binary) and to %s (agent_deck_path); set agent_deck_path to %s to keep one copy", onPath, configured, onPath)
-	} else {
-		r.installReport = "deployed to " + configured
-	}
+	targets = append(targets, configured)
 
-	want := strings.TrimPrefix(expectedVersion, "v")
+	var done []string
+	for _, target := range targets {
+		if err := r.deployResolvedBinary(ctx, binaryData, target); err != nil {
+			r.installReport = r.installReportFor(done, onPath, configured, pathLeft)
+			return err
+		}
+		done = append(done, target)
+	}
+	r.installReport = r.installReportFor(done, onPath, configured, pathLeft)
+
+	// A $PATH binary deliberately left newer: the deployed configured path
+	// is verified on its own, and $PATH keeps running the newer one.
+	if pathLeft != "" {
+		if deployedVer, found := r.versionAt(ctx, configured); found && deployedVer == want {
+			return nil
+		}
+		return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s", want, configured)
+	}
 
 	// The binary the remote actually runs: bare `agent-deck` through its $PATH.
 	pathVer, found := r.versionAt(ctx, "agent-deck")
@@ -1332,6 +1358,26 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 	}
 
 	return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s or on $PATH", want, configured)
+}
+
+// installReportFor words where the binary went (and what was left alone) so
+// the report is right even when a later deploy fails.
+func (r *SSHRunner) installReportFor(done []string, onPath, configured, pathLeft string) string {
+	parts := make([]string, 0, 3)
+	switch {
+	case len(done) == 2:
+		parts = append(parts, fmt.Sprintf("deployed to %s (the remote's $PATH binary) and to %s (agent_deck_path); set agent_deck_path to %s to keep one copy", onPath, configured, onPath))
+	case len(done) == 1 && done[0] == onPath && onPath != configured:
+		parts = append(parts, fmt.Sprintf("deployed to %s (the remote's $PATH binary); %s (agent_deck_path) not deployed", onPath, configured))
+	case len(done) == 1:
+		parts = append(parts, "deployed to "+done[0])
+	default:
+		parts = append(parts, "nothing deployed")
+	}
+	if pathLeft != "" {
+		parts = append(parts, pathLeft)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // LastInstallReport says where the last InstallBinary put the binary.

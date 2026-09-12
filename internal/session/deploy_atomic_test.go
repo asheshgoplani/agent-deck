@@ -57,7 +57,9 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 	// sudo when the directory is not writable, and otherwise names the
 	// problem instead of leaving a bare "permission denied". The sudo probe
 	// runs the same binary as the real call.
-	for _, want := range []string{"[ -w '/home/daniel' ]", "sudo -n sh -c true", "sudo -n sh -c", "is not writable by", "$(id -un)", `mkdir "$lock"`} {
+	// A file owned by someone else in a writable directory takes the sudo
+	// route too, so the owner is kept instead of silently becoming us.
+	for _, want := range []string{"[ -w '/home/daniel' ]", "-O " + shellQuote(target), "sudo -n sh -c true", "sudo -n sh -c", "is not writable by", "$(id -un)", `mkdir "$lock"`} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("deploy command lacks %q:\n%s", want, cmd)
 		}
