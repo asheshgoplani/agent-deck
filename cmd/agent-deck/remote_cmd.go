@@ -704,7 +704,8 @@ func updateRemotesAfterLocalUpdate(newVersion string) {
 		return
 	}
 
-	if session.GetUpdateSettings().GetAutoUpdateRemotes() {
+	unattended := session.GetUpdateSettings().GetAutoUpdateRemotes()
+	if unattended {
 		fmt.Printf("\nauto_update_remotes is on: updating %d remote(s) to v%s\n", len(config.Remotes), newVersion)
 	} else {
 		fmt.Printf("\nYou have %d remote(s) configured. Update them too? [Y/n] ", len(config.Remotes))
@@ -715,9 +716,18 @@ func updateRemotesAfterLocalUpdate(newVersion string) {
 		}
 	}
 
-	results := runRemoteUpdates(context.Background(), config.Remotes, newVersion, true)
+	results := runRemoteUpdates(context.Background(), config.Remotes, newVersion, postUpdateInstallsMissing(unattended))
 	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
 	_ = session.MarkRemoteAutoUpdateRan(time.Now())
+}
+
+// postUpdateInstallsMissing decides whether the post-update sweep installs
+// onto remotes it could not version. Only when a person answered the prompt:
+// the unattended sweep never pushes a binary onto a host whose agent-deck
+// it could not run (offline, or a probe that failed for any reason), the
+// same contract as the startup sweep (#2164).
+func postUpdateInstallsMissing(unattended bool) bool {
+	return !unattended
 }
 
 func shouldProceedWithRemoteUpdate(response string, readErr error) bool {

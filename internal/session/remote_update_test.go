@@ -48,6 +48,9 @@ func TestPlanRemoteUpdates_PreReleaseControllerIsOlderThanItsRelease(t *testing.
 		"behind":       {Version: "1.16.3", Found: true},
 		"ahead":        {Version: "1.16.5", Found: true},
 		"same-preview": {Version: "1.16.4-switch-preview.abc1234", Found: true},
+		// The old comparator read both sides as 1.16.4 and called this
+		// current; only a pre-release-aware order marks it behind.
+		"older-preview": {Version: "1.16.4-switch-preview.aaa0000", Found: true},
 	}
 	actions := PlanRemoteUpdates(versions, "1.16.4-switch-preview.abc1234")
 	kinds := map[string]RemoteUpdateKind{}
@@ -55,10 +58,11 @@ func TestPlanRemoteUpdates_PreReleaseControllerIsOlderThanItsRelease(t *testing.
 		kinds[a.Name] = a.Kind
 	}
 	want := map[string]RemoteUpdateKind{
-		"on-release":   RemoteUpdateCurrent,
-		"behind":       RemoteUpdateUpgrade,
-		"ahead":        RemoteUpdateCurrent,
-		"same-preview": RemoteUpdateCurrent,
+		"on-release":    RemoteUpdateCurrent,
+		"behind":        RemoteUpdateUpgrade,
+		"ahead":         RemoteUpdateCurrent,
+		"same-preview":  RemoteUpdateCurrent,
+		"older-preview": RemoteUpdateUpgrade,
 	}
 	for name, kind := range want {
 		if kinds[name] != kind {
@@ -83,6 +87,8 @@ func TestRemoteVersionState_Outdated(t *testing.T) {
 		{"v prefix", RemoteVersionState{Version: "v1.15.0", Found: true}, "v1.16.0", true},
 		{"preview controller does not flag its release", RemoteVersionState{Version: "1.16.4", Found: true}, "1.16.4-switch-preview.abc1234", false},
 		{"preview controller flags the previous release", RemoteVersionState{Version: "1.16.3", Found: true}, "1.16.4-switch-preview.abc1234", true},
+		{"remote on a pre-release of the controller's release is behind", RemoteVersionState{Version: "1.16.4-rc.1", Found: true}, "1.16.4", true},
+		{"unparseable remote version never flags", RemoteVersionState{Version: "development build", Found: true}, "1.16.4", false},
 	}
 	for _, tc := range cases {
 		if got := tc.state.Outdated(tc.controller); got != tc.want {
@@ -259,6 +265,68 @@ func TestUpdateRemotes_NotWritableInstallPathIsReportedWithRemedy(t *testing.T) 
 	}
 	if cached := LoadRemoteVersions()["locked"]; cached.Version != "1.15.0" {
 		t.Errorf("cache = %+v, want the unchanged version", cached)
+	}
+}
+
+// A remote whose agent-deck answers with something that is not a version
+// ("development build": parseRemoteVersion hands raw output back, and the
+// old comparator read it as 0.0.0, older than everything) is never deployed
+// onto, not even by the explicit CLI that installs onto missing remotes.
+func TestUpdateRemotes_UnparseableVersionIsSkippedNeverInstalled(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	if PlanRemoteUpdates(map[string]RemoteVersionState{"odd": {Version: "development build", Found: true}}, "1.16.0")[0].Kind != RemoteUpdateUnknown {
+		t.Fatal("an unparseable version must plan as unknown, not as an upgrade")
+	}
+	for _, installMissing := range []bool{false, true} {
+		stubs := map[string]*stubInstaller{"odd": {version: "development build", found: true, platformOK: true}}
+		results := UpdateRemotes(context.Background(), map[string]RemoteConfig{"odd": {Host: "a@odd"}}, "1.16.0", stubReleaseOptions(stubs, installMissing))
+		if len(results) != 1 || results[0].Outcome != RemoteUpdateOutcomeSkipped || !errors.Is(results[0].Err, ErrRemoteVersionUnknown) {
+			t.Fatalf("installMissing=%v: results = %+v, want skipped as unknown", installMissing, results)
+		}
+		if stubs["odd"].installs != 0 {
+			t.Fatalf("installMissing=%v: installs = %d, want 0", installMissing, stubs["odd"].installs)
+		}
+		if !strings.Contains(results[0].String(), `"development build"`) {
+			t.Errorf("report must quote what the remote said: %s", results[0])
+		}
+	}
+}
+
+// The controller's tag may have no release (a preview build), in which case
+// the deploy falls back to the latest release. That fallback must never
+// move a remote backwards: controller 1.17.0-preview.2, remote
+// 1.17.0-preview.1, latest release 1.16.5 is a skip, not a downgrade.
+func TestUpdateRemotes_FallbackReleaseNeverDowngrades(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	stub := &stubInstaller{version: "1.17.0-preview.1", found: true, platformOK: true}
+	opts := RemoteUpdateOptions{
+		NewRunner:    func(string, RemoteConfig) RemoteBinaryInstaller { return stub },
+		FetchRelease: func(string) (*update.Release, error) { return &update.Release{TagName: "v1.16.5"}, nil },
+		Download:     func(*update.Release, string, string) ([]byte, error) { return []byte("binary-for-linux-amd64"), nil },
+	}
+	results := UpdateRemotes(context.Background(), map[string]RemoteConfig{"lab": {Host: "a@lab"}}, "1.17.0-preview.2", opts)
+	if len(results) != 1 || results[0].Outcome != RemoteUpdateOutcomeSkipped || !errors.Is(results[0].Err, ErrRemoteReleaseNotNewer) {
+		t.Fatalf("results = %+v, want skipped (no newer release)", results)
+	}
+	if stub.installs != 0 {
+		t.Fatalf("installs = %d, want 0: a fallback release older than the remote must not be deployed", stub.installs)
+	}
+	if !strings.Contains(results[0].Err.Error(), "v1.16.5 is not newer than the remote's v1.17.0-preview.1") {
+		t.Errorf("reason must name both versions: %v", results[0].Err)
+	}
+	if cached := LoadRemoteVersions()["lab"]; cached.Version != "1.17.0-preview.1" {
+		t.Errorf("cache = %+v, want the remote's unchanged version", cached)
+	}
+}
+
+// DeployRemoteBinary without a known current version (a missing binary the
+// explicit CLI installs) has nothing to compare against and deploys.
+func TestDeployRemoteBinary_NoCurrentVersionDeploys(t *testing.T) {
+	stub := &stubInstaller{platformOK: true}
+	opts := stubReleaseOptions(map[string]*stubInstaller{"x": stub}, true)
+	opts.NewRunner = nil
+	if _, err := DeployRemoteBinary(context.Background(), stub, "1.16.0", opts); err != nil || stub.installs != 1 {
+		t.Fatalf("err = %v, installs = %d", err, stub.installs)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -38,11 +39,23 @@ type RemoteVersionState struct {
 // ("1.16.4-preview.abc") is older than release 1.16.4, so a remote on that
 // release is not flagged either (#2164).
 func (s RemoteVersionState) Outdated(controller string) bool {
-	if !s.Found || s.Version == "" || !isReleaseVersion(controller) {
+	if !s.Found || !isVersionString(s.Version) || !isReleaseVersion(controller) {
 		return false
 	}
 	return update.CompareVersions(s.Version, controller) < 0
 }
+
+// isVersionString reports whether v is something CompareVersions can order:
+// a dotted numeric core with an optional pre-release tag. parseRemoteVersion
+// hands back raw output ("development build") when it finds no version
+// token, and CompareVersions would read that as 0.0.0, older than anything;
+// an unattended sweep must never act on it (#2164).
+func isVersionString(v string) bool {
+	return versionStringRe.MatchString(strings.TrimSpace(v))
+}
+
+// versionStringRe is remoteVersionRe anchored to the whole string.
+var versionStringRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(?:[.\-+][0-9A-Za-z.\-]+)?$`)
 
 func isReleaseVersion(v string) bool {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
@@ -178,6 +191,9 @@ const (
 	// RemoteUpdateMissing: no runnable agent-deck was found on the remote
 	// (or the host was unreachable). Installing is a caller's choice.
 	RemoteUpdateMissing
+	// RemoteUpdateUnknown: the remote ran agent-deck but reported something
+	// that is not a version ("development build"). Never deployed onto.
+	RemoteUpdateUnknown
 )
 
 func (k RemoteUpdateKind) String() string {
@@ -188,6 +204,8 @@ func (k RemoteUpdateKind) String() string {
 		return "upgrade"
 	case RemoteUpdateMissing:
 		return "missing"
+	case RemoteUpdateUnknown:
+		return "unknown"
 	}
 	return fmt.Sprintf("kind(%d)", int(k))
 }
@@ -211,6 +229,8 @@ func PlanRemoteUpdates(versions map[string]RemoteVersionState, controller string
 		case !state.Found || state.Version == "":
 			action.Kind = RemoteUpdateMissing
 			action.Version = ""
+		case !isVersionString(state.Version):
+			action.Kind = RemoteUpdateUnknown
 		case update.CompareVersions(state.Version, controller) < 0:
 			action.Kind = RemoteUpdateUpgrade
 		default:
@@ -298,6 +318,11 @@ type RemoteUpdateOptions struct {
 	// Download fetches and verifies the binary for a platform. Nil means
 	// update.DownloadVerifiedBinary.
 	Download func(release *update.Release, goos, goarch string) ([]byte, error)
+	// CurrentVersion is what the remote runs now, when known. DeployRemoteBinary
+	// refuses to install a release that is not newer than it: the fallback
+	// from a missing tag to the latest release must never downgrade a remote
+	// (#2164). UpdateRemotes sets it per remote.
+	CurrentVersion string
 }
 
 func (o RemoteUpdateOptions) withDefaults() RemoteUpdateOptions {
@@ -357,6 +382,9 @@ func DeployRemoteBinary(ctx context.Context, runner RemoteBinaryInstaller, targe
 	if deployed == "" {
 		deployed = strings.TrimPrefix(targetVersion, "v")
 	}
+	if current := strings.TrimPrefix(opts.CurrentVersion, "v"); isVersionString(current) && update.CompareVersions(deployed, current) <= 0 {
+		return "", fmt.Errorf("%w: release v%s is not newer than the remote's v%s", ErrRemoteReleaseNotNewer, deployed, current)
+	}
 
 	opts.Progress(fmt.Sprintf("Downloading + verifying %s/%s binary for v%s...", goos, goarch, deployed))
 	binaryData, err := opts.Download(release, goos, goarch)
@@ -374,6 +402,16 @@ func DeployRemoteBinary(ctx context.Context, runner RemoteBinaryInstaller, targe
 // ErrRemoteBinaryMissing is the Skipped reason when a sweep finds no
 // runnable agent-deck on a remote and InstallMissing is off.
 var ErrRemoteBinaryMissing = errors.New("agent-deck not found on remote or host unreachable")
+
+// ErrRemoteVersionUnknown is the Skipped reason when the remote's agent-deck
+// reported something that is not a version; nothing is ever deployed onto
+// a remote whose version cannot be compared.
+var ErrRemoteVersionUnknown = errors.New("remote reported an unrecognised version")
+
+// ErrRemoteReleaseNotNewer is the Skipped reason when the release resolved
+// for the controller's version (the tag, or latest when the tag has no
+// release) is not newer than what the remote already runs.
+var ErrRemoteReleaseNotNewer = errors.New("no newer release to deploy")
 
 // UpdateRemotes checks every remote in remotes and pushes targetVersion to the
 // ones that are older, one remote at a time, in name order. It records the
@@ -405,12 +443,20 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 		switch {
 		case plan.Kind == RemoteUpdateCurrent:
 			result.Outcome = RemoteUpdateOutcomeCurrent
+		case plan.Kind == RemoteUpdateUnknown:
+			result.Outcome = RemoteUpdateOutcomeSkipped
+			result.Err = fmt.Errorf("%w: %q", ErrRemoteVersionUnknown, state.Version)
 		case plan.Kind == RemoteUpdateMissing && !opts.InstallMissing:
 			result.Outcome = RemoteUpdateOutcomeSkipped
 			result.Err = ErrRemoteBinaryMissing
 		default:
-			deployed, err := DeployRemoteBinary(ctx, runner, target, opts)
-			if err != nil {
+			remoteOpts := opts
+			remoteOpts.CurrentVersion = plan.Version
+			deployed, err := DeployRemoteBinary(ctx, runner, target, remoteOpts)
+			if errors.Is(err, ErrRemoteReleaseNotNewer) {
+				result.Outcome = RemoteUpdateOutcomeSkipped
+				result.Err = err
+			} else if err != nil {
 				result.Outcome = RemoteUpdateOutcomeFailed
 				result.Err = err
 			} else {
