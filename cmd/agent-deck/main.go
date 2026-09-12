@@ -963,6 +963,9 @@ func main() {
 				defer cancel()
 				_ = server.Shutdown(ctx)
 			}()
+			watchCtx, stopWatch := context.WithCancel(context.Background())
+			defer stopWatch()
+			startHeadlessSelfRestart(watchCtx, server.Idle)
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
 					slog.String("error", err.Error()))
@@ -1071,6 +1074,39 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// startHeadlessSelfRestart makes `web --no-tui` pick up an installed
+// update on its own: once a newer binary is on disk and idle reports no
+// request in flight, the process re-execs itself with the same args and
+// environment, so the server comes back on the same port (the listener
+// closes with the exec; Go listeners set SO_REUSEADDR). Nothing is shut
+// down first on purpose: a graceful Shutdown would return Start() and
+// race main's exit against the exec, while the exec itself is atomic
+// from the kernel's point of view. Open event streams reconnect from the
+// browser. Off with [updates].auto_restart = false, for Homebrew-managed
+// binaries (brew owns those), and under AGENTDECK_SKIP_UPDATE_CHECK.
+func startHeadlessSelfRestart(ctx context.Context, idle func() bool) {
+	webLog := logging.ForComponent(logging.CompWeb)
+	if os.Getenv(update.SkipUpdateCheckEnv) != "" || !session.GetUpdateSettings().GetAutoRestart() {
+		webLog.Debug("self_restart_disabled", slog.String("reason", "auto_restart off or update check skipped"))
+		return
+	}
+	if _, _, managed, _ := update.DetectHomebrewManagedInstall(); managed {
+		webLog.Debug("self_restart_disabled", slog.String("reason", "homebrew-managed install"))
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		return
+	}
+	w := &update.Watcher{
+		Exe:            exe,
+		RunningVersion: Version,
+		Idle:           idle,
+		Log:            webLog,
+	}
+	go w.Run(ctx)
 }
 
 // commandRegistry lists every token that main()'s dispatch switch treats
