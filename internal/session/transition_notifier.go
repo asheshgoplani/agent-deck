@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -535,16 +536,40 @@ func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
 	_ = n.saveStateLocked()
 }
 
+// lastNotifiedTurn reports the persisted last-notified (to_status, output
+// hash) for a child, or ok=false when this child has never been notified. The
+// daemon's restart seed compares it against the child's current status so a
+// recycle re-notifies only a turn that actually happened while it was down.
+func (n *TransitionNotifier) lastNotifiedTurn(childID string) (to, outputHash string, ok bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	rec, ok := n.state.Records[strings.TrimSpace(childID)]
+	if !ok {
+		return "", "", false
+	}
+	return rec.To, rec.OutputHash, true
+}
+
+// loadState reads the persisted last-notified records. A missing file is the
+// first-ever start; an unreadable or corrupt file is logged and treated the same
+// way (fresh, empty state) so the daemon still comes up — the restart seed then
+// takes the registry as the baseline instead of replaying history.
 func (n *TransitionNotifier) loadState() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
 	data, err := os.ReadFile(n.statePath)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			commsLog.Warn("transition_notify_state_unreadable",
+				slog.String("path", n.statePath), slog.String("error", err.Error()))
+		}
 		return
 	}
 	var state transitionNotifyState
 	if err := json.Unmarshal(data, &state); err != nil {
+		commsLog.Warn("transition_notify_state_corrupt",
+			slog.String("path", n.statePath), slog.String("error", err.Error()))
 		return
 	}
 	if state.Records == nil {
