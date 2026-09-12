@@ -86,6 +86,13 @@ const (
 	// UnitStopSkipProcessAlive: the unit still supervises a live process we
 	// cannot prove is exclusively ours.
 	UnitStopSkipProcessAlive = "unit_process_alive"
+	// UnitStopSkipOwnershipUnproven means the exact socket/PID/starttime/
+	// cgroup evidence does not bind the retired server to this unit.
+	UnitStopSkipOwnershipUnproven = "ownership_unproven"
+	// UnitStopSkipUnsafeKillMode means an existing unit can still kill its
+	// whole cgroup. It is never stopped by this path, even if it looks empty:
+	// a sibling may attach after the occupancy probe.
+	UnitStopSkipUnsafeKillMode = "unsafe_unit_kill_mode"
 )
 
 // ServiceUnitOwnership is the evidence a caller supplies to prove it may
@@ -106,6 +113,16 @@ type ServiceUnitOwnership struct {
 	// gate distinguish "our generation is somehow still alive" from
 	// "systemd already spawned a replacement generation".
 	RetiredServerPID int
+
+	// RetiredServerStartTime is field 22 from /proc/<pid>/stat. It binds the
+	// PID to one process incarnation so PID reuse can never turn a stale
+	// snapshot into ownership of an unrelated server.
+	RetiredServerStartTime string
+
+	// RetiredServerCgroup is the exact cgroup read from that PID before
+	// teardown. It must exactly match the derived unit's ControlGroup before
+	// the unit may be retired; a name-derived unit alone is never ownership.
+	RetiredServerCgroup string
 }
 
 // ServiceUnitDecision reports what the ownership gate decided.
@@ -123,6 +140,17 @@ type serviceUnitState struct {
 	ActiveState  string
 	MainPID      int
 	MainPIDAlive bool
+	ControlGroup string
+	KillMode     string
+}
+
+// serverProcessEvidence is the immutable identity and cgroup location of a
+// tmux server process. It deliberately contains no executable/process-name
+// heuristic: ownership comes only from the session's exact socket probe plus
+// PID start time and cgroup membership.
+type serverProcessEvidence struct {
+	StartTime string
+	Cgroup    string
 }
 
 // systemctlLookPath is a swappable seam so tests can simulate a host with
@@ -150,12 +178,45 @@ var unitPIDAlive = func(pid int) bool {
 // production always uses the bounded single `list-sessions` probe.
 var liveSessionsOnSocket = ListSessionNamesOnSocket
 
+// readServerProcessEvidence reads the cgroup-v2 location and immutable start
+// time for pid. It is a seam so tests can deterministically model PID reuse
+// and cgroup ownership without touching /proc.
+var readServerProcessEvidence = func(pid int) (serverProcessEvidence, error) {
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return serverProcessEvidence{}, err
+	}
+	closeParen := strings.LastIndex(string(stat), ")")
+	if closeParen < 0 {
+		return serverProcessEvidence{}, os.ErrInvalid
+	}
+	// Fields after the final ')' begin at proc field 3, so starttime (field
+	// 22) is index 19. Parsing after the final ')' handles names containing
+	// spaces or parentheses without relying on the process name as identity.
+	fields := strings.Fields(string(stat[closeParen+1:]))
+	const startTimeIndex = 19
+	if len(fields) <= startTimeIndex || fields[startTimeIndex] == "" {
+		return serverProcessEvidence{}, os.ErrInvalid
+	}
+
+	cgroups, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cgroup")
+	if err != nil {
+		return serverProcessEvidence{}, err
+	}
+	for _, line := range strings.Split(string(cgroups), "\n") {
+		if _, path, ok := strings.Cut(strings.TrimSpace(line), "0::"); ok && path != "" {
+			return serverProcessEvidence{StartTime: fields[startTimeIndex], Cgroup: path}, nil
+		}
+	}
+	return serverProcessEvidence{}, os.ErrInvalid
+}
+
 // readServiceUnitState reads ActiveState + MainPID for one unit. Returns
 // an error when systemctl cannot be consulted — an unknown unit is NOT an
 // error (systemd reports ActiveState=inactive / MainPID=0 for not-found).
 var readServiceUnitState = func(unit string) (serviceUnitState, error) {
 	out, err := execCommand("systemctl", "--user", "show", unit,
-		"-p", "ActiveState", "-p", "MainPID").Output()
+		"-p", "ActiveState", "-p", "MainPID", "-p", "ControlGroup", "-p", "KillMode").Output()
 	if err != nil {
 		return serviceUnitState{}, err
 	}
@@ -178,6 +239,10 @@ func parseServiceUnitState(out string) serviceUnitState {
 			if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && n > 0 {
 				st.MainPID = n
 			}
+		case "ControlGroup":
+			st.ControlGroup = strings.TrimSpace(value)
+		case "KillMode":
+			st.KillMode = strings.ToLower(strings.TrimSpace(value))
 		}
 	}
 	st.MainPIDAlive = unitPIDAlive(st.MainPID)
@@ -193,6 +258,24 @@ func unitStartJobInFlight(activeState string) bool {
 		return true
 	}
 	return false
+}
+
+// serviceUnitOwnershipProof verifies that the pre-teardown server identity
+// belongs to this exact service cgroup. The socket is proven by ServerPID's
+// tmux display-message probe; PID + starttime prevent PID reuse; cgroup binds
+// that server to the unit. Missing evidence is intentionally a refusal.
+func serviceUnitOwnershipProof(own ServiceUnitOwnership, state serviceUnitState) (bool, string) {
+	if own.RetiredServerPID <= 0 || own.RetiredServerStartTime == "" || own.RetiredServerCgroup == "" ||
+		state.ControlGroup == "" || own.RetiredServerCgroup != state.ControlGroup ||
+		!strings.HasSuffix(state.ControlGroup, "/"+ServiceUnitName(own.SessionName)) {
+		return false, UnitStopSkipOwnershipUnproven
+	}
+	if state.KillMode != "none" {
+		// Units created before #2219 commonly report control-group here. Do
+		// not stop them: another session can attach after our socket listing.
+		return false, UnitStopSkipUnsafeKillMode
+	}
+	return true, UnitStopReasonExclusive
 }
 
 // evaluateServiceUnitOwnership is the pure ownership predicate: given the
@@ -228,7 +311,7 @@ func evaluateServiceUnitOwnership(
 		}
 		return false, UnitStopSkipProcessAlive
 	}
-	return true, UnitStopReasonExclusive
+	return serviceUnitOwnershipProof(own, state)
 }
 
 // StopServiceUnitOwned stops + resets-failed the transient systemd-user
@@ -295,11 +378,29 @@ func (s *Session) ServiceUnitOwnership() ServiceUnitOwnership {
 	if s == nil {
 		return ServiceUnitOwnership{}
 	}
-	return ServiceUnitOwnership{
-		SessionName:      s.Name,
-		SocketName:       s.SocketName,
-		RetiredServerPID: s.ServerPID(),
+	own := ServiceUnitOwnership{SessionName: s.Name, SocketName: s.SocketName}
+	pid := s.ServerPID() // exact Session.SocketName probe; no name matching.
+	if pid <= 0 {
+		return own
 	}
+
+	first, err := readServerProcessEvidence(pid)
+	if err != nil {
+		return own
+	}
+	// Re-read the server PID and its immutable evidence. If it changed while
+	// snapshotting, PID reuse or server replacement made ownership unprovable.
+	if s.ServerPID() != pid {
+		return own
+	}
+	second, err := readServerProcessEvidence(pid)
+	if err != nil || first != second {
+		return own
+	}
+	own.RetiredServerPID = pid
+	own.RetiredServerStartTime = first.StartTime
+	own.RetiredServerCgroup = first.Cgroup
+	return own
 }
 
 // ServerPID returns the pid of the tmux server hosting this session, or 0

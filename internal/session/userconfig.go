@@ -2665,9 +2665,10 @@ type TmuxSettings struct {
 
 	// LaunchAs selects the spawn form for new tmux servers (v1.7.21+).
 	// Valid values (case-insensitive, whitespace-trimmed):
-	//   "scope"   — systemd-run --user --scope (PR #467 legacy behavior)
+	//   "scope"   — systemd-run --user --scope with KillMode=none, so
+	//               stopping one per-session scope cannot kill a shared server.
 	//   "service" — systemd-run --user --unit <NAME>.service with
-	//               Type=forking + Restart=on-failure. Adds auto-restart
+	//               Type=forking + Restart=on-failure + KillMode=none. Adds auto-restart
 	//               if the tmux daemon dies unexpectedly (OOM, SIGKILL,
 	//               kernel signal). Opt-in defense-in-depth.
 	//   "direct"  — plain `tmux new-session` (no systemd isolation).
@@ -2680,8 +2681,9 @@ type TmuxSettings struct {
 	// LaunchInUserScope) so a config typo doesn't silently opt the user
 	// onto an unintended spawn path.
 	//
-	// This is additive — v1.7.20 users get zero behavior change until
-	// they explicitly set launch_as.
+	// Both systemd forms preserve SSH/logout isolation while avoiding a
+	// control-group teardown of a shared tmux server. This changes only units
+	// spawned after #2219; existing transient units are never migrated.
 	LaunchAs *string `toml:"launch_as,omitempty"`
 
 	// WindowStyleOverride sets the tmux window-style (and window-active-style) for

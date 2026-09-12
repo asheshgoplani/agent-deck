@@ -46,8 +46,8 @@ func TestStartCommandSpec_LaunchAs_Service_UsesServiceForm(t *testing.T) {
 	assert.Contains(t, joined, "--property=Restart=on-failure",
 		"Restart=on-failure is the entire point of v1.7.21 — its absence silently breaks the feature")
 	assert.Contains(t, joined, "--property=RestartSec=")
-	assert.Contains(t, joined, "--property=KillMode=control-group",
-		"KillMode=control-group ensures systemctl stop kills tmux cleanly via cgroup")
+	assert.Contains(t, joined, "--property=KillMode=none",
+		"a per-session service must not kill the shared tmux server's cgroup when stopped")
 
 	assert.NotContains(t, joined, "--scope",
 		"service mode MUST NOT include --scope (would conflict and produce an invalid unit)")
@@ -77,7 +77,8 @@ func TestStartCommandSpec_LaunchAs_Scope_UsesScopeForm(t *testing.T) {
 	require.GreaterOrEqual(t, len(args), 8)
 	assert.Equal(t, []string{"--user", "--scope", "--quiet", "--collect", "--unit"}, args[:5])
 	assert.Equal(t, "agentdeck-tmux-agentdeck-test-scope-1234abcd", args[5])
-	assert.Equal(t, "tmux", args[6])
+	assert.Equal(t, "--property=KillMode=none", args[6])
+	assert.Equal(t, "tmux", args[7])
 
 	joined := strings.Join(args, " ")
 	assert.NotContains(t, joined, "--property=Type=forking",
@@ -204,7 +205,7 @@ func TestStripSystemdRunPrefix_RecoversTmuxArgsFromServiceForm(t *testing.T) {
 		"--property=RestartSec=5s",
 		"--property=StartLimitBurst=10",
 		"--property=StartLimitIntervalSec=60",
-		"--property=KillMode=control-group",
+		"--property=KillMode=none",
 		"--property=TimeoutStopSec=15s",
 		"tmux",
 		"new-session", "-d", "-s", "name",
