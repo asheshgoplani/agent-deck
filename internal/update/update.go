@@ -477,6 +477,14 @@ func CompareVersions(v1, v2 string) int {
 	return comparePreRelease(pre1, pre2)
 }
 
+// splitPreRelease separates "1.2.3-rc.1+build" into its numeric core "1.2.3"
+// and pre-release tag "rc.1". Build metadata after "+" is ignored either way.
+func splitPreRelease(v string) (core, pre string) {
+	v, _, _ = strings.Cut(v, "+")
+	core, pre, _ = strings.Cut(v, "-")
+	return core, pre
+}
+
 // comparePreRelease orders two pre-release tags the way semver 2.0 §11
 // does: dot-separated identifiers compared left to right, numeric ones as
 // numbers (so rc.2 < rc.10), numeric below alphanumeric, and a tag that is
@@ -484,15 +492,11 @@ func CompareVersions(v1, v2 string) int {
 func comparePreRelease(a, b string) int {
 	as, bs := strings.Split(a, "."), strings.Split(b, ".")
 	for i := 0; i < len(as) && i < len(bs); i++ {
-		an, aNum := parseNumericIdentifier(as[i])
-		bn, bNum := parseNumericIdentifier(bs[i])
+		aNum, bNum := isNumericIdentifier(as[i]), isNumericIdentifier(bs[i])
 		switch {
 		case aNum && bNum:
-			if an != bn {
-				if an < bn {
-					return -1
-				}
-				return 1
+			if c := compareNumericIdentifiers(as[i], bs[i]); c != 0 {
+				return c
 			}
 		case aNum:
 			return -1
@@ -513,27 +517,32 @@ func comparePreRelease(a, b string) int {
 	return 0
 }
 
-// parseNumericIdentifier reports whether id is all digits and its value.
-func parseNumericIdentifier(id string) (int, bool) {
+// isNumericIdentifier reports whether id is one or more ASCII digits.
+func isNumericIdentifier(id string) bool {
 	if id == "" {
-		return 0, false
+		return false
 	}
-	n := 0
 	for _, c := range id {
 		if c < '0' || c > '9' {
-			return 0, false
+			return false
 		}
-		n = n*10 + int(c-'0')
 	}
-	return n, true
+	return true
 }
 
-// splitPreRelease separates "1.2.3-rc.1+build" into its numeric core "1.2.3"
-// and pre-release tag "rc.1". Build metadata after "+" is ignored either way.
-func splitPreRelease(v string) (core, pre string) {
-	v, _, _ = strings.Cut(v, "+")
-	core, pre, _ = strings.Cut(v, "-")
-	return core, pre
+// compareNumericIdentifiers orders two digit strings by value without
+// converting them: leading zeros dropped, then longer is larger, then
+// lexical. No integer width is involved, so an identifier past int64
+// (a build counter, a timestamp) still sorts correctly.
+func compareNumericIdentifiers(a, b string) int {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	}
+	return strings.Compare(a, b)
 }
 
 // CheckForUpdate checks if a new version is available
