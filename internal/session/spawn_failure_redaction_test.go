@@ -108,6 +108,30 @@ func TestRedactSpawnFailureDiagnostic_CoversBoundedCredentialForms(t *testing.T)
 			contains: `Authorization="Bearer [redacted]"`,
 		},
 		{
+			name:     "single quoted bearer authorization credential",
+			input:    `Authorization: Bearer 'single-quoted-bearer-marker' mytool`,
+			secret:   "single-quoted-bearer-marker",
+			contains: "Authorization: Bearer [redacted] mytool",
+		},
+		{
+			name:     "double quoted basic authorization credential",
+			input:    `Authorization: Basic "double-quoted-basic-marker" mytool`,
+			secret:   "double-quoted-basic-marker",
+			contains: "Authorization: Basic [redacted] mytool",
+		},
+		{
+			name:     "malformed single quoted authorization credential",
+			input:    "Authorization: Bearer 'unterminated-single-marker\nnormal diagnostic survives",
+			secret:   "unterminated-single-marker",
+			contains: "Authorization: Bearer [redacted]\nnormal diagnostic survives",
+		},
+		{
+			name:     "malformed double quoted authorization credential",
+			input:    "Authorization: Basic \"unterminated-double-marker\nnormal diagnostic survives",
+			secret:   "unterminated-double-marker",
+			contains: "Authorization: Basic [redacted]\nnormal diagnostic survives",
+		},
+		{
 			name:     "malformed quote remains safe",
 			input:    "export ACCESS_TOKEN='token-marker unterminated",
 			secret:   "token-marker",
@@ -127,6 +151,53 @@ func TestRedactSpawnFailureDiagnostic_CoversBoundedCredentialForms(t *testing.T)
 				t.Fatalf("redacted diagnostic = %q, missing %q", got, tc.contains)
 			}
 		})
+	}
+}
+
+// Quoted Authorization credentials must be redacted before persistence and
+// remain redacted when the saved record is rendered for display.
+func TestSpawnFailureRecord_RedactsQuotedAuthorizationAtPersistenceAndDisplay(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runtime", "spawn-failure")
+	markers := []string{
+		"persisted-single-quoted-bearer-marker",
+		"persisted-double-quoted-basic-marker",
+		"persisted-unterminated-single-marker",
+		"persisted-unterminated-double-marker",
+	}
+	rec := SpawnFailureRecord{
+		InstanceID: "quoted-authorization",
+		Tool:       "generic",
+		Command:    "mytool --session-id session-keep",
+		Reason:     "prepare_failed",
+		DyingOutput: "Authorization: Bearer 'persisted-single-quoted-bearer-marker'\n" +
+			"Authorization: Basic \"persisted-double-quoted-basic-marker\"\n" +
+			"Authorization: Bearer 'persisted-unterminated-single-marker\n" +
+			"Authorization: Basic \"persisted-unterminated-double-marker",
+	}
+	if err := writeSpawnFailureRecordTo(rec, dir); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "quoted-authorization.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var got SpawnFailureRecord
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, marker := range markers {
+		if strings.Contains(string(data), marker) {
+			t.Fatalf("quoted credential marker leaked into sidecar: %s", marker)
+		}
+		if strings.Contains(got.FormatForDisplay(), marker) {
+			t.Fatalf("quoted credential marker leaked through display: %s", marker)
+		}
+	}
+	if !strings.Contains(got.Command, "--session-id session-keep") ||
+		!strings.Contains(got.FormatForDisplay(), "Authorization: Bearer [redacted]") ||
+		!strings.Contains(got.FormatForDisplay(), "Authorization: Basic [redacted]") {
+		t.Fatalf("redaction did not preserve normal diagnostics: %+v", got)
 	}
 }
 

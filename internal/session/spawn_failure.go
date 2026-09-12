@@ -65,7 +65,7 @@ const shellValuePattern = `'(?:[^']*(?:'\\''[^']*)*)'?|"(?:\\.|[^"])*"?|[^\s;&|]
 var (
 	shellAssignmentPattern     = regexp.MustCompile(`(?is)(\b(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*)((?:` + shellValuePattern + `))`)
 	sensitiveOptionPattern     = regexp.MustCompile(`(?is)(--([A-Za-z][A-Za-z0-9_-]*)=?[ \t]*)((?:` + shellValuePattern + `))`)
-	authorizationHeaderPattern = regexp.MustCompile(`(?is)(\b(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*)(["']?)(bearer|basic)[ \t]+([^ \t\r\n,;'"&|]+)(["']?)`)
+	authorizationHeaderPattern = regexp.MustCompile(`(?is)(\b(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*)(["']?)(bearer|basic)[ \t]+(?:'[^'\r\n]*'?|"[^"\r\n]*"?|[^ \t\r\n,;'"&|]+)(["']?)`)
 )
 
 // redactSpawnFailureDiagnostic removes common credential-bearing values before
