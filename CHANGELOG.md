@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.7] - 2026-09-12
+
+The controller keeps itself current and restarts the TUI in place, deploys behind symlinked install paths work, the notify daemon restarts without re-notifying parked children, and the New Session dialog walks with Enter.
+
+### Added
+
+- Unattended self-update on the controller: `[updates] auto_install` (on by default, `false` to opt out) installs an available release from the TUI's periodic check and from a daily timer that `agent-deck update --install-timer` sets up (launchd on macOS, systemd user timer on Linux; `--uninstall-timer` removes it). `[updates] auto_restart` (on by default) re-execs the TUI in place once a newer binary is on disk and the TUI is idle (no dialog open, no attach in progress) and the new binary passes an executable probe; `web --no-tui` re-execs the same way, `remote-agent` drains and exits so the controller reconnects, and `notify-daemon` leaves the restart to its supervisor. With `auto_restart` off, the TUI shows the installed version and `ctrl+t` restarts in place; `ctrl+y` installs from the banner. On macOS, after an unattended install, agent-deck re-bootstraps its own launchd agents (`com.agentdeck.*` whose program is the replaced binary, except the update timer itself); if that step fails the new binary stays installed and the exact repair commands are printed. Unattended installs never replace a Homebrew-managed binary (the `brew` command is printed instead); an interactive `agent-deck update` can still run a confirmed Homebrew upgrade ([#2165](https://github.com/asheshgoplani/agent-deck/pull/2165)).
+- The New Session dialog walks with Enter from field to field down to a Create button (`[ui] new_session_enter_advances`, on by default; `false` keeps Enter-to-create), the Model ID row no longer loops, Tab reaches every Claude option, and every dialog row has an `add`/`launch` flag (including `--effort`) with `--help` text. The account switch in the Edit Session dialog asks for confirmation before it saves and switches ([#2239](https://github.com/asheshgoplani/agent-deck/pull/2239)).
+
+### Fixed
+
+- Controller-driven remote deploys resolve a symlinked install path and update the file behind the link, preserving owner and group. Before writing, the deploy probes the remote's `$PATH` binary; a failed probe skips with a report. When the `$PATH` binary is a different file that is older, it is updated too; one already at the target version or newer is left alone and only the configured binary is verified. After writing, the installed binary is verified and a verification failure is reported as such. An explicit `remote update --all` during a startup sweep waits up to two minutes instead of failing, and `remote list --check` refreshes after a deploy ([#2245](https://github.com/asheshgoplani/agent-deck/pull/2245), closes #2244).
+- The notify daemon seeds its last-notified state from the live session list on start, so a restart (the systemd `RuntimeMaxSec` recycle or an update) no longer re-emits a transition for every parked child; children whose status changed while the daemon was down are still notified once. The `[INBOX]` nudge is skipped when the turn was already consumed (the ledger record still commits). Known gap: a child that was never notified before and finishes its first turn inside the daemon's own restart window is seeded rather than notified ([#2242](https://github.com/asheshgoplani/agent-deck/pull/2242), closes #2240).
+
 ## [1.16.6] - 2026-09-12
 
 Remotes now follow the controller's version on their own, a session can switch its Claude account or move to another harness with its conversation carried over, and the account badge only appears when it means something.
