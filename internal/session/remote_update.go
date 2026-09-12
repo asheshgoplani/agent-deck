@@ -97,6 +97,9 @@ func loadRemoteVersionCache() remoteVersionCache {
 	return cache
 }
 
+// saveRemoteVersionCache writes the cache through a temp file and a rename
+// so a reader never sees a truncated file and two writers never interleave
+// bytes; the last complete write wins.
 func saveRemoteVersionCache(cache remoteVersionCache) error {
 	path, err := remoteVersionCachePath()
 	if err != nil {
@@ -109,7 +112,62 @@ func saveRemoteVersionCache(cache remoteVersionCache) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), remoteVersionCacheFile+".*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// remoteAutoUpdateClaimStale bounds how long a claim lock left behind by a
+// crashed process blocks the next claimant.
+const remoteAutoUpdateClaimStale = time.Minute
+
+// withRemoteAutoUpdateClaimLock runs fn while holding the cross-process
+// lock file next to the cache (O_EXCL create, removed afterwards). A lock
+// older than remoteAutoUpdateClaimStale is treated as abandoned. Returns
+// false without running fn when another process holds the lock.
+func withRemoteAutoUpdateClaimLock(fn func()) bool {
+	path, err := remoteVersionCachePath()
+	if err != nil {
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false
+	}
+	lockPath := path + ".claim"
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			f.Close()
+			defer os.Remove(lockPath)
+			fn()
+			return true
+		}
+		info, statErr := os.Stat(lockPath)
+		if statErr != nil || time.Since(info.ModTime()) < remoteAutoUpdateClaimStale {
+			return false
+		}
+		_ = os.Remove(lockPath) // abandoned by a crashed claimant; retry once
+	}
+	return false
 }
 
 // LoadRemoteVersions returns the cached per-remote version states. Missing or
@@ -159,6 +217,27 @@ func MarkRemoteAutoUpdateRan(at time.Time) error {
 	cache := loadRemoteVersionCache()
 	cache.AutoUpdateRanAt = at
 	return saveRemoteVersionCache(cache)
+}
+
+// ClaimRemoteAutoUpdateRun is the startup sweep's check-and-stamp in one
+// step: under the in-process cache lock and a cross-process lock file it
+// re-reads the stamp, applies ShouldAutoUpdateRemotes, and writes the new
+// stamp before returning true. Two TUIs starting at once therefore agree on
+// a single sweep, and a stamp that cannot be written yields false, so a
+// broken cache dir never causes a sweep on every startup (#2164).
+func ClaimRemoteAutoUpdateRun(settings UpdateSettings, remoteCount int, now time.Time) bool {
+	remoteVersionCacheMu.Lock()
+	defer remoteVersionCacheMu.Unlock()
+	claimed := false
+	withRemoteAutoUpdateClaimLock(func() {
+		cache := loadRemoteVersionCache()
+		if !ShouldAutoUpdateRemotes(settings, remoteCount, cache.AutoUpdateRanAt, now) {
+			return
+		}
+		cache.AutoUpdateRanAt = now
+		claimed = saveRemoteVersionCache(cache) == nil
+	})
+	return claimed
 }
 
 // ShouldAutoUpdateRemotes is the pure decision behind the startup sweep:

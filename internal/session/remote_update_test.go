@@ -3,7 +3,11 @@ package session
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -328,6 +332,123 @@ func TestDeployRemoteBinary_NoCurrentVersionDeploys(t *testing.T) {
 	if _, err := DeployRemoteBinary(context.Background(), stub, "1.16.0", opts); err != nil || stub.installs != 1 {
 		t.Fatalf("err = %v, installs = %d", err, stub.installs)
 	}
+}
+
+// ClaimRemoteAutoUpdateRun is the check and the stamp in one step: of many
+// startups racing for the same interval exactly one sweeps, an opted-out
+// config never claims, and an unwritable cache dir yields no claim rather
+// than a sweep on every start.
+func TestClaimRemoteAutoUpdateRun(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	on := UpdateSettings{CheckIntervalHours: 24}
+
+	var wg sync.WaitGroup
+	var claimed atomic.Int32
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ClaimRemoteAutoUpdateRun(on, 2, now) {
+				claimed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if claimed.Load() != 1 {
+		t.Fatalf("%d concurrent claims succeeded, want exactly 1", claimed.Load())
+	}
+	if !RemoteAutoUpdateRanAt().Equal(now) {
+		t.Fatalf("stamp = %v, want %v", RemoteAutoUpdateRanAt(), now)
+	}
+	if ClaimRemoteAutoUpdateRun(on, 2, now.Add(time.Hour)) {
+		t.Fatal("a claim inside the interval must fail")
+	}
+	if !ClaimRemoteAutoUpdateRun(on, 2, now.Add(25*time.Hour)) {
+		t.Fatal("a claim after the interval must succeed")
+	}
+	off := UpdateSettings{AutoUpdateRemotes: boolPtr(false)}
+	if ClaimRemoteAutoUpdateRun(off, 2, now.Add(72*time.Hour)) {
+		t.Fatal("an opted-out config must never claim")
+	}
+	if ClaimRemoteAutoUpdateRun(on, 0, now.Add(72*time.Hour)) {
+		t.Fatal("no remotes, no claim")
+	}
+	if entries, _ := filepath.Glob(filepath.Join(filepath.Dir(mustCachePath(t)), "*.claim")); len(entries) != 0 {
+		t.Errorf("claim lock left behind: %v", entries)
+	}
+}
+
+func TestClaimRemoteAutoUpdateRun_LockHeldAndStale(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	on := UpdateSettings{CheckIntervalHours: 24}
+	lock := mustCachePath(t) + ".claim"
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ClaimRemoteAutoUpdateRun(on, 2, now) {
+		t.Fatal("a fresh lock held by another process must block the claim")
+	}
+	old := time.Now().Add(-2 * remoteAutoUpdateClaimStale)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if !ClaimRemoteAutoUpdateRun(on, 2, now) {
+		t.Fatal("an abandoned lock must be cleared and the claim succeed")
+	}
+}
+
+func TestClaimRemoteAutoUpdateRun_UnwritableCacheNeverClaims(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write anywhere")
+	}
+	setupSessionXDGPathEnv(t)
+	dir := filepath.Dir(mustCachePath(t))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if ClaimRemoteAutoUpdateRun(UpdateSettings{CheckIntervalHours: 24}, 2, time.Now()) {
+		t.Fatal("a stamp that cannot be written must not grant a sweep")
+	}
+}
+
+// The cache is replaced by rename: no reader sees a half-written file and no
+// temp file is left behind.
+func TestRemoteVersionCache_SaveIsAtomicAndClean(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	if err := RecordRemoteVersions(map[string]RemoteVersionState{"lab": {Version: "1.16.0", Found: true}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(mustCachePath(t))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+	if info, err := os.Stat(mustCachePath(t)); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("cache mode = %v (%v), want 0600", info, err)
+	}
+}
+
+func mustCachePath(t *testing.T) string {
+	t.Helper()
+	path, err := remoteVersionCachePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestUpdateRemotes_InstallMissingDeploysAbsentBinary(t *testing.T) {

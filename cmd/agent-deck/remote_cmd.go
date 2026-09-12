@@ -786,7 +786,9 @@ func reorderRemoteArgs(fs *flag.FlagSet, args []string) []string {
 // remote that reports an older one. It never blocks startup (the sweep runs
 // in a goroutine), never prompts, and only writes to the debug log because
 // the TUI owns the screen by then. Throttled to once per check interval via
-// the shared version cache; the explicit `agent-deck update` path resets
+// a claim in the shared version cache (check and stamp under one lock, so
+// two TUIs starting together run one sweep, and a stamp that cannot be
+// written means no sweep); the explicit `agent-deck update` path resets
 // that stamp too, so a fresh controller version still sweeps promptly.
 func startRemoteAutoUpdate() {
 	settings := session.GetUpdateSettings()
@@ -794,7 +796,7 @@ func startRemoteAutoUpdate() {
 	if err != nil || config == nil {
 		return
 	}
-	if !session.ShouldAutoUpdateRemotes(settings, len(config.Remotes), session.RemoteAutoUpdateRanAt(), time.Now()) {
+	if !session.ClaimRemoteAutoUpdateRun(settings, len(config.Remotes), time.Now()) {
 		return
 	}
 	remotes := config.Remotes
@@ -802,13 +804,11 @@ func startRemoteAutoUpdate() {
 }
 
 // runRemoteAutoUpdate is the body of the startup sweep, split out so a test
-// can run it synchronously against a stubbed runner.
+// can run it synchronously against a stubbed runner. The caller has already
+// claimed the run (stamped the cache), so a crash mid-sweep does not retry
+// on every restart.
 func runRemoteAutoUpdate(remotes map[string]session.RemoteConfig, target string) []session.RemoteUpdateResult {
 	log := logging.ForComponent(logging.CompSession)
-	// Stamp first so a crash mid-sweep does not retry on every restart.
-	if err := session.MarkRemoteAutoUpdateRan(time.Now()); err != nil {
-		log.Warn("remote_auto_update_stamp_failed", slog.String("error", err.Error()))
-	}
 	log.Info("remote_auto_update_start", slog.Int("remotes", len(remotes)), slog.String("target", target))
 	results := session.UpdateRemotes(context.Background(), remotes, target, session.RemoteUpdateOptions{
 		InstallMissing: false,
