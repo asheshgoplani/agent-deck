@@ -272,3 +272,21 @@ func TestRemoteSessionsFetchedMsg_RecordsVersions(t *testing.T) {
 		t.Errorf("a poll without a version answer must keep the previous one: %+v", state)
 	}
 }
+
+// #2244: a failed remote update shows its full message in a dialog; the
+// one-line footer truncates the remedy at the terminal edge.
+func TestRemoteUpdatedMsg_FailureOpensNoticeWithFullMessage(t *testing.T) {
+	home := armHomeOnRemoteHeader(t, "1.15.0")
+	long := errors.New("deployed v1.16.6 to /usr/local/bin/agent-deck, but the remote runs v1.16.5 from $PATH; set agent_deck_path to the binary the remote's PATH finds (command -v agent-deck) or fix the remote's PATH")
+	_, _ = home.Update(remoteUpdatedMsg{remoteName: "lab", from: "1.15.0", to: "1.16.6", err: long})
+	if !home.confirmDialog.IsVisible() || home.confirmDialog.GetConfirmType() != ConfirmNotice {
+		t.Fatal("a failed update must open the notice dialog")
+	}
+	// Collapse the box drawing and wrapping so the whole sentence is checked.
+	flat := strings.Join(strings.Fields(strings.NewReplacer("│", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(stripANSIForGroupNesting(home.confirmDialog.View()))), " ")
+	for _, want := range []string{"deployed v1.16.6 to /usr/local/bin/agent-deck,", "(command -v agent-deck) or fix the remote's PATH"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("dialog must carry the whole remedy; missing %q in:\n%s", want, home.confirmDialog.View())
+		}
+	}
+}

@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,3 +123,67 @@ func (s *probeFailedStub) DetectPlatform(context.Context) (string, string, error
 	return "", "", errors.New("stub: no platform")
 }
 func (s *probeFailedStub) InstallBinary(context.Context, []byte, string) error { return nil }
+
+// #2244: `remote update --all` while this controller's startup sweep is still
+// running waits for it (bounded) and, if it is still going, reports each
+// remote the sweep covers as "being updated by <pid>" without failing, so
+// the exit status is 0 and no second deploy races the first.
+func TestRunRemoteUpdatesCLI_WaitsForRunningSweepThenReportsIt(t *testing.T) {
+	setupTask6XDGEnv(t)
+	orig := remoteUpdateRunner
+	t.Cleanup(func() { remoteUpdateRunner = orig })
+	// Both remotes answer as current so the only thing that decides their
+	// outcome is the sweep coordination.
+	stub := &autoUpdateStub{version: "1.16.0", found: true}
+	remoteUpdateRunner = func(string, session.RemoteConfig) session.RemoteBinaryInstaller { return stub }
+	remotes := map[string]session.RemoteConfig{"lab": {Host: "a@lab"}, "other": {Host: "a@other"}}
+
+	end, err := session.BeginRemoteSweep([]string{"lab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(end)
+	results := runRemoteUpdatesCLI(context.Background(), remotes, "1.16.0", 50*time.Millisecond)
+	byName := map[string]session.RemoteUpdateResult{}
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+	lab := byName["lab"]
+	if lab.Outcome != session.RemoteUpdateOutcomeSkipped || !strings.Contains(lab.String(), "sweep already in progress") || !strings.Contains(lab.String(), fmt.Sprintf("being updated by %d", os.Getpid())) {
+		t.Fatalf("lab = %+v (%s), want skipped as being updated by the sweep", lab, lab)
+	}
+	if other := byName["other"]; other.Outcome != session.RemoteUpdateOutcomeCurrent {
+		t.Fatalf("a remote the sweep does not cover must be handled normally: %s", other)
+	}
+	if session.CountRemoteUpdateFailures(results) != 0 {
+		t.Fatal("waiting on our own sweep is not a failure")
+	}
+
+	// Once the sweep ends within the wait, the update proceeds normally.
+	end()
+	results = runRemoteUpdatesCLI(context.Background(), remotes, "1.16.0", 50*time.Millisecond)
+	for _, r := range results {
+		if strings.Contains(r.String(), "sweep") {
+			t.Fatalf("no sweep is running any more: %s", r)
+		}
+	}
+}
+
+// The sweeps mark themselves so the CLI can see them.
+func TestRunRemoteAutoUpdate_MarksItselfInProgress(t *testing.T) {
+	setupTask6XDGEnv(t)
+	orig := remoteAutoUpdateRunner
+	t.Cleanup(func() { remoteAutoUpdateRunner = orig })
+	var seen bool
+	remoteAutoUpdateRunner = func(string, session.RemoteConfig) session.RemoteBinaryInstaller {
+		_, seen = session.RemoteSweepInProgress()
+		return &autoUpdateStub{version: "1.16.0", found: true}
+	}
+	runRemoteAutoUpdate(map[string]session.RemoteConfig{"lab": {Host: "a@lab"}}, "1.16.0")
+	if !seen {
+		t.Fatal("the startup sweep must be marked in progress while it runs")
+	}
+	if _, ok := session.RemoteSweepInProgress(); ok {
+		t.Fatal("the marker must be cleared afterwards")
+	}
+}

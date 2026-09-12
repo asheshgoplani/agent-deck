@@ -32,10 +32,11 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 		t.Fatalf("DeployBinary returned error: %v", err)
 	}
 
-	if len(*calls) != 1 {
-		t.Fatalf("expected exactly one remote command, got %d: %v", len(*calls), *calls)
+	// One round trip resolves symlinks at the path (#2244), one deploys.
+	if len(*calls) != 2 || !strings.Contains((*calls)[0], "resolve "+shellQuote(target)) {
+		t.Fatalf("expected a resolve then one deploy command, got %d: %v", len(*calls), *calls)
 	}
-	cmd := (*calls)[0]
+	cmd := (*calls)[1]
 
 	// Must NOT redirect the new bytes straight onto the live binary (ETXTBSY).
 	if strings.Contains(cmd, "cat > "+shellQuote(target)) || strings.Contains(cmd, `cat > "$p"`) {
@@ -44,7 +45,7 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 
 	// Must stage to a temp path unique to this deploy and atomically rename
 	// it onto the target, which arrives as the script's second argument.
-	for _, want := range []string{`t="$p.new.$$"`, `cat > "$t"`, `mv -f "$t" "$p"`, `chmod 0755 "$t"`} {
+	for _, want := range []string{`t="$p.new.$$"`, `cat > "$t"`, `mv -f "$t" "$p"`, `chmod "$mode" "$t"`, `chmod a+rx "$t"`, `if [ -L "$p" ]`} {
 		if !strings.Contains(cmd, want) {
 			t.Fatalf("deploy script lacks %q; got:\n%s", want, cmd)
 		}
@@ -56,7 +57,9 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 	// sudo when the directory is not writable, and otherwise names the
 	// problem instead of leaving a bare "permission denied". The sudo probe
 	// runs the same binary as the real call.
-	for _, want := range []string{"[ -w '/home/daniel' ]", "sudo -n sh -c true", "sudo -n sh -c", "is not writable by", "$(id -un)", `mkdir "$lock"`} {
+	// A file owned by someone else in a writable directory takes the sudo
+	// route too, so the owner is kept instead of silently becoming us.
+	for _, want := range []string{"[ -w '/home/daniel' ]", "-O " + shellQuote(target), "sudo -n sh -c true", "sudo -n sh -c", "is not writable by", "$(id -un)", `mkdir "$lock"`} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("deploy command lacks %q:\n%s", want, cmd)
 		}
@@ -71,7 +74,10 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 // typed error the CLI, the TUI and the unattended sweep all print verbatim.
 func TestDeployBinary_NotWritableReportsRemedy(t *testing.T) {
 	const target = "/usr/local/bin/agent-deck"
-	r, _ := recordingRunner(func(string) (string, error) {
+	r, _ := recordingRunner(func(cmd string) (string, error) {
+		if !strings.Contains(cmd, "cat >") {
+			return "", nil // probes answer; only the deploy fails
+		}
 		return "", fmt.Errorf("remote command failed: exit status 3: agent-deck: install path %s is not writable by daniel\n", target)
 	})
 
@@ -92,7 +98,10 @@ func TestDeployBinary_NotWritableReportsRemedy(t *testing.T) {
 
 // Any other deploy failure keeps its original shape.
 func TestDeployBinary_OtherFailuresAreNotRelabelled(t *testing.T) {
-	r, _ := recordingRunner(func(string) (string, error) {
+	r, _ := recordingRunner(func(cmd string) (string, error) {
+		if !strings.Contains(cmd, "cat >") {
+			return "", nil
+		}
 		return "", errors.New("remote command failed: exit status 255: connection refused")
 	})
 	err := r.DeployBinary(context.Background(), []byte("bytes"), "/home/daniel/agent-deck")

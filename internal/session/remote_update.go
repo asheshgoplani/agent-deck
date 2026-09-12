@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -73,6 +74,94 @@ type remoteVersionCache struct {
 	Remotes map[string]RemoteVersionState `json:"remotes"`
 	// AutoUpdateRanAt throttles the startup auto-update sweep.
 	AutoUpdateRanAt time.Time `json:"auto_update_ran_at,omitempty"`
+	// Sweep marks a sweep this controller is running right now, so a
+	// `remote update --all` started meanwhile waits for it instead of
+	// racing it to the remotes' deploy locks (#2244).
+	Sweep *remoteSweepMarker `json:"sweep,omitempty"`
+}
+
+// remoteSweepMarker is the on-disk shape of RemoteSweep.
+type remoteSweepMarker struct {
+	PID       int       `json:"pid"`
+	StartedAt time.Time `json:"started_at"`
+	Remotes   []string  `json:"remotes"`
+}
+
+// RemoteSweep describes a sweep in progress on this controller.
+type RemoteSweep struct {
+	PID       int
+	StartedAt time.Time
+	Remotes   []string
+}
+
+// Covers reports whether the sweep is updating the named remote.
+func (s RemoteSweep) Covers(name string) bool {
+	for _, r := range s.Remotes {
+		if r == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrRemoteSweepRunning is returned by BeginRemoteSweep while another sweep
+// from this controller is still running.
+var ErrRemoteSweepRunning = errors.New("a remote sweep is already in progress on this controller")
+
+// remoteSweepStale bounds how long a marker whose process is still alive is
+// trusted: a sweep hung on SSH for this long is not one to wait for.
+const remoteSweepStale = 30 * time.Minute
+
+// BeginRemoteSweep records that this process is sweeping the named remotes
+// and returns the function that clears the marker. A live marker from
+// another process yields ErrRemoteSweepRunning; a marker whose process is
+// gone or which is older than remoteSweepStale is replaced.
+func BeginRemoteSweep(remotes []string) (end func(), err error) {
+	var running bool
+	err = updateRemoteVersionCache(func(cache *remoteVersionCache) {
+		if _, ok := liveSweep(cache.Sweep); ok {
+			running = true
+			return
+		}
+		names := append([]string(nil), remotes...)
+		sort.Strings(names)
+		cache.Sweep = &remoteSweepMarker{PID: os.Getpid(), StartedAt: time.Now(), Remotes: names}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if running {
+		return nil, ErrRemoteSweepRunning
+	}
+	return func() {
+		_ = updateRemoteVersionCache(func(cache *remoteVersionCache) {
+			if cache.Sweep != nil && cache.Sweep.PID == os.Getpid() {
+				cache.Sweep = nil
+			}
+		})
+	}, nil
+}
+
+// RemoteSweepInProgress reports the sweep this controller is running, if
+// its process is still alive and it started recently.
+func RemoteSweepInProgress() (RemoteSweep, bool) {
+	remoteVersionCacheMu.Lock()
+	defer remoteVersionCacheMu.Unlock()
+	return liveSweep(loadRemoteVersionCache().Sweep)
+}
+
+func liveSweep(m *remoteSweepMarker) (RemoteSweep, bool) {
+	if m == nil || m.PID <= 0 || time.Since(m.StartedAt) > remoteSweepStale || !sweepProcessAlive(m.PID) {
+		return RemoteSweep{}, false
+	}
+	return RemoteSweep{PID: m.PID, StartedAt: m.StartedAt, Remotes: append([]string(nil), m.Remotes...)}, true
+}
+
+// sweepProcessAlive reports whether a process with pid exists (signal 0; EPERM
+// still means it exists).
+func sweepProcessAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 var remoteVersionCacheMu sync.Mutex
@@ -365,23 +454,36 @@ type RemoteUpdateResult struct {
 	To      string // target version
 	Outcome RemoteUpdateOutcome
 	Err     error
+	// Note is where the deploy put the binary (the installer's report), or
+	// why a remote was left to another run; appended to the report line.
+	Note string
 }
 
 // String renders the one-line report used by the CLI and the log.
 func (r RemoteUpdateResult) String() string {
+	line := ""
 	switch r.Outcome {
 	case RemoteUpdateOutcomeUpdated:
 		if r.From == "" {
-			return fmt.Sprintf("%s: installed v%s", r.Name, r.To)
+			line = fmt.Sprintf("%s: installed v%s", r.Name, r.To)
+		} else {
+			line = fmt.Sprintf("%s: updated v%s -> v%s", r.Name, r.From, r.To)
 		}
-		return fmt.Sprintf("%s: updated v%s -> v%s", r.Name, r.From, r.To)
 	case RemoteUpdateOutcomeCurrent:
-		return fmt.Sprintf("%s: already current (v%s)", r.Name, r.From)
+		line = fmt.Sprintf("%s: already current (v%s)", r.Name, r.From)
 	case RemoteUpdateOutcomeSkipped:
-		return fmt.Sprintf("%s: skipped (%v)", r.Name, r.Err)
+		if r.Err == nil {
+			line = fmt.Sprintf("%s: skipped", r.Name)
+		} else {
+			line = fmt.Sprintf("%s: skipped (%v)", r.Name, r.Err)
+		}
 	default:
-		return fmt.Sprintf("%s: failed (%v)", r.Name, r.Err)
+		line = fmt.Sprintf("%s: failed (%v)", r.Name, r.Err)
 	}
+	if r.Note != "" {
+		line += "; " + r.Note
+	}
+	return line
 }
 
 // CountRemoteUpdateFailures returns how many results failed; callers map a
@@ -402,6 +504,12 @@ type RemoteBinaryInstaller interface {
 	CheckBinary(ctx context.Context) (version string, found bool)
 	DetectPlatform(ctx context.Context) (goos, goarch string, err error)
 	InstallBinary(ctx context.Context, binaryData []byte, expectedVersion string) error
+}
+
+// installReporter is the optional part of an installer that can say where
+// it put the binary; SSHRunner implements it.
+type installReporter interface {
+	LastInstallReport() string
 }
 
 // RemoteUpdateOptions tunes UpdateRemotes.
@@ -534,7 +642,6 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 	sort.Strings(names)
 
 	results := make([]RemoteUpdateResult, 0, len(names))
-	learned := make(map[string]RemoteVersionState, len(names))
 	for _, name := range names {
 		rc := remotes[name]
 		runner := opts.NewRunner(name, rc)
@@ -558,22 +665,31 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 			remoteOpts := opts
 			remoteOpts.CurrentVersion = plan.Version
 			deployed, err := DeployRemoteBinary(ctx, runner, target, remoteOpts)
-			if errors.Is(err, ErrRemoteReleaseNotNewer) {
+			if reporter, ok := runner.(installReporter); ok {
+				result.Note = reporter.LastInstallReport()
+			}
+			switch {
+			case errors.Is(err, ErrRemoteReleaseNotNewer), errors.Is(err, ErrRemoteDeployBusy), errors.Is(err, ErrRemoteProbeFailed):
+				// Nothing wrong with this remote: another deploy holds it,
+				// there is nothing newer to give it, or it could not say
+				// what it runs and was left alone (#2244).
 				result.Outcome = RemoteUpdateOutcomeSkipped
 				result.Err = err
-			} else if err != nil {
+			case err != nil:
 				result.Outcome = RemoteUpdateOutcomeFailed
 				result.Err = err
-			} else {
+			default:
 				result.Outcome = RemoteUpdateOutcomeUpdated
 				result.To = deployed
 				state = RemoteVersionState{Version: deployed, Found: true, CheckedAt: time.Now()}
 			}
 		}
-		learned[name] = state
+		// Record what this remote runs now, before the next remote and
+		// before the caller hears about it, so `remote list` never shows a
+		// version a finished deploy has already replaced (#2244).
+		_ = RecordRemoteVersions(map[string]RemoteVersionState{name: state})
 		results = append(results, result)
 		opts.OnResult(result)
 	}
-	_ = RecordRemoteVersions(learned)
 	return results
 }
