@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 // fakeAgentDeck writes a stand-in for the remote's agent-deck binary: a shell
@@ -178,11 +180,53 @@ func TestInstallBinary_VerifiesPathResolvesToDeployedInode(t *testing.T) {
 	l := newRemoteLayout(t)
 	configured := filepath.Join(l.home, ".local", "bin", "agent-deck")
 	fakeAgentDeck(t, configured, "1.16.5", 0o755)
-	// Nothing on PATH: the deploy lands but the remote cannot run it.
+	// Nothing on the non-interactive PATH, no agent_deck_path configured:
+	// the controller itself runs `agent-deck` through PATH, so this is a
+	// failure with the full remedy.
 	r := l.runner(t, configured, noSudo)
+	r.configuredPath = ""
 	err := r.InstallBinary(context.Background(), []byte(fakeAgentDeckPayload("1.16.6")), "1.16.6")
 	if err == nil || !strings.Contains(err.Error(), "not on the remote's $PATH") || !strings.Contains(err.Error(), "add "+configured+" to PATH") {
 		t.Fatalf("got %v, want the not-on-PATH remedy in full", err)
+	}
+}
+
+// #2249: an explicit agent_deck_path that is off the remote's
+// non-interactive PATH is how the controller reaches that remote anyway.
+// Once the configured binary is deployed and verified the update is a
+// success; the missing PATH entry is a warning in the report, not a
+// failure, and the sweep records the new version.
+func TestInstallBinary_ConfiguredPathOffPathIsAWarning(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	l := newRemoteLayout(t)
+	configured := filepath.Join(l.home, "bin", "agent-deck")
+	fakeAgentDeck(t, configured, "1.16.6", 0o755)
+	r := l.runner(t, configured, noSudo)
+
+	opts := RemoteUpdateOptions{
+		NewRunner:    func(string, RemoteConfig) RemoteBinaryInstaller { return localPlatform{r} },
+		FetchRelease: func(target string) (*update.Release, error) { return &update.Release{TagName: "v" + target}, nil },
+		Download: func(*update.Release, string, string) ([]byte, error) {
+			return []byte(fakeAgentDeckPayload("1.16.7")), nil
+		},
+	}
+	results := UpdateRemotes(context.Background(), map[string]RemoteConfig{"home": {Host: "x@home", AgentDeckPath: configured}}, "1.16.7", opts)
+	if len(results) != 1 || results[0].Outcome != RemoteUpdateOutcomeUpdated || results[0].Err != nil {
+		t.Fatalf("results = %+v, want updated", results)
+	}
+	if got, _ := os.ReadFile(configured); string(got) != fakeAgentDeckPayload("1.16.7") {
+		t.Fatalf("configured path not deployed: %q", got)
+	}
+	for _, want := range []string{"warning", "not on the remote's non-interactive PATH", "add " + configured + " to PATH"} {
+		if !strings.Contains(results[0].Note, want) {
+			t.Errorf("report %q lacks %q", results[0].Note, want)
+		}
+	}
+	if CountRemoteUpdateFailures(results) != 0 {
+		t.Fatal("a PATH warning must not be a failure")
+	}
+	if cached := LoadRemoteVersions()["home"]; cached.Version != "1.16.7" || !cached.Found {
+		t.Fatalf("cache = %+v, want the verified version recorded", cached)
 	}
 }
 
@@ -485,8 +529,11 @@ func TestInstallBinary_NothingOnPathStillDeploysConfigured(t *testing.T) {
 	fakeAgentDeck(t, configured, "1.16.5", 0o755)
 	r := l.runner(t, configured, noSudo)
 	err := r.InstallBinary(context.Background(), []byte(fakeAgentDeckPayload("1.16.6")), "1.16.6")
-	if errors.Is(err, ErrRemoteProbeFailed) || err == nil || !strings.Contains(err.Error(), "not on the remote's $PATH") {
-		t.Fatalf("got %v, want the not-on-PATH remedy", err)
+	if err != nil {
+		t.Fatalf("an explicit agent_deck_path off PATH is a warning, not a failure (#2249): %v", err)
+	}
+	if !strings.Contains(r.LastInstallReport(), "not on the remote's non-interactive PATH") {
+		t.Fatalf("report must carry the PATH warning: %q", r.LastInstallReport())
 	}
 	if got, _ := os.ReadFile(configured); string(got) != fakeAgentDeckPayload("1.16.6") {
 		t.Fatalf("configured path not deployed: %q", got)
@@ -578,4 +625,12 @@ func TestDeployScript_NonRootKeepsGroup_Real(t *testing.T) {
 	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Gid) != other {
 		t.Fatalf("group = %d after deploy, want %d kept", st.Gid, other)
 	}
+}
+
+// localPlatform is an SSHRunner whose platform probe is answered locally;
+// everything else (version, deploy, report) runs the real code paths.
+type localPlatform struct{ *SSHRunner }
+
+func (localPlatform) DetectPlatform(context.Context) (string, string, error) {
+	return "linux", "amd64", nil
 }

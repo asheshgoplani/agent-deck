@@ -1395,8 +1395,16 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 	}
 
 	// Nothing on $PATH. If the deployed binary itself reports the right version,
-	// the install worked but the location is not on $PATH yet.
+	// the install worked but the location is not on $PATH yet. With an
+	// explicit agent_deck_path that is exactly how the controller reaches
+	// this remote, so the update succeeded and the missing entry is a
+	// warning for sessions started over SSH (#2249); without one the
+	// controller itself runs `agent-deck` through PATH, so it is a failure.
 	if deployedVer, found := r.versionAt(ctx, configured); found && deployedVer == want {
+		if strings.TrimSpace(r.configuredPath) != "" {
+			r.installReport += fmt.Sprintf("; warning: %s is not on the remote's non-interactive PATH, sessions started via SSH may need PATH (add %s to PATH)", configured, configured)
+			return nil
+		}
 		return fmt.Errorf("installed v%s at %s, but it is not on the remote's $PATH; "+
 			"add %s to PATH or set agent_deck_path to a $PATH location", want, configured, configured)
 	}
