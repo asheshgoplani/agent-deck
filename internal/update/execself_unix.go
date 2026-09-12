@@ -1,6 +1,6 @@
 //go:build !windows
 
-package ui
+package update
 
 import "syscall"
 

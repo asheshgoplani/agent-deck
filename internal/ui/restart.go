@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -102,9 +103,7 @@ func ExecSelf(exe string) error {
 	if exe == "" {
 		return errors.New("executable path unknown")
 	}
-	// This is a self re-exec, not a child spawn: the new image must see the
-	// exact environment the user launched the old one with, so the childenv
-	// filter (which strips CLAUDE_CONFIG_DIR for claude workers) does not
-	// apply here.
-	return execSelf(exe, os.Args, os.Environ()) //nolint:forbidigo // self re-exec, not a child launch (#1163 is about claude workers)
+	// The exec itself lives in internal/update so the headless entrypoints
+	// use the same site; nil env keeps this process's own environment.
+	return update.ExecSelf(exe, nil)
 }

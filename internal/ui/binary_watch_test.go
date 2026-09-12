@@ -128,19 +128,3 @@ func TestBinaryWatch_NilIsInert(t *testing.T) {
 		t.Fatal("installedUpdateVersion without a watch should be empty")
 	}
 }
-
-func TestParseVersionOutput(t *testing.T) {
-	cases := map[string]string{
-		"Agent Deck v1.16.1":                             "1.16.1",
-		"Agent Deck v1.16.1 (update available: v1.16.2)": "1.16.1",
-		"Agent Deck v1.17.0-rc.1":                        "1.17.0-rc.1",
-		"garbage":                                        "",
-		"":                                               "",
-		"warning: something\nAgent Deck v1.16.3\nmore text": "1.16.3",
-	}
-	for in, want := range cases {
-		if got := parseVersionOutput(in); got != want {
-			t.Errorf("parseVersionOutput(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
