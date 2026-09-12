@@ -3,11 +3,14 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -393,7 +396,7 @@ func TestClaimRemoteAutoUpdateRun_LockHeldAndStale(t *testing.T) {
 	if ClaimRemoteAutoUpdateRun(on, 2, now) {
 		t.Fatal("a fresh lock held by another process must block the claim")
 	}
-	old := time.Now().Add(-2 * remoteAutoUpdateClaimStale)
+	old := time.Now().Add(-2 * remoteVersionCacheLockStale)
 	if err := os.Chtimes(lock, old, old); err != nil {
 		t.Fatal(err)
 	}
@@ -420,12 +423,21 @@ func TestClaimRemoteAutoUpdateRun_UnwritableCacheNeverClaims(t *testing.T) {
 	}
 }
 
-// The cache is replaced by rename: no reader sees a half-written file and no
-// temp file is left behind.
+// The cache is replaced by rename, never truncated in place: a save lands
+// on a new inode, so a reader holding the old file sees a complete old
+// cache, never a half-written new one. A truncating os.WriteFile keeps the
+// inode and fails this.
 func TestRemoteVersionCache_SaveIsAtomicAndClean(t *testing.T) {
 	setupSessionXDGPathEnv(t)
 	if err := RecordRemoteVersions(map[string]RemoteVersionState{"lab": {Version: "1.16.0", Found: true}}); err != nil {
 		t.Fatal(err)
+	}
+	before := mustInode(t, mustCachePath(t))
+	if err := RecordRemoteVersions(map[string]RemoteVersionState{"lab": {Version: "1.16.1", Found: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if after := mustInode(t, mustCachePath(t)); after == before {
+		t.Fatalf("second save reused inode %d: the cache was truncated in place, not replaced", before)
 	}
 	dir := filepath.Dir(mustCachePath(t))
 	entries, err := os.ReadDir(dir)
@@ -439,6 +451,154 @@ func TestRemoteVersionCache_SaveIsAtomicAndClean(t *testing.T) {
 	}
 	if info, err := os.Stat(mustCachePath(t)); err != nil || info.Mode().Perm() != 0o600 {
 		t.Errorf("cache mode = %v (%v), want 0600", info, err)
+	}
+}
+
+func mustInode(t *testing.T, path string) uint64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("inode not available on this platform")
+	}
+	return uint64(st.Ino)
+}
+
+// Every read-modify-write of the cache shares the claim lock. With another
+// process holding it, RecordRemoteVersions and MarkRemoteAutoUpdateRan wait
+// instead of replacing whatever that process is about to write: the stamp
+// a claimant wrote survives a version record that started earlier.
+func TestRemoteVersionCache_WritersWaitForTheLockHolder(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	lock := mustCachePath(t) + ".claim"
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name  string
+		write func() error
+	}{
+		{"RecordRemoteVersions", func() error {
+			return RecordRemoteVersions(map[string]RemoteVersionState{"lab": {Version: "1.16.0", Found: true}})
+		}},
+		{"MarkRemoteAutoUpdateRan", func() error { return MarkRemoteAutoUpdateRan(stamp.Add(time.Hour)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(lock, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.write() }()
+			select {
+			case err := <-done:
+				t.Fatalf("%s wrote while another process held the lock (err %v)", tc.name, err)
+			case <-time.After(150 * time.Millisecond):
+			}
+			// The lock holder (a claimant in another process) writes its stamp
+			// and lets go.
+			if err := saveRemoteVersionCache(remoteVersionCache{Remotes: map[string]RemoteVersionState{}, AutoUpdateRanAt: stamp}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(lock); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("%s after the lock was released: %v", tc.name, err)
+			}
+			cache := loadRemoteVersionCache()
+			if cache.AutoUpdateRanAt.Before(stamp) {
+				t.Fatalf("%s replaced the claimant's stamp: %+v", tc.name, cache)
+			}
+		})
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Errorf("lock left behind: %v", err)
+	}
+}
+
+// A lock held past remoteVersionCacheLockWait is reported, not overwritten.
+func TestRemoteVersionCache_LockHeldTooLongIsBusy(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	lock := mustCachePath(t) + ".claim"
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(lock)
+	err := RecordRemoteVersions(map[string]RemoteVersionState{"lab": {Version: "1.16.0", Found: true}})
+	if !errors.Is(err, ErrRemoteVersionCacheBusy) {
+		t.Fatalf("got %v, want ErrRemoteVersionCacheBusy", err)
+	}
+	if _, statErr := os.Stat(mustCachePath(t)); !os.IsNotExist(statErr) {
+		t.Fatal("nothing may be written past a held lock")
+	}
+}
+
+// The real inter-process case: this test holds the lock, a second process
+// (the test binary re-run with an env marker) calls RecordRemoteVersions,
+// this process stamps the cache and releases the lock, and the child's
+// record must land on top of the stamp rather than under it.
+func TestRemoteVersionCache_OtherProcessCannotClobberTheStamp(t *testing.T) {
+	if childHome := os.Getenv("AGENT_DECK_TEST_CACHE_WRITER_HOME"); childHome != "" {
+		// TestMain gives every test process its own sandbox HOME; point the
+		// child at the parent's so both see one cache file.
+		t.Setenv("HOME", childHome)
+		t.Setenv("XDG_CACHE_HOME", "")
+		if err := RecordRemoteVersions(map[string]RemoteVersionState{"child": {Version: "1.16.0", Found: true}}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	_, _, _ = setupSessionXDGPathEnv(t)
+	lock := mustCachePath(t) + ".claim"
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+	child := exec.Command(os.Args[0], "-test.run=^TestRemoteVersionCache_OtherProcessCannotClobberTheStamp$")
+	child.Env = append(os.Environ(), "AGENT_DECK_TEST_CACHE_WRITER_HOME="+os.Getenv("HOME"))
+	var childOut strings.Builder
+	child.Stdout, child.Stderr = &childOut, &childOut
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- child.Wait() }()
+	select {
+	case err := <-waited:
+		t.Fatalf("child wrote past the held lock (exit %v):\n%s", err, childOut.String())
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := saveRemoteVersionCache(remoteVersionCache{Remotes: map[string]RemoteVersionState{}, AutoUpdateRanAt: stamp}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-waited; err != nil {
+		t.Fatalf("child failed: %v\n%s", err, childOut.String())
+	}
+	cache := loadRemoteVersionCache()
+	if !cache.AutoUpdateRanAt.Equal(stamp) {
+		t.Fatalf("the child replaced the stamp: %+v", cache)
+	}
+	if cache.Remotes["child"].Version != "1.16.0" {
+		t.Fatalf("the child's record is missing: %+v", cache)
 	}
 }
 

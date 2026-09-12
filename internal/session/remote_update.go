@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -136,38 +137,76 @@ func saveRemoteVersionCache(cache remoteVersionCache) error {
 	return nil
 }
 
-// remoteAutoUpdateClaimStale bounds how long a claim lock left behind by a
-// crashed process blocks the next claimant.
-const remoteAutoUpdateClaimStale = time.Minute
+// remoteVersionCacheLockStale bounds how long a lock file left behind by a
+// crashed process blocks the next writer.
+const remoteVersionCacheLockStale = time.Minute
 
-// withRemoteAutoUpdateClaimLock runs fn while holding the cross-process
-// lock file next to the cache (O_EXCL create, removed afterwards). A lock
-// older than remoteAutoUpdateClaimStale is treated as abandoned. Returns
-// false without running fn when another process holds the lock.
-func withRemoteAutoUpdateClaimLock(fn func()) bool {
+// remoteVersionCacheLockWait is how long a writer waits for another
+// process to release the lock before giving up; writes are small, so a
+// holder is gone within milliseconds.
+const remoteVersionCacheLockWait = 2 * time.Second
+
+// ErrRemoteVersionCacheBusy is returned when another process held the
+// cache lock for longer than remoteVersionCacheLockWait.
+var ErrRemoteVersionCacheBusy = errors.New("remote version cache is locked by another process")
+
+// withRemoteVersionCacheLock runs fn while holding the cross-process lock
+// file next to the cache (O_EXCL create, removed afterwards), waiting up to
+// remoteVersionCacheLockWait for a holder to finish. Every read-modify-write
+// of the cache goes through it, so a process that read the cache before
+// another stamped it can never replace that stamp with its stale copy. A
+// lock older than remoteVersionCacheLockStale is treated as abandoned.
+// Callers hold remoteVersionCacheMu.
+func withRemoteVersionCacheLock(fn func()) error {
 	path, err := remoteVersionCachePath()
 	if err != nil {
-		return false
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return false
+		return err
 	}
 	lockPath := path + ".claim"
-	for attempt := 0; attempt < 2; attempt++ {
+	deadline := time.Now().Add(remoteVersionCacheLockWait)
+	for {
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			f.Close()
 			defer os.Remove(lockPath)
 			fn()
-			return true
+			return nil
 		}
-		info, statErr := os.Stat(lockPath)
-		if statErr != nil || time.Since(info.ModTime()) < remoteAutoUpdateClaimStale {
-			return false
+		if !errors.Is(err, fs.ErrExist) {
+			return err
 		}
-		_ = os.Remove(lockPath) // abandoned by a crashed claimant; retry once
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) >= remoteVersionCacheLockStale {
+			_ = os.Remove(lockPath) // abandoned by a crashed holder
+			continue
+		}
+		if time.Now().After(deadline) {
+			return ErrRemoteVersionCacheBusy
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return false
+}
+
+// updateRemoteVersionCache is the one read-modify-write of the cache file:
+// load, let fn change it, save, all under both locks.
+func updateRemoteVersionCache(fn func(*remoteVersionCache)) error {
+	remoteVersionCacheMu.Lock()
+	defer remoteVersionCacheMu.Unlock()
+	var saveErr error
+	err := withRemoteVersionCacheLock(func() {
+		cache := loadRemoteVersionCache()
+		if cache.Remotes == nil {
+			cache.Remotes = map[string]RemoteVersionState{}
+		}
+		fn(&cache)
+		saveErr = saveRemoteVersionCache(cache)
+	})
+	if err != nil {
+		return err
+	}
+	return saveErr
 }
 
 // LoadRemoteVersions returns the cached per-remote version states. Missing or
@@ -190,16 +229,11 @@ func RecordRemoteVersions(states map[string]RemoteVersionState) error {
 	if len(states) == 0 {
 		return nil
 	}
-	remoteVersionCacheMu.Lock()
-	defer remoteVersionCacheMu.Unlock()
-	cache := loadRemoteVersionCache()
-	if cache.Remotes == nil {
-		cache.Remotes = map[string]RemoteVersionState{}
-	}
-	for name, state := range states {
-		cache.Remotes[name] = state
-	}
-	return saveRemoteVersionCache(cache)
+	return updateRemoteVersionCache(func(cache *remoteVersionCache) {
+		for name, state := range states {
+			cache.Remotes[name] = state
+		}
+	})
 }
 
 // RemoteAutoUpdateRanAt returns when the background remote auto-update sweep
@@ -212,32 +246,24 @@ func RemoteAutoUpdateRanAt() time.Time {
 
 // MarkRemoteAutoUpdateRan stamps the sweep time used by ShouldAutoUpdateRemotes.
 func MarkRemoteAutoUpdateRan(at time.Time) error {
-	remoteVersionCacheMu.Lock()
-	defer remoteVersionCacheMu.Unlock()
-	cache := loadRemoteVersionCache()
-	cache.AutoUpdateRanAt = at
-	return saveRemoteVersionCache(cache)
+	return updateRemoteVersionCache(func(cache *remoteVersionCache) { cache.AutoUpdateRanAt = at })
 }
 
 // ClaimRemoteAutoUpdateRun is the startup sweep's check-and-stamp in one
-// step: under the in-process cache lock and a cross-process lock file it
-// re-reads the stamp, applies ShouldAutoUpdateRemotes, and writes the new
+// step: under the cache locks (see updateRemoteVersionCache) it re-reads
+// the stamp, applies ShouldAutoUpdateRemotes, and writes the new
 // stamp before returning true. Two TUIs starting at once therefore agree on
 // a single sweep, and a stamp that cannot be written yields false, so a
 // broken cache dir never causes a sweep on every startup (#2164).
 func ClaimRemoteAutoUpdateRun(settings UpdateSettings, remoteCount int, now time.Time) bool {
-	remoteVersionCacheMu.Lock()
-	defer remoteVersionCacheMu.Unlock()
 	claimed := false
-	withRemoteAutoUpdateClaimLock(func() {
-		cache := loadRemoteVersionCache()
-		if !ShouldAutoUpdateRemotes(settings, remoteCount, cache.AutoUpdateRanAt, now) {
-			return
+	err := updateRemoteVersionCache(func(cache *remoteVersionCache) {
+		if ShouldAutoUpdateRemotes(settings, remoteCount, cache.AutoUpdateRanAt, now) {
+			cache.AutoUpdateRanAt = now
+			claimed = true
 		}
-		cache.AutoUpdateRanAt = now
-		claimed = saveRemoteVersionCache(cache) == nil
 	})
-	return claimed
+	return claimed && err == nil
 }
 
 // ShouldAutoUpdateRemotes is the pure decision behind the startup sweep:
