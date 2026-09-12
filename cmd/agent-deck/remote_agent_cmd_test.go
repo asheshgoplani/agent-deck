@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 // The agent answers each request with its id and the command's output,
@@ -414,4 +417,85 @@ func writeFileAtomic(path, content string) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// TestRemoteAgent_RecyclesOnNewBinary pins the recycle-on-upgrade path:
+// once the watcher sees a newer build the agent finishes the request it
+// already accepted, answers it, and exits without a re-exec so the
+// controller redials into the new binary.
+func TestRemoteAgent_RecyclesOnNewBinary(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var startOnce sync.Once
+	run := func(ctx context.Context, args []string) (string, string, int) {
+		if args[0] == "status" {
+			startOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return "", "cancelled", 1
+			}
+		}
+		return "ran:" + strings.Join(args, " "), "", 0
+	}
+	var ticks atomic.Int64
+	watch := &update.Watcher{
+		Exe:            "/opt/agent-deck",
+		RunningVersion: "1.16.0",
+		Interval:       5 * time.Millisecond,
+		Stat: func(string) (update.Fingerprint, error) {
+			// The file changes after the request below is in flight.
+			if ticks.Add(1) > 3 {
+				return update.Fingerprint{ModTime: time.Unix(2, 0), Size: 2}, nil
+			}
+			return update.Fingerprint{ModTime: time.Unix(1, 0), Size: 1}, nil
+		},
+		Probe: func(string) (string, error) { return "1.16.1", nil },
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	done := make(chan struct{})
+	go func() {
+		serveRemoteAgent(context.Background(), inR, outW, remoteAgentConfig{Run: run, BinaryWatch: watch})
+		_ = outW.Close()
+		close(done)
+	}()
+	sc := bufio.NewScanner(outR)
+	next := func() remoteAgentReply {
+		if !sc.Scan() {
+			t.Fatalf("agent closed early: %v", sc.Err())
+		}
+		var r remoteAgentReply
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatalf("bad reply %q: %v", sc.Text(), err)
+		}
+		return r
+	}
+	if r := next(); r.Event != "ready" {
+		t.Fatalf("first line must announce ready, got %+v", r)
+	}
+	b, _ := json.Marshal(remoteAgentRequest{ID: 1, Args: []string{"status"}})
+	if _, err := inW.Write(append(b, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	// The newer build is noticed while the request runs: the agent must
+	// keep serving until it is answered.
+	time.Sleep(60 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("agent exited with a request in flight")
+	default:
+	}
+	close(release)
+	if r := next(); r.ID != 1 || r.Code != 0 || r.Stdout != "ran:status" {
+		t.Fatalf("in-flight request must be answered before the recycle, got %+v", r)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent did not exit after the newer build was seen and it went idle")
+	}
+	_ = inW.Close()
 }
