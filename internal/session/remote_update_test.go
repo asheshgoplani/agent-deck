@@ -38,6 +38,34 @@ func TestPlanRemoteUpdates(t *testing.T) {
 	}
 }
 
+// #2164: a pre-release controller ("1.16.4-switch-preview.<sha>") is older
+// than release 1.16.4, so a remote on that release is current, a remote on
+// 1.16.3 is behind, and a remote on the next release is never touched.
+func TestPlanRemoteUpdates_PreReleaseControllerIsOlderThanItsRelease(t *testing.T) {
+	versions := map[string]RemoteVersionState{
+		"on-release":   {Version: "1.16.4", Found: true},
+		"behind":       {Version: "1.16.3", Found: true},
+		"ahead":        {Version: "1.16.5", Found: true},
+		"same-preview": {Version: "1.16.4-switch-preview.abc1234", Found: true},
+	}
+	actions := PlanRemoteUpdates(versions, "1.16.4-switch-preview.abc1234")
+	kinds := map[string]RemoteUpdateKind{}
+	for _, a := range actions {
+		kinds[a.Name] = a.Kind
+	}
+	want := map[string]RemoteUpdateKind{
+		"on-release":   RemoteUpdateCurrent,
+		"behind":       RemoteUpdateUpgrade,
+		"ahead":        RemoteUpdateCurrent,
+		"same-preview": RemoteUpdateCurrent,
+	}
+	for name, kind := range want {
+		if kinds[name] != kind {
+			t.Errorf("%s: kind = %s, want %s", name, kinds[name], kind)
+		}
+	}
+}
+
 func TestRemoteVersionState_Outdated(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -52,6 +80,8 @@ func TestRemoteVersionState_Outdated(t *testing.T) {
 		{"dev controller never flags", RemoteVersionState{Version: "1.15.0", Found: true}, "dev", false},
 		{"zero controller never flags", RemoteVersionState{Version: "1.15.0", Found: true}, "0.0.0", false},
 		{"v prefix", RemoteVersionState{Version: "v1.15.0", Found: true}, "v1.16.0", true},
+		{"preview controller does not flag its release", RemoteVersionState{Version: "1.16.4", Found: true}, "1.16.4-switch-preview.abc1234", false},
+		{"preview controller flags the previous release", RemoteVersionState{Version: "1.16.3", Found: true}, "1.16.4-switch-preview.abc1234", true},
 	}
 	for _, tc := range cases {
 		if got := tc.state.Outdated(tc.controller); got != tc.want {

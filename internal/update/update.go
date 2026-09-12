@@ -425,13 +425,22 @@ func FetchReleaseByTag(tag string) (*Release, error) {
 
 // CompareVersions compares two semantic versions
 // Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+//
+// A pre-release ("1.16.4-switch-preview.abc") sorts BELOW its release
+// ("1.16.4"), as semver orders them: a preview controller is older than the
+// release it previews, so it never judges a remote on that release as
+// behind, and it never keeps a remote from moving to it (#2164). Two
+// pre-releases of the same core compare by their suffix.
 func CompareVersions(v1, v2 string) int {
 	// Remove 'v' prefix if present
 	v1 = strings.TrimPrefix(v1, "v")
 	v2 = strings.TrimPrefix(v2, "v")
 
-	parts1 := strings.Split(v1, ".")
-	parts2 := strings.Split(v2, ".")
+	core1, pre1 := splitPreRelease(v1)
+	core2, pre2 := splitPreRelease(v2)
+
+	parts1 := strings.Split(core1, ".")
+	parts2 := strings.Split(core2, ".")
 
 	// Pad with zeros
 	for len(parts1) < 3 {
@@ -454,7 +463,23 @@ func CompareVersions(v1, v2 string) int {
 		}
 	}
 
-	return 0
+	switch {
+	case pre1 == pre2:
+		return 0
+	case pre1 == "":
+		return 1 // release > pre-release of the same core
+	case pre2 == "":
+		return -1
+	}
+	return strings.Compare(pre1, pre2)
+}
+
+// splitPreRelease separates "1.2.3-rc.1+build" into its numeric core "1.2.3"
+// and pre-release tag "rc.1". Build metadata after "+" is ignored either way.
+func splitPreRelease(v string) (core, pre string) {
+	v, _, _ = strings.Cut(v, "+")
+	core, pre, _ = strings.Cut(v, "-")
+	return core, pre
 }
 
 // CheckForUpdate checks if a new version is available
