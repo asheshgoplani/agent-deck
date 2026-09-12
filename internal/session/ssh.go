@@ -1103,37 +1103,71 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 		dir = remotePath[:idx]
 	}
 
-	// Stage to a sibling temp file and atomically rename it into place rather
-	// than redirecting onto remotePath directly. agent-deck keeps a long-lived
-	// `session attach` process running from remotePath, so truncating it in
-	// place (`cat > remotePath`) makes the kernel reject the write with ETXTBSY
-	// ("text file busy"). rename(2) only repoints the directory entry, so it
-	// succeeds while the old binary is still executing (the running process
-	// keeps the now-unlinked inode); the next launch picks up the new binary.
-	tmpPath := remotePath + ".new"
-	quotedDir := shellQuote(dir)
-	stage := fmt.Sprintf("cat > %s && chmod +x %s && mv -f %s %s",
-		shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(remotePath))
-	// Under sudo the mkdir runs again as root: the unprivileged one above may
-	// have failed on a missing parent.
-	sudoStage := shellQuote("mkdir -p " + quotedDir + " && " + stage)
-	// Neither route: report "<prefix><path><infix><user>" on stderr with the
-	// exit code parseInstallPathNotWritable recognises.
+	// remoteDeployScript runs as the remote user when the directory is
+	// writable, otherwise as root through sudo -n. The probe uses the same
+	// binary (`sh`) the real call does, so a sudoers rule that allows
+	// `true` but not `sh` is not mistaken for permission to deploy.
+	script := shellQuote(remoteDeployScript)
+	args := shellQuote(dir) + " " + shellQuote(remotePath)
+	// Neither route, or sudo refused the real command after allowing the
+	// probe (exit 1 from sudo itself; the script's own failures exit 4 or
+	// 5 and pass through): report "<prefix><path><infix><user>" on stderr
+	// with the exit code parseInstallPathNotWritable recognises.
 	report := fmt.Sprintf("printf '%s%%s%s%%s\\n' %s \"$(id -un)\" >&2; exit %d",
 		installPathNotWritablePrefix, installPathNotWritableInfix, shellQuote(remotePath), installPathNotWritableExit)
-	cmd := fmt.Sprintf("mkdir -p %s 2>/dev/null; if [ -w %s ]; then %s; elif sudo -n true 2>/dev/null; then sudo -n sh -c %s; else %s; fi",
-		quotedDir, quotedDir, stage, sudoStage, report)
+	cmd := fmt.Sprintf("mkdir -p %s 2>/dev/null; if [ -w %s ]; then sh -c %s sh %s; "+
+		"elif sudo -n sh -c true 2>/dev/null; then sudo -n sh -c %s sh %s || { rc=$?; case $rc in 4|5) exit $rc;; esac; %s; }; else %s; fi",
+		shellQuote(dir), shellQuote(dir), script, args, script, args, report, report)
 
 	deployCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	if _, err := r.remoteExec(deployCtx, cmd, binaryData); err != nil {
 		if notWritable := parseInstallPathNotWritable(err.Error()); notWritable != nil {
-			return notWritable
+			// Keep whatever else the remote said (a sudo refusal, a full
+			// disk under sudo) behind the typed error.
+			return fmt.Errorf("%w (remote output: %s)", notWritable, strings.TrimSpace(err.Error()))
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return fmt.Errorf("failed to deploy binary to %s: %w", remotePath, err)
+		}
+		if strings.Contains(err.Error(), remoteDeployBusyMarker) {
+			return fmt.Errorf("%w: %s", ErrRemoteDeployBusy, remotePath)
 		}
 		return fmt.Errorf("failed to deploy binary to %s: %w", remotePath, err)
 	}
 	return nil
 }
+
+// ErrRemoteDeployBusy is returned when another deploy holds the lock on the
+// remote's install path; the caller retries later or lets the other finish.
+var ErrRemoteDeployBusy = errors.New("another agent-deck deploy is writing the install path")
+
+// remoteDeployBusyMarker is what remoteDeployScript prints when it cannot
+// take the lock.
+const remoteDeployBusyMarker = "agent-deck: another deploy holds "
+
+// remoteDeployScript is the body of a deploy, run as `sh -c SCRIPT sh DIR
+// PATH` either directly or under sudo -n. It stages the bytes from stdin to
+// a sibling temp file unique to this process and renames it into place
+// rather than redirecting onto PATH directly: agent-deck keeps a long-lived
+// `session attach` process running from PATH, so truncating it in place
+// makes the kernel reject the write with ETXTBSY. rename(2) only repoints
+// the directory entry, so it succeeds while the old binary is still
+// executing; the next launch picks up the new binary.
+//
+// Two controllers deploying at once must not share a staging file (one
+// could rename it into place while the other is still writing it), so the
+// name carries the shell's PID and a lock directory next to PATH serialises
+// deploys; a lock older than 15 minutes is treated as abandoned. The mode
+// is set explicitly (0755) rather than with +x so a root umask of 077 under
+// sudo still leaves the binary runnable by the remote user.
+const remoteDeployScript = `d="$1"; p="$2"; lock="$p.lock"; t="$p.new.$$"
+mkdir -p "$d"
+if [ -d "$lock" ]; then find "$lock" -maxdepth 0 -mmin +15 -exec rmdir {} \; 2>/dev/null || true; fi
+if ! mkdir "$lock" 2>/dev/null; then printf '` + remoteDeployBusyMarker + `%s\n' "$p" >&2; exit 4; fi
+trap 'rm -f "$t"; rmdir "$lock" 2>/dev/null' EXIT HUP INT TERM
+if cat > "$t" && chmod 0755 "$t" && mv -f "$t" "$p"; then exit 0; fi
+printf 'agent-deck: deploy to %s failed\n' "$p" >&2; exit 5`
 
 // The remote deploy script reports an unwritable install directory on stderr
 // as "<prefix><path><infix><user>" with installPathNotWritableExit, which the

@@ -38,24 +38,31 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 	cmd := (*calls)[0]
 
 	// Must NOT redirect the new bytes straight onto the live binary (ETXTBSY).
-	if strings.Contains(cmd, "cat > "+shellQuote(target)) {
+	if strings.Contains(cmd, "cat > "+shellQuote(target)) || strings.Contains(cmd, `cat > "$p"`) {
 		t.Fatalf("deploy truncates the live binary in place (would hit ETXTBSY):\n%s", cmd)
 	}
 
-	// Must stage to a temp path and atomically rename it onto the target.
-	if !strings.Contains(cmd, "mv -f ") {
-		t.Fatalf("deploy must atomically `mv -f` the staged binary into place; got:\n%s", cmd)
+	// Must stage to a temp path unique to this deploy and atomically rename
+	// it onto the target, which arrives as the script's second argument.
+	for _, want := range []string{`t="$p.new.$$"`, `cat > "$t"`, `mv -f "$t" "$p"`, `chmod 0755 "$t"`} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("deploy script lacks %q; got:\n%s", want, cmd)
+		}
 	}
-	if !strings.Contains(cmd, "mv -f "+shellQuote(target+".new")+" "+shellQuote(target)) {
-		t.Fatalf("the rename destination must be the final target %s; got:\n%s", target, cmd)
+	if !strings.Contains(cmd, " sh "+shellQuote("/home/daniel")+" "+shellQuote(target)) {
+		t.Fatalf("the script must receive the directory and the final target %s as arguments; got:\n%s", target, cmd)
 	}
 	// #2164: the deploy is one round trip that falls back to passwordless
 	// sudo when the directory is not writable, and otherwise names the
-	// problem instead of leaving a bare "permission denied".
-	for _, want := range []string{"[ -w '/home/daniel' ]", "sudo -n true", "sudo -n sh -c", "is not writable by", "$(id -un)"} {
+	// problem instead of leaving a bare "permission denied". The sudo probe
+	// runs the same binary as the real call.
+	for _, want := range []string{"[ -w '/home/daniel' ]", "sudo -n sh -c true", "sudo -n sh -c", "is not writable by", "$(id -un)", `mkdir "$lock"`} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("deploy command lacks %q:\n%s", want, cmd)
 		}
+	}
+	if strings.Contains(cmd, "sudo -n true") {
+		t.Errorf("the sudo probe must use sh, not true, so a rule that allows only true is not mistaken for deploy rights:\n%s", cmd)
 	}
 }
 
