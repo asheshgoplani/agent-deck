@@ -1076,6 +1076,13 @@ func main() {
 	}
 }
 
+// headlessAutoRestartEnabled is the shared gate for the headless
+// self-restart paths (`web --no-tui`, the remote agent): [updates]
+// .auto_restart is on and update checks are not disabled by environment.
+func headlessAutoRestartEnabled() bool {
+	return os.Getenv(update.SkipUpdateCheckEnv) == "" && session.GetUpdateSettings().GetAutoRestart()
+}
+
 // startHeadlessSelfRestart makes `web --no-tui` pick up an installed
 // update on its own: once a newer binary is on disk and idle reports no
 // request in flight, the process re-execs itself with the same args and
@@ -1088,7 +1095,7 @@ func main() {
 // binaries (brew owns those), and under AGENTDECK_SKIP_UPDATE_CHECK.
 func startHeadlessSelfRestart(ctx context.Context, idle func() bool) {
 	webLog := logging.ForComponent(logging.CompWeb)
-	if os.Getenv(update.SkipUpdateCheckEnv) != "" || !session.GetUpdateSettings().GetAutoRestart() {
+	if !headlessAutoRestartEnabled() {
 		webLog.Debug("self_restart_disabled", slog.String("reason", "auto_restart off or update check skipped"))
 		return
 	}

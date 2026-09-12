@@ -77,9 +77,10 @@ func ProbeBinaryVersion(exe string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	version := ParseVersionOutput(strings.TrimSpace(string(out)))
+	text := strings.TrimSpace(string(out))
+	version := ParseVersionOutput(text)
 	if version == "" {
-		return "", fmt.Errorf("no version in output %q", strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("no version in output %q", text)
 	}
 	return version, nil
 }

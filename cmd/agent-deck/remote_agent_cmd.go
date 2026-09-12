@@ -300,7 +300,7 @@ func handleRemoteAgent(profile string, args []string) {
 // agent, or nil when [updates].auto_restart is off on this host or update
 // checks are disabled by environment.
 func newRemoteAgentBinaryWatch(self string) *update.Watcher {
-	if os.Getenv(update.SkipUpdateCheckEnv) != "" || !session.GetUpdateSettings().GetAutoRestart() {
+	if !headlessAutoRestartEnabled() {
 		return nil
 	}
 	return &update.Watcher{
@@ -536,15 +536,15 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, cfg remo
 
 	requests := newRemoteAgentRequests(cfg.Run, cfg.MaxConcurrent, cfg.WatchPath)
 
-	// Recycle on upgrade: the watcher's "restart" only closes recycle; the
-	// loop below stops reading, drains accepted requests and exits so the
-	// controller redials into the new build.
+	// Recycle on upgrade: the watcher's "restart" only closes recycle (a
+	// Watcher stops after its first successful Restart, so this runs once);
+	// the loop below stops reading, drains accepted requests and exits so
+	// the controller redials into the new build.
 	recycle := make(chan struct{})
 	if w := cfg.BinaryWatch; w != nil {
-		var once sync.Once
 		w.Idle = func() bool { return requests.inFlight() == 0 }
 		w.Restart = func(string) error {
-			once.Do(func() { close(recycle) })
+			close(recycle)
 			return nil
 		}
 		wg.Add(1)
