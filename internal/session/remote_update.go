@@ -34,7 +34,9 @@ type RemoteVersionState struct {
 // Outdated reports whether the remote runs something older than controller.
 // Unknown versions and non-release controller builds never count as drift:
 // CompareVersions treats "dev" or "0.0.0" as older than any release, so a
-// developer build must not flag every remote.
+// developer build must not flag every remote. A pre-release controller
+// ("1.16.4-preview.abc") is older than release 1.16.4, so a remote on that
+// release is not flagged either (#2164).
 func (s RemoteVersionState) Outdated(controller string) bool {
 	if !s.Found || s.Version == "" || !isReleaseVersion(controller) {
 		return false
@@ -147,11 +149,12 @@ func MarkRemoteAutoUpdateRan(at time.Time) error {
 }
 
 // ShouldAutoUpdateRemotes is the pure decision behind the startup sweep:
-// the key must be on, there must be remotes, and the previous sweep must be
-// older than the update check interval (so a TUI restarted ten times in a
-// row does not SSH into every remote ten times). A zero lastRun always runs.
+// the key must not be off (it is on by default), there must be remotes, and
+// the previous sweep must be older than the update check interval (so a TUI
+// restarted ten times in a row does not SSH into every remote ten times). A
+// zero lastRun always runs.
 func ShouldAutoUpdateRemotes(settings UpdateSettings, remoteCount int, lastRun, now time.Time) bool {
-	if !settings.AutoUpdateRemotes || remoteCount == 0 {
+	if !settings.GetAutoUpdateRemotes() || remoteCount == 0 {
 		return false
 	}
 	if lastRun.IsZero() {

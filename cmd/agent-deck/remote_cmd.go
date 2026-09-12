@@ -696,15 +696,15 @@ func remoteUpdateSummary(results []session.RemoteUpdateResult) string {
 }
 
 // updateRemotesAfterLocalUpdate runs after a successful local update. With
-// [updates] auto_update_remotes it pushes newVersion to every older remote
-// without asking; otherwise it prompts as before.
+// [updates] auto_update_remotes (the default) it pushes newVersion to every
+// older remote without asking; with the key off it prompts as before.
 func updateRemotesAfterLocalUpdate(newVersion string) {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || len(config.Remotes) == 0 {
 		return
 	}
 
-	if session.GetUpdateSettings().AutoUpdateRemotes {
+	if session.GetUpdateSettings().GetAutoUpdateRemotes() {
 		fmt.Printf("\nauto_update_remotes is on: updating %d remote(s) to v%s\n", len(config.Remotes), newVersion)
 	} else {
 		fmt.Printf("\nYou have %d remote(s) configured. Update them too? [Y/n] ", len(config.Remotes))

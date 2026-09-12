@@ -60,7 +60,7 @@ func TestRunRemoteAutoUpdate_SkipsMissingAndStamps(t *testing.T) {
 	if session.RemoteAutoUpdateRanAt().IsZero() {
 		t.Error("sweep must stamp its run time")
 	}
-	settings := session.UpdateSettings{AutoUpdateRemotes: true, CheckIntervalHours: 24}
+	settings := session.UpdateSettings{CheckIntervalHours: 24} // on by default
 	if session.ShouldAutoUpdateRemotes(settings, 2, session.RemoteAutoUpdateRanAt(), session.RemoteAutoUpdateRanAt()) {
 		t.Error("a second startup right after the sweep must not sweep again")
 	}

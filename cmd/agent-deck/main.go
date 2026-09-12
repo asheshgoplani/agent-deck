@@ -582,7 +582,8 @@ func main() {
 	}
 
 	// [updates] auto_update_remotes: bring older remotes up to this version
-	// in the background. Off by default; never prompts, never blocks (#2164).
+	// in the background. On by default (auto_update_remotes = false opts
+	// out); never prompts, never blocks (#2164).
 	startRemoteAutoUpdate()
 
 	// Web parses its own flags and preflights during subcommand dispatch so

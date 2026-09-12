@@ -62,7 +62,8 @@ func TestRemoteVersionState_Outdated(t *testing.T) {
 
 func TestShouldAutoUpdateRemotes(t *testing.T) {
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	on := UpdateSettings{AutoUpdateRemotes: true, CheckIntervalHours: 24}
+	on := UpdateSettings{AutoUpdateRemotes: boolPtr(true), CheckIntervalHours: 24}
+	off := UpdateSettings{AutoUpdateRemotes: boolPtr(false), CheckIntervalHours: 24}
 	cases := []struct {
 		name     string
 		settings UpdateSettings
@@ -70,13 +71,14 @@ func TestShouldAutoUpdateRemotes(t *testing.T) {
 		lastRun  time.Time
 		want     bool
 	}{
-		{"off by default", UpdateSettings{CheckIntervalHours: 24}, 2, time.Time{}, false},
+		{"on by default", UpdateSettings{CheckIntervalHours: 24}, 2, time.Time{}, true},
+		{"opted out", off, 2, time.Time{}, false},
 		{"on, never ran", on, 2, time.Time{}, true},
 		{"on, no remotes", on, 0, time.Time{}, false},
 		{"on, ran an hour ago", on, 2, now.Add(-time.Hour), false},
 		{"on, ran a day ago", on, 2, now.Add(-24 * time.Hour), true},
-		{"zero interval falls back to 24h", UpdateSettings{AutoUpdateRemotes: true}, 1, now.Add(-2 * time.Hour), false},
-		{"short interval", UpdateSettings{AutoUpdateRemotes: true, CheckIntervalHours: 1}, 1, now.Add(-2 * time.Hour), true},
+		{"zero interval falls back to 24h", UpdateSettings{AutoUpdateRemotes: boolPtr(true)}, 1, now.Add(-2 * time.Hour), false},
+		{"short interval", UpdateSettings{AutoUpdateRemotes: boolPtr(true), CheckIntervalHours: 1}, 1, now.Add(-2 * time.Hour), true},
 	}
 	for _, tc := range cases {
 		if got := ShouldAutoUpdateRemotes(tc.settings, tc.remotes, tc.lastRun, now); got != tc.want {
