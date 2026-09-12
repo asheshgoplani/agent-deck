@@ -183,8 +183,10 @@ func TestWatcher_RestartFailureDisarmsUntilNextChange(t *testing.T) {
 	f := &fakeWatch{fp: fpAt(1, 1), version: "1.16.1", idle: true, restartEr: errors.New("exec failed")}
 	w := f.watcher()
 	f.fp = fpAt(2, 2)
-	if w.tick() || w.tick() {
-		t.Fatal("failed restart must report not restarted")
+	for i := 0; i < 2; i++ {
+		if w.tick() {
+			t.Fatalf("tick %d: failed restart must report not restarted", i)
+		}
 	}
 	if len(f.restarts) != 1 {
 		t.Fatalf("restarts = %d, want exactly 1 attempt", len(f.restarts))
