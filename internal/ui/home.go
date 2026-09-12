@@ -515,6 +515,8 @@ type Home struct {
 	navigationHotUntil atomic.Int64
 	// Snapshot of status/tool used by render path to avoid per-row lock contention.
 	sessionRenderSnapshot atomic.Value // map[string]sessionRenderState
+	// Serializes snapshot publication with account gate transitions. Readers stay lock-free.
+	sessionRenderSnapshotMu sync.Mutex
 
 	// Jump mode (vimium-style hint navigation)
 	jumpMode   bool   // True when jump mode is active
@@ -5509,6 +5511,51 @@ func (h *Home) getSessionRenderSnapshot() map[string]sessionRenderState {
 	return nil
 }
 
+// setAccountSlotsConfigured updates only inherited account presentations when
+// settings cross the configured/unconfigured boundary. Copy the snapshot so
+// active renderers keep an immutable view, without rereading session state.
+func (h *Home) setAccountSlotsConfigured(configured bool) {
+	h.sessionRenderSnapshotMu.Lock()
+	defer h.sessionRenderSnapshotMu.Unlock()
+	if h.accountSlotsConfigured.Swap(configured) == configured {
+		return
+	}
+	previous := h.getSessionRenderSnapshot()
+	if len(previous) == 0 {
+		return
+	}
+	snap := make(map[string]sessionRenderState, len(previous))
+	display := newAccountPresentation("", configured)
+	for id, state := range previous {
+		if state.account == "" {
+			state.accountDisplay = display
+		}
+		snap[id] = state
+	}
+	h.sessionRenderSnapshot.Store(snap)
+}
+
+// publishSessionRenderSnapshot takes ownership of snap. Resolve presentations
+// at publication so an in-flight refresh cannot restore an old settings gate.
+// Instance reads happen before this lock, keeping settings updates bounded to
+// cached render data even when a background status writer holds Instance.mu.
+func (h *Home) publishSessionRenderSnapshot(snap map[string]sessionRenderState) {
+	h.sessionRenderSnapshotMu.Lock()
+	defer h.sessionRenderSnapshotMu.Unlock()
+	accounts := make(map[string]accountPresentation)
+	slotsConfigured := h.accountSlotsConfigured.Load()
+	for id, state := range snap {
+		display, ok := accounts[state.account]
+		if !ok {
+			display = newAccountPresentation(state.account, slotsConfigured)
+			accounts[state.account] = display
+		}
+		state.accountDisplay = display
+		snap[id] = state
+	}
+	h.sessionRenderSnapshot.Store(snap)
+}
+
 func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 	if instances == nil {
 		h.instancesMu.RLock()
@@ -5518,8 +5565,6 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 	}
 
 	snap := make(map[string]sessionRenderState, len(instances))
-	accounts := make(map[string]accountPresentation)
-	slotsConfigured := h.accountSlotsConfigured.Load()
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -5538,12 +5583,6 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			autoName:     inst.GetAutoName(),
 			autoNameDesc: inst.GetAutoNameDescription(),
 		}
-		display, ok := accounts[state.account]
-		if !ok {
-			display = newAccountPresentation(state.account, slotsConfigured)
-			accounts[state.account] = display
-		}
-		state.accountDisplay = display
 		// Look up pane title from the already-refreshed tmux cache.
 		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
 		// the cache fresh; processStatusUpdate and other rebuild paths run on
@@ -5568,7 +5607,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		}
 		snap[inst.ID] = state
 	}
-	h.sessionRenderSnapshot.Store(snap)
+	h.publishSessionRenderSnapshot(snap)
 }
 
 func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState {
@@ -9052,9 +9091,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.reloadHotkeysFromConfig()
 				h.showSessionTimestamps = config.Display.ShowSessionTimestamps
 				h.showPaneTitles = config.Display.ShowPaneTitles
-				// A slot added here must light the badges now; the next snapshot
-				// refresh reads this flag.
-				h.accountSlotsConfigured.Store(len(session.ConfiguredAccountNames(config)) > 0)
+				h.setAccountSlotsConfigured(len(session.ConfiguredAccountNames(config)) > 0)
 
 				// Apply theme changes live
 				h.stopThemeWatcher()
