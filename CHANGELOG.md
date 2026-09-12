@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.6] - 2026-09-12
+
+Remotes now follow the controller's version on their own, a session can switch its Claude account or move to another harness with its conversation carried over, and the account badge only appears when it means something.
+
+### Added
+
+- Connected remotes follow the controller's version automatically: `[updates] auto_update_remotes` is on by default (set it to `false` to opt out). Remotes are swept after a successful local `agent-deck update`, and on TUI startup at most once per `check_interval_hours`, without prompting; `agent-deck remote update --all` does it on demand, `remote list` shows a VERSION column with a drift marker, and `u` on a drifted remote header updates it from the TUI. Unattended sweeps never install onto a remote they could not version and never downgrade; every deploy stages uniquely under a lock, reports an unwritable install path by name with the remedy, and uses passwordless `sudo -n` only when the path needs it ([#2166](https://github.com/asheshgoplani/agent-deck/pull/2166), closes #2164).
+- Account switching: a Claude or Codex session can move to another configured account of the same harness from the edit dialog or `agent-deck session switch`, resuming natively under the new account. Harness switching: a session can move between Claude, Codex and Pi; its conversation is carried over as a bounded readable-text projection (not a native resume), the target is brought up first, and the source is archived (reversible) only after the switch finalizes, so one visible row remains. Cross-harness moves refuse conductors, watcher targets and sessions with dependent children; remote-owned sessions refuse any switch. Ownership is revalidated against a fresh snapshot and parent routing moves with compare-and-swap; an external watcher routing race remains documented in `docs/specs/HARNESS-SWITCH-SAFETY-LIMITS.md`. `switch-preview` and `--json` are available ([#2237](https://github.com/asheshgoplani/agent-deck/pull/2237)).
+
+### Fixed
+
+- An inherited account badge is shown only when account slots are configured (explicit account assignments still render), and cached inherited badges refresh when the configuration crosses the configured/unconfigured boundary instead of rendering a stale snapshot ([#2238](https://github.com/asheshgoplani/agent-deck/pull/2238), supersedes #2198 by @mineralinis, whose contribution is retained).
+- Version comparison treats a pre-release as older than the release it previews and orders numeric identifiers numerically, so a release is never mistaken for older than its own preview ([#2166](https://github.com/asheshgoplani/agent-deck/pull/2166)).
+
 ## [1.16.5] - 2026-09-12
 
 Fleet-safety release: units Agent Deck creates from now on can be stopped without taking down the shared tmux server, spawn diagnostics redact recognized credential-bearing values, and the vulnerability scan runs again in CI.
