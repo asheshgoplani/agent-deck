@@ -48,6 +48,7 @@ import { SettingsPanel } from './SettingsPanel.js'
 import { KeyboardShortcuts } from './KeyboardShortcuts.js'
 import { apiFetch, authHeaders } from './api.js'
 import { shortcutsOverlaySignal } from './state.js'
+import { installViewportInsets } from './viewportInsets.js'
 
 function WorkHead() {
   const { sessions } = menuModelSignal.value
@@ -124,6 +125,17 @@ export function AppShell() {
   const confirmData = confirmDialogSignal.value
   const groupNameData = groupNameDialogSignal.value
   const drawerOpen = infoDrawerOpenSignal.value
+
+  // Publish the visible viewport into --app-height / --keyboard-inset, which
+  // styles.src.css already consumes on `.app`. Without a producer the grid is
+  // sized by `100vh` -- the iOS large viewport -- so the mobile tab bar sits
+  // below the fold whenever Safari's toolbars show, and nothing moves when the
+  // software keyboard opens over the terminal.
+  useEffect(() => {
+    const controller = new AbortController()
+    installViewportInsets(window, document.documentElement, controller.signal)
+    return () => controller.abort()
+  }, [])
 
   // Hide the vanilla .app div from the legacy boot path (kept for back-compat
   // until we delete it).
