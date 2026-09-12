@@ -3,7 +3,10 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
@@ -72,6 +75,39 @@ func (h *Home) tryRestartDeck() (tea.Model, tea.Cmd) {
 	return h, h.performQuit(false)
 }
 
+// autoRestartLogEvery rate-limits the "waiting for idle" log line.
+const autoRestartLogEvery = time.Minute
+
+// maybeAutoRestart is the auto_restart path: once a newer build is on disk
+// it arms the same quit-and-exec sequence as the key, without a key press,
+// at the first tick where nothing blocks a restart. While a dialog is
+// open, insert mode is active or a session action is in flight it stays
+// quiet (the banner already says "restarting when idle") and tries again
+// on the next tick. It is only ever reached from the home screen: while
+// attached, Bubble Tea is parked inside tea.Exec and no tick arrives, so
+// tmux sessions and servers are never touched by the hand-over.
+func (h *Home) maybeAutoRestart() tea.Cmd {
+	installed := h.installedUpdateVersion()
+	if installed == "" || h.restartRequested || !h.autoRestartEnabled() {
+		return nil
+	}
+	if reason := h.restartBlockReason(); reason != "" {
+		if time.Since(h.autoRestartLoggedAt) >= autoRestartLogEvery {
+			h.autoRestartLoggedAt = time.Now()
+			uiLog.Info("tui_auto_restart_waiting", slog.String("installed", installed), slog.String("reason", reason))
+		}
+		return nil
+	}
+	uiLog.Info("tui_auto_restart", slog.String("running", Version), slog.String("installed", installed))
+	_, cmd := h.tryRestartDeck()
+	return cmd
+}
+
+// autoRestartEnabled reads [updates].auto_restart (default true).
+func (h *Home) autoRestartEnabled() bool {
+	return loadUpdateSettings().GetAutoRestart()
+}
+
 // restartExecutable is the path to exec: the path fingerprinted at startup
 // when available (it is the file the installer replaced), else whatever
 // os.Executable says now.
@@ -86,8 +122,9 @@ func (h *Home) restartExecutable() string {
 	return exe
 }
 
-// RestartTarget reports whether the user asked for an in-place restart and,
-// if so, which executable main() should exec after tea.Program.Run returns.
+// RestartTarget reports whether an in-place restart was armed (by the key
+// or by auto_restart) and, if so, which executable main() should exec
+// after tea.Program.Run returns.
 func (h *Home) RestartTarget() (string, bool) {
 	if !h.restartRequested {
 		return "", false
@@ -96,14 +133,97 @@ func (h *Home) RestartTarget() (string, bool) {
 	return exe, exe != ""
 }
 
-// ExecSelf replaces the current process with exe, keeping os.Args and the
-// environment. It only returns on failure (or on platforms without exec,
-// see restart_windows.go). Call it after the TUI has restored the terminal.
-func ExecSelf(exe string) error {
-	if exe == "" {
-		return errors.New("executable path unknown")
+// Environment handed from the old process to the new one across the exec.
+// The new Home reads and unsets both immediately (consumeRestartEnv) so
+// they never leak into sessions it launches.
+const (
+	// restartSelectEnv carries the id of the session the cursor was on.
+	restartSelectEnv = "AGENTDECK_RESTART_SELECT"
+	// restartedFromEnv carries the version that restarted, for the
+	// "restarted into vNEW (was vOLD)" notice.
+	restartedFromEnv = "AGENTDECK_RESTARTED_FROM"
+)
+
+// RestartHandoff is what the new process needs to pick up where this one
+// left off.
+type RestartHandoff struct {
+	SelectedID string
+	OldVersion string
+}
+
+// RestartHandoff describes the state to carry across the exec: the
+// selected session (if the cursor is on one) and the running version.
+func (h *Home) RestartHandoff() RestartHandoff {
+	hand := RestartHandoff{OldVersion: Version}
+	if inst := h.getSelectedSession(); inst != nil {
+		hand.SelectedID = inst.ID
 	}
-	// The exec itself lives in internal/update so the headless entrypoints
-	// use the same site; nil env keeps this process's own environment.
-	return update.ExecSelf(exe, nil)
+	return hand
+}
+
+// buildRestartEnv returns env with the hand-off variables set (any stale
+// copies from an earlier restart removed first).
+func buildRestartEnv(env []string, hand RestartHandoff) []string {
+	out := make([]string, 0, len(env)+2)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, restartSelectEnv+"=") || strings.HasPrefix(kv, restartedFromEnv+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if hand.SelectedID != "" {
+		out = append(out, restartSelectEnv+"="+hand.SelectedID)
+	}
+	if hand.OldVersion != "" {
+		out = append(out, restartedFromEnv+"="+hand.OldVersion)
+	}
+	return out
+}
+
+// parseRestartEnv reads the hand-off from a getenv-shaped lookup.
+func parseRestartEnv(getenv func(string) string) RestartHandoff {
+	return RestartHandoff{
+		SelectedID: strings.TrimSpace(getenv(restartSelectEnv)),
+		OldVersion: strings.TrimSpace(getenv(restartedFromEnv)),
+	}
+}
+
+// consumeRestartEnv reads the hand-off from the process environment and
+// unsets it at once so no child launched later inherits it.
+func consumeRestartEnv() RestartHandoff {
+	hand := parseRestartEnv(os.Getenv)
+	_ = os.Unsetenv(restartSelectEnv)
+	_ = os.Unsetenv(restartedFromEnv)
+	return hand
+}
+
+// applyRestartHandoff runs once after the first session load of a process
+// that was exec'd by its predecessor: it puts the cursor back on the
+// session that was selected and tells the user which version they are on
+// now. The notice goes through the footer as a plain message, not a
+// failure.
+func (h *Home) applyRestartHandoff() {
+	hand := h.restartHandoff
+	h.restartHandoff = RestartHandoff{}
+	if hand.SelectedID != "" {
+		h.SelectSessionByID(hand.SelectedID)
+	}
+	if hand.OldVersion != "" {
+		uiLog.Info("tui_restarted", slog.String("from", hand.OldVersion), slog.String("into", Version))
+		h.setError(fmt.Errorf("restarted into v%s (was v%s)", Version, hand.OldVersion))
+	}
+}
+
+// ExecSelf replaces the current process with exe, keeping os.Args and the
+// environment plus the hand-off variables. It only returns on failure (or
+// on platforms without exec). Call it after the TUI has restored the
+// terminal. The exec itself lives in internal/update so the headless
+// entrypoints use the same site.
+func ExecSelf(exe string, hand RestartHandoff) error {
+	// A self re-exec, not a child spawn: the new image must see the exact
+	// environment the user launched the old one with, so the childenv
+	// filter (which strips CLAUDE_CONFIG_DIR for claude workers) does not
+	// apply here.
+	env := buildRestartEnv(os.Environ(), hand) //nolint:forbidigo // self re-exec, not a child launch (#1163 is about claude workers)
+	return update.ExecSelf(exe, env)
 }

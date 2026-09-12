@@ -45,6 +45,9 @@ func (h *Home) restartDeckKeyLabel() string {
 // over the nudge because the user can act on it right now.
 func (h *Home) renderUpdateBannerText() string {
 	if v := h.installedUpdateVersion(); v != "" {
+		if h.autoRestartEnabled() {
+			return fmt.Sprintf(" ⬆ v%s installed, restarting when idle (%s now) ", v, h.restartDeckKeyLabel())
+		}
 		return fmt.Sprintf(" ⬆ v%s installed, press %s to restart agent-deck ", v, h.restartDeckKeyLabel())
 	}
 	return h.renderUpdateNudgeText()

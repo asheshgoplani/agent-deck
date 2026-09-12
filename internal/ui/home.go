@@ -484,6 +484,11 @@ type Home struct {
 	// tried, so a failure is not retried every check.
 	autoInstallInFlight string
 	autoInstallAttempts map[string]time.Time
+	// autoRestartLoggedAt rate-limits the "waiting for idle" log line.
+	autoRestartLoggedAt time.Time
+	// restartHandoff is what the previous process left in the environment
+	// when it exec'd this one (restart.go); applied after the first load.
+	restartHandoff RestartHandoff
 
 	// Launching animation state (for newly created sessions)
 	launchingSessions    map[string]time.Time        // sessionID -> creation time
@@ -1701,6 +1706,9 @@ func shouldPromptHermesHooks(installed bool, decision string) bool {
 // NewHomeWithProfileAndMode creates a new Home with the specified profile.
 // All instances manage the notification bar equally via shared SQLite state.
 func NewHomeWithProfileAndMode(profile string) *Home {
+	// Read (and unset) what a predecessor left for us before anything else
+	// in this process can spawn a child (restart.go).
+	restartHandoff := consumeRestartEnv()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var storageWarning string
@@ -1734,6 +1742,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	}
 
 	h := &Home{
+		restartHandoff:            restartHandoff,
 		profile:                   actualProfile,
 		storage:                   storage,
 		storageWarning:            storageWarning,
@@ -7209,6 +7218,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Save after dedup to persist any ID changes (initial load only)
 				h.saveInstances()
 			}
+			// Pick up where the process we were exec'd from left off.
+			if firstLoad {
+				h.applyRestartHandoff()
+			}
 			// Trigger immediate preview fetch for initial selection (mutex-protected)
 			if selected := h.getSelectedSession(); selected != nil {
 				h.previewCacheMu.Lock()
@@ -7826,7 +7839,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				uiLog.Info("update_installed_on_disk", slog.String("running", Version), slog.String("installed", v))
 			}
 		}
-		return h, nil
+		// Restart right away when allowed; otherwise the tick loop retries.
+		return h, h.maybeAutoRestart()
 
 	case updateCheckMsg:
 		h.lastUpdateCheck = time.Now()
@@ -9147,8 +9161,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// One os.Stat per tick; a version probe only when the file changed.
 		binaryProbeCmd := h.pollBinaryChange()
+		// auto_restart: hand over to an installed newer build once idle.
+		autoRestartCmd := h.maybeAutoRestart()
 
-		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), binaryProbeCmd}
+		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), binaryProbeCmd, autoRestartCmd}
 		if h.fullRepaint {
 			cmds = append(cmds, tea.ClearScreen)
 		}

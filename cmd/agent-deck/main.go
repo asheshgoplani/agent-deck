@@ -1057,13 +1057,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// In-place restart (restart_deck hotkey): the TUI has flushed its state
-	// and restored the terminal, so replace this process with the executable
-	// on disk using the same args and environment. Only returns on failure.
+	// In-place restart (restart_deck hotkey or auto_restart): the TUI has
+	// flushed its state and restored the terminal, so replace this process
+	// with the executable on disk using the same args and environment plus
+	// the hand-off (selected session, old version). The target was probed
+	// with `<exe> version` before the restart was armed and is stat-checked
+	// again inside ExecSelf, so the exec practically cannot fail; if it
+	// still does there is no TUI to go back to, so say so and exit non-zero.
 	if exe, ok := homeModel.RestartTarget(); ok {
 		maintenanceCancel()
-		if err := ui.ExecSelf(exe); err != nil {
-			fmt.Printf("Could not restart in place (%v). Run `agent-deck` again to use the new version.\n", err)
+		if err := ui.ExecSelf(exe, homeModel.RestartHandoff()); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not restart in place (%v). Run `agent-deck` again.\n", err)
+			os.Exit(1)
 		}
 	}
 }
