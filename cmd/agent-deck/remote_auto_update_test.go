@@ -73,12 +73,50 @@ func TestRunRemoteAutoUpdate_SkipsMissingAndStamps(t *testing.T) {
 // #2164: the sweep that follows a successful `agent-deck update` installs
 // onto remotes it could not version only when a person answered the prompt;
 // the unattended run (auto_update_remotes on) skips them like the startup
-// sweep does, so a failed probe never turns into a blind install.
-func TestPostUpdateInstallsMissing_OnlyWhenPrompted(t *testing.T) {
-	if postUpdateInstallsMissing(true) {
-		t.Error("unattended post-update sweep must not install onto unversioned remotes")
-	}
-	if !postUpdateInstallsMissing(false) {
-		t.Error("a prompted, confirmed run keeps the explicit CLI contract of installing missing binaries")
+// sweep does, so a failed probe never turns into a blind install. Driven
+// through the production sweep with a stubbed runner, so a hardcoded
+// InstallMissing at the call site would fail it.
+func TestRunPostUpdateRemoteSweep_UnattendedNeverInstallsBlind(t *testing.T) {
+	setupTask6XDGEnv(t)
+	orig := remoteUpdateRunner
+	t.Cleanup(func() { remoteUpdateRunner = orig })
+
+	for _, tc := range []struct {
+		name       string
+		unattended bool
+		want       session.RemoteUpdateOutcome
+		installs   int
+	}{
+		{"unattended skips the unversioned remote", true, session.RemoteUpdateOutcomeSkipped, 0},
+		{"prompted run installs onto it", false, session.RemoteUpdateOutcomeFailed, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// found=false: the probe failed. DetectPlatform errors in the stub,
+			// so a prompted install is attempted (installs counted by the
+			// platform step failing) but never completes.
+			stub := &probeFailedStub{}
+			remoteUpdateRunner = func(string, session.RemoteConfig) session.RemoteBinaryInstaller { return stub }
+			results := runPostUpdateRemoteSweep(context.Background(), map[string]session.RemoteConfig{"offline": {Host: "a@offline"}}, "1.16.0", tc.unattended)
+			if len(results) != 1 || results[0].Outcome != tc.want {
+				t.Fatalf("results = %+v, want outcome %d", results, tc.want)
+			}
+			if stub.platformProbes != tc.installs {
+				t.Fatalf("install attempts = %d, want %d", stub.platformProbes, tc.installs)
+			}
+			if session.RemoteAutoUpdateRanAt().IsZero() {
+				t.Error("the post-update sweep must stamp its run")
+			}
+		})
 	}
 }
+
+// probeFailedStub is a remote whose version probe fails; an install attempt
+// shows up as a platform probe.
+type probeFailedStub struct{ platformProbes int }
+
+func (s *probeFailedStub) CheckBinary(context.Context) (string, bool) { return "", false }
+func (s *probeFailedStub) DetectPlatform(context.Context) (string, string, error) {
+	s.platformProbes++
+	return "", "", errors.New("stub: no platform")
+}
+func (s *probeFailedStub) InstallBinary(context.Context, []byte, string) error { return nil }

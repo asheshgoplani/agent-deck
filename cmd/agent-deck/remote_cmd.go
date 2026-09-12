@@ -643,10 +643,17 @@ func runRemoteUpdates(ctx context.Context, remotes map[string]session.RemoteConf
 		},
 		NewRunner: func(name string, rc session.RemoteConfig) session.RemoteBinaryInstaller {
 			fmt.Printf("\n═══ Remote: %s (%s) ═══\n", name, rc.Host)
+			if remoteUpdateRunner != nil {
+				return remoteUpdateRunner(name, rc)
+			}
 			return session.NewSSHRunner(name, rc)
 		},
 	})
 }
+
+// remoteUpdateRunner builds the installer for the CLI update paths. A
+// package variable so tests substitute a stub; nil means NewSSHRunner.
+var remoteUpdateRunner func(name string, rc session.RemoteConfig) session.RemoteBinaryInstaller
 
 // formatRemoteUpdateResult renders one remote's outcome with the CLI's glyphs.
 func formatRemoteUpdateResult(r session.RemoteUpdateResult) string {
@@ -716,18 +723,21 @@ func updateRemotesAfterLocalUpdate(newVersion string) {
 		}
 	}
 
-	results := runRemoteUpdates(context.Background(), config.Remotes, newVersion, postUpdateInstallsMissing(unattended))
+	results := runPostUpdateRemoteSweep(context.Background(), config.Remotes, newVersion, unattended)
 	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
-	_ = session.MarkRemoteAutoUpdateRan(time.Now())
 }
 
-// postUpdateInstallsMissing decides whether the post-update sweep installs
-// onto remotes it could not version. Only when a person answered the prompt:
-// the unattended sweep never pushes a binary onto a host whose agent-deck
-// it could not run (offline, or a probe that failed for any reason), the
-// same contract as the startup sweep (#2164).
-func postUpdateInstallsMissing(unattended bool) bool {
-	return !unattended
+// runPostUpdateRemoteSweep is the sweep after a successful local update,
+// split from the prompt so a test can drive it against a stubbed runner.
+// It installs onto remotes it could not version only when a person
+// answered the prompt: the unattended sweep never pushes a binary onto a
+// host whose agent-deck it could not run (offline, or a probe that failed
+// for any reason), the same contract as the startup sweep (#2164). The
+// run is stamped so the next TUI start does not sweep again at once.
+func runPostUpdateRemoteSweep(ctx context.Context, remotes map[string]session.RemoteConfig, newVersion string, unattended bool) []session.RemoteUpdateResult {
+	results := runRemoteUpdates(ctx, remotes, newVersion, !unattended)
+	_ = session.MarkRemoteAutoUpdateRan(time.Now())
+	return results
 }
 
 func shouldProceedWithRemoteUpdate(response string, readErr error) bool {

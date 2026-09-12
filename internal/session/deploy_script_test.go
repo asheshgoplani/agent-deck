@@ -3,11 +3,11 @@ package session
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -168,46 +168,75 @@ func TestDeployScript_SudoRefusesRealCommandKeepsRemedy(t *testing.T) {
 	}
 }
 
-// Two deploys onto the same path never share a staging file: the second
-// either waits its turn (here: is refused as busy while the lock is held)
-// and the installed binary is always one complete payload.
+// pipeRunner is a shellRunner whose script reads its payload from a pipe
+// the test feeds, so a deploy can be held open mid-write on purpose.
+func pipeRunner(t *testing.T, prelude string, payload io.Reader) *SSHRunner {
+	t.Helper()
+	return &SSHRunner{
+		Host:          "tester@remote",
+		AgentDeckPath: "agent-deck",
+		remoteExecFn: func(ctx context.Context, remoteCmd string, _ []byte) ([]byte, error) {
+			cmd := exec.CommandContext(ctx, "sh", "-c", prelude+remoteCmd)
+			cmd.Stdin = payload
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil {
+				return nil, errors.New("remote command failed: " + err.Error() + ": " + stderr.String())
+			}
+			return out, nil
+		},
+	}
+}
+
+// Two deploys onto the same path never share a staging file. Deploy A is
+// held open in the middle of its write (its payload arrives through a pipe
+// the test controls); deploy B arrives meanwhile and must be refused as
+// busy rather than write into or rename the same staging file; then A
+// finishes and the installed binary is A's payload, whole. The old script
+// (shared <path>.new, no lock) let B rename A's half-written file into
+// place and fails the busy assertion.
 func TestDeployScript_ConcurrentDeploysNeverCorrupt(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bin")
 	target := filepath.Join(dir, "agent-deck")
-	payloads := []string{strings.Repeat("A", 1<<20), strings.Repeat("B", 1<<20)}
+	first, rest := strings.Repeat("A", 4096), strings.Repeat("a", 4096)
 
-	var wg sync.WaitGroup
-	errs := make([]error, len(payloads))
-	for i, payload := range payloads {
-		wg.Add(1)
-		go func(i int, payload string) {
-			defer wg.Done()
-			// Hold the payload open briefly so the two writes overlap.
-			r := shellRunner(t, noSudo+"deploy_delay() { sleep 0.2; }; deploy_delay; ")
-			errs[i] = r.DeployBinary(context.Background(), []byte(payload), target)
-		}(i, payload)
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- pipeRunner(t, noSudo, pr).DeployBinary(context.Background(), nil, target) }()
+	if _, err := io.WriteString(pw, first); err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
-
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("nothing installed: %v", err)
-	}
-	if string(got) != payloads[0] && string(got) != payloads[1] {
-		t.Fatalf("installed binary is not one complete payload (len %d, first byte %q)", len(got), got[:1])
-	}
-	successes := 0
-	for _, e := range errs {
-		switch {
-		case e == nil:
-			successes++
-		case errors.Is(e, ErrRemoteDeployBusy):
-		default:
-			t.Errorf("unexpected failure: %v", e)
+	// A has taken the lock and is mid-write once its staging file exists.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if entries, _ := filepath.Glob(target + ".new.*"); len(entries) == 1 {
+			break
 		}
+		if time.Now().After(deadline) {
+			t.Fatal("deploy A never started writing its staging file")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if successes == 0 {
-		t.Fatal("at least one deploy must succeed")
+
+	errB := shellRunner(t, noSudo).DeployBinary(context.Background(), []byte(strings.Repeat("B", 8192)), target)
+	if !errors.Is(errB, ErrRemoteDeployBusy) {
+		t.Fatalf("deploy B while A is mid-write: got %v, want ErrRemoteDeployBusy", errB)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be installed while A is still writing (stat: %v)", err)
+	}
+
+	if _, err := io.WriteString(pw, rest); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("deploy A: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != first+rest {
+		t.Fatalf("installed %d bytes (%v), want A's whole payload", len(got), err)
 	}
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
