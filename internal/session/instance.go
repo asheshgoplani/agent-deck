@@ -542,6 +542,9 @@ type Instance struct {
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
 
 	tmuxSession *tmux.Session // Internal tmux session
+	// Database that last loaded or saved this instance. Restart bookkeeping must
+	// return to that profile instead of whichever database is process-global.
+	restartDB atomic.Pointer[statedb.StateDB]
 
 	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
 
