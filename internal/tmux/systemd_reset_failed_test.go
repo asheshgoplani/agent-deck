@@ -18,6 +18,18 @@ func TestResetFailedReportsCollectedUnit(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "unexpected leading whitespace is fatal",
+			output: " Failed to reset failed state of unit " + unit + ": Unit " + unit + " not loaded.\n",
+			unit:   unit,
+			want:   false,
+		},
+		{
+			name:   "extra newline is fatal",
+			output: "Failed to reset failed state of unit " + unit + ": Unit " + unit + " not loaded.\n\n",
+			unit:   unit,
+			want:   false,
+		},
+		{
 			name:   "different unit is not accepted",
 			output: "Failed to reset failed state of unit agentdeck-tmux-accept-other.scope: Unit agentdeck-tmux-accept-other.scope not loaded.",
 			unit:   unit,
