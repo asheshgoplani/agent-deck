@@ -131,6 +131,10 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 
 **Status:** `●` running | `◐` waiting | `○` idle | `✕` error
 
+## Session Identity Inside a Harness
+
+Every session agent-deck launches (claude, codex, pi, gemini) already carries a short identity block in its instructions: session id, title, tool, group, profile, account, parent session, project path, the core CLI commands, `agent-deck session current --json` for the live record, and the completion sentinel. Custom `--cmd` sessions get the same block via `$AGENTDECK_IDENTITY_FILE`. A child therefore does not need to be told who it is or how to reach its parent; a prompt only has to state the task. Opt out per session with `--no-identity` or globally with `[launch] inject_identity = false`; gemini additionally needs its identity folder trusted (see `documentation/HARNESS_IDENTITY.md`).
+
 ## Sub-Agent Launch
 
 **Use when:** User says "launch sub-agent", "create sub-agent", "spawn agent"

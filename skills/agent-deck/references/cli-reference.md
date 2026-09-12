@@ -91,6 +91,7 @@ Notes:
 - `--account <name>` selects a named slot from `[profiles.<name>.claude].config_dir` for this session, matching `add --account`.
 - `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh`; other tools refuse the flag. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--account` requires an explicit name. If the next token is another launch flag, launch stops with an error before resolving a fallback account or creating a session; use `--account=<name>` when a name intentionally begins with a dash.
+- `--no-identity` (also on `add`): skip the harness identity injection for this session only. By default every spawn tells the model it runs inside agent-deck, its session metadata and how to use the CLI (`[launch] inject_identity` in config-reference.md, `documentation/HARNESS_IDENTITY.md`). Persisted, so restarts honour it.
 
 ### accounts - List named account slots
 
@@ -278,8 +279,12 @@ agent-deck session current -q
 
 # JSON
 agent-deck session current --json
-# {"session":"test","profile":"work","id":"c5bfd4b4",...}
+# {"session":"test","title":"test","profile":"work","id":"c5bfd4b4","tool":"claude",
+#  "group":"projects","account":"","parent_session_id":"","path":"/...","status":"running",
+#  "tmux_session":"agentdeck_test_...","identity_file":"/.../runtime/identity/c5bfd4b4/identity.md"}
 ```
+
+The JSON form is the machine-readable identity a session fetches from inside: `tool`, `account` and `parent_session_id` are always present (empty when unset); `group`, `tmux_session`, `is_conductor`, `worktree_branch` and `identity_file` appear when set. The injected identity block (`[launch] inject_identity`) points the model here for the live record.
 
 **Profile auto-detection priority:**
 1. `AGENTDECK_PROFILE` env var

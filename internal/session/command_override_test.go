@@ -178,7 +178,10 @@ func TestBuildPiCommand_UsesInstanceScopedSessionDir(t *testing.T) {
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
-	inst := &Instance{ID: "test-instance-id", Tool: "pi"}
+	// The identity file (identity_injection.go) is a controller-host path by
+	// design and is skipped for --ssh sessions; disable it here so the
+	// host-path assertion below stays about the Pi session dir alone.
+	inst := &Instance{ID: "test-instance-id", Tool: "pi", IdentityInjectionDisabled: true}
 	got := inst.buildPiCommand("pi")
 
 	wantSessionDir := "${HOME}/.pi/agent-deck/test-instance-id"
@@ -379,7 +382,7 @@ func TestBuildCodexCommand_PassthroughKeepsAgentdeckEnv(t *testing.T) {
 	if !strings.Contains(got, "AGENTDECK_TOOL=codex") {
 		t.Errorf("custom-command codex passthrough must include AGENTDECK_TOOL=codex, got %q", got)
 	}
-	if !strings.Contains(got, `AGENTDECK_TITLE="test session"`) {
+	if !strings.Contains(got, `AGENTDECK_TITLE='test session'`) { // shell-quoted, not Go-%q (backticks in a title ran as commands)
 		t.Errorf("custom-command codex passthrough must include AGENTDECK_TITLE, got %q", got)
 	}
 }

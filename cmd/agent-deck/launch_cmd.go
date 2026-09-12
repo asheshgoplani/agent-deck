@@ -68,6 +68,7 @@ func handleLaunch(profile string, args []string) {
 	// TELEGRAM_BOT_TOKEN spawns a duplicate `bun telegram` poller that
 	// races the conductor for the bot lock (Telegram 409, dropped messages).
 	inheritTelegramEnv := fs.Bool("inherit-telegram-env", false, "Keep TELEGRAM_* env vars in the child (#1133); off by default to prevent duplicate plugin pollers")
+	noIdentity := fs.Bool("no-identity", false, "Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -488,6 +489,11 @@ func handleLaunch(profile string, args []string) {
 	// #1133: explicit opt-in for inheriting the conductor's telegram env.
 	if *inheritTelegramEnv {
 		newInstance.InheritTelegramEnv = true
+	}
+
+	// Per-session opt-out of harness identity injection (identity_injection.go).
+	if *noIdentity {
+		newInstance.IdentityInjectionDisabled = true
 	}
 
 	if sessionCommandInput != "" {
