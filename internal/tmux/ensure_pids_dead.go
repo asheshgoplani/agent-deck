@@ -18,6 +18,8 @@ package tmux
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -36,9 +38,9 @@ import (
 //
 // The PID-reuse guard in isOurProcess is preserved: if a captured PID
 // has been recycled into an unrelated process, it's skipped.
-func EnsurePIDsDead(pids []int, timeout time.Duration) {
+func EnsurePIDsDead(pids []int, timeout time.Duration) error {
 	if len(pids) == 0 {
-		return
+		return nil
 	}
 	if timeout <= 0 {
 		timeout = 3 * time.Second
@@ -52,7 +54,7 @@ func EnsurePIDsDead(pids []int, timeout time.Duration) {
 
 	alive := filterAliveOurProcesses(pids)
 	if len(alive) == 0 {
-		return
+		return nil
 	}
 
 	respawnLog.Info("ensure_pids_dead_sigterm",
@@ -69,7 +71,7 @@ func EnsurePIDsDead(pids []int, timeout time.Duration) {
 
 	stubborn := filterAliveOurProcesses(alive)
 	if len(stubborn) == 0 {
-		return
+		return nil
 	}
 
 	respawnLog.Info("ensure_pids_dead_sigkill",
@@ -85,10 +87,25 @@ func EnsurePIDsDead(pids []int, timeout time.Duration) {
 	// return as soon as they're all gone rather than sleeping blindly.
 	for time.Now().Before(deadline) {
 		if len(filterAliveOurProcesses(stubborn)) == 0 {
-			return
+			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	return processReapResult(filterAliveOurProcesses(stubborn))
+}
+
+func processReapResult(alive []int) error {
+	if len(alive) == 0 {
+		return nil
+	}
+	return fmt.Errorf("process reaping timed out; death unverified for captured PIDs %v", alive)
+}
+
+func killAndWaitResult(killErr, reapErr error, sessionExists bool) error {
+	if !sessionExists {
+		killErr = nil
+	}
+	return errors.Join(killErr, reapErr)
 }
 
 // sleepUntilOrDuration sleeps for min(d, until-now). Never past the
@@ -169,26 +186,19 @@ func (s *Session) KillAndWait() error {
 
 	_, oldPIDs := s.getPaneProcessTree()
 
-	// Bounded — see tmuxMutationTimeout. This is the CLI path (`agent-deck
-	// remove`), where an unbounded wedge hangs the user's terminal outright
-	// rather than a background goroutine. The argv stays plain (no -L): keeping
-	// the execCommand seam's exact shape is what the launcher-fallback tests
-	// assert on, and which server this targets is a separate question from
-	// whether it terminates.
+	// Bounded — see tmuxMutationTimeout. This must use the same per-session
+	// socket-aware command construction as Spawn and Exists: an unqualified
+	// `tmux kill-session` targets the host default server while Exists probes
+	// s.SocketName, so a custom-socket source could survive a purported
+	// synchronous stop.
 	killCtx, cancelKill := context.WithTimeout(context.Background(), tmuxMutationTimeout)
 	defer cancelKill()
-	killErr := execCommandContext(killCtx, "tmux", "kill-session", "-t", s.Name).Run()
+	killErr := s.tmuxCmdContext(killCtx, "kill-session", "-t", s.Name).Run()
 
-	if len(oldPIDs) > 0 {
-		EnsurePIDsDead(oldPIDs, 3*time.Second)
-	}
+	reapErr := EnsurePIDsDead(oldPIDs, 3*time.Second)
 
 	// Killing an already-dead session is success (see Session.Kill): tmux
 	// `kill-session` exits non-zero for a session that no longer exists. CLI
 	// callers (`agent-deck remove` of a stopped session) must not fail on that.
-	if killErr != nil && !s.Exists() {
-		return nil
-	}
-
-	return killErr
+	return killAndWaitResult(killErr, reapErr, killErr == nil || s.Exists())
 }

@@ -108,14 +108,36 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 	}
 
 	dstProjDir := filepath.Join(dst, "projects", projDirName)
+	// Do not let a writable destination symlink redirect a migration into an
+	// unrelated tree. This check is intentionally destination-only: source
+	// accounts remain untouched, and configured source roots may legitimately be
+	// symlinked by operators.
+	if err := ensureNoSymlinkPath(dstProjDir); err != nil {
+		return "", fmt.Errorf("unsafe target project dir: %w", err)
+	}
 	if err := os.MkdirAll(dstProjDir, 0o700); err != nil {
 		return "", fmt.Errorf("create target project dir: %w", err)
 	}
 	dstFile := filepath.Join(dstProjDir, sid+".jsonl")
+	if info, err := os.Lstat(dstFile); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to overwrite symlink destination: %s", dstFile)
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect target conversation: %w", err)
+	}
 	bak := ""
 	if fileIsRegular(dstFile) {
-		// Backup before any destructive write (2026-06-04 incident, S2).
-		bak = fmt.Sprintf("%s.bak-%d", dstFile, time.Now().Unix())
+		// Backup before any destructive write (2026-06-04 incident, S2). Use a
+		// collision-free name so two retries never overwrite the prior backup.
+		for n := 0; ; n++ {
+			suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+			if n > 0 {
+				suffix = fmt.Sprintf("%s-%d", suffix, n)
+			}
+			bak = fmt.Sprintf("%s.bak-%s", dstFile, suffix)
+			if _, statErr := os.Lstat(bak); os.IsNotExist(statErr) {
+				break
+			}
+		}
 		if err := os.Rename(dstFile, bak); err != nil {
 			return "", fmt.Errorf("backup existing conversation: %w", err)
 		}
@@ -149,6 +171,9 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 // (created 0700), size-verifying each copy. Symlinks and other special files
 // are skipped.
 func copyDirVerified(src, dst string) error {
+	if err := ensureNoSymlinkPath(dst); err != nil {
+		return err
+	}
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -159,6 +184,9 @@ func copyDirVerified(src, dst string) error {
 		}
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
+			if err := ensureNoSymlinkPath(target); err != nil {
+				return err
+			}
 			return os.MkdirAll(target, 0o700)
 		}
 		if !d.Type().IsRegular() {
@@ -285,8 +313,31 @@ func newestConversationBackup(projDir, sessionID string) (string, error) {
 }
 
 // copyFileVerified copies src to dst (0600, matching Claude's conversation
-// files) and verifies the written size matches the source.
+// files) and verifies the written size matches the source. Both the source and
+// destination are checked with Lstat so a writable destination symlink cannot
+// redirect the copy and a source is never removed or followed unexpectedly.
 func copyFileVerified(src, dst string) error {
+	srcInfo, err := os.Lstat(src)
+	if err != nil {
+		return fmt.Errorf("stat source: %w", err)
+	}
+	if !srcInfo.Mode().IsRegular() || srcInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("source is not a regular file: %s", src)
+	}
+	if err := ensureNoSymlinkPath(filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("unsafe target path: %w", err)
+	}
+	if dstInfo, statErr := os.Lstat(dst); statErr == nil {
+		if dstInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to follow symlink destination: %s", dst)
+		}
+		if !dstInfo.Mode().IsRegular() {
+			return fmt.Errorf("destination is not a regular file: %s", dst)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect target: %w", statErr)
+	}
+
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open conversation: %w", err)
@@ -304,12 +355,45 @@ func copyFileVerified(src, dst string) error {
 	if copyErr != nil {
 		return fmt.Errorf("copy conversation: %w", copyErr)
 	}
-	srcInfo, err := os.Stat(src)
-	if err != nil {
-		return fmt.Errorf("stat source: %w", err)
-	}
 	if written != srcInfo.Size() {
 		return fmt.Errorf("size mismatch after copy: wrote %d bytes, source has %d", written, srcInfo.Size())
+	}
+	return nil
+}
+
+// ensureNoSymlinkPath verifies every existing component of path. MkdirAll and
+// OpenFile otherwise follow a writable symlink in an intermediate destination
+// directory, defeating copy-only source preservation.
+func ensureNoSymlinkPath(path string) error {
+	path = filepath.Clean(path)
+	if path == "." || path == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(abs, string(filepath.Separator)), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) {
+			// Missing descendants will be created by the caller; no later
+			// component can be inspected until that creation occurs.
+			continue
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component is a symlink: %s", current)
+		}
+		if !info.IsDir() && current != abs {
+			return fmt.Errorf("path component is not a directory: %s", current)
+		}
 	}
 	return nil
 }

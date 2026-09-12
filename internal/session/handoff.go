@@ -50,7 +50,18 @@ func BuildClaudeToCodexHandoffPrompt(inst *Instance, maxChars int) (string, Hand
 			inst.Title, inst.SSHHost)
 	}
 
-	transcriptPath := locateHandoffTranscript(inst)
+	transcriptPath, err := locateExactHandoffTranscript(inst)
+	if err != nil {
+		return "", HandoffInfo{TranscriptPath: transcriptPath, MaxChars: maxChars}, err
+	}
+	// Validate the complete exact-ID JSONL before rendering its tail. The
+	// renderer intentionally ignores non-message records, but it must not turn
+	// a malformed non-tail record or a foreign native identity into a plausible
+	// handoff. An unfinished final append remains tolerated by the shared
+	// export validator.
+	if err := validateClaudeHandoffTranscript(transcriptPath, inst.ClaudeSessionID); err != nil {
+		return "", HandoffInfo{TranscriptPath: transcriptPath, MaxChars: maxChars}, err
+	}
 	messages, err := readClaudeTranscriptMessages(transcriptPath)
 	if err != nil {
 		return "", HandoffInfo{TranscriptPath: transcriptPath, MaxChars: maxChars}, err
@@ -129,11 +140,23 @@ func claudeTranscriptPathIn(configDir string, inst *Instance, sessionID string) 
 	return filepath.Join(configDir, "projects", encoded, sessionID+".jsonl")
 }
 
-// locateHandoffTranscript picks the transcript to hand off. The disk is
-// authoritative: account-switched or pre-account sessions may keep their
-// conversation in a different config dir than the resolver's answer, so scan
-// all configured dirs (issue #1571 machinery) and fall back to the resolver
-// path when nothing is found.
+// locateExactHandoffTranscript resolves only the configured account-bound
+// path for this exact Claude identity. A native ID can legitimately exist in
+// two account homes after a migration, so the old all-account discovery
+// fallback could hand the wrong account's conversation to Codex. Missing
+// source data is an error; it must never borrow a matching ID from another
+// account.
+func locateExactHandoffTranscript(inst *Instance) (string, error) {
+	path, err := canonicalClaudeExactTranscriptPath(inst)
+	if err != nil {
+		return "", err
+	}
+	return uniqueRegularArtifact([]string{path}, inst.ClaudeSessionID+".jsonl")
+}
+
+// locateHandoffTranscript remains the historical best-effort resolver used by
+// local usage-limit display. It must not be used for a cross-harness export:
+// BuildClaudeToCodexHandoffPrompt uses locateExactHandoffTranscript above.
 func locateHandoffTranscript(inst *Instance) string {
 	fallback := ClaudeTranscriptPathForInstance(inst)
 	cfg, err := LoadUserConfig()
@@ -147,8 +170,6 @@ func locateHandoffTranscript(inst *Instance) string {
 	if sid == "" {
 		sid = inst.ClaudeSessionID
 	}
-	// LocateConversationConfigDir matches on the raw ProjectPath encoding;
-	// prefer the canonical encoding when it exists in the located dir.
 	canonical := claudeTranscriptPathIn(dir, inst, sid)
 	if _, statErr := os.Stat(canonical); statErr == nil {
 		return canonical
@@ -158,6 +179,17 @@ func locateHandoffTranscript(inst *Instance) string {
 		return raw
 	}
 	return fallback
+}
+
+func validateClaudeHandoffTranscript(path, sessionID string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read Claude transcript: %w", err)
+	}
+	if err := validateJSONLIdentity(data, sessionID); err != nil {
+		return fmt.Errorf("validate Claude transcript: %w", err)
+	}
+	return nil
 }
 
 func readClaudeTranscriptMessages(path string) ([]handoffMessage, error) {

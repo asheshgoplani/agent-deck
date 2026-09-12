@@ -77,6 +77,8 @@ type InstanceData struct {
 	// active).
 	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
 	ArchivedAt     time.Time `json:"archived_at,omitempty"`
+	SupersededBy   string    `json:"superseded_by,omitempty"`
+	Supersedes     string    `json:"supersedes,omitempty"`
 	TmuxSession    string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
@@ -437,6 +439,98 @@ func (s *Storage) rememberInstanceSnapshot(inst *Instance, original, stored *sta
 		dbPath:   s.dbPath,
 		original: statedb.CloneInstanceRow(original),
 		stored:   statedb.CloneInstanceRow(stored),
+	}
+}
+
+// CommitNativeHarnessSwitch persists a same-harness switch after its lifecycle
+// work has completed. Unlike SaveWithGroups, it does not replay a full stale
+// registry snapshot: it compare-and-swaps the source identity and writes only
+// account, tool, and native-ID fields. Monitor status changes and unrelated
+// sessions/edits therefore survive, while a changed account, command, path, or
+// native ID refuses recovery rather than overwriting a newer operation.
+func (s *Storage) CommitNativeHarnessSwitch(inst *Instance, result *HarnessSwitchResult) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+	if inst == nil || result == nil || !result.Committed || result.nativeSource.InstanceID == "" || result.nativeTarget.InstanceID == "" {
+		return fmt.Errorf("native harness switch commit is incomplete")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	source := nativeSwitchStorageIdentity(result.nativeSource)
+	target := nativeSwitchStorageIdentity(result.nativeTarget)
+	var (
+		committed *statedb.InstanceRow
+		err       error
+	)
+	if result.nativeStorageAcknowledgement {
+		// The CAS already succeeded, but writing its journal acknowledgement
+		// failed. A reloaded target can only confirm that exact durable target;
+		// it must not retry the source-bound CAS or replay lifecycle work.
+		committed, err = s.db.ConfirmNativeHarnessSwitchTarget(target)
+	} else {
+		committed, err = s.db.CommitNativeHarnessSwitch(source, target)
+	}
+	if err != nil {
+		return fmt.Errorf("commit native harness switch: %w", err)
+	}
+	// A completed-journal retry starts from the old registry row. Reconcile the
+	// exact already-executed mutation here; no stop/start/prompt lifecycle work
+	// is replayed merely to repair storage.
+	inst.Tool, inst.Account = result.nativeTarget.Tool, result.nativeTarget.Account
+	inst.ClaudeSessionID, inst.CodexSessionID = result.nativeTarget.ClaudeID, result.nativeTarget.CodexID
+	desired, err := instanceToRow(inst)
+	if err != nil {
+		return err
+	}
+	s.rememberInstanceSnapshot(inst, desired, committed)
+	if err := completeNativeHarnessSwitchJournal(result); err != nil {
+		return err
+	}
+	_ = s.db.Touch()
+	return nil
+}
+
+// FinalizeCrossHarnessSupersession is the durable replacement boundary for a
+// ready fresh target. It updates only the exact source and target rows in one
+// SQLite transaction: source becomes archived with a reversible successor ID,
+// and target becomes active with its predecessor ID. No transcript/runtime is
+// deleted or overwritten, and a failed CAS leaves the source visible.
+func (s *Storage) FinalizeCrossHarnessSupersession(source, target *Instance) error {
+	if s == nil || s.db == nil || source == nil || target == nil {
+		return fmt.Errorf("cross-harness supersession storage is incomplete")
+	}
+	if source.ID == "" || target.ID == "" || source.ID == target.ID {
+		return fmt.Errorf("cross-harness supersession has invalid source/target IDs")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sourceIdentity := statedb.NativeHarnessSwitchIdentity{
+		ID: source.ID, Tool: source.Tool, Account: source.Account, ProjectPath: source.ProjectPath, Command: source.Command,
+		ClaudeSessionID: source.ClaudeSessionID, CodexSessionID: source.CodexSessionID, ParentSessionID: source.ParentSessionID,
+	}
+	targetIdentity := statedb.NativeHarnessSwitchIdentity{
+		ID: target.ID, Tool: target.Tool, Account: target.Account, ProjectPath: target.ProjectPath, Command: target.Command,
+		ClaudeSessionID: target.ClaudeSessionID, CodexSessionID: target.CodexSessionID, ParentSessionID: target.ParentSessionID,
+	}
+	_, _, err := s.db.CommitCrossHarnessSupersession(sourceIdentity, targetIdentity, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("commit cross-harness supersession: %w", err)
+	}
+	_ = s.db.Touch()
+	return nil
+}
+
+func nativeSwitchStorageIdentity(identity switchIdentity) statedb.NativeHarnessSwitchIdentity {
+	tool := identity.StorageTool
+	if tool == "" { // version-2 journals stored only the canonical harness.
+		tool = identity.Tool
+	}
+	return statedb.NativeHarnessSwitchIdentity{
+		ID: identity.InstanceID, Tool: tool, Account: identity.Account,
+		ProjectPath: identity.ProjectPath, Command: identity.Command,
+		ClaudeSessionID: identity.ClaudeID, CodexSessionID: identity.CodexID,
 	}
 }
 
@@ -932,6 +1026,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// zone. For a one-shot the task IS the invocation, so a row that forgets it
 	// can only ever be "restarted" into dsh's usage error.
 	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
+	toolData = WriteCrossHarnessLineageToToolData(toolData, inst.SupersededBy, inst.Supersedes)
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -1103,6 +1198,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
+			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
+			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
 	}
 
@@ -1234,6 +1331,8 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
+			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
+			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
 	}
 
@@ -1495,6 +1594,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			CreatedAt:                    instData.CreatedAt,
 			LastAccessedAt:               instData.LastAccessedAt,
 			ArchivedAt:                   instData.ArchivedAt,
+			SupersededBy:                 instData.SupersededBy,
+			Supersedes:                   instData.Supersedes,
 			WorktreePath:                 instData.WorktreePath,
 			WorktreeRepoRoot:             instData.WorktreeRepoRoot,
 			WorktreeBranch:               instData.WorktreeBranch,
