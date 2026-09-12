@@ -52,6 +52,16 @@ func (p *YoloOptionsPanel) AtTop() bool {
 	return true
 }
 
+// AtBottom returns true (single element, always at bottom).
+func (p *YoloOptionsPanel) AtBottom() bool {
+	return true
+}
+
+// FocusLast focuses the single element.
+func (p *YoloOptionsPanel) FocusLast() {
+	p.focused = true
+}
+
 func (p *YoloOptionsPanel) FocusedLine() int {
 	if !p.focused {
 		return -1

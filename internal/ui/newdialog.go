@@ -137,6 +137,7 @@ const (
 	focusBranch                      // branch input (conditional — only when worktree enabled).
 	focusOptions                     // tool-specific options panel (conditional).
 	focusRemoteMCPs                  // MCPs defined on the target remote (conditional, remote targets only).
+	focusCreate                      // explicit "[ Create session ]" button; the one row where Enter submits.
 )
 
 // New session dialog: outer box and textinput widths stay in sync so long
@@ -749,26 +750,31 @@ func (d *NewDialog) IsModelTypeCustomHighlighted() bool {
 }
 
 func (d *NewDialog) shouldHandleEnterLocally() bool {
-	switch d.currentTarget() {
-	// Path/Model open their own dropdown on Enter.
-	case focusPath, focusModel:
+	// An open dropdown always owns Enter (select / close).
+	if d.suggestionsActive || d.modelSuggestionActive {
 		return true
-	// Name/Branch are free-text fields. When the opt-in
-	// [ui].new_session_enter_advances toggle is on, Enter advances to the next
-	// field rather than submitting the whole form: pressing Enter right after
-	// typing the session name used to silently submit (path defaults to cwd),
-	// skipping path/tool/model selection entirely. Handling Enter locally lets
-	// the dialog advance focus instead. Submit stays reachable from non-text
-	// rows (checkboxes/conductor) and via Ctrl+S (additive, always available).
-	// Default (toggle off) preserves today's behavior: Enter here submits, so we
-	// must NOT claim it locally.
-	case focusName, focusBranch:
-		return d.enterAdvances
-	case focusMultiRepo:
-		return d.multiRepoEnabled
-	default:
-		return d.suggestionsActive || d.modelSuggestionActive
 	}
+	switch d.currentTarget() {
+	// The Create button is the one row where Enter means "create now".
+	case focusCreate:
+		return false
+	// Path opens its own browse dropdown (or advances on a usable path).
+	case focusPath:
+		return true
+	case focusMultiRepo:
+		if d.multiRepoEnabled {
+			return true
+		}
+	}
+	// Every other row follows the [ui].new_session_enter_advances contract
+	// (on by default): Enter moves to the next field and only the Create
+	// button or Ctrl+S submits. Before this, Enter on the Model row toggled
+	// its dropdown open/closed forever, and Enter on any non-text row
+	// (tool, reasoning effort, checkboxes, Claude options) created the
+	// session on the spot — the "stuck on the model step, then it launches
+	// by itself" report. With the toggle explicitly off, Enter submits from
+	// every row, as before.
+	return d.enterAdvances
 }
 
 // WantsSubmit reports whether the given key is an explicit "create now"
@@ -837,6 +843,16 @@ func (d *NewDialog) ApplyHighlightedModelSuggestion() {
 func (d *NewDialog) DismissModelSuggestions() {
 	d.modelSuggestionHidden = true
 	d.modelSuggestionActive = false
+}
+
+// openModelSuggestions steps into the model list (↓ or Space on the model
+// row): the list takes the arrow keys and Enter until it is left with Esc,
+// Tab, or a pick.
+func (d *NewDialog) openModelSuggestions() {
+	d.filterModelSuggestions()
+	d.modelSuggestionActive = true
+	d.modelSuggestionHidden = false
+	d.modelInput.Blur()
 }
 
 // SetRecentSessions sets the list of recently deleted session configs.
@@ -1383,18 +1399,10 @@ func (d *NewDialog) cycleReasoningEffort(delta int) {
 }
 
 func (d *NewDialog) updateModelPlaceholder() {
-	switch cmd := d.GetSelectedCommand(); {
-	case session.IsClaudeCompatible(cmd):
-		d.modelInput.Placeholder = "claude-sonnet-4-6"
-	case cmd == "gemini":
-		d.modelInput.Placeholder = "gemini-3.1-pro-preview"
-	case cmd == "opencode":
-		d.modelInput.Placeholder = "openai/gpt-5.5"
-	case session.IsCodexCompatible(cmd):
-		d.modelInput.Placeholder = "gpt-5.6-sol"
-	default:
-		d.modelInput.Placeholder = "tool default"
-	}
+	// One neutral placeholder for every tool. A per-tool example ID here read
+	// as an already-chosen model ("it picked claude-sonnet-4-6 by itself");
+	// the examples live on the hint line below the field instead.
+	d.modelInput.Placeholder = "tool default (↓ to browse)"
 }
 
 func (d *NewDialog) modelInputHint() string {
@@ -1796,6 +1804,10 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.toolOptions != nil {
 		targets = append(targets, focusOptions)
 	}
+	// The Create button is always last: Enter walks the form top to bottom and
+	// lands here, so nothing is created until the user asks for it (Ctrl+S
+	// remains the create-from-anywhere shortcut).
+	targets = append(targets, focusCreate)
 	d.focusTargets = targets
 	// Clamp focusIndex to valid range.
 	if d.focusIndex >= len(d.focusTargets) {
@@ -1875,8 +1887,8 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusModel:
 		d.modelInput.Focus()
-	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs:
-		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
+	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusCreate:
+		// Checkbox/toggle rows, conductor dropdown and Create button — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
 	case focusOptions:
@@ -1898,6 +1910,11 @@ func (d *NewDialog) moveFocus(delta int) {
 		d.focusIndex %= len(d.focusTargets)
 	}
 	d.updateFocus()
+	// Moving backwards into the tool options panel enters it at its last row,
+	// mirroring the forward walk that leaves from that row.
+	if delta < 0 && d.currentTarget() == focusOptions && d.toolOptions != nil {
+		d.toolOptions.FocusLast()
+	}
 }
 
 func isNewDialogTabKey(msg tea.KeyMsg) bool {
@@ -2021,9 +2038,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		if !d.modelSuggestionActive && d.currentTarget() == focusModel &&
 			!d.modelSuggestionHidden && d.selectedToolSupportsModel() {
 			if s := msg.String(); s == "down" || s == "up" {
-				d.filterModelSuggestions()
-				d.modelSuggestionActive = true
-				d.modelInput.Blur()
+				d.openModelSuggestions()
 				d.modelNavigated = true
 				// fall through to the modelSuggestionActive arrow handler below
 			}
@@ -2194,6 +2209,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				}
 				d.DismissModelSuggestions()
 			}
+			// Walk the tool options rows one at a time; Tab used to jump from
+			// the panel's first row straight back to Name, leaving Skip
+			// permissions / Extra args / Start query / Account reachable only
+			// via ↓.
+			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtBottom() {
+				return d, d.toolOptions.Update(msg)
+			}
 			// Issue #896 (problem 1): don't advance focus from a non-empty path
 			// that doesn't point to an existing directory. Tab should stick to
 			// the input until the user has a usable path; otherwise it silently
@@ -2219,6 +2241,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		if isNewDialogShiftTabKey(msg) {
 			d.DismissSuggestions()
 			d.DismissModelSuggestions()
+			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtTop() {
+				return d, d.toolOptions.Update(msg)
+			}
 			d.moveFocus(-1)
 			return d, nil
 		}
@@ -2247,11 +2272,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					return d, nil
 				}
 			}
+			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtBottom() {
+				return d, d.toolOptions.Update(tea.KeyMsg{Type: tea.KeyDown})
+			}
 			if d.focusIndex < maxIdx {
 				d.focusIndex++
 				d.updateFocus()
-			} else if cur == focusOptions && d.toolOptions != nil {
-				return d, d.toolOptions.Update(msg)
 			}
 			return d, nil
 
@@ -2281,13 +2307,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				}
 			}
 			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtTop() {
-				return d, d.toolOptions.Update(msg)
+				return d, d.toolOptions.Update(tea.KeyMsg{Type: tea.KeyUp})
 			}
-			d.focusIndex--
-			if d.focusIndex < 0 {
-				d.focusIndex = maxIdx
-			}
-			d.updateFocus()
+			// Same walk as ↑/Shift+Tab, so moving back into the options
+			// panel lands on its last row.
+			d.moveFocus(-1)
 			return d, nil
 
 		case "ctrl+w":
@@ -2341,11 +2365,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					return d, nil
 				}
 			}
+			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtBottom() {
+				return d, d.toolOptions.Update(msg)
+			}
 			if d.focusIndex < maxIdx {
 				d.focusIndex++
 				d.updateFocus()
-			} else if cur == focusOptions && d.toolOptions != nil {
-				return d, d.toolOptions.Update(msg)
 			}
 			return d, nil
 
@@ -2389,38 +2414,27 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "enter":
-			// Name/Branch are free-text fields: when the opt-in
-			// [ui].new_session_enter_advances toggle is on, Enter advances to the
-			// next field instead of submitting the form, so typing a name + Enter
-			// no longer silently creates a session with all defaults. With the
-			// toggle off (default) home.go never forwards Enter here for these
-			// fields (shouldHandleEnterLocally returns false), so this branch is
-			// only reached in opt-in mode; the guard keeps it correct regardless.
-			if d.enterAdvances && (cur == focusName || cur == focusBranch) {
-				d.moveFocus(1)
-				return d, nil
-			}
 			if cur == focusPath {
-				// Issue #1536: Enter on an actively-typed path (not the
-				// soft-selected pre-fill) that already resolves to an existing
-				// directory advances to the next field instead of re-opening the
-				// browse dropdown. Previously Enter here unconditionally
-				// re-activated suggestions, so after typing a custom path Enter
-				// looped straight back into browse and only Ctrl+S proceeded.
-				// This mirrors the #896 Tab guard. Enter still opens browse for
-				// the soft-selected pre-fill and for empty or not-yet-existing
-				// paths (where the dropdown is genuinely useful).
-				if !d.pathSoftSelected {
-					v := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
-					if v != "" {
-						expanded := session.ExpandPath(v)
-						if info, err := os.Stat(expanded); err == nil && info.IsDir() {
-							d.moveFocus(1)
-							if d.currentTarget() != focusPath {
-								d.suggestionNavigated = false
-							}
-							return d, nil
+				// Issue #1536: Enter on a path that already resolves to an
+				// existing directory advances to the next field instead of
+				// re-opening the browse dropdown. Previously Enter here
+				// unconditionally re-activated suggestions, so after typing a
+				// custom path Enter looped straight back into browse and only
+				// Ctrl+S proceeded. This mirrors the #896 Tab guard. The
+				// soft-selected pre-fill (the group default / cwd) advances the
+				// same way — browsing it is Space or → — so a plain Enter walk
+				// never stalls on an already-usable path. Enter still opens
+				// browse for empty or not-yet-existing paths (where the
+				// dropdown is genuinely useful).
+				v := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+				if v != "" {
+					expanded := session.ExpandPath(v)
+					if info, err := os.Stat(expanded); err == nil && info.IsDir() {
+						d.moveFocus(1)
+						if d.currentTarget() != focusPath {
+							d.suggestionNavigated = false
 						}
+						return d, nil
 					}
 				}
 				d.suggestionsActive = true
@@ -2430,10 +2444,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				return d, nil
 			}
 			if cur == focusModel {
-				d.filterModelSuggestions()
-				d.modelSuggestionActive = true
-				d.modelSuggestionHidden = false
-				d.modelInput.Blur()
+				// Enter accepts whatever is in the field (empty = tool default)
+				// and moves on. Opening the list is ↓ or Space; Enter used to
+				// open it, and Enter on the list's default "Type custom" entry
+				// closed it again, so Enter never left this row.
+				d.moveFocus(1)
 				return d, nil
 			}
 			if cur == focusMultiRepo && d.multiRepoEnabled {
@@ -2455,6 +2470,20 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.filterPathSuggestions()
 				}
 				return d, nil
+			}
+			// Enter-advances mode: every remaining row (name, branch, tool,
+			// effort, checkboxes, conductor, tool options) steps to the next
+			// field, so typing a name + Enter no longer silently creates a
+			// session with all defaults. Inside the tool options panel that
+			// means the next option row; past its last row focus leaves for the
+			// Create button. Only focusCreate reaches home.go's submit path
+			// (shouldHandleEnterLocally); with the toggle off home.go never
+			// forwards Enter here, and the guard keeps it correct regardless.
+			if d.enterAdvances && cur != focusCreate {
+				if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtBottom() {
+					return d, d.toolOptions.Update(tea.KeyMsg{Type: tea.KeyTab})
+				}
+				d.moveFocus(1)
 			}
 			return d, nil
 
@@ -2587,6 +2616,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case " ":
+			if cur == focusModel && !d.modelSuggestionActive {
+				// Space (like ↓) steps into the model list; a model ID never
+				// contains a space, so the input loses nothing.
+				d.openModelSuggestions()
+				return d, nil
+			}
 			if cur == focusReasoningEffort {
 				d.cycleReasoningEffort(1)
 				return d, nil
@@ -3243,6 +3278,17 @@ func (d *NewDialog) View() string {
 		content.WriteString(d.toolOptions.View())
 	}
 
+	// Create button: the explicit end of the Enter walk. Ctrl+S still creates
+	// from any row.
+	content.WriteString("\n")
+	markFocusedRow(focusCreate)
+	if cur == focusCreate {
+		content.WriteString(activeLabelStyle.Render("▶ [ Create session ]"))
+	} else {
+		content.WriteString(labelStyle.Render("  [ Create session ]"))
+	}
+	content.WriteString("\n")
+
 	// Inline validation error
 	if d.validationErr != "" {
 		errStyle := lipgloss.NewStyle().Foreground(ColorRed).Bold(true)
@@ -3260,19 +3306,19 @@ func (d *NewDialog) View() string {
 	if len(d.recentSessions) > 0 {
 		recentPrefix = "^R recent │ "
 	}
-	// createHint reflects the active Enter mode on free-text fields. With the
-	// opt-in toggle on, Enter advances and Ctrl+S creates; with it off (default),
-	// Enter still creates (Ctrl+S also works, but Enter is the legacy primary).
-	createHint := "Enter create"
-	if d.enterAdvances {
-		createHint = "^S create"
+	// Every row's footer says what Enter does there. In Enter-advances mode
+	// (default) Enter steps to the next field and only the Create button or
+	// Ctrl+S creates; with the toggle explicitly off, Enter creates from any row.
+	rowHint := "Enter next │ ^S create"
+	if !d.enterAdvances {
+		rowHint = "Enter create"
 	}
-	helpText := recentPrefix + "Tab next │ ↑↓ navigate │ " + createHint + " │ Esc cancel"
+	helpText := recentPrefix + "Tab next │ ↑↓ navigate │ " + rowHint + " │ Esc cancel"
 	if cur == focusPath {
 		if d.suggestionsActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Tab next │ Esc back"
 		} else if d.pathSoftSelected {
-			helpText = "Type to replace │ Enter browse list │ ← edit │ Tab next │ Esc cancel"
+			helpText = "Type to replace │ Enter next │ Space/→ browse │ ← edit │ Esc cancel"
 		} else {
 			// Issue #1536: on a path that resolves to an existing directory,
 			// Enter advances to the next field; otherwise it opens the browse
@@ -3290,30 +3336,32 @@ func (d *NewDialog) View() string {
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()
 		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
-			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ ^S create │ Esc cancel"
+			helpText = "←→ tool │ w worktree │ s sandbox │ y yolo │ " + rowHint + " │ Esc cancel"
 		} else {
-			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ ^S create │ Esc cancel"
+			helpText = "←→ tool │ w worktree │ s sandbox │ " + rowHint + " │ Esc cancel"
 		}
 	} else if cur == focusModel {
 		if d.modelSuggestionActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Esc back │ ^S create"
 		} else if d.IsModelPickerOpen() {
-			helpText = "Type custom model ID │ Enter browse IDs │ Tab next │ Esc back │ ^S create"
+			helpText = "Type an ID │ ↓/Space browse IDs │ " + rowHint + " │ Esc back"
 		} else {
-			helpText = "Type custom model ID │ Enter browse IDs │ Tab next │ Esc cancel │ ^S create"
+			helpText = "Type an ID │ ↓/Space browse IDs │ " + rowHint + " │ Esc cancel"
 		}
 	} else if cur == focusReasoningEffort {
-		helpText = "←→/Space choose effort │ Tab next │ Enter/^S create │ Esc cancel"
+		helpText = "←→/Space choose effort │ Tab next │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusConductor {
-		helpText = "↑↓ select parent │ Tab next │ Enter/^S create │ Esc cancel"
+		helpText = "↑↓ select parent │ Tab next │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {
-		helpText = "Space toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
+		helpText = "Space toggle │ ↑↓ navigate │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusInherited {
-		helpText = "Space expand/collapse │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
+		helpText = "Space expand/collapse │ ↑↓ navigate │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusRemoteMCPs {
-		helpText = "←→ choose MCP │ Space attach/detach │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
+		helpText = "←→ choose MCP │ Space attach/detach │ ↑↓ navigate │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusOptions && d.toolOptions != nil {
-		helpText = "Space/y toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
+		helpText = "Space/y toggle │ Tab/↑↓ navigate │ " + rowHint + " │ Esc cancel"
+	} else if cur == focusCreate {
+		helpText = "Enter create │ Shift+Tab back │ ↑↓ navigate │ Esc cancel"
 	}
 	content.WriteString(helpStyle.Render(helpText))
 

@@ -115,12 +115,14 @@ func TestIssue1536_NewDialog_EnterOnValidPathAdvances(t *testing.T) {
 	}
 }
 
-// Case 2b: Enter still opens the browse dropdown for the soft-selected pre-fill
-// and for empty/non-existent paths (browse remains useful there).
+// Case 2b: Enter still opens the browse dropdown for empty/non-existent paths
+// (browse remains useful there). The soft-selected pre-fill advances like any
+// other usable path (new-session flow pass: Enter never stalls on a row that
+// is already valid); Space/→ browse it.
 func TestIssue1536_NewDialog_EnterStillBrowsesWhenAppropriate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Soft-selected pre-fill → Enter browses.
+	// Soft-selected pre-fill of an existing directory → Enter advances.
 	d := NewNewDialog()
 	d.SetSize(100, 50)
 	d.Show()
@@ -129,8 +131,8 @@ func TestIssue1536_NewDialog_EnterStillBrowsesWhenAppropriate(t *testing.T) {
 	d.pathSoftSelected = true
 	d.pathInput.SetValue(tmpDir)
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !d.IsSuggestionsActive() {
-		t.Fatal("Enter on the soft-selected pre-fill should still open the browse dropdown")
+	if d.IsSuggestionsActive() || d.currentTarget() == focusPath {
+		t.Fatal("Enter on the soft-selected pre-fill of an existing directory should advance, not browse")
 	}
 
 	// Non-existent typed path → Enter browses (path not yet usable).

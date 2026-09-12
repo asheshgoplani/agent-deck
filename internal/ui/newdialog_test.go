@@ -147,9 +147,9 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectClaude(t *testing.T) {
 	if len(d.modelSuggestions) == 0 || d.modelSuggestions[0] != "claude-opus-5" {
 		t.Fatalf("filtered model suggestions = %v, want claude-opus-5 first", d.modelSuggestions)
 	}
-	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace}) // Space opens the list; Enter advances (newdialog_flow_test.go)
 	if !d.IsModelSuggestionsActive() {
-		t.Fatal("enter on model input should activate the model suggestions dropdown")
+		t.Fatal("space on model input should activate the model suggestions dropdown")
 	}
 	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "claude-opus-5") {
 		t.Fatalf("model dropdown should show custom entry and known model IDs after enter: %q", view)
@@ -223,9 +223,9 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	if len(d.modelSuggestions) != 3 || d.modelSuggestions[0] != "gpt-5.6-sol" {
 		t.Fatalf("filtered model suggestions = %v, want three GPT-5.6 tiers with Sol first", d.modelSuggestions)
 	}
-	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace}) // Space opens the list; Enter advances (newdialog_flow_test.go)
 	if !d.IsModelSuggestionsActive() {
-		t.Fatal("enter on model input should activate the model suggestions dropdown")
+		t.Fatal("space on model input should activate the model suggestions dropdown")
 	}
 	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.6-terra") || !strings.Contains(view, "gpt-5.6-luna") {
 		t.Fatalf("model dropdown should show custom entry and known model IDs after enter: %q", view)
@@ -329,9 +329,9 @@ func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
 
 	d.focusIndex = d.indexOf(focusModel)
 	d.updateFocus()
-	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace}) // Space opens the list; Enter advances (newdialog_flow_test.go)
 	if !d.IsModelSuggestionsActive() {
-		t.Fatal("enter on model input should activate model suggestions")
+		t.Fatal("space on model input should activate model suggestions")
 	}
 
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -351,7 +351,7 @@ func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
 
 	d.focusIndex = d.indexOf(focusModel)
 	d.updateFocus()
-	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace}) // Space opens the list; Enter advances (newdialog_flow_test.go)
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if d.IsModelSuggestionsActive() {
 		t.Fatal("tab should close the model dropdown")
@@ -373,6 +373,12 @@ func TestNewDialog_TabFromLastFieldCyclesToTop(t *testing.T) {
 	}
 	d.updateFocus()
 
+	// The Create button follows the (single-row) codex options panel; Tab from
+	// it wraps to the top of the form.
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if d.currentTarget() != focusCreate {
+		t.Fatalf("currentTarget after tab from options = %v, want focusCreate", d.currentTarget())
+	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if d.currentTarget() != focusName {
 		t.Fatalf("currentTarget after tab from last field = %v, want focusName", d.currentTarget())
@@ -2713,10 +2719,11 @@ func TestNewDialog_CtrlSInertWhileDropdownActive(t *testing.T) {
 	d.Show()
 	d.SetPathSuggestions([]string{"/tmp/a", "/tmp/b"})
 
-	// Open the path suggestions dropdown.
+	// Open the path suggestions dropdown (Space on the soft-selected pre-fill;
+	// Enter on an existing directory advances instead).
 	d.focusIndex = d.indexOf(focusPath)
 	d.updateFocus()
-	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter}) // focusPath Enter opens dropdown
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
 	if !d.IsSuggestionsActive() {
 		t.Fatal("path dropdown should be active after Enter on Path")
 	}
