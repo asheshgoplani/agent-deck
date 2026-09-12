@@ -25,9 +25,11 @@
 // Conductors, explicit telegram channel owners, and non-claude tools
 // use the ambient profile as-is.
 //
-// Cleanup. `CleanupWorkerScratchConfigDir` removes the dir on
-// session stop/remove — best-effort, no-op on first-time misses. The
-// scratch dir lives under the effective worker-scratch data directory.
+// Lifecycle. Every spawn receives an immutable scratch generation under the
+// effective worker-scratch data directory. A later restart never rewrites a
+// generation that an old process could still have open. Old generations are
+// deliberately retained as evidence until a caller has synchronously verified
+// the process tree is dead; asynchronous Kill never removes them.
 
 package session
 
@@ -363,13 +365,26 @@ func profileCanonicalFromNestedScratch(scratchDir string) string {
 	return ""
 }
 
-// EnsureWorkerScratchConfigDir idempotently prepares the scratch
-// CLAUDE_CONFIG_DIR. Returns "" (no error) when no scratch is needed —
-// callers treat that as "use the ambient profile". The scratch mirrors
-// sourceProfileDir via symlinks and rewrites settings.json with the
-// deny+allow overlay. Source absence is fine — we emit a minimal
-// settings.json.
+// EnsureWorkerScratchConfigDir prepares this instance's current scratch
+// generation. It is idempotent for direct callers that need to repair the
+// current generation in place. Spawn paths must use
+// prepareWorkerScratchConfigDirForSpawn, which always creates a fresh,
+// immutable generation before a replacement process starts.
+//
+// Returns "" (no error) when no scratch is needed — callers treat that as
+// "use the ambient profile". The scratch mirrors sourceProfileDir via symlinks
+// and rewrites settings.json with the deny+allow overlay. Source absence is
+// fine — we emit a minimal settings.json.
 func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string, error) {
+	return i.ensureWorkerScratchConfigDir(sourceProfileDir, false)
+}
+
+// ensureWorkerScratchConfigDir prepares a scratch generation. forceNew makes
+// an immutable generation even if the instance still names the previous one;
+// it is reserved for lifecycle spawn boundaries. The previous generation is
+// intentionally not removed here: RespawnPane kills the old process only
+// after restart has prepared the replacement environment.
+func (i *Instance) ensureWorkerScratchConfigDir(sourceProfileDir string, forceNew bool) (string, error) {
 	if !i.NeedsWorkerScratchConfigDir() {
 		return "", nil
 	}
@@ -377,12 +392,34 @@ func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string
 		return "", fmt.Errorf("EnsureWorkerScratchConfigDir: instance has no ID")
 	}
 
-	scratch := workerScratchDirFor(i.ID)
+	scratch := i.WorkerScratchConfigDir
+	if scratch != "" && !forceNew {
+		if _, err := os.Stat(scratch); err != nil {
+			if !os.IsNotExist(err) {
+				return "", fmt.Errorf("stat scratch generation: %w", err)
+			}
+			// The active path is persisted for observability, but its scratch
+			// directory is ephemeral. A process reload after prior cleanup must
+			// create a fresh generation rather than fail on that stale path.
+			scratch = ""
+		}
+	}
+	if scratch == "" || forceNew {
+		instanceRoot := workerScratchDirFor(i.ID)
+		if err := os.MkdirAll(instanceRoot, 0o700); err != nil {
+			return "", fmt.Errorf("mkdir scratch root: %w", err)
+		}
+		var err error
+		scratch, err = os.MkdirTemp(instanceRoot, "generation-")
+		if err != nil {
+			return "", fmt.Errorf("mkdir scratch generation: %w", err)
+		}
+	}
 
 	// 0o700: scratch settings.json holds plugin topology that shouldn't
 	// be world-readable on a multi-user host.
-	if err := os.MkdirAll(scratch, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir scratch: %w", err)
+	if err := os.Chmod(scratch, 0o700); err != nil {
+		return "", fmt.Errorf("chmod scratch: %w", err)
 	}
 
 	// Mutate settings.json with a deny ∪ allow overlay on enabledPlugins
@@ -462,6 +499,7 @@ func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string
 		}
 	}
 
+	i.WorkerScratchConfigDir = scratch
 	return scratch, nil
 }
 
@@ -743,7 +781,12 @@ func symlinkReplace(target, linkPath string) error {
 	return nil
 }
 
-// CleanupWorkerScratchConfigDir removes the scratch dir. Best-effort.
+// CleanupWorkerScratchConfigDir removes only the active scratch generation.
+// Callers must invoke it only after a synchronous process-death check; this
+// method cannot establish that an asynchronous tmux kill has actually stopped
+// the process that still has the directory open. Earlier generations are never
+// swept here: they preserve delayed-flush evidence and avoid deleting a path
+// that a surviving old process may still write through.
 func (i *Instance) CleanupWorkerScratchConfigDir() {
 	if i.WorkerScratchConfigDir == "" {
 		return
@@ -817,6 +860,10 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 		)
 	}
 	if !i.NeedsWorkerScratchConfigDir() {
+		// A prior generation may still be in use by the process being
+		// replaced. Do not delete it, but do not inject it into this spawn
+		// after the scratch gate has become false.
+		i.WorkerScratchConfigDir = ""
 		return
 	}
 	sourceDir := GetClaudeConfigDirForInstance(i)
@@ -847,9 +894,12 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 		maybeEmitMacOSScratchWarning(sourceDir)
 	}
 
-	// Step 3: build the scratch dir. By this point the source profile
-	// has the plugin code so symlinks resolve correctly.
-	scratch, err := i.EnsureWorkerScratchConfigDir(sourceDir)
+	// Step 3: build a new immutable generation. Restart prepares this before
+	// RespawnPane terminates the old pane, so reusing or repointing the old
+	// directory would let a delayed old-process flush write into the new
+	// account's profile. Keep every prior generation untouched.
+	i.WorkerScratchConfigDir = ""
+	scratch, err := i.ensureWorkerScratchConfigDir(sourceDir, true)
 	if err != nil {
 		sessionLog.Warn("worker_scratch_prepare_failed",
 			slog.String("instance_id", i.ID),

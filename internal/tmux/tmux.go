@@ -46,11 +46,6 @@ var (
 // tmux_fallback_test.go for the contract.
 var execCommand = exec.Command
 
-// execCommandContext is the deadline-carrying counterpart to execCommand, kept
-// as its own seam so a bounded call site stays overridable by the same tests.
-// Use it for any tmux invocation that must terminate — see tmuxMutationTimeout.
-var execCommandContext = exec.CommandContext
-
 type tmuxThemeStyle struct {
 	windowStyle       string
 	windowActiveStyle string

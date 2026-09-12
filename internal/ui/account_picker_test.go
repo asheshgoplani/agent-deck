@@ -239,9 +239,9 @@ func TestEditSessionDialogAccountRowHiddenWithoutAccounts(t *testing.T) {
 	}
 }
 
-// The conversation migration only makes sense for `claude --resume`, so a
-// non-claude session must not be offered the row (SwitchAccount would refuse
-// it at commit time).
+// Account selection belongs to the requested target harness. A Codex source
+// therefore receives the target-account row even when its current harness has
+// no configured named slots; "inherit" is the only valid current-target value.
 func TestEditSessionDialogAccountRowClaudeOnly(t *testing.T) {
 	withAccountsConfig(t, "work")
 
@@ -251,10 +251,13 @@ func TestEditSessionDialogAccountRowClaudeOnly(t *testing.T) {
 
 	d := NewEditSessionDialog()
 	d.Show(inst)
-	for _, f := range d.fields {
-		if f.key == session.FieldAccount {
-			t.Fatal("a non-claude session must not get the account row")
-		}
+	idx := accountFieldIndex(t, d)
+	field := d.fields[idx]
+	if len(field.pillOptions) != 1 || field.pillOptions[0] != "" {
+		t.Fatalf("Codex target account picker = %#v, want inherit-only", field.pillOptions)
+	}
+	if !strings.Contains(field.label, "Account for selected harness") {
+		t.Fatalf("account row label = %q, want target-harness disclosure", field.label)
 	}
 }
 
@@ -394,17 +397,37 @@ func TestEditSessionDialogKeepsUnconfiguredAccountPill(t *testing.T) {
 	}
 }
 
-// Switching account and changing tool in one submit cannot both apply: the
-// switch is claude-only. Refuse the pair before anything is written rather
-// than persisting the tool and then failing the switch.
+// A supported harness/account pair is a lossy fresh-target transfer, not a
+// direct same-instance account write. Submitting it must leave the source
+// untouched and show the explicit loss confirmation before any lifecycle work.
 func TestEditSessionDialogRefusesAccountSwitchWithToolChange(t *testing.T) {
-	withAccountsConfig(t, "work", "personal")
+	cfg := withAccountsConfig(t, "work", "personal")
+	work := cfg.Profiles["work"]
+	work.Codex = session.ProfileCodexSettings{ConfigDir: filepath.Join(t.TempDir(), "codex-work")}
+	cfg.Profiles["work"] = work
+	if err := session.SaveUserConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	session.ClearUserConfigCache()
 
 	home := NewHome()
 	home.width, home.height = 120, 40
 
-	inst := session.NewInstanceWithTool("acct-tool", t.TempDir(), "claude")
+	project := t.TempDir()
+	const sourceSessionID = "11111111-2222-3333-4444-555555555555"
+	inst := session.NewInstanceWithTool("acct-tool", project, "claude")
 	inst.Account = "personal"
+	inst.ClaudeSessionID = sourceSessionID
+	// Cross-harness confirmation is gated on an exact, exportable source
+	// transcript. Seed the native Claude identity rather than weakening that
+	// safety gate for an otherwise fresh-session fixture.
+	transcript := filepath.Join(cfg.Profiles["personal"].Claude.ConfigDir, "projects", session.ConvertToClaudeDirName(project), sourceSessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte(`{"sessionId":"`+sourceSessionID+`","type":"user","message":{"role":"user","content":"seeded source context"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	home.instancesMu.Lock()
 	home.instances = []*session.Instance{inst}
 	home.instanceByID[inst.ID] = inst
@@ -415,25 +438,55 @@ func TestEditSessionDialogRefusesAccountSwitchWithToolChange(t *testing.T) {
 	home.editSessionDialog.SetSize(home.width, home.height)
 	home.editSessionDialog.Show(inst)
 
-	// Move the account row to "work" and the tool row to shell.
+	// Select work, then select the supported Codex target. Tool navigation
+	// refreshes the picker, preserving work only because Codex configures it.
 	home.editSessionDialog.focusIndex = accountFieldIndex(t, home.editSessionDialog)
 	home.editSessionDialog.Update(tea.KeyMsg{Type: tea.KeyRight})
 	for i, f := range home.editSessionDialog.fields {
-		if f.key == session.FieldTool {
-			home.editSessionDialog.focusIndex = i
-			home.editSessionDialog.fields[i].pillCursor = 0 // shell
+		if f.key != session.FieldTool {
+			continue
 		}
+		home.editSessionDialog.focusIndex = i
+		for attempts := 0; attempts < len(f.pillOptions); attempts++ {
+			if home.editSessionDialog.fields[i].pillOptions[home.editSessionDialog.fields[i].pillCursor] == "codex" {
+				break
+			}
+			home.editSessionDialog.Update(tea.KeyMsg{Type: tea.KeyRight})
+		}
+		if home.editSessionDialog.fields[i].pillOptions[home.editSessionDialog.fields[i].pillCursor] != "codex" {
+			t.Fatal("Codex is not available in the edit tool picker")
+		}
+	}
+	// Navigating through an unsupported tool clears a now-invalid account slot.
+	// Once Codex is selected, choose its configured work slot through the same
+	// keyboard path a user takes and lock the exact selected value before Enter.
+	home.editSessionDialog.focusIndex = accountFieldIndex(t, home.editSessionDialog)
+	accountField := &home.editSessionDialog.fields[home.editSessionDialog.focusIndex]
+	for attempts := 0; attempts < len(accountField.pillOptions); attempts++ {
+		if accountField.pillOptions[accountField.pillCursor] == "work" {
+			break
+		}
+		home.editSessionDialog.Update(tea.KeyMsg{Type: tea.KeyRight})
+	}
+	if got := accountField.pillOptions[accountField.pillCursor]; got != "work" {
+		t.Fatalf("selected Codex account = %q, want work", got)
 	}
 
 	_, cmd := home.handleEditSessionDialogKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
-		t.Error("the conflicting submit must not start a switch")
+		t.Error("loss confirmation must precede a cross-harness switch")
 	}
-	if !home.editSessionDialog.IsVisible() {
-		t.Error("the dialog must stay open so the user can resolve the conflict")
+	if home.editSessionDialog.IsVisible() {
+		t.Error("the edit dialog must yield to the loss confirmation")
+	}
+	if !home.confirmDialog.IsVisible() || home.confirmDialog.GetConfirmType() != ConfirmCrossHarnessTransfer {
+		t.Fatal("supported target harness/account change must require loss confirmation")
+	}
+	if home.confirmDialog.TargetHarness() != "codex" || home.confirmDialog.TargetAccount() != "work" {
+		t.Fatalf("confirmation target = %q/%q, want codex/work", home.confirmDialog.TargetHarness(), home.confirmDialog.TargetAccount())
 	}
 	if inst.Account != "personal" || inst.Tool != "claude" {
-		t.Errorf("nothing must be written: account=%q tool=%q", inst.Account, inst.Tool)
+		t.Errorf("confirmation must not mutate source: account=%q tool=%q", inst.Account, inst.Tool)
 	}
 }
 

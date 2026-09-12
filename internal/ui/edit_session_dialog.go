@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -42,6 +43,8 @@ type EditSessionDialog struct {
 	sessionID     string
 	sessionTitle  string
 	groupName     string
+	sourceTool    string
+	sourceAccount string
 	width         int
 	height        int
 	fields        []editField
@@ -60,6 +63,8 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 	d.sessionID = inst.ID
 	d.sessionTitle = inst.Title
 	d.groupName = displayGroupName(inst.GroupPath)
+	d.sourceTool = inst.Tool
+	d.sourceAccount = inst.Account
 	d.validationErr = ""
 	d.focusIndex = 0
 
@@ -68,7 +73,7 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 	d.fields = []editField{
 		{key: session.FieldTitle, label: "Title", kind: editFieldText,
 			input: mkInput("Session title", MaxNameLength, inst.Title)},
-		{key: session.FieldTool, label: "Tool (restart)", kind: editFieldPills,
+		{key: session.FieldTool, label: "Harness (choose destination first)", kind: editFieldPills,
 			pillOptions: tools, pillCursor: toolCursor},
 		// Pin position — anchors the session to the top/bottom of its group,
 		// exempt from the status/recency sort (pin-sessions feature). Applies
@@ -78,18 +83,23 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 			pillLabels:  []string{"Off", "Top", "Bottom"},
 			pillCursor:  pinCursorFor(inst.Pin)},
 	}
-	// Named account slot (#924). Strictly claude-only: committing this row
-	// runs session.SwitchAccount, whose conversation migration is specific to
-	// `claude --resume` reading a .jsonl out of the account's config dir.
-	// Hidden when the machine has no [profiles.<name>.claude].config_dir
-	// blocks — there would be nothing to switch between.
-	if inst.Tool == "claude" {
+	// Account slots are shown when the source can participate in a supported
+	// Claude/Codex/Pi transfer. The picker is a configured slot picker, not an
+	// OAuth verifier: labels disclose that authentication is not checked until
+	// the destination harness starts.
+	if session.IsClaudeCompatible(inst.Tool) || session.IsCodexCompatible(inst.Tool) || inst.Tool == "pi" {
 		cfg, _ := session.LoadUserConfig()
-		if accounts := session.ConfiguredAccountNames(cfg); len(accounts) > 0 {
+		// Create the target account row whenever any supported destination has
+		// configured slots. Pi has no source-account abstraction, but changing
+		// its target tool to Claude or Codex must expose that target's slots.
+		// The initial target is still the current tool, and tool-pill changes
+		// refresh the options below.
+		if len(session.ConfiguredAccountNamesForSwitch(cfg)) > 0 {
+			accounts := session.ConfiguredAccountNamesForHarness(cfg, inst.Tool)
 			opts, labels, cursor := accountPillsForInstance(inst.Account, accounts)
 			d.fields = append(d.fields, editField{
 				key:         session.FieldAccount,
-				label:       "Claude account (restart, moves the conversation)",
+				label:       accountFieldLabel(inst.Tool),
 				kind:        editFieldPills,
 				pillOptions: opts,
 				pillLabels:  labels,
@@ -376,6 +386,9 @@ func (d *EditSessionDialog) Update(msg tea.Msg) (*EditSessionDialog, tea.Cmd) {
 			if f.pillCursor < 0 {
 				f.pillCursor = len(f.pillOptions) - 1
 			}
+			if f.key == session.FieldTool {
+				d.refreshTargetAccountPills(f.pillOptions[f.pillCursor])
+			}
 			return d, nil
 		}
 
@@ -383,6 +396,9 @@ func (d *EditSessionDialog) Update(msg tea.Msg) (*EditSessionDialog, tea.Cmd) {
 		if d.isPillsFocused() {
 			f := &d.fields[d.focusIndex]
 			f.pillCursor = (f.pillCursor + 1) % len(f.pillOptions)
+			if f.key == session.FieldTool {
+				d.refreshTargetAccountPills(f.pillOptions[f.pillCursor])
+			}
 			return d, nil
 		}
 
@@ -407,10 +423,105 @@ func (d *EditSessionDialog) Update(msg tea.Msg) (*EditSessionDialog, tea.Cmd) {
 	return d, nil
 }
 
+func (d *EditSessionDialog) refreshTargetAccountPills(targetHarness string) {
+	cfg, _ := session.LoadUserConfig()
+	accounts := session.ConfiguredAccountNamesForHarness(cfg, targetHarness)
+	for index := range d.fields {
+		field := &d.fields[index]
+		if field.key != session.FieldAccount {
+			continue
+		}
+		selected := ""
+		if field.pillCursor >= 0 && field.pillCursor < len(field.pillOptions) {
+			selected = field.pillOptions[field.pillCursor]
+		}
+		opts, labels, cursor := accountPillsForInstance(selected, accounts)
+		// A slot unavailable on the selected target is not carried forward as
+		// a hidden stale choice; the confirmation/backend receives only a
+		// target-harness configured account or the explicit default.
+		if selected != "" {
+			found := false
+			for _, account := range accounts {
+				found = found || account == selected
+			}
+			if !found {
+				opts, labels, cursor = accountPillsForInstance("", accounts)
+			}
+		}
+		field.pillOptions, field.pillLabels, field.pillCursor = opts, labels, cursor
+		field.label = accountFieldLabel(targetHarness)
+		return
+	}
+}
+
+func accountFieldLabel(harness string) string {
+	switch session.CanonicalSwitchHarnessForUI(harness) {
+	case "pi":
+		return "Account for Pi (default only)"
+	case "claude", "codex":
+		return "Account for selected harness (configured; auth unverified)"
+	default:
+		return "Account (select a supported harness first)"
+	}
+}
+
 func (d *EditSessionDialog) isPillsFocused() bool {
 	return d.focusIndex >= 0 && d.focusIndex < len(d.fields) &&
 		d.fields[d.focusIndex].kind == editFieldPills &&
 		len(d.fields[d.focusIndex].pillOptions) > 0
+}
+
+func (d *EditSessionDialog) selectedPill(key string) string {
+	for _, field := range d.fields {
+		if field.key == key && field.pillCursor >= 0 && field.pillCursor < len(field.pillOptions) {
+			return field.pillOptions[field.pillCursor]
+		}
+	}
+	return ""
+}
+
+func (d *EditSessionDialog) hasField(key string) bool {
+	for _, field := range d.fields {
+		if field.key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *EditSessionDialog) switchSummary() string {
+	targetHarness := d.selectedPill(session.FieldTool)
+	if targetHarness == "" {
+		targetHarness = d.sourceTool
+	}
+	targetAccount := d.selectedPill(session.FieldAccount)
+	if !d.hasField(session.FieldAccount) && session.CanonicalSwitchHarnessForUI(targetHarness) == session.CanonicalSwitchHarnessForUI(d.sourceTool) {
+		targetAccount = d.sourceAccount
+	}
+	source := fmt.Sprintf("%s/%s", d.sourceTool, displayEditAccount(d.sourceAccount))
+	target := fmt.Sprintf("%s/%s", targetHarness, displayEditAccount(targetAccount))
+	if session.CanonicalSwitchHarnessForUI(targetHarness) == session.CanonicalSwitchHarnessForUI(d.sourceTool) {
+		return "Current: " + source + " → " + target + "\nsame-harness resume"
+	}
+	return "Current: " + source + " → NEW " + target + "\nsource kept"
+}
+
+func displayEditAccount(account string) string {
+	if strings.TrimSpace(account) == "" {
+		return "default"
+	}
+	return account
+}
+
+func clipEditDialogText(text string, maxRunes int) string {
+	if maxRunes < 2 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes-1]) + "…"
 }
 
 func (d *EditSessionDialog) View() string {
@@ -427,11 +538,16 @@ func (d *EditSessionDialog) View() string {
 
 	dialogWidth := 60
 	if d.width > 0 && d.width < dialogWidth+10 {
-		dialogWidth = d.width - 10
-		if dialogWidth < 40 {
-			dialogWidth = 40
+		dialogWidth = d.width - 4
+		if dialogWidth < 24 {
+			dialogWidth = 24
 		}
 	}
+	lineWidth := dialogWidth - 8
+	if lineWidth < 12 {
+		lineWidth = 12
+	}
+	compact := dialogWidth < 45
 
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -445,7 +561,14 @@ func (d *EditSessionDialog) View() string {
 	content.WriteString("\n")
 	content.WriteString(groupInfoStyle.Render("  in group: " + d.groupName))
 	content.WriteString("\n")
-	content.WriteString(dimStyle.Render("  session: " + d.sessionTitle))
+	content.WriteString(dimStyle.Render("  session: " + clipEditDialogText(d.sessionTitle, lineWidth-11)))
+	content.WriteString("\n")
+	for n, line := range strings.Split(d.switchSummary(), "\n") {
+		if n > 0 {
+			content.WriteString("\n")
+		}
+		content.WriteString(dimStyle.Render("  " + clipEditDialogText(line, lineWidth)))
+	}
 	content.WriteString("\n\n")
 
 	for i, f := range d.fields {
@@ -458,10 +581,11 @@ func (d *EditSessionDialog) View() string {
 			continue
 		}
 
+		fieldLabel := clipEditDialogText(f.label, lineWidth-3)
 		if focused {
-			content.WriteString(activeLabelStyle.Render("▶ " + f.label + ":"))
+			content.WriteString(activeLabelStyle.Render("▶ " + fieldLabel + ":"))
 		} else {
-			content.WriteString(labelStyle.Render("  " + f.label + ":"))
+			content.WriteString(labelStyle.Render("  " + fieldLabel + ":"))
 		}
 		content.WriteString("\n  ")
 
@@ -469,7 +593,13 @@ func (d *EditSessionDialog) View() string {
 		case editFieldText:
 			content.WriteString(f.input.View())
 		case editFieldPills:
-			if f.pillLabels != nil {
+			if compact && f.pillCursor >= 0 {
+				if f.pillLabels != nil && f.pillCursor < len(f.pillLabels) {
+					content.WriteString(renderLabelPills([]string{f.pillLabels[f.pillCursor]}, 0))
+				} else if f.pillCursor < len(f.pillOptions) {
+					content.WriteString(renderToolPills([]string{f.pillOptions[f.pillCursor]}, 0))
+				}
+			} else if f.pillLabels != nil {
 				content.WriteString(renderLabelPills(f.pillLabels, f.pillCursor))
 			} else {
 				content.WriteString(renderToolPills(f.pillOptions, f.pillCursor))
@@ -486,7 +616,15 @@ func (d *EditSessionDialog) View() string {
 	}
 
 	content.WriteString("\n")
-	content.WriteString(helpStyle.Render("Enter save │ Esc cancel │ Tab next │ ←/→ options │ Space toggle"))
+	if session.CanonicalSwitchHarnessForUI(d.selectedPill(session.FieldTool)) == "pi" {
+		content.WriteString(dimStyle.Render("  Pi uses its default account only."))
+		content.WriteString("\n")
+	}
+	help := "Enter save │ Esc cancel │ Tab next │ ←/→ options │ Space toggle"
+	if compact {
+		help = "Enter save · Esc cancel · Tab next · ←/→ choose"
+	}
+	content.WriteString(helpStyle.Render(clipEditDialogText(help, lineWidth)))
 
 	dialog := dialogStyle.Render(content.String())
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)

@@ -2308,6 +2308,7 @@ func handleList(profile string, args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
+	includeSuperseded := fs.Bool("include-superseded", false, "Include archived source rows retained for cross-harness recovery")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
@@ -2330,7 +2331,7 @@ func handleList(profile string, args []string) {
 	}
 
 	if *allProfiles {
-		handleListAllProfiles(*jsonOutput)
+		handleListAllProfiles(*jsonOutput, *includeSuperseded)
 		return
 	}
 	ensureTmuxInPathOrExit()
@@ -2345,6 +2346,10 @@ func handleList(profile string, args []string) {
 	if err != nil {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		os.Exit(1)
+	}
+
+	if !*includeSuperseded {
+		instances = defaultListInstances(instances)
 	}
 
 	if len(instances) == 0 {
@@ -2386,6 +2391,19 @@ func handleList(profile string, args []string) {
 	printUpdateNotice()
 }
 
+// defaultListInstances hides only archived cross-harness sources. Clearing the
+// normal archive flag (via `session unarchive`) intentionally restores a source
+// row to the default list without replaying or deleting its retained lineage.
+func defaultListInstances(instances []*session.Instance) []*session.Instance {
+	visible := make([]*session.Instance, 0, len(instances))
+	for _, inst := range instances {
+		if inst != nil && !(inst.IsArchived() && inst.SupersededBy != "") {
+			visible = append(visible, inst)
+		}
+	}
+	return visible
+}
+
 // buildListJSON is the body of `list --json`: every session with its status
 // refreshed, as the indented array the CLI prints, trailing newline included.
 // handleList prints it and the remote agent's change probe (#2177) pushes it,
@@ -2418,6 +2436,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Color             string    `json:"color,omitempty"` // issue #391
 		Archived          bool      `json:"archived"`
 		ArchivedAt        time.Time `json:"archived_at,omitempty"`
+		SupersededBy      string    `json:"superseded_by,omitempty"`
+		Supersedes        string    `json:"supersedes,omitempty"`
 		// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
 		// apply the local recency filter (session.TimeFilterMode) to this
 		// session, the same way it applies to a local one.
@@ -2448,6 +2468,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Color:             inst.Color,
 			Archived:          inst.IsArchived(),
 			ArchivedAt:        inst.ArchivedAt,
+			SupersededBy:      inst.SupersededBy,
+			Supersedes:        inst.Supersedes,
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
@@ -2468,7 +2490,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 }
 
 // handleListAllProfiles lists sessions from all profiles
-func handleListAllProfiles(jsonOutput bool) {
+func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 	profiles, err := session.ListProfiles()
 	if err != nil {
 		fmt.Printf("Error: failed to list profiles: %v\n", err)
@@ -2506,6 +2528,9 @@ func handleListAllProfiles(jsonOutput bool) {
 			instances, _, err := storage.LoadWithGroups()
 			if err != nil {
 				continue
+			}
+			if !includeSuperseded {
+				instances = defaultListInstances(instances)
 			}
 			for _, inst := range instances {
 				allSessions = append(allSessions, sessionJSON{
@@ -2545,6 +2570,9 @@ func handleListAllProfiles(jsonOutput bool) {
 		instances, _, err := storage.LoadWithGroups()
 		if err != nil {
 			continue
+		}
+		if !includeSuperseded {
+			instances = defaultListInstances(instances)
 		}
 
 		if len(instances) == 0 {
