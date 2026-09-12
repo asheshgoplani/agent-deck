@@ -1036,7 +1036,9 @@ and answer: How do I fork a session?
 Agent Deck checks for updates automatically.
 - Standalone/manual install: run `agent-deck update` to install.
 - Homebrew install: run `brew upgrade asheshgoplani/tap/agent-deck`.
-- Optional: set `auto_update = true` in [config.toml](skills/agent-deck/references/config-reference.md) for automatic update prompts.
+- Unattended: `[updates] auto_install` is on by default, so the TUI installs an available update without asking (and restarts itself when `auto_restart` is on). For machines where the TUI is not open every day, `agent-deck update --install-timer` adds a daily run (launchd on macOS, systemd user timer on Linux); `--timer-status` and `--uninstall-timer` manage it and `--dry-run` shows what would be written. Set `auto_install = false` in [config.toml](skills/agent-deck/references/config-reference.md) to go back to installing by hand.
+- Optional: set `auto_update = true` for a Y/n prompt before the TUI opens.
+- macOS note: launchd agents that run the agent-deck binary (`notify-daemon`, `web --no-tui`) crash-loop with `EX_CONFIG` after the binary is replaced, because macOS ties their identity to the file. Every install re-registers the `com.agentdeck.*` agents automatically and prints the `launchctl bootout`/`bootstrap` commands if one does not come back.
 
 ## FAQ
 

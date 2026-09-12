@@ -134,6 +134,24 @@ agent-deck migrate-paths [--dry-run] [--force]
 
 Copies known legacy `~/.agent-deck` files into the split XDG layout (config under `~/.config/agent-deck`, durable data under `~/.local/share/agent-deck`, cache under `~/.cache/agent-deck`) without deleting the legacy directory. Use `--dry-run` to preview what would be copied.
 
+### update - Check for and install a new release
+
+```bash
+agent-deck update                      # check GitHub, show changelog, Y/n, install
+agent-deck update --check              # only check
+agent-deck update --check --json       # {"current","latest","available","publishing","auto_install","auto_restart","timer":{...}}
+agent-deck update --version 1.7.3      # install a specific release (may downgrade)
+agent-deck update --unattended         # no prompts, no changelog, no stdin
+agent-deck update --unattended --trigger timer|tui|manual
+agent-deck update --install-timer [--dry-run]
+agent-deck update --uninstall-timer [--dry-run]
+agent-deck update --timer-status
+```
+
+- `--unattended` is what the daily timer and the TUI's `auto_install` run. It honours `[updates] auto_install` (off means "nothing installed", exit 0), never runs Homebrew (prints the `brew` command, exit 2), takes `<cache dir>/update.lock` so two runs never replace the binary at once (busy means exit 0), skips the remotes prompt, and exits 1 when the install or the macOS launchd hygiene failed. `--trigger` (default `$AGENTDECK_UPDATE_TRIGGER`, then `manual`) only tags the debug log lines.
+- `--install-timer` writes `~/Library/LaunchAgents/com.agentdeck.autoupdate.plist` (macOS, daily at 07:MM with a random minute, program `/bin/sh`) or `~/.config/systemd/user/agent-deck-autoupdate.{service,timer}` (Linux, `OnCalendar=daily`, `RandomizedDelaySec=1h`) and loads it. Installing over an existing timer replaces it; `--dry-run` prints the exact files and commands and executes nothing. The timer's output goes to `<log dir>/auto-update.log` on macOS and the journal on Linux.
+- On macOS every install (interactive, `--version`, the TUI prompt and `--unattended`) re-registers the `com.agentdeck.*` launch agents whose program is the replaced binary (`launchctl bootout` then `bootstrap`, then a `state = running` check for KeepAlive/RunAtLoad agents). Without this they crash-loop with `EX_CONFIG` (exit 78) because macOS ties a launch agent's identity to the file at its program path. If an agent does not come back the command exits 1 and prints the two `launchctl` commands to run by hand; the binary is already updated at that point.
+
 ## Web Command
 
 ### web - Start browser UI
