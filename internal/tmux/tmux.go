@@ -1470,7 +1470,10 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 			"--property=RestartSec=5s",
 			"--property=StartLimitBurst=10",
 			"--property=StartLimitIntervalSec=60",
-			"--property=KillMode=control-group",
+			// A tmux server is shared by every session on its socket. A
+			// per-session unit must never kill that shared server (and its
+			// sibling panes) when the unit is stopped.
+			"--property=KillMode=none",
 			"--property=TimeoutStopSec=15s",
 			"tmux",
 		}
@@ -1478,10 +1481,13 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		return "systemd-run", svcArgs
 
 	case launchModeScope:
-		// Legacy PR #467 shape — unchanged so existing users opting out
-		// of service mode with launch_as="scope" get identical semantics.
+		// The scope remains the SSH/logout-isolation compatibility path, but
+		// its cgroup can host the shared tmux server. KillMode=none prevents
+		// stopping this per-session scope from taking that server (and all
+		// sibling sessions) with it.
 		scopeArgs := []string{
-			"--user", "--scope", "--quiet", "--collect", "--unit", unitBase, "tmux",
+			"--user", "--scope", "--quiet", "--collect", "--unit", unitBase,
+			"--property=KillMode=none", "tmux",
 		}
 		scopeArgs = append(scopeArgs, tmuxArgs...)
 		return "systemd-run", scopeArgs
@@ -1497,7 +1503,11 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 // falling all the way back to direct tmux.
 func buildScopeArgsFromTmuxArgs(sessionName string, tmuxArgs []string) []string {
 	unitBase := serviceUnitBase(sessionName)
-	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitBase, "tmux"}
+	// Keep the service → scope fallback just as safe as an explicitly
+	// selected scope. Otherwise a transient service failure would silently
+	// reintroduce a per-session cgroup that can kill a shared server.
+	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitBase,
+		"--property=KillMode=none", "tmux"}
 	return append(scopeArgs, tmuxArgs...)
 }
 

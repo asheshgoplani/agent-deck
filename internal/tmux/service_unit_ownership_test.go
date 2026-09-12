@@ -81,6 +81,20 @@ func systemctlStopCalls(calls [][]string) [][]string {
 	return stops
 }
 
+// provenServiceOwnership is deterministic fake command/cgroup evidence for
+// one server generation. No host process, tmux socket, or systemd manager is
+// used by these tests.
+func provenServiceOwnership(name string) (ServiceUnitOwnership, serviceUnitState) {
+	cgroup := "/user.slice/user-1000.slice/user@1000.service/app.slice/" + ServiceUnitName(name)
+	return ServiceUnitOwnership{
+		SessionName:            name,
+		SocketName:             "isolated-test-socket",
+		RetiredServerPID:       4242,
+		RetiredServerStartTime: "123456",
+		RetiredServerCgroup:    cgroup,
+	}, serviceUnitState{ControlGroup: cgroup, KillMode: "none"}
+}
+
 // --- gate #1: the shared unit is reachable in the first place -------------
 
 // TestServiceUnitName_TwoSessionsCanShareOneUnit is the precondition the
@@ -292,6 +306,39 @@ func TestStopServiceUnitOwned_NoSystemctl_IsANoOp(t *testing.T) {
 	assert.Empty(t, *calls)
 }
 
+// TestStopServiceUnitOwned_UnknownOwnership_IssuesNoStop proves a unit name
+// is never enough. This models an existing server whose socket gave us a PID
+// but whose cgroup cannot be bound to the derived unit; no stop is allowed.
+func TestStopServiceUnitOwned_UnknownOwnership_IssuesNoStop(t *testing.T) {
+	const name = "agentdeck_removed_a1a1a1a1"
+	own, state := provenServiceOwnership(name)
+	own.RetiredServerCgroup = "/user.slice/user-1000.slice/foreign.scope"
+	state.ActiveState = "inactive"
+	calls := withServiceUnitSeams(t, state, nil, liveSet(), nil)
+
+	dec := StopServiceUnitOwned(own)
+	assert.False(t, dec.Stopped)
+	assert.Equal(t, UnitStopSkipOwnershipUnproven, dec.Reason)
+	assert.Empty(t, systemctlStopCalls(*calls))
+}
+
+// TestStopServiceUnitOwned_ExistingControlGroupUnit_IssuesNoStop protects
+// servers created before #2219. They retain KillMode=control-group, so even
+// otherwise matching evidence must fail closed rather than race a sibling
+// attach and kill the shared server.
+func TestStopServiceUnitOwned_ExistingControlGroupUnit_IssuesNoStop(t *testing.T) {
+	const name = "agentdeck_removed_a1a1a1a1"
+	own, state := provenServiceOwnership(name)
+	state.ActiveState = "inactive"
+	state.KillMode = "control-group"
+	calls := withServiceUnitSeams(t, state, nil, liveSet(), nil)
+
+	dec := StopServiceUnitOwned(own)
+	assert.False(t, dec.Stopped)
+	assert.Equal(t, UnitStopSkipUnsafeKillMode, dec.Reason)
+	assert.Empty(t, systemctlStopCalls(*calls))
+}
+
 // --- gate #4: shutdown only once ownership is established ----------------
 
 // TestStopServiceUnitOwned_ExclusiveOwner_StopsAndResetsFailed: the server
@@ -300,14 +347,11 @@ func TestStopServiceUnitOwned_NoSystemctl_IsANoOp(t *testing.T) {
 // must not resurrect the session).
 func TestStopServiceUnitOwned_ExclusiveOwner_StopsAndResetsFailed(t *testing.T) {
 	const name = "agentdeck_removed_a1a1a1a1"
-	calls := withServiceUnitSeams(t,
-		serviceUnitState{ActiveState: "failed", MainPID: 0, MainPIDAlive: false},
-		nil,
-		liveSet(),
-		nil,
-	)
+	own, state := provenServiceOwnership(name)
+	state.ActiveState = "failed"
+	calls := withServiceUnitSeams(t, state, nil, liveSet(), nil)
 
-	dec := StopServiceUnitOwned(ServiceUnitOwnership{SessionName: name, RetiredServerPID: 4242})
+	dec := StopServiceUnitOwned(own)
 
 	require.True(t, dec.Stopped, "exclusive ownership must retire the unit")
 	assert.Equal(t, UnitStopReasonExclusive, dec.Reason)
@@ -322,17 +366,13 @@ func TestStopServiceUnitOwned_ExclusiveOwner_StopsAndResetsFailed(t *testing.T) 
 // unit's recorded main pid IS the generation we retired and it is dead.
 // Still exclusive — stop is allowed.
 func TestStopServiceUnitOwned_ExclusiveOwner_DeadOwnGeneration(t *testing.T) {
-	calls := withServiceUnitSeams(t,
-		serviceUnitState{ActiveState: "active", MainPID: 4242, MainPIDAlive: false},
-		nil,
-		liveSet(),
-		nil,
-	)
+	const name = "agentdeck_removed_a1a1a1a1"
+	own, state := provenServiceOwnership(name)
+	state.ActiveState = "active"
+	state.MainPID = 4242
+	calls := withServiceUnitSeams(t, state, nil, liveSet(), nil)
 
-	dec := StopServiceUnitOwned(ServiceUnitOwnership{
-		SessionName:      "agentdeck_removed_a1a1a1a1",
-		RetiredServerPID: 4242,
-	})
+	dec := StopServiceUnitOwned(own)
 
 	require.True(t, dec.Stopped)
 	assert.Equal(t, UnitStopReasonExclusive, dec.Reason)
@@ -405,9 +445,15 @@ func TestEvaluateServiceUnitOwnership_Table(t *testing.T) {
 			wantReason: UnitStopSkipProcessAlive,
 		},
 		{
-			name:       "exclusive owner",
-			own:        ServiceUnitOwnership{SessionName: self, RetiredServerPID: 1},
-			state:      serviceUnitState{ActiveState: "failed"},
+			name: "exclusive owner",
+			own: ServiceUnitOwnership{
+				SessionName: self, RetiredServerPID: 1, RetiredServerStartTime: "123456",
+				RetiredServerCgroup: "/user.slice/" + ServiceUnitName(self),
+			},
+			state: serviceUnitState{
+				ActiveState: "failed", KillMode: "none",
+				ControlGroup: "/user.slice/" + ServiceUnitName(self),
+			},
 			live:       liveSet(),
 			wantStop:   true,
 			wantReason: UnitStopReasonExclusive,

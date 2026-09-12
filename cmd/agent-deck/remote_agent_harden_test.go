@@ -377,6 +377,14 @@ func TestRemoteAgent_ConcurrencyCap(t *testing.T) {
 		t.Fatalf("only MaxConcurrent requests may run at once, got %d started", got)
 	}
 	h.send(remoteAgentRequest{ID: 5, Cancel: true})
+	// A successful pipe write only proves the agent reader received the line,
+	// not that its request loop processed it. Wait for a following ping ack,
+	// which is emitted only after the cancel has removed request 5, before
+	// freeing a semaphore slot for the queued requests.
+	h.send(remoteAgentRequest{ID: 6, Ping: true})
+	if r := h.next("cancel barrier"); r.ID != 6 || r.Code != 0 {
+		t.Fatalf("cancel barrier reply = %+v, want successful ping acknowledgement", r)
+	}
 	close(release)
 	ids := map[int64]bool{}
 	for i := 0; i < 4; i++ {

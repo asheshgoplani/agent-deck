@@ -1,0 +1,118 @@
+# Real systemd-user acceptance for the tmux shared-server safety contract.
+#
+# This is intentionally separate from ordinary Go tests: it bootstraps a user
+# manager only on a disposable Ubuntu hosted runner, then explicitly enables
+# the build-tagged fixture. Missing prerequisites and skipped controls fail.
+
+name: tmux systemd-user acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'internal/tmux/**'
+      - 'internal/testutil/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/tmux-systemd-user-acceptance.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  shared-tmux-unit-safety:
+    name: shared tmux unit safety (real user manager)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Create isolated test paths and receipt directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/tmux-systemd-user-acceptance"
+          mkdir -p "$root/home" "$root/xdg-config" "$root/xdg-data" "$root/xdg-cache" "$root/receipts"
+          {
+            echo "TMUX_SYSTEMD_ACCEPTANCE_ROOT=$root"
+            echo "HOME=$root/home"
+            echo "XDG_CONFIG_HOME=$root/xdg-config"
+            echo "XDG_DATA_HOME=$root/xdg-data"
+            echo "XDG_CACHE_HOME=$root/xdg-cache"
+            echo "XDG_STATE_HOME=$root/xdg-state"
+            echo "TMUX_SYSTEMD_ACCEPTANCE_RECEIPTS=$root/receipts"
+          } >> "$GITHUB_ENV"
+
+      # Bootstrap is deliberately workflow-only. Tests merely require the
+      # already-running manager and fail if this setup was not effective.
+      - name: Bootstrap and require disposable systemd user manager
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$TMUX_SYSTEMD_ACCEPTANCE_RECEIPTS/systemd-user-preflight.txt"
+          for binary in systemctl systemd-run tmux jq; do
+            command -v "$binary" | tee -a "$receipt"
+          done
+          uid="$(id -u)"
+          runtime_dir="/run/user/$uid"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@${uid}.service"
+          test -d "$runtime_dir"
+          test -S "$runtime_dir/bus"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus"
+          systemctl --user show-environment | tee -a "$receipt"
+          systemctl --user is-active default.target | tee -a "$receipt"
+          {
+            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+            echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+            echo "AGENT_DECK_SYSTEMD_USER_ACCEPTANCE=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Run required real-manager controls
+        shell: bash
+        env:
+          AGENT_DECK_SYSTEMD_USER_ACCEPTANCE: '1'
+          GOTOOLCHAIN: go1.25.13
+        run: |
+          set -euo pipefail
+          receipt="$TMUX_SYSTEMD_ACCEPTANCE_RECEIPTS/go-test.json"
+          tests=(
+            TestTmuxSystemdUser_ExplicitScope_KillModeNonePreservesSharedServer
+            TestTmuxSystemdUser_Service_KillModeNonePreservesSharedServer
+            TestTmuxSystemdUser_ServiceFallbackScope_KillModeNonePreservesSharedServer
+          )
+          pattern="^($(IFS='|'; echo "${tests[*]}"))$"
+          go test -json -count=1 -timeout 3m -tags systemd_user_integration \
+            -run "$pattern" ./internal/tmux | tee "$receipt"
+          for test_name in "${tests[@]}"; do
+            if jq -s -e --arg test_name "$test_name" \
+              'any(.[]; .Action == "pass" and .Test == $test_name)' "$receipt" >/dev/null; then
+              echo "control passed: $test_name"
+            else
+              echo "required control did not pass: $test_name" >&2
+              exit 1
+            fi
+            if jq -s -e --arg test_name "$test_name" \
+              'any(.[]; .Action == "skip" and .Test == $test_name)' "$receipt" >/dev/null; then
+              echo "required control was skipped: $test_name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Preserve systemd-user acceptance receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tmux-systemd-user-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TMUX_SYSTEMD_ACCEPTANCE_ROOT }}/receipts
+          if-no-files-found: error
