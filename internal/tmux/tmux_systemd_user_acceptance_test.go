@@ -231,28 +231,38 @@ func TestTmuxSystemdUser_ServiceFallbackScope_KillModeNonePreservesSharedServer(
 	serverName := "fallback-" + randomServerSuffix(t)
 	socket := filepath.Join(dir, "tmux-"+strconv.Itoa(os.Getuid()), serverName)
 	// The fallback must exercise Start's real service→scope branch. Its -L
-	// server is still isolated because this test gives it a private TMUX_TMPDIR;
-	// cleanup resolves the resulting socket by this exact absolute path.
-	// systemd-run executes through the manager, which has its own environment.
-	// Set the private socket base on both sides so Start's -L probe and the
-	// manager's spawned tmux resolve to this fixture's one exact socket.
-	out, err := exec.Command("systemctl", "--user", "set-environment", "TMUX_TMPDIR="+dir).CombinedOutput()
-	require.NoErrorf(t, err, "set private manager TMUX_TMPDIR failed: %s", out)
-	t.Cleanup(func() {
-		if output, unsetErr := exec.Command("systemctl", "--user", "unset-environment", "TMUX_TMPDIR").CombinedOutput(); unsetErr != nil {
-			t.Errorf("cleanup unset manager TMUX_TMPDIR: %v: %s", unsetErr, output)
-		}
-	})
+	// server is still isolated because Start's probe uses this test process's
+	// private TMUX_TMPDIR, while the real fallback scope receives the same base
+	// as a transient-unit-only environment. Do not alter the user manager's
+	// global environment: it may carry a value owned by the workflow or another
+	// test. Clearing TMUX in this unit prevents an inherited manager selection
+	// from overriding the private -L socket resolution.
 	t.Setenv("TMUX_TMPDIR", dir)
 	f := &systemdUserTMuxFixture{t: t, dir: dir, socket: socket, unit: base + ".scope"}
 	t.Cleanup(f.cleanup)
 
 	originalExec := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
-		if name == "systemd-run" && containsServiceUnitFlag(args) {
+		if name != "systemd-run" {
+			return originalExec(name, args...)
+		}
+		if containsServiceUnitFlag(args) {
 			return exec.Command("false")
 		}
-		return originalExec(name, args...)
+
+		// Keep the real scope retry intact, adding environment only to that
+		// transient unit before its command begins.
+		scopeArgs := make([]string, 0, len(args)+2)
+		inserted := false
+		for _, arg := range args {
+			if arg == "tmux" && !inserted {
+				scopeArgs = append(scopeArgs, "--setenv=TMUX=", "--setenv=TMUX_TMPDIR="+dir)
+				inserted = true
+			}
+			scopeArgs = append(scopeArgs, arg)
+		}
+		require.Truef(t, inserted, "scope fallback systemd-run invocation has no tmux command: %q", args)
+		return originalExec(name, scopeArgs...)
 	}
 	t.Cleanup(func() { execCommand = originalExec })
 
