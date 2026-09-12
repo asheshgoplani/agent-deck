@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,6 +230,35 @@ func TestUpdateRemotes_SelectionAndReporting(t *testing.T) {
 	}
 	if cached["offline"].Found {
 		t.Errorf("cache for offline = %+v, want not found", cached["offline"])
+	}
+}
+
+// #2164: a remote whose install path the deploy cannot write (root-owned
+// /usr/local/bin without passwordless sudo) is reported as failed with the
+// path, the user and the remedy; the typed error survives the wrapping.
+func TestUpdateRemotes_NotWritableInstallPathIsReportedWithRemedy(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	notWritable := &update.InstallPathNotWritableError{Path: "/usr/local/bin/agent-deck", User: "daniel"}
+	stubs := map[string]*stubInstaller{"locked": {version: "1.15.0", found: true, platformOK: true, installErr: notWritable}}
+	results := UpdateRemotes(context.Background(), map[string]RemoteConfig{"locked": {Host: "daniel@locked"}}, "1.16.0", stubReleaseOptions(stubs, false))
+	if len(results) != 1 || results[0].Outcome != RemoteUpdateOutcomeFailed {
+		t.Fatalf("results = %+v, want one failure", results)
+	}
+	var got *update.InstallPathNotWritableError
+	if !errors.As(results[0].Err, &got) || got.Path != notWritable.Path || got.User != "daniel" {
+		t.Fatalf("Err = %v, want the typed not-writable error", results[0].Err)
+	}
+	line := results[0].String()
+	for _, want := range []string{"locked: failed", "install path /usr/local/bin/agent-deck is not writable by daniel", "~/.local/bin", "symlink", "sudo"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("report %q lacks %q", line, want)
+		}
+	}
+	if CountRemoteUpdateFailures(results) != 1 {
+		t.Errorf("failures = %d, want 1", CountRemoteUpdateFailures(results))
+	}
+	if cached := LoadRemoteVersions()["locked"]; cached.Version != "1.15.0" {
+		t.Errorf("cache = %+v, want the unchanged version", cached)
 	}
 }
 

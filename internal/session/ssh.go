@@ -24,6 +24,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
@@ -1090,6 +1091,12 @@ func (r *SSHRunner) ResolveRemotePath(ctx context.Context) string {
 // parent directory and marking it executable. It pipes through `ssh "cat > ..."`
 // rather than scp so the remote shell handles the path uniformly; remotePath is
 // expected to be absolute (see ResolveRemotePath) (#1171).
+//
+// When the remote user cannot write the install directory (a root-owned
+// /usr/local/bin, #2164) the deploy goes through `sudo -n` if the remote
+// grants it without a password; otherwise it fails with
+// InstallPathNotWritableError naming the path, the user and the remedy,
+// never a bare "permission denied" on the staged file.
 func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remotePath string) error {
 	dir := remotePath
 	if idx := strings.LastIndex(remotePath, "/"); idx > 0 {
@@ -1104,16 +1111,49 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 	// succeeds while the old binary is still executing (the running process
 	// keeps the now-unlinked inode); the next launch picks up the new binary.
 	tmpPath := remotePath + ".new"
-	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod +x %s && mv -f %s %s",
-		shellQuote(dir), shellQuote(tmpPath), shellQuote(tmpPath),
-		shellQuote(tmpPath), shellQuote(remotePath))
+	quotedDir := shellQuote(dir)
+	stage := fmt.Sprintf("cat > %s && chmod +x %s && mv -f %s %s",
+		shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(remotePath))
+	// Under sudo the mkdir runs again as root: the unprivileged one above may
+	// have failed on a missing parent.
+	sudoStage := shellQuote("mkdir -p " + quotedDir + " && " + stage)
+	// Neither route: report "<prefix><path><infix><user>" on stderr with the
+	// exit code parseInstallPathNotWritable recognises.
+	report := fmt.Sprintf("printf '%s%%s%s%%s\\n' %s \"$(id -un)\" >&2; exit %d",
+		installPathNotWritablePrefix, installPathNotWritableInfix, shellQuote(remotePath), installPathNotWritableExit)
+	cmd := fmt.Sprintf("mkdir -p %s 2>/dev/null; if [ -w %s ]; then %s; elif sudo -n true 2>/dev/null; then sudo -n sh -c %s; else %s; fi",
+		quotedDir, quotedDir, stage, sudoStage, report)
 
 	deployCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	if _, err := r.remoteExec(deployCtx, cmd, binaryData); err != nil {
+		if notWritable := parseInstallPathNotWritable(err.Error()); notWritable != nil {
+			return notWritable
+		}
 		return fmt.Errorf("failed to deploy binary to %s: %w", remotePath, err)
 	}
 	return nil
+}
+
+// The remote deploy script reports an unwritable install directory on stderr
+// as "<prefix><path><infix><user>" with installPathNotWritableExit, which the
+// controller turns back into update.InstallPathNotWritableError.
+const (
+	installPathNotWritablePrefix = "agent-deck: install path "
+	installPathNotWritableInfix  = " is not writable by "
+	installPathNotWritableExit   = 3
+)
+
+var installPathNotWritableRe = regexp.MustCompile(regexp.QuoteMeta(installPathNotWritablePrefix) + `(.+?)` + regexp.QuoteMeta(installPathNotWritableInfix) + `(\S+)`)
+
+// parseInstallPathNotWritable recovers the structured error from a failed
+// remote deploy's output; nil when the failure was something else.
+func parseInstallPathNotWritable(output string) *update.InstallPathNotWritableError {
+	m := installPathNotWritableRe.FindStringSubmatch(output)
+	if m == nil {
+		return nil
+	}
+	return &update.InstallPathNotWritableError{Path: m[1], User: m[2]}
 }
 
 // InstallBinary resolves the remote's real agent-deck path, deploys binaryData

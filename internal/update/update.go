@@ -6,11 +6,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -671,10 +674,38 @@ func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
 	return installSelfUpdateBinary(execPath, binaryData)
 }
 
+// InstallPathNotWritableError says the running user cannot replace the
+// binary at Path: a root-owned /usr/local/bin/agent-deck, typically. It is
+// returned instead of a bare EACCES so the self-update, the controller-driven
+// remote deploy and the unattended sweep all report the same remedy (#2164).
+type InstallPathNotWritableError struct {
+	Path string
+	User string
+}
+
+func (e *InstallPathNotWritableError) Error() string {
+	return fmt.Sprintf("install path %s is not writable by %s; move the binary to ~/.local/bin and leave a symlink at %s, or run the update with sudo",
+		e.Path, e.User, e.Path)
+}
+
+// currentUserName names the user for InstallPathNotWritableError.
+func currentUserName() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if name := os.Getenv("USER"); name != "" {
+		return name
+	}
+	return fmt.Sprintf("uid %d", os.Getuid())
+}
+
 func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 	// Create temp file for new binary
 	newBinaryPath := execPath + ".new"
 	if err := os.WriteFile(newBinaryPath, binaryData, 0755); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return &InstallPathNotWritableError{Path: execPath, User: currentUserName()}
+		}
 		return fmt.Errorf("failed to write new binary: %w", err)
 	}
 
@@ -682,6 +713,9 @@ func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 	oldBinaryPath := execPath + ".old"
 	if err := os.Rename(execPath, oldBinaryPath); err != nil {
 		os.Remove(newBinaryPath)
+		if errors.Is(err, fs.ErrPermission) {
+			return &InstallPathNotWritableError{Path: execPath, User: currentUserName()}
+		}
 		return fmt.Errorf("failed to backup old binary: %w", err)
 	}
 

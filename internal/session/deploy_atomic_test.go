@@ -2,8 +2,12 @@ package session
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 // `agent-deck remote update` deployed the new binary with `cat > <path>`, which
@@ -42,7 +46,54 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 	if !strings.Contains(cmd, "mv -f ") {
 		t.Fatalf("deploy must atomically `mv -f` the staged binary into place; got:\n%s", cmd)
 	}
-	if !strings.HasSuffix(strings.TrimSpace(cmd), shellQuote(target)) {
+	if !strings.Contains(cmd, "mv -f "+shellQuote(target+".new")+" "+shellQuote(target)) {
 		t.Fatalf("the rename destination must be the final target %s; got:\n%s", target, cmd)
+	}
+	// #2164: the deploy is one round trip that falls back to passwordless
+	// sudo when the directory is not writable, and otherwise names the
+	// problem instead of leaving a bare "permission denied".
+	for _, want := range []string{"[ -w '/home/daniel' ]", "sudo -n true", "sudo -n sh -c", "is not writable by", "$(id -un)"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("deploy command lacks %q:\n%s", want, cmd)
+		}
+	}
+}
+
+// #2164: a remote that refuses the write (root-owned /usr/local/bin, no
+// passwordless sudo) reports the install path, the user and the remedy as a
+// typed error the CLI, the TUI and the unattended sweep all print verbatim.
+func TestDeployBinary_NotWritableReportsRemedy(t *testing.T) {
+	const target = "/usr/local/bin/agent-deck"
+	r, _ := recordingRunner(func(string) (string, error) {
+		return "", fmt.Errorf("remote command failed: exit status 3: agent-deck: install path %s is not writable by daniel\n", target)
+	})
+
+	err := r.DeployBinary(context.Background(), []byte("bytes"), target)
+	var notWritable *update.InstallPathNotWritableError
+	if !errors.As(err, &notWritable) {
+		t.Fatalf("got %v, want InstallPathNotWritableError", err)
+	}
+	if notWritable.Path != target || notWritable.User != "daniel" {
+		t.Errorf("error carries path %q user %q", notWritable.Path, notWritable.User)
+	}
+	for _, want := range []string{"install path /usr/local/bin/agent-deck is not writable by daniel", "~/.local/bin", "symlink", "sudo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q lacks %q", err.Error(), want)
+		}
+	}
+}
+
+// Any other deploy failure keeps its original shape.
+func TestDeployBinary_OtherFailuresAreNotRelabelled(t *testing.T) {
+	r, _ := recordingRunner(func(string) (string, error) {
+		return "", errors.New("remote command failed: exit status 255: connection refused")
+	})
+	err := r.DeployBinary(context.Background(), []byte("bytes"), "/home/daniel/agent-deck")
+	if err == nil || !strings.Contains(err.Error(), "failed to deploy binary to /home/daniel/agent-deck") || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("got %v", err)
+	}
+	var notWritable *update.InstallPathNotWritableError
+	if errors.As(err, &notWritable) {
+		t.Fatal("a connection failure must not be reported as an unwritable path")
 	}
 }
