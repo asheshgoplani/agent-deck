@@ -49,6 +49,7 @@ func TestCountReleasesBehind_Basic(t *testing.T) {
 }
 
 func TestShouldNudge_ThresholdIsGreaterThanFive(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	tests := []struct {
 		name string
 		info *UpdateInfo
@@ -70,6 +71,7 @@ func TestShouldNudge_ThresholdIsGreaterThanFive(t *testing.T) {
 }
 
 func TestShouldNudge_EnvVarSuppressesNudge(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	info := &UpdateInfo{Available: true, ReleasesBehind: 40}
 	// Without env: nudge fires
 	assert.True(t, ShouldNudge(info))
@@ -102,6 +104,7 @@ func TestCheckForUpdate_EnvSkipsCheckAndReturnsEmpty(t *testing.T) {
 }
 
 func TestCheckForUpdate_PopulatesReleasesBehind(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	// A fresh check (no cache hit path) must populate ReleasesBehind using
 	// the /releases listing.
 	latestRelease := Release{
@@ -153,6 +156,7 @@ func TestCheckForUpdate_PopulatesReleasesBehind(t *testing.T) {
 }
 
 func TestCachedUpdateInfo_OfflineReadFromCache(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	// `agent-deck --version` must be instant — never hit the network.
 	// CachedUpdateInfo reads the on-disk cache directly.
 	isolateUpdatePaths(t)
@@ -205,6 +209,7 @@ func TestCachedUpdateInfo_EnvSkipReturnsNil(t *testing.T) {
 }
 
 func TestCheckForUpdate_ReleasesBehindSurvivesCacheRoundtrip(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	// First call populates disk cache with ReleasesBehind. A second call
 	// within the interval must read ReleasesBehind out of the cache — not
 	// default to zero.
@@ -252,4 +257,13 @@ func TestCheckForUpdate_ReleasesBehindSurvivesCacheRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 6, second.ReleasesBehind)
 	assert.Equal(t, hitsAfterFirst, hits, "cached path must not hit the network")
+}
+
+// withUpdateChecksEnabled clears an inherited AGENTDECK_SKIP_UPDATE_CHECK
+// for tests that assert the nudge itself: CI exports the variable for the
+// whole workflow so no spawned binary auto-updates mid-run (issue #2251),
+// and these in-process tests must not inherit that kill switch.
+func withUpdateChecksEnabled(t *testing.T) {
+	t.Helper()
+	t.Setenv(SkipUpdateCheckEnv, "")
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -59,6 +58,10 @@ var (
 		_, _, managed, _ := update.DetectHomebrewManagedInstall()
 		return managed
 	}
+	// autoUpdateSuppressed reports why this process must not install or
+	// restart on its own (go test, CI, skip env, test markers, no TTY;
+	// issue #2251). Evaluated once at startup into Home.autoUpdateSuppressed.
+	autoUpdateSuppressed = update.TUIAutoUpdateSuppressed
 )
 
 // runUnattendedUpdateProcess is the production runUnattendedUpdate.
@@ -99,8 +102,8 @@ func (h *Home) autoInstallSkipReason(info *update.UpdateInfo) string {
 		return "no update available"
 	case info.PublishingVersion != "":
 		return "release still publishing"
-	case os.Getenv(update.SkipUpdateCheckEnv) != "":
-		return update.SkipUpdateCheckEnv + " set"
+	case h.autoUpdateSuppressedReason != "":
+		return h.autoUpdateSuppressedReason
 	case h.homebrewManaged:
 		return "homebrew-managed install"
 	case h.autoInstallInFlight != "":
@@ -170,4 +173,14 @@ func firstLine(text, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// applyAutoUpdateSuppression records, once at startup, whether this
+// process may install or restart on its own (issue #2251). Both auto
+// paths read the stored reason on every decision.
+func (h *Home) applyAutoUpdateSuppression() {
+	h.autoUpdateSuppressedReason = autoUpdateSuppressed()
+	if h.autoUpdateSuppressedReason != "" {
+		uiLog.Info("auto_update_suppressed", slog.String("reason", h.autoUpdateSuppressedReason))
+	}
 }

@@ -21,6 +21,7 @@ import (
 // The existing banner (pre-v1.7.59) fired at >=1 behind; the new nudge
 // is a separate, louder signal that only fires at >5 behind.
 func TestUpdateNudge_ShowsOnlyWhenSixPlusBehind(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	tests := []struct {
 		name string
 		info *update.UpdateInfo
@@ -48,6 +49,7 @@ func TestUpdateNudge_ShowsOnlyWhenSixPlusBehind(t *testing.T) {
 // dismiss: after the user hits "U", the nudge stops rendering until the
 // process exits — even if a later update-check refreshes updateInfo.
 func TestUpdateNudge_DismissKeySuppressesBanner(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	h := &Home{
 		updateInfo: &update.UpdateInfo{
 			Available:      true,
@@ -123,4 +125,12 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// withUpdateChecksEnabled clears an inherited AGENTDECK_SKIP_UPDATE_CHECK
+// for tests that assert the nudge banner: CI exports the variable for the
+// whole workflow so no spawned binary auto-updates mid-run (issue #2251).
+func withUpdateChecksEnabled(t *testing.T) {
+	t.Helper()
+	t.Setenv(update.SkipUpdateCheckEnv, "")
 }

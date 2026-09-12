@@ -179,6 +179,7 @@ func TestSelectInstallableRelease(t *testing.T) {
 // GitHub API: /releases/latest reports a tag with no assets (the #1759 window)
 // and the listing carries an installable predecessor.
 func TestCheckForUpdate_PublishWindowFallsBack(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 
 	latest := emptyRelease("v1.10.11")
@@ -229,6 +230,7 @@ func TestCheckForUpdate_PublishWindowFallsBack(t *testing.T) {
 // when NO release has a binary for this platform, behaviour is unchanged — the
 // newest release is still reported, and the result is cached as usual.
 func TestCheckForUpdate_NoFallbackKeepsLatest(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	latest := releaseWithAssets("v1.10.11", "plan9", "mips")
 	recent := []Release{latest, releaseWithAssets("v1.10.10", "plan9", "mips")}
 

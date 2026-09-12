@@ -67,6 +67,7 @@ func TestUpdateBanner_InstalledIgnoresNudgeDismiss(t *testing.T) {
 // compatibility: with no installed update the banner is exactly the old
 // nudge, including its threshold and Esc dismissal.
 func TestUpdateBanner_NothingInstalledKeepsNudgeBehavior(t *testing.T) {
+	withUpdateChecksEnabled(t)
 	h := &Home{updateInfo: &update.UpdateInfo{Available: true, ReleasesBehind: 2}}
 	if h.shouldRenderUpdateBanner() {
 		t.Fatal("2 releases behind and nothing installed should not render a banner")

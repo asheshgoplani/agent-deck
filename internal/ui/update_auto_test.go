@@ -133,7 +133,11 @@ func TestAutoInstall_SkipConditions(t *testing.T) {
 		},
 		"homebrew-managed": func(_ *testing.T, h *Home) { h.homebrewManaged = true },
 		"still publishing": func(_ *testing.T, h *Home) { h.updateInfo.PublishingVersion = "1.16.2" },
-		"skip env set":     func(t *testing.T, _ *Home) { t.Setenv(update.SkipUpdateCheckEnv, "1") },
+		"suppressed at startup (this is a go test)": func(_ *testing.T, h *Home) {
+			// The real predicate, not the stub: this process is a go test
+			// binary, so Init's decision must already refuse (issue #2251).
+			h.applyAutoUpdateSuppression()
+		},
 		"nothing available": func(_ *testing.T, h *Home) {
 			h.updateInfo.Available = false
 		},
@@ -187,5 +191,77 @@ func TestTailBuffer(t *testing.T) {
 	}
 	if got := firstLine("  \n", "fallback"); got != "fallback" {
 		t.Fatalf("firstLine on blank text = %q", got)
+	}
+}
+
+// stubAutoUpdateSuppressed replaces the startup predicate for one test.
+func stubAutoUpdateSuppressed(t *testing.T, reason string) {
+	t.Helper()
+	prev := autoUpdateSuppressed
+	autoUpdateSuppressed = func() string { return reason }
+	t.Cleanup(func() { autoUpdateSuppressed = prev })
+}
+
+// TestAutoUpdate_SuppressedProcessNeverActsOnItsOwn pins issue #2251 for
+// the TUI: for every reason the predicate can return (go test, skip env,
+// CI, a test marker, no terminal) neither the unattended install nor the
+// automatic restart fires, while the interactive keys keep working. The
+// reasons are the strings update.TUIAutoUpdateSuppressed produces.
+func TestAutoUpdate_SuppressedProcessNeverActsOnItsOwn(t *testing.T) {
+	reasons := []string{
+		"running under go test",
+		update.SkipUpdateCheckEnv + " set",
+		"CI=true",
+		"AGENTDECK_TEST_ARGV_LOG set",
+		"stdin is not a terminal",
+		"stdout is not a terminal",
+	}
+	for _, reason := range reasons {
+		t.Run(reason, func(t *testing.T) {
+			stubAutoUpdateSuppressed(t, reason)
+
+			// auto_install: an installable release must not start a run.
+			h, f := newAutoInstallTestHome(t)
+			h.applyAutoUpdateSuppression()
+			if cmd := h.maybeAutoInstall(h.updateInfo); cmd != nil || len(f.exes) != 0 || h.autoInstallInFlight != "" {
+				t.Fatalf("%s: unattended install must not start (cmd=%v runs=%v)", reason, cmd, f.exes)
+			}
+			// The key still installs interactively.
+			if _, cmd := h.tryInstallUpdate(); cmd == nil {
+				t.Fatalf("%s: the install key must keep working, err=%v", reason, h.err)
+			}
+
+			// auto_restart: a newer build on disk must not arm a restart.
+			h = newAutoRestartTestHome(t)
+			h.applyAutoUpdateSuppression()
+			for i := 0; i < 3; i++ {
+				if cmd := h.maybeAutoRestart(); cmd != nil || h.restartRequested || h.isQuitting {
+					t.Fatalf("%s: tick %d armed a restart", reason, i)
+				}
+			}
+			if h.err != nil {
+				t.Fatalf("%s: suppression must be silent, got footer %v", reason, h.err)
+			}
+			if got := h.renderUpdateBannerText(); !strings.Contains(got, "press ctrl+t to restart") {
+				t.Fatalf("%s: banner must offer the key, not promise a restart: %q", reason, got)
+			}
+			// The key still restarts.
+			if _, cmd := h.tryRestartDeck(); cmd == nil || !h.restartRequested {
+				t.Fatalf("%s: the restart key must keep working, err=%v", reason, h.err)
+			}
+		})
+	}
+
+	// And with nothing suppressing, the same homes act on their own.
+	stubAutoUpdateSuppressed(t, "")
+	h, _ := newAutoInstallTestHome(t)
+	h.applyAutoUpdateSuppression()
+	if cmd := h.maybeAutoInstall(h.updateInfo); cmd == nil {
+		t.Fatal("interactive process must install on its own")
+	}
+	h = newAutoRestartTestHome(t)
+	h.applyAutoUpdateSuppression()
+	if cmd := h.maybeAutoRestart(); cmd == nil || !h.restartRequested {
+		t.Fatal("interactive process must restart on its own")
 	}
 }

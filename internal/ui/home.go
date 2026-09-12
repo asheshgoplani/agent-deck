@@ -489,6 +489,10 @@ type Home struct {
 	// autoRestartHoldUntil pauses the auto path after the pre-arm check of
 	// the new binary failed (see restartTargetProblem).
 	autoRestartHoldUntil time.Time
+	// autoUpdateSuppressedReason is non-empty when neither auto_install nor
+	// auto_restart may act in this process (go test, CI, skip env, test
+	// markers, no terminal; issue #2251). Set once in Init.
+	autoUpdateSuppressedReason string
 	// restartHandoff is what the previous process left in the environment
 	// when it exec'd this one (restart.go); applied after the first load.
 	restartHandoff RestartHandoff
@@ -3752,6 +3756,7 @@ func (h *Home) Init() tea.Cmd {
 	// update lands on disk while the TUI is open.
 	h.binaryWatch = startBinaryWatch(Version)
 	h.homebrewManaged = detectHomebrewManaged()
+	h.applyAutoUpdateSuppression()
 
 	cmds := []tea.Cmd{
 		h.sessionLoadCmd(nil, true),

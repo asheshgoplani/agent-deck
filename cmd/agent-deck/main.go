@@ -1085,10 +1085,22 @@ func main() {
 
 // headlessAutoRestartEnabled is the shared gate for the headless
 // self-restart paths (`web --no-tui`, the remote agent): [updates]
-// .auto_restart is on and update checks are not disabled by environment.
+// .auto_restart is on and nothing marks this process as test-, CI- or
+// script-driven (update.AutoUpdateSuppressed, issue #2251). Daemons keep
+// their idle-point restart otherwise; only the terminal rule of the TUI
+// does not apply to them.
 func headlessAutoRestartEnabled() bool {
-	return os.Getenv(update.SkipUpdateCheckEnv) == "" && session.GetUpdateSettings().GetAutoRestart()
+	if reason := headlessAutoUpdateSuppressed(); reason != "" {
+		logging.ForComponent(logging.CompUpdate).Info("auto_update_suppressed", slog.String("reason", reason))
+		return false
+	}
+	return session.GetUpdateSettings().GetAutoRestart()
 }
+
+// headlessAutoUpdateSuppressed is a seam over update.AutoUpdateSuppressed
+// so tests can drive both outcomes (the real one always suppresses under
+// go test).
+var headlessAutoUpdateSuppressed = update.AutoUpdateSuppressed
 
 // startHeadlessSelfRestart makes `web --no-tui` pick up an installed
 // update on its own: once a newer binary is on disk and idle reports no
