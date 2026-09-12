@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -620,12 +621,78 @@ func handleRemoteUpdate(args []string) {
 		remotes = map[string]session.RemoteConfig{name: rc}
 	}
 
-	results := runRemoteUpdates(context.Background(), remotes, Version, true)
+	results := runRemoteUpdatesCLI(context.Background(), remotes, Version, remoteSweepWait)
 	if failed := session.CountRemoteUpdateFailures(results); failed > 0 {
 		fmt.Printf("\n%s\n", remoteUpdateSummary(results))
 		os.Exit(1)
 	}
 	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
+}
+
+// remoteSweepWait bounds how long an explicit update waits for a sweep this
+// controller is already running (the TUI's startup sweep, typically).
+const remoteSweepWait = 2 * time.Minute
+
+// runRemoteUpdatesCLI is the explicit `remote update` run. It first waits
+// up to wait for a sweep this controller is already running: racing it
+// would only meet the remotes' deploy locks. When the sweep is still going
+// afterwards, the remotes it covers are reported as being updated by it
+// (skipped, not failed) and the rest are updated here; otherwise this run
+// marks itself as the sweep so a later one waits in turn (#2244).
+func runRemoteUpdatesCLI(ctx context.Context, remotes map[string]session.RemoteConfig, target string, wait time.Duration) []session.RemoteUpdateResult {
+	names := remoteNames(remotes)
+	deadline := time.Now().Add(wait)
+	var announced bool
+	for {
+		end, err := session.BeginRemoteSweep(names)
+		if err == nil {
+			defer end()
+			return runRemoteUpdates(ctx, remotes, target, true)
+		}
+		if !errors.Is(err, session.ErrRemoteSweepRunning) || time.Now().After(deadline) {
+			break
+		}
+		if sweep, ok := session.RemoteSweepInProgress(); ok && !announced {
+			fmt.Printf("A remote sweep is already running on this controller (pid %d, started %s); waiting for it...\n", sweep.PID, sweep.StartedAt.Format(time.Kitchen))
+			announced = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(remoteSweepPoll(wait)):
+		}
+	}
+
+	sweep, running := session.RemoteSweepInProgress()
+	rest := make(map[string]session.RemoteConfig, len(remotes))
+	results := make([]session.RemoteUpdateResult, 0, len(names))
+	for _, name := range names {
+		if running && sweep.Covers(name) {
+			skipped := session.RemoteUpdateResult{
+				Name: name, Host: remotes[name].Host, To: strings.TrimPrefix(target, "v"),
+				Outcome: session.RemoteUpdateOutcomeSkipped,
+				Note:    fmt.Sprintf("sweep already in progress, remote %s is being updated by %d", name, sweep.PID),
+			}
+			results = append(results, skipped)
+			fmt.Printf("\n═══ Remote: %s (%s) ═══\n  %s\n", name, remotes[name].Host, formatRemoteUpdateResult(skipped))
+			continue
+		}
+		rest[name] = remotes[name]
+	}
+	if len(rest) > 0 {
+		results = append(results, runRemoteUpdates(ctx, rest, target, true)...)
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	return results
+}
+
+// remoteSweepPoll is how often the wait re-checks; short waits (tests) poll
+// faster.
+func remoteSweepPoll(wait time.Duration) time.Duration {
+	if wait < time.Second {
+		return wait / 4
+	}
+	return 500 * time.Millisecond
 }
 
 // runRemoteUpdates drives session.UpdateRemotes with the CLI's progress and
@@ -666,6 +733,9 @@ func formatRemoteUpdateResult(r session.RemoteUpdateResult) string {
 	case session.RemoteUpdateOutcomeCurrent:
 		return fmt.Sprintf("✓ Up to date (v%s)", r.From)
 	case session.RemoteUpdateOutcomeSkipped:
+		if r.Err == nil {
+			return "– Skipped: " + r.Note
+		}
 		return fmt.Sprintf("– Skipped: %v", r.Err)
 	default:
 		return fmt.Sprintf("✗ Failed: %v", r.Err)
@@ -735,9 +805,27 @@ func updateRemotesAfterLocalUpdate(newVersion string) {
 // for any reason), the same contract as the startup sweep (#2164). The
 // run is stamped so the next TUI start does not sweep again at once.
 func runPostUpdateRemoteSweep(ctx context.Context, remotes map[string]session.RemoteConfig, newVersion string, unattended bool) []session.RemoteUpdateResult {
+	end, err := session.BeginRemoteSweep(remoteNames(remotes))
+	if err != nil {
+		// A sweep from a TUI is still running: it pushes the version it was
+		// started with. Let it finish rather than race it (#2244).
+		fmt.Printf("  a remote sweep is already running on this controller; run `agent-deck remote update --all` after it finishes\n")
+		return nil
+	}
+	defer end()
 	results := runRemoteUpdates(ctx, remotes, newVersion, !unattended)
 	_ = session.MarkRemoteAutoUpdateRan(time.Now())
 	return results
+}
+
+// remoteNames returns the remotes' names in sorted order.
+func remoteNames(remotes map[string]session.RemoteConfig) []string {
+	names := make([]string, 0, len(remotes))
+	for name := range remotes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func shouldProceedWithRemoteUpdate(response string, readErr error) bool {
@@ -819,6 +907,12 @@ func startRemoteAutoUpdate() {
 // on every restart.
 func runRemoteAutoUpdate(remotes map[string]session.RemoteConfig, target string) []session.RemoteUpdateResult {
 	log := logging.ForComponent(logging.CompSession)
+	end, err := session.BeginRemoteSweep(remoteNames(remotes))
+	if err != nil {
+		log.Info("remote_auto_update_skipped", slog.String("reason", err.Error()))
+		return nil
+	}
+	defer end()
 	log.Info("remote_auto_update_start", slog.Int("remotes", len(remotes)), slog.String("target", target))
 	results := session.UpdateRemotes(context.Background(), remotes, target, session.RemoteUpdateOptions{
 		InstallMissing: false,
