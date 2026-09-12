@@ -183,9 +183,16 @@ func promptForUpdate() bool {
 		fmt.Fprintf(os.Stderr, "Update failed: failed to fetch release info: %v\n", err)
 		return false
 	}
+	warnIfLaunchctlUnavailable()
 	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 		return false
+	}
+
+	// The binary is replaced either way; a failed re-registration must not be
+	// hidden behind the TUI, so exit here with the repair commands on screen.
+	if !finishInstallHygiene(info.LatestVersion) {
+		os.Exit(1)
 	}
 
 	fmt.Println("Restart agent-deck to use the new version.")
@@ -3412,7 +3419,14 @@ func handleProfileSetDefault(out *CLIOutput, name string) {
 func handleUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
+	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer)")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
+	unattended := fs.Bool("unattended", false, "Install without prompts (no changelog, no stdin); honours [updates] auto_install; exit 2 on Homebrew installs")
+	trigger := fs.String("trigger", "", "Who started this run, for the debug log: tui, timer or manual (default: $AGENTDECK_UPDATE_TRIGGER or manual)")
+	installTimer := fs.Bool("install-timer", false, "Install (or replace) the daily unattended update timer (launchd on macOS, systemd --user on Linux)")
+	uninstallTimer := fs.Bool("uninstall-timer", false, "Remove the daily unattended update timer")
+	timerStatus := fs.Bool("timer-status", false, "Show whether the daily update timer is installed and loaded")
+	dryRun := fs.Bool("dry-run", false, "With --install-timer/--uninstall-timer: print the files and commands, execute nothing")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck update [options]")
@@ -3423,18 +3437,62 @@ func handleUpdate(args []string) {
 		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
-		fmt.Println("  agent-deck update              # Check and install latest if available")
-		fmt.Println("  agent-deck update --check      # Only check, don't install")
-		fmt.Println("  agent-deck update --version 1.7.3  # Install a specific version (may downgrade)")
+		fmt.Println("  agent-deck update                     # Check and install latest if available")
+		fmt.Println("  agent-deck update --check             # Only check, don't install")
+		fmt.Println("  agent-deck update --check --json      # Machine-readable check incl. timer state")
+		fmt.Println("  agent-deck update --version 1.7.3     # Install a specific version (may downgrade)")
+		fmt.Println("  agent-deck update --unattended        # No prompts; what the timer and the TUI run")
+		fmt.Println("  agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)")
+		fmt.Println("  agent-deck update --install-timer --dry-run")
+		fmt.Println("  agent-deck update --uninstall-timer")
+		fmt.Println("  agent-deck update --timer-status")
+		fmt.Println()
+		fmt.Println("On macOS every install re-registers com.agentdeck.* launchd agents that run")
+		fmt.Println("this binary (bootout + bootstrap), otherwise they crash-loop with EX_CONFIG.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
+	shutdownLog := initUpdateCommandLogging()
+	exit := func(code int) {
+		shutdownLog()
+		os.Exit(code)
+	}
+
+	switch {
+	case *installTimer:
+		exit(runTimerCommand("install", *dryRun, os.Stdout))
+	case *uninstallTimer:
+		exit(runTimerCommand("uninstall", *dryRun, os.Stdout))
+	case *timerStatus:
+		exit(runTimerCommand("status", false, os.Stdout))
+	}
+
+	if *unattended {
+		exit(runUnattendedUpdate(realUnattendedDeps(updateTrigger(*trigger))))
+	}
+
 	if strings.TrimSpace(*targetVersion) != "" {
 		handleUpdateToSpecificVersion(*targetVersion, *checkOnly)
 		return
+	}
+
+	if *checkOnly && *jsonOut {
+		info, err := update.CheckForUpdate(Version, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
+			exit(1)
+		}
+		var timer update.TimerStatus
+		if cfg, err := update.DefaultTimerConfig(); err == nil {
+			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
+		}
+		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer)); err != nil {
+			exit(1)
+		}
+		exit(0)
 	}
 
 	fmt.Printf("Agent Deck v%s\n", Version)
@@ -3510,6 +3568,7 @@ func handleUpdate(args []string) {
 
 	// Perform update (direct binary replacement or Homebrew upgrade)
 	fmt.Println()
+	warnIfLaunchctlUnavailable()
 	if homebrewManaged {
 		if err := runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd); err != nil {
 			fmt.Printf("Error installing update via Homebrew: %v\n", err)
@@ -3533,11 +3592,16 @@ func handleUpdate(args []string) {
 		fmt.Println("  You can manually refresh it with: agent-deck conductor setup <name>")
 	}
 
+	if !finishInstallHygiene(info.LatestVersion) {
+		exit(1)
+	}
+
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
 	fmt.Println("  Restart agent-deck to use the new version.")
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
+	shutdownLog()
 }
 
 // handleUpdateToSpecificVersion installs a user-specified release version.
@@ -3611,6 +3675,7 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	}
 
 	fmt.Println()
+	warnIfLaunchctlUnavailable()
 	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Printf("Error installing v%s: %v\n", targetVersion, err)
 		os.Exit(1)
@@ -3619,6 +3684,10 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	if err := update.UpdateBridgePy(); err != nil {
 		fmt.Printf("Warning: Failed to update bridge.py: %v\n", err)
 		fmt.Println("  You can manually refresh it with: agent-deck conductor setup <name>")
+	}
+
+	if !finishInstallHygiene(targetVersion) {
+		os.Exit(1)
 	}
 
 	fmt.Printf("\n✓ Installed v%s\n", targetVersion)
