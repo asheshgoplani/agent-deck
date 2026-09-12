@@ -861,6 +861,10 @@ func (r *remoteAgentRequests) execute(ctx context.Context, f *remoteAgentFlight,
 		return
 	}
 	defer func() { <-r.sem }()
+	if ctx.Err() != nil {
+		f.stderr, f.code = "cancelled while queued", 1
+		return
+	}
 	f.stdout, f.stderr, f.code = r.exec(ctx, args)
 	f.stamp = remoteAgentStampNanos(r.stampPath)
 }
