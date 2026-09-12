@@ -123,6 +123,12 @@ func handleLaunch(profile string, args []string) {
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)")
 	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
+	// Parity with `add` and the New Session dialog: sandbox, YOLO and the
+	// Claude Options rows.
+	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
+	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
+	claudeFlags := registerClaudeOptionFlags(fs)
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
 	// `agent-deck add --tmux-socket`: overrides `[tmux].socket_name` for
@@ -149,6 +155,8 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude")
 		fmt.Println("  agent-deck launch . -c codex --model gpt-5.5")
 		fmt.Println("  agent-deck launch . -c claude --model claude-opus-5 --effort high")
+		fmt.Println("  agent-deck launch . -c claude --skip-permissions --chrome --continue   # the dialog's Claude Options rows")
+		fmt.Println("  agent-deck launch . -c gemini --yolo --sandbox")
 		fmt.Println("  agent-deck launch . -c gemini --model gemini-3.1-pro-preview")
 		fmt.Println("  agent-deck launch . -c claude -m \"Explain this codebase\"")
 		fmt.Println("  agent-deck launch /path/to/project -t \"My Agent\" -c claude -g work")
@@ -577,6 +585,18 @@ func handleLaunch(profile string, args []string) {
 		_ = newInstance.SetClaudeOptions(opts)
 	}
 
+	if *sandbox {
+		newInstance.Sandbox = session.NewSandboxConfig(*sandboxImage)
+	}
+	if err := applyCLIYoloOverride(newInstance, *yoloMode); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := applyCLIClaudeOptionFlags(newInstance, claudeFlags); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Materialize the declarative per-group/per-conductor skill+mcp loadout
 	// at create time (mirror of handleAdd) — a queued session gets its floor
 	// now, not at its eventual start. Start/Restart re-assert.
@@ -649,6 +669,7 @@ func handleLaunch(profile string, args []string) {
 		}
 		addModelInfoJSON(queuedJSON, newInstance.LaunchModelInfo())
 		addEffortJSON(queuedJSON, newInstance)
+		addClaudeOptionsJSON(queuedJSON, newInstance)
 		out.Success(fmt.Sprintf("Queued session: %s (group at cap %d)", newInstance.Title, maxC), queuedJSON)
 		return
 	}
@@ -807,6 +828,10 @@ func handleLaunch(profile string, args []string) {
 	}
 	addModelInfoJSON(jsonData, newInstance.LaunchModelInfo())
 	addEffortJSON(jsonData, newInstance)
+	addClaudeOptionsJSON(jsonData, newInstance)
+	if *sandbox {
+		jsonData["sandbox"] = true
+	}
 
 	msg := fmt.Sprintf("Launched session: %s", newInstance.Title)
 	if initialMessage != "" {
