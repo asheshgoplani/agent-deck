@@ -139,6 +139,46 @@ func TestRestartRecordsWhatItProduced(t *testing.T) {
 	}
 }
 
+// A loaded instance must write restart bookkeeping to its own profile even
+// when another profile is registered as the process-global database.
+func TestRestartOutcomeUsesOwningProfile(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	suffix := randomString(8)
+	storage, _ := restartPersistFixture(t, "_test_restart_owner_"+suffix, "agentdeck_restartprofile_deadbeef")
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("reload owning profile: instances=%d err=%v", len(instances), err)
+	}
+	inst := instances[0]
+
+	other, err := NewStorageWithProfile("_test_restart_other_" + suffix)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile(other): %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	previous := statedb.GetGlobal()
+	statedb.SetGlobal(other.GetDB())
+	t.Cleanup(func() { statedb.SetGlobal(previous) })
+
+	if err := inst.Restart(); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	t.Cleanup(func() {
+		if sess := inst.GetTmuxSession(); sess != nil {
+			_ = sess.Kill()
+		}
+	})
+
+	if recorded, err := inst.RestartTmuxNameRecorded(); !recorded || err != nil {
+		t.Fatalf("RestartTmuxNameRecorded() = (%v, %v), want owning-profile success", recorded, err)
+	}
+	live := inst.GetTmuxSession()
+	if live == nil || storedTmuxName(t, storage, inst.ID) != live.Name {
+		t.Fatalf("owning profile did not retain the restarted runtime: live=%v", live)
+	}
+}
+
 // TestRestartReportsAnUnrecordedTmuxName pins the honesty half. If the write
 // cannot land -- here because the row was deleted while the restart ran -- the
 // restart still succeeded and the process is live, so Restart must not fail.
