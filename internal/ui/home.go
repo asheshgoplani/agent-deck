@@ -12181,10 +12181,10 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if h.confirmDialog.GetFocusedButton() == 0 {
 				return h, h.confirmAction()
 			}
-			h.confirmDialog.Hide()
+			h.dismissConfirmDialog()
 			return h, nil
 		case "n", "N", "esc":
-			h.confirmDialog.Hide()
+			h.dismissConfirmDialog()
 			return h, nil
 		}
 	}
@@ -12192,9 +12192,34 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, nil
 }
 
+// dismissConfirmDialog closes a y/n confirmation without acting. A declined
+// same-harness account switch returns to the Edit Session dialog, which is
+// still open underneath, with focus on the account row and nothing written.
+func (h *Home) dismissConfirmDialog() {
+	switchDeclined := h.confirmDialog.GetConfirmType() == ConfirmSwitchAccount
+	h.confirmDialog.Hide()
+	if switchDeclined && h.editSessionDialog.IsVisible() {
+		h.editSessionDialog.FocusField(session.FieldAccount)
+	}
+}
+
 // confirmAction executes the confirmed destructive action.
 func (h *Home) confirmAction() tea.Cmd {
 	switch h.confirmDialog.GetConfirmType() {
+	case ConfirmSwitchAccount:
+		sessionID, harness, account := h.confirmDialog.GetTargetID(), h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount()
+		h.instancesMu.RLock()
+		inst := h.instanceByID[sessionID]
+		unchanged := h.confirmDialog.CrossHarnessSourceMatches(inst)
+		h.instancesMu.RUnlock()
+		if !unchanged {
+			h.confirmDialog.ShowNotice("Account switch cancelled", "The source session changed while this confirmation was open. Review the current session and confirm a new switch.")
+			return nil
+		}
+		h.confirmDialog.Hide()
+		h.editSessionDialog.Hide()
+		h.resumingSessions[sessionID] = time.Now()
+		return h.switchSessionHarness(sessionID, harness, account)
 	case ConfirmCrossHarnessTransfer:
 		sessionID, harness, account := h.confirmDialog.GetTargetID(), h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount()
 		h.instancesMu.RLock()
@@ -13102,9 +13127,13 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowCrossHarnessTransfer(inst, switchHarness, accountSwitch, preview.Fidelity.Exclusions)
 				return h, nil
 			}
-			h.editSessionDialog.Hide()
-			h.resumingSessions[sessionID] = time.Now()
-			return h, h.switchSessionHarness(sessionID, switchHarness, accountSwitch)
+			// Same harness, other account: also a stop + conversation move +
+			// restart, so ask once (the cross-harness branch above already
+			// does). The dialog stays open underneath; Switch runs it,
+			// Cancel returns to the account row with nothing written.
+			h.confirmDialog.SetSize(h.width, h.height)
+			h.confirmDialog.ShowSwitchAccount(inst, switchHarness, accountSwitch)
+			return h, nil
 		}
 
 		// Apply Tool last so claude-only validation (Skip/Auto/ExtraArgs)

@@ -465,6 +465,61 @@ func accountFieldLabel(harness string) string {
 	}
 }
 
+// FocusField moves focus to the row with the given field key (no-op when the
+// row is not shown), so a cancelled switch confirmation lands the user back
+// on the row they were changing.
+func (d *EditSessionDialog) FocusField(key string) {
+	for i := range d.fields {
+		if d.fields[i].key == key {
+			d.focusIndex = i
+			d.updateFocus()
+			return
+		}
+	}
+}
+
+// switchPending reports whether saving now would run a harness/account
+// switch (the transactional path in handleEditSessionDialogKey) rather than
+// plain field writes.
+func (d *EditSessionDialog) switchPending() bool {
+	if target := d.selectedPill(session.FieldTool); target != "" && target != d.sourceTool {
+		return true
+	}
+	account := d.selectedPill(session.FieldAccount)
+	return account != "" && account != d.sourceAccount
+}
+
+// footerHint says what the keys do on the focused row. The harness and
+// account rows are where "save" becomes a switch (restart, conversation
+// carried over), so their footer says that Enter asks first.
+func (d *EditSessionDialog) footerHint(compact bool) string {
+	if d.focusIndex < 0 || d.focusIndex >= len(d.fields) {
+		return "Enter save │ Esc cancel │ Tab next"
+	}
+	f := d.fields[d.focusIndex]
+	sep := " │ "
+	if compact {
+		sep = " · "
+	}
+	switch {
+	case f.key == session.FieldAccount || f.key == session.FieldTool:
+		what := "account"
+		if f.key == session.FieldTool {
+			what = "harness"
+		}
+		if d.switchPending() {
+			return strings.Join([]string{"←/→ " + what, "Enter switch (asks first)", "Esc cancel"}, sep)
+		}
+		return strings.Join([]string{"←/→ " + what, "Enter save", "Tab next", "Esc cancel"}, sep)
+	case f.kind == editFieldPills:
+		return strings.Join([]string{"←/→ choose", "Enter save", "Tab next", "Esc cancel"}, sep)
+	case f.kind == editFieldCheckbox:
+		return strings.Join([]string{"Space toggle", "Enter save", "Tab next", "Esc cancel"}, sep)
+	default:
+		return strings.Join([]string{"Type to edit", "Enter save", "Tab next", "Esc cancel"}, sep)
+	}
+}
+
 func (d *EditSessionDialog) isPillsFocused() bool {
 	return d.focusIndex >= 0 && d.focusIndex < len(d.fields) &&
 		d.fields[d.focusIndex].kind == editFieldPills &&
@@ -620,11 +675,7 @@ func (d *EditSessionDialog) View() string {
 		content.WriteString(dimStyle.Render("  Pi uses its default account only."))
 		content.WriteString("\n")
 	}
-	help := "Enter save │ Esc cancel │ Tab next │ ←/→ options │ Space toggle"
-	if compact {
-		help = "Enter save · Esc cancel · Tab next · ←/→ choose"
-	}
-	content.WriteString(helpStyle.Render(clipEditDialogText(help, lineWidth)))
+	content.WriteString(helpStyle.Render(clipEditDialogText(d.footerHint(compact), lineWidth)))
 
 	dialog := dialogStyle.Render(content.String())
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)

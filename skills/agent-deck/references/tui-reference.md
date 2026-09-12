@@ -104,6 +104,14 @@ Pressing `n` on a remote group/session opens a remote-aware dialog (remote paths
 
 Claude New Session defaults are remembered in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`) under `[claude]`, except start query and resume IDs, which are per-launch values.
 
+### Edit Session (`Shift+P`)
+
+Edits the fields a session iterates on at runtime: Title, Harness (tool), Pin position, the account row (shown when `[profiles.<name>.*].config_dir` slots are configured for a supported harness), and for claude sessions Skip permissions, Auto mode, Extra args, Plugins.
+
+**Controls:** `Tab`/`↓` `Shift+Tab`/`↑` move rows | `←`/`→` choose (pills) | `Space` toggle (checkboxes) | `Enter` save | `Esc` cancel. The footer says what the keys do on the focused row; on a changed harness or account row it reads "Enter switch (asks first)".
+
+A harness or account change is saved on its own (not together with other edits) and always asks first: a same-harness account change shows "Switch Account?" (from → to, what happens), a different harness shows the transfer disclosure. `y`/Switch runs it, `n`/Esc returns to the row with nothing written; the outcome is reported in a notice. CLI equivalents: `agent-deck session switch-account <session> <account>` (same flow), `agent-deck session set <session> account <name>`, `agent-deck session switch <session> --to-harness <tool> [--to-account <account>]` (preview with `session switch-preview`); `agent-deck accounts` lists the slots.
+
 ### MCP Manager (`m`)
 
 **Layout:**
