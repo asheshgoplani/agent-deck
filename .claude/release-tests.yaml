@@ -909,12 +909,12 @@ tests:
   added: '2026-04-18'
   task: v1721-scope-to-service
   file: internal/tmux/tmux_service_integration_test.go
-  test_name: TestTmuxService_ExplicitStopDoesNotTriggerRestart
-  purpose: 'Removal semantics. systemctl --user stop must be a CLEAN stop — Restart=on-failure must NOT fire. This guarantees `agent-deck remove` is truly terminal and not papered over by auto-restart.'
+  test_name: TestTmuxService_ExplicitStopDoesNotKillSharedServer
+  purpose: 'Removal safety. Stopping a service-mode unit must preserve both sessions on its shared tmux server, preventing per-session teardown from killing sibling work.'
   source: .planning/v1721-scope-to-service/PLAN.md
   manual: false
   run:
-    command: go test ./internal/tmux/ -run TestTmuxService_ExplicitStopDoesNotTriggerRestart -count=1 -timeout 60s -v
+    command: go test ./internal/tmux/ -run TestTmuxService_ExplicitStopDoesNotKillSharedServer -count=1 -timeout 60s -v
     expected: pass
 - id: v1721-tmux-settings-get-launch-as
   added: '2026-04-18'
