@@ -238,6 +238,7 @@ type Home struct {
 	instances          []*session.Instance
 	instanceByID       map[string]*session.Instance // O(1) instance lookup by ID
 	instancesMu        sync.RWMutex                 // Protects instances slice for thread-safe background access
+	switchGenerations  map[string]uint64            // owns async harness-switch completions per instance
 	storage            *session.Storage
 	groupTree          *session.GroupTree
 	flatItems          []session.Item // Flattened view for cursor navigation
@@ -1759,6 +1760,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		cancel:                    cancel,
 		instances:                 []*session.Instance{},
 		instanceByID:              make(map[string]*session.Instance),
+		switchGenerations:         make(map[string]uint64),
 		groupTree:                 session.NewGroupTree([]*session.Instance{}),
 		flatItems:                 []session.Item{},
 		previewCache:              make(map[string]string),
@@ -7607,21 +7609,89 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case accountSwitchedMsg:
-		delete(h.resumingSessions, msg.sessionID)
+		// Completion belongs to exactly the generation and source snapshot that
+		// launched it. An old completion must not clear a newer spinner or force
+		// save a replacement instance loaded by the watcher.
+		h.instancesMu.RLock()
+		current := h.instanceByID[msg.sessionID]
+		// Status belongs to independent monitor/lifecycle ownership and may change
+		// while this switch is running. It must not reject the bounded registry
+		// commit; account/command/path/native-ID conflicts are checked atomically
+		// by Storage.CommitNativeHarnessSwitch below.
+		fresh := current != nil && h.switchGenerations[msg.sessionID] == msg.generation && current.Tool == msg.sourceTool && current.Account == msg.sourceAccount && current.ProjectPath == msg.sourceProject && current.Title == msg.sourceTitle && current.GroupPath == msg.sourceGroup && current.Command == msg.sourceCommand && current.ClaudeSessionID == msg.sourceClaudeID && current.CodexSessionID == msg.sourceCodexID && current.EffectiveWorkingDir() == msg.sourceCWD
 		if msg.committed {
-			// The slot (and any conversation move) is already applied in
-			// memory; persist it and repaint the row's account badge.
+			// A storage watcher can replace the switched pointer with the source
+			// row after recording only a monitor status. Accept either in-memory
+			// account representation here; the storage CAS is the authority for
+			// substantive source identity conflicts and reconciles the target.
+			fresh = current != nil && h.switchGenerations[msg.sessionID] == msg.generation && current.Tool == msg.sourceTool && current.ProjectPath == msg.sourceProject && current.Title == msg.sourceTitle && current.GroupPath == msg.sourceGroup && current.Command == msg.sourceCommand && current.EffectiveWorkingDir() == msg.sourceCWD && (current.Account == msg.sourceAccount || current.Account == msg.account)
+		}
+		h.instancesMu.RUnlock()
+		if !fresh {
+			uiLog.Debug("stale_harness_switch_completion", slog.String("session_id", msg.sessionID), slog.Uint64("generation", msg.generation))
+			return h, nil
+		}
+		delete(h.resumingSessions, msg.sessionID)
+		// A distinct target is attachable only after an explicit positive native
+		// readiness result with no execution error. Pending is not a substitute
+		// for readiness, and an error after a durable target write is recovery-only.
+		if msg.target != nil && msg.targetReady && msg.err == nil {
+			h.instancesMu.Lock()
+			if _, exists := h.instanceByID[msg.target.ID]; !exists {
+				h.instances = append(h.instances, msg.target)
+				h.instanceByID[msg.target.ID] = msg.target
+				if h.groupTree != nil {
+					h.groupTree.AddSession(msg.target)
+				}
+			}
+			h.instancesMu.Unlock()
 			h.rebuildFlatItems()
-			h.forceSaveInstances()
-			h.invalidatePreviewCache(msg.sessionID)
+			h.invalidatePreviewCache(msg.target.ID)
+		}
+		if msg.committed && msg.nativeResult != nil {
+			// Persist the precise post-lifecycle native mutation. A full TUI
+			// snapshot here can be stale after an independent status sweep and
+			// would either conflict or overwrite unrelated registry changes.
+			if h.storage == nil {
+				msg.err = fmt.Errorf("persist native switch: storage is unavailable")
+				msg.pending = false
+				msg.summary = "status=failed; recovery_required=true; storage is unavailable"
+			} else if err := h.storage.CommitNativeHarnessSwitch(current, msg.nativeResult); err != nil {
+				msg.err = fmt.Errorf("persist native switch: %w", err)
+				msg.pending = false
+				msg.summary = fmt.Sprintf("status=failed; recovery_required=true; %v", msg.err)
+			} else {
+				h.rebuildFlatItems()
+				h.invalidatePreviewCache(msg.sessionID)
+			}
 		}
 		for _, warning := range msg.warnings {
 			uiLog.Warn("account_switch_warning", slog.String("session_id", msg.sessionID), slog.String("detail", warning))
 		}
-		if msg.err != nil {
+		// Journal persistence after a commit is a failed, recovery-required
+		// operation, like the CLI. Ordinary readiness-pending results retain their
+		// pending notice even though the backend uses ErrCrossHarnessPending to
+		// make callers inspect the result.
+		if msg.err != nil && (!msg.pending || errors.Is(msg.err, session.ErrCrossHarnessRecoveryRequired)) {
 			// A refused switch explains why in a paragraph the footer banner
 			// would clip, and the session may be left stopped — show it in the
-			// modal instead, where it cannot be missed.
+			// modal instead, where it cannot be missed. Preserve any committed
+			// metadata rather than hiding a recovery-required partial operation.
+			body := msg.err.Error()
+			if msg.summary != "" {
+				body += "\n\n" + msg.summary
+			}
+			if msg.committed {
+				body += "\n\nstatus=failed; recovery_required=true; committed=true"
+			}
+			h.confirmDialog.ShowNotice("Account switch failed", body)
+			return h, nil
+		}
+		if msg.pending {
+			h.confirmDialog.ShowNotice("Account switch pending", msg.summary)
+			return h, nil
+		}
+		if msg.err != nil {
 			h.confirmDialog.ShowNotice("Account switch failed", msg.err.Error())
 			return h, nil
 		}
@@ -7633,6 +7703,23 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sprintf("Switched to %q — %s\n\n%s", msg.account, msg.summary, strings.Join(msg.warnings, "\n")))
 			return h, nil
 		}
+		if msg.target != nil && msg.targetReady {
+			h.confirmDialog.ShowNotice("Harness transfer verified",
+				fmt.Sprintf("New %s target %q is verified and ready. %s", msg.target.Tool, msg.target.Title, msg.summary))
+			return h, nil
+		}
+		if msg.nativeResult != nil && msg.nativeResult.DestinationReady {
+			h.confirmDialog.ShowNotice("Account switch verified", msg.summary)
+			return h, nil
+		}
+		if msg.nativeResult != nil {
+			h.confirmDialog.ShowNotice("Account switch pending verification",
+				fmt.Sprintf("Account changed to %q, but its restarted harness has not reported native readiness. %s", msg.account, msg.summary))
+			return h, nil
+		}
+		// Legacy/synthetic completions without an execution receipt retain the
+		// existing footer behavior; real native and cross-harness paths above
+		// always carry the receipt needed to state verified versus pending.
 		h.setError(fmt.Errorf("account switched to %q — %s", msg.account, msg.summary))
 		return h, nil
 
@@ -12108,6 +12195,19 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // confirmAction executes the confirmed destructive action.
 func (h *Home) confirmAction() tea.Cmd {
 	switch h.confirmDialog.GetConfirmType() {
+	case ConfirmCrossHarnessTransfer:
+		sessionID, harness, account := h.confirmDialog.GetTargetID(), h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount()
+		h.instancesMu.RLock()
+		inst := h.instanceByID[sessionID]
+		unchanged := h.confirmDialog.CrossHarnessSourceMatches(inst)
+		h.instancesMu.RUnlock()
+		if !unchanged {
+			h.confirmDialog.ShowNotice("Harness transfer cancelled", "The source session changed while this confirmation was open. Review the current session and confirm a new transfer.")
+			return nil
+		}
+		h.confirmDialog.Hide()
+		h.resumingSessions[sessionID] = time.Now()
+		return h.switchSessionHarness(sessionID, harness, account)
 	case ConfirmDeleteSession:
 		sessionID := h.confirmDialog.GetTargetID()
 		if inst := h.getInstanceByID(sessionID); inst != nil {
@@ -12964,25 +13064,47 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// chain). Only a named target goes through the switch flow; the empty
 		// value stays in the ordinary field loop below.
 		accountSwitch := ""
+		switchHarness := ""
 		switchAccount := false
 		for _, c := range changes {
 			if c.Field == session.FieldAccount && strings.TrimSpace(c.Value) != "" {
 				accountSwitch, switchAccount = c.Value, true
 			}
+			if c.Field == session.FieldTool && strings.TrimSpace(c.Value) != "" && c.Value != inst.Tool {
+				switchHarness = c.Value
+			}
 		}
-
-		// A switch to another Claude account and a change of tool cannot both
-		// land in one submit: session.SwitchAccount only supports claude, so
-		// applying the tool first would persist it and then refuse the switch,
-		// leaving the session half-edited and unrestarted. Refuse the pair up
-		// front, with nothing written.
-		if switchAccount {
+		// Harness/account changes are one transactional operation. Do not apply
+		// unrelated edits first: a failed destination must leave title, settings,
+		// cwd, group and routing untouched.
+		if switchAccount || switchHarness != "" {
 			for _, c := range changes {
-				if c.Field == session.FieldTool && c.Value != "claude" {
-					h.editSessionDialog.SetError("an account switch only applies to claude sessions — change the tool and the account in separate edits")
+				if c.Field != session.FieldAccount && c.Field != session.FieldTool {
+					h.editSessionDialog.SetError("save harness/account switch separately from other edits")
 					return h, nil
 				}
 			}
+			if switchHarness == "" {
+				switchHarness = inst.Tool
+			}
+			// A different harness is necessarily a bounded, lossy export. Show
+			// the same fidelity disclosure as the CLI preview and require an
+			// explicit confirmation before any target lifecycle operation.
+			if session.CanonicalSwitchHarnessForUI(switchHarness) != session.CanonicalSwitchHarnessForUI(inst.Tool) {
+				cfg, _ := session.LoadUserConfig()
+				sourceSnapshot := h.switchSourceSnapshot(inst)
+				preview := session.PreviewSwitchWithMaxBytesAndSnapshot(cfg, inst, session.SwitchPreviewTarget{Harness: switchHarness, Account: accountSwitch}, session.DefaultHandoffMaxChars, &sourceSnapshot)
+				if preview.Refusal != nil {
+					h.confirmDialog.ShowNotice("Harness transfer refused", preview.Refusal.Message)
+					return h, nil
+				}
+				h.editSessionDialog.Hide()
+				h.confirmDialog.ShowCrossHarnessTransfer(inst, switchHarness, accountSwitch, preview.Fidelity.Exclusions)
+				return h, nil
+			}
+			h.editSessionDialog.Hide()
+			h.resumingSessions[sessionID] = time.Now()
+			return h, h.switchSessionHarness(sessionID, switchHarness, accountSwitch)
 		}
 
 		// Apply Tool last so claude-only validation (Skip/Auto/ExtraArgs)
@@ -15534,12 +15656,168 @@ func (h *Home) bulkRemoveErrored() tea.Cmd {
 // including the partial case where the switch succeeded but the restart did
 // not.
 type accountSwitchedMsg struct {
-	sessionID string
-	account   string
-	summary   string
-	committed bool
-	warnings  []string
-	err       error
+	sessionID      string
+	generation     uint64
+	sourceTool     string
+	sourceAccount  string
+	sourceProject  string
+	sourceTitle    string
+	sourceGroup    string
+	sourceCommand  string
+	sourceStatus   session.Status
+	sourceClaudeID string
+	sourceCodexID  string
+	sourceCWD      string
+	targetHarness  string
+	account        string
+	summary        string
+	committed      bool
+	pending        bool // durable target/account update without verified native readiness
+	targetReady    bool // explicit positive target-native readiness evidence
+	warnings       []string
+	target         *session.Instance // distinct cross-harness target; source remains unchanged
+	nativeResult   *session.HarnessSwitchResult
+	err            error
+}
+
+func switchTUIStatus(committed, ready, pending bool) string {
+	if pending {
+		return "pending"
+	}
+	if !committed {
+		return "failed"
+	}
+	if !ready {
+		return "pending"
+	}
+	return "success"
+}
+
+func switchTUIReadiness(ready bool) string {
+	if ready {
+		return "ready"
+	}
+	return "pending"
+}
+
+// crossHarnessSwitchMessage retains a backend result's durable metadata while
+// making an absent target explicit. Store failures can correctly return a
+// result without a target, so presentation must never assume Target is nonnil.
+func crossHarnessSwitchMessage(msg accountSwitchedMsg, preview *session.SwitchPreview, result *session.CrossHarnessSwitchResult, err error) accountSwitchedMsg {
+	msg.err = err
+	if result == nil {
+		return msg
+	}
+	msg.target, msg.targetReady, msg.pending = result.Target, result.TargetReady, result.Pending
+	if result.Pending {
+		msg.warnings = append(msg.warnings, result.MissingContract)
+	}
+	recoveryRequired := result.TargetCreated || errors.Is(err, session.ErrCrossHarnessRecoveryRequired)
+	if result.Target == nil {
+		msg.summary = fmt.Sprintf("cross-harness switch failed; status=failed; target_created=%t; recovery_required=%t", result.TargetCreated, recoveryRequired)
+		return msg
+	}
+
+	status := switchTUIStatus(true, result.TargetReady, result.Pending)
+	failed := err != nil && (!result.Pending || errors.Is(err, session.ErrCrossHarnessRecoveryRequired))
+	if failed {
+		status = "failed"
+	}
+	harness := "target"
+	if preview != nil {
+		harness = preview.TargetHarness
+	}
+	msg.summary = fmt.Sprintf("distinct %s target %s created; status=%s; recovery_required=%t; readiness=%s; account=%s; authentication=%s; context=%s; semantic acceptance=%s", harness, result.Target.ID, status, failed && recoveryRequired, switchTUIReadiness(result.TargetReady), result.ConfiguredAccount, result.Authentication, result.ContextDelivery, result.SemanticAcceptance)
+	return msg
+}
+
+// nativeHarnessSwitchMessage maps a native switch result to its TUI message.
+// A result can retain a committed account after persisting a later journal
+// transition fails. That is recovery-required, not readiness-pending: errors
+// must never be presented as a pending or successful switch.
+func nativeHarnessSwitchMessage(msg accountSwitchedMsg, result *session.HarnessSwitchResult, err error) accountSwitchedMsg {
+	msg.err = err
+	if result == nil {
+		return msg
+	}
+
+	msg.committed = result.Committed
+	msg.nativeResult = result
+	msg.targetReady = result.DestinationReady
+	msg.pending = err == nil && result.Committed && !result.DestinationReady
+	msg.warnings = result.Warnings
+
+	status := switchTUIStatus(result.Committed, result.DestinationReady, msg.pending)
+	recoveryRequired := err != nil && result.Committed
+	if err != nil {
+		status = "failed"
+	}
+	msg.summary = fmt.Sprintf("status=%s; readiness=%s; recovery_required=%t; %s", status, switchTUIReadiness(result.DestinationReady), recoveryRequired, result.Conversation)
+	return msg
+}
+
+// switchSourceSnapshot reads route metadata without mutating it. A malformed
+// or inaccessible route file is an ownership uncertainty, so cross-harness
+// replacement fails closed rather than guessing a bridge destination.
+func (h *Home) switchSourceSnapshot(inst *session.Instance) session.SwitchSourceSnapshot {
+	h.instancesMu.RLock()
+	instances := append([]*session.Instance(nil), h.instances...)
+	h.instancesMu.RUnlock()
+	return switchSourceSnapshotFromInstances(inst, instances)
+}
+
+func switchSourceSnapshotFromInstances(inst *session.Instance, instances []*session.Instance) session.SwitchSourceSnapshot {
+	watcherTarget, managementUnknown := false, false
+	watcherDir, err := session.WatcherDir()
+	if err != nil {
+		managementUnknown = true
+	} else {
+		clientsPath := filepath.Join(watcherDir, "clients.json")
+		if _, statErr := os.Stat(clientsPath); statErr == nil {
+			clients, loadErr := watcher.LoadClientsJSON(clientsPath)
+			if loadErr != nil {
+				managementUnknown = true
+			} else {
+				for _, client := range clients {
+					if client.Conductor == inst.ID || client.Conductor == inst.Title || session.ConductorSessionTitle(client.Conductor) == inst.Title {
+						watcherTarget = true
+						break
+					}
+				}
+			}
+		} else if !os.IsNotExist(statErr) {
+			managementUnknown = true
+		}
+	}
+	return session.SnapshotSwitchSource(inst, instances, watcherTarget, managementUnknown)
+}
+
+// crossHarnessSourceOwnershipValidator re-reads storage instead of relying on
+// the Home's displayed rows. The executor repeats it before staging and final
+// commit; watcher routing remains external to SQLite and is not atomic with
+// the final storage CAS.
+func (h *Home) crossHarnessSourceOwnershipValidator() session.CrossHarnessSourceOwnershipValidator {
+	return session.CrossHarnessSourceOwnershipValidatorFunc(func(source *session.Instance) (session.SwitchSourceSnapshot, error) {
+		if h.storage == nil {
+			return session.SwitchSourceSnapshot{ManagementUnknown: true}, fmt.Errorf("session storage is unavailable")
+		}
+		instances, err := h.storage.Load()
+		if err != nil {
+			return session.SwitchSourceSnapshot{ManagementUnknown: true}, fmt.Errorf("load current session graph: %w", err)
+		}
+		var current *session.Instance
+		for _, candidate := range instances {
+			if candidate != nil && source != nil && candidate.ID == source.ID {
+				current = candidate
+				break
+			}
+		}
+		if current == nil {
+			return session.AuthoritativeSwitchSourceSnapshot(source, instances, false, true)
+		}
+		snapshot := switchSourceSnapshotFromInstances(current, instances)
+		return session.AuthoritativeSwitchSourceSnapshot(source, instances, snapshot.WatcherBridgeTarget, snapshot.ManagementUnknown)
+	})
 }
 
 // switchSessionAccount moves a session to another named Claude account,
@@ -15551,28 +15829,64 @@ type accountSwitchedMsg struct {
 // Runs as a tea.Cmd because the stop/copy/start sequence talks to tmux and the
 // filesystem; doing it inline would freeze the UI for the duration.
 func (h *Home) switchSessionAccount(sessionID, account string) tea.Cmd {
+	return h.switchSessionHarness(sessionID, "claude", account)
+}
+
+// switchSessionHarness is the TUI adapter for ExecuteHarnessSwitch. The
+// confirmation/result notice is shared with the legacy account-only path, so
+// the TUI cannot accidentally bypass the journalled backend.
+func (h *Home) switchSessionHarness(sessionID, harness, account string) tea.Cmd {
+	// Capture immutable source identity and claim an operation generation before
+	// releasing the registry lock. A reload or newer operation may replace the
+	// pointer while the filesystem/lifecycle work is in flight.
+	h.instancesMu.Lock()
+	captured := h.instanceByID[sessionID]
+	if captured == nil {
+		h.instancesMu.Unlock()
+		return func() tea.Msg {
+			return accountSwitchedMsg{sessionID: sessionID, account: account, targetHarness: harness, err: fmt.Errorf("session no longer exists")}
+		}
+	}
+	h.switchGenerations[sessionID]++
+	generation := h.switchGenerations[sessionID]
+	sourceTool, sourceAccount := captured.Tool, captured.Account
+	sourceProject, sourceTitle, sourceGroup := captured.ProjectPath, captured.Title, captured.GroupPath
+	sourceCommand, sourceStatus := captured.Command, captured.Status
+	sourceClaudeID, sourceCodexID, sourceCWD := captured.ClaudeSessionID, captured.CodexSessionID, captured.EffectiveWorkingDir()
+	modalIdentity := session.CaptureSwitchModalIdentity(captured)
+	h.instancesMu.Unlock()
 	return func() tea.Msg {
-		// Resolve by ID at execution time: a storage reload can replace the
-		// pointer captured when the dialog was submitted.
+		// Resolve by ID at execution time, then require the captured identity to
+		// remain unchanged. Never mutate a replacement snapshot.
 		h.instancesMu.RLock()
 		inst := h.instanceByID[sessionID]
+		valid := inst != nil && modalIdentity.Matches(inst) && h.switchGenerations[sessionID] == generation
 		h.instancesMu.RUnlock()
-		if inst == nil {
-			return accountSwitchedMsg{sessionID: sessionID, account: account, err: fmt.Errorf("session no longer exists")}
+		if !valid {
+			return accountSwitchedMsg{sessionID: sessionID, generation: generation, sourceTool: sourceTool, sourceAccount: sourceAccount, sourceProject: sourceProject, sourceTitle: sourceTitle, sourceGroup: sourceGroup, sourceCommand: sourceCommand, sourceStatus: sourceStatus, sourceClaudeID: sourceClaudeID, sourceCodexID: sourceCodexID, sourceCWD: sourceCWD, targetHarness: harness, account: account, err: fmt.Errorf("session changed while switch was pending")}
 		}
 
 		cfg, cfgErr := session.LoadUserConfig()
+		baseMsg := accountSwitchedMsg{sessionID: sessionID, generation: generation, sourceTool: sourceTool, sourceAccount: sourceAccount, sourceProject: sourceProject, sourceTitle: sourceTitle, sourceGroup: sourceGroup, sourceCommand: sourceCommand, sourceStatus: sourceStatus, sourceClaudeID: sourceClaudeID, sourceCodexID: sourceCodexID, sourceCWD: sourceCWD, targetHarness: harness, account: account}
 		if cfgErr != nil {
-			return accountSwitchedMsg{sessionID: sessionID, account: account, err: cfgErr}
+			baseMsg.err = cfgErr
+			return baseMsg
 		}
-		result, err := session.SwitchAccount(cfg, inst, account, session.AccountSwitchOptions{})
-		msg := accountSwitchedMsg{sessionID: sessionID, account: account, err: err}
-		if result != nil {
-			msg.committed = true
-			msg.summary = result.Conversation
-			msg.warnings = result.Warnings
+		target := session.SwitchPreviewTarget{Harness: harness, Account: account}
+		sourceSnapshot := h.switchSourceSnapshot(inst)
+		preview := session.PreviewSwitchWithMaxBytesAndSnapshot(cfg, inst, target, session.DefaultHandoffMaxChars, &sourceSnapshot)
+		msg := baseMsg
+		if preview.Execution == session.ExecutionPlanned && preview.Refusal == nil {
+			crossResult, err := session.ExecuteCrossHarnessSwitch(context.Background(), cfg, inst, session.CrossHarnessSwitchOptions{Target: target, SourceSnapshot: &sourceSnapshot}, session.CrossHarnessSwitchDependencies{
+				Store:           session.StorageCrossHarnessTargetStore{Storage: h.storage},
+				Lifecycle:       session.InstanceCrossHarnessLifecycle{},
+				Observer:        session.NewNativeCrossHarnessTargetObserver(),
+				SourceOwnership: h.crossHarnessSourceOwnershipValidator(),
+			})
+			return crossHarnessSwitchMessage(msg, preview, crossResult, err)
 		}
-		return msg
+		result, err := session.ExecuteHarnessSwitch(cfg, inst, session.HarnessSwitchOptions{Target: target})
+		return nativeHarnessSwitchMessage(msg, result, err)
 	}
 }
 
