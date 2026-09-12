@@ -66,7 +66,7 @@ func TestEval_VersionFlag_ShowsUpdateAnnotationFromCache(t *testing.T) {
 	// PTY) — `--version` is stdout-only with no terminal dependency, and
 	// we want the clean stdout bytes.
 	cmd := exec.Command(sb.BinPath, "--version")
-	cmd.Env = sb.Env()
+	cmd.Env = sb.EnvWithUpdateChecks()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("agent-deck --version failed: %v\noutput: %s", err, string(out))
@@ -111,7 +111,7 @@ func TestEval_VersionFlag_EnvSkipSuppressesAnnotation(t *testing.T) {
 	// kill-switch or a globally-disabled annotation looks identical to a
 	// working kill-switch). See test-correctness audit #9.
 	baseCmd := exec.Command(sb.BinPath, "--version")
-	baseCmd.Env = sb.Env()
+	baseCmd.Env = sb.EnvWithUpdateChecks()
 	baseOut, baseErr := baseCmd.CombinedOutput()
 	if baseErr != nil {
 		t.Fatalf("baseline agent-deck --version failed: %v\noutput: %s", baseErr, string(baseOut))
@@ -123,7 +123,7 @@ func TestEval_VersionFlag_EnvSkipSuppressesAnnotation(t *testing.T) {
 	}
 
 	cmd := exec.Command(sb.BinPath, "--version")
-	cmd.Env = append(sb.Env(), "AGENTDECK_SKIP_UPDATE_CHECK=1")
+	cmd.Env = append(sb.EnvWithUpdateChecks(), "AGENTDECK_SKIP_UPDATE_CHECK=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("agent-deck --version failed: %v\noutput: %s", err, string(out))

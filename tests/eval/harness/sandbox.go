@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -64,6 +65,21 @@ func NewSandbox(t *testing.T) *Sandbox {
 
 	t.Cleanup(func() { sb.teardown() })
 	return sb
+}
+
+// EnvWithUpdateChecks is Env without the AGENTDECK_SKIP_UPDATE_CHECK kill
+// switch, for the few tests that assert the update annotation or nudge
+// itself. Everything those tests spawn reads a seeded cache and never
+// installs anything, so the switch is safe to drop there.
+func (s *Sandbox) EnvWithUpdateChecks() []string {
+	var out []string
+	for _, kv := range s.Env() {
+		if strings.HasPrefix(kv, "AGENTDECK_SKIP_UPDATE_CHECK=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // Env returns the base environment vector used when spawning the binary.
