@@ -1221,6 +1221,15 @@ func (r *SSHRunner) remoteResolvedPath(ctx context.Context, cmd string) (string,
 	return resolved, nil
 }
 
+// remoteSameFile reports whether a and b are the same inode on the remote
+// (test -ef follows symlinks).
+func (r *SSHRunner) remoteSameFile(ctx context.Context, a, b string) bool {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := r.remoteExec(timeoutCtx, "[ "+shellQuote(a)+" -ef "+shellQuote(b)+" ]", nil)
+	return err == nil
+}
+
 // remotePathRunsFile reports whether `command -v agent-deck` on the remote
 // resolves to the same inode as file (test -ef follows symlinks).
 func (r *SSHRunner) remotePathRunsFile(ctx context.Context, file string) bool {
@@ -1401,7 +1410,15 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 	// warning for sessions started over SSH (#2249); without one the
 	// controller itself runs `agent-deck` through PATH, so it is a failure.
 	if deployedVer, found := r.versionAt(ctx, configured); found && deployedVer == want {
-		if strings.TrimSpace(r.configuredPath) != "" {
+		if entry := strings.TrimSpace(r.configuredPath); entry != "" {
+			// The version alone is not identity: the configured entry (as
+			// written, symlink and all) must still be the file that was
+			// deployed, checked by inode now, after the deploy.
+			entry = r.expandHome(ctx, entry)
+			if !r.remoteSameFile(ctx, entry, configured) {
+				return fmt.Errorf("post-deploy verification failed: agent_deck_path %s no longer resolves to the deployed file %s (v%s); "+
+					"check what the path points at on the remote", entry, configured, want)
+			}
 			r.installReport += fmt.Sprintf("; warning: %s is not on the remote's non-interactive PATH, sessions started via SSH may need PATH (add %s to PATH)", configured, configured)
 			return nil
 		}

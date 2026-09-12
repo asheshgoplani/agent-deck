@@ -634,3 +634,67 @@ type localPlatform struct{ *SSHRunner }
 func (localPlatform) DetectPlatform(context.Context) (string, string, error) {
 	return "linux", "amd64", nil
 }
+
+// Review of #2250: the warning branch is only for a configured entry that
+// is, by inode, the file that was deployed. Right version at the resolved
+// path but an entry that no longer points there (swapped underneath, a
+// second copy) is a verification failure.
+func TestInstallBinary_ConfiguredPathOffPathNotVerifiedByInodeFails(t *testing.T) {
+	const entry = "/home/tester/bin/agent-deck"
+	r, calls := recordingRunner(func(cmd string) (string, error) {
+		switch {
+		case strings.Contains(cmd, "resolve "+shellQuote(entry)):
+			return entry + "\n", nil
+		case strings.Contains(cmd, "command -v agent-deck 2>/dev/null); if"):
+			return "NONE\n", nil
+		case strings.Contains(cmd, "'agent-deck' version"):
+			return "", errors.New("exit status 127") // nothing on PATH
+		case strings.Contains(cmd, "[ "+shellQuote(entry)+" -ef "+shellQuote(entry)+" ]"):
+			return "", errors.New("exit status 1") // the entry is no longer that inode
+		case strings.Contains(cmd, "version"):
+			return "Agent Deck v1.16.7\n", nil
+		}
+		return "", nil
+	})
+	r.configuredPath = entry
+	r.AgentDeckPath = entry
+	err := r.InstallBinary(context.Background(), []byte("BINARY"), "1.16.7")
+	if err == nil || !strings.Contains(err.Error(), "no longer resolves to the deployed file") {
+		t.Fatalf("got %v, want the inode verification failure", err)
+	}
+	if strings.Contains(r.LastInstallReport(), "warning") {
+		t.Fatalf("no PATH warning may be reported for an unverified entry: %q", r.LastInstallReport())
+	}
+	var sawInode bool
+	for _, c := range *calls {
+		if strings.Contains(c, " -ef ") {
+			sawInode = true
+		}
+	}
+	if !sawInode {
+		t.Fatal("the configured entry must be compared to the deployed file by inode")
+	}
+}
+
+// The positive side of the same check: a symlinked agent_deck_path off
+// PATH is verified through the link and reported as a warning.
+func TestInstallBinary_ConfiguredSymlinkOffPathVerifiedByInode(t *testing.T) {
+	l := newRemoteLayout(t)
+	target := filepath.Join(l.home, ".local", "bin", "agent-deck")
+	fakeAgentDeck(t, target, "1.16.6", 0o755)
+	link := filepath.Join(l.home, "bin", "agent-deck")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	r := l.runner(t, link, noSudo)
+	if err := r.InstallBinary(context.Background(), []byte(fakeAgentDeckPayload("1.16.7")), "1.16.7"); err != nil {
+		t.Fatalf("InstallBinary: %v", err)
+	}
+	mustSameFile(t, link, target)
+	if !strings.Contains(r.LastInstallReport(), "warning") {
+		t.Fatalf("report must carry the PATH warning: %q", r.LastInstallReport())
+	}
+}
