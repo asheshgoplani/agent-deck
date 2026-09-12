@@ -205,6 +205,12 @@ func (s *SessionDataService) Profile() string {
 	return s.profile
 }
 
+// refreshesLiveState reports that snapshots include tmux-derived process state,
+// which can change without a persisted menu-data revision.
+func (s *SessionDataService) refreshesLiveState() bool {
+	return s != nil && s.refreshLiveState
+}
+
 // resolveAndOpenStorage opens storage for the raw profile this service was
 // constructed with (see NewSessionDataService) and syncs s.profile to
 // whatever profile was actually opened, so callers built on Profile() and

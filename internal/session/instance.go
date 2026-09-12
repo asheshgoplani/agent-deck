@@ -106,7 +106,7 @@ const (
 const (
 	hookFastPathWindow             = 2 * time.Minute
 	codexHookRunningFastPathWindow = 20 * time.Second
-	codexHookWaitingFastPathWindow = 2 * time.Minute
+	codexHookWaitingFastPathWindow = 5 * time.Second
 	codexBootstrapScanInterval     = 2 * time.Second
 	codexRotationScanInterval      = 30 * time.Second
 	opencodeRotationScanInterval   = 15 * time.Second

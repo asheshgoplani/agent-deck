@@ -3458,14 +3458,14 @@ func TestInstance_HookFastPath_CodexRunningStale(t *testing.T) {
 	}
 }
 
-func TestInstance_HookFastPath_CodexWaitingFreshness(t *testing.T) {
+func TestInstance_HookFastPath_CodexWaitingExpiresPromptly(t *testing.T) {
 	inst := NewInstanceWithTool("hook-codex-waiting", "/tmp/test", "codex")
 	inst.hookStatus = "waiting"
-	inst.hookLastUpdate = time.Now().Add(-30 * time.Second)
+	inst.hookLastUpdate = time.Now().Add(-6 * time.Second)
 
 	_, fresh := inst.GetHookStatus()
-	if !fresh {
-		t.Error("codex waiting hook should be fresh for waiting window")
+	if fresh {
+		t.Error("codex waiting hook should expire promptly so tmux can detect a new turn")
 	}
 }
 

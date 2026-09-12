@@ -46,9 +46,10 @@ func refreshSnapshotHookStatuses(snapshot *MenuSnapshot, loader func() map[strin
 
 // applyHookStatusToMenuSession bridges the web's MenuSession DTO into the
 // shared sessionstatus.Derive helper. The web read-path runs in
-// AllowStaleWaiting=true mode (no per-request tmux subprocess budget); the
-// MenuSession DTO does not carry the per-instance Acknowledged bit yet, so
-// Acknowledged=false is the conservative v1.9.0 default.
+// Stale waiting remains durable for tools with start+stop hooks. Legacy Codex
+// notify has no start edge, so its stale completion must yield to the live
+// snapshot instead (#2189). The DTO does not carry the per-instance
+// Acknowledged bit yet, so Acknowledged=false is the conservative default.
 func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now time.Time) {
 	if sess == nil {
 		return
@@ -58,7 +59,7 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 		PriorStatus:       sess.Status,
 		Hook:              hs,
 		Now:               now,
-		AllowStaleWaiting: true,
+		AllowStaleWaiting: !session.IsCodexCompatible(sess.Tool),
 	})
 	sess.Status = out.Status
 }
