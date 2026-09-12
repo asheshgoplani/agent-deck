@@ -8,40 +8,50 @@ import (
 	"testing"
 )
 
-// Reproduction of the credential leak: a failed restart with --env used to
-// persist the literal `export API_KEY='secret'` into a 0644 sidecar exposed
-// by session show. The record writer must redact values and write 0600.
-func TestSpawnFailureRecord_RedactsEnvValuesAndTightensPerms(t *testing.T) {
-	// A child the writer has to create itself, so the 0700 directory mode is
-	// exercised rather than inherited from t.TempDir().
+// A spawn failure is later exposed by session show --json, so new sidecars must
+// never retain credential values even when the sidecar is already 0600.
+func TestSpawnFailureRecord_RedactsCredentialsAtPersistenceBoundary(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runtime", "spawn-failure")
+	markers := []string{"otel-bearer-marker", "api-key-marker", "basic-marker", "token-marker"}
 	rec := SpawnFailureRecord{
-		InstanceID:  "leaktest",
-		Tool:        "generic",
-		Command:     `export API_KEY='sk-live-SECRET' && export NOTE='it'\''s quoted' && mytool run`,
+		InstanceID: "leaktest",
+		Tool:       "generic",
+		Command: "cd /safe/recovery && " +
+			"export OTEL_EXPORTER_OTLP_TRACES_HEADERS='Authorization=Bearer otel-bearer-marker' && " +
+			"mytool --api-key=\"api-key-marker\" --session-id session-keep",
 		Reason:      "prepare_failed",
-		DyingOutput: `prepare failed running: export API_KEY='sk-live-SECRET' && mytool`,
+		DyingOutput: "upstream rejected Authorization: Basic basic-marker\nexport ACCESS_TOKEN='token-marker'",
 	}
 	if err := writeSpawnFailureRecordTo(rec, dir); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+
 	path := filepath.Join(dir, "leaktest.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if strings.Contains(string(data), "sk-live-SECRET") || strings.Contains(string(data), "quoted") {
-		t.Fatalf("credential value leaked into sidecar: %s", data)
+	for _, marker := range markers {
+		if strings.Contains(string(data), marker) {
+			t.Fatalf("credential marker leaked into sidecar: %s", marker)
+		}
 	}
 	var got SpawnFailureRecord
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(got.Command, "export API_KEY='[redacted]'") {
-		t.Fatalf("key name must stay visible with redacted value, got: %s", got.Command)
+	if !strings.Contains(got.Command, "OTEL_EXPORTER_OTLP_TRACES_HEADERS='[redacted]'") ||
+		!strings.Contains(got.Command, `--api-key="[redacted]"`) {
+		t.Fatalf("credential-bearing command values were not redacted: %s", got.Command)
 	}
-	if !strings.Contains(got.Command, "mytool run") {
-		t.Fatalf("non-secret command tail must survive, got: %s", got.Command)
+	if !strings.Contains(got.Command, "cd /safe/recovery") ||
+		!strings.Contains(got.Command, "mytool") ||
+		!strings.Contains(got.Command, "--session-id session-keep") {
+		t.Fatalf("non-secret command identity did not survive: %s", got.Command)
+	}
+	if !strings.Contains(got.DyingOutput, "Authorization: Basic [redacted]") ||
+		!strings.Contains(got.DyingOutput, "ACCESS_TOKEN='[redacted]'") {
+		t.Fatalf("credential-bearing output was not redacted: %s", got.DyingOutput)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -59,75 +69,86 @@ func TestSpawnFailureRecord_RedactsEnvValuesAndTightensPerms(t *testing.T) {
 	}
 }
 
-// Upgrade path (#1934 review): the directory and the sidecars in it already
-// exist from a version that wrote them 0755/0644 with unredacted credentials.
-// os.MkdirAll leaves an existing directory's mode alone, so without an explicit
-// sweep the fix above would only protect fresh installs while the credentials
-// that actually leaked stayed world-readable on disk.
-func TestSpawnFailureRecord_TightensExistingDirAndSweepsOldSidecars(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "spawn-failure")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+func TestRedactSpawnFailureDiagnostic_CoversBoundedCredentialForms(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		secret    string
+		contains  string
+		unchanged bool
+	}{
+		{
+			name:      "normal command preserved",
+			input:     "cd /recovery/session-42 && codex resume session-keep",
+			contains:  "codex resume session-keep",
+			unchanged: true,
+		},
+		{
+			name:     "shell escaped API key",
+			input:    `export API_KEY='api-key-marker'\''suffix' && mytool run`,
+			secret:   "api-key-marker",
+			contains: "export API_KEY='[redacted]' && mytool run",
+		},
+		{
+			name:     "multiline token",
+			input:    "TOKEN='token-marker\nsecond-line'\nmytool run",
+			secret:   "token-marker",
+			contains: "TOKEN='[redacted]'",
+		},
+		{
+			name:     "basic authorization header",
+			input:    `-H 'Authorization: Basic basic-marker' mytool`,
+			secret:   "basic-marker",
+			contains: "Authorization: Basic [redacted]",
+		},
+		{
+			name:     "bearer authorization header",
+			input:    `Authorization="Bearer bearer-marker" mytool`,
+			secret:   "bearer-marker",
+			contains: `Authorization="Bearer [redacted]"`,
+		},
+		{
+			name:     "malformed quote remains safe",
+			input:    "export ACCESS_TOKEN='token-marker unterminated",
+			secret:   "token-marker",
+			contains: "ACCESS_TOKEN='[redacted]'",
+		},
 	}
-	if err := os.Chmod(dir, 0o755); err != nil { // defeat any umask narrowing
-		t.Fatalf("chmod dir: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSpawnFailureDiagnostic(tc.input)
+			if tc.unchanged && got != tc.input {
+				t.Fatalf("normal command changed: got %q want %q", got, tc.input)
+			}
+			if tc.secret != "" && strings.Contains(got, tc.secret) {
+				t.Fatalf("credential marker leaked: %q", got)
+			}
+			if !strings.Contains(got, tc.contains) {
+				t.Fatalf("redacted diagnostic = %q, missing %q", got, tc.contains)
+			}
+		})
 	}
-	old := filepath.Join(dir, "old-session.json")
-	oldBody := `{
-  "instance_id": "old-session",
-  "tool": "generic",
-  "command": "export API_KEY='sk-live-OLDSECRET' && mytool run",
-  "reason": "prepare_failed",
-  "dying_output": "prepare failed running: export API_KEY='sk-live-OLDSECRET'",
-  "elapsed_ms": 0,
-  "ts": 1765400000
 }
-`
-	if err := os.WriteFile(old, []byte(oldBody), 0o644); err != nil {
-		t.Fatalf("write old sidecar: %v", err)
-	}
-	if err := os.Chmod(old, 0o644); err != nil {
-		t.Fatalf("chmod old sidecar: %v", err)
-	}
 
-	if err := writeSpawnFailureRecordTo(SpawnFailureRecord{
-		InstanceID: "new-session",
-		Tool:       "generic",
-		Reason:     "prepare_failed",
-	}, dir); err != nil {
-		t.Fatalf("write: %v", err)
+// Older sidecars are evidence and must not be rewritten or deleted. Their
+// presentation is still redacted before an operator can copy it into an issue.
+func TestSpawnFailureRecord_LegacyEvidenceIsUnchangedAndDisplayIsRedacted(t *testing.T) {
+	legacy := &SpawnFailureRecord{
+		InstanceID:  "legacy-session",
+		Command:     "mytool -H 'Authorization: Bearer legacy-bearer-marker'",
+		Reason:      "prepare_failed",
+		DyingOutput: "export API_KEY='legacy-key-marker' failed",
 	}
-
-	dirInfo, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("stat dir: %v", err)
+	before := *legacy
+	display := legacy.FormatForDisplay()
+	if strings.Contains(display, "legacy-bearer-marker") || strings.Contains(display, "legacy-key-marker") {
+		t.Fatalf("legacy credential leaked through display: %s", display)
 	}
-	if dirInfo.Mode().Perm() != 0o700 {
-		t.Fatalf("existing dir perms = %o, want 700", dirInfo.Mode().Perm())
+	if !strings.Contains(display, "Authorization: Bearer [redacted]") ||
+		!strings.Contains(display, "API_KEY='[redacted]'") {
+		t.Fatalf("legacy display was not redacted: %s", display)
 	}
-	oldInfo, err := os.Stat(old)
-	if err != nil {
-		t.Fatalf("stat old sidecar: %v", err)
-	}
-	if oldInfo.Mode().Perm() != 0o600 {
-		t.Fatalf("old sidecar perms = %o, want 600", oldInfo.Mode().Perm())
-	}
-	data, err := os.ReadFile(old)
-	if err != nil {
-		t.Fatalf("read old sidecar: %v", err)
-	}
-	// Tight perms alone would only hide the credential; it must be gone.
-	if strings.Contains(string(data), "sk-live-OLDSECRET") {
-		t.Fatalf("pre-existing credential still on disk: %s", data)
-	}
-	var got SpawnFailureRecord
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("rewritten sidecar is not valid JSON: %v (%s)", err, data)
-	}
-	if !strings.Contains(got.Command, "export API_KEY='[redacted]'") || !strings.Contains(got.Command, "mytool run") {
-		t.Fatalf("rewrite must redact the value and keep the rest, got: %s", got.Command)
-	}
-	if got.InstanceID != "old-session" || got.Reason != "prepare_failed" || got.Timestamp != 1765400000 {
-		t.Fatalf("rewrite lost non-secret fields: %+v", got)
+	if *legacy != before {
+		t.Fatalf("display mutated legacy evidence: got %+v want %+v", legacy, before)
 	}
 }

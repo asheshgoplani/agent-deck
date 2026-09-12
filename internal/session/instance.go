@@ -2378,6 +2378,23 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 //     would not be the subcommand's prompt.
 //
 // In each of those cases the caller keeps the existing behaviour unchanged.
+// redactEmbeddedSpawnPrompt removes a prompt that StartWithMessage deliberately
+// placed in a launch command. The process still receives the original command;
+// only the failure diagnostic uses this copy, so prompt delivery semantics stay
+// unchanged. Both current positional-prompt builders append shellescape.Quote.
+func redactEmbeddedSpawnPrompt(command, prompt string) string {
+	for _, candidate := range []string{prompt, strings.TrimSpace(prompt)} {
+		if candidate == "" {
+			continue
+		}
+		quoted := shellescape.Quote(candidate)
+		if strings.HasSuffix(command, " "+quoted) {
+			return strings.TrimSuffix(command, " "+quoted) + " '[prompt redacted]'"
+		}
+	}
+	return command
+}
+
 func (i *Instance) buildCodexCommandWithPrompt(baseCommand, prompt string) (string, bool) {
 	command := i.buildCodexCommand(baseCommand)
 	if strings.TrimSpace(prompt) == "" {
@@ -5269,13 +5286,17 @@ func (i *Instance) StartWithMessage(message string) error {
 		}
 	}
 
+	diagnosticCommand := command
+	if promptEmbeddedInCommand {
+		diagnosticCommand = redactEmbeddedSpawnPrompt(command, message)
+	}
 	var containerName string
 	var err error
 	command, containerName, err = i.prepareCommand(command)
 	if err != nil {
 		// #1924: leave a reason behind. Without this the session sits on
 		// StatusError with no tmux session and nothing to diagnose from.
-		i.recordPrepareFailure(command, err)
+		i.recordPrepareFailure(diagnosticCommand, err)
 		return err
 	}
 	if containerName != "" {
@@ -5300,13 +5321,13 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
 		// #1580: persist the tmux-level failure (sister path to Start()).
-		i.recordTmuxStartFailure(command, err)
+		i.recordTmuxStartFailure(diagnosticCommand, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
 
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" && !i.expectsFastExit() {
-		i.startFastDeathWatcher(command, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		i.startFastDeathWatcher(diagnosticCommand, i.tmuxSession, i.ID, i.Tool, sessionLog)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
