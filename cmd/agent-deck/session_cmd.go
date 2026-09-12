@@ -4651,12 +4651,22 @@ func handleSessionCurrent(profileArg string, args []string) {
 	status := StatusString(instData.Status)
 
 	// Prepare JSON output
+	// The JSON form is the machine-readable identity a session fetches from
+	// inside (the injected identity block points here), so it carries the
+	// full record: tool, account, parent and the identity file, not just the
+	// human summary fields.
+	// account and parent_session_id are always present (empty when unset)
+	// so a caller can key on them without probing for absence.
 	jsonData := map[string]interface{}{
-		"session": instData.Title,
-		"profile": detectedProfile,
-		"id":      instData.ID,
-		"path":    instData.ProjectPath,
-		"status":  status,
+		"session":           instData.Title,
+		"title":             instData.Title,
+		"profile":           detectedProfile,
+		"id":                instData.ID,
+		"path":              instData.ProjectPath,
+		"status":            status,
+		"tool":              instData.Tool,
+		"account":           instData.Account,
+		"parent_session_id": instData.ParentSessionID,
 	}
 
 	if instData.TmuxSession != "" {
@@ -4665,6 +4675,15 @@ func handleSessionCurrent(profileArg string, args []string) {
 
 	if instData.GroupPath != "" {
 		jsonData["group"] = instData.GroupPath
+	}
+	if instData.IsConductor {
+		jsonData["is_conductor"] = true
+	}
+	if instData.WorktreeBranch != "" {
+		jsonData["worktree_branch"] = instData.WorktreeBranch
+	}
+	if identityFile := os.Getenv(session.IdentityFileEnv); identityFile != "" {
+		jsonData["identity_file"] = identityFile
 	}
 
 	// Build human-readable output
@@ -4676,6 +4695,15 @@ func handleSessionCurrent(profileArg string, args []string) {
 	sb.WriteString(fmt.Sprintf("Path:    %s\n", FormatPath(instData.ProjectPath)))
 	if instData.GroupPath != "" {
 		sb.WriteString(fmt.Sprintf("Group:   %s\n", instData.GroupPath))
+	}
+	if instData.Tool != "" {
+		sb.WriteString(fmt.Sprintf("Tool:    %s\n", instData.Tool))
+	}
+	if instData.Account != "" {
+		sb.WriteString(fmt.Sprintf("Account: %s\n", instData.Account))
+	}
+	if instData.ParentSessionID != "" {
+		sb.WriteString(fmt.Sprintf("Parent:  %s\n", instData.ParentSessionID))
 	}
 
 	out.Print(sb.String(), jsonData)

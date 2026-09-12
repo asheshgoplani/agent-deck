@@ -51,7 +51,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 			}
 			out = append(out, item)
 		}
-		return append(out, "HOME="+home, "TERM=xterm-256color", "AGENTDECK_TELEMETRY=0")
+		return append(out, "HOME="+home, "TERM=xterm-256color", "AGENTDECK_TELEMETRY=0", "AGENTDECK_SKIP_UPDATE_CHECK=1")
 	}
 	command := func(home, executable string, args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -72,7 +72,16 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 	}
 	inner := fmt.Sprintf("nt-in-%d", time.Now().UnixNano())
 	outer := fmt.Sprintf("nt-out-%d", time.Now().UnixNano())
-	write(filepath.Join(remote, ".config", "agent-deck", "config.toml"), "[telemetry]\ndisabled = true\n[claude]\nhooks_enabled = false\n[tmux]\nsocket_name = '"+inner+"'\n[profiles.alice.claude]\nconfig_dir = '"+filepath.Join(remote, "claude-alice")+"'\n")
+	// Update checking is disabled for determinism. AGENTDECK_SKIP_UPDATE_CHECK
+	// (set in the launch env above) is the load-bearing switch: without it the
+	// TUI auto-installs a newer release and restarts itself in place mid-test
+	// (tui_auto_install_finished -> tui_restart_requested), and the CLI startup
+	// path prints an "Update available" banner into the pane — either one
+	// displaces the SESSIONS/PREVIEW divider this test asserts (both observed
+	// after v1.16.7 shipped). [updates] check_enabled=false is kept as a
+	// belt-and-suspenders gate for the CLI banner. Orthogonal to what this
+	// test exercises.
+	write(filepath.Join(remote, ".config", "agent-deck", "config.toml"), "[telemetry]\ndisabled = true\n[updates]\ncheck_enabled = false\n[claude]\nhooks_enabled = false\n[tmux]\nsocket_name = '"+inner+"'\n[profiles.alice.claude]\nconfig_dir = '"+filepath.Join(remote, "claude-alice")+"'\n")
 	proxy := startNativeSSH(t, remote, shim)
 	cli := func(args ...string) string {
 		t.Helper()
@@ -167,7 +176,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		pidFile = filepath.Join(remote, fmt.Sprintf("full-tui-%d.pid", launchNumber))
 		// Each launch has a new exclusive private PID file. exec preserves the
 		// shell PID through env into the exact built full-TUI executable.
-		remoteCommand := "umask 077; set -C; printf '%s' \"$$\" > " + quote(pidFile) + " || exit 1; exec env TERM=xterm-256color AGENTDECK_ACCOUNT=alice " + quote(bin) + " -p default"
+		remoteCommand := "umask 077; set -C; printf '%s' \"$$\" > " + quote(pidFile) + " || exit 1; exec env TERM=xterm-256color AGENTDECK_ACCOUNT=alice AGENTDECK_SKIP_UPDATE_CHECK=1 " + quote(bin) + " -p default"
 		sshCommand := quote(filepath.Join(shim, "ssh")) + " -tt test-host " + quote(remoteCommand)
 		tmux("respawn-pane", "-k", "-t", "full-tui:0.0", sshCommand)
 	}

@@ -67,7 +67,7 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	// The boolean options of launch/start/send do not consume a following token.
 	// Unknown options are conservatively treated as value-taking: they must never
 	// cause a flag-shaped value to be opened as a controller file.
-	boolOptions := " json quiet q no-wait wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts "
+	boolOptions := " json quiet q no-wait wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts "
 	forwarded := append([]string(nil), args[:offset]...)
 	messagePath := ""
 	found := false

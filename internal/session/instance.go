@@ -455,6 +455,14 @@ type Instance struct {
 	// existing behavior is preserved when the flag is absent.
 	InheritTelegramEnv bool `json:"inherit_telegram_env,omitempty"`
 
+	// IdentityInjectionDisabled is the per-session opt-out of the harness
+	// identity injection (see identity_injection.go): when true, the spawn
+	// neither writes the identity file nor passes the harness-specific
+	// instruction flag, regardless of [launch].inject_identity. Persisted in
+	// the tool_data extras zone so a restart honours the choice. CLI flag:
+	// `--no-identity` on `agent-deck add` / `agent-deck launch`.
+	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT
@@ -1860,6 +1868,14 @@ func (i *Instance) buildClaudeExtraFlagsWithName(opts *ClaudeOptions, launchName
 		flags = append(flags, "--name "+shellescape.Quote(launchName))
 	}
 
+	// Identity injection (identity_injection.go): tell the model which
+	// agent-deck session it is and how to use the CLI. Emitted here because
+	// every fresh/resume/fork claude spawn assembles its flags in this one
+	// place; --append-system-prompt-file leaves claude's own prompt intact.
+	if identityFlag := i.claudeIdentityFlag(); identityFlag != "" {
+		flags = append(flags, identityFlag)
+	}
+
 	// User-supplied extra args: each token is shellescape-quoted before
 	// re-emission so values with spaces survive the `bash -c` wrapper
 	// without being re-tokenized. Appended last so user flags can override
@@ -1931,16 +1947,27 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 	// If baseCommand is just "gemini", handle specially
 	if baseCommand == "gemini" {
 		cmd := GetToolCommand("gemini")
+		// Identity injection: the per-session identity dir holds GEMINI.md,
+		// which --include-directories loads as project memory
+		// (identity_injection.go). Same on fresh and resume spawns. When the
+		// identity root is not a gemini-trusted folder the flag is withheld
+		// (it would raise a dialog that eats the initial message) and the
+		// pane shows the rule to add instead.
+		identityFlag, identityHint := i.geminiIdentityFlag()
+		if identityHint != "" {
+			envPrefix += paneWarning(identityHint) + " && "
+		}
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
 			// GEMINI_YOLO_MODE and GEMINI_SESSION_ID are propagated via host-side
 			// SetEnvironment after tmux start. No inline tmux set-environment.
 			return envPrefix + fmt.Sprintf(
-				"%s --resume %s%s%s",
+				"%s --resume %s%s%s%s",
 				cmd,
 				i.GeminiSessionID,
 				yoloFlag,
 				modelFlag,
+				identityFlag,
 			)
 		}
 
@@ -1949,10 +1976,11 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		// because Gemini processes the "." prompt which takes too long
 		// GEMINI_YOLO_MODE is propagated via host-side SetEnvironment after tmux start.
 		return envPrefix + fmt.Sprintf(
-			`%s%s%s`,
+			`%s%s%s%s`,
 			cmd,
 			yoloFlag,
 			modelFlag,
+			identityFlag,
 		)
 	}
 
@@ -2296,8 +2324,12 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	// injected BEFORE the custom-command passthrough early-return below.
 	// Dropping it on custom-command sessions was the design regression flagged
 	// on #951 review — keep AGENTDECK_* on every codex-flavoured launch.
-	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
-		i.ID, i.Title, i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+	// AGENTDECK_TITLE is shell-quoted, not Go-%q-quoted: %q wraps the title
+	// in double quotes, inside which the shell still runs backticks and
+	// $(...) (a title of `x` printed "bash: x: command not found" at every
+	// spawn and lost the backticks). Same quoting as the passthrough branch.
+	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
+		i.ID, shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
 	envPrefix += agentdeckEnvPrefix
 
 	// Passthrough: if the tool is literally "codex" and user gave a custom command
@@ -2325,6 +2357,12 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	// the gates below decide whether a rollout exists, and looking in the wrong
 	// home destroys a live binding (#1929).
 	codexHome := i.codexHomeForCommand(command)
+	// Identity injection: `-c developer_instructions=...` appends the session
+	// block to codex's developer message (identity_injection.go), merged with
+	// any developer_instructions the operator configured in this launch's
+	// CODEX_HOME so the override never replaces their guidance. Carried on
+	// fresh, resume and fork spawns alike since a -c override never persists.
+	identityFlag := i.codexIdentityFlag(codexHome, i.EffectiveWorkingDir())
 
 	// Issue #756: Gate `codex resume <sid>` on rollout-file existence.
 	// If Codex died before flushing its rollout JSONL (tmux crash, kill -9
@@ -2360,16 +2398,16 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 			slog.String("instance_id", i.ID),
 			slog.String("title", i.Title),
 			slog.String("sid", i.CodexSessionID))
-		return envPrefix + fmt.Sprintf("%s%s%s%s fork %s",
-			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s",
+			command, yoloFlag, modelFlag, reasoningFlag, identityFlag, i.CodexSessionID)
 	}
 
 	if i.CodexSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s%s%s%s resume %s",
-			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s%s resume %s",
+			command, yoloFlag, modelFlag, reasoningFlag, identityFlag, i.CodexSessionID)
 	}
 
-	return envPrefix + command + yoloFlag + modelFlag + reasoningFlag
+	return envPrefix + command + yoloFlag + modelFlag + reasoningFlag + identityFlag
 }
 
 // buildCodexCommandWithPrompt builds the Codex launch command with an initial
@@ -2460,11 +2498,12 @@ func (i *Instance) buildPiCommand(baseCommand string) string {
 	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
 
 	return envPrefix + fmt.Sprintf(
-		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --continue --session-dir \"$session_dir\"",
+		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --continue --session-dir \"$session_dir\"%s",
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
 		cmd,
+		i.piIdentityFlag(),
 	)
 }
 
@@ -2488,12 +2527,13 @@ func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand str
 	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
 
 	return envPrefix + fmt.Sprintf(
-		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"",
+		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
 		parentSessionDir,
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
 		cmd,
+		target.piIdentityFlag(),
 	), nil
 }
 

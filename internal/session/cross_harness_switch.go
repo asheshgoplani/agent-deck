@@ -648,6 +648,14 @@ func crossHarnessPlanCommand(target *Instance, plan *FreshTargetLaunchPlan, _ st
 	for _, arg := range plan.NativeArgs {
 		args = append(args, shellescape.Quote(arg))
 	}
+	// Identity injection (identity_injection.go): the switched-to session is a
+	// NEW instance in a NEW harness, so it gets its own identity block, built
+	// from the target record, through the target harness's native flag. Added
+	// at command-build time only; the journaled plan stays immutable and never
+	// carries the block. Each argv element is quoted like the plan's own.
+	for _, arg := range target.identityNativeArgs(plan.Target.Tool, plan.Environment["CODEX_HOME"]) {
+		args = append(args, shellescape.Quote(arg))
+	}
 	readPayload := shellescape.Quote(`payload=$(cat "$1") || exit 1; shift; command=$1; shift; exec "$command" "$@" "$payload"`)
 	command := prefix + "sh -c " + readPayload + " agent-deck-handoff " + strings.Join(args, " ")
 	return command, true, nil
