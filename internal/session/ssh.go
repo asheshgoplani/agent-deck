@@ -1107,10 +1107,11 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 	// putting a regular file over the link would leave that file behind
 	// forever (#2244). Writability, staging and the lock all concern the
 	// resolved file's directory.
-	if resolved := r.resolveRemoteFile(ctx, remotePath); resolved != "" {
-		remotePath = resolved
+	resolved, err := r.resolveRemoteFile(ctx, remotePath)
+	if err != nil {
+		return err
 	}
-	return r.deployResolvedBinary(ctx, binaryData, remotePath)
+	return r.deployResolvedBinary(ctx, binaryData, resolved)
 }
 
 // deployResolvedBinary runs the deploy script against a path that has
@@ -1167,33 +1168,57 @@ func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte,
 // and BSD ones may not have it.
 const remoteResolveFn = `resolve() { f="$1"; n=0; while [ -L "$f" ] && [ "$n" -lt 40 ]; do l=$(readlink "$f"); case "$l" in /*) f="$l";; *) f="$(dirname "$f")/$l";; esac; n=$((n+1)); done; d=$(cd "$(dirname "$f")" 2>/dev/null && pwd -P) || d=$(dirname "$f"); printf '%s/%s' "$d" "$(basename "$f")"; }; `
 
-// resolveRemoteFile returns path with every symlink followed, or "" when the
-// remote could not answer (the caller then uses path as given).
-func (r *SSHRunner) resolveRemoteFile(ctx context.Context, path string) string {
-	return r.remoteResolvedPath(ctx, "resolve "+shellQuote(path))
+// ErrRemoteProbeFailed is returned when the remote could not say what it
+// runs (the `command -v`, resolve or version probe failed or answered
+// ambiguously). The deploy then touches nothing: an unknown binary is not
+// an old one (#2245 review).
+var ErrRemoteProbeFailed = errors.New("could not determine what the remote runs; nothing deployed")
+
+// resolveRemoteFile returns path with every symlink followed.
+func (r *SSHRunner) resolveRemoteFile(ctx context.Context, path string) (string, error) {
+	resolved, err := r.remoteResolvedPath(ctx, "resolve "+shellQuote(path))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolving %s: %v", ErrRemoteProbeFailed, path, err)
+	}
+	return resolved, nil
 }
 
 // remotePathBinary returns the resolved file behind `command -v agent-deck`
-// on the remote, or "" when nothing on $PATH answers to that name.
-func (r *SSHRunner) remotePathBinary(ctx context.Context) string {
-	return r.remoteResolvedPath(ctx, `pb=$(command -v agent-deck 2>/dev/null); [ -n "$pb" ] && resolve "$pb"`)
+// on the remote; found is false when nothing on $PATH answers to that
+// name, and err is set when the probe itself failed or answered with
+// something that is not a path.
+func (r *SSHRunner) remotePathBinary(ctx context.Context) (path string, found bool, err error) {
+	resolved, err := r.remoteResolvedPath(ctx, `pb=$(command -v agent-deck 2>/dev/null); if [ -z "$pb" ]; then printf NONE; else resolve "$pb"; fi`)
+	if err != nil {
+		if errors.Is(err, errRemoteNothingOnPath) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("%w: locating agent-deck on the remote's $PATH: %v", ErrRemoteProbeFailed, err)
+	}
+	return resolved, true, nil
 }
 
+// errRemoteNothingOnPath is remoteResolvedPath's answer to the NONE marker.
+var errRemoteNothingOnPath = errors.New("nothing on PATH")
+
 // remoteResolvedPath runs cmd on the remote with remoteResolveFn defined and
-// returns the absolute path it prints, or "" on any failure or non-absolute
-// answer.
-func (r *SSHRunner) remoteResolvedPath(ctx context.Context, cmd string) string {
+// returns the absolute path it prints. A failed command, or an answer that
+// is not an absolute path (an alias, a function body), is an error.
+func (r *SSHRunner) remoteResolvedPath(ctx context.Context, cmd string) (string, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	out, err := r.remoteExec(timeoutCtx, remoteResolveFn+cmd, nil)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	resolved := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(resolved, "/") {
-		return ""
+	if resolved == "NONE" {
+		return "", errRemoteNothingOnPath
 	}
-	return resolved
+	if !strings.HasPrefix(resolved, "/") || strings.ContainsAny(resolved, "\n") {
+		return "", fmt.Errorf("ambiguous answer %q", resolved)
+	}
+	return resolved, nil
 }
 
 // remotePathRunsFile reports whether `command -v agent-deck` on the remote
@@ -1230,9 +1255,10 @@ const remoteDeployBusyMarker = "agent-deck: another deploy holds "
 // The script never puts a regular file over a symlink (exit 6), checked
 // before streaming and again right before the rename: the caller resolves
 // links first, and the guard keeps a race or a stale resolution from
-// orphaning the link target (#2244). The previous file's mode and, when
-// running as root over a user-owned file, its owner are kept (a chown that
-// fails aborts the deploy with the original in place), and the mode is
+// orphaning the link target (#2244). The previous file's mode and owner are
+// kept: as root a chown restores uid and gid, as the owning user a chgrp
+// restores the group (either failing aborts the deploy with the original
+// in place, exit 5), and the mode is
 // then made readable and executable for everyone so a root umask of 077
 // under sudo still leaves the binary runnable by the remote user.
 const remoteDeployScript = `d="$1"; p="$2"; lock="$p.lock"; t="$p.new.$$"
@@ -1247,7 +1273,14 @@ if [ -e "$p" ]; then
   own=$(stat -c %u:%g "$p" 2>/dev/null || stat -f %u:%g "$p" 2>/dev/null)
 fi
 if cat > "$t" && chmod "$mode" "$t" && chmod a+rx "$t"; then
-  if [ "$(id -u)" = 0 ] && [ -n "$own" ] && ! chown "$own" "$t"; then printf 'agent-deck: could not keep owner %s on %s\n' "$own" "$p" >&2; exit 5; fi
+  if [ -n "$own" ]; then
+    if [ "$(id -u)" = 0 ]; then
+      if ! chown "$own" "$t"; then printf 'agent-deck: could not keep owner %s on %s\n' "$own" "$p" >&2; exit 5; fi
+    else
+      g="${own#*:}"; tg=$(stat -c %g "$t" 2>/dev/null || stat -f %g "$t" 2>/dev/null)
+      if [ -n "$g" ] && [ "$g" != "$tg" ] && ! chgrp "$g" "$t"; then printf 'agent-deck: could not keep group %s on %s\n' "$g" "$p" >&2; exit 5; fi
+    fi
+  fi
   if [ -L "$p" ]; then printf '` + remoteDeploySymlinkMarker + `%s\n' "$p" >&2; exit ` + remoteDeploySymlinkExitStr + `; fi
   if mv -f "$t" "$p"; then exit 0; fi
 fi
@@ -1296,22 +1329,33 @@ func parseInstallPathNotWritable(output string) *update.InstallPathNotWritableEr
 func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expectedVersion string) error {
 	r.installReport = ""
 	want := strings.TrimPrefix(expectedVersion, "v")
-	configured := r.ResolveRemotePath(ctx)
-	if resolved := r.resolveRemoteFile(ctx, configured); resolved != "" {
-		configured = resolved
+	// Every probe must answer before anything is written: a path that
+	// cannot be resolved or a $PATH binary whose version cannot be read is
+	// unknown, not old, and is left exactly as it is.
+	configured, err := r.resolveRemoteFile(ctx, r.ResolveRemotePath(ctx))
+	if err != nil {
+		return err
 	}
-	onPath := r.remotePathBinary(ctx)
+	onPath, onPathFound, err := r.remotePathBinary(ctx)
+	if err != nil {
+		return err
+	}
 
 	// The $PATH binary is a second target only when it is a different file
-	// and older than what is being deployed: the remote's own binary may be
-	// ahead of the controller (the no-downgrade rule the sweep applies to
-	// the configured path holds for it too).
+	// with a successfully read version strictly older than what is being
+	// deployed: the remote's own binary may be ahead of the controller (the
+	// no-downgrade rule the sweep applies to the configured path holds for
+	// it too).
 	var targets []string
 	pathLeft := ""
-	if onPath != "" && onPath != configured {
-		if pathVer, found := r.versionAt(ctx, onPath); found && isVersionString(pathVer) && update.CompareVersions(pathVer, want) >= 0 {
+	if onPathFound && onPath != configured {
+		pathVer, found := r.versionAt(ctx, onPath)
+		switch {
+		case !found || !isVersionString(pathVer):
+			return fmt.Errorf("%w: could not read the version of the remote's $PATH binary %s (got %q)", ErrRemoteProbeFailed, onPath, pathVer)
+		case update.CompareVersions(pathVer, want) >= 0:
 			pathLeft = fmt.Sprintf("left the remote's $PATH binary %s at v%s (not older than v%s)", onPath, pathVer, want)
-		} else {
+		default:
 			targets = append(targets, onPath)
 		}
 	}

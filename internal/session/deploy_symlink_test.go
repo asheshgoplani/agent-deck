@@ -384,3 +384,198 @@ func TestDeployScript_RechecksSymlinkBeforeRename(t *testing.T) {
 		t.Fatalf("link target touched: %q", got)
 	}
 }
+
+// Re-review of #2245: a $PATH binary whose version cannot be read is not
+// "older", it is unknown. Nothing is overwritten (not even the configured
+// path), the probe failure is the error, and the sweep reports it as a
+// skip rather than a failure.
+func TestInstallBinary_ProbeFailureOverwritesNothing(t *testing.T) {
+	for _, tc := range []struct{ name, pathBinary string }{
+		{"version command fails", "#!/bin/sh\nexit 1\n"},
+		{"version output unparseable", "#!/bin/sh\necho 'development build'\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newRemoteLayout(t)
+			configured := filepath.Join(l.home, "opt", "agent-deck")
+			fakeAgentDeck(t, configured, "1.16.5", 0o755)
+			onPath := filepath.Join(l.pathDir, "agent-deck")
+			if err := os.WriteFile(onPath, []byte(tc.pathBinary), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			r := l.runner(t, configured, noSudo)
+
+			err := r.InstallBinary(context.Background(), []byte(fakeAgentDeckPayload("1.16.6")), "1.16.6")
+			if !errors.Is(err, ErrRemoteProbeFailed) {
+				t.Fatalf("got %v, want ErrRemoteProbeFailed", err)
+			}
+			if !strings.Contains(err.Error(), onPath) {
+				t.Errorf("the error must name the binary whose probe failed: %v", err)
+			}
+			if got, _ := os.ReadFile(onPath); string(got) != tc.pathBinary {
+				t.Fatalf("$PATH binary overwritten: %q", got)
+			}
+			if got, _ := os.ReadFile(configured); string(got) != fakeAgentDeckPayload("1.16.5") {
+				t.Fatalf("configured path overwritten: %q", got)
+			}
+		})
+	}
+}
+
+// The `command -v` and resolve probes themselves failing (SSH hiccup, odd
+// shell) are the same: no deploy command is ever issued.
+func TestInstallBinary_PathProbeExecFailureIssuesNoDeploy(t *testing.T) {
+	for _, tc := range []struct{ name, failOn string }{
+		{"command -v probe", "command -v agent-deck 2>/dev/null); if"},
+		{"resolve probe", "resolve '/home/tester/.local/bin/agent-deck'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, calls := recordingRunner(func(cmd string) (string, error) {
+				switch {
+				case strings.Contains(cmd, tc.failOn):
+					return "", errors.New("ssh: connection reset")
+				case strings.Contains(cmd, "resolve '/home/tester/.local/bin/agent-deck'"):
+					return "/home/tester/.local/bin/agent-deck\n", nil
+				case strings.Contains(cmd, "command -v agent-deck"):
+					return "/home/tester/.local/bin/agent-deck\n", nil
+				}
+				return "", nil
+			})
+			err := r.InstallBinary(context.Background(), []byte("BINARY"), "1.16.6")
+			if !errors.Is(err, ErrRemoteProbeFailed) {
+				t.Fatalf("got %v, want ErrRemoteProbeFailed", err)
+			}
+			for _, c := range *calls {
+				if strings.Contains(c, "cat >") {
+					t.Fatalf("a deploy was issued after a failed probe: %s", c)
+				}
+			}
+		})
+	}
+}
+
+// An ambiguous `command -v` answer (not an absolute path) is a probe
+// failure too.
+func TestInstallBinary_AmbiguousPathAnswerIsAProbeFailure(t *testing.T) {
+	r, calls := recordingRunner(func(cmd string) (string, error) {
+		switch {
+		case strings.Contains(cmd, "resolve '/home/tester/.local/bin/agent-deck'"):
+			return "/home/tester/.local/bin/agent-deck\n", nil
+		case strings.Contains(cmd, "command -v agent-deck 2>/dev/null); if"):
+			return "alias agent-deck='agent-deck --profile x'\n", nil
+		case strings.Contains(cmd, "command -v agent-deck"):
+			return "/home/tester/.local/bin/agent-deck\n", nil
+		}
+		return "", nil
+	})
+	if err := r.InstallBinary(context.Background(), []byte("BINARY"), "1.16.6"); !errors.Is(err, ErrRemoteProbeFailed) {
+		t.Fatalf("got %v, want ErrRemoteProbeFailed", err)
+	}
+	for _, c := range *calls {
+		if strings.Contains(c, "cat >") {
+			t.Fatalf("a deploy was issued after an ambiguous probe: %s", c)
+		}
+	}
+}
+
+// Nothing on $PATH at all is not a probe failure: the configured path is
+// deployed and the not-on-PATH remedy follows as before.
+func TestInstallBinary_NothingOnPathStillDeploysConfigured(t *testing.T) {
+	l := newRemoteLayout(t)
+	configured := filepath.Join(l.home, ".local", "bin", "agent-deck")
+	fakeAgentDeck(t, configured, "1.16.5", 0o755)
+	r := l.runner(t, configured, noSudo)
+	err := r.InstallBinary(context.Background(), []byte(fakeAgentDeckPayload("1.16.6")), "1.16.6")
+	if errors.Is(err, ErrRemoteProbeFailed) || err == nil || !strings.Contains(err.Error(), "not on the remote's $PATH") {
+		t.Fatalf("got %v, want the not-on-PATH remedy", err)
+	}
+	if got, _ := os.ReadFile(configured); string(got) != fakeAgentDeckPayload("1.16.6") {
+		t.Fatalf("configured path not deployed: %q", got)
+	}
+}
+
+// Non-root deploys keep the group of the file they replace: the staged
+// file is chgrp'd to it (a group the deploying user is in, or the deploy
+// would not own the file), and a chgrp that fails aborts with the original
+// in place. stat is shadowed to report a foreign group deterministically.
+func TestDeployScript_NonRootKeepsGroup(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(t.TempDir(), "chgrp.log")
+	prelude := "stat() { case \"$*\" in *%u:%g*) printf '%s:99999\\n' \"$(id -u)\";; *) command stat \"$@\";; esac; }; " +
+		"chgrp() { printf '%s\\n' \"$*\" >> " + shellQuote(log) + "; }; "
+	cmd := exec.Command("sh", "-c", prelude+remoteDeployScript, "sh", dir, target)
+	cmd.Stdin = strings.NewReader("new")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script: %v: %s", err, out)
+	}
+	logged, _ := os.ReadFile(log)
+	if !strings.HasPrefix(string(logged), "99999 "+target+".new.") {
+		t.Fatalf("the staged file must be chgrp'd to the previous group before the rename; got %q", logged)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "new" {
+		t.Fatalf("installed %q", got)
+	}
+}
+
+func TestDeployScript_NonRootGroupFailureAborts(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prelude := "stat() { case \"$*\" in *%u:%g*) printf '%s:99999\\n' \"$(id -u)\";; *) command stat \"$@\";; esac; }; chgrp() { return 1; }; "
+	cmd := exec.Command("sh", "-c", prelude+remoteDeployScript, "sh", dir, target)
+	cmd.Stdin = strings.NewReader("new")
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 5 || !strings.Contains(string(out), "could not keep group") {
+		t.Fatalf("script must abort with exit 5 and say why when the group cannot be kept; got %v: %s", err, out)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "old" {
+		t.Fatalf("original replaced despite group failure: %q", got)
+	}
+	if entries, _ := filepath.Glob(filepath.Join(dir, "*.new.*")); len(entries) != 0 {
+		t.Errorf("staging left behind: %v", entries)
+	}
+}
+
+// With a real second group available, the group is actually preserved.
+func TestDeployScript_NonRootKeepsGroup_Real(t *testing.T) {
+	groups, err := os.Getgroups()
+	if err != nil || len(groups) < 2 {
+		t.Skip("needs a user with a second group")
+	}
+	other := -1
+	for _, g := range groups {
+		if g != os.Getgid() {
+			other = g
+			break
+		}
+	}
+	if other < 0 {
+		t.Skip("no second group")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(target, os.Getuid(), other); err != nil {
+		t.Skipf("cannot assign group %d: %v", other, err)
+	}
+	cmd := exec.Command("sh", "-c", remoteDeployScript, "sh", dir, target)
+	cmd.Stdin = strings.NewReader("new")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script: %v: %s", err, out)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Gid) != other {
+		t.Fatalf("group = %d after deploy, want %d kept", st.Gid, other)
+	}
+}

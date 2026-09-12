@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -98,5 +99,18 @@ func TestRemoteSweepMarker(t *testing.T) {
 	}
 	if _, err := BeginRemoteSweep([]string{"lab"}); err != nil {
 		t.Fatalf("a stale marker must not block a new sweep: %v", err)
+	}
+}
+
+// A probe failure is not a failed remote: the run skips it and says why.
+func TestUpdateRemotes_ProbeFailureIsSkipped(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	stubs := map[string]*stubInstaller{"odd": {version: "1.15.0", found: true, platformOK: true, installErr: fmt.Errorf("%w: could not read the version of /opt/agent-deck", ErrRemoteProbeFailed)}}
+	results := UpdateRemotes(context.Background(), map[string]RemoteConfig{"odd": {Host: "a@odd"}}, "1.16.0", stubReleaseOptions(stubs, false))
+	if len(results) != 1 || results[0].Outcome != RemoteUpdateOutcomeSkipped || !errors.Is(results[0].Err, ErrRemoteProbeFailed) {
+		t.Fatalf("results = %+v, want skipped (probe failed)", results)
+	}
+	if CountRemoteUpdateFailures(results) != 0 {
+		t.Fatal("a probe failure must not count as a failure")
 	}
 }

@@ -74,7 +74,10 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 // typed error the CLI, the TUI and the unattended sweep all print verbatim.
 func TestDeployBinary_NotWritableReportsRemedy(t *testing.T) {
 	const target = "/usr/local/bin/agent-deck"
-	r, _ := recordingRunner(func(string) (string, error) {
+	r, _ := recordingRunner(func(cmd string) (string, error) {
+		if !strings.Contains(cmd, "cat >") {
+			return "", nil // probes answer; only the deploy fails
+		}
 		return "", fmt.Errorf("remote command failed: exit status 3: agent-deck: install path %s is not writable by daniel\n", target)
 	})
 
@@ -95,7 +98,10 @@ func TestDeployBinary_NotWritableReportsRemedy(t *testing.T) {
 
 // Any other deploy failure keeps its original shape.
 func TestDeployBinary_OtherFailuresAreNotRelabelled(t *testing.T) {
-	r, _ := recordingRunner(func(string) (string, error) {
+	r, _ := recordingRunner(func(cmd string) (string, error) {
+		if !strings.Contains(cmd, "cat >") {
+			return "", nil
+		}
 		return "", errors.New("remote command failed: exit status 255: connection refused")
 	})
 	err := r.DeployBinary(context.Background(), []byte("bytes"), "/home/daniel/agent-deck")

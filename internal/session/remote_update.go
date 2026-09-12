@@ -669,9 +669,10 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 				result.Note = reporter.LastInstallReport()
 			}
 			switch {
-			case errors.Is(err, ErrRemoteReleaseNotNewer), errors.Is(err, ErrRemoteDeployBusy):
+			case errors.Is(err, ErrRemoteReleaseNotNewer), errors.Is(err, ErrRemoteDeployBusy), errors.Is(err, ErrRemoteProbeFailed):
 				// Nothing wrong with this remote: another deploy holds it,
-				// or there is nothing newer to give it (#2244).
+				// there is nothing newer to give it, or it could not say
+				// what it runs and was left alone (#2244).
 				result.Outcome = RemoteUpdateOutcomeSkipped
 				result.Err = err
 			case err != nil:
