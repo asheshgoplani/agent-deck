@@ -183,9 +183,16 @@ func promptForUpdate() bool {
 		fmt.Fprintf(os.Stderr, "Update failed: failed to fetch release info: %v\n", err)
 		return false
 	}
+	warnIfLaunchctlUnavailable()
 	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 		return false
+	}
+
+	// The binary is replaced either way; a failed re-registration must not be
+	// hidden behind the TUI, so exit here with the repair commands on screen.
+	if !finishInstallHygiene(info.LatestVersion) {
+		os.Exit(1)
 	}
 
 	fmt.Println("Restart agent-deck to use the new version.")
@@ -963,6 +970,9 @@ func main() {
 				defer cancel()
 				_ = server.Shutdown(ctx)
 			}()
+			watchCtx, stopWatch := context.WithCancel(context.Background())
+			defer stopWatch()
+			startHeadlessSelfRestart(watchCtx, server.Idle)
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
 					slog.String("error", err.Error()))
@@ -1056,6 +1066,61 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// In-place restart (restart_deck hotkey or auto_restart): the TUI has
+	// flushed its state and restored the terminal, so replace this process
+	// with the executable on disk using the same args and environment plus
+	// the hand-off (selected session, old version). The target was probed
+	// with `<exe> version` before the restart was armed and is stat-checked
+	// again inside ExecSelf, so the exec practically cannot fail; if it
+	// still does there is no TUI to go back to, so say so and exit non-zero.
+	if exe, ok := homeModel.RestartTarget(); ok {
+		maintenanceCancel()
+		if err := ui.ExecSelf(exe, homeModel.RestartHandoff()); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not restart in place (%v). Run `agent-deck` again.\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+// headlessAutoRestartEnabled is the shared gate for the headless
+// self-restart paths (`web --no-tui`, the remote agent): [updates]
+// .auto_restart is on and update checks are not disabled by environment.
+func headlessAutoRestartEnabled() bool {
+	return os.Getenv(update.SkipUpdateCheckEnv) == "" && session.GetUpdateSettings().GetAutoRestart()
+}
+
+// startHeadlessSelfRestart makes `web --no-tui` pick up an installed
+// update on its own: once a newer binary is on disk and idle reports no
+// request in flight, the process re-execs itself with the same args and
+// environment, so the server comes back on the same port (the listener
+// closes with the exec; Go listeners set SO_REUSEADDR). Nothing is shut
+// down first on purpose: a graceful Shutdown would return Start() and
+// race main's exit against the exec, while the exec itself is atomic
+// from the kernel's point of view. Open event streams reconnect from the
+// browser. Off with [updates].auto_restart = false, for Homebrew-managed
+// binaries (brew owns those), and under AGENTDECK_SKIP_UPDATE_CHECK.
+func startHeadlessSelfRestart(ctx context.Context, idle func() bool) {
+	webLog := logging.ForComponent(logging.CompWeb)
+	if !headlessAutoRestartEnabled() {
+		webLog.Debug("self_restart_disabled", slog.String("reason", "auto_restart off or update check skipped"))
+		return
+	}
+	if _, _, managed, _ := update.DetectHomebrewManagedInstall(); managed {
+		webLog.Debug("self_restart_disabled", slog.String("reason", "homebrew-managed install"))
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		return
+	}
+	w := &update.Watcher{
+		Exe:            exe,
+		RunningVersion: Version,
+		Idle:           idle,
+		Log:            webLog,
+	}
+	go w.Run(ctx)
 }
 
 // commandRegistry lists every token that main()'s dispatch switch treats
@@ -3354,7 +3419,14 @@ func handleProfileSetDefault(out *CLIOutput, name string) {
 func handleUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
+	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer)")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
+	unattended := fs.Bool("unattended", false, "Install without prompts (no changelog, no stdin); honours [updates] auto_install; exit 2 on Homebrew installs")
+	trigger := fs.String("trigger", "", "Who started this run, for the debug log: tui, timer or manual (default: $AGENTDECK_UPDATE_TRIGGER or manual)")
+	installTimer := fs.Bool("install-timer", false, "Install (or replace) the daily unattended update timer (launchd on macOS, systemd --user on Linux)")
+	uninstallTimer := fs.Bool("uninstall-timer", false, "Remove the daily unattended update timer")
+	timerStatus := fs.Bool("timer-status", false, "Show whether the daily update timer is installed and loaded")
+	dryRun := fs.Bool("dry-run", false, "With --install-timer/--uninstall-timer: print the files and commands, execute nothing")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck update [options]")
@@ -3365,18 +3437,62 @@ func handleUpdate(args []string) {
 		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
-		fmt.Println("  agent-deck update              # Check and install latest if available")
-		fmt.Println("  agent-deck update --check      # Only check, don't install")
-		fmt.Println("  agent-deck update --version 1.7.3  # Install a specific version (may downgrade)")
+		fmt.Println("  agent-deck update                     # Check and install latest if available")
+		fmt.Println("  agent-deck update --check             # Only check, don't install")
+		fmt.Println("  agent-deck update --check --json      # Machine-readable check incl. timer state")
+		fmt.Println("  agent-deck update --version 1.7.3     # Install a specific version (may downgrade)")
+		fmt.Println("  agent-deck update --unattended        # No prompts; what the timer and the TUI run")
+		fmt.Println("  agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)")
+		fmt.Println("  agent-deck update --install-timer --dry-run")
+		fmt.Println("  agent-deck update --uninstall-timer")
+		fmt.Println("  agent-deck update --timer-status")
+		fmt.Println()
+		fmt.Println("On macOS every install re-registers com.agentdeck.* launchd agents that run")
+		fmt.Println("this binary (bootout + bootstrap), otherwise they crash-loop with EX_CONFIG.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
+	shutdownLog := initUpdateCommandLogging()
+	exit := func(code int) {
+		shutdownLog()
+		os.Exit(code)
+	}
+
+	switch {
+	case *installTimer:
+		exit(runTimerCommand("install", *dryRun, os.Stdout))
+	case *uninstallTimer:
+		exit(runTimerCommand("uninstall", *dryRun, os.Stdout))
+	case *timerStatus:
+		exit(runTimerCommand("status", false, os.Stdout))
+	}
+
+	if *unattended {
+		exit(runUnattendedUpdate(realUnattendedDeps(updateTrigger(*trigger))))
+	}
+
 	if strings.TrimSpace(*targetVersion) != "" {
 		handleUpdateToSpecificVersion(*targetVersion, *checkOnly)
 		return
+	}
+
+	if *checkOnly && *jsonOut {
+		info, err := update.CheckForUpdate(Version, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
+			exit(1)
+		}
+		var timer update.TimerStatus
+		if cfg, err := update.DefaultTimerConfig(); err == nil {
+			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
+		}
+		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer)); err != nil {
+			exit(1)
+		}
+		exit(0)
 	}
 
 	fmt.Printf("Agent Deck v%s\n", Version)
@@ -3452,6 +3568,7 @@ func handleUpdate(args []string) {
 
 	// Perform update (direct binary replacement or Homebrew upgrade)
 	fmt.Println()
+	warnIfLaunchctlUnavailable()
 	if homebrewManaged {
 		if err := runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd); err != nil {
 			fmt.Printf("Error installing update via Homebrew: %v\n", err)
@@ -3475,11 +3592,16 @@ func handleUpdate(args []string) {
 		fmt.Println("  You can manually refresh it with: agent-deck conductor setup <name>")
 	}
 
+	if !finishInstallHygiene(info.LatestVersion) {
+		exit(1)
+	}
+
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
 	fmt.Println("  Restart agent-deck to use the new version.")
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
+	shutdownLog()
 }
 
 // handleUpdateToSpecificVersion installs a user-specified release version.
@@ -3553,6 +3675,7 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	}
 
 	fmt.Println()
+	warnIfLaunchctlUnavailable()
 	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Printf("Error installing v%s: %v\n", targetVersion, err)
 		os.Exit(1)
@@ -3561,6 +3684,10 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	if err := update.UpdateBridgePy(); err != nil {
 		fmt.Printf("Warning: Failed to update bridge.py: %v\n", err)
 		fmt.Println("  You can manually refresh it with: agent-deck conductor setup <name>")
+	}
+
+	if !finishInstallHygiene(targetVersion) {
+		os.Exit(1)
 	}
 
 	fmt.Printf("\n✓ Installed v%s\n", targetVersion)

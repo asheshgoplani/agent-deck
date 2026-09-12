@@ -477,8 +477,10 @@ Auto-update settings.
 
 ```toml
 [updates]
-auto_update = false           # Auto-install updates
+auto_update = false           # Offer to install on TUI startup
 auto_update_remotes = true    # Keep older remotes on the controller's version (false opts out)
+auto_install = true           # Install unattended (TUI check + timer)
+auto_restart = true           # Restart in place after an install
 check_enabled = true          # Check on startup
 check_interval_hours = 24     # Check frequency
 notify_in_cli = true          # Show in CLI commands
@@ -486,11 +488,17 @@ notify_in_cli = true          # Show in CLI commands
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `auto_update` | bool | `false` | Install updates without prompting. |
 | `auto_update_remotes` | bool | `true` | Keep configured remotes on the controller's version: after a successful `agent-deck update`, and in the background on TUI startup (at most once per `check_interval_hours`), every remote whose `agent-deck version` is older than the controller's gets the same verified binary deploy as `agent-deck remote update --all`. Never prompts, never blocks the TUI; a remote that fails stays on its version and is logged. Remotes without a reachable binary, or whose `agent-deck version` is not a version string, are skipped (install them once with `agent-deck remote update <name>`), and a release that is not newer than what the remote runs is never deployed, so the fallback from a tag without a release to the latest release cannot downgrade a remote. A pre-release controller (`1.16.4-preview.abc`) counts as older than release `1.16.4`, so it never pushes onto a remote already on that release. Set `auto_update_remotes = false` to opt out and be prompted after `agent-deck update` instead. |
+| `auto_update` | bool | `false` | Offer to install an available update (Y/n prompt) before the TUI opens. |
+| `auto_install` | bool | `true` | Install an available update unattended, from the TUI's periodic check and from the `agent-deck update --install-timer` job (launchd on macOS, systemd on Linux). `false` opts out; `agent-deck update` then only runs by hand. |
+| `auto_restart` | bool | `true` | Once a newer binary is on disk, re-exec the running process in place (TUI: from the home screen when no dialog or session action is in flight; `web --no-tui` and daemons: at an idle point). `false` keeps the "installed, press ctrl+t to restart" notice instead. |
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
+
+**Timer.** `agent-deck update --install-timer` schedules `agent-deck update --unattended --trigger timer` once a day: a launchd agent (`~/Library/LaunchAgents/com.agentdeck.autoupdate.plist`, 07:MM local time with a minute drawn at random at install time, since launchd has no `RandomizedDelaySec`) on macOS, or a systemd user timer (`agent-deck-autoupdate.timer`, `OnCalendar=daily`, `RandomizedDelaySec=1h`, `Persistent=true`) on Linux. The unattended run honours `auto_install`, never runs Homebrew, takes `<cache dir>/update.lock` so it cannot collide with the TUI's own install, and afterwards runs the same no-prompt remote sweep as an interactive update when `auto_update_remotes` is on (with it off, remotes are left alone). `--timer-status`, `--uninstall-timer` and `--dry-run` round it out; `agent-deck update --check --json` reports the timer state alongside these settings.
+
+**macOS launchd hygiene.** macOS ties a launch agent's code identity to the file at its program path, so any `com.agentdeck.*` agent that runs the agent-deck binary (for example `notify-daemon` or `web --no-tui`) crash-loops with `EX_CONFIG` after that file is replaced. Every install path therefore boots those agents out and bootstraps them again, then checks they are running; a failure exits 1 and prints the `launchctl` commands to run by hand. The timer's own plist runs `/bin/sh` and is never touched. The unattended flow refuses to install at all when `launchctl print gui/<uid>` does not work, so the binary is never replaced without the follow-up.
 
 ## [interval_hooks.*] Section
 

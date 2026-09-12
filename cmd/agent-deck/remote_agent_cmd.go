@@ -17,8 +17,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 // `agent-deck remote-agent` is the remote end of a persistent channel
@@ -163,6 +165,9 @@ const (
 	// remoteAgentWriteStall is how long a producer may wait for room in a
 	// full outbound queue before the peer counts as gone.
 	remoteAgentWriteStall = 30 * time.Second
+	// remoteAgentDrainWait bounds how long a recycling agent waits for the
+	// requests it already accepted before it exits.
+	remoteAgentDrainWait = 30 * time.Second
 )
 
 // remoteAgentConfig wires serveRemoteAgent. Zero durations and counts take
@@ -183,6 +188,14 @@ type remoteAgentConfig struct {
 	// MaxConcurrent caps subprocesses; MaxPushBytes caps pushed listings.
 	MaxConcurrent int
 	MaxPushBytes  int
+	// BinaryWatch, when set, makes the agent exit cleanly once a newer
+	// agent-deck is on disk and no request is in flight. The agent never
+	// re-execs: the JSON-lines handshake would not survive it. The
+	// controller (internal/session/remote_channel.go) sees EOF, marks the
+	// channel down and redials on its next request, which starts the new
+	// build; pane watches are re-asked after a reconnect. Idle and
+	// Restart on the watcher are set by serveRemoteAgent.
+	BinaryWatch *update.Watcher
 }
 
 func (c remoteAgentConfig) withDefaults() remoteAgentConfig {
@@ -273,13 +286,28 @@ func handleRemoteAgent(profile string, args []string) {
 		return out.String(), errb.String(), code
 	}
 	serveRemoteAgent(context.Background(), os.Stdin, os.Stdout, remoteAgentConfig{
-		Run:        runner,
-		Probe:      probe,
-		WatchPath:  dbPath,
-		WatchEvery: remoteAgentStampEvery,
-		Capture:    remoteAgentPaneCapturer(profile),
-		PaneEvery:  remoteAgentPaneEvery,
+		Run:         runner,
+		Probe:       probe,
+		WatchPath:   dbPath,
+		WatchEvery:  remoteAgentStampEvery,
+		Capture:     remoteAgentPaneCapturer(profile),
+		PaneEvery:   remoteAgentPaneEvery,
+		BinaryWatch: newRemoteAgentBinaryWatch(self),
 	})
+}
+
+// newRemoteAgentBinaryWatch returns the recycle-on-upgrade watcher for the
+// agent, or nil when [updates].auto_restart is off on this host or update
+// checks are disabled by environment.
+func newRemoteAgentBinaryWatch(self string) *update.Watcher {
+	if !headlessAutoRestartEnabled() {
+		return nil
+	}
+	return &update.Watcher{
+		Exe:            self,
+		RunningVersion: Version,
+		Log:            logging.ForComponent(logging.CompSession),
+	}
 }
 
 // newRemoteAgentProbe opens the profile's storage once and returns a probe
@@ -508,6 +536,24 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, cfg remo
 
 	requests := newRemoteAgentRequests(cfg.Run, cfg.MaxConcurrent, cfg.WatchPath)
 
+	// Recycle on upgrade: the watcher's "restart" only closes recycle (a
+	// Watcher stops after its first successful Restart, so this runs once);
+	// the loop below stops reading, drains accepted requests and exits so
+	// the controller redials into the new build.
+	recycle := make(chan struct{})
+	if w := cfg.BinaryWatch; w != nil {
+		w.Idle = func() bool { return requests.inFlight() == 0 }
+		w.Restart = func(string) error {
+			close(recycle)
+			return nil
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.Run(ctx)
+		}()
+	}
+
 	// stdin is read on its own goroutine so the loop can also leave on a
 	// dead stdout or an idle deadline while a read is blocked.
 	lines := make(chan string)
@@ -525,6 +571,7 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, cfg remo
 	}()
 	idle := time.NewTimer(cfg.IdleAfter)
 	defer idle.Stop()
+	draining := false
 loop:
 	for {
 		var (
@@ -536,6 +583,10 @@ loop:
 			break loop
 		case <-idle.C:
 			fmt.Fprintf(os.Stderr, "remote-agent: no input for %s, exiting\n", cfg.IdleAfter)
+			break loop
+		case <-recycle:
+			fmt.Fprintf(os.Stderr, "remote-agent: binary upgraded (running v%s); exiting so the controller reconnects\n", Version)
+			draining = true
 			break loop
 		case raw, ok = <-lines:
 			if !ok {
@@ -596,6 +647,11 @@ loop:
 				write(reply)
 			}
 		}(req, f)
+	}
+	if draining {
+		// A request that slipped in between the idle check and the recycle
+		// still gets its reply; only then is the context cancelled.
+		requests.drain(remoteAgentDrainWait)
 	}
 	cancel()
 	setWatch("", 0)
@@ -807,6 +863,21 @@ func (r *remoteAgentRequests) execute(ctx context.Context, f *remoteAgentFlight,
 	defer func() { <-r.sem }()
 	f.stdout, f.stderr, f.code = r.exec(ctx, args)
 	f.stamp = remoteAgentStampNanos(r.stampPath)
+}
+
+// inFlight is the number of requests registered and not yet answered.
+func (r *remoteAgentRequests) inFlight() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.byID)
+}
+
+// drain waits until no request is in flight or timeout has passed.
+func (r *remoteAgentRequests) drain(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for r.inFlight() > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // cancel drops request id: its subprocess is killed once no other request

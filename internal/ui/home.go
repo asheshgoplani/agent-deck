@@ -336,6 +336,7 @@ type Home struct {
 	isReloading         bool       // Visual feedback during auto-reload
 	initialLoading      bool       // True until first loadSessionsMsg received (shows splash screen)
 	isQuitting          bool       // True when user pressed q, shows quitting splash
+	restartRequested    bool       // True when the quit sequence should end in an in-place exec (restart.go)
 	reloadVersion       uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu            sync.Mutex // Protects reloadVersion, isReloading, and lastLoadMtime for thread-safe access
 	lastLoadMtime       time.Time  // File mtime when we last loaded (for external change detection)
@@ -471,6 +472,26 @@ type Home struct {
 	// updateNudgeDismissed suppresses the >5-releases-behind nudge for
 	// the rest of the process. Reset on restart. Conductor task #45.
 	updateNudgeDismissed bool
+	// binaryWatch notices when the executable on disk is replaced by a
+	// newer release while the TUI runs (see binary_watch.go). Nil when the
+	// executable could not be resolved at startup.
+	binaryWatch *binaryWatch
+	// homebrewManaged is cached once at startup: a Homebrew binary is never
+	// installed over by the TUI (brew owns it). See update_auto.go.
+	homebrewManaged bool
+	// autoInstallInFlight is the version an unattended install is running
+	// for ("" when none); autoInstallAttempts is when each version was last
+	// tried, so a failure is not retried every check.
+	autoInstallInFlight string
+	autoInstallAttempts map[string]time.Time
+	// autoRestartLoggedAt rate-limits the "waiting for idle" log line.
+	autoRestartLoggedAt time.Time
+	// autoRestartHoldUntil pauses the auto path after the pre-arm check of
+	// the new binary failed (see restartTargetProblem).
+	autoRestartHoldUntil time.Time
+	// restartHandoff is what the previous process left in the environment
+	// when it exec'd this one (restart.go); applied after the first load.
+	restartHandoff RestartHandoff
 
 	// Launching animation state (for newly created sessions)
 	launchingSessions    map[string]time.Time        // sessionID -> creation time
@@ -1291,7 +1312,7 @@ func (h *Home) getLayoutMode() string {
 func (h *Home) contentChromeTop() int {
 	top := 1 // header line
 	top++    // filter bar (always shown, matches View())
-	if h.shouldRenderUpdateNudge() {
+	if h.shouldRenderUpdateBanner() {
 		top++
 	}
 	if h.maintenanceMsg != "" {
@@ -1316,7 +1337,7 @@ func (h *Home) stackedPreviewTopY() int {
 	const helpBarHeight = 2
 	filterBarHeight := 1
 	updateBannerHeight := 0
-	if h.shouldRenderUpdateNudge() {
+	if h.shouldRenderUpdateBanner() {
 		updateBannerHeight = 1
 	}
 	maintenanceBannerHeight := 0
@@ -1688,6 +1709,9 @@ func shouldPromptHermesHooks(installed bool, decision string) bool {
 // NewHomeWithProfileAndMode creates a new Home with the specified profile.
 // All instances manage the notification bar equally via shared SQLite state.
 func NewHomeWithProfileAndMode(profile string) *Home {
+	// Read (and unset) what a predecessor left for us before anything else
+	// in this process can spawn a child (restart.go).
+	restartHandoff := consumeRestartEnv()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var storageWarning string
@@ -1721,6 +1745,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	}
 
 	h := &Home{
+		restartHandoff:            restartHandoff,
 		profile:                   actualProfile,
 		storage:                   storage,
 		storageWarning:            storageWarning,
@@ -3402,7 +3427,7 @@ func (h *Home) syncViewport() {
 	// Filter bar is always shown for consistent layout (matches View())
 	filterBarHeight := 1
 	updateBannerHeight := 0
-	if h.shouldRenderUpdateNudge() {
+	if h.shouldRenderUpdateBanner() {
 		updateBannerHeight = 1
 	}
 	maintenanceBannerHeight := 0
@@ -3649,7 +3674,7 @@ func (h *Home) getVisibleHeight() int {
 	panelTitleLines := 2
 	filterBarHeight := 1
 	updateBannerHeight := 0
-	if h.shouldRenderUpdateNudge() {
+	if h.shouldRenderUpdateBanner() {
 		updateBannerHeight = 1
 	}
 	maintenanceBannerHeight := 0
@@ -3722,6 +3747,11 @@ func (h *Home) Init() tea.Cmd {
 	if h.intervalHookRunner != nil {
 		h.intervalHookRunner.Start()
 	}
+
+	// Fingerprint the running executable so the tick loop can tell when an
+	// update lands on disk while the TUI is open.
+	h.binaryWatch = startBinaryWatch(Version)
+	h.homebrewManaged = detectHomebrewManaged()
 
 	cmds := []tea.Cmd{
 		h.sessionLoadCmd(nil, true),
@@ -7191,6 +7221,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Save after dedup to persist any ID changes (initial load only)
 				h.saveInstances()
 			}
+			// Pick up where the process we were exec'd from left off.
+			if firstLoad {
+				h.applyRestartHandoff()
+			}
 			// Trigger immediate preview fetch for initial selection (mutex-protected)
 			if selected := h.getSelectedSession(); selected != nil {
 				h.previewCacheMu.Lock()
@@ -7793,6 +7827,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case updateInstallFinishedMsg:
+		return h, h.handleUpdateInstallFinished(msg)
+
+	case unattendedInstallFinishedMsg:
+		return h, h.handleUnattendedInstallFinished(msg)
+
+	case binaryVersionProbedMsg:
+		if h.binaryWatch != nil {
+			h.binaryWatch.recordProbe(msg.fingerprint, msg.version, msg.err)
+			if msg.err != nil {
+				uiLog.Debug("binary_version_probe_failed", slog.String("error", msg.err.Error()))
+			} else if v := h.binaryWatch.installedVersion; v != "" {
+				uiLog.Info("update_installed_on_disk", slog.String("running", Version), slog.String("installed", v))
+			}
+		}
+		// Restart right away when allowed; otherwise the tick loop retries.
+		return h, h.maybeAutoRestart()
+
 	case updateCheckMsg:
 		h.lastUpdateCheck = time.Now()
 		if msg.info != nil && !msg.info.Available {
@@ -7801,7 +7853,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			h.updateInfo = msg.info
 		}
-		return h, nil
+		// auto_install: start the unattended updater in the background.
+		return h, h.maybeAutoInstall(msg.info)
 
 	case remoteFetchRoundMsg:
 		// Fan out: each remote answers with its own remoteSessionsFetchedMsg.
@@ -9112,7 +9165,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.previewCacheMu.Unlock()
 			}
 		}
-		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch()}
+		// One os.Stat per tick; a version probe only when the file changed.
+		binaryProbeCmd := h.pollBinaryChange()
+		// auto_restart: hand over to an installed newer build once idle.
+		autoRestartCmd := h.maybeAutoRestart()
+
+		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), binaryProbeCmd, autoRestartCmd}
 		if h.fullRepaint {
 			cmds = append(cmds, tea.ClearScreen)
 		}
@@ -10258,6 +10316,7 @@ func (h *Home) hasModalVisible() bool {
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
 		(h.telemetryDialog != nil && h.telemetryDialog.IsVisible()) ||
+		(h.feedbackDialog != nil && h.feedbackDialog.IsVisible()) ||
 		h.zoxidePicker.IsVisible()
 }
 
@@ -10414,7 +10473,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (h *Home) getListContentStartY() int {
 	// Header: 1 line, Filter bar: 1 line
 	startY := 2
-	if h.shouldRenderUpdateNudge() {
+	if h.shouldRenderUpdateBanner() {
 		startY++ // Update banner
 	}
 	if h.maintenanceMsg != "" {
@@ -11961,6 +12020,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.remotesFetchActive = true // so the remote headers show "refreshing…"
 		h.remoteSessionsMu.Unlock()
 		return h, tea.Batch(h.sessionLoadCmd(&state, false), h.fetchRemoteSessions)
+
+	case "ctrl+t":
+		// Restart the TUI in place so an update installed while it was open
+		// takes effect (restart.go). Refuses with a footer message while a
+		// dialog is open or a session action is running.
+		return h.tryRestartDeck()
+
+	case "ctrl+y":
+		// Run `agent-deck update` on the terminal (TUI suspended); a
+		// successful install flips the banner to the restart hint.
+		return h.tryInstallUpdate()
 
 	case "ctrl+s":
 		// Open the session switcher from the overview too, with the same key
@@ -17284,6 +17354,9 @@ func (h *Home) renderFrame() string {
 
 	// Show quitting splash during shutdown
 	if h.isQuitting {
+		if h.restartRequested {
+			return renderShutdownSplash(h.width, h.height, h.animationFrame, "Restarting...")
+		}
 		return renderQuittingSplash(h.width, h.height, h.animationFrame)
 	}
 
@@ -17525,7 +17598,7 @@ func (h *Home) renderFrame() string {
 	// UPDATE BANNER (if update available)
 	// ═══════════════════════════════════════════════════════════════════
 	updateBannerHeight := 0
-	if h.shouldRenderUpdateNudge() {
+	if h.shouldRenderUpdateBanner() {
 		updateBannerHeight = 1
 		updateStyle := lipgloss.NewStyle().
 			Foreground(ColorBg).
@@ -17533,7 +17606,7 @@ func (h *Home) renderFrame() string {
 			Bold(true).
 			MaxWidth(h.width).
 			Align(lipgloss.Center)
-		b.WriteString(updateStyle.Render(h.renderUpdateNudgeText()))
+		b.WriteString(updateStyle.Render(h.renderUpdateBannerText()))
 		b.WriteString("\n")
 	}
 
@@ -17772,6 +17845,11 @@ func renderLoadingSplash(width, height int, frame int) string {
 
 // renderQuittingSplash renders a splash screen during application shutdown
 func renderQuittingSplash(width, height int, frame int) string {
+	return renderShutdownSplash(width, height, frame, "Shutting down...")
+}
+
+// renderShutdownSplash draws the quit/restart splash with the given subtitle.
+func renderShutdownSplash(width, height int, frame int, subtitle string) string {
 	// Status indicator cycle (matches loading splash for consistency)
 	phase := (frame / 2) % 4
 
@@ -17813,11 +17891,11 @@ func renderQuittingSplash(width, height int, frame int) string {
 		content.WriteString("\n")
 		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
 		content.WriteString("\n")
-		content.WriteString(subtitleStyle.Render("Shutting down..."))
+		content.WriteString(subtitleStyle.Render(subtitle))
 	} else {
 		// Compact/Minimal
 		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
-		content.WriteString(subtitleStyle.Render("Shutting down..."))
+		content.WriteString(subtitleStyle.Render(subtitle))
 	}
 
 	contentStyle := lipgloss.NewStyle().
