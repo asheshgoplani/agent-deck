@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.6] - 2026-09-12
+
+Remotes now follow the controller's version on their own, a session can switch its Claude account or its harness with the conversation carried over, and the account badge only appears when it means something.
+
+### Added
+
+- Connected remotes follow the controller's version automatically: `[updates] auto_update_remotes` is on by default (set it to `false` to opt out), a successful `agent-deck update` and TUI startup sweep older remotes at most once per `check_interval_hours` without prompting, `agent-deck remote update --all` does it on demand, `remote list` shows a VERSION column with a drift marker, and `u` on a drifted remote header updates it from the TUI. The sweep never installs onto a remote it could not version, never downgrades, stages uniquely under a lock, and reports an unwritable install path by name with the remedy; passwordless `sudo -n` is used only when the path needs it ([#2166](https://github.com/asheshgoplani/agent-deck/pull/2166), closes #2164).
+- A session can switch its Claude account or its harness (Claude, Codex, Pi) from the edit dialog or `agent-deck session switch`, with `switch-preview` and `--json`. The conversation is carried over as a readable-text projection (not a native resume); the original session is archived and reversible, one visible row remains; conductors, watchers, remote-owned and otherwise managed sessions refuse to switch; ownership is revalidated against a fresh snapshot and parent routing moves with compare-and-swap ([#2237](https://github.com/asheshgoplani/agent-deck/pull/2237)).
+
+### Fixed
+
+- The account badge is shown only when account slots are configured, and cached badges refresh on configuration changes instead of rendering a stale snapshot ([#2238](https://github.com/asheshgoplani/agent-deck/pull/2238), supersedes #2198, by @mineralinis, whose commit is kept).
+- Version comparison treats a pre-release as older than the release it previews and orders numeric identifiers numerically, so a preview controller never holds remotes back ([#2166](https://github.com/asheshgoplani/agent-deck/pull/2166)).
+
+
 ## [1.16.5] - 2026-09-12
 
 Fleet-safety release: units Agent Deck creates from now on can be stopped without taking down the shared tmux server, spawn diagnostics redact recognized credential-bearing values, and the vulnerability scan runs again in CI.
