@@ -12,20 +12,19 @@ import (
 // default-size, and agent-deck runs the tool as the pane's INITIAL PROCESS
 // (RunCommandAsInitialProcess), so the tool paints its first frames into an
 // 80x24 window. The attach client arrives later at the real terminal size and
-// window-size=largest grows the window — but a TUI that fixed its layout
-// geometry on the first paint keeps drawing the 80-column layout into the
-// wider pane. OpenCode does exactly that and renders visibly clipped; tools
+// tmux resizes the window — but a TUI that fixed its layout geometry on the
+// first paint keeps drawing the 80-column layout into the wider pane. OpenCode
+// does exactly that and renders visibly clipped; tools
 // that reflow on SIGWINCH (Claude Code, Codex) hid the gap for two releases.
 //
 // This is the other half of #1167, which pre-sized only the ATTACH client's
 // PTY (see StartAttachPTY) and left the session's own creation at the default.
-// aggressive-resize cannot rescue the birth size either: it is a no-op under
-// window-size=largest, which Session.Start pins.
+// aggressive-resize cannot rescue the birth size before a client attaches.
 const (
 	// tmuxDefaultCols/Rows are tmux's own birth size for a detached session.
 	// They are a floor, not a target: a host terminal narrower than this must
-	// not birth a pane MORE clipped than tmux's default already is, and
-	// window-size=largest shrinks the window to the real client on attach.
+	// not birth a pane MORE clipped than tmux's default already is. Window-size
+	// arbitration moves the window to the real client dimensions on attach.
 	tmuxDefaultCols = 80
 	tmuxDefaultRows = 24
 

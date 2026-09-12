@@ -46,7 +46,9 @@ func TestTmuxPTYBridgeResize(t *testing.T) {
 	// to the bridge's attach client size on CI's headless tmux. Production
 	// session creation always sets these (see internal/tmux/tmux.go); the
 	// test's manual `tmux new-session` bypassed that path.
-	_ = exec.Command("tmux", "set-option", "-t", sessionName, "window-size", "largest").Run()
+	if output, err := exec.Command("tmux", "set-option", "-t", sessionName, "window-size", "smallest").CombinedOutput(); err != nil {
+		t.Fatalf("tmux set-option window-size=smallest failed: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
 	_ = exec.Command("tmux", "set-window-option", "-t", sessionName, "aggressive-resize", "on").Run()
 
 	srv := NewServer(Config{

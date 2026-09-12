@@ -2522,17 +2522,17 @@ func (s *Session) Start(command string) error {
 	// #1625: the key-handling defaults are gated through OptionOverrides so an
 	// explicit user tmux setting wins (see gatedTmuxKeyOptionArgs).
 	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
-	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
-	// control client (controlpipe.go) at the same time as native `tmux attach`
-	// clients (Ghostty, iTerm). Default `window-size latest` makes the window
-	// flip to whichever client most recently sent input, so larger clients see
-	// dot-filled void cells and smaller clients clip. `largest` keeps the
-	// window sized to the biggest client; `aggressive-resize` only resizes
-	// windows that are actively viewed (avoids cross-window resize storms).
+	// Multi-client size negotiation. Web's xterm.js connects at the same time
+	// as native `tmux attach` clients (Ghostty, iTerm). `window-size=largest`
+	// maximizes each axis independently, so crossed client dimensions such as
+	// 88x71 and 189x62 produce a synthetic 189x70 pane that no client can fully
+	// display. `smallest` keeps the complete pane visible in every attached
+	// client; larger clients may show unused cells. `aggressive-resize` limits
+	// resizing to windows that are actively viewed (avoids resize storms).
 	// See tmux(1) "window-size" / "aggressive-resize" and tmux issue #2594.
 	// Both are gated through OptionOverrides so users can opt out.
 	if _, ok := s.OptionOverrides["window-size"]; !ok {
-		startArgs = append(startArgs, ";", "set-option", "-t", s.Name, "window-size", "largest")
+		startArgs = append(startArgs, ";", "set-option", "-t", s.Name, "window-size", "smallest")
 	}
 	if _, ok := s.OptionOverrides["aggressive-resize"]; !ok {
 		startArgs = append(startArgs, ";", "set-window-option", "-t", s.Name, "aggressive-resize", "on")

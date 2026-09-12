@@ -182,14 +182,13 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	// process. Because the attach client (see tmuxAttachCommand) is no longer
 	// flagged `-f ignore-size`, the tmux server now uses this client's PTY
 	// size as its declared geometry and re-arbitrates the window dimensions
-	// per the session's `window-size` policy (`largest` — set at Session.Start
+	// per the session's `window-size` policy (`smallest` — set at Session.Start
 	// in internal/tmux/tmux.go). The previous `tmux resize-window` call here
 	// was removed because it implicitly flipped the session option to
 	// `window-size=manual` and pinned the window to the web viewport, which
 	// dragged native attached clients (Ghostty, iTerm) along with it. Letting
-	// tmux do the arbitration via `largest` keeps every client at the size of
-	// the biggest viewer; smaller clients see a clipped portion of the larger
-	// window content (no dot-filled void cells).
+	// tmux arbitrate via `smallest` keeps the complete pane visible in every
+	// attached client, with unused cells possible in larger clients.
 	if err := pty.Setsize(b.ptmx, &pty.Winsize{
 		Rows: uint16(rows), // #nosec G115 -- terminal rows fits in uint16; PTY ABI enforces this
 		Cols: uint16(cols), // #nosec G115 -- terminal cols fits in uint16; PTY ABI enforces this
@@ -308,13 +307,13 @@ func tmuxCommandContext(ctx context.Context, socketName string, args ...string) 
 
 func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
 	// Web's attach is now a normal client whose PTY size participates in tmux's
-	// `window-size=largest` arbitration (set at Session.Start). Previously we
+	// `window-size=smallest` arbitration (set at Session.Start). Previously we
 	// passed `-f ignore-size` together with a manual `tmux resize-window` call
 	// in (*tmuxPTYBridge).Resize; the manual resize-window flipped the session
 	// option to `window-size=manual` and pinned the window to the web viewport
-	// for ALL attached clients (Ghostty, iTerm) — the dots-in-window symptom.
-	// With largest in effect, every client sees content sized to the biggest
-	// viewer; smaller clients see a clipped portion rather than dot-filled void.
+	// for ALL attached clients (Ghostty, iTerm). With smallest in effect, every
+	// client can display the complete shared pane; larger clients may show
+	// unused cells around it.
 	// `-u` forces UTF-8 output regardless of the daemon's locale. Same class of
 	// bug as the TERM handling below: when the web daemon runs under launchd/
 	// systemd its environment carries no LANG/LC_*, so tmux treats this client as
