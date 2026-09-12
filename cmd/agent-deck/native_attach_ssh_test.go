@@ -78,6 +78,11 @@ func (p *nativeSSHProxy) copy(dst, src net.Conn) {
 
 func startNativeSSH(t *testing.T, remoteHome, binDir string) *nativeSSHProxy {
 	t.Helper()
+	// Prevent macOS zsh's first-run wizard from consuming commands injected
+	// into tmux sessions using this isolated HOME.
+	if err := os.WriteFile(filepath.Join(remoteHome, ".zshrc"), []byte("# native SSH test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	realSSH, err := exec.LookPath("ssh")
 	if err != nil {
 		t.Fatal(err)

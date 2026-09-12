@@ -8578,7 +8578,7 @@ func (i *Instance) killInternal(sync bool) error {
 	i.mu.Unlock()
 	// (gen already bumped at the top of killInternal, before the tmux kill —
 	// see the comment there for why it must happen first, not here.)
-	if i.Tool == "hermes" {
+	if i.GetToolThreadSafe() == "hermes" {
 		i.clearHermesHookArtifacts()
 	}
 

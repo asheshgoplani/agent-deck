@@ -61,7 +61,11 @@ func startSpinnerSession(t *testing.T) (socket, session string) {
 		t.Skip("tmux binary not available")
 	}
 
-	socket = fmt.Sprintf("ad1867-%d-%s", os.Getpid(), strings.ToLower(strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())))
+	suffix := strings.ToLower(strings.NewReplacer("/", "-", " ", "-").Replace(t.Name()))
+	if len(suffix) > 16 {
+		suffix = suffix[:16]
+	}
+	socket = fmt.Sprintf("ad1867-%d-%s", os.Getpid(), suffix)
 	session = "agentdeck_i1867"
 
 	run := func(args ...string) {
