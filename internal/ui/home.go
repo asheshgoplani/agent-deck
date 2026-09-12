@@ -7891,7 +7891,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteUpdatedMsg:
 		if msg.err != nil {
+			// The footer is one line and cuts the remedy at the terminal
+			// edge; the dialog wraps the whole message (#2244).
 			h.setError(fmt.Errorf("failed to update remote %s: %w", msg.remoteName, msg.err))
+			h.confirmDialog.ShowNotice(fmt.Sprintf("Remote update failed: %s", msg.remoteName), msg.err.Error())
 			return h, nil
 		}
 		// The deploy verified the remote runs msg.to; show it now and let the

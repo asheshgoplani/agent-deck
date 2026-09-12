@@ -157,6 +157,9 @@ type SSHRunner struct {
 	// lets ResolveRemotePath decide whether to honor an explicit user path or
 	// probe the remote's real binary location via $PATH (#1171).
 	configuredPath string
+	// installReport is where the last InstallBinary put the binary, for the
+	// update report (#2244).
+	installReport string
 
 	// runFn lets tests stub out command execution. nil = real SSH.
 	runFn func(ctx context.Context, args ...string) ([]byte, error)
@@ -1098,6 +1101,21 @@ func (r *SSHRunner) ResolveRemotePath(ctx context.Context) string {
 // InstallPathNotWritableError naming the path, the user and the remedy,
 // never a bare "permission denied" on the staged file.
 func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remotePath string) error {
+	// A symlink at the install path (the documented remedy for a root-owned
+	// /usr/local/bin points it at ~/.local/bin/agent-deck) is followed: the
+	// file it names is what $PATH and the remote's service units run, and
+	// putting a regular file over the link would leave that file behind
+	// forever (#2244). Writability, staging and the lock all concern the
+	// resolved file's directory.
+	if resolved := r.resolveRemoteFile(ctx, remotePath); resolved != "" {
+		remotePath = resolved
+	}
+	return r.deployResolvedBinary(ctx, binaryData, remotePath)
+}
+
+// deployResolvedBinary runs the deploy script against a path that has
+// already been resolved through any symlinks.
+func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte, remotePath string) error {
 	dir := remotePath
 	if idx := strings.LastIndex(remotePath, "/"); idx > 0 {
 		dir = remotePath[:idx]
@@ -1116,7 +1134,7 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 	report := fmt.Sprintf("printf '%s%%s%s%%s\\n' %s \"$(id -un)\" >&2; exit %d",
 		installPathNotWritablePrefix, installPathNotWritableInfix, shellQuote(remotePath), installPathNotWritableExit)
 	cmd := fmt.Sprintf("mkdir -p %s 2>/dev/null; if [ -w %s ]; then sh -c %s sh %s; "+
-		"elif sudo -n sh -c true 2>/dev/null; then sudo -n sh -c %s sh %s || { rc=$?; case $rc in 4|5) exit $rc;; esac; %s; }; else %s; fi",
+		"elif sudo -n sh -c true 2>/dev/null; then sudo -n sh -c %s sh %s || { rc=$?; case $rc in 4|5|6) exit $rc;; esac; %s; }; else %s; fi",
 		shellQuote(dir), shellQuote(dir), script, args, script, args, report, report)
 
 	deployCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
@@ -1136,6 +1154,50 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 		return fmt.Errorf("failed to deploy binary to %s: %w", remotePath, err)
 	}
 	return nil
+}
+
+// remoteResolveFn is a POSIX sh function that follows symlinks (file and
+// directory) to the real path, the way `readlink -f` does on GNU systems,
+// without depending on it: macOS remotes gained readlink -f only recently
+// and BSD ones may not have it.
+const remoteResolveFn = `resolve() { f="$1"; n=0; while [ -L "$f" ] && [ "$n" -lt 40 ]; do l=$(readlink "$f"); case "$l" in /*) f="$l";; *) f="$(dirname "$f")/$l";; esac; n=$((n+1)); done; d=$(cd "$(dirname "$f")" 2>/dev/null && pwd -P) || d=$(dirname "$f"); printf '%s/%s' "$d" "$(basename "$f")"; }; `
+
+// resolveRemoteFile returns path with every symlink followed, or "" when the
+// remote could not answer (the caller then uses path as given).
+func (r *SSHRunner) resolveRemoteFile(ctx context.Context, path string) string {
+	return r.remoteResolvedPath(ctx, "resolve "+shellQuote(path))
+}
+
+// remotePathBinary returns the resolved file behind `command -v agent-deck`
+// on the remote, or "" when nothing on $PATH answers to that name.
+func (r *SSHRunner) remotePathBinary(ctx context.Context) string {
+	return r.remoteResolvedPath(ctx, `pb=$(command -v agent-deck 2>/dev/null); [ -n "$pb" ] && resolve "$pb"`)
+}
+
+// remoteResolvedPath runs cmd on the remote with remoteResolveFn defined and
+// returns the absolute path it prints, or "" on any failure or non-absolute
+// answer.
+func (r *SSHRunner) remoteResolvedPath(ctx context.Context, cmd string) string {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := r.remoteExec(timeoutCtx, remoteResolveFn+cmd, nil)
+	if err != nil {
+		return ""
+	}
+	resolved := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(resolved, "/") {
+		return ""
+	}
+	return resolved
+}
+
+// remotePathRunsFile reports whether `command -v agent-deck` on the remote
+// resolves to the same inode as file (test -ef follows symlinks).
+func (r *SSHRunner) remotePathRunsFile(ctx context.Context, file string) bool {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := r.remoteExec(timeoutCtx, `pb=$(command -v agent-deck 2>/dev/null); [ -n "$pb" ] && [ "$pb" -ef `+shellQuote(file)+` ]`, nil)
+	return err == nil
 }
 
 // ErrRemoteDeployBusy is returned when another deploy holds the lock on the
@@ -1158,16 +1220,37 @@ const remoteDeployBusyMarker = "agent-deck: another deploy holds "
 // Two controllers deploying at once must not share a staging file (one
 // could rename it into place while the other is still writing it), so the
 // name carries the shell's PID and a lock directory next to PATH serialises
-// deploys; a lock older than 15 minutes is treated as abandoned. The mode
-// is set explicitly (0755) rather than with +x so a root umask of 077 under
-// sudo still leaves the binary runnable by the remote user.
+// deploys; a lock older than 15 minutes is treated as abandoned.
+//
+// The script never puts a regular file over a symlink (exit 6): the caller
+// resolves links first, and this guard keeps a race or a stale resolution
+// from orphaning the link target (#2244). The previous file's mode and,
+// when running as root over a user-owned file, its owner are kept, and the
+// mode is then made readable and executable for everyone so a root umask
+// of 077 under sudo still leaves the binary runnable by the remote user.
 const remoteDeployScript = `d="$1"; p="$2"; lock="$p.lock"; t="$p.new.$$"
+if [ -L "$p" ]; then printf '` + remoteDeploySymlinkMarker + `%s\n' "$p" >&2; exit ` + remoteDeploySymlinkExitStr + `; fi
 mkdir -p "$d"
 if [ -d "$lock" ]; then find "$lock" -maxdepth 0 -mmin +15 -exec rmdir {} \; 2>/dev/null || true; fi
 if ! mkdir "$lock" 2>/dev/null; then printf '` + remoteDeployBusyMarker + `%s\n' "$p" >&2; exit 4; fi
 trap 'rm -f "$t"; rmdir "$lock" 2>/dev/null' EXIT HUP INT TERM
-if cat > "$t" && chmod 0755 "$t" && mv -f "$t" "$p"; then exit 0; fi
+mode=755; own=""
+if [ -e "$p" ]; then
+  m=$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p" 2>/dev/null); [ -n "$m" ] && mode="$m"
+  own=$(stat -c %u:%g "$p" 2>/dev/null || stat -f %u:%g "$p" 2>/dev/null)
+fi
+if cat > "$t" && chmod "$mode" "$t" && chmod a+rx "$t"; then
+  if [ "$(id -u)" = 0 ] && [ -n "$own" ]; then chown "$own" "$t" || true; fi
+  if mv -f "$t" "$p"; then exit 0; fi
+fi
 printf 'agent-deck: deploy to %s failed\n' "$p" >&2; exit 5`
+
+// The script's refusal to replace a symlink, and its exit status.
+const (
+	remoteDeploySymlinkMarker  = "agent-deck: refusing to replace symlink "
+	remoteDeploySymlinkExit    = 6
+	remoteDeploySymlinkExitStr = "6"
+)
 
 // The remote deploy script reports an unwritable install directory on stderr
 // as "<prefix><path><infix><user>" with installPathNotWritableExit, which the
@@ -1194,32 +1277,65 @@ func parseInstallPathNotWritable(output string) *update.InstallPathNotWritableEr
 // there, then verifies the remote actually runs expectedVersion from its $PATH.
 // It returns an actionable error instead of a false success when the deployed
 // binary is not the one the remote executes (#1171).
+//
+// The configured path and the binary `command -v agent-deck` finds are both
+// resolved through symlinks. When they are the same file there is one
+// deploy. When they differ, the $PATH binary is what the remote runs, so it
+// is updated first, and the configured path too so the controller's own
+// commands over it see the same version; the report names both (#2244).
+// Verification then checks that $PATH resolves to the deployed inode and
+// reports expectedVersion.
 func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expectedVersion string) error {
-	path := r.ResolveRemotePath(ctx)
-	if err := r.DeployBinary(ctx, binaryData, path); err != nil {
-		return err
+	r.installReport = ""
+	configured := r.ResolveRemotePath(ctx)
+	if resolved := r.resolveRemoteFile(ctx, configured); resolved != "" {
+		configured = resolved
+	}
+	onPath := r.remotePathBinary(ctx)
+
+	targets := []string{configured}
+	if onPath != "" && onPath != configured {
+		targets = []string{onPath, configured}
+	}
+	for _, target := range targets {
+		if err := r.deployResolvedBinary(ctx, binaryData, target); err != nil {
+			return err
+		}
+	}
+	if len(targets) == 2 {
+		r.installReport = fmt.Sprintf("deployed to %s (the remote's $PATH binary) and to %s (agent_deck_path); set agent_deck_path to %s to keep one copy", onPath, configured, onPath)
+	} else {
+		r.installReport = "deployed to " + configured
 	}
 
 	want := strings.TrimPrefix(expectedVersion, "v")
 
 	// The binary the remote actually runs: bare `agent-deck` through its $PATH.
-	if pathVer, found := r.versionAt(ctx, "agent-deck"); found && pathVer == want {
+	pathVer, found := r.versionAt(ctx, "agent-deck")
+	if found && pathVer == want {
+		if !r.remotePathRunsFile(ctx, targets[0]) {
+			return fmt.Errorf("the remote's $PATH agent-deck reports v%s but is not the file deployed to %s; "+
+				"check for a wrapper or a second copy on the remote's PATH, or set agent_deck_path to it", want, targets[0])
+		}
 		return nil
 	} else if found {
 		// Something is on $PATH but it is not what we just deployed.
-		return fmt.Errorf("deployed v%s to %s, but the remote runs v%s from $PATH — "+
-			"set agent_deck_path to the $PATH binary or fix the remote's PATH", want, path, pathVer)
+		return fmt.Errorf("deployed v%s to %s, but the remote runs v%s from $PATH; "+
+			"set agent_deck_path to the binary the remote's PATH finds (command -v agent-deck) or fix the remote's PATH", want, targets[0], pathVer)
 	}
 
 	// Nothing on $PATH. If the deployed binary itself reports the right version,
 	// the install worked but the location is not on $PATH yet.
-	if deployedVer, found := r.versionAt(ctx, path); found && deployedVer == want {
-		return fmt.Errorf("installed v%s at %s, but it is not on the remote's $PATH — "+
-			"add %s to PATH or set agent_deck_path to a $PATH location", want, path, path)
+	if deployedVer, found := r.versionAt(ctx, configured); found && deployedVer == want {
+		return fmt.Errorf("installed v%s at %s, but it is not on the remote's $PATH; "+
+			"add %s to PATH or set agent_deck_path to a $PATH location", want, configured, configured)
 	}
 
-	return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s or on $PATH", want, path)
+	return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s or on $PATH", want, configured)
 }
+
+// LastInstallReport says where the last InstallBinary put the binary.
+func (r *SSHRunner) LastInstallReport() string { return r.installReport }
 
 // sshConnOpts returns the SSH -o options shared by every connection agent-deck
 // makes. They are the single source of truth for agent-deck's host-key stance:

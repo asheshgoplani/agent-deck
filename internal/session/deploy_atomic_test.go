@@ -32,10 +32,11 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 		t.Fatalf("DeployBinary returned error: %v", err)
 	}
 
-	if len(*calls) != 1 {
-		t.Fatalf("expected exactly one remote command, got %d: %v", len(*calls), *calls)
+	// One round trip resolves symlinks at the path (#2244), one deploys.
+	if len(*calls) != 2 || !strings.Contains((*calls)[0], "resolve "+shellQuote(target)) {
+		t.Fatalf("expected a resolve then one deploy command, got %d: %v", len(*calls), *calls)
 	}
-	cmd := (*calls)[0]
+	cmd := (*calls)[1]
 
 	// Must NOT redirect the new bytes straight onto the live binary (ETXTBSY).
 	if strings.Contains(cmd, "cat > "+shellQuote(target)) || strings.Contains(cmd, `cat > "$p"`) {
@@ -44,7 +45,7 @@ func TestDeployBinary_StagesAndRenames_NeverTruncatesLiveBinary(t *testing.T) {
 
 	// Must stage to a temp path unique to this deploy and atomically rename
 	// it onto the target, which arrives as the script's second argument.
-	for _, want := range []string{`t="$p.new.$$"`, `cat > "$t"`, `mv -f "$t" "$p"`, `chmod 0755 "$t"`} {
+	for _, want := range []string{`t="$p.new.$$"`, `cat > "$t"`, `mv -f "$t" "$p"`, `chmod "$mode" "$t"`, `chmod a+rx "$t"`, `if [ -L "$p" ]`} {
 		if !strings.Contains(cmd, want) {
 			t.Fatalf("deploy script lacks %q; got:\n%s", want, cmd)
 		}
