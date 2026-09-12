@@ -1675,6 +1675,8 @@ func handleSessionShow(profile string, args []string) {
 	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
+	addEffortJSON(jsonData, inst)
+	addClaudeOptionsJSON(jsonData, inst)
 	addAutoNameJSON(jsonData, inst)
 
 	if inst.Command != "" {

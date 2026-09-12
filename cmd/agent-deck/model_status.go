@@ -14,6 +14,25 @@ func applyCLIModelOverride(inst *session.Instance, modelID string) error {
 	return inst.ApplyLaunchModel(modelID)
 }
 
+// applyCLIEffortOverride mirrors the new-session dialog's "Reasoning effort"
+// row: a per-session native effort level for claude (--effort) and codex
+// (model_reasoning_effort). Empty leaves the tool default.
+func applyCLIEffortOverride(inst *session.Instance, effort string) error {
+	effort = strings.TrimSpace(effort)
+	if inst == nil || effort == "" {
+		return nil
+	}
+	return inst.ApplyLaunchReasoningEffort(effort)
+}
+
+// addEffortJSON surfaces the persisted per-session reasoning effort next to
+// the model fields, so --json consumers see the same value the TUI row shows.
+func addEffortJSON(target map[string]interface{}, inst *session.Instance) {
+	if effort := inst.LaunchReasoningEffort(); effort != "" {
+		target["effort"] = effort
+	}
+}
+
 func addModelInfoJSON(target map[string]interface{}, info session.ModelInfo) {
 	if info.ModelID == "" {
 		return

@@ -92,7 +92,7 @@ agent-deck skill attach my-proj docs --source pool --restart # Attach skill + re
 agent-deck web                    # Start web UI on http://127.0.0.1:8420
 ```
 
-> **⚠️ Changed in v1.9.55:** in the new-session dialog (`n`), **Enter advances to the next field** on the Name and Branch inputs instead of submitting — typing a name and hitting Enter no longer creates a session with all defaults. **Ctrl+S creates the session from any field.** The dialog also remembers your last-used tool. Restore the old behavior with `[ui].new_session_enter_advances = false`.
+> **⚠️ Changed in v1.9.55, extended after v1.16.5:** in the new-session dialog (`n`), **Enter advances to the next field** on every row — Name, Tool, Model, Reasoning effort, Path, checkboxes and each Claude Options row — and only the trailing **`[ Create session ]`** button (or **Ctrl+S from any field**) creates the session, so walking the form with Enter never launches a session before you have chosen the model, path or options. `↓`/`Space` open the model list. The dialog also remembers your last-used tool. Restore the old Enter-creates-from-any-row behavior with `[ui].new_session_enter_advances = false`.
 
 ### Key Shortcuts
 
@@ -238,8 +238,8 @@ configured under `[profiles.<name>.claude].config_dir`.
 The TUI exposes the same two moments. The **New Session** dialog's Claude options
 carry an `Account` row (`←`/`→` or `Space` to cycle, `inherit` = today's
 conductor/group/env chain), so a session can be created straight onto the right
-login. The **Edit Session** dialog (`e`) carries a `Claude account` row for a
-session that already exists; committing it runs the same
+login. The **Edit Session** dialog (`Shift+P`) carries an account row for a
+session that already exists; saving it asks "Switch Account?" first, then runs the same
 migrate-and-resume flow as `session switch-account`, and the session card's
 `[account:"…"]` badge follows. Both rows are hidden when no
 `[profiles.<name>.claude].config_dir` blocks are configured.

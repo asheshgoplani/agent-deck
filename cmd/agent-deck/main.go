@@ -1308,6 +1308,7 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"extra-arg":      true,
 		"wrapper":        true,
 		"model":          true,
+		"effort":         true,
 		"w":              true,
 		"worktree":       true,
 		"location":       true,
@@ -1529,8 +1530,10 @@ func handleAdd(profile string, args []string) {
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
+	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
+	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
 	// Socket isolation (v1.7.50+, issue #687). Overrides the installation-
 	// wide `[tmux].socket_name` for this one session. Empty = fall back to
@@ -1562,6 +1565,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add -t \"My Project\" -g \"work\"")
 		fmt.Println("  agent-deck add -c claude .")
 		fmt.Println("  agent-deck add -c codex --model gpt-5.5 .")
+		fmt.Println("  agent-deck add -c claude --model claude-opus-5 --effort high .")
+		fmt.Println("  agent-deck add -c claude --skip-permissions --chrome --continue .   # the dialog's Claude Options rows")
 		fmt.Println("  agent-deck add -c gemini --model gemini-3.1-pro-preview .")
 		fmt.Println("  agent-deck -p work add               # Add to 'work' profile")
 		fmt.Println("  agent-deck add -t \"Sub-task\" --parent \"Main Project\"  # Create sub-session")
@@ -2116,6 +2121,10 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 	}
+	if err := applyCLIEffortOverride(newInstance, *effort); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Set worktree fields if created
 	if worktreePath != "" {
@@ -2160,6 +2169,10 @@ func handleAdd(profile string, args []string) {
 	}
 
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := applyCLIClaudeOptionFlags(newInstance, claudeFlags); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -2331,6 +2344,8 @@ func handleAdd(profile string, args []string) {
 		jsonData["resume_session"] = *resumeSession
 	}
 	addModelInfoJSON(jsonData, modelInfo)
+	addEffortJSON(jsonData, newInstance)
+	addClaudeOptionsJSON(jsonData, newInstance)
 	if *sandbox {
 		jsonData["sandbox"] = true
 		humanLines = append(humanLines[:len(humanLines)-3],

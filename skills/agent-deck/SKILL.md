@@ -819,9 +819,9 @@ Move a session — conversation included — to a different Claude account (work
 
 **In the TUI:** the New Session dialog's Claude options carry an `Account` row
 (`←`/`→` or `Space` to cycle; `inherit` keeps the conductor/group/env chain), and
-the Edit Session dialog (`e`) carries a `Claude account` row that runs the full
-switch — conversation migration and `--resume` restart included — on save. Both
-rows are hidden when no accounts are configured.
+the Edit Session dialog (`Shift+P`) carries an account row that runs the full
+switch — conversation migration and `--resume` restart included — on save, after a
+"Switch Account?" confirmation. Both rows are hidden when no accounts are configured.
 
 **Commands:**
 
