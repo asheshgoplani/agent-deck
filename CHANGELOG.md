@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.5] - 2026-09-12
+
+Fleet-safety release: stopping one session's systemd unit can no longer take down the shared tmux server, spawn diagnostics never persist credentials, and the vulnerability scan runs again in CI.
+
+### Fixed
+
+- A per-session systemd unit is torn down without killing the shared tmux server that other sessions live in; a real user-manager acceptance job now guards this in CI ([#2233](https://github.com/asheshgoplani/agent-deck/pull/2233), closes #2219).
+- Spawn failure diagnostics redact bearer, basic and quoted authorization credentials before they are persisted, logged or displayed ([#2232](https://github.com/asheshgoplani/agent-deck/pull/2232), closes #2216).
+- Pi's line-leading "→" is no longer treated as a busy marker, so Pi sessions stop showing as running when they are waiting ([#2221](https://github.com/asheshgoplani/agent-deck/pull/2221), by @barjatiyasaurabh).
+- The release test gate is portable on macOS and preserves the global state database around home fixtures ([#2204](https://github.com/asheshgoplani/agent-deck/pull/2204), by @jwiegley).
+
+### CI
+
+- `govulncheck` is pinned to a scanner compatible with the project's Go toolchain instead of `@latest`, so the security job runs again ([#2231](https://github.com/asheshgoplani/agent-deck/pull/2231)).
+
 ## [1.16.4] - 2026-09-07
 
 The persistent remote channel is production-grade: bounded, self-healing and honest at fleet scale, with faster pushes and a live preview pane.
