@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.7] - 2026-09-12
+
+The controller keeps itself current and restarts in place, deploys behind symlinked install paths work, the notify daemon restarts silently, and the New Session dialog walks with Enter.
+
+### Added
+
+- Unattended self-update on the controller: `[updates] auto_install` (on by default, `false` to opt out) installs an available release from the TUI's periodic check and from a daily timer that `agent-deck update --install-timer` sets up (launchd on macOS, systemd user timer on Linux; `--uninstall-timer` removes it). `[updates] auto_restart` (on by default) re-execs the running TUI or headless process in place once a newer binary is on disk; with it off, the TUI shows the installed version and `ctrl+t` restarts in place, `ctrl+y` installs from the banner. On macOS the installer re-bootstraps agent-deck's own launchd agents after a binary replace so they do not crash-loop. Homebrew installs are never replaced; the `brew` command is printed instead ([#2165](https://github.com/asheshgoplani/agent-deck/pull/2165)).
+- The New Session dialog walks with Enter from field to field down to a Create button, the Model ID row no longer loops, Tab reaches every Claude option, and every dialog row has an `add`/`launch` flag (including `--effort`) with `--help` text. The account switch in the Edit Session dialog asks for confirmation before it saves and switches ([#2239](https://github.com/asheshgoplani/agent-deck/pull/2239)).
+
+### Fixed
+
+- Controller-driven remote deploys resolve a symlinked install path and update the file behind the link, preserving owner and group, and verify the installed inode against the remote's `$PATH` binary; a failed probe skips with a report instead of overwriting; an explicit `remote update --all` during a startup sweep waits instead of failing, and `remote list --check` refreshes after a deploy ([#2245](https://github.com/asheshgoplani/agent-deck/pull/2245), closes #2244).
+- The notify daemon seeds its last-notified state from the live session list on start, so a restart (the systemd `RuntimeMaxSec` recycle or an update) no longer re-emits a transition for every parked child, and the `[INBOX]` nudge fires only when a record was actually committed ([#2242](https://github.com/asheshgoplani/agent-deck/pull/2242), closes #2240).
+
+
 ## [1.16.6] - 2026-09-12
 
 Remotes now follow the controller's version on their own, a session can switch its Claude account or move to another harness with its conversation carried over, and the account badge only appears when it means something.
