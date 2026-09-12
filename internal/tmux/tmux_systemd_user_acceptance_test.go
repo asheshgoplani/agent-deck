@@ -175,7 +175,7 @@ func (f *systemdUserTMuxFixture) cleanup() {
 		f.t.Errorf("cleanup kill-server reported success but exact socket %s remains reachable: %s (socket directory preserved)", f.socket, out)
 		return
 	}
-	if out, err := f.command("systemctl", "--user", "reset-failed", f.unit).CombinedOutput(); err != nil {
+	if out, err := f.command("systemctl", "--user", "reset-failed", f.unit).CombinedOutput(); err != nil && !resetFailedReportsCollectedUnit(out, f.unit) {
 		f.t.Errorf("cleanup reset-failed %s: %v: %s", f.unit, err, out)
 	}
 	if err := os.RemoveAll(f.dir); err != nil {
