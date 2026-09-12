@@ -435,6 +435,7 @@ type instanceStorageSnapshot struct {
 }
 
 func (s *Storage) rememberInstanceSnapshot(inst *Instance, original, stored *statedb.InstanceRow) {
+	inst.restartDB.Store(s.db)
 	inst.storageSnapshot = &instanceStorageSnapshot{
 		dbPath:   s.dbPath,
 		original: statedb.CloneInstanceRow(original),
