@@ -86,7 +86,7 @@ type unattendedDeps struct {
 // changelog, no stdin. Returns the process exit code. Every branch logs with
 // the trigger so the debug log shows what a timer or TUI run did.
 func runUnattendedUpdate(d unattendedDeps) int {
-	log := updateCLILog.With(slog.String("trigger", d.trigger), slog.String("mode", "unattended"))
+	log := unattendedLogger(d.trigger)
 	log.Info("unattended_update_start", slog.String("current", d.version))
 
 	info, err := d.check()
@@ -161,9 +161,15 @@ func runUnattendedUpdate(d unattendedDeps) int {
 	return exitUpdateOK
 }
 
+// unattendedLogger tags every line of an unattended run with its trigger.
+func unattendedLogger(trigger string) *slog.Logger {
+	return updateCLILog.With(slog.String("trigger", trigger), slog.String("mode", "unattended"))
+}
+
 // realUnattendedDeps wires runUnattendedUpdate to GitHub, the binary and
 // launchd.
 func realUnattendedDeps(trigger string) unattendedDeps {
+	log := unattendedLogger(trigger)
 	lockDir, err := ensureEffectiveCacheDir()
 	if err != nil {
 		lockDir = os.TempDir()
@@ -177,7 +183,7 @@ func realUnattendedDeps(trigger string) unattendedDeps {
 		check:          func() (*update.UpdateInfo, error) { return update.CheckForUpdate(Version, true) },
 		detectHomebrew: update.DetectHomebrewManagedInstall,
 		preflight: func() error {
-			return update.PreflightLaunchctl(update.RebootstrapOptions{})
+			return update.PreflightLaunchctl(update.RebootstrapOptions{Logger: log})
 		},
 		install: func(latest string) error {
 			release, err := update.FetchReleaseByTag(latest)
@@ -187,7 +193,7 @@ func realUnattendedDeps(trigger string) unattendedDeps {
 			return update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH)
 		},
 		updateBridge: update.UpdateBridgePy,
-		hygiene:      rebootstrapLaunchAgentsAfterInstall,
+		hygiene:      func() error { return rebootstrapLaunchAgentsAfterInstall(log) },
 	}
 }
 
@@ -196,12 +202,12 @@ func realUnattendedDeps(trigger string) unattendedDeps {
 // agents that run this binary (see update.RebootstrapLaunchAgents); elsewhere
 // it is a no-op. The returned error already names the agent and the repair
 // commands.
-func rebootstrapLaunchAgentsAfterInstall() error {
+func rebootstrapLaunchAgentsAfterInstall(log *slog.Logger) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
 	fmt.Println("Re-registering launchd agents that run agent-deck...")
-	res, err := update.RebootstrapLaunchAgents(update.RebootstrapOptions{})
+	res, err := update.RebootstrapLaunchAgents(update.RebootstrapOptions{Logger: log})
 	if err != nil {
 		return err
 	}
@@ -228,7 +234,7 @@ func warnIfLaunchctlUnavailable() {
 // the caller can exit non-zero: the binary is already updated at that point
 // and the message says so.
 func finishInstallHygiene(version string) bool {
-	if err := rebootstrapLaunchAgentsAfterInstall(); err != nil {
+	if err := rebootstrapLaunchAgentsAfterInstall(updateCLILog); err != nil {
 		fmt.Printf("\nInstalled v%s but %v\n", version, err)
 		return false
 	}

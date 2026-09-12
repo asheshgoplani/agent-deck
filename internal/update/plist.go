@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ func (a LaunchAgent) ProgramPath() string {
 // scalar/array/dict node types launchd uses fit in a small encoding/xml
 // walker.
 func ParseLaunchAgentPlist(data []byte) (LaunchAgent, error) {
-	dec := xml.NewDecoder(strings.NewReader(string(data)))
+	dec := xml.NewDecoder(bytes.NewReader(data))
 	var agent LaunchAgent
 	root, err := plistRootDict(dec)
 	if err != nil {
@@ -144,14 +145,10 @@ func plistDecodeDict(dec *xml.Decoder) (map[string]any, error) {
 func plistDecodeValue(dec *xml.Decoder, se xml.StartElement) (any, error) {
 	switch se.Name.Local {
 	case "string", "date", "data":
-		var s string
-		if err := dec.DecodeElement(&s, &se); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return plistText(dec, se)
 	case "integer":
-		var s string
-		if err := dec.DecodeElement(&s, &se); err != nil {
+		s, err := plistText(dec, se)
+		if err != nil {
 			return nil, err
 		}
 		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
@@ -160,8 +157,8 @@ func plistDecodeValue(dec *xml.Decoder, se xml.StartElement) (any, error) {
 		}
 		return n, nil
 	case "real":
-		var s string
-		if err := dec.DecodeElement(&s, &se); err != nil {
+		s, err := plistText(dec, se)
+		if err != nil {
 			return nil, err
 		}
 		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
@@ -199,4 +196,11 @@ func plistDecodeValue(dec *xml.Decoder, se xml.StartElement) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported plist element <%s>", se.Name.Local)
 	}
+}
+
+// plistText decodes the character data of a scalar element.
+func plistText(dec *xml.Decoder, se xml.StartElement) (string, error) {
+	var s string
+	err := dec.DecodeElement(&s, &se)
+	return s, err
 }

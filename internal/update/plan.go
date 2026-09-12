@@ -162,26 +162,19 @@ func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 		return err
 	}
 	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		cleanup()
-		return err
+	if _, err = tmp.Write(content); err == nil {
+		err = tmp.Chmod(mode)
 	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		cleanup()
-		return err
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
 	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
+	if err == nil {
+		err = os.Rename(tmpPath, path)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
-		return err
+	if err != nil {
+		_ = os.Remove(tmpPath)
 	}
-	return nil
+	return err
 }
 
 // AcquireUpdateLock takes the cross-process lock that keeps the TUI's

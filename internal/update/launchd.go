@@ -54,10 +54,9 @@ type RebootstrapResult struct {
 // AgentRestartError is returned when an agent did not come back after the
 // binary was replaced. It carries the exact commands to run by hand.
 type AgentRestartError struct {
-	Label   string
-	Cause   error
-	Repair  []string // shell lines
-	Version string
+	Label  string
+	Cause  error
+	Repair []string // shell lines
 }
 
 func (e *AgentRestartError) Error() string {
@@ -110,6 +109,11 @@ func (o *RebootstrapOptions) fill() error {
 
 // launchctlDomain is the per-user GUI domain the agents live in.
 func launchctlDomain(uid int) string { return fmt.Sprintf("gui/%d", uid) }
+
+// launchctlTarget is the domain/label form launchctl bootout and print take.
+func launchctlTarget(uid int, label string) string {
+	return launchctlDomain(uid) + "/" + label
+}
 
 // PreflightLaunchctl checks that the launchd hygiene can run at all:
 // launchctl must be on PATH and the user's gui domain must be reachable.
@@ -208,7 +212,7 @@ func RebootstrapLaunchAgents(opts RebootstrapOptions) (RebootstrapResult, error)
 func rebootstrapOne(opts RebootstrapOptions, agent LaunchAgent) error {
 	log := opts.Logger
 	domain := launchctlDomain(opts.UID)
-	target := domain + "/" + agent.Label
+	target := launchctlTarget(opts.UID, agent.Label)
 	bootout := []string{"launchctl", "bootout", target}
 	bootstrap := []string{"launchctl", "bootstrap", domain, agent.Path}
 	printCmd := []string{"launchctl", "print", target}
@@ -259,7 +263,7 @@ func rebootstrapOne(opts RebootstrapOptions, agent LaunchAgent) error {
 	}
 	deadline := opts.now().Add(opts.VerifyTimeout)
 	for {
-		if launchctlRunning(out) {
+		if launchctlState(out) == "running" {
 			log.Info("launchagent_verified", slog.String("label", agent.Label), slog.String("state", "running"))
 			return nil
 		}
@@ -298,8 +302,6 @@ func launchctlState(out string) string {
 	}
 	return "unknown"
 }
-
-func launchctlRunning(out string) bool { return launchctlState(out) == "running" }
 
 // sameProgram reports whether prog names the updated executable, comparing
 // the raw path and the symlink-resolved path on both sides.

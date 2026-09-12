@@ -112,14 +112,13 @@ func (c TimerConfig) timerPATH() string {
 // update never touches, so the timer survives every install without being
 // re-bootstrapped.
 func (c TimerConfig) LaunchdPlist() []byte {
-	var b bytes.Buffer
 	esc := func(s string) string {
 		var sb strings.Builder
 		_ = xml.EscapeText(&sb, []byte(s))
 		return sb.String()
 	}
 	logPath := filepath.Join(c.LogDir, TimerLogFileName)
-	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -166,7 +165,6 @@ func (c TimerConfig) LaunchdPlist() []byte {
 </dict>
 </plist>
 `)
-	return b.Bytes()
 }
 
 // SystemdService renders the oneshot service the timer fires.
@@ -209,12 +207,12 @@ func systemdQuote(p string) string {
 func InstallTimerPlan(c TimerConfig) (Plan, error) {
 	switch c.GOOS {
 	case "darwin":
-		domain := launchctlDomain(c.UID)
+		target := launchctlTarget(c.UID, AutoupdateLabel)
 		return Plan{Steps: []Step{
 			{Desc: "write launchd plist", WritePath: c.PlistPath(), Content: c.LaunchdPlist(), Mode: 0o644},
-			{Desc: "unload previous timer", Argv: []string{"launchctl", "bootout", domain + "/" + AutoupdateLabel}, Tolerate: launchctlNotLoaded},
-			{Desc: "load timer", Argv: []string{"launchctl", "bootstrap", domain, c.PlistPath()}},
-			{Desc: "verify timer", Argv: []string{"launchctl", "print", domain + "/" + AutoupdateLabel}},
+			{Desc: "unload previous timer", Argv: []string{"launchctl", "bootout", target}, Tolerate: launchctlNotLoaded},
+			{Desc: "load timer", Argv: []string{"launchctl", "bootstrap", launchctlDomain(c.UID), c.PlistPath()}},
+			{Desc: "verify timer", Argv: []string{"launchctl", "print", target}},
 		}}, nil
 	case "linux":
 		return Plan{Steps: []Step{
@@ -236,9 +234,8 @@ func UninstallTimerPlan(c TimerConfig) (Plan, error) {
 		if !fileExists(c.PlistPath()) {
 			return Plan{}, nil
 		}
-		domain := launchctlDomain(c.UID)
 		return Plan{Steps: []Step{
-			{Desc: "unload timer", Argv: []string{"launchctl", "bootout", domain + "/" + AutoupdateLabel}, Tolerate: launchctlNotLoaded},
+			{Desc: "unload timer", Argv: []string{"launchctl", "bootout", launchctlTarget(c.UID, AutoupdateLabel)}, Tolerate: launchctlNotLoaded},
 			{Desc: "remove launchd plist", RemovePath: c.PlistPath()},
 		}}, nil
 	case "linux":
@@ -283,7 +280,7 @@ func QueryTimerStatus(c TimerConfig, r Runner) TimerStatus {
 			st.Detail = launchdScheduleDetail(data)
 		}
 		if r != nil {
-			_, err := r.Run("launchctl", "print", launchctlDomain(c.UID)+"/"+AutoupdateLabel)
+			_, err := r.Run("launchctl", "print", launchctlTarget(c.UID, AutoupdateLabel))
 			st.Active = err == nil
 		}
 		return st
