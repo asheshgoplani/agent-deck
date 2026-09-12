@@ -476,6 +476,14 @@ type Home struct {
 	// newer release while the TUI runs (see binary_watch.go). Nil when the
 	// executable could not be resolved at startup.
 	binaryWatch *binaryWatch
+	// homebrewManaged is cached once at startup: a Homebrew binary is never
+	// installed over by the TUI (brew owns it). See update_auto.go.
+	homebrewManaged bool
+	// autoInstallInFlight is the version an unattended install is running
+	// for ("" when none); autoInstallAttempts is when each version was last
+	// tried, so a failure is not retried every check.
+	autoInstallInFlight string
+	autoInstallAttempts map[string]time.Time
 
 	// Launching animation state (for newly created sessions)
 	launchingSessions    map[string]time.Time        // sessionID -> creation time
@@ -3731,6 +3739,7 @@ func (h *Home) Init() tea.Cmd {
 	// Fingerprint the running executable so the tick loop can tell when an
 	// update lands on disk while the TUI is open.
 	h.binaryWatch = startBinaryWatch(Version)
+	h.homebrewManaged = detectHomebrewManaged()
 
 	cmds := []tea.Cmd{
 		h.sessionLoadCmd(nil, true),
@@ -7805,6 +7814,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateInstallFinishedMsg:
 		return h, h.handleUpdateInstallFinished(msg)
 
+	case unattendedInstallFinishedMsg:
+		return h, h.handleUnattendedInstallFinished(msg)
+
 	case binaryVersionProbedMsg:
 		if h.binaryWatch != nil {
 			h.binaryWatch.recordProbe(msg.fingerprint, msg.version, msg.err)
@@ -7824,7 +7836,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			h.updateInfo = msg.info
 		}
-		return h, nil
+		// auto_install: start the unattended updater in the background.
+		return h, h.maybeAutoInstall(msg.info)
 
 	case remoteFetchRoundMsg:
 		// Fan out: each remote answers with its own remoteSessionsFetchedMsg.
