@@ -87,6 +87,11 @@ func (s *Sandbox) Env() []string {
 		// Let the binary find tmux; we do NOT shim tmux — we use the real
 		// binary against a per-sandbox socket. See TmuxSocket().
 		"AGENT_DECK_TMUX_SOCKET=" + s.TmuxSocket(),
+		// A release that lands while the suite runs must never make the
+		// binary under test install it and re-exec itself (issue #2251).
+		// The binary also refuses under CI=true and without a TTY; this
+		// keeps local runs of the harness deterministic too.
+		"AGENTDECK_SKIP_UPDATE_CHECK=1",
 	}
 	// Preserve a few passthrough vars that the binary and its children need.
 	for _, k := range []string{"LANG", "LC_ALL", "SHELL", "GOCACHE", "GOMODCACHE"} {

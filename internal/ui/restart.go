@@ -147,9 +147,12 @@ func (h *Home) maybeAutoRestart() tea.Cmd {
 	return cmd
 }
 
-// autoRestartEnabled reads [updates].auto_restart (default true).
+// autoRestartEnabled reads [updates].auto_restart (default true) and
+// refuses outright when the process is driven by a test, CI or a script
+// (Home.autoUpdateSuppressedReason, issue #2251): the key still works,
+// nothing happens on its own.
 func (h *Home) autoRestartEnabled() bool {
-	return loadUpdateSettings().GetAutoRestart()
+	return h.autoUpdateSuppressedReason == "" && loadUpdateSettings().GetAutoRestart()
 }
 
 // restartExecutable is the path to exec: the path fingerprinted at startup
