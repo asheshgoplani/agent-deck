@@ -474,7 +474,58 @@ func CompareVersions(v1, v2 string) int {
 	case pre2 == "":
 		return -1
 	}
-	return strings.Compare(pre1, pre2)
+	return comparePreRelease(pre1, pre2)
+}
+
+// comparePreRelease orders two pre-release tags the way semver 2.0 §11
+// does: dot-separated identifiers compared left to right, numeric ones as
+// numbers (so rc.2 < rc.10), numeric below alphanumeric, and a tag that is
+// a prefix of the other sorts first (rc.1 < rc.1.1).
+func comparePreRelease(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		an, aNum := parseNumericIdentifier(as[i])
+		bn, bNum := parseNumericIdentifier(bs[i])
+		switch {
+		case aNum && bNum:
+			if an != bn {
+				if an < bn {
+					return -1
+				}
+				return 1
+			}
+		case aNum:
+			return -1
+		case bNum:
+			return 1
+		default:
+			if c := strings.Compare(as[i], bs[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	switch {
+	case len(as) < len(bs):
+		return -1
+	case len(as) > len(bs):
+		return 1
+	}
+	return 0
+}
+
+// parseNumericIdentifier reports whether id is all digits and its value.
+func parseNumericIdentifier(id string) (int, bool) {
+	if id == "" {
+		return 0, false
+	}
+	n := 0
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
 }
 
 // splitPreRelease separates "1.2.3-rc.1+build" into its numeric core "1.2.3"
