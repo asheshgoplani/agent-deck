@@ -95,15 +95,15 @@ jobs:
           go test -json -count=1 -timeout 3m -tags systemd_user_integration \
             -run "$pattern" ./internal/tmux | tee "$receipt"
           for test_name in "${tests[@]}"; do
-            if jq -e --arg test_name "$test_name" \
-              'select(.Action == "pass" and .Test == $test_name)' "$receipt" >/dev/null; then
+            if jq -s -e --arg test_name "$test_name" \
+              'any(.[]; .Action == "pass" and .Test == $test_name)' "$receipt" >/dev/null; then
               echo "control passed: $test_name"
             else
               echo "required control did not pass: $test_name" >&2
               exit 1
             fi
-            if jq -e --arg test_name "$test_name" \
-              'select(.Action == "skip" and .Test == $test_name)' "$receipt" >/dev/null; then
+            if jq -s -e --arg test_name "$test_name" \
+              'any(.[]; .Action == "skip" and .Test == $test_name)' "$receipt" >/dev/null; then
               echo "required control was skipped: $test_name" >&2
               exit 1
             fi
