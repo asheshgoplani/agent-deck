@@ -1490,7 +1490,9 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	// Plant a rollout file under HOME/.codex so the resume branch is exercised.
 	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), inst.CodexSessionID)
 	cmd = inst.buildCodexCommand(inst.Command)
-	if !strings.Contains(cmd, "codex-wrapper resume 019d1af6-c425-7791-8fd1-38c0fc43062c") {
+	// Launch flags (yolo/model/identity injection) sit between the wrapper
+	// and the resume subcommand, so check the two ends rather than adjacency.
+	if !strings.Contains(cmd, "AGENTDECK_PROFILE=_test codex-wrapper") || !strings.HasSuffix(cmd, " resume 019d1af6-c425-7791-8fd1-38c0fc43062c") {
 		t.Fatalf("buildCodexCommand should resume through the custom wrapper, got %q", cmd)
 	}
 }
@@ -1635,6 +1637,9 @@ func TestBuildCodexCommand_ConfiguredCommandResume(t *testing.T) {
 	inst.CodexSessionID = id
 	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), id)
 
+	// Identity injection sits between the command and `resume`; this test
+	// pins the configured-command/CODEX_HOME adjacency, so switch it off.
+	inst.IdentityInjectionDisabled = true
 	cmd := inst.buildCodexCommand("codex")
 	if !strings.Contains(cmd, "codex-v2 resume "+id) {
 		t.Fatalf("configured Codex command should be used for resume, got %q", cmd)
@@ -1694,6 +1699,9 @@ func TestBuildCodexCommand_InlineCodexHomeForRolloutCheck(t *testing.T) {
 	inst.CodexSessionID = id
 	writeFakeCodexRollout(t, codexHome, id)
 
+	// Identity injection sits between the command and `resume`; this test
+	// pins the configured-command/CODEX_HOME adjacency, so switch it off.
+	inst.IdentityInjectionDisabled = true
 	cmd := inst.buildCodexCommand("codex")
 	if !strings.Contains(cmd, "CODEX_HOME="+codexHome+" codex resume "+id) {
 		t.Fatalf("inline CODEX_HOME command should resume from configured home, got %q", cmd)
@@ -1728,6 +1736,9 @@ func TestBuildCodexCommand_QuotedInlineCodexHomeWithSpaces(t *testing.T) {
 	inst.CodexSessionID = id
 	writeFakeCodexRollout(t, codexHome, id)
 
+	// Identity injection sits between the command and `resume`; this test
+	// pins the configured-command/CODEX_HOME adjacency, so switch it off.
+	inst.IdentityInjectionDisabled = true
 	cmd := inst.buildCodexCommand("codex")
 	if !strings.Contains(cmd, `CODEX_HOME="`+codexHome+`" codex resume `+id) {
 		t.Fatalf("quoted inline CODEX_HOME command should resume from configured home, got %q", cmd)

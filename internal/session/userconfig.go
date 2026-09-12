@@ -255,6 +255,10 @@ type UserConfig struct {
 	// UI defines TUI layout settings (split ratios, etc).
 	UI UISettings `toml:"ui,omitempty"`
 
+	// Launch defines settings applied to every session spawn regardless of
+	// tool (identity injection, ...). See LaunchSettings.
+	Launch LaunchSettings `toml:"launch,omitempty"`
+
 	// SelfHeal defines self-heal supervision settings (SELF-HEAL-DESIGN.md).
 	// Stage 1 (v1.9.67) is observe-only: it logs what it WOULD do, takes no
 	// action. See SelfHealSettings.
@@ -1387,6 +1391,28 @@ func (s *ShellSettings) GetExitToShell() bool {
 		return false // Default: OFF (preserve current exit/resume behavior)
 	}
 	return *s.ExitToShell
+}
+
+// LaunchSettings holds tool-agnostic spawn settings ([launch] in config.toml).
+type LaunchSettings struct {
+	// InjectIdentity controls whether every spawned session is told, through
+	// its harness's own instruction mechanism, that it runs inside agent-deck,
+	// what its session identity is (id, title, group, profile, account,
+	// parent, path) and how to use the agent-deck CLI from inside. The text
+	// is regenerated from the session record on every start/restart and
+	// written to an agent-deck-owned file (AGENTDECK_IDENTITY_FILE), never
+	// into the project directory. nil => true. Per-session opt-out:
+	// `add`/`launch --no-identity`.
+	InjectIdentity *bool `toml:"inject_identity,omitempty"`
+}
+
+// GetInjectIdentity returns whether identity injection is enabled, defaulting
+// to true.
+func (l *LaunchSettings) GetInjectIdentity() bool {
+	if l == nil || l.InjectIdentity == nil {
+		return true
+	}
+	return *l.InjectIdentity
 }
 
 // GetLaunchShell returns whether agent commands should be wrapped with a shell

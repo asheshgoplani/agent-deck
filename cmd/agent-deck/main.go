@@ -1459,6 +1459,7 @@ func handleAdd(profile string, args []string) {
 	// is an alias for discoverability.
 	titleLock := fs.Bool("title-lock", false, "Lock session title so Claude's session name never overrides it (#697)")
 	noTitleSync := fs.Bool("no-title-sync", false, "Alias for --title-lock")
+	noIdentity := fs.Bool("no-identity", false, "Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)")
 	quickCreate := fs.Bool("quick", false, "Create a quick session with a machine-generated handle; TUI shows Claude's live task description when available")
 	quickCreateShort := fs.Bool("Q", false, "Create a quick session (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -2053,6 +2054,11 @@ func handleAdd(profile string, args []string) {
 	// `launch` paths.
 	if shouldLockTitle(userProvidedTitle, *titleLock, *noTitleSync) {
 		newInstance.TitleLocked = true
+	}
+
+	// Per-session opt-out of harness identity injection (identity_injection.go).
+	if *noIdentity {
+		newInstance.IdentityInjectionDisabled = true
 	}
 
 	// Set command if provided
