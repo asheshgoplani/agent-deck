@@ -78,6 +78,7 @@ func newUnattendedHarness(t *testing.T, info *update.UpdateInfo) *unattendedHarn
 		},
 		updateBridge: func() error { h.calls = append(h.calls, "bridge"); return nil },
 		hygiene:      func() error { h.calls = append(h.calls, "hygiene"); return nil },
+		sweepRemotes: func(latest string) { h.calls = append(h.calls, "remotes "+latest) },
 	}
 	return h
 }
@@ -90,7 +91,7 @@ func TestRunUnattendedUpdate_HappyPath(t *testing.T) {
 	h := newUnattendedHarness(t, availableInfo())
 	code := runUnattendedUpdate(h.deps)
 	assert.Equal(t, exitUpdateOK, code)
-	assert.Equal(t, []string{"check", "homebrew", "preflight", "install 1.17.0", "bridge", "hygiene"}, h.calls)
+	assert.Equal(t, []string{"check", "homebrew", "preflight", "install 1.17.0", "bridge", "hygiene", "remotes 1.17.0"}, h.calls)
 	assert.Contains(t, h.out.String(), "✓ Updated to v1.17.0 (unattended); running agent-deck processes restart themselves")
 	assert.NoFileExists(t, filepath.Join(h.deps.lockDir, update.UpdateLockFileName), "lock released")
 }

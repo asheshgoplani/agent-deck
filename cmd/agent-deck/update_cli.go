@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,6 +81,10 @@ type unattendedDeps struct {
 	install        func(latest string) error
 	updateBridge   func() error
 	hygiene        func() error
+	// sweepRemotes pushes the new version to older remotes when
+	// [updates] auto_update_remotes is on (#2166); it never prompts and
+	// its failures are per-remote, never this run's.
+	sweepRemotes func(latest string)
 }
 
 // runUnattendedUpdate is `agent-deck update --unattended`: no prompts, no
@@ -158,6 +163,10 @@ func runUnattendedUpdate(d unattendedDeps) int {
 
 	fmt.Fprintf(d.out, "✓ Updated to v%s (unattended); running agent-deck processes restart themselves\n", info.LatestVersion)
 	log.Info("unattended_update_done", slog.String("installed", info.LatestVersion))
+
+	if d.sweepRemotes != nil {
+		d.sweepRemotes(info.LatestVersion)
+	}
 	return exitUpdateOK
 }
 
@@ -194,7 +203,29 @@ func realUnattendedDeps(trigger string) unattendedDeps {
 		},
 		updateBridge: update.UpdateBridgePy,
 		hygiene:      func() error { return rebootstrapLaunchAgentsAfterInstall(log) },
+		sweepRemotes: func(latest string) { sweepRemotesUnattended(latest, log) },
 	}
+}
+
+// sweepRemotesUnattended is the unattended counterpart of
+// updateRemotesAfterLocalUpdate: with auto_update_remotes on it runs the
+// same no-prompt sweep (#2166); with it off there is nobody to answer the
+// Y/n prompt, so the remotes are left alone and the log says so.
+func sweepRemotesUnattended(latest string, log *slog.Logger) {
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil || len(config.Remotes) == 0 {
+		return
+	}
+	if !session.GetUpdateSettings().GetAutoUpdateRemotes() {
+		fmt.Println("auto_update_remotes is off; remotes left alone (run `agent-deck remote update --all` to update them)")
+		log.Info("unattended_remote_sweep_skipped", slog.String("reason", "auto_update_remotes_off"), slog.Int("remotes", len(config.Remotes)))
+		return
+	}
+	fmt.Printf("auto_update_remotes is on: updating %d remote(s) to v%s\n", len(config.Remotes), latest)
+	log.Info("unattended_remote_sweep_start", slog.Int("remotes", len(config.Remotes)), slog.String("latest", latest))
+	results := runPostUpdateRemoteSweep(context.Background(), config.Remotes, latest, true)
+	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
+	log.Info("unattended_remote_sweep_done", slog.Int("remotes", len(results)))
 }
 
 // rebootstrapLaunchAgentsAfterInstall is the post-install hygiene shared by
