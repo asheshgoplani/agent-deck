@@ -2360,6 +2360,22 @@ type WorktreeSettings struct {
 	// to "always". See --allow-repo-scripts / AGENT_DECK_ALLOW_REPO_SCRIPTS
 	// for a one-shot, non-persisted bypass (CI).
 	RunRepoScripts string `toml:"run_repo_scripts,omitempty"`
+
+	// Backend selects how a worktree is created:
+	//   "auto" (default, "" too) → proj's reflink copy of a template worktree
+	//     when the repository layout and host tooling support it, plain
+	//     `git worktree add` otherwise
+	//   "proj" → same, except a repository proj cannot serve is an error
+	//     instead of a silent (and much slower) fallback
+	//   "git"  → never use proj
+	// Unknown values resolve to "auto". See internal/git/proj.go.
+	Backend string `toml:"backend,omitempty"`
+}
+
+// WorktreeBackend returns the parsed [worktree] backend value, defaulting to
+// git.WorktreeBackendAuto.
+func (w WorktreeSettings) WorktreeBackend() string {
+	return git.ParseWorktreeBackend(w.Backend)
 }
 
 // ScriptConsentPolicy returns the parsed [worktree] run_repo_scripts value.
@@ -4184,9 +4200,11 @@ func (w WorktreeSettings) GetAutoCleanup() bool {
 func GetWorktreeSettings() WorktreeSettings {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
-		return WorktreeSettings{
+		settings := WorktreeSettings{
 			DefaultLocation: "subdirectory",
 		}
+		git.SetWorktreeBackend(settings.WorktreeBackend())
+		return settings
 	}
 
 	settings := config.Worktree
@@ -4194,6 +4212,12 @@ func GetWorktreeSettings() WorktreeSettings {
 	if settings.DefaultLocation == "" {
 		settings.DefaultLocation = "subdirectory"
 	}
+
+	// Push the resolved backend into the git package, which does not read
+	// config itself. Done here rather than at startup because every worktree
+	// entry point (TUI, CLI, web, remote) already funnels through this call,
+	// so none can reach creation with a stale backend.
+	git.SetWorktreeBackend(settings.WorktreeBackend())
 
 	return settings
 }

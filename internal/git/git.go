@@ -281,6 +281,10 @@ type worktreeBranchResolution struct {
 	Branch string
 	Mode   worktreeBranchMode
 	Remote string
+	// StartPoint is the ref a worktreeBranchNew branch is rooted at, empty for
+	// HEAD. Recorded because the proj backend has to create the branch itself
+	// and would otherwise lose the caller's start point.
+	StartPoint string
 }
 
 // ValidateBranchName validates that a branch name follows git's naming rules
@@ -364,6 +368,14 @@ func ValidateBranchName(name string) error {
 // neither default makes sense when the project root *is* the bare repo. Custom
 // path templates still take precedence (see WorktreePath in template.go).
 func GenerateWorktreePath(repoDir, branchName, location string) string {
+	// proj hardcodes <project dir>/<name> and cannot be pointed elsewhere, so
+	// when the proj backend will serve creation the path has to agree with it
+	// up front — otherwise planProjCreate rejects the very path generated here
+	// and every create silently falls back to git.
+	if projPath, ok := ProjWorktreePath(repoDir, branchName); ok {
+		return projPath
+	}
+
 	// Sanitize branch name for filesystem
 	sanitized := branchName
 	sanitized = strings.ReplaceAll(sanitized, "/", "-")
@@ -478,11 +490,13 @@ func CreateWorktreeWithOptions(repoDir, worktreePath, branchName string, opts Wo
 		// falls through to a HEAD-based branch.
 		if base, ok := freshOriginDefaultBranchRef(repoDir); ok {
 			spec.args = []string{"-b", branchName, worktreePath, base}
+			resolution.StartPoint = base
 		} else {
 			spec.args = []string{"-b", branchName, worktreePath}
 		}
 		spec.createdBranch = true
 	}
+	spec.branch = resolution
 
 	return runWorktreeAdd(spec)
 }
@@ -501,6 +515,10 @@ type worktreeAddSpec struct {
 	// createdBranch records whether this invocation creates the branch, so a
 	// failed sparse replay can roll the branch back too.
 	createdBranch bool
+	// branch carries the resolved branch decision in structured form. The git
+	// path expresses it through args; the proj backend cannot reuse those
+	// (proj takes a branch, not `git worktree add` syntax) and reads this.
+	branch worktreeBranchResolution
 	// failMsg prefixes the creation error, keeping each caller's wording.
 	failMsg string
 }
@@ -514,6 +532,21 @@ type worktreeAddSpec struct {
 // semantics the with-state path uses (see CreateWorktreeWithStateAndSetup); the
 // caller therefore never observes a half-initialized worktree.
 func runWorktreeAdd(spec worktreeAddSpec) error {
+	// proj backend (see proj.go): a reflink copy of a template worktree
+	// instead of a fresh checkout. planProjCreate narrows hard — anything it
+	// cannot serve exactly falls through to the git path below unchanged.
+	if backend := WorktreeBackend(); backend != WorktreeBackendGit {
+		plan, reason, ok := planProjCreate(spec)
+		switch {
+		case ok:
+			return runProjNew(plan, spec)
+		case backend == WorktreeBackendProj:
+			// Explicitly configured for proj: surface the mismatch rather than
+			// silently doing the slow thing the user opted out of.
+			return fmt.Errorf("%s: [worktree] backend = %q but proj cannot serve this request: %s", spec.failMsg, WorktreeBackendProj, reason)
+		}
+	}
+
 	args := []string{"-C", spec.repoDir, "worktree", "add"}
 	if spec.sparse.Enabled {
 		// The whole point of #1708: patterns must be installed before the
@@ -600,7 +633,12 @@ func CreateWorktreeAtStartPointWithOptions(repoDir, worktreePath, branchName, st
 		args:          []string{"-b", branchName, worktreePath, startPoint},
 		sparse:        sparse,
 		createdBranch: true,
-		failMsg:       "failed to create worktree at start point",
+		branch: worktreeBranchResolution{
+			Branch:     branchName,
+			Mode:       worktreeBranchNew,
+			StartPoint: startPoint,
+		},
+		failMsg: "failed to create worktree at start point",
 	}); err != nil {
 		return false, err
 	}
@@ -734,6 +772,10 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 	// paths. Non-fatal — removal proceeds even if the script fails.
 	if IsLinkedWorktree(worktreePath) {
 		_ = RunWorktreeDestructionBeforeRemove(repoDir, worktreePath, os.Stderr, os.Stderr, DefaultWorktreeDestructionTimeout)
+		// Same moment, for worktrees proj created: `proj rm` is this hook plus
+		// the `git worktree remove` below, so running it here keeps teardown a
+		// single agent-deck operation (see RunProjPreRemoveHook).
+		RunProjPreRemoveHook(worktreePath)
 	}
 
 	args := []string{"-C", repoDir, "worktree", "remove"}
