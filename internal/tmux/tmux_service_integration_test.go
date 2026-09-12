@@ -1,3 +1,5 @@
+//go:build systemd_user_integration
+
 // Integration tests for the service-mode systemd invocation shape
 // produced by startCommandSpec (v1.7.21). These tests validate the REAL
 // systemd mechanism: spawn tmux as a transient service with the exact
