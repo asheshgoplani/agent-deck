@@ -126,4 +126,35 @@ test.describe('mobile phone layout', () => {
     await expect(page.locator('.term-strip .tpath')).toContainText('sess-002')
     await expect(page.locator('[data-testid="empty-state-dashboard"]')).toHaveCount(0)
   })
+
+  test('the shell is sized by the measured viewport, not by 100vh', async ({ page }) => {
+    // app.css sized `.app` with `height: 100vh`. On iOS Safari that is the
+    // LARGE viewport -- the height the page would have with the toolbars
+    // hidden -- so while they show, the bottom grid row (this tab bar) lands
+    // under the fold. Chromium cannot reproduce that: here 100vh and
+    // innerHeight agree. What this case pins instead is the wiring the fix
+    // restores -- viewportInsets mounted in the shell, publishing a measured
+    // pixel height into the --app-height that styles.src.css and app.css both
+    // read. Without the producer the variable keeps its `100vh` token and the
+    // first assertion fails.
+    const m = await page.evaluate(() => {
+      const root = getComputedStyle(document.documentElement)
+      const app = document.querySelector('.app')
+      const bar = document.querySelector('[data-testid="mobile-tabs"]')
+      return {
+        appHeight: root.getPropertyValue('--app-height').trim(),
+        keyboardInset: root.getPropertyValue('--keyboard-inset').trim(),
+        innerHeight: window.innerHeight,
+        appBottom: Math.round(app.getBoundingClientRect().bottom),
+        barBottom: Math.round(bar.getBoundingClientRect().bottom),
+      }
+    })
+
+    expect(m.appHeight).toBe(`${m.innerHeight}px`)
+    // No software keyboard in a headless run, so the inset must be exactly 0.
+    expect(m.keyboardInset).toBe('0px')
+    // The consequence that matters on a phone: nothing hangs below the fold.
+    expect(m.appBottom).toBeLessThanOrEqual(m.innerHeight)
+    expect(m.barBottom).toBeLessThanOrEqual(m.innerHeight)
+  })
 })
