@@ -50,6 +50,7 @@ const (
 	hotkeyReload           = "reload"
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
+	hotkeyDeadLetters      = "dead_letters"
 	// hotkeyAgentsPanel opens the Agents tab.
 	//
 	// The design mockup asks for "a". Every plain letter that reads as
@@ -127,6 +128,7 @@ var hotkeyActionOrder = []string{
 	hotkeyReload,
 	hotkeyDetach,
 	hotkeyWatcherPanel,
+	hotkeyDeadLetters,
 	hotkeyAgentsPanel,
 	hotkeySwitchSession,
 }
@@ -174,6 +176,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyReload:           "ctrl+r",
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
+	hotkeyDeadLetters:      "alt+d",
 	hotkeyAgentsPanel:      "alt+a",
 	hotkeySwitchSession:    "ctrl+s",
 }

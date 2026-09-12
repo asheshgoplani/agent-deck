@@ -14,6 +14,7 @@ Complete reference for all agent-deck CLI commands.
 - [Skill Commands](#skill-commands)
 - [Group Commands](#group-commands)
 - [Profile Commands](#profile-commands)
+- [Inbox Commands](#inbox-commands)
 - [Remote Commands](#remote-commands)
 - [Codex Hook Commands](#codex-hook-commands)
 - [DeepSeek Commands](#deepseek-commands)
@@ -592,6 +593,33 @@ agent-deck conductor list [--profile <name>]
 - Heartbeat sends use non-blocking `session send --no-wait -q` to avoid timeout churn when sessions are busy.
 - Bridge daemon is installed only when Telegram and/or Slack is configured in `[conductor]`.
 - Transition notifier daemon (`agent-deck notify-daemon`) is installed by setup and sends event nudges on `running -> waiting|error|idle` transitions (parent first, then conductor fallback).
+
+## Inbox Commands
+
+### dead-letter - Inspect and resolve terminal delivery failures
+
+```bash
+agent-deck inbox dead-letter list [--json]
+agent-deck inbox dead-letter show [--json] <record-id>
+agent-deck inbox dead-letter retry <record-id>
+agent-deck inbox dead-letter purge --older-than <duration>
+agent-deck inbox dead-letter purge --yes
+```
+
+`list` and `show` expose stable, bounded metadata only: record/session identity,
+reason, age, attempts, and a payload-type summary. They never print the raw
+record, prompt, completion summary, or pane output. IDs may be shortened to a
+unique prefix for `show` and `retry`.
+
+`retry` re-resolves the child's current parent and commits the event to that
+parent's durable inbox before removing exactly the delivered dead-letter record.
+If the child or parent no longer exists, or the target remains undeliverable,
+the command exits non-zero and retains the record.
+
+An unbounded purge requires `--yes`. `--older-than` is the non-interactive,
+bounded alternative; corrupt or undated records are never selected by an age
+bound. The command family also includes the `_unowned` discovery ledger so a
+successful triage can clear the warning reported by `inbox drain`.
 
 ## Remote Commands
 

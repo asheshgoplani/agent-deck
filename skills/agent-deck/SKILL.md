@@ -63,6 +63,7 @@ What agent-deck does, at the noun level (independent of which surface — CLI / 
 | **Manage groups** | Move / delete groups; organize sessions hierarchically | CLI ✅ · TUI ✅ |
 | **Manage watchers** | Install / configure event-driven adapters (Gmail, GitHub, ntfy) — doorbell-not-messenger | CLI ✅ · TUI ✅ |
 | **Heartbeat orchestration** | Cron / ScheduleWakeup feeding the conductor periodic system-state nudges | CLI ✅ |
+| **Dead-letter triage** | `inbox dead-letter` list/show/retry/purge; `Alt+D` in the TUI | CLI + TUI ✅ |
 | **Worktree workflows** | `--worktree` to create isolated git-worktree-backed sessions for parallel branch work | CLI ✅ |
 | **Channel routing** | Telegram / Slack inbound delivery to the right conductor, with `--channels` per-session binding | CLI ✅ |
 | **Attach MCPs** | Per-session or global MCP plugin attach / detach / status, with optional pooling | CLI ✅ · TUI ✅ · Web UI ⚪ |
