@@ -36,6 +36,8 @@ type installUpdateCmd struct {
 }
 
 func (c installUpdateCmd) Run() error {
+	// #nosec G204 -- c.exe is our own executable path (os.Executable) and
+	// "update" is a fixed argument.
 	cmd := exec.Command(c.exe, "update")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

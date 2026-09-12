@@ -102,5 +102,9 @@ func ExecSelf(exe string) error {
 	if exe == "" {
 		return errors.New("executable path unknown")
 	}
-	return execSelf(exe, os.Args, os.Environ())
+	// This is a self re-exec, not a child spawn: the new image must see the
+	// exact environment the user launched the old one with, so the childenv
+	// filter (which strips CLAUDE_CONFIG_DIR for claude workers) does not
+	// apply here.
+	return execSelf(exe, os.Args, os.Environ()) //nolint:forbidigo // self re-exec, not a child launch (#1163 is about claude workers)
 }

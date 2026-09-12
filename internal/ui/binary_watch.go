@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -151,8 +152,10 @@ func parseVersionOutput(out string) string {
 func probeBinaryVersion(exe string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), binaryProbeTimeout)
 	defer cancel()
+	// #nosec G204 -- exe is the path os.Executable() returned at startup
+	// (our own binary), and "version" is a fixed argument.
 	cmd := exec.CommandContext(ctx, exe, "version")
-	cmd.Env = append(os.Environ(), "AGENTDECK_SKIP_UPDATE_CHECK=1")
+	cmd.Env = append(childenv.ForLaunch(""), update.SkipUpdateCheckEnv+"=1")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

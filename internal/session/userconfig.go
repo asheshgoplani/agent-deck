@@ -1114,7 +1114,8 @@ type LogSettings struct {
 
 // UpdateSettings defines auto-update configuration
 type UpdateSettings struct {
-	// AutoUpdate automatically installs updates without prompting
+	// AutoUpdate makes the TUI offer to install an available update on
+	// startup (a Y/n prompt before the deck opens).
 	// Default: false
 	AutoUpdate bool `toml:"auto_update,omitempty"`
 
@@ -1125,6 +1126,17 @@ type UpdateSettings struct {
 	// version and is logged. Default: true (nil = true); opt out with
 	// auto_update_remotes = false (issue #2164).
 	AutoUpdateRemotes *bool `toml:"auto_update_remotes,omitempty"`
+	// AutoInstall installs an available update unattended (no prompt) from
+	// the TUI's periodic check and from the `agent-deck update` timer
+	// (launchd on macOS, systemd on Linux). Set false to opt out.
+	// Default: true (nil = true)
+	AutoInstall *bool `toml:"auto_install,omitempty"`
+
+	// AutoRestart re-executes the running process in place once a newer
+	// binary is installed on disk, without asking. Set false to keep the
+	// "installed, press <key> to restart" notice and restart by hand.
+	// Default: true (nil = true)
+	AutoRestart *bool `toml:"auto_restart,omitempty"`
 
 	// CheckEnabled enables automatic update checks on startup
 	// Default: true (nil = true)
@@ -1154,6 +1166,24 @@ func (u UpdateSettings) GetAutoUpdateRemotes() bool {
 		return true
 	}
 	return *u.AutoUpdateRemotes
+}
+
+// GetAutoInstall reports whether available updates are installed unattended
+// (default: true).
+func (u UpdateSettings) GetAutoInstall() bool {
+	if u.AutoInstall == nil {
+		return true
+	}
+	return *u.AutoInstall
+}
+
+// GetAutoRestart reports whether a running process restarts itself in place
+// once a newer binary is on disk (default: true).
+func (u UpdateSettings) GetAutoRestart() bool {
+	if u.AutoRestart == nil {
+		return true
+	}
+	return *u.AutoRestart
 }
 
 // GetNotifyInCLI returns whether CLI update notifications are enabled (default: true).
@@ -4615,8 +4645,13 @@ remove_orphans = true
 # Update settings
 # Controls automatic update checking and installation
 [updates]
-# Automatically install updates without prompting (default: false)
+# Offer to install an available update when the TUI starts (default: false)
 # auto_update = true
+# Install available updates unattended: from the TUI's periodic check and
+# from the "agent-deck update --install-timer" job (default: true)
+auto_install = true
+# Restart agent-deck in place once a newer binary is installed (default: true)
+auto_restart = true
 # Enable update checks on startup (default: true)
 check_enabled = true
 # How often to check for updates in hours (default: 24)
