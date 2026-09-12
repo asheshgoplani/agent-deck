@@ -1678,8 +1678,8 @@ auto_install = false
 	if scratch2 == "" {
 		t.Fatal("re-Ensure must produce scratch dir for reloaded instance with non-empty Plugins")
 	}
-	if scratch2 != scratch1 {
-		t.Fatalf("scratch dir is keyed on instance ID and MUST be deterministic across restarts; got first=%q, second=%q", scratch1, scratch2)
+	if scratch2 == scratch1 {
+		t.Fatalf("a reloaded instance must receive a fresh scratch generation; got %q twice", scratch1)
 	}
 	assertScratchHasOctopus(scratch2, "post-restart")
 }
