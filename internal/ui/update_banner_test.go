@@ -4,14 +4,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
+
+// manualRestart pins auto_restart = false so the banner shows the manual
+// wording; the default (auto_restart on) is covered by
+// TestUpdateBanner_AutoRestartWording.
+func manualRestart(t *testing.T) {
+	t.Helper()
+	off := false
+	stubUpdateSettings(t, session.UpdateSettings{AutoRestart: &off})
+}
 
 // TestUpdateBanner_InstalledStateWinsOverNudge pins the banner wording once
 // a newer build is on disk: it names the installed version and the restart
 // key, and it takes precedence over the releases-behind nudge because the
 // user can act on it immediately.
 func TestUpdateBanner_InstalledStateWinsOverNudge(t *testing.T) {
+	manualRestart(t)
 	h := &Home{
 		updateInfo: &update.UpdateInfo{
 			Available:      true,
@@ -76,6 +87,7 @@ func TestUpdateBanner_NothingInstalledKeepsNudgeBehavior(t *testing.T) {
 // TestUpdateBanner_UsesConfiguredRestartKey pins that a rebound restart_deck
 // hotkey shows up in the banner instead of the default.
 func TestUpdateBanner_UsesConfiguredRestartKey(t *testing.T) {
+	manualRestart(t)
 	h := &Home{hotkeys: resolveHotkeys(map[string]string{"restart_deck": "ctrl+y"})}
 	w := newBinaryWatch("/bin/agent-deck", "1.16.0", fpAt(1, 1))
 	w.observe(fpAt(2, 2))
@@ -83,5 +95,21 @@ func TestUpdateBanner_UsesConfiguredRestartKey(t *testing.T) {
 	h.binaryWatch = w
 	if got := h.renderUpdateBannerText(); !strings.Contains(got, "press ctrl+y to restart") {
 		t.Fatalf("banner = %q, want the rebound key", got)
+	}
+}
+
+// TestUpdateBanner_AutoRestartWording pins that with auto_restart on (the
+// default) the banner says the restart happens on its own, and still names
+// the key for an immediate restart.
+func TestUpdateBanner_AutoRestartWording(t *testing.T) {
+	stubUpdateSettings(t, session.UpdateSettings{})
+	h := &Home{hotkeys: resolveHotkeys(nil)}
+	w := newBinaryWatch("/bin/agent-deck", "1.16.0", fpAt(1, 1))
+	w.observe(fpAt(2, 2))
+	w.recordProbe(fpAt(2, 2), "1.16.1", nil)
+	h.binaryWatch = w
+	got := h.renderUpdateBannerText()
+	if !strings.Contains(got, "v1.16.1 installed, restarting when idle (ctrl+t now)") {
+		t.Fatalf("banner = %q, want the auto-restart wording", got)
 	}
 }
