@@ -80,6 +80,10 @@ func handleSession(profile string, args []string) {
 		handleSessionSet(profile, args[1:])
 	case "switch-account":
 		handleSessionSwitchAccount(profile, args[1:])
+	case "switch":
+		handleSessionSwitch(profile, args[1:])
+	case "switch-preview":
+		handleSessionSwitchPreview(profile, args[1:])
 	case "move", "mv":
 		handleSessionMove(profile, args[1:])
 	case "send":
@@ -120,11 +124,13 @@ func printSessionHelp() {
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)")
+	fmt.Println("  switch-preview <id>     Preview switch capability, fidelity and refusals (read-only, no mutation)")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
+	fmt.Println("  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target")
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
