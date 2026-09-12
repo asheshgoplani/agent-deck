@@ -43,8 +43,37 @@ func (h *Home) sessionActionInFlight() bool {
 		h.isAttaching.Load()
 }
 
+// Seams for the pre-arm check of the restart target; tests swap them so no
+// real binary is stat'ed or run.
+var (
+	checkRestartExecutable = update.CheckExecutable
+	probeRestartTarget     = update.ProbeBinaryVersion
+)
+
+// restartTargetProblem is the pre-arm check: before the TUI is torn down
+// the file it is about to exec must exist, be a regular non-empty file
+// with an exec bit, and answer `<exe> version` (a dry run of the new
+// build). Any failure refuses the restart while the old binary is still
+// running, so a half-written or broken install never leaves the user
+// without a deck. Returns "" when the target is good.
+func (h *Home) restartTargetProblem() string {
+	exe := h.restartExecutable()
+	if exe == "" {
+		return "executable path unknown"
+	}
+	if err := checkRestartExecutable(exe); err != nil {
+		return fmt.Sprintf("new binary is not runnable (%v)", err)
+	}
+	if _, err := probeRestartTarget(exe); err != nil {
+		return fmt.Sprintf("new binary failed its dry run (%v)", err)
+	}
+	return ""
+}
+
 // restartBlockReason returns "" when a restart may proceed, otherwise a
-// short reason for the footer.
+// short reason for the footer. The cheap state checks come first; the
+// target check (a stat and one exec of the new binary) runs only once
+// nothing else blocks.
 func (h *Home) restartBlockReason() string {
 	switch {
 	case h.restartRequested:
@@ -54,7 +83,7 @@ func (h *Home) restartBlockReason() string {
 	case h.sessionActionInFlight():
 		return "a session action is still running, try again in a moment"
 	}
-	return ""
+	return h.restartTargetProblem()
 }
 
 // tryRestartDeck is the restart_deck key handler. It either refuses with a
@@ -78,6 +107,11 @@ func (h *Home) tryRestartDeck() (tea.Model, tea.Cmd) {
 // autoRestartLogEvery rate-limits the "waiting for idle" log line.
 const autoRestartLogEvery = time.Minute
 
+// autoRestartRetryAfter is how long the auto path leaves a target alone
+// after its pre-arm check failed (the check execs the new binary once, so
+// it must not run on every 2 s tick).
+const autoRestartRetryAfter = time.Minute
+
 // maybeAutoRestart is the auto_restart path: once a newer build is on disk
 // it arms the same quit-and-exec sequence as the key, without a key press,
 // at the first tick where nothing blocks a restart. While a dialog is
@@ -91,10 +125,20 @@ func (h *Home) maybeAutoRestart() tea.Cmd {
 	if installed == "" || h.restartRequested || !h.autoRestartEnabled() {
 		return nil
 	}
+	if time.Now().Before(h.autoRestartHoldUntil) {
+		return nil
+	}
 	if reason := h.restartBlockReason(); reason != "" {
 		if time.Since(h.autoRestartLoggedAt) >= autoRestartLogEvery {
 			h.autoRestartLoggedAt = time.Now()
 			uiLog.Info("tui_auto_restart_waiting", slog.String("installed", installed), slog.String("reason", reason))
+		}
+		if strings.HasPrefix(reason, "new binary") {
+			// The target itself is bad: say so once, keep running the old
+			// build, and do not re-run the dry probe on every tick. A later
+			// change of the file resets the watch and the hold.
+			h.setError(fmt.Errorf("%w: %s; still running v%s", errRestartBlocked, reason, Version))
+			h.autoRestartHoldUntil = time.Now().Add(autoRestartRetryAfter)
 		}
 		return nil
 	}

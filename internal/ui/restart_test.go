@@ -1,17 +1,40 @@
 package ui
 
 import (
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// stubRestartTarget makes the pre-arm check pass (or fail with probeErr)
+// without stat'ing or running anything; the real checks are exercised by
+// TestRestartDeck_PreArmCheck*.
+func stubRestartTarget(t *testing.T, checkErr, probeErr error) *int {
+	t.Helper()
+	probes := new(int)
+	prevCheck, prevProbe := checkRestartExecutable, probeRestartTarget
+	checkRestartExecutable = func(string) error { return checkErr }
+	probeRestartTarget = func(string) (string, error) {
+		*probes++
+		if probeErr != nil {
+			return "", probeErr
+		}
+		return "1.16.1", nil
+	}
+	t.Cleanup(func() { checkRestartExecutable, probeRestartTarget = prevCheck, prevProbe })
+	return probes
+}
+
 func newRestartTestHome(t *testing.T) *Home {
 	t.Helper()
+	stubRestartTarget(t, nil, nil)
 	h := NewHome()
 	h.initialLoading = false
 	h.width, h.height = 80, 24
@@ -273,5 +296,124 @@ func TestRestartHandoff_AppliedAfterFirstLoad(t *testing.T) {
 	// RestartHandoff() on the old side names the selected session.
 	if got := home.RestartHandoff(); got.SelectedID != inst[3].ID || got.OldVersion != Version {
 		t.Fatalf("RestartHandoff() = %+v", got)
+	}
+}
+
+// TestRestartDeck_RefusedWhileFeedbackDialogOpen pins that the feedback
+// textarea counts as a dialog for the restart guard: neither the key nor
+// the auto path may exec while the user is typing feedback.
+func TestRestartDeck_RefusedWhileFeedbackDialogOpen(t *testing.T) {
+	h := newRestartTestHome(t)
+	h.feedbackDialog.Show(Version, nil, nil)
+	if !h.hasModalVisible() {
+		t.Fatal("an open feedback dialog must count as a visible modal")
+	}
+	assertRestartBlocked(t, h, "close the open dialog first")
+
+	h = newAutoRestartTestHome(t)
+	h.feedbackDialog.Show(Version, nil, nil)
+	if cmd := h.maybeAutoRestart(); cmd != nil || h.restartRequested || h.isQuitting {
+		t.Fatal("auto restart must wait while the feedback dialog is open")
+	}
+	h.feedbackDialog.Hide()
+	if cmd := h.maybeAutoRestart(); cmd == nil || !h.restartRequested {
+		t.Fatal("once the feedback dialog is closed the restart must be armed")
+	}
+}
+
+// TestRestartDeck_PreArmCheckRefusesBadTarget runs the real executable
+// check against files on disk: a missing, empty or non-executable target
+// refuses the restart while the TUI is still alive, with the reason in
+// the footer, and never reaches the dry probe.
+func TestRestartDeck_PreArmCheckRefusesBadTarget(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		make func(path string)
+		want string
+	}{
+		{"missing", func(string) {}, "no such file"},
+		{"empty", func(p string) { _ = os.WriteFile(p, nil, 0o755) }, "is empty"},
+		{"not executable", func(p string) { _ = os.WriteFile(p, []byte("x"), 0o644) }, "is not executable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-"))
+			tc.make(path)
+			h := newAutoRestartTestHome(t)
+			h.binaryWatch.execPath = path
+			probes := stubRestartTarget(t, nil, nil)
+			checkRestartExecutable = update.CheckExecutable
+
+			assertRestartBlocked(t, h, "new binary is not runnable")
+			if !strings.Contains(h.err.Error(), tc.want) {
+				t.Fatalf("footer = %v, want it to mention %q", h.err, tc.want)
+			}
+			if *probes != 0 {
+				t.Fatalf("dry probe ran %d times on a target that failed the stat check", *probes)
+			}
+
+			h.err = nil
+			if cmd := h.maybeAutoRestart(); cmd != nil || h.restartRequested || h.isQuitting {
+				t.Fatal("auto restart must not arm on a bad target")
+			}
+			if h.err == nil || !strings.Contains(h.err.Error(), "still running v"+Version) {
+				t.Fatalf("auto path must show the failure and the still-running version, got %v", h.err)
+			}
+		})
+	}
+}
+
+// TestRestartDeck_PreArmCheckRefusesFailedDryRun pins the dry probe: a
+// target that passes the stat check but does not answer `version` is
+// refused, the old build keeps running, and the auto path does not re-run
+// the probe on every tick.
+func TestRestartDeck_PreArmCheckRefusesFailedDryRun(t *testing.T) {
+	h := newAutoRestartTestHome(t)
+	probes := stubRestartTarget(t, nil, errors.New("exit status 78"))
+	assertRestartBlocked(t, h, "new binary failed its dry run (exit status 78)")
+	if *probes != 1 {
+		t.Fatalf("probe ran %d times for one key press, want 1", *probes)
+	}
+
+	h.err = nil
+	for i := 0; i < 3; i++ {
+		if cmd := h.maybeAutoRestart(); cmd != nil || h.restartRequested || h.isQuitting {
+			t.Fatalf("tick %d: auto restart must not arm on a failed dry run", i)
+		}
+	}
+	if *probes != 2 {
+		t.Fatalf("probe ran %d times over three ticks, want one more (then a hold)", *probes)
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "failed its dry run") {
+		t.Fatalf("auto path must show the dry-run failure, got %v", h.err)
+	}
+
+	// Once the probe passes (the hold elapsed and the file answers), the
+	// restart is armed as usual.
+	h.autoRestartHoldUntil = time.Time{}
+	probeRestartTarget = func(string) (string, error) { return "1.16.1", nil }
+	if cmd := h.maybeAutoRestart(); cmd == nil || !h.restartRequested {
+		t.Fatal("a target that passes the dry run must be armed")
+	}
+}
+
+// TestRestartDeck_PreArmCheckPassesRealBinary runs the real check and the
+// real dry probe against a script that answers `version`, so the happy
+// path is covered end to end without a Go binary.
+func TestRestartDeck_PreArmCheckPassesRealBinary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-deck")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'Agent Deck v1.16.1'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := newAutoRestartTestHome(t)
+	h.binaryWatch.execPath = path
+	checkRestartExecutable = update.CheckExecutable
+	probeRestartTarget = update.ProbeBinaryVersion
+	if _, cmd := h.tryRestartDeck(); cmd == nil || !h.restartRequested {
+		t.Fatalf("a runnable target that answers version must be armed, err=%v", h.err)
+	}
+	if exe, ok := h.RestartTarget(); !ok || exe != path {
+		t.Fatalf("RestartTarget = %q, %v", exe, ok)
 	}
 }

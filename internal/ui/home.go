@@ -486,6 +486,9 @@ type Home struct {
 	autoInstallAttempts map[string]time.Time
 	// autoRestartLoggedAt rate-limits the "waiting for idle" log line.
 	autoRestartLoggedAt time.Time
+	// autoRestartHoldUntil pauses the auto path after the pre-arm check of
+	// the new binary failed (see restartTargetProblem).
+	autoRestartHoldUntil time.Time
 	// restartHandoff is what the previous process left in the environment
 	// when it exec'd this one (restart.go); applied after the first load.
 	restartHandoff RestartHandoff
@@ -10310,6 +10313,7 @@ func (h *Home) hasModalVisible() bool {
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
 		(h.telemetryDialog != nil && h.telemetryDialog.IsVisible()) ||
+		(h.feedbackDialog != nil && h.feedbackDialog.IsVisible()) ||
 		h.zoxidePicker.IsVisible()
 }
 
