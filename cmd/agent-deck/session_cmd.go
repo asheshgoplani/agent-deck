@@ -300,6 +300,14 @@ func handleSessionStart(profile string, args []string) {
 		}
 	}
 
+	// #2099: Start() returning nil only means tmux accepted the spawn. Read
+	// the result back before claiming success: a pane that died at once (or
+	// was never created) exits non-zero with the recorded reason instead of
+	// a false "Started".
+	if err := inst.VerifySpawned(spawnVerifyWait); err != nil {
+		failSpawnVerification(out, "start", storage, instances, groups, inst, err)
+	}
+
 	// Capture session ID from tmux env before saving to JSON
 	// Claude: UUID is set by bash capture-resume pattern before exec.
 	// --no-wait skips this bounded wait for a caller that attaches at once
@@ -355,6 +363,57 @@ func handleSessionStart(profile string, args []string) {
 	} else {
 		out.Success(fmt.Sprintf("Started session: %s", inst.Title), jsonData)
 	}
+}
+
+// spawnVerifyWait bounds how long `session start`/`restart` wait for a
+// missing tmux session to either appear or be explained by a spawn-failure
+// record (#2099). The fast-death watcher records a death on its 250ms tick,
+// so this comfortably covers a pane that died before the first tick; a live
+// session returns immediately and never pays it.
+const spawnVerifyWait = 2 * time.Second
+
+// spawnFailureJSON is the one --json shape for a spawn-failure record, shared
+// by `session show`, `session start` and `session restart`.
+func spawnFailureJSON(rec *session.SpawnFailureRecord) map[string]interface{} {
+	return map[string]interface{}{
+		"reason":       rec.Reason,
+		"command":      rec.Command,
+		"dying_output": rec.DyingOutput,
+		"elapsed_ms":   rec.ElapsedMs,
+		"ts":           rec.Timestamp,
+	}
+}
+
+// spawnFailureOutput renders a failed spawn verification (#2099) as the
+// human error line and the --json payload. verb is "start" or "restart".
+func spawnFailureOutput(verb string, inst *session.Instance, err error) (string, map[string]interface{}) {
+	data := map[string]interface{}{
+		"id":    inst.ID,
+		"title": inst.Title,
+	}
+	var spawnErr *session.SpawnFailedError
+	if errors.As(err, &spawnErr) {
+		data["tmux"] = spawnErr.TmuxName
+		if spawnErr.Record != nil {
+			data["reason"] = spawnErr.Record.Reason
+			data["spawn_failure"] = spawnFailureJSON(spawnErr.Record)
+		} else {
+			data["reason"] = "tmux_session_missing"
+		}
+	}
+	return fmt.Sprintf("failed to %s session: %v", verb, err), data
+}
+
+// failSpawnVerification persists whatever Start()/Restart() changed on the
+// instance (tmux name, timestamps), reports the spawn failure and exits 1.
+func failSpawnVerification(out *CLIOutput, verb string, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, inst *session.Instance, err error) {
+	inst.Status = session.StatusError
+	if saveErr := saveSessionData(storage, instances, groups); saveErr != nil && !out.jsonMode {
+		fmt.Fprintf(os.Stderr, "Warning: failed to save session state: %v\n", saveErr)
+	}
+	msg, data := spawnFailureOutput(verb, inst, err)
+	out.ErrorWithData(msg, ErrCodeInvalidOperation, data)
+	os.Exit(1)
 }
 
 // handleSessionStop stops a session process
@@ -750,6 +809,10 @@ func handleSessionRestart(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	// #2099: confirm the new pane is actually there before reporting success.
+	if err := inst.VerifySpawned(spawnVerifyWait); err != nil {
+		failSpawnVerification(out, "restart", storage, instances, groups, inst, err)
+	}
 	// Stamp the persisted freshness marker so subsequent watchdog ticks see
 	// this session as "just started" and skip (issue #30).
 	inst.LastStartedAt = time.Now()
@@ -825,6 +888,19 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			}
 			result["success"] = false
 			result["error"] = errMsg
+			return err
+		}
+		// #2099: a restart whose pane is already gone is a failure, not a boot.
+		if err := inst.VerifySpawned(spawnVerifyWait); err != nil {
+			errMsg, data := spawnFailureOutput("restart", inst, err)
+			if !out.jsonMode {
+				fmt.Fprintf(os.Stderr, "  Error: %s\n", errMsg)
+			}
+			result["success"] = false
+			result["error"] = errMsg
+			if sf, ok := data["spawn_failure"]; ok {
+				result["spawn_failure"] = sf
+			}
 			return err
 		}
 		inst.LastStartedAt = time.Now()
@@ -1736,13 +1812,7 @@ func handleSessionShow(profile string, args []string) {
 	// --json so tooling can read it too.
 	spawnFailure := inst.SpawnFailure()
 	if spawnFailure != nil {
-		jsonData["spawn_failure"] = map[string]interface{}{
-			"reason":       spawnFailure.Reason,
-			"command":      spawnFailure.Command,
-			"dying_output": spawnFailure.DyingOutput,
-			"elapsed_ms":   spawnFailure.ElapsedMs,
-			"ts":           spawnFailure.Timestamp,
-		}
+		jsonData["spawn_failure"] = spawnFailureJSON(spawnFailure)
 	}
 
 	// An auth hold explains a bare "error" that no restart can clear, and tells
