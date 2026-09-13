@@ -46,6 +46,9 @@ jobs:
       - name: Compatibility test suite
         run: python -m pytest conductor/tests/test_python_compat.py -v
 
+      - name: Stage report tests
+        run: python -m pytest conductor/tests/test_stage_report.py -v
+
   watchdog-tests:
     runs-on: ubuntu-latest
     strategy:

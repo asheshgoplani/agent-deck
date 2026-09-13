@@ -207,6 +207,14 @@ When you first start (or after a restart):
 5. If any sessions are in error state, try to restart them
 6. Reply: "Conductor ({PROFILE}) online. N sessions tracked (X running, Y waiting)."
 
+## Stage events
+
+Record pipeline timing with `conductor/scripts/stage-event.sh <pr> <stage> [note]` at every transition (`arrived`, `discovered`, `triaged`, `review_started`, `verdict`, `ci_green`, `merged`, `closed`).
+One line per transition is the whole record: do not write per-merge receipts, hash readbacks or metrics prose.
+Set `STAGE_EVENTS_FILE` to the events file for this repo, otherwise it appends to `./stage-events.jsonl` in the current directory.
+Summaries come from `python3 conductor/scripts/stage-report.py <file> --maintainer <login> --since <date>`.
+Schema and details: `conductor/STAGE-EVENTS.md`.
+
 ## Important Notes
 
 - You cannot directly access other sessions' files. Use `session output` to read their latest response.
