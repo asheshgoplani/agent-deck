@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.8] - 2026-09-13
+
+Every session knows it runs inside agent-deck, unattended updates stay out of tests and CI, and a verified remote deploy off the non-interactive `$PATH` is a warning rather than a failure.
+
+### Added
+
+- Every session agent-deck launches or restarts (Claude, Codex, Pi, Gemini, and `--cmd` commands where the CLI offers a mechanism) is told its own identity: session id, title, group, profile, account, parent, project path, the key `agent-deck` commands, `session current --json` for the full record, and the completion sentinel. The text is generated from the session record at each launch, delivered through each CLI's own additive mechanism, and never written into the project directory; a project's own instructions (for example its `AGENTS.md`) are delivered unchanged and take precedence, as do conductor instructions. `[launch] inject_identity` (default true) and `--no-identity` on `add` and `launch` opt out; `AGENTDECK_IDENTITY_FILE` names the generated file inside the session; `session current --json` now carries `tool`, `account`, `parent_session_id` and `identity_file`. Not covered in this release: opencode, cursor and copilot sessions, and a TUI dialog row for the opt-out ([#2243](https://github.com/asheshgoplani/agent-deck/pull/2243)).
+
+### Fixed
+
+- Unattended auto-install and restart in place never run under `go test`, when `CI` is set, when `AGENTDECK_SKIP_UPDATE_CHECK` is set, under the repository's test markers, or when the TUI has no TTY; headless processes honour the same markers. The CI workflows and the eval harness set the skip marker once per job, so a release landing mid-run can no longer update the binary under test ([#2252](https://github.com/asheshgoplani/agent-deck/pull/2252), closes #2251).
+- A controller-driven remote deploy whose configured `agent_deck_path` was installed and verified by inode but is not on the remote's non-interactive `$PATH` reports a warning and exit status 0, and the per-remote version cache records the verified version; an unverified deploy still fails ([#2250](https://github.com/asheshgoplani/agent-deck/pull/2250), closes #2249).
+
+
 ## [1.16.7] - 2026-09-12
 
 The controller keeps itself current and restarts the TUI in place, deploys behind symlinked install paths work, the notify daemon restarts without re-notifying parked children, and the New Session dialog walks with Enter.
