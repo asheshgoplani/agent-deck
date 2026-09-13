@@ -310,17 +310,6 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 		return preview
 	}
 
-	// A fresh cross-harness target starts the target CLI on this host. Report
-	// its absence from PATH as a warning (an interactive shell may resolve it
-	// differently); on a remote deck this is the host the target runs on.
-	if capability == CapabilityTranscriptTail {
-		if command := canonicalSwitchHarness(targetHarness); command != "" {
-			if _, lookErr := exec.LookPath(command); lookErr != nil {
-				preview.Warnings = append(preview.Warnings, fmt.Sprintf("target harness %q was not found on this host's PATH; the fresh target cannot start here until it is installed", command))
-			}
-		}
-	}
-
 	// Pi supports only its default account. A named Pi account is a clear
 	// semantic refusal, not an ordinary missing config slot.
 	if targetHarness == "pi" && targetAccount != "" {
@@ -371,6 +360,19 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 			}
 			return preview
 		}
+		// A fresh cross-harness target starts the target CLI on this host (on
+		// a remote deck, the host the target runs on). Refuse before anything
+		// is staged, journaled, persisted or archived when it is absent; the
+		// executor repeats this preview before its first mutation.
+		if command := canonicalSwitchHarness(targetHarness); command != "" {
+			if _, lookErr := lookPathHarness(command); lookErr != nil {
+				preview.Refusal = &SwitchRefusal{
+					Code:    "target-harness-missing",
+					Message: fmt.Sprintf("target harness %q is not on this host's PATH; nothing was staged, copied or archived. Install %q on this host (or fix PATH for agent-deck) and retry.", command, command),
+				}
+				return preview
+			}
+		}
 		if maxBytes <= 0 {
 			maxBytes = DefaultHandoffMaxChars
 		}
@@ -404,6 +406,9 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 
 	return preview
 }
+
+// lookPathHarness resolves a target harness command; tests stub it.
+var lookPathHarness = exec.LookPath
 
 func refusalForCrossHarnessSource(inst *Instance, supplied *SwitchSourceSnapshot) *SwitchRefusal {
 	// A direct caller may not have inventory, but a conductor role on the row is

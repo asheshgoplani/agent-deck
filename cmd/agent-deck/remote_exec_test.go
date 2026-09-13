@@ -435,6 +435,8 @@ func TestRemoteCommandArgsSessionSwitchVerbs(t *testing.T) {
 		{"session", "switch-account", "task", "work", "--no-restart", "--json", "-q"},
 		{"session", "switch", "--help"},
 		{"session", "switch-preview", "-h"},
+		{"session", "switch-preview", "my remote session", "--json"},
+		{"session", "switch", "4b3dee00-1789328952", "--to-account", "ashesh.personal_2"},
 	}
 	for _, args := range accept {
 		got, err := remoteCommandArgs(args)
@@ -457,6 +459,17 @@ func TestRemoteCommandArgsSessionSwitchVerbs(t *testing.T) {
 		{"session", "switch", "task", "--to-account", "wo rk"},
 		{"session", "switch-account", "task", "/etc/passwd"},
 		{"session", "switch", "task", "--"},
+		// Selector shapes: paths, shell metacharacters, traversal and flag
+		// lookalikes never reach the remote (its own selector resolves ids
+		// and titles; nothing path-shaped is a session name).
+		{"session", "switch", "/etc/passwd", "--to-account", "work"},
+		{"session", "switch-preview", "../task"},
+		{"session", "switch-preview", "task;id"},
+		{"session", "switch-preview", "$(id)"},
+		{"session", "switch-preview", "task\n"},
+		{"session", "switch-account", "-task", "work"},
+		{"session", "switch-account", "task", "../../.claude"},
+		{"session", "switch-account", "task", "$HOME"},
 	}
 	for _, args := range reject {
 		if _, err := remoteCommandArgs(args); err == nil {

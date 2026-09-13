@@ -153,6 +153,9 @@ func handleSessionSwitch(profile string, args []string) {
 			"configured_account": crossResult.ConfiguredAccount, "authentication": crossResult.Authentication,
 			"context_delivery": crossResult.ContextDelivery, "semantic_acceptance": crossResult.SemanticAcceptance,
 			"loss_disclosure": crossResult.LossDisclosure,
+			// A ready target supersedes the source (archived, reversible); a
+			// pending one leaves the source visible and unchanged.
+			"source_archived": crossResult.TargetReady, "source_superseded_by": crossHarnessSupersededBy(inst, crossResult),
 		}
 		if *jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
@@ -160,7 +163,7 @@ func handleSessionSwitch(profile string, args []string) {
 			_ = enc.Encode(payload)
 			return
 		}
-		fmt.Printf("Created distinct %s target %s; status=%s; readiness=%s\n", crossHarnessTargetTool(crossResult, preview.TargetHarness), crossHarnessTargetID(crossResult), crossHarnessPresentationStatus(crossResult), readinessPresentation(crossResult.TargetReady))
+		fmt.Printf("Created distinct %s target %s; status=%s; readiness=%s; source_archived=%t\n", crossHarnessTargetTool(crossResult, preview.TargetHarness), crossHarnessTargetID(crossResult), crossHarnessPresentationStatus(crossResult), readinessPresentation(crossResult.TargetReady), crossResult.TargetReady)
 		return
 	}
 	if err := storage.CommitNativeHarnessSwitch(inst, result); err != nil {
@@ -175,6 +178,7 @@ func handleSessionSwitch(profile string, args []string) {
 		"continuity": result.Continuity, "source_sha256": result.SourceArtifactSHA256,
 		"destination_path": result.DestinationPath, "destination_ready": result.DestinationReady,
 		"restarted": result.Restarted, "loss_disclosure": result.LossDisclosure,
+		"source_archived": false,
 	}
 	if *jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -265,6 +269,16 @@ func crossHarnessTargetID(result *session.CrossHarnessSwitchResult) string {
 		return ""
 	}
 	return result.Target.ID
+}
+
+func crossHarnessSupersededBy(inst *session.Instance, result *session.CrossHarnessSwitchResult) string {
+	if inst == nil || result == nil || !result.TargetReady {
+		return ""
+	}
+	if inst.SupersededBy != "" {
+		return inst.SupersededBy
+	}
+	return crossHarnessTargetID(result)
 }
 
 func crossHarnessTargetTool(result *session.CrossHarnessSwitchResult, fallback string) string {

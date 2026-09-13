@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -221,5 +222,110 @@ func TestSSHRunnerFetchAccountsForHarness(t *testing.T) {
 	names, err := (&SSHRunner{}).FetchAccountsForHarness(context.Background(), "pi")
 	if err != nil || len(names) != 0 {
 		t.Fatalf("pi has no named slots: names=%v err=%v", names, err)
+	}
+}
+
+// Selector, harness and account are validated before any exec on the TUI
+// path as well: a path- or shell-shaped value never reaches the remote.
+func TestSSHRunnerSwitch_RefusesUnsafeSelectorsBeforeExec(t *testing.T) {
+	calls := 0
+	runner := &SSHRunner{runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+		calls++
+		return []byte(`{}`), nil
+	}}
+	bad := []struct{ id, harness, account string }{
+		{"/etc/passwd", "claude", ""},
+		{"../task", "", ""},
+		{"task;id", "", ""},
+		{"$(id)", "", ""},
+		{"-task", "", ""},
+		{"", "claude", ""},
+		{"task", "../codex", ""},
+		{"task", "claude", "/home/u/.claude-work"},
+		{"task", "claude", "wo rk"},
+		{"task", "claude", ".hidden"},
+		{"task", "cl aude", ""},
+	}
+	for _, tc := range bad {
+		if _, err := runner.SwitchPreview(context.Background(), tc.id, tc.harness, tc.account); err == nil {
+			t.Fatalf("SwitchPreview(%q,%q,%q) must be refused", tc.id, tc.harness, tc.account)
+		}
+		if _, err := runner.SwitchSession(context.Background(), tc.id, tc.harness, tc.account, false); err == nil {
+			t.Fatalf("SwitchSession(%q,%q,%q) must be refused", tc.id, tc.harness, tc.account)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("refused requests reached the runner %d times", calls)
+	}
+	for _, id := range []string{"4b3dee00-1789328952", "remote session", "task_2.v1"} {
+		if _, err := runner.SwitchPreview(context.Background(), id, "claude", "work"); err != nil {
+			t.Fatalf("SwitchPreview(%q): %v", id, err)
+		}
+	}
+}
+
+// No controller path ever travels in a switch request, and no remote config
+// directory is retained from the answer: the preview contract's *_dir
+// fields are not part of RemoteSwitchPreview, and the account listing keeps
+// names only.
+func TestRemoteSwitch_NoConfigPathsCrossHosts(t *testing.T) {
+	var got [][]string
+	runner := &SSHRunner{runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+		got = append(got, append([]string(nil), args...))
+		return []byte(`{"source_account_dir":"/home/u/.claude","target_account_dir":"/home/u/.claude-work","capability":"native-resume","execution":"supported"}`), nil
+	}}
+	preview, err := runner.SwitchPreview(context.Background(), "task", "claude", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.SwitchSession(context.Background(), "task", "codex", "", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range got {
+		for _, a := range args[2:] {
+			if strings.ContainsAny(a, `/\`) {
+				t.Fatalf("a path-shaped argument was forwarded: %v", args)
+			}
+		}
+	}
+	rt := reflect.TypeOf(*preview)
+	for i := 0; i < rt.NumField(); i++ {
+		if tag := rt.Field(i).Tag.Get("json"); strings.Contains(tag, "_dir") || strings.Contains(tag, "path") {
+			t.Fatalf("RemoteSwitchPreview must not retain remote paths: field %s tagged %q", rt.Field(i).Name, tag)
+		}
+	}
+	names, err := parseRemoteAccountNames([]byte(`[{"name":"work","config_dir":"/home/u/.claude-work","exists":true}]`))
+	if err != nil || len(names) != 1 || names[0] != "work" {
+		t.Fatalf("names = %v err = %v", names, err)
+	}
+}
+
+// The remote reports what it did to the source; the controller relays it
+// exactly. Remotes older than 1.16.10 omit the field, and then the engine's
+// own rule applies: a ready cross-harness target has superseded its source.
+func TestRemoteSwitchResult_SourceWasArchived(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		cross bool
+		want  bool
+	}{
+		{"explicit true", `{"success":true,"status":"success","target_ready":true,"source_archived":true,"source_superseded_by":"t1"}`, true, true},
+		{"explicit false pending", `{"success":false,"status":"pending","pending":true,"target_ready":false,"source_archived":false}`, true, false},
+		{"old remote ready cross", `{"success":true,"status":"success","target_ready":true}`, true, true},
+		{"old remote pending cross", `{"success":false,"status":"pending","pending":true,"target_ready":false}`, true, false},
+		{"native never archives", `{"success":true,"status":"success","destination_ready":true,"restarted":true}`, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &SSHRunner{runFn: func(ctx context.Context, args ...string) ([]byte, error) { return []byte(tc.body), nil }}
+			result, err := runner.SwitchSession(context.Background(), "task", "codex", "", tc.cross)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := result.SourceWasArchived(tc.cross); got != tc.want {
+				t.Fatalf("SourceWasArchived = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

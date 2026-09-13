@@ -325,6 +325,36 @@ func TestRemoteSwitch_CrossHarnessTransfer(t *testing.T) {
 	if !strings.Contains(home.confirmDialog.noticeBody, "fresh-1") {
 		t.Fatalf("the notice must name the new target: %q", home.confirmDialog.noticeBody)
 	}
+	if !strings.Contains(home.confirmDialog.noticeBody, "source session is unchanged on lab") {
+		t.Fatalf("a pending transfer leaves the source untouched and must say so: %q", home.confirmDialog.noticeBody)
+	}
+}
+
+// A ready cross-harness target supersedes its source on the remote; the
+// notice reports the archive exactly as the remote reported it, never "kept
+// unchanged".
+func TestRemoteSwitch_ReadyTransferReportsSourceArchived(t *testing.T) {
+	archived := true
+	runner := &fakeRemoteSwitchRunner{
+		accounts: map[string][]string{"claude": {"personal"}},
+		preview:  &session.RemoteSwitchPreview{SourceTool: "claude", TargetHarness: "codex", Capability: "transcript-tail", Execution: "planned", Exclusions: []string{"native session state"}},
+		result:   &session.RemoteSwitchResult{Success: true, Status: "success", TargetID: "fresh-2", TargetReady: true, SourceArchived: &archived, SourceSupersededBy: "fresh-2"},
+	}
+	home := armHomeWithRemoteRowForSwitch(t, runner)
+	_, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	runCmd(t, home, cmd)
+	selectEditPill(t, home.editSessionDialog, session.FieldTool, "codex")
+	_, cmd = home.handleEditSessionDialogKey(tea.KeyMsg{Type: tea.KeyEnter})
+	runCmd(t, home, cmd)
+	view := strings.Join(strings.Fields(strings.ReplaceAll(stripAnsi(home.confirmDialog.View()), "│", " ")), " ")
+	if strings.Contains(view, "kept unchanged") || !strings.Contains(view, "archived as superseded") {
+		t.Fatalf("the transfer confirmation must disclose the supersession:\n%s", view)
+	}
+	runCmd(t, home, home.confirmAction())
+	body := home.confirmDialog.noticeBody
+	if !strings.Contains(home.confirmDialog.noticeTitle, "verified") || !strings.Contains(body, "archived on lab as superseded by fresh-2") || strings.Contains(body, "unchanged") {
+		t.Fatalf("notice = %q / %q", home.confirmDialog.noticeTitle, body)
+	}
 }
 
 // A switch that fails on the remote after committing is reported with the

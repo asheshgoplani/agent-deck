@@ -81,12 +81,7 @@ func remoteSwitchValueOK(name, value string) bool {
 		_, err := strconv.Atoi(value)
 		return err == nil
 	default:
-		for _, r := range value {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
-				return false
-			}
-		}
-		return !strings.HasPrefix(value, ".") && !strings.HasPrefix(value, "-")
+		return session.ValidateRemoteSwitchToken(name, value) == nil
 	}
 }
 
@@ -137,8 +132,11 @@ func validateRemoteSwitchArgs(verb string, args []string) error {
 	if len(positional) != want {
 		return fmt.Errorf("remote session %s expects %d positional argument(s), got %d", verb, want, len(positional))
 	}
-	if verb == "switch-account" && !remoteSwitchValueOK("to-account", positional[1]) {
-		return fmt.Errorf("invalid account %q", positional[1])
+	if err := session.ValidateRemoteSwitchSelector(positional[0]); err != nil {
+		return err
+	}
+	if verb == "switch-account" {
+		return session.ValidateRemoteSwitchToken("account", positional[1])
 	}
 	return nil
 }

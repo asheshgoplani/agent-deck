@@ -39,27 +39,88 @@ type RemoteSwitchRefusal struct {
 // either shape (same-harness native switch or a distinct cross-harness
 // target). Only the fields the controller reports are decoded.
 type RemoteSwitchResult struct {
-	Success          bool     `json:"success"`
-	Status           string   `json:"status"`
-	Pending          bool     `json:"pending"`
-	RecoveryRequired bool     `json:"recovery_required"`
-	Error            string   `json:"error,omitempty"`
-	Code             string   `json:"code,omitempty"`
-	OperationID      string   `json:"operation_id,omitempty"`
-	TargetID         string   `json:"target_id,omitempty"`
-	TargetCreated    bool     `json:"target_created"`
-	TargetReady      bool     `json:"target_ready"`
-	MissingContract  string   `json:"missing_contract,omitempty"`
-	ID               string   `json:"id,omitempty"`
-	Title            string   `json:"title,omitempty"`
-	OldTool          string   `json:"old_tool,omitempty"`
-	NewTool          string   `json:"new_tool,omitempty"`
-	OldAccount       string   `json:"old_account"`
-	NewAccount       string   `json:"new_account"`
-	Continuity       string   `json:"continuity,omitempty"`
-	DestinationReady bool     `json:"destination_ready"`
-	Restarted        bool     `json:"restarted"`
-	LossDisclosure   []string `json:"loss_disclosure,omitempty"`
+	Success          bool   `json:"success"`
+	Status           string `json:"status"`
+	Pending          bool   `json:"pending"`
+	RecoveryRequired bool   `json:"recovery_required"`
+	Error            string `json:"error,omitempty"`
+	Code             string `json:"code,omitempty"`
+	OperationID      string `json:"operation_id,omitempty"`
+	TargetID         string `json:"target_id,omitempty"`
+	TargetCreated    bool   `json:"target_created"`
+	TargetReady      bool   `json:"target_ready"`
+	// SourceArchived reports what the remote did to the source row: a ready
+	// cross-harness target supersedes it (archived, reversible); a pending
+	// or failed transfer and every native switch leave it as it was. Sent by
+	// remotes from 1.16.10; older remotes omit it and the controller then
+	// derives it from TargetReady, which is the engine's own rule.
+	SourceArchived     *bool    `json:"source_archived,omitempty"`
+	SourceSupersededBy string   `json:"source_superseded_by,omitempty"`
+	MissingContract    string   `json:"missing_contract,omitempty"`
+	ID                 string   `json:"id,omitempty"`
+	Title              string   `json:"title,omitempty"`
+	OldTool            string   `json:"old_tool,omitempty"`
+	NewTool            string   `json:"new_tool,omitempty"`
+	OldAccount         string   `json:"old_account"`
+	NewAccount         string   `json:"new_account"`
+	Continuity         string   `json:"continuity,omitempty"`
+	DestinationReady   bool     `json:"destination_ready"`
+	Restarted          bool     `json:"restarted"`
+	LossDisclosure     []string `json:"loss_disclosure,omitempty"`
+}
+
+// ValidateRemoteSwitchSelector admits the session selector (id or title) a
+// remote switch request may carry: printable letters, digits, space and
+// ._-, no leading dash, no path separator, at most 200 bytes. Anything else
+// is refused before any exec, on both the CLI passthrough and the TUI path.
+func ValidateRemoteSwitchSelector(selector string) error {
+	if strings.TrimSpace(selector) == "" {
+		return fmt.Errorf("session selector is empty")
+	}
+	if len(selector) > 200 {
+		return fmt.Errorf("session selector is longer than 200 bytes")
+	}
+	if strings.HasPrefix(selector, "-") {
+		return fmt.Errorf("session selector %q must not start with a dash", selector)
+	}
+	for _, r := range selector {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' || r == '-' || r == '_' || r == '.') {
+			return fmt.Errorf("session selector %q contains %q; only letters, digits, space, '.', '_' and '-' are forwarded", selector, r)
+		}
+	}
+	return nil
+}
+
+// ValidateRemoteSwitchToken admits a harness or account name forwarded to a
+// remote: a single [A-Za-z0-9._-] token that is not path- or flag-shaped.
+// Config directories are resolved by the remote from these names; a path
+// never travels. Empty is the target default and is not sent at all.
+func ValidateRemoteSwitchToken(kind, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 100 {
+		return fmt.Errorf("%s %q is longer than 100 bytes", kind, value)
+	}
+	if strings.HasPrefix(value, "-") || strings.HasPrefix(value, ".") {
+		return fmt.Errorf("%s %q must not start with '-' or '.'", kind, value)
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return fmt.Errorf("%s %q contains %q; only [A-Za-z0-9._-] names are forwarded (a path is never sent to a remote)", kind, value, r)
+		}
+	}
+	return nil
+}
+
+func validateRemoteSwitchRequest(sessionID, harness, account string) error {
+	if err := ValidateRemoteSwitchSelector(sessionID); err != nil {
+		return err
+	}
+	if err := ValidateRemoteSwitchToken("harness", strings.TrimSpace(harness)); err != nil {
+		return err
+	}
+	return ValidateRemoteSwitchToken("account", strings.TrimSpace(account))
 }
 
 // remoteSwitchTargetArgs renders the explicit target the way the local CLI
@@ -82,6 +143,9 @@ func remoteSwitchTargetArgs(harness, account string) []string {
 // an old remote, an unknown session or an unreachable host never pass as a
 // clean preflight.
 func (r *SSHRunner) SwitchPreview(ctx context.Context, sessionID, harness, account string) (*RemoteSwitchPreview, error) {
+	if err := validateRemoteSwitchRequest(sessionID, harness, account); err != nil {
+		return nil, err
+	}
 	args := append([]string{"session", "switch-preview", sessionID}, remoteSwitchTargetArgs(harness, account)...)
 	output, runErr := r.Run(ctx, append(args, "--json")...)
 	var preview RemoteSwitchPreview
@@ -106,6 +170,9 @@ func (r *SSHRunner) SwitchPreview(ctx context.Context, sessionID, harness, accou
 // with a JSON error body; that body is decoded and returned alongside the
 // error so callers can report recovery_required and the remote's message.
 func (r *SSHRunner) SwitchSession(ctx context.Context, sessionID, harness, account string, confirmContextLoss bool) (*RemoteSwitchResult, error) {
+	if err := validateRemoteSwitchRequest(sessionID, harness, account); err != nil {
+		return nil, err
+	}
 	args := append([]string{"session", "switch", sessionID}, remoteSwitchTargetArgs(harness, account)...)
 	if confirmContextLoss {
 		args = append(args, "--confirm-context-loss")
@@ -126,6 +193,19 @@ func (r *SSHRunner) SwitchSession(ctx context.Context, sessionID, harness, accou
 		return &result, fmt.Errorf("remote switch failed: %s", message)
 	}
 	return &result, nil
+}
+
+// SourceWasArchived reports whether the remote archived (superseded) the
+// source row. The explicit field wins; a remote too old to send it archives
+// exactly when the cross-harness target became ready.
+func (r *RemoteSwitchResult) SourceWasArchived(cross bool) bool {
+	if r == nil {
+		return false
+	}
+	if r.SourceArchived != nil {
+		return *r.SourceArchived
+	}
+	return cross && r.TargetReady
 }
 
 // FetchAccountsForHarness lists the named account slots the remote has

@@ -326,10 +326,11 @@ func (h *Home) handleRemoteSwitchResult(msg remoteSwitchResultMsg) tea.Cmd {
 			body += "; waiting for " + r.MissingContract
 		}
 		body += ". The restarted harness has not reported native readiness yet."
+		body += " " + remoteSourceDisposition(msg.remoteName, r, msg.cross)
 		h.confirmDialog.ShowNotice(what+" pending on "+msg.remoteName, body)
 	case msg.cross:
 		h.confirmDialog.ShowNotice(what+" verified on "+msg.remoteName,
-			fmt.Sprintf("New %s target %s is verified and ready on %s%s. The source session is kept unchanged.", msg.harness, r.TargetID, msg.remoteName, took))
+			fmt.Sprintf("New %s target %s is verified and ready on %s%s. %s", msg.harness, r.TargetID, msg.remoteName, took, remoteSourceDisposition(msg.remoteName, r, true)))
 	default:
 		h.patchRemoteSession(msg.remoteName, msg.source.ID, func(info *session.RemoteSessionInfo) {
 			info.Account = msg.account
@@ -345,6 +346,20 @@ func (h *Home) handleRemoteSwitchResult(msg remoteSwitchResultMsg) tea.Cmd {
 		h.confirmDialog.ShowNotice(what+" verified on "+msg.remoteName, body)
 	}
 	return h.fetchRemoteSessions
+}
+
+// remoteSourceDisposition states exactly what the remote did to the source
+// row, from the remote's own report: a ready cross-harness target archives
+// it as superseded (reversible); otherwise it is untouched.
+func remoteSourceDisposition(remoteName string, r *session.RemoteSwitchResult, cross bool) string {
+	if r.SourceWasArchived(cross) {
+		by := r.SourceSupersededBy
+		if by == "" {
+			by = r.TargetID
+		}
+		return fmt.Sprintf("The source session is archived on %s as superseded by %s (reversible; see the archived view).", remoteName, by)
+	}
+	return fmt.Sprintf("The source session is unchanged on %s.", remoteName)
 }
 
 func presentRemoteStatus(status string) string {

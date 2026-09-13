@@ -3,14 +3,15 @@
 
 
 
-
                                   ╭──────────────────────────────────────────────────╮
                                   │                                                  │
                                   │  Transfer Context on lab?                        │
                                   │                                                  │
                                   │  claude → NEW codex target (account default).    │
                                   │                                                  │
-                                  │  The original source session is kept unchanged.  │
+                                  │  The source stays visible until the target is    │
+                                  │  verified ready; it is then archived as          │
+                                  │  superseded (reversible).                        │
                                   │                                                  │
                                   │  Not transferred:                                │
                                   │  • native session state (target is fresh; no     │

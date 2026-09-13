@@ -737,7 +737,7 @@ func (c *ConfirmDialog) View() string {
 		if c.remoteName != "" {
 			title = "Transfer Context on " + c.remoteName + "?"
 		}
-		warning = fmt.Sprintf("%s → NEW %s target (account %s).\n\nThe original source session is kept unchanged.", c.sourceSnapshot.tool, c.targetHarness, displayConfirmAccount(c.targetAccount))
+		warning = fmt.Sprintf("%s → NEW %s target (account %s).\n\nThe source stays visible until the target is verified ready; it is then archived as superseded (reversible).", c.sourceSnapshot.tool, c.targetHarness, displayConfirmAccount(c.targetAccount))
 		details = "Not transferred:\n• " + c.noticeBody + "\n\nTarget readiness is pending until a target-native identity and ready event are observed."
 		details += c.remoteSwitchDetails()
 		borderColor = ColorYellow
