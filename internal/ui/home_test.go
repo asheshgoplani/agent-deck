@@ -1671,6 +1671,14 @@ func TestRemoteNewDialogCustomizationPreservesRemoteValues(t *testing.T) {
 
 	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	h := model.(*Home)
+	// Remote tool choices become available only after this opening receives
+	// the owning host's catalog. Never select from controller presets.
+	model, _ = h.Update(remoteCreationCatalogFetchedMsg{
+		remoteName: "myserver",
+		catalog:    remoteDialogTestCatalog(),
+		gen:        h.remoteAccountsGen,
+	})
+	h = model.(*Home)
 	h.newDialog.nameInput.SetValue("custom remote")
 	h.newDialog.pathInput.SetValue("~/custom-project")
 	h.newDialog.SetDefaultTool("codex")

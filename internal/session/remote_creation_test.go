@@ -37,7 +37,7 @@ func TestRemoteCreationCatalogStrictValidation(t *testing.T) {
 			t.Errorf("%v: %v, want %s", tc.args, err, tc.want)
 		}
 	}
-	if err := c.ValidateArgs([]string{"add", "--extra-arg", "--chrome", "--effort=high", "--", "-remote-path"}); err != nil {
+	if err := c.ValidateArgs([]string{"add", "--extra-arg", "--chrome", "--effort=high", "--", "---remote-path"}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -87,11 +87,10 @@ func (c *RemoteCreationCatalog) ValidateArgs(args []string) error {
 	}
 	positional := 0
 	endFlags := false
-	for i := 1; i < len(args); i++ {
-		arg := args[i]
-		if strings.HasPrefix(arg, "---") {
-			return fmt.Errorf("invalid remote creation flag %q", arg)
-		}
+	remaining := args[1:]
+	for len(remaining) > 0 {
+		arg := remaining[0]
+		remaining = remaining[1:]
 		if strings.ContainsRune(arg, 0) {
 			return fmt.Errorf("remote creation argument contains NUL")
 		}
@@ -103,17 +102,20 @@ func (c *RemoteCreationCatalog) ValidateArgs(args []string) error {
 			positional++
 			continue
 		}
+		if strings.HasPrefix(arg, "---") {
+			return fmt.Errorf("invalid remote creation flag %q", arg)
+		}
 		name, value, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
 		field, ok := known[name]
 		if !ok {
 			return fmt.Errorf("unsupported remote creation field --%s; update the remote", name)
 		}
 		if field.TakesValue && !inline {
-			if i+1 >= len(args) {
+			if len(remaining) == 0 {
 				return fmt.Errorf("remote creation field --%s needs a value", name)
 			}
-			value = args[i+1]
-			i++
+			value = remaining[0]
+			remaining = remaining[1:]
 			if strings.ContainsRune(value, 0) {
 				return fmt.Errorf("remote creation argument contains NUL")
 			}
