@@ -469,6 +469,10 @@ type Home struct {
 	// Update notification (async check on startup, periodic re-check)
 	updateInfo      *update.UpdateInfo
 	lastUpdateCheck time.Time
+	// lastUpdateCheckFailed holds the periodic check back for
+	// update.RecheckBackoff; updateCheckInFlight keeps it to one at a time.
+	lastUpdateCheckFailed bool
+	updateCheckInFlight   bool
 	// updateNudgeDismissed suppresses the >5-releases-behind nudge for
 	// the rest of the process. Reset on restart. Conductor task #45.
 	updateNudgeDismissed bool
@@ -484,6 +488,9 @@ type Home struct {
 	// tried, so a failure is not retried every check.
 	autoInstallInFlight string
 	autoInstallAttempts map[string]time.Time
+	// autoInstallLastSkip is the last reason the periodic check left the
+	// updater alone, so the log says it once per change, not per minute.
+	autoInstallLastSkip string
 	// autoRestartLoggedAt rate-limits the "waiting for idle" log line.
 	autoRestartLoggedAt time.Time
 	// autoRestartHoldUntil pauses the auto path after the pre-arm check of
@@ -1451,6 +1458,7 @@ type openCodeDetectionCompleteMsg struct {
 
 type updateCheckMsg struct {
 	info *update.UpdateInfo
+	err  error
 }
 
 type (
@@ -3763,7 +3771,7 @@ func (h *Home) Init() tea.Cmd {
 
 		h.tick(),
 		h.reviverTick(),
-		h.checkForUpdate(),
+		h.periodicUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
 		// Opt-in telemetry daily report. MaybeSend re-reads consent from
@@ -3786,14 +3794,6 @@ func (h *Home) Init() tea.Cmd {
 	cmds = append(cmds, h.startWatcherEngine())
 
 	return tea.Batch(cmds...)
-}
-
-// checkForUpdate checks for updates asynchronously
-func (h *Home) checkForUpdate() tea.Cmd {
-	return func() tea.Msg {
-		info, _ := update.CheckForUpdate(Version, false)
-		return updateCheckMsg{info: info}
-	}
 }
 
 // listenForReloads waits for storage change notification
@@ -7848,15 +7848,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.maybeAutoRestart()
 
 	case updateCheckMsg:
-		h.lastUpdateCheck = time.Now()
-		if msg.info != nil && !msg.info.Available {
-			// Update is no longer available (e.g., user updated via terminal) — dismiss banner
-			h.updateInfo = nil
-		} else {
-			h.updateInfo = msg.info
-		}
-		// auto_install: start the unattended updater in the background.
-		return h, h.maybeAutoInstall(msg.info)
+		return h, h.handleUpdateCheck(msg)
 
 	case remoteFetchRoundMsg:
 		// Fan out: each remote answers with its own remoteSessionsFetchedMsg.
@@ -9104,14 +9096,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}()
 		}
 
-		// Periodic update re-check every 5 minutes to dismiss stale banner
-		// after the user updates agent-deck via terminal while TUI is running
-		const updateRecheckInterval = 5 * time.Minute
-		if h.updateInfo != nil && h.updateInfo.Available && time.Since(h.lastUpdateCheck) >= updateRecheckInterval {
-			h.lastUpdateCheck = time.Now()
-			return h, tea.Batch(h.tick(), h.checkForUpdate())
-		}
-
 		// Clean up expired animation entries (launching, resuming, MCP loading, forking)
 		// For Claude: remove after 20s timeout (animation shows for ~6-15s)
 		// For others: remove after 5s timeout
@@ -9167,12 +9151,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.previewCacheMu.Unlock()
 			}
 		}
+		// Periodic update check: notices a release that lands while the
+		// deck is open (auto_install acts on the result) and dismisses a
+		// stale banner after an update from a terminal.
+		updateCheckCmd := h.periodicUpdateCheck(time.Now())
 		// One os.Stat per tick; a version probe only when the file changed.
 		binaryProbeCmd := h.pollBinaryChange()
 		// auto_restart: hand over to an installed newer build once idle.
 		autoRestartCmd := h.maybeAutoRestart()
 
-		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), binaryProbeCmd, autoRestartCmd}
+		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), updateCheckCmd, binaryProbeCmd, autoRestartCmd}
 		if h.fullRepaint {
 			cmds = append(cmds, tea.ClearScreen)
 		}

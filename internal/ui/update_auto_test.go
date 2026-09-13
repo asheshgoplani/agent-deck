@@ -176,16 +176,7 @@ func TestAutoInstall_ManualKeyStillWorks(t *testing.T) {
 	}
 }
 
-func TestTailBuffer(t *testing.T) {
-	tb := &tailBuffer{max: 8}
-	for _, chunk := range []string{"abcdef", "ghij", "kl"} {
-		if n, err := tb.Write([]byte(chunk)); err != nil || n != len(chunk) {
-			t.Fatalf("Write(%q) = %d, %v", chunk, n, err)
-		}
-	}
-	if got := tb.String(); got != "efghijkl" {
-		t.Fatalf("tail = %q, want the last 8 bytes", got)
-	}
+func TestFirstLine(t *testing.T) {
 	if got := firstLine("\n  \n  first \nsecond", "fallback"); got != "first" {
 		t.Fatalf("firstLine = %q", got)
 	}

@@ -4,17 +4,22 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Unattended install from the TUI's periodic update check.
+// Periodic update check and unattended install from the TUI.
+//
+// The tick loop re-asks update.CheckForUpdate every update.RecheckInterval
+// whether or not a banner is showing. The answer is the shared on-disk
+// cache until that is older than the check interval, so an open deck
+// notices a release within one check interval of it landing instead of on
+// its next start (before this, the loop only re-checked while a banner was
+// already up, so a deck opened before a release never asked again).
 //
 // With [updates].auto_install (default true) the TUI does not wait for the
 // user to press the install key: when a check says a release is available
@@ -27,15 +32,10 @@ import (
 
 // autoInstallRetryAfter is how long a version that failed (or was just
 // attempted) is left alone before the periodic check may try it again.
-const autoInstallRetryAfter = time.Hour
+const autoInstallRetryAfter = update.InstallRetryAfter
 
-// autoInstallTimeout bounds one unattended run: a download on a slow link
-// plus the install, with plenty of slack.
-const autoInstallTimeout = 10 * time.Minute
-
-// autoInstallOutputTail is how much of the updater's combined output is
-// kept for the log and the footer.
-const autoInstallOutputTail = 4 * 1024
+// autoInstallTimeout bounds one unattended run.
+const autoInstallTimeout = update.UnattendedInstallTimeout
 
 // unattendedInstallFinishedMsg is delivered when the background updater
 // exits.
@@ -45,8 +45,11 @@ type unattendedInstallFinishedMsg struct {
 	err     error
 }
 
-// Seams so tests never run a real process or read the user's config.
+// Seams so tests never run a real process, hit GitHub or read the user's
+// config.
 var (
+	// checkUpdate asks for the latest release (cache-backed unless forced).
+	checkUpdate = update.CheckForUpdate
 	// runUnattendedUpdate runs the updater for exe and returns the tail of
 	// its combined output.
 	runUnattendedUpdate = runUnattendedUpdateProcess
@@ -66,33 +69,49 @@ var (
 
 // runUnattendedUpdateProcess is the production runUnattendedUpdate.
 func runUnattendedUpdateProcess(ctx context.Context, exe string) (string, error) {
-	// #nosec G204 -- exe is our own executable path (os.Executable) and
-	// every argument is fixed.
-	cmd := exec.CommandContext(ctx, exe, "update", "--unattended", "--trigger", "tui")
-	cmd.Env = append(childenv.ForLaunch(""), "AGENTDECK_UPDATE_TRIGGER=tui")
-	cmd.Stdin = nil
-	tail := &tailBuffer{max: autoInstallOutputTail}
-	cmd.Stdout = tail
-	cmd.Stderr = tail
-	err := cmd.Run()
-	return tail.String(), err
+	return update.RunUnattendedInstall(ctx, exe, "tui")
 }
 
-// tailBuffer keeps the last max bytes written to it.
-type tailBuffer struct {
-	max int
-	buf []byte
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.max {
-		t.buf = t.buf[len(t.buf)-t.max:]
+// checkForUpdate asks for the latest release asynchronously.
+func (h *Home) checkForUpdate() tea.Cmd {
+	return func() tea.Msg {
+		info, err := checkUpdate(Version, false)
+		return updateCheckMsg{info: info, err: err}
 	}
-	return len(p), nil
 }
 
-func (t *tailBuffer) String() string { return string(t.buf) }
+// periodicUpdateCheck is called on every tick. It starts a check when one
+// is due (update.NextRecheck: every update.RecheckInterval, longer after a
+// failure), never two at once, and not at all with check_enabled = false.
+func (h *Home) periodicUpdateCheck(now time.Time) tea.Cmd {
+	if h.updateCheckInFlight || now.Before(update.NextRecheck(h.lastUpdateCheck, h.lastUpdateCheckFailed)) {
+		return nil
+	}
+	if !loadUpdateSettings().GetCheckEnabled() {
+		return nil
+	}
+	h.lastUpdateCheck = now
+	h.updateCheckInFlight = true
+	return h.checkForUpdate()
+}
+
+// handleUpdateCheck records a check result: the banner state, what the
+// scheduler needs (in flight, failed), then the unattended install.
+func (h *Home) handleUpdateCheck(msg updateCheckMsg) tea.Cmd {
+	h.updateCheckInFlight = false
+	h.lastUpdateCheckFailed = msg.err != nil
+	if msg.err != nil {
+		uiLog.Debug("update_check_failed", slog.String("error", msg.err.Error()))
+	}
+	if msg.info != nil && !msg.info.Available {
+		// Update is no longer available (e.g., user updated via terminal) — dismiss banner
+		h.updateInfo = nil
+	} else {
+		h.updateInfo = msg.info
+	}
+	// auto_install: start the unattended updater in the background.
+	return h.maybeAutoInstall(msg.info)
+}
 
 // autoInstallSkipReason returns "" when the periodic check may start an
 // unattended install of info now, else why not (for the debug log).
@@ -125,11 +144,19 @@ func (h *Home) autoInstallSkipReason(info *update.UpdateInfo) string {
 // and never blocks the event loop.
 func (h *Home) maybeAutoInstall(info *update.UpdateInfo) tea.Cmd {
 	if reason := h.autoInstallSkipReason(info); reason != "" {
+		// Say why once per change of mind at Info, so the default log
+		// shows the decision; the per-minute repeats stay at Debug.
 		if info != nil && info.Available {
-			uiLog.Debug("tui_auto_install_skipped", slog.String("latest", info.LatestVersion), slog.String("reason", reason))
+			log := uiLog.Debug
+			if reason != h.autoInstallLastSkip {
+				log = uiLog.Info
+			}
+			log("tui_auto_install_skipped", slog.String("latest", info.LatestVersion), slog.String("reason", reason))
 		}
+		h.autoInstallLastSkip = reason
 		return nil
 	}
+	h.autoInstallLastSkip = ""
 	version := info.LatestVersion
 	exe := h.restartExecutable()
 	if h.autoInstallAttempts == nil {

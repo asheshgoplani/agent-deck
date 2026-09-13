@@ -972,6 +972,7 @@ func main() {
 			}()
 			watchCtx, stopWatch := context.WithCancel(context.Background())
 			defer stopWatch()
+			startHeadlessAutoInstall(watchCtx)
 			startHeadlessSelfRestart(watchCtx, server.Idle)
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
@@ -1133,6 +1134,50 @@ func startHeadlessSelfRestart(ctx context.Context, idle func() bool) {
 		Log:            webLog,
 	}
 	go w.Run(ctx)
+}
+
+// startHeadlessAutoInstall makes `web --no-tui` install a release that
+// lands while it runs, the way an open TUI does: every
+// update.RecheckInterval it asks the cache-backed check and, with
+// [updates].auto_install on, runs `<exe> update --unattended --trigger
+// web` (lock-protected, so a TUI or the timer doing the same is harmless).
+// startHeadlessSelfRestart then re-execs into the new file at the next
+// idle point. Same gates as the restart: nothing when the process is test-,
+// CI- or script-driven (issue #2251) or Homebrew owns the binary.
+func startHeadlessAutoInstall(ctx context.Context) {
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		return
+	}
+	inst := newHeadlessAutoInstaller(exe, func() bool {
+		_, _, managed, _ := update.DetectHomebrewManagedInstall()
+		return managed
+	})
+	if inst == nil {
+		return
+	}
+	go inst.Run(ctx)
+}
+
+// newHeadlessAutoInstaller builds the daemon's installer, or nil when the
+// process must not install on its own.
+func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.Installer {
+	webLog := logging.ForComponent(logging.CompWeb)
+	if reason := headlessAutoUpdateSuppressed(); reason != "" {
+		webLog.Info("auto_install_suppressed", slog.String("reason", reason))
+		return nil
+	}
+	if homebrewManaged() {
+		webLog.Debug("auto_install_disabled", slog.String("reason", "homebrew-managed install"))
+		return nil
+	}
+	return &update.Installer{
+		Exe:            exe,
+		RunningVersion: Version,
+		Trigger:        "web",
+		Enabled:        func() bool { return session.GetUpdateSettings().GetAutoInstall() },
+		Log:            webLog,
+	}
 }
 
 // commandRegistry lists every token that main()'s dispatch switch treats
