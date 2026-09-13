@@ -311,3 +311,41 @@ func TestIssue1978_TurnScopedStreamEndsAtInterruption(t *testing.T) {
 		t.Fatalf("want an error event and no stop event at the boundary:\n%s", got)
 	}
 }
+
+// TestIssue1978_TruncatedTranscriptRefusesInsteadOfReplaying (CodeRabbit on
+// #2273): a transcript that shrank below the pre-send cursor has lost the
+// turn boundary. Rescanning from offset 0 would replay an older identical
+// prompt as this send's identity, and a turn-scoped stream would replay
+// earlier turns. Both refuse with ErrTranscriptTruncated.
+func TestIssue1978_TruncatedTranscriptRefusesInsteadOfReplaying(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	appendTranscript(t, path,
+		userLine("older-identical", "", "ping"),
+		assistantLine("older-reply", "", "OLD ANSWER", "end_turn"),
+	)
+	cursor, _ := TranscriptCursor(path)
+	// Truncate below the cursor, leaving only the older identical prompt.
+	if err := os.WriteFile(path, []byte(userLine("older-identical", "", "ping")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "ping", Cursor: cursor}, 50*time.Millisecond, time.Millisecond)
+	if !errors.Is(err, ErrTranscriptTruncated) {
+		t.Fatalf("identity err = %v, want ErrTranscriptTruncated (bound to the pre-send prompt?)", err)
+	}
+
+	id := TurnIdentity{UUID: "mine", Path: path, StartOffset: cursor}
+	if _, err := AwaitTurnResponse(id, 50*time.Millisecond, time.Millisecond); !errors.Is(err, ErrTranscriptTruncated) {
+		t.Fatalf("response err = %v, want ErrTranscriptTruncated", err)
+	}
+
+	var out bytes.Buffer
+	err = StreamTranscriptForTurn(context.Background(), id, "sid", &out, StreamConfig{
+		PollInterval: time.Millisecond, IdleTimeout: time.Second, CharBudget: 1024, ToolBudget: 10,
+	})
+	if !errors.Is(err, ErrTranscriptTruncated) {
+		t.Fatalf("stream err = %v, want ErrTranscriptTruncated", err)
+	}
+	if strings.Contains(out.String(), "OLD ANSWER") || !strings.Contains(out.String(), `"type":"error"`) {
+		t.Fatalf("stream replayed earlier turns or emitted no error event:\n%s", out.String())
+	}
+}

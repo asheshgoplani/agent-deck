@@ -60,7 +60,13 @@ Supersedes PR #2043 on current `main` (27fac197, v1.16.9). Closes #1978 and
    now returns that stdout and falls back to `session output` only when
    stdout is empty. The remaining `sentAt` consumers are the `last_sent_at`
    self-heal clock and `waitForFreshOutput` (non-Claude and slash commands).
-8. **Test determinism.** The partial-record case is proven by one scan
+8. **Truncation** (CodeRabbit on #2273). A transcript shorter than the
+   pre-send cursor or a turn's start offset has lost the boundary; identity,
+   reply and turn-scoped stream refuse with `ErrTranscriptTruncated` instead
+   of rescanning from offset 0 and replaying earlier turns
+   (`TestIssue1978_TruncatedTranscriptRefusesInsteadOfReplaying`; mutation
+   back to the reset-to-zero paths fails it).
+9. **Test determinism.** The partial-record case is proven by one scan
    (`scanTurnIdentity`) returning a cursor before the partial line; the
    `--wait` red-path test drives `awaitClaudeWaitReply`, the single helper
    `handleSessionSend` obtains a Claude reply from (identity, completion and

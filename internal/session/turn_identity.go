@@ -43,6 +43,12 @@ type TurnQuery struct {
 // reply; it must not be presented as complete.
 var ErrTurnResponseIncomplete = errors.New("turn response incomplete at deadline")
 
+// ErrTranscriptTruncated is returned when the transcript is shorter than a
+// durable position captured earlier (the pre-send cursor or a turn's start
+// offset). The boundary is gone, and rescanning from offset 0 would replay
+// records that precede the send — so the turn is refused, never guessed.
+var ErrTranscriptTruncated = errors.New("transcript truncated below a durable turn boundary")
+
 // TranscriptCursor returns the current end of a transcript. It is captured
 // before transport submission and is only a search cursor, never turn proof.
 func TranscriptCursor(path string) (int64, error) {
@@ -140,7 +146,7 @@ func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, err
 	}
 	defer f.Close()
 	if fi, statErr := f.Stat(); statErr == nil && fi.Size() < cursor {
-		cursor = 0
+		return TurnIdentity{}, cursor, false, fmt.Errorf("%w: %s is %d bytes, cursor at %d", ErrTranscriptTruncated, q.Path, fi.Size(), cursor)
 	}
 	if _, err := f.Seek(cursor, 0); err != nil {
 		return TurnIdentity{}, cursor, false, nil
@@ -291,6 +297,9 @@ func readTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
 		return nil, false, nil
 	}
 	defer f.Close()
+	if fi, statErr := f.Stat(); statErr == nil && fi.Size() < id.StartOffset {
+		return nil, false, fmt.Errorf("%w: turn %s started at offset %d, transcript is %d bytes", ErrTranscriptTruncated, id.UUID, id.StartOffset, fi.Size())
+	}
 	if _, err := f.Seek(id.StartOffset, 0); err != nil {
 		return nil, false, nil
 	}

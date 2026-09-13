@@ -272,8 +272,13 @@ func (s *streamerState) consumeFile(path string, offset int64) (int64, bool, boo
 		return offset, false, false, "", err
 	}
 	// Truncation detection: if the file shrank below our offset, reset
-	// to 0 and replay — rare, but we must not seek past EOF.
+	// to 0 and replay — rare, but we must not seek past EOF. A turn-scoped
+	// stream cannot replay: offset 0 precedes the send, so the records it
+	// would emit belong to earlier turns. Refuse instead.
 	if fi.Size() < offset {
+		if s.turnScoped {
+			return offset, false, false, "", fmt.Errorf("%w: stream started at offset %d, transcript is %d bytes", ErrTranscriptTruncated, offset, fi.Size())
+		}
 		offset = 0
 	}
 	if offset > 0 {
