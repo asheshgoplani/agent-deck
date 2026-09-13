@@ -62,6 +62,16 @@ type TransitionNotificationEvent struct {
 	// 90s short window.
 	LastOutputHash string `json:"last_output_hash,omitempty"`
 
+	// OutputHashStale marks an interactive transition whose LastOutputHash did
+	// NOT advance since the child's last notified turn even though a new
+	// transition was observed (issue #2184): the transcript signal is stale
+	// (e.g. the resolved transcript path is no longer the one being written),
+	// so it cannot identify this turn. TurnFingerprint falls through to the
+	// flip + emit instant for a flagged record, so the new completion is
+	// delivered once instead of colliding with the consumed turn. The flag is
+	// persisted so the inconsistent signal stays visible on the record.
+	OutputHashStale bool `json:"output_hash_stale,omitempty"`
+
 	TargetSessionID string `json:"target_session_id,omitempty"`
 	TargetKind      string `json:"target_kind,omitempty"` // parent | conductor
 	DeliveryResult  string `json:"delivery_result,omitempty"`
@@ -326,6 +336,7 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 		event.DeliveryResult = transitionDeliveryDropped
 		return event
 	}
+	event.OutputHashStale = n.outputHashIsStale(event)
 
 	// Issue #1225: commit the transition to the parent's durable outbox instead
 	// of gating delivery on the parent being idle.
@@ -465,6 +476,24 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	}
 
 	return false
+}
+
+// outputHashIsStale reports whether a NEW (non-duplicate) transition carries
+// the same LastOutputHash the child was last notified with (issue #2184). The
+// transcript signal is supposed to advance on every real turn; when a fresh
+// flip arrives with an unchanged signal, the signal is stale (typically the
+// resolved transcript path is no longer the file being written) and must not
+// be used as the turn's identity. Call after isDuplicate: a same-hash re-fire
+// inside the dedup TTL is a duplicate, not a stale signal.
+func (n *TransitionNotifier) outputHashIsStale(event TransitionNotificationEvent) bool {
+	hash := strings.TrimSpace(event.LastOutputHash)
+	if hash == "" {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	record, ok := n.state.Records[event.ChildSessionID]
+	return ok && strings.TrimSpace(record.OutputHash) == hash
 }
 
 // outputHashTTL returns the active TTL for the output-hash dedup layer. The

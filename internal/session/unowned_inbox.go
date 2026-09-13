@@ -3,6 +3,7 @@ package session
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // UnownedInboxID is the durable ledger for events with no resolvable parent on
@@ -67,11 +68,20 @@ func recordUnownedTransition(event TransitionNotificationEvent) (bool, error) {
 // _unowned copy hash differently from the ledger copy of the same completion and
 // re-open P2b itself.
 func unownedTurnSignal(event TransitionNotificationEvent) string {
-	if signal := strings.TrimSpace(event.LastOutputHash); signal != "" {
+	// A stale hash (issue #2184) is no signal at all: it would pin a recurring
+	// stall to the first record exactly like an empty one does.
+	if signal := strings.TrimSpace(event.LastOutputHash); signal != "" && !event.OutputHashStale {
 		return signal
 	}
 	if event.Kind == transitionKindFinished || event.Timestamp.IsZero() {
 		return strings.TrimSpace(event.LastOutputHash)
 	}
-	return "emit:" + strconv.FormatInt(event.Timestamp.UTC().UnixNano(), 10)
+	return emitInstantSignal(event.Timestamp)
+}
+
+// emitInstantSignal keys a transition on the instant its single producer
+// stamped it. Shared by unownedTurnSignal and TurnFingerprint's stale-hash case
+// so both hash the same representation of the same stamp.
+func emitInstantSignal(at time.Time) string {
+	return "emit:" + strconv.FormatInt(at.UTC().UnixNano(), 10)
 }
