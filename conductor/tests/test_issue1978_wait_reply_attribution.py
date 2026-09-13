@@ -52,12 +52,16 @@ def test_wait_reply_is_the_turn_bound_stdout_not_the_latest_output():
     assert len(calls) == 1
 
 
-def test_wait_reply_falls_back_to_session_output_only_when_stdout_is_empty():
+def test_empty_attributed_reply_is_preserved_never_substituted():
+    """An empty end-of-turn record is a valid completed result. Substituting
+    ``session output`` would hand back a later or unrelated reply as this
+    turn's answer, which is the race the turn binding exists to close."""
     with mock.patch("bridge.run_cli", return_value=_completed(0, stdout="  \n")), mock.patch(
-        "bridge.get_session_output", return_value="FALLBACK"
+        "bridge.get_session_output", return_value="LATEST OTHER TURN"
     ) as latest:
-        ok, reply, _ = send_to_conductor(
+        ok, reply, still_running = send_to_conductor(
             "conductor", "question", wait_for_reply=True, response_timeout=5
         )
-    assert ok is True and reply == "FALLBACK"
-    assert latest.call_count == 1
+    assert ok is True and still_running is False
+    assert reply == ""
+    assert latest.call_count == 0, "an empty attributed reply must not be replaced by the latest output"

@@ -405,3 +405,41 @@ func TestIssue1978_NonClaudeBusyBeforeSendIsNotQueued(t *testing.T) {
 		t.Fatalf("delivery=%q err=%v, want the #1793 typed verdict", delivery, err)
 	}
 }
+
+// --- Round 2 review of #2273: the affordance is a UI element, not a substring
+
+// busyPaneMentioningQueuedMessages: ordinary transcript text (the assistant's
+// reply and our own prompt) contains the words of the affordance, but the
+// composer itself is empty. Nothing here is Claude acknowledging a queue.
+func busyPaneMentioningQueuedMessages(msg string) string {
+	return strings.Join([]string{
+		"⏺ I will explain how queued messages work: press up to edit queued messages",
+		"  when the composer shows that placeholder.",
+		"❯ " + msg,
+		"────────────────────────────────────────",
+		"❯ ",
+		"────────────────────────────────────────",
+	}, "\n")
+}
+
+func TestIssue1978_QueueAffordanceIsTheComposerElementNotASubstring(t *testing.T) {
+	const msg = "PROBE: do queued messages survive a restart?"
+	if claudeQueueAcknowledged(busyPaneMentioningQueuedMessages(msg)) {
+		t.Fatal("free-text mention of queued messages counted as the composer placeholder")
+	}
+	if claudeQueueAcknowledged("some output\n❯ Press up to edit queued messages") {
+		t.Fatal("placeholder text without a divider-framed composer counted as the affordance")
+	}
+	if !claudeQueueAcknowledged(busyPaneWithBody(msg)) {
+		t.Fatal("the real composer placeholder was not recognised")
+	}
+
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{busyPaneNoBody(), busyPaneMentioningQueuedMessages(msg)},
+	}
+	delivery, err := sendWithRetryTarget(mock, msg, false, queuedOpts(hookSeq(probeBusy)))
+	if delivery == deliveryQueued || delivery == deliverySubmitted || err == nil {
+		t.Fatalf("delivery=%q err=%v: the words in ordinary output must not yield a queued success", delivery, err)
+	}
+}

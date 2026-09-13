@@ -517,8 +517,9 @@ def send_to_conductor(
     # the transcript record of THIS message (issue #1978), so it is the one
     # attributed answer. Re-fetching `session output` afterwards would hand
     # back whatever the latest reply happens to be (a later turn, another
-    # sender's queued message), reopening the attribution race; it remains
-    # only as a fallback for an empty stdout.
+    # sender's queued message), reopening the attribution race. An empty
+    # stdout is a valid attributed result — the turn ended with no text — and
+    # is returned as such, never substituted with the latest output.
     result = run_cli(
         "session", "send", session, message,
         "--wait", "--timeout", f"{response_timeout}s", "-q",
@@ -541,7 +542,7 @@ def send_to_conductor(
         return False, "", False
     reply = (result.stdout or "").strip()
     if not reply:
-        reply = get_session_output(session, profile=profile)
+        log.info("Conductor %s: turn completed with an empty reply", session)
     return True, reply, False
 
 

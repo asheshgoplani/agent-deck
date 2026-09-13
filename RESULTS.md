@@ -26,7 +26,10 @@ Supersedes PR #2043 on current `main` (27fac197, v1.16.9). Closes #1978 and
    all of: the hook read busy *before* the send, token movement after it (a
    new copy of the body relative to the pre-send pane baseline; a composer
    paste marker is never movement), the composer not holding the body, and
-   Claude's own queued-messages affordance in the same frame. A target that
+   Claude's own queued-messages placeholder in the same frame — recognised
+   as the composer element (divider-framed block, parsed like the unsent
+   prompt checks, holding exactly "Press up to edit queued messages"), never
+   as a substring elsewhere in the pane. A target that
    was already mid-turn gets no `submitted` from the activity heuristic or
    from held-then-cleared either; it settles on turn advancement (the
    message's own user record in the transcript, `session.TurnAdvanced`), on
@@ -57,8 +60,9 @@ Supersedes PR #2043 on current `main` (27fac197, v1.16.9). Closes #1978 and
 7. **Conductor reply attribution.** The bridge's wait path
    (`conductor_bridge.py`) returned `session output` (the latest reply)
    after `--wait -q` instead of the turn-bound stdout the CLI printed. It
-   now returns that stdout and falls back to `session output` only when
-   stdout is empty. The remaining `sentAt` consumers are the `last_sent_at`
+   now returns that stdout as the attributed reply, including an empty one
+   when the turn ended with no text (logged, never substituted with the
+   latest output). The remaining `sentAt` consumers are the `last_sent_at`
    self-heal clock and `waitForFreshOutput` (non-Claude and slash commands).
 8. **Truncation** (CodeRabbit on #2273). A transcript shorter than the
    pre-send cursor or a turn's start offset has lost the boundary; identity,
@@ -110,7 +114,11 @@ Mutation proofs on the final branch (tests untouched):
   fail; re-enabling the active shortcut on a busy-before target alone fails
   `ActiveHeuristicIsNotSubmissionOnABusyTarget`.
 - Bridge: `test_wait_reply_is_the_turn_bound_stdout_not_the_latest_output`
-  fails on the unpatched bridge (`LATEST OTHER TURN` returned).
+  fails on the unpatched bridge (`LATEST OTHER TURN` returned);
+  `test_empty_attributed_reply_is_preserved_never_substituted` fails on the
+  first fix (fallback substituted the latest output for an empty reply).
+- Round-2 review: `TestIssue1978_QueueAffordanceIsTheComposerElementNotASubstring`
+  fails with the free-substring check restored.
 
 ### Green
 

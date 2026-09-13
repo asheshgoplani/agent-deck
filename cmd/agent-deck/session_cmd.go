@@ -4292,13 +4292,42 @@ func paneArrivalObservation(target sendRetryTarget, message string) (int, int, s
 	return n, markers, tmux.StripANSI(raw), ok
 }
 
-// claudeQueueAcknowledged reports whether the captured pane shows Claude
-// Code's queued-messages affordance ("Press up to edit queued messages"),
-// which the TUI renders only while it is holding input behind the running
-// turn. It is the harness's own acknowledgement that a message is queued,
-// and the only thing the queued verdict is allowed to rest on (issue #1978).
+// claudeQueuePlaceholder is the composer placeholder Claude Code renders
+// while it holds input behind the running turn.
+const claudeQueuePlaceholder = "Press up to edit queued messages"
+
+// claudeQueueAcknowledged reports whether the captured pane's COMPOSER — the
+// block between the last two divider lines, parsed the same way the unsent
+// prompt checks parse it — holds exactly Claude Code's queued-messages
+// placeholder. That element is the harness's own acknowledgement that a
+// message is queued, and the only thing the queued verdict is allowed to
+// rest on (issue #1978). The words appearing anywhere else in the pane (a
+// prompt or an assistant reply that mentions queued messages) do not count,
+// and neither does a pane without a divider-framed composer.
 func claudeQueueAcknowledged(content string) bool {
-	return strings.Contains(strings.ToLower(content), "queued message")
+	lines := strings.Split(content, "\n")
+	last := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if send.IsComposerDividerLine(lines[i]) {
+			last = i
+			break
+		}
+	}
+	if last <= 0 {
+		return false
+	}
+	prev := -1
+	for i := last - 1; i >= 0; i-- {
+		if send.IsComposerDividerLine(lines[i]) {
+			prev = i
+			break
+		}
+	}
+	if prev < 0 || prev+1 >= last {
+		return false
+	}
+	body, ok := send.ParsePromptFromComposerBlock(lines[prev+1 : last])
+	return ok && strings.EqualFold(body, claudeQueuePlaceholder)
 }
 
 // paneArrivalCounts is paneArrivalObservation over a capture the caller
