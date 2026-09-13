@@ -69,6 +69,7 @@ func createIssue1607Session(t *testing.T, title string, autoName bool) *session.
 		nil,
 		"",
 		"",
+		"",
 		false,
 		nil,
 		"", "",

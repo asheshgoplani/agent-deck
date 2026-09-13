@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,6 +80,10 @@ func handleSession(profile string, args []string) {
 		handleSessionSet(profile, args[1:])
 	case "switch-account":
 		handleSessionSwitchAccount(profile, args[1:])
+	case "switch":
+		handleSessionSwitch(profile, args[1:])
+	case "switch-preview":
+		handleSessionSwitchPreview(profile, args[1:])
 	case "move", "mv":
 		handleSessionMove(profile, args[1:])
 	case "send":
@@ -119,11 +124,13 @@ func printSessionHelp() {
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)")
+	fmt.Println("  switch-preview <id>     Preview switch capability, fidelity and refusals (read-only, no mutation)")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
+	fmt.Println("  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target")
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
@@ -192,6 +199,7 @@ func handleSessionStart(profile string, args []string) {
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
 	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
+	noWait := fs.Bool("no-wait", false, "Return as soon as the process is spawned instead of waiting up to 3s for the tool's session id (a caller that attaches right away; the id is still captured by hooks)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session start <id|title> [options]")
@@ -293,8 +301,13 @@ func handleSessionStart(profile string, args []string) {
 	}
 
 	// Capture session ID from tmux env before saving to JSON
-	// Claude: UUID is set by bash capture-resume pattern before exec
-	inst.PostStartSync(3 * time.Second)
+	// Claude: UUID is set by bash capture-resume pattern before exec.
+	// --no-wait skips this bounded wait for a caller that attaches at once
+	// (the remote TUI create path); hooks and the status loop capture the
+	// id shortly after.
+	if !*noWait {
+		inst.PostStartSync(3 * time.Second)
+	}
 
 	// Save updated state
 	if err := saveSessionData(storage, instances, groups); err != nil {
@@ -1574,6 +1587,8 @@ func handleSessionShow(profile string, args []string) {
 		fmt.Println("Usage: agent-deck session show [id|title] [options]")
 		fmt.Println()
 		fmt.Println("Show session details. If no ID is provided, auto-detects current session.")
+		fmt.Println("Account: shows the quoted stored account slot, not a resolved account or login identity.")
+		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -1650,6 +1665,7 @@ func handleSessionShow(profile string, args []string) {
 		"no_transition_notify": inst.NoTransitionNotify,
 		"title_locked":         inst.TitleLocked,
 		"tool":                 inst.Tool,
+		"account":              inst.Account,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
 	}
 	// Honest Status v2: additive substate refinement (omit when none so the
@@ -1659,6 +1675,8 @@ func handleSessionShow(profile string, args []string) {
 	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
+	addEffortJSON(jsonData, inst)
+	addClaudeOptionsJSON(jsonData, inst)
 	addAutoNameJSON(jsonData, inst)
 
 	if inst.Command != "" {
@@ -1754,6 +1772,7 @@ func handleSessionShow(profile string, args []string) {
 	}
 
 	sb.WriteString(fmt.Sprintf("Tool:    %s\n", inst.Tool))
+	sb.WriteString(fmt.Sprintf("Account: %s\n", strconv.Quote(inst.Account)))
 	if modelInfo.ModelID != "" {
 		if modelInfo.Model != "" {
 			sb.WriteString(fmt.Sprintf("Model:   %s\n", modelInfo.Model))
@@ -3234,6 +3253,7 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 		tun.retry.composerPasteFreeBeforeSend = guard.ComposerPasteMarkerFree
 	}
 
+	tun.retry.tool = tool
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
 
@@ -3366,6 +3386,7 @@ type sendRetryOptions struct {
 	maxRetries     int
 	checkDelay     time.Duration
 	maxFullResends int // >0 overrides default (3); <0 disables Ctrl+C-then-resend; 0 uses default
+	tool           string
 
 	// verifyDelivery, when true, requires the verification loop to observe at
 	// least one positive signal that the message reached the inner agent (an
@@ -3790,7 +3811,7 @@ type sendArrivalBaseline struct {
 // baseline is disabled, never guessed.
 func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
 	base := sendArrivalBaseline{}
-	if n, markers, ok := paneArrivalObservation(target, message); ok {
+	if n, markers, _, ok := paneArrivalObservation(target, message); ok {
 		base.occurrences, base.pasteMarkers, base.paneOK = n, markers, true
 	}
 	if status, err := target.GetStatus(); err == nil {
@@ -3877,8 +3898,11 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			}
 		}
 		if baseline.paneOK {
-			if n, markers, ok := paneArrivalObservation(target, message); ok {
+			if n, markers, content, ok := paneArrivalObservation(target, message); ok {
 				if n > baseline.occurrences {
+					if opts.tool == "pi" && piComposerEmpty(content, message) {
+						return deliverySubmitted, nil
+					}
 					// Keep polling: the body is in, but the turn may still
 					// start within the budget and upgrade this to submitted.
 					sawBody = true
@@ -3980,7 +4004,8 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 // paneArrivalObservation reads the pane ONCE and reports both arrival signals
 // the check compares against its baseline: how many times the message's
 // distinctive token is visible in the pane, and how many "[Pasted text …]"
-// collapse markers the COMPOSER holds. One capture serving both signals is
+// collapse markers the COMPOSER holds. It also returns stripped pane content
+// for tool-specific submission checks. One capture serving all signals is
 // deliberate — they must describe the same instant, and the scripted-capture
 // test fakes index captures by call count. The final bool reports whether the
 // pane was actually read: a failed look is not "zero occurrences", it is no
@@ -3999,18 +4024,43 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 // composer holding one more marker than before is unsubmitted payload.
 //
 // Both counts are raw observations; the caller compares them to its baseline.
-func paneArrivalObservation(target sendRetryTarget, message string) (int, int, bool) {
+func paneArrivalObservation(target sendRetryTarget, message string) (int, int, string, bool) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
-		return 0, 0, false
+		return 0, 0, "", false
 	}
 	raw, err := target.CapturePaneFresh()
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, "", false
 	}
 	content := tmux.StripANSI(raw)
 	return strings.Count(collapseWhitespace(content), token),
-		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), true
+		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), content, true
+}
+
+// piComposerEmpty recognizes Pi's editor between its final two horizontal
+// borders. Once this send's body is in the pane and that editor is empty, Enter
+// was accepted; an unsent message would still occupy the editor.
+func piComposerEmpty(content, message string) bool {
+	// User-provided rules can impersonate the editor's top border. A pane
+	// capture cannot distinguish those bytes from Pi's own empty editor, so
+	// these messages require an activity transition instead of visual inference.
+	if strings.Contains(tmux.StripANSI(message), strings.Repeat("─", 20)) {
+		return false
+	}
+	lines := strings.Split(content, "\n")
+	borders := make([]int, 0, 2)
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Count(line, "\u2500") >= 20 && strings.Trim(line, "\u2500") == "" {
+			borders = append(borders, i)
+		}
+	}
+	if len(borders) < 2 {
+		return false
+	}
+	top, bottom := borders[len(borders)-2], borders[len(borders)-1]
+	return strings.TrimSpace(strings.Join(lines[top+1:bottom], "\n")) == ""
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives
@@ -4161,12 +4211,11 @@ var freshOutputTestConfig *freshOutputConfig
 // This bridges the gap between the UI prompt reappearing (detected by
 // waitForCompletion) and the JSONL being flushed to disk.
 //
-// For non-Claude tools (Codex, Gemini, etc.) the JSONL freshness check is
-// skipped entirely to avoid an unnecessary 5s penalty, since those tools
-// don't use the same JSONL format.
+// Local Pi sessions also expose structured timestamps. Other tools and
+// nonlocal Pi sessions retain best-effort output without a freshness claim.
 //
-// Falls back to the best-effort response if the freshness timeout expires,
-// logging a warning to stderr so the caller knows the data may be stale.
+// Claude retains its best-effort response with a warning on timeout. Pi
+// returns an error instead of reporting an earlier turn as this send's reply.
 //
 // peers carries the profile snapshot for the #1400 collision guard: a
 // claude_session_id shared by multiple live instances resolves to ONE
@@ -4174,14 +4223,18 @@ var freshOutputTestConfig *freshOutputConfig
 // Fail fast (same semantics as --stream's #1352 guard) instead of polling
 // a colliding transcript until the freshness timeout.
 func waitForFreshOutput(inst *session.Instance, sentAt time.Time, peers []*session.Instance) (*session.ResponseOutput, error) {
-	// Non-Claude tools don't use JSONL timestamps — skip the freshness loop.
-	if !session.IsClaudeCompatible(inst.Tool) {
+	// Pi's transcript lives in the tool's HOME. Legacy SSH/sandbox instances
+	// use terminal fallback, which does not provide timestamp evidence.
+	localPi := inst.Tool == "pi" && !inst.IsSSH() && !inst.IsSandboxed()
+	if !session.IsClaudeCompatible(inst.Tool) && !localPi {
 		return inst.GetLastResponseBestEffort()
 	}
 
 	// #1400: refuse a colliding transcript before entering the poll loop.
-	if _, err := inst.GetJSONLPathChecked(peers); err != nil {
-		return nil, fmt.Errorf("refusing to read a colliding transcript: %w", err)
+	if session.IsClaudeCompatible(inst.Tool) {
+		if _, err := inst.GetJSONLPathChecked(peers); err != nil {
+			return nil, fmt.Errorf("refusing to read a colliding transcript: %w", err)
+		}
 	}
 
 	pollInterval := 250 * time.Millisecond
@@ -4196,6 +4249,11 @@ func waitForFreshOutput(inst *session.Instance, sentAt time.Time, peers []*sessi
 	// time.Now() can be slightly ahead of Claude's clock. Tighter than the
 	// original 2s to reduce false positives on genuinely stale output.
 	threshold := sentAt.Add(-250 * time.Millisecond)
+	if localPi {
+		// Pi records milliseconds; do not accept a previous turn under Claude's
+		// wider clock-skew allowance.
+		threshold = sentAt.Truncate(time.Millisecond)
+	}
 
 	deadline := time.Now().Add(timeout)
 	var lastResp *session.ResponseOutput
@@ -4227,7 +4285,15 @@ func waitForFreshOutput(inst *session.Instance, sentAt time.Time, peers []*sessi
 		time.Sleep(pollInterval)
 	}
 
-	// Freshness timeout: return whatever we have but warn that it may be stale
+	// Pi's send --wait result must belong to this turn. Neither stale text nor
+	// a terminal fallback without a timestamp can establish that relationship.
+	if localPi {
+		if lastErr != nil {
+			return nil, fmt.Errorf("Pi output freshness timeout (%s): %w", timeout, lastErr)
+		}
+		return nil, fmt.Errorf("Pi output freshness timeout (%s): no fresh assistant response", timeout)
+	}
+	// Preserve Claude's historical warning-and-best-effort timeout behavior.
 	if lastResp != nil {
 		fmt.Fprintf(os.Stderr, "Warning: output freshness timeout (%s) — response may be stale\n", timeout)
 		return lastResp, nil
@@ -4585,12 +4651,22 @@ func handleSessionCurrent(profileArg string, args []string) {
 	status := StatusString(instData.Status)
 
 	// Prepare JSON output
+	// The JSON form is the machine-readable identity a session fetches from
+	// inside (the injected identity block points here), so it carries the
+	// full record: tool, account, parent and the identity file, not just the
+	// human summary fields.
+	// account and parent_session_id are always present (empty when unset)
+	// so a caller can key on them without probing for absence.
 	jsonData := map[string]interface{}{
-		"session": instData.Title,
-		"profile": detectedProfile,
-		"id":      instData.ID,
-		"path":    instData.ProjectPath,
-		"status":  status,
+		"session":           instData.Title,
+		"title":             instData.Title,
+		"profile":           detectedProfile,
+		"id":                instData.ID,
+		"path":              instData.ProjectPath,
+		"status":            status,
+		"tool":              instData.Tool,
+		"account":           instData.Account,
+		"parent_session_id": instData.ParentSessionID,
 	}
 
 	if instData.TmuxSession != "" {
@@ -4599,6 +4675,15 @@ func handleSessionCurrent(profileArg string, args []string) {
 
 	if instData.GroupPath != "" {
 		jsonData["group"] = instData.GroupPath
+	}
+	if instData.IsConductor {
+		jsonData["is_conductor"] = true
+	}
+	if instData.WorktreeBranch != "" {
+		jsonData["worktree_branch"] = instData.WorktreeBranch
+	}
+	if identityFile := os.Getenv(session.IdentityFileEnv); identityFile != "" {
+		jsonData["identity_file"] = identityFile
 	}
 
 	// Build human-readable output
@@ -4610,6 +4695,15 @@ func handleSessionCurrent(profileArg string, args []string) {
 	sb.WriteString(fmt.Sprintf("Path:    %s\n", FormatPath(instData.ProjectPath)))
 	if instData.GroupPath != "" {
 		sb.WriteString(fmt.Sprintf("Group:   %s\n", instData.GroupPath))
+	}
+	if instData.Tool != "" {
+		sb.WriteString(fmt.Sprintf("Tool:    %s\n", instData.Tool))
+	}
+	if instData.Account != "" {
+		sb.WriteString(fmt.Sprintf("Account: %s\n", instData.Account))
+	}
+	if instData.ParentSessionID != "" {
+		sb.WriteString(fmt.Sprintf("Parent:  %s\n", instData.ParentSessionID))
 	}
 
 	out.Print(sb.String(), jsonData)

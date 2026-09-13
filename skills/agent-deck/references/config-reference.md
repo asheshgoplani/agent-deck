@@ -19,6 +19,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[worktree] Section](#worktree-section)
 - [[fork] Section](#fork-section)
 - [[conductor] Section](#conductor-section)
+- [[launch] Section](#launch-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[interval_hooks.*] Section](#interval_hooks-section)
@@ -27,6 +28,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[global_search] Section](#global_search-section)
 - [[notifications] Section](#notifications-section)
 - [[performance] Section](#performance-section)
+- [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
 - [[mcps.*] Section](#mcps-section)
@@ -39,6 +41,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 default_tool = "claude"   # Pre-selected tool when creating sessions
 default_path = ""         # Fallback project directory for add/launch without a path
 sync_title   = true       # Let agents rename sessions from their session-name
+push_title   = true       # Use the exact deck title at supported Claude startup
 group_sort   = "creation" # within-group order: "creation" (default) or "actionable"
 ```
 
@@ -47,7 +50,16 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | `default_tool` | string | `"claude"` | Pre-selected tool when creating sessions. |
 | `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. A title you supply explicitly is already exempt: `add -t`, `launch -t`, the TUI New Session dialog, an explicit fork title, and `rename` all lock the title on creation (#1615/#1715), so only auto-derived folder-name titles follow the agent. The per-session title-lock (`agent-deck session set-title-lock <id> on|off`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
+| `push_title` | bool | `true` | Pass the exact deck title as `--name <title>` on supported Claude start/restart/resume commands. Case, punctuation, Unicode and long names are preserved; invalid UTF-8, control/bidirectional-control characters and line separators omit the default. An explicit `--name`/`-n` override wins. Missing settings default to enabled; configuration read/parse errors disable automatic naming. A deck rename applies on the next supported startup. No running prompt receives input. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
+
+### Startup naming boundaries
+
+Claude Code 2.1.261 documents `-n, --name <name>` in its installed CLI help. The normal Claude command builder, including configured Claude command aliases that forward the same arguments, passes the name to the same startup process as its conversation ID and account environment. Forks receive the child's title. Existing account and worker-scratch selection remains in the startup builder; naming does not consult any account's session registry.
+
+Automatic names are omitted for other agents, arbitrary per-session custom commands, unbound continue/resume-picker modes, and extra arguments that override conversation selection. Custom commands and older Claude versions must support their own explicit naming arguments; agent-deck does not probe or emulate them through a running prompt. Configure `push_title = false` for a Claude version without `--name` support. Configured aliases must forward Claude's documented arguments and preserve their intended account selection.
+
+Safe live rename remains a separate deliverable requiring an agent-side acknowledgement protocol. This startup behavior does not establish full naming parity or resolve every concern in #2088; that issue remains open. Existing inbound title reconciliation is unchanged.
 
 ## [shell] Section
 
@@ -441,6 +453,31 @@ dir = ""   # Override the base conductor directory (default: <data-dir>/conducto
 
 > **Note:** The Telegram/Slack/Discord bridge daemon (`bridge.py`) now honors `[conductor].dir`: the Go side injects the resolved override into the daemon environment as `AGENT_DECK_CONDUCTOR_DIR`, and the bridge prefers it over its XDG/legacy resolver (#1350). Caveat: the daemon's environment is frozen at install time, so if you change `[conductor].dir` after the bridge is set up, regenerate the bridge daemon (re-run conductor setup, or the planned `conductor migrate-dir`) for the daemon to pick up the new directory.
 
+## [launch] Section
+
+Tool-agnostic spawn settings.
+
+```toml
+[launch]
+inject_identity = true   # Default: true
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inject_identity` | bool | `true` | Tell every spawned session, through its harness's own instruction mechanism, that it runs inside agent-deck: its session id, title, tool, group, profile, account, parent session and project path, the six most useful `agent-deck` commands, `session current --json` as the way to fetch the live record, and the `===AGENTDECK_DONE===` completion sentinel. The block (under 40 lines) is regenerated from the session record on every start/restart and written to `<data-dir>/agent-deck/runtime/identity/<session-id>/identity.md`; its path is exported as `AGENTDECK_IDENTITY_FILE`. Nothing is written into the project directory. Per-session opt-out: `agent-deck add|launch --no-identity`. |
+
+How each harness receives the block (`documentation/HARNESS_IDENTITY.md` has the details):
+
+| Tool | Mechanism | Notes |
+|------|-----------|-------|
+| `claude` | `--append-system-prompt-file <file>` | fresh, `--resume` and fork spawns; custom `[claude].command` wrappers and `claude <subcommand>` passthrough get the env var only |
+| `codex` | `-c developer_instructions="..."` (block inlined as a TOML basic string) | appends to the developer message; a configured `developer_instructions` in that `CODEX_HOME/config.toml` is merged in first; the built-in instructions are never replaced; custom codex commands get the env var only |
+| `pi` | `--append-system-prompt <file>` | also on `session fork` |
+| `gemini` | `--include-directories <dir>` (dir holds `GEMINI.md`) | only when gemini's folder trust is off or a `TRUST_FOLDER` rule in `~/.gemini/trustedFolders.json` covers `<data-dir>/agent-deck/runtime/identity`; otherwise the flag is withheld (the trust dialog would swallow `launch -m`), the pane prints the rule to add, and only the env var is set |
+| anything else (`--cmd`, opencode, cursor, ...) | `AGENTDECK_IDENTITY_FILE` env var only | the file is still written and current |
+
+SSH (`--ssh`) and Docker-sandboxed sessions are skipped: the file lives on the controller host.
+
 ## [logs] Section
 
 Session log file management.
@@ -466,7 +503,10 @@ Auto-update settings.
 
 ```toml
 [updates]
-auto_update = false           # Auto-install updates
+auto_update = false           # Offer to install on TUI startup
+auto_update_remotes = true    # Keep older remotes on the controller's version (false opts out)
+auto_install = true           # Install unattended (TUI check + timer)
+auto_restart = true           # Restart in place after an install
 check_enabled = true          # Check on startup
 check_interval_hours = 24     # Check frequency
 notify_in_cli = true          # Show in CLI commands
@@ -474,10 +514,19 @@ notify_in_cli = true          # Show in CLI commands
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `auto_update` | bool | `false` | Install updates without prompting. |
+| `auto_update_remotes` | bool | `true` | Keep configured remotes on the controller's version: after a successful `agent-deck update`, and in the background on TUI startup (at most once per `check_interval_hours`), every remote whose `agent-deck version` is older than the controller's gets the same verified binary deploy as `agent-deck remote update --all`. Never prompts, never blocks the TUI; a remote that fails stays on its version and is logged. Remotes without a reachable binary, or whose `agent-deck version` is not a version string, are skipped (install them once with `agent-deck remote update <name>`), and a release that is not newer than what the remote runs is never deployed, so the fallback from a tag without a release to the latest release cannot downgrade a remote. A pre-release controller (`1.16.4-preview.abc`) counts as older than release `1.16.4`, so it never pushes onto a remote already on that release. Set `auto_update_remotes = false` to opt out and be prompted after `agent-deck update` instead. |
+| `auto_update` | bool | `false` | Offer to install an available update (Y/n prompt) before the TUI opens. |
+| `auto_install` | bool | `true` | Install an available update unattended, from the TUI's periodic check and from the `agent-deck update --install-timer` job (launchd on macOS, systemd on Linux). `false` opts out; `agent-deck update` then only runs by hand. |
+| `auto_restart` | bool | `true` | Once a newer binary is on disk, re-exec the running process in place (TUI: from the home screen when no dialog or session action is in flight; `web --no-tui` and daemons: at an idle point). `false` keeps the "installed, press ctrl+t to restart" notice instead. |
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
+
+**Timer.** `agent-deck update --install-timer` schedules `agent-deck update --unattended --trigger timer` once a day: a launchd agent (`~/Library/LaunchAgents/com.agentdeck.autoupdate.plist`, 07:MM local time with a minute drawn at random at install time, since launchd has no `RandomizedDelaySec`) on macOS, or a systemd user timer (`agent-deck-autoupdate.timer`, `OnCalendar=daily`, `RandomizedDelaySec=1h`, `Persistent=true`) on Linux. The unattended run honours `auto_install`, never runs Homebrew, takes `<cache dir>/update.lock` so it cannot collide with the TUI's own install, and afterwards runs the same no-prompt remote sweep as an interactive update when `auto_update_remotes` is on (with it off, remotes are left alone). `--timer-status`, `--uninstall-timer` and `--dry-run` round it out; `agent-deck update --check --json` reports the timer state alongside these settings.
+
+**When the automatic paths stay quiet.** `auto_install` and `auto_restart` are for a person's deck. Neither fires, whatever the config says, when the process runs under `go test`, when `AGENTDECK_SKIP_UPDATE_CHECK` is set, when `CI` is truthy, when an `AGENTDECK_TEST_*` marker is in the environment, or (TUI only) when stdin or stdout is not a terminal. Headless daemons (`web --no-tui`, `remote-agent`) keep their idle-point restart for real deployments but honour the same environment markers. The reason is logged once at startup (`auto_update_suppressed`), the banner then offers the keys instead of promising a restart, and `ctrl+y` / `ctrl+t` and the explicit `agent-deck update` commands keep working. Scripts that drive `agent-deck` and must never see an unattended install set `AGENTDECK_SKIP_UPDATE_CHECK=1`; the repository's CI workflows do so once per workflow.
+
+**macOS launchd hygiene.** macOS ties a launch agent's code identity to the file at its program path, so any `com.agentdeck.*` agent that runs the agent-deck binary (for example `notify-daemon` or `web --no-tui`) crash-loops with `EX_CONFIG` after that file is replaced. Every install path therefore boots those agents out and bootstraps them again, then checks they are running; a failure exits 1 and prints the `launchctl` commands to run by hand. The timer's own plist runs `/bin/sh` and is never touched. The unattended flow refuses to install at all when `launchctl print gui/<uid>` does not work, so the binary is never replaced without the follow-up.
 
 ## [interval_hooks.*] Section
 
@@ -525,6 +574,7 @@ active_filter_label = "Open"                      # Label for the active filter 
 active_filter_excludes = ["error", "stopped"]     # Statuses the % "Open" filter hides (default: ["error", "stopped"])
 show_pane_titles = false                          # Show the pane title (task description) on every row, not just the selected one
 include_cwd_prefix = true                         # Prefix titles with "[<cwd-basename>]"
+title_format = "{group}/{name}"                   # Template the terminal title (unset by default); placeholders {group} {project} {name}; overrides include_cwd_prefix
 ```
 
 | Key | Type | Default | Description |
@@ -535,6 +585,7 @@ include_cwd_prefix = true                         # Prefix titles with "[<cwd-ba
 | `active_filter_excludes` | []string | `["error", "stopped"]` | Statuses hidden when the `%` "Open" filter is engaged. Default matches the original hardcoded behavior. Valid values: `running`, `waiting`, `idle`, `error`, `starting`, `stopped`. Unknown entries are dropped silently; if the resulting list is empty the default applies. **Set to `["error"]`** to keep stopped/closed sessions visible while still hiding errors — fixes the over-broad "Open" semantics where closed sessions disappeared from view. Extend with `idle` for an aggressive "show only running/waiting" definition of open. |
 | `show_pane_titles` | bool | `false` | Shows the dim tmux pane-title (task description) suffix on every session row instead of only the selected row. Also toggleable in the TUI Settings panel (`S`) under **DISPLAY**. |
 | `include_cwd_prefix` | bool | `true` | Show the working-directory prefix (`[<cwd-basename>]`) on session rows/titles. Set `false` to show only the session title. (v1.9.46) |
+| `title_format` | string | `""` | Template for the outer terminal window/tab title using `{group}`, `{project}`, and `{name}` placeholders (e.g. `"{group}/{name}"`). Re-renders live on rename and move-to-group. When unset, the historical `[<project>] <name>` format (and the `include_cwd_prefix` toggle) applies; when set, it takes precedence over `include_cwd_prefix`. |
 
 ## [ui] Section
 
@@ -554,7 +605,7 @@ attach_on_create = true                       # Opt IN: instantly attach to a ne
 | `footer` | string | `"full"` | Style of the bottom hint bar: `"full"` (default, the historic verbose bar), `"curated"`, `"compact"`, or `"minimal"`. (v1.9.49) |
 | `hidden_tools` | []string | `[]` | Tool names to hide from the new-session picker. `shell` is always shown and cannot be hidden. Unknown names log a warning and are ignored. Edit via TUI **Settings (`S`) → Visible tools…** or by hand in `config.toml`. |
 | `show_only_installed_tools` | bool | `false` | When `true`, hides built-in and custom tools whose command does not resolve on the host `PATH`. `shell` stays visible. If nothing else resolves, the picker falls back to showing all tools with a one-line hint. Toggle in TUI Settings under **TOOL PICKER**. |
-| `new_session_enter_advances` | bool | `true` | Controls what **Enter** does on the free-text **Name** / **Branch** fields of the new-session dialog. Default `true`: Enter **advances** to the next field, so typing a name and pressing Enter no longer silently creates a session with all defaults. **Ctrl+S** is the explicit "create now" shortcut and submits from any field in both modes. Set `false` to restore the legacy behavior where Enter on Name/Branch submits the form. |
+| `new_session_enter_advances` | bool | `true` | Controls what **Enter** does in the new-session dialog. Default `true`: Enter **advances** to the next field on every row (Name, Tool, Model, Reasoning effort, Path, checkboxes, and each Claude Options row) and only the trailing **[ Create session ]** button creates, so walking the form with Enter never launches a session early. **Ctrl+S** is the explicit "create now" shortcut and submits from any field in both modes. Set `false` to restore the legacy behavior where Enter creates from any row. |
 | `attach_on_create` | bool | `false` | When `true`, creating a session in the TUI (`n` new-session dialog) **immediately attaches** to the new session's pane instead of only moving the cursor to it — "instantly open". Default `false`: today's select-only behavior (press **Enter** to attach). Does not affect the CLI; `agent-deck add` / `session start` attach only with an explicit `--attach`. |
 
 Filters compose: `hidden_tools` is applied first, then `show_only_installed_tools` (when enabled).
@@ -650,6 +701,71 @@ claim_polling = true   # Opt-in: dedupe status polling across concurrent instanc
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `claim_polling` | bool | `false` | When `true`, each session is actively polled (tmux status scan, live pipe attach) by exactly one instance instead of every open instance polling every session redundantly. Instances take ownership of sessions in their `-g` scope via a `session_claims` table in `state.db`, refreshing a heartbeat each sweep; a session with no live claim (owner heartbeat older than 15s, or no claim row at all) is up for grabs by the next instance that sees it in scope. Every 30s the elected primary instance additionally slow-polls **orphaned** sessions — those no scoped instance currently claims — so their statuses and notifications keep working even with no dedicated owner. Claims for sessions no longer present in the `instances` table (deleted, or archived-then-purged) are pruned periodically so the table cannot grow unbounded over a long-lived process. Default `false` preserves today's behavior: every instance polls every session it can see. |
+
+## [tmux] Section
+
+How agent-deck drives tmux: which server its sessions live on, and which tmux options it sets on them.
+
+```toml
+[tmux]
+socket_name = ""              # "" = share the user's default tmux server
+mouse = true                  # false = terminal keeps raw mouse events
+inject_status_line = true     # false = agent-deck never touches the tmux status line
+clear_on_restart = false      # true = wipe scrollback on session restart
+window_style_override = ""    # "default" lets the terminal background show through
+detach_key = ""               # alias for [hotkeys].detach, e.g. "ctrl+d"
+launch_as = ""                # "", "scope", "service", "direct", "auto"
+options = { "history-limit" = "50000" }   # raw tmux options, applied after agent-deck's defaults
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `socket_name` | string | `""` | tmux `-L <name>` selector for every agent-deck spawn. Empty shares the user's default server at `$TMUX_TMPDIR/tmux-<uid>/default`. Set it to isolate agent-deck onto its own tmux server, so its global option and key-binding writes never touch the user's interactive tmux, and a `tmux kill-server` in a shell cannot take managed sessions down. Captured per session at creation time — changing it later does **not** migrate existing sessions. CLI `--tmux-socket <name>` wins over this value. See `docs/SOCKET_ISOLATION.md`. |
+| `mouse` | bool | `true` | `false` never sets tmux `mouse on`, so the terminal emulator keeps raw control of mouse events — required by the VS Code Linux integrated terminal for click-drag selection. Applies both at session creation and on the reconnect configuration pass. |
+| `inject_status_line` | bool | `true` | `false` leaves the tmux status bar alone, and also disables agent-deck's global tmux notification bar and key bindings, so the runtime stops mutating global tmux options. |
+| `clear_on_restart` | bool | `false` | `true` wipes the scrollback buffer on session restart (`respawn-pane`) instead of preserving the previous run's output. |
+| `window_style_override` | string | `""` | Sets `window-style` and `window-active-style` for all sessions, overriding the theme. `"default"` lets the terminal emulator's background show through. Takes precedence over the same keys in `options`. |
+| `detach_key` | string | `""` | Alias for `[hotkeys].detach` (`"ctrl+<letter>"`). Used only when `[hotkeys].detach` is absent; empty keeps the built-in Ctrl+Q. |
+| `launch_as` | string | `""` | Spawn form for new tmux servers: `"scope"` (`systemd-run --user --scope`), `"service"` (systemd unit with restart-on-failure), `"direct"` (plain `tmux new-session`), `"auto"` (service where a systemd user manager exists, else direct). Empty defers to `launch_in_user_scope`. Unknown values are ignored rather than silently changing the spawn path. |
+| `launch_in_user_scope` | bool | platform | Launch new tmux servers under the user's systemd manager so they survive an SSH login scope teardown. Default: `true` on Linux hosts where `systemd-run --user` works, `false` elsewhere. Ignored when `launch_as` is set. |
+| `options` | table | — | Raw tmux options applied after agent-deck's own defaults. See below. |
+
+### [tmux.options] — raw tmux options
+
+Each pair is applied as `tmux set-option -t <session> -q <key> <value>` after agent-deck's defaults, so it wins over them. Either spelling works:
+
+```toml
+[tmux]
+options = { "history-limit" = "50000" }
+
+# or
+[tmux.options]
+history-limit = "50000"
+```
+
+Setting a key here does more than add an option: for the keys agent-deck sets itself, **an explicit entry opts out of agent-deck's default for that key entirely** ([#1625](https://github.com/asheshgoplani/agent-deck/issues/1625)), so your value — or the one in your own `~/.tmux.conf` — is what survives. The keys that behave that way:
+
+| Key | agent-deck default | Why it exists |
+|-----|--------------------|---------------|
+| `escape-time` | `10` | tmux's 500ms default makes Vim and editors feel sluggish. |
+| `extended-keys` | `on` | Forwards Shift+Enter and other modified keys to the agent (tmux 3.2+). A deliberate `set -s extended-keys off` in your tmux config needs this opt-out to survive. |
+| `extended-keys-format` | `csi-u` | Delivers modified keys as `ESC[13;2u` (the kitty form Claude Code reads) rather than xterm's `ESC[27;2;13~`, which Claude Code ignores. |
+| `terminal-features` | `*:hyperlinks:extkeys` | OSC 8 hyperlink tracking plus extended key reporting. Server-wide — see the note below. |
+| `window-size` | `largest` | Keeps a window sized to the biggest attached client, so a web `tmux -C` client and a native terminal client can share a session without void cells or clipping. |
+| `aggressive-resize` | `on` | Only resizes windows that are actively viewed, avoiding cross-window resize storms. |
+| `window-style`, `window-active-style` | theme value | Prevents color issues in some terminals. `window_style_override` above is the friendlier way to set these. |
+| `remain-on-exit` | `on` for sandbox and one-shot sessions only | Keeps a dead pane readable instead of tearing it down with the answer still in it. Not set for ordinary sessions. |
+
+**`terminal-features` is a server option.** It is an array on the tmux *server*, shared by every session on that socket, and it survives every agent-deck restart because the server does. Versions up to v1.15.0 appended to it on each session configuration pass without checking whether the entry was already there, which grew it without bound and eventually corrupted the display ([#2061](https://github.com/asheshgoplani/agent-deck/issues/2061)). agent-deck reads exact indexed entries and removes duplicates with guarded indexed deletions. New entries use the stable shared slot `terminal-features[2147483647]` and tmux's atomic no-overwrite operation, which works on tmux 3.4 as well as newer versions. This highest signed array index is sparse: it orders the owned entry after lower indices without allocating the intervening slots. Concurrent initializers target the same slot; foreign appends and replacements are never reconstructed or overwritten.
+
+A foreign value at that slot, including an explicitly empty value, wins. Agent-deck leaves it untouched and does not append elsewhere. If a complete read after the attempt still finds no exact owned entry, logs report `terminal_features_installation_deferred`; an incomplete verification reports `terminal_features_installation_unverified`. Freeing the slot permits installation on a later pass, or you can set an explicit override. Existing owned entries at other indices are honored. Cleanup leaves duplicates untouched when the read contains comma-bearing or blank values, and an unreadable array is never changed. Concurrent changes or a timeout can leave cleanup for a later pass. To inspect or reset it by hand:
+
+```bash
+tmux show-options -s terminal-features | wc -l   # a healthy server: a handful of lines
+tmux set -su terminal-features                   # reset to tmux's built-in defaults
+```
+
+Add `-L <socket_name>` to both when `socket_name` is set. See [troubleshooting](troubleshooting.md) for the full symptom list.
 
 ## Skills Registry (Outside config.toml)
 
@@ -962,3 +1078,4 @@ description = "GitHub access"
 | `AGENTDECK_PROFILE` | Override default profile |
 | `CLAUDE_CONFIG_DIR` | Override Claude config dir |
 | `AGENTDECK_DEBUG=1` | Enable debug logging |
+| `AGENTDECK_IDENTITY_FILE` | Set in every spawned session: path of the model-readable identity block for that session (see `[launch] inject_identity`) |

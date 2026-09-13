@@ -1,6 +1,7 @@
 package web
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,43 @@ import (
 type staticMenuLoader struct {
 	calls    int
 	snapshot *MenuSnapshot
+}
+
+type revisionedMenuLoader struct {
+	mu                sync.Mutex
+	revision          int64
+	revisionCalls     int
+	loadCalls         int
+	snapshot          *MenuSnapshot
+	nextSnapshot      *MenuSnapshot
+	changeOnFirstLoad bool
+}
+
+func (r *revisionedMenuLoader) MenuDataRevision() (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.revisionCalls++
+	return r.revision, nil
+}
+
+func (r *revisionedMenuLoader) LoadMenuSnapshot() (*MenuSnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.loadCalls++
+	if r.changeOnFirstLoad && r.loadCalls == 1 {
+		r.revision++
+		return r.snapshot, nil
+	}
+	if r.nextSnapshot != nil {
+		return r.nextSnapshot, nil
+	}
+	return r.snapshot, nil
+}
+
+func (r *revisionedMenuLoader) calls() (revision, load int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.revisionCalls, r.loadCalls
 }
 
 func (s *staticMenuLoader) LoadMenuSnapshot() (*MenuSnapshot, error) {
@@ -119,6 +157,128 @@ func TestMemoryMenuData_InvalidateCacheForcesReload(t *testing.T) {
 	}
 	if got := third.Items[0].Session.Title; got != "Updated" {
 		t.Fatalf("after invalidation title = %q, want %q", got, "Updated")
+	}
+}
+
+func TestMemoryMenuData_ConcurrentLoadsCoalesceRevisionCheck(t *testing.T) {
+	loader := &revisionedMenuLoader{
+		revision: 1,
+		snapshot: &MenuSnapshot{
+			TotalSessions: 1,
+			Items: []MenuItem{{
+				Type:    MenuItemTypeSession,
+				Session: &MenuSession{ID: "sess-1"},
+			}},
+		},
+	}
+	store := NewMemoryMenuData(loader)
+	if _, err := store.LoadMenuSnapshot(); err != nil {
+		t.Fatalf("initial LoadMenuSnapshot() error = %v", err)
+	}
+
+	store.mu.Lock()
+	store.lastRevisionCheck = time.Now().Add(-2 * memoryMenuRevisionCheckInterval)
+	store.mu.Unlock()
+
+	const callers = 32
+	errCh := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := store.LoadMenuSnapshot()
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Errorf("concurrent LoadMenuSnapshot() error = %v", err)
+		}
+	}
+
+	revisionCalls, loadCalls := loader.calls()
+	if revisionCalls != 3 {
+		t.Fatalf("revision calls = %d, want 3", revisionCalls)
+	}
+	if loadCalls != 1 {
+		t.Fatalf("snapshot loads = %d, want 1", loadCalls)
+	}
+}
+
+func TestMemoryMenuData_RetriesSnapshotChangedDuringLoad(t *testing.T) {
+	loader := &revisionedMenuLoader{
+		revision:          1,
+		changeOnFirstLoad: true,
+		snapshot: &MenuSnapshot{
+			TotalSessions: 1,
+			Items: []MenuItem{{
+				Type:    MenuItemTypeSession,
+				Session: &MenuSession{ID: "sess-old"},
+			}},
+		},
+		nextSnapshot: &MenuSnapshot{
+			TotalSessions: 1,
+			Items: []MenuItem{{
+				Type:    MenuItemTypeSession,
+				Session: &MenuSession{ID: "sess-new"},
+			}},
+		},
+	}
+
+	snapshot, err := NewMemoryMenuData(loader).LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("LoadMenuSnapshot() error = %v", err)
+	}
+	if !menuSnapshotHasSession(snapshot, "sess-new") {
+		t.Fatalf("stable snapshot does not contain sess-new: %+v", snapshot.Items)
+	}
+	if menuSnapshotHasSession(snapshot, "sess-old") {
+		t.Fatalf("stable snapshot contains stale sess-old: %+v", snapshot.Items)
+	}
+
+	_, loadCalls := loader.calls()
+	if loadCalls != 2 {
+		t.Fatalf("snapshot loads = %d, want 2", loadCalls)
+	}
+}
+
+func TestMemoryMenuData_SetSnapshotKeepsPublisherOwnership(t *testing.T) {
+	loader := &revisionedMenuLoader{
+		revision: 1,
+		snapshot: &MenuSnapshot{
+			TotalSessions: 1,
+			Items: []MenuItem{{
+				Type:    MenuItemTypeSession,
+				Session: &MenuSession{ID: "sess-fallback"},
+			}},
+		},
+	}
+	store := NewMemoryMenuData(loader)
+	store.SetSnapshot(&MenuSnapshot{
+		TotalSessions: 1,
+		Items: []MenuItem{{
+			Type:    MenuItemTypeSession,
+			Session: &MenuSession{ID: "sess-published"},
+		}},
+	})
+
+	snapshot, err := store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("LoadMenuSnapshot() error = %v", err)
+	}
+	if !menuSnapshotHasSession(snapshot, "sess-published") {
+		t.Fatalf("snapshot does not contain sess-published: %+v", snapshot.Items)
+	}
+	if menuSnapshotHasSession(snapshot, "sess-fallback") {
+		t.Fatalf("snapshot contains fallback-owned sess-fallback: %+v", snapshot.Items)
+	}
+
+	revisionCalls, loadCalls := loader.calls()
+	if revisionCalls != 0 || loadCalls != 0 {
+		t.Fatalf("fallback calls after SetSnapshot() = revision %d, load %d; want 0, 0", revisionCalls, loadCalls)
 	}
 }
 

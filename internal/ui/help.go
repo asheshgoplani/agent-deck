@@ -188,6 +188,8 @@ func (h *HelpOverlay) View() string {
 	quitKey := h.key(hotkeyQuit, "q")
 	importKey := h.key(hotkeyImport, "i")
 	reloadKey := h.key(hotkeyReload, "Ctrl+R")
+	restartDeckKey := h.key(hotkeyRestartDeck, "Ctrl+T")
+	installUpdateKey := h.key(hotkeyInstallUpdate, "Ctrl+Y")
 	deleteKey := h.key(hotkeyDelete, "d")
 	closeKey := h.key(hotkeyCloseSession, "D")
 	restartKey := h.key(hotkeyRestart, "Shift+R")
@@ -199,6 +201,7 @@ func (h *HelpOverlay) View() string {
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
 	groupViewKey := h.key(hotkeyCycleGroupView, "t")
+	timeFilterKey := h.key(hotkeyCycleTimeFilter, "*")
 	// Opt-in: empty when switch_session is unbound, so the filter drops the row.
 	switchKey := h.key(hotkeySwitchSession, "")
 	// In-attach scrollback pager (#1491). Its trigger is resolved directly (it is
@@ -305,7 +308,7 @@ func (h *HelpOverlay) View() string {
 				{copyPaneKey, "Copy visible terminal text, including links"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
-				{openShellHereKey, "Open shell in session's worktree (split pane / tmux)"},
+				{openShellHereKey, "Open shell in session's worktree (split pane / window)"},
 				{editPathsKey, "Edit multi-repo paths"},
 				{editSessionKey, "Edit session settings (title/color/...)"},
 				{notesKey, "Edit notes"},
@@ -345,6 +348,7 @@ func (h *HelpOverlay) View() string {
 				{"/running", "Filter running"},
 				{"/idle", "Filter idle"},
 				{groupViewKey, "Cycle view: active-on-top / populated-on-top"},
+				{timeFilterKey, "Cycle time filter: today / 3 days / 7 days / all"},
 			},
 		},
 		{
@@ -352,6 +356,8 @@ func (h *HelpOverlay) View() string {
 			items: [][2]string{
 				{settingsKey, "Settings"},
 				{reloadKey, "Reload from disk"},
+				{installUpdateKey, "Install the available update (runs agent-deck update)"},
+				{restartDeckKey, "Restart agent-deck in place (picks up an installed update)"},
 				{importKey, "Import tmux sessions"},
 				{switchKey, "Switch session (here or attached)"},
 				{scrollbackKey, "Scrollback pager (while attached)"},

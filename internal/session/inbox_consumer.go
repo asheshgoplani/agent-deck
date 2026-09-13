@@ -195,6 +195,20 @@ func WriteInboxEventIfUnseen(parentID string, event TransitionNotificationEvent)
 	return InboxEventAlreadyPresent, nil
 }
 
+// turnAlreadyConsumed reports whether the parent's consumed-turn ledger already
+// holds fp, i.e. the parent has acted on this turn and its next drain would drop
+// a fresh copy. Read-only; used by the producer to withhold the wake-nudge for
+// a record that cannot produce a non-empty drain.
+func turnAlreadyConsumed(parentID, fp string) bool {
+	if strings.TrimSpace(fp) == "" {
+		return false
+	}
+	consumedTurnsMu.Lock()
+	defer consumedTurnsMu.Unlock()
+	_, ok := loadConsumedTurnsLocked(parentID)[fp]
+	return ok
+}
+
 func saveConsumedTurnsLocked(parentID string, m map[string]int64) error {
 	// Prune expired entries on every save to bound growth.
 	cutoff := time.Now().Add(-consumedTurnsTTL).Unix()

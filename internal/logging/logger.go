@@ -25,6 +25,7 @@ const (
 	CompHTTP    = "http"
 	CompWeb     = "web"
 	CompWatcher = "watcher"
+	CompUpdate  = "update"
 )
 
 // Config holds logging configuration.

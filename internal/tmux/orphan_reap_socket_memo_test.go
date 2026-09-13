@@ -33,6 +33,7 @@ func TestIsLiveTmuxClientOrServer_MemoizesAnUnreachableSocketForTheSweep(t *test
 	}
 	socket := orphanLiveTestSocket(t)
 	resetUnreachableSockets()
+	t.Cleanup(resetUnreachableSockets)
 
 	// A live candidate whose argv points at a socket with no server on it.
 	pid := fakeTmuxCandidateArgv(t, "ignore",

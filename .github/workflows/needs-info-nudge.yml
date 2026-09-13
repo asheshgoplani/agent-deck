@@ -1,0 +1,107 @@
+name: Needs-info nudge (comment-only)
+
+# Day-10 step of the intake silence ladder from PR-GATE-PLAN.md. Once a day it
+# looks at open PRs still labelled `needs-info` and, when nothing has happened
+# for NUDGE_AFTER_DAYS, posts ONE gentle reminder. It never changes labels and
+# never closes anything; the `keep-open` label suppresses the nudge entirely.
+# Idempotent via the HTML marker below: a PR that already carries a nudge
+# comment is skipped. The auto-close step is intentionally not implemented
+# until this has run for a full cycle (see #2132).
+#
+# Security posture: metadata-only. It never checks out or runs PR code.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: needs-info-nudge
+  cancel-in-progress: false
+
+env:
+  NUDGE_AFTER_DAYS: '10'
+
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Nudge silent needs-info PRs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const MARKER = '<!-- needs-info-nudge -->';
+            const NUDGE_LABEL = 'needs-info';
+            const SUPPRESS_LABEL = 'keep-open';
+            const days = Number(process.env.NUDGE_AFTER_DAYS) || 10;
+            const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+            const { owner, repo } = context.repo;
+
+            const nudgeBody = [
+              MARKER,
+              'Gentle nudge: this is still waiting on the info above. If you are still on it, just reply or edit',
+              'the PR body and it stays open. If not, no worries; it stays open for now and you can pick it up',
+              'whenever you have a minute.',
+              '',
+              'The intake contract (required sections, disclosure box, gate marker) is spelled out in',
+              '[`.github/INTAKE.md`](https://github.com/' + owner + '/' + repo + '/blob/main/.github/INTAKE.md).',
+              'The intake gate comment on this PR lists exactly which pieces are missing.',
+            ].join('\n');
+
+            const openPRs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+
+            let nudged = 0;
+            for (const pr of openPRs) {
+              const labels = new Set((pr.labels || []).map(l => l.name));
+              if (!labels.has(NUDGE_LABEL) || labels.has(SUPPRESS_LABEL)) continue;
+
+              const number = pr.number;
+              const author = pr.user && pr.user.login;
+
+              // Last activity = latest of PR updated_at, last commit date, last author comment.
+              let last = Date.parse(pr.updated_at) || 0;
+
+              const commits = await github.paginate(github.rest.pulls.listCommits, {
+                owner, repo, pull_number: number, per_page: 100,
+              });
+              for (const c of commits) {
+                const d = c.commit && c.commit.committer && c.commit.committer.date;
+                const t = Date.parse(d || '') || 0;
+                if (t > last) last = t;
+              }
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: number, per_page: 100,
+              });
+              let alreadyNudged = false;
+              for (const c of comments) {
+                if ((c.body || '').includes(MARKER)) alreadyNudged = true;
+                if (c.user && c.user.login === author) {
+                  const t = Date.parse(c.created_at) || 0;
+                  if (t > last) last = t;
+                }
+              }
+
+              const ageDays = Math.floor((Date.now() - last) / (24 * 60 * 60 * 1000));
+              if (alreadyNudged) {
+                core.info(`#${number}: already nudged, skipping`);
+                continue;
+              }
+              if (last > cutoff) {
+                core.info(`#${number}: active ${ageDays}d ago, under ${days}d, skipping`);
+                continue;
+              }
+
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number, body: nudgeBody,
+              });
+              nudged++;
+              core.info(`#${number}: nudged (silent for ${ageDays}d)`);
+            }
+            core.info(`Done: ${nudged} PR(s) nudged`);

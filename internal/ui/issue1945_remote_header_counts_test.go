@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -14,10 +15,10 @@ import (
 // different sets of the same rows.
 //
 // Note what this test does NOT assert: that archived rows are excluded from the
-// header's TOTAL. They are not, and must not be — unlike the local list, the
-// remote list does not partition by archive state, so an archived remote row is
-// rendered (with ■) in the normal view. Its total belongs in the count; only
-// the running/waiting tallies must exclude it.
+// header's TOTAL by these helpers. They count whatever slice they are given;
+// the archive partition (active view vs ^ view) is applied by the caller via
+// Home.remoteSessionsInView, pinned in TestRemoteHeaderCountsFollowArchiveView.
+// Only the running/waiting tallies must exclude archived rows here.
 func TestRemoteStatusCounts_ArchivedIsNeitherRunningNorWaiting(t *testing.T) {
 	sessions := []session.RemoteSessionInfo{
 		{ID: "a", Group: "work", Status: "running"},
@@ -49,5 +50,51 @@ func TestRemoteStatusCounts_HostHeaderSkipsArchived(t *testing.T) {
 	running, waiting := remoteStatusCounts(sessions, "")
 	if running != 1 || waiting != 0 {
 		t.Errorf("host header counts = (%d running, %d waiting), want (1, 0) (#1945)", running, waiting)
+	}
+}
+
+// The rendered header and preview counts must follow the archive partition the
+// list itself uses: with one live and two archived sessions, the active view
+// shows (1) and the ^ view shows (2); neither advertises the grand total of 3.
+func TestRemoteHeaderCountsFollowArchiveView(t *testing.T) {
+	home := NewHome()
+	home.width = 120
+	home.height = 40
+	home.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"dev": {
+			{ID: "a", Group: "work", Status: "running"},
+			{ID: "b", Group: "work", Status: "running", Archived: true},
+			{ID: "c", Group: "work/api", Status: "idle", Archived: true},
+		},
+	}
+	host := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "dev", Path: "remotes/dev", Level: 0}
+	work := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "dev", Path: "remotes/dev/work", Level: 1}
+
+	render := func(item session.Item) string {
+		var b strings.Builder
+		home.renderRemoteGroupItem(&b, item, false)
+		return b.String()
+	}
+
+	home.statusFilter = ""
+	if out := render(host); !strings.Contains(out, "(1)") {
+		t.Errorf("active view host header = %q, want count (1)", out)
+	}
+	if out := render(work); !strings.Contains(out, "(1)") {
+		t.Errorf("active view sub-group header = %q, want count (1)", out)
+	}
+	if out := home.renderRemotePreview(host, 80, 20); !strings.Contains(out, "1 sessions") {
+		t.Errorf("active view preview = %q, want \"1 sessions\"", out)
+	}
+
+	home.statusFilter = FilterModeArchived
+	if out := render(host); !strings.Contains(out, "(2)") {
+		t.Errorf("archived view host header = %q, want count (2)", out)
+	}
+	if out := render(work); !strings.Contains(out, "(2)") {
+		t.Errorf("archived view sub-group header = %q, want count (2)", out)
+	}
+	if out := home.renderRemotePreview(host, 80, 20); !strings.Contains(out, "2 sessions") {
+		t.Errorf("archived view preview = %q, want \"2 sessions\"", out)
 	}
 }

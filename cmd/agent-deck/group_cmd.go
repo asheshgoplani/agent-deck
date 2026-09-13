@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -111,6 +112,106 @@ func printGroupHelp() {
 	fmt.Println("  agent-deck group reorder mobile --position 0")
 }
 
+// buildGroupListJSON is the body of `group list --json`: the group tree with
+// recursive session and status counts, as the indented object the CLI
+// prints, trailing newline included. handleGroupList prints it and the
+// remote agent's change probe (#2177) pushes it, so both sides of the
+// channel see the same bytes. Callers warm the status caches first
+// (session.RefreshInstancesForCLIStatus).
+func buildGroupListJSON(groupTree *session.GroupTree) ([]byte, error) {
+	// Build JSON output structure
+	type groupStatusJSON struct {
+		Running int `json:"running"`
+		Waiting int `json:"waiting"`
+		Idle    int `json:"idle"`
+		Error   int `json:"error"`
+		Stopped int `json:"stopped"`
+	}
+
+	type groupJSON struct {
+		Name         string           `json:"name"`
+		Path         string           `json:"path"`
+		SessionCount int              `json:"session_count"`
+		Status       *groupStatusJSON `json:"status,omitempty"`
+		Children     []groupJSON      `json:"children,omitempty"`
+	}
+
+	// Build hierarchical structure (with recursive session counts - Issue #48)
+	buildGroupJSON := func(g *session.Group) groupJSON {
+		// Count status recursively for this group and all subgroups
+		status := groupStatusJSON{}
+		for path, subGroup := range groupTree.Groups {
+			if path == g.Path || strings.HasPrefix(path, g.Path+"/") {
+				for _, sess := range subGroup.Sessions {
+					_ = sess.UpdateStatus() // Refresh status
+					switch sess.Status {
+					case session.StatusRunning:
+						status.Running++
+					case session.StatusWaiting:
+						status.Waiting++
+					case session.StatusIdle:
+						status.Idle++
+					case session.StatusError:
+						status.Error++
+					case session.StatusStopped:
+						status.Stopped++
+					}
+				}
+			}
+		}
+
+		// Use recursive session count
+		sessCount := groupTree.SessionCountForGroup(g.Path)
+		gj := groupJSON{
+			Name:         g.Name,
+			Path:         g.Path,
+			SessionCount: sessCount,
+		}
+		if sessCount > 0 {
+			gj.Status = &status
+		}
+		return gj
+	}
+
+	// Build the tree recursively: each group carries its direct children
+	// (one level deeper, same prefix), which carry theirs, so a group at
+	// any depth appears, including empty ones the session list cannot
+	// reveal. GroupList is already ordered (a parent before its children,
+	// siblings by their persisted Order), so sibling order is preserved.
+	var buildSubtree func(g *session.Group) groupJSON
+	buildSubtree = func(g *session.Group) groupJSON {
+		gj := buildGroupJSON(g)
+		childLevel := session.GetGroupLevel(g.Path) + 1
+		for _, child := range groupTree.GroupList {
+			if strings.HasPrefix(child.Path, g.Path+"/") && session.GetGroupLevel(child.Path) == childLevel {
+				gj.Children = append(gj.Children, buildSubtree(child))
+			}
+		}
+		return gj
+	}
+
+	groupsJSON := []groupJSON{}
+	for _, g := range groupTree.GroupList {
+		if session.GetGroupLevel(g.Path) == 0 {
+			groupsJSON = append(groupsJSON, buildSubtree(g))
+		}
+	}
+
+	// Count totals
+	totalGroups := len(groupTree.Groups)
+	totalSessions := groupTree.SessionCount()
+
+	output, err := json.MarshalIndent(map[string]interface{}{
+		"groups":         groupsJSON,
+		"total_groups":   totalGroups,
+		"total_sessions": totalSessions,
+	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(output, '\n'), nil
+}
+
 // handleGroupList lists all groups with session counts and status
 func handleGroupList(profile string, args []string) {
 	fs := flag.NewFlagSet("group list", flag.ExitOnError)
@@ -156,102 +257,14 @@ func handleGroupList(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 
 	if *jsonOutput {
-		// Build JSON output structure
-		type groupStatusJSON struct {
-			Running int `json:"running"`
-			Waiting int `json:"waiting"`
-			Idle    int `json:"idle"`
-			Error   int `json:"error"`
-			Stopped int `json:"stopped"`
+		output, err := buildGroupListJSON(groupTree)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to format JSON: %v\n", err)
+			os.Exit(1)
 		}
-
-		type groupJSON struct {
-			Name         string           `json:"name"`
-			Path         string           `json:"path"`
-			SessionCount int              `json:"session_count"`
-			Status       *groupStatusJSON `json:"status,omitempty"`
-			Children     []groupJSON      `json:"children,omitempty"`
+		if !*quiet && !*quietShort {
+			fmt.Print(string(output))
 		}
-
-		// Build hierarchical structure (with recursive session counts - Issue #48)
-		buildGroupJSON := func(g *session.Group) groupJSON {
-			// Count status recursively for this group and all subgroups
-			status := groupStatusJSON{}
-			for path, subGroup := range groupTree.Groups {
-				if path == g.Path || strings.HasPrefix(path, g.Path+"/") {
-					for _, sess := range subGroup.Sessions {
-						_ = sess.UpdateStatus() // Refresh status
-						switch sess.Status {
-						case session.StatusRunning:
-							status.Running++
-						case session.StatusWaiting:
-							status.Waiting++
-						case session.StatusIdle:
-							status.Idle++
-						case session.StatusError:
-							status.Error++
-						case session.StatusStopped:
-							status.Stopped++
-						}
-					}
-				}
-			}
-
-			// Use recursive session count
-			sessCount := groupTree.SessionCountForGroup(g.Path)
-			gj := groupJSON{
-				Name:         g.Name,
-				Path:         g.Path,
-				SessionCount: sessCount,
-			}
-			if sessCount > 0 {
-				gj.Status = &status
-			}
-			return gj
-		}
-
-		// Build top-level groups with their children
-		groupsJSON := []groupJSON{}
-		processedPaths := make(map[string]bool)
-
-		for _, g := range groupTree.GroupList {
-			// Skip if already processed as a child
-			if processedPaths[g.Path] {
-				continue
-			}
-
-			// Only process root-level groups here
-			if session.GetGroupLevel(g.Path) > 0 {
-				continue
-			}
-
-			gj := buildGroupJSON(g)
-
-			// Find children
-			for _, child := range groupTree.GroupList {
-				if strings.HasPrefix(child.Path, g.Path+"/") {
-					// Direct child (one level deeper)
-					childLevel := session.GetGroupLevel(child.Path)
-					if childLevel == session.GetGroupLevel(g.Path)+1 {
-						gj.Children = append(gj.Children, buildGroupJSON(child))
-						processedPaths[child.Path] = true
-					}
-				}
-			}
-
-			groupsJSON = append(groupsJSON, gj)
-			processedPaths[g.Path] = true
-		}
-
-		// Count totals
-		totalGroups := len(groupTree.Groups)
-		totalSessions := groupTree.SessionCount()
-
-		out.Print("", map[string]interface{}{
-			"groups":         groupsJSON,
-			"total_groups":   totalGroups,
-			"total_sessions": totalSessions,
-		})
 		return
 	}
 
@@ -938,13 +951,6 @@ func handleGroupDelete(profile string, args []string) {
 		groupTree.SyncWithInstances(groupTree.GetAllInstances())
 	}
 
-	// SaveGroups is additive (never prunes), so the deleted group's rows must be
-	// removed explicitly or the group resurrects on the next reload.
-	if err := storage.DeleteGroupSubtree(groupPath); err != nil {
-		out.Error(fmt.Sprintf("failed to delete group rows: %v", err), ErrCodeNotFound)
-		os.Exit(1)
-	}
-
 	// Save
 	if err := storage.SaveWithGroups(groupTree.GetAllInstances(), groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeNotFound)
@@ -1489,14 +1495,6 @@ func handleGroupChange(profile string, args []string) {
 	newPath := baseName
 	if destPath != "" {
 		newPath = destPath + "/" + baseName
-	}
-
-	// A move re-paths the group and its subgroups; the old source path rows must
-	// be deleted explicitly (additive SaveGroups won't prune them) before the
-	// save re-adds the new paths, or the group lingers under its old path.
-	if err := storage.DeleteGroupSubtree(sourcePath); err != nil {
-		out.Error(fmt.Sprintf("failed to delete old group rows: %v", err), ErrCodeNotFound)
-		os.Exit(1)
 	}
 
 	// Persist.

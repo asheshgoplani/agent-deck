@@ -12,47 +12,11 @@
 //     key `agentdeck_toast_history`).
 //   - aria-live="assertive" for errors, "polite" otherwise.
 import { html } from 'htm/preact'
-import { toastsSignal, toastHistorySignal } from './state.js'
+import { toastsSignal, removeToast } from './toasts.js'
 
-let nextId = 0
-const HISTORY_CAP = 50
-const AUTO_DISMISS_MS = 5000
-const LOCAL_STORAGE_KEY = 'agentdeck_toast_history'
-
-function pushToHistory(toast) {
-  if (!toast) return
-  const next = [...toastHistorySignal.value, toast].slice(-HISTORY_CAP)
-  toastHistorySignal.value = next
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(next))
-  } catch (_) { /* incognito */ }
-}
-
-export function addToast(message, type) {
-  const resolvedType = type || 'error'
-  const newToast = { id: ++nextId, message, type: resolvedType, createdAt: Date.now() }
-  let next = [...toastsSignal.value, newToast]
-  if (next.length > 3) {
-    const nonErrorIdx = next.findIndex(t => t.type !== 'error')
-    if (nonErrorIdx >= 0) {
-      const [evicted] = next.splice(nonErrorIdx, 1)
-      pushToHistory(evicted)
-    } else {
-      const evicted = next.shift()
-      pushToHistory(evicted)
-    }
-  }
-  toastsSignal.value = next
-  if (newToast.type !== 'error') {
-    setTimeout(() => removeToast(newToast.id), AUTO_DISMISS_MS)
-  }
-}
-
-export function removeToast(id) {
-  const removed = toastsSignal.value.find(t => t.id === id)
-  if (removed) pushToHistory(removed)
-  toastsSignal.value = toastsSignal.value.filter(t => t.id !== id)
-}
+// addToast/removeToast moved to toasts.js (leaf module) so api.js can call
+// them without importing this component; re-exported for existing callers.
+export { addToast, removeToast } from './toasts.js'
 
 function ToastItem({ id, message, type }) {
   const borderColor =

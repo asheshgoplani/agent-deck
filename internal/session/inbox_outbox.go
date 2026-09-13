@@ -532,6 +532,16 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		return false, true, ""
 	}
 	n.logEvent(event)
+	// A turn the parent's consumed-turn ledger already holds is dropped by its
+	// next drain, so waking it would cost one empty "[INBOX]" turn for nothing
+	// (issue #2240, notify-daemon restart re-delivery). The record itself is left
+	// as committed: ledger dedup semantics and delivery ordering are unchanged,
+	// only the nudge is withheld.
+	if turnAlreadyConsumed(parentID, event.TurnFingerprint) {
+		commsLog.Debug("wake_nudge_skipped_consumed_turn",
+			slog.String("parent", parentID), slog.String("turn", event.TurnFingerprint))
+		return true, false, ""
+	}
 	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
 	// to drain it immediately instead of on its next ~14-min heartbeat. This is
 	// the event-driven trigger — fired the moment the completion is committed,

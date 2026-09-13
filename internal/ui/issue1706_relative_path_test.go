@@ -62,7 +62,7 @@ func TestIssue1706_SubmitAnchorsRelativePathToAbsolute(t *testing.T) {
 		t.Fatalf("confirmType = %v, want ConfirmCreateDirectory", got)
 	}
 
-	_, pendingPath, _, _, _, _, _, _, _, _ := home.confirmDialog.GetPendingSession()
+	_, pendingPath, _, _, _, _, _, _, _, _, _ := home.confirmDialog.GetPendingSession()
 	if !filepath.IsAbs(pendingPath) {
 		t.Fatalf("pending session path = %q, want an absolute path (#1706: a relative path is created next to the TUI's cwd but tmux resolves it against the tmux server's cwd)", pendingPath)
 	}

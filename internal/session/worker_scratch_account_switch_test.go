@@ -84,6 +84,65 @@ func TestEnsureWorkerScratchConfigDir_RepointsSymlinksOnSourceChange(t *testing.
 	}
 }
 
+// TestWorkerScratchGeneration_DelayedOldProcessWriteStaysInOriginalAccount
+// models Restart's ordering: the replacement generation is prepared before
+// RespawnPane kills the old pane. A delayed write through the old process's
+// CLAUDE_CONFIG_DIR must remain in account A rather than following a repointed
+// symlink into account B.
+func TestWorkerScratchGeneration_DelayedOldProcessWriteStaysInOriginalAccount(t *testing.T) {
+	withTelegramConductorPresent(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+
+	srcA := filepath.Join(home, "account-a")
+	srcB := filepath.Join(home, "account-b")
+	for _, source := range []string{srcA, srcB} {
+		if err := os.MkdirAll(filepath.Join(source, "projects"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inst := &Instance{ID: "scratch-delayed-flush", Title: "worker", Tool: "claude"}
+	oldGeneration, err := inst.EnsureWorkerScratchConfigDir(srcA)
+	if err != nil {
+		t.Fatalf("seed account A generation: %v", err)
+	}
+	// This is the lifecycle-only path used by prepareWorkerScratchConfigDirForSpawn.
+	newGeneration, err := inst.ensureWorkerScratchConfigDir(srcB, true)
+	if err != nil {
+		t.Fatalf("prepare account B generation: %v", err)
+	}
+	if oldGeneration == newGeneration {
+		t.Fatalf("restart reused scratch generation %q", oldGeneration)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(oldGeneration)) })
+
+	oldProjects := filepath.Join(oldGeneration, "projects")
+	if target, err := os.Readlink(oldProjects); err != nil || target != filepath.Join(srcA, "projects") {
+		t.Fatalf("old generation projects link = %q, %v; want account A", target, err)
+	}
+	if target, err := os.Readlink(filepath.Join(newGeneration, "projects")); err != nil || target != filepath.Join(srcB, "projects") {
+		t.Fatalf("new generation projects link = %q, %v; want account B", target, err)
+	}
+
+	// Simulate the old process flushing only after the replacement generation
+	// has been created. The write must still land under its original account.
+	const flushName = "delayed-old-process.jsonl"
+	if err := os.WriteFile(filepath.Join(oldProjects, flushName), []byte("old-process-flush"), 0o600); err != nil {
+		t.Fatalf("delayed old-process flush: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(srcA, "projects", flushName)); err != nil || string(got) != "old-process-flush" {
+		t.Fatalf("account A did not retain delayed flush: got %q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(srcB, "projects", flushName)); !os.IsNotExist(err) {
+		t.Fatalf("delayed old-process flush leaked into account B: %v", err)
+	}
+}
+
 func TestEnsureWorkerScratchConfigDir_SameSourceLeavesRealFilesAlone(t *testing.T) {
 	inst := scratchSwitchInstance(t, "scratch-switch-2")
 	src := makeProfileDir(t, ".claude.json")

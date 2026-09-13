@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -66,6 +67,21 @@ func NewSandbox(t *testing.T) *Sandbox {
 	return sb
 }
 
+// EnvWithUpdateChecks is Env without the AGENTDECK_SKIP_UPDATE_CHECK kill
+// switch, for the few tests that assert the update annotation or nudge
+// itself. Everything those tests spawn reads a seeded cache and never
+// installs anything, so the switch is safe to drop there.
+func (s *Sandbox) EnvWithUpdateChecks() []string {
+	var out []string
+	for _, kv := range s.Env() {
+		if strings.HasPrefix(kv, "AGENTDECK_SKIP_UPDATE_CHECK=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // Env returns the base environment vector used when spawning the binary.
 // Tests can extend this slice before passing it to exec.Cmd.
 func (s *Sandbox) Env() []string {
@@ -87,6 +103,11 @@ func (s *Sandbox) Env() []string {
 		// Let the binary find tmux; we do NOT shim tmux — we use the real
 		// binary against a per-sandbox socket. See TmuxSocket().
 		"AGENT_DECK_TMUX_SOCKET=" + s.TmuxSocket(),
+		// A release that lands while the suite runs must never make the
+		// binary under test install it and re-exec itself (issue #2251).
+		// The binary also refuses under CI=true and without a TTY; this
+		// keeps local runs of the harness deterministic too.
+		"AGENTDECK_SKIP_UPDATE_CHECK=1",
 	}
 	// Preserve a few passthrough vars that the binary and its children need.
 	for _, k := range []string{"LANG", "LC_ALL", "SHELL", "GOCACHE", "GOMODCACHE"} {

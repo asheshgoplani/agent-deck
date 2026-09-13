@@ -1,10 +1,17 @@
-name: PR Intake Gate (observe-only)
+name: PR Intake Gate
 
-# Reads the PR body against the intake contract in .github/INTAKE.md, applies
-# advisory labels, and posts ONE kind comment. This is OBSERVE-ONLY: it never
-# closes, blocks, or requests changes — it only labels and explains. The visible
-# template sections are authoritative; the trailing gate marker is a parse-stable
-# confirmation. See PR-GATE-PLAN.md for the rollout design.
+# Required status check on PR description format. The `main-protection`
+# ruleset lists the `intake` job id as a required context, so no PR can merge
+# until this job has reported on its current tip. Do not rename the `intake`
+# job id. The job exits green in both outcomes; a body that misses the contract
+# in .github/INTAKE.md is surfaced by the `needs-info` label and the comment,
+# not by a red check.
+#
+# What it does: reads the PR body against .github/INTAKE.md, applies the
+# `intake:clean` or `needs-info` label, and posts ONE kind comment explaining
+# what is missing. It never closes the PR, never requests changes, and never
+# touches PR code. The visible template sections are authoritative; the
+# trailing gate marker is a parse-stable confirmation.
 #
 # Security posture: pull_request_target runs in the base-repo context (needed to
 # label/comment on fork PRs), so this job is metadata-only. It never checks out,

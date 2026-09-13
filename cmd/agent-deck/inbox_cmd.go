@@ -35,10 +35,54 @@ func (w *errorTrackingWriter) Write(p []byte) (int, error) {
 // (at-most-once); the `drain` subcommand is the durable consumer path. See
 // internal/session/inbox.go.
 func handleInbox(profile string, args []string) {
+	if helpRequested(args) {
+		switch args[0] {
+		case "export":
+			printInboxExportUsage(os.Stdout)
+		case "writer-status":
+			printInboxWriterStatusUsage(os.Stdout)
+		case "dead-letter":
+			printInboxDeadLetterUsage(os.Stdout)
+		default:
+			printInboxUsage(os.Stdout)
+		}
+		return
+	}
 	if err := runInboxWithProfile(os.Stdout, args, profile); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(inboxExitCode(err))
 	}
+}
+
+func printInboxUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id>")
+	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
+	fmt.Fprintln(w, "       agent-deck inbox export [--json]")
+	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
+	fmt.Fprintln(w, "       agent-deck inbox dead-letter <list|show|retry|purge>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Drain pending completion events from the parent's durable outbox.")
+	fmt.Fprintln(w, "The `drain` form (issue #1225) collapses last-wins per child and")
+	fmt.Fprintln(w, "dedups re-delivery via turn_fingerprint; run it first on every")
+	fmt.Fprintln(w, "heartbeat. Reading clears the inbox.")
+	fmt.Fprintln(w, "The `export` form (issue #1948) READS this host's completion and")
+	fmt.Fprintln(w, "transition records without consuming anything; it is what a")
+	fmt.Fprintln(w, "conductor on another machine runs over ssh via `remote drain`.")
+	fmt.Fprintln(w, "The `writer-status` form reports whether a notify-daemon is")
+	fmt.Fprintln(w, "actually recording transitions here — without it, an empty export")
+	fmt.Fprintln(w, "cannot be told apart from a host where nothing has been watching.")
+	fmt.Fprintln(w, "The `dead-letter` family safely inspects, retries, or purges terminal")
+	fmt.Fprintln(w, "delivery failures; run `agent-deck inbox dead-letter help` for details.")
+}
+
+func printInboxExportUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage: agent-deck inbox export [--json]")
+	fmt.Fprintln(w, "Print this host's completion/transition records without consuming them.")
+}
+
+func printInboxWriterStatusUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage: agent-deck inbox writer-status [--json]")
+	fmt.Fprintln(w, "Report whether a notify-daemon is recording transitions on this host.")
 }
 
 type inboxTargetNotFoundError struct{ identifier string }
@@ -155,26 +199,7 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	}
 
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
-	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox <session-id>")
-		fmt.Fprintln(stdout, "       agent-deck inbox drain [--json] <session-id>")
-		fmt.Fprintln(stdout, "       agent-deck inbox export [--json]")
-		fmt.Fprintln(stdout, "       agent-deck inbox writer-status [--json]")
-		fmt.Fprintln(stdout, "       agent-deck inbox dead-letter <list|show|retry|purge>")
-		fmt.Fprintln(stdout)
-		fmt.Fprintln(stdout, "Drain pending completion events from the parent's durable outbox.")
-		fmt.Fprintln(stdout, "The `drain` form (issue #1225) collapses last-wins per child and")
-		fmt.Fprintln(stdout, "dedups re-delivery via turn_fingerprint; run it first on every")
-		fmt.Fprintln(stdout, "heartbeat. Reading clears the inbox.")
-		fmt.Fprintln(stdout, "The `export` form (issue #1948) READS this host's completion and")
-		fmt.Fprintln(stdout, "transition records without consuming anything; it is what a")
-		fmt.Fprintln(stdout, "conductor on another machine runs over ssh via `remote drain`.")
-		fmt.Fprintln(stdout, "The `writer-status` form reports whether a notify-daemon is")
-		fmt.Fprintln(stdout, "actually recording transitions here — without it, an empty export")
-		fmt.Fprintln(stdout, "cannot be told apart from a host where nothing has been watching.")
-		fmt.Fprintln(stdout, "The `dead-letter` family safely inspects, retries, or purges terminal")
-		fmt.Fprintln(stdout, "delivery failures; run `agent-deck inbox dead-letter help` for details.")
-	}
+	fs.Usage = func() { printInboxUsage(stdout) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
 	}
@@ -192,17 +217,19 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	return nil
 }
 
+func printInboxDeadLetterUsage(stdout io.Writer) {
+	fmt.Fprintln(stdout, "Usage: agent-deck inbox dead-letter <command>")
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Commands:")
+	fmt.Fprintln(stdout, "  list [--json]                 List bounded record metadata")
+	fmt.Fprintln(stdout, "  show [--json] <record-id>     Show one record without raw content")
+	fmt.Fprintln(stdout, "  retry <record-id>             Re-resolve and redeliver one record")
+	fmt.Fprintln(stdout, "  purge --older-than <duration> Purge only records older than a bound")
+	fmt.Fprintln(stdout, "  purge --yes                   Purge every record with explicit consent")
+}
+
 func runInboxDeadLetter(stdout io.Writer, args []string) error {
-	usage := func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox dead-letter <command>")
-		fmt.Fprintln(stdout)
-		fmt.Fprintln(stdout, "Commands:")
-		fmt.Fprintln(stdout, "  list [--json]                 List bounded record metadata")
-		fmt.Fprintln(stdout, "  show [--json] <record-id>     Show one record without raw content")
-		fmt.Fprintln(stdout, "  retry <record-id>             Re-resolve and redeliver one record")
-		fmt.Fprintln(stdout, "  purge --older-than <duration> Purge only records older than a bound")
-		fmt.Fprintln(stdout, "  purge --yes                   Purge every record with explicit consent")
-	}
+	usage := func() { printInboxDeadLetterUsage(stdout) }
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		usage()
 		return nil
@@ -551,10 +578,7 @@ func resolveSelfSessionID() (string, error) {
 func runInboxExport(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("inbox export", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the records as a JSON array")
-	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox export [--json]")
-		fmt.Fprintln(stdout, "Print this host's completion/transition records without consuming them.")
-	}
+	fs.Usage = func() { printInboxExportUsage(stdout) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
 	}
@@ -594,10 +618,7 @@ func runInboxExport(stdout io.Writer, args []string) error {
 func runInboxWriterStatus(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("inbox writer-status", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the status as JSON")
-	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox writer-status [--json]")
-		fmt.Fprintln(stdout, "Report whether a notify-daemon is recording transitions on this host.")
-	}
+	fs.Usage = func() { printInboxWriterStatusUsage(stdout) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
 	}

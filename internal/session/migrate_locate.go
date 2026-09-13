@@ -46,18 +46,20 @@ func LocateConversationConfigDir(cfg *UserConfig, inst *Instance, extraCandidate
 		return "", "", 0
 	}
 	candidates := conversationConfigDirCandidates(cfg, extraCandidates...)
-	projDirName := ConvertToClaudeDirName(inst.ProjectPath)
+	projDirNames := conversationProjectDirNames(inst.ProjectPath)
 
 	if sid := inst.ClaudeSessionID; sid != "" {
 		bestSize := int64(-1)
 		bestDir := ""
 		for _, dir := range candidates {
-			info, err := os.Stat(filepath.Join(dir, "projects", projDirName, sid+".jsonl"))
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			if info.Size() > bestSize {
-				bestSize, bestDir = info.Size(), dir
+			for _, projDirName := range projDirNames {
+				info, err := os.Stat(filepath.Join(dir, "projects", projDirName, sid+".jsonl"))
+				if err != nil || !info.Mode().IsRegular() {
+					continue
+				}
+				if info.Size() > bestSize {
+					bestSize, bestDir = info.Size(), dir
+				}
 			}
 		}
 		if bestDir == "" {
@@ -71,19 +73,34 @@ func LocateConversationConfigDir(cfg *UserConfig, inst *Instance, extraCandidate
 	var bestSize int64
 	var bestMod time.Time
 	for _, dir := range candidates {
-		path, id := newestConversationFile(filepath.Join(dir, "projects", projDirName))
-		if path == "" {
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-		if bestDir == "" || info.ModTime().After(bestMod) {
-			bestDir, bestID, bestSize, bestMod = dir, id, info.Size(), info.ModTime()
+		for _, projDirName := range projDirNames {
+			path, id := newestConversationFile(filepath.Join(dir, "projects", projDirName))
+			if path == "" {
+				continue
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			if bestDir == "" || info.ModTime().After(bestMod) {
+				bestDir, bestID, bestSize, bestMod = dir, id, info.Size(), info.ModTime()
+			}
 		}
 	}
 	return bestDir, bestID, bestSize
+}
+
+func conversationProjectDirNames(projectPath string) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, path := range []string{resolveRealPath(projectPath), filepath.Clean(projectPath)} {
+		name := ConvertToClaudeDirName(path)
+		if path != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // conversationConfigDirCandidates returns the deduped list of config dirs to
@@ -140,7 +157,10 @@ func VerifyConversationInDir(inst *Instance, cfgDir string, wantSize int64) erro
 	if dir == "" {
 		return fmt.Errorf("empty config dir")
 	}
-	path := filepath.Join(dir, "projects", ConvertToClaudeDirName(inst.ProjectPath), inst.ClaudeSessionID+".jsonl")
+	path := resolveClaudeTranscriptPath(dir, inst.ProjectPath, inst.ClaudeSessionID)
+	if path == "" {
+		return fmt.Errorf("conversation missing from target: %s", filepath.Join(dir, "projects", "*", inst.ClaudeSessionID+".jsonl"))
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("conversation missing from target: %s: %w", path, err)

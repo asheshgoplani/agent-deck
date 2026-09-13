@@ -5,8 +5,10 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-// Mock Toast.addToast to avoid pulling the rendering layer into a unit test.
-vi.mock('../../../internal/web/static/app/Toast.js', () => ({
+// Mock toasts.addToast to avoid pulling the rendering layer into a unit test.
+// api.js imports addToast from toasts.js (not Toast.js) since the import
+// cycle fix, so the mock targets that module.
+vi.mock('../../../internal/web/static/app/toasts.js', () => ({
   addToast: vi.fn(),
 }))
 
@@ -55,7 +57,7 @@ describe('apiFetch', () => {
 
   it('throws and surfaces toast on network error', async () => {
     const { apiFetch } = await import(apiModulePath)
-    const Toast = await import('../../../internal/web/static/app/Toast.js')
+    const Toast = await import('../../../internal/web/static/app/toasts.js')
     const fetchMock = vi.fn().mockRejectedValue(new Error('boom'))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -65,7 +67,7 @@ describe('apiFetch', () => {
 
   it('throws on non-ok response and surfaces error.message via toast for mutations', async () => {
     const { apiFetch } = await import(apiModulePath)
-    const Toast = await import('../../../internal/web/static/app/Toast.js')
+    const Toast = await import('../../../internal/web/static/app/toasts.js')
     Toast.addToast.mockClear()
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
@@ -79,7 +81,7 @@ describe('apiFetch', () => {
 
   it('does NOT toast for failing GET (background reads)', async () => {
     const { apiFetch } = await import(apiModulePath)
-    const Toast = await import('../../../internal/web/static/app/Toast.js')
+    const Toast = await import('../../../internal/web/static/app/toasts.js')
     Toast.addToast.mockClear()
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,

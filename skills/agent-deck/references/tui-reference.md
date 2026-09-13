@@ -32,11 +32,11 @@ Complete reference for agent-deck Terminal UI features.
 | `A` | Archive session (stops tmux, hides from default list; conversations/metadata untouched) |
 | `Shift+U` | Unarchive session (restores to list; does NOT auto-start tmux) |
 | `b` | Re-run worktree setup script (`.agent-deck/worktree-setup.sh`) |
-| `u` | Mark unread (idle -> waiting) |
+| `u` | Mark unread (idle -> waiting); on a remote host header showing `v<old> ↑`, update that remote after confirmation |
 | `f` | Quick fork (Claude/OpenCode/Pi/Codex) |
 | `F` | Fork with options (Claude/OpenCode/Pi/Codex) |
 
-For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. Remote-session reorder keys move only within the current remote group; the order is saved on the viewing machine, while remote group headers remain name-sorted.
+For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. A remote host header shows `v1.15.0 ↑` after its count when the remote runs an older agent-deck than this controller (the version is asked once per hour per remote on the session poll); `u` on that header opens "Update remote <name> from v<old> to v<new>?" and runs the same verified deploy as `agent-deck remote update <name>`. Remote-session reorder keys move only within the current remote group; the order is saved on the viewing machine, while remote group headers remain name-sorted.
 
 ### Group Actions
 
@@ -69,6 +69,8 @@ For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses 
 | `Ctrl+Q` | Detach (keep tmux running) |
 | `$` | Cost Dashboard |
 | `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
+| `Ctrl+Y` | Install the available update now (`install_update`; runs `agent-deck update` on the terminal, see [Updates](#updates)) |
+| `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `q` / `Ctrl+C` | Quit |
 
 ## Local Status Indicators
@@ -95,20 +97,31 @@ completion content are never rendered.
 
 ### New Session (`n`)
 
-**Fields (order: Name → Tool → Path):**
+**Fields (order: Name → Tool → Model → Reasoning effort → Path):**
 - Session name (required)
 - Command (claude/gemini/opencode/codex/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
+- Model ID (claude/codex/gemini/opencode): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
+- Reasoning effort (claude/codex): `←`/`→` or `Space` cycles the levels (CLI: `--effort`)
 - Project path (required, supports `~/`)
 - Parent group (auto-selected)
-- Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, and start query
+- Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, start query, and the account row (CLI: `--account`; hidden when no named accounts are configured)
+- `[ Create session ]` button (last row)
 
-**Controls:** `Tab` move fields | `Enter` advance to next field (on free-text Name/Branch fields) | `Ctrl+S` create from any field | `Esc` cancel
+**Controls:** `Enter` next field on every row (inside the Claude options it steps row by row) | `Tab`/`Shift+Tab` and `↓`/`↑` move fields the same way | `Enter` on `[ Create session ]` or `Ctrl+S` anywhere creates | `Esc` back out of a list, then cancel
 
-Enter-advances is the default (`[ui].new_session_enter_advances = true`), so typing a name and pressing Enter no longer silently creates a session with all defaults. Set `[ui].new_session_enter_advances = false` to restore the legacy Enter-submits behavior; `Ctrl+S` submits in both modes.
+Enter-advances is the default (`[ui].new_session_enter_advances = true`): Enter never creates the session until you reach the Create button, so typing a name and pressing Enter through the form no longer launches a session before you have chosen the model, path, or options. The footer on every row says what Enter does there. Set `[ui].new_session_enter_advances = false` to restore the legacy behavior where Enter creates from any row; `Ctrl+S` creates in both modes.
 
 Pressing `n` on a remote group/session opens a remote-aware dialog (remote paths and group pre-filled); the session is created over SSH on the remote, never on localhost.
 
 Claude New Session defaults are remembered in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`) under `[claude]`, except start query and resume IDs, which are per-launch values.
+
+### Edit Session (`Shift+P`)
+
+Edits the fields a session iterates on at runtime: Title, Harness (tool), Pin position, the account row (shown when `[profiles.<name>.*].config_dir` slots are configured for a supported harness), and for claude sessions Skip permissions, Auto mode, Extra args, Plugins.
+
+**Controls:** `Tab`/`↓` `Shift+Tab`/`↑` move rows | `←`/`→` choose (pills) | `Space` toggle (checkboxes) | `Enter` save | `Esc` cancel. The footer says what the keys do on the focused row; on a changed harness or account row it reads "Enter switch (asks first)".
+
+A harness or account change is saved on its own (not together with other edits) and always asks first: a same-harness account change shows "Switch Account?" (from → to, what happens), a different harness shows the transfer disclosure. `y`/Switch runs it, `n`/Esc returns to the row with nothing written; the outcome is reported in a notice. CLI equivalents: `agent-deck session switch-account <session> <account>` (same flow), `agent-deck session set <session> account <name>`, `agent-deck session switch <session> --to-harness <tool> [--to-account <account>]` (preview with `session switch-preview`); `agent-deck accounts` lists the slots.
 
 ### MCP Manager (`m`)
 
@@ -204,6 +217,17 @@ recent_days = 30
 - Shows last ~500 lines of session's tmux pane
 - Auto-updates every 2 seconds
 - Launch animation: 6-15s for Claude/Gemini
+
+## Updates
+
+The TUI checks for a new release on startup and every 5 minutes, and watches its own binary on disk once per tick (one `stat`; a `version` probe only when the file changed). What happens next depends on `[updates]` in config.toml (both default to `true`, both also in the Settings panel under UPDATES):
+
+| Setting | On (default) | Off |
+|---------|--------------|-----|
+| `auto_install` | When a release is installable the TUI runs `agent-deck update --unattended --trigger tui` in the background (no prompt, the deck stays usable). One attempt per version per hour; a failure shows one footer line ("auto-update to vX failed: ...; run agent-deck update"). Skipped for Homebrew-managed installs, while a release is still publishing, and under `AGENTDECK_SKIP_UPDATE_CHECK`. | Banner: `⬆ Update available: vA → vB (... press ctrl+y to install (agent-deck update) · Esc to dismiss)` for 6+ releases behind; `Ctrl+Y` installs interactively. |
+| `auto_restart` | Once a newer build is on disk the banner reads `⬆ vX installed, restarting when idle (ctrl+t now)` and the TUI restarts itself at the first tick with no dialog open, no insert mode and no session action in flight (attached sessions are never interrupted: the restart only happens from the home screen). After the restart the footer says `restarted into vNEW (was vOLD)` and the cursor is back on the session it was on. | Banner: `⬆ vX installed, press ctrl+t to restart agent-deck`; `Ctrl+T` restarts when you choose. |
+
+Before the restart is armed (by the key or on its own) the TUI checks the file it is about to exec: it must be a regular, non-empty, executable file that answers `agent-deck version`; otherwise the restart is refused with a footer message (`restart blocked: new binary ... ; still running vOLD`) and the old build keeps running. The restart replaces the process in place (same executable path, args and environment), so tmux sessions, MCP pools and the web server are untouched. `web --no-tui` restarts itself the same way when no request is in flight; a remote agent exits cleanly instead and the controller reconnects. None of this happens on its own when the TUI is driven by a test, CI or a script: under `go test`, with `AGENTDECK_SKIP_UPDATE_CHECK` set, with `CI` truthy, with an `AGENTDECK_TEST_*` marker, or without a terminal on stdin and stdout, the banner reverts to `press ctrl+t to restart agent-deck` and only the keys act (issue #2251).
 
 ## Layout
 

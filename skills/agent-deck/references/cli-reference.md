@@ -28,6 +28,10 @@ Complete reference for all agent-deck CLI commands.
 -q, --quiet             Minimal output
 ```
 
+`--help` and `-h` are read-only on every human-facing command. Bare `help` is
+recognized only in a command position; in a value position it remains usable
+as a workspace, remote, session, or other identifier.
+
 ## Basic Commands
 
 ### add - Create session
@@ -77,6 +81,7 @@ Examples:
 ```bash
 agent-deck launch . -c claude -m "Review this module"
 agent-deck launch . -c claude --account work -m "Review this module"
+agent-deck launch . -c claude --model claude-opus-5 --effort high   # the dialog's Model / Reasoning effort rows
 agent-deck launch . -g ard -c claude -m "Review dataset"
 agent-deck launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
 agent-deck launch -g book-keeper -c claude   # no path: lands on the group's default_path
@@ -85,7 +90,9 @@ agent-deck launch -g book-keeper -c claude   # no path: lands on the group's def
 Notes:
 - `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
 - `--account <name>` selects a named slot from `[profiles.<name>.claude].config_dir` for this session, matching `add --account`.
+- `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh`; other tools refuse the flag. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--account` requires an explicit name. If the next token is another launch flag, launch stops with an error before resolving a fallback account or creating a session; use `--account=<name>` when a name intentionally begins with a dash.
+- `--no-identity` (also on `add`): skip the harness identity injection for this session only. By default every spawn tells the model it runs inside agent-deck, its session metadata and how to use the CLI (`[launch] inject_identity` in config-reference.md, `documentation/HARNESS_IDENTITY.md`). Persisted, so restarts honour it.
 
 ### accounts - List named account slots
 
@@ -93,7 +100,9 @@ Notes:
 agent-deck accounts [--json]
 ```
 
-Lists profiles that configure a Claude `config_dir`; these names are accepted by `add --account` and `launch --account`.
+Lists profiles that configure a Claude `config_dir`; these names are accepted by `add --account`, `launch --account`, `session set <id> account`, `session switch-account`, and the account rows in the TUI's New Session and Edit Session dialogs.
+
+Each row reports the slot name, its config dir, and whether that directory exists yet — a configured account with no directory has never been logged in (`CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`). The `--json` form carries the same three fields (`name`, `config_dir`, `exists`).
 
 ### list - List sessions
 
@@ -101,6 +110,8 @@ Lists profiles that configure a Claude `config_dir`; these names are accepted by
 agent-deck list [--json] [--all]
 agent-deck ls  # Alias
 ```
+
+Both JSON forms always include `account`: the exact stored per-session slot, including an empty string when no slot is explicitly stored. Human tables show the slot in a quoted `ACCOUNT` column, escaping controls. This is stored metadata, not a resolved account or login identity.
 
 ### remove - Remove session
 
@@ -126,6 +137,24 @@ agent-deck migrate-paths [--dry-run] [--force]
 ```
 
 Copies known legacy `~/.agent-deck` files into the split XDG layout (config under `~/.config/agent-deck`, durable data under `~/.local/share/agent-deck`, cache under `~/.cache/agent-deck`) without deleting the legacy directory. Use `--dry-run` to preview what would be copied.
+
+### update - Check for and install a new release
+
+```bash
+agent-deck update                      # check GitHub, show changelog, Y/n, install
+agent-deck update --check              # only check
+agent-deck update --check --json       # {"current","latest","available","publishing","auto_install","auto_restart","timer":{...}}
+agent-deck update --version 1.7.3      # install a specific release (may downgrade)
+agent-deck update --unattended         # no prompts, no changelog, no stdin
+agent-deck update --unattended --trigger timer|tui|manual
+agent-deck update --install-timer [--dry-run]
+agent-deck update --uninstall-timer [--dry-run]
+agent-deck update --timer-status
+```
+
+- `--unattended` is what the daily timer and the TUI's `auto_install` run. It honours `[updates] auto_install` (off means "nothing installed", exit 0), never runs Homebrew (prints the `brew` command, exit 2), takes `<cache dir>/update.lock` so two runs never replace the binary at once (busy means exit 0), skips the remotes prompt, and exits 1 when the install or the macOS launchd hygiene failed. `--trigger` (default `$AGENTDECK_UPDATE_TRIGGER`, then `manual`) only tags the debug log lines.
+- `--install-timer` writes `~/Library/LaunchAgents/com.agentdeck.autoupdate.plist` (macOS, daily at 07:MM with a random minute, program `/bin/sh`) or `~/.config/systemd/user/agent-deck-autoupdate.{service,timer}` (Linux, `OnCalendar=daily`, `RandomizedDelaySec=1h`) and loads it. Installing over an existing timer replaces it; `--dry-run` prints the exact files and commands and executes nothing. The timer's output goes to `<log dir>/auto-update.log` on macOS and the journal on Linux.
+- On macOS every install (interactive, `--version`, the TUI prompt and `--unattended`) re-registers the `com.agentdeck.*` launch agents whose program is the replaced binary (`launchctl bootout` then `bootstrap`, then a `state = running` check for KeepAlive/RunAtLoad agents). Without this they crash-loop with `EX_CONFIG` (exit 78) because macOS ties a launch agent's identity to the file at its program path. If an agent does not come back the command exits 1 and prints the two `launchctl` commands to run by hand; the binary is already updated at that point.
 
 ## Web Command
 
@@ -227,6 +256,7 @@ Auto-detects current session if no ID provided.
 
 **JSON output includes:**
 - Session details (id, title, status, path, group, tool)
+- `account`: the exact stored slot, always present including an empty string. Human output shows a quoted, control-escaped `Account:` field; neither form resolves login identity.
 - Claude/Gemini session ID
 - Attached MCPs (local, global, project)
 - tmux session name
@@ -250,8 +280,12 @@ agent-deck session current -q
 
 # JSON
 agent-deck session current --json
-# {"session":"test","profile":"work","id":"c5bfd4b4",...}
+# {"session":"test","title":"test","profile":"work","id":"c5bfd4b4","tool":"claude",
+#  "group":"projects","account":"","parent_session_id":"","path":"/...","status":"running",
+#  "tmux_session":"agentdeck_test_...","identity_file":"/.../runtime/identity/c5bfd4b4/identity.md"}
 ```
+
+The JSON form is the machine-readable identity a session fetches from inside: `tool`, `account` and `parent_session_id` are always present (empty when unset); `group`, `tmux_session`, `is_conductor`, `worktree_branch` and `identity_file` appear when set. The injected identity block (`[launch] inject_identity`) points the model here for the live record.
 
 **Profile auto-detection priority:**
 1. `AGENTDECK_PROFILE` env var
@@ -654,11 +688,11 @@ Removes a remote from configuration.
 ### remote list / ls
 
 ```bash
-agent-deck remote list [--json]
-agent-deck remote ls [--json]
+agent-deck remote list [--json] [--check]
+agent-deck remote ls [--json] [--check]
 ```
 
-Lists all configured remotes. Use `--json` for scripting.
+Lists all configured remotes. The VERSION column shows the agent-deck version each remote last reported (learned by the TUI poll, `remote update`, or `--check`), with `↑` when it is older than this controller; `-` means never checked. `--check` asks every remote now (one SSH call each) and refreshes that cache. Use `--json` for scripting (`version`, `version_checked_at`, `outdated`).
 
 ### remote sessions
 
@@ -713,10 +747,10 @@ Renames a session on a remote instance.
 ### remote update
 
 ```bash
-agent-deck remote update [name]
+agent-deck remote update [name | --all]
 ```
 
-Downloads and installs the correct agent-deck binary (detected platform/arch) on all remotes, or on a specific remote if `name` is provided. Prompts for confirmation before updating.
+Downloads and installs the correct agent-deck binary (detected platform/arch) on a specific remote, or with `--all` (or no name) on every configured remote whose version is older than this controller's. Remotes run one at a time and each is reported as updated, already current, or failed with the reason; a remote that fails stays on its version (the archive is checksum-verified before deploy and the remote is re-checked afterwards, never a partial binary). Exit status is 1 when any remote failed. Remotes follow the controller's version automatically unless `[updates] auto_update_remotes = false` is set (see the config reference). When the remote user cannot write the install directory (a root-owned `/usr/local/bin`), the deploy runs through `sudo -n` if the remote allows passwordless sudo; otherwise it fails with `install path <path> is not writable by <user>` and the remedy (move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo). `agent-deck update` on the remote itself reports the same error for that case. The deploy first resolves the install path through symlinks on the remote (`readlink` style), so the documented "symlink at the old path to `~/.local/bin/agent-deck`" layout works: the file behind the link is replaced, its owner and mode are kept (then made readable and executable for everyone), sudo is used only when the resolved file's directory is unwritable, and a symlink is never replaced by a regular file. When `command -v agent-deck` on the remote resolves to a different file than `agent_deck_path`, both are updated and the report names both, unless the `$PATH` binary is already at that version or newer, in which case it is left alone and the report says so. A file owned by another user is replaced through sudo so its owner is kept, and a non-root deploy keeps the file's group; if owner or group cannot be restored the deploy aborts with the original in place. If the remote cannot say what it runs (the `command -v`, resolve or version probe fails or answers ambiguously) nothing is written and the remote is reported as skipped with the probe error. After the deploy, `command -v agent-deck` must resolve to the deployed file's inode and report the new version. When `agent_deck_path` is set explicitly and that entry is verified by inode to be the deployed file (reporting the new version) but sits off the remote's non-interactive `$PATH`, the update counts as a success with a warning in the report (sessions started via SSH may need PATH); without an explicit `agent_deck_path` the controller itself relies on `$PATH`, so that case stays a failure. The deploy stages to a temp file unique to that run, takes a lock directory next to the binary (`<path>.lock`, treated as abandoned after 15 minutes) so two controllers cannot interleave writes; a remote whose lock another deploy holds is reported as skipped, not failed. While a sweep from this controller is still running (the TUI's startup sweep, say), `remote update --all` waits for it up to two minutes and then reports the remotes it covers as `sweep already in progress, remote <name> is being updated by <pid>` with exit status 0. The version cache is refreshed after each remote's deploy, so `remote list` shows the new version right away.
 
 ### Examples
 
@@ -727,7 +761,7 @@ agent-deck remote list
 agent-deck remote sessions dev
 agent-deck remote attach dev my-session
 agent-deck remote rename dev my-session new-name
-agent-deck remote update          # update all remotes
+agent-deck remote update --all    # update every remote older than this controller
 agent-deck remote update dev      # update specific remote
 ```
 

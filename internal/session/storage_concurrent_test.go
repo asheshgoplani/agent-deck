@@ -102,3 +102,34 @@ func TestConcurrentStorageWrites(t *testing.T) {
 	assert.LessOrEqual(t, holdersCount, 1,
 		"at most one session should retain the shared ClaudeSessionID after load-time dedup")
 }
+
+// A stale TUI snapshot changing the title must not erase a concurrent CLI
+// status update on the same row. This is intentionally deterministic: both
+// handles load before either writer saves.
+func TestStaleSnapshotPreservesDisjointFieldUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	open := func() *Storage {
+		db, err := statedb.Open(filepath.Join(tmpDir, "state.db"))
+		require.NoError(t, err)
+		require.NoError(t, db.Migrate())
+		return &Storage{db: db, dbPath: filepath.Join(tmpDir, "state.db"), profile: "_test"}
+	}
+	seed := open()
+	base := &Instance{ID: "shared", Title: "original", ProjectPath: tmpDir, GroupPath: "test", Tool: "shell", Status: StatusIdle, CreatedAt: time.Now()}
+	require.NoError(t, seed.SaveWithGroups([]*Instance{base}, NewGroupTree([]*Instance{base})))
+	tui, cli := open(), open()
+	tuiRows, _, err := tui.LoadWithGroups()
+	require.NoError(t, err)
+	cliRows, _, err := cli.LoadWithGroups()
+	require.NoError(t, err)
+	cliRows[0].Status = StatusRunning
+	require.NoError(t, cli.SaveWithGroups(cliRows, nil))
+	tuiRows[0].Title = "renamed"
+	require.NoError(t, tui.SaveWithGroups(tuiRows, nil))
+	check := open()
+	got, err := check.Load()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "renamed", got[0].Title)
+	assert.Equal(t, StatusRunning, got[0].Status, "stale title save must preserve disjoint CLI status update")
+}

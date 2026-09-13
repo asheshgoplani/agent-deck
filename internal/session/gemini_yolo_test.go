@@ -216,7 +216,6 @@ func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 
 // TestInstance_GeminiYoloMode_Persistence tests that GeminiYoloMode persists through save/load
 func TestInstance_GeminiYoloMode_Persistence(t *testing.T) {
-	s := newTestStorage(t)
 
 	tests := []struct {
 		name              string
@@ -242,6 +241,7 @@ func TestInstance_GeminiYoloMode_Persistence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStorage(t)
 			// Create instance with YOLO mode
 			inst := &Instance{
 				ID:              "test-persist",

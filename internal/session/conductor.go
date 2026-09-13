@@ -1876,6 +1876,27 @@ func LaunchdPlistPath() (string, error) {
 	return filepath.Join(homeDir, "Library", "LaunchAgents", LaunchdPlistName+".plist"), nil
 }
 
+// ConductorVenvDir returns the directory of the conductor-owned virtualenv that
+// findPython3 prefers. It does not create or check the directory — callers use
+// it to tell the user where to build the venv, so the instructions and the
+// lookup can never drift apart (they did: the PEP 668 remediation printed
+// ".venv" while findPython3 only ever looked for "venv").
+func ConductorVenvDir() string {
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(conductorDir, "venv")
+}
+
+// FindPython3 is the exported form of findPython3, for the CLI layer: the
+// dependency installer must use the same interpreter the generated launchd /
+// systemd unit will run, or it installs the bridge's dependencies somewhere the
+// daemon cannot see them.
+func FindPython3() string {
+	return findPython3()
+}
+
 // findPython3 resolves python3 for daemon configs.
 // Prefer the conductor venv (has required deps like toml), then the current
 // PATH (so pyenv/asdf-selected interpreters win), then common absolute paths.
@@ -2031,6 +2052,15 @@ WantedBy=default.target
 // recycle onto the current binary, so the daemon can never run stale code even
 // if the in-process version watcher is somehow bypassed. The watcher recycles
 // promptly on upgrade; this is the backstop.
+//
+// The recycle is kept rather than dropped because it is what makes the stale-
+// binary guarantee unconditional. It used to be noisy (issue #2240): every
+// start replayed a transition for every parked child and woke every conductor
+// with an empty drain. The daemon now restarts statefully and silently instead
+// — it seeds its turn baseline from the registry against the persisted
+// last-notified state (TransitionDaemon.seedTurnBaseline) and withholds the
+// wake-nudge for a turn the parent has already consumed — so a daily recycle
+// costs nothing.
 const systemdTransitionNotifierServiceTemplate = `[Unit]
 Description=Agent Deck Transition Notifier
 After=network.target

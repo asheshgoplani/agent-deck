@@ -4,7 +4,9 @@
 // remote in the TUI header, refreshed on the CPU/RAM cadence.
 //
 // This file owns the structural invariants of the measurement primitive:
-//   - SSHRunner.MeasureLatency calls a known cheap noop RPC (`--version`).
+//   - SSHRunner.MeasureLatency times a shell builtin (`true`) over ssh, not
+//     a remote agent-deck invocation, so the figure is transport round trip
+//     without remote process startup.
 //   - It returns a non-negative duration that reflects the round-trip.
 //   - It surfaces remote/network failure as an error so the renderer can
 //     show ` — offline` instead of misleading "0ms".
@@ -20,20 +22,26 @@ import (
 	"time"
 )
 
-// TestIssue1103_MeasureLatency_InvokesVersionAndTimesRoundTrip asserts that
-// MeasureLatency hits the cheapest possible noop on the remote (`--version`)
-// and returns a duration that reflects the stubbed delay. If a future change
-// switches to a heavier command (e.g. `list --json`), this test catches the
-// regression because the header would start ticking on a heavyweight RPC.
-func TestIssue1103_MeasureLatency_InvokesVersionAndTimesRoundTrip(t *testing.T) {
+// TestIssue1103_MeasureLatency_TimesShellBuiltinRoundTrip asserts that
+// MeasureLatency times a raw shell builtin over ssh (`true`) rather than an
+// agent-deck invocation, and returns a duration that reflects the stubbed
+// delay. Running the remote binary (even `--version`) adds its process
+// startup to the figure, which made a 97 ms link read as 110 ms or more; a
+// builtin keeps the header honest about the transport alone.
+func TestIssue1103_MeasureLatency_TimesShellBuiltinRoundTrip(t *testing.T) {
 	const stubDelay = 30 * time.Millisecond
 
-	var calledWith []string
+	var calledWith string
+	agentDeckCalls := 0
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
-			calledWith = append([]string(nil), args...)
-			time.Sleep(stubDelay)
+			agentDeckCalls++
 			return []byte("agent-deck v1.9.23\n"), nil
+		},
+		remoteExecFn: func(ctx context.Context, remoteCmd string, stdin []byte) ([]byte, error) {
+			calledWith = remoteCmd
+			time.Sleep(stubDelay)
+			return nil, nil
 		},
 	}
 
@@ -42,8 +50,11 @@ func TestIssue1103_MeasureLatency_InvokesVersionAndTimesRoundTrip(t *testing.T) 
 		t.Fatalf("MeasureLatency returned err=%v", err)
 	}
 
-	if len(calledWith) != 1 || calledWith[0] != "--version" {
-		t.Fatalf("MeasureLatency must call `--version` (cheapest noop), got args=%v", calledWith)
+	if calledWith != "true" {
+		t.Fatalf("MeasureLatency must time the shell builtin `true`, got remote command %q", calledWith)
+	}
+	if agentDeckCalls != 0 {
+		t.Fatalf("MeasureLatency must not invoke the remote agent-deck binary; got %d call(s)", agentDeckCalls)
 	}
 
 	if d < stubDelay {
@@ -56,7 +67,7 @@ func TestIssue1103_MeasureLatency_InvokesVersionAndTimesRoundTrip(t *testing.T) 
 // reporting "0ms" (which would falsely indicate a healthy remote).
 func TestIssue1103_MeasureLatency_PropagatesError(t *testing.T) {
 	runner := &SSHRunner{
-		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+		remoteExecFn: func(ctx context.Context, remoteCmd string, stdin []byte) ([]byte, error) {
 			return nil, errors.New("ssh: connection refused")
 		},
 	}

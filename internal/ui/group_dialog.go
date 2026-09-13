@@ -38,6 +38,12 @@ type GroupDialog struct {
 	// Tab toggle between Root and Subgroup modes (Issue #111)
 	contextParentPath string // Original cursor context parent path (for toggling back)
 	contextParentName string // Original cursor context parent name (for toggling back)
+
+	// remoteName is non-empty when the dialog was opened on a REMOTE row
+	// (g key on a remote session/group header). The group is then created in
+	// the remote's own state DB via SSH instead of the local group tree; the
+	// create handler in home.go uses RemoteName() to pick the routing.
+	remoteName string
 }
 
 // NewGroupDialog creates a new group dialog
@@ -64,7 +70,8 @@ func NewGroupDialog() *GroupDialog {
 func (g *GroupDialog) Show() {
 	g.visible = true
 	g.mode = GroupDialogCreate
-	g.groupPath = "" // No parent = root level
+	g.remoteName = "" // local
+	g.groupPath = ""  // No parent = root level
 	g.parentName = ""
 	g.validationErr = ""
 	g.nameInput.SetValue("")
@@ -77,6 +84,7 @@ func (g *GroupDialog) Show() {
 func (g *GroupDialog) ShowCreateSubgroup(parentPath, parentName string) {
 	g.visible = true
 	g.mode = GroupDialogCreate
+	g.remoteName = ""        // local
 	g.groupPath = parentPath // Parent path for the new subgroup
 	g.parentName = parentName
 	g.validationErr = ""
@@ -92,6 +100,7 @@ func (g *GroupDialog) ShowCreateSubgroup(parentPath, parentName string) {
 func (g *GroupDialog) ShowCreateWithContext(parentPath, parentName string) {
 	g.visible = true
 	g.mode = GroupDialogCreate
+	g.remoteName = "" // local
 	g.contextParentPath = parentPath
 	g.contextParentName = parentName
 	g.validationErr = ""
@@ -119,6 +128,57 @@ func (g *GroupDialog) ShowCreateWithContextDefaultRoot(parentPath, parentName st
 	g.mode = GroupDialogCreate
 	g.contextParentPath = parentPath
 	g.contextParentName = parentName
+	g.remoteName = "" // local
+	g.validationErr = ""
+	g.nameInput.SetValue("")
+	g.nameInput.CursorEnd() // Issue #604
+	g.resetPathInput()
+	g.focusName()
+
+	// Default to root mode, Tab toggles to subgroup
+	g.groupPath = ""
+	g.parentName = ""
+}
+
+// ShowCreateRemoteWithContext opens the create dialog for a REMOTE context
+// (g key on a remote group header): the new group is created on the remote
+// host via SSH (see home.go createRemoteGroup), with parentPath set to the
+// header's own group path so the remote creates a subgroup under it. Pass an
+// empty parentPath for the level-0 host header (root-level remote group).
+func (g *GroupDialog) ShowCreateRemoteWithContext(parentPath, parentName, remoteName string) {
+	g.visible = true
+	g.mode = GroupDialogCreate
+	g.contextParentPath = parentPath
+	g.contextParentName = parentName
+	g.remoteName = remoteName
+	g.validationErr = ""
+	g.nameInput.SetValue("")
+	g.nameInput.CursorEnd() // Issue #604
+	g.resetPathInput()
+	g.focusName()
+
+	if parentPath != "" {
+		// Default to subgroup mode
+		g.groupPath = parentPath
+		g.parentName = parentName
+	} else {
+		// Root mode, no toggle
+		g.groupPath = ""
+		g.parentName = ""
+	}
+}
+
+// ShowCreateRemoteWithContextDefaultRoot is the remote counterpart of
+// ShowCreateWithContextDefaultRoot: opens the create dialog defaulting to
+// root mode on the remote, storing the cursor context so Tab can toggle to
+// subgroup mode under the session's current group. The created group is
+// routed to the remote's own state DB (home.go createRemoteGroup).
+func (g *GroupDialog) ShowCreateRemoteWithContextDefaultRoot(parentPath, parentName, remoteName string) {
+	g.visible = true
+	g.mode = GroupDialogCreate
+	g.contextParentPath = parentPath
+	g.contextParentName = parentName
+	g.remoteName = remoteName
 	g.validationErr = ""
 	g.nameInput.SetValue("")
 	g.nameInput.CursorEnd() // Issue #604
@@ -157,6 +217,7 @@ func (g *GroupDialog) ToggleRootSubgroup() {
 func (g *GroupDialog) ShowRename(currentPath, currentName string) {
 	g.visible = true
 	g.mode = GroupDialogRename
+	g.remoteName = "" // not a create
 	g.groupPath = currentPath
 	g.validationErr = ""
 	g.nameInput.SetValue(currentName)
@@ -170,6 +231,7 @@ func (g *GroupDialog) ShowRename(currentPath, currentName string) {
 func (g *GroupDialog) ShowMove(groupPaths []string) {
 	g.visible = true
 	g.mode = GroupDialogMove
+	g.remoteName = "" // not a create; reset any stale remote create context
 	g.validationErr = ""
 	g.groupPaths = groupPaths
 	g.selected = 0
@@ -179,6 +241,7 @@ func (g *GroupDialog) ShowMove(groupPaths []string) {
 func (g *GroupDialog) ShowRenameSession(sessionID, currentName string) {
 	g.visible = true
 	g.mode = GroupDialogRenameSession
+	g.remoteName = "" // not a create
 	g.sessionID = sessionID
 	g.validationErr = ""
 	g.nameInput.SetValue(currentName)
@@ -193,9 +256,17 @@ func (g *GroupDialog) GetSessionID() string {
 	return g.sessionID
 }
 
+// RemoteName returns the remote the create dialog is scoped to (g key on a
+// remote row), or "" when the dialog creates a LOCAL group. The create
+// handler routes to the remote's own state DB via SSH when non-empty.
+func (g *GroupDialog) RemoteName() string {
+	return g.remoteName
+}
+
 // Hide hides the dialog
 func (g *GroupDialog) Hide() {
 	g.visible = false
+	g.remoteName = ""
 	g.nameInput.Blur()
 }
 
@@ -399,6 +470,15 @@ func (g *GroupDialog) View() string {
 		} else {
 			title = "Create New Group"
 			content = fields
+		}
+
+		// Remote create (g on a remote row): make the routing explicit so the
+		// user knows the group will be created on the remote host, not locally.
+		if g.remoteName != "" {
+			remoteInfo := lipgloss.NewStyle().
+				Foreground(ColorCyan).
+				Render("Remote: " + g.remoteName)
+			content = remoteInfo + "\n\n" + content
 		}
 
 		// Add Root/Subgroup toggle indicator when Tab toggle is available

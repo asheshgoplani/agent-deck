@@ -47,8 +47,8 @@ func TestGroupCreate_SurvivesReloadRace(t *testing.T) {
 	if _, ok := h.groupTree.Groups["home"]; !ok {
 		t.Fatalf("group 'home' was lost after the reload race; reapply did not restore it")
 	}
-	if len(h.pendingGroupOps) != 0 {
-		t.Errorf("pendingGroupOps should be cleared after reapply, got %d", len(h.pendingGroupOps))
+	if len(h.pendingGroupOps) != 1 {
+		t.Errorf("without a storage save, reapplied intent must remain pending; got %d", len(h.pendingGroupOps))
 	}
 }
 
@@ -82,8 +82,8 @@ func TestGroupRename_SurvivesReloadRace(t *testing.T) {
 	if _, ok := h.groupTree.Groups["work"]; ok {
 		t.Errorf("stale 'work' group still present after reapplied rename")
 	}
-	if len(h.pendingGroupOps) != 0 {
-		t.Errorf("pendingGroupOps should be cleared after reapply, got %d", len(h.pendingGroupOps))
+	if len(h.pendingGroupOps) != 1 {
+		t.Errorf("without a storage save, reapplied intent must remain pending; got %d", len(h.pendingGroupOps))
 	}
 }
 

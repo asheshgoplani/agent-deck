@@ -64,6 +64,19 @@ func handleCredsRefresh(args []string) {
 	endpoint := fs.String("endpoint", credrefresh.DefaultTokenEndpoint, "OAuth token endpoint (override for testing only)")
 	var configDirs stringSliceFlag
 	fs.Var(&configDirs, "config-dir", "profile config dir to keep warm (repeatable); defaults to ~/.claude, ~/.claude-work and every config_dir declared in config.toml")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stdout, "Usage: agent-deck creds-refresh [options]")
+		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(os.Stdout, "Keep Claude OAuth credentials refreshed for configured profiles.")
+		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(os.Stdout, "Options:")
+		fs.SetOutput(os.Stdout)
+		fs.PrintDefaults()
+	}
+	if helpRequested(args) {
+		fs.Usage()
+		return
+	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}

@@ -11,13 +11,22 @@ import (
 )
 
 // helper: create storage, add N root groups, return (storage, instances, groupTree).
-// Each call overwrites the _test profile, so tests are independent when run sequentially.
+// Each call uses an isolated profile directory; creation must not overwrite
+// a different test's reordered groups.
 func setupGroupsForReorder(t *testing.T, names ...string) *session.Storage {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	for _, key := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(key, "")
+	}
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
 	storage, err := session.NewStorageWithProfile("_test")
 	if err != nil {
 		t.Fatalf("NewStorageWithProfile: %v", err)
 	}
+
+	t.Cleanup(func() { _ = storage.Close() })
 
 	instances := []*session.Instance{}
 	groupTree := session.NewGroupTreeWithGroups(instances, nil)

@@ -134,7 +134,7 @@ func TestIssue1753_FirstViewNonEmptyAfterRemoteAttach(t *testing.T) {
 		h.isAttaching.Store(true)
 		cmd := remoteCreateAndAttachCmd{
 			runner: runner,
-			tool:   "shell",
+			opts:   session.RemoteAddOptions{Tool: "shell"},
 			onExit: func() { h.isAttaching.Store(false) },
 		}
 		if err := cmd.Run(); err == nil {

@@ -1,0 +1,72 @@
+name: Issue Intake
+
+# Auto-labels newly opened issues so nothing sits unlabeled and invisible to
+# the drain sweeps (#2128). Only issues with zero labels are touched: they get
+# "triage" plus one advisory type label from the same keyword heuristic that
+# issue-notify.yml uses. Labels are only ever added, never removed, and no
+# comment is posted.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add triage and advisory type labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const issue = context.payload.issue;
+
+            // Re-read labels from the API so a label applied between the
+            // event firing and this job running is respected.
+            const { data: live } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+            });
+            const existing = live.labels.map(l => l.name);
+            if (existing.length > 0) {
+              core.info(`#${issue.number} already labeled (${existing.join(', ')}); leaving it alone.`);
+              return;
+            }
+
+            // Type heuristic: keep identical to issue-notify.yml so both agree.
+            const labels = existing.map(l => l.toLowerCase());
+            const titleLower = issue.title.toLowerCase();
+            const bodyLower = (issue.body || '').toLowerCase();
+
+            let issueType = 'unknown';
+            if (labels.includes('bug') || titleLower.includes('bug') || titleLower.includes('fix') || bodyLower.includes('error') || bodyLower.includes('crash')) {
+              issueType = 'bug';
+            } else if (labels.includes('enhancement') || labels.includes('feature') || titleLower.includes('feature') || titleLower.includes('add')) {
+              issueType = 'feature';
+            } else if (labels.includes('documentation') || labels.includes('docs')) {
+              issueType = 'docs';
+            } else if (labels.includes('question') || titleLower.includes('how') || titleLower.includes('?')) {
+              issueType = 'support';
+            }
+
+            // Advisory type label, mapped onto labels that already exist in the repo.
+            const typeLabel = {
+              bug: 'bug',
+              feature: 'feature',
+              docs: 'documentation',
+              support: 'question',
+            }[issueType];
+
+            const toAdd = ['triage'];
+            if (typeLabel) toAdd.push(typeLabel);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: toAdd,
+            });
+            core.info(`#${issue.number}: added ${toAdd.join(', ')} (detected type: ${issueType}).`);

@@ -88,6 +88,11 @@ type UserConfig struct {
 	// Default: true (nil = true)
 	SyncTitle *bool `toml:"sync_title,omitempty"`
 
+	// PushTitle passes the exact deck title via --name on supported Claude
+	// startup commands. Live renames take effect at the next start/restart.
+	// Default: true (nil = true); unreadable config disables automatic naming.
+	PushTitle *bool `toml:"push_title,omitempty"`
+
 	// GroupSort controls the order of sessions within a group.
 	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
 	//   "actionable"           — issue #857 status→recency→Order surfacing.
@@ -234,6 +239,11 @@ type UserConfig struct {
 	// to the user and editable without running `agent-deck feedback`.
 	Feedback FeedbackSettings `toml:"feedback,omitempty"`
 
+	// Telemetry configures the opt-in usage telemetry (see TELEMETRY.md).
+	// Consent itself lives in telemetry-state.json, never here: this section
+	// can only turn telemetry OFF or point it at a self-hosted endpoint.
+	Telemetry TelemetrySettings `toml:"telemetry,omitempty"`
+
 	// Terminal defines outer-terminal chrome settings — sequences agent-deck
 	// writes directly to the host terminal (iTerm2 badge, etc), distinct
 	// from anything tmux draws. Empty/absent uses defaults; see TerminalSettings.
@@ -244,6 +254,10 @@ type UserConfig struct {
 
 	// UI defines TUI layout settings (split ratios, etc).
 	UI UISettings `toml:"ui,omitempty"`
+
+	// Launch defines settings applied to every session spawn regardless of
+	// tool (identity injection, ...). See LaunchSettings.
+	Launch LaunchSettings `toml:"launch,omitempty"`
 
 	// SelfHeal defines self-heal supervision settings (SELF-HEAL-DESIGN.md).
 	// Stage 1 (v1.9.67) is observe-only: it logs what it WOULD do, takes no
@@ -376,7 +390,8 @@ type UISettings struct {
 	// ShellSplit controls the terminal used by the open_shell_here hotkey.
 	// Valid values:
 	//   "iterm"  — always open an iTerm2 vertical split pane (macOS only)
-	//   "tmux"   — always open a new tmux window
+	//   "tmux"   — always open an inline tmux split pane
+	//   "window" — always open a tmux window (tab) inside the session
 	//   ""       — auto: use iTerm2 split when LC_TERMINAL=iTerm2 or
 	//              TERM_PROGRAM=iTerm.app, otherwise tmux
 	// Default: "" (auto). Issue #1470.
@@ -505,8 +520,9 @@ const (
 
 // ShellSplit modes for the open_shell_here hotkey (issue #1470).
 const (
-	ShellSplitITerm = "iterm"
-	ShellSplitTmux  = "tmux"
+	ShellSplitITerm  = "iterm"
+	ShellSplitTmux   = "tmux"
+	ShellSplitWindow = "window"
 )
 
 // Preview-pane orientation modes for wide terminals (>= 80 cols).
@@ -585,6 +601,8 @@ func (u UISettings) GetShellSplit() string {
 		return ShellSplitITerm
 	case ShellSplitTmux:
 		return ShellSplitTmux
+	case ShellSplitWindow:
+		return ShellSplitWindow
 	}
 	return ""
 }
@@ -696,6 +714,17 @@ type FeedbackSettings struct {
 	// Disabled suppresses all passive feedback prompts when true.
 	// Defaults to false. Set by RecordOptOut paths; cleared on re-enable.
 	Disabled bool `toml:"disabled,omitempty"`
+}
+
+// TelemetrySettings configures opt-in usage telemetry (TELEMETRY.md).
+type TelemetrySettings struct {
+	// Disabled forces telemetry off regardless of stored consent, like
+	// AGENTDECK_TELEMETRY=0. It cannot enable telemetry.
+	Disabled bool `toml:"disabled,omitempty"`
+
+	// Endpoint overrides the HTTPS receiver URL for self-hosting. Plain http
+	// is accepted only for localhost. Empty uses the compiled-in default.
+	Endpoint string `toml:"endpoint,omitempty"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -1089,9 +1118,29 @@ type LogSettings struct {
 
 // UpdateSettings defines auto-update configuration
 type UpdateSettings struct {
-	// AutoUpdate automatically installs updates without prompting
+	// AutoUpdate makes the TUI offer to install an available update on
+	// startup (a Y/n prompt before the deck opens).
 	// Default: false
 	AutoUpdate bool `toml:"auto_update,omitempty"`
+
+	// AutoUpdateRemotes pushes the controller's version to every configured
+	// remote that reports an older agent-deck: after a successful
+	// `agent-deck update`, and in the background on startup (throttled by
+	// CheckIntervalHours). Never prompts; a remote that fails stays on its
+	// version and is logged. Default: true (nil = true); opt out with
+	// auto_update_remotes = false (issue #2164).
+	AutoUpdateRemotes *bool `toml:"auto_update_remotes,omitempty"`
+	// AutoInstall installs an available update unattended (no prompt) from
+	// the TUI's periodic check and from the `agent-deck update` timer
+	// (launchd on macOS, systemd on Linux). Set false to opt out.
+	// Default: true (nil = true)
+	AutoInstall *bool `toml:"auto_install,omitempty"`
+
+	// AutoRestart re-executes the running process in place once a newer
+	// binary is installed on disk, without asking. Set false to keep the
+	// "installed, press <key> to restart" notice and restart by hand.
+	// Default: true (nil = true)
+	AutoRestart *bool `toml:"auto_restart,omitempty"`
 
 	// CheckEnabled enables automatic update checks on startup
 	// Default: true (nil = true)
@@ -1112,6 +1161,33 @@ func (u UpdateSettings) GetCheckEnabled() bool {
 		return true
 	}
 	return *u.CheckEnabled
+}
+
+// GetAutoUpdateRemotes returns whether older remotes follow the controller's
+// version on their own (default: true).
+func (u UpdateSettings) GetAutoUpdateRemotes() bool {
+	if u.AutoUpdateRemotes == nil {
+		return true
+	}
+	return *u.AutoUpdateRemotes
+}
+
+// GetAutoInstall reports whether available updates are installed unattended
+// (default: true).
+func (u UpdateSettings) GetAutoInstall() bool {
+	if u.AutoInstall == nil {
+		return true
+	}
+	return *u.AutoInstall
+}
+
+// GetAutoRestart reports whether a running process restarts itself in place
+// once a newer binary is on disk (default: true).
+func (u UpdateSettings) GetAutoRestart() bool {
+	if u.AutoRestart == nil {
+		return true
+	}
+	return *u.AutoRestart
 }
 
 // GetNotifyInCLI returns whether CLI update notifications are enabled (default: true).
@@ -1317,6 +1393,28 @@ func (s *ShellSettings) GetExitToShell() bool {
 	return *s.ExitToShell
 }
 
+// LaunchSettings holds tool-agnostic spawn settings ([launch] in config.toml).
+type LaunchSettings struct {
+	// InjectIdentity controls whether every spawned session is told, through
+	// its harness's own instruction mechanism, that it runs inside agent-deck,
+	// what its session identity is (id, title, group, profile, account,
+	// parent, path) and how to use the agent-deck CLI from inside. The text
+	// is regenerated from the session record on every start/restart and
+	// written to an agent-deck-owned file (AGENTDECK_IDENTITY_FILE), never
+	// into the project directory. nil => true. Per-session opt-out:
+	// `add`/`launch --no-identity`.
+	InjectIdentity *bool `toml:"inject_identity,omitempty"`
+}
+
+// GetInjectIdentity returns whether identity injection is enabled, defaulting
+// to true.
+func (l *LaunchSettings) GetInjectIdentity() bool {
+	if l == nil || l.InjectIdentity == nil {
+		return true
+	}
+	return *l.InjectIdentity
+}
+
 // GetLaunchShell returns whether agent commands should be wrapped with a shell
 // invocation that loads startup files before launch, defaulting to false
 // (opt-in). Issue #1218.
@@ -1433,6 +1531,16 @@ func (c *UserConfig) GetSyncTitle() bool {
 		return true
 	}
 	return *c.SyncTitle
+}
+
+// GetPushTitle returns whether agent-deck may tell the agent its own session
+// name. Defaults to true (nil = true); set push_title = false to leave the
+// agent's name alone and keep the sync one-directional.
+func (c *UserConfig) GetPushTitle() bool {
+	if c.PushTitle == nil {
+		return true
+	}
+	return *c.PushTitle
 }
 
 // GetGroupSort returns the normalized within-group sort mode: "actionable" only
@@ -2630,9 +2738,10 @@ type TmuxSettings struct {
 
 	// LaunchAs selects the spawn form for new tmux servers (v1.7.21+).
 	// Valid values (case-insensitive, whitespace-trimmed):
-	//   "scope"   — systemd-run --user --scope (PR #467 legacy behavior)
+	//   "scope"   — systemd-run --user --scope with KillMode=none, so
+	//               stopping one per-session scope cannot kill a shared server.
 	//   "service" — systemd-run --user --unit <NAME>.service with
-	//               Type=forking + Restart=on-failure. Adds auto-restart
+	//               Type=forking + Restart=on-failure + KillMode=none. Adds auto-restart
 	//               if the tmux daemon dies unexpectedly (OOM, SIGKILL,
 	//               kernel signal). Opt-in defense-in-depth.
 	//   "direct"  — plain `tmux new-session` (no systemd isolation).
@@ -2645,8 +2754,9 @@ type TmuxSettings struct {
 	// LaunchInUserScope) so a config typo doesn't silently opt the user
 	// onto an unintended spawn path.
 	//
-	// This is additive — v1.7.20 users get zero behavior change until
-	// they explicitly set launch_as.
+	// Both systemd forms preserve SSH/logout isolation while avoiding a
+	// control-group teardown of a shared tmux server. This changes only units
+	// spawned after #2219; existing transient units are never migrated.
 	LaunchAs *string `toml:"launch_as,omitempty"`
 
 	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
@@ -3063,8 +3173,19 @@ type DisplaySettings struct {
 	// IncludeCwdPrefix controls whether the terminal/pane title is prefixed
 	// with "[<cwd-basename>]" (e.g. "[my-project] feature work"). Default true
 	// preserves the historical format; set false to show only the session
-	// title. Consumed by the tmux set-titles-string builder.
+	// title. Consumed by the tmux set-titles-string builder. Ignored when
+	// TitleFormat is set.
 	IncludeCwdPrefix *bool `toml:"include_cwd_prefix,omitempty"`
+
+	// TitleFormat is a custom template for the outer terminal title. When
+	// non-empty it overrides the default "[<project>] <name>" format (and the
+	// IncludeCwdPrefix toggle). Supported placeholders, substituted live by
+	// tmux on rename/regroup:
+	//   {group}   — the agent-deck group/tree path (e.g. "projects/devops")
+	//   {project} — the working-directory basename
+	//   {name}    — the session title
+	// Example: "{group}/{name}" or "[{project}] {group} · {name}".
+	TitleFormat string `toml:"title_format,omitempty"`
 
 	// ShowSessionTimestamps appends a dim "Nm ago" badge to every session row.
 	// Default: false — opt-in to avoid crowding existing badges. See
@@ -3138,6 +3259,18 @@ func (d DisplaySettings) GetIncludeCwdPrefix() bool {
 		return true
 	}
 	return *d.IncludeCwdPrefix
+}
+
+// GetTitleFormat returns the trimmed custom terminal title template, or "" when
+// unset (in which case the default format and GetIncludeCwdPrefix apply).
+func (d DisplaySettings) GetTitleFormat() string {
+	return strings.TrimSpace(d.TitleFormat)
+}
+
+// ConfigureTmuxDisplay applies the shared CLI, TUI and headless-web title policy.
+func ConfigureTmuxDisplay(display DisplaySettings) {
+	tmux.SetHideCwdPrefixInTitle(!display.GetIncludeCwdPrefix())
+	tmux.SetTitleFormat(display.GetTitleFormat())
 }
 
 // Default user config (empty maps)
@@ -4538,8 +4671,13 @@ remove_orphans = true
 # Update settings
 # Controls automatic update checking and installation
 [updates]
-# Automatically install updates without prompting (default: false)
+# Offer to install an available update when the TUI starts (default: false)
 # auto_update = true
+# Install available updates unattended: from the TUI's periodic check and
+# from the "agent-deck update --install-timer" job (default: true)
+auto_install = true
+# Restart agent-deck in place once a newer binary is installed (default: true)
+auto_restart = true
 # Enable update checks on startup (default: true)
 check_enabled = true
 # How often to check for updates in hours (default: 24)

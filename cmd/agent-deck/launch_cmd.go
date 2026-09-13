@@ -68,6 +68,7 @@ func handleLaunch(profile string, args []string) {
 	// TELEGRAM_BOT_TOKEN spawns a duplicate `bun telegram` poller that
 	// races the conductor for the bot lock (Telegram 409, dropped messages).
 	inheritTelegramEnv := fs.Bool("inherit-telegram-env", false, "Keep TELEGRAM_* env vars in the child (#1133); off by default to prevent duplicate plugin pollers")
+	noIdentity := fs.Bool("no-identity", false, "Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -121,7 +122,14 @@ func handleLaunch(profile string, args []string) {
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
-	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
+	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)")
+	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
+	// Parity with `add` and the New Session dialog: sandbox, YOLO and the
+	// Claude Options rows.
+	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
+	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
+	claudeFlags := registerClaudeOptionFlags(fs)
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
 	// `agent-deck add --tmux-socket`: overrides `[tmux].socket_name` for
@@ -147,6 +155,9 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck launch . -c claude")
 		fmt.Println("  agent-deck launch . -c codex --model gpt-5.5")
+		fmt.Println("  agent-deck launch . -c claude --model claude-opus-5 --effort high")
+		fmt.Println("  agent-deck launch . -c claude --skip-permissions --chrome --continue   # the dialog's Claude Options rows")
+		fmt.Println("  agent-deck launch . -c gemini --yolo --sandbox")
 		fmt.Println("  agent-deck launch . -c gemini --model gemini-3.1-pro-preview")
 		fmt.Println("  agent-deck launch . -c claude -m \"Explain this codebase\"")
 		fmt.Println("  agent-deck launch /path/to/project -t \"My Agent\" -c claude -g work")
@@ -206,6 +217,11 @@ func handleLaunch(profile string, args []string) {
 	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, sessionCommandIsPassthrough, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
 	if cmdErr != nil {
 		out.Error(cmdErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	selectedAccount, accountErr := resolveCLIAccountSlot(*account, sessionCommandTool, sessionCommandResolved, sessionCommandIsPassthrough)
+	if accountErr != nil {
+		out.Error(accountErr.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	sessionParent := mergeFlags(*parent, *parentShort)
@@ -447,11 +463,8 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
-	// #2045: launch must preserve the same per-session named account slot as
-	// add. Start-time resolution already consumes Instance.Account.
-	if trimmed := strings.TrimSpace(*account); trimmed != "" {
-		newInstance.Account = trimmed
-	}
+	// Preserve the slot validated before any worktree setup effects.
+	newInstance.Account = selectedAccount
 
 	if parentInstance != nil {
 		newInstance.SetParentWithPath(parentInstance.ID, parentInstance.ProjectPath)
@@ -478,10 +491,19 @@ func handleLaunch(profile string, args []string) {
 		newInstance.InheritTelegramEnv = true
 	}
 
+	// Per-session opt-out of harness identity injection (identity_injection.go).
+	if *noIdentity {
+		newInstance.IdentityInjectionDisabled = true
+	}
+
 	if sessionCommandInput != "" {
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		newInstance.Command = sessionCommandResolved
 		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
+	}
+	if err := newInstance.ValidateAccount(); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
@@ -530,6 +552,10 @@ func handleLaunch(profile string, args []string) {
 			os.Exit(1)
 		}
 	}
+	if err := applyCLIEffortOverride(newInstance, *effort); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	if worktreePath != "" {
 		newInstance.WorktreePath = worktreePath
@@ -563,6 +589,18 @@ func handleLaunch(profile string, args []string) {
 		opts.SessionMode = "resume"
 		opts.ResumeSessionID = *resumeSession
 		_ = newInstance.SetClaudeOptions(opts)
+	}
+
+	if *sandbox {
+		newInstance.Sandbox = session.NewSandboxConfig(*sandboxImage)
+	}
+	if err := applyCLIYoloOverride(newInstance, *yoloMode); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := applyCLIClaudeOptionFlags(newInstance, claudeFlags); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// Materialize the declarative per-group/per-conductor skill+mcp loadout
@@ -636,6 +674,8 @@ func handleLaunch(profile string, args []string) {
 			"max_concurrent": maxC,
 		}
 		addModelInfoJSON(queuedJSON, newInstance.LaunchModelInfo())
+		addEffortJSON(queuedJSON, newInstance)
+		addClaudeOptionsJSON(queuedJSON, newInstance)
 		out.Success(fmt.Sprintf("Queued session: %s (group at cap %d)", newInstance.Title, maxC), queuedJSON)
 		return
 	}
@@ -738,6 +778,7 @@ func handleLaunch(profile string, args []string) {
 			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), sendRetryOptions{
 				maxRetries:                  8,
 				checkDelay:                  150 * time.Millisecond,
+				tool:                        newInstance.Tool,
 				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
 			}); err != nil {
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
@@ -792,6 +833,11 @@ func handleLaunch(profile string, args []string) {
 		jsonData["worktree_branch"] = wtBranch
 	}
 	addModelInfoJSON(jsonData, newInstance.LaunchModelInfo())
+	addEffortJSON(jsonData, newInstance)
+	addClaudeOptionsJSON(jsonData, newInstance)
+	if *sandbox {
+		jsonData["sandbox"] = true
+	}
 
 	msg := fmt.Sprintf("Launched session: %s", newInstance.Title)
 	if initialMessage != "" {

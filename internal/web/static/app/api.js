@@ -1,7 +1,9 @@
 // api.js -- Shared fetch helper for mutation API calls
-// Applies auth token from state.js and handles JSON parsing uniformly.
-import { authTokenSignal } from './state.js'
-import { addToast } from './Toast.js'
+// Applies the auth token from auth.js and handles JSON parsing uniformly.
+// Imports only leaf modules (auth.js, toasts.js) so state.js can import
+// apiFetch without forming an import cycle.
+import { authTokenSignal } from './auth.js'
+import { addToast } from './toasts.js'
 
 // authHeaders returns the headers every /api/ request must carry.
 //

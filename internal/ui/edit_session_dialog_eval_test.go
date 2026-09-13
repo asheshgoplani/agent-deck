@@ -64,7 +64,9 @@ func TestEval_EditSessionDialog_ShellToolHidesExtraArgs(t *testing.T) {
 	if strings.Contains(view, "Extra args") {
 		t.Errorf("shell-tool session should not render Extra args; rendered view:\n%s", view)
 	}
-	for _, required := range []string{"Title", "Tool"} {
+	// The tool row is labelled "Harness" since it doubles as the switch
+	// destination picker; a shell session must still render it.
+	for _, required := range []string{"Title", "Harness"} {
 		if !strings.Contains(view, required) {
 			t.Errorf("shell-tool session should still render %q; got:\n%s", required, view)
 		}

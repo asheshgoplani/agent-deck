@@ -159,9 +159,7 @@ func TestAttack_StickyVsClearContracts(t *testing.T) {
 	}
 
 	// (1) Sticky: full save with empty id + cleared=false preserves A.
-	stale := NewInstance("sticky-contract", "/tmp")
-	stale.ID = inst.ID
-	stale.Tool = "shell"
+	stale := inst
 	stale.GenericSessionID = ""
 	stale.genericSessionIDCleared = false
 	if err := storage.SaveWithGroups([]*Instance{stale}, NewGroupTreeWithGroups([]*Instance{stale}, nil)); err != nil {

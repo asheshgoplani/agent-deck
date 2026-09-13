@@ -8,15 +8,34 @@ actionable regression.
 
 ## Active PR gates (block merge)
 
-These run on pull requests and **must go green** before merge.
+The `main-protection` ruleset requires exactly these four status check
+contexts on the current tip of every PR. The context name is the **job id**
+(or the job's `name:` when one is set), so renaming a job here silently drops
+it from the gate; keep the ruleset and this table in lockstep.
 
-| Workflow | Trigger | What it gates |
+| Context | Workflow (job) | What it gates |
 |---|---|---|
-| `session-persistence.yml` | PR touching tmux/session lifecycle paths, or `workflow_dispatch` | The eight `TestPersistence_*` tests (race-detector on) plus `scripts/verify-session-persistence.sh` end-to-end. Covers the class of bug where a single SSH logout destroys every managed tmux session on Linux+systemd. See the "Session persistence: mandatory test coverage" section in the root `CLAUDE.md`. |
-| `lighthouse-ci.yml` | PR touching `internal/web/**`, `.lighthouserc.json`, `tests/lighthouse/**`, or the workflow itself; also re-runs on `labeled` / `unlabeled` so the override below is reactive | Two-layer Lighthouse gate against `agent-deck web --no-tui`: (1) absolute thresholds in `.lighthouserc.json` (`total-byte-weight`, `resource-summary:script:size`, `cumulative-layout-shift` as hard error; FCP/LCP/TBT/Speed Index as soft warn); (2) bundle-delta gate (`tests/lighthouse/compare-deltas.mjs`) that fails if a single PR grows `total-byte-weight` or `script:size` by more than 5% vs the base ref. Reinstated in v1.7.70 after the `--no-tui` flag fixed the bubbletea/headless-CI start failure that disabled the gate in v1.7.42. **Maintainer override on the delta gate**: apply the `lighthouse-regression-acknowledged` label (auto-created by the workflow) to acknowledge an intentional regression — the workflow re-runs on the `labeled` event and the check turns green. The absolute thresholds in layer (1) do not participate in the override. |
+| `intake` | `pr-intake.yml` (`intake`) | PR description format against the contract in `.github/INTAKE.md`: required headings, one AI-disclosure box, a real "What actually bothered you" section. Labels `intake:clean` or `needs-info` and posts one comment; it never closes or requests changes. The job itself exits green in both outcomes, so what the ruleset enforces today is that `intake` has reported on the current tip; a `needs-info` body is surfaced by label and comment for the human merger. |
+| `Full test suite (PR gate)` | `go-test.yml` (`full-test-suite`) | The exact release-gate test step (`gotestsum`, `-race ./...`) on every PR, no path filter, short-circuiting when the diff touches nothing Go-related. |
+| `golangci` | `golangci-lint.yml` (`golangci`) | `golangci-lint` over the whole module. |
+| `analyze` | `codeql.yml` (`analyze`) | CodeQL security analysis of the Go code. |
 
-Any other red on a PR is either a pre-release workflow (see below) or a bug —
+Any other red on a PR is either a pre-release workflow (see below) or a bug:
 file an issue and fix it, don't merge through it.
+
+## Runs on PRs but does not block
+
+These run on pull requests and are worth reading when red, but the ruleset does
+not require them. A path-filtered workflow cannot be a required check: when the
+PR touches none of its paths it never reports at all, and a required context
+that never reports blocks the merge forever (see the header comment in
+`go-test.yml`).
+
+| Workflow (job) | Trigger | Why it does not block |
+|---|---|---|
+| `session-persistence.yml` | PR touching tmux/session lifecycle paths, or `workflow_dispatch` | Path filter. Runs the eight `TestPersistence_*` tests (race-detector on) plus `scripts/verify-session-persistence.sh` end-to-end. Covers the class of bug where a single SSH logout destroys every managed tmux session on Linux+systemd. See the "Session persistence: mandatory test coverage" section in the root `CLAUDE.md`. The same tests also run inside `Full test suite (PR gate)`, which is required. |
+| `lighthouse-ci.yml` | PR touching `internal/web/**`, `.lighthouserc.json`, `tests/lighthouse/**`, or the workflow itself; also re-runs on `labeled` / `unlabeled` so the override below is reactive | Path filter. Two-layer Lighthouse gate against `agent-deck web --no-tui`: (1) absolute thresholds in `.lighthouserc.json` (`total-byte-weight`, `resource-summary:script:size`, `cumulative-layout-shift` as hard error; FCP/LCP/TBT/Speed Index as soft warn); (2) bundle-delta gate (`tests/lighthouse/compare-deltas.mjs`) that fails if a single PR grows `total-byte-weight` or `script:size` by more than 5% vs the base ref. Reinstated in v1.7.70 after the `--no-tui` flag fixed the bubbletea/headless-CI start failure that disabled the gate in v1.7.42. **Maintainer override on the delta gate**: apply the `lighthouse-regression-acknowledged` label (auto-created by the workflow) to acknowledge an intentional regression; the workflow re-runs on the `labeled` event and the check turns green. The absolute thresholds in layer (1) do not participate in the override. |
+| `go-test.yml` (`native-ssh`, `native-ssh-macos`) | Every PR, same trigger as `full-test-suite` | Not a ruleset context. Runs `scripts/ci-native-ssh.sh` against a real sshd on Linux and macOS and uploads the evidence artifact. Despite the "Required" in the job display name, only `Full test suite (PR gate)` from this workflow is in the ruleset. |
 
 ## Release automation (tag-triggered)
 
@@ -81,8 +100,9 @@ token), not that the release is bad.
 |---|---|---|
 | `issue-notify.yml` | issue opened | Posts issue context (title, body, labels, related issues, recent commits) to the configured ntfy topic so the conductor picks it up. |
 | `pr-notify.yml` | PR opened or marked ready-for-review | Posts PR context (files, commits, reviews, comments) to the same ntfy topic. |
+| `issue-intake.yml` | issue opened | Adds `triage` plus one advisory type label (`bug`, `feature`, `documentation`, `question`) from the same keyword heuristic as `issue-notify.yml`, only when the issue has no labels at all. Never removes labels, never comments. Needs no secret. (#2128) |
 
-Both expect `secrets.NTFY_TOPIC` to be set on the repo. Neither blocks
+The two notify workflows expect `secrets.NTFY_TOPIC` to be set on the repo. None of these block
 anything — they can fail silently without affecting merges.
 
 ## Schedule-only (alert-only, not a PR gate)
@@ -90,6 +110,7 @@ anything — they can fail silently without affecting merges.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `weekly-regression.yml` | Sunday 00:00 UTC cron, or `workflow_dispatch` | Runs the Playwright visual-regression suite (`tests/e2e/pw-visual-regression.config.ts`) and Lighthouse CI (`.lighthouserc.json`) against a freshly built `agent-deck web` server. On failure, opens or appends to a single `Weekly regression check: … [date]` issue labelled `regression,automated` (idempotent — no duplicate issues on back-to-back failures). **Alert-only** — does not block any PR. |
+| `needs-info-nudge.yml` | Daily 06:00 UTC cron, or `workflow_dispatch` | Day-10 step of the intake silence ladder (#2132). For each open PR labelled `needs-info` (and not `keep-open`) whose last activity (PR update, last commit, last author comment) is older than 10 days, posts one gentle reminder comment linking `.github/INTAKE.md`. Idempotent via the `<!-- needs-info-nudge -->` marker. **Comment-only**: no label changes, no closing. |
 
 > **Note on the v1.7.70 fix:** the bubbletea cancel-reader failure that broke
 > `agent-deck web` on headless CI (`error creating cancelreader: bubbletea:
@@ -111,7 +132,7 @@ fixtures.
 
 | Workflow | Status |
 |---|---|
-| `lighthouse-ci.yml` | **Reinstated in v1.7.70.** Listed under "Active PR gates" above. Thresholds re-baselined against the current webui bundle (`./tests/lighthouse/calibrate.sh` output) and the `--no-tui` flag is wired through `.lighthouserc.json`, `tests/lighthouse/*.sh`, and `weekly-regression.yml`. |
+| `lighthouse-ci.yml` | **Reinstated in v1.7.70.** Listed under "Runs on PRs but does not block" above. Thresholds re-baselined against the current webui bundle (`./tests/lighthouse/calibrate.sh` output) and the `--no-tui` flag is wired through `.lighthouserc.json`, `tests/lighthouse/*.sh`, and `weekly-regression.yml`. |
 | `visual-regression.yml` | **Still removed.** The server-start issue is fixed by `--no-tui`, but the screenshot baselines under `tests/e2e/visual/__screenshots__/` were never re-baselined and the suite still flakes on shared runners. The same matrix continues to run weekly via `weekly-regression.yml` (now reliably, since `--no-tui` lets the server bind). |
 
 Reach the repo at commits before v1.7.42 (`a4b7079^`) if you need the

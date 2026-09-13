@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 type rotatingMenuDataLoader struct {
@@ -196,6 +199,149 @@ func TestMenuEventsStreamPushesChanges(t *testing.T) {
 	if !strings.Contains(payload2, `"id":"sess-2"`) {
 		t.Fatalf("second payload missing sess-2: %s", payload2)
 	}
+}
+
+func TestExternalStorageChangeRefreshesMenuAPIAndSSE(t *testing.T) {
+	profile := fmt.Sprintf("external-refresh-%d", time.Now().UnixNano())
+	writeExternalMenuSession(t, profile, "sess-initial", "Initial")
+
+	menuData := NewMemoryMenuData(NewSessionDataService(profile))
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		Profile:    profile,
+		MenuData:   menuData,
+	})
+	testServer := httptest.NewServer(srv.Handler())
+	defer testServer.Close()
+
+	initialAPI := loadMenuSnapshotFromAPI(t, testServer.URL)
+	if !menuSnapshotHasSession(initialAPI, "sess-initial") {
+		t.Fatalf("initial API snapshot does not contain sess-initial: %+v", initialAPI.Items)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testServer.URL+"/events/menu", nil)
+	if err != nil {
+		t.Fatalf("new SSE request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("start SSE request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	_, initialPayload, err := readSSEEvent(reader)
+	if err != nil {
+		t.Fatalf("read initial SSE event: %v", err)
+	}
+	var initialSSE MenuSnapshot
+	if err := json.Unmarshal([]byte(initialPayload), &initialSSE); err != nil {
+		t.Fatalf("decode initial SSE event: %v", err)
+	}
+	if !menuSnapshotHasSession(&initialSSE, "sess-initial") {
+		t.Fatalf("initial SSE snapshot does not contain sess-initial: %+v", initialSSE.Items)
+	}
+
+	writeExternalMenuSession(t, profile, "sess-external", "External")
+
+	type sseResult struct {
+		snapshot MenuSnapshot
+		err      error
+	}
+	sseResultCh := make(chan sseResult, 1)
+	go func() {
+		_, payload, readErr := readSSEEvent(reader)
+		if readErr != nil {
+			sseResultCh <- sseResult{err: readErr}
+			return
+		}
+		var snapshot MenuSnapshot
+		if decodeErr := json.Unmarshal([]byte(payload), &snapshot); decodeErr != nil {
+			sseResultCh <- sseResult{err: decodeErr}
+			return
+		}
+		sseResultCh <- sseResult{snapshot: snapshot}
+	}()
+
+	apiDeadline := time.Now().Add(4 * time.Second)
+	var refreshedAPI *MenuSnapshot
+	for time.Now().Before(apiDeadline) {
+		candidate := loadMenuSnapshotFromAPI(t, testServer.URL)
+		if menuSnapshotHasSession(candidate, "sess-external") {
+			refreshedAPI = candidate
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if refreshedAPI == nil {
+		t.Error("API menu kept the stale snapshot after an external storage write")
+	}
+
+	result := <-sseResultCh
+	if result.err != nil {
+		t.Errorf("SSE menu did not emit the external storage change: %v", result.err)
+	} else if !menuSnapshotHasSession(&result.snapshot, "sess-external") {
+		t.Errorf("SSE menu emitted a snapshot without sess-external: %+v", result.snapshot.Items)
+	}
+}
+
+func writeExternalMenuSession(t *testing.T, profile, id, title string) {
+	t.Helper()
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("open external storage: %v", err)
+	}
+	defer func() {
+		if err := storage.Close(); err != nil {
+			t.Errorf("close external storage: %v", err)
+		}
+	}()
+
+	instances, groups, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("load external storage: %v", err)
+	}
+	inst := session.NewInstanceWithGroupAndTool(title, t.TempDir(), "external", "shell")
+	inst.ID = id
+	instances = append(instances, inst)
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	groupTree.CreateGroupPath("external")
+	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+		t.Fatalf("write external storage: %v", err)
+	}
+}
+
+func loadMenuSnapshotFromAPI(t *testing.T, serverURL string) *MenuSnapshot {
+	t.Helper()
+
+	resp, err := http.Get(serverURL + "/api/menu")
+	if err != nil {
+		t.Fatalf("load API menu: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("API menu status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var snapshot MenuSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode API menu: %v", err)
+	}
+	return &snapshot
+}
+
+func menuSnapshotHasSession(snapshot *MenuSnapshot, id string) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, item := range snapshot.Items {
+		if item.Session != nil && item.Session.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSSEReconnectSnapshot(t *testing.T) {

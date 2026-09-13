@@ -1,0 +1,50 @@
+                                                                                                    
+                                                                                                    
+       ╭────────────────────────────────────────────────────────────────────────────────────╮       
+       │                                                                                    │       
+       │                                                                                    │       
+       │    New Session                                                                     │       
+       │                                                                                    │       
+       │      in group: default                                                             │       
+       │                                                                                    │       
+       │      Name:                                                                         │       
+       │      > demo                                                                        │       
+       │                                                                                    │       
+       │      Command:                                                                      │       
+       │                                                                                    │       
+       │      shell    claude    gemini    opencode    codex    pi    copilot    crush      │       
+       │      cursor agent    hermes    deepseek                                            │       
+       │                                                                                    │       
+       │      Model ID:                                                                     │       
+       │      > tool default (↓ to browse)                                                  │       
+       │      Examples: claude-opus-5, claude-sonnet-5, claude-haiku-4-5                    │       
+       │                                                                                    │       
+       │      Reasoning effort: Tool default                                                │       
+       │                                                                                    │       
+       │      Path:                                                                         │       
+       │      > /home/user/project                                                          │       
+       │                                                                                    │       
+       │      [ ] Create in worktree                                                        │       
+       │      [ ] Run in Docker sandbox                                                     │       
+       │                                                                                    │       
+       │      [ ] Multi-repo mode                                                           │       
+       │                                                                                    │       
+       │    ─ Claude Options ─                                                              │       
+       │      Session: (•) New  ( ) Continue  ( ) Resume                                    │       
+       │      [ ] Skip permissions                                                          │       
+       │      [ ] Auto mode                                                                 │       
+       │      [ ] Chrome mode                                                               │       
+       │      [ ] Teammate mode                                                             │       
+       │        Extra args: > e.g. --agent reviewer                                         │       
+       │        Start query: > initial prompt (not split on spaces)                         │       
+       │      ▶ Account:   inherit    personal    work                                      │       
+       │                                                                                    │       
+       │      [ Create session ]                                                            │       
+       │                                                                                    │       
+       │                                                                                    │       
+       │    Space/y toggle │ Tab/↑↓ navigate │ Enter next │ ^S create │ Esc cancel          │       
+       │                                                                                    │       
+       │                                                                                    │       
+       ╰────────────────────────────────────────────────────────────────────────────────────╯       
+                                                                                                    
+                                                                                                    

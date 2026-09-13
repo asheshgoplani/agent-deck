@@ -39,9 +39,7 @@ func TestStress_StaleFullSavePreservesStickyGenericID(t *testing.T) {
 	}
 
 	// Stale full-table save: Instance still has empty GenericSessionID.
-	stale := NewInstance("sticky-stale", "/tmp/proj")
-	stale.ID = inst.ID
-	stale.Tool = "shell"
+	stale := inst
 	stale.Color = "#00ff00" // unrelated field change
 	stale.GenericSessionID = ""
 	stale.GenericDetectedAt = time.Time{}
@@ -83,10 +81,8 @@ func TestStress_ExplicitClearViaBindingThenLoad(t *testing.T) {
 	}
 
 	// Stale save after clear must not resurrect: DB keys are gone, so sticky
-	// has nothing to preserve. New Instance (do not copy *inst — it holds a mutex).
-	stale := NewInstance(inst.Title, inst.ProjectPath)
-	stale.ID = inst.ID
-	stale.Tool = inst.Tool
+	// has nothing to preserve. Retain the genuine snapshot from before the clear.
+	stale := inst
 	if err := storage.SaveWithGroups([]*Instance{stale}, NewGroupTreeWithGroups([]*Instance{stale}, nil)); err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +269,8 @@ func TestStress_DetectedAtZeroVsNonZero(t *testing.T) {
 		t.Fatalf("detected_at %v outside [%v,%v]", at, before, after)
 	}
 
+	// Explicit edits start from the binding just read, not the older snapshot.
+	inst = loaded[0]
 	// Explicit non-zero stamp round-trips via full Save path.
 	want := time.Unix(1_700_000_777, 0).UTC()
 	inst.GenericSessionID = "id-explicit-at"
