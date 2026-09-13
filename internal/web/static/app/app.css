@@ -30,7 +30,7 @@ button { font: inherit; color: inherit; }
     "top top top"
     "side main rail"
     "foot foot foot";
-  height: 100vh;
+  height: var(--app-height, 100dvh);
 }
 body[data-rail="hidden"] .app { grid-template-columns: var(--sidebar-w) 1fr 0; }
 body[data-rail="hidden"] .rightrail { display: none; }
@@ -615,7 +615,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
   box-shadow: 0 40px 100px -20px rgba(0,0,0,0.6), 0 0 0 1px var(--accent-soft);
   display: flex; flex-direction: column;
-  max-height: calc(100vh - 80px);
+  max-height: calc(var(--app-height, 100dvh) - 80px);
   overflow: hidden;
 }
 .dialog .dh { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
