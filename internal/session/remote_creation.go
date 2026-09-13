@@ -109,11 +109,11 @@ func (c *RemoteCreationCatalog) ValidateArgs(args []string) error {
 			return fmt.Errorf("unsupported remote creation field --%s; update the remote", name)
 		}
 		if field.TakesValue && !inline {
-			if i+1 == len(args) {
+			if i+1 >= len(args) {
 				return fmt.Errorf("remote creation field --%s needs a value", name)
 			}
+			value = args[i+1]
 			i++
-			value = args[i]
 			if strings.ContainsRune(value, 0) {
 				return fmt.Errorf("remote creation argument contains NUL")
 			}
