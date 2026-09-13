@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -188,5 +190,119 @@ func TestCreationCLIHelpAndCatalog(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(home, "never-created")); !os.IsNotExist(err) {
 			t.Fatalf("invalid args created directory: %v, %v", args, err)
 		}
+	}
+}
+
+func TestCreationFreshRegistryReadOnly(t *testing.T) {
+	profile := "creation-fresh-registry"
+	dbPath, err := session.GetDBPathForProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := buildCreationCatalog(profile)
+	if err != nil {
+		t.Fatalf("blank catalog: %v", err)
+	}
+	if len(catalog.Conductors) != 0 || catalog.Version != 1 {
+		t.Fatalf("unexpected catalog: %+v", catalog)
+	}
+	var group string
+	if err := validateStartupQueryCapacity(profile, "work", "", t.TempDir(), true, false, true, &group); err != nil {
+		t.Fatalf("blank query capacity: %v", err)
+	}
+	if group != "work" {
+		t.Fatalf("resolved group %q", group)
+	}
+	if err := validateStartupQueryCapacity(profile, "work", "missing-parent", t.TempDir(), false, false, true, nil); err == nil {
+		t.Fatal("missing parent accepted in fresh registry")
+	}
+	info, err := os.Stat(dbPath)
+	if err != nil || info.Size() != 0 {
+		t.Fatalf("read-only discovery modified blank database: %v %v", info, err)
+	}
+
+	// Partial schemas must not be mistaken for a new registry, but a launch
+	// explicitly opting out of parenting and capacity has no reason to read it.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE sqliteX (id INTEGER)"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildCreationCatalog(profile); err == nil {
+		t.Fatal("partial schema accepted as fresh catalog")
+	}
+	if err := validateStartupQueryCapacity(profile, "work", "", t.TempDir(), true, false, false, nil); err != nil {
+		t.Fatalf("irrelevant read on no-parent launch: %v", err)
+	}
+}
+
+func TestCreationRegistryReadsLiveWAL(t *testing.T) {
+	profile := "creation-live-wal"
+	writer, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	db := writer.GetDB().DB()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA wal_autocheckpoint=0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		t.Fatal(err)
+	}
+	inst := session.NewInstanceWithGroup("WAL conductor", t.TempDir(), "wal-group")
+	inst.IsConductor = true
+	inst.Status = session.StatusRunning
+	tree := session.NewGroupTreeWithGroups([]*session.Instance{inst}, []*session.GroupData{{Path: "wal-group", Name: "wal-group", MaxConcurrent: 1}})
+	if err := writer.SaveWithGroups([]*session.Instance{inst}, tree); err != nil {
+		t.Fatal(err)
+	}
+	immutable, err := session.NewReadOnlyStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := immutable.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("fixture checkpointed unexpectedly: %d", len(stale))
+	}
+	if err := immutable.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := writer.GetDB().LoadRegistrySnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := buildCreationCatalog(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Conductors) != 1 || catalog.Conductors[0].ID != inst.ID {
+		t.Fatalf("catalog missed WAL conductor: %+v", catalog.Conductors)
+	}
+	if err := validateStartupQueryCapacity(profile, "wal-group", "", inst.ProjectPath, true, false, true, nil); err == nil || !strings.Contains(err.Error(), "cannot be queued") {
+		t.Fatalf("capacity missed WAL group/running row: %v", err)
+	}
+	after, err := writer.GetDB().LoadRegistrySnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("catalog/capacity modified registry rows")
 	}
 }

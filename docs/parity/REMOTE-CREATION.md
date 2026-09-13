@@ -7,6 +7,11 @@ host's tool kinds, model suggestions, configured Claude account names, MCP
 names, conductor identities, and option defaults. It contains no credentials
 or configuration directories.
 
+Catalog and capacity checks use a WAL-aware read-only registry snapshot, so
+uncheckpointed conductor and group changes are visible. Empty registries are
+accepted without initializing tables; partial schemas fail visibly. Existing
+immutable evidence readers keep their separate filesystem-preservation contract.
+
 Both the public remote CLI and New Session dialog validate requested fields
 against this response. An old binary, unknown catalog version, unknown option,
 or malformed field returns a visible error before creation. Project and

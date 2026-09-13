@@ -100,21 +100,7 @@ func buildCreationCatalog(profile string) (*session.RemoteCreationCatalog, error
 		catalog.MCPs = append(catalog.MCPs, name)
 	}
 	sort.Strings(catalog.MCPs)
-	dbPath, err := session.GetDBPathForProfile(profile)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return catalog, nil
-	} else if err != nil {
-		return nil, err
-	}
-	storage, err := session.NewReadOnlyStorageWithProfile(profile)
-	if err != nil {
-		return nil, err
-	}
-	defer storage.Close()
-	instances, err := storage.Load()
+	instances, _, err := readCreationRegistry(profile)
 	if err != nil {
 		return nil, err
 	}
@@ -305,25 +291,10 @@ func validateCreationOptions(tool, account, model, effort string, yolo bool, fla
 }
 
 func validateStartupQueryCapacity(profile, group, parent, path string, noParent, inheritGroup, checkCapacity bool, resolvedGroup *string) error {
-	resolved, err := session.ResolveProfileForStorage(profile)
-	if err != nil {
-		return err
-	}
-	dbPath, err := session.GetDBPathForProfile(resolved)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+	if !checkCapacity && parent == "" && noParent {
 		return nil
-	} else if err != nil {
-		return err
 	}
-	storage, err := session.NewReadOnlyStorageWithProfile(resolved)
-	if err != nil {
-		return err
-	}
-	defer storage.Close()
-	instances, groups, err := storage.LoadWithGroups()
+	instances, groups, err := readCreationRegistry(profile)
 	if err != nil {
 		return err
 	}
@@ -448,4 +419,36 @@ func validateMultiRepoCreation(primary string, additional []string, branch strin
 		}
 	}
 	return nil
+}
+
+// readCreationRegistry never initializes or migrates the owner database. A
+// genuinely blank SQLite file is a fresh registry, whereas partial schemas
+// and unreadable databases remain visible failures.
+func readCreationRegistry(profile string) ([]*session.Instance, []*session.GroupData, error) {
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, nil, err
+	}
+	dbPath, err := session.GetDBPathForProfile(resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return nil, nil, nil
+	} else if err != nil {
+		return nil, nil, err
+	}
+	storage, err := session.NewLiveReadOnlyStorageWithProfile(resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer storage.Close()
+	var tables int
+	if err := storage.GetDB().DB().QueryRow("SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT GLOB 'sqlite_*'").Scan(&tables); err != nil {
+		return nil, nil, err
+	}
+	if tables == 0 {
+		return nil, nil, nil
+	}
+	return storage.LoadWithGroups()
 }
