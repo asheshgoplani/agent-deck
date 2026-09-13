@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.9] - 2026-09-13
+
+Stability release: sending to a Claude pane never interrupts it, a future-dated spawn stamp no longer blocks Start, and the macOS sandbox owns its own Claude credential.
+
+### Fixed
+
+- `session send` no longer emits interrupt sequences (Ctrl-C) into a Claude composer when concurrent sends race; drafts are preserved and a send that cannot capture the pane state is refused with a reason instead of interrupting. Two racing sends could previously exit the Claude session. Carries the fix from #2108 rebased onto main with a concurrent regression test ([#2263](https://github.com/asheshgoplani/agent-deck/pull/2263), fixes #2104).
+- Sibling spawn detection is gated on a stamp generation counter instead of wall-clock order, so a spawn stamp dated in the future after a backwards clock correction no longer blocks or loops `session start`; a genuine concurrent sibling across a clock step is still recognised, and the anomaly is logged once per stamp ([#2261](https://github.com/asheshgoplani/agent-deck/pull/2261), closes #2220).
+- macOS Docker sandbox sessions no longer copy the Claude token out of the Keychain by default; the sandbox obtains its own credential through an in-sandbox `/login` once and owns it from then on, which stops the sandbox and the host from refreshing the same token against each other. `[docker] seed_credentials_from_keychain = true` opts back into a one-time seed with a warning that it forks the refresh chain; a seed can never be repeated silently ([#2262](https://github.com/asheshgoplani/agent-deck/pull/2262), closes #2153).
+
+
 ### Fixed
 
 - macOS Docker sandboxes no longer copy the host's Claude OAuth token out of the Keychain. Every copy of the single-use refresh token forked the host's refresh chain, so the host was logged out (`/login` prompt) after a sandbox refreshed. The sandbox now keeps a login of its own: run `/login` once inside the first sandbox session (or pass `CLAUDE_CODE_OAUTH_TOKEN` via `[docker] environment`); `~/.claude/sandbox/.credentials.json` is then canonical, never overwritten on session start and no longer deleted on teardown. The old behaviour is available as `[docker] seed_credentials_from_keychain = true`, which seeds a new sandbox exactly once and warns that this forks the host chain ([#2153](https://github.com/asheshgoplani/agent-deck/issues/2153)).
