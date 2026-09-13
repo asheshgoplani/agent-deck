@@ -115,7 +115,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
-| `agent-deck session output <name>` | Get last response |
+| `agent-deck session output <name>` | Get bounded, ANSI-clean last response (JSON/quiet/copy preserve full source) |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
