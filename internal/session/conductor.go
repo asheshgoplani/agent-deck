@@ -91,6 +91,11 @@ type ConductorSettings struct {
 	// Discord defines Discord bot integration settings
 	Discord DiscordSettings `toml:"discord,omitempty"`
 
+	// GitHubWatcher configures the opt-in GitHub event watcher that lives in
+	// conductor/gh-watcher/ (issue #2134). The Go binary only parses this table;
+	// conductor/setup.sh reads it to decide whether to install the poller unit.
+	GitHubWatcher GitHubWatcherSettings `toml:"github_watcher,omitempty"`
+
 	// Dir overrides the base conductor directory. Empty = default
 	// (<data-dir>/conductor with legacy ~/.agent-deck/conductor fallback).
 	// Tilde and $VAR are expanded.
@@ -105,6 +110,34 @@ type ConductorSettings struct {
 	// 'conductor migrate-dir'). The bridge daemon similarly freezes
 	// AGENT_DECK_CONDUCTOR_DIR at install time.
 	Dir string `toml:"dir,omitempty"`
+}
+
+// GitHubWatcherMode values accepted by [conductor.github_watcher].mode.
+const (
+	// GitHubWatcherModeLog records classified events without sending anything.
+	GitHubWatcherModeLog = "log"
+	// GitHubWatcherModeDispatch sends the lean [github:...] trigger to the conductor.
+	GitHubWatcherModeDispatch = "dispatch"
+)
+
+// GitHubWatcherSettings is the [conductor.github_watcher] table. Both keys are
+// optional: Enabled defaults to false and Mode defaults to "log", so a config
+// without the table changes nothing.
+type GitHubWatcherSettings struct {
+	// Enabled turns the poller on. conductor/setup.sh installs the launchd or
+	// systemd unit only when this is true.
+	Enabled bool `toml:"enabled,omitempty"`
+
+	// Mode is "log" (default) or "dispatch". Use EffectiveMode to read it.
+	Mode string `toml:"mode,omitempty"`
+}
+
+// EffectiveMode returns Mode with the "log" default applied.
+func (g GitHubWatcherSettings) EffectiveMode() string {
+	if g.Mode == "" {
+		return GitHubWatcherModeLog
+	}
+	return g.Mode
 }
 
 // ConductorID is a Telegram/Discord bot identifier used by the conductor

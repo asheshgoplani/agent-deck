@@ -248,6 +248,22 @@ Four things matter, in order:
    conductor is worse than useless — nobody notices. Log every successful
    send, alert if the send count drops to zero for an hour.
 
+### Shipped polling watcher: `conductor/gh-watcher/`
+
+The GitHub *events* poller ships in the repo as an opt-in daemon. It polls
+`/repos/<owner>/<repo>/events` with an ETag every 30 s, dedupes in SQLite,
+paces delivery, collapses bursts above a high-water mark into one summary,
+and writes a `last-poll` liveness file the heartbeat can check. Enable it with
+
+```toml
+[conductor.github_watcher]
+enabled = true
+mode = "log"      # "dispatch" once the log looks right
+```
+
+and rerun `conductor/setup.sh`. Full description, trigger format, modes and
+liveness: [`conductor/gh-watcher/README.md`](../conductor/gh-watcher/README.md).
+
 ### Two reference watchers (informal, maintainer-side)
 
 These do not ship in the repo because they're tied to one user's
