@@ -137,17 +137,6 @@ func assertGolden(t *testing.T, name, got string) {
 	}
 }
 
-func editFieldCursor(t *testing.T, d *EditSessionDialog, key string) int {
-	t.Helper()
-	for _, f := range d.fields {
-		if f.key == key {
-			return f.pillCursor
-		}
-	}
-	t.Fatalf("field %q not shown", key)
-	return -1
-}
-
 func selectEditPill(t *testing.T, d *EditSessionDialog, key, value string) {
 	t.Helper()
 	for i := range d.fields {

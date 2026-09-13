@@ -119,11 +119,12 @@ func validateRemoteSwitchArgs(verb string, args []string) error {
 			continue
 		}
 		if !inline {
-			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+			rest := args[i+1:]
+			if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
 				return fmt.Errorf("option --%s needs a value", name)
 			}
+			value = rest[0]
 			i++
-			value = args[i]
 		}
 		if !remoteSwitchValueOK(name, value) {
 			return fmt.Errorf("invalid value %q for --%s", value, name)
