@@ -4856,7 +4856,7 @@ func (i *Instance) Start() error {
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
-	beforeLock := nowFn()
+	beforeLock := spawnGenerationSnapshot(i.ID)
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
 		return lockErr
@@ -5174,7 +5174,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
-	beforeLock := nowFn()
+	beforeLock := spawnGenerationSnapshot(i.ID)
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
 		return lockErr
@@ -8738,7 +8738,8 @@ func (i *Instance) killInternal(sync bool) error {
 // in-process; multiple `agent-deck session start` CLI invocations
 // cross-process) cannot each race to recreate a tmux session for the
 // same instance. A legitimate manual restart still proceeds because the
-// stamp from any prior spawn pre-dates the new caller's beforeLock.
+// stamp generation from any prior spawn is already in the new caller's
+// pre-lock snapshot.
 func (i *Instance) Restart() error {
 	return i.restart(nil)
 }
@@ -8759,7 +8760,7 @@ func (i *Instance) restart(env map[string]string) error {
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
-	beforeLock := nowFn()
+	beforeLock := spawnGenerationSnapshot(i.ID)
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
 		return lockErr

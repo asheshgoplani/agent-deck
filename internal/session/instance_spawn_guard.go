@@ -35,8 +35,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -55,10 +56,10 @@ var agentDeckDirOverride string
 // legitimate manual restart of a long-running session must proceed even
 // though tmux holds a live AGENTDECK_INSTANCE_ID-matching session; only
 // the *storm* shape — multiple spawns racing while one is in-flight —
-// should be suppressed. Run() captures a timestamp before acquiring the
-// lock and consults the per-instance spawn-stamp after acquisition. If
-// a sibling completed during our wait (stamp mtime > our pre-lock time),
-// we skip; otherwise we run Spawn and stamp on success.
+// should be suppressed. Run() snapshots the per-instance spawn-stamp
+// generation before acquiring the lock and re-reads it after acquisition.
+// If a sibling completed during our wait (generation advanced past our
+// snapshot), we skip; otherwise we run Spawn and stamp on success.
 type SpawnAttempt struct {
 	// InstanceID is the lock-key partition. Different instances do not
 	// serialize against each other.
@@ -84,7 +85,7 @@ func (a SpawnAttempt) Run() error {
 	if a.Spawn == nil {
 		return fmt.Errorf("SpawnAttempt: nil Spawn func")
 	}
-	beforeLock := nowFn()
+	beforeLock := spawnGenerationSnapshot(a.InstanceID)
 	release, err := acquireInstanceSpawnLock(a.InstanceID)
 	if err != nil {
 		return err
@@ -108,96 +109,115 @@ func (a SpawnAttempt) Run() error {
 // nowFn is a test seam so tests can pin time without sleeping.
 var nowFn = time.Now
 
-// Issue #2220: bounds on how far a stamp may be trusted.
+// Issue #2220: the sibling-spawn gate is a generation counter, not a clock.
 //
-// A sibling can only have stamped between our beforeLock and now, so a
-// stamp is evidence of a sibling spawn only when its mtime lies in
-// [ref, now]. Two bounds keep a bad stamp from turning the guard into a
-// permanent no-op:
+// The stamp used to carry its only signal in its mtime, compared against
+// the caller's pre-lock wall-clock time. That breaks in both directions
+// when the clock steps: a stamp written before a backwards correction sat
+// in the future and suppressed every later Start()/Restart() (the silent
+// no-op from #2220), and any clamp or skew tolerance that ignores future
+// stamps discards a genuine sibling that stamped just before the step.
 //
-//   - instanceSpawnStampSkewTolerance: filesystem timestamp rounding and
-//     coarse clocks can put a just-written stamp a hair ahead of the
-//     wall clock; up to this far ahead the mtime is clamped to now. Past
-//     it the stamp cannot have been written by a sibling in this process
-//     lifetime — it is the field shape from #2220 (stamp written before a
-//     backwards clock correction) and is ignored, with one warning per
-//     process so the silent no-op can no longer hide.
-//   - instanceSpawnStampFreshness: a stamp older than the lock's stale
-//     TTL predates any wait we could have had on the lock, so it is not
-//     evidence of a sibling either. This bounds the suppression window
-//     to the same budget as the lock itself.
-const (
-	instanceSpawnStampSkewTolerance = 2 * time.Second
-	instanceSpawnStampFreshness     = instanceSpawnLockLegacyStaleTTL
-)
+// Instead the stamp body holds a monotonically increasing generation.
+// A caller snapshots it before waiting for the lock and compares after
+// acquisition: a higher generation means a sibling spawned during the
+// wait, regardless of what the wall clock did in between. Suppression is
+// therefore bounded by the lock wait itself. The mtime is still set to
+// now for `ls` triage; a future-dated one is reported once per stamp as
+// a clock anomaly and heals on the next successful spawn.
+//
+// A missing, empty (pre-#2220) or unparseable stamp reads as generation 0.
 
-// spawnStampClockAnomalyLogFn is a test seam for the once-per-process
-// clock anomaly warning.
+// instanceSpawnStampSkewTolerance is how far ahead of now a stamp's mtime
+// may sit before it is reported as a clock anomaly. It only gates the
+// warning — the spawn decision never looks at the mtime.
+const instanceSpawnStampSkewTolerance = 2 * time.Second
+
+// spawnStampClockAnomalyLogFn is a test seam for the clock anomaly warning.
 var spawnStampClockAnomalyLogFn = func(instanceID string, mtime, now time.Time) {
 	slog.Warn("spawn_stamp_future_dated",
 		slog.String("instance", instanceID),
 		slog.Time("stamp_mtime", mtime),
 		slog.Time("now", now),
-		slog.String("hint", "clock was corrected backwards after a spawn; stamp ignored"),
+		slog.String("hint", "clock was corrected backwards after a spawn; stamp mtime ignored"),
 	)
 }
 
-var spawnStampClockAnomalyLogged atomic.Bool
+// spawnStampClockAnomalySeen dedupes the warning per stamp (path + mtime),
+// so each anomalous stamp is reported once and a re-stamped file that is
+// future-dated again is reported again.
+var spawnStampClockAnomalySeen sync.Map
 
-// logSpawnStampClockAnomalyOnce emits the future-dated stamp warning the
-// first time it is hit in this process and stays silent afterwards.
-func logSpawnStampClockAnomalyOnce(instanceID string, mtime, now time.Time) {
-	if spawnStampClockAnomalyLogged.CompareAndSwap(false, true) {
+func noteSpawnStampClockAnomaly(instanceID, path string, mtime, now time.Time) {
+	if mtime.Sub(now) <= instanceSpawnStampSkewTolerance {
+		return
+	}
+	key := fmt.Sprintf("%s|%d", path, mtime.UnixNano())
+	if _, seen := spawnStampClockAnomalySeen.LoadOrStore(key, struct{}{}); !seen {
 		spawnStampClockAnomalyLogFn(instanceID, mtime, now)
 	}
 }
 
-// spawnedSince reports whether the per-instance spawn stamp's mtime is
-// newer than the given reference, i.e. a sibling spawned while we waited
-// for the lock. A missing stamp = false (no sibling has spawned yet for
-// this instance ID). A stamp outside the [ref, now] window — future-dated
-// beyond the skew tolerance, or older than the freshness window — is
-// never evidence of a sibling (#2220).
-func spawnedSince(instanceID string, ref time.Time) bool {
+// spawnGenerationSnapshot returns the stamp's current generation for use as
+// the pre-lock reference. Callers take it before acquireInstanceSpawnLock.
+func spawnGenerationSnapshot(instanceID string) uint64 {
+	gen, _ := readSpawnGeneration(instanceID)
+	return gen
+}
+
+// spawnedSince reports whether the per-instance spawn stamp's generation
+// has advanced past the given pre-lock snapshot, i.e. a sibling spawned
+// while we waited for the lock. A missing stamp = false (no sibling has
+// spawned yet for this instance ID).
+func spawnedSince(instanceID string, before uint64) bool {
+	gen, _ := readSpawnGeneration(instanceID)
+	return gen > before
+}
+
+// readSpawnGeneration reads the stamp body. Missing, empty or unparseable
+// content is generation 0. It also reports a future-dated mtime while it
+// has the stat in hand.
+func readSpawnGeneration(instanceID string) (uint64, error) {
 	stamp, err := instanceSpawnStampPath(instanceID)
 	if err != nil {
-		return false
+		return 0, err
 	}
 	info, err := os.Stat(stamp)
 	if err != nil {
-		return false
+		return 0, err
 	}
-	mtime := info.ModTime()
-	now := nowFn()
-	switch {
-	case mtime.Sub(now) > instanceSpawnStampSkewTolerance:
-		logSpawnStampClockAnomalyOnce(instanceID, mtime, now)
-		return false
-	case mtime.After(now):
-		mtime = now
+	noteSpawnStampClockAnomaly(instanceID, stamp, info.ModTime(), nowFn())
+	data, err := os.ReadFile(stamp)
+	if err != nil {
+		return 0, err
 	}
-	if now.Sub(mtime) > instanceSpawnStampFreshness {
-		return false
+	gen, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, nil
 	}
-	return mtime.After(ref)
+	return gen, nil
 }
 
-// recordInstanceSpawn updates the stamp's mtime to now. Best-effort:
-// stamp errors are silent; they just turn the gate into a no-op for
-// the next storm sibling (no worse than current behavior).
+// recordInstanceSpawn bumps the stamp's generation and sets its mtime to
+// now. Best-effort: stamp errors are silent; they just turn the gate into
+// a no-op for the next storm sibling (no worse than current behavior).
+// The body is written to a sibling temp file and renamed so a pre-lock
+// snapshot never observes a half-written generation.
 func recordInstanceSpawn(instanceID string) {
 	stamp, err := instanceSpawnStampPath(instanceID)
 	if err != nil {
 		return
 	}
-	now := nowFn()
-	// O_CREATE+TRUNC so the stamp file exists with a fresh mtime even on
-	// first use. We don't write anything — only ModTime matters.
-	f, err := os.OpenFile(stamp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
+	gen, _ := readSpawnGeneration(instanceID)
+	tmp := stamp + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(gen+1, 10)), 0o600); err != nil {
 		return
 	}
-	_ = f.Close()
+	if err := os.Rename(tmp, stamp); err != nil {
+		_ = os.Remove(tmp)
+		return
+	}
+	now := nowFn()
 	_ = os.Chtimes(stamp, now, now)
 }
 
