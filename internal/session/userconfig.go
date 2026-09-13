@@ -3011,6 +3011,12 @@ type DockerSettings struct {
 
 	// AutoCleanup removes sandbox containers on session kill (default: true).
 	AutoCleanup *bool `toml:"auto_cleanup,omitempty"`
+
+	// SeedCredentialsFromKeychain copies the macOS Keychain Claude token into a
+	// sandbox that has no credential file yet (default: false). Off, the sandbox
+	// logs in on its own; on, the one-time copy forks the host's OAuth refresh
+	// chain once (#2153).
+	SeedCredentialsFromKeychain bool `toml:"seed_credentials_from_keychain,omitempty"`
 }
 
 // GetAutoCleanup returns whether to auto-remove sandbox containers, defaulting to true.

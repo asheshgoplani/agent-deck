@@ -26,12 +26,14 @@ var keychainReader = readKeychainSecret
 // Single-owner rule (#2153): an OAuth refresh token is single-use and rotates
 // on every refresh, so every copy of it starts a competing refresh chain and
 // whichever side refreshes first invalidates the other. The Keychain entry is
-// owned by the host's Claude; the sandbox file is owned by the containers. The
-// Keychain is therefore read exactly once, to seed a sandbox that has no
-// credential of its own. From then on the sandbox file is canonical: it is
-// never overwritten by a later sync and never removed on session teardown.
-// The write is O_EXCL so a start that races another one cannot replace the
-// file the winner now owns. An absent Keychain entry is not an error.
+// owned by the host's Claude; the sandbox file is owned by the containers and
+// is normally created by a /login inside the sandbox. This opt-in path copies
+// the Keychain entry exactly once, to seed a sandbox that has no credential of
+// its own, and that single copy still forks the host chain once. From then on
+// the sandbox file is canonical: it is never overwritten by a later sync and
+// never removed on session teardown. The write is O_EXCL so a start that races
+// another one cannot replace the file the winner now owns. An absent Keychain
+// entry is not an error.
 func extractKeychainCredential(service string, destPath string) error {
 	if _, err := os.Stat(destPath); err == nil {
 		return nil // Sandbox already owns a refresh chain; do not fork it.
@@ -43,6 +45,7 @@ func extractKeychainCredential(service string, destPath string) error {
 	if secret == "" {
 		return nil // No Keychain entry (e.g. API-key auth); nothing to seed.
 	}
+	slog.Warn("Seeding sandbox credential from the macOS Keychain; this forks the host OAuth refresh chain once (#2153). Prefer /login inside the sandbox.", "path", destPath)
 	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -62,11 +65,29 @@ func extractKeychainCredential(service string, destPath string) error {
 	return nil
 }
 
+// SyncOption tunes a host-to-sandbox sync.
+type SyncOption func(*syncOptions)
+
+type syncOptions struct {
+	seedFromKeychain bool
+}
+
+// WithKeychainSeed opts in to a one-time copy of the macOS Keychain credential
+// into a sandbox that has none. Off by default: every copy of an OAuth refresh
+// token forks the host's refresh chain (#2153).
+func WithKeychainSeed() SyncOption {
+	return func(o *syncOptions) { o.seedFromKeychain = true }
+}
+
 // SyncAgentConfig syncs host tool config into a shared sandbox directory.
 // Seed files use write-once semantics: they are written only if they don't
 // already exist, preserving any state accumulated by the container.
 // Top-level files from the host dir are always copied (overwriting previous copies).
-func SyncAgentConfig(homeDir string, mount AgentConfigMount) (string, error) {
+func SyncAgentConfig(homeDir string, mount AgentConfigMount, opts ...SyncOption) (string, error) {
+	var o syncOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	hostDir := filepath.Join(homeDir, mount.hostRel)
 	sandboxDir := SandboxDir(homeDir, mount.hostRel)
 
@@ -160,11 +181,17 @@ func SyncAgentConfig(homeDir string, mount AgentConfigMount) (string, error) {
 		}
 	}
 
-	// Extract macOS Keychain credential if configured.
+	// The sandbox owns its own credential (#2153). Seeding it from the macOS
+	// Keychain is opt-in because the copy forks the host's OAuth refresh chain.
 	if mount.keychainCredential != nil {
 		dest := filepath.Join(sandboxDir, mount.keychainCredential.filename)
-		if err := extractKeychainCredential(mount.keychainCredential.service, dest); err != nil {
-			slog.Warn("Extracting keychain credential", "service", mount.keychainCredential.service, "error", err)
+		if o.seedFromKeychain {
+			if err := extractKeychainCredential(mount.keychainCredential.service, dest); err != nil {
+				slog.Warn("Extracting keychain credential", "service", mount.keychainCredential.service, "error", err)
+			}
+		}
+		if _, err := os.Stat(dest); os.IsNotExist(err) {
+			slog.Info("Sandbox has no credential file yet; run /login once inside the sandbox session, or pass CLAUDE_CODE_OAUTH_TOKEN via [docker] environment", "path", dest)
 		}
 	}
 
@@ -177,7 +204,7 @@ func SyncAgentConfig(homeDir string, mount AgentConfigMount) (string, error) {
 // but gets refreshed sandbox directory contents via the shared host directory.
 // cHome is the container's home directory (e.g. "/root" for root images).
 // Returns bind mounts for tool config dirs and home-level seed file mounts.
-func RefreshAgentConfigs(homeDir string, cHome string) (bindMounts []VolumeMount, homeMounts []VolumeMount) {
+func RefreshAgentConfigs(homeDir string, cHome string, opts ...SyncOption) (bindMounts []VolumeMount, homeMounts []VolumeMount) {
 	if cHome == "" {
 		cHome = containerHome
 	}
@@ -189,7 +216,7 @@ func RefreshAgentConfigs(homeDir string, cHome string) (bindMounts []VolumeMount
 			continue
 		}
 
-		sandboxDir, err := SyncAgentConfig(homeDir, mount)
+		sandboxDir, err := SyncAgentConfig(homeDir, mount, opts...)
 		if err != nil {
 			slog.Warn("Sandbox sync failed, skipping",
 				"tool", mount.hostRel, "error", err)

@@ -469,7 +469,7 @@ Run sessions inside isolated Docker containers. The project directory is bind-mo
 - Press `T` on a sandboxed session to open a container shell
 - `agent-deck try "task description"` runs a one-shot sandboxed session
 
-Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. On macOS, the Claude Code Keychain token is extracted once to seed the sandbox; after that the sandbox keeps its own login (see the single-owner rule in the sandbox reference).
+Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. The exception is the Claude Code login on macOS, which lives in the Keychain: copying it would fork the host's OAuth refresh chain and log the host out, so the sandbox keeps a login of its own. Run `/login` once in your first sandbox session (or pass a `claude setup-token` credential as `CLAUDE_CODE_OAUTH_TOKEN` via `environment`); see the single-owner rule in the sandbox reference.
 
 ```toml
 [docker]

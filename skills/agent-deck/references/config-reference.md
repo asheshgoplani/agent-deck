@@ -345,6 +345,7 @@ cpu_limit = ""                 # CPU limit, e.g. "2.0"
 memory_limit = ""              # Memory limit, e.g. "4g"
 mount_ssh = false              # Mount ~/.ssh read-only into container
 auto_cleanup = true            # Remove containers on session kill
+seed_credentials_from_keychain = false  # macOS: copy the Keychain Claude token into a new sandbox once (forks the host login, see sandbox.md)
 environment = []               # Host env vars to pass into container
 volume_ignores = []            # Directories to exclude from project mount
 ```
@@ -357,6 +358,7 @@ volume_ignores = []            # Directories to exclude from project mount
 | `memory_limit` | string | `""` | Container memory limit (e.g. `"4g"`). |
 | `mount_ssh` | bool | `false` | Bind-mount `~/.ssh` read-only for git access inside containers. |
 | `auto_cleanup` | bool | `true` | Remove sandbox containers when sessions are killed. |
+| `seed_credentials_from_keychain` | bool | `false` | macOS only. Copy the Claude Code Keychain token into a sandbox that has no `.credentials.json` yet. Off, the sandbox logs in on its own (`/login` inside the sandbox). On, the one-time copy forks the host's OAuth refresh chain once; see the single-owner rule in the sandbox reference. |
 | `environment` | array | `[]` | Host environment variable names to forward into containers. |
 | `volume_ignores` | array | `[]` | Directories to exclude from the project bind mount (e.g. `["node_modules", ".git"]`). |
 

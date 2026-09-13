@@ -54,6 +54,7 @@ CLI flags take priority over config file defaults:
 default_enabled = false
 default_image = ""
 auto_cleanup = true
+seed_credentials_from_keychain = false
 cpu_limit = ""
 memory_limit = ""
 mount_ssh = false
@@ -68,6 +69,7 @@ volume_ignores = []
 | `default_enabled` | `false` | Pre-check sandbox for new sessions |
 | `default_image` | `""` | Docker image (empty uses built-in `agent-deck-sandbox:latest`) |
 | `auto_cleanup` | `true` | Remove containers when sessions are killed |
+| `seed_credentials_from_keychain` | `false` | macOS: copy the Keychain Claude token into a new sandbox once (forks the host login) |
 | `cpu_limit` | `""` | CPU limit (e.g. `"2.0"`) |
 | `memory_limit` | `""` | Memory limit (e.g. `"4g"`) |
 | `mount_ssh` | `false` | Mount `~/.ssh/` read-only into containers |
@@ -105,17 +107,17 @@ For each tool whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`
 ### Platform-specific authentication
 
 - **Linux:** Credential files (e.g. `.credentials.json`) live directly in the tool's config directory and are synced automatically.
-- **macOS:** Some tools store credentials in the macOS Keychain rather than on disk. Agent Deck reads these and writes them as files in the sandbox directory so the container can authenticate. For example, the Claude Code OAuth token is read from the Keychain and written as `.credentials.json`. If no Keychain entry is found (e.g. you authenticate via `ANTHROPIC_API_KEY`), pass your API key via the `environment` config.
+- **macOS:** Claude Code stores its OAuth login in the macOS Keychain, and a Keychain entry cannot be shared into a Linux container. Agent Deck does **not** copy it (see the single-owner rule below). Instead the sandbox keeps a login of its own: on the first sandbox session Claude prompts for `/login` inside the container, and the resulting `~/.claude/sandbox/.credentials.json` is reused by every later sandbox session. For unattended hosts, pass a non-rotating `claude setup-token` credential as `CLAUDE_CODE_OAUTH_TOKEN` via the `environment` config, or an `ANTHROPIC_API_KEY`. Other Keychain-backed tools are not extracted either; pass their API keys via `environment`.
 
 #### Single-owner rule for OAuth tokens (macOS)
 
 Claude's OAuth refresh token is single-use and rotates on every refresh. Every copy of it starts a competing refresh chain, and whichever copy refreshes first invalidates the other, which is how a sandbox used to log the host out (the recurring `/login` prompt, #2153). Agent Deck therefore treats each token as having exactly one owner:
 
-- The Keychain entry belongs to the host's Claude Code. It is read **once**, to seed a sandbox that has no `.credentials.json` yet.
-- `~/.claude/sandbox/.credentials.json` belongs to the containers. Once it exists it is canonical: later session starts skip the Keychain entirely, and the file is kept across session teardown so the next start does not fork the host chain again.
-- Two session starts racing each other cannot overwrite one another's copy; the first one to land wins.
+- The Keychain entry belongs to the host's Claude Code and is never copied by default.
+- `~/.claude/sandbox/.credentials.json` belongs to the containers. It is created by `/login` inside the sandbox, is never overwritten by a session start, and is kept across session teardown.
+- `seed_credentials_from_keychain = true` is the opt-in exception: a sandbox with no `.credentials.json` is seeded **once** from the Keychain, which forks the host chain exactly once (the host may need to log in again afterwards; the log says so). The seed never overwrites an existing sandbox credential, two racing session starts cannot replace each other's copy, and the file is never re-seeded while it exists.
 
-Consequences: containers share one refresh chain among themselves, separate from the host's, so re-authenticating on the host no longer reaches running or future sandboxes. If the sandbox login stops working (e.g. you revoked it or it expired unused), delete `~/.claude/sandbox/.credentials.json` and start a session to seed it again from the Keychain. Several containers refreshing the shared sandbox chain at the same time are not serialised by Agent Deck; for unattended hosts a non-rotating `claude setup-token` credential passed via `environment` (`CLAUDE_CODE_OAUTH_TOKEN`) is the race-free option.
+Consequences: containers share one refresh chain among themselves, separate from the host's, so re-authenticating on the host does not reach running or future sandboxes. If the sandbox login stops working (revoked, or expired unused), delete `~/.claude/sandbox/.credentials.json` and run `/login` in the next sandbox session. Several containers refreshing the shared sandbox chain at the same time are not serialised by Agent Deck; a `setup-token` credential via `environment` is the race-free option.
 
 ### Sandbox refresh
 
@@ -213,7 +215,7 @@ Sandboxed containers are hardened to limit the blast radius of agent actions:
 - **No Docker socket:** The Docker socket is never mounted, so agents cannot control the host Docker daemon.
 - **Volume restrictions:** User-configured extra volumes are validated against blocked lists. Host paths are resolved through symlinks before checking, preventing symlink-based bypass. Paths like `/etc`, `/proc`, `/sys`, the Docker socket, and home-relative secret directories (`.gnupg`, `.aws`, `.azure`, `.config`) are rejected.
 - **Symlink boundary enforcement:** When syncing host config files into the sandbox, symlinks that resolve outside the source directory are rejected to prevent credential exfiltration.
-- **Credential storage:** On macOS, the sandbox's `.credentials.json` (seeded once from the Keychain) is kept in `~/.claude/sandbox/` with mode `0600` inside a `0700` directory, the same on-disk layout Claude Code uses on Linux. It is not deleted on session end, because re-seeding it from the Keychain would fork the host's OAuth refresh chain (#2153).
+- **Credential storage:** On macOS the sandbox's own `.credentials.json` (from `/login` inside the sandbox, or the opt-in Keychain seed) is kept in `~/.claude/sandbox/` with mode `0600` inside a `0700` directory, the same on-disk layout Claude Code uses on Linux. It is not deleted on session end; the sandbox is its only owner (#2153).
 
 ## Troubleshooting
 

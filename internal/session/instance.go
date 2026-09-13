@@ -11557,7 +11557,11 @@ func ensureSandboxContainer(inst *Instance, userCfg *UserConfig, toolCommand str
 	var bindMounts []docker.VolumeMount
 	var homeMounts []docker.VolumeMount
 	if homeDir != "" {
-		bindMounts, homeMounts = docker.RefreshAgentConfigs(homeDir, "")
+		var syncOpts []docker.SyncOption
+		if userCfg != nil && userCfg.Docker.SeedCredentialsFromKeychain {
+			syncOpts = append(syncOpts, docker.WithKeychainSeed())
+		}
+		bindMounts, homeMounts = docker.RefreshAgentConfigs(homeDir, "", syncOpts...)
 		if IsCodexCompatible(inst.Tool) {
 			if err := PreAcceptCodexSandboxWorkspaceTrust(homeDir); err != nil {
 				sessionLog.Warn("codex_sandbox_preaccept_trust_failed",

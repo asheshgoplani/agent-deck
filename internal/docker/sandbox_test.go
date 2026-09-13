@@ -549,7 +549,7 @@ func TestSyncAgentConfig_KeychainSkippedWhenSandboxCredentialExists(t *testing.T
 	credPath := filepath.Join(sandboxDir, ".credentials.json")
 	require.NoError(t, os.WriteFile(credPath, []byte(`{"fake":"sandbox-chain-token"}`), 0o600))
 
-	_, err := SyncAgentConfig(homeDir, claudeKeychainMount())
+	_, err := SyncAgentConfig(homeDir, claudeKeychainMount(), WithKeychainSeed())
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(credPath)
@@ -558,12 +558,30 @@ func TestSyncAgentConfig_KeychainSkippedWhenSandboxCredentialExists(t *testing.T
 	require.Equal(t, 0, *calls, "Keychain must not be read when the sandbox already owns a credential")
 }
 
+// Issue #2153: by default the sandbox never receives a copy of the host's token.
+// It obtains its own credential (/login inside the sandbox, or an env token), so
+// the host and the sandbox never share a refresh chain.
+func TestSyncAgentConfig_KeychainNotReadByDefault(t *testing.T) {
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o755))
+	calls := fakeKeychain(t, `{"fake":"host-chain-token"}`)
+
+	sandboxDir, err := SyncAgentConfig(homeDir, claudeKeychainMount())
+	require.NoError(t, err)
+
+	require.Equal(t, 0, *calls, "Keychain must not be read unless seeding is opted in")
+	_, err = os.Stat(filepath.Join(sandboxDir, ".credentials.json"))
+	require.True(t, os.IsNotExist(err), "no credential may be copied into the sandbox by default")
+}
+
+// Opt-in path (seed_credentials_from_keychain): a one-time seed, documented as
+// forking the host chain once.
 func TestSyncAgentConfig_KeychainSeedsSandboxCredentialOnce(t *testing.T) {
 	homeDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o755))
 	fakeKeychain(t, `{"fake":"host-token-v1"}`)
 
-	sandboxDir, err := SyncAgentConfig(homeDir, claudeKeychainMount())
+	sandboxDir, err := SyncAgentConfig(homeDir, claudeKeychainMount(), WithKeychainSeed())
 	require.NoError(t, err)
 	credPath := filepath.Join(sandboxDir, ".credentials.json")
 
@@ -576,7 +594,7 @@ func TestSyncAgentConfig_KeychainSeedsSandboxCredentialOnce(t *testing.T) {
 
 	// Host chain rotates; a later start must not re-fork it into the sandbox.
 	fakeKeychain(t, `{"fake":"host-token-v2"}`)
-	_, err = SyncAgentConfig(homeDir, claudeKeychainMount())
+	_, err = SyncAgentConfig(homeDir, claudeKeychainMount(), WithKeychainSeed())
 	require.NoError(t, err)
 	data, err = os.ReadFile(credPath)
 	require.NoError(t, err)
