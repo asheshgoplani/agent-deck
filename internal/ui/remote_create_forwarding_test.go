@@ -62,8 +62,11 @@ func newRemoteHome(t *testing.T, item session.Item, configTOML string) (*Home, *
 	h.cursor = 0
 	capture := &remoteCreateCapture{}
 	h.remoteCreateSink = capture.sink
-	h.remoteAccountsFetcher = capture.accountsFetcher
-	h.remoteMCPsFetcher = capture.mcpsFetcher
+	h.remoteCreationCatalogFetcher = func(name string) tea.Cmd {
+		capture.accountsFetcher(name)
+		capture.mcpsFetcher(name)
+		return func() tea.Msg { return nil }
+	}
 	return h, capture
 }
 
@@ -77,6 +80,7 @@ func openRemoteDialogOn(t *testing.T, item session.Item, configTOML, tool, name 
 	if !h.newDialog.IsVisible() {
 		t.Fatal("precondition: n on a remote item must open the dialog")
 	}
+	h.newDialog.SetRemoteCreationCatalog(remoteDialogTestCatalog())
 	h.newDialog.SetDefaultTool(tool)
 	if got := h.newDialog.GetSelectedCommand(); got != tool {
 		t.Fatalf("precondition: selected tool = %q, want %q", got, tool)
@@ -192,14 +196,11 @@ func TestRemoteDialog_ClaudeOptions_Forwarded(t *testing.T) {
 	if capture.opts.Model != "opus" {
 		t.Fatalf("model = %q, want opus", capture.opts.Model)
 	}
-	got := strings.Join(capture.opts.ExtraArgs, " ")
-	for _, want := range []string{"--effort high", "--dangerously-skip-permissions", "--chrome", "--agent reviewer"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("extra args = %q, want %q", got, want)
-		}
+	if got := strings.Join(capture.opts.ExtraArgs, " "); got != "--agent reviewer" {
+		t.Fatalf("extra args = %q", got)
 	}
-	if strings.Contains(got, "--model") {
-		t.Fatalf("extra args = %q: model must travel as the first-class --model flag, not as an extra arg", got)
+	if capture.opts.ClaudeOptions == nil || !capture.opts.ClaudeOptions.SkipPermissions || !capture.opts.ClaudeOptions.UseChrome || capture.opts.ReasoningEffort != "high" {
+		t.Fatalf("Claude choices lost: %+v", capture.opts)
 	}
 }
 
@@ -252,27 +253,39 @@ func TestRemoteDialog_CodexYolo_Forwarded(t *testing.T) {
 
 // Fields the remote `add` cannot express are refused with a visible message
 // instead of being dropped.
-func TestRemoteDialog_UnforwardableFields_Refused(t *testing.T) {
+func TestRemoteDialog_CreationParityFields_Forwarded(t *testing.T) {
 	t.Run("startup query", func(t *testing.T) {
 		h, capture := openRemoteDialogAndTypeName(t, "myserver", "claude", "query-task")
 		h.newDialog.claudeOptions.SetStartQuery("fix the build")
-		submitRemoteDialogExpectingError(t, h, capture, "Startup query")
+		submitRemoteDialog(t, h)
+		if capture.opts.StartQuery != "fix the build" {
+			t.Fatalf("query lost: %+v", capture.opts)
+		}
 	})
 	t.Run("multi-repo", func(t *testing.T) {
 		h, capture := openRemoteDialogAndTypeName(t, "myserver", "claude", "multi-task")
 		h.newDialog.ToggleMultiRepo()
 		h.newDialog.multiRepoPaths = []string{"/srv/a", "/srv/b"}
-		submitRemoteDialogExpectingError(t, h, capture, "cannot be created on a remote")
+		submitRemoteDialog(t, h)
+		if capture.opts.Path != "/srv/a" || strings.Join(capture.opts.AdditionalPaths, ",") != "/srv/b" {
+			t.Fatalf("paths lost: %+v", capture.opts)
+		}
 	})
 	t.Run("codex reasoning effort", func(t *testing.T) {
 		h, capture := openRemoteDialogAndTypeName(t, "myserver", "codex", "effort-task")
 		h.newDialog.reasoningEffort = "high"
-		submitRemoteDialogExpectingError(t, h, capture, "Reasoning effort")
+		submitRemoteDialog(t, h)
+		if capture.opts.ReasoningEffort == "" {
+			t.Fatalf("effort lost: %+v", capture.opts)
+		}
 	})
 	t.Run("hermes yolo", func(t *testing.T) {
 		h, capture := openRemoteDialogAndTypeName(t, "myserver", "hermes", "hermes-task")
 		h.newDialog.hermesOptions.SetDefaults(true)
-		submitRemoteDialogExpectingError(t, h, capture, "Hermes YOLO")
+		submitRemoteDialog(t, h)
+		if !capture.opts.Yolo {
+			t.Fatalf("yolo lost: %+v", capture.opts)
+		}
 	})
 }
 
@@ -349,25 +362,16 @@ func TestRemoteDialog_WorktreeBranch_PrefixAppliedOnceByRemote(t *testing.T) {
 
 // A Codex-compatible custom tool shows the same effort selector as codex, so
 // a selected effort is refused with the same message rather than dropped.
-func TestRemoteDialog_CodexCompatibleCustomTool_EffortRefused(t *testing.T) {
-	const config = "[tools.mycodex]\ncommand = \"codex-wrapper\"\ncompatible_with = \"codex\"\n"
-	h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), config, "mycodex", "custom-effort")
-	if !h.newDialog.selectedToolSupportsReasoningEffort() {
-		t.Fatal("precondition: a Codex-compatible custom tool must offer the effort selector")
-	}
-	h.newDialog.cycleReasoningEffort(1)
-	if h.newDialog.GetLaunchReasoningEffort() == "" {
-		t.Fatal("precondition: cycling the selector must pick an effort")
-	}
-
-	submitRemoteDialogExpectingError(t, h, capture, "Reasoning effort")
-
-	// With no effort selected the same tool is created, with its YOLO flag.
-	h.newDialog.reasoningEffort = ""
+func TestRemoteDialog_CodexCompatibleCustomTool_EffortForwarded(t *testing.T) {
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "codex", "custom-effort")
+	h.newDialog.presetCommands = append(h.newDialog.presetCommands, "mycodex")
+	h.newDialog.remoteCatalog.Tools = append(h.newDialog.remoteCatalog.Tools, session.RemoteCreationTool{Name: "mycodex", Kind: "codex"})
+	h.newDialog.SetDefaultTool("mycodex")
+	h.newDialog.reasoningEffort = "high"
 	h.newDialog.codexOptions.SetDefaults(true)
 	submitRemoteDialog(t, h)
-	if capture.opts.Tool != "mycodex" || !capture.opts.Yolo {
-		t.Fatalf("opts = %+v, want mycodex with yolo once the effort is cleared", capture.opts)
+	if capture.opts.Tool != "mycodex" || capture.opts.ReasoningEffort != "high" || !capture.opts.Yolo {
+		t.Fatalf("options lost: %+v", capture.opts)
 	}
 }
 
@@ -397,7 +401,7 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 
 	t.Run("remote-only slot is offered and forwarded", func(t *testing.T) {
 		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), localConfig, "claude", "acct-task")
-		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}, gen: h.remoteAccountsGen})
+		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		if !h.newDialog.claudeOptions.hasAccountRow() {
 			t.Fatal("the remote's slots must populate the account row")
@@ -420,14 +424,14 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 			{remoteName: "otherserver", accounts: []string{"stale"}, gen: h.remoteAccountsGen},
 			{remoteName: "myserver", accounts: []string{"stale"}, err: errUnavailable, gen: h.remoteAccountsGen},
 		} {
-			model, _ := h.Update(msg)
+			model, _ := h.Update(msg.catalogMessage())
 			h = model.(*Home)
 			if h.newDialog.claudeOptions.hasAccountRow() {
 				t.Fatalf("msg %+v must not populate the account row", msg)
 			}
 		}
 		h.newDialog.Hide()
-		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"late"}, gen: h.remoteAccountsGen})
+		model, _ := h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"late"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		if h.newDialog.claudeOptions.hasAccountRow() {
 			t.Fatal("a late answer for a closed dialog must be dropped")
@@ -453,17 +457,18 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 		if strings.Join(capture.accountsFetchedFor, ",") != "myserver,myserver" {
 			t.Fatalf("fetches requested for %v, want myserver twice", capture.accountsFetchedFor)
 		}
+		h.newDialog.SetRemoteCreationCatalog(remoteDialogTestCatalog())
 		h.newDialog.SetDefaultTool("claude")
 		for _, r := range "acct-task" {
 			h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		}
 		// Fetch B (this opening) answers first and the user picks a slot.
-		model, _ = h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}, gen: h.remoteAccountsGen})
+		model, _ = h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-alice", "srv-bob"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		h.newDialog.claudeOptions.SetAccount("srv-bob")
 		// Fetch A (the earlier opening) answers late with a different list in
 		// which the same cursor position would name another account.
-		model, _ = h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-zed", "srv-alice", "srv-bob"}, gen: firstGen})
+		model, _ = h.Update(remoteAccountsFetchedMsg{remoteName: "myserver", accounts: []string{"srv-zed", "srv-alice", "srv-bob"}, gen: firstGen}.catalogMessage())
 		h = model.(*Home)
 		if got := strings.Join(h.newDialog.claudeOptions.accounts, ","); got != "srv-alice,srv-bob" {
 			t.Fatalf("offered slots = %q after the late answer, want the current opening's list unchanged", got)
@@ -478,37 +483,6 @@ func TestRemoteDialog_AccountSlots_ComeFromRemote(t *testing.T) {
 	})
 }
 
-// remoteClaudeExtraArgs is the exact translation of the panel's toggles.
-func TestRemoteClaudeExtraArgs(t *testing.T) {
-	cases := []struct {
-		name string
-		opts *session.ClaudeOptions
-		want []string
-	}{
-		{name: "nil", opts: nil, want: nil},
-		{name: "new session with nothing on", opts: &session.ClaudeOptions{SessionMode: "new"}, want: nil},
-		{
-			name: "model is stripped, the rest is emitted",
-			opts: &session.ClaudeOptions{Model: "opus", Effort: "low", SkipPermissions: true, UseTeammateMode: true},
-			want: []string{"--effort", "low", "--dangerously-skip-permissions", "--teammate-mode", "tmux"},
-		},
-		{name: "auto mode", opts: &session.ClaudeOptions{AutoMode: true}, want: []string{"--permission-mode", "auto"}},
-		{name: "continue", opts: &session.ClaudeOptions{SessionMode: "continue"}, want: []string{"-c"}},
-		{name: "bare resume asks the server's picker", opts: &session.ClaudeOptions{SessionMode: "resume"}, want: []string{"--resume"}},
-		{name: "resume with id travels elsewhere", opts: &session.ClaudeOptions{SessionMode: "resume", ResumeSessionID: "x"}, want: nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := remoteClaudeExtraArgs(tc.opts)
-			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
-				t.Fatalf("remoteClaudeExtraArgs(%+v) = %q, want %q", tc.opts, got, tc.want)
-			}
-		})
-	}
-}
-
-// The two sandbox tests below keep the names from PR #2127 (Djeeteg007), which
-// first forwarded the checkbox; they now run through RemoteAddOptions.
 func TestRemoteDialog_SandboxCheckbox_ForwardedToRemoteCreate(t *testing.T) {
 	h, capture := openRemoteDialogAndTypeName(t, "myserver", "claude", "sandboxed-task")
 	if h.newDialog.IsSandboxEnabled() {
@@ -582,5 +556,155 @@ func TestRemoteDialog_RemoteHostHeader_KeepsDefaultGroup(t *testing.T) {
 
 	if capture.calls != 1 || capture.opts.Group != session.DefaultGroupPath {
 		t.Fatalf("opts = %+v (calls=%d), want the default group for the host header", capture.opts, capture.calls)
+	}
+}
+
+func remoteDialogTestCatalog() *session.RemoteCreationCatalog {
+	fields := []session.RemoteCreationField{}
+	for _, name := range []string{"json", "quick", "sandbox", "yolo", "create-dir", "no-wait", "no-parent", "skip-permissions", "auto-mode", "chrome", "teammate-mode", "continue", "resume"} {
+		fields = append(fields, session.RemoteCreationField{Name: name})
+	}
+	for _, name := range []string{"t", "g", "c", "account", "model", "mcp", "resume-session", "extra-arg", "w", "startup-query", "additional-path", "effort", "parent"} {
+		fields = append(fields, session.RemoteCreationField{Name: name, TakesValue: true})
+	}
+	catalog := &session.RemoteCreationCatalog{Version: 1, DefaultTool: "shell", Commands: map[string][]session.RemoteCreationField{"add": fields, "launch": fields}}
+	for _, name := range []string{"shell", "claude", "codex", "gemini", "hermes", "opencode"} {
+		catalog.Tools = append(catalog.Tools, session.RemoteCreationTool{Name: name, Kind: name})
+	}
+	return catalog
+}
+
+func TestRemoteDialog_CatalogOwnsToolsModelsAndParents(t *testing.T) {
+	h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), "default_tool = \"claude\"\n[tools.controller-only]\ncommand = \"true\"\n", "claude", "remote-owner")
+	catalog := remoteDialogTestCatalog()
+	catalog.Tools = []session.RemoteCreationTool{{Name: "remote-codex", Kind: "codex", Models: []string{"remote-model"}}}
+	catalog.DefaultTool = "remote-codex"
+	catalog.Conductors = []session.RemoteCreationConductor{{ID: "remote-parent", Title: "Remote parent"}}
+	h.newDialog.SetRemoteCreationCatalog(catalog)
+	if strings.Join(h.newDialog.presetCommands, ",") != "remote-codex" || strings.Join(h.newDialog.modelSuggestions, ",") != "remote-model" || len(h.newDialog.inheritedSettings) != 0 {
+		t.Fatal("controller catalog leaked")
+	}
+	h.newDialog.conductorCursor = 1
+	h.newDialog.multiRepoEnabled = true
+	h.newDialog.multiRepoPaths = []string{"~/repo", "$PROJECT/other"}
+	submitRemoteDialog(t, h)
+	if capture.opts.ParentID != "remote-parent" || capture.opts.Path != "~/repo" || capture.opts.AdditionalPaths[0] != "$PROJECT/other" {
+		t.Fatalf("owner values lost: %+v", capture.opts)
+	}
+}
+
+func TestRemoteDialog_MissingCatalogRefusesBeforeCreate(t *testing.T) {
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "claude", "blocked")
+	if !strings.Contains(h.newDialog.View(), "remote: myserver") {
+		t.Fatal("remote host identity not visible")
+	}
+	h.newDialog.remoteCatalog = nil
+	submitRemoteDialogExpectingError(t, h, capture, "capabilities")
+}
+
+func TestRemoteDialog_UnsupportedCatalogFieldRefusesBeforeCreate(t *testing.T) {
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "codex", "blocked")
+	h.newDialog.reasoningEffort = "high"
+	for command, fields := range h.newDialog.remoteCatalog.Commands {
+		var supported []session.RemoteCreationField
+		for _, field := range fields {
+			if field.Name != "effort" {
+				supported = append(supported, field)
+			}
+		}
+		h.newDialog.remoteCatalog.Commands[command] = supported
+	}
+	submitRemoteDialogExpectingError(t, h, capture, "effort")
+}
+
+// Fixture adapters keep the account and MCP scenarios focused while exercising
+// the single production catalog response.
+type remoteAccountsFetchedMsg struct {
+	remoteName string
+	accounts   []string
+	err        error
+	gen        uint64
+}
+
+func (m remoteAccountsFetchedMsg) catalogMessage() remoteCreationCatalogFetchedMsg {
+	c := remoteDialogTestCatalog()
+	c.DefaultTool = "claude"
+	c.Accounts = m.accounts
+	return remoteCreationCatalogFetchedMsg{remoteName: m.remoteName, catalog: c, err: m.err, gen: m.gen}
+}
+
+type remoteMCPsFetchedMsg struct {
+	remoteName string
+	mcps       []string
+	err        error
+	gen        uint64
+}
+
+func (m remoteMCPsFetchedMsg) catalogMessage() remoteCreationCatalogFetchedMsg {
+	c := remoteDialogTestCatalog()
+	c.DefaultTool = "claude"
+	c.MCPs = m.mcps
+	return remoteCreationCatalogFetchedMsg{remoteName: m.remoteName, catalog: c, err: m.err, gen: m.gen}
+}
+
+func TestRemoteDialog_RemoteDefaultsCanBeDisabled(t *testing.T) {
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "claude", "choices")
+	c := remoteDialogTestCatalog()
+	c.DefaultTool = "claude"
+	c.Defaults = map[string]bool{"skip_permissions": true, "codex_yolo": true}
+	h.newDialog.SetRemoteCreationCatalog(c)
+	if !h.newDialog.claudeOptions.skipPermissions {
+		t.Fatal("remote default missing")
+	}
+	h.newDialog.claudeOptions.skipPermissions = false
+	submitRemoteDialog(t, h)
+	if capture.opts.ClaudeOptions == nil || capture.opts.ClaudeOptions.SkipPermissions {
+		t.Fatal("explicit false lost")
+	}
+	h, capture = openRemoteDialogAndTypeName(t, "myserver", "codex", "choices")
+	h.newDialog.codexOptions.SetDefaults(false)
+	submitRemoteDialog(t, h)
+	if capture.opts.YoloOverride == nil || *capture.opts.YoloOverride {
+		t.Fatal("explicit yolo false lost")
+	}
+}
+
+func TestRemoteDialog_CustomShellCommandUsesRemoteText(t *testing.T) {
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "shell", "custom-shell")
+	if !h.newDialog.customCommandSelected() || !strings.Contains(h.newDialog.View(), "Custom:") {
+		t.Fatal("remote shell lacks custom command input")
+	}
+	h.newDialog.commandInput.SetValue("remote-script --verbose")
+	submitRemoteDialog(t, h)
+	if capture.opts.Tool != "remote-script --verbose" {
+		t.Fatalf("command lost: %+v", capture.opts)
+	}
+}
+
+func TestRemoteDialog_LocalRefreshCannotReplaceRemoteTools(t *testing.T) {
+	h, _ := openRemoteDialogAndTypeName(t, "myserver", "claude", "owner")
+	h.newDialog.remoteCatalog.Tools = []session.RemoteCreationTool{{Name: "remote-only", Kind: "codex"}}
+	h.newDialog.SetRemoteCreationCatalog(h.newDialog.remoteCatalog)
+	h.newDialog.RefreshPresetCommands()
+	if strings.Join(h.newDialog.presetCommands, ",") != "remote-only" {
+		t.Fatal("controller refresh replaced remote catalog")
+	}
+	h.newDialog.Hide()
+	h.newDialog.SetDefaultTool("claude")
+	h.newDialog.ShowInGroup("local", "local", ".", nil, "")
+	if h.newDialog.GetSelectedCommand() != "claude" {
+		t.Fatal("local tool selection lost after closing remote dialog")
+	}
+}
+
+func TestRemoteDialog_PathTabDoesNotConsultController(t *testing.T) {
+	h, _ := openRemoteDialogAndTypeName(t, "myserver", "claude", "path")
+	d := h.newDialog
+	d.pathInput.SetValue("~/nonexistent-on-controller/remote")
+	d.focusIndex = d.indexOf(focusPath)
+	d.updateFocus()
+	d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if d.currentTarget() == focusPath || d.pathInput.Value() != "~/nonexistent-on-controller/remote" {
+		t.Fatal("remote path navigation consulted or expanded controller path")
 	}
 }

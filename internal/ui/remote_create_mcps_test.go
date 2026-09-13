@@ -57,7 +57,7 @@ func TestRemoteDialog_MCPs_ComeFromRemote(t *testing.T) {
 
 	t.Run("remote-only MCPs are offered and the picks are forwarded", func(t *testing.T) {
 		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), localOnlyMCPConfig, "claude", "mcp-task")
-		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory", "sequential-thinking"}, gen: h.remoteAccountsGen})
+		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory", "sequential-thinking"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		h.newDialog.SetSize(100, 50)
 		if got := strings.Join(h.newDialog.remoteMCPs, ","); got != "github,memory,sequential-thinking" {
@@ -81,7 +81,7 @@ func TestRemoteDialog_MCPs_ComeFromRemote(t *testing.T) {
 
 	t.Run("space toggles a pick off again", func(t *testing.T) {
 		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), "", "claude", "mcp-task")
-		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"memory"}, gen: h.remoteAccountsGen})
+		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"memory"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		pickRemoteMCP(t, h, "memory")
 		pickRemoteMCP(t, h, "memory")
@@ -97,14 +97,14 @@ func TestRemoteDialog_MCPs_ComeFromRemote(t *testing.T) {
 			{remoteName: "otherserver", mcps: []string{"stale"}, gen: h.remoteAccountsGen},
 			{remoteName: "myserver", mcps: []string{"stale"}, err: errUnavailable, gen: h.remoteAccountsGen},
 		} {
-			model, _ := h.Update(msg)
+			model, _ := h.Update(msg.catalogMessage())
 			h = model.(*Home)
 			if h.newDialog.hasRemoteMCPRow() {
 				t.Fatalf("msg %+v must not populate the MCP row", msg)
 			}
 		}
 		h.newDialog.Hide()
-		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"late"}, gen: h.remoteAccountsGen})
+		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"late"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		if h.newDialog.hasRemoteMCPRow() {
 			t.Fatal("a late answer for a closed dialog must be dropped")
@@ -128,17 +128,18 @@ func TestRemoteDialog_MCPs_ComeFromRemote(t *testing.T) {
 		if strings.Join(capture.mcpsFetchedFor, ",") != "myserver,myserver" {
 			t.Fatalf("MCP fetches requested for %v, want myserver twice", capture.mcpsFetchedFor)
 		}
+		h.newDialog.SetRemoteCreationCatalog(remoteDialogTestCatalog())
 		h.newDialog.SetDefaultTool("claude")
 		for _, r := range "mcp-task" {
 			h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		}
 		// Fetch B (this opening) answers first and the user picks an MCP.
-		model, _ = h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen})
+		model, _ = h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		pickRemoteMCP(t, h, "memory")
 		// Fetch A (the earlier opening) answers late with a different list in
 		// which the same cursor position would name another MCP.
-		model, _ = h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"exa", "github", "memory"}, gen: firstGen})
+		model, _ = h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"exa", "github", "memory"}, gen: firstGen}.catalogMessage())
 		h = model.(*Home)
 		if got := strings.Join(h.newDialog.remoteMCPs, ","); got != "github,memory" {
 			t.Fatalf("offered MCPs = %q after the late answer, want the current opening's list unchanged", got)
@@ -151,7 +152,7 @@ func TestRemoteDialog_MCPs_ComeFromRemote(t *testing.T) {
 
 	t.Run("a new list clears picks made against the old one", func(t *testing.T) {
 		h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), "", "claude", "mcp-task")
-		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen})
+		model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		pickRemoteMCP(t, h, "github")
 		// The dialog is closed and reopened; the reopened dialog must not
@@ -163,11 +164,12 @@ func TestRemoteDialog_MCPs_ComeFromRemote(t *testing.T) {
 		if h.newDialog.hasRemoteMCPRow() {
 			t.Fatalf("reopened dialog still offers %v before the remote answered", h.newDialog.remoteMCPs)
 		}
+		h.newDialog.SetRemoteCreationCatalog(remoteDialogTestCatalog())
 		h.newDialog.SetDefaultTool("claude")
 		for _, r := range "mcp-task" {
 			h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		}
-		model, _ = h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen})
+		model, _ = h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen}.catalogMessage())
 		h = model.(*Home)
 		submitRemoteDialog(t, h)
 		if len(capture.opts.MCPs) != 0 {
@@ -202,7 +204,7 @@ func TestNewDialog_LocalOpening_HasNoRemoteMCPRow(t *testing.T) {
 // then fails on the MCP write.
 func TestRemoteDialog_MCPs_OnlyOfferedForToolsWithMCPSupport(t *testing.T) {
 	h, capture := openRemoteDialogOn(t, remoteGroupItem("myserver"), "", "claude", "mcp-task")
-	model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen})
+	model, _ := h.Update(remoteMCPsFetchedMsg{remoteName: "myserver", mcps: []string{"github", "memory"}, gen: h.remoteAccountsGen}.catalogMessage())
 	h = model.(*Home)
 	h.newDialog.SetSize(100, 50)
 	if !session.ToolSupportsMCPManager("claude") {
@@ -221,10 +223,10 @@ func TestRemoteDialog_MCPs_OnlyOfferedForToolsWithMCPSupport(t *testing.T) {
 	}
 	h.newDialog.focusIndex = idx
 	h.newDialog.updateFocus()
-	for i := 0; i < len(h.newDialog.presetCommands) && h.newDialog.GetSelectedCommand() != ""; i++ {
+	for i := 0; i < len(h.newDialog.presetCommands) && h.newDialog.GetSelectedCommand() != "shell"; i++ {
 		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyLeft})
 	}
-	if got := h.newDialog.GetSelectedCommand(); got != "" {
+	if got := h.newDialog.GetSelectedCommand(); got != "shell" {
 		t.Fatalf("selected tool = %q, want shell", got)
 	}
 	if session.ToolSupportsMCPManager(h.newDialog.resolveCommand()) {
