@@ -2846,6 +2846,35 @@ func setSocketMismatchProbeForTest(probe func(string) bool) func() {
 	}
 }
 
+// ProbeExists asks the tmux server on this session's own socket whether a
+// session with EXACTLY this name exists, bypassing every cache and every
+// "assume alive" fallback that Exists uses on the status hot path. It is the
+// authoritative check for a caller that is about to report a spawn as
+// successful (#2099): Exists answers positive from a cached listing, a timed
+// out probe or a protocol-mismatched socket, none of which prove that THIS
+// session is up.
+//
+// The `=` target prefix makes tmux match the name exactly instead of by
+// prefix, so a sibling named like this session plus a suffix cannot answer
+// for it. A completed non-zero exit is "gone"; a probe that timed out or was
+// refused by a protocol-mismatched server is indeterminate and reported as an
+// error, never as either verdict.
+func (s *Session) ProbeExists() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	err := s.tmuxCmdContext(ctx, "has-session", "-t", "="+s.Name).Run()
+	if err == nil {
+		return true, nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return false, fmt.Errorf("tmux has-session probe for %q timed out after %s", s.Name, hasSessionProbeTimeout)
+	}
+	if socketHasProtocolMismatch(s.SocketName) {
+		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", s.SocketName)
+	}
+	return false, nil
+}
+
 // Exists checks if the tmux session exists
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale

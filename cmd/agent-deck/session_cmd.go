@@ -400,6 +400,10 @@ func spawnFailureOutput(verb string, inst *session.Instance, err error) (string,
 		} else {
 			data["reason"] = "tmux_session_missing"
 		}
+	} else {
+		// The probe never settled (busy server, protocol mismatch): not a
+		// recorded spawn failure, but not a confirmed start either.
+		data["reason"] = "spawn_unverified"
 	}
 	return fmt.Sprintf("failed to %s session: %v", verb, err), data
 }

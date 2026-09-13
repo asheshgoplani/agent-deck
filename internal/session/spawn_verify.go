@@ -36,11 +36,17 @@ func (e *SpawnFailedError) Error() string {
 const spawnVerifyTick = 100 * time.Millisecond
 
 // VerifySpawned confirms that the tmux session actually exists after a
-// Start()/Restart() returned nil (#2099). A live session returns nil at once.
-// When the session is missing it keeps looking, for at most maxWait, for
-// either the session to appear or a spawn-failure record to be written (the
-// fast-death watcher records a death on its next 250ms tick), and then
-// returns a *SpawnFailedError carrying whatever was recorded.
+// Start()/Restart() returned nil (#2099). The check is authoritative: it asks
+// the tmux server on the session's own socket for this exact session name
+// (tmux.Session.ProbeExists), never the liveness cache or a timed-out probe's
+// "assume alive" answer, and otherwise reads the spawn-failure record. A live
+// session returns nil at once. When the session is missing it keeps looking,
+// for at most maxWait, for either the session to appear or a spawn-failure
+// record to be written (the fast-death watcher records a death on its next
+// 250ms tick), and then returns a *SpawnFailedError carrying whatever was
+// recorded. A probe that stays indeterminate (server busy, protocol
+// mismatch) for the whole window is reported as its own error rather than
+// as either verdict.
 //
 // This is the read-back the CLI was missing: Start() can return nil while
 // the pane is already gone (the initial process died before the first
@@ -60,12 +66,18 @@ func (i *Instance) VerifySpawned(maxWait time.Duration) error {
 	for {
 		// Liveness wins: a stale sidecar from an earlier attempt must never
 		// fail a session that is demonstrably up.
-		if i.tmuxSession.Exists() {
+		exists, probeErr := i.tmuxSession.ProbeExists()
+		if exists {
 			return nil
 		}
-		rec := i.SpawnFailure()
-		if rec != nil || time.Now().After(deadline) {
-			return &SpawnFailedError{TmuxName: i.tmuxSession.Name, Record: rec}
+		expired := time.Now().After(deadline)
+		if probeErr == nil {
+			rec := i.SpawnFailure()
+			if rec != nil || expired {
+				return &SpawnFailedError{TmuxName: i.tmuxSession.Name, Record: rec}
+			}
+		} else if expired {
+			return fmt.Errorf("could not confirm tmux session %q after spawn: %w", i.tmuxSession.Name, probeErr)
 		}
 		time.Sleep(spawnVerifyTick)
 	}
