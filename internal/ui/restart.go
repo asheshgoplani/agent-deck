@@ -61,6 +61,9 @@ func (h *Home) restartTargetProblem() string {
 	if exe == "" {
 		return "executable path unknown"
 	}
+	if h.binaryOrphanReason != "" {
+		return h.binaryOrphanReason
+	}
 	if err := checkRestartExecutable(exe); err != nil {
 		return fmt.Sprintf("new binary is not runnable (%v)", err)
 	}

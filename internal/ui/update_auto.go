@@ -125,6 +125,8 @@ func (h *Home) autoInstallSkipReason(info *update.UpdateInfo) string {
 		return h.autoUpdateSuppressedReason
 	case h.homebrewManaged:
 		return "homebrew-managed install"
+	case h.binaryOrphanReason != "":
+		return h.binaryOrphanReason
 	case h.autoInstallInFlight != "":
 		return "install already running"
 	case update.CompareVersions(h.installedUpdateVersion(), info.LatestVersion) >= 0:

@@ -28,7 +28,7 @@ func (h *Home) shouldRenderUpdateNudge() bool {
 // nudge applies. Every layout height computation must use this, not
 // shouldRenderUpdateNudge, so the list does not overlap the banner.
 func (h *Home) shouldRenderUpdateBanner() bool {
-	return h.installedUpdateVersion() != "" || h.shouldRenderUpdateNudge()
+	return h.binaryOrphanReason != "" || h.installedUpdateVersion() != "" || h.shouldRenderUpdateNudge()
 }
 
 // restartDeckKeyLabel is the key shown in the banner and status messages.
@@ -44,6 +44,14 @@ func (h *Home) restartDeckKeyLabel() string {
 // renderUpdateBannerText picks the banner wording: an installed update wins
 // over the nudge because the user can act on it right now.
 func (h *Home) renderUpdateBannerText() string {
+	if h.binaryOrphanReason != "" {
+		// Action first: the path at the end may be cut off by the width.
+		text := " ⚠ Quit and start agent-deck again"
+		if h.updateInfo != nil && h.updateInfo.Available {
+			text += fmt.Sprintf(" to get v%s", h.updateInfo.LatestVersion)
+		}
+		return text + ": this one cannot update or restart itself, " + h.binaryOrphanReason + " "
+	}
 	if v := h.installedUpdateVersion(); v != "" {
 		if h.autoRestartEnabled() {
 			return fmt.Sprintf(" ⬆ v%s installed, restarting when idle (%s now) ", v, h.restartDeckKeyLabel())

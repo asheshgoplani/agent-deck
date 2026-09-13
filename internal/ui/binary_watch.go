@@ -1,7 +1,11 @@
 package ui
 
 import (
+	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,19 +120,50 @@ type binaryVersionProbedMsg struct {
 	err         error
 }
 
+// statBinary is the per-tick stat; a seam so tests need no real binary.
+var statBinary = update.StatBinary
+
+// orphanedBinaryReason reports why a process running from execPath can
+// neither install an update into it nor re-exec from it: the path no
+// longer exists (deleted; Linux reports "/proc/self/exe (deleted)") or it
+// is in a Trash folder (a binary moved there is not where an installer or
+// `agent-deck` from PATH will look). "" when the path is fine or unknown.
+// A file merely replaced in place keeps its path and is not orphaned.
+func orphanedBinaryReason(execPath string) string {
+	if execPath == "" {
+		return ""
+	}
+	path, deleted := strings.CutSuffix(execPath, " (deleted)")
+	if deleted {
+		return fmt.Sprintf("its executable no longer exists at %s", path)
+	}
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".Trash" || part == "Trash" {
+			return fmt.Sprintf("its executable is in the Trash (%s)", path)
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Sprintf("its executable no longer exists at %s", path)
+	}
+	return ""
+}
+
 // pollBinaryChange is the per-tick check: one os.Stat, and a probe command
 // only when the fingerprint moved. Returns nil when there is nothing to do.
+// The same stat keeps binaryOrphanReason current (see orphanedBinaryReason).
 func (h *Home) pollBinaryChange() tea.Cmd {
 	w := h.binaryWatch
 	if w == nil {
 		return nil
 	}
-	fp, err := update.StatBinary(w.execPath)
+	fp, err := statBinary(w.execPath)
 	if err != nil {
 		// Mid-swap (installer renamed the old file away) or unreadable:
-		// wait for the next tick.
+		// wait for the next tick. Gone for good is the orphan case.
+		h.setBinaryOrphanReason(orphanedBinaryReason(w.execPath))
 		return nil
 	}
+	h.setBinaryOrphanReason("")
 	if !w.observe(fp) {
 		return nil
 	}
@@ -146,4 +181,17 @@ func (h *Home) installedUpdateVersion() string {
 		return ""
 	}
 	return h.binaryWatch.installedVersion
+}
+
+// setBinaryOrphanReason records the orphan state, logging each change.
+func (h *Home) setBinaryOrphanReason(reason string) {
+	if reason == h.binaryOrphanReason {
+		return
+	}
+	if reason != "" {
+		uiLog.Warn("binary_orphaned", slog.String("reason", reason))
+	} else {
+		uiLog.Info("binary_orphan_cleared")
+	}
+	h.binaryOrphanReason = reason
 }

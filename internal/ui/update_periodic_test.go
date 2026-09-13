@@ -120,6 +120,7 @@ func TestPeriodicTick_InstallsAndReExecsWithoutKeypress(t *testing.T) {
 	t.Cleanup(func() { runUnattendedUpdate = prev })
 
 	h := newRestartTestHome(t) // running 1.16.0 from /bin/agent-deck, no update known
+	const exe = "/bin/agent-deck"
 	h.lastUpdateCheck = time.Now().Add(-2 * update.RecheckInterval)
 
 	// 1. Tick: the periodic check is due and asks.
@@ -138,7 +139,7 @@ func TestPeriodicTick_InstallsAndReExecsWithoutKeypress(t *testing.T) {
 		t.Fatalf("install cmd=%v inFlight=%q, want the updater started for 1.16.1", installCmd, h.autoInstallInFlight)
 	}
 	finished, ok := installCmd().(unattendedInstallFinishedMsg)
-	if !ok || len(f.exes) != 1 || f.exes[0] != "/bin/agent-deck" {
+	if !ok || len(f.exes) != 1 || f.exes[0] != exe {
 		t.Fatalf("updater ran with %v, want the fingerprinted exe once", f.exes)
 	}
 	if _, cmd := h.Update(finished); cmd == nil || h.autoInstallInFlight != "" || h.err != nil {
@@ -156,8 +157,8 @@ func TestPeriodicTick_InstallsAndReExecsWithoutKeypress(t *testing.T) {
 	if restartCmd == nil || !h.restartRequested || !h.isQuitting {
 		t.Fatalf("restart cmd=%v requested=%v quitting=%v, want the re-exec armed", restartCmd, h.restartRequested, h.isQuitting)
 	}
-	if exe, ok := h.RestartTarget(); !ok || exe != "/bin/agent-deck" {
-		t.Fatalf("RestartTarget = %q, %v; want the updated executable", exe, ok)
+	if target, ok := h.RestartTarget(); !ok || target != exe {
+		t.Fatalf("RestartTarget = %q, %v; want the updated executable", target, ok)
 	}
 	if h.err != nil {
 		t.Fatalf("the unattended chain must not leave a footer error, got %v", h.err)

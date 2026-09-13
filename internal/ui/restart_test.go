@@ -35,11 +35,21 @@ func stubRestartTarget(t *testing.T, checkErr, probeErr error) *int {
 func newRestartTestHome(t *testing.T) *Home {
 	t.Helper()
 	stubRestartTarget(t, nil, nil)
+	stubStatBinary(t, fpAt(1, 1), nil)
 	h := NewHome()
 	h.initialLoading = false
 	h.width, h.height = 80, 24
 	h.binaryWatch = newBinaryWatch("/bin/agent-deck", "1.16.0", fpAt(1, 1))
 	return h
+}
+
+// stubStatBinary makes the per-tick stat of the fake executable answer fp
+// (the file "exists" and is unchanged) or err.
+func stubStatBinary(t *testing.T, fp binaryFingerprint, err error) {
+	t.Helper()
+	prev := statBinary
+	statBinary = func(string) (binaryFingerprint, error) { return fp, err }
+	t.Cleanup(func() { statBinary = prev })
 }
 
 func assertRestartBlocked(t *testing.T, h *Home, wantReason string) {

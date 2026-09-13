@@ -488,6 +488,10 @@ type Home struct {
 	// tried, so a failure is not retried every check.
 	autoInstallInFlight string
 	autoInstallAttempts map[string]time.Time
+	// binaryOrphanReason is set while the executable this process started
+	// from is gone or in the Trash: the deck cannot update or restart
+	// itself then, says so in the banner, and both auto paths stay off.
+	binaryOrphanReason string
 	// autoInstallLastSkip is the last reason the periodic check left the
 	// updater alone, so the log says it once per change, not per minute.
 	autoInstallLastSkip string
@@ -3763,6 +3767,9 @@ func (h *Home) Init() tea.Cmd {
 	// Fingerprint the running executable so the tick loop can tell when an
 	// update lands on disk while the TUI is open.
 	h.binaryWatch = startBinaryWatch(Version)
+	if exe, err := os.Executable(); err == nil {
+		h.setBinaryOrphanReason(orphanedBinaryReason(exe))
+	}
 	h.homebrewManaged = detectHomebrewManaged()
 	h.applyAutoUpdateSuppression()
 
