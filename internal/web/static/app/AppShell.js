@@ -15,15 +15,7 @@ import { RightRail } from './RightRail.js'
 import { MobileTabs } from './MobileTabs.js'
 import { CommandPalette } from './CommandPalette.js'
 import { TweaksPanel } from './TweaksPanel.js'
-import { TerminalPane } from './panes/TerminalPane.js'
-import { CostsPane } from './panes/CostsPane.js'
-import { FleetPane } from './panes/FleetPane.js'
-import { CommandCenterPane } from './panes/CommandCenterPane.js'
-import { ArchivedPane } from './panes/ArchivedPane.js'
-import { StubPane } from './panes/StubPane.js'
-import { SearchPane } from './panes/SearchPane.js'
-import { McpPane } from './panes/McpPane.js'
-import { SkillsPane } from './panes/SkillsPane.js'
+import { PANES, resolvePane } from './paneRegistry.js'
 import { Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
 import {
@@ -99,22 +91,19 @@ function WorkHead() {
 // when another tab is active. This preserves the xterm.js + WebSocket lifecycle
 // across tab switches; unmounting would trigger a reconnect storm and lose
 // scrollback. Other panes are cheap enough to mount/unmount on demand.
+//
+// Which panes exist, and what each renders, lives in paneRegistry.js.
 function Panes({ tab }) {
+  const terminal = resolvePane('terminal')
   return html`
     <div style=${{ display: tab === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
-      <${TerminalPane}/>
+      <${terminal.component} ...${terminal.props}/>
     </div>
-    ${tab === 'command-center' && html`<${CommandCenterPane}/>`}
-    ${tab === 'fleet'     && html`<${FleetPane}/>`}
-    ${tab === 'costs'     && html`<${CostsPane}/>`}
-    ${tab === 'search'    && html`<${SearchPane}/>`}
-    ${tab === 'archived'  && html`<${ArchivedPane}/>`}
-    ${tab === 'mcp'       && html`<${McpPane}/>`}
-    ${tab === 'skills'    && html`<${SkillsPane}/>`}
-    ${tab === 'conductor' && html`<${StubPane} title="Conductor"
-                              message="Conductor orchestration view is TUI-only. The web API does not expose child topology, bridges, or NEED escalation."/>`}
-    ${tab === 'watchers'  && html`<${StubPane} title="Watchers"
-                              message="Watcher framework events are routed in the backend; the web API does not surface event streams or routing config."/>`}
+    ${Object.keys(PANES).map(id => {
+      if (id === 'terminal' || id !== tab) return null
+      const pane = resolvePane(id)
+      return html`<${pane.component} key=${id} ...${pane.props}/>`
+    })}
   `
 }
 

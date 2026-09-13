@@ -59,6 +59,10 @@ export default defineConfig({
       'htm/preact': aliasFor('htm/preact'),
       '@preact/signals': aliasFor('@preact/signals'),
       '@preact/signals-core': aliasFor('@preact/signals-core'),
+      // xterm ships via the index.html import map, not npm; see helpers/xtermStub.js.
+      '@xterm/xterm': resolve(import.meta.dirname, 'helpers', 'xtermStub.js'),
+      '@xterm/addon-fit': resolve(import.meta.dirname, 'helpers', 'xtermStub.js'),
+      '@xterm/addon-webgl': resolve(import.meta.dirname, 'helpers', 'xtermStub.js'),
     },
   },
 })

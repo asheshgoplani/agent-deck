@@ -648,3 +648,15 @@ func filterDefined(names []string) []string {
 type errInvalidScope string
 
 func (e errInvalidScope) Error() string { return "invalid MCP scope: " + string(e) }
+
+// MCP management (Web UI parity with TUI `m` key dialog). Closes the
+// four MISSING rows under "MCP MANAGEMENT" in PARITY_MATRIX.md.
+func init() {
+	registerFeatureRoutes(func(s *Server, mux *http.ServeMux) {
+		mux.HandleFunc("/api/mcps", s.handleMCPsCatalog)
+		mux.HandleFunc("GET /api/sessions/{id}/mcps", s.handleSessionMCPsRouter)
+		mux.HandleFunc("POST /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
+		mux.HandleFunc("DELETE /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
+		mux.HandleFunc("PATCH /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
+	})
+}
