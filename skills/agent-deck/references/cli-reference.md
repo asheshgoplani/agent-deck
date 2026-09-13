@@ -320,6 +320,14 @@ Default behavior:
 - Verifies processing starts after send.
 - If Claude leaves a pasted prompt unsent (`[Pasted text ...]`), retries `Enter` automatically.
 - Avoids unnecessary retry `Enter` presses when session is already `waiting`/`idle`.
+- Never sends interrupt keys (Ctrl-C) into a target, whatever it observes.
+
+Delivery verdict (`--json` carries `delivery` and a machine-checkable `submitted` boolean):
+- `submitted` (exit 0, `submitted: true`): the target accepted the message and began its turn.
+- `queued` (exit 0, `submitted: false`): the target was mid-turn per its hook-driven status and the body newly arrived in its pane; Claude holds it as a queued message and takes it up when the current turn ends. Do not resend.
+- `typed`, `typed_not_submitted`, `no_evidence`, `line_too_long`, `composer_blocked`, `send_failed` (exit 1, `code: DELIVERY_FAILED`): not delivered; see the error text for whether a retry is safe.
+
+With `--wait` or `--stream` on a Claude target, the reply is bound to the transcript record of this exact message: a message queued behind a live turn waits for its own turn to start, and the in-flight turn's output is never returned as its reply. Slash commands and non-Claude tools keep the timestamp-based best-effort reply.
 
 ### session approve
 

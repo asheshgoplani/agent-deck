@@ -46,7 +46,7 @@ func TestTurnIdentity_InterleavedSendsReturnOwnNonce(t *testing.T) {
 	for i := range prompts {
 		go func(i int) {
 			ready.Done()
-			id, err := AwaitTurnIdentity(path, prompts[i], cursor, 3*time.Second, time.Millisecond)
+			id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: prompts[i], Cursor: cursor}, 3*time.Second, time.Millisecond)
 			if err != nil {
 				results <- result{i: i, err: err}
 				return
@@ -87,7 +87,7 @@ func TestAwaitTurnIdentity_RejectsMissingUUID(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"role":"user","content":"mine"}}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AwaitTurnIdentity(path, "mine", 0, time.Second, time.Millisecond); err == nil {
+	if _, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "mine"}, time.Second, time.Millisecond); err == nil {
 		t.Fatal("missing UUID was accepted as turn identity")
 	}
 }
@@ -103,7 +103,7 @@ func TestAwaitTurnIdentity_RetainsPartialTrailingRecord(t *testing.T) {
 		err error
 	}, 1)
 	go func() {
-		id, err := AwaitTurnIdentity(path, "mine", 0, time.Second, time.Millisecond)
+		id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "mine"}, time.Second, time.Millisecond)
 		done <- struct {
 			id  TurnIdentity
 			err error

@@ -29,13 +29,16 @@ func hookIdle() (bool, bool)    { return false, true }
 func hookUnknown() (bool, bool) { return false, false }
 
 // TestInterruptSuppressedWhenHookStatusBusy pins the fix (a): the hook says
-// the target is mid-turn, the body is not on screen, the heuristic never
-// reports active. No interrupt keys, exactly one delivery, `queued` verdict.
+// the target is mid-turn, the body lands and then scrolls off screen, the
+// heuristic never reports active. No interrupt keys, exactly one delivery,
+// `queued` verdict. (Round 2, #1978: the first capture is the pre-send
+// baseline and the body must newly appear against it — see
+// issue1978_queued_delivery_test.go.)
 func TestInterruptSuppressedWhenHookStatusBusy(t *testing.T) {
 	const msg = "PROBE reply with only OK"
 	mock := &mockSendRetryTarget{
 		statuses: []string{"idle"},
-		panes:    []string{busyPaneBodyScrolledOff()},
+		panes:    []string{busyPaneBodyScrolledOff(), busyPaneWithBody(msg), busyPaneBodyScrolledOff()},
 	}
 
 	delivery, err := sendWithRetryTarget(mock, msg, false, sendRetryOptions{
@@ -64,15 +67,16 @@ func TestInterruptSuppressedWhenHookStatusBusy(t *testing.T) {
 // resend budget is intentionally disabled, but that must not disable the busy
 // classification or turn a safely queued message into a delivery failure.
 func TestNoWaitClassifiesHookBusyAsQueued(t *testing.T) {
+	const msg = "queued no-wait message"
 	mock := &mockSendRetryTarget{
 		statuses: []string{"idle"},
-		panes:    []string{busyPaneBodyScrolledOff()},
+		panes:    []string{busyPaneBodyScrolledOff(), busyPaneWithBody(msg), busyPaneBodyScrolledOff()},
 	}
 	opts := noWaitSendOptions()
 	opts.checkDelay = 0
 	opts.targetBusyByHook = hookBusy
 
-	delivery, err := sendWithRetryTarget(mock, "queued no-wait message", false, opts)
+	delivery, err := sendWithRetryTarget(mock, msg, false, opts)
 	if err != nil {
 		t.Fatalf("hook-busy --no-wait send returned error: %v", err)
 	}
