@@ -1,0 +1,116 @@
+# Structural quality advisory (sentrux)
+#
+# Advisory only. This job never fails a PR and is not in the branch ruleset.
+# It measures the import/call graph of the PR head against the merge base
+# with sentrux (https://sentrux.dev, MIT) and writes the delta to the job
+# summary: quality signal, circular dependencies, god files, complex
+# functions, dependency depth. Issue #2148 records the baseline and the
+# known limit: Go module and stdlib imports mostly do not resolve in
+# sentrux v0.5.x, so treat the headline number as indicative, and the
+# cycle, god-file and complexity counts as the useful part.
+#
+# The sentrux version and its grammar bundle are pinned to one release tag.
+# Bump SENTRUX_VERSION deliberately; do not use the moving install script.
+name: Structure advisory
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.go'
+      - '**/*.js'
+      - '**/*.ts'
+      - '**/*.py'
+      - '.github/workflows/structure-advisory.yml'
+permissions:
+  contents: read
+env:
+  SENTRUX_VERSION: v0.5.7
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Install sentrux (pinned release)
+        run: |
+          set -eu
+          base="https://github.com/sentrux/sentrux/releases/download/${SENTRUX_VERSION}"
+          curl -fsSL -o /usr/local/bin/sentrux "${base}/sentrux-linux-x86_64"
+          chmod +x /usr/local/bin/sentrux
+          sentrux --version
+          sentrux analytics off || true
+
+      - name: Check out merge base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          fetch-depth: 1
+
+      - name: Check out PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          fetch-depth: 1
+
+      - name: Measure base and head
+        run: |
+          set -eu
+          (cd base && sentrux gate --save . > ../base.log 2>&1) || echo "base measurement failed" >> base.log
+          (cd head && sentrux gate --save . > ../head.log 2>&1) || echo "head measurement failed" >> head.log
+          cp base/.sentrux/baseline.json base.json 2>/dev/null || echo '{}' > base.json
+          cp head/.sentrux/baseline.json head.json 2>/dev/null || echo '{}' > head.json
+
+      - name: Write summary
+        run: |
+          python3 - <<'PY'
+          import json, os
+          def load(p):
+              try:
+                  return json.load(open(p))
+              except Exception:
+                  return {}
+          b, h = load("base.json"), load("head.json")
+          rows = [
+              ("quality_signal", "Quality signal (higher is better)", 3),
+              ("cycle_count", "Circular dependencies", 0),
+              ("god_file_count", "God files", 0),
+              ("complex_fn_count", "Complex functions", 0),
+              ("max_depth", "Max dependency depth", 0),
+              ("cross_module_edges", "Cross-module edges", 0),
+              ("total_import_edges", "Import edges resolved", 0),
+          ]
+          out = ["## Structure advisory (sentrux " + os.environ.get("SENTRUX_VERSION", "") + ")", "",
+                 "Advisory only; this check never blocks. See issue #2148 for limits.", "",
+                 "| Metric | Base | Head | Delta |", "|---|---:|---:|---:|"]
+          worse = []
+          for key, label, nd in rows:
+              bv, hv = b.get(key), h.get(key)
+              if bv is None or hv is None:
+                  out.append(f"| {label} | {bv if bv is not None else 'n/a'} | {hv if hv is not None else 'n/a'} | |")
+                  continue
+              d = hv - bv
+              fmt = (lambda v: f"{v:.{nd}f}") if nd else (lambda v: f"{int(v)}")
+              sign = "+" if d > 0 else ""
+              out.append(f"| {label} | {fmt(bv)} | {fmt(hv)} | {sign}{fmt(d)} |")
+              if key == "quality_signal" and d < -0.005: worse.append(label)
+              if key in ("cycle_count", "god_file_count") and d > 0: worse.append(label)
+          out.append("")
+          if not b or not h:
+              out.append("One side could not be measured; see the logs below.")
+          elif worse:
+              out.append("Worth a look before merge: " + ", ".join(worse) + ".")
+          else:
+              out.append("No structural regression detected.")
+          for name in ("base.log", "head.log"):
+              try:
+                  txt = open(name).read().strip()
+              except Exception:
+                  txt = ""
+              if txt:
+                  out += ["", f"<details><summary>{name}</summary>", "", "```", txt[-3000:], "```", "</details>"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(out) + "\n")
+          print("\n".join(out))
+          PY
