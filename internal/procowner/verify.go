@@ -211,6 +211,9 @@ func Verify(p Prober, r *Receipt) Report {
 				r.Provider, name),
 		}
 	}
+	if r.State == StateUnverifiedSpawn {
+		return verifyUnverifiedSpawn(p, r)
+	}
 
 	// A boot change is the one situation where every recorded identity is
 	// provably gone without inspecting a single PID: start identities are
@@ -266,4 +269,32 @@ func Verify(p Prober, r *Receipt) Report {
 		}
 	}
 	return report
+}
+
+// verifyUnverifiedSpawn classifies a fail-closed spawn marker. It is unknown by
+// construction — there is no identity to check — with one exception: a marker
+// from a previous boot is proof that the pane process and everything it started
+// are gone, so it may be retired like any pre-boot receipt.
+func verifyUnverifiedSpawn(p Prober, r *Receipt) Report {
+	if r.BootID != "" {
+		if boot, err := p.BootID(); err == nil && boot != r.BootID {
+			return Report{
+				Verdict: VerdictClear,
+				Members: []MemberStatus{{Member: r.Leader, State: StateGone,
+					Detail: "recorded before the current boot"}},
+				Reason:      "unverified spawn predates the current boot, so everything it started is gone",
+				BootChanged: true,
+			}
+		}
+	}
+	detail := "identity could not be read at spawn"
+	if r.Note != "" {
+		detail += ": " + r.Note
+	}
+	return Report{
+		Verdict: VerdictUnknown,
+		Members: []MemberStatus{{Member: r.Leader, State: StateUnknown, Detail: detail}},
+		Reason: fmt.Sprintf("the spawn's pane process (pid %d) could not be identified, so anything it started is unaccounted for; nothing was signalled",
+			r.Leader.PID),
+	}
 }

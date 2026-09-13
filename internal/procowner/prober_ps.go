@@ -71,34 +71,6 @@ func parsePSTable(out string) []ProcInfo {
 	return infos
 }
 
-// descendantsFromTable follows parent links down from root over a single
-// snapshot of the process table.
-func descendantsFromTable(root ProcInfo, table []ProcInfo) []ProcInfo {
-	byParent := map[int][]ProcInfo{}
-	for _, info := range table {
-		if info.PID <= 1 || info.IsZombie() {
-			continue
-		}
-		byParent[info.PPID] = append(byParent[info.PPID], info)
-	}
-	var out []ProcInfo
-	seen := map[int]bool{root.PID: true}
-	queue := []int{root.PID}
-	for len(queue) > 0 {
-		parent := queue[0]
-		queue = queue[1:]
-		for _, child := range byParent[parent] {
-			if seen[child.PID] {
-				continue
-			}
-			seen[child.PID] = true
-			out = append(out, child)
-			queue = append(queue, child.PID)
-		}
-	}
-	return out
-}
-
 // bootTimePattern extracts the seconds field from `sysctl -n kern.boottime`,
 // whose output looks like `{ sec = 1755300000, usec = 123456 } Sat Aug 16 ...`.
 var bootTimePattern = regexp.MustCompile(`sec\s*=\s*(\d+)`)

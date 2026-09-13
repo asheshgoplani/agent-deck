@@ -70,6 +70,13 @@ const (
 	// StateRecoveryRequired means verification could not prove the receipt
 	// either dead or ours. Nothing is signalled in this state.
 	StateRecoveryRequired = "recovery_required"
+	// StateUnverifiedSpawn is a fail-closed marker: the spawn's pane process
+	// existed but its identity could not be read, so nothing it launched can
+	// be attributed. The marker owns nothing and can never be signalled; it
+	// exists to refuse the next spawn until an operator resolves it, because a
+	// tree agent-deck launched and cannot account for is precisely the shape
+	// that duplicates. The leader carries the pid only.
+	StateUnverifiedSpawn = "unverified_spawn"
 )
 
 // Member roles.
@@ -204,15 +211,27 @@ func (r *Receipt) Validate() error {
 		return fmt.Errorf("%w: missing instance id", ErrCorruptReceipt)
 	case strings.TrimSpace(r.Provider) == "":
 		return fmt.Errorf("%w: missing provider", ErrCorruptReceipt)
+	}
+	switch r.State {
+	case StateUnverifiedSpawn:
+		// The marker names a pid it could not identify; a boot id may be
+		// missing too (reading it can be what failed). It never has members.
+		if r.Leader.PID <= 1 {
+			return fmt.Errorf("%w: unverified spawn marker has no pane pid", ErrCorruptReceipt)
+		}
+		if len(r.Members) > 0 {
+			return fmt.Errorf("%w: unverified spawn marker cannot carry members", ErrCorruptReceipt)
+		}
+		return nil
+	case StateLive, StateReaping, StateRecoveryRequired:
+	default:
+		return fmt.Errorf("%w: unknown state %q", ErrCorruptReceipt, r.State)
+	}
+	switch {
 	case strings.TrimSpace(r.BootID) == "":
 		return fmt.Errorf("%w: missing boot id", ErrCorruptReceipt)
 	case !r.Leader.valid():
 		return fmt.Errorf("%w: leader identity is incomplete", ErrCorruptReceipt)
-	}
-	switch r.State {
-	case StateLive, StateReaping, StateRecoveryRequired:
-	default:
-		return fmt.Errorf("%w: unknown state %q", ErrCorruptReceipt, r.State)
 	}
 	for idx, m := range r.Members {
 		if !m.valid() {

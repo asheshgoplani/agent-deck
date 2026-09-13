@@ -64,6 +64,34 @@ func TestRenderOwnershipStatus_UnreadableReceiptSaysSo(t *testing.T) {
 	assert.False(t, status.Admissible(), "an unreadable receipt is never admissible")
 }
 
+func TestRenderOwnershipStatus_UnverifiedSpawnPointsAtAbandon(t *testing.T) {
+	inst := session.NewInstance("owner-render-unverified", t.TempDir())
+	status := session.OwnershipStatus{
+		InstanceID: inst.ID,
+		Receipt: &procowner.Receipt{
+			Version:    procowner.ReceiptVersion,
+			InstanceID: inst.ID,
+			Generation: 1,
+			State:      procowner.StateUnverifiedSpawn,
+			Provider:   procowner.ProviderLinuxProc,
+			Leader:     procowner.Member{PID: 4240, Role: procowner.RoleLeader},
+			Note:       "identity unreadable: read stat for pid 4240: permission denied",
+		},
+		Report: procowner.Report{
+			Verdict: procowner.VerdictUnknown,
+			Reason:  "the spawn's pane process (pid 4240) could not be identified",
+		},
+	}
+
+	out := renderOwnershipStatus(inst, status)
+	assert.Contains(t, out, "state unverified_spawn")
+	assert.Contains(t, out, "pid 4240")
+	assert.Contains(t, out, "nothing will be signalled")
+	assert.Contains(t, out, "agent-deck session ownership abandon "+inst.ID)
+	assert.NotContains(t, out, "reconcile", "there is nothing reconcile could prove is ours")
+	assert.False(t, status.Admissible())
+}
+
 func TestRenderOwnershipStatus_NoReceipt(t *testing.T) {
 	inst := session.NewInstance("owner-render-none", t.TempDir())
 	status := session.OwnershipStatus{InstanceID: inst.ID}

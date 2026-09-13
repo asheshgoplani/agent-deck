@@ -27,7 +27,33 @@ type Signaler interface {
 	Signal(pid int, sig syscall.Signal) error
 }
 
-// OSSignaler signals real processes.
+// PinnedProcess is a handle bound to one process rather than to a pid. Signals
+// sent through it reach the process it was opened on, or fail with ESRCH once
+// that process is gone — never a later occupant of the same pid.
+type PinnedProcess interface {
+	Signal(sig syscall.Signal) error
+	Close() error
+}
+
+// PinnedSignaler is a Signaler that can bind a pid to a PinnedProcess.
+//
+// Reap pins each member BEFORE verifying its identity and then signals through
+// the handle. Verification proves that the recorded process occupies the pid at
+// the moment of the check; a process cannot leave a pid and come back to it, so
+// it also occupied the pid at the earlier moment the handle was opened. The
+// handle is therefore bound to exactly the process the check vouched for, and
+// the window between "verify" and "kill" that a raw pid leaves open is closed.
+//
+// Pin returning an error is not fatal: Reap falls back to the verified raw
+// signal, which is what every platform without process handles gets.
+type PinnedSignaler interface {
+	Signaler
+	Pin(pid int) (PinnedProcess, error)
+}
+
+// OSSignaler signals real processes. On Linux it also implements
+// PinnedSignaler through pidfd (see reap_linux.go); elsewhere the raw pid path
+// is the only one the kernel offers.
 type OSSignaler struct{}
 
 // Signal implements Signaler.
@@ -120,10 +146,11 @@ func (r ReapReport) Describe() string {
 // to stop. Signalling the whole set first also gives a parent and its children
 // the same window to shut down cleanly.
 //
-// The one window this cannot close is between the verify and the kill syscall:
-// closing it entirely needs pidfd (Linux-only, and a syscall this package would
-// have to hand-roll). The window is microseconds wide and requires the pid
-// space to wrap inside it, and SIGTERM — the only signal that can land there
+// Where the Signaler can pin (Linux, via pidfd), the verify-then-kill window is
+// closed outright: the handle is opened first, the identity is verified second,
+// and the signal goes through the handle. Where it cannot, the window between
+// the verify and the kill syscall remains; it is microseconds wide, requires the
+// pid space to wrap inside it, and SIGTERM — the only signal that can land there
 // first — is survivable. Everything after that first signal is re-verified.
 func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 	opts = opts.withDefaults()
@@ -139,6 +166,19 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 			Reason: fmt.Sprintf("receipt was written by provider %q but this host verifies with %q; nothing was signalled",
 				r.Provider, p.Name()),
 		}
+	}
+	if r.State == StateUnverifiedSpawn {
+		// There is no identity to verify and therefore nothing that may be
+		// signalled. Verify already knows how to classify the marker.
+		report := Verify(p, r)
+		out := ReapReport{Verdict: report.Verdict, Reason: report.Reason}
+		for _, m := range report.Members {
+			out.Outcomes = append(out.Outcomes, ReapOutcome{Member: m.Member, Outcome: OutcomeNotSignalled, Detail: m.Detail})
+		}
+		if report.Verdict == VerdictClear {
+			out.Outcomes = nil
+		}
+		return out
 	}
 	// A receipt from a previous boot names processes that cannot exist. There
 	// is nothing to signal and nothing ambiguous about it.
@@ -173,6 +213,32 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 		pending = append(pending, m)
 	}
 
+	// Pin before verifying (see PinnedSignaler). A pin that fails with ESRCH
+	// is a process already gone; any other failure means this member is
+	// signalled the raw way after verification.
+	pins := map[string]PinnedProcess{}
+	defer func() {
+		for _, pin := range pins {
+			_ = pin.Close()
+		}
+	}()
+	if pinner, ok := s.(PinnedSignaler); ok {
+		var stillPending []Member
+		for _, m := range pending {
+			pin, err := pinner.Pin(m.PID)
+			switch {
+			case err == nil:
+				pins[m.Key()] = pin
+			case errors.Is(err, syscall.ESRCH), errors.Is(err, os.ErrProcessDone):
+				outcomes[m.Key()] = &ReapOutcome{Member: m, Outcome: OutcomeAlreadyGone,
+					Detail: "process does not exist"}
+				continue
+			}
+			stillPending = append(stillPending, m)
+		}
+		pending = stillPending
+	}
+
 	for _, step := range []struct {
 		sig   syscall.Signal
 		grace time.Duration
@@ -192,7 +258,13 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 				outcomes[m.Key()] = outcome
 				continue
 			}
-			if err := s.Signal(m.PID, step.sig); err != nil {
+			var err error
+			if pin, pinned := pins[m.Key()]; pinned {
+				err = pin.Signal(step.sig)
+			} else {
+				err = s.Signal(m.PID, step.sig)
+			}
+			if err != nil {
 				outcomes[m.Key()] = classifySignalError(m, err)
 				continue
 			}

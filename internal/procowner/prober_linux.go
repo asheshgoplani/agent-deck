@@ -153,14 +153,16 @@ func parseProcStat(data []byte) (ProcInfo, error) {
 	}, nil
 }
 
-// Descendants implements Prober by walking /proc once and following parent
-// links down from root.
+// Descendants implements Prober by reading /proc once and handing the snapshot
+// to descendantsOf, which follows parent links down from root and re-checks
+// every interior identity after the scan.
 //
 // One pass over /proc is deliberate: every (pid, ppid, start) triple comes from
 // a single read of that process's stat file, so a pid cannot be recorded with
 // another process's start identity. A process that exits mid-scan simply drops
 // out — a missed descendant is a process we never claim to own, which is the
-// safe direction to fail in.
+// safe direction to fail in. The pass is not atomic across processes, which is
+// why the walk itself verifies the links (see descendantsOf).
 func (p LinuxProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
 	if root.PID <= 0 {
 		return nil, fmt.Errorf("%w: pid %d", ErrNoProcess, root.PID)
@@ -169,7 +171,7 @@ func (p LinuxProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: read %s: %v", ErrUnreadable, procRoot, err)
 	}
-	byParent := map[int][]ProcInfo{}
+	table := make([]ProcInfo, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -182,25 +184,9 @@ func (p LinuxProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
 		if inspectErr != nil {
 			continue // vanished or unreadable: never guessed at
 		}
-		byParent[info.PPID] = append(byParent[info.PPID], info)
+		table = append(table, info)
 	}
-
-	var out []ProcInfo
-	seen := map[int]bool{root.PID: true}
-	queue := []int{root.PID}
-	for len(queue) > 0 {
-		parent := queue[0]
-		queue = queue[1:]
-		for _, child := range byParent[parent] {
-			if seen[child.PID] {
-				continue
-			}
-			seen[child.PID] = true
-			out = append(out, child)
-			queue = append(queue, child.PID)
-		}
-	}
-	return out, nil
+	return descendantsOf(p, root, table)
 }
 
 // CompareStart implements StartComparer. Linux start identities are clock ticks

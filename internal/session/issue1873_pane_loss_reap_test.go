@@ -18,27 +18,27 @@ import (
 //   - a deliberate stop must reap the tree even though its pane is long gone;
 //   - a second fast-death/restart wave must leave exactly one tree, then none.
 //
-// It deliberately does not care HOW the restart is answered: on fixed code it
-// is refused, on pre-fix code it is admitted. What is asserted is the count of
-// live wrapped trees after it, which is the invariant the issue asks for.
+// It is deterministic, not timed. The wrapper is held alive until the receipt
+// on disk names the escaped child (on pre-fix code there is no receipt, and the
+// hold simply expires), so attribution can never lose a scheduling race to the
+// pane's death. And the restart is judged by its outcome, not by a sleep: a
+// restart that returns nil must have produced a recorded second child (the
+// fixture fails loudly if it did not), and the live-tree count is asserted
+// after that.
 func TestIssue1873_WrappedTreeIsReapedAfterPaneLossAndNeverDuplicatedOnRestart(t *testing.T) {
 	requireEscapedWrapperSupport(t)
 
-	w := newEscapedWrapper(t, 800*time.Millisecond)
+	w := newSynchronisedEscapedWrapper(t)
 	inst, wave1 := startEscapedInstance(t, w, "test-1873-pane-loss-reap")
 
 	// --- Restart after pane loss: never a duplicate --------------------------
-	restartErr := inst.Restart()
-	// Pre-fix code admits the restart and the wrapper records its second child
-	// within a second; give that duplicate time to show up so the count below
-	// catches it instead of racing it.
-	waitForRecordedChildren(w, 2, 3*time.Second)
+	restartIsRefusedOrProvesADuplicate(t, inst, w)
 	assert.Equal(t, 1, liveWrappedTrees(w),
-		"a restart after pane loss must not start a second wrapped tree (restart err=%v)", restartErr)
+		"a restart after pane loss must not start a second wrapped tree")
 	requireChildAlive(t, wave1, "the survivor is never signalled by a restart")
 
 	// --- Stop after pane loss: the escaped tree is reaped --------------------
-	require.NoError(t, inst.KillAndWait())
+	stopEscapedInstance(t, inst, true)
 	requireChildGone(t, wave1, "a deliberate stop must reap the wrapped tree that escaped its pane")
 	assert.Equal(t, 0, liveWrappedTrees(w), "nothing owned may survive a stop")
 
@@ -47,32 +47,37 @@ func TestIssue1873_WrappedTreeIsReapedAfterPaneLossAndNeverDuplicatedOnRestart(t
 	require.NoError(t, inst.Restart(), "restart must be admitted once nothing is owned")
 	kids := w.waitForChildren(recorded+1, 15*time.Second)
 	wave2 := kids[len(kids)-1]
+	waitForReceiptToRecord(inst.ID, wave2, 10*time.Second)
+	w.release()
 	require.True(t, paneGoneWithin(inst, 20*time.Second), "the second wave dies the same way")
 	requireChildAlive(t, wave2, "the second wrapped tree escaped its pane too")
 	assert.False(t, childAlive(wave1), "the first wave's tree must still be dead")
 	assert.Equal(t, 1, liveWrappedTrees(w), "exactly one wrapped tree may be alive after two waves")
 
-	recorded = len(w.children())
-	restartErr = inst.Restart()
-	waitForRecordedChildren(w, recorded+1, 3*time.Second)
-	assert.Equal(t, 1, liveWrappedTrees(w),
-		"the second wave's restart must not duplicate either (restart err=%v)", restartErr)
+	restartIsRefusedOrProvesADuplicate(t, inst, w)
+	assert.Equal(t, 1, liveWrappedTrees(w), "the second wave's restart must not duplicate either")
 
-	require.NoError(t, inst.KillAndWait())
+	stopEscapedInstance(t, inst, true)
 	requireChildGone(t, wave2, "a stop must reap the second wave's tree too")
 	assert.Equal(t, 0, liveWrappedTrees(w), "no survivor from either wave is left behind")
 }
 
-// waitForRecordedChildren waits, without failing, until the wrapper has recorded
-// want children or the timeout passes. It exists for the pre-fix branch of the
-// test above, where a duplicate is the expected (wrong) outcome and must be
-// given time to appear.
-func waitForRecordedChildren(w *escapedWrapper, want int, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if len(w.children()) >= want {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+// restartIsRefusedOrProvesADuplicate calls Restart and pins down the outcome
+// either way. A refusal is the fixed behaviour and must leave no replacement
+// pane. An admitted restart (pre-fix) must show its second child in the record
+// before the caller counts live trees — waiting on the record rather than on a
+// clock is what keeps the count honest on both sides.
+func restartIsRefusedOrProvesADuplicate(t *testing.T, inst *Instance, w *escapedWrapper) {
+	t.Helper()
+	recorded := len(w.children())
+	err := inst.Restart()
+	if err != nil {
+		assert.False(t, paneAliveNow(inst.GetTmuxSession()),
+			"a refused restart must not have started a replacement pane: %v", err)
+		assert.Len(t, w.children(), recorded, "a refused restart must not have recorded a new child")
+		return
 	}
+	// Admitted: the duplicate is a certainty, not a possibility, and the
+	// fixture fails the test loudly if it never shows up.
+	w.waitForChildren(recorded+1, 15*time.Second)
 }

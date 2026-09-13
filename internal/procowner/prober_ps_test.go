@@ -53,20 +53,6 @@ garbage row that ps would never print
 	assert.Equal(t, 4711, table[1].PID)
 }
 
-func TestDescendantsFromTable(t *testing.T) {
-	table := []ProcInfo{
-		{PID: 100, PPID: 1, StartID: "a"},
-		{PID: 101, PPID: 100, StartID: "b"},
-		{PID: 102, PPID: 101, StartID: "c"},
-		{PID: 103, PPID: 100, StartID: "e", State: "Z"},
-		{PID: 200, PPID: 1, StartID: "d"},
-	}
-	kids := descendantsFromTable(ProcInfo{PID: 100}, table)
-	require.Len(t, kids, 2, "a zombie descendant is not a live process")
-	assert.Equal(t, 101, kids[0].PID)
-	assert.Equal(t, 102, kids[1].PID)
-}
-
 func TestParseKernBootTime(t *testing.T) {
 	id, err := parseKernBootTime("{ sec = 1755300000, usec = 123456 } Sat Aug 16 09:00:00 2026\n")
 	require.NoError(t, err)

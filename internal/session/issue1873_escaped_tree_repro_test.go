@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,6 +39,77 @@ type escapedWrapper struct {
 	script string
 	recDir string
 	linger time.Duration
+	// beforePaneLoss, when set, runs in startEscapedInstance once the child
+	// has published its identity and BEFORE the pane is allowed to die. It is
+	// where a test synchronises on receipt state and then releases the
+	// wrapper.
+	beforePaneLoss func(inst *Instance, child escapedChild)
+}
+
+// release lets every wrapper that has published a child exit now, instead of
+// at its linger bound. Wrappers are addressed by pid (the ready.<pid> marker),
+// so releasing wave 1 does not pre-release a wave 2 wrapper started later.
+func (w *escapedWrapper) release() {
+	entries, _ := filepath.Glob(filepath.Join(w.recDir, "ready.*"))
+	for _, path := range entries {
+		pid := strings.TrimPrefix(filepath.Base(path), "ready.")
+		_ = os.WriteFile(filepath.Join(w.recDir, "release."+pid), nil, 0o600)
+	}
+}
+
+// fixtureOwnershipDir mirrors the production receipt directory resolution so a
+// test can watch the receipt file directly, without depending on any symbol the
+// fix adds (the same data-path helpers exist on pre-fix code).
+func fixtureOwnershipDir() string {
+	path, err := runtimeDataPath("ownership")
+	if err != nil {
+		return tempAgentDeckPath("runtime", "ownership")
+	}
+	return path
+}
+
+// receiptRecords reports whether the instance's on-disk receipt currently names
+// pid. It reads the JSON generically: on pre-fix code there is no receipt and
+// the answer is simply false.
+func receiptRecords(instanceID string, pid int) bool {
+	data, err := os.ReadFile(filepath.Join(fixtureOwnershipDir(), instanceID+".json"))
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		Leader struct {
+			PID int `json:"pid"`
+		} `json:"leader"`
+		Members []struct {
+			PID int `json:"pid"`
+		} `json:"members"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	if doc.Leader.PID == pid {
+		return true
+	}
+	for _, m := range doc.Members {
+		if m.PID == pid {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForReceiptToRecord blocks until the receipt names the child or the
+// timeout passes, and reports which. It never fails the test: the pre-fix
+// branch of an acceptance test legitimately never sees a receipt.
+func waitForReceiptToRecord(instanceID string, child escapedChild, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if receiptRecords(instanceID, child.PID) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return receiptRecords(instanceID, child.PID)
 }
 
 // escapedChild is one recorded survivor.
@@ -69,10 +141,17 @@ func requireEscapedWrapperSupport(t *testing.T) {
 // pid; fields 22 and 5 of /proc/<pid>/stat are its start time and its process
 // group. The marker file is what lets the wrapper wait until the child has
 // published its identity before dying, so the record is never half-written.
+//
+// After that the wrapper lingers until EITHER the test releases it (a
+// release.<wrapper pid> file, see escapedWrapper.release) OR the linger bound
+// elapses. The release is what makes a test deterministic: it can hold the
+// wrapper alive until it has observed whatever state it needs — the receipt
+// naming the child — instead of hoping a fixed sleep is long enough.
 const wrapperScript = `#!/bin/sh
 REC="$1"
 LINGER="$2"
 MARK="$REC/ready.$$"
+RELEASE="$REC/release.$$"
 setsid /bin/sh -c '
   trap "" HUP
   R="$1"; M="$2"
@@ -84,7 +163,10 @@ setsid /bin/sh -c '
 ' fakeagent1873 "$REC" "$MARK" &
 n=0
 while [ ! -f "$MARK" ] && [ $n -lt 200 ]; do n=$((n+1)); sleep 0.05; done
-sleep "$LINGER"
+# linger in 50ms steps, leaving early once released
+steps=$(awk "BEGIN{printf \"%d\", $LINGER*20}")
+n=0
+while [ ! -f "$RELEASE" ] && [ $n -lt $steps ]; do n=$((n+1)); sleep 0.05; done
 exit 3
 `
 
@@ -107,6 +189,21 @@ func newEscapedWrapper(t *testing.T, linger time.Duration) *escapedWrapper {
 
 	w := &escapedWrapper{t: t, script: script, recDir: recDir, linger: linger}
 	t.Cleanup(w.killOwnPIDs)
+	return w
+}
+
+// newSynchronisedEscapedWrapper is the fixture most tests want: the wrapper is
+// held alive until the receipt names its child, then released. Attribution
+// therefore cannot lose a scheduling race to the pane's death, and the tests
+// built on it are deterministic rather than timed. The linger is only a bound
+// for code that never writes a receipt.
+func newSynchronisedEscapedWrapper(t *testing.T) *escapedWrapper {
+	t.Helper()
+	w := newEscapedWrapper(t, 15*time.Second)
+	w.beforePaneLoss = func(inst *Instance, child escapedChild) {
+		waitForReceiptToRecord(inst.ID, child, 10*time.Second)
+		w.release()
+	}
 	return w
 }
 
@@ -284,6 +381,29 @@ func requireChildGone(t *testing.T, child escapedChild, msg string) {
 	require.True(t, waitForChildGone(child, 5*time.Second), "%s: %s", msg, child)
 }
 
+// stopEscapedInstance stops the instance and tolerates exactly one kind of
+// error: tmux reporting that the session it was asked to kill is already gone.
+// The pane died by construction in these tests, and Session.Kill can surface
+// that as an error when its existence cache is briefly stale; the ownership
+// reap runs before that return either way, and that reap is what these tests
+// are about. Any other failure, or a session that is really still alive, fails
+// the test.
+func stopEscapedInstance(t *testing.T, inst *Instance, sync bool) {
+	t.Helper()
+	var err error
+	if sync {
+		err = inst.KillAndWait()
+	} else {
+		err = inst.Kill()
+	}
+	if err == nil {
+		return
+	}
+	require.Contains(t, err.Error(), "failed to kill tmux session", "unexpected stop error: %v", err)
+	require.False(t, paneAliveNow(inst.GetTmuxSession()),
+		"stop reported a tmux failure while the pane is still alive: %v", err)
+}
+
 // startEscapedInstance starts an instance through the fake wrapper and waits
 // for the pane to die while the wrapped child survives — the exact state the
 // issue reports.
@@ -308,6 +428,9 @@ func startEscapedInstance(t *testing.T, w *escapedWrapper, id string) (*Instance
 
 	kids := w.waitForChildren(1, 15*time.Second)
 	child := kids[len(kids)-1]
+	if w.beforePaneLoss != nil {
+		w.beforePaneLoss(inst, child)
+	}
 	require.True(t, paneGoneWithin(inst, 20*time.Second),
 		"the pane must die inside the fast-death window for this reproduction")
 	requireChildAlive(t, child, "the wrapped child must survive the pane it was launched from")
@@ -327,7 +450,7 @@ func startEscapedInstance(t *testing.T, w *escapedWrapper, id string) (*Instance
 func TestIssue1873_RestartIsNotAdmittedWhileTheOwnedTreeSurvives(t *testing.T) {
 	requireEscapedWrapperSupport(t)
 
-	w := newEscapedWrapper(t, 800*time.Millisecond)
+	w := newSynchronisedEscapedWrapper(t)
 	inst, survivor := startEscapedInstance(t, w, "test-1873-escaped")
 
 	err := inst.Restart()
@@ -348,9 +471,9 @@ func TestIssue1873_RestartIsNotAdmittedWhileTheOwnedTreeSurvives(t *testing.T) {
 func TestIssue1873_TeardownReapsTheEscapedTree(t *testing.T) {
 	requireEscapedWrapperSupport(t)
 
-	w := newEscapedWrapper(t, 800*time.Millisecond)
+	w := newSynchronisedEscapedWrapper(t)
 	inst, survivor := startEscapedInstance(t, w, "test-1873-teardown")
 
-	require.NoError(t, inst.Kill())
+	stopEscapedInstance(t, inst, false)
 	requireChildGone(t, survivor, "a deliberate stop must reap the escaped tree")
 }

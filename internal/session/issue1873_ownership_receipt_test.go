@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"testing"
@@ -28,7 +29,7 @@ import (
 func TestIssue1873_TwoFastDeathWavesLeaveExactlyOneOwnedTree(t *testing.T) {
 	requireEscapedWrapperSupport(t)
 
-	w := newEscapedWrapper(t, 2*time.Second)
+	w := newSynchronisedEscapedWrapper(t)
 	inst, wave1 := startEscapedInstance(t, w, "test-1873-two-wave")
 
 	// --- Wave 1 -----------------------------------------------------------
@@ -60,6 +61,9 @@ func TestIssue1873_TwoFastDeathWavesLeaveExactlyOneOwnedTree(t *testing.T) {
 	require.NoError(t, inst.Restart(), "restart must be admitted once nothing is owned")
 	kids := w.waitForChildren(2, 15*time.Second)
 	wave2 := kids[len(kids)-1]
+	require.True(t, waitForReceiptToRecord(inst.ID, wave2, 10*time.Second),
+		"the second wave's receipt must name its child before the pane is allowed to die")
+	w.release()
 	require.True(t, paneGoneWithin(inst, 20*time.Second), "the second wave dies the same way")
 	requireChildAlive(t, wave2, "the second wrapped tree escaped its pane too")
 
@@ -98,7 +102,7 @@ func TestIssue1873_TwoFastDeathWavesLeaveExactlyOneOwnedTree(t *testing.T) {
 func TestIssue1873_ConcurrentRestartsAreBothRefused(t *testing.T) {
 	requireEscapedWrapperSupport(t)
 
-	w := newEscapedWrapper(t, 800*time.Millisecond)
+	w := newSynchronisedEscapedWrapper(t)
 	inst, survivor := startEscapedInstance(t, w, "test-1873-race")
 
 	var wg sync.WaitGroup
@@ -391,6 +395,9 @@ type sessionFakeProber struct {
 	bootErr error
 	procs   map[int]procowner.ProcInfo
 	errs    map[int]error
+	// failAll makes every Inspect fail, for pids the test cannot know ahead
+	// of time (a real pane's).
+	failAll error
 }
 
 func newSessionFakeProber() *sessionFakeProber {
@@ -415,6 +422,9 @@ func (p *sessionFakeProber) BootID() (string, error) {
 }
 
 func (p *sessionFakeProber) Inspect(pid int) (procowner.ProcInfo, error) {
+	if p.failAll != nil {
+		return procowner.ProcInfo{}, p.failAll
+	}
 	if err, ok := p.errs[pid]; ok {
 		return procowner.ProcInfo{}, err
 	}
@@ -445,4 +455,48 @@ func (c *countingSignaler) Signal(pid int, sig syscall.Signal) error {
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, signalRecord{pid: pid, sig: sig})
 	return nil
+}
+
+// A pane process whose identity cannot be read at spawn is not "no ownership":
+// it is a tree agent-deck launched and cannot account for. The spawn leaves a
+// fail-closed marker, the next restart is refused with the pid it could not
+// identify, and only an explicit abandon (which signals nothing) admits a
+// replacement.
+func TestIssue1873_UnreadableIdentityAtSpawnFailsClosed(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	prober := newSessionFakeProber()
+	prober.failAll = fmt.Errorf("%w: /proc unreadable", procowner.ErrUnreadable)
+	signaler := &countingSignaler{}
+	restore := swapOwnershipProbe(t, prober, signaler)
+	defer restore()
+
+	inst := NewInstance("test-1873-unreadable-spawn", t.TempDir())
+	inst.Tool = "customwrap1873"
+	inst.Command = "sleep 30"
+	require.NoError(t, inst.Start())
+	t.Cleanup(func() { _ = inst.Kill() })
+
+	status := inst.OwnershipStatus()
+	require.NoError(t, status.LoadErr)
+	require.NotNil(t, status.Receipt, "an unreadable identity must leave a marker, not nothing")
+	assert.Equal(t, procowner.StateUnverifiedSpawn, status.Receipt.State)
+	assert.Greater(t, status.Receipt.Leader.PID, 1, "the marker names the pane process it could not identify")
+	assert.False(t, status.Admissible())
+
+	err := inst.Restart()
+	require.Error(t, err, "a restart must not be admitted over a spawn whose tree is unaccounted for")
+	assert.True(t, IsOwnedProcessRecoveryRequired(err), "want a typed recovery error, got %T: %v", err, err)
+	assert.Contains(t, err.Error(), strconv.Itoa(status.Receipt.Leader.PID))
+	assert.Empty(t, signaler.calls, "nothing is ever signalled on the strength of a marker")
+
+	// Reconcile cannot help: there is nothing it can prove is ours.
+	report, err := inst.ReconcileOwnership()
+	require.NoError(t, err)
+	assert.Equal(t, procowner.VerdictUnknown, report.Verdict)
+	assert.Empty(t, signaler.calls)
+
+	// The operator's explicit decision is the only way through.
+	require.NoError(t, inst.AbandonOwnership())
+	prober.failAll = nil
+	require.NoError(t, inst.Restart(), "once abandoned, the restart is admitted")
 }

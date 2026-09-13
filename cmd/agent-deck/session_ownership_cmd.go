@@ -224,6 +224,12 @@ func renderOwnershipStatus(inst *session.Instance, status session.OwnershipStatu
 	fmt.Fprintf(&b, "Members:  %d recorded\n", len(r.Members))
 	fmt.Fprintf(&b, "Pane:     %s\n", paneAttachmentLabel(status.PaneAttached))
 	fmt.Fprintf(&b, "Verdict:  %s\n", status.Report.Describe())
+	if r.State == procowner.StateUnverifiedSpawn {
+		fmt.Fprintf(&b, "\nThe last spawn's pane process (pid %d) could not be identified, so anything it\n", r.Leader.PID)
+		b.WriteString("started is unaccounted for. Nothing is owned and nothing will be signalled.\n")
+		b.WriteString("A start or restart is refused until you decide:\n")
+		fmt.Fprintf(&b, "  agent-deck session ownership abandon %s --yes\n", inst.ID)
+	}
 	if len(status.Survivors) > 0 {
 		fmt.Fprintf(&b, "\n%d owned process(es) are alive outside this session's pane:\n", len(status.Survivors))
 		for _, m := range status.Survivors {

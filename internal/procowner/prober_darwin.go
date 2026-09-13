@@ -71,8 +71,9 @@ func (DarwinProber) Inspect(pid int) (ProcInfo, error) {
 	return rows[0], nil
 }
 
-// Descendants implements Prober over a single `ps -A` snapshot.
-func (DarwinProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
+// Descendants implements Prober over a single `ps -A` snapshot, walked and
+// identity-checked by descendantsOf.
+func (p DarwinProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
 	if root.PID <= 0 {
 		return nil, fmt.Errorf("%w: pid %d", ErrNoProcess, root.PID)
 	}
@@ -80,7 +81,7 @@ func (DarwinProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: ps -A: %v", ErrUnreadable, err)
 	}
-	return descendantsFromTable(root, parsePSTable(out)), nil
+	return descendantsOf(p, root, parsePSTable(out))
 }
 
 func runBounded(name string, args ...string) (string, error) {

@@ -57,6 +57,12 @@ var (
 // ownershipStores caches one Store per directory.
 var ownershipStores sync.Map // dir -> *procowner.Store
 
+// ownershipUnpersisted records instances whose fail-closed marker could not
+// even be written (the store itself failed). It is the last line: in-process
+// only, so a CLI in another process cannot see it, but this process will not
+// admit a spawn it knows it cannot account for. Cleared by AbandonOwnership.
+var ownershipUnpersisted sync.Map // instanceID -> reason string
+
 // ownershipReceiptLock is the cross-process serialization for a receipt's whole
 // load → check → write cycle.
 //
@@ -165,6 +171,9 @@ func (s OwnershipStatus) Admissible() bool {
 	if s.LoadErr != nil {
 		return false
 	}
+	if _, unpersisted := ownershipUnpersisted.Load(s.InstanceID); unpersisted {
+		return false
+	}
 	if s.Receipt == nil {
 		return true
 	}
@@ -176,6 +185,9 @@ func (s OwnershipStatus) Admissible() bool {
 
 // Reason renders why a spawn is or is not admissible.
 func (s OwnershipStatus) Reason() string {
+	if reason, unpersisted := ownershipUnpersisted.Load(s.InstanceID); unpersisted {
+		return "the last spawn's ownership could not be recorded: " + reason.(string)
+	}
 	switch {
 	case s.LoadErr != nil:
 		return "the ownership receipt could not be read: " + s.LoadErr.Error()
@@ -386,10 +398,23 @@ func (i *Instance) commitOwnershipAfterRestart(command string) {
 // spawn or a deliberate stop takes over, and so claiming a receipt never
 // supersedes the watcher the caller started alongside it.
 //
-// Best-effort by construction: a spawn that cannot be given a receipt is still
-// a spawn. What it must never do is record a claim it cannot substantiate, so
-// every failure path here writes nothing at all — no receipt means no ownership
-// and therefore no signal, which is the safe direction.
+// A spawn that cannot be given a receipt is still a spawn, and what this must
+// never do is record a claim it cannot substantiate. So the failure paths split
+// by what they prove:
+//
+//   - the pane process is already gone (ErrNoProcess): nothing is written. The
+//     leader is verifiably dead; anything it forked and detached before this
+//     point is not attributable to a PID+start-time receipt (see
+//     TestIssue1873_ChildThatDetachesBeforeAttributionIsNeverClaimed), and the
+//     ruling is to leave the unknowable alone. It is logged as a lifecycle
+//     event so the operator can see the spawn went unclaimed.
+//   - no start-identity provider (ErrUnsupported): nothing is written; the
+//     platform owns nothing, by design.
+//   - anything else — the identity or boot id could not be read for a LIVE
+//     pane process: a fail-closed marker is written instead of a receipt. It
+//     owns nothing and can never be signalled, but it refuses the next spawn
+//     until the operator resolves it, because a tree we launched and cannot
+//     account for is exactly what duplicates.
 //
 // One window remains open and cannot be closed from here: agent-deck dying
 // between tmux starting the pane and this function committing the receipt. The
@@ -429,10 +454,12 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 			Command:    redactSpawnFailureDiagnostic(command),
 		})
 		if claimErr != nil {
-			// Unsupported platform, or a pane process that exited between the
-			// tmux start and this probe. Either way: no claim, and the abort
-			// leaves whatever was on disk untouched.
-			return nil, claimErr
+			if errors.Is(claimErr, procowner.ErrNoProcess) || errors.Is(claimErr, procowner.ErrUnsupported) {
+				// No claim, and the abort leaves whatever was on disk
+				// untouched.
+				return nil, claimErr
+			}
+			return unverifiedSpawnMarker(ownershipProber, i.ID, generation, panePID, i.tmuxSession.Name, i.TmuxSocketName, claimErr), nil
 		}
 		// Attribute once inside the same critical section so a wrapper that
 		// forks and exits before the first tick is still caught, and so the
@@ -464,10 +491,49 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 		return claimed, nil
 	})
 	if err != nil {
-		sessionLog.Info("ownership_receipt_not_claimed",
+		if errors.Is(err, procowner.ErrNoProcess) || errors.Is(err, procowner.ErrUnsupported) {
+			sessionLog.Info("ownership_receipt_not_claimed",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("reason", logging.SanitizeValue(err.Error())))
+			if errors.Is(err, procowner.ErrNoProcess) {
+				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+					InstanceID: i.ID,
+					Tool:       i.Tool,
+					Action:     "ownership_unclaimed",
+					Source:     "spawn",
+					Reason:     "pane process exited before its identity could be recorded; nothing it started is owned",
+				})
+			}
+			return
+		}
+		// The store itself failed, so not even the marker reached disk. Refuse
+		// in this process at least, and say so loudly.
+		ownershipUnpersisted.Store(i.ID, err.Error())
+		sessionLog.Error("ownership_receipt_unpersisted",
 			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("reason", logging.SanitizeValue(err.Error())))
+			slog.String("error", logging.SanitizeValue(err.Error())))
+		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+			InstanceID: i.ID,
+			Tool:       i.Tool,
+			Action:     "ownership_unpersisted",
+			Source:     "spawn",
+			Reason:     err.Error(),
+		})
 		return
+	}
+	if receipt.State == procowner.StateUnverifiedSpawn {
+		sessionLog.Error("ownership_spawn_unverified",
+			slog.String("instance_id", logging.SanitizeValue(i.ID)),
+			slog.Int("pane_pid", panePID),
+			slog.String("reason", logging.SanitizeValue(receipt.Note)))
+		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+			InstanceID: i.ID,
+			Tool:       i.Tool,
+			Action:     "ownership_spawn_unverified",
+			Source:     "spawn",
+			Reason:     fmt.Sprintf("pane pid %d: %s", panePID, receipt.Note),
+		})
+		return // nothing to attribute: the marker owns nothing
 	}
 	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 		InstanceID: i.ID,
@@ -484,6 +550,29 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 	// swapped those package variables out from under it. Reading them from the
 	// goroutine is a data race the race detector will (and did) catch.
 	go i.attributeOwnedTree(receipt, store, ownershipProber, sessionLog, gen, wake)
+}
+
+// unverifiedSpawnMarker builds the fail-closed marker for a pane process whose
+// identity could not be read. The boot id is best-effort: reading it may be the
+// very thing that failed, and a marker without one simply cannot be retired by a
+// reboot.
+func unverifiedSpawnMarker(p procowner.Prober, instanceID string, generation uint64, panePID int, tmuxName, tmuxSocket string, cause error) *procowner.Receipt {
+	boot, _ := p.BootID()
+	now := time.Now().Unix()
+	return &procowner.Receipt{
+		Version:    procowner.ReceiptVersion,
+		InstanceID: instanceID,
+		Generation: generation,
+		State:      procowner.StateUnverifiedSpawn,
+		Provider:   p.Name(),
+		BootID:     boot,
+		TmuxName:   tmuxName,
+		TmuxSocket: tmuxSocket,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Leader:     procowner.Member{PID: panePID, Role: procowner.RoleLeader, SeenAt: now},
+		Note:       cause.Error(),
+	}
 }
 
 // attributeOwnedTree records the leader's descendants, each with its own start
@@ -633,6 +722,9 @@ func markOwnershipRecoveryRequired(store *procowner.Store, receipt *procowner.Re
 		if err := procowner.RequireGeneration(current, receipt.Generation, receipt.Leader); err != nil {
 			return err
 		}
+		if current.State == procowner.StateUnverifiedSpawn {
+			return procowner.ErrNoChange // already fail-closed, and it must keep its shape
+		}
 		current.State = procowner.StateRecoveryRequired
 		current.Note = reason
 		current.UpdatedAt = time.Now().Unix()
@@ -692,6 +784,7 @@ func (i *Instance) AbandonOwnership() error {
 	if err := ownershipStore().ForceClear(i.ID); err != nil {
 		return err
 	}
+	ownershipUnpersisted.Delete(i.ID)
 	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 		InstanceID: i.ID,
 		Tool:       i.Tool,
