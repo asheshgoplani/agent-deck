@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -588,12 +589,14 @@ func StatusIndicator(status string) string {
 	}
 }
 
-// ToolIcon returns the icon for a given tool
-// Checks user config for custom tools first, then falls back to built-ins
+// ToolIcon returns the icon for a given tool.
+// The tool registry (built-ins plus [tools.<name>] custom entries) is the
+// source of truth; the switch below is the fallback for names the registry
+// does not know (issue #2136).
 func ToolIcon(tool string) string {
-	// Use session.GetToolIcon which handles custom + built-in
-	// Import would be circular, so we duplicate the logic here
-	// Custom icons are handled by the session layer's GetToolDef
+	if icon := session.ToolIconFor(tool); icon != "" {
+		return icon
+	}
 	switch tool {
 	case "claude":
 		return IconClaude
@@ -624,7 +627,15 @@ func ToolIcon(tool string) string {
 
 // ToolColor returns the brand color for a given tool
 // Claude=orange (Anthropic), Gemini=purple (Google AI), Codex=cyan, Pi=accent, Aider=red
+//
+// The tool registry is the source of truth: built-ins carry a palette slot
+// name that is resolved against the active theme here, and custom tools may
+// set color = "<lipgloss value>" in config. The switch below is the fallback
+// for names the registry does not know (issue #2136).
 func ToolColor(tool string) lipgloss.Color {
+	if c, ok := paletteColor(session.ToolColorFor(tool)); ok {
+		return c
+	}
 	switch tool {
 	case "claude":
 		return ColorOrange // Anthropic's orange
@@ -648,6 +659,31 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorRed // Red for Aider
 	default:
 		return ColorTextDim // Default gray
+	}
+}
+
+// paletteColor resolves a registry color value to a lipgloss color. Palette
+// slot names map to the active theme's variables so live theme switches keep
+// working; any other non-empty value is passed to lipgloss verbatim (custom
+// tool hex or ANSI colors). "" reports false so callers use their fallback.
+func paletteColor(value string) (lipgloss.Color, bool) {
+	switch value {
+	case "":
+		return "", false
+	case "orange":
+		return ColorOrange, true
+	case "purple":
+		return ColorPurple, true
+	case "cyan":
+		return ColorCyan, true
+	case "accent":
+		return ColorAccent, true
+	case "yellow":
+		return ColorYellow, true
+	case "red":
+		return ColorRed, true
+	default:
+		return lipgloss.Color(value), true
 	}
 }
 
