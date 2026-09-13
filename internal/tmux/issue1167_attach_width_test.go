@@ -40,7 +40,8 @@ func tmuxCtl1167(t *testing.T, socket string, args ...string) {
 
 // newDetachedSession1167 builds the worst-case window this fix has to survive:
 // a detached session with NO -x/-y (so tmux uses its 80x24 default-size) plus
-// the window-size=largest / aggressive-resize=on options Session.Start pins.
+// the window-size=largest / aggressive-resize=on policy used when #1167 was
+// reported.
 //
 // Production no longer births sessions this way — startCommandSpec passes
 // -x/-y from InitialWindowSize (#1694) — but the attach client must still

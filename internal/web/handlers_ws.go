@@ -106,9 +106,9 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// actually runs. Without this, an idle session whose client vanished
 	// (network drop, mobile app killed) leaves the read loop below blocked
 	// forever in ReadMessage, so `defer bridge.Close()` never fires and the
-	// tmux attach client leaks. Under `window-size largest` a single leaked
-	// wide client then pins the shared window geometry for every other viewer
-	// — the symptom being a phone terminal that stops wrapping to its screen.
+	// tmux attach client leaks. Because attached clients participate in window
+	// sizing, a leaked client can then distort the shared geometry for every
+	// other viewer — for example, a phone terminal may stop wrapping correctly.
 	// We send protocol-level pings and require a pong within pongWait; both
 	// browsers and URLSessionWebSocketTask answer pings automatically.
 	pongWait, pingPeriod := wsPongWait, wsPingPeriod
