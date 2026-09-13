@@ -492,6 +492,10 @@ type Home struct {
 	// from is gone or in the Trash: the deck cannot update or restart
 	// itself then, says so in the banner, and both auto paths stay off.
 	binaryOrphanReason string
+	// binaryExecPath is os.Executable() at startup, kept even when the
+	// file could not be fingerprinted then, so a later tick can start the
+	// watch once the path is back.
+	binaryExecPath string
 	// autoInstallLastSkip is the last reason the periodic check left the
 	// updater alone, so the log says it once per change, not per minute.
 	autoInstallLastSkip string
@@ -3766,9 +3770,8 @@ func (h *Home) Init() tea.Cmd {
 
 	// Fingerprint the running executable so the tick loop can tell when an
 	// update lands on disk while the TUI is open.
-	h.binaryWatch = startBinaryWatch(Version)
 	if exe, err := os.Executable(); err == nil {
-		h.setBinaryOrphanReason(orphanedBinaryReason(exe))
+		h.startBinaryWatch(exe, Version)
 	}
 	h.homebrewManaged = detectHomebrewManaged()
 	h.applyAutoUpdateSuppression()
@@ -3778,7 +3781,7 @@ func (h *Home) Init() tea.Cmd {
 
 		h.tick(),
 		h.reviverTick(),
-		h.periodicUpdateCheck(time.Now()),
+		h.requestUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
 		// Opt-in telemetry daily report. MaybeSend re-reads consent from

@@ -36,6 +36,9 @@ func newRestartTestHome(t *testing.T) *Home {
 	t.Helper()
 	stubRestartTarget(t, nil, nil)
 	stubStatBinary(t, fpAt(1, 1), nil)
+	prevOrphan := orphanCheck
+	orphanCheck = func(string) string { return "" }
+	t.Cleanup(func() { orphanCheck = prevOrphan })
 	h := NewHome()
 	h.initialLoading = false
 	h.width, h.height = 80, 24

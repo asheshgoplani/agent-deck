@@ -84,6 +84,9 @@ func TestInstallUpdate_FinishedRechecksBinary(t *testing.T) {
 	if h.err != nil {
 		t.Fatalf("clean exit must not set a footer error, got %v", h.err)
 	}
+	// The recheck is single-flight: let the first one answer before the
+	// next install finishes (TestUpdateCheck_SingleFlight pins the overlap).
+	h.Update(updateCheckMsg{info: h.updateInfo})
 	if cmd := h.handleUpdateInstallFinished(updateInstallFinishedMsg{err: errors.New("exit status 1")}); cmd == nil {
 		t.Fatal("expected a recheck command even after a failed exit")
 	}

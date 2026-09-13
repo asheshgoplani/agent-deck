@@ -59,6 +59,9 @@ func TestOrphanedBinary_NoticeAndNoAutoPaths(t *testing.T) {
 	}
 
 	h.binaryOrphanReason = "its executable no longer exists at /bin/agent-deck"
+	prevOrphan := orphanCheck
+	orphanCheck = func(string) string { return h.binaryOrphanReason }
+	t.Cleanup(func() { orphanCheck = prevOrphan })
 	if !h.shouldRenderUpdateBanner() {
 		t.Fatal("orphaned binary must show the banner")
 	}
@@ -113,5 +116,70 @@ func TestPollBinaryChange_TracksOrphan(t *testing.T) {
 	h.pollBinaryChange()
 	if h.binaryOrphanReason != "" {
 		t.Fatalf("file back: reason = %q, want cleared", h.binaryOrphanReason)
+	}
+}
+
+// TestOrphanedBinary_Lifecycle pins the three lifecycle rules the notice
+// must follow: it is set once and logged once (not re-set every tick), it
+// clears only when the path is valid again (a file that stats but sits in
+// the Trash stays orphaned), and a deck whose executable was missing at
+// startup (no binary watch) still notices when the path comes back.
+func TestOrphanedBinary_Lifecycle(t *testing.T) {
+	dir := t.TempDir()
+	trash := filepath.Join(dir, ".Trash")
+	if err := os.MkdirAll(trash, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inTrash := filepath.Join(trash, "agent-deck")
+	if err := os.WriteFile(inTrash, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fp, err := update.StatBinary(inTrash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stats fine, but in the Trash: orphaned, and stays so on every tick.
+	h := NewHome()
+	h.binaryWatch = newBinaryWatch(inTrash, "1.16.0", fp)
+	for i := 0; i < 3; i++ {
+		h.pollBinaryChange()
+		if !strings.Contains(h.binaryOrphanReason, "Trash") {
+			t.Fatalf("tick %d: a binary in the Trash must stay orphaned, got %q", i, h.binaryOrphanReason)
+		}
+	}
+
+	// Missing at startup: no watch, but the path is remembered and a tick
+	// that finds the file back starts the watch and clears the notice.
+	exe := filepath.Join(dir, "agent-deck")
+	h = NewHome()
+	h.startBinaryWatch(exe, "1.16.0")
+	if h.binaryWatch != nil || !strings.Contains(h.binaryOrphanReason, "no longer exists") {
+		t.Fatalf("missing at startup: watch=%v reason=%q", h.binaryWatch, h.binaryOrphanReason)
+	}
+	h.pollBinaryChange()
+	if !strings.Contains(h.binaryOrphanReason, "no longer exists") {
+		t.Fatalf("still missing: reason = %q", h.binaryOrphanReason)
+	}
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.pollBinaryChange()
+	if h.binaryOrphanReason != "" || h.binaryWatch == nil || h.binaryWatch.execPath != exe {
+		t.Fatalf("path back: reason=%q watch=%+v, want cleared and watching", h.binaryOrphanReason, h.binaryWatch)
+	}
+}
+
+// TestOrphanedBinary_NeverBlocksValidRestart pins that a stale orphan
+// note cannot refuse the restart of an executable that is valid now: the
+// restart gate asks the filesystem, not the cached reason.
+func TestOrphanedBinary_NeverBlocksValidRestart(t *testing.T) {
+	stubUpdateSettings(t, session.UpdateSettings{})
+	h := newAutoRestartTestHome(t)
+	h.binaryOrphanReason = "its executable no longer exists at /bin/agent-deck" // stale: the stub says the file is fine
+	if _, cmd := h.tryRestartDeck(); cmd == nil || !h.restartRequested {
+		t.Fatalf("restart of a valid binary refused: err=%v", h.err)
+	}
+	if h.binaryOrphanReason != "" {
+		t.Fatal("the stale reason must be cleared once the path is seen valid")
 	}
 }

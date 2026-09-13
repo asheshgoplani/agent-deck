@@ -80,19 +80,32 @@ func (h *Home) checkForUpdate() tea.Cmd {
 	}
 }
 
-// periodicUpdateCheck is called on every tick. It starts a check when one
-// is due (update.NextRecheck: every update.RecheckInterval, longer after a
-// failure), never two at once, and not at all with check_enabled = false.
-func (h *Home) periodicUpdateCheck(now time.Time) tea.Cmd {
-	if h.updateCheckInFlight || now.Before(update.NextRecheck(h.lastUpdateCheck, h.lastUpdateCheckFailed)) {
-		return nil
-	}
-	if !loadUpdateSettings().GetCheckEnabled() {
+// requestUpdateCheck is the one gate every check the TUI starts on its
+// own goes through (startup, the periodic tick, after an install): at most
+// one in flight, and each one stamps lastUpdateCheck so the periodic
+// schedule counts from the latest. Returns nil while one is running.
+func (h *Home) requestUpdateCheck(now time.Time) tea.Cmd {
+	if h.updateCheckInFlight {
 		return nil
 	}
 	h.lastUpdateCheck = now
 	h.updateCheckInFlight = true
 	return h.checkForUpdate()
+}
+
+// periodicUpdateCheck is called on every tick. It starts a check when one
+// is due (update.NextRecheck: every update.RecheckInterval, longer after a
+// failure), through requestUpdateCheck, and not at all with check_enabled
+// = false or when the process is test-, CI- or script-driven (issue
+// #2251: such a process must not start polling GitHub on its own either).
+func (h *Home) periodicUpdateCheck(now time.Time) tea.Cmd {
+	if h.updateCheckInFlight || now.Before(update.NextRecheck(h.lastUpdateCheck, h.lastUpdateCheckFailed)) {
+		return nil
+	}
+	if h.autoUpdateSuppressedReason != "" || !loadUpdateSettings().GetCheckEnabled() {
+		return nil
+	}
+	return h.requestUpdateCheck(now)
 }
 
 // handleUpdateCheck records a check result: the banner state, what the
@@ -191,7 +204,7 @@ func (h *Home) handleUnattendedInstallFinished(msg unattendedInstallFinishedMsg)
 	} else {
 		uiLog.Info("tui_auto_install_finished", slog.String("latest", msg.version), slog.String("output", tail))
 	}
-	return tea.Batch(h.pollBinaryChange(), h.checkForUpdate())
+	return tea.Batch(h.pollBinaryChange(), h.requestUpdateCheck(time.Now()))
 }
 
 // firstLine returns the first non-blank line of text, or fallback.

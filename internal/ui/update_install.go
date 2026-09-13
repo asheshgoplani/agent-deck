@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -92,5 +93,5 @@ func (h *Home) handleUpdateInstallFinished(msg updateInstallFinishedMsg) tea.Cmd
 	if msg.err != nil {
 		h.setError(fmt.Errorf("agent-deck update failed (%v); run it in a terminal to see why", msg.err))
 	}
-	return tea.Batch(h.pollBinaryChange(), h.checkForUpdate())
+	return tea.Batch(h.pollBinaryChange(), h.requestUpdateCheck(time.Now()))
 }

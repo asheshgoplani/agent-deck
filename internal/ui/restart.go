@@ -48,6 +48,9 @@ func (h *Home) sessionActionInFlight() bool {
 var (
 	checkRestartExecutable = update.CheckExecutable
 	probeRestartTarget     = update.ProbeBinaryVersion
+	// orphanCheck is orphanedBinaryReason, a seam for tests whose
+	// fake executable path does not exist.
+	orphanCheck = orphanedBinaryReason
 )
 
 // restartTargetProblem is the pre-arm check: before the TUI is torn down
@@ -61,7 +64,9 @@ func (h *Home) restartTargetProblem() string {
 	if exe == "" {
 		return "executable path unknown"
 	}
-	if h.binaryOrphanReason != "" {
+	// Ask the filesystem, not the cached note: a stale orphan reason must
+	// never refuse a binary that is valid now (and a valid check clears it).
+	if h.setBinaryOrphanReason(orphanCheck(exe)); h.binaryOrphanReason != "" {
 		return h.binaryOrphanReason
 	}
 	if err := checkRestartExecutable(exe); err != nil {
