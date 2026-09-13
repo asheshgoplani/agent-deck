@@ -724,9 +724,15 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 	if newInstance == nil {
 		return fmt.Errorf("nil instance")
 	}
-	if err := s.SaveWithGroups([]*Instance{newInstance}, groupTree); err != nil {
+	rows, err := s.saveWithGroups([]*Instance{newInstance}, groupTree)
+	if err != nil {
 		return err
 	}
+	s.refreshCommittedGroupTitles([]*Instance{newInstance}, rows)
+	// Issue #2209: the post-start save merges with a concurrent detector's
+	// committed liveness observation instead of aborting. The instance the
+	// launch goes on to report must describe that merged row.
+	adoptCommittedLiveness(newInstance, rows[0])
 	exists, err := s.InstanceExists(newInstance.ID)
 	if err != nil {
 		return fmt.Errorf("verify insert of %s: %w", newInstance.ID, err)
@@ -735,6 +741,36 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		return fmt.Errorf("%w: concurrent deletion conflict for instance %s", ErrInsertNotPersistent, newInstance.ID)
 	}
 	return nil
+}
+
+// adoptCommittedLiveness copies the liveness values the snapshot merge may
+// have resolved in favour of a concurrent writer (statedb liveness_merge.go)
+// back onto the in-memory instance: pane-derived status, activity time, and
+// the detection stamps. Everything else was written as submitted.
+func adoptCommittedLiveness(inst *Instance, row *statedb.InstanceRow) {
+	if inst == nil || row == nil {
+		return
+	}
+	inst.Status = Status(row.Status)
+	inst.LastAccessedAt = row.LastAccessed
+	var stamps struct {
+		Claude   int64 `json:"claude_detected_at"`
+		Gemini   int64 `json:"gemini_detected_at"`
+		OpenCode int64 `json:"opencode_detected_at"`
+		Codex    int64 `json:"codex_detected_at"`
+	}
+	if len(row.ToolData) == 0 || json.Unmarshal(row.ToolData, &stamps) != nil {
+		return
+	}
+	adopt := func(dst *time.Time, unix int64) {
+		if unix > 0 && dst.Unix() != unix {
+			*dst = time.Unix(unix, 0)
+		}
+	}
+	adopt(&inst.ClaudeDetectedAt, stamps.Claude)
+	adopt(&inst.GeminiDetectedAt, stamps.Gemini)
+	adopt(&inst.OpenCodeDetectedAt, stamps.OpenCode)
+	adopt(&inst.CodexDetectedAt, stamps.Codex)
 }
 
 // SyncInstanceCwd swaps the persisted project_path for id to newCwd, but ONLY

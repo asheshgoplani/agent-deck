@@ -835,6 +835,11 @@ func handleLaunch(profile string, args []string) {
 	addModelInfoJSON(jsonData, newInstance.LaunchModelInfo())
 	addEffortJSON(jsonData, newInstance)
 	addClaudeOptionsJSON(jsonData, newInstance)
+	tmuxName := ""
+	if sess := newInstance.GetTmuxSession(); sess != nil {
+		tmuxName = sess.Name
+	}
+	addLaunchStateJSON(jsonData, newInstance, tmuxName)
 	if *sandbox {
 		jsonData["sandbox"] = true
 	}
@@ -890,4 +895,19 @@ func resolveLaunchPath(rawPathArg, groupSelector, profile string) (string, error
 	}
 
 	return os.Getwd()
+}
+
+// addLaunchStateJSON surfaces the session state as committed by the
+// post-start save. Issue #2209: that save merges with a concurrent detector's
+// liveness observation (status, detection stamp) instead of aborting, so the
+// reported status is the merged row's, and the spawn receipt (tmux session
+// name) the launch alone produced is echoed for the caller to verify.
+func addLaunchStateJSON(target map[string]interface{}, inst *session.Instance, tmuxName string) {
+	target["status"] = string(inst.Status)
+	if tmuxName != "" {
+		target["tmux_session"] = tmuxName
+	}
+	if inst.ClaudeSessionID != "" {
+		target["claude_session_id"] = inst.ClaudeSessionID
+	}
 }

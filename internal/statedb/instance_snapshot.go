@@ -500,7 +500,14 @@ func mergeInstanceSnapshot(update InstanceSnapshot, current *InstanceRow) (*Inst
 			continue
 		}
 		if !snapshotValueEqual(actual.Field(i).Interface(), stored.Field(i).Interface()) && !snapshotValueEqual(actual.Field(i).Interface(), want.Field(i).Interface()) {
-			return nil, fmt.Errorf("stale concurrent %s conflict for instance %s", name, id)
+			// Observations of the same live session are merged, not refused
+			// (issue #2209); see liveness_merge.go for the policy.
+			resolved, ok := mergeLivenessScalar(name, want.Field(i).Interface(), actual.Field(i).Interface())
+			if !ok {
+				return nil, fmt.Errorf("stale concurrent %s conflict for instance %s", name, id)
+			}
+			out.Field(i).Set(reflect.ValueOf(resolved))
+			continue
 		}
 		out.Field(i).Set(want.Field(i))
 	}
@@ -550,10 +557,7 @@ func sameStoredToolValue(key string, a, b json.RawMessage) bool {
 	// empty/zero markers. Those are the same committed clear, including when
 	// this caller's write-through already removed the key before the full save.
 	if stickyToolDataKeys()[key] {
-		isClear := func(value json.RawMessage) bool {
-			return value == nil || sameJSON(value, json.RawMessage(`""`)) || sameJSON(value, json.RawMessage(`0`))
-		}
-		return isClear(a) && isClear(b)
+		return isToolDataClear(a) && isToolDataClear(b)
 	}
 	return false
 }
@@ -584,11 +588,17 @@ func mergeSnapshotToolData(update InstanceSnapshot, current *InstanceRow) (json.
 	for key := range desired {
 		keys[key] = true
 	}
-	for key := range keys {
+	for _, key := range orderToolDataKeys(keys) {
 		if sameJSON(original[key], desired[key]) {
 			continue
 		}
 		if !sameStoredToolValue(key, actual[key], stored[key]) && !sameStoredToolValue(key, actual[key], desired[key]) {
+			// A detection stamp for the conversation this caller also bound
+			// is an observation; the committed one wins (issue #2209).
+			if resolved, ok := mergeLivenessToolData(key, desired, actual); ok {
+				actual[key] = resolved
+				continue
+			}
 			return nil, fmt.Errorf("stale concurrent tool_data.%s conflict for instance %s", key, current.ID)
 		}
 		if value, exists := desired[key]; exists {
