@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,6 +84,23 @@ func runOwnershipReceiptChild(payload string) int {
 			})
 			return nil
 		})
+	case "gate":
+		// Run the admission gate as a second agent-deck process would: a fresh
+		// Instance that knows only the id, reading the store at dir.
+		inst := NewInstance("ownership-child", os.TempDir())
+		inst.ID = instanceID
+		gateErr := inst.guardOwnedProcessesBeforeSpawnAt(store, "restart")
+		switch {
+		case gateErr == nil:
+			fmt.Println("admitted")
+			return 0
+		case IsOwnedProcessRecoveryRequired(gateErr):
+			fmt.Println("refused:", gateErr)
+			return ownershipChildExitRefused
+		default:
+			fmt.Fprintf(os.Stderr, "ownership child: %v\n", gateErr)
+			return 2
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "ownership child: unknown mode %q\n", mode)
 		return 2
@@ -310,6 +328,29 @@ func TestIssue1873_LockSurvivesAProcessThatDiesHoldingIt(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the receipt lock was never released after its holder died")
 	}
+}
+
+// ownershipChildExitRefused is the child's exit code for a fail-closed gate.
+const ownershipChildExitRefused = 3
+
+// runOwnershipGateInChildProcess re-executes this test binary as a second
+// agent-deck process that runs the admission gate for instanceID against the
+// store at dir, and returns its exit code and output.
+func runOwnershipGateInChildProcess(t *testing.T, dir, instanceID string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run", "TestIssue1873_OwnershipChildEntrypoint")
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("%s=%s|%s|%d|gate", ownershipChildEnv, dir, instanceID, os.Getpid()))
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return 0, strings.TrimSpace(string(out))
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), strings.TrimSpace(string(out))
+	}
+	t.Fatalf("child process could not run: %v: %s", err, out)
+	return -1, ""
 }
 
 // runOwnershipChildProcess re-executes this test binary as a second agent-deck

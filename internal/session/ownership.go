@@ -61,8 +61,12 @@ var ownershipStores sync.Map // dir -> *procowner.Store
 // uses, as variables so tests can make the pane pid unreadable for a pane that
 // really exists. Production never replaces them.
 var (
-	ownershipPanePID    = func(s *tmux.Session) (int, error) { return s.PanePID() }
-	ownershipHasSession = tmux.HasSessionOnSocket
+	ownershipPanePID = func(s *tmux.Session) (int, error) { return s.PanePID() }
+	// ownershipSessionProbe must distinguish absent from unknown: only a
+	// (false, nil) answer may be read as "the session is gone". tmux's
+	// ProbeExists is the one probe in the tree that makes that promise
+	// (#2265); the cached Exists and the assume-alive HasSession do not.
+	ownershipSessionProbe = func(s *tmux.Session) (bool, error) { return s.ProbeExists() }
 )
 
 // ownershipPanePIDAttempts bounds the retry on a failed pane pid probe before
@@ -227,8 +231,12 @@ func (s OwnershipStatus) Reason() string {
 // process that the live pane cannot account for — which is exactly the escaped
 // tree #1873 reports.
 func (i *Instance) ownershipStatus() OwnershipStatus {
+	return i.ownershipStatusAt(ownershipStore())
+}
+
+func (i *Instance) ownershipStatusAt(store *procowner.Store) OwnershipStatus {
 	status := OwnershipStatus{InstanceID: i.ID}
-	receipt, err := ownershipStore().Load(i.ID)
+	receipt, err := store.Load(i.ID)
 	if err != nil {
 		status.LoadErr = err
 		return status
@@ -327,13 +335,20 @@ func (i *Instance) receiptLeaderRunsALivePane(receipt *procowner.Receipt) bool {
 // It never signals anything. A refusal leaves the receipt exactly as it was, so
 // the operator can inspect it and decide.
 func (i *Instance) guardOwnedProcessesBeforeSpawn(action string) error {
-	status := i.ownershipStatus()
+	return i.guardOwnedProcessesBeforeSpawnAt(ownershipStore(), action)
+}
+
+// guardOwnedProcessesBeforeSpawnAt is guardOwnedProcessesBeforeSpawn against an
+// explicit store. Production always passes the live store; a test that stands
+// in for a second agent-deck process passes the directory it was handed.
+func (i *Instance) guardOwnedProcessesBeforeSpawnAt(store *procowner.Store, action string) error {
+	status := i.ownershipStatusAt(store)
 	if status.Admissible() {
 		if status.Receipt != nil && status.Report.Verdict == procowner.VerdictClear {
 			// Every recorded process is provably gone: retire the receipt so
 			// the replacement spawn starts from a clean slate rather than
 			// inheriting a stale claim.
-			if err := ownershipStore().Clear(status.Receipt); err != nil {
+			if err := store.Clear(status.Receipt); err != nil {
 				sessionLog.Warn("ownership_receipt_clear_failed",
 					slog.String("instance_id", logging.SanitizeValue(i.ID)),
 					slog.String("error", logging.SanitizeValue(err.Error())))
@@ -421,10 +436,14 @@ func (i *Instance) commitOwnershipAfterRestart(command string) {
 // never do is record a claim it cannot substantiate. So the failure paths split
 // by what they prove:
 //
-//   - the pane pid cannot be read AND tmux no longer has the session (the pane
-//     died before this ran): nothing is written, as for a gone leader below.
-//   - the pane pid cannot be read while tmux still HAS the session: a
-//     fail-closed marker with pid 0. The tree is running and unaccounted for.
+//   - the pane pid cannot be read AND tmux answers, definitively, that the
+//     session is gone (the pane died before this ran): nothing is written, as
+//     for a gone leader below. "Definitively" means a tmux client that ran to
+//     completion and said so; a probe that timed out, hit a protocol
+//     mismatch, or could not launch a client is NOT absence.
+//   - the pane pid cannot be read while the session exists OR its existence
+//     cannot be determined: a fail-closed marker with pid 0. A tree that may
+//     be running and cannot be accounted for is refused, not assumed dead.
 //   - the pane process is already gone (ErrNoProcess): nothing is written. The
 //     leader is verifiably dead; anything it forked and detached before this
 //     point is not attributable to a PID+start-time receipt (see
@@ -454,9 +473,11 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 	store := ownershipStore()
 	panePID, err := i.probePanePIDForClaim()
 	if err != nil {
-		if !ownershipHasSession(i.TmuxSocketName, i.tmuxSession.Name) {
-			// The pane took the session down before we could read it: the
-			// leader is gone, and this is the same boundary as ErrNoProcess.
+		exists, probeErr := ownershipSessionProbe(i.tmuxSession)
+		if probeErr == nil && !exists {
+			// tmux ran and said the session is gone: the pane took it down
+			// before we could read it. The leader is gone, and this is the
+			// same boundary as ErrNoProcess.
 			sessionLog.Info("ownership_receipt_not_claimed",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("reason", "pane exited before its pid could be read: "+logging.SanitizeValue(err.Error())))
@@ -469,10 +490,15 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 			})
 			return
 		}
-		// The session is there and we cannot say which process runs its pane.
-		// That is a live tree we cannot account for: fail closed.
+		// The session is there — or we cannot even tell — and we cannot say
+		// which process runs its pane. That is a tree we cannot account for:
+		// fail closed.
 		panePID = 0
-		err = fmt.Errorf("pane pid unreadable while the session exists: %w", err)
+		if probeErr != nil {
+			err = fmt.Errorf("pane pid unreadable and session existence unknown (%v): %w", probeErr, err)
+		} else {
+			err = fmt.Errorf("pane pid unreadable while the session exists: %w", err)
+		}
 		i.commitUnverifiedSpawnMarker(store, panePID, err)
 		return
 	}

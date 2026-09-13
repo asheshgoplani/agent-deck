@@ -2856,9 +2856,12 @@ func setSocketMismatchProbeForTest(probe func(string) bool) func() {
 //
 // The `=` target prefix makes tmux match the name exactly instead of by
 // prefix, so a sibling named like this session plus a suffix cannot answer
-// for it. A completed non-zero exit is "gone"; a probe that timed out or was
-// refused by a protocol-mismatched server is indeterminate and reported as an
-// error, never as either verdict.
+// for it. Only a tmux client that ran to completion and exited non-zero is
+// "gone"; a probe that timed out, was refused by a protocol-mismatched server,
+// or never produced a completed tmux client (the binary could not be launched,
+// the client was killed by a signal) is indeterminate and reported as an
+// error, never as either verdict. Callers deciding whether a session's process
+// tree may be treated as absent (#1873) depend on that distinction.
 func (s *Session) ProbeExists() (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
@@ -2871,6 +2874,10 @@ func (s *Session) ProbeExists() (bool, error) {
 	}
 	if socketHasProtocolMismatch(s.SocketName) {
 		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", s.SocketName)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !exitErr.Exited() {
+		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", s.Name, err)
 	}
 	return false, nil
 }

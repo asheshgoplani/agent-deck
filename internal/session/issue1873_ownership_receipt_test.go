@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -522,8 +523,9 @@ func TestIssue1873_UnreadablePanePIDOnALiveSessionFailsClosedAcrossProcesses(t *
 	inst.Command = "sleep 30"
 	require.NoError(t, inst.Start())
 	t.Cleanup(func() { _ = inst.Kill() })
-	require.True(t, tmux.HasSessionOnSocket(inst.TmuxSocketName, inst.GetTmuxSession().Name),
-		"precondition: the session exists while its pane pid is unreadable")
+	exists, probeErr := inst.GetTmuxSession().ProbeExists()
+	require.NoError(t, probeErr)
+	require.True(t, exists, "precondition: the session exists while its pane pid is unreadable")
 
 	status := inst.OwnershipStatus()
 	require.NoError(t, status.LoadErr)
@@ -553,10 +555,12 @@ func TestIssue1873_UnreadablePanePIDOnAGoneSessionIsUnclaimed(t *testing.T) {
 	prober := newSessionFakeProber()
 	restore := swapOwnershipProbe(t, prober, &countingSignaler{})
 	defer restore()
-	prevPanePID, prevHas := ownershipPanePID, ownershipHasSession
+	prevPanePID, prevProbe := ownershipPanePID, ownershipSessionProbe
 	ownershipPanePID = func(*tmux.Session) (int, error) { return 0, errors.New("can't find session") }
-	ownershipHasSession = func(string, string) bool { return false }
-	t.Cleanup(func() { ownershipPanePID, ownershipHasSession = prevPanePID, prevHas })
+	// tmux ran to completion and said so: this is the only answer that may be
+	// read as absence.
+	ownershipSessionProbe = func(*tmux.Session) (bool, error) { return false, nil }
+	t.Cleanup(func() { ownershipPanePID, ownershipSessionProbe = prevPanePID, prevProbe })
 
 	inst := NewInstance("test-1873-gone-pane-pid", t.TempDir())
 	inst.Tool = "customwrap1873"
@@ -568,4 +572,50 @@ func TestIssue1873_UnreadablePanePIDOnAGoneSessionIsUnclaimed(t *testing.T) {
 	require.NoError(t, status.LoadErr)
 	assert.Nil(t, status.Receipt, "a pane that is gone before it can be read leaves no claim")
 	assert.True(t, status.Admissible())
+}
+
+// Both probes fail while the session survives: the pane pid cannot be read AND
+// tmux cannot say whether the session exists (client failed to launch, timed
+// out, protocol mismatch). "Unknown" is not "absent". The tree may be running,
+// so a marker is written — and a REAL second agent-deck process, reading only
+// the store on disk, refuses to spawn until the operator abandons it.
+func TestIssue1873_PanePIDAndSessionProbeBothFailingFailsClosedInAnotherProcess(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	if runtime.GOOS != "linux" {
+		t.Skip("the child process verifies with the real prober, which needs /proc here")
+	}
+	// The real prober stays in place: the marker must be honoured by a second
+	// process for what it IS, not because of a provider mismatch.
+	prevPanePID, prevProbe := ownershipPanePID, ownershipSessionProbe
+	ownershipPanePID = func(*tmux.Session) (int, error) { return 0, errors.New("list-panes: client failed to launch") }
+	ownershipSessionProbe = func(*tmux.Session) (bool, error) {
+		return false, errors.New("has-session probe did not complete: fork/exec: resource temporarily unavailable")
+	}
+	t.Cleanup(func() { ownershipPanePID, ownershipSessionProbe = prevPanePID, prevProbe })
+
+	inst := NewInstance("test-1873-both-probes-fail", t.TempDir())
+	inst.Tool = "customwrap1873"
+	inst.Command = "sleep 30"
+	require.NoError(t, inst.Start())
+	t.Cleanup(func() { _ = inst.Kill() })
+	exists, probeErr := inst.GetTmuxSession().ProbeExists()
+	require.NoError(t, probeErr)
+	require.True(t, exists, "precondition: the session really is alive while both probes fail")
+
+	status := inst.OwnershipStatus()
+	require.NoError(t, status.LoadErr)
+	require.NotNil(t, status.Receipt, "unknown existence must produce a marker, never silence")
+	assert.Equal(t, procowner.StateUnverifiedSpawn, status.Receipt.State)
+	assert.Equal(t, 0, status.Receipt.Leader.PID)
+	assert.Contains(t, status.Receipt.Note, "existence unknown")
+
+	// A real second process (this test binary re-executed) runs the admission
+	// gate against the same store directory.
+	code, out := runOwnershipGateInChildProcess(t, ownershipStore().Dir(), inst.ID)
+	require.Equal(t, ownershipChildExitRefused, code,
+		"a second process must refuse to spawn over the marker; child said: %s", out)
+
+	require.NoError(t, inst.AbandonOwnership())
+	code, out = runOwnershipGateInChildProcess(t, ownershipStore().Dir(), inst.ID)
+	require.Equal(t, 0, code, "after abandon a second process is admitted; child said: %s", out)
 }
