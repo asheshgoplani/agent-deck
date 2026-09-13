@@ -108,10 +108,17 @@ func TestInstanceStart_FutureStampDoesNotShortCircuit_RegressionFor2220(t *testi
 		t.Fatalf("Start() error = %q, want the tmux-not-initialized error past the stamp gate", got)
 	}
 
-	// Restart() shares the same gate.
+	// StartWithMessage() shares the same gate and the same nil-tmux error.
+	// Restart() is covered by the spawnedSince() unit tests below: with a
+	// live tmux server it would recreate a real session for this bare
+	// Instance, so it is not driven end-to-end here.
 	stampWithOffset(t, inst.ID, time.Hour)
-	if err := inst.Restart(); err == nil {
-		t.Fatal("Restart() returned nil: future-dated stamp short-circuited the respawn")
+	err = inst.StartWithMessage("hello")
+	if err == nil {
+		t.Fatal("StartWithMessage() returned nil: future-dated stamp short-circuited the spawn")
+	}
+	if got := err.Error(); got != "tmux session not initialized" {
+		t.Fatalf("StartWithMessage() error = %q, want the tmux-not-initialized error past the stamp gate", got)
 	}
 }
 
