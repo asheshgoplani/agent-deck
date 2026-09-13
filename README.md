@@ -469,7 +469,7 @@ Run sessions inside isolated Docker containers. The project directory is bind-mo
 - Press `T` on a sandboxed session to open a container shell
 - `agent-deck try "task description"` runs a one-shot sandboxed session
 
-Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. On macOS, Keychain credentials are extracted too.
+Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. On macOS, the Claude Code Keychain token is extracted once to seed the sandbox; after that the sandbox keeps its own login (see the single-owner rule in the sandbox reference).
 
 ```toml
 [docker]

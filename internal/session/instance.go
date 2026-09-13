@@ -8681,14 +8681,11 @@ func (i *Instance) killInternal(sync bool) error {
 		}
 	}
 
-	// Remove plaintext keychain credential files extracted during sandbox sync.
-	// Gated on IsSandboxed() (not SandboxContainer) so cleanup runs even if
-	// container creation failed after credential extraction.
+	// The sandbox credential file (seeded once from the macOS Keychain) is
+	// deliberately kept across teardown: it is the containers' own OAuth
+	// refresh chain, and re-seeding it from the Keychain on the next start
+	// would fork the host's chain again (#2153).
 	if i.IsSandboxed() {
-		if homeDir, err := os.UserHomeDir(); err == nil {
-			docker.CleanupKeychainCredentials(homeDir)
-		}
-
 		// Tear down the per-instance scoped hook bridge dir (…/hooks/sandbox/<id>).
 		// Each ended sandbox session otherwise leaks a directory AND (on Linux) an
 		// fsnotify inotify watch held by the notify-daemon's StatusFileWatcher →

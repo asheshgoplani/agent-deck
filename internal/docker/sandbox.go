@@ -16,19 +16,50 @@ func SandboxDir(homeDir string, hostRel string) string {
 	return filepath.Join(homeDir, hostRel, "sandbox")
 }
 
-// CleanupKeychainCredentials removes plaintext credential files that were
-// extracted from the macOS Keychain during sandbox sync. Called on session
-// teardown to avoid persisting secrets on the host filesystem.
-func CleanupKeychainCredentials(homeDir string) {
-	for _, mount := range agentConfigMounts {
-		if mount.keychainCredential == nil {
-			continue
-		}
-		credPath := filepath.Join(SandboxDir(homeDir, mount.hostRel), mount.keychainCredential.filename)
-		if err := os.Remove(credPath); err != nil && !os.IsNotExist(err) {
-			slog.Warn("Removing keychain credential file", "path", credPath, "error", err)
-		}
+// keychainReader reads a secret from the platform credential store.
+// Overridable in tests so no real Keychain is touched.
+var keychainReader = readKeychainSecret
+
+// extractKeychainCredential seeds destPath from the Keychain credential for
+// service, but only when no sandbox credential exists yet.
+//
+// Single-owner rule (#2153): an OAuth refresh token is single-use and rotates
+// on every refresh, so every copy of it starts a competing refresh chain and
+// whichever side refreshes first invalidates the other. The Keychain entry is
+// owned by the host's Claude; the sandbox file is owned by the containers. The
+// Keychain is therefore read exactly once, to seed a sandbox that has no
+// credential of its own. From then on the sandbox file is canonical: it is
+// never overwritten by a later sync and never removed on session teardown.
+// The write is O_EXCL so a start that races another one cannot replace the
+// file the winner now owns. An absent Keychain entry is not an error.
+func extractKeychainCredential(service string, destPath string) error {
+	if _, err := os.Stat(destPath); err == nil {
+		return nil // Sandbox already owns a refresh chain; do not fork it.
 	}
+	secret, err := keychainReader(service)
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		return nil // No Keychain entry (e.g. API-key auth); nothing to seed.
+	}
+	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil // Another sync seeded it first; that copy is canonical.
+		}
+		return fmt.Errorf("creating %s: %w", destPath, err)
+	}
+	_, writeErr := f.WriteString(secret)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(destPath) // Never leave a truncated credential behind.
+		if writeErr != nil {
+			return fmt.Errorf("writing %s: %w", destPath, writeErr)
+		}
+		return fmt.Errorf("closing %s: %w", destPath, closeErr)
+	}
+	return nil
 }
 
 // SyncAgentConfig syncs host tool config into a shared sandbox directory.
