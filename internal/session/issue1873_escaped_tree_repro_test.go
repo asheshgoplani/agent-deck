@@ -192,16 +192,46 @@ func newEscapedWrapper(t *testing.T, linger time.Duration) *escapedWrapper {
 	return w
 }
 
-// newSynchronisedEscapedWrapper is the fixture most tests want: the wrapper is
-// held alive until the receipt names its child, then released. Attribution
-// therefore cannot lose a scheduling race to the pane's death, and the tests
-// built on it are deterministic rather than timed. The linger is only a bound
-// for code that never writes a receipt.
+// issue1873BaselineEnv, when set, switches the fixture-driven tests into
+// pre-fix baseline mode: the receipt handshake is allowed to time out (there is
+// no receipt to wait for on code without the fix) and the wrapper's linger is a
+// bound rather than effectively infinite. It exists so the acceptance test can
+// be run against main to show it fails there. It is never set in CI or by
+// default, where synchronisation is REQUIRED: a wrapper is released only once
+// the receipt names its child, and a handshake that does not complete fails
+// the test instead of letting the pane die and hoping.
+const issue1873BaselineEnv = "AGENTDECK_1873_BASELINE"
+
+func issue1873Baseline() bool { return os.Getenv(issue1873BaselineEnv) != "" }
+
+// requireReceiptHandshake blocks until the receipt names the child, and fails
+// the test if it does not — except in baseline mode, where the absence of a
+// receipt is the expected pre-fix state.
+func requireReceiptHandshake(t *testing.T, instanceID string, child escapedChild) {
+	t.Helper()
+	recorded := waitForReceiptToRecord(instanceID, child, 10*time.Second)
+	if issue1873Baseline() {
+		return
+	}
+	require.True(t, recorded,
+		"the receipt must name the escaped child %s before the pane is allowed to die", child)
+}
+
+// newSynchronisedEscapedWrapper is the fixture every escaped-tree test uses: the
+// wrapper is held alive until the receipt names its child, then released.
+// Attribution therefore cannot lose a scheduling race to the pane's death, and
+// the tests built on it are deterministic rather than timed. Outside baseline
+// mode the linger bound is far beyond any test timeout, so the wrapper cannot
+// expire on its own before the handshake has been enforced.
 func newSynchronisedEscapedWrapper(t *testing.T) *escapedWrapper {
 	t.Helper()
-	w := newEscapedWrapper(t, 15*time.Second)
+	linger := 10 * time.Minute
+	if issue1873Baseline() {
+		linger = 15 * time.Second
+	}
+	w := newEscapedWrapper(t, linger)
 	w.beforePaneLoss = func(inst *Instance, child escapedChild) {
-		waitForReceiptToRecord(inst.ID, child, 10*time.Second)
+		requireReceiptHandshake(t, inst.ID, child)
 		w.release()
 	}
 	return w

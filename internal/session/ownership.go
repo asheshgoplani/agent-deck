@@ -57,6 +57,21 @@ var (
 // ownershipStores caches one Store per directory.
 var ownershipStores sync.Map // dir -> *procowner.Store
 
+// ownershipPanePID and ownershipHasSession are the tmux probes the claim path
+// uses, as variables so tests can make the pane pid unreadable for a pane that
+// really exists. Production never replaces them.
+var (
+	ownershipPanePID    = func(s *tmux.Session) (int, error) { return s.PanePID() }
+	ownershipHasSession = tmux.HasSessionOnSocket
+)
+
+// ownershipPanePIDAttempts bounds the retry on a failed pane pid probe before
+// the claim path decides the pane is gone or writes a marker.
+const (
+	ownershipPanePIDAttempts = 3
+	ownershipPanePIDRetry    = 50 * time.Millisecond
+)
+
 // ownershipUnpersisted records instances whose fail-closed marker could not
 // even be written (the store itself failed). It is the last line: in-process
 // only, so a CLI in another process cannot see it, but this process will not
@@ -294,7 +309,7 @@ func (i *Instance) liveOwnedPaneSet(receipt *procowner.Receipt) map[string]bool 
 // session we launched it into?" correctly even when the instance has lost track.
 func (i *Instance) receiptLeaderRunsALivePane(receipt *procowner.Receipt) bool {
 	if i.tmuxSession != nil {
-		if panePID, err := i.tmuxSession.PanePID(); err == nil && panePID == receipt.Leader.PID {
+		if panePID, err := ownershipPanePID(i.tmuxSession); err == nil && panePID == receipt.Leader.PID {
 			return true
 		}
 	}
@@ -375,8 +390,12 @@ func (i *Instance) commitOwnershipAfterRestart(command string) {
 	if i.tmuxSession == nil {
 		return
 	}
-	panePID, err := i.tmuxSession.PanePID()
+	panePID, err := ownershipPanePID(i.tmuxSession)
 	if err != nil || panePID <= 0 {
+		// Let the claim path classify the failure: a gone pane stays
+		// unclaimed, a live pane with an unreadable pid gets a marker.
+		gen, wake := i.newSpawnGenWatch()
+		i.claimOwnershipAtSpawn(command, gen, wake)
 		return
 	}
 	if existing, loadErr := ownershipStore().Load(i.ID); loadErr == nil && existing != nil &&
@@ -402,6 +421,10 @@ func (i *Instance) commitOwnershipAfterRestart(command string) {
 // never do is record a claim it cannot substantiate. So the failure paths split
 // by what they prove:
 //
+//   - the pane pid cannot be read AND tmux no longer has the session (the pane
+//     died before this ran): nothing is written, as for a gone leader below.
+//   - the pane pid cannot be read while tmux still HAS the session: a
+//     fail-closed marker with pid 0. The tree is running and unaccounted for.
 //   - the pane process is already gone (ErrNoProcess): nothing is written. The
 //     leader is verifiably dead; anything it forked and detached before this
 //     point is not attributable to a PID+start-time receipt (see
@@ -429,11 +452,28 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 		return
 	}
 	store := ownershipStore()
-	panePID, err := i.tmuxSession.PanePID()
-	if err != nil || panePID <= 0 {
-		sessionLog.Warn("ownership_receipt_skipped_no_pane_pid",
-			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("error", logging.SanitizeValue(errString(err))))
+	panePID, err := i.probePanePIDForClaim()
+	if err != nil {
+		if !ownershipHasSession(i.TmuxSocketName, i.tmuxSession.Name) {
+			// The pane took the session down before we could read it: the
+			// leader is gone, and this is the same boundary as ErrNoProcess.
+			sessionLog.Info("ownership_receipt_not_claimed",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("reason", "pane exited before its pid could be read: "+logging.SanitizeValue(err.Error())))
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID,
+				Tool:       i.Tool,
+				Action:     "ownership_unclaimed",
+				Source:     "spawn",
+				Reason:     "pane exited before its pid could be read; nothing it started is owned",
+			})
+			return
+		}
+		// The session is there and we cannot say which process runs its pane.
+		// That is a live tree we cannot account for: fail closed.
+		panePID = 0
+		err = fmt.Errorf("pane pid unreadable while the session exists: %w", err)
+		i.commitUnverifiedSpawnMarker(store, panePID, err)
 		return
 	}
 	// Choosing the generation and writing the receipt are ONE critical section.
@@ -550,6 +590,64 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 	// swapped those package variables out from under it. Reading them from the
 	// goroutine is a data race the race detector will (and did) catch.
 	go i.attributeOwnedTree(receipt, store, ownershipProber, sessionLog, gen, wake)
+}
+
+// probePanePIDForClaim reads the pane's initial pid, retrying a few times so a
+// momentarily busy tmux server does not turn into a marker.
+func (i *Instance) probePanePIDForClaim() (int, error) {
+	var lastErr error
+	for attempt := 0; attempt < ownershipPanePIDAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(ownershipPanePIDRetry)
+		}
+		pid, err := ownershipPanePID(i.tmuxSession)
+		if err == nil && pid > 0 {
+			return pid, nil
+		}
+		lastErr = err
+		if lastErr == nil {
+			lastErr = fmt.Errorf("pane pid %d", pid)
+		}
+	}
+	return 0, lastErr
+}
+
+// commitUnverifiedSpawnMarker writes the fail-closed marker for a spawn whose
+// pane process could not be identified, choosing the generation under the same
+// lock every receipt is written under. panePID may be 0 (pane pid unreadable).
+func (i *Instance) commitUnverifiedSpawnMarker(store *procowner.Store, panePID int, cause error) {
+	_, err := store.Commit(i.ID, func(existing *procowner.Receipt) (*procowner.Receipt, error) {
+		var generation uint64 = 1
+		if existing != nil {
+			generation = existing.Generation + 1
+		}
+		return unverifiedSpawnMarker(ownershipProber, i.ID, generation, panePID, i.tmuxSession.Name, i.TmuxSocketName, cause), nil
+	})
+	if err != nil {
+		ownershipUnpersisted.Store(i.ID, err.Error())
+		sessionLog.Error("ownership_receipt_unpersisted",
+			slog.String("instance_id", logging.SanitizeValue(i.ID)),
+			slog.String("error", logging.SanitizeValue(err.Error())))
+		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+			InstanceID: i.ID,
+			Tool:       i.Tool,
+			Action:     "ownership_unpersisted",
+			Source:     "spawn",
+			Reason:     err.Error(),
+		})
+		return
+	}
+	sessionLog.Error("ownership_spawn_unverified",
+		slog.String("instance_id", logging.SanitizeValue(i.ID)),
+		slog.Int("pane_pid", panePID),
+		slog.String("reason", logging.SanitizeValue(cause.Error())))
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID,
+		Tool:       i.Tool,
+		Action:     "ownership_spawn_unverified",
+		Source:     "spawn",
+		Reason:     fmt.Sprintf("pane pid %d: %s", panePID, cause.Error()),
+	})
 }
 
 // unverifiedSpawnMarker builds the fail-closed marker for a pane process whose

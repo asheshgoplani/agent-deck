@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asheshgoplani/agent-deck/internal/procowner"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // The two-wave proof the issue asks for, plus the fail-closed cases that a
@@ -61,8 +63,7 @@ func TestIssue1873_TwoFastDeathWavesLeaveExactlyOneOwnedTree(t *testing.T) {
 	require.NoError(t, inst.Restart(), "restart must be admitted once nothing is owned")
 	kids := w.waitForChildren(2, 15*time.Second)
 	wave2 := kids[len(kids)-1]
-	require.True(t, waitForReceiptToRecord(inst.ID, wave2, 10*time.Second),
-		"the second wave's receipt must name its child before the pane is allowed to die")
+	requireReceiptHandshake(t, inst.ID, wave2)
 	w.release()
 	require.True(t, paneGoneWithin(inst, 20*time.Second), "the second wave dies the same way")
 	requireChildAlive(t, wave2, "the second wrapped tree escaped its pane too")
@@ -499,4 +500,72 @@ func TestIssue1873_UnreadableIdentityAtSpawnFailsClosed(t *testing.T) {
 	require.NoError(t, inst.AbandonOwnership())
 	prober.failAll = nil
 	require.NoError(t, inst.Restart(), "once abandoned, the restart is admitted")
+}
+
+// The pane pid itself can be unreadable — a tmux probe that fails while the
+// session is demonstrably there. That is a running tree with no record at all,
+// and it must fail closed for EVERY agent-deck process, not only the one that
+// spawned it: the marker lives on disk, so a second Instance reading the same
+// id refuses too.
+func TestIssue1873_UnreadablePanePIDOnALiveSessionFailsClosedAcrossProcesses(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	prober := newSessionFakeProber()
+	signaler := &countingSignaler{}
+	restore := swapOwnershipProbe(t, prober, signaler)
+	defer restore()
+	prevPanePID := ownershipPanePID
+	ownershipPanePID = func(*tmux.Session) (int, error) { return 0, errors.New("list-panes: server busy") }
+	t.Cleanup(func() { ownershipPanePID = prevPanePID })
+
+	inst := NewInstance("test-1873-unreadable-pane-pid", t.TempDir())
+	inst.Tool = "customwrap1873"
+	inst.Command = "sleep 30"
+	require.NoError(t, inst.Start())
+	t.Cleanup(func() { _ = inst.Kill() })
+	require.True(t, tmux.HasSessionOnSocket(inst.TmuxSocketName, inst.GetTmuxSession().Name),
+		"precondition: the session exists while its pane pid is unreadable")
+
+	status := inst.OwnershipStatus()
+	require.NoError(t, status.LoadErr)
+	require.NotNil(t, status.Receipt, "a live session with an unreadable pane pid must leave a marker")
+	assert.Equal(t, procowner.StateUnverifiedSpawn, status.Receipt.State)
+	assert.Equal(t, 0, status.Receipt.Leader.PID, "pid 0: not even the pane pid was readable")
+	assert.False(t, status.Admissible())
+
+	// A second process: a fresh Instance that knows only the id and reads the
+	// store from disk. It must refuse exactly like the spawning one.
+	other := NewInstance("other-process", t.TempDir())
+	other.ID = inst.ID
+	err := other.guardOwnedProcessesBeforeSpawn("restart")
+	require.Error(t, err, "another process must see the marker and refuse")
+	assert.True(t, IsOwnedProcessRecoveryRequired(err))
+	assert.Empty(t, signaler.calls)
+
+	require.NoError(t, other.AbandonOwnership())
+	require.NoError(t, other.guardOwnedProcessesBeforeSpawn("restart"), "abandon is the only way through")
+}
+
+// The same probe failure on a session tmux no longer has is the pane dying
+// before we could look, which is the leader-gone boundary: nothing is written
+// and the spawn is recorded as unclaimed rather than blocked forever.
+func TestIssue1873_UnreadablePanePIDOnAGoneSessionIsUnclaimed(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	prober := newSessionFakeProber()
+	restore := swapOwnershipProbe(t, prober, &countingSignaler{})
+	defer restore()
+	prevPanePID, prevHas := ownershipPanePID, ownershipHasSession
+	ownershipPanePID = func(*tmux.Session) (int, error) { return 0, errors.New("can't find session") }
+	ownershipHasSession = func(string, string) bool { return false }
+	t.Cleanup(func() { ownershipPanePID, ownershipHasSession = prevPanePID, prevHas })
+
+	inst := NewInstance("test-1873-gone-pane-pid", t.TempDir())
+	inst.Tool = "customwrap1873"
+	inst.Command = "sleep 30"
+	require.NoError(t, inst.Start())
+	t.Cleanup(func() { _ = inst.Kill() })
+
+	status := inst.OwnershipStatus()
+	require.NoError(t, status.LoadErr)
+	assert.Nil(t, status.Receipt, "a pane that is gone before it can be read leaves no claim")
+	assert.True(t, status.Admissible())
 }

@@ -291,10 +291,14 @@ func verifyUnverifiedSpawn(p Prober, r *Receipt) Report {
 	if r.Note != "" {
 		detail += ": " + r.Note
 	}
+	reason := fmt.Sprintf("the spawn's pane process (pid %d) could not be identified, so anything it started is unaccounted for; nothing was signalled",
+		r.Leader.PID)
+	if r.Leader.PID == 0 {
+		reason = "the spawn's pane pid could not be read while the pane existed, so anything it started is unaccounted for; nothing was signalled"
+	}
 	return Report{
 		Verdict: VerdictUnknown,
 		Members: []MemberStatus{{Member: r.Leader, State: StateUnknown, Detail: detail}},
-		Reason: fmt.Sprintf("the spawn's pane process (pid %d) could not be identified, so anything it started is unaccounted for; nothing was signalled",
-			r.Leader.PID),
+		Reason:  reason,
 	}
 }

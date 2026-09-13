@@ -37,10 +37,12 @@ func TestUnverifiedSpawn_ValidatesWithoutAStartIdentity(t *testing.T) {
 	assert.Equal(t, StateUnverifiedSpawn, decoded.State)
 	assert.Equal(t, 4242, decoded.Leader.PID)
 
-	// No pid at all is still a corrupt receipt: the marker must name the pane
-	// process it could not identify.
-	bad := unverifiedMarker(0, "boot-1")
-	require.ErrorIs(t, bad.Validate(), ErrCorruptReceipt)
+	// pid 0 is the "pane pid itself unreadable" marker and is valid; pid 1 or a
+	// negative pid is corrupt.
+	require.NoError(t, unverifiedMarker(0, "boot-1").Validate())
+	assert.Equal(t, VerdictUnknown, Verify(newFakeProber(), unverifiedMarker(0, "boot-1")).Verdict)
+	require.ErrorIs(t, unverifiedMarker(1, "boot-1").Validate(), ErrCorruptReceipt)
+	require.ErrorIs(t, unverifiedMarker(-4, "boot-1").Validate(), ErrCorruptReceipt)
 	// And a marker never carries members: nothing under it is attributable.
 	withMembers := unverifiedMarker(4242, "boot-1")
 	withMembers.Members = []Member{{PID: 5, StartID: "1", UID: 1}}

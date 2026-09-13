@@ -2,6 +2,7 @@ package procowner
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"syscall"
 	"testing"
@@ -127,17 +128,42 @@ func TestReap_PinnedStrangerIsNeverSignalled(t *testing.T) {
 	assert.Equal(t, OutcomeAlreadyGone, report.Outcomes[0].Outcome)
 }
 
-func TestReap_PinFailureFallsBackToVerifiedRawSignal(t *testing.T) {
+// A platform whose kernel has no process handles at all (pidfd_open is
+// ENOSYS) is the same situation as macOS: the only thing on offer is the
+// verified raw signal, and Pin says so with ErrUnsupported.
+func TestReap_PinUnsupportedFallsBackToVerifiedRawSignal(t *testing.T) {
 	p := newFakeProber()
 	leader := p.add(4242, 1, "5000", 1000)
 	sig := newPinningSignaler(p)
-	sig.pinErr = errors.New("pidfd_open: ENOSYS")
+	sig.pinErr = fmt.Errorf("%w: pidfd_open: ENOSYS", ErrUnsupported)
 	sig.onSend = func(pid int, _ syscall.Signal) { p.remove(pid) }
 
 	report := Reap(p, sig, liveReceipt("i", memberOf(leader, RoleLeader)), fastReapOptions())
 	require.Equal(t, VerdictClear, report.Verdict, report.Describe())
 	assert.Empty(t, sig.viaPin)
-	assert.Equal(t, 1, sig.sentTo(4242), "without a handle the verified raw signal is still delivered")
+	assert.Equal(t, 1, sig.sentTo(4242), "with no handle mechanism the verified raw signal is still delivered")
+}
+
+// A handle mechanism that exists but fails for THIS process (EPERM, EMFILE,
+// anything that is not "gone" and not "unsupported") must not degrade to a raw
+// kill: the pid is left alone, reported not signalled, and the receipt stays
+// so the operator can see it.
+func TestReap_PinFailureRefusesRatherThanRawKill(t *testing.T) {
+	for _, cause := range []error{syscall.EPERM, syscall.EMFILE, errors.New("pidfd_open: unexpected")} {
+		p := newFakeProber()
+		leader := p.add(4242, 1, "5000", 1000)
+		sig := newPinningSignaler(p)
+		sig.pinFail[4242] = cause
+		sig.onSend = func(pid int, _ syscall.Signal) { p.remove(pid) }
+
+		report := Reap(p, sig, liveReceipt("i", memberOf(leader, RoleLeader)), fastReapOptions())
+		assert.Empty(t, sig.calls(), "%v: a raw signal after a failed pin is the race this exists to close", cause)
+		assert.Empty(t, sig.viaPin, "%v", cause)
+		require.Len(t, report.Outcomes, 1, "%v", cause)
+		assert.Equal(t, OutcomeNotSignalled, report.Outcomes[0].Outcome, "%v", cause)
+		assert.Equal(t, VerdictUnknown, report.Verdict, "%v: the receipt must not be cleared", cause)
+		assert.Equal(t, StateOwned, VerifyMember(p, memberOf(leader, RoleLeader)).State, "%v: the process is untouched", cause)
+	}
 }
 
 func TestReap_PinESRCHMeansAlreadyGone(t *testing.T) {

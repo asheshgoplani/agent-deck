@@ -44,8 +44,13 @@ type PinnedProcess interface {
 // handle is therefore bound to exactly the process the check vouched for, and
 // the window between "verify" and "kill" that a raw pid leaves open is closed.
 //
-// Pin returning an error is not fatal: Reap falls back to the verified raw
-// signal, which is what every platform without process handles gets.
+// Pin's errors are read strictly. ESRCH means the process is already gone.
+// ErrUnsupported means this host has no handle mechanism at all (a kernel
+// without pidfd), and the member gets what every such platform gets: the
+// verified raw signal. Any other failure — EPERM, EMFILE, anything — means a
+// handle mechanism exists and could not be used for THIS process, and the
+// member is left alone and reported not signalled rather than raw-killed by
+// pid: the fallback would reopen exactly the window the handle closes.
 type PinnedSignaler interface {
 	Signaler
 	Pin(pid int) (PinnedProcess, error)
@@ -146,12 +151,14 @@ func (r ReapReport) Describe() string {
 // to stop. Signalling the whole set first also gives a parent and its children
 // the same window to shut down cleanly.
 //
-// Where the Signaler can pin (Linux, via pidfd), the verify-then-kill window is
+// Where the Signaler can pin (Linux with pidfd), the verify-then-kill window is
 // closed outright: the handle is opened first, the identity is verified second,
-// and the signal goes through the handle. Where it cannot, the window between
-// the verify and the kill syscall remains; it is microseconds wide, requires the
-// pid space to wrap inside it, and SIGTERM — the only signal that can land there
-// first — is survivable. Everything after that first signal is re-verified.
+// and the signal goes through the handle; a handle that cannot be obtained
+// leaves the member unsignalled. Where the host has no handle mechanism at all
+// (macOS; a Linux kernel before 5.3), the window between the verify and the
+// kill syscall remains: it is microseconds wide, requires the pid space to wrap
+// inside it, and SIGTERM — the only signal that can land there first — is
+// survivable. Everything after that first signal is re-verified.
 func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 	opts = opts.withDefaults()
 	if r == nil {
@@ -213,9 +220,7 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 		pending = append(pending, m)
 	}
 
-	// Pin before verifying (see PinnedSignaler). A pin that fails with ESRCH
-	// is a process already gone; any other failure means this member is
-	// signalled the raw way after verification.
+	// Pin before verifying (see PinnedSignaler for how each error is read).
 	pins := map[string]PinnedProcess{}
 	defer func() {
 		for _, pin := range pins {
@@ -232,6 +237,12 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 			case errors.Is(err, syscall.ESRCH), errors.Is(err, os.ErrProcessDone):
 				outcomes[m.Key()] = &ReapOutcome{Member: m, Outcome: OutcomeAlreadyGone,
 					Detail: "process does not exist"}
+				continue
+			case errors.Is(err, ErrUnsupported):
+				// No handle mechanism on this host: verified raw signal.
+			default:
+				outcomes[m.Key()] = &ReapOutcome{Member: m, Outcome: OutcomeNotSignalled,
+					Detail: "could not bind a process handle (" + err.Error() + "); left alone rather than signalled by pid"}
 				continue
 			}
 			stillPending = append(stillPending, m)

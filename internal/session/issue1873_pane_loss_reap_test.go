@@ -19,12 +19,14 @@ import (
 //   - a second fast-death/restart wave must leave exactly one tree, then none.
 //
 // It is deterministic, not timed. The wrapper is held alive until the receipt
-// on disk names the escaped child (on pre-fix code there is no receipt, and the
-// hold simply expires), so attribution can never lose a scheduling race to the
-// pane's death. And the restart is judged by its outcome, not by a sleep: a
-// restart that returns nil must have produced a recorded second child (the
-// fixture fails loudly if it did not), and the live-tree count is asserted
-// after that.
+// on disk names the escaped child, and the test FAILS if that handshake does
+// not complete, so attribution can never lose a scheduling race to the pane's
+// death. (Set AGENTDECK_1873_BASELINE=1 to run it against pre-fix code, where
+// no receipt exists: the handshake is then allowed to expire and the test fails
+// on the issue's own assertions instead.) The restart is judged by its outcome,
+// not by a sleep: a restart that returns nil must have produced a recorded
+// second child (the fixture fails loudly if it did not), and the live-tree
+// count is asserted after that.
 func TestIssue1873_WrappedTreeIsReapedAfterPaneLossAndNeverDuplicatedOnRestart(t *testing.T) {
 	requireEscapedWrapperSupport(t)
 
@@ -47,7 +49,7 @@ func TestIssue1873_WrappedTreeIsReapedAfterPaneLossAndNeverDuplicatedOnRestart(t
 	require.NoError(t, inst.Restart(), "restart must be admitted once nothing is owned")
 	kids := w.waitForChildren(recorded+1, 15*time.Second)
 	wave2 := kids[len(kids)-1]
-	waitForReceiptToRecord(inst.ID, wave2, 10*time.Second)
+	requireReceiptHandshake(t, inst.ID, wave2)
 	w.release()
 	require.True(t, paneGoneWithin(inst, 20*time.Second), "the second wave dies the same way")
 	requireChildAlive(t, wave2, "the second wrapped tree escaped its pane too")

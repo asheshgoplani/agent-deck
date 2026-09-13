@@ -75,7 +75,8 @@ const (
 	// be attributed. The marker owns nothing and can never be signalled; it
 	// exists to refuse the next spawn until an operator resolves it, because a
 	// tree agent-deck launched and cannot account for is precisely the shape
-	// that duplicates. The leader carries the pid only.
+	// that duplicates. The leader carries the pid only; pid 0 means even the
+	// pane pid could not be read while the pane was known to exist.
 	StateUnverifiedSpawn = "unverified_spawn"
 )
 
@@ -214,10 +215,11 @@ func (r *Receipt) Validate() error {
 	}
 	switch r.State {
 	case StateUnverifiedSpawn:
-		// The marker names a pid it could not identify; a boot id may be
-		// missing too (reading it can be what failed). It never has members.
-		if r.Leader.PID <= 1 {
-			return fmt.Errorf("%w: unverified spawn marker has no pane pid", ErrCorruptReceipt)
+		// The marker names the pid it could not identify, or 0 when the pane
+		// pid itself could not be read; a boot id may be missing too (reading
+		// it can be what failed). It never has members.
+		if r.Leader.PID < 0 || r.Leader.PID == 1 {
+			return fmt.Errorf("%w: unverified spawn marker names pid %d", ErrCorruptReceipt, r.Leader.PID)
 		}
 		if len(r.Members) > 0 {
 			return fmt.Errorf("%w: unverified spawn marker cannot carry members", ErrCorruptReceipt)

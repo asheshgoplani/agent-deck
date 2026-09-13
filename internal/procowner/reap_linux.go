@@ -3,6 +3,7 @@
 package procowner
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 
@@ -19,14 +20,19 @@ type pidfdProcess struct {
 // it is open: once that process exits, pidfd_send_signal fails with ESRCH even
 // if the pid has been handed to someone new.
 //
-// Kernels before 5.3 return ENOSYS; Reap treats that like any other pin failure
-// and falls back to the verified raw signal.
+// A kernel before 5.3 has no pidfd_open and answers ENOSYS; that is reported
+// as ErrUnsupported so Reap knows the host has no handle mechanism (and uses
+// the verified raw signal, as on macOS). Every other failure is returned as is,
+// and Reap then refuses to signal that member at all.
 func (OSSignaler) Pin(pid int) (PinnedProcess, error) {
 	if pid <= 1 {
 		return nil, fmt.Errorf("%w: refusing to pin pid %d", ErrNoProcess, pid)
 	}
 	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
+		if errors.Is(err, unix.ENOSYS) {
+			return nil, fmt.Errorf("%w: pidfd_open: %v", ErrUnsupported, err)
+		}
 		return nil, err
 	}
 	return &pidfdProcess{fd: fd}, nil
