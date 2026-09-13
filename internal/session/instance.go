@@ -2281,6 +2281,16 @@ func (i *Instance) getCodexHomeDir() string {
 	return i.codexHomeForCommand(i.resolveCodexCommand(i.Command))
 }
 
+// ResolvedCodexHome exposes the local rollout root for structured consumers.
+// Remote SSH sessions intentionally return empty: their path is meaningful on
+// the remote host and must not be mistaken for a readable local directory.
+func (i *Instance) ResolvedCodexHome() string {
+	if i == nil || !IsCodexCompatible(i.Tool) || strings.TrimSpace(i.SSHHost) != "" {
+		return ""
+	}
+	return i.getCodexHomeDir()
+}
+
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 // Resume: codex resume <session-id> or codex resume --last
 // Also sources .env files from [shell].env_files
