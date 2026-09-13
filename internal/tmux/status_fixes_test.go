@@ -677,6 +677,56 @@ func TestSpinnerCheckSkipsBoxDrawingLines(t *testing.T) {
 }
 
 // =============================================================================
+// FIX: pi "── ⠹ Working ──" banner detected as busy
+// =============================================================================
+// pi renders its activity indicator as a horizontal-rule banner with a braille
+// spinner leading the label ("── ⠹ Working ──────"), pinned to the top of its
+// UI region. The spinner check used to (a) skip any line starting with a
+// box-drawing character and (b) only inspect the last 10 lines, so a genuinely
+// working pi session was classified not-busy → "waiting". Reported live
+// 2026-09-06 on headless soc-dev-server pi sessions (daemon probe logged
+// busy_no_spinner while the pane showed the Working banner).
+func TestPiWorkingBannerDetectedAsBusy(t *testing.T) {
+	banner := "── ⠹ Working ──────────────────────────────────────────────"
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "pi banner near bottom of short pane",
+			content: "some prose\n" + banner + "\n/var/www/servermanager (saurabh)\n↑1k ↓2k R3M 12.0%/1.0M (auto)",
+			want:    true,
+		},
+		{
+			name:    "pi banner at top of tall pane (output below)",
+			content: banner + "\n" + strings.Repeat("output line\n", 30) + "footer row",
+			want:    true,
+		},
+		{
+			name:    "pi idle prompt has no banner",
+			content: "awaiting your input\n\n/var/www/servermanager (saurabh)\n↑1k ↓2k R3M 12.0%/1.0M (auto)   (deepseek) deepseek-v4-flash • high",
+			want:    false,
+		},
+		{
+			name:    "vertical box with decorative spinner still skipped",
+			content: "│ ⠹ decorative content │",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Fresh session per test to avoid spinner grace period carryover.
+			sess := &Session{DisplayName: "pi-" + tt.name, detectedTool: "pi"}
+			if got := sess.hasBusyIndicator(tt.content); got != tt.want {
+				t.Errorf("hasBusyIndicator() = %v, want %v\nContent:\n%s", got, tt.want, tt.content)
+			}
+		})
+	}
+}
+
+// =============================================================================
 // VALIDATION 6.0: Claude Code 2.1.25+ Active Spinner Detection
 // =============================================================================
 // Claude Code 2.1.25 removed "ctrl+c to interrupt" from the status line.
