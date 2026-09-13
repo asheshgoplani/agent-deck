@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.10] - 2026-09-13
+
+An open deck now installs a new release on its own and restarts in place, `session start` no longer reports success for a pane that is not there, `launch` survives a concurrent session detector, and a child completion with a stale transcript signal is delivered instead of dropped.
+
+### Fixed
+
+- A deck that is already open when a release lands now installs it: the TUI runs a cache-backed periodic update check (due every minute, answered from the shared on-disk cache until it is older than `check_interval_hours`, five-minute backoff after a failed check, one check at a time), so `auto_install` fires within about one check interval of a release and the deck restarts itself in place with the same executable and selection. `web --no-tui` installs on its own on the same cadence instead of waiting for a TUI or the daily timer. A deck whose executable is gone or sits in a Trash folder shows a banner asking for a manual restart and refuses to install or re-exec from that path; a binary replaced in place keeps working. Everything stays off with `auto_install = false`, `check_enabled = false`, `AGENTDECK_SKIP_UPDATE_CHECK`, under CI and tests, and for Homebrew-managed binaries ([#2271](https://github.com/asheshgoplani/agent-deck/pull/2271), fixes #2270).
+- `session start`, `session restart` and `restart --all` verify after the spawn that the tmux session exists (an exact, uncached `has-session` probe on the session's own socket). A pane that died at once is reported as `failed to start session: tmux session "…" is gone: spawn_died_fast (…)` with the dying output, the session is saved as `error`, the command exits 1, and `--json` carries `success:false`, `reason`, `tmux` and the same `spawn_failure` object as `session show`; a live session pays one extra probe, a dead one waits at most two seconds ([#2265](https://github.com/asheshgoplani/agent-deck/pull/2265), closes #2099).
+- `agent-deck launch` no longer aborts its post-start save with `stale concurrent tool_data.claude_detected_at conflict` (or the `Status` variant) when another process detects the same Claude session during the launch. Liveness observations (pane-derived status, `LastAccessed`, a detection stamp whose paired session id matches) merge with committed-wins instead of conflicting; intent (`stopped`, `queued`), session ids, a stamp whose paired id diverges, and every other column still conflict as before. `launch --json` now reports `status`, `tmux_session` and `claude_session_id` from the committed row. Merge shape, liveness table and failing reproduction from @jwr456's proposal in #2209 ([#2267](https://github.com/asheshgoplani/agent-deck/pull/2267), closes #2209).
+- `inbox drain` no longer answers `No pending events.` for a genuinely new child completion whose transcript signal has not advanced since the last notified turn. Such a record is flagged `output_hash_stale`, keyed on the status flip and emit instant instead of the stale hash, and delivered with its wake nudge; a retry of the same stamped record still collapses into one ([#2266](https://github.com/asheshgoplani/agent-deck/pull/2266), fixes #2184).
+
 ## [1.16.9] - 2026-09-13
 
 Stability release: sending to a Claude pane never interrupts it, a future-dated spawn stamp no longer blocks Start, and the macOS sandbox owns its own Claude credential.
