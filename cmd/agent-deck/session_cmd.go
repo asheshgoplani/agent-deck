@@ -2927,6 +2927,11 @@ func handleSessionSend(profile string, args []string) {
 			out.ErrorWithData(fmt.Sprintf("message reached '%s' but was never confirmed submitted: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliveryNoEvidence:
 			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryComposerBlocked:
+			// Nothing was typed: the operator's draft is exactly as they
+			// left it. This is a delivery failure automation may retry once
+			// the composer clears, not an invalid operation.
+			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		default:
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
