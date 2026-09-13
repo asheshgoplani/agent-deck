@@ -2905,8 +2905,12 @@ func handleSessionSend(profile string, args []string) {
 	sentAt := time.Now()
 	var turnPath string
 	var turnCursor int64
-	useTurnIdentity := sendUsesTurnIdentity(inst.Tool, message, *wait, *stream)
-	if useTurnIdentity {
+	// trackTurn: every Claude send with a real prompt reads its own turn
+	// record out of the transcript — as the verification loop's authoritative
+	// submission signal, and as the reply binding for --wait/--stream.
+	trackTurn := sendTracksTurn(inst.Tool, message)
+	useTurnIdentity := trackTurn && (*wait || *stream)
+	if trackTurn {
 		if fresh := inst.GetSessionIDFromTmux(); fresh != "" {
 			inst.ClaudeSessionID = fresh
 			// #1815: own pane env — weak vouch.
@@ -2921,10 +2925,10 @@ func handleSessionSend(profile string, args []string) {
 			failSessionSend(out, *stream, fmt.Sprintf("cannot establish turn identity: %v", pathErr))
 		}
 		// turnPath == "" here is a fresh session whose transcript Claude has
-		// not written yet (or a session ID not yet visible). The path is
-		// resolved after the send and searched from offset 0 under the
-		// NotBefore guard; refusing to send would break --wait on every
-		// first message to a new session.
+		// not written yet (or a session ID not yet visible). For --wait and
+		// --stream the path is resolved after the send and searched from
+		// offset 0 under the exact NotBefore guard; refusing to send would
+		// break --wait on every first message to a new session.
 		if turnPath != "" {
 			turnCursor, pathErr = session.TranscriptCursor(turnPath)
 			if pathErr != nil {
@@ -2932,6 +2936,11 @@ func handleSessionSend(profile string, args []string) {
 			}
 		}
 	}
+	// pathKnownBeforeSend decides the identity guard: a pre-send cursor is
+	// proof by position, so no timestamp is needed; a path learned only after
+	// the send is searched from offset 0 and every candidate must carry a
+	// timestamp at or after sentAt.
+	pathKnownBeforeSend := turnPath != ""
 
 	// --draft: type text into the prompt without pressing Enter, letting the
 	// user review and submit manually.
@@ -2967,6 +2976,13 @@ func handleSessionSend(profile string, args []string) {
 	// from a message lost during TUI init. Same signal --defer-if-busy reads.
 	tun.retry.targetBusyByHook = func() (bool, bool) {
 		return hookDrivenBusy(inst)
+	}
+	// #1978: turn advancement in Claude's own transcript is the authoritative
+	// submission signal; it is only available when the transcript existed
+	// before the send (position is the proof).
+	if pathKnownBeforeSend {
+		turnQuery := session.TurnQuery{Path: turnPath, Prompt: message, Cursor: turnCursor}
+		tun.retry.turnAdvanced = func() bool { return session.TurnAdvanced(turnQuery) }
 	}
 	sendRes, sendErr := executeSend(tmuxSess, inst.Tool, message, *noWait, tun)
 	if sendErr != nil {
@@ -3047,7 +3063,7 @@ func handleSessionSend(profile string, args []string) {
 	// record when its own turn starts, so --wait and --stream bind to that
 	// durable record first — the in-flight turn's completion and output are
 	// never consumed as the queued message's reply.
-	var turnID session.TurnIdentity
+	var turnQuery session.TurnQuery
 	if useTurnIdentity {
 		if turnPath == "" {
 			var err error
@@ -3056,21 +3072,23 @@ func handleSessionSend(profile string, args []string) {
 				failSessionSend(out, *stream, err.Error())
 			}
 		}
-		var identityErr error
-		turnID, identityErr = session.AwaitTurnIdentity(session.TurnQuery{
-			Path:      turnPath,
-			Prompt:    message,
-			Cursor:    turnCursor,
-			NotBefore: sentAt.Add(-turnIdentityClockSkew),
-		}, time.Until(waitDeadline), 100*time.Millisecond)
-		if identityErr != nil {
-			failSessionSend(out, *stream, fmt.Sprintf("turn identity not established: %v", identityErr))
+		turnQuery = session.TurnQuery{Path: turnPath, Prompt: message, Cursor: turnCursor}
+		if !pathKnownBeforeSend {
+			turnQuery.NotBefore = sentAt
 		}
 	}
 
 	// --stream: tail the Claude transcript and pipe JSONL events to
 	// stdout until end_turn, idle timeout, or error. Issue #689.
 	if *stream {
+		var turnID session.TurnIdentity
+		if useTurnIdentity {
+			var identityErr error
+			turnID, identityErr = session.AwaitTurnIdentity(turnQuery, time.Until(waitDeadline), 100*time.Millisecond)
+			if identityErr != nil {
+				failSessionSend(out, true, fmt.Sprintf("turn identity not established: %v", identityErr))
+			}
+		}
 		if err := streamSessionSend(inst, sessionRef, profile, turnID, sentAt, streamOptions{
 			idle:       *streamIdle,
 			charBudget: *streamCharBudget,
@@ -3088,10 +3106,14 @@ func handleSessionSend(profile string, args []string) {
 	var response *session.ResponseOutput
 	var responseErr error
 	if useTurnIdentity {
-		var completionErr error
-		response, finalStatus, completionErr, responseErr = awaitClaudeTurnReply(turnID, waitDeadline, func(remaining time.Duration) (string, error) {
+		var identityErr, completionErr error
+		response, finalStatus, identityErr, completionErr, responseErr = awaitClaudeWaitReply(turnQuery, waitDeadline, func(remaining time.Duration) (string, error) {
 			return waitForCompletion(tmuxSess, remaining)
 		})
+		if identityErr != nil {
+			out.Error(fmt.Sprintf("turn identity not established: %v", identityErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		if completionErr != nil {
 			out.Error(fmt.Sprintf("timeout waiting for completion: %v", completionErr), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -3147,10 +3169,13 @@ func handleSessionSend(profile string, args []string) {
 	}
 }
 
-// awaitClaudeTurnReply is the Claude --wait reply phase once turn identity is
-// established: observe completion (the UI prompt reappearing), then read THIS
-// turn's reply. completion is injected so the phase is testable without a
-// tmux pane; it receives the remaining budget.
+// awaitClaudeWaitReply is the whole Claude --wait reply path after delivery,
+// and the only place handleSessionSend obtains a Claude reply from: establish
+// the turn identity (blocking until the message's own user record exists —
+// a message queued behind a live turn waits here for its turn to start),
+// observe completion (the UI prompt reappearing), then read THIS turn's
+// reply. completion is injected so the path is testable without a tmux pane;
+// it receives the remaining budget. All three phases share deadline.
 //
 // The status heuristic detects the prompt reappearing, but the JSONL may not
 // be flushed yet — and the spike-filtered heuristic can read idle mid-turn
@@ -3159,34 +3184,30 @@ func handleSessionSend(profile string, args []string) {
 // back with ErrTurnResponseIncomplete rather than being dropped, and is never
 // dressed up as complete. Output from the turn that was in flight when the
 // message was queued can never be returned: the read starts after the
-// message's own user record.
-func awaitClaudeTurnReply(turnID session.TurnIdentity, deadline time.Time, completion func(remaining time.Duration) (string, error)) (resp *session.ResponseOutput, finalStatus string, completionErr, responseErr error) {
+// message's own user record and stops at the next human prompt.
+func awaitClaudeWaitReply(q session.TurnQuery, deadline time.Time, completion func(remaining time.Duration) (string, error)) (resp *session.ResponseOutput, finalStatus string, identityErr, completionErr, responseErr error) {
+	turnID, identityErr := session.AwaitTurnIdentity(q, time.Until(deadline), 100*time.Millisecond)
+	if identityErr != nil {
+		return nil, "", identityErr, nil, nil
+	}
 	finalStatus, completionErr = completion(time.Until(deadline))
 	if completionErr != nil {
-		return nil, finalStatus, completionErr, nil
+		return nil, finalStatus, nil, completionErr, nil
 	}
 	resp, responseErr = session.AwaitTurnResponse(turnID, time.Until(deadline), 100*time.Millisecond)
-	return resp, finalStatus, nil, responseErr
+	return resp, finalStatus, nil, nil, responseErr
 }
 
-// turnIdentityClockSkew is the tolerance applied to sentAt when it guards
-// the turn-identity search from offset 0 (transcript path unknown before the
-// send). It only has to reject records that are clearly older than this send;
-// the transcript and the CLI share one clock, so two seconds is generous.
-const turnIdentityClockSkew = 2 * time.Second
-
-// sendUsesTurnIdentity reports whether a --wait/--stream send binds its reply
-// to the durable transcript record of the submitted prompt (PR #2043).
+// sendTracksTurn reports whether a send reads its own turn record out of the
+// Claude transcript: as the verification loop's authoritative submission
+// signal, and (with --wait/--stream) as the reply binding (PR #2043).
 //
 // Claude-compatible tools only: other tools' output adapters expose no
 // transcript UUIDs, so non-Claude --wait keeps its best-effort contract.
 // Slash commands are excluded too: Claude records them as
 // `<command-name>` meta records, never as the typed text, so no identity
 // could be established and --wait would time out on every `/compact`.
-func sendUsesTurnIdentity(tool, message string, wait, stream bool) bool {
-	if !wait && !stream {
-		return false
-	}
+func sendTracksTurn(tool, message string) bool {
 	if !session.IsClaudeCompatible(tool) {
 		return false
 	}
@@ -3640,6 +3661,14 @@ type sendRetryOptions struct {
 	// firing, or stale) changes no verdict. nil means no hook signal is
 	// wired for this caller, which can then never report queued.
 	targetBusyByHook func() (busy, known bool)
+
+	// turnAdvanced, when non-nil, reports whether the harness's own
+	// transcript already holds this send's user record after the pre-send
+	// cursor (session.TurnAdvanced). It is the authoritative "the target
+	// took this message up" signal — turn advancement, not pane inference —
+	// and wins over every heuristic below. nil for callers without a
+	// transcript (non-Claude tools, slash commands, unknown path).
+	turnAdvanced func() bool
 }
 
 // hookBusyNow reads targetBusyByHook once and reports whether the hook
@@ -3652,17 +3681,6 @@ func (o sendRetryOptions) hookBusyNow() bool {
 	}
 	busy, known := o.targetBusyByHook()
 	return known && busy
-}
-
-// hookDeliveryVerdict classifies a message that landed while the hook reads
-// busy (issue #1978): busy before the send means the target was ALREADY
-// mid-turn and the message sits behind that turn (queued); busy only now is
-// the target taking this message up (submitted).
-func hookDeliveryVerdict(hookBusyBeforeSend bool) string {
-	if hookBusyBeforeSend {
-		return deliveryQueued
-	}
-	return deliverySubmitted
 }
 
 // composerPasteFree captures the pane and reports whether the composer is
@@ -3788,17 +3806,26 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		Message:        message,
 		OwnPasteMarker: opts.composerPasteFreeBeforeSend,
 	}
-	// sawTokenMovement latches once a NEW copy of the body, or a new composer
-	// paste marker, is observed relative to the pre-send baseline (issue
-	// #1978). Unlike sawDeliveryEvidence's "the token is somewhere on
-	// screen", this is attributable to THIS send, and it stays latched so a
-	// body that later scrolls out of the visible pane (#2033) is not
-	// un-delivered by a later capture. Only ever set when a baseline exists.
+	// sawTokenMovement latches once a NEW copy of the body is observed
+	// relative to the pre-send baseline (issue #1978). Unlike
+	// sawDeliveryEvidence's "the token is somewhere on screen", this is
+	// attributable to THIS send, and it stays latched so a body that later
+	// scrolls out of the visible pane (#2033) is not un-delivered by a later
+	// capture. Only ever set when a baseline exists. A composer paste marker
+	// is deliberately NOT movement here: a marker the composer newly holds is
+	// the shape of bytes sitting unsent, the opposite of a delivery.
 	sawTokenMovement := false
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
 
+		// Turn advancement in the harness's own transcript is the one
+		// authoritative submission signal and needs no pane at all.
+		if opts.turnAdvanced != nil && opts.turnAdvanced() {
+			return deliverySubmitted, nil
+		}
+
 		unsentPromptDetected := false
+		queueAcknowledged := false
 		// paneNow is this iteration's observation (raw ANSI + whether the
 		// capture succeeded at all), and is what the attribution gate reads.
 		captured, captureErr := target.CapturePaneFresh()
@@ -3806,12 +3833,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
+			queueAcknowledged = claudeQueueAcknowledged(content)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
 			}
 			if !sawTokenMovement && arrivalBaseline.paneOK {
-				if n, markers, ok := paneArrivalCounts(captured, message); ok &&
-					(n > arrivalBaseline.occurrences || markers > arrivalBaseline.pasteMarkers) {
+				if n, _, ok := paneArrivalCounts(captured, message); ok && n > arrivalBaseline.occurrences {
 					sawTokenMovement = true
 				}
 			}
@@ -3823,15 +3850,24 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		// GetStatus decays through waiting to idle while a target is in
 		// fact generating, which is how a queued message was reported "NOT
 		// delivered" for the whole budget. Busy alone proves nothing about
-		// this message, though: it is combined with token movement, and the
-		// composer must not still be holding the body (that is the
-		// unsent-prompt branch below, which nudges Enter). Classification
-		// does not depend on any retry threshold or resend budget, so the
-		// --no-wait path reports it identically. known == false (hooks
-		// absent, not firing, or stale) leaves every other verdict exactly
-		// as it was.
+		// this message, though, and neither does the body being on screen.
+		// `queued` is only ever reported on the harness's own
+		// acknowledgement: the target was mid-turn BEFORE the send, a new
+		// copy of the body landed, the composer is not holding it, and the
+		// pane shows Claude's queued-messages affordance in the same frame.
+		// A target that was NOT busy before the send and reads busy once the
+		// body has landed took this message up (the hook edge is written by
+		// its UserPromptSubmit hook). Classification does not depend on any
+		// retry threshold or resend budget, so the --no-wait path reports it
+		// identically. known == false (hooks absent, not firing, or stale)
+		// leaves every other verdict exactly as it was.
 		if sawTokenMovement && !unsentPromptDetected && opts.hookBusyNow() {
-			return hookDeliveryVerdict(hookBusyBeforeSend), nil
+			if !hookBusyBeforeSend {
+				return deliverySubmitted, nil
+			}
+			if queueAcknowledged {
+				return deliveryQueued, nil
+			}
 		}
 		status, err := target.GetStatus()
 
@@ -3844,7 +3880,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			continue
 		}
 
-		if err == nil && status == "active" {
+		// A target the hook reported mid-turn BEFORE the send is active on
+		// that turn; its activity is not evidence about this message (the
+		// same "was already busy" rule verifyContentArrival applies), so
+		// the active shortcut is disabled and only turn advancement, the
+		// hook edge or the queue acknowledgement above can settle it.
+		if err == nil && status == "active" && !hookBusyBeforeSend {
 			sawActiveAfterSend = true
 			sawDeliveryEvidence = true
 			waitingNoMarkerChecks = 0
@@ -3923,11 +3964,15 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			// The agent went active after the send: it took the message up.
 			return deliverySubmitted, nil
 		}
-		if sawUnsentMarker {
+		if sawUnsentMarker && !hookBusyBeforeSend {
 			// The composer was observed holding this message and — per the
 			// typed_not_submitted check just above, which did not fire — is
 			// no longer holding it. Held-then-cleared means the agent took it
-			// out of the composer, which is submission.
+			// out of the composer, which is submission. On a target that was
+			// already mid-turn it only means the input moved somewhere out
+			// of view, which is an inference this verdict must not rest on
+			// (issue #1978): that target settles on turn advancement or the
+			// queue acknowledgement, or falls through to the failure below.
 			return deliverySubmitted, nil
 		}
 		// The only thing ever observed was the body being visible somewhere in
@@ -4042,10 +4087,9 @@ func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalB
 // guessing one is how a failed capture would quietly become fake evidence.
 //
 // Issue #1978: tools on this path (codex, gemini) emit hook status too. A body
-// that newly appears while the hook says the target was already mid-turn is
-// a queued message, not the #1793 "typed" failure; a body that newly appears
-// as the hook flips to busy is the target taking it up. hookBusyBeforeSend is
-// the pre-send reading of opts.targetBusyByHook.
+// that newly appears as the hook flips from not-busy to busy is the target
+// taking it up; hookBusyBeforeSend is the pre-send reading of
+// opts.targetBusyByHook. A composer paste marker never feeds that verdict.
 func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions, baseline sendArrivalBaseline, hookBusyBeforeSend bool) (string, error) {
 	// Whether an unverified outcome is a failure depends on the longest LINE,
 	// not on the total payload. Canonical buffering is per line — that is the
@@ -4104,6 +4148,17 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 					if opts.tool == "pi" && piComposerEmpty(content, message) {
 						return deliverySubmitted, nil
 					}
+					// Issue #1978: the hook edge is the harness acknowledging
+					// the submission (codex/gemini write "running" from their
+					// prompt-submit hooks). A target that was NOT busy before
+					// the send, reads busy now, and is not holding the body in
+					// its composer took this message up. A target that was
+					// already busy can only be inferred queued, and this path
+					// has no queue acknowledgement to read, so it keeps the
+					// #1793 verdict below.
+					if !hookBusyBeforeSend && !send.HasUnsentComposerPrompt(content, message) && opts.hookBusyNow() {
+						return deliverySubmitted, nil
+					}
 					// Keep polling: the body is in, but the turn may still
 					// start within the budget and upgrade this to submitted.
 					sawBody = true
@@ -4128,9 +4183,6 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 					sawBody = true
 				}
 			}
-		}
-		if sawBody && opts.hookBusyNow() {
-			return hookDeliveryVerdict(hookBusyBeforeSend), nil
 		}
 		if i < checks-1 {
 			time.Sleep(opts.checkDelay)
@@ -4238,6 +4290,15 @@ func paneArrivalObservation(target sendRetryTarget, message string) (int, int, s
 	}
 	n, markers, ok := paneArrivalCounts(raw, message)
 	return n, markers, tmux.StripANSI(raw), ok
+}
+
+// claudeQueueAcknowledged reports whether the captured pane shows Claude
+// Code's queued-messages affordance ("Press up to edit queued messages"),
+// which the TUI renders only while it is holding input behind the running
+// turn. It is the harness's own acknowledgement that a message is queued,
+// and the only thing the queued verdict is allowed to rest on (issue #1978).
+func claudeQueueAcknowledged(content string) bool {
+	return strings.Contains(strings.ToLower(content), "queued message")
 }
 
 // paneArrivalCounts is paneArrivalObservation over a capture the caller
@@ -4543,7 +4604,7 @@ type streamOptions struct {
 // With a non-zero turnID (PR #2043) the stream starts at that durable user
 // record, so a message queued behind a live turn never streams that turn's
 // tail. A zero turnID is the legacy timestamp path, kept for slash commands
-// (see sendUsesTurnIdentity), where sentAt gates out history instead.
+// (see sendTracksTurn), where sentAt gates out history instead.
 //
 // Overall budget: streamOptions.timeout bounds the entire stream (not just
 // idle gaps), matching the semantics of --wait's --timeout.

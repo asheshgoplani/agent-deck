@@ -324,10 +324,10 @@ Default behavior:
 
 Delivery verdict (`--json` carries `delivery` and a machine-checkable `submitted` boolean):
 - `submitted` (exit 0, `submitted: true`): the target accepted the message and began its turn.
-- `queued` (exit 0, `submitted: false`): the target was mid-turn per its hook-driven status and the body newly arrived in its pane; Claude holds it as a queued message and takes it up when the current turn ends. Do not resend.
+- `queued` (exit 0, `submitted: false`): Claude targets only. The target was mid-turn per its hook-driven status before the send, the body newly arrived in its pane, and Claude's own "Press up to edit queued messages" affordance acknowledged it. Claude takes it up when the current turn ends. Do not resend. `submitted` on a Claude target is confirmed by the message's own record appearing in the transcript, or by the hook status flipping from idle to running once the body has landed.
 - `typed`, `typed_not_submitted`, `no_evidence`, `line_too_long`, `composer_blocked`, `send_failed` (exit 1, `code: DELIVERY_FAILED`): not delivered; see the error text for whether a retry is safe.
 
-With `--wait` or `--stream` on a Claude target, the reply is bound to the transcript record of this exact message: a message queued behind a live turn waits for its own turn to start, and the in-flight turn's output is never returned as its reply. Slash commands and non-Claude tools keep the timestamp-based best-effort reply.
+With `--wait` or `--stream` on a Claude target, the reply is bound to the transcript record of this exact message: a message queued behind a live turn waits for its own turn to start, the read begins after that record, and it stops at the next human prompt (an interrupted turn is reported as incomplete or as a stream error, not as the next turn's answer). Slash commands and non-Claude tools keep the timestamp-based best-effort reply.
 
 ### session approve
 

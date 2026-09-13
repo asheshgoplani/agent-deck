@@ -21,35 +21,54 @@ Supersedes PR #2043 on current `main` (27fac197, v1.16.9). Closes #1978 and
 
 ## Round-2 findings addressed
 
-1. **Queued is not a snapshot.** #2043 returned `queued` the moment the hook
-   read busy, before any evidence the body arrived. Now `queued` requires the
-   hook to have read busy *before* the send and token movement after it: a
-   new copy of the body, or a new composer paste marker, relative to the
-   pre-send pane baseline (the same delta idiom `verifyContentArrival` uses).
-   Hook busy with no arrival keeps today's failure verdict; an identical body
-   already on screen (heartbeat) is not movement. Hook idle before the send
-   and busy after, with the body landed, is `submitted`.
+1. **Queued is an acknowledgement, not a snapshot.** #2043 returned `queued`
+   the moment the hook read busy. Now `queued` (Claude targets only) needs
+   all of: the hook read busy *before* the send, token movement after it (a
+   new copy of the body relative to the pre-send pane baseline; a composer
+   paste marker is never movement), the composer not holding the body, and
+   Claude's own queued-messages affordance in the same frame. A target that
+   was already mid-turn gets no `submitted` from the activity heuristic or
+   from held-then-cleared either; it settles on turn advancement (the
+   message's own user record in the transcript, `session.TurnAdvanced`), on
+   the queue acknowledgement, or falls through to today's failure verdict.
+   Hook idle before the send and busy after, with the body landed and the
+   composer clear, is `submitted` (the hook edge is the harness's
+   prompt-submit acknowledgement); that is also the only hook verdict on the
+   non-Claude arrival path.
 2. **Interrupts.** No automated path sends Ctrl-C (inherited from #2263);
    every busy-target test asserts zero `SendCtrlC` calls and exactly one
    `SendKeysAndEnter`.
-3. **Turn identity freshness.** `--wait`/`--stream` bind to the transcript
-   user record of the exact message. The transcript path unknown before the
-   send (fresh session) is resolved after it and searched from offset 0 under
-   a `NotBefore = sentAt - 2s` guard, so an older identical prompt is never
-   adopted; #2043 exited 1 there. Prompt comparison is whitespace/CRLF
-   normalised. Slash commands (recorded by Claude as `<command-name>` meta
-   records) and non-Claude tools keep the timestamp path.
-4. **One `--timeout` budget** shared by identity, completion and reply
+3. **Turn identity.** `--wait`/`--stream` bind to the transcript user record
+   of the exact message. With a pre-send cursor, position is the proof. With
+   the path learned only after the send (fresh session), the search from
+   offset 0 accepts only records whose timestamp parses and is at or after
+   `sentAt` — no tolerance window, and a missing or malformed timestamp is
+   rejected. Prompt comparison is whitespace/CRLF normalised. Slash commands
+   (Claude records them as `<command-name>` meta records) and non-Claude
+   tools keep the timestamp path.
+4. **Stream boundary.** A turn-scoped stream stops with an error event when
+   a later human prompt appears before end_turn (`ErrStreamTurnInterrupted`);
+   the `--wait` reader already refused that boundary.
+5. **One `--timeout` budget** shared by identity, completion and reply
    (#2043 spent it up to three times). A reply with text but no end-of-turn
    at the deadline returns as incomplete with a warning; `stop_sequence` and
    `max_tokens` end a turn like the streamer.
-5. **Stream errors** before streaming are emitted as JSONL error events
-   (colliding transcript, identity failure), never a bare exit.
-6. **Conductor delivery-evidence check.** Swept every `sentAt` consumer in
-   the tree: the only remaining ones are the `last_sent_at` self-heal clock
-   (a dwell anchor, not reply selection) and `waitForFreshOutput`, which is
-   now reached only for non-Claude tools and slash commands. No conductor
-   path selects a reply by timestamp.
+6. **Stream errors** before streaming are emitted as JSONL error events.
+7. **Conductor reply attribution.** The bridge's wait path
+   (`conductor_bridge.py`) returned `session output` (the latest reply)
+   after `--wait -q` instead of the turn-bound stdout the CLI printed. It
+   now returns that stdout and falls back to `session output` only when
+   stdout is empty. The remaining `sentAt` consumers are the `last_sent_at`
+   self-heal clock and `waitForFreshOutput` (non-Claude and slash commands).
+8. **Test determinism.** The partial-record case is proven by one scan
+   (`scanTurnIdentity`) returning a cursor before the partial line; the
+   `--wait` red-path test drives `awaitClaudeWaitReply`, the single helper
+   `handleSessionSend` obtains a Claude reply from (identity, completion and
+   reply in one call), rather than the phases separately.
+
+What this does not claim: `handleSessionSend` itself is not exercised by a
+test (it calls `os.Exit` and needs a tmux pane); the wiring from it to
+`awaitClaudeWaitReply` and `executeSend` is reviewed, not tested.
 
 ## Test evidence
 
@@ -63,42 +82,42 @@ Against the rebased #2043 head (before the round-2 commit), the new CLI tests:
 
 ```
 --- FAIL: TestIssue1978_HookBusyWithoutArrivalIsNotQueued
-    delivery = queued with the body never on screen — hook-busy is not arrival evidence
 --- FAIL: TestIssue1978_StaleIdenticalBodyIsNotTokenMovement
-    delivery = queued from a pre-existing copy of the body; want the token count to move (#876 phantom)
 --- FAIL: TestIssue1978_HookIdleBeforeSendThenBusyIsSubmitted
-    delivery="queued" err=<nil>, want submitted
 --- FAIL: TestIssue1978_NoWaitQueuedNeedsArrivalToo
-    --no-wait dropped: delivery="queued" err=<nil>, want a failure verdict
---- FAIL: TestIssue1978_NonClaudeArrivalPathReportsQueuedWhenHookBusy
-    delivery="typed" ... want queued
+--- FAIL: TestIssue1978_NonClaudeArrivalPathReportsQueuedWhenHookBusy (since replaced by ...SubmittedOnHookEdge)
 ```
 
-On unpatched `main` none of the new tests compile (`deliveryQueued`,
-`TurnQuery`, `awaitClaudeTurnReply` do not exist).
+Mutation proofs on the final branch (tests untouched):
 
-Mutation proof on the final branch (drop the `NotBefore` guard, hand the reply
-phase a fresh 10s budget, drop the token-movement gate), tests only:
-
-```
---- FAIL: TestIssue1978_IdentityRejectsOlderIdenticalPromptBeforeSentAt
-    bound to "old-heartbeat", want the record written after the send
---- FAIL: TestIssue1978_HookBusyWithoutArrivalIsNotQueued
---- FAIL: TestIssue1978_StaleIdenticalBodyIsNotTokenMovement
---- FAIL: TestIssue1978_NoWaitQueuedNeedsArrivalToo
---- FAIL: TestIssue1978_WaitReplyHonoursOneDeadline
-    reply phase ran 10.148106255s past a 300ms shared deadline
-```
+- drop the `NotBefore` guard / fresh reply budget / drop the movement gate:
+  `IdentityRejectsOlderIdenticalPromptBeforeSentAt`,
+  `HookBusyWithoutArrivalIsNotQueued`, `StaleIdenticalBodyIsNotTokenMovement`,
+  `NoWaitQueuedNeedsArrivalToo`, `WaitReplyHonoursOneDeadline` fail.
+- Codex round (restore the 2s tolerance and pass missing timestamps, disable
+  the stream boundary, drop the affordance requirement, ignore
+  `turnAdvanced`, re-enable the marker-based success on the arrival path):
+  `IdentityGuardRejectsRecordInsideOldToleranceWindow`,
+  `IdentityGuardRejectsMissingOrMalformedTimestamp`,
+  `TurnScopedStreamEndsAtInterruption`, `QueuedNeedsTheQueueAffordance`,
+  `TurnAdvancementIsSubmission`, `NonClaudeNewPasteMarkerIsNeverASuccess`
+  fail; re-enabling the active shortcut on a busy-before target alone fails
+  `ActiveHeuristicIsNotSubmissionOnABusyTarget`.
+- Bridge: `test_wait_reply_is_the_turn_bound_stdout_not_the_latest_output`
+  fails on the unpatched bridge (`LATEST OTHER TURN` returned).
 
 ### Green
 
-- `go test -race -count=3 ./internal/session/... ./cmd/agent-deck/... -run
-  'TestIssue1978|TestInterrupt|TestNoWaitClassifies|TestTurnIdentity|TestAwaitTurn|TestStreamTranscript|TestResend|TestNoResend|TestIssue2104|TestWaitForFreshOutput|TestSendWithRetry'`
-  — both packages `ok`.
+- `go test -race -count=2 ./internal/send/... ./internal/session/... ./cmd/agent-deck/... -run
+  'TestIssue1978|TestInterrupt|TestNoWaitClassifies|TestTurnIdentity|TestAwaitTurn|TestStreamTranscript|TestResend|TestNoResend|TestIssue2104|TestWaitForFreshOutput|TestSendWithRetry|Issue1409|Issue1413|Issue876|Issue1793|Issue1855|Issue1777|Stream|Guard'`
+  — all three packages `ok`.
 - Full `./internal/send/... ./internal/session/... ./cmd/agent-deck/...`:
-  `internal/send` ok; the 43 failures in `internal/session` and
+  `internal/send` ok; the failures in `internal/session` and
   `cmd/agent-deck` are byte-identical to unpatched `main` in the same image
   (every one is `tmux not found`; the `golang:1.25` image has no tmux).
-  `comm` of the two sorted `--- FAIL` lists is empty in both directions.
+- Bridge: `pytest conductor/tests/` under a throwaway HOME: the two new
+  tests pass; `test_bridge_proxy.py` fails 6 cases only when run after the
+  other files and passes alone, identically on the unpatched tree
+  (pre-existing ordering dependence).
 - Host: `gofmt -l` clean, `go build ./...` ok, `go vet` ok on the touched
-  packages.
+  packages, `py_compile` ok on the bridge.

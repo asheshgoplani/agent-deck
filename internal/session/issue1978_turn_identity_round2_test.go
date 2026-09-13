@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -57,7 +59,7 @@ func TestIssue1978_QueuedSendBindsToItsOwnTurnNotTheInFlightOne(t *testing.T) {
 		err  error
 	}, 1)
 	go func() {
-		id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "queued question", Cursor: cursor, NotBefore: sentAt.Add(-2 * time.Second)}, 3*time.Second, time.Millisecond)
+		id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "queued question", Cursor: cursor, NotBefore: sentAt}, 3*time.Second, time.Millisecond)
 		if err != nil {
 			done <- struct {
 				resp *ResponseOutput
@@ -104,7 +106,7 @@ func TestIssue1978_IdentityRejectsOlderIdenticalPromptBeforeSentAt(t *testing.T)
 		assistantLine("old-reply", ts(-50*time.Second), "OLD", "end_turn"),
 		userLine("new-heartbeat", ts(time.Second), "heartbeat"),
 	)
-	id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "heartbeat", Cursor: 0, NotBefore: base.Add(-2 * time.Second)}, time.Second, time.Millisecond)
+	id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "heartbeat", Cursor: 0, NotBefore: base}, time.Second, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,5 +187,127 @@ func TestIssue1978_ResponseSkipsToolResultUserRecords(t *testing.T) {
 	resp, err := AwaitTurnResponse(id, time.Second, time.Millisecond)
 	if err != nil || !strings.Contains(resp.Content, "final") {
 		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+}
+
+// --- Codex review of PR #2273 (dc54fdef) -----------------------------------
+
+// TestIssue1978_IdentityGuardRejectsRecordInsideOldToleranceWindow: with the
+// transcript path resolved only after the send (cursor 0), an identical prompt
+// written ONE SECOND before sentAt used to pass a two-second tolerance and be
+// adopted, returning an older reply. The guard is now exact: at or after
+// NotBefore, or not this turn.
+func TestIssue1978_IdentityGuardRejectsRecordInsideOldToleranceWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	ts := func(d time.Duration) string { return base.Add(d).Format(time.RFC3339Nano) }
+	appendTranscript(t, path,
+		userLine("one-second-old", ts(-time.Second), "heartbeat"),
+		assistantLine("old-reply", ts(-500*time.Millisecond), "OLD", "end_turn"),
+		userLine("ours", ts(300*time.Millisecond), "heartbeat"),
+	)
+	id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "heartbeat", NotBefore: base}, time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.UUID != "ours" {
+		t.Fatalf("bound to %q, want the record at or after sentAt", id.UUID)
+	}
+}
+
+// TestIssue1978_IdentityGuardRejectsMissingOrMalformedTimestamp: under the
+// NotBefore guard a record with no usable timestamp is not "not old", it is
+// unverifiable, and must not be adopted from offset 0.
+func TestIssue1978_IdentityGuardRejectsMissingOrMalformedTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	appendTranscript(t, path,
+		userLine("no-ts", "", "heartbeat"),
+		userLine("bad-ts", "yesterday", "heartbeat"),
+	)
+	if id, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "heartbeat", NotBefore: base}, 50*time.Millisecond, time.Millisecond); err == nil {
+		t.Fatalf("adopted %q despite no verifiable timestamp", id.UUID)
+	}
+	// Without the guard (cursor known) timestamps are not required.
+	if _, err := AwaitTurnIdentity(TurnQuery{Path: path, Prompt: "heartbeat"}, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("cursor-guarded query must accept an untimestamped record: %v", err)
+	}
+}
+
+// TestIssue1978_ScanDoesNotConsumePartialTrailingRecord proves the partial
+// record handling deterministically: one scan over a file whose last line has
+// no newline must report not-found and hand back a cursor BEFORE that line,
+// so the next scan re-reads it once it is complete. No sleeps, no goroutine.
+func TestIssue1978_ScanDoesNotConsumePartialTrailingRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	complete := userLine("other", "", "something else") + "\n"
+	partial := `{"type":"user","uuid":"mine","message":{"role":"user","content":"mine"}`
+	if err := os.WriteFile(path, []byte(complete+partial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	q := TurnQuery{Path: path, Prompt: "mine"}
+	_, next, found, err := scanTurnIdentity(q, 0)
+	if err != nil || found {
+		t.Fatalf("found=%v err=%v on a partial record", found, err)
+	}
+	if next != int64(len(complete)) {
+		t.Fatalf("cursor advanced to %d, want %d (before the partial line)", next, len(complete))
+	}
+	appendTranscript(t, path, "}")
+	id, _, found, err := scanTurnIdentity(q, next)
+	if err != nil || !found || id.UUID != "mine" {
+		t.Fatalf("after completion: found=%v id=%+v err=%v", found, id, err)
+	}
+	if id.StartOffset != int64(len(complete)+len(partial)+2) {
+		t.Fatalf("StartOffset=%d, want end of the completed record", id.StartOffset)
+	}
+}
+
+// TestIssue1978_TurnAdvancedIsASingleScan: the verification loop's
+// authoritative submission signal — this send's record exists after the
+// pre-send cursor — without waiting.
+func TestIssue1978_TurnAdvancedIsASingleScan(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	appendTranscript(t, path, userLine("old", "", "ping"))
+	cursor, _ := TranscriptCursor(path)
+	q := TurnQuery{Path: path, Prompt: "ping", Cursor: cursor}
+	if TurnAdvanced(q) {
+		t.Fatal("advanced before the record exists (an older identical prompt was counted)")
+	}
+	appendTranscript(t, path, userLine("new", "", "ping"))
+	if !TurnAdvanced(q) {
+		t.Fatal("record after the cursor not detected")
+	}
+}
+
+// TestIssue1978_TurnScopedStreamEndsAtInterruption: the requested turn is
+// interrupted (a later human prompt lands before end_turn). The stream must
+// stop with an error event at that boundary, never stream the next turn's
+// answer as this one's completion.
+func TestIssue1978_TurnScopedStreamEndsAtInterruption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	prefix := userLine("mine", "", "mine") + "\n"
+	if err := os.WriteFile(path, []byte(prefix), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendTranscript(t, path,
+		assistantLine("partial", "", "started answering", "tool_use"),
+		userLine("next-prompt", "", "never mind, do this instead"),
+		assistantLine("next-reply", "", "NEXT TURN ANSWER", "end_turn"),
+	)
+	id := TurnIdentity{UUID: "mine", Path: path, StartOffset: int64(len(prefix))}
+	var out bytes.Buffer
+	err := StreamTranscriptForTurn(context.Background(), id, "sid", &out, StreamConfig{
+		PollInterval: time.Millisecond, IdleTimeout: time.Second, CharBudget: 1024, ToolBudget: 10,
+	})
+	if !errors.Is(err, ErrStreamTurnInterrupted) {
+		t.Fatalf("err = %v, want ErrStreamTurnInterrupted", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "NEXT TURN ANSWER") {
+		t.Fatalf("streamed the next turn's answer:\n%s", got)
+	}
+	if !strings.Contains(got, `"type":"error"`) || strings.Contains(got, `"type":"stop"`) {
+		t.Fatalf("want an error event and no stop event at the boundary:\n%s", got)
 	}
 }

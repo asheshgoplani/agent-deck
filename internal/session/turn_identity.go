@@ -25,10 +25,11 @@ type TurnIdentity struct {
 // Cursor is the transcript size captured before the send; the search starts
 // there so a record written before this send can never be adopted. When the
 // transcript path only became known after the send, Cursor is 0 and NotBefore
-// carries the guard instead: a main-chain user record whose timestamp parses
-// and is earlier than NotBefore is skipped. Heartbeats, inbox nudges and
-// retries resend identical text, so the older copy of the same prompt must
-// never become this send's identity (PR #2043 round 2, issue #1978).
+// carries the guard instead: only a main-chain user record whose timestamp
+// parses and is at or after NotBefore qualifies, and a record with a missing
+// or malformed timestamp is rejected rather than trusted. Heartbeats, inbox
+// nudges and retries resend identical text, so the older copy of the same
+// prompt must never become this send's identity (PR #2043 round 2, #1978).
 type TurnQuery struct {
 	Path      string
 	Prompt    string
@@ -105,21 +106,79 @@ func humanPrompt(rec turnRecord) (string, bool) {
 	return b.String(), b.Len() > 0
 }
 
-// recordBefore reports whether rec carries a parseable timestamp earlier than
-// notBefore. A missing or unparseable timestamp is not "before": the guard
-// only ever rejects positive evidence of age.
-func recordBefore(rec turnRecord, notBefore time.Time) bool {
-	if notBefore.IsZero() || rec.Timestamp == "" {
+// recordTooOld applies the NotBefore guard. With a zero notBefore nothing is
+// rejected (the cursor is the proof). Otherwise a record is accepted only on
+// positive evidence: a parseable timestamp at or after notBefore. Missing or
+// malformed timestamps are rejected — a guard that passes on absence is no
+// guard when the search starts at offset 0.
+func recordTooOld(rec turnRecord, notBefore time.Time) bool {
+	if notBefore.IsZero() {
 		return false
+	}
+	if rec.Timestamp == "" {
+		return true
 	}
 	ts, err := time.Parse(time.RFC3339Nano, rec.Timestamp)
 	if err != nil {
 		ts, err = time.Parse(time.RFC3339, rec.Timestamp)
 		if err != nil {
-			return false
+			return true
 		}
 	}
 	return ts.Before(notBefore)
+}
+
+// scanTurnIdentity reads complete records from cursor and returns the first
+// one that is this send's turn. The returned cursor is where the next scan
+// resumes: past every complete line examined, and never past a partial
+// trailing line, which Claude may still be writing.
+func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, error) {
+	want := normalizeTurnPrompt(q.Prompt)
+	f, err := os.Open(q.Path)
+	if err != nil {
+		return TurnIdentity{}, cursor, false, nil
+	}
+	defer f.Close()
+	if fi, statErr := f.Stat(); statErr == nil && fi.Size() < cursor {
+		cursor = 0
+	}
+	if _, err := f.Seek(cursor, 0); err != nil {
+		return TurnIdentity{}, cursor, false, nil
+	}
+	r := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, readErr := r.ReadBytes('\n')
+		if readErr != nil {
+			// Do not consume a partial trailing JSON record. Claude may be
+			// writing it concurrently; the next poll must retry from the
+			// same durable cursor once its newline arrives.
+			return TurnIdentity{}, cursor, false, nil
+		}
+		cursor += int64(len(line))
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		var rec turnRecord
+		if json.Unmarshal(line, &rec) != nil {
+			continue
+		}
+		body, human := humanPrompt(rec)
+		if !human || normalizeTurnPrompt(body) != want || recordTooOld(rec, q.NotBefore) {
+			continue
+		}
+		if rec.UUID == "" {
+			return TurnIdentity{}, cursor, false, fmt.Errorf("submitted prompt has no transcript UUID; refusing to guess turn identity")
+		}
+		return TurnIdentity{UUID: rec.UUID, Path: q.Path, StartOffset: cursor}, cursor, true, nil
+	}
+}
+
+// TurnAdvanced reports whether the transcript already holds this send's turn
+// record (one scan, no waiting). The verification loop uses it as the
+// authoritative "the target took this message up" signal: turn advancement
+// in the harness's own transcript, not pane inference.
+func TurnAdvanced(q TurnQuery) bool {
+	_, _, found, err := scanTurnIdentity(q, q.Cursor)
+	return err == nil && found
 }
 
 // AwaitTurnIdentity waits until Claude has durably accepted exactly q.Prompt
@@ -132,45 +191,17 @@ func recordBefore(rec turnRecord, notBefore time.Time) bool {
 // --stream until then — the in-flight turn's output can never be consumed as
 // the queued message's reply.
 func AwaitTurnIdentity(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, error) {
-	want := normalizeTurnPrompt(q.Prompt)
 	cursor := q.Cursor
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		f, err := os.Open(q.Path)
-		if err == nil {
-			fi, statErr := f.Stat()
-			if statErr == nil && fi.Size() < cursor {
-				cursor = 0
-			}
-			_, _ = f.Seek(cursor, 0)
-			r := bufio.NewReaderSize(f, 64*1024)
-			for {
-				line, readErr := r.ReadBytes('\n')
-				if readErr != nil {
-					// Do not consume a partial trailing JSON record. Claude may be
-					// writing it concurrently; the next poll must retry from the
-					// same durable cursor once its newline arrives.
-					break
-				}
-				cursor += int64(len(line))
-				line = bytes.TrimSuffix(line, []byte{'\n'})
-				line = bytes.TrimSuffix(line, []byte{'\r'})
-				var rec turnRecord
-				if json.Unmarshal(line, &rec) != nil {
-					continue
-				}
-				body, human := humanPrompt(rec)
-				if !human || normalizeTurnPrompt(body) != want || recordBefore(rec, q.NotBefore) {
-					continue
-				}
-				_ = f.Close()
-				if rec.UUID == "" {
-					return TurnIdentity{}, fmt.Errorf("submitted prompt has no transcript UUID; refusing to guess turn identity")
-				}
-				return TurnIdentity{UUID: rec.UUID, Path: q.Path, StartOffset: cursor}, nil
-			}
-			_ = f.Close()
+		id, next, found, err := scanTurnIdentity(q, cursor)
+		if err != nil {
+			return TurnIdentity{}, err
 		}
+		if found {
+			return id, nil
+		}
+		cursor = next
 		time.Sleep(poll)
 	}
 	return TurnIdentity{}, fmt.Errorf("turn identity not established within %s", timeout)

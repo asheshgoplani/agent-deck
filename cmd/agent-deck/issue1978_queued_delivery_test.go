@@ -128,15 +128,29 @@ func TestIssue1978_StaleIdenticalBodyIsNotTokenMovement(t *testing.T) {
 	}
 }
 
+// queuedPaneBodyScrolledOff is a mid-turn target still holding a queued
+// message (the affordance stays in the composer area) after the body itself
+// has scrolled out of the visible pane.
+func queuedPaneBodyScrolledOff() string {
+	return strings.Join([]string{
+		"  ⎿  streaming output line 7",
+		"  ⎿  streaming output line 8",
+		"────────────────────────────────────────",
+		"❯ Press up to edit queued messages",
+		"────────────────────────────────────────",
+	}, "\n")
+}
+
 // TestIssue1978_BodyScrolledOffAfterArrivalIsStillQueued pins the #2033
 // shape: the body arrives, then scrolls out of the visible pane while the
-// turn keeps streaming. Arrival is latched at the moment it was observed, so
-// a later capture without the body does not un-deliver the message.
+// turn keeps streaming and the queue affordance stays. Arrival is latched at
+// the moment it was observed, so a later capture without the body does not
+// un-deliver the message.
 func TestIssue1978_BodyScrolledOffAfterArrivalIsStillQueued(t *testing.T) {
 	const msg = "PROBE reply with only OK"
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
-		panes:    []string{busyPaneNoBody(), busyPaneWithBody(msg), busyPaneNoBody()},
+		panes:    []string{busyPaneNoBody(), busyPaneWithBody(msg), queuedPaneBodyScrolledOff()},
 	}
 	// The probe reads busy only from the third iteration on, so the loop has
 	// to carry the arrival it saw on the second frame forward.
@@ -238,11 +252,147 @@ func TestIssue1978_QueuedIsSuccessButNotSubmittedInJSON(t *testing.T) {
 	}
 }
 
-// TestIssue1978_NonClaudeArrivalPathReportsQueuedWhenHookBusy: tools that
+// TestIssue1978_NonClaudeArrivalPathReportsSubmittedOnHookEdge: tools that
 // take the content-arrival path (codex, gemini) also have hooks. A body that
-// newly appears while the hook says the target was already mid-turn is
-// queued there too, instead of the #1793 "typed" failure.
-func TestIssue1978_NonClaudeArrivalPathReportsQueuedWhenHookBusy(t *testing.T) {
+// newly appears as the hook flips from idle to busy is the harness
+// acknowledging the submission, instead of the #1793 "typed" failure.
+func TestIssue1978_NonClaudeArrivalPathReportsSubmittedOnHookEdge(t *testing.T) {
+	const msg = "PROBE reply with only OK"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{busyPaneNoBody(), busyPaneWithBody(msg)},
+	}
+	opts := queuedOpts(hookSeq(probeIdle, probeBusy))
+	opts.tool = "codex"
+
+	delivery, err := sendWithRetryTarget(mock, msg, true, opts)
+
+	if delivery != deliverySubmitted || err != nil {
+		t.Fatalf("delivery=%q err=%v, want submitted", delivery, err)
+	}
+}
+
+// TestIssue1978_TurnTrackingScope pins which sends read their own turn record
+// out of the transcript: Claude sends with a real prompt. Slash commands are
+// recorded by Claude as command meta records, never as the typed text, so
+// they keep the timestamp path instead of timing out; non-Claude tools keep
+// their best-effort adapters.
+func TestIssue1978_TurnTrackingScope(t *testing.T) {
+	cases := []struct {
+		tool, msg string
+		want      bool
+	}{
+		{"claude", "summarize", true},
+		{"claude", "/compact", false},
+		{"claude", "  /clear", false},
+		{"codex", "summarize", false},
+	}
+	for _, c := range cases {
+		if got := sendTracksTurn(c.tool, c.msg); got != c.want {
+			t.Errorf("sendTracksTurn(%q, %q) = %v, want %v", c.tool, c.msg, got, c.want)
+		}
+	}
+}
+
+// --- Codex review of PR #2273 (dc54fdef): queued only on acknowledgement ---
+
+// busyPaneBodyNoAffordance is a mid-turn target with the body freshly on
+// screen but WITHOUT Claude's queued-messages affordance: the body is there,
+// nothing says the harness queued it.
+func busyPaneBodyNoAffordance(msg string) string {
+	return strings.Join([]string{
+		"  ⎿  streaming output line 1",
+		"❯ " + msg,
+		"────────────────────────────────────────",
+		"❯ ",
+		"────────────────────────────────────────",
+	}, "\n")
+}
+
+// TestIssue1978_QueuedNeedsTheQueueAffordance: hook busy before and after,
+// the body newly on screen, but no "queued messages" affordance. That is an
+// inference, not an acknowledgement, and must not be reported queued.
+func TestIssue1978_QueuedNeedsTheQueueAffordance(t *testing.T) {
+	const msg = "PROBE reply with only OK"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{busyPaneNoBody(), busyPaneBodyNoAffordance(msg)},
+	}
+	delivery, err := sendWithRetryTarget(mock, msg, false, queuedOpts(hookSeq(probeBusy)))
+	if delivery == deliveryQueued || delivery == deliverySubmitted || err == nil {
+		t.Fatalf("delivery=%q err=%v: a busy target without the queue affordance must not be reported delivered", delivery, err)
+	}
+}
+
+// TestIssue1978_ActiveHeuristicIsNotSubmissionOnABusyTarget: the target was
+// mid-turn before the send; its activity belongs to that turn. Two "active"
+// reads with the body on screen used to return submitted without any
+// evidence about THIS message.
+func TestIssue1978_ActiveHeuristicIsNotSubmissionOnABusyTarget(t *testing.T) {
+	const msg = "PROBE reply with only OK"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"active"},
+		panes:    []string{busyPaneNoBody(), busyPaneBodyNoAffordance(msg)},
+	}
+	delivery, _ := sendWithRetryTarget(mock, msg, false, queuedOpts(hookSeq(probeBusy)))
+	if delivery == deliverySubmitted {
+		t.Fatalf("delivery = submitted from the in-flight turn's activity")
+	}
+}
+
+// TestIssue1978_TurnAdvancementIsSubmission: the message's own user record
+// in the transcript is the authoritative signal and wins even when the pane
+// and status heuristics show nothing.
+func TestIssue1978_TurnAdvancementIsSubmission(t *testing.T) {
+	const msg = "PROBE reply with only OK"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{busyPaneNoBody()},
+	}
+	opts := queuedOpts(hookSeq(probeBusy))
+	var polls int32
+	opts.turnAdvanced = func() bool { return atomic.AddInt32(&polls, 1) >= 3 }
+	delivery, err := sendWithRetryTarget(mock, msg, false, opts)
+	if delivery != deliverySubmitted || err != nil {
+		t.Fatalf("delivery=%q err=%v, want submitted on turn advancement", delivery, err)
+	}
+	if n := atomic.LoadInt32(&mock.sendKeysCalls); n != 1 {
+		t.Errorf("SendKeysAndEnter called %d times, want 1", n)
+	}
+}
+
+// composerWithNewPasteMarker is a codex-style composer holding a freshly
+// collapsed paste: bytes sitting unsent, the opposite of a delivery.
+func composerWithNewPasteMarker() string {
+	return strings.Join([]string{
+		"  ⎿  streaming output",
+		"────────────────────────────────────────",
+		"› [Pasted text #1 +12 lines]",
+		"────────────────────────────────────────",
+	}, "\n")
+}
+
+// TestIssue1978_NonClaudeNewPasteMarkerIsNeverASuccess: on the content-arrival
+// path a paste marker the composer newly holds, with the hook busy, used to
+// become a queued success. A swallowed Enter must stay a failure.
+func TestIssue1978_NonClaudeNewPasteMarkerIsNeverASuccess(t *testing.T) {
+	msg := "line one\nline two\nline three"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{busyPaneNoBody(), composerWithNewPasteMarker()},
+	}
+	opts := queuedOpts(hookSeq(probeBusy))
+	opts.tool = "codex"
+	delivery, err := sendWithRetryTarget(mock, msg, true, opts)
+	if delivery == deliveryQueued || delivery == deliverySubmitted || err == nil {
+		t.Fatalf("delivery=%q err=%v: a composer holding a new paste marker is not a delivery", delivery, err)
+	}
+}
+
+// TestIssue1978_NonClaudeBusyBeforeSendIsNotQueued: the content-arrival path
+// has no queue acknowledgement to read, so a target that was already busy
+// keeps the #1793 verdict rather than an inferred queued.
+func TestIssue1978_NonClaudeBusyBeforeSendIsNotQueued(t *testing.T) {
 	const msg = "PROBE reply with only OK"
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
@@ -250,35 +400,8 @@ func TestIssue1978_NonClaudeArrivalPathReportsQueuedWhenHookBusy(t *testing.T) {
 	}
 	opts := queuedOpts(hookSeq(probeBusy))
 	opts.tool = "codex"
-
 	delivery, err := sendWithRetryTarget(mock, msg, true, opts)
-
-	if delivery != deliveryQueued || err != nil {
-		t.Fatalf("delivery=%q err=%v, want queued", delivery, err)
-	}
-}
-
-// TestIssue1978_TurnIdentityScope pins which sends bind their reply to a
-// durable transcript record: Claude --wait/--stream with a real prompt. Slash
-// commands are recorded by Claude as command meta records, never as the typed
-// text, so they keep the timestamp path instead of timing out; non-Claude
-// tools keep their best-effort adapters.
-func TestIssue1978_TurnIdentityScope(t *testing.T) {
-	cases := []struct {
-		tool, msg    string
-		wait, stream bool
-		want         bool
-	}{
-		{"claude", "summarize", true, false, true},
-		{"claude", "summarize", false, true, true},
-		{"claude", "summarize", false, false, false},
-		{"claude", "/compact", true, false, false},
-		{"claude", "  /clear", false, true, false},
-		{"codex", "summarize", true, false, false},
-	}
-	for _, c := range cases {
-		if got := sendUsesTurnIdentity(c.tool, c.msg, c.wait, c.stream); got != c.want {
-			t.Errorf("sendUsesTurnIdentity(%q, %q, wait=%v, stream=%v) = %v, want %v", c.tool, c.msg, c.wait, c.stream, got, c.want)
-		}
+	if delivery != deliveryTyped || err == nil {
+		t.Fatalf("delivery=%q err=%v, want the #1793 typed verdict", delivery, err)
 	}
 }
