@@ -118,6 +118,19 @@ func (m Member) String() string {
 	return fmt.Sprintf("pid=%d start=%s uid=%d role=%s", m.PID, m.StartID, m.UID, role)
 }
 
+// Provider names recorded in receipts. They live here, outside any build tag,
+// because a receipt written on one platform may be read on another and because
+// the package's tests name them on every platform they compile on.
+const (
+	// ProviderLinuxProc reads start identity from /proc/<pid>/stat.
+	ProviderLinuxProc = "linux_proc"
+	// ProviderDarwinPS reads start identity from BSD ps(1).
+	ProviderDarwinPS = "darwin_ps"
+	// ProviderUnsupported names the no-op provider used where no
+	// start-identity source exists.
+	ProviderUnsupported = "unsupported"
+)
+
 // Receipt is the durable record of what a spawn took ownership of.
 type Receipt struct {
 	Version    int    `json:"version"`

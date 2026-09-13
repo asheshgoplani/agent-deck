@@ -11,9 +11,6 @@ import (
 	"syscall"
 )
 
-// ProviderLinuxProc is the provider name recorded in receipts written here.
-const ProviderLinuxProc = "linux_proc"
-
 // procRoot is a variable so tests can point the reader at a fixture tree
 // instead of the live /proc. Production never changes it.
 var procRoot = "/proc"

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -223,6 +225,44 @@ func childPPID(pid int) int {
 	return ppid
 }
 
+// fixturePanePID reads the pane's initial process id straight from tmux, the
+// way paneAliveNow does, so this fixture depends on nothing the fix adds and
+// the tests built on it compile — and fail — on pre-fix code.
+func fixturePanePID(sess *tmux.Session) (int, error) {
+	if sess == nil {
+		return 0, fmt.Errorf("no tmux session")
+	}
+	args := []string{}
+	if sock := strings.TrimSpace(sess.SocketName); sock != "" {
+		args = append(args, "-L", sock)
+	}
+	args = append(args, "list-panes", "-t", sess.Name+":", "-F", "#{pane_pid}")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", args...).Output()
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("unparseable pane pid %q", strings.TrimSpace(string(out)))
+	}
+	return pid, nil
+}
+
+// liveWrappedTrees counts the wrapper's recorded children that are still alive
+// under their recorded identity — the number of wrapped trees this instance
+// currently has running.
+func liveWrappedTrees(w *escapedWrapper) int {
+	n := 0
+	for _, c := range w.children() {
+		if childAlive(c) {
+			n++
+		}
+	}
+	return n
+}
+
 func waitForChildGone(child escapedChild, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -257,8 +297,14 @@ func startEscapedInstance(t *testing.T, w *escapedWrapper, id string) (*Instance
 
 	require.NoError(t, inst.Start())
 	t.Cleanup(func() { _ = inst.Kill() })
-	panePID, err := inst.GetTmuxSession().PanePID()
-	require.NoError(t, err)
+	// A wrapper with no linger can take the pane down before this probe runs;
+	// an unreadable pid is then expected, and the survivor is reparented by
+	// construction. Any other probe failure is a broken fixture.
+	panePID, paneErr := fixturePanePID(inst.GetTmuxSession())
+	if paneErr != nil {
+		require.False(t, paneAliveNow(inst.GetTmuxSession()),
+			"pane pid unreadable while the pane is still alive: %v", paneErr)
+	}
 
 	kids := w.waitForChildren(1, 15*time.Second)
 	child := kids[len(kids)-1]
@@ -267,8 +313,10 @@ func startEscapedInstance(t *testing.T, w *escapedWrapper, id string) (*Instance
 	requireChildAlive(t, child, "the wrapped child must survive the pane it was launched from")
 	ppid := childPPID(child.PID)
 	require.Greater(t, ppid, 0, "the survivor must still have a readable parent")
-	require.NotEqual(t, panePID, ppid,
-		"the survivor must have been reparented away from the pane tree")
+	if paneErr == nil {
+		require.NotEqual(t, panePID, ppid,
+			"the survivor must have been reparented away from the pane tree")
+	}
 	return inst, child
 }
 

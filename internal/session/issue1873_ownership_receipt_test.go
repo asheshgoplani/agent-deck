@@ -345,16 +345,6 @@ func survivorPIDs(status OwnershipStatus) []int {
 	return pids
 }
 
-func liveWrappedTrees(w *escapedWrapper) int {
-	n := 0
-	for _, c := range w.children() {
-		if childAlive(c) {
-			n++
-		}
-	}
-	return n
-}
-
 func sanitizeTestID(name string) string {
 	out := make([]rune, 0, len(name))
 	for _, r := range name {

@@ -12,9 +12,6 @@ import (
 	"time"
 )
 
-// ProviderDarwinPS is the provider name recorded in receipts written here.
-const ProviderDarwinPS = "darwin_ps"
-
 // psTimeout bounds every probe. An ownership check runs on the restart path, so
 // a wedged `ps` must fail closed quickly rather than hang the restart.
 const psTimeout = 5 * time.Second

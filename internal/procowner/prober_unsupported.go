@@ -4,10 +4,6 @@ package procowner
 
 import "fmt"
 
-// ProviderUnsupported names the no-op provider used where no start-identity
-// source exists.
-const ProviderUnsupported = "unsupported"
-
 // UnsupportedProber is the safe cross-platform fallback.
 //
 // Every call fails with ErrUnsupported, which means: no receipt is ever written
