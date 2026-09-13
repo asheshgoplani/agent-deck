@@ -32,9 +32,11 @@ package session
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -106,9 +108,56 @@ func (a SpawnAttempt) Run() error {
 // nowFn is a test seam so tests can pin time without sleeping.
 var nowFn = time.Now
 
+// Issue #2220: bounds on how far a stamp may be trusted.
+//
+// A sibling can only have stamped between our beforeLock and now, so a
+// stamp is evidence of a sibling spawn only when its mtime lies in
+// [ref, now]. Two bounds keep a bad stamp from turning the guard into a
+// permanent no-op:
+//
+//   - instanceSpawnStampSkewTolerance: filesystem timestamp rounding and
+//     coarse clocks can put a just-written stamp a hair ahead of the
+//     wall clock; up to this far ahead the mtime is clamped to now. Past
+//     it the stamp cannot have been written by a sibling in this process
+//     lifetime — it is the field shape from #2220 (stamp written before a
+//     backwards clock correction) and is ignored, with one warning per
+//     process so the silent no-op can no longer hide.
+//   - instanceSpawnStampFreshness: a stamp older than the lock's stale
+//     TTL predates any wait we could have had on the lock, so it is not
+//     evidence of a sibling either. This bounds the suppression window
+//     to the same budget as the lock itself.
+const (
+	instanceSpawnStampSkewTolerance = 2 * time.Second
+	instanceSpawnStampFreshness     = instanceSpawnLockLegacyStaleTTL
+)
+
+// spawnStampClockAnomalyLogFn is a test seam for the once-per-process
+// clock anomaly warning.
+var spawnStampClockAnomalyLogFn = func(instanceID string, mtime, now time.Time) {
+	slog.Warn("spawn_stamp_future_dated",
+		slog.String("instance", instanceID),
+		slog.Time("stamp_mtime", mtime),
+		slog.Time("now", now),
+		slog.String("hint", "clock was corrected backwards after a spawn; stamp ignored"),
+	)
+}
+
+var spawnStampClockAnomalyLogged atomic.Bool
+
+// logSpawnStampClockAnomalyOnce emits the future-dated stamp warning the
+// first time it is hit in this process and stays silent afterwards.
+func logSpawnStampClockAnomalyOnce(instanceID string, mtime, now time.Time) {
+	if spawnStampClockAnomalyLogged.CompareAndSwap(false, true) {
+		spawnStampClockAnomalyLogFn(instanceID, mtime, now)
+	}
+}
+
 // spawnedSince reports whether the per-instance spawn stamp's mtime is
-// newer than the given reference. A missing stamp = false (no sibling
-// has spawned yet for this instance ID).
+// newer than the given reference, i.e. a sibling spawned while we waited
+// for the lock. A missing stamp = false (no sibling has spawned yet for
+// this instance ID). A stamp outside the [ref, now] window — future-dated
+// beyond the skew tolerance, or older than the freshness window — is
+// never evidence of a sibling (#2220).
 func spawnedSince(instanceID string, ref time.Time) bool {
 	stamp, err := instanceSpawnStampPath(instanceID)
 	if err != nil {
@@ -118,7 +167,19 @@ func spawnedSince(instanceID string, ref time.Time) bool {
 	if err != nil {
 		return false
 	}
-	return info.ModTime().After(ref)
+	mtime := info.ModTime()
+	now := nowFn()
+	switch {
+	case mtime.Sub(now) > instanceSpawnStampSkewTolerance:
+		logSpawnStampClockAnomalyOnce(instanceID, mtime, now)
+		return false
+	case mtime.After(now):
+		mtime = now
+	}
+	if now.Sub(mtime) > instanceSpawnStampFreshness {
+		return false
+	}
+	return mtime.After(ref)
 }
 
 // recordInstanceSpawn updates the stamp's mtime to now. Best-effort:
