@@ -358,11 +358,26 @@ func deletedPaneCwdError(socketName, workDir, panePath string) error {
 // involved in the cd: bash forks /bin/sh, which cds, then execs the original
 // command (even when that command starts with "exec ").
 func wrapCommandForCwdAssert(dir, cmd string) string {
-	// Escape single quotes for safe embedding inside a single-quoted string.
-	// Pattern: end quote, escaped literal quote, restart quote.
-	// Example: it's -> it'"'"'s
-	escapedDir := strings.ReplaceAll(dir, "'", "'\"'\"'")
-	inner := "cd -- " + escapedDir
+	// dir is embedded as a double-quoted token inside the inner /bin/sh script so
+	// that paths containing spaces are treated as a single argument by cd.
+	//
+	// Two-pass escaping:
+	//   Pass 1 — double-quote context: escape \, $, `, and " so they are not
+	//            interpreted by the inner shell when dir is wrapped in "...".
+	//            Single quotes are literal inside double quotes and need no escaping
+	//            at this level.
+	//   Pass 2 — outer single-quote context: the entire inner script is wrapped in
+	//            '...' for the /bin/sh -c invocation. Any single quote surviving
+	//            from pass 1 would break that wrapping, so escape them with the
+	//            standard '"'"' pattern.
+	dirDQ := dir
+	dirDQ = strings.ReplaceAll(dirDQ, `\`, `\\`)
+	dirDQ = strings.ReplaceAll(dirDQ, `$`, `\$`)
+	dirDQ = strings.ReplaceAll(dirDQ, "`", "\\`")
+	dirDQ = strings.ReplaceAll(dirDQ, `"`, `\"`)
+	dirForShell := strings.ReplaceAll(dirDQ, "'", "'\"'\"'")
+
+	inner := `cd -- "` + dirForShell + `"`
 	if cmd != "" {
 		escapedCmd := strings.ReplaceAll(cmd, "'", "'\"'\"'")
 		inner += " && " + escapedCmd

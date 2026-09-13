@@ -42,7 +42,7 @@ import (
 
 func TestWrapCommandForCwdAssert_PlainPathAndCommand(t *testing.T) {
 	got := wrapCommandForCwdAssert("/home/user/project", "claude --session-id abc")
-	assert.Equal(t, "/bin/sh -c 'cd -- /home/user/project && claude --session-id abc'", got)
+	assert.Equal(t, `/bin/sh -c 'cd -- "/home/user/project" && claude --session-id abc'`, got)
 }
 
 func TestWrapCommandForCwdAssert_ExecPrefixedCommand(t *testing.T) {
@@ -50,14 +50,14 @@ func TestWrapCommandForCwdAssert_ExecPrefixedCommand(t *testing.T) {
 	// execs a binary named "cd" and exits 127. Inside /bin/sh -c the exec is a
 	// shell builtin, so `cd` is also a builtin and the sequence works correctly.
 	got := wrapCommandForCwdAssert("/project", "exec claude --resume 91fd7978")
-	assert.Equal(t, "/bin/sh -c 'cd -- /project && exec claude --resume 91fd7978'", got)
+	assert.Equal(t, `/bin/sh -c 'cd -- "/project" && exec claude --resume 91fd7978'`, got)
 }
 
 func TestWrapCommandForCwdAssert_EmptyCommand(t *testing.T) {
 	// An empty command (shell sessions) must produce a valid /bin/sh invocation
 	// that just changes directory. The shell exits 0 after the cd.
 	got := wrapCommandForCwdAssert("/project", "")
-	assert.Equal(t, "/bin/sh -c 'cd -- /project'", got)
+	assert.Equal(t, `/bin/sh -c 'cd -- "/project"'`, got)
 }
 
 func TestWrapCommandForCwdAssert_SingleQuoteInDir(t *testing.T) {
@@ -73,14 +73,19 @@ func TestWrapCommandForCwdAssert_SingleQuoteInCommand(t *testing.T) {
 	got := wrapCommandForCwdAssert("/project", "bash -c 'stty susp undef; claude'")
 	assert.Contains(t, got, "/bin/sh -c '")
 	assert.Contains(t, got, "/project")
-	// The single quotes inside the command must be escaped.
-	assert.NotContains(t, got, "stty susp undef; claude'", "unescaped inner single quote would break the outer shell string")
+	// The single quotes inside the command must be escaped with '"'"'.
+	// Check that the escaped form of the opening quote appears ('"'"'stty...) and
+	// that the raw unescaped opening sequence bash -c 'stty is not present.
+	assert.Contains(t, got, `'"'"'stty`, "inner single quote must use the end-quote/literal/reopen escape")
+	assert.NotContains(t, got, "bash -c 'stty", "unescaped inner single quote would break the outer shell string")
 }
 
 func TestWrapCommandForCwdAssert_PathWithSpaces(t *testing.T) {
 	// Spaces in directory paths are valid and must survive the embedding.
+	// The dir is double-quoted inside the inner sh script so the space is not
+	// treated as a word boundary by the shell.
 	got := wrapCommandForCwdAssert("/home/user/my project", "claude")
-	assert.Equal(t, "/bin/sh -c 'cd -- /home/user/my project && claude'", got)
+	assert.Equal(t, `/bin/sh -c 'cd -- "/home/user/my project" && claude'`, got)
 }
 
 // --- recovery in Start() when server is poisoned (#2214) --------------------
@@ -178,6 +183,12 @@ func TestWrapCommandForCwdAssert_IsRoundTrippable(t *testing.T) {
 	// sh -c interprets the wrapped string.
 	assert.True(t, strings.HasPrefix(wrapped, "/bin/sh -c '"),
 		"wrapper must always start with /bin/sh -c '")
+	// Actually execute it: pass the entire wrapped string to sh -c so the outer
+	// shell parses the quoting, then runs /bin/sh -c '<inner>'. Exit code 0 means
+	// both the quoting was syntactically valid and cd succeeded.
+	cmd := exec.Command("sh", "-c", wrapped)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "wrapped command must execute without error (output: %s)", out)
 }
 
 // --- helpers -----------------------------------------------------------------
