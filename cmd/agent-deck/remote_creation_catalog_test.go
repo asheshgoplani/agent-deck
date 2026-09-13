@@ -146,6 +146,14 @@ func TestCreationExplicitFalseOverridesOwnerDefaults(t *testing.T) {
 
 func TestCreationCLIHelpAndCatalog(t *testing.T) {
 	home := t.TempDir()
+	// These cases must reach creation validation even in the minimal Docker
+	// image. The shim satisfies executable discovery and cannot start a server.
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	for _, command := range []string{"add", "launch"} {
 		stdout, stderr, code := runAgentDeck(t, home, command, "--help")
 		if code != 0 || !strings.Contains(stdout+stderr, "startup-query") || !strings.Contains(stdout+stderr, "additional-path") {
@@ -163,15 +171,19 @@ func TestCreationCLIHelpAndCatalog(t *testing.T) {
 	if catalog.Version != 1 || len(catalog.Commands["launch"]) == 0 {
 		t.Fatalf("incomplete catalog: %+v", catalog)
 	}
-	for _, args := range [][]string{
-		{"launch", filepath.Join(home, "never-created"), "--create-dir", "-c", "claude", "--additional-path", home, "--worktree", "task", "--location", "sibling"},
-		{"launch", filepath.Join(home, "never-created"), "--create-dir", "-c", "claude", "--mcp", "unknown"},
-		{"add", filepath.Join(home, "never-created"), "--create-dir", "--attach", "--json"},
-		{"launch", filepath.Join(home, "never-created"), "--create-dir", "-c", "claude", "--startup-query", "hello", "--extra-arg=--resume"},
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"launch", filepath.Join(home, "never-created"), "--create-dir", "-c", "claude", "--additional-path", home, "--worktree", "task", "--location", "sibling"}, "--location cannot be combined with multi-repo worktrees"},
+		{[]string{"launch", filepath.Join(home, "never-created"), "--create-dir", "-c", "claude", "--mcp", "unknown"}, `MCP "unknown" not found in host catalog`},
+		{[]string{"add", filepath.Join(home, "never-created"), "--create-dir", "--attach", "--json"}, "--attach cannot be combined with --json or --ssh"},
+		{[]string{"launch", filepath.Join(home, "never-created"), "--create-dir", "-c", "claude", "--startup-query", "hello", "--extra-arg=--resume"}, "--startup-query cannot be combined with resume or continue arguments"},
 	} {
+		args := tc.args
 		stdout, stderr, code = runAgentDeck(t, home, args...)
-		if code == 0 {
-			t.Fatalf("invalid creation succeeded: %v %s %s", args, stdout, stderr)
+		if code == 0 || !strings.Contains(stdout+stderr, tc.want) {
+			t.Fatalf("creation must fail for %q: args=%v code=%d stdout=%s stderr=%s", tc.want, args, code, stdout, stderr)
 		}
 		if _, err := os.Stat(filepath.Join(home, "never-created")); !os.IsNotExist(err) {
 			t.Fatalf("invalid args created directory: %v, %v", args, err)

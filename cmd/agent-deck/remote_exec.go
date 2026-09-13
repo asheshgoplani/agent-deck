@@ -69,6 +69,16 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	// Unknown options are conservatively treated as value-taking: they must never
 	// cause a flag-shaped value to be opened as a controller file.
 	boolOptions := " json quiet q no-wait wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts "
+	// Creation booleans come from the same registered parser as capabilities.
+	// Otherwise a new boolean can swallow --message-file as its apparent value.
+	if args[0] == "launch" {
+		boolOptions = " "
+		for _, field := range creationCommandFields("launch") {
+			if !field.TakesValue {
+				boolOptions += field.Name + " "
+			}
+		}
+	}
 	forwarded := append([]string(nil), args[:offset]...)
 	messagePath := ""
 	found := false

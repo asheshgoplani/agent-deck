@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -39,5 +43,31 @@ func TestRemoteCreationPublicPreflight(t *testing.T) {
 		if err := preflightRemoteCreation(context.Background(), r, args); err != nil || r.calls != 0 {
 			t.Fatalf("%v: calls=%d err=%v", args, r.calls, err)
 		}
+	}
+}
+
+func TestRemoteCreationMessageFileAfterEveryBoolean(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "query.txt")
+	if err := os.WriteFile(path, []byte("literal query"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range creationCommandFields("launch") {
+		if field.TakesValue {
+			continue
+		}
+		t.Run(field.Name, func(t *testing.T) {
+			args, input, closeInput, err := remoteMessageInput([]string{"launch", "--" + field.Name, "--message-file", path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeInput()
+			data, err := io.ReadAll(input)
+			if err != nil || string(data) != "literal query" {
+				t.Fatalf("message lost: %s %v", data, err)
+			}
+			if strings.Contains(strings.Join(args, " "), path) {
+				t.Fatalf("controller filename leaked: %v", args)
+			}
+		})
 	}
 }
