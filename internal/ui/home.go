@@ -8050,6 +8050,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteAccountsFetchedMsg:
 		h.applyRemoteAccounts(msg)
+	case remoteEditAccountsFetchedMsg:
+		h.applyRemoteEditAccounts(msg)
+		return h, nil
+	case remoteSwitchPreviewMsg:
+		return h, h.handleRemoteSwitchPreview(msg)
+	case remoteSwitchResultMsg:
+		return h, h.handleRemoteSwitchResult(msg)
 	case remoteMCPsFetchedMsg:
 		h.applyRemoteMCPs(msg)
 		return h, nil
@@ -11057,13 +11064,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "P", "shift+p":
-		// Edit session settings — local sessions only (remote mutators live
-		// on the remote host, not in our Storage).
+		// Edit session settings. A remote row opens the same dialog bound to
+		// that remote: its slots come from the remote and the harness/account
+		// switch runs there (remote_switch.go).
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.editSessionDialog.SetSize(h.width, h.height)
 				h.editSessionDialog.Show(item.Session)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				return h, h.openRemoteEditSession(item)
 			}
 		}
 		return h, nil
@@ -12278,6 +12288,13 @@ func (h *Home) dismissConfirmDialog() {
 
 // confirmAction executes the confirmed destructive action.
 func (h *Home) confirmAction() tea.Cmd {
+	// A switch confirmation opened for a remote row runs on that remote.
+	if h.confirmDialog.GetRemoteName() != "" {
+		switch h.confirmDialog.GetConfirmType() {
+		case ConfirmSwitchAccount, ConfirmCrossHarnessTransfer:
+			return h.confirmRemoteSwitch()
+		}
+	}
 	switch h.confirmDialog.GetConfirmType() {
 	case ConfirmSwitchAccount:
 		sessionID, harness, account := h.confirmDialog.GetTargetID(), h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount()
@@ -13118,6 +13135,9 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if errMsg := h.editSessionDialog.Validate(); errMsg != "" {
 			h.editSessionDialog.SetError(errMsg)
 			return h, nil
+		}
+		if h.editSessionDialog.IsRemote() {
+			return h, h.commitRemoteEditSession()
 		}
 
 		sessionID := h.editSessionDialog.SessionID()

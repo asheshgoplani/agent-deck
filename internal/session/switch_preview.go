@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 )
@@ -289,8 +290,9 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 		preview.Refusal = &SwitchRefusal{
 			Code: "remote",
 			Message: fmt.Sprintf(
-				"session %q runs on %s; its transcript is on the remote host and cannot be "+
-					"migrated or read locally. Account switching for remote sessions is not supported.",
+				"session %q runs on %s over a bare SSH shell; its transcript is on that host and cannot be "+
+					"migrated or read here. Sessions owned by a remote deck switch on that host instead: "+
+					"`agent-deck remote <name> session switch <id> …`, or Shift+P on the remote row in the TUI.",
 				inst.Title, inst.SSHHost),
 		}
 		return preview
@@ -306,6 +308,17 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 	if capability == CapabilityUnsupported {
 		preview.Refusal = refusalForUnsupported(inst.Tool, targetHarness)
 		return preview
+	}
+
+	// A fresh cross-harness target starts the target CLI on this host. Report
+	// its absence from PATH as a warning (an interactive shell may resolve it
+	// differently); on a remote deck this is the host the target runs on.
+	if capability == CapabilityTranscriptTail {
+		if command := canonicalSwitchHarness(targetHarness); command != "" {
+			if _, lookErr := exec.LookPath(command); lookErr != nil {
+				preview.Warnings = append(preview.Warnings, fmt.Sprintf("target harness %q was not found on this host's PATH; the fresh target cannot start here until it is installed", command))
+			}
+		}
 	}
 
 	// Pi supports only its default account. A named Pi account is a clear

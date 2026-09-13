@@ -60,6 +60,12 @@ type ConfirmDialog struct {
 	targetHarness  string
 	targetAccount  string
 	sourceSnapshot crossHarnessConfirmationSource
+	// remoteSource is the remote row a remote switch confirmation was opened
+	// for (remoteName set); the switch is cancelled when the row changed.
+	remoteSource session.RemoteSessionInfo
+	// switchWarnings are the remote preview's warnings (e.g. the target
+	// harness missing on that host); the local preview shows none here.
+	switchWarnings []string
 
 	// Notice (ConfirmNotice) carries an acknowledge-only title/body.
 	noticeTitle string
@@ -275,6 +281,20 @@ func (s crossHarnessConfirmationSource) matches(inst *session.Instance) bool {
 		s.lastStartedAt.Equal(inst.LastStartedAt)
 }
 
+// remoteSwitchDetails adds what only a remote switch needs to say: the
+// whole operation runs on that host with its own slots, transcripts and
+// credentials, plus the remote preview's warnings.
+func (c *ConfirmDialog) remoteSwitchDetails() string {
+	if c.remoteName == "" {
+		return ""
+	}
+	out := fmt.Sprintf("\n• Runs on %s: its account slot, transcript and credentials stay there", c.remoteName)
+	for _, w := range c.switchWarnings {
+		out += "\n⚠ on " + c.remoteName + ": " + w
+	}
+	return out
+}
+
 func displayConfirmAccount(account string) string {
 	if strings.TrimSpace(account) == "" {
 		return "default"
@@ -291,6 +311,7 @@ func displayConfirmAccount(account string) string {
 func (c *ConfirmDialog) ShowSwitchAccount(source *session.Instance, harness, account string) {
 	c.visible = true
 	c.confirmType = ConfirmSwitchAccount
+	c.remoteName, c.switchWarnings = "", nil
 	c.sourceSnapshot = snapshotCrossHarnessConfirmationSource(source)
 	c.targetID, c.targetName = c.sourceSnapshot.id, c.sourceSnapshot.title
 	c.targetHarness, c.targetAccount = harness, account
@@ -304,12 +325,50 @@ func (c *ConfirmDialog) ShowSwitchAccount(source *session.Instance, harness, acc
 func (c *ConfirmDialog) ShowCrossHarnessTransfer(source *session.Instance, harness, account string, losses []string) {
 	c.visible = true
 	c.confirmType = ConfirmCrossHarnessTransfer
+	c.remoteName, c.switchWarnings = "", nil
 	c.sourceSnapshot = snapshotCrossHarnessConfirmationSource(source)
 	c.targetID, c.targetName = c.sourceSnapshot.id, c.sourceSnapshot.title
 	c.targetHarness, c.targetAccount = harness, account
 	c.noticeBody = strings.Join(losses, "\n• ")
 	c.buttonCount = 2
 	c.focusedButton = 1
+}
+
+// ShowRemoteSwitchAccount is ShowSwitchAccount for a session a remote deck
+// owns: the same question, fed by the remote's own switch-preview, and the
+// switch runs on that host. warnings are the remote preview's warnings.
+func (c *ConfirmDialog) ShowRemoteSwitchAccount(remoteName string, source session.RemoteSessionInfo, harness, account string, warnings []string) {
+	c.visible = true
+	c.confirmType = ConfirmSwitchAccount
+	c.remoteName, c.remoteSource, c.switchWarnings = remoteName, source, warnings
+	c.sourceSnapshot = crossHarnessConfirmationSource{}
+	c.targetID, c.targetName = source.ID, source.Title
+	c.targetHarness, c.targetAccount = harness, account
+	c.switchFrom = source.Account
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowRemoteCrossHarnessTransfer is ShowCrossHarnessTransfer for a session a
+// remote deck owns; losses and warnings come from the remote's preview.
+func (c *ConfirmDialog) ShowRemoteCrossHarnessTransfer(remoteName string, source session.RemoteSessionInfo, harness, account string, losses, warnings []string) {
+	c.visible = true
+	c.confirmType = ConfirmCrossHarnessTransfer
+	c.remoteName, c.remoteSource, c.switchWarnings = remoteName, source, warnings
+	c.sourceSnapshot = crossHarnessConfirmationSource{tool: source.Tool}
+	c.targetID, c.targetName = source.ID, source.Title
+	c.targetHarness, c.targetAccount = harness, account
+	c.noticeBody = strings.Join(losses, "\n• ")
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// RemoteSourceMatches validates a remote switch confirmation against the
+// row the remote currently reports: identity, title, harness and slot must
+// be the ones the user confirmed.
+func (c *ConfirmDialog) RemoteSourceMatches(info *session.RemoteSessionInfo) bool {
+	return info != nil && c.remoteSource.ID == info.ID && c.remoteSource.Title == info.Title &&
+		c.remoteSource.Tool == info.Tool && c.remoteSource.Account == info.Account
 }
 
 // CrossHarnessSourceMatches validates the modal-time snapshot at acceptance,
@@ -675,8 +734,12 @@ func (c *ConfirmDialog) View() string {
 
 	case ConfirmCrossHarnessTransfer:
 		title = "Transfer Context to Fresh Target?"
+		if c.remoteName != "" {
+			title = "Transfer Context on " + c.remoteName + "?"
+		}
 		warning = fmt.Sprintf("%s → NEW %s target (account %s).\n\nThe original source session is kept unchanged.", c.sourceSnapshot.tool, c.targetHarness, displayConfirmAccount(c.targetAccount))
 		details = "Not transferred:\n• " + c.noticeBody + "\n\nTarget readiness is pending until a target-native identity and ready event are observed."
+		details += c.remoteSwitchDetails()
 		borderColor = ColorYellow
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Transfer", ColorYellow, c.focusedButton == 0), "  ",
@@ -686,8 +749,12 @@ func (c *ConfirmDialog) View() string {
 
 	case ConfirmSwitchAccount:
 		title = "Switch Account?"
+		if c.remoteName != "" {
+			title = "Switch Account on " + c.remoteName + "?"
+		}
 		warning = fmt.Sprintf("Move this session to another %s account:\n\n  \"%s\"\n  %s  →  %s", c.targetHarness, c.targetName, displayConfirmAccount(c.switchFrom), displayConfirmAccount(c.targetAccount))
 		details = "• The session is stopped and restarted with its conversation carried over\n• Tools, MCPs, plugins and usage limits follow the new account\n• Authentication is not checked until the restarted harness reports ready"
+		details += c.remoteSwitchDetails()
 		borderColor = ColorYellow
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Switch", ColorYellow, c.focusedButton == 0), "  ",

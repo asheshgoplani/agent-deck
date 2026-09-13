@@ -224,6 +224,11 @@ while True:
 		{name: "worktree-info", args: func(int) []string { return []string{"worktree", "info", "worktree", "--json"} }},
 		{name: "mcp-attach", args: func(int) []string { return []string{"mcp", "attach", "worktree", "parity", "--json"} }},
 		{name: "skill-attach", args: func(int) []string { return []string{"skill", "attach", "worktree", "parity", "--json"} }},
+		// The switch preview runs on the server against its own slots and
+		// transcript; the same JSON contract comes back through the passthrough.
+		{name: "switch-preview", args: func(int) []string {
+			return []string{"session", "switch-preview", "worktree", "--to-harness", "claude", "--to-account", "person_a", "--json"}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -419,3 +419,48 @@ func TestRemoteCommandArgsSessionSet(t *testing.T) {
 		t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
 	}
 }
+
+// The switch family runs ON the remote host: the passthrough forwards the
+// session selector, the explicit target and the documented option set only.
+// A path-shaped or unknown option never reaches the remote, so the switch
+// engine there can never be pointed at a controller config dir or transcript.
+func TestRemoteCommandArgsSessionSwitchVerbs(t *testing.T) {
+	accept := [][]string{
+		{"session", "switch-preview", "task"},
+		{"session", "switch-preview", "task", "--to-account", "work", "--json"},
+		{"session", "switch-preview", "task", "--to-harness=codex", "--max-chars", "4000"},
+		{"session", "switch", "task", "--to-harness", "claude", "--to-account", "work", "--json"},
+		{"session", "switch", "task", "--to-harness", "codex", "--confirm-context-loss", "--no-start", "--max-bytes", "8000"},
+		{"session", "switch-account", "task", "work"},
+		{"session", "switch-account", "task", "work", "--no-restart", "--json", "-q"},
+		{"session", "switch", "--help"},
+		{"session", "switch-preview", "-h"},
+	}
+	for _, args := range accept {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	reject := [][]string{
+		{"session", "switch"},
+		{"session", "switch-preview"},
+		{"session", "switch-account", "task"},
+		{"session", "switch-account", "task", "work", "extra"},
+		{"session", "switch", "task", "--config-dir", "/tmp/x"},
+		{"session", "switch", "task", "--to-harness"},
+		{"session", "switch", "task", "--to-account", "--json"},
+		{"session", "switch", "task", "--to-account=a=b"},
+		{"session", "switch", "task", "--max-bytes", "lots"},
+		{"session", "switch-preview", "task", "extra-positional"},
+		{"session", "switch", "task", "--to-harness", "../claude"},
+		{"session", "switch", "task", "--to-account", "wo rk"},
+		{"session", "switch-account", "task", "/etc/passwd"},
+		{"session", "switch", "task", "--"},
+	}
+	for _, args := range reject {
+		if _, err := remoteCommandArgs(args); err == nil {
+			t.Fatalf("remoteCommandArgs(%v) must be refused", args)
+		}
+	}
+}

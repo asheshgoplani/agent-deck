@@ -569,3 +569,50 @@ func TestPreviewSwitch_SourceSessionIDFromCodexField(t *testing.T) {
 		t.Errorf("SourceSessionID = %q, want \"codex-thread-xyz\" (from CodexSessionID)", preview.SourceSessionID)
 	}
 }
+
+// A cross-harness target needs the target CLI on the host that runs the
+// preview. When it is absent from PATH the preview says so as a warning
+// (interactive shells may resolve differently, so it is not a refusal). The
+// remote switch path runs this preview on the remote, which is exactly where
+// a missing harness must be reported.
+func TestPreviewSwitch_TargetHarnessMissingFromPATHIsWarned(t *testing.T) {
+	cfg := switchPreviewConfig(t)
+	inst := switchPreviewClaude(t, "personal", "11111111-2222-3333-4444-555555555555")
+	t.Setenv("PATH", t.TempDir())
+
+	preview := PreviewSwitch(cfg, inst, SwitchPreviewTarget{Harness: "codex"})
+	if preview.Refusal != nil {
+		t.Fatalf("unexpected refusal: %+v", preview.Refusal)
+	}
+	found := false
+	for _, w := range preview.Warnings {
+		if strings.Contains(w, `"codex"`) && strings.Contains(w, "PATH") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings must name the missing target harness: %v", preview.Warnings)
+	}
+
+	// Same harness never checks the binary: the session is already running it.
+	same := PreviewSwitch(cfg, inst, SwitchPreviewTarget{Account: "work"})
+	for _, w := range same.Warnings {
+		if strings.Contains(w, "PATH") {
+			t.Fatalf("same-harness preview must not warn about PATH: %v", same.Warnings)
+		}
+	}
+}
+
+// The legacy --ssh session refusal points at the remote-deck route, so the
+// user is told how to switch a session that a remote deck owns.
+func TestPreviewSwitch_RemoteSourceRefusalNamesRemoteRoute(t *testing.T) {
+	cfg := switchPreviewConfig(t)
+	inst := &Instance{ID: "r", Title: "r", ProjectPath: t.TempDir(), Tool: "claude", SSHHost: "lab.example"}
+	preview := PreviewSwitch(cfg, inst, SwitchPreviewTarget{Account: "work"})
+	if preview.Refusal == nil || preview.Refusal.Code != "remote" {
+		t.Fatalf("refusal = %+v", preview.Refusal)
+	}
+	if !strings.Contains(preview.Refusal.Message, "agent-deck remote <name> session switch") {
+		t.Fatalf("refusal must name the remote-deck route: %q", preview.Refusal.Message)
+	}
+}

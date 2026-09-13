@@ -27,6 +27,9 @@ Run the same command through `remote lab`. Output, JSON fields, diagnostics and 
 | `session archive task` | `remote lab session archive task` |
 | `session set task title "task 2"` | `remote lab session set task title "task 2"` |
 | `session unarchive task` | `remote lab session unarchive task` |
+| `session switch-preview task --to-account alice --json` | `remote lab session switch-preview task --to-account alice --json` |
+| `session switch task --to-harness codex --confirm-context-loss` | `remote lab session switch task --to-harness codex --confirm-context-loss` |
+| `session switch-account task alice` | `remote lab session switch-account task alice` |
 | `worktree list --json` | `remote lab worktree list --json` |
 | `worktree info task --json` | `remote lab worktree info task --json` |
 | `worktree cleanup --json` | `remote lab worktree cleanup --json` |
@@ -67,6 +70,12 @@ Fields the remote `add` cannot express are refused with a message in the dialog 
 Remote-management commands such as `remote list` and `remote remove lab` operate on your local configuration. New remote names cannot match those command names. For an existing conflicting name, use the explicit execution form, for example `remote exec remove list --json`; ambiguous shorthand refuses to act. Rename the conflicting entry in your configuration before using the matching management command.
 
 If a worktree operation needs an approved repository setup script, pass `--allow-repo-scripts` after the remote name. The server applies that explicit consent. Normal cleanup confirmation still applies to destructive cleanup.
+
+## Switching a remote session's account or harness
+
+`Shift+P` on a remote row opens the Edit Session dialog for that session, bound to its remote. The account row lists the remote's own slots (read over SSH with `accounts --json` and `accounts --harness codex --json` when the dialog opens, names only); the harness row offers the same harnesses as locally. Saving a changed harness or account asks the remote for `session switch-preview --json` and shows the same "Switch Account?" or "Transfer Context?" confirmation a local session gets, fed by that answer: the remote's capability, its loss disclosure and its warnings (for example a target harness that is not on the remote's `PATH`). A refusal the remote reports (a slot that exists locally but not there, a managed conductor or watcher bridge target on the remote, a session with no recorded conversation id) is shown verbatim and nothing runs. Confirming runs the remote's own `session switch` (`--confirm-context-loss` for a cross-harness transfer), with the same ownership revalidation, parent routing, managed-source refusal and journal the local switch has, on the remote. The result is reported as verified, pending or failed with the remote's status and `recovery_required` flag, and the row updates through the pushed remote events.
+
+The whole switch runs on the remote: its transcripts, config directories and credentials never leave that host, and this computer's account slots are never offered for it. A slot must therefore exist in the remote's `config.toml`; a harness must be installed on the remote. The title row still renames through the remote's `rename`; a title edit and a switch are saved separately, as locally. Runtime flags that live only in the remote's registry (skip permissions, auto mode, extra args, plugins, pin) are edited on the remote with `remote lab session set`. From the CLI the same operations are `remote lab session switch-preview`, `remote lab session switch` and `remote lab session switch-account`; only the session selector, the explicit `--to-harness`/`--to-account` target and the documented options are forwarded, so no local path can ever be handed to the remote's switch engine. Both sides need agent-deck 1.16.10 or newer; an older remote answers the preview with an unknown-command error, which is reported as such.
 
 ## Reordering remote groups from the TUI
 
