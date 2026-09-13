@@ -3849,6 +3849,18 @@ func (s *Session) CaptureHistoryLines(n int) (string, error) {
 	return string(output), nil
 }
 
+// CapturePrimaryFullHistory captures the managed agent window even when an
+// auxiliary tmux window is currently active.
+func (s *Session) CapturePrimaryFullHistory() (string, error) {
+	// Bounded for the same reason as CaptureFullHistory: this is polled on a
+	// cadence, and an unreaped capture-pane client spins at 100% CPU forever.
+	output, err := s.runBoundedOutput("capture-pane", "-t", s.primaryWindowTarget(), "-p", "-e", "-S", "-2000")
+	if err != nil {
+		return "", fmt.Errorf("failed to capture primary history: %w", err)
+	}
+	return string(output), nil
+}
+
 // CaptureWindowFullHistory captures the scrollback history of a specific window (last 2000 lines).
 func (s *Session) CaptureWindowFullHistory(windowIndex int) (string, error) {
 	target := fmt.Sprintf("%s:%d", s.Name, windowIndex)
@@ -5495,6 +5507,18 @@ func (s *Session) windowTarget(windowIndex int) string {
 	return fmt.Sprintf("%s:%d", s.Name, windowIndex)
 }
 
+// primaryWindowTarget addresses the first window in the session. tmux's ^
+// selector is independent of base-index and remains stable when an operator
+// opens or focuses auxiliary windows alongside the managed agent.
+func (s *Session) primaryWindowTarget() string {
+	return s.Name + ":^"
+}
+
+// SendKeysToPrimaryWindow sends literal text to the managed agent window.
+func (s *Session) SendKeysToPrimaryWindow(keys string) error {
+	return s.sendKeysToTarget(s.primaryWindowTarget(), keys)
+}
+
 // sendKeysToTarget sends literal text to an explicit tmux target — either the
 // session name (active window) or a "<session>:<windowIndex>" window target.
 // SendKeys delegates here against the active window.
@@ -5553,6 +5577,13 @@ func (s *Session) SendEnter() error {
 	return s.sendEnterRaw()
 }
 
+// SendEnterToPrimaryWindow submits input in the managed agent window.
+func (s *Session) SendEnterToPrimaryWindow() error {
+	target := s.primaryWindowTarget()
+	s.ensureInsertModeOnTarget(target)
+	return s.sendEnterRawToTarget(target)
+}
+
 // OpenKeySender opens a persistent tmux control-mode client bound to this
 // session's pane. Used by TUI insert mode (#1102) to amortize the fork+exec
 // cost of `tmux send-keys` across a typing burst. Returns nil and an error
@@ -5570,6 +5601,13 @@ func (s *Session) OpenKeySender() (KeySender, error) {
 func (s *Session) SendNamedKey(key string) error {
 	s.invalidateCache()
 	cmd := keySenderExec(s.SocketName, "send-keys", "-t", s.Name, key)
+	return runSendKeysBounded(cmd)
+}
+
+// SendNamedKeyToPrimaryWindow sends a tmux key name to the managed agent window.
+func (s *Session) SendNamedKeyToPrimaryWindow(key string) error {
+	s.invalidateCache()
+	cmd := keySenderExec(s.SocketName, "send-keys", "-t", s.primaryWindowTarget(), key)
 	return runSendKeysBounded(cmd)
 }
 

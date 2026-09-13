@@ -7150,6 +7150,15 @@ func (i *Instance) spawnFailurePreview() string {
 	return rec.FormatForDisplay()
 }
 
+// PreviewPrimaryFull returns the managed agent window's scrollback rather than
+// whichever auxiliary tmux window the operator most recently focused.
+func (i *Instance) PreviewPrimaryFull() (string, error) {
+	if i.tmuxSession == nil {
+		return "", fmt.Errorf("tmux session not initialized")
+	}
+	return i.tmuxSession.CapturePrimaryFullHistory()
+}
+
 // PreviewWindowFull returns the full scrollback of a specific tmux window.
 func (i *Instance) PreviewWindowFull(windowIndex int) (string, error) {
 	if i.tmuxSession == nil {
