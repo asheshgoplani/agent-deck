@@ -303,6 +303,9 @@ func (h *Home) handleRemoteSwitchResult(msg remoteSwitchResultMsg) tea.Cmd {
 			if r.TargetID != "" {
 				body += "; target_id=" + r.TargetID
 			}
+			// A failure after readiness (journal not persisted) has already
+			// superseded the source on the remote; say so.
+			body += ". " + remoteSourceDisposition(msg.remoteName, r, msg.cross)
 		} else {
 			body += "\n\non " + msg.remoteName
 		}

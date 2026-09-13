@@ -441,3 +441,31 @@ func TestRemoteSwitch_TitleEditAndMixedEdits(t *testing.T) {
 		t.Fatalf("optimistic title = %q", got)
 	}
 }
+
+// A journal failure after the source was already superseded is reported as
+// failed AND says the source is archived: the remote committed that before
+// the error, and hiding it would send the user looking for a row that has
+// moved to the archived view.
+func TestRemoteSwitch_RecoveryFailureStillReportsSourceArchived(t *testing.T) {
+	archived := true
+	runner := &fakeRemoteSwitchRunner{
+		accounts: map[string][]string{"claude": {"personal"}},
+		preview:  &session.RemoteSwitchPreview{SourceTool: "claude", TargetHarness: "codex", Capability: "transcript-tail", Execution: "planned", Exclusions: []string{"native session state"}},
+	}
+	home := armHomeWithRemoteRowForSwitch(t, runner)
+	_, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	runCmd(t, home, cmd)
+	selectEditPill(t, home.editSessionDialog, session.FieldTool, "codex")
+	_, cmd = home.handleEditSessionDialogKey(tea.KeyMsg{Type: tea.KeyEnter})
+	runCmd(t, home, cmd)
+	runner.result = &session.RemoteSwitchResult{Status: "failed", RecoveryRequired: true, TargetID: "fresh-3", TargetCreated: true, TargetReady: true, SourceArchived: &archived, SourceSupersededBy: "fresh-3", Error: "target-native readiness was observed but its journal transition was not persisted"}
+	runner.err = errors.New("remote switch failed: target-native readiness was observed but its journal transition was not persisted")
+	runCmd(t, home, home.confirmAction())
+	body := home.confirmDialog.noticeBody
+	if !strings.Contains(home.confirmDialog.noticeTitle, "failed") {
+		t.Fatalf("title = %q", home.confirmDialog.noticeTitle)
+	}
+	if !strings.Contains(body, "recovery_required=true") || !strings.Contains(body, "archived on lab as superseded by fresh-3") {
+		t.Fatalf("failure notice must carry the committed archive state: %q", body)
+	}
+}
