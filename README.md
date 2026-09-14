@@ -810,6 +810,59 @@ cost_line_template = "{cost_yesterday} yda | {cost_today} today | {cost_projecte
 
 Resolution chain: `profiles.<active>.costs.cost_line_template > [costs].cost_line_template > hardcoded "{cost_today} today"`. Setting the template to an empty string explicitly disables the segment.
 
+### Provider Quota (`agent-deck usage`)
+
+Cost tracking answers "how many dollars"; this answers "how much of my
+subscription is left". When you run several agents at once, the limit you hit
+first is usually the provider's 5-hour or weekly plan window, not a dollar
+budget.
+
+The numbers come from the providers themselves — nothing here is estimated from
+token counts.
+
+```
+$ agent-deck usage
+Claude  updated 2m ago
+  5h       23.5%  resets in 2h14m
+  7d       41.2%  resets in 3d6h
+Z.ai (pro)  updated 1m ago
+  5h        0.0%
+  7d       22.0%  resets in 4d3h
+```
+
+`agent-deck usage --json` prints the same report for scripting. `--refresh`
+forces a fetch for pull-based providers.
+
+**Claude** is read from the documented `rate_limits` block in the JSON Claude
+Code pipes to a `statusLine` command. Wire the ingester into
+`~/.claude/settings.json`:
+
+```json
+{"statusLine": {"type": "command", "command": "agent-deck usage ingest claude"}}
+```
+
+If you already have a status line, keep it by wrapping it — the same payload is
+passed through and your command's output and exit status are forwarded verbatim:
+
+```json
+{"statusLine": {"type": "command",
+                "command": "agent-deck usage ingest claude -- your-existing-command"}}
+```
+
+Only `rate_limits` is kept. The transcript path, cwd, prompt and model in that
+payload are never stored or printed.
+
+**Z.ai / GLM Coding Plan** is read from the monitor endpoint the vendor's own
+coding plugin calls, on the host you configured in `ANTHROPIC_BASE_URL`, using
+`ANTHROPIC_AUTH_TOKEN`. There is no default host: if `ANTHROPIC_BASE_URL` is
+unset or does not point at a Z.ai host, the provider is skipped and no request
+is made. Run `agent-deck usage` inside a session where those variables are set
+(an agent-deck-launched session has already sourced its profile's env file).
+
+Snapshots are cached under `$XDG_CACHE_HOME/agent-deck/quota/<profile>/`. A
+snapshot older than the freshness bound is still shown, marked `(stale)` — a
+Claude snapshot only refreshes while Claude is actually running.
+
 ### Socket Isolation (v1.7.50+)
 
 Run agent-deck on its own tmux server so it never touches your interactive tmux's config, bindings, or sessions. Opt-in via a single config line:
