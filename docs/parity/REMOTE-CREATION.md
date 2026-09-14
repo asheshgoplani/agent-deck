@@ -27,7 +27,7 @@ on the controller and forwarded through stdin; its filename is never sent.
 | Claude startup query | Refused | One `launch --startup-query` call, no separate send or mutation replay |
 | Resume and continue | Partially forwarded | Forwarded; query combined with resume/continue refused before mutation |
 | Multi-repo paths | Refused | Host validation and host-owned combined workspace/context |
-| Worktree branch | Forwarded | Host git setup, branch validation, and negotiated fields |
+| Worktree branch | Forwarded | Host git setup and validation; requested multi-repo checkout failures refuse creation and clean newly owned checkout paths |
 | Docker sandbox | Forwarded; expander showed controller config | Host sandbox setup; controller settings suppressed |
 | Claude account | Separate remote fetch | One authoritative owner catalog, names only |
 | MCP picks | Separate fetch could reset picks | One owner catalog; host tool support/name validation before create |
@@ -56,3 +56,23 @@ Verification: focused fake-runner, parser/catalog, option validation, dialog,
 and ownership regression tests run in isolated Docker. A fixture-backed actual
 New Session dialog was captured in a private tmux socket with throwaway HOME.
 The fixture frame proves rendering, not a live remote connection.
+
+Independent review R1 added regressions for pending/failed/empty catalog arrow
+navigation and custom command typing using the producer's empty-string shell
+entry. An empty catalog refuses submission visibly.
+
+Catalog validation is a preflight contract, not a general transaction across
+all creation side effects. The one-call startup-query launch route compensates
+failed insertion, MCP configuration, and start by stopping its attempted child,
+removing its session row, and removing newly owned checkout/workspace paths.
+Reused worktrees and original repositories are preserved. If compensation
+fails, the error includes the session ID and failing cleanup step for recovery.
+Branch references, newly reconciled groups, user-requested directory creation,
+and changes made by repository setup scripts are not reverted. Existing MCP
+files in original repositories are not restored. Successful creation and later
+attach or message delivery remain separate outcomes.
+
+Requested multi-repository Git worktree creation and setup failures now stop
+creation rather than warning and symlinking the original checkout. Non-Git
+additional directories intentionally remain symlinks. This strict behavior is
+used by owner add/launch; existing local TUI fallback policy is unchanged.

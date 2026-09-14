@@ -567,8 +567,8 @@ func remoteDialogTestCatalog() *session.RemoteCreationCatalog {
 	for _, name := range []string{"t", "g", "c", "account", "model", "mcp", "resume-session", "extra-arg", "w", "startup-query", "additional-path", "effort", "parent"} {
 		fields = append(fields, session.RemoteCreationField{Name: name, TakesValue: true})
 	}
-	catalog := &session.RemoteCreationCatalog{Version: 1, DefaultTool: "shell", Commands: map[string][]session.RemoteCreationField{"add": fields, "launch": fields}}
-	for _, name := range []string{"shell", "claude", "codex", "gemini", "hermes", "opencode"} {
+	catalog := &session.RemoteCreationCatalog{Version: 1, DefaultTool: "", Commands: map[string][]session.RemoteCreationField{"add": fields, "launch": fields}}
+	for _, name := range []string{"", "claude", "codex", "gemini", "hermes", "opencode"} {
 		catalog.Tools = append(catalog.Tools, session.RemoteCreationTool{Name: name, Kind: name})
 	}
 	return catalog
@@ -670,11 +670,15 @@ func TestRemoteDialog_RemoteDefaultsCanBeDisabled(t *testing.T) {
 }
 
 func TestRemoteDialog_CustomShellCommandUsesRemoteText(t *testing.T) {
-	h, capture := openRemoteDialogAndTypeName(t, "myserver", "shell", "custom-shell")
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "", "custom-shell")
 	if !h.newDialog.customCommandSelected() || !strings.Contains(h.newDialog.View(), "Custom:") {
 		t.Fatal("remote shell lacks custom command input")
 	}
-	h.newDialog.commandInput.SetValue("remote-script --verbose")
+	h.newDialog.focusIndex = h.newDialog.indexOf(focusCommand)
+	h.newDialog.updateFocus()
+	for _, r := range "remote-script --verbose" {
+		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
 	submitRemoteDialog(t, h)
 	if capture.opts.Tool != "remote-script --verbose" {
 		t.Fatalf("command lost: %+v", capture.opts)
@@ -706,5 +710,68 @@ func TestRemoteDialog_PathTabDoesNotConsultController(t *testing.T) {
 	d.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if d.currentTarget() == focusPath || d.pathInput.Value() != "~/nonexistent-on-controller/remote" {
 		t.Fatal("remote path navigation consulted or expanded controller path")
+	}
+}
+
+func TestRemoteDialog_EmptyCatalogToolNavigation(t *testing.T) {
+	for _, state := range []string{"pending", "failed", "empty"} {
+		for _, key := range []tea.KeyType{tea.KeyLeft, tea.KeyRight} {
+			t.Run(state+"/"+tea.KeyMsg{Type: key}.String(), func(t *testing.T) {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						t.Errorf("empty catalog navigation panicked: %v", recovered)
+					}
+				}()
+				h, capture := newRemoteHome(t, remoteGroupItem("myserver"), "")
+				h = pressN(t, h)
+				if state == "failed" {
+					model, _ := h.Update(remoteCreationCatalogFetchedMsg{remoteName: "myserver", gen: h.remoteAccountsGen, err: errUnavailable})
+					h = model.(*Home)
+				}
+				if state == "empty" {
+					c := remoteDialogTestCatalog()
+					c.Tools = nil
+					h.newDialog.SetRemoteCreationCatalog(c)
+				}
+				d := h.newDialog
+				d.nameInput.SetValue("blocked")
+				d.focusIndex = d.indexOf(focusCommand)
+				d.updateFocus()
+				if d.customCommandSelected() {
+					t.Fatal("empty catalog must not enable a custom command")
+				}
+				h.handleNewDialogKey(tea.KeyMsg{Type: key})
+				if d.commandCursor != 0 {
+					t.Fatalf("empty catalog cursor = %d", d.commandCursor)
+				}
+				if _, _, command := d.GetRemoteValues(); command != "" {
+					t.Fatalf("empty catalog command = %q", command)
+				}
+				if capture.calls != 0 {
+					t.Fatal("navigation created a session")
+				}
+				if !d.IsVisible() {
+					t.Fatal("navigation closed dialog")
+				}
+				submitRemoteDialogExpectingError(t, h, capture, "capabilities")
+			})
+		}
+	}
+}
+
+func TestRemoteDialog_ExplicitShellOverridesCatalogDefault(t *testing.T) {
+	h, capture := openRemoteDialogAndTypeName(t, "myserver", "claude", "plain-shell")
+	catalog := remoteDialogTestCatalog()
+	catalog.DefaultTool = "codex"
+	h.newDialog.SetRemoteCreationCatalog(catalog)
+	if h.newDialog.GetSelectedCommand() != "codex" {
+		t.Fatal("remote default not selected")
+	}
+	h.newDialog.SetDefaultTool("")
+	// Empty command is the add handler's plain shell contract. It does not use
+	// the catalog default; a custom command, when typed, is forwarded instead.
+	submitRemoteDialog(t, h)
+	if capture.calls != 1 || capture.opts.Tool != "" || capture.opts.ClaudeOptions != nil || capture.opts.YoloOverride != nil {
+		t.Fatalf("shell selection lost: %+v", capture.opts)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -176,7 +177,7 @@ func validateCreationStartupQuery(query, tool, mode string, starts bool, extraAr
 	return nil
 }
 
-func applyCreationExtras(inst *session.Instance, query string, additional []string, branch string, newBranch bool, location string) error {
+func applyCreationExtras(inst *session.Instance, query string, additional []string, branch string, newBranch bool, location string) (err error) {
 	inst.StartupQuery = query
 	if len(additional) == 0 {
 		return nil
@@ -203,18 +204,26 @@ func applyCreationExtras(inst *session.Instance, query string, additional []stri
 		return err
 	}
 	parent := filepath.Join(root, inst.ID)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	if err := os.Mkdir(parent, 0o755); err != nil {
 		return err
 	}
 	inst.MultiRepoEnabled = true
 	inst.MultiRepoTempDir = parent
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, cleanupOwnedCreationArtifacts(inst))
+		}
+	}()
 	if branch != "" {
 		settings := session.GetWorktreeSettings()
-		result := session.CreateMultiRepoWorktreesWithOptions(allPaths, parent, branch, settings.SetupTimeout(), settings.InheritSparseCheckout())
-		for _, warning := range result.Warnings {
-			fmt.Fprintln(os.Stderr, "Warning:", warning)
-		}
+		result, createErr := session.CreateMultiRepoWorktreesStrictWithOptions(allPaths, parent, branch, settings.SetupTimeout(), settings.InheritSparseCheckout())
 		inst.MultiRepoWorktrees = result.Worktrees
+		if createErr != nil {
+			return createErr
+		}
 		inst.ProjectPath = result.MappedPaths[0]
 		inst.AdditionalPaths = result.MappedPaths[1:]
 	} else {
@@ -451,4 +460,41 @@ func readCreationRegistry(profile string) ([]*session.Instance, []*session.Group
 		return nil, nil, nil
 	}
 	return storage.LoadWithGroups()
+}
+
+// cleanupOwnedCreationArtifacts compensates only the workspace recorded on a
+// newly created instance. It never removes original repository paths.
+func cleanupOwnedCreationArtifacts(inst *session.Instance) error {
+	var cleanupErrors []error
+	for _, wt := range inst.MultiRepoWorktrees {
+		registered, err := git.ListWorktrees(wt.RepoRoot)
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("inspect worktree %s: %w", wt.WorktreePath, err))
+			continue
+		}
+		ownedPath := filepath.Clean(wt.WorktreePath)
+		if resolved, err := filepath.EvalSymlinks(ownedPath); err == nil {
+			ownedPath = resolved
+		}
+		exists := false
+		for _, checkout := range registered {
+			if filepath.Clean(checkout.Path) == ownedPath {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			continue
+		}
+		if err := git.RemoveWorktree(wt.RepoRoot, wt.WorktreePath, true); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove worktree %s: %w", wt.WorktreePath, err))
+		}
+	}
+	// Keep recovery evidence if a worktree could not be unregistered.
+	if len(cleanupErrors) == 0 {
+		if err := inst.CleanupMultiRepoTempDir(); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+		}
+	}
+	return errors.Join(cleanupErrors...)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -357,6 +358,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot, worktreeType string
+	cleanupSingleWorktree := func() error { return nil }
 	if wtBranch != "" && len(validatedAdditionalPaths) == 0 {
 		backend, err := detectAndCreateBackend(path)
 		if err != nil {
@@ -417,6 +419,8 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 				out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
+			ownedPath := worktreePath
+			cleanupSingleWorktree = func() error { return backend.RemoveWorktree(ownedPath, true) }
 			if setupErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
@@ -685,6 +689,16 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		os.Exit(1)
 	}
 
+	var creationRollback *startupCreationRollback
+	if *startupQuery != "" {
+		creationRollback = &startupCreationRollback{
+			id:        newInstance.ID,
+			removeRow: func() error { return storage.RemoveSessionAndVerify(newInstance.ID, nil, nil) },
+			stop:      newInstance.KillAndWait,
+			cleanup:   func() error { return errors.Join(cleanupOwnedCreationArtifacts(newInstance), cleanupSingleWorktree()) },
+		}
+	}
+
 	// Materialize the declarative per-group/per-conductor skill+mcp loadout
 	// at create time (mirror of handleAdd) — a queued session gets its floor
 	// now, not at its eventual start. Start/Restart re-assert.
@@ -709,7 +723,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// sweep inside SaveInstances; InsertSessionAndVerify uses
 	// SaveInstance (single-row INSERT OR REPLACE) + verify-with-backoff
 	// to guarantee persistence. Mirror of RemoveSessionAndVerify (#909).
-	if err := storage.InsertSessionAndVerify(newInstance, groupTree); err != nil {
+	if err := creationRollback.run("save session", func() error { return storage.InsertSessionAndVerify(newInstance, groupTree) }); err != nil {
 		out.Error(fmt.Sprintf("failed to save session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -717,19 +731,21 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// attach below must not hold the lock for other registrations.
 	releaseLaunchRegistration()
 
-	// Attach MCPs if specified
-	if len(mcpFlags) > 0 {
-		availableMCPs := session.GetAvailableMCPs()
-		for _, mcpName := range mcpFlags {
-			if _, exists := availableMCPs[mcpName]; !exists {
-				out.Error(fmt.Sprintf("MCP '%s' not found in config.toml", mcpName), ErrCodeNotFound)
-				os.Exit(1)
+	// Keep validation and writing inside the compensated post-insert step.
+	if err := creationRollback.run("configure MCPs", func() error {
+		if len(mcpFlags) == 0 {
+			return nil
+		}
+		available := session.GetAvailableMCPs()
+		for _, name := range mcpFlags {
+			if _, exists := available[name]; !exists {
+				return fmt.Errorf("MCP %q not found in config.toml", name)
 			}
 		}
-		if err := newInstance.WriteLocalMCPConfig(mcpFlags); err != nil {
-			out.Error(fmt.Sprintf("failed to write MCPs: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
+		return newInstance.WriteLocalMCPConfig(mcpFlags)
+	}); err != nil {
+		out.Error(fmt.Sprintf("failed to configure MCPs: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// v1.9.1 group concurrency cap: if the target group is at its
@@ -738,6 +754,14 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	tree := session.NewGroupTreeWithGroups(instances, groups)
 	maxC := session.GroupMaxConcurrent(tree, newInstance.GroupPath)
 	if session.ShouldQueue(instances, newInstance.GroupPath, maxC) {
+		if creationRollback != nil {
+			err := creationRollback.run("queue startup query", func() error {
+				return fmt.Errorf("startup query cannot be queued; retry when group capacity is available")
+			})
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
 		newInstance.Status = session.StatusQueued
 		// v1.9.x issue #1031: same targeted single-row pattern as the
 		// initial insert above — saveSessionData → SaveWithGroups is
@@ -788,7 +812,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// has no terminal prompt, so the pane-send paths below would type the prompt
 	// into a server's stdin and report success. Every other tool returns nil.
 	if initialMessage != "" {
-		if err := newInstance.PromptDeliveryError(); err != nil {
+		if err := creationRollback.run("validate initial message", newInstance.PromptDeliveryError); err != nil {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -803,12 +827,12 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	promptRidesArgv := initialMessage != "" && newInstance.PromptRidesCommandLine()
 
 	if initialMessage != "" && (!*noWait || promptRidesArgv) {
-		if err := newInstance.StartWithMessage(initialMessage); err != nil {
+		if err := creationRollback.run("start session", func() error { return newInstance.StartWithMessage(initialMessage) }); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 	} else {
-		if err := newInstance.Start(); err != nil {
+		if err := creationRollback.run("start session", newInstance.Start); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -830,7 +854,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if newInstance.GroupPath != "" {
 		postStartTree.CreateGroupPath(newInstance.GroupPath)
 	}
-	if err := storage.InsertSessionAndVerify(newInstance, postStartTree); err != nil {
+	if err := creationRollback.run("save started session", func() error { return storage.InsertSessionAndVerify(newInstance, postStartTree) }); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -863,6 +887,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 				tool:                        newInstance.Tool,
 				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
 			}); err != nil {
+				err = creationRollback.run("send initial message", func() error { return err })
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}

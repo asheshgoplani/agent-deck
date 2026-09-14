@@ -1152,7 +1152,7 @@ func (d *NewDialog) resolveCommand() string {
 			return value
 		}
 	}
-	if d.commandCursor < len(d.presetCommands) {
+	if d.commandCursor >= 0 && d.commandCursor < len(d.presetCommands) {
 		if command := d.presetCommands[d.commandCursor]; command != "" {
 			return command
 		}
@@ -1588,7 +1588,7 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		Model:   d.GetLaunchModelID(),
 		MCPs:    d.GetRemoteMCPs(),
 	}
-	if d.remoteTarget && d.remoteCatalog == nil {
+	if d.remoteTarget && (d.remoteCatalog == nil || len(d.presetCommands) == 0) {
 		return opts, "Remote creation capabilities are not loaded; wait for the remote catalog or reopen the dialog"
 	}
 	if d.multiRepoEnabled {
@@ -2475,6 +2475,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 		case "left":
 			if cur == focusCommand {
+				if len(d.presetCommands) == 0 {
+					return d, nil
+				}
 				d.commandCursor--
 				if d.commandCursor < 0 {
 					d.commandCursor = len(d.presetCommands) - 1
@@ -2498,6 +2501,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 		case "right":
 			if cur == focusCommand {
+				if len(d.presetCommands) == 0 {
+					return d, nil
+				}
 				d.commandCursor = (d.commandCursor + 1) % len(d.presetCommands)
 				d.modelInput.SetValue("")
 				d.updateToolOptions()
@@ -3795,10 +3801,9 @@ func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCata
 }
 
 func (d *NewDialog) customCommandSelected() bool {
-	if d.remoteTarget {
-		return d.GetSelectedCommand() == "shell"
-	}
-	return d.commandCursor == 0
+	// Both local presets and the remote producer represent shell with an empty name.
+	// An absent catalog also reads as an empty command, so require a valid entry.
+	return d.commandCursor >= 0 && d.commandCursor < len(d.presetCommands) && d.presetCommands[d.commandCursor] == ""
 }
 
 // SetRemoteName labels the owning host of a remote creation dialog.

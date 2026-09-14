@@ -223,10 +223,10 @@ func TestRemoteDialog_MCPs_OnlyOfferedForToolsWithMCPSupport(t *testing.T) {
 	}
 	h.newDialog.focusIndex = idx
 	h.newDialog.updateFocus()
-	for i := 0; i < len(h.newDialog.presetCommands) && h.newDialog.GetSelectedCommand() != "shell"; i++ {
+	for i := 0; i < len(h.newDialog.presetCommands) && h.newDialog.GetSelectedCommand() != ""; i++ {
 		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyLeft})
 	}
-	if got := h.newDialog.GetSelectedCommand(); got != "shell" {
+	if got := h.newDialog.GetSelectedCommand(); got != "" {
 		t.Fatalf("selected tool = %q, want shell", got)
 	}
 	if session.ToolSupportsMCPManager(h.newDialog.resolveCommand()) {
