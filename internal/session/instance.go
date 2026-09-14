@@ -7644,7 +7644,116 @@ func conversationIsResumable(inst *Instance, sessionID string) bool {
 	if inst != nil && !inst.TranscriptIsResolvableLocally() {
 		return true
 	}
+	// #2269: this is the only path that turns the answer into a `--resume`,
+	// so it is the one place a cross-config-dir import belongs. The predicate
+	// below stays a pure read: the hook/tmux rebind gates call it on live
+	// sessions, where copying a transcript mid-conversation would freeze a
+	// stale snapshot into the new dir.
+	importConversationForResume(inst, sessionID)
 	return sessionHasConversationData(inst, sessionID)
+}
+
+// importConversationForResume handles the #2269 case at resume time: the
+// config dir the new process will use either has no transcript for sessionID
+// or holds only a stub (a `--session-id` launch that fabricated an empty
+// conversation under the real id), while another known config dir
+// (~/.claude, or any profile's config_dir) holds the real one. It copies the
+// real transcript in - the same copy `session switch-account` does, stripping
+// stale history-suppression records and backing up any existing destination
+// - so the launcher emits `--resume` against the full history.
+//
+// A primary transcript that carries conversation data is authoritative and
+// is never replaced: the import strips records, so a copy in another dir can
+// be LARGER than the primary without being newer, and Claude appends to the
+// primary from the moment it resumes. Only a missing primary or a stub (no
+// "sessionId" line) is filled in, from the largest exact-id file elsewhere
+// that does carry conversation data. Nothing is written otherwise.
+func importConversationForResume(inst *Instance, sessionID string) {
+	if inst == nil || sessionID == "" || !inst.TranscriptIsResolvableLocally() {
+		return
+	}
+	// The scan below keys on the instance's own bound id. With an unbound or
+	// different id there is nothing that can be attributed to this session.
+	if strings.TrimSpace(inst.ClaudeSessionID) != sessionID {
+		return
+	}
+	if sessionHasConversationData(inst, sessionID) {
+		return // primary (or a same-dir cross-project hit) is authoritative
+	}
+	configDir := GetClaudeConfigDirForInstance(inst)
+	if configDir == "" {
+		configDir = GetClaudeConfigDir()
+	}
+	if configDir == "" {
+		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
+	}
+	sameDir := func(a, b string) bool {
+		return filepath.Clean(a) == filepath.Clean(b) || resolveRealPath(a) == resolveRealPath(b)
+	}
+	// The id is session state, not a path: refuse anything that is not a
+	// single path segment before it is joined under a config root.
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return
+	}
+	cfg, _ := LoadUserConfig()
+	srcDir, srcSize := "", int64(0)
+	for _, dir := range conversationConfigDirCandidates(cfg, configDir) {
+		if sameDir(dir, configDir) {
+			continue
+		}
+		for _, projDirName := range conversationProjectDirNames(inst.ProjectPath) {
+			path, err := containedConversationPath(dir, "projects", projDirName, fileName)
+			if err != nil {
+				continue
+			}
+			info, err := os.Stat(path)
+			if err != nil || !info.Mode().IsRegular() || info.Size() <= srcSize {
+				continue
+			}
+			if !transcriptFileHasConversationData(path) {
+				continue
+			}
+			srcDir, srcSize = dir, info.Size()
+		}
+	}
+	if srcDir == "" {
+		return // nowhere else on this host: nothing to import
+	}
+	dst, written, err := MigrateConversationFromSized(inst, srcDir, configDir)
+	if err != nil || dst == "" {
+		sessionLog.Warn("session_data_import_failed",
+			slog.String("session_id", logging.SanitizeValue(sessionID)),
+			slog.String("source_config_dir", logging.SanitizeValue(srcDir)),
+			slog.String("target_config_dir", logging.SanitizeValue(configDir)),
+			slog.String("error", logging.SanitizeValue(fmt.Sprintf("%v", err))))
+		return
+	}
+	sessionLog.Info("session_data_imported_from_other_config_dir",
+		slog.String("session_id", logging.SanitizeValue(sessionID)),
+		slog.String("source_config_dir", logging.SanitizeValue(srcDir)),
+		slog.String("target_config_dir", logging.SanitizeValue(configDir)),
+		slog.Int64("source_bytes", srcSize),
+		slog.Int64("written_bytes", written))
+}
+
+// transcriptFileHasConversationData is the file-level form of the
+// sessionHasConversationData scan: true when any line carries a "sessionId"
+// field, which a system-prompt-only stub never does.
+func transcriptFileHasConversationData(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), `"sessionId"`) {
+			return true
+		}
+	}
+	return false
 }
 
 // TranscriptIsResolvableLocally reports whether this instance's conversation
@@ -11041,7 +11150,11 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 			return false
 		case fallbackPath == "":
 			// File doesn't exist anywhere - use --session-id to create fresh session
-			// (there's nothing to resume if the file doesn't exist)
+			// (there's nothing to resume if the file doesn't exist). The
+			// resume-time chokepoint (conversationIsResumable) has already
+			// tried to import it from another config dir (#2269) before
+			// asking here; this predicate itself stays read-only because the
+			// hook/tmux rebind gates call it on live sessions.
 			sessionLog.Debug("session_data_file_not_found", slog.String("result", "use_session_id"))
 			emitDecision(false, "file_not_found")
 			return false
