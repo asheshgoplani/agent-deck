@@ -307,7 +307,7 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [tmux](h
 ---
 name: agent-deck
 description: Terminal session manager for AI coding agents. Use when user mentions "agent-deck", "session", "sub-agent", "MCP attach", "git worktree", or needs to (1) create/start/stop/restart/fork sessions, (2) attach/detach MCPs, (3) manage groups/profiles, (4) get session output, (5) configure agent-deck, (6) troubleshoot issues, (7) launch sub-agents, or (8) create/manage worktree sessions. Covers CLI commands, TUI shortcuts, config.toml options, and automation.
-compatibility: claude, opencode
+compatibility: claude, codex, opencode
 ---
 
 # Agent Deck
