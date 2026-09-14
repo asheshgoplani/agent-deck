@@ -343,3 +343,44 @@ func deletedPaneCwdError(socketName, workDir, panePath string) error {
 			"them (issue #1713)",
 		ErrPaneCwdDeleted, panePath, workDir, socketLabel(socketName), SpawnBaseDir)
 }
+
+// wrapCommandForCwdAssert wraps cmd so the pane changes into dir before running
+// the original command. This is the recovery path for issue #2214: when a tmux
+// server's own cwd has been deleted, tmux ignores the -c start directory for
+// every new pane. Passing -c <good dir> does not rescue the child because the
+// pane inherits the server's dead vnode before the new-session call can chdir
+// it. Having the command itself cd into the project directory works because the
+// shell builtin cd operates on the filesystem directly, bypassing the broken
+// cwd the pane was born in.
+//
+// /bin/sh is used rather than the user's login shell so the wrapper is available
+// on every POSIX platform. The outer bash -c layer from startCommandSpec is not
+// involved in the cd: bash forks /bin/sh, which cds, then execs the original
+// command (even when that command starts with "exec ").
+func wrapCommandForCwdAssert(dir, cmd string) string {
+	// dir is embedded as a double-quoted token inside the inner /bin/sh script so
+	// that paths containing spaces are treated as a single argument by cd.
+	//
+	// Two-pass escaping:
+	//   Pass 1 — double-quote context: escape \, $, `, and " so they are not
+	//            interpreted by the inner shell when dir is wrapped in "...".
+	//            Single quotes are literal inside double quotes and need no escaping
+	//            at this level.
+	//   Pass 2 — outer single-quote context: the entire inner script is wrapped in
+	//            '...' for the /bin/sh -c invocation. Any single quote surviving
+	//            from pass 1 would break that wrapping, so escape them with the
+	//            standard '"'"' pattern.
+	dirDQ := dir
+	dirDQ = strings.ReplaceAll(dirDQ, `\`, `\\`)
+	dirDQ = strings.ReplaceAll(dirDQ, `$`, `\$`)
+	dirDQ = strings.ReplaceAll(dirDQ, "`", "\\`")
+	dirDQ = strings.ReplaceAll(dirDQ, `"`, `\"`)
+	dirForShell := strings.ReplaceAll(dirDQ, "'", "'\"'\"'")
+
+	inner := `cd -- "` + dirForShell + `"`
+	if cmd != "" {
+		escapedCmd := strings.ReplaceAll(cmd, "'", "'\"'\"'")
+		inner += " && " + escapedCmd
+	}
+	return "/bin/sh -c '" + inner + "'"
+}
