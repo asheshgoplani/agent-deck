@@ -67,7 +67,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 
 	userConfig, _ := session.LoadUserConfig()
 
-	storage, instances, groups, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -95,7 +95,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 	}
 
-	if err := saveSessionData(storage, instances, groups); err != nil {
+	if err := session.CommitAccountSwitch(storage, inst, result); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

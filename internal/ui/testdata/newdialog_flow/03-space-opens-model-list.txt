@@ -1,0 +1,50 @@
+                                                                                                    
+                                                                                                    
+       ╭────────────────────────────────────────────────────────────────────────────────────╮       
+       │                                                                                    │       
+       │                                                                                    │       
+       │    New Session                                                                     │       
+       │                                                                                    │       
+       │      in group: default                                                             │       
+       │                                                                                    │       
+       │      Name:                                                                         │       
+       │      > demo                                                                        │       
+       │                                                                                    │       
+       │      Command:                                                                      │       
+       │                                                                                    │       
+       │      shell    claude    gemini    opencode    codex    pi    copilot    crush      │       
+       │      cursor agent    hermes    deepseek                                            │       
+       │                                                                                    │       
+       │    ▶ Model ID:                                                                     │       
+       │      > tool default (↓ to browse)                                                  │       
+       │    ╭────────────────────────────────────────────────╮-haiku-4-5                    │       
+       │    │ ▶ ✎ Type custom model ID…                      │                              │       
+       │    │   claude-opus-5                                │                              │       
+       │    │   claude-sonnet-5                              │                              │       
+       │    │   claude-fable-5-1                             │                              │       
+       │    │   claude-fable-5                               │                              │       
+       │    │   claude-sonnet-4-6                            │                              │       
+       │    │   claude-opus-4-8                              │                              │       
+       │    │   ↓ 3 more below                               │                              │       
+       │    │  ↑/↓ navigate │ Space/Enter select │ Esc back  │                              │       
+       │    ╰────────────────────────────────────────────────╯                              │       
+       │                                                                                    │       
+       │    ─ Claude Options ─                                                              │       
+       │      Session: (•) New  ( ) Continue  ( ) Resume                                    │       
+       │      [ ] Skip permissions                                                          │       
+       │      [ ] Auto mode                                                                 │       
+       │      [ ] Chrome mode                                                               │       
+       │      [ ] Teammate mode                                                             │       
+       │        Extra args: > e.g. --agent reviewer                                         │       
+       │        Start query: > initial prompt (not split on spaces)                         │       
+       │        Account:   inherit    personal    work                                      │       
+       │                                                                                    │       
+       │      [ Create session ]                                                            │       
+       │                                                                                    │       
+       │                                                                                    │       
+       │    ↑/↓ navigate │ Space/Enter select │ Esc back │ ^S create                        │       
+       │                                                                                    │       
+       │                                                                                    │       
+       ╰────────────────────────────────────────────────────────────────────────────────────╯       
+                                                                                                    
+                                                                                                    

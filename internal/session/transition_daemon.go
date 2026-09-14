@@ -487,6 +487,12 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
 	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
+	// A daemon PROCESS start (first pass for the profile) seeds the turn
+	// baseline from the registry against the persisted last-notified state, so
+	// a recycle does not republish every parked child. See seedTurnBaseline.
+	if !d.initialized[profile] {
+		d.seedTurnBaseline(profile, byID, statuses)
+	}
 	// Runs on EVERY pass, the first scan included — see the FIRST SCAN note on
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
@@ -543,6 +549,73 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
+}
+
+// turnBaseline returns the per-instance completed-turn map for profile,
+// creating it on first use. Shared by seedTurnBaseline and recordTerminalTurns.
+func (d *TransitionDaemon) turnBaseline(profile string) map[string]string {
+	if d.lastTurn == nil {
+		d.lastTurn = map[string]map[string]string{}
+	}
+	if d.lastTurn[profile] == nil {
+		d.lastTurn[profile] = map[string]string{}
+	}
+	return d.lastTurn[profile]
+}
+
+// seedTurnBaseline runs once per profile, on the daemon's first pass, BEFORE
+// recordTerminalTurns. It marks every child already parked at a recordable
+// status as "seen" so the first pass publishes nothing for it — unless the
+// persisted last-notified state (transition-notify-state.json) says the child
+// was last notified at a DIFFERENT status or transcript signal, in which case
+// the turn happened while the daemon was down and recordTerminalTurns notifies
+// it once.
+//
+// Issue #2240 (field report, v1.16.5): the notify-daemon is recycled by its
+// systemd unit (RuntimeMaxSec) and after every auto-update, and on every start
+// it re-emitted a running→waiting record for EVERY parked child, however old.
+// The consumed-turn ledger collapsed the records on drain, so the conductor saw
+// "No pending events" — but the [INBOX] wake-nudge had already landed: one
+// wasted turn per conductor per restart. The FIRST SCAN note on
+// recordTerminalTurns leaned on that ledger to make the replay free; the nudge
+// made it not free.
+//
+// Rules, per child at a recordable status:
+//   - no persisted record (first-ever start, or a child never notified) → seed
+//     silently. This is deliberately the same on a brand-new install: a fresh
+//     daemon must not present every long-finished session as news.
+//   - persisted record equals the current (status, signal) → already
+//     notified, seed silently.
+//   - persisted record differs → leave unseeded so recordTerminalTurns records
+//     the turn that completed during the downtime, exactly once.
+//
+// A corrupt or unreadable state file loads as empty (logged by loadState), so
+// it degrades to the first-ever-start case rather than a replay storm.
+//
+// Children that appear AFTER this pass are not seeded and are recorded on first
+// sight, which is what keeps the field round-3 race (session launched and
+// finished between two polls) covered. The residual hole is narrow and
+// accepted: a child that had never been notified before and completed its
+// first turn inside the daemon's own restart window is seeded, not notified.
+func (d *TransitionDaemon) seedTurnBaseline(profile string, byID map[string]*Instance, statuses map[string]string) {
+	seen := d.turnBaseline(profile)
+	for id, to := range statuses {
+		if !isRecordableTurnStatus(to) {
+			continue
+		}
+		inst := byID[id]
+		if inst == nil {
+			continue
+		}
+		if _, known := seen[id]; known {
+			continue
+		}
+		signal := transitionEventOutputHash(inst)
+		if lastTo, lastHash, ok := d.notifier.lastNotifiedTurn(id); ok && (lastTo != to || lastHash != signal) {
+			continue // changed while down: recordTerminalTurns notifies it once
+		}
+		seen[id] = to + "|" + signal
+	}
 }
 
 // recordTerminalTurns records EVERY completed turn into the drainable ledgers,
@@ -605,13 +678,7 @@ func (d *TransitionDaemon) recordTerminalTurns(
 	hookStatuses map[string]*HookStatus,
 ) {
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
-	if d.lastTurn == nil {
-		d.lastTurn = map[string]map[string]string{}
-	}
-	if d.lastTurn[profile] == nil {
-		d.lastTurn[profile] = map[string]string{}
-	}
-	seen := d.lastTurn[profile]
+	seen := d.turnBaseline(profile)
 
 	for id, to := range statuses {
 		if !isRecordableTurnStatus(to) {

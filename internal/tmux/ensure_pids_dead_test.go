@@ -1,7 +1,9 @@
 package tmux
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -67,6 +69,47 @@ func TestEnsurePIDsDead_SynchronouslyKillsSigHupImmuneChild(t *testing.T) {
 		t.Errorf("pid %d (comm=%q) still alive after EnsurePIDsDead — must be synchronous",
 			pid, strings.TrimSpace(string(name)))
 	}
+}
+
+// TestKillAndWait_RoutesKillToSessionSocket ensures the synchronous stop path
+// cannot kill a same-named session on the host/default server while its Exists
+// check probes a custom socket. The shim records argv only; it starts no tmux
+// server or process tree.
+func TestKillAndWait_RoutesKillToSessionSocket(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tmux-argv.log")
+	t.Setenv("TMUX_KILL_LOG", logPath)
+	writeFakeTmux(t, dir, `printf '%s\n' "$*" >> "$TMUX_KILL_LOG"
+exit 1`)
+
+	socket := "kill-and-wait-custom-socket"
+	s := &Session{Name: "kill-and-wait-target", SocketName: socket}
+	if err := s.KillAndWait(); err != nil {
+		t.Fatalf("KillAndWait on shim-reported absent session: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake tmux argv log: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		fields := strings.Fields(line)
+		killAt := -1
+		for idx, field := range fields {
+			if field == "kill-session" {
+				killAt = idx
+				break
+			}
+		}
+		if killAt < 0 {
+			continue
+		}
+		if killAt < 2 || fields[killAt-2] != "-L" || fields[killAt-1] != socket {
+			t.Fatalf("kill-session argv %q did not target -L %q", line, socket)
+		}
+		return
+	}
+	t.Fatalf("fake tmux never received kill-session; argv log: %q", data)
 }
 
 // A nil/empty PID list must be a no-op, returning immediately. Callers

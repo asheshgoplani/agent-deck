@@ -5,15 +5,14 @@ package docker
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 )
 
-// extractKeychainCredential extracts a credential from the macOS Keychain and writes it to destPath.
-// If no keychain entry exists (e.g. using ANTHROPIC_API_KEY), this is not an error.
+// readKeychainSecret reads a generic password from the macOS Keychain.
+// A missing entry (e.g. using ANTHROPIC_API_KEY) returns "" and no error.
 // Uses Output() (stdout only) to avoid leaking credential data in error messages.
-func extractKeychainCredential(service string, destPath string) error {
+func readKeychainSecret(service string) (string, error) {
 	cmd := exec.Command("security", "find-generic-password", "-s", service, "-w")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -23,15 +22,9 @@ func extractKeychainCredential(service string, destPath string) error {
 		errMsg := stderr.String()
 		if strings.Contains(errMsg, "could not be found") ||
 			strings.Contains(errMsg, "SecKeychainSearchCopyNext") {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("reading keychain service %s: %s: %w", service, strings.TrimSpace(errMsg), err)
+		return "", fmt.Errorf("reading keychain service %s: %s: %w", service, strings.TrimSpace(errMsg), err)
 	}
-
-	password := strings.TrimSpace(string(out))
-	if password == "" {
-		return nil
-	}
-
-	return os.WriteFile(destPath, []byte(password), 0o600)
+	return strings.TrimSpace(string(out)), nil
 }

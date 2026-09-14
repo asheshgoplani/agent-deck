@@ -86,20 +86,30 @@ func decodeInboxLine(line []byte) (TransitionNotificationEvent, error) {
 //   - finished (one-shot) events: the completion outcome (status + summary)
 //   - interactive transitions: the child's pane-content hash at the flip
 //     (LastOutputHash), which advances once per turn
+//   - stale-hash transitions (OutputHashStale, issue #2184): the from→to flip
+//     plus the emit instant. The hash did not advance since the child's last
+//     notified turn, so it cannot identify THIS turn; keying on it would hand a
+//     new completion the fingerprint of an already-consumed one and the drain
+//     would drop it. The emit instant is safe here for the reason
+//     unownedTurnSignal gives: a transition has one producer that stamps it
+//     once, so a retry of the same stamped record still collapses.
 //   - fallback: the from→to flip
 //
 // Format "<child_id>@<hex16>" keeps it greppable and child-scoped.
 func TurnFingerprint(e TransitionNotificationEvent) string {
 	child := strings.TrimSpace(e.ChildSessionID)
 	originChild := strings.TrimSpace(e.SourceRemote) + "\x00" + child
+	flip := strings.ToLower(strings.TrimSpace(e.FromStatus)) + ">" + strings.ToLower(strings.TrimSpace(e.ToStatus))
 	var signal string
 	switch {
 	case e.Kind == transitionKindFinished:
 		signal = "finished|" + strings.ToLower(strings.TrimSpace(e.DoneStatus)) + "|" + strings.TrimSpace(e.DoneSummary)
+	case e.OutputHashStale:
+		signal = "flip|" + flip + "|" + emitInstantSignal(e.Timestamp)
 	case strings.TrimSpace(e.LastOutputHash) != "":
 		signal = "turn|" + strings.TrimSpace(e.LastOutputHash)
 	default:
-		signal = "flip|" + strings.ToLower(strings.TrimSpace(e.FromStatus)) + ">" + strings.ToLower(strings.TrimSpace(e.ToStatus))
+		signal = "flip|" + flip
 	}
 	sum := sha256.Sum256([]byte(originChild + "@" + signal))
 	return child + "@" + hex.EncodeToString(sum[:])[:16]
@@ -532,6 +542,16 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		return false, true, ""
 	}
 	n.logEvent(event)
+	// A turn the parent's consumed-turn ledger already holds is dropped by its
+	// next drain, so waking it would cost one empty "[INBOX]" turn for nothing
+	// (issue #2240, notify-daemon restart re-delivery). The record itself is left
+	// as committed: ledger dedup semantics and delivery ordering are unchanged,
+	// only the nudge is withheld.
+	if turnAlreadyConsumed(parentID, event.TurnFingerprint) {
+		commsLog.Debug("wake_nudge_skipped_consumed_turn",
+			slog.String("parent", parentID), slog.String("turn", event.TurnFingerprint))
+		return true, false, ""
+	}
 	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
 	// to drain it immediately instead of on its next ~14-min heartbeat. This is
 	// the event-driven trigger — fired the moment the completion is committed,

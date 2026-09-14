@@ -24,6 +24,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
@@ -156,6 +157,9 @@ type SSHRunner struct {
 	// lets ResolveRemotePath decide whether to honor an explicit user path or
 	// probe the remote's real binary location via $PATH (#1171).
 	configuredPath string
+	// installReport is where the last InstallBinary put the binary, for the
+	// update report (#2244).
+	installReport string
 
 	// runFn lets tests stub out command execution. nil = real SSH.
 	runFn func(ctx context.Context, args ...string) ([]byte, error)
@@ -163,6 +167,10 @@ type SSHRunner struct {
 	// name is the remote's config name; it keys the shared persistent
 	// channel (#2174). Empty for runners built without a name.
 	name string
+
+	// dialChannelFn lets tests stub the persistent channel's ssh subprocess
+	// (channelFor). nil = real SSH.
+	dialChannelFn func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)
 
 	// openStreamFn lets tests stub out the persistent-stream subprocess
 	// without spawning real ssh. nil = real SSH (#1112 bug 2).
@@ -254,7 +262,16 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	// the channel can only make things faster, never break them.
 	if ch := channelFor(r); ch != nil && ch.Connected() {
 		out, err := ch.Request(ctx, args)
-		if !errors.Is(err, errChannelDown) {
+		switch {
+		case err == nil:
+			return out, nil
+		case errors.Is(err, errChannelDown):
+			// Never reached the agent: an exec is the same request.
+		case errors.Is(err, errChannelInterrupted) && remoteVerbReadOnly(args):
+			// Written, reply lost. Re-running a listing is harmless; a
+			// mutating verb may already have run on the remote (#3), so
+			// its error goes to the caller, who refetches.
+		default:
 			return out, err
 		}
 	}
@@ -1077,62 +1094,363 @@ func (r *SSHRunner) ResolveRemotePath(ctx context.Context) string {
 // parent directory and marking it executable. It pipes through `ssh "cat > ..."`
 // rather than scp so the remote shell handles the path uniformly; remotePath is
 // expected to be absolute (see ResolveRemotePath) (#1171).
+//
+// When the remote user cannot write the install directory (a root-owned
+// /usr/local/bin, #2164) the deploy goes through `sudo -n` if the remote
+// grants it without a password; otherwise it fails with
+// InstallPathNotWritableError naming the path, the user and the remedy,
+// never a bare "permission denied" on the staged file.
 func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remotePath string) error {
+	// A symlink at the install path (the documented remedy for a root-owned
+	// /usr/local/bin points it at ~/.local/bin/agent-deck) is followed: the
+	// file it names is what $PATH and the remote's service units run, and
+	// putting a regular file over the link would leave that file behind
+	// forever (#2244). Writability, staging and the lock all concern the
+	// resolved file's directory.
+	resolved, err := r.resolveRemoteFile(ctx, remotePath)
+	if err != nil {
+		return err
+	}
+	return r.deployResolvedBinary(ctx, binaryData, resolved)
+}
+
+// deployResolvedBinary runs the deploy script against a path that has
+// already been resolved through any symlinks.
+func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte, remotePath string) error {
 	dir := remotePath
 	if idx := strings.LastIndex(remotePath, "/"); idx > 0 {
 		dir = remotePath[:idx]
 	}
 
-	// Stage to a sibling temp file and atomically rename it into place rather
-	// than redirecting onto remotePath directly. agent-deck keeps a long-lived
-	// `session attach` process running from remotePath, so truncating it in
-	// place (`cat > remotePath`) makes the kernel reject the write with ETXTBSY
-	// ("text file busy"). rename(2) only repoints the directory entry, so it
-	// succeeds while the old binary is still executing (the running process
-	// keeps the now-unlinked inode); the next launch picks up the new binary.
-	tmpPath := remotePath + ".new"
-	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod +x %s && mv -f %s %s",
-		shellQuote(dir), shellQuote(tmpPath), shellQuote(tmpPath),
-		shellQuote(tmpPath), shellQuote(remotePath))
+	// remoteDeployScript runs as the remote user when the directory is
+	// writable, otherwise as root through sudo -n. The probe uses the same
+	// binary (`sh`) the real call does, so a sudoers rule that allows
+	// `true` but not `sh` is not mistaken for permission to deploy.
+	script := shellQuote(remoteDeployScript)
+	args := shellQuote(dir) + " " + shellQuote(remotePath)
+	// Neither route, or sudo refused the real command after allowing the
+	// probe (exit 1 from sudo itself; the script's own failures exit 4 or
+	// 5 and pass through): report "<prefix><path><infix><user>" on stderr
+	// with the exit code parseInstallPathNotWritable recognises.
+	report := fmt.Sprintf("printf '%s%%s%s%%s\\n' %s \"$(id -un)\" >&2; exit %d",
+		installPathNotWritablePrefix, installPathNotWritableInfix, shellQuote(remotePath), installPathNotWritableExit)
+	// The direct route needs a writable directory and, when the file
+	// exists, ownership of it: a non-root deploy over someone else's file
+	// would silently change its owner, so that case takes the sudo route,
+	// where the script restores the owner.
+	quotedPath := shellQuote(remotePath)
+	cmd := fmt.Sprintf("mkdir -p %s 2>/dev/null; if [ -w %s ] && { [ ! -e %s ] || [ -O %s ]; }; then sh -c %s sh %s; "+
+		"elif sudo -n sh -c true 2>/dev/null; then sudo -n sh -c %s sh %s || { rc=$?; case $rc in 4|5|6) exit $rc;; esac; %s; }; else %s; fi",
+		shellQuote(dir), shellQuote(dir), quotedPath, quotedPath, script, args, script, args, report, report)
 
 	deployCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	if _, err := r.remoteExec(deployCtx, cmd, binaryData); err != nil {
+		if notWritable := parseInstallPathNotWritable(err.Error()); notWritable != nil {
+			// Keep whatever else the remote said (a sudo refusal, a full
+			// disk under sudo) behind the typed error.
+			return fmt.Errorf("%w (remote output: %s)", notWritable, strings.TrimSpace(err.Error()))
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return fmt.Errorf("failed to deploy binary to %s: %w", remotePath, err)
+		}
+		if strings.Contains(err.Error(), remoteDeployBusyMarker) {
+			return fmt.Errorf("%w: %s", ErrRemoteDeployBusy, remotePath)
+		}
 		return fmt.Errorf("failed to deploy binary to %s: %w", remotePath, err)
 	}
 	return nil
+}
+
+// remoteResolveFn is a POSIX sh function that follows symlinks (file and
+// directory) to the real path, the way `readlink -f` does on GNU systems,
+// without depending on it: macOS remotes gained readlink -f only recently
+// and BSD ones may not have it.
+const remoteResolveFn = `resolve() { f="$1"; n=0; while [ -L "$f" ] && [ "$n" -lt 40 ]; do l=$(readlink "$f"); case "$l" in /*) f="$l";; *) f="$(dirname "$f")/$l";; esac; n=$((n+1)); done; d=$(cd "$(dirname "$f")" 2>/dev/null && pwd -P) || d=$(dirname "$f"); printf '%s/%s' "$d" "$(basename "$f")"; }; `
+
+// ErrRemoteProbeFailed is returned when the remote could not say what it
+// runs (the `command -v`, resolve or version probe failed or answered
+// ambiguously). The deploy then touches nothing: an unknown binary is not
+// an old one (#2245 review).
+var ErrRemoteProbeFailed = errors.New("could not determine what the remote runs; nothing deployed")
+
+// resolveRemoteFile returns path with every symlink followed.
+func (r *SSHRunner) resolveRemoteFile(ctx context.Context, path string) (string, error) {
+	resolved, err := r.remoteResolvedPath(ctx, "resolve "+shellQuote(path))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolving %s: %v", ErrRemoteProbeFailed, path, err)
+	}
+	return resolved, nil
+}
+
+// remotePathBinary returns the resolved file behind `command -v agent-deck`
+// on the remote; found is false when nothing on $PATH answers to that
+// name, and err is set when the probe itself failed or answered with
+// something that is not a path.
+func (r *SSHRunner) remotePathBinary(ctx context.Context) (path string, found bool, err error) {
+	resolved, err := r.remoteResolvedPath(ctx, `pb=$(command -v agent-deck 2>/dev/null); if [ -z "$pb" ]; then printf NONE; else resolve "$pb"; fi`)
+	if err != nil {
+		if errors.Is(err, errRemoteNothingOnPath) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("%w: locating agent-deck on the remote's $PATH: %v", ErrRemoteProbeFailed, err)
+	}
+	return resolved, true, nil
+}
+
+// errRemoteNothingOnPath is remoteResolvedPath's answer to the NONE marker.
+var errRemoteNothingOnPath = errors.New("nothing on PATH")
+
+// remoteResolvedPath runs cmd on the remote with remoteResolveFn defined and
+// returns the absolute path it prints. A failed command, or an answer that
+// is not an absolute path (an alias, a function body), is an error.
+func (r *SSHRunner) remoteResolvedPath(ctx context.Context, cmd string) (string, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := r.remoteExec(timeoutCtx, remoteResolveFn+cmd, nil)
+	if err != nil {
+		return "", err
+	}
+	resolved := strings.TrimSpace(string(out))
+	if resolved == "NONE" {
+		return "", errRemoteNothingOnPath
+	}
+	if !strings.HasPrefix(resolved, "/") || strings.ContainsAny(resolved, "\n") {
+		return "", fmt.Errorf("ambiguous answer %q", resolved)
+	}
+	return resolved, nil
+}
+
+// remoteSameFile reports whether a and b are the same inode on the remote
+// (test -ef follows symlinks).
+func (r *SSHRunner) remoteSameFile(ctx context.Context, a, b string) bool {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := r.remoteExec(timeoutCtx, "[ "+shellQuote(a)+" -ef "+shellQuote(b)+" ]", nil)
+	return err == nil
+}
+
+// remotePathRunsFile reports whether `command -v agent-deck` on the remote
+// resolves to the same inode as file (test -ef follows symlinks).
+func (r *SSHRunner) remotePathRunsFile(ctx context.Context, file string) bool {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := r.remoteExec(timeoutCtx, `pb=$(command -v agent-deck 2>/dev/null); [ -n "$pb" ] && [ "$pb" -ef `+shellQuote(file)+` ]`, nil)
+	return err == nil
+}
+
+// ErrRemoteDeployBusy is returned when another deploy holds the lock on the
+// remote's install path; the caller retries later or lets the other finish.
+var ErrRemoteDeployBusy = errors.New("another agent-deck deploy is writing the install path")
+
+// remoteDeployBusyMarker is what remoteDeployScript prints when it cannot
+// take the lock.
+const remoteDeployBusyMarker = "agent-deck: another deploy holds "
+
+// remoteDeployScript is the body of a deploy, run as `sh -c SCRIPT sh DIR
+// PATH` either directly or under sudo -n. It stages the bytes from stdin to
+// a sibling temp file unique to this process and renames it into place
+// rather than redirecting onto PATH directly: agent-deck keeps a long-lived
+// `session attach` process running from PATH, so truncating it in place
+// makes the kernel reject the write with ETXTBSY. rename(2) only repoints
+// the directory entry, so it succeeds while the old binary is still
+// executing; the next launch picks up the new binary.
+//
+// Two controllers deploying at once must not share a staging file (one
+// could rename it into place while the other is still writing it), so the
+// name carries the shell's PID and a lock directory next to PATH serialises
+// deploys; a lock older than 15 minutes is treated as abandoned.
+//
+// The script never puts a regular file over a symlink (exit 6), checked
+// before streaming and again right before the rename: the caller resolves
+// links first, and the guard keeps a race or a stale resolution from
+// orphaning the link target (#2244). The previous file's mode and owner are
+// kept: as root a chown restores uid and gid, as the owning user a chgrp
+// restores the group (either failing aborts the deploy with the original
+// in place, exit 5), and the mode is
+// then made readable and executable for everyone so a root umask of 077
+// under sudo still leaves the binary runnable by the remote user.
+const remoteDeployScript = `d="$1"; p="$2"; lock="$p.lock"; t="$p.new.$$"
+if [ -L "$p" ]; then printf '` + remoteDeploySymlinkMarker + `%s\n' "$p" >&2; exit ` + remoteDeploySymlinkExitStr + `; fi
+mkdir -p "$d"
+if [ -d "$lock" ]; then find "$lock" -maxdepth 0 -mmin +15 -exec rmdir {} \; 2>/dev/null || true; fi
+if ! mkdir "$lock" 2>/dev/null; then printf '` + remoteDeployBusyMarker + `%s\n' "$p" >&2; exit 4; fi
+trap 'rm -f "$t"; rmdir "$lock" 2>/dev/null' EXIT HUP INT TERM
+mode=755; own=""
+if [ -e "$p" ]; then
+  m=$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p" 2>/dev/null); [ -n "$m" ] && mode="$m"
+  own=$(stat -c %u:%g "$p" 2>/dev/null || stat -f %u:%g "$p" 2>/dev/null)
+fi
+if cat > "$t" && chmod "$mode" "$t" && chmod a+rx "$t"; then
+  if [ -n "$own" ]; then
+    if [ "$(id -u)" = 0 ]; then
+      if ! chown "$own" "$t"; then printf 'agent-deck: could not keep owner %s on %s\n' "$own" "$p" >&2; exit 5; fi
+    else
+      g="${own#*:}"; tg=$(stat -c %g "$t" 2>/dev/null || stat -f %g "$t" 2>/dev/null)
+      if [ -n "$g" ] && [ "$g" != "$tg" ] && ! chgrp "$g" "$t"; then printf 'agent-deck: could not keep group %s on %s\n' "$g" "$p" >&2; exit 5; fi
+    fi
+  fi
+  if [ -L "$p" ]; then printf '` + remoteDeploySymlinkMarker + `%s\n' "$p" >&2; exit ` + remoteDeploySymlinkExitStr + `; fi
+  if mv -f "$t" "$p"; then exit 0; fi
+fi
+printf 'agent-deck: deploy to %s failed\n' "$p" >&2; exit 5`
+
+// The script's refusal to replace a symlink, and its exit status.
+const (
+	remoteDeploySymlinkMarker  = "agent-deck: refusing to replace symlink "
+	remoteDeploySymlinkExit    = 6
+	remoteDeploySymlinkExitStr = "6"
+)
+
+// The remote deploy script reports an unwritable install directory on stderr
+// as "<prefix><path><infix><user>" with installPathNotWritableExit, which the
+// controller turns back into update.InstallPathNotWritableError.
+const (
+	installPathNotWritablePrefix = "agent-deck: install path "
+	installPathNotWritableInfix  = " is not writable by "
+	installPathNotWritableExit   = 3
+)
+
+var installPathNotWritableRe = regexp.MustCompile(regexp.QuoteMeta(installPathNotWritablePrefix) + `(.+?)` + regexp.QuoteMeta(installPathNotWritableInfix) + `(\S+)`)
+
+// parseInstallPathNotWritable recovers the structured error from a failed
+// remote deploy's output; nil when the failure was something else.
+func parseInstallPathNotWritable(output string) *update.InstallPathNotWritableError {
+	m := installPathNotWritableRe.FindStringSubmatch(output)
+	if m == nil {
+		return nil
+	}
+	return &update.InstallPathNotWritableError{Path: m[1], User: m[2]}
 }
 
 // InstallBinary resolves the remote's real agent-deck path, deploys binaryData
 // there, then verifies the remote actually runs expectedVersion from its $PATH.
 // It returns an actionable error instead of a false success when the deployed
 // binary is not the one the remote executes (#1171).
+//
+// The configured path and the binary `command -v agent-deck` finds are both
+// resolved through symlinks. When they are the same file there is one
+// deploy. When they differ, the $PATH binary is what the remote runs, so it
+// is updated first, and the configured path too so the controller's own
+// commands over it see the same version; the report names both (#2244).
+// Verification then checks that $PATH resolves to the deployed inode and
+// reports expectedVersion.
 func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expectedVersion string) error {
-	path := r.ResolveRemotePath(ctx)
-	if err := r.DeployBinary(ctx, binaryData, path); err != nil {
+	r.installReport = ""
+	want := strings.TrimPrefix(expectedVersion, "v")
+	// Every probe must answer before anything is written: a path that
+	// cannot be resolved or a $PATH binary whose version cannot be read is
+	// unknown, not old, and is left exactly as it is.
+	configured, err := r.resolveRemoteFile(ctx, r.ResolveRemotePath(ctx))
+	if err != nil {
+		return err
+	}
+	onPath, onPathFound, err := r.remotePathBinary(ctx)
+	if err != nil {
 		return err
 	}
 
-	want := strings.TrimPrefix(expectedVersion, "v")
+	// The $PATH binary is a second target only when it is a different file
+	// with a successfully read version strictly older than what is being
+	// deployed: the remote's own binary may be ahead of the controller (the
+	// no-downgrade rule the sweep applies to the configured path holds for
+	// it too).
+	var targets []string
+	pathLeft := ""
+	if onPathFound && onPath != configured {
+		pathVer, found := r.versionAt(ctx, onPath)
+		switch {
+		case !found || !isVersionString(pathVer):
+			return fmt.Errorf("%w: could not read the version of the remote's $PATH binary %s (got %q)", ErrRemoteProbeFailed, onPath, pathVer)
+		case update.CompareVersions(pathVer, want) >= 0:
+			pathLeft = fmt.Sprintf("left the remote's $PATH binary %s at v%s (not older than v%s)", onPath, pathVer, want)
+		default:
+			targets = append(targets, onPath)
+		}
+	}
+	targets = append(targets, configured)
+
+	var done []string
+	for _, target := range targets {
+		if err := r.deployResolvedBinary(ctx, binaryData, target); err != nil {
+			r.installReport = r.installReportFor(done, onPath, configured, pathLeft)
+			return err
+		}
+		done = append(done, target)
+	}
+	r.installReport = r.installReportFor(done, onPath, configured, pathLeft)
+
+	// A $PATH binary deliberately left newer: the deployed configured path
+	// is verified on its own, and $PATH keeps running the newer one.
+	if pathLeft != "" {
+		if deployedVer, found := r.versionAt(ctx, configured); found && deployedVer == want {
+			return nil
+		}
+		return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s", want, configured)
+	}
 
 	// The binary the remote actually runs: bare `agent-deck` through its $PATH.
-	if pathVer, found := r.versionAt(ctx, "agent-deck"); found && pathVer == want {
+	pathVer, found := r.versionAt(ctx, "agent-deck")
+	if found && pathVer == want {
+		if !r.remotePathRunsFile(ctx, targets[0]) {
+			return fmt.Errorf("the remote's $PATH agent-deck reports v%s but is not the file deployed to %s; "+
+				"check for a wrapper or a second copy on the remote's PATH, or set agent_deck_path to it", want, targets[0])
+		}
 		return nil
 	} else if found {
 		// Something is on $PATH but it is not what we just deployed.
-		return fmt.Errorf("deployed v%s to %s, but the remote runs v%s from $PATH — "+
-			"set agent_deck_path to the $PATH binary or fix the remote's PATH", want, path, pathVer)
+		return fmt.Errorf("deployed v%s to %s, but the remote runs v%s from $PATH; "+
+			"set agent_deck_path to the binary the remote's PATH finds (command -v agent-deck) or fix the remote's PATH", want, targets[0], pathVer)
 	}
 
 	// Nothing on $PATH. If the deployed binary itself reports the right version,
-	// the install worked but the location is not on $PATH yet.
-	if deployedVer, found := r.versionAt(ctx, path); found && deployedVer == want {
-		return fmt.Errorf("installed v%s at %s, but it is not on the remote's $PATH — "+
-			"add %s to PATH or set agent_deck_path to a $PATH location", want, path, path)
+	// the install worked but the location is not on $PATH yet. With an
+	// explicit agent_deck_path that is exactly how the controller reaches
+	// this remote, so the update succeeded and the missing entry is a
+	// warning for sessions started over SSH (#2249); without one the
+	// controller itself runs `agent-deck` through PATH, so it is a failure.
+	if deployedVer, found := r.versionAt(ctx, configured); found && deployedVer == want {
+		if entry := strings.TrimSpace(r.configuredPath); entry != "" {
+			// The version alone is not identity: the configured entry (as
+			// written, symlink and all) must still be the file that was
+			// deployed, checked by inode now, after the deploy.
+			entry = r.expandHome(ctx, entry)
+			if !r.remoteSameFile(ctx, entry, configured) {
+				return fmt.Errorf("post-deploy verification failed: agent_deck_path %s no longer resolves to the deployed file %s (v%s); "+
+					"check what the path points at on the remote", entry, configured, want)
+			}
+			r.installReport += fmt.Sprintf("; warning: %s is not on the remote's non-interactive PATH, sessions started via SSH may need PATH (add %s to PATH)", configured, configured)
+			return nil
+		}
+		return fmt.Errorf("installed v%s at %s, but it is not on the remote's $PATH; "+
+			"add %s to PATH or set agent_deck_path to a $PATH location", want, configured, configured)
 	}
 
-	return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s or on $PATH", want, path)
+	return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s or on $PATH", want, configured)
 }
+
+// installReportFor words where the binary went (and what was left alone) so
+// the report is right even when a later deploy fails.
+func (r *SSHRunner) installReportFor(done []string, onPath, configured, pathLeft string) string {
+	parts := make([]string, 0, 3)
+	switch {
+	case len(done) == 2:
+		parts = append(parts, fmt.Sprintf("deployed to %s (the remote's $PATH binary) and to %s (agent_deck_path); set agent_deck_path to %s to keep one copy", onPath, configured, onPath))
+	case len(done) == 1 && done[0] == onPath && onPath != configured:
+		parts = append(parts, fmt.Sprintf("deployed to %s (the remote's $PATH binary); %s (agent_deck_path) not deployed", onPath, configured))
+	case len(done) == 1:
+		parts = append(parts, "deployed to "+done[0])
+	default:
+		parts = append(parts, "nothing deployed")
+	}
+	if pathLeft != "" {
+		parts = append(parts, pathLeft)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// LastInstallReport says where the last InstallBinary put the binary.
+func (r *SSHRunner) LastInstallReport() string { return r.installReport }
 
 // sshConnOpts returns the SSH -o options shared by every connection agent-deck
 // makes. They are the single source of truth for agent-deck's host-key stance:
@@ -1175,6 +1493,44 @@ func ValidateSSHHost(host string) error {
 // sshBaseArgs returns common SSH args for running a raw command on the remote.
 func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
 	return append(r.sshConnOpts(), r.Host, remoteCmd)
+}
+
+// sshChannelArgs is sshBaseArgs for the persistent channel (#2174). It adds
+// ServerAlive probes so a link that died under the session (laptop sleep,
+// VPN flap, NAT expiry) is torn down by ssh within about 45 s instead of
+// the OS keepalive's hours (#5). One-shot execs do not need them: their
+// command timeout already bounds them.
+func (r *SSHRunner) sshChannelArgs(remoteCmd string) []string {
+	args := append(r.sshConnOpts(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
+	return append(args, r.Host, remoteCmd)
+}
+
+// remoteVerbReadOnly reports whether args is a verb that only reads remote
+// state, so running it twice is harmless. Anything not listed here counts
+// as mutating.
+func remoteVerbReadOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	second := ""
+	if len(args) > 1 {
+		second = args[1]
+	}
+	switch args[0] {
+	case "list", "ls", "accounts", "version", "status":
+		return true
+	case "group":
+		return second == "list"
+	case "costs":
+		return second == "summary"
+	case "mcp", "skill":
+		return second == "list"
+	case "inbox":
+		return second == "export" || second == "writer-status"
+	case "session":
+		return second == "show" || second == "output" || second == "pane"
+	}
+	return false
 }
 
 // buildAttachArgs builds the ssh argv for an interactive attach. It shares
@@ -1527,20 +1883,27 @@ type RemoteLatency struct {
 	MeasuredAt time.Time
 }
 
-// MeasureLatency measures the round-trip time of a lightweight noop call
-// to the remote agent-deck binary. Returns the elapsed duration on success.
+// MeasureLatency measures the transport round trip to the remote host and
+// returns the elapsed duration on success.
 //
-// Implementation note: we run `agent-deck --version` because it is the
-// cheapest possible call (no DB read, no tmux probe, no network back to
-// services). The ControlMaster socket is persisted across calls so we
-// measure mostly network RTT after the first hit, which is exactly what
-// the user wants to see in the header per #1103.
+// It times the shell builtin `true` over the same ssh options (and the same
+// ControlMaster socket) every other command uses, so the number is the
+// network round trip plus ssh channel setup and nothing else. It used to run
+// `agent-deck --version`, which also paid for the remote process to start:
+// the header showed ~110 ms on a 97 ms link, and ~215 ms before the
+// persistent channel (#2177) existed. Users read the header figure as "how
+// far away is this host", and only the transport answers that (#1103).
 func (r *SSHRunner) MeasureLatency(ctx context.Context) (time.Duration, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	start := time.Now()
-	if _, err := r.run(timeoutCtx, "--version"); err != nil {
+	if _, err := r.remoteExec(timeoutCtx, latencyProbeCommand, nil); err != nil {
 		return 0, err
 	}
 	return time.Since(start), nil
 }
+
+// latencyProbeCommand is the remote command MeasureLatency times: a shell
+// builtin, so no process is forked on the remote and the timing is pure
+// transport.
+const latencyProbeCommand = "true"

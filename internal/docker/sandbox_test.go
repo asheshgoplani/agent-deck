@@ -510,3 +510,121 @@ func TestResolveAndValidateSymlink(t *testing.T) {
 		require.Equal(t, expected, resolved)
 	})
 }
+
+// fakeKeychain installs a Keychain reader that returns fixed fake tokens and
+// counts calls. Not parallel-safe: it swaps a package-level hook.
+func fakeKeychain(t *testing.T, secret string) *int {
+	t.Helper()
+	calls := 0
+	orig := keychainReader
+	keychainReader = func(string) (string, error) {
+		calls++
+		return secret, nil
+	}
+	t.Cleanup(func() { keychainReader = orig })
+	return &calls
+}
+
+func claudeKeychainMount() AgentConfigMount {
+	return AgentConfigMount{
+		hostRel:       ".claude",
+		preserveFiles: []string{".credentials.json"},
+		keychainCredential: &keychainEntry{
+			service:  "fake-service",
+			filename: ".credentials.json",
+		},
+	}
+}
+
+// Issue #2153: the sandbox credential file is canonical once it exists. Re-extracting
+// the Keychain token on every start forks the OAuth refresh chain (the refresh token
+// is single-use), so the host and the sandbox invalidate each other.
+func TestSyncAgentConfig_KeychainSkippedWhenSandboxCredentialExists(t *testing.T) {
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o755))
+	calls := fakeKeychain(t, `{"fake":"host-chain-token"}`)
+
+	sandboxDir := SandboxDir(homeDir, ".claude")
+	require.NoError(t, os.MkdirAll(sandboxDir, 0o700))
+	credPath := filepath.Join(sandboxDir, ".credentials.json")
+	require.NoError(t, os.WriteFile(credPath, []byte(`{"fake":"sandbox-chain-token"}`), 0o600))
+
+	_, err := SyncAgentConfig(homeDir, claudeKeychainMount(), WithKeychainSeed())
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(credPath)
+	require.NoError(t, err)
+	require.Equal(t, `{"fake":"sandbox-chain-token"}`, string(data), "existing sandbox credential must stay canonical")
+	require.Equal(t, 0, *calls, "Keychain must not be read when the sandbox already owns a credential")
+}
+
+// Issue #2153: by default the sandbox never receives a copy of the host's token.
+// It obtains its own credential (/login inside the sandbox, or an env token), so
+// the host and the sandbox never share a refresh chain.
+func TestSyncAgentConfig_KeychainNotReadByDefault(t *testing.T) {
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o755))
+	calls := fakeKeychain(t, `{"fake":"host-chain-token"}`)
+
+	sandboxDir, err := SyncAgentConfig(homeDir, claudeKeychainMount())
+	require.NoError(t, err)
+
+	require.Equal(t, 0, *calls, "Keychain must not be read unless seeding is opted in")
+	_, err = os.Stat(filepath.Join(sandboxDir, ".credentials.json"))
+	require.True(t, os.IsNotExist(err), "no credential may be copied into the sandbox by default")
+}
+
+// Opt-in path (seed_credentials_from_keychain): a one-time seed, documented as
+// forking the host chain once.
+func TestSyncAgentConfig_KeychainSeedsSandboxCredentialOnce(t *testing.T) {
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o755))
+	fakeKeychain(t, `{"fake":"host-token-v1"}`)
+
+	sandboxDir, err := SyncAgentConfig(homeDir, claudeKeychainMount(), WithKeychainSeed())
+	require.NoError(t, err)
+	credPath := filepath.Join(sandboxDir, ".credentials.json")
+
+	data, err := os.ReadFile(credPath)
+	require.NoError(t, err)
+	require.Equal(t, `{"fake":"host-token-v1"}`, string(data), "first start seeds the sandbox from the Keychain")
+	info, err := os.Stat(credPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	// Host chain rotates; a later start must not re-fork it into the sandbox.
+	fakeKeychain(t, `{"fake":"host-token-v2"}`)
+	_, err = SyncAgentConfig(homeDir, claudeKeychainMount(), WithKeychainSeed())
+	require.NoError(t, err)
+	data, err = os.ReadFile(credPath)
+	require.NoError(t, err)
+	require.Equal(t, `{"fake":"host-token-v1"}`, string(data), "second start must keep the sandbox-owned credential")
+}
+
+// Two session starts can race between the existence check and the write. The
+// loser must never replace a credential another sandbox refresher now owns.
+func TestExtractKeychainCredential_NeverOverwritesConcurrentOwner(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), ".credentials.json")
+	orig := keychainReader
+	keychainReader = func(string) (string, error) {
+		// Simulate another sync landing its file while we were reading the Keychain.
+		require.NoError(t, os.WriteFile(dest, []byte(`{"fake":"other-owner"}`), 0o600))
+		return `{"fake":"late-copy"}`, nil
+	}
+	t.Cleanup(func() { keychainReader = orig })
+
+	require.NoError(t, extractKeychainCredential("fake-service", dest))
+
+	data, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	require.Equal(t, `{"fake":"other-owner"}`, string(data))
+}
+
+func TestExtractKeychainCredential_AbsentEntryWritesNothing(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), ".credentials.json")
+	fakeKeychain(t, "")
+
+	require.NoError(t, extractKeychainCredential("fake-service", dest))
+	_, err := os.Stat(dest)
+	require.True(t, os.IsNotExist(err), "no Keychain entry must not create a credential file")
+}

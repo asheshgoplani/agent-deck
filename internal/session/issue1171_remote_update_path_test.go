@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,9 @@ import (
 
 // recordingRunner returns an SSHRunner whose remote commands are answered by
 // respond(remoteCmd) and recorded for assertions.
+// resolveProbeRe matches the trailing `resolve '<path>'` of the resolve probe.
+var resolveProbeRe = regexp.MustCompile(`resolve '([^']+)'$`)
+
 func recordingRunner(respond func(remoteCmd string) (string, error)) (*SSHRunner, *[]string) {
 	var calls []string
 	r := &SSHRunner{
@@ -27,6 +31,13 @@ func recordingRunner(respond func(remoteCmd string) (string, error)) (*SSHRunner
 		remoteExecFn: func(_ context.Context, remoteCmd string, _ []byte) ([]byte, error) {
 			calls = append(calls, remoteCmd)
 			out, err := respond(remoteCmd)
+			// A responder that does not model the symlink resolve probe
+			// (#2244) gets the identity answer: the path resolves to itself.
+			if out == "" && err == nil {
+				if m := resolveProbeRe.FindStringSubmatch(remoteCmd); m != nil {
+					out = m[1] + "\n"
+				}
+			}
 			return []byte(out), err
 		},
 	}

@@ -60,10 +60,10 @@ func TestResendSuppressedOnceBodyHasArrived(t *testing.T) {
 	}
 }
 
-// TestResendStillFiresWhenNothingArrived guards the other direction: the #876
+// TestNoResendWhenNothingArrived guards the other direction: the #876
 // TUI-init case, where the body never reached the pane, must still be
 // recovered. A fix that suppressed the resend unconditionally would break it.
-func TestResendStillFiresWhenNothingArrived(t *testing.T) {
+func TestNoResendWhenNothingArrived(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
 		panes:    []string{"❯ \n────────────────────────────────────────"}, // empty composer, no body
@@ -74,12 +74,11 @@ func TestResendStillFiresWhenNothingArrived(t *testing.T) {
 		checkDelay: 0,
 	})
 
-	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n == 0 {
-		t.Error("SendCtrlC never called although nothing ever arrived — " +
-			"the #876 TUI-init recovery must survive the #1979 fix")
+	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n != 0 {
+		t.Error("automatic recovery must never interrupt an unconfirmed recipient")
 	}
-	if n := atomic.LoadInt32(&mock.sendKeysCalls); n < 2 {
-		t.Errorf("SendKeysAndEnter called %d times, want >1 — the lost-message resend must still fire", n)
+	if n := atomic.LoadInt32(&mock.sendKeysCalls); n != 1 {
+		t.Errorf("SendKeysAndEnter called %d times, want exactly1 without an automatic resend", n)
 	}
 }
 
@@ -103,7 +102,7 @@ func emptyComposerPane() string {
 	}, "\n")
 }
 
-// TestResendStillFiresAfterComposerMarkerCleared is the regression guard for the
+// TestNoResendAfterComposerMarkerCleared is the regression guard for the
 // review finding on the first attempt at this fix. That attempt gated the resend
 // on sawDeliveryEvidence, which latches — and one of its sources is the composer
 // merely HOLDING the message, which is the opening step of the TUI-init loss
@@ -113,7 +112,7 @@ func emptyComposerPane() string {
 // success. Gating on a per-iteration observation instead keeps the recovery.
 //
 // Marker first, then a cleared composer: nothing was ever submitted.
-func TestResendStillFiresAfterComposerMarkerCleared(t *testing.T) {
+func TestNoResendAfterComposerMarkerCleared(t *testing.T) {
 	const msg = "recover me please"
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
@@ -125,12 +124,11 @@ func TestResendStillFiresAfterComposerMarkerCleared(t *testing.T) {
 		checkDelay: 0,
 	})
 
-	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n == 0 {
-		t.Error("resend never fired after the composer marker cleared — the message " +
-			"landed in the composer, was discarded, and was not recovered (#876 regression)")
+	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n != 0 {
+		t.Error("automatic recovery must never interrupt after a marker disappears")
 	}
-	if n := atomic.LoadInt32(&mock.sendKeysCalls); n < 2 {
-		t.Errorf("SendKeysAndEnter called %d times, want >1 — the lost message was never re-sent", n)
+	if n := atomic.LoadInt32(&mock.sendKeysCalls); n != 1 {
+		t.Errorf("SendKeysAndEnter called %d times, want exactly1 without an automatic resend", n)
 	}
 	// Note: on this path the call still returns success, both before and after
 	// this change, because the loop treats held-then-cleared as submission

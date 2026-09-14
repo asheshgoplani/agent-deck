@@ -49,6 +49,8 @@ const (
 	hotkeySettings         = "settings"
 	hotkeyImport           = "import"
 	hotkeyReload           = "reload"
+	hotkeyRestartDeck      = "restart_deck"   // in-place TUI restart after an update landed on disk (restart.go)
+	hotkeyInstallUpdate    = "install_update" // run `agent-deck update` from the TUI (update_install.go)
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
 	// hotkeyAgentsPanel opens the Agents tab.
@@ -127,6 +129,8 @@ var hotkeyActionOrder = []string{
 	hotkeySettings,
 	hotkeyImport,
 	hotkeyReload,
+	hotkeyRestartDeck,
+	hotkeyInstallUpdate,
 	hotkeyDetach,
 	hotkeyWatcherPanel,
 	hotkeyAgentsPanel,
@@ -175,6 +179,8 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeySettings:         "S",
 	hotkeyImport:           "i",
 	hotkeyReload:           "ctrl+r",
+	hotkeyRestartDeck:      "ctrl+t",
+	hotkeyInstallUpdate:    "ctrl+y",
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
 	hotkeyAgentsPanel:      "alt+a",

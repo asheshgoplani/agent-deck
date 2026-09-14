@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.10] - 2026-09-13
+
+An open deck now attempts to install a new release on its own and, when `auto_restart` allows, restarts in place; `session start` no longer reports success for a pane that is not there; `launch` survives a concurrent session detector; and a new child completion that passed the duplicate gate but whose transcript signal is stale is delivered instead of dropped.
+
+### Fixed
+
+- A deck that is already open when a release lands now sees it: the TUI runs a cache-backed periodic update check (due every minute, answered from the shared on-disk cache until it is older than `check_interval_hours`, five-minute backoff after a failed check, one check at a time), so an eligible `auto_install` attempt happens within about one check interval of a release instead of never. With `[updates] auto_restart` on, the deck then restarts itself in place at the next idle opportunity, after the installed binary passes the existing target checks, keeping the same executable path and selection. `web --no-tui` runs the same check-and-install cadence instead of waiting for a TUI or the daily timer. For the TUI's automatic install and restart only, an executable that is gone or sits in a Trash folder shows a banner asking for a manual restart and is refused as the install or re-exec target; a binary replaced in place keeps working; the manual install key and the headless installer do not carry this guard. The reason an automatic install was skipped is now logged once per change of reason. Periodic checking stops with `check_enabled = false`; automatic installation stops with `auto_install = false` (checking and an independently enabled restart continue); a truthy `AGENTDECK_SKIP_UPDATE_CHECK`, CI and test markers, and no TTY suppress the automatic paths as before; a Homebrew-managed binary is excluded from automatic installation in the TUI (periodic checking and an independently enabled restart stay available there) and from both the installer loop and self-restart in `web --no-tui` ([#2271](https://github.com/asheshgoplani/agent-deck/pull/2271), fixes #2270).
+- `session start` and `session restart` verify after the spawn that the tmux session exists (an exact, uncached `has-session` probe on the session's own socket, polled up to a two-second deadline; a slow probe can extend the elapsed time). A recorded fast death is reported as `failed to start session: tmux session "…" is gone: spawn_died_fast (…)` with the dying output when one was captured; a missing session with no record as `tmux_session_missing`; a probe that stays indeterminate as `spawn_unverified`. The command exits 1, the session is saved as `error` on a best-effort basis, and `--json` carries `success:false` and `reason`, `tmux` except for `spawn_unverified`, plus `spawn_failure` when a record exists; the restart path uses `failed to restart session`. `session restart --all` also verifies each spawn but reports bulk failures in its existing per-session form (success, error and, when recorded, `spawn_failure`) without separate `reason` and `tmux` fields. A live session pays one extra probe; headless DeepSeek sessions, which are expected to exit at once, are exempt ([#2265](https://github.com/asheshgoplani/agent-deck/pull/2265), closes #2099).
+- `agent-deck launch` no longer aborts its post-start save with `stale concurrent tool_data.claude_detected_at conflict` (or the `Status` variant) when another process detects the same Claude session during the launch. Pane-derived status merges committed-wins, `LastAccessed` keeps the later timestamp, and a detection stamp merges committed-wins only when both sides carry a stamp and the committed paired session id equals the one being stamped. Intent (`stopped`, `queued`), session ids, a stamp whose paired id diverges, an explicit clear racing a stamp, and every other column still conflict as before. `launch --json` now reports `status` from the committed row, plus `tmux_session` and `claude_session_id` when they are set. Merge shape, liveness table and failing reproduction from @jwr456's proposal in #2209 ([#2267](https://github.com/asheshgoplani/agent-deck/pull/2267), closes #2209).
+- `inbox drain` no longer answers `No pending events.` for a new child completion that passed the duplicate gate but whose transcript signal had not advanced since the last notified turn. Such a record is flagged `output_hash_stale`, keyed on the status flip and emit instant instead of the stale hash, and enqueued with its wake nudge on the same terms as any other new record; a retry of the same stamped record still collapses into one, and the existing 90-second and two-hour suppression windows are unchanged. The same fix applies to recurring unowned transitions ([#2266](https://github.com/asheshgoplani/agent-deck/pull/2266), fixes #2184).
+
+## [1.16.9] - 2026-09-13
+
+Stability release: sending to a Claude pane never interrupts it, a future-dated spawn stamp no longer blocks Start, and the macOS sandbox owns its own Claude credential.
+
+### Fixed
+
+- `session send` no longer emits interrupt sequences (Ctrl-C) into a Claude composer when concurrent sends race; drafts are preserved and a send that cannot capture the pane state is refused with a reason instead of interrupting. Two racing sends could previously exit the Claude session. Carries the fix from #2108 rebased onto main with a concurrent regression test ([#2263](https://github.com/asheshgoplani/agent-deck/pull/2263), fixes #2104).
+- Sibling spawn detection is gated on a stamp generation counter instead of wall-clock order, so a spawn stamp dated in the future after a backwards clock correction no longer blocks or loops `session start`; a genuine concurrent sibling across a clock step is still recognised, and a stamp more than two seconds ahead of the clock is logged once per stamp per process ([#2261](https://github.com/asheshgoplani/agent-deck/pull/2261), closes #2220).
+- macOS Docker sandboxes no longer copy the host's Claude OAuth token out of the Keychain. Every copy of the single-use refresh token forked the host's refresh chain, so the host was logged out (`/login` prompt) after a sandbox refreshed. The sandbox now keeps a login of its own: run `/login` once inside the first sandbox session (or pass `CLAUDE_CODE_OAUTH_TOKEN` via `[docker] environment`); `~/.claude/sandbox/.credentials.json` is then canonical, never overwritten on session start and no longer deleted on teardown. The old behaviour is available as `[docker] seed_credentials_from_keychain = true`, which seeds a new sandbox exactly once and warns that this forks the host chain ([#2262](https://github.com/asheshgoplani/agent-deck/pull/2262), closes #2153).
+
+## [1.16.8] - 2026-09-13
+
+Sessions are told they run inside agent-deck, unattended updates stay out of tests and CI, and a verified remote deploy off the non-interactive `$PATH` is a warning rather than a failure.
+
+### Added
+
+- Session identity: every locally launched or restarted session gets `AGENTDECK_IDENTITY_FILE` pointing at a generated file with its identity (session id, title, group, profile, account, parent, project path), the key `agent-deck` commands, `session current --json` for the full record, and the completion sentinel. The block is also injected into the model's instructions for Claude (append-system-prompt file), Pi (append-system-prompt), Codex (a developer-instructions override that preserves the effective configured developer instructions and appends the identity), and Gemini (an included context directory, only when folder trust permits; otherwise the environment variable and a pane hint). The block includes an explicit instruction to defer to project, operator and conductor instructions, and no file in the project directory is created or edited. Not injected into the prompt (environment variable only): custom `--cmd` commands, opencode, cursor, copilot, crush, hermes, deepseek, and custom Claude or Codex wrappers and subcommands; SSH-attached and Docker-sandboxed sessions are skipped entirely. `[launch] inject_identity` (default true) and `--no-identity` on `add` and `launch` opt out; `session current --json` now carries `tool`, `account`, `parent_session_id` and `identity_file` ([#2243](https://github.com/asheshgoplani/agent-deck/pull/2243)).
+
+### Fixed
+
+- The automatic update paths (unattended auto-install and restart in place) are suppressed under `go test`, when `CI` or `AGENTDECK_SKIP_UPDATE_CHECK` is set to a truthy value (empty, `0`, `false`, `no` and `off` do not suppress), when an `AGENTDECK_TEST_*` marker is set, and, for the TUI, when stdin or stdout is not a terminal; `web --no-tui` and `remote-agent` honour the same conditions. Explicit `agent-deck update` commands, including `update --unattended`, still work. The CI workflows and the eval harness set `AGENTDECK_SKIP_UPDATE_CHECK` once per job, so a release landing mid-run no longer triggers an automatic update of the binary under test ([#2252](https://github.com/asheshgoplani/agent-deck/pull/2252), closes #2251).
+- A controller-driven remote deploy whose configured `agent_deck_path` reports the expected version and passes post-deploy inode verification, but is not on the remote's non-interactive `$PATH`, reports a warning with exit status 0 and records the verified version in the per-remote cache; a deploy that fails verification still fails ([#2250](https://github.com/asheshgoplani/agent-deck/pull/2250), closes #2249).
+
+## [1.16.7] - 2026-09-12
+
+The controller keeps itself current and restarts the TUI in place, deploys behind symlinked install paths work, the notify daemon restarts without re-notifying parked children, and the New Session dialog walks with Enter.
+
+### Added
+
+- Unattended self-update on the controller: `[updates] auto_install` (on by default, `false` to opt out) installs an available release from the TUI's periodic check and from a daily timer that `agent-deck update --install-timer` sets up (launchd on macOS, systemd user timer on Linux; `--uninstall-timer` removes it). `[updates] auto_restart` (on by default) re-execs the TUI in place once a newer binary is on disk and the TUI is idle (no dialog open, no attach in progress) and the new binary passes an executable probe; `web --no-tui` re-execs the same way, `remote-agent` drains and exits so the controller reconnects, and `notify-daemon` leaves the restart to its supervisor. With `auto_restart` off, the TUI shows the installed version and `ctrl+t` restarts in place; `ctrl+y` installs from the banner. On macOS, after an unattended install, agent-deck re-bootstraps its own launchd agents (`com.agentdeck.*` whose program is the replaced binary, except the update timer itself); if that step fails the new binary stays installed and the exact repair commands are printed. Unattended installs never replace a Homebrew-managed binary (the `brew` command is printed instead); an interactive `agent-deck update` can still run a confirmed Homebrew upgrade ([#2165](https://github.com/asheshgoplani/agent-deck/pull/2165)).
+- The New Session dialog walks with Enter from field to field down to a Create button (`[ui] new_session_enter_advances`, on by default; `false` keeps Enter-to-create), the Model ID row no longer loops, Tab reaches every Claude option, and every dialog row has an `add`/`launch` flag (including `--effort`) with `--help` text. The account switch in the Edit Session dialog asks for confirmation before it saves and switches ([#2239](https://github.com/asheshgoplani/agent-deck/pull/2239)).
+
+### Fixed
+
+- Controller-driven remote deploys resolve a symlinked install path and update the file behind the link, preserving owner and group. Before writing, the deploy probes the remote's `$PATH` binary; a failed probe skips with a report. When the `$PATH` binary is a different file that is older, it is updated too; one already at the target version or newer is left alone and only the configured binary is verified. After writing, the installed binary is verified and a verification failure is reported as such. An explicit `remote update --all` during a startup sweep waits up to two minutes instead of failing, and `remote list --check` refreshes after a deploy ([#2245](https://github.com/asheshgoplani/agent-deck/pull/2245), closes #2244).
+- The notify daemon seeds its last-notified state from the live session list on start, so a restart (the systemd `RuntimeMaxSec` recycle or an update) no longer re-emits a transition for every parked child; children whose status changed while the daemon was down are still notified once. The `[INBOX]` nudge is skipped when the turn was already consumed (the ledger record still commits). Known gap: a child that was never notified before and finishes its first turn inside the daemon's own restart window is seeded rather than notified ([#2242](https://github.com/asheshgoplani/agent-deck/pull/2242), closes #2240).
+
+## [1.16.6] - 2026-09-12
+
+Remotes now follow the controller's version on their own, a session can switch its Claude account or move to another harness with its conversation carried over, and the account badge only appears when it means something.
+
+### Added
+
+- Connected remotes follow the controller's version automatically: `[updates] auto_update_remotes` is on by default (set it to `false` to opt out). Remotes are swept after a successful local `agent-deck update`, and on TUI startup at most once per `check_interval_hours`, without prompting; `agent-deck remote update --all` does it on demand, `remote list` shows a VERSION column with a drift marker, and `u` on a drifted remote header updates it from the TUI. Unattended sweeps never install onto a remote they could not version and never downgrade; every deploy stages uniquely under a lock, reports an unwritable install path by name with the remedy, and uses passwordless `sudo -n` only when the path needs it ([#2166](https://github.com/asheshgoplani/agent-deck/pull/2166), closes #2164).
+- Account switching: a Claude or Codex session can move to another configured account of the same harness from the edit dialog or `agent-deck session switch`, resuming natively under the new account. Harness switching: a session can move between Claude, Codex and Pi; its conversation is carried over as a bounded readable-text projection (not a native resume), the target is brought up first, and the source is archived (reversible) only after the switch finalizes, so one visible row remains. Cross-harness moves refuse conductors, watcher targets and sessions with dependent children; remote-owned sessions refuse any switch. Ownership is revalidated against a fresh snapshot and parent routing moves with compare-and-swap; an external watcher routing race remains documented in `docs/specs/HARNESS-SWITCH-SAFETY-LIMITS.md`. `switch-preview` and `--json` are available ([#2237](https://github.com/asheshgoplani/agent-deck/pull/2237)).
+
+### Fixed
+
+- An inherited account badge is shown only when account slots are configured (explicit account assignments still render), and cached inherited badges refresh when the configuration crosses the configured/unconfigured boundary instead of rendering a stale snapshot ([#2238](https://github.com/asheshgoplani/agent-deck/pull/2238), supersedes #2198 by @mineralinis, whose contribution is retained).
+- Version comparison treats a pre-release as older than the release it previews and orders numeric identifiers numerically, so a release is never mistaken for older than its own preview ([#2166](https://github.com/asheshgoplani/agent-deck/pull/2166)).
+
+## [1.16.5] - 2026-09-12
+
+Fleet-safety release: units Agent Deck creates from now on can be stopped without taking down the shared tmux server, spawn diagnostics redact recognized credential-bearing values, and the vulnerability scan runs again in CI.
+
+### Fixed
+
+- New per-session systemd units are created with `KillMode=none`, so Agent Deck can tear one down without killing the shared tmux server that other sessions live in, and Agent Deck refuses unsafe cleanup; a real user-manager acceptance job now guards this in CI. Units created by earlier versions are not migrated, so stopping one of those from outside Agent Deck (for example `systemctl --user stop`) can still kill the shared server ([#2233](https://github.com/asheshgoplani/agent-deck/pull/2233), closes #2219).
+- Spawn failure diagnostics redact recognized credential-bearing values (sensitive environment names and bearer, basic and quoted Authorization forms) before they are persisted, logged or displayed ([#2232](https://github.com/asheshgoplani/agent-deck/pull/2232), closes #2216).
+- Pi's line-leading "→" is no longer treated as a busy marker, so Pi sessions stop showing as running when they are waiting ([#2221](https://github.com/asheshgoplani/agent-deck/pull/2221), by @barjatiyasaurabh).
+- The release test gate is portable on macOS and preserves the global state database around home fixtures ([#2204](https://github.com/asheshgoplani/agent-deck/pull/2204), by @jwiegley).
+
+### CI
+
+- `govulncheck` is pinned to a scanner compatible with the project's Go toolchain instead of `@latest`, so the security job runs again ([#2231](https://github.com/asheshgoplani/agent-deck/pull/2231)).
+
+## [1.16.4] - 2026-09-07
+
+The persistent remote channel is production-grade: bounded, self-healing and honest at fleet scale, with faster pushes and a live preview pane.
+
+### Added
+
+- The remote agent's change probe lists in-process instead of spawning the CLI twice, cutting the time from a change on the remote to the local screen by roughly two thirds; events carry `probe_ms` ([#2182](https://github.com/asheshgoplani/agent-deck/pull/2182)).
+- Each remote's poll result is delivered as it lands, so a slow host never delays a fast one; the header latency figure now measures the transport round trip, not a remote process start ([#2181](https://github.com/asheshgoplani/agent-deck/pull/2181)).
+- The focused remote session's pane is pushed over the channel instead of polled ([#2183](https://github.com/asheshgoplani/agent-deck/pull/2183)).
+- A remote session you just created is drawn the moment you detach from it ([#2179](https://github.com/asheshgoplani/agent-deck/pull/2179)).
+
+### Fixed
+
+- Channel hardening for large fleets ([#2187](https://github.com/asheshgoplani/agent-deck/pull/2187), closes #2180): the agent debounces probes, never writes to the remote DB, caps concurrent requests, honours cancels, keeps itself alive with pings and an idle deadline, pushes only well-formed compact listings capped at 4 MB, and stamps every event and reply; the client never re-runs a mutating command after a lost reply, detects half-open links, backs off on transient failures instead of disabling itself, reconciles channels against config, closes them on quit, caps frames, and keeps only the latest push per remote; the TUI never lets pushes starve the poll, saves the remote cache at most every 30 s, computes group counts once per rebuild, keeps empty remotes, and refuses stale pushes that would resurrect a row you just removed.
+
 ## [1.16.3] - 2026-09-06
 
 Changes on a remote deck reach the local TUI within about a second instead of at the next poll, and the PR gate runs in a third of the time.

@@ -327,7 +327,7 @@ func TestRemoteSubcommandHelpRoutesToSelectedCommand(t *testing.T) {
 		{"sessions", "Usage: agent-deck remote sessions [name] [options]"},
 		{"attach", "Usage: agent-deck remote attach <remote-name> <session-title-or-id>"},
 		{"rename", "Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>"},
-		{"update", "Usage: agent-deck remote update [name]"},
+		{"update", "Usage: agent-deck remote update [name | --all]"},
 	}
 
 	for _, tt := range tests {

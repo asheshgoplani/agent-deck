@@ -155,10 +155,17 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				// when subagents are actively running. These patterns are
 				// specific enough to NOT match the idle status bar or
 				// package-update banners.
+				//
+				// Deliberately NO line-leading "→" pattern: markdown
+				// nests/continues assistant prose with a bare arrow, and a
+				// finished answer stays on screen, so an idle session whose
+				// final message contained "    → ..." bullet lines matched
+				// busy forever (instance stuck "running"). Genuine pi
+				// subagent work is covered by the markers below and by the
+				// "Working" spinner detection.
 				"delegate_task",
 				`re:(?m)^\[subagent\]`,
 				`re:(?m)^\[running\]`,
-				`re:(?m)^\s*→\s`,
 			},
 			PromptPatterns: []string{`re:(?m)^\s*pi>\s*`},
 			SpinnerChars:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},

@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,16 @@ type TransitionNotificationEvent struct {
 	// empty string disables hash-based dedup and falls back to the legacy
 	// 90s short window.
 	LastOutputHash string `json:"last_output_hash,omitempty"`
+
+	// OutputHashStale marks an interactive transition whose LastOutputHash did
+	// NOT advance since the child's last notified turn even though a new
+	// transition was observed (issue #2184): the transcript signal is stale
+	// (e.g. the resolved transcript path is no longer the one being written),
+	// so it cannot identify this turn. TurnFingerprint falls through to the
+	// flip + emit instant for a flagged record, so the new completion is
+	// delivered once instead of colliding with the consumed turn. The flag is
+	// persisted so the inconsistent signal stays visible on the record.
+	OutputHashStale bool `json:"output_hash_stale,omitempty"`
 
 	TargetSessionID string `json:"target_session_id,omitempty"`
 	TargetKind      string `json:"target_kind,omitempty"` // parent | conductor
@@ -325,6 +336,7 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 		event.DeliveryResult = transitionDeliveryDropped
 		return event
 	}
+	event.OutputHashStale = n.outputHashIsStale(event)
 
 	// Issue #1225: commit the transition to the parent's durable outbox instead
 	// of gating delivery on the parent being idle.
@@ -466,6 +478,24 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	return false
 }
 
+// outputHashIsStale reports whether a NEW (non-duplicate) transition carries
+// the same LastOutputHash the child was last notified with (issue #2184). The
+// transcript signal is supposed to advance on every real turn; when a fresh
+// flip arrives with an unchanged signal, the signal is stale (typically the
+// resolved transcript path is no longer the file being written) and must not
+// be used as the turn's identity. Call after isDuplicate: a same-hash re-fire
+// inside the dedup TTL is a duplicate, not a stale signal.
+func (n *TransitionNotifier) outputHashIsStale(event TransitionNotificationEvent) bool {
+	hash := strings.TrimSpace(event.LastOutputHash)
+	if hash == "" {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	record, ok := n.state.Records[event.ChildSessionID]
+	return ok && strings.TrimSpace(record.OutputHash) == hash
+}
+
 // outputHashTTL returns the active TTL for the output-hash dedup layer. The
 // override field is reserved for tests; production callers get the default.
 func (n *TransitionNotifier) outputHashTTL() time.Duration {
@@ -535,16 +565,40 @@ func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
 	_ = n.saveStateLocked()
 }
 
+// lastNotifiedTurn reports the persisted last-notified (to_status, output
+// hash) for a child, or ok=false when this child has never been notified. The
+// daemon's restart seed compares it against the child's current status so a
+// recycle re-notifies only a turn that actually happened while it was down.
+func (n *TransitionNotifier) lastNotifiedTurn(childID string) (to, outputHash string, ok bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	rec, ok := n.state.Records[strings.TrimSpace(childID)]
+	if !ok {
+		return "", "", false
+	}
+	return rec.To, rec.OutputHash, true
+}
+
+// loadState reads the persisted last-notified records. A missing file is the
+// first-ever start; an unreadable or corrupt file is logged and treated the same
+// way (fresh, empty state) so the daemon still comes up — the restart seed then
+// takes the registry as the baseline instead of replaying history.
 func (n *TransitionNotifier) loadState() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
 	data, err := os.ReadFile(n.statePath)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			commsLog.Warn("transition_notify_state_unreadable",
+				slog.String("path", n.statePath), slog.String("error", err.Error()))
+		}
 		return
 	}
 	var state transitionNotifyState
 	if err := json.Unmarshal(data, &state); err != nil {
+		commsLog.Warn("transition_notify_state_corrupt",
+			slog.String("path", n.statePath), slog.String("error", err.Error()))
 		return
 	}
 	if state.Records == nil {

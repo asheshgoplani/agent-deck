@@ -32,6 +32,9 @@ func isolateVersionUpdatePaths(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpHome, "xdg-cache"))
+	// These tests assert the annotation itself; CI exports the kill switch
+	// for the whole workflow (issue #2251), so clear the inherited value.
+	t.Setenv("AGENTDECK_SKIP_UPDATE_CHECK", "")
 }
 
 // Conductor task #45 — `agent-deck --version` should append

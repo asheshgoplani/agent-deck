@@ -92,7 +92,7 @@ agent-deck skill attach my-proj docs --source pool --restart # Attach skill + re
 agent-deck web                    # Start web UI on http://127.0.0.1:8420
 ```
 
-> **⚠️ Changed in v1.9.55:** in the new-session dialog (`n`), **Enter advances to the next field** on the Name and Branch inputs instead of submitting — typing a name and hitting Enter no longer creates a session with all defaults. **Ctrl+S creates the session from any field.** The dialog also remembers your last-used tool. Restore the old behavior with `[ui].new_session_enter_advances = false`.
+> **⚠️ Changed in v1.9.55, extended after v1.16.5:** in the new-session dialog (`n`), **Enter advances to the next field** on every row — Name, Tool, Model, Reasoning effort, Path, checkboxes and each Claude Options row — and only the trailing **`[ Create session ]`** button (or **Ctrl+S from any field**) creates the session, so walking the form with Enter never launches a session before you have chosen the model, path or options. `↓`/`Space` open the model list. The dialog also remembers your last-used tool. Restore the old Enter-creates-from-any-row behavior with `[ui].new_session_enter_advances = false`.
 
 ### Key Shortcuts
 
@@ -238,8 +238,8 @@ configured under `[profiles.<name>.claude].config_dir`.
 The TUI exposes the same two moments. The **New Session** dialog's Claude options
 carry an `Account` row (`←`/`→` or `Space` to cycle, `inherit` = today's
 conductor/group/env chain), so a session can be created straight onto the right
-login. The **Edit Session** dialog (`e`) carries a `Claude account` row for a
-session that already exists; committing it runs the same
+login. The **Edit Session** dialog (`Shift+P`) carries an account row for a
+session that already exists; saving it asks "Switch Account?" first, then runs the same
 migrate-and-resume flow as `session switch-account`, and the session card's
 `[account:"…"]` badge follows. Both rows are hidden when no
 `[profiles.<name>.claude].config_dir` blocks are configured.
@@ -469,7 +469,7 @@ Run sessions inside isolated Docker containers. The project directory is bind-mo
 - Press `T` on a sandboxed session to open a container shell
 - `agent-deck try "task description"` runs a one-shot sandboxed session
 
-Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. On macOS, Keychain credentials are extracted too.
+Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. The exception is the Claude Code login on macOS, which lives in the Keychain: copying it would fork the host's OAuth refresh chain and log the host out, so the sandbox keeps a login of its own. Run `/login` once in your first sandbox session (or pass a `claude setup-token` credential as `CLAUDE_CODE_OAUTH_TOKEN` via `environment`); see the single-owner rule in the sandbox reference.
 
 ```toml
 [docker]
@@ -908,9 +908,12 @@ agent-deck remote attach dev my-session
 agent-deck remote drain dev
 
 # Keep remote binaries up to date
-agent-deck remote update          # all remotes
+agent-deck remote update --all    # every remote older than this controller
 agent-deck remote update dev      # specific remote
+agent-deck remote list            # includes each remote's version, ↑ when behind
 ```
+
+By default the controller pushes its version to older remotes on its own: after `agent-deck update`, and in the background on startup (`[updates] auto_update_remotes = false` in `config.toml` opts out). The TUI shows `v1.15.0 ↑` on a remote header that is behind; `u` on that header updates it after a confirmation. A remote whose binary lives in a directory its user cannot write (a root-owned `/usr/local/bin`) is updated through passwordless `sudo -n` when the remote grants it; otherwise the update reports `install path <path> is not writable by <user>` and the fix: move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo. That symlink layout is supported by the deploy itself: the install path is resolved through symlinks on the remote first, the file behind the link is what gets replaced (owner and mode kept, sudo only if *that* directory is unwritable), a symlink is never overwritten by a regular file, and afterwards `command -v agent-deck` must resolve to the deployed file. If the remote's `$PATH` binary and `agent_deck_path` are different files, both are updated and the report says so.
 
 A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. `remote drain <name>` closes that gap by pulling — it reads the remote's records over the same SSH path (consuming nothing there) and writes them into the local inbox, safe to run on every heartbeat and safe to repeat.
 
@@ -1033,7 +1036,10 @@ and answer: How do I fork a session?
 Agent Deck checks for updates automatically.
 - Standalone/manual install: run `agent-deck update` to install.
 - Homebrew install: run `brew upgrade asheshgoplani/tap/agent-deck`.
-- Optional: set `auto_update = true` in [config.toml](skills/agent-deck/references/config-reference.md) for automatic update prompts.
+- Unattended: `[updates] auto_install` is on by default, so the TUI installs an available update without asking (and restarts itself when `auto_restart` is on). For machines where the TUI is not open every day, `agent-deck update --install-timer` adds a daily run (launchd on macOS, systemd user timer on Linux); `--timer-status` and `--uninstall-timer` manage it and `--dry-run` shows what would be written. Set `auto_install = false` in [config.toml](skills/agent-deck/references/config-reference.md) to go back to installing by hand.
+- Optional: set `auto_update = true` for a Y/n prompt before the TUI opens.
+- Scripts, tests and CI: the automatic install and restart never fire under `go test`, with `CI=true`, with `AGENTDECK_SKIP_UPDATE_CHECK=1`, or when the TUI has no terminal; set the variable in any script that drives `agent-deck` and must not be interrupted by a release.
+- macOS note: launchd agents that run the agent-deck binary (`notify-daemon`, `web --no-tui`) crash-loop with `EX_CONFIG` after the binary is replaced, because macOS ties their identity to the file. Every install re-registers the `com.agentdeck.*` agents automatically and prints the `launchctl bootout`/`bootstrap` commands if one does not come back.
 
 ## FAQ
 

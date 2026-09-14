@@ -142,24 +142,12 @@ func TestGuardComposerDraft_IgnoresDimAutosuggestion(t *testing.T) {
 }
 
 // The #1409 protection must survive intact: a real draft carrying ANSI colour
-// is still held, saved and cleared.
+// is still held, then refused without modification.
 func TestGuardComposerDraft_StillGuardsRealDraftWithANSI(t *testing.T) {
-	target := &fakeGuardTarget{
-		captures:     []string{pane(fixtureRealDraftComposer)},
-		clearOnCtrlC: true,
-	}
-	res := GuardComposerDraft(target, ComposerGuardOptions{
-		HoldWait: 10 * time.Millisecond, PollInterval: time.Millisecond, ClearWait: 50 * time.Millisecond,
-		Strip: stripANSI,
-	})
-	if res.SavedDraft != "REALDRAFT typed by a human" {
-		t.Fatalf("real draft must still be saved for restore, got %q", res.SavedDraft)
-	}
-	if !res.DraftCleared {
-		t.Fatalf("real draft must still be cleared before delivery, got %+v", res)
-	}
-	if target.ctrlCCalls == 0 {
-		t.Fatal("expected Ctrl+C for a real operator draft")
+	target := &fakeGuardTarget{captures: []string{pane(fixtureRealDraftComposer)}, clearOnCtrlC: true}
+	res := GuardComposerDraft(target, ComposerGuardOptions{HoldWait: time.Millisecond, PollInterval: time.Millisecond, Strip: stripANSI})
+	if !res.Refused || res.SavedDraft != "" || res.DraftCleared || target.ctrlCCalls != 0 {
+		t.Fatalf("real draft must remain untouched: %+v, interrupts=%d", res, target.ctrlCCalls)
 	}
 }
 
@@ -268,21 +256,11 @@ func TestGuardComposerDraft_MidRenderSuggestionIsNotSaved(t *testing.T) {
 	}
 }
 
-// The save-step re-capture must not weaken #1409: a REAL draft that is still
-// present on the second capture is saved and cleared exactly as before.
-func TestGuardComposerDraft_ReconfirmStillSavesRealDraft(t *testing.T) {
-	target := &fakeGuardTarget{
-		captures:     []string{pane(fixtureRealDraftComposer)},
-		clearOnCtrlC: true,
-	}
-	res := GuardComposerDraft(target, ComposerGuardOptions{
-		HoldWait: 0, PollInterval: time.Millisecond, ClearWait: 50 * time.Millisecond,
-		Strip: stripANSI,
-	})
-	if res.SavedDraft != "REALDRAFT typed by a human" {
-		t.Fatalf("confirmed operator draft must still be saved, got %q", res.SavedDraft)
-	}
-	if !res.DraftCleared {
-		t.Fatalf("confirmed operator draft must still be cleared, got %+v", res)
+// Reconfirmation must preserve a real draft that remains in the composer.
+func TestGuardComposerDraft_ReconfirmStillPreservesRealDraft(t *testing.T) {
+	target := &fakeGuardTarget{captures: []string{pane(fixtureRealDraftComposer)}, clearOnCtrlC: true}
+	res := GuardComposerDraft(target, ComposerGuardOptions{HoldWait: time.Millisecond, PollInterval: time.Millisecond, Strip: stripANSI})
+	if !res.Refused || res.SavedDraft != "" || res.DraftCleared || target.ctrlCCalls != 0 {
+		t.Fatalf("real draft must remain untouched: %+v, interrupts=%d", res, target.ctrlCCalls)
 	}
 }

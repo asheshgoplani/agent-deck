@@ -63,7 +63,7 @@ func NewClaudeOptionsPanel() *ClaudeOptionsPanel {
 	resumeInput.Width = 30
 
 	extraArgsInput := textinput.New()
-	extraArgsInput.Placeholder = "--agent reviewer --model opus"
+	extraArgsInput.Placeholder = "e.g. --agent reviewer"
 	extraArgsInput.CharLimit = 512
 	extraArgsInput.Width = 44
 
@@ -242,6 +242,17 @@ func (p *ClaudeOptionsPanel) IsFocused() bool {
 // AtTop returns true if focus is on the first element
 func (p *ClaudeOptionsPanel) AtTop() bool {
 	return p.focusIndex <= 0
+}
+
+// AtBottom returns true if focus is on the last element
+func (p *ClaudeOptionsPanel) AtBottom() bool {
+	return p.focusIndex >= p.getFocusCount()-1
+}
+
+// FocusLast sets focus to the last element of this panel
+func (p *ClaudeOptionsPanel) FocusLast() {
+	p.focusIndex = p.getFocusCount() - 1
+	p.updateInputFocus()
 }
 
 // FocusedLine maps the panel's focus identity and state to the logical row

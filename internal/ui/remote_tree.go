@@ -278,3 +278,45 @@ func remoteStatusCounts(sessions []session.RemoteSessionInfo, groupPath string) 
 	}
 	return running, waiting
 }
+
+// remoteHeaderCount is what a remote header row shows: the sessions under it
+// (the whole remote for the host header, the subtree for a group header) and
+// how many of those are running or waiting.
+type remoteHeaderCount struct {
+	total, running, waiting int
+}
+
+// remoteHeaderCounts computes the counts of every header row one remote's
+// rows can have, keyed by Item.Path, in one pass over the sessions: the host
+// header ("remotes/<name>") and every group prefix a session's Group path
+// implies. The numbers equal remoteSubGroupCount and remoteStatusCounts for
+// the same slice; computing them once with the rows spares the renderer a
+// rescan of every session for every visible header on every frame.
+func remoteHeaderCounts(remoteName string, sessions []session.RemoteSessionInfo) map[string]remoteHeaderCount {
+	root := "remotes/" + remoteName
+	counts := make(map[string]remoteHeaderCount)
+	add := func(path string, running, waiting bool) {
+		c := counts[path]
+		c.total++
+		if running {
+			c.running++
+		}
+		if waiting {
+			c.waiting++
+		}
+		counts[path] = c
+	}
+	for i := range sessions {
+		// Archived rows count as sessions but never as running or waiting,
+		// matching remoteStatusCounts (#1945).
+		running := !sessions[i].Archived && sessions[i].Status == "running"
+		waiting := !sessions[i].Archived && sessions[i].Status == "waiting"
+		add(root, running, waiting)
+		prefix := ""
+		for _, seg := range strings.Split(normalizeRemoteGroupPath(sessions[i].Group), "/") {
+			prefix = joinGroupSegment(prefix, seg)
+			add(root+"/"+prefix, running, waiting)
+		}
+	}
+	return counts
+}

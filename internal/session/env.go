@@ -21,6 +21,7 @@ import (
 //  7. Conductor-specific env from meta.json (highest priority, overrides tool env)
 //  8. One-shot restart overrides (`session restart --env`)
 //  9. Strip TELEGRAM_STATE_DIR (v1.7.40, S8)
+//  10. AGENTDECK_IDENTITY_FILE export (identity injection)
 //
 // Note: This does NOT handle [shell].launch_shell wrapping — that happens at the
 // prepareCommand layer (instance.go) after env sourcing, so the shell startup
@@ -58,6 +59,9 @@ func (i *Instance) buildEnvSourceCommand() string {
 		}
 		if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
 			sources = append(sources, stripExpr)
+		}
+		if identityExport := i.identityEnvExport(); identityExport != "" {
+			sources = append(sources, identityExport)
 		}
 		if len(sources) == 0 {
 			return ""
@@ -157,6 +161,14 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// Subsumes the narrower issue #680 predicate.
 	if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
 		sources = append(sources, stripExpr)
+	}
+
+	// 10. Identity injection (identity_injection.go): every tool, including
+	//     custom commands, gets AGENTDECK_IDENTITY_FILE pointing at the
+	//     model-readable session block written for this spawn. Last so no
+	//     env_file / inline env can shadow it.
+	if identityExport := i.identityEnvExport(); identityExport != "" {
+		sources = append(sources, identityExport)
 	}
 
 	if len(sources) == 0 {

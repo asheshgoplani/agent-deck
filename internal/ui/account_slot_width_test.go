@@ -18,7 +18,7 @@ func TestStoredAccountWidthMatrix(t *testing.T) {
 					h := NewHome()
 					h.width, h.height = width, 40
 					inst := &session.Instance{ID: "width", Title: strings.Repeat("Title日本e\u0301", 8), Tool: "shell", Status: session.StatusIdle, Account: slot}
-					state := sessionRenderState{status: session.StatusIdle, tool: "shell", title: inst.Title, account: slot, accountDisplay: newAccountPresentation(slot), autoName: auto, paneTitle: "pane subtitle", autoNameDesc: "description"}
+					state := sessionRenderState{status: session.StatusIdle, tool: "shell", title: inst.Title, account: slot, accountDisplay: newAccountPresentation(slot, true), autoName: auto, paneTitle: "pane subtitle", autoNameDesc: "description"}
 					for _, selected := range []bool{false, true} {
 						var b strings.Builder
 						h.renderSessionItem(&b, session.Item{Type: session.ItemTypeSession, Session: inst, Level: 1, Path: "work", IsLastInGroup: true}, selected, map[string]sessionRenderState{inst.ID: state}, width)

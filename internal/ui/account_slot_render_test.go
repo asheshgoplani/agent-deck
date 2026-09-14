@@ -11,6 +11,8 @@ import (
 
 // These controls intentionally use only pre-existing rendering entry points.
 // They must reproduce missing stored-slot output on the unmodified baseline.
+// Slots are configured here so the inherited case stays covered; the
+// no-slots-configured gate lives in account_slot_gate_test.go.
 func TestStoredAccountRenderBaseline(t *testing.T) {
 	slots := []string{"personal", "work", "", "inherited", " 日本 e\u0301 🚀 ", "quote\"slash\\", "\x1b]0;injected\a\r\n\u0085\u202e"}
 	for _, account := range slots {
@@ -28,6 +30,7 @@ func TestStoredAccountRenderBaseline(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					h := NewHome()
 					h.width, h.height = 240, 40
+					h.accountSlotsConfigured.Store(true)
 					if refreshed {
 						h.refreshSessionRenderSnapshot([]*session.Instance{inst})
 					}
@@ -43,6 +46,7 @@ func TestStoredAccountRenderBaseline(t *testing.T) {
 				})
 				t.Run(name+"_card", func(t *testing.T) {
 					h := NewHome()
+					h.accountSlotsConfigured.Store(true)
 					if refreshed {
 						h.refreshSessionRenderSnapshot([]*session.Instance{inst})
 					}

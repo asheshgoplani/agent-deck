@@ -54,7 +54,7 @@ func TestBuildClaudeToCodexHandoffPrompt_ReadsClaudeTranscript(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeToCodexHandoffPrompt_FindsDifferentlyEncodedTranscript(t *testing.T) {
+func TestBuildClaudeToCodexHandoffPrompt_RejectsDifferentlyEncodedTranscript(t *testing.T) {
 	claudeDir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
 
@@ -76,15 +76,143 @@ func TestBuildClaudeToCodexHandoffPrompt_FindsDifferentlyEncodedTranscript(t *te
 		Tool:            "claude",
 		ClaudeSessionID: sessionID,
 	}
-	prompt, info, err := BuildClaudeToCodexHandoffPrompt(inst, DefaultHandoffMaxChars)
+	_, _, err := BuildClaudeToCodexHandoffPrompt(inst, DefaultHandoffMaxChars)
+	if err == nil || !strings.Contains(err.Error(), "no exact context artifact") {
+		t.Fatalf("differently encoded transcript error = %v, want exact-path refusal", err)
+	}
+}
+
+func TestBuildClaudeToCodexHandoffPrompt_UsesExactSourceAccountWhenIDExistsInTwoAccounts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	project := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(project); err == nil {
+		project = resolved
+	}
+	const sessionID = "12121212-2222-3333-4444-555555555555"
+	personalDir, workDir := filepath.Join(home, "claude-personal"), filepath.Join(home, "claude-work")
+	cfg := &UserConfig{Profiles: map[string]ProfileSettings{
+		"personal": {Claude: ProfileClaudeSettings{ConfigDir: personalDir}},
+		"work":     {Claude: ProfileClaudeSettings{ConfigDir: workDir}},
+	}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	for dir, text := range map[string]string{personalDir: "PERSONAL EXACT SOURCE", workDir: "WRONG WORK ACCOUNT"} {
+		path := filepath.Join(dir, "projects", ConvertToClaudeDirName(project), sessionID+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{"sessionId":"`+sessionID+`","type":"user","message":{"role":"user","content":"`+text+`"}}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	prompt, info, err := BuildClaudeToCodexHandoffPrompt(&Instance{Title: "account-bound", ProjectPath: project, Tool: "claude", Account: "personal", ClaudeSessionID: sessionID}, DefaultHandoffMaxChars)
 	if err != nil {
 		t.Fatalf("BuildClaudeToCodexHandoffPrompt: %v", err)
 	}
-	if info.TranscriptPath != transcriptPath {
-		t.Fatalf("TranscriptPath = %q, want UUID-glob match %q", info.TranscriptPath, transcriptPath)
+	if !strings.Contains(prompt, "PERSONAL EXACT SOURCE") || strings.Contains(prompt, "WRONG WORK ACCOUNT") {
+		t.Fatalf("handoff used another account's same-ID transcript:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "WSL fallback found me") {
-		t.Fatalf("prompt missing differently encoded transcript content:\n%s", prompt)
+	if !strings.HasPrefix(info.TranscriptPath, personalDir+string(os.PathSeparator)) {
+		t.Fatalf("TranscriptPath = %q, want personal account path", info.TranscriptPath)
+	}
+}
+
+func TestBuildClaudeToCodexHandoffPrompt_MissingSourceDoesNotFallBackToAnotherAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	project := t.TempDir()
+	const sessionID = "13131313-2222-3333-4444-555555555555"
+	personalDir, workDir := filepath.Join(home, "claude-personal"), filepath.Join(home, "claude-work")
+	cfg := &UserConfig{Profiles: map[string]ProfileSettings{
+		"personal": {Claude: ProfileClaudeSettings{ConfigDir: personalDir}},
+		"work":     {Claude: ProfileClaudeSettings{ConfigDir: workDir}},
+	}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	other := filepath.Join(workDir, "projects", ConvertToClaudeDirName(project), sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte(`{"sessionId":"`+sessionID+`","type":"user","message":{"role":"user","content":"must not be borrowed"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := BuildClaudeToCodexHandoffPrompt(&Instance{Title: "missing-source", ProjectPath: project, Tool: "claude", Account: "personal", ClaudeSessionID: sessionID}, DefaultHandoffMaxChars)
+	if err == nil || !strings.Contains(err.Error(), "no exact context artifact") {
+		t.Fatalf("missing personal source error = %v, want exact-source refusal", err)
+	}
+}
+
+func TestBuildClaudeToCodexHandoffPrompt_RejectsForeignNativeIdentity(t *testing.T) {
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	project := t.TempDir()
+	const sessionID = "16161616-2222-3333-4444-555555555555"
+	path := filepath.Join(claudeDir, "projects", ConvertToClaudeDirName(project), sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"sessionId":"foreign-session","type":"user","message":{"role":"user","content":"wrong identity"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := BuildClaudeToCodexHandoffPrompt(&Instance{Title: "foreign", ProjectPath: project, Tool: "claude", ClaudeSessionID: sessionID}, DefaultHandoffMaxChars)
+	if err == nil || !strings.Contains(err.Error(), "session identity mismatch") {
+		t.Fatalf("foreign native identity error = %v, want refusal", err)
+	}
+}
+
+func TestBuildClaudeToCodexHandoffPrompt_RejectsSymlinkedExactSource(t *testing.T) {
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	project := t.TempDir()
+	const sessionID = "15151515-2222-3333-4444-555555555555"
+	path := filepath.Join(claudeDir, "projects", ConvertToClaudeDirName(project), sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "other.jsonl")
+	if err := os.WriteFile(target, []byte(`{"sessionId":"`+sessionID+`"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := BuildClaudeToCodexHandoffPrompt(&Instance{Title: "symlink", ProjectPath: project, Tool: "claude", ClaudeSessionID: sessionID}, DefaultHandoffMaxChars)
+	if err == nil || !strings.Contains(err.Error(), "unsafe exact Claude source path") {
+		t.Fatalf("symlink source error = %v, want refusal", err)
+	}
+}
+
+func TestBuildClaudeToCodexHandoffPrompt_RejectsMalformedNonTailRecord(t *testing.T) {
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	project := t.TempDir()
+	const sessionID = "14141414-2222-3333-4444-555555555555"
+	path := filepath.Join(claudeDir, "projects", ConvertToClaudeDirName(project), sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"sessionId":"` + sessionID + `","type":"user","message":{"role":"user","content":"before"}}` + "\nnot-json\n" + `{"sessionId":"` + sessionID + `","type":"assistant","message":{"role":"assistant","content":"after"}}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := BuildClaudeToCodexHandoffPrompt(&Instance{Title: "malformed", ProjectPath: project, Tool: "claude", ClaudeSessionID: sessionID}, DefaultHandoffMaxChars)
+	if err == nil || !strings.Contains(err.Error(), "malformed JSONL record") {
+		t.Fatalf("malformed non-tail record error = %v, want refusal", err)
 	}
 }
 
@@ -141,7 +269,6 @@ func TestBuildClaudeToCodexHandoffPrompt_ComplexClaudeContent(t *testing.T) {
 	}
 	transcript := strings.Join([]string{
 		`{"type":"summary","summary":"summary records are not conversation turns"}`,
-		`not json`,
 		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Please inspect the repo and remember SILVER COMPASS 1782726200."}]}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"do not leak this"},{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/example.go"}},{"type":"text","text":"I will inspect the file."}]}}`,
 		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"package main\nfunc main() {}"}]}]}}`,
@@ -168,7 +295,7 @@ func TestBuildClaudeToCodexHandoffPrompt_ComplexClaudeContent(t *testing.T) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	for _, unwanted := range []string{"do not leak this", "summary records", "not json"} {
+	for _, unwanted := range []string{"do not leak this", "summary records"} {
 		if strings.Contains(prompt, unwanted) {
 			t.Fatalf("prompt included unwanted %q:\n%s", unwanted, prompt)
 		}

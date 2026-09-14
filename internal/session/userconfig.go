@@ -261,6 +261,10 @@ type UserConfig struct {
 	// UI defines TUI layout settings (split ratios, etc).
 	UI UISettings `toml:"ui,omitempty"`
 
+	// Launch defines settings applied to every session spawn regardless of
+	// tool (identity injection, ...). See LaunchSettings.
+	Launch LaunchSettings `toml:"launch,omitempty"`
+
 	// SelfHeal defines self-heal supervision settings (SELF-HEAL-DESIGN.md).
 	// Stage 1 (v1.9.67) is observe-only: it logs what it WOULD do, takes no
 	// action. See SelfHealSettings.
@@ -1120,9 +1124,29 @@ type LogSettings struct {
 
 // UpdateSettings defines auto-update configuration
 type UpdateSettings struct {
-	// AutoUpdate automatically installs updates without prompting
+	// AutoUpdate makes the TUI offer to install an available update on
+	// startup (a Y/n prompt before the deck opens).
 	// Default: false
 	AutoUpdate bool `toml:"auto_update,omitempty"`
+
+	// AutoUpdateRemotes pushes the controller's version to every configured
+	// remote that reports an older agent-deck: after a successful
+	// `agent-deck update`, and in the background on startup (throttled by
+	// CheckIntervalHours). Never prompts; a remote that fails stays on its
+	// version and is logged. Default: true (nil = true); opt out with
+	// auto_update_remotes = false (issue #2164).
+	AutoUpdateRemotes *bool `toml:"auto_update_remotes,omitempty"`
+	// AutoInstall installs an available update unattended (no prompt) from
+	// the TUI's periodic check and from the `agent-deck update` timer
+	// (launchd on macOS, systemd on Linux). Set false to opt out.
+	// Default: true (nil = true)
+	AutoInstall *bool `toml:"auto_install,omitempty"`
+
+	// AutoRestart re-executes the running process in place once a newer
+	// binary is installed on disk, without asking. Set false to keep the
+	// "installed, press <key> to restart" notice and restart by hand.
+	// Default: true (nil = true)
+	AutoRestart *bool `toml:"auto_restart,omitempty"`
 
 	// CheckEnabled enables automatic update checks on startup
 	// Default: true (nil = true)
@@ -1143,6 +1167,33 @@ func (u UpdateSettings) GetCheckEnabled() bool {
 		return true
 	}
 	return *u.CheckEnabled
+}
+
+// GetAutoUpdateRemotes returns whether older remotes follow the controller's
+// version on their own (default: true).
+func (u UpdateSettings) GetAutoUpdateRemotes() bool {
+	if u.AutoUpdateRemotes == nil {
+		return true
+	}
+	return *u.AutoUpdateRemotes
+}
+
+// GetAutoInstall reports whether available updates are installed unattended
+// (default: true).
+func (u UpdateSettings) GetAutoInstall() bool {
+	if u.AutoInstall == nil {
+		return true
+	}
+	return *u.AutoInstall
+}
+
+// GetAutoRestart reports whether a running process restarts itself in place
+// once a newer binary is on disk (default: true).
+func (u UpdateSettings) GetAutoRestart() bool {
+	if u.AutoRestart == nil {
+		return true
+	}
+	return *u.AutoRestart
 }
 
 // GetNotifyInCLI returns whether CLI update notifications are enabled (default: true).
@@ -1346,6 +1397,28 @@ func (s *ShellSettings) GetExitToShell() bool {
 		return false // Default: OFF (preserve current exit/resume behavior)
 	}
 	return *s.ExitToShell
+}
+
+// LaunchSettings holds tool-agnostic spawn settings ([launch] in config.toml).
+type LaunchSettings struct {
+	// InjectIdentity controls whether every spawned session is told, through
+	// its harness's own instruction mechanism, that it runs inside agent-deck,
+	// what its session identity is (id, title, group, profile, account,
+	// parent, path) and how to use the agent-deck CLI from inside. The text
+	// is regenerated from the session record on every start/restart and
+	// written to an agent-deck-owned file (AGENTDECK_IDENTITY_FILE), never
+	// into the project directory. nil => true. Per-session opt-out:
+	// `add`/`launch --no-identity`.
+	InjectIdentity *bool `toml:"inject_identity,omitempty"`
+}
+
+// GetInjectIdentity returns whether identity injection is enabled, defaulting
+// to true.
+func (l *LaunchSettings) GetInjectIdentity() bool {
+	if l == nil || l.InjectIdentity == nil {
+		return true
+	}
+	return *l.InjectIdentity
 }
 
 // GetLaunchShell returns whether agent commands should be wrapped with a shell
@@ -2684,9 +2757,10 @@ type TmuxSettings struct {
 
 	// LaunchAs selects the spawn form for new tmux servers (v1.7.21+).
 	// Valid values (case-insensitive, whitespace-trimmed):
-	//   "scope"   — systemd-run --user --scope (PR #467 legacy behavior)
+	//   "scope"   — systemd-run --user --scope with KillMode=none, so
+	//               stopping one per-session scope cannot kill a shared server.
 	//   "service" — systemd-run --user --unit <NAME>.service with
-	//               Type=forking + Restart=on-failure. Adds auto-restart
+	//               Type=forking + Restart=on-failure + KillMode=none. Adds auto-restart
 	//               if the tmux daemon dies unexpectedly (OOM, SIGKILL,
 	//               kernel signal). Opt-in defense-in-depth.
 	//   "direct"  — plain `tmux new-session` (no systemd isolation).
@@ -2699,8 +2773,9 @@ type TmuxSettings struct {
 	// LaunchInUserScope) so a config typo doesn't silently opt the user
 	// onto an unintended spawn path.
 	//
-	// This is additive — v1.7.20 users get zero behavior change until
-	// they explicitly set launch_as.
+	// Both systemd forms preserve SSH/logout isolation while avoiding a
+	// control-group teardown of a shared tmux server. This changes only units
+	// spawned after #2219; existing transient units are never migrated.
 	LaunchAs *string `toml:"launch_as,omitempty"`
 
 	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
@@ -2955,6 +3030,12 @@ type DockerSettings struct {
 
 	// AutoCleanup removes sandbox containers on session kill (default: true).
 	AutoCleanup *bool `toml:"auto_cleanup,omitempty"`
+
+	// SeedCredentialsFromKeychain copies the macOS Keychain Claude token into a
+	// sandbox that has no credential file yet (default: false). Off, the sandbox
+	// logs in on its own; on, the one-time copy forks the host's OAuth refresh
+	// chain once (#2153).
+	SeedCredentialsFromKeychain bool `toml:"seed_credentials_from_keychain,omitempty"`
 }
 
 // GetAutoCleanup returns whether to auto-remove sandbox containers, defaulting to true.
@@ -4615,8 +4696,13 @@ remove_orphans = true
 # Update settings
 # Controls automatic update checking and installation
 [updates]
-# Automatically install updates without prompting (default: false)
+# Offer to install an available update when the TUI starts (default: false)
 # auto_update = true
+# Install available updates unattended: from the TUI's periodic check and
+# from the "agent-deck update --install-timer" job (default: true)
+auto_install = true
+# Restart agent-deck in place once a newer binary is installed (default: true)
+auto_restart = true
 # Enable update checks on startup (default: true)
 check_enabled = true
 # How often to check for updates in hours (default: 24)

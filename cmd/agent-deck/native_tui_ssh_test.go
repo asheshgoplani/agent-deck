@@ -51,7 +51,12 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 			}
 			out = append(out, item)
 		}
-		return append(out, "HOME="+home, "TERM=xterm-256color", "AGENTDECK_TELEMETRY=0")
+		// This env is rebuilt from scratch (every AGENTDECK_* var above is
+		// dropped), so the workflow-wide kill switch has to be re-added:
+		// the TUI under test runs on a real tmux terminal and would
+		// otherwise install a release that lands mid-run and re-exec
+		// itself (issue #2251). CI=true still passes through.
+		return append(out, "HOME="+home, "TERM=xterm-256color", "AGENTDECK_TELEMETRY=0", "AGENTDECK_SKIP_UPDATE_CHECK=1")
 	}
 	command := func(home, executable string, args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -72,7 +77,16 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 	}
 	inner := fmt.Sprintf("nt-in-%d", time.Now().UnixNano())
 	outer := fmt.Sprintf("nt-out-%d", time.Now().UnixNano())
-	write(filepath.Join(remote, ".config", "agent-deck", "config.toml"), "[telemetry]\ndisabled = true\n[claude]\nhooks_enabled = false\n[tmux]\nsocket_name = '"+inner+"'\n[profiles.alice.claude]\nconfig_dir = '"+filepath.Join(remote, "claude-alice")+"'\n")
+	// Update checking is disabled for determinism. AGENTDECK_SKIP_UPDATE_CHECK
+	// (set in the launch env above) is the load-bearing switch: without it the
+	// TUI auto-installs a newer release and restarts itself in place mid-test
+	// (tui_auto_install_finished -> tui_restart_requested), and the CLI startup
+	// path prints an "Update available" banner into the pane — either one
+	// displaces the SESSIONS/PREVIEW divider this test asserts (both observed
+	// after v1.16.7 shipped). [updates] check_enabled=false is kept as a
+	// belt-and-suspenders gate for the CLI banner. Orthogonal to what this
+	// test exercises.
+	write(filepath.Join(remote, ".config", "agent-deck", "config.toml"), "[telemetry]\ndisabled = true\n[updates]\ncheck_enabled = false\n[claude]\nhooks_enabled = false\n[tmux]\nsocket_name = '"+inner+"'\n[profiles.alice.claude]\nconfig_dir = '"+filepath.Join(remote, "claude-alice")+"'\n")
 	proxy := startNativeSSH(t, remote, shim)
 	cli := func(args ...string) string {
 		t.Helper()
@@ -81,7 +95,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 	first, second := "Alpha界", "Betaé"
 	nonce := fmt.Sprintf("TUI-NONCE-%d", time.Now().UnixNano())
 	receiver := filepath.Join(remote, "receiver.sh")
-	write(receiver, "#!/bin/sh\nprintf '%s\\n' "+quote(nonce)+"\nexec sleep 600\n")
+	write(receiver, "#!/bin/sh\nprintf '\\n%s\\n' "+quote(nonce)+"\nexec sleep 600\n")
 	cli("add", remote, "--title", first, "--cmd", "shell", "--wrapper", "sh "+quote(receiver), "--account", "alice", "--json")
 	cli("add", remote, "--title", second, "--cmd", "shell", "--account", "alice", "--json")
 	cli("session", "start", first, "--json")
@@ -115,6 +129,18 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		return strings.TrimSpace(run(remote, "tmux", "-L", inner, "list-panes", "-a", "-F", "#{pid}:#{session_id}:#{pane_id}:#{pane_pid}"))
 	}
 	beforeIdentity := identity()
+	stateDB, err := sql.Open("sqlite", filepath.Join(remote, ".local", "share", "agent-deck", "profiles", "default", "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateDB.Exec("INSERT OR REPLACE INTO metadata (key, value) VALUES ('hermes_hooks_prompted', 'declined')"); err != nil {
+		_ = stateDB.Close()
+		t.Fatal(err)
+	}
+	if err := stateDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitDetail := ""
 	wait := func(label string, condition func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
@@ -124,10 +150,11 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 			}
 			time.Sleep(40 * time.Millisecond)
 		}
-		t.Fatalf("timed out: %s", label)
+		t.Fatalf("timed out: %s\n%s", label, waitDetail)
 	}
 	hasNonce := func() bool {
-		for _, line := range strings.Split(cli("session", "output", first), "\n") {
+		waitDetail = cli("session", "output", first)
+		for _, line := range strings.Split(waitDetail, "\n") {
 			if strings.TrimSpace(ansi.Strip(line)) == nonce {
 				return true
 			}
@@ -154,7 +181,7 @@ func TestNativeSSHTUIRegistryLifecycle(t *testing.T) {
 		pidFile = filepath.Join(remote, fmt.Sprintf("full-tui-%d.pid", launchNumber))
 		// Each launch has a new exclusive private PID file. exec preserves the
 		// shell PID through env into the exact built full-TUI executable.
-		remoteCommand := "umask 077; set -C; printf '%s' \"$$\" > " + quote(pidFile) + " || exit 1; exec env TERM=xterm-256color AGENTDECK_ACCOUNT=alice " + quote(bin) + " -p default"
+		remoteCommand := "umask 077; set -C; printf '%s' \"$$\" > " + quote(pidFile) + " || exit 1; exec env TERM=xterm-256color AGENTDECK_ACCOUNT=alice AGENTDECK_SKIP_UPDATE_CHECK=1 " + quote(bin) + " -p default"
 		sshCommand := quote(filepath.Join(shim, "ssh")) + " -tt test-host " + quote(remoteCommand)
 		tmux("respawn-pane", "-k", "-t", "full-tui:0.0", sshCommand)
 	}

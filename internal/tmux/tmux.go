@@ -46,11 +46,6 @@ var (
 // tmux_fallback_test.go for the contract.
 var execCommand = exec.Command
 
-// execCommandContext is the deadline-carrying counterpart to execCommand, kept
-// as its own seam so a bounded call site stays overridable by the same tests.
-// Use it for any tmux invocation that must terminate — see tmuxMutationTimeout.
-var execCommandContext = exec.CommandContext
-
 type tmuxThemeStyle struct {
 	windowStyle       string
 	windowActiveStyle string
@@ -1470,7 +1465,10 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 			"--property=RestartSec=5s",
 			"--property=StartLimitBurst=10",
 			"--property=StartLimitIntervalSec=60",
-			"--property=KillMode=control-group",
+			// A tmux server is shared by every session on its socket. A
+			// per-session unit must never kill that shared server (and its
+			// sibling panes) when the unit is stopped.
+			"--property=KillMode=none",
 			"--property=TimeoutStopSec=15s",
 			"tmux",
 		}
@@ -1478,10 +1476,13 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		return "systemd-run", svcArgs
 
 	case launchModeScope:
-		// Legacy PR #467 shape — unchanged so existing users opting out
-		// of service mode with launch_as="scope" get identical semantics.
+		// The scope remains the SSH/logout-isolation compatibility path, but
+		// its cgroup can host the shared tmux server. KillMode=none prevents
+		// stopping this per-session scope from taking that server (and all
+		// sibling sessions) with it.
 		scopeArgs := []string{
-			"--user", "--scope", "--quiet", "--collect", "--unit", unitBase, "tmux",
+			"--user", "--scope", "--quiet", "--collect", "--unit", unitBase,
+			"--property=KillMode=none", "tmux",
 		}
 		scopeArgs = append(scopeArgs, tmuxArgs...)
 		return "systemd-run", scopeArgs
@@ -1497,7 +1498,11 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 // falling all the way back to direct tmux.
 func buildScopeArgsFromTmuxArgs(sessionName string, tmuxArgs []string) []string {
 	unitBase := serviceUnitBase(sessionName)
-	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitBase, "tmux"}
+	// Keep the service → scope fallback just as safe as an explicitly
+	// selected scope. Otherwise a transient service failure would silently
+	// reintroduce a per-session cgroup that can kill a shared server.
+	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitBase,
+		"--property=KillMode=none", "tmux"}
 	return append(scopeArgs, tmuxArgs...)
 }
 
@@ -2839,6 +2844,35 @@ func setSocketMismatchProbeForTest(probe func(string) bool) func() {
 		defer socketMismatchMu.Unlock()
 		probeSocketProtocolMismatch = prev
 	}
+}
+
+// ProbeExists asks the tmux server on this session's own socket whether a
+// session with EXACTLY this name exists, bypassing every cache and every
+// "assume alive" fallback that Exists uses on the status hot path. It is the
+// authoritative check for a caller that is about to report a spawn as
+// successful (#2099): Exists answers positive from a cached listing, a timed
+// out probe or a protocol-mismatched socket, none of which prove that THIS
+// session is up.
+//
+// The `=` target prefix makes tmux match the name exactly instead of by
+// prefix, so a sibling named like this session plus a suffix cannot answer
+// for it. A completed non-zero exit is "gone"; a probe that timed out or was
+// refused by a protocol-mismatched server is indeterminate and reported as an
+// error, never as either verdict.
+func (s *Session) ProbeExists() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	err := s.tmuxCmdContext(ctx, "has-session", "-t", "="+s.Name).Run()
+	if err == nil {
+		return true, nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return false, fmt.Errorf("tmux has-session probe for %q timed out after %s", s.Name, hasSessionProbeTimeout)
+	}
+	if socketHasProtocolMismatch(s.SocketName) {
+		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", s.SocketName)
+	}
+	return false, nil
 }
 
 // Exists checks if the tmux session exists

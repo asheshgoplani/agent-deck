@@ -11,8 +11,13 @@ import (
 // refreshCommittedGroupTitles runs after the storage lock is released. Unchanged
 // groups cost no tmux work. A failed save never reaches this publication step.
 func (s *Storage) refreshCommittedGroupTitles(instances []*Instance, rows []*statedb.InstanceRow) {
-	for idx, row := range rows {
-		sess := instances[idx].GetTmuxSession()
+	// MergeRegistrySnapshots returns rows in input order.
+	for idx, inst := range instances {
+		if idx >= len(rows) {
+			break
+		}
+		row := rows[idx]
+		sess := inst.GetTmuxSession()
 		if sess == nil || sess.GetGroupPath() == row.GroupPath {
 			continue
 		}

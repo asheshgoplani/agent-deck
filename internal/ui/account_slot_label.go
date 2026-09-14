@@ -21,7 +21,16 @@ type accountPresentation struct {
 	quoted bool
 }
 
-func newAccountPresentation(account string) accountPresentation {
+// slotsConfigured reports whether this machine has any named account slot. An
+// empty stored slot only carries information when it could have been something
+// else, so on a single-login machine the inherited badge is suppressed entirely
+// (zero value: no badge, no width). An explicit slot always renders — a session
+// can hold a slot whose profile was since removed from config.toml, and hiding
+// that would misreport which config dir the session actually runs on.
+func newAccountPresentation(account string, slotsConfigured bool) accountPresentation {
+	if account == "" && !slotsConfigured {
+		return accountPresentation{}
+	}
 	label := storedAccountLabel(account)
 	return accountPresentation{
 		label:  label,

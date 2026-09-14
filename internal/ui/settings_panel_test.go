@@ -71,6 +71,8 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 		Updates: session.UpdateSettings{
 			CheckEnabled: boolPtr(false),
 			AutoUpdate:   true,
+			AutoInstall:  boolPtr(false),
+			AutoRestart:  boolPtr(false),
 		},
 		Logs: session.LogSettings{
 			MaxSizeMB:     20,
@@ -99,6 +101,9 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 	}
 	if !panel.autoUpdate {
 		t.Error("autoUpdate should be true")
+	}
+	if panel.autoInstall || panel.autoRestart {
+		t.Errorf("autoInstall=%v autoRestart=%v, want both false from config", panel.autoInstall, panel.autoRestart)
 	}
 	if panel.logMaxSizeMB != 20 {
 		t.Errorf("logMaxSizeMB: got %d, want 20", panel.logMaxSizeMB)
@@ -252,6 +257,8 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	panel.claudeConfigDir = "~/.claude-custom"
 	panel.checkForUpdates = false
 	panel.autoUpdate = true
+	panel.autoInstall = false
+	panel.autoRestart = false
 	panel.logMaxSizeMB = 15
 	panel.logMaxLines = 8000
 	panel.removeOrphans = false
@@ -275,6 +282,12 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	}
 	if !config.Updates.AutoUpdate {
 		t.Error("AutoUpdate should be true")
+	}
+	if config.Updates.AutoInstall == nil || *config.Updates.AutoInstall {
+		t.Error("AutoInstall should be *false")
+	}
+	if config.Updates.AutoRestart == nil || *config.Updates.AutoRestart {
+		t.Error("AutoRestart should be *false")
 	}
 	if config.Logs.MaxSizeMB != 15 {
 		t.Errorf("MaxSizeMB: got %d, want 15", config.Logs.MaxSizeMB)
@@ -1068,5 +1081,35 @@ func TestSettingsPanel_ViewShowsUnboundMCPHotkeyHint(t *testing.T) {
 	view := panel.View()
 	if !containsString(view, "MCP Manager hotkey is unbound.") {
 		t.Fatalf("settings view should show unbound MCP key hint, got %q", view)
+	}
+}
+
+// TestSettingsPanel_AutoInstallRestartToggles pins the two auto-update
+// rows: they default on, load from config, toggle with Space and render
+// under UPDATES.
+func TestSettingsPanel_AutoInstallRestartToggles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	panel := NewSettingsPanel()
+	if !panel.autoInstall || !panel.autoRestart {
+		t.Fatal("both toggles must default to on (nil == true in config)")
+	}
+	panel.cursor = int(SettingAutoInstall)
+	if !panel.toggleValue() || panel.autoInstall {
+		t.Fatal("Space on the auto-install row must turn it off")
+	}
+	panel.cursor = int(SettingAutoRestart)
+	if !panel.toggleValue() || panel.autoRestart {
+		t.Fatal("Space on the auto-restart row must turn it off")
+	}
+	panel.SetSize(100, 80)
+	panel.Show()
+	view := panel.View()
+	for _, want := range []string{"Install updates automatically", "Restart automatically after update", "Offer to install on startup"} {
+		if !containsString(view, want) {
+			t.Errorf("settings view missing %q", want)
+		}
 	}
 }

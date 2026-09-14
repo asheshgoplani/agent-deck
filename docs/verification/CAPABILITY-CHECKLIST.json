@@ -2239,7 +2239,7 @@
    "id": "CAP-MISC-003",
    "area": "MISC",
    "name": "Agent-config sandbox sync (host credentials/config \u2192 container)",
-   "surfaces_raw": "daemon/session start (RefreshAgentConfigs called on EVERY session start, including container reuse); session teardown (CleanupKeychainCredentials)",
+   "surfaces_raw": "daemon/session start (RefreshAgentConfigs called on EVERY session start, including container reuse); sandbox .credentials.json is sandbox-owned (/login inside the sandbox; macOS Keychain seed is opt-in via seed_credentials_from_keychain) and kept across teardown (#2153)",
    "surfaces": [
     "DAEMON/INTERNAL"
    ],

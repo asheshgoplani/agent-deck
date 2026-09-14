@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,28 +20,44 @@ var (
 	channelsCLIBuildOK bool
 )
 
-func channelsCLIBinary(t *testing.T) string {
-	t.Helper()
+// Helper test processes with deliberately sparse PATH reuse the parent process's
+// already-built fixture through AGENTDECK_TEST_CLI_BIN.
+func ensureChannelsCLIBinary() error {
 	channelsCLIBuildMu.Lock()
 	defer channelsCLIBuildMu.Unlock()
-
-	if channelsCLIBuildOK {
-		return channelsCLIBinPath
+	if inherited := os.Getenv("AGENTDECK_TEST_CLI_BIN"); inherited != "" {
+		if info, err := os.Stat(inherited); err == nil && !info.IsDir() {
+			channelsCLIBinPath = inherited
+			channelsCLIBuildOK = true
+			return nil
+		}
 	}
-
+	if channelsCLIBuildOK {
+		return nil
+	}
 	binDir, err := os.MkdirTemp("", "agent-deck-channels-bin-*")
 	if err != nil {
-		t.Fatalf("mkdir bin tmp: %v", err)
+		return fmt.Errorf("mkdir bin tmp: %w", err)
 	}
 	bin := filepath.Join(binDir, "agent-deck-test")
-
 	build := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\noutput: %s", err, out)
+		return fmt.Errorf("go build: %w\noutput: %s", err, out)
 	}
 	channelsCLIBinPath = bin
 	channelsCLIBuildOK = true
-	return bin
+	if err := os.Setenv("AGENTDECK_TEST_CLI_BIN", bin); err != nil {
+		return err
+	}
+	return nil
+}
+
+func channelsCLIBinary(t *testing.T) string {
+	t.Helper()
+	if err := ensureChannelsCLIBinary(); err != nil {
+		t.Fatal(err)
+	}
+	return channelsCLIBinPath
 }
 
 // runAgentDeck invokes the built binary with isolated HOME so each test

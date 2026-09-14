@@ -25,6 +25,8 @@ const (
 	SettingHermesYoloMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
+	SettingAutoInstall
+	SettingAutoRestart
 	SettingLogMaxSize
 	SettingLogMaxLines
 	SettingRemoveOrphans
@@ -53,7 +55,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 34
+const settingsCount = 36
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -79,6 +81,8 @@ type SettingsPanel struct {
 	hermesYoloMode      bool
 	checkForUpdates     bool
 	autoUpdate          bool
+	autoInstall         bool
+	autoRestart         bool
 	logMaxSizeMB        int
 	logMaxLines         int
 	removeOrphans       bool
@@ -151,6 +155,8 @@ func NewSettingsPanel() *SettingsPanel {
 		logMaxLines:         10000,
 		removeOrphans:       true,
 		checkForUpdates:     true,
+		autoInstall:         true,
+		autoRestart:         true,
 		globalSearchEnabled: true,
 		recentDays:          90,
 		showOutput:          true,  // Default: output ON (shows launch animation)
@@ -270,6 +276,8 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	// Update settings
 	s.checkForUpdates = config.Updates.GetCheckEnabled()
 	s.autoUpdate = config.Updates.AutoUpdate
+	s.autoInstall = config.Updates.GetAutoInstall()
+	s.autoRestart = config.Updates.GetAutoRestart()
 
 	// Log settings
 	s.logMaxSizeMB = config.Logs.MaxSizeMB
@@ -413,6 +421,10 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	checkForUpdates := s.checkForUpdates
 	config.Updates.CheckEnabled = &checkForUpdates
 	config.Updates.AutoUpdate = s.autoUpdate
+	autoInstall := s.autoInstall
+	config.Updates.AutoInstall = &autoInstall
+	autoRestart := s.autoRestart
+	config.Updates.AutoRestart = &autoRestart
 
 	// Log settings
 	config.Logs.MaxSizeMB = s.logMaxSizeMB
@@ -683,6 +695,14 @@ func (s *SettingsPanel) toggleValue() bool {
 		s.autoUpdate = !s.autoUpdate
 		return true
 
+	case SettingAutoInstall:
+		s.autoInstall = !s.autoInstall
+		return true
+
+	case SettingAutoRestart:
+		s.autoRestart = !s.autoRestart
+		return true
+
 	case SettingRemoveOrphans:
 		s.removeOrphans = !s.removeOrphans
 		return true
@@ -943,8 +963,20 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n")
 
-	line = s.renderCheckbox("Auto-install updates", s.autoUpdate)
+	line = s.renderCheckbox("Offer to install on startup", s.autoUpdate)
 	if s.cursor == int(SettingAutoUpdate) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderCheckbox("Install updates automatically", s.autoInstall)
+	if s.cursor == int(SettingAutoInstall) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderCheckbox("Restart automatically after update", s.autoRestart)
+	if s.cursor == int(SettingAutoRestart) {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
@@ -1191,31 +1223,33 @@ func (s *SettingsPanel) View() string {
 			21, // SettingHermesYoloMode
 			24, // SettingCheckForUpdates
 			25, // SettingAutoUpdate
-			28, // SettingLogMaxSize
-			28, // SettingLogMaxLines (shares line with LogMaxSize)
-			29, // SettingRemoveOrphans
-			32, // SettingGlobalSearchEnabled
-			33, // SettingSearchTier
-			34, // SettingRecentDays
-			37, // SettingShowOutput
-			38, // SettingShowAnalytics
-			39, // SettingShowNotes
-			40, // SettingNotesOutputSplit
-			43, // SettingMaintenanceEnabled
-			46, // SettingStatsEnabled
-			47, // SettingStatsRefresh
-			48, // SettingStatsFormat
-			50, // SettingStatsShowCPU (row with RAM, Disk)
-			50, // SettingStatsShowRAM
-			50, // SettingStatsShowDisk
-			51, // SettingStatsShowNetwork (row with GPU, Load)
-			51, // SettingStatsShowGPU
-			51, // SettingStatsShowLoad
-			54, // SettingSyncTitle (SESSIONS section, after stats)
-			57, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
-			58, // SettingShowPaneTitles (DISPLAY section, after timestamps)
-			61, // SettingShowOnlyInstalledTools (TOOL PICKER section)
-			62, // SettingVisibleTools
+			26, // SettingAutoInstall
+			27, // SettingAutoRestart
+			30, // SettingLogMaxSize
+			30, // SettingLogMaxLines (shares line with LogMaxSize)
+			31, // SettingRemoveOrphans
+			34, // SettingGlobalSearchEnabled
+			35, // SettingSearchTier
+			36, // SettingRecentDays
+			39, // SettingShowOutput
+			40, // SettingShowAnalytics
+			41, // SettingShowNotes
+			42, // SettingNotesOutputSplit
+			45, // SettingMaintenanceEnabled
+			48, // SettingStatsEnabled
+			49, // SettingStatsRefresh
+			50, // SettingStatsFormat
+			52, // SettingStatsShowCPU (row with RAM, Disk)
+			52, // SettingStatsShowRAM
+			52, // SettingStatsShowDisk
+			53, // SettingStatsShowNetwork (row with GPU, Load)
+			53, // SettingStatsShowGPU
+			53, // SettingStatsShowLoad
+			56, // SettingSyncTitle (SESSIONS section, after stats)
+			59, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			60, // SettingShowPaneTitles (DISPLAY section, after timestamps)
+			63, // SettingShowOnlyInstalledTools (TOOL PICKER section)
+			64, // SettingVisibleTools
 		}
 		cursorLine := cursorToLine[s.cursor]
 

@@ -44,20 +44,41 @@ func TestSwitchAccountRejectsUnknownSlot(t *testing.T) {
 	}
 }
 
-// The conversation migration is Claude-specific (claude --resume reading a
-// .jsonl out of the config dir). Other tools must be refused rather than
-// half-switched.
-func TestSwitchAccountRejectsNonClaudeTool(t *testing.T) {
+// Tools without an account-switch executor must still be refused. Codex is
+// intentionally excluded: it now has a supported configured-account path.
+func TestSwitchAccountRejectsUnsupportedTool(t *testing.T) {
 	withTempAgentDeckHome(t, twoAccountConfig)
 	cfg, _ := LoadUserConfig()
 
-	inst := NewInstanceWithTool("codex-session", t.TempDir(), "codex")
+	inst := NewInstanceWithTool("shell-session", t.TempDir(), "shell")
 	result, switchErr := SwitchAccount(cfg, inst, "work", AccountSwitchOptions{})
 	if result != nil {
-		t.Fatal("a non-claude session must commit nothing")
+		t.Fatal("an unsupported-tool session must commit nothing")
 	}
 	if !errors.Is(switchErr, ErrAccountSwitchUnsupported) {
 		t.Fatalf("error must wrap ErrAccountSwitchUnsupported, got: %v", switchErr)
+	}
+}
+
+// Codex named accounts are supported when the selected target has its own
+// configured CODEX_HOME. This no-op path verifies the compatibility adapter
+// recognizes the actual Codex target configuration instead of treating every
+// non-Claude tool as unsupported.
+func TestSwitchAccountSupportsConfiguredCodexTarget(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[profiles.work.codex]
+config_dir = "~/.codex-work"
+`)
+	cfg, _ := LoadUserConfig()
+	inst := NewInstanceWithTool("codex-session", t.TempDir(), "codex")
+	inst.Account = "work"
+
+	result, switchErr := SwitchAccount(cfg, inst, "work", AccountSwitchOptions{})
+	if switchErr != nil || result == nil || result.NewAccount != "work" || result.Restarted {
+		t.Fatalf("configured Codex no-op = result=%#v err=%v", result, switchErr)
+	}
+	if result.Conversation == "" || !strings.Contains(result.Conversation, "no-op") {
+		t.Fatalf("Codex no-op summary = %q", result.Conversation)
 	}
 }
 
@@ -82,8 +103,8 @@ func TestSwitchAccountFreshSessionCommitsSlot(t *testing.T) {
 	if result.Restarted {
 		t.Error("a session that was not running must not be started by a switch")
 	}
-	if !strings.Contains(result.Conversation, "no conversation") {
-		t.Errorf("conversation summary = %q, want it to report nothing was migrated", result.Conversation)
+	if !strings.Contains(result.Conversation, "no conversation") || !strings.Contains(result.Conversation, "readiness was not asserted") {
+		t.Errorf("conversation summary = %q, want fresh-session/no-readiness disclosure", result.Conversation)
 	}
 
 	// The resolver must now route this session at the target account's dir.

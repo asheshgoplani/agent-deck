@@ -22,6 +22,9 @@ import (
 // installation, host sockets, real credentials or external network are needed.
 func startParitySSH(t *testing.T, remoteHome, binDir string) {
 	t.Helper()
+	if err := os.WriteFile(filepath.Join(remoteHome, ".zshrc"), []byte("# remote parity test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	realSSH, err := exec.LookPath("ssh")
 	if err != nil {
 		t.Skip("OpenSSH client required")
