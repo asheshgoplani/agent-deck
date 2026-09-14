@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
+	"github.com/google/uuid"
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -2833,6 +2834,11 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
+		fmt.Println()
+		fmt.Println("Codex --json --wait:")
+		fmt.Println("  Emits one structured result correlated to the accepted Codex turn.")
+		fmt.Println("  Requires a locally readable exact accepted-turn receipt; remote or sandboxed targets are refused.")
+		fmt.Println("  Local agent-deck sends are serialized; direct pane or keyboard input is outside this guarantee.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -2948,6 +2954,23 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
+	// Every local Codex send participates in the same durable acceptance
+	// protocol, whether structured or human and whether it waits for completion
+	// or not. Structured remote/sandbox waits still fail closed; ordinary remote
+	// sends keep their legacy transport and never read host-local marker state.
+	structuredCodexWait := *jsonOutput && *wait && session.IsCodexCompatible(inst.Tool)
+	acceptanceFence := codexAcceptanceFence{}
+	var acceptanceGuard *codexAcceptanceGuard
+	if shouldAcquireCodexAcceptanceGuard(inst, *jsonOutput, *wait, *draft) {
+		lockWait := min(*timeout, codexAcceptanceLockTimeout)
+		acceptanceGuard, err = acquireCodexAcceptanceGuard(inst, lockWait)
+		if err != nil {
+			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		acceptanceFence = acceptanceGuard.fence
+	}
+
 	// Wait for agent to be ready (unless --no-wait is specified).
 	// Issue #957: honor --timeout for the readiness phase too, not just the
 	// post-ready completion wait. Otherwise --timeout 5m against a busy
@@ -2957,6 +2980,9 @@ func handleSessionSend(profile string, args []string) {
 			ClaudeComposer: session.IsClaudeCompatible(inst.Tool),
 			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
 		}); err != nil {
+			if acceptanceGuard != nil {
+				acceptanceGuard.Release()
+			}
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -2969,6 +2995,9 @@ func handleSessionSend(profile string, args []string) {
 				slashTimeout = 10 * time.Second
 			}
 			if err := waitForSlashCommandReady(tmuxSess, inst.Tool, slashTimeout); err != nil {
+				if acceptanceGuard != nil {
+					acceptanceGuard.Release()
+				}
 				out.Error(fmt.Sprintf("timeout waiting for slash-command registration: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
@@ -3061,8 +3090,33 @@ func handleSessionSend(profile string, args []string) {
 		turnQuery := session.TurnQuery{Path: turnPath, Prompt: message, Cursor: turnCursor}
 		tun.retry.turnAdvanced = func() bool { return session.TurnAdvanced(turnQuery) }
 	}
+	if acceptanceGuard != nil {
+		if err := validateCodexAcceptanceFence(inst, acceptanceFence); err != nil {
+			acceptanceGuard.Release()
+			out.Error(fmt.Sprintf("cannot submit against changed Codex turn fence: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if err := acceptanceGuard.Prepare(inst.ID, time.Now()); err != nil {
+			acceptanceGuard.Release()
+			out.Error(fmt.Sprintf("cannot durably reserve Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
 	sendRes, sendErr := executeSend(tmuxSess, inst.Tool, message, *noWait, tun)
+	if acceptanceGuard != nil {
+		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, time.Now()); markerErr != nil {
+			acceptanceGuard.Release()
+			extra := sendRes.jsonFields()
+			extra["session_id"] = inst.ID
+			extra["session_title"] = inst.Title
+			out.ErrorWithData(fmt.Sprintf("cannot persist Codex submission state: %v", markerErr), ErrCodeInvalidOperation, extra)
+			os.Exit(1)
+		}
+	}
 	if sendErr != nil {
+		if acceptanceGuard != nil {
+			acceptanceGuard.Release()
+		}
 		extra := sendRes.jsonFields()
 		extra["session_id"] = inst.ID
 		extra["session_title"] = inst.Title
@@ -3109,21 +3163,55 @@ func handleSessionSend(profile string, args []string) {
 			sendRes.draftSaved)
 	}
 
+	sendData := map[string]interface{}{
+		"success":       true,
+		"session_id":    inst.ID,
+		"session_title": inst.Title,
+		"message":       message,
+	}
+	for k, v := range sendRes.jsonFields() {
+		sendData[k] = v
+	}
+	if session.IsCodexCompatible(inst.Tool) {
+		sendData["accepted_turn_kind"] = "codex_rollout"
+	}
+	acceptedAt := time.Now()
+	acceptedTurn := observeAcceptedCodexTurn(*wait, inst, sendRes.delivery, acceptedAt, acceptanceFence)
+	if acceptedTurn != nil && acceptanceGuard != nil {
+		if err := acceptanceGuard.ResolveAccepted(); err != nil {
+			acceptanceGuard.Release()
+			sendData["accepted_turn"] = acceptedTurn
+			out.ErrorWithData(
+				fmt.Sprintf("accepted Codex turn but failed to finalize durable ownership: %v", err),
+				ErrCodeInvalidOperation,
+				completionTimeoutPayload(sendData),
+			)
+			os.Exit(1)
+		}
+		acceptanceGuard.Release()
+		acceptanceGuard = nil
+	}
+	if acceptanceGuard != nil && !retainCodexAcceptanceGuardForCompletion(*wait, acceptedTurn) {
+		// The unresolved marker survives this process. A later sender either
+		// reconciles the exact new generation or refuses with the operator
+		// recovery path; it can never claim this attempt's turn.
+		acceptanceGuard.Release()
+		acceptanceGuard = nil
+	}
+	if acceptedTurn != nil {
+		sendData["accepted_turn"] = acceptedTurn
+	}
+
 	if !*stream {
-		data := map[string]interface{}{
-			"success":       true,
-			"session_id":    inst.ID,
-			"session_title": inst.Title,
-			"message":       message,
+		// JSON --wait is one result, emitted only when completion succeeds or
+		// times out. Human and non-wait output keep their existing eager ack.
+		if !*wait || !*jsonOutput {
+			summary := fmt.Sprintf("Sent message to '%s'", inst.Title)
+			if sendRes.delivery == deliveryQueued {
+				summary = fmt.Sprintf("Queued message for '%s' (target is mid-turn; it takes the message up when the current turn ends)", inst.Title)
+			}
+			out.Success(summary, sendData)
 		}
-		for k, v := range sendRes.jsonFields() {
-			data[k] = v
-		}
-		summary := fmt.Sprintf("Sent message to '%s'", inst.Title)
-		if sendRes.delivery == deliveryQueued {
-			summary = fmt.Sprintf("Queued message for '%s' (target is mid-turn; it takes the message up when the current turn ends)", inst.Title)
-		}
-		out.Success(summary, data)
 	}
 
 	if !*stream && !*wait {
@@ -3202,8 +3290,41 @@ func handleSessionSend(profile string, args []string) {
 	} else {
 		var err error
 		finalStatus, err = waitForCompletion(tmuxSess, time.Until(waitDeadline))
+		// The turn-start record may flush just after submit verification. Retry
+		// at the completion boundary before emitting the one structured result.
+		var receiptErr error
+		acceptedTurn, receiptErr = retryAndRequireStructuredCodexAcceptedTurn(
+			inst, *jsonOutput, *wait, acceptedTurn,
+			sendRes.delivery, acceptedAt, acceptanceFence,
+		)
+		if acceptedTurn != nil {
+			sendData["accepted_turn"] = acceptedTurn
+		}
+		if acceptedTurn != nil && acceptanceGuard != nil {
+			if markerErr := acceptanceGuard.ResolveAccepted(); markerErr != nil {
+				acceptanceGuard.Release()
+				out.ErrorWithData(
+					fmt.Sprintf("accepted Codex turn but failed to finalize durable ownership: %v", markerErr),
+					ErrCodeInvalidOperation,
+					completionTimeoutPayload(sendData),
+				)
+				os.Exit(1)
+			}
+		}
+		if acceptanceGuard != nil {
+			acceptanceGuard.Release()
+			acceptanceGuard = nil
+		}
+		if receiptErr != nil {
+			out.ErrorWithData(receiptErr.Error(), ErrCodeInvalidOperation, sendData)
+			os.Exit(1)
+		}
 		if err != nil {
-			out.Error(fmt.Sprintf("timeout waiting for completion: %v", err), ErrCodeInvalidOperation)
+			out.ErrorWithData(
+				fmt.Sprintf("timeout waiting for completion: %v", err),
+				ErrCodeInvalidOperation,
+				completionTimeoutPayload(sendData),
+			)
 			os.Exit(1)
 		}
 		// Refresh session ID: the instance was loaded before sending the
@@ -3223,22 +3344,45 @@ func handleSessionSend(profile string, args []string) {
 		// Pre-#2043 contract for non-Claude tools, whose output adapters do
 		// not expose transcript UUIDs, and for slash commands, which Claude
 		// records as command meta records rather than as the typed text.
-		response, responseErr = waitForFreshOutput(inst, sentAt, instances)
+		// Codex additionally binds a structured --json --wait reply to its
+		// exact accepted turn generation rather than a freshness scan.
+		if structuredCodexWait {
+			response, responseErr = waitForCodexTurnOutput(inst, acceptedTurn.TurnGeneration)
+		} else {
+			response, responseErr = waitForFreshOutput(inst, sentAt, instances)
+		}
 		if responseErr != nil {
 			// Fallback: reload session from DB in case tmux env was also stale
 			// (e.g., /clear created a new session that TUI or hooks detected)
 			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
 				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
-					response, responseErr = waitForFreshOutput(freshInst, sentAt, freshInstances)
+					if structuredCodexWait {
+						response, responseErr = waitForCodexTurnOutput(freshInst, acceptedTurn.TurnGeneration)
+					} else {
+						response, responseErr = waitForFreshOutput(freshInst, sentAt, freshInstances)
+					}
 				}
 			}
 		}
 	}
 	if responseErr != nil {
-		out.Error(fmt.Sprintf("failed to get response: %v", responseErr), ErrCodeInvalidOperation)
+		out.ErrorWithData(
+			fmt.Sprintf("failed to get response: %v", responseErr),
+			ErrCodeInvalidOperation,
+			responseReadFailureData(sendData),
+		)
 		os.Exit(1)
 	}
-	fmt.Println(response.Content)
+	if *jsonOutput {
+		sendData["completion"] = "complete"
+		sendData["content"] = response.Content
+		if response.CodexTurnGeneration != "" {
+			sendData["codex_turn_generation"] = response.CodexTurnGeneration
+		}
+		out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), sendData)
+	} else {
+		fmt.Println(response.Content)
+	}
 
 	// Exit 1 for error/inactive status
 	if finalStatus == "inactive" || finalStatus == "error" {
@@ -3350,6 +3494,18 @@ func awaitTranscriptPath(inst *session.Instance, sessionRef, profile string, pee
 	}
 }
 
+func shouldAcquireCodexAcceptanceGuard(inst *session.Instance, jsonOutput, wait, draft bool) bool {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) || draft {
+		return false
+	}
+	structuredWait := jsonOutput && wait
+	return structuredWait || inst.CodexRolloutIsResolvableLocally()
+}
+
+func retainCodexAcceptanceGuardForCompletion(wait bool, receipt *codexAcceptedTurnReceipt) bool {
+	return wait && receipt == nil
+}
+
 // defaultSendOptions returns the verification-loop options used by the default
 // (non-`--no-wait`) CLI send path. verifyDelivery is enabled so the CLI
 // surfaces silent drops as errors rather than returning false success — see
@@ -3456,6 +3612,224 @@ type sendDeliveryResult struct {
 	// the type-back failed (SendKeysChunked errored) — the draft is held in
 	// draftSaved for recovery and must be surfaced, not silently dropped.
 	draftRestoreFailed bool
+}
+
+// codexAcceptanceFence snapshots the last durable rollout turn before a send.
+type codexAcceptanceFence struct {
+	codexSessionID      string
+	priorTurnGeneration string
+	available           bool
+}
+
+// codexAcceptedTurnReceipt is returned only after Codex submission is
+// positively verified. It intentionally contains no prompt or response text.
+type codexAcceptedTurnReceipt struct {
+	ReceiptID      string `json:"receipt_id"`
+	InstanceID     string `json:"instance_id"`
+	CodexSessionID string `json:"codex_session_id"`
+	TurnGeneration string `json:"turn_generation"`
+	AcceptedAt     string `json:"accepted_at"`
+}
+
+const codexAcceptanceLockTimeout = 5 * time.Second
+
+var (
+	codexAcceptedTurnPollTimeout  = 2 * time.Second
+	codexAcceptedTurnPollInterval = 50 * time.Millisecond
+)
+
+type codexAcceptanceGuard struct {
+	lock   *session.CodexAcceptanceLock
+	fence  codexAcceptanceFence
+	marker *session.CodexSubmissionMarker
+}
+
+func (g *codexAcceptanceGuard) Release() {
+	if g != nil && g.lock != nil {
+		g.lock.Release()
+	}
+}
+
+func (g *codexAcceptanceGuard) Prepare(instanceID string, now time.Time) error {
+	if g == nil || g.lock == nil || !g.fence.available || g.marker != nil {
+		return fmt.Errorf("Codex acceptance guard is not ready to prepare a submission")
+	}
+	marker, err := session.PrepareCodexSubmissionMarker(
+		instanceID, g.fence.codexSessionID, g.fence.priorTurnGeneration, now,
+	)
+	if err != nil {
+		return err
+	}
+	g.marker = marker
+	return nil
+}
+
+func (g *codexAcceptanceGuard) RecordTransportOutcome(delivery string, now time.Time) error {
+	if g == nil || g.marker == nil {
+		return fmt.Errorf("Codex submission marker is unavailable")
+	}
+	switch delivery {
+	case deliveryLineTooLong, deliveryComposerBlocked:
+		return session.ClearCodexSubmissionMarker(g.marker)
+	case deliverySubmitted:
+		return g.marker.MarkSubmitted(now)
+	default:
+		return g.marker.MarkTransportAmbiguous(now)
+	}
+}
+
+func (g *codexAcceptanceGuard) ResolveAccepted() error {
+	if g == nil || g.marker == nil {
+		return fmt.Errorf("Codex submission marker is unavailable")
+	}
+	return session.ClearCodexSubmissionMarker(g.marker)
+}
+
+func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) (*codexAcceptanceGuard, error) {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) {
+		return nil, fmt.Errorf("target is not Codex-compatible")
+	}
+	if !inst.CodexRolloutIsResolvableLocally() {
+		return nil, fmt.Errorf("exact rollout is unavailable for remote or sandboxed sessions")
+	}
+	if strings.TrimSpace(inst.CodexSessionID) == "" {
+		return nil, fmt.Errorf("Codex session identity is unavailable")
+	}
+	lock, err := session.AcquireCodexAcceptanceLock(inst.CodexSessionID, timeout)
+	if err != nil {
+		return nil, err
+	}
+	fence := captureCodexAcceptanceFence(inst)
+	if !fence.available {
+		lock.Release()
+		return nil, fmt.Errorf("current rollout generation is unavailable")
+	}
+	if _, err := session.ReconcileCodexSubmissionMarker(inst.ID, inst.CodexSessionID, fence.priorTurnGeneration); err != nil {
+		lock.Release()
+		return nil, err
+	}
+	return &codexAcceptanceGuard{lock: lock, fence: fence}, nil
+}
+
+func validateCodexAcceptanceFence(inst *session.Instance, fence codexAcceptanceFence) error {
+	if inst == nil || !fence.available || inst.CodexSessionID != fence.codexSessionID {
+		return fmt.Errorf("acceptance fence is unavailable")
+	}
+	current, err := inst.LatestCodexTurnGeneration()
+	if err != nil {
+		return err
+	}
+	if current != fence.priorTurnGeneration {
+		return fmt.Errorf("another turn started before submission")
+	}
+	return nil
+}
+
+func requireStructuredCodexAcceptedTurn(
+	inst *session.Instance,
+	jsonOutput, wait bool,
+	receipt *codexAcceptedTurnReceipt,
+) error {
+	if !jsonOutput || !wait || inst == nil || !session.IsCodexCompatible(inst.Tool) {
+		return nil
+	}
+	if receipt == nil {
+		return fmt.Errorf("submitted Codex turn has no exact accepted generation; refusing uncorrelated output")
+	}
+	return nil
+}
+
+func retryAndRequireStructuredCodexAcceptedTurn(
+	inst *session.Instance,
+	jsonOutput, wait bool,
+	receipt *codexAcceptedTurnReceipt,
+	delivery string,
+	acceptedAt time.Time,
+	fence codexAcceptanceFence,
+) (*codexAcceptedTurnReceipt, error) {
+	if receipt == nil {
+		receipt = waitForAcceptedCodexTurn(inst, delivery, acceptedAt, fence)
+	}
+	return receipt, requireStructuredCodexAcceptedTurn(inst, jsonOutput, wait, receipt)
+}
+
+func captureCodexAcceptanceFence(inst *session.Instance) codexAcceptanceFence {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) {
+		return codexAcceptanceFence{}
+	}
+	if inst.CodexSessionID == "" {
+		return codexAcceptanceFence{}
+	}
+	generation, err := inst.LatestCodexTurnGeneration()
+	if err != nil {
+		return codexAcceptanceFence{}
+	}
+	return codexAcceptanceFence{
+		codexSessionID:      inst.CodexSessionID,
+		priorTurnGeneration: generation,
+		available:           true,
+	}
+}
+
+func newCodexAcceptedTurnReceipt(
+	inst *session.Instance,
+	delivery string,
+	acceptedAt time.Time,
+	fence codexAcceptanceFence,
+	turnGeneration string,
+) *codexAcceptedTurnReceipt {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) ||
+		delivery != deliverySubmitted || !fence.available ||
+		inst.CodexSessionID == "" || inst.CodexSessionID != fence.codexSessionID ||
+		turnGeneration == "" || turnGeneration == fence.priorTurnGeneration ||
+		!strings.HasPrefix(turnGeneration, inst.CodexSessionID+":") {
+		return nil
+	}
+	accepted := acceptedAt.UTC().Format(time.RFC3339Nano)
+	return &codexAcceptedTurnReceipt{
+		ReceiptID:      uuid.NewString(),
+		InstanceID:     inst.ID,
+		CodexSessionID: inst.CodexSessionID,
+		TurnGeneration: turnGeneration,
+		AcceptedAt:     accepted,
+	}
+}
+
+func waitForAcceptedCodexTurn(
+	inst *session.Instance,
+	delivery string,
+	acceptedAt time.Time,
+	fence codexAcceptanceFence,
+) *codexAcceptedTurnReceipt {
+	if delivery != deliverySubmitted || !fence.available {
+		return nil
+	}
+	deadline := time.Now().Add(codexAcceptedTurnPollTimeout)
+	for {
+		generation, err := inst.LatestCodexTurnGeneration()
+		if err == nil {
+			if receipt := newCodexAcceptedTurnReceipt(inst, delivery, acceptedAt, fence, generation); receipt != nil {
+				return receipt
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		time.Sleep(codexAcceptedTurnPollInterval)
+	}
+}
+
+func completionTimeoutPayload(data map[string]interface{}) map[string]interface{} {
+	payload := make(map[string]interface{}, len(data)+1)
+	for key, value := range data {
+		payload[key] = value
+	}
+	payload["completion"] = "timeout"
+	return payload
+}
+
+func responseReadFailureData(data map[string]interface{}) map[string]interface{} {
+	return completionTimeoutPayload(data)
 }
 
 // jsonFields returns the delivery-status fields added to `session send`
@@ -4589,6 +4963,36 @@ type freshOutputConfig struct {
 // Only set from tests.
 var freshOutputTestConfig *freshOutputConfig
 
+// waitForCodexTurnOutput bridges the ordering gap between Codex's completion
+// hook and the final rollout append. Content and timestamps are insufficient:
+// consecutive turns can legitimately emit identical replies, so only the
+// exact accepted thread:turn generation can satisfy this read.
+func waitForCodexTurnOutput(inst *session.Instance, generation string) (*session.ResponseOutput, error) {
+	if inst == nil || generation == "" {
+		return nil, fmt.Errorf("accepted Codex turn identity is unavailable")
+	}
+	pollInterval := 250 * time.Millisecond
+	timeout := 5 * time.Second
+	if cfg := freshOutputTestConfig; cfg != nil {
+		pollInterval = cfg.pollInterval
+		timeout = cfg.timeout
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := inst.GetLastResponseBestEffort()
+		if err == nil && resp.CodexTurnGeneration == generation {
+			return resp, nil
+		}
+		lastErr = err
+		time.Sleep(pollInterval)
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("read Codex turn %s: %w", generation, lastErr)
+	}
+	return nil, fmt.Errorf("Codex turn %s was not flushed before timeout", generation)
+}
+
 // waitForFreshOutput polls the session's JSONL file until it contains an assistant
 // response with a timestamp not before sentAt (with a 250ms skew tolerance).
 // This bridges the gap between the UI prompt reappearing (detected by
@@ -4929,6 +5333,9 @@ func handleSessionOutput(profile string, args []string) {
 		"role":          response.Role,
 		"content":       response.Content,
 		"timestamp":     response.Timestamp,
+	}
+	if response.CodexTurnGeneration != "" {
+		jsonData["codex_turn_generation"] = response.CodexTurnGeneration
 	}
 	// Add tool-specific conversation session ID
 	if response.SessionID != "" {

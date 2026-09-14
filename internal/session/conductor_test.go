@@ -608,7 +608,7 @@ func TestBridgeTemplate_HeartbeatScopesToConductorGroups(t *testing.T) {
 
 func TestBridgeTemplate_SendToConductorSupportsSingleCallWait(t *testing.T) {
 	template := conductorBridgePy
-	waitPattern := `"--wait", "--timeout", f"{response_timeout}s", "-q",`
+	waitPattern := `"--wait", "--timeout", f"{response_timeout}s", "--json",`
 	noWaitPattern := `"session", "send", session, message, "--no-wait",`
 	oldPattern := `"session", "send", session, message, profile=profile, timeout=120`
 

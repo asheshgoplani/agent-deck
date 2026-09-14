@@ -7538,11 +7538,12 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 
 // ResponseOutput represents a parsed response from an agent session
 type ResponseOutput struct {
-	Tool      string `json:"tool"`                 // Tool type (claude, gemini, etc.)
-	Role      string `json:"role"`                 // Always "assistant" for now
-	Content   string `json:"content"`              // The actual response text
-	Timestamp string `json:"timestamp,omitempty"`  // When the response was generated (Claude only)
-	SessionID string `json:"session_id,omitempty"` // Claude session ID (if available)
+	Tool                string `json:"tool"`                            // Tool type (claude, gemini, etc.)
+	Role                string `json:"role"`                            // Always "assistant" for now
+	Content             string `json:"content"`                         // The actual response text
+	Timestamp           string `json:"timestamp,omitempty"`             // When the response was generated
+	SessionID           string `json:"session_id,omitempty"`            // Conversation session ID, if available
+	CodexTurnGeneration string `json:"codex_turn_generation,omitempty"` // Exact thread:turn identity, if retained
 }
 
 // GetLastResponse returns the last assistant response from the session
@@ -7560,6 +7561,93 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 		return i.getPiLastResponse()
 	}
 	return i.getTerminalLastResponse()
+}
+
+type codexRolloutRecord struct {
+	Timestamp string `json:"timestamp"`
+	Type      string `json:"type"`
+	Payload   struct {
+		Type             string  `json:"type"`
+		TurnID           string  `json:"turn_id"`
+		LastAgentMessage *string `json:"last_agent_message"`
+	} `json:"payload"`
+}
+
+func (i *Instance) codexRolloutTail() ([]string, error) {
+	if !i.CodexRolloutIsResolvableLocally() {
+		return nil, fmt.Errorf("Codex rollout is not locally readable")
+	}
+	if err := validateExactSessionID(i.CodexSessionID); err != nil {
+		return nil, err
+	}
+	paths, err := exactCodexRolloutMatches(i.CodexSessionID, i.getCodexHomeDir())
+	if err != nil {
+		return nil, err
+	}
+	path, err := uniqueRegularArtifact(paths, "rollout for "+i.CodexSessionID)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() == 0 {
+		return nil, nil
+	}
+	return TranscriptTailLines(path, 50)
+}
+
+func (i *Instance) getCodexLastResponse() (*ResponseOutput, error) {
+	lines, err := i.codexRolloutTail()
+	if err != nil {
+		return nil, err
+	}
+	return parseCodexLastAssistantMessage(lines, i.CodexSessionID)
+}
+
+func parseCodexLastAssistantMessage(lines []string, sessionID string) (*ResponseOutput, error) {
+	var last *ResponseOutput
+	for _, line := range lines {
+		var record codexRolloutRecord
+		if json.Unmarshal([]byte(line), &record) != nil || record.Type != "event_msg" ||
+			(record.Payload.Type != "task_complete" && record.Payload.Type != "turn_complete") ||
+			record.Payload.TurnID == "" {
+			continue
+		}
+		content := ""
+		if record.Payload.LastAgentMessage != nil {
+			content = *record.Payload.LastAgentMessage
+		}
+		last = &ResponseOutput{Tool: "codex", Role: "assistant", Content: content,
+			Timestamp: record.Timestamp, SessionID: sessionID,
+			CodexTurnGeneration: sessionID + ":" + record.Payload.TurnID}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("no completed Codex turn found")
+	}
+	return last, nil
+}
+
+// LatestCodexTurnGeneration returns the newest durable turn-start identity in
+// the exact rollout bound to this instance. It never derives identity from
+// prompt or response content.
+func (i *Instance) LatestCodexTurnGeneration() (string, error) {
+	lines, err := i.codexRolloutTail()
+	if err != nil {
+		return "", err
+	}
+	var generation string
+	for _, line := range lines {
+		var record codexRolloutRecord
+		if json.Unmarshal([]byte(line), &record) != nil || record.Type != "event_msg" ||
+			(record.Payload.Type != "task_started" && record.Payload.Type != "turn_started") ||
+			record.Payload.TurnID == "" {
+			continue
+		}
+		generation = i.CodexSessionID + ":" + record.Payload.TurnID
+	}
+	return generation, nil
 }
 
 // GetLastResponseBestEffortChecked is the collision-aware variant of
@@ -7598,6 +7686,13 @@ func (i *Instance) GetLastResponseBestEffortChecked(peers []*Instance) (*Respons
 // 4. Fallback to terminal parsing.
 // 5. If still unavailable, return an empty response (no error).
 func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
+	if IsCodexCompatible(i.Tool) {
+		// Prefer the exact rollout response, avoiding a tmux subprocess on the
+		// normal local path. On failure, retain the historical terminal fallback.
+		if exact, exactErr := i.getCodexLastResponse(); exactErr == nil {
+			return exact, nil
+		}
+	}
 	resp, err := i.GetLastResponse()
 	if err == nil {
 		return resp, nil
@@ -7757,6 +7852,14 @@ func conversationIsResumable(inst *Instance, sessionID string) bool {
 // remote_transcript_boundary.go.
 func (i *Instance) TranscriptIsResolvableLocally() bool {
 	return i != nil && !i.IsSSH()
+}
+
+// CodexRolloutIsResolvableLocally reports whether the controller can read the
+// exact rollout used for accepted-turn correlation. In addition to remote SSH
+// sessions, this excludes sandboxed harnesses whose Codex home belongs to the
+// container rather than the controller process.
+func (i *Instance) CodexRolloutIsResolvableLocally() bool {
+	return i != nil && !i.IsSSH() && !i.IsSandboxed()
 }
 
 // claudeTranscriptDir returns the key used to decide whether two instances would
