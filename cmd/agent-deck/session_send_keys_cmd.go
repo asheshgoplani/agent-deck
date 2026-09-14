@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // handleSessionSendKeys implements `agent-deck session send-keys <id>
@@ -35,6 +37,7 @@ func handleSessionSendKeys(profile string, args []string) {
 	namedKey := fs.String("named-key", "", "Tmux named key (e.g. BSpace, Up, C-c)")
 	sendEnter := fs.Bool("enter", false, "Send an Enter keystroke")
 	stream := fs.Bool("stream", false, "Read dispatch commands from stdin until EOF (#1112)")
+	primary := fs.Bool("primary", false, "Target the managed first window, not the active tmux window")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 
@@ -118,6 +121,10 @@ func handleSessionSendKeys(profile string, args []string) {
 		out.Error(fmt.Sprintf("session '%s' has no tmux pane", inst.Title), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	var sink streamKeySink = tmuxSess
+	if *primary {
+		sink = primaryWindowKeySink{session: tmuxSess}
+	}
 
 	switch {
 	case *stream:
@@ -131,22 +138,22 @@ func handleSessionSendKeys(profile string, args []string) {
 		//   E\n              (SendEnter)
 		// Blank lines and unknown verbs are ignored to keep the stream
 		// resilient to forward-compatible extensions.
-		if err := runSendKeysStream(os.Stdin, tmuxSess); err != nil {
+		if err := runSendKeysStream(os.Stdin, sink); err != nil {
 			out.Error(fmt.Sprintf("send-keys stream: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 	case *text != "":
-		if err := tmuxSess.SendKeys(*text); err != nil {
+		if err := sink.SendKeys(*text); err != nil {
 			out.Error(fmt.Sprintf("send-keys failed: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 	case *namedKey != "":
-		if err := tmuxSess.SendNamedKey(*namedKey); err != nil {
+		if err := sink.SendNamedKey(*namedKey); err != nil {
 			out.Error(fmt.Sprintf("send-named-key failed: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 	case *sendEnter:
-		if err := tmuxSess.SendEnter(); err != nil {
+		if err := sink.SendEnter(); err != nil {
 			out.Error(fmt.Sprintf("send-enter failed: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -166,6 +173,22 @@ type streamKeySink interface {
 	SendKeys(text string) error
 	SendNamedKey(key string) error
 	SendEnter() error
+}
+
+type primaryWindowKeySink struct {
+	session *tmux.Session
+}
+
+func (s primaryWindowKeySink) SendKeys(text string) error {
+	return s.session.SendKeysToPrimaryWindow(text)
+}
+
+func (s primaryWindowKeySink) SendNamedKey(key string) error {
+	return s.session.SendNamedKeyToPrimaryWindow(key)
+}
+
+func (s primaryWindowKeySink) SendEnter() error {
+	return s.session.SendEnterToPrimaryWindow()
 }
 
 // runSendKeysStream reads dispatch commands from r and forwards each to
