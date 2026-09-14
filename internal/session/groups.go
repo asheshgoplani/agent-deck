@@ -1037,6 +1037,53 @@ func (t *GroupTree) DemoteSession(inst *Instance) {
 	}
 }
 
+// SessionPosition returns the index of inst in its group's session slice
+// (the order the storage layer sorts it in, sub-sessions and archived rows
+// included), or -1 when the group or the session is not in the tree. This
+// is the position `session set <id> order <n>` consumes, unlike the raw
+// Order value, which ties at 0 on every launch-appended row.
+func (t *GroupTree) SessionPosition(inst *Instance) int {
+	group, exists := t.Groups[inst.GroupPath]
+	if !exists {
+		return -1
+	}
+	for i, s := range group.Sessions {
+		if s.ID == inst.ID {
+			return i
+		}
+	}
+	return -1
+}
+
+// SetSessionOrder moves inst to index n in its group's session slice
+// (clamped to the last index) and renumbers the group 0..len-1, the same
+// way the K/J reorder keys do. Parent links and pins are untouched. No-op
+// when the group or the session is not in the tree.
+func (t *GroupTree) SetSessionOrder(inst *Instance, n int) {
+	group, exists := t.Groups[inst.GroupPath]
+	if !exists {
+		return
+	}
+	currentIdx := t.SessionPosition(inst)
+	if currentIdx < 0 {
+		return
+	}
+
+	s := group.Sessions[currentIdx]
+	group.Sessions = append(group.Sessions[:currentIdx], group.Sessions[currentIdx+1:]...)
+	if n > len(group.Sessions) {
+		n = len(group.Sessions)
+	}
+	if n < 0 {
+		n = 0
+	}
+	group.Sessions = append(group.Sessions[:n], append([]*Instance{s}, group.Sessions[n:]...)...)
+
+	for i, s := range group.Sessions {
+		s.Order = i
+	}
+}
+
 // MoveSessionToGroup moves a session to a different group
 func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 	// Defense in depth: a creating-session placeholder row (Item.Type ==

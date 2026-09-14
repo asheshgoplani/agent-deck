@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -2608,5 +2609,126 @@ func TestDemoteSession_FirstActiveAboveArchivedIsNoOp(t *testing.T) {
 
 	if a1.ParentSessionID != "" {
 		t.Errorf("a1.ParentSessionID after no-op demote = %q, want %q", a1.ParentSessionID, "")
+	}
+}
+
+func sessionIDs(group *Group) []string {
+	ids := make([]string, 0, len(group.Sessions))
+	for _, s := range group.Sessions {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+func assertGroupOrder(t *testing.T, group *Group, want []string) {
+	t.Helper()
+	got := sessionIDs(group)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("slice order = %v, want %v", got, want)
+	}
+	for i, s := range group.Sessions {
+		if s.Order != i {
+			t.Errorf("Order of %q = %d, want %d", s.ID, s.Order, i)
+		}
+	}
+}
+
+// TestSetSessionOrder_MovesToIndexAndRenumbers is the launch-appended case:
+// every row at Order 0, the newest one last by rowid. Moving it to index 0
+// must put it first and turn the ties into explicit 0..n-1 values.
+func TestSetSessionOrder_MovesToIndexAndRenumbers(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g"},
+		{ID: "b", GroupPath: "g"},
+		{ID: "c", GroupPath: "g"},
+		{ID: "d", GroupPath: "g"},
+	}
+	tree := NewGroupTree(instances)
+	tree.SetSessionOrder(instances[3], 0)
+	assertGroupOrder(t, tree.Groups["g"], []string{"d", "a", "b", "c"})
+}
+
+func TestSetSessionOrder_MiddleIndex(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g"},
+		{ID: "b", GroupPath: "g"},
+		{ID: "c", GroupPath: "g"},
+		{ID: "d", GroupPath: "g"},
+	}
+	tree := NewGroupTree(instances)
+	tree.SetSessionOrder(instances[0], 2)
+	assertGroupOrder(t, tree.Groups["g"], []string{"b", "c", "a", "d"})
+}
+
+func TestSetSessionOrder_ClampsToEnd(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g"},
+		{ID: "b", GroupPath: "g"},
+		{ID: "c", GroupPath: "g"},
+		{ID: "d", GroupPath: "g"},
+	}
+	tree := NewGroupTree(instances)
+	tree.SetSessionOrder(instances[0], 99)
+	assertGroupOrder(t, tree.Groups["g"], []string{"b", "c", "d", "a"})
+}
+
+func TestSetSessionOrder_UnknownGroupNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g", Order: 0},
+		{ID: "b", GroupPath: "g", Order: 0},
+	}
+	tree := NewGroupTree(instances)
+	stray := &Instance{ID: "x", GroupPath: "elsewhere"}
+	tree.SetSessionOrder(stray, 0)
+	if got := sessionIDs(tree.Groups["g"]); strings.Join(got, ",") != "a,b" {
+		t.Fatalf("slice order changed to %v", got)
+	}
+	for _, s := range instances {
+		if s.Order != 0 {
+			t.Errorf("Order of %q = %d, want 0 (untouched)", s.ID, s.Order)
+		}
+	}
+}
+
+func TestSessionPosition_ReflectsSortedSlice(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g", Order: 0},
+		{ID: "b", GroupPath: "g", Order: 0},
+		{ID: "c", GroupPath: "g", Order: 3},
+		{ID: "d", GroupPath: "g", Order: 1},
+	}
+	tree := NewGroupTree(instances)
+	want := map[string]int{"a": 0, "b": 1, "d": 2, "c": 3}
+	for _, inst := range instances {
+		if got := tree.SessionPosition(inst); got != want[inst.ID] {
+			t.Errorf("SessionPosition(%q) = %d, want %d", inst.ID, got, want[inst.ID])
+		}
+	}
+	if got := tree.SessionPosition(&Instance{ID: "x", GroupPath: "g"}); got != -1 {
+		t.Errorf("SessionPosition(unknown) = %d, want -1", got)
+	}
+}
+
+func TestSetSessionOrder_SubSessionKeepsParent(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p", GroupPath: "g"},
+		{ID: "q", GroupPath: "g"},
+		{ID: "p1", GroupPath: "g", ParentSessionID: "p"},
+		{ID: "p2", GroupPath: "g", ParentSessionID: "p"},
+	}
+	tree := NewGroupTree(instances)
+	tree.SetSessionOrder(instances[3], 0)
+	assertGroupOrder(t, tree.Groups["g"], []string{"p2", "p", "q", "p1"})
+	if instances[3].ParentSessionID != "p" {
+		t.Fatalf("parent cleared: %q", instances[3].ParentSessionID)
+	}
+	var rendered []string
+	for _, item := range tree.Flatten() {
+		if item.Type == ItemTypeSession {
+			rendered = append(rendered, item.Session.ID)
+		}
+	}
+	if got := strings.Join(rendered, ","); got != "p,p2,p1,q" {
+		t.Fatalf("rendered order = %s, want p,p2,p1,q", got)
 	}
 }
