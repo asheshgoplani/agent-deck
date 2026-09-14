@@ -195,7 +195,7 @@ jobs:
 
       - name: Upload Lighthouse results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: lighthouse-results-${{ github.run_id }}
           retention-days: 14
