@@ -221,7 +221,7 @@ jobs:
         run: bash scripts/ci-native-ssh.sh
       - name: Retain native SSH evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: native-ssh-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.NATIVE_SSH_ARTIFACT_DIR }}
@@ -260,7 +260,7 @@ jobs:
         run: bash scripts/ci-native-ssh.sh
       - name: Retain macOS native SSH evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: native-ssh-macos-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.NATIVE_SSH_ARTIFACT_DIR }}
