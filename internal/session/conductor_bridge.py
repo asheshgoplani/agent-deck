@@ -18,6 +18,7 @@ Dependencies: pip3 install toml aiogram slack-bolt slack-sdk discord.py
 
 from __future__ import annotations
 
+import contextlib
 import asyncio
 import functools
 import json
@@ -2660,7 +2661,16 @@ def create_discord_bot(config: dict):
             "Discord message -> [%s]: %s",
             target["name"], cleaned_msg[:100],
         )
-        async with message.channel.typing():
+        async def _best_effort_typing():
+            try:
+                async with message.channel.typing():
+                    while True:
+                        await asyncio.sleep(5)
+            except Exception as exc:
+                log.warning("Discord typing indicator failed; continuing message delivery: %s", exc)
+
+        typing_task = asyncio.create_task(_best_effort_typing())
+        try:
             loop = asyncio.get_event_loop()
             ok, response, still_running = await loop.run_in_executor(
                 None,
@@ -2672,6 +2682,10 @@ def create_discord_bot(config: dict):
                     response_timeout=RESPONSE_TIMEOUT,
                 ),
             )
+        finally:
+            typing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await typing_task
         if not ok:
             if still_running:
                 # The message WAS delivered; the single turn just outran the
