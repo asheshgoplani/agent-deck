@@ -68,6 +68,7 @@ For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses 
 | `Ctrl+R` | Manual refresh |
 | `Ctrl+Q` | Detach (keep tmux running) |
 | `$` | Cost Dashboard |
+| `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
 | `Ctrl+Y` | Install the available update now (`install_update`; runs `agent-deck update` on the terminal, see [Updates](#updates)) |
 | `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `q` / `Ctrl+C` | Quit |
@@ -85,6 +86,14 @@ For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses 
 Federated remote rows currently carry coarse running/waiting/idle/error status; local Honest Status substates are not included in the remote payload.
 
 ## Dialogs
+
+### Dead-letter events (`Alt+D`)
+
+The panel mirrors `agent-deck inbox dead-letter`: `j`/`k` selects a record,
+`Enter` shows bounded metadata, `r` retries delivery, and `d` starts a selected
+record purge that must be confirmed with `y`. A retry that cannot resolve a live
+target reports the reason and retains the record. Raw prompt, output, and
+completion content are never rendered.
 
 ### New Session (`n`)
 
