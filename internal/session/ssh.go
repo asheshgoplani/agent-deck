@@ -291,11 +291,13 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := cmd.Run(); err != nil {
 		// The remote CLI reports refusals such as "path does not exist" on
 		// stdout; fall back to it so the failure is not a bare exit status.
+		// stdout is returned as well: a --json verb that exits non-zero
+		// (switch-preview refusal, switch failure) still answered there.
 		detail := stderr.String()
 		if strings.TrimSpace(detail) == "" {
 			detail = strings.TrimSpace(stdout.String())
 		}
-		return nil, fmt.Errorf("ssh command failed: %w: %s", err, detail)
+		return stdout.Bytes(), fmt.Errorf("ssh command failed: %w: %s", err, detail)
 	}
 
 	return stdout.Bytes(), nil
@@ -1827,6 +1829,11 @@ type RemoteSessionInfo struct {
 	Tool      string `json:"tool"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+
+	// Account is the stored account slot on the remote ("" = default). It
+	// names the remote's own [profiles.<name>] slot; the Edit Session dialog
+	// shows it as the current slot and the switch confirmation as "from".
+	Account string `json:"account"`
 
 	// Substate and Archived are what the local row needs to pick the same
 	// status glyph a local session would get: the ⚡/🔒 substate refinements

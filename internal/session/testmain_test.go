@@ -241,6 +241,11 @@ func runTestMain(m *testing.M) int {
 	cleanupBootstrap := bootstrapTmuxServer()
 	defer cleanupBootstrap()
 
+	// Cross-harness previews refuse when the target CLI is not on PATH. CI has
+	// no claude/codex/pi, so resolve every harness as present by default; the
+	// refusal itself is covered by tests that restore exec.LookPath.
+	lookPathHarness = func(command string) (string, error) { return "/usr/bin/" + command, nil }
+
 	// Force test profile to prevent production data corruption
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
 	os.Setenv("AGENTDECK_PROFILE", "_test")

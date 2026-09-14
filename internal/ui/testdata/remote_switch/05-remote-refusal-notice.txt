@@ -1,0 +1,17 @@
+╭──────────────────────────────────────────────────╮
+│                                                  │
+│  Account switch refused on lab                   │
+│                                                  │
+│  on lab: account "work" has no                   │
+│  [profiles.work.claude].config_dir in            │
+│  config.toml (configured accounts: personal)     │
+│                                                  │
+│  refusal code: unknown-account                   │
+│                                                  │
+│                                                  │
+│                                                  │
+│                                                  │
+│    ▸ OK                                          │
+│  Enter / Esc / o dismiss                         │
+│                                                  │
+╰──────────────────────────────────────────────────╯

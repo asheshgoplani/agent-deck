@@ -1,0 +1,34 @@
+
+
+
+
+
+                                  ╭──────────────────────────────────────────────────╮
+                                  │                                                  │
+                                  │  Transfer Context on lab?                        │
+                                  │                                                  │
+                                  │  claude → NEW codex target (account default).    │
+                                  │                                                  │
+                                  │  The source stays visible until the target is    │
+                                  │  verified ready; it is then archived as          │
+                                  │  superseded (reversible).                        │
+                                  │                                                  │
+                                  │  Not transferred:                                │
+                                  │  • native session state (target is fresh; no     │
+                                  │  native resume)                                  │
+                                  │  • context beyond the export budget              │
+                                  │                                                  │
+                                  │  Target readiness is pending until a target-     │
+                                  │  native identity and ready event are observed.   │
+                                  │  • Runs on lab: its account slot, transcript     │
+                                  │  and credentials stay there                      │
+                                  │  ⚠ on lab: target harness "codex" was not found  │
+                                  │  on this host's PATH; the fresh target cannot    │
+                                  │  start here until it is installed                │
+                                  │                                                  │
+                                  │                                                  │
+                                  │      Transfer      ▸ Cancel                      │
+                                  │  y transfer · n cancel · ←/→ navigate · Enter    │
+                                  │  select · Esc                                    │
+                                  │                                                  │
+                                  ╰──────────────────────────────────────────────────╯

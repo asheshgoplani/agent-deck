@@ -1,0 +1,32 @@
+
+
+
+
+
+
+
+
+                                  ╭──────────────────────────────────────────────────╮
+                                  │                                                  │
+                                  │  Switch Account on lab?                          │
+                                  │                                                  │
+                                  │  Move this session to another claude account:    │
+                                  │                                                  │
+                                  │    "remote session"                              │
+                                  │    personal  →  work                             │
+                                  │                                                  │
+                                  │  • The session is stopped and restarted with     │
+                                  │  its conversation carried over                   │
+                                  │  • Tools, MCPs, plugins and usage limits follow  │
+                                  │  the new account                                 │
+                                  │  • Authentication is not checked until the       │
+                                  │  restarted harness reports ready                 │
+                                  │  • Runs on lab: its account slot, transcript     │
+                                  │  and credentials stay there                      │
+                                  │                                                  │
+                                  │                                                  │
+                                  │      Switch      ▸ Cancel                        │
+                                  │  y switch · n cancel · ←/→ navigate · Enter      │
+                                  │  select · Esc                                    │
+                                  │                                                  │
+                                  ╰──────────────────────────────────────────────────╯

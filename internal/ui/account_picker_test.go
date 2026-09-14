@@ -415,6 +415,13 @@ func TestEditSessionDialogKeepsUnconfiguredAccountPill(t *testing.T) {
 // untouched and show the explicit loss confirmation before any lifecycle work.
 func TestEditSessionDialogRefusesAccountSwitchWithToolChange(t *testing.T) {
 	cfg := withAccountsConfig(t, "work", "personal")
+	// A cross-harness preview refuses when the target CLI is not on PATH;
+	// this test is about the loss confirmation, so give it a stub codex.
+	fakeBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeBin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	work := cfg.Profiles["work"]
 	work.Codex = session.ProfileCodexSettings{ConfigDir: filepath.Join(t.TempDir(), "codex-work")}
 	cfg.Profiles["work"] = work

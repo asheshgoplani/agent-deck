@@ -38,7 +38,7 @@ func handleSessionSwitchPreview(profile string, args []string) {
 		fmt.Println("Capability levels:")
 		fmt.Println("  native-resume    Same-harness Claude→Claude: exact copy + claude --resume")
 		fmt.Println("  transcript-tail  Cross-harness Claude/Codex/Pi: bounded context to a fresh target (lossy)")
-		fmt.Println("  unsupported      No switch path (Hermes, remote, …)")
+		fmt.Println("  unsupported      No switch path (Hermes, bare --ssh shell sessions, …)")
 		fmt.Println()
 		fmt.Println("Execution labels:")
 		fmt.Println("  supported        Native same-harness executor exists")

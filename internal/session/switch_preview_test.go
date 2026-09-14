@@ -16,6 +16,10 @@ package session
 // are read. All tests run with fixture config only.
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -567,5 +571,97 @@ func TestPreviewSwitch_SourceSessionIDFromCodexField(t *testing.T) {
 	// Even though it's unsupported, SourceSessionID should reflect CodexSessionID.
 	if preview.SourceSessionID != "codex-thread-xyz" {
 		t.Errorf("SourceSessionID = %q, want \"codex-thread-xyz\" (from CodexSessionID)", preview.SourceSessionID)
+	}
+}
+
+// A cross-harness target needs the target CLI on the host that runs the
+// preview. When it is absent from PATH the preview REFUSES, so the executor
+// (which repeats the preview before its first mutation) never stages a
+// payload, writes a journal, persists a target or archives the source. The
+// remote switch path runs this preview on the remote, which is exactly the
+// host whose PATH matters.
+func TestPreviewSwitch_TargetHarnessMissingFromPATHRefuses(t *testing.T) {
+	cfg := switchPreviewConfig(t)
+	inst := switchPreviewClaude(t, "personal", "11111111-2222-3333-4444-555555555555")
+	previous := lookPathHarness
+	lookPathHarness = exec.LookPath
+	t.Cleanup(func() { lookPathHarness = previous })
+	t.Setenv("PATH", t.TempDir())
+
+	preview := PreviewSwitch(cfg, inst, SwitchPreviewTarget{Harness: "codex"})
+	if preview.Refusal == nil || preview.Refusal.Code != "target-harness-missing" {
+		t.Fatalf("refusal = %+v; want target-harness-missing", preview.Refusal)
+	}
+	if !strings.Contains(preview.Refusal.Message, `"codex"`) || !strings.Contains(preview.Refusal.Message, "nothing was staged") {
+		t.Fatalf("refusal must name the harness and state that nothing happened: %q", preview.Refusal.Message)
+	}
+	if preview.LaunchPlan != nil {
+		t.Fatal("no launch plan may be built for a refused target")
+	}
+
+	// Same harness never checks the binary: the session is already running it.
+	same := PreviewSwitch(cfg, inst, SwitchPreviewTarget{Account: "work"})
+	if same.Refusal != nil {
+		t.Fatalf("same-harness preview must not refuse on PATH: %+v", same.Refusal)
+	}
+}
+
+// The executor must fail closed on that refusal before its first mutation:
+// no journal, no staged payload, no persisted target, no archived source.
+func TestExecuteCrossHarnessSwitch_MissingTargetHarnessLeavesNoPartialState(t *testing.T) {
+	cfg := switchPreviewConfig(t)
+	inst := switchPreviewClaude(t, "personal", "11111111-2222-3333-4444-555555555555")
+	previous := lookPathHarness
+	lookPathHarness = exec.LookPath
+	t.Cleanup(func() { lookPathHarness = previous })
+	t.Setenv("PATH", t.TempDir())
+
+	store := &recordingCrossHarnessTargetStore{}
+	result, err := ExecuteCrossHarnessSwitch(context.Background(), cfg, inst, CrossHarnessSwitchOptions{Target: SwitchPreviewTarget{Harness: "codex"}}, CrossHarnessSwitchDependencies{
+		Store:     store,
+		Lifecycle: InstanceCrossHarnessLifecycle{},
+		Observer:  NewNativeCrossHarnessTargetObserver(),
+		SourceOwnership: CrossHarnessSourceOwnershipValidatorFunc(func(source *Instance) (SwitchSourceSnapshot, error) {
+			return SnapshotSwitchSource(source, []*Instance{source}, false, false), nil
+		}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "target-harness-missing") {
+		t.Fatalf("err = %v; want the target-harness-missing refusal", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %+v; a refused switch has no result", result)
+	}
+	if store.saved != 0 || store.finalized != 0 {
+		t.Fatalf("store touched: saved=%d finalized=%d", store.saved, store.finalized)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(inst.ProjectPath)); len(entries) != 0 {
+		t.Fatalf("project dir gained files: %v", entries)
+	}
+	if !inst.ArchivedAt.IsZero() || inst.SupersededBy != "" {
+		t.Fatalf("source was mutated: archived_at=%v superseded_by=%q", inst.ArchivedAt, inst.SupersededBy)
+	}
+}
+
+type recordingCrossHarnessTargetStore struct{ saved, finalized int }
+
+func (s *recordingCrossHarnessTargetStore) LoadTarget(string) (*Instance, error) { return nil, nil }
+func (s *recordingCrossHarnessTargetStore) CreateTarget(*Instance) error         { s.saved++; return nil }
+func (s *recordingCrossHarnessTargetStore) SaveTarget(*Instance) error           { s.saved++; return nil }
+func (s *recordingCrossHarnessTargetStore) FinalizeTargetHandoff(*Instance, *Instance) error {
+	s.finalized++
+	return nil
+}
+
+// The legacy --ssh session refusal points at the remote-deck route, so the
+// user is told how to switch a session that a remote deck owns.
+func TestPreviewSwitch_RemoteSourceRefusalNamesRemoteRoute(t *testing.T) {
+	cfg := switchPreviewConfig(t)
+	inst := &Instance{ID: "r", Title: "r", ProjectPath: t.TempDir(), Tool: "claude", SSHHost: "lab.example"}
+	preview := PreviewSwitch(cfg, inst, SwitchPreviewTarget{Account: "work"})
+	if preview.Refusal == nil || preview.Refusal.Code != "remote" {
+		t.Fatalf("refusal = %+v", preview.Refusal)
+	}
+	if !strings.Contains(preview.Refusal.Message, "agent-deck remote <name> session switch") {
+		t.Fatalf("refusal must name the remote-deck route: %q", preview.Refusal.Message)
 	}
 }
