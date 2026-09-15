@@ -35,12 +35,21 @@ run_tests() {
   docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
     -v "$source":/src -w /src -v "$modules":/tmp/gomod -v "$cache":/tmp/h/.cache \
     -e HOME=/tmp/h -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/h/.cache \
-    -e GOFLAGS=-mod=mod -e PERF_BUDGET_MULTIPLIER=2 -e AGENTDECK_SKIP_UPDATE_CHECK=1 \
+    -e 'GOFLAGS=-mod=mod -buildvcs=false' -e PERF_BUDGET_MULTIPLIER=2 -e AGENTDECK_SKIP_UPDATE_CHECK=1 \
     "$image" go test -p 2 "$@" -run "$pattern" -count=1 -v -timeout=10m >> "$work/$label.log" 2>&1 || result=$?
   printf '\nexit_code=%d\n' "$result" >> "$work/$label.log"
   cat "$work/$label.log"
   if [[ "$expectation" == red ]]; then
-    [[ $result -ne 0 ]] && grep -Eq -- '--- FAIL: Test(StatusPass|BackgroundStatusPass|ListJSON_CodexProbeCount)' "$work/$label.log"
+    [[ $result -ne 0 ]]
+    case "$label" in
+      base-session) grep -Eq 'ownership sweep scans=.*want 1 and 24' "$work/$label.log" ;;
+      base-ui) grep -Eq 'environment reads=.*want 80' "$work/$label.log" ;;
+      base-cli) grep -Eq 'show-environment subprocesses=.*want <=500' "$work/$label.log" ;;
+      reviewed)
+        grep -q 'instance status readers blocked behind peer ownership refresh' "$work/$label.log"
+        grep -q 'authoritative hook rotation blocked behind peer ownership refresh' "$work/$label.log" ;;
+      *) return 1 ;;
+    esac
   else
     [[ $result -eq 0 ]]
   fi
