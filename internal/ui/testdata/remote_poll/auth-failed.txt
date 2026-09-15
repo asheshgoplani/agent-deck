@@ -1,0 +1,4 @@
+  ▾ remotes/dev (1) · unreachable: auth failed (paused; R retry) · poll 13570ms
+    └─ ? Remote work claude · last known
+▶ ▾ remotes/dev (1) · unreachable: auth failed (paused; R retry) · poll 13570ms
+▶   └─ ? Remote work claude · last known
