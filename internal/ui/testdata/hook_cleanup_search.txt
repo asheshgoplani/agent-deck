@@ -19,6 +19,7 @@
                         │                                                            │
                         │                                                            │
                         │    No results                                              │
-                        │    [Enter] Select  [↑↓] Navigate  [Tab] Global  [Esc] Cancel  │
+                        │    [Enter] Select  [↑↓] Navigate  [Tab] Global  [Esc]      │
+                        │  Cancel                                                    │
                         │                                                            │
                         ╰────────────────────────────────────────────────────────────╯

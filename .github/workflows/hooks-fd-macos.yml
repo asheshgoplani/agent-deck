@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 30
     env:
       BASE_REVISION: 4f6b51214637f5aaff06aaf3f123f76de48196c4
+      ASYNC_REVISION: cf356983894adab71b0d6bee16cad2f23a423441
       HEAD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -34,6 +35,11 @@ jobs:
         with:
           ref: ${{ env.BASE_REVISION }}
           path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.ASYNC_REVISION }}
+          path: async-baseline
           persist-credentials: false
       - name: Prepare isolated test image and regression overlays
         shell: bash
@@ -49,6 +55,10 @@ jobs:
             sha256sum "head/$file"
             cp "head/$file" "baseline/$file"
           done
+          test "$(git -C async-baseline rev-parse HEAD)" = "$ASYNC_REVISION"
+          git -C async-baseline diff --exit-code
+          cp head/internal/ui/hook_cleanup_async_test.go async-baseline/internal/ui/
+          cp head/internal/ui/testdata/hook_cleanup_search.txt async-baseline/internal/ui/testdata/
           cat > "$RUNNER_TEMP/hooks-test.Dockerfile" <<'DOCKERFILE'
           FROM golang:1.25
           RUN apt-get update && apt-get install -y --no-install-recommends tmux
@@ -97,6 +107,14 @@ jobs:
           grep -F -- 'UI deletion handler blocked on hook cleanup' evidence/cleanup-base-red.log
           grep -F -- '--- FAIL: TestHookCleanupDeleteDoesNotSweepUnrelatedOrphans' evidence/cleanup-base-red.log
           grep -F -- 'targeted deletion must not sweep unrelated orphans' evidence/cleanup-base-red.log
+          set +e
+          run_tests async-baseline "$ASYNC_REVISION" '^TestHookCleanupDeletionKeepsUIResponsive$/^undo$' ./internal/ui > evidence/undo-base-red.log 2>&1
+          undo_status=$?
+          set -e
+          cat evidence/undo-base-red.log
+          test "$undo_status" -eq 1
+          grep -F -- 'undo restarted before hook cleanup completed' evidence/undo-base-red.log
+          grep -F -- '--- FAIL: TestHookCleanupDeletionKeepsUIResponsive/undo' evidence/undo-base-red.log
           run_tests head "$HEAD_REVISION" "$regression" ./internal/session ./internal/ui 2>&1 | tee evidence/cleanup-head-green.log
           run_tests head "$HEAD_REVISION" 'TestHookCleanup|TestPolling' ./internal/session ./internal/fswatch ./internal/ui 2>&1 | tee evidence/hooks-race-green.log
       - name: Retain SHA-stamped Docker evidence

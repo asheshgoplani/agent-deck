@@ -18,9 +18,11 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		msg  tea.Msg
+		undo bool
 	}{
-		{"delete", sessionDeletedMsg{deletedID: "gone"}},
-		{"finish", worktreeFinishResultMsg{sessionID: "gone", sessionTitle: "gone"}},
+		{"delete", sessionDeletedMsg{deletedID: "gone"}, false},
+		{"finish", worktreeFinishResultMsg{sessionID: "gone", sessionTitle: "gone"}, false},
+		{"undo", sessionDeletedMsg{deletedID: "gone"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -101,6 +103,23 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, string(golden), frame, "search frame while deletion cleanup is blocked")
 			require.FileExists(t, artifact)
+			var undoResult chan tea.Msg
+			if tc.undo {
+				// A deliberately invalid account makes Restart return before any
+				// process launch. Its error still reveals when Restart was attempted.
+				inst.Account = "missing-undo-test-account"
+				h.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				_, undoCmd := h.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+				require.NotNil(t, undoCmd)
+				undoResult = make(chan tea.Msg, 1)
+				go func() { undoResult <- undoCmd() }()
+				select {
+				case result := <-undoResult:
+					t.Error("undo restarted before hook cleanup completed")
+					undoResult <- result
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
 			_, err = writer.Write([]byte(`{"instances":[]}`))
 			require.NoError(t, err)
 			require.NoError(t, writer.Close())
@@ -110,6 +129,16 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 				t.Fatal("background cleanup did not complete")
 			}
 			require.NoFileExists(t, artifact)
+			if undoResult != nil {
+				select {
+				case result := <-undoResult:
+					restored, ok := result.(sessionRestoredMsg)
+					require.True(t, ok)
+					require.ErrorContains(t, restored.err, "missing-undo-test-account")
+				case <-time.After(5 * time.Second):
+					t.Fatal("undo did not resume after cleanup completed")
+				}
+			}
 		})
 	}
 }
