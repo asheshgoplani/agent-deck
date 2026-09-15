@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 )
 
 type platform struct{ os, arch string }
@@ -66,8 +68,9 @@ func defaultVersion(now time.Time) (string, error) {
 }
 
 func buildBinary(target platform, version, destination string) error {
+	// #nosec G204 -- fixed go subcommand, validated SemVer, and a generated staging path; no shell is used.
 	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.Version="+version, "-o", destination, "./cmd/agent-deck")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+target.os, "GOARCH="+target.arch)
+	cmd.Env = append(childenv.ForLaunch(""), "CGO_ENABLED=0", "GOOS="+target.os, "GOARCH="+target.arch)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
 }
