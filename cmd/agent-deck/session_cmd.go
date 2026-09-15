@@ -2856,7 +2856,7 @@ func handleSessionSend(profile string, args []string) {
 	}
 
 	// Load sessions
-	_, instances, _, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -2938,6 +2938,10 @@ func handleSessionSend(profile string, args []string) {
 	acceptanceFence := codexAcceptanceFence{}
 	var acceptanceGuard *codexAcceptanceGuard
 	if shouldAcquireCodexAcceptanceGuard(inst, *jsonOutput, *wait, *draft) {
+		if err := hydrateLegacyCodexIdentity(inst, instances, storage); err != nil {
+			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		lockWait := min(*timeout, codexAcceptanceLockTimeout)
 		acceptanceGuard, err = acquireCodexAcceptanceGuard(inst, lockWait)
 		if err != nil {
@@ -3434,6 +3438,64 @@ func (g *codexAcceptanceGuard) ResolveAccepted() error {
 		return fmt.Errorf("Codex submission marker is unavailable")
 	}
 	return session.ClearCodexSubmissionMarker(g.marker)
+}
+
+// hydrateLegacyCodexIdentity repairs the narrow upgrade case where a live,
+// local Codex pane already owns an exact rollout but its database row predates
+// durable Codex identity tracking. The pane environment is the authority; disk
+// scans and terminal text are deliberately not identity sources here.
+func hydrateLegacyCodexIdentity(
+	inst *session.Instance,
+	peers []*session.Instance,
+	storage *session.Storage,
+) error {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) ||
+		!inst.CodexRolloutIsResolvableLocally() || strings.TrimSpace(inst.CodexSessionID) != "" {
+		return nil
+	}
+
+	previousDetectedAt := inst.CodexDetectedAt
+	restore := func() {
+		inst.CodexSessionID = ""
+		inst.CodexDetectedAt = previousDetectedAt
+	}
+
+	inst.SyncSessionIDsFromTmux()
+	candidate := strings.TrimSpace(inst.CodexSessionID)
+	inst.CodexSessionID = ""
+	if candidate == "" {
+		return fmt.Errorf("Codex session identity is unavailable")
+	}
+	if _, _, err := session.SetField(inst, session.FieldCodexSessionID, candidate, nil); err != nil {
+		restore()
+		return fmt.Errorf("invalid live Codex session identity: %w", err)
+	}
+
+	for _, peer := range peers {
+		if peer == nil || peer.ID == inst.ID || !session.IsCodexCompatible(peer.Tool) ||
+			!peer.CodexRolloutIsResolvableLocally() || !peer.Exists() {
+			continue
+		}
+		peer.SyncSessionIDsFromTmux()
+		if strings.TrimSpace(peer.CodexSessionID) == inst.CodexSessionID {
+			restore()
+			return fmt.Errorf("live Codex session identity is already owned by another session")
+		}
+	}
+
+	if _, err := inst.LatestCodexTurnGeneration(); err != nil {
+		restore()
+		return fmt.Errorf("live Codex session identity has no unique current rollout: %w", err)
+	}
+	if storage == nil || storage.GetDB() == nil {
+		restore()
+		return fmt.Errorf("cannot persist live Codex session identity")
+	}
+	if err := storage.GetDB().WriteCodexSessionBinding(inst.ID, inst.CodexSessionID, inst.CodexDetectedAt); err != nil {
+		restore()
+		return fmt.Errorf("persist live Codex session identity: %w", err)
+	}
+	return nil
 }
 
 func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) (*codexAcceptanceGuard, error) {
