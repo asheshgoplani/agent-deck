@@ -7497,7 +7497,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update search items
 		h.search.SetItems(h.instances)
 		// Explicitly delete from database to prevent resurrection on reload
-		if err := h.storage.DeleteInstance(msg.deletedID); err != nil {
+		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
+		if err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
@@ -7512,7 +7513,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
 			}
 		}
-		return h, nil
+		return h, hookCleanupCmd(cleanup)
 
 	case sessionClosedMsg:
 		// Keep session metadata, just reflect runtime termination state.
@@ -8833,7 +8834,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.search.SetItems(h.instances)
 
 		// Delete from database and save
-		if err := h.storage.DeleteInstance(msg.sessionID); err != nil {
+		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.sessionID)
+		if err != nil {
 			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
 		}
 		h.forceSaveInstances()
@@ -8855,7 +8857,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			successMsg += fmt.Sprintf(", merged into %s", msg.targetBranch)
 		}
 		h.setError(fmt.Errorf("%s", successMsg))
-		return h, nil
+		return h, hookCleanupCmd(cleanup)
 
 	case copyResultMsg:
 		if msg.err != nil {
@@ -23350,4 +23352,16 @@ func (h *Home) renderFilterBarHint() string {
 		hint += dim.Render(" • ") + mark(timeFilterKey, false) + dim.Render(" time")
 	}
 	return hint
+}
+
+// hookCleanupCmd keeps best-effort filesystem cleanup outside Update. Registry
+// failures return nil cleanup, preserving the handler's existing error logging.
+func hookCleanupCmd(cleanup func()) tea.Cmd {
+	if cleanup == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		cleanup()
+		return nil
+	}
 }

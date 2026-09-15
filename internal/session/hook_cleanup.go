@@ -84,7 +84,7 @@ func pruneHookArtifacts(deletedID string) error {
 				} else if !child.IsDir() {
 					continue
 				}
-				if validHookArtifactID(id) {
+				if validHookArtifactID(id) && (deletedID == "" || id == deletedID) {
 					groups[id] = append(groups[id], filepath.Join(entry.Name(), child.Name()))
 				}
 			}
@@ -93,7 +93,7 @@ func pruneHookArtifacts(deletedID string) error {
 		if entry.IsDir() {
 			continue
 		}
-		if id := hookArtifactID(entry.Name()); id != "" {
+		if id := hookArtifactID(entry.Name()); id != "" && (deletedID == "" || id == deletedID) {
 			groups[id] = append(groups[id], entry.Name())
 		}
 	}
@@ -103,14 +103,17 @@ func pruneHookArtifacts(deletedID string) error {
 		if ids[id] {
 			continue
 		}
-		// Age is checked for the whole group, including nested sandbox evidence.
-		old, err := hookArtifactGroupOld(root, paths, cutoff)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if !old && id != deletedID {
-			continue
+		// A targeted deletion never walks or removes unrelated orphan groups.
+		// The explicit target is exempt from the creation grace period.
+		if id != deletedID {
+			old, err := hookArtifactGroupOld(root, paths, cutoff)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if !old {
+				continue
+			}
 		}
 		if err := removeHookArtifactGroup(root, paths, cutoff, id == deletedID); err != nil {
 			errs = append(errs, err)

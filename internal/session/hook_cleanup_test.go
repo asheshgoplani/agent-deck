@@ -43,7 +43,7 @@ func TestHookCleanupDeleteInstance(t *testing.T) {
 }
 
 func TestHookCleanupSweep(t *testing.T) {
-	s := hookCleanupStorage(t)
+	_ = hookCleanupStorage(t)
 	root := GetHooksDir()
 	require.NoError(t, os.MkdirAll(root, 0700))
 	for _, name := range []string{"old.json", "old.sid", "recent.json", "recent.sid", "notes.txt"} {
@@ -52,8 +52,8 @@ func TestHookCleanupSweep(t *testing.T) {
 		require.NoError(t, os.Chtimes(path, time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour)))
 	}
 	require.NoError(t, os.Chtimes(filepath.Join(root, "recent.sid"), time.Now(), time.Now()))
-	// Existing removal entry point also exercises the registry-aware orphan sweep.
-	require.NoError(t, s.DeleteInstance("unrelated"))
+	// Full orphan sweeping is reserved for startup and explicit pruning.
+	require.NoError(t, PruneHookArtifacts())
 	_, err := os.Stat(filepath.Join(root, "old.json"))
 	require.True(t, os.IsNotExist(err))
 	for _, name := range []string{"recent.json", "recent.sid", "notes.txt"} {
@@ -215,4 +215,26 @@ func TestHookCleanupRepeatedStorageOpenDoesNotSweep(t *testing.T) {
 	require.NoError(t, PruneHookArtifacts())
 	_, err = os.Stat(path)
 	require.True(t, os.IsNotExist(err), "explicit cleanup must still run")
+}
+
+func TestHookCleanupDeferredDeletion(t *testing.T) {
+	s := hookCleanupStorage(t)
+	root := GetHooksDir()
+	require.NoError(t, os.MkdirAll(root, 0700))
+	path := filepath.Join(root, "gone.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0600))
+	cleanup, err := s.DeleteInstanceDeferredCleanup("gone")
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	require.FileExists(t, path)
+	require.NoError(t, s.Close())
+	cleanup()
+	require.NoFileExists(t, path, "cleanup must work after storage closes")
+}
+
+func TestHookCleanupDeferredDeletionError(t *testing.T) {
+	s := &Storage{}
+	cleanup, err := s.DeleteInstanceDeferredCleanup("gone")
+	require.Error(t, err)
+	require.Nil(t, cleanup, "failed registry deletion must not schedule artifact cleanup")
 }
