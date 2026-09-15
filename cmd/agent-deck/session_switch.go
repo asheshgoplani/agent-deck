@@ -95,16 +95,7 @@ func handleSessionSwitch(profile string, args []string) {
 		// committed target/account write is instead failed and recovery-required;
 		// never present either as a successful switch.
 		if crossResult != nil && crossResult.Pending && !errors.Is(switchErr, session.ErrCrossHarnessRecoveryRequired) {
-			payload := map[string]any{
-				"success": false, "status": "pending", "pending": true, "operation_id": crossResult.OperationID,
-				"target_id": crossHarnessTargetID(crossResult), "target_ready": crossResult.TargetReady,
-				"missing_contract":    crossResult.MissingContract,
-				"configured_account":  crossResult.ConfiguredAccount,
-				"authentication":      crossResult.Authentication,
-				"context_delivery":    crossResult.ContextDelivery,
-				"semantic_acceptance": crossResult.SemanticAcceptance,
-				"source_sha256":       crossResult.SourceSHA256, "loss_disclosure": crossResult.LossDisclosure,
-			}
+			payload := crossHarnessPendingPayload(inst, crossResult)
 			if *jsonOutput {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetEscapeHTML(false)
@@ -115,20 +106,12 @@ func handleSessionSwitch(profile string, args []string) {
 			return
 		}
 		if crossResult != nil {
-			recoveryRequired := crossResult.TargetCreated || errors.Is(switchErr, session.ErrCrossHarnessRecoveryRequired)
-			data := map[string]interface{}{
-				"status": "failed", "pending": crossResult.Pending, "recovery_required": recoveryRequired,
-				"operation_id": crossResult.OperationID, "target_id": crossHarnessTargetID(crossResult),
-				"target_created": crossResult.TargetCreated, "target_ready": crossResult.TargetReady,
-				"missing_contract": crossResult.MissingContract, "configured_account": crossResult.ConfiguredAccount,
-				"authentication": crossResult.Authentication, "context_delivery": crossResult.ContextDelivery,
-				"semantic_acceptance": crossResult.SemanticAcceptance, "source_sha256": crossResult.SourceSHA256,
-				"loss_disclosure": crossResult.LossDisclosure,
-			}
+			data := crossHarnessFailurePayload(inst, crossResult, switchErr)
+			recoveryRequired := data["recovery_required"].(bool)
 			if *jsonOutput {
 				out.ErrorWithData(switchErr.Error(), ErrCodeInvalidOperation, data)
 			} else {
-				fmt.Fprintf(os.Stderr, "Switch failed; status=failed; recovery-required=%t; target_id=%s; target_created=%t; target_ready=%t: %v\n", recoveryRequired, crossHarnessTargetID(crossResult), crossResult.TargetCreated, crossResult.TargetReady, switchErr)
+				fmt.Fprintf(os.Stderr, "Switch failed; status=failed; recovery-required=%t; target_id=%s; target_created=%t; target_ready=%t; source_archived=%t: %v\n", recoveryRequired, crossHarnessTargetID(crossResult), crossResult.TargetCreated, crossResult.TargetReady, crossResult.TargetReady, switchErr)
 			}
 		} else if *jsonOutput {
 			out.ErrorWithData(switchErr.Error(), ErrCodeInvalidOperation, map[string]interface{}{"status": switchPresentationStatus(false, false), "pending": false, "committed": result != nil && result.Committed, "recovery_required": result != nil && result.Committed})
@@ -146,21 +129,14 @@ func handleSessionSwitch(profile string, args []string) {
 		os.Exit(1)
 	}
 	if crossResult != nil {
-		payload := map[string]any{
-			"success": crossResult.TargetReady, "status": crossHarnessPresentationStatus(crossResult), "pending": crossResult.Pending,
-			"operation_id": crossResult.OperationID, "target_id": crossHarnessTargetID(crossResult),
-			"target_ready": crossResult.TargetReady, "source_sha256": crossResult.SourceSHA256,
-			"configured_account": crossResult.ConfiguredAccount, "authentication": crossResult.Authentication,
-			"context_delivery": crossResult.ContextDelivery, "semantic_acceptance": crossResult.SemanticAcceptance,
-			"loss_disclosure": crossResult.LossDisclosure,
-		}
+		payload := crossHarnessSuccessPayload(inst, crossResult)
 		if *jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetEscapeHTML(false)
 			_ = enc.Encode(payload)
 			return
 		}
-		fmt.Printf("Created distinct %s target %s; status=%s; readiness=%s\n", crossHarnessTargetTool(crossResult, preview.TargetHarness), crossHarnessTargetID(crossResult), crossHarnessPresentationStatus(crossResult), readinessPresentation(crossResult.TargetReady))
+		fmt.Printf("Created distinct %s target %s; status=%s; readiness=%s; source_archived=%t\n", crossHarnessTargetTool(crossResult, preview.TargetHarness), crossHarnessTargetID(crossResult), crossHarnessPresentationStatus(crossResult), readinessPresentation(crossResult.TargetReady), crossResult.TargetReady)
 		return
 	}
 	if err := storage.CommitNativeHarnessSwitch(inst, result); err != nil {
@@ -175,6 +151,7 @@ func handleSessionSwitch(profile string, args []string) {
 		"continuity": result.Continuity, "source_sha256": result.SourceArtifactSHA256,
 		"destination_path": result.DestinationPath, "destination_ready": result.DestinationReady,
 		"restarted": result.Restarted, "loss_disclosure": result.LossDisclosure,
+		"source_archived": false,
 	}
 	if *jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -265,6 +242,52 @@ func crossHarnessTargetID(result *session.CrossHarnessSwitchResult) string {
 		return ""
 	}
 	return result.Target.ID
+}
+
+// crossHarnessResultFields are the receipt fields every cross-harness JSON
+// shape carries. source_archived / source_superseded_by describe what the
+// engine has already committed: the source is superseded the moment the
+// target is verified ready, which happens BEFORE the final journal write, so
+// a recovery-required failure after that point still reports the archive.
+func crossHarnessResultFields(inst *session.Instance, r *session.CrossHarnessSwitchResult) map[string]any {
+	return map[string]any{
+		"operation_id": r.OperationID, "target_id": crossHarnessTargetID(r),
+		"target_created": r.TargetCreated, "target_ready": r.TargetReady,
+		"missing_contract": r.MissingContract, "configured_account": r.ConfiguredAccount,
+		"authentication": r.Authentication, "context_delivery": r.ContextDelivery,
+		"semantic_acceptance": r.SemanticAcceptance, "source_sha256": r.SourceSHA256,
+		"loss_disclosure": r.LossDisclosure,
+		"source_archived": r.TargetReady, "source_superseded_by": crossHarnessSupersededBy(inst, r),
+	}
+}
+
+func crossHarnessPendingPayload(inst *session.Instance, r *session.CrossHarnessSwitchResult) map[string]any {
+	payload := crossHarnessResultFields(inst, r)
+	payload["success"], payload["status"], payload["pending"] = false, "pending", true
+	return payload
+}
+
+func crossHarnessSuccessPayload(inst *session.Instance, r *session.CrossHarnessSwitchResult) map[string]any {
+	payload := crossHarnessResultFields(inst, r)
+	payload["success"], payload["status"], payload["pending"] = r.TargetReady, crossHarnessPresentationStatus(r), r.Pending
+	return payload
+}
+
+func crossHarnessFailurePayload(inst *session.Instance, r *session.CrossHarnessSwitchResult, switchErr error) map[string]any {
+	payload := crossHarnessResultFields(inst, r)
+	payload["status"], payload["pending"] = "failed", r.Pending
+	payload["recovery_required"] = r.TargetCreated || errors.Is(switchErr, session.ErrCrossHarnessRecoveryRequired)
+	return payload
+}
+
+func crossHarnessSupersededBy(inst *session.Instance, result *session.CrossHarnessSwitchResult) string {
+	if inst == nil || result == nil || !result.TargetReady {
+		return ""
+	}
+	if inst.SupersededBy != "" {
+		return inst.SupersededBy
+	}
+	return crossHarnessTargetID(result)
 }
 
 func crossHarnessTargetTool(result *session.CrossHarnessSwitchResult, fallback string) string {

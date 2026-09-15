@@ -102,9 +102,22 @@ func runSessionSwitchPreviewHelper(t *testing.T, env switchPreviewHelperEnv, arg
 	cmdArgs := append([]string{"-test.run=^TestSessionSwitchPreviewHelperProcess$", "--"}, args...)
 	cmd := exec.Command(os.Args[0], cmdArgs...)
 
+	// A cross-harness preview refuses when the target CLI is missing; give
+	// the helper a stub codex so the transcript-tail cases exercise the plan.
+	fakeBin := filepath.Join(env.home, "fakebin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	envOut := os.Environ()
 	filtered := make([]string, 0, len(envOut)+5)
 	for _, e := range envOut {
+		if strings.HasPrefix(e, "PATH=") {
+			filtered = append(filtered, "PATH="+fakeBin+string(os.PathListSeparator)+strings.TrimPrefix(e, "PATH="))
+			continue
+		}
 		if strings.HasPrefix(e, "HOME=") ||
 			strings.HasPrefix(e, "XDG_CONFIG_HOME=") ||
 			strings.HasPrefix(e, "XDG_DATA_HOME=") ||

@@ -244,6 +244,12 @@ migrate-and-resume flow as `session switch-account`, and the session card's
 `[account:"…"]` badge follows. Both rows are hidden when no
 `[profiles.<name>.claude].config_dir` blocks are configured.
 
+Rows of a remote deck get the same dialog: `Shift+P` on a remote session lists
+that remote's own slots, previews the switch there (`session switch-preview`)
+and, once confirmed, runs the remote's own `session switch`; transcripts and
+credentials never leave the remote. See
+[docs/REMOTE-COMMANDS.md](docs/REMOTE-COMMANDS.md#switching-a-remote-sessions-account-or-harness).
+
 ### Session naming
 
 Titles and groups answer different questions — "what is this, at a glance?" versus "why do these sessions belong together?" — and each has its own controls.

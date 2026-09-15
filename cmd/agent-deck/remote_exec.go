@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -25,6 +26,11 @@ func remoteCommandArgs(args []string) ([]string, error) {
 			if len(args) > 1 {
 				switch args[1] {
 				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set":
+					return append([]string(nil), args...), nil
+				case "switch", "switch-preview", "switch-account":
+					if err := validateRemoteSwitchArgs(args[1], args[2:]); err != nil {
+						return nil, err
+					}
 					return append([]string(nil), args...), nil
 				}
 			}
@@ -51,6 +57,88 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		}
 	}
 	return nil, fmt.Errorf("unsupported remote command %q; run 'agent-deck remote' for supported commands", strings.Join(args, " "))
+}
+
+// remoteSwitchOptions is the closed option set forwarded for each switch verb.
+// true marks an option that takes a value. Anything else (in particular any
+// path-shaped or unknown option) is refused here, before SSH: the switch
+// engine runs on the remote host and may only be pointed at the remote's own
+// configured account slots and harnesses, never at a controller path.
+var remoteSwitchOptions = map[string]map[string]bool{
+	"switch":         {"to-harness": true, "to-account": true, "max-bytes": true, "no-start": false, "confirm-context-loss": false, "json": false},
+	"switch-preview": {"to-harness": true, "to-account": true, "max-chars": true, "json": false},
+	"switch-account": {"no-restart": false, "json": false, "quiet": false, "q": false},
+}
+
+// remoteSwitchValueOK admits the value shapes each option can take: a plain
+// account/harness token, or a decimal byte budget.
+func remoteSwitchValueOK(name, value string) bool {
+	if value == "" {
+		return false
+	}
+	switch name {
+	case "max-bytes", "max-chars":
+		_, err := strconv.Atoi(value)
+		return err == nil
+	default:
+		return session.ValidateRemoteSwitchToken(name, value) == nil
+	}
+}
+
+// validateRemoteSwitchArgs checks the arguments of `session switch`,
+// `session switch-preview` and `session switch-account` before they are
+// forwarded. A help request passes through unchanged so the remote's own
+// usage text answers.
+func validateRemoteSwitchArgs(verb string, args []string) error {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		return nil
+	}
+	options := remoteSwitchOptions[verb]
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positional = append(positional, arg)
+			continue
+		}
+		// A bare "--" trims to an empty name and is refused as unknown.
+		name, value, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		takesValue, known := options[name]
+		if !known {
+			return fmt.Errorf("unsupported option %q for remote session %s", arg, verb)
+		}
+		if !takesValue {
+			if inline {
+				return fmt.Errorf("option --%s takes no value", name)
+			}
+			continue
+		}
+		if !inline {
+			rest := args[i+1:]
+			if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
+				return fmt.Errorf("option --%s needs a value", name)
+			}
+			value = rest[0]
+			i++
+		}
+		if !remoteSwitchValueOK(name, value) {
+			return fmt.Errorf("invalid value %q for --%s", value, name)
+		}
+	}
+	want := 1
+	if verb == "switch-account" {
+		want = 2
+	}
+	if len(positional) != want {
+		return fmt.Errorf("remote session %s expects %d positional argument(s), got %d", verb, want, len(positional))
+	}
+	if err := session.ValidateRemoteSwitchSelector(positional[0]); err != nil {
+		return err
+	}
+	if verb == "switch-account" {
+		return session.ValidateRemoteSwitchToken("account", positional[1])
+	}
+	return nil
 }
 
 // Forward message files through stdin: their paths belong to the controller,
