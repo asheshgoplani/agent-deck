@@ -64,7 +64,7 @@ func passInstance(n int, socket string) *Instance {
 	return &Instance{ID: fmt.Sprintf("pass-%d", n), Tool: "codex", Status: StatusRunning,
 		ProjectPath: "/no-matching-rollout", CreatedAt: time.Now().Add(-time.Hour),
 		lastCodexProbeAt: time.Now(),
-		tmuxSession:      &tmux.Session{Name: fmt.Sprintf("agentdeck_pass_%d", n), SocketName: socket}}
+		tmuxSession:      &tmux.Session{Name: fmt.Sprintf("agentdeck_pass_%d", n), SocketName: socket, Command: "codex"}}
 }
 
 func waitFixtureFile(t *testing.T, path string) {

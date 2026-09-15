@@ -20,6 +20,9 @@ for revision in base reviewed; do
 done
 cp "$repo/scripts/ci/status-pass-baseline-adapter.go.txt" "$work/base/internal/session/status_pass_baseline_adapter_test.go"
 cp "$repo/cmd/agent-deck/list_perf_test.go" "$work/base/cmd/agent-deck/"
+# Hosted checkout owner differs from the deliberately unprivileged test UID.
+# -mod=mod may update direct/indirect annotations for the copied test imports.
+chmod a+w "$repo/go.mod" "$repo/go.sum" "$work/base/go.mod" "$work/base/go.sum" "$work/reviewed/go.mod" "$work/reviewed/go.sum"
 printf 'base=%s\nreviewed=%s\nhead=%s\n' "$base" "$reviewed" "$head" | tee "$work/revisions.log"
 # Only dependency preparation has network access. Actual tests use --network none.
 docker pull "$image"
@@ -42,8 +45,8 @@ run_tests() {
   if [[ "$expectation" == red ]]; then
     [[ $result -ne 0 ]]
     case "$label" in
-      base-session) grep -Eq 'ownership sweep scans=.*want 1 and 24' "$work/$label.log" ;;
-      base-ui) grep -Eq 'environment reads=.*want 80' "$work/$label.log" ;;
+      base-session) grep -Eq 'ownership sweep scans=12 environment reads=144, want 1 and 24' "$work/$label.log" ;;
+      base-ui) grep -Eq 'environment reads=1600, want 80' "$work/$label.log" ;;
       base-cli) grep -Eq 'show-environment subprocesses=.*want <=500' "$work/$label.log" ;;
       reviewed)
         grep -q 'instance status readers blocked behind peer ownership refresh' "$work/$label.log"

@@ -27,7 +27,7 @@ func TestBackgroundStatusPassOwnershipLinear(t *testing.T) {
 		fmt.Fprintf(&windows, "%s|1|0|codex\n", name)
 		fmt.Fprintf(&panes, "%s|codex|0|0|0|⠋ Working\n", name)
 		inst := &session.Instance{ID: name, Title: name, Tool: "codex", Status: session.StatusWaiting, ProjectPath: dir, CreatedAt: time.Now().Add(-time.Hour)}
-		inst.SetTmuxSessionForTest(&tmux.Session{Name: name, SocketName: "status-pass-fixture"})
+		inst.SetTmuxSessionForTest(&tmux.Session{Name: name, SocketName: "status-pass-fixture", Command: "codex"})
 		h.instances = append(h.instances, inst)
 	}
 	script := `#!/bin/sh
