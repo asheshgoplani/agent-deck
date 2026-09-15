@@ -2080,7 +2080,7 @@ func (s *Session) ApplyThemeOptions() error {
 func (s *Session) ReadEnvironment(key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	output, err := s.tmuxCmdContext(ctx, "show-environment", "-t", s.Name).Output()
+	output, err := commandOutput(s.tmuxCmdContext(ctx, "show-environment", "-t", s.Name))
 	if err != nil {
 		return "", err
 	}

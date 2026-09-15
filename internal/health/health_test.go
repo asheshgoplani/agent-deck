@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,13 @@ func TestSamplerAndPositiveSince(t *testing.T) {
 	}
 	if r.Processes[0].Latest.Goroutines == nil {
 		t.Fatal("missing runtime count")
+	}
+	latest := r.Processes[0].Latest
+	if latest.OpenFDs == nil || *latest.OpenFDs <= 0 || latest.CPUPercent == nil || *latest.CPUPercent < 0 {
+		t.Fatalf("missing native process observations: %+v", latest)
+	}
+	if runtime.GOOS == "linux" && (latest.RSSBytes == nil || *latest.RSSBytes == 0) {
+		t.Fatalf("missing current Linux RSS: %+v", latest)
 	}
 	if _, err := Report(d, 0); err == nil {
 		t.Fatal("accepted invalid since")

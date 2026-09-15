@@ -39,7 +39,7 @@ func runRuntimeHealthPerf(t *testing.T, codex bool) {
 	if codex {
 		var names, windows, panes strings.Builder
 		for i := 0; i < 100; i++ {
-			name := fmt.Sprintf("agentdeck_health_%03d", i)
+			name := fmt.Sprintf("agentdeck_health_%d", i+1)
 			fmt.Fprintln(&names, name)
 			fmt.Fprintf(&windows, "%s|1|0|codex\n", name)
 			fmt.Fprintf(&panes, "%s|codex|0|0|0|Codex\n", name)
@@ -57,7 +57,7 @@ case "$1" in
 list-sessions) printf '%s' "$HEALTH_FAKE_NAMES" ;;
 list-windows) printf '%s' "$HEALTH_FAKE_WINDOWS" ;;
 list-panes) printf '%s' "$HEALTH_FAKE_PANES" ;;
-show-environment) printf 'CODEX_SESSION_ID=00000000-0000-4000-8000-000000000001\n' ;;
+show-environment) printf 'CODEX_SESSION_ID=00000000-0000-4000-8000-%012d\n' "${3##*_}" ;;
 capture-pane) printf '• Working (1s • esc to interrupt)\n' ;;
 *) exit 0 ;;
 esac
@@ -71,12 +71,27 @@ esac
 	tmux.SetDefaultSocketName("runtime-health-perf")
 	t.Cleanup(func() { tmux.SetDefaultSocketName(priorSocket) })
 	h := &Home{}
+	preparedDiscovery := make([]time.Time, 100)
 	for i := 0; i < 100; i++ {
 		inst := &session.Instance{ID: fmt.Sprintf("fake-%03d", i), Title: fmt.Sprintf("Fake %d", i), Tool: "shell", Status: session.StatusRunning}
 		if codex {
 			inst.Tool = "codex"
 			inst.CodexSessionID = fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
-			inst.SetTmuxSessionForTest(tmux.ReconnectSessionLazy(fmt.Sprintf("agentdeck_health_%03d", i), inst.Title, root, "codex", "active"))
+			tmuxSession := tmux.ReconnectSessionLazy(fmt.Sprintf("agentdeck_health_%d", i+1), inst.Title, root, "codex", "active")
+			tmuxSession.SocketName = tmux.DefaultSocketName()
+			inst.TmuxSocketName = tmuxSession.SocketName
+			inst.SetTmuxSessionForTest(tmuxSession)
+			// Model an already-known binding without running Instance.UpdateStatus:
+			// metadata synchronization remains due in the measured pass.
+			id, err := tmuxSession.GetEnvironment("CODEX_SESSION_ID")
+			if err != nil || id != inst.CodexSessionID {
+				t.Fatalf("fixture binding %s: id=%q err=%v", inst.ID, id, err)
+			}
+			// Prime the native process-discovery cadence as an earlier poll would.
+			// This does not touch the status pass's metadata-sync clock. Assert below
+			// that the measured pass actually refreshes each discovery timestamp.
+			inst.UpdateCodexSession(nil)
+			preparedDiscovery[i] = inst.CodexDetectedAt
 		}
 		h.instances = append(h.instances, inst)
 	}
@@ -86,6 +101,11 @@ esac
 		multiplier, err = strconv.ParseFloat(value, 64)
 		if err != nil || multiplier <= 0 || math.IsInf(multiplier, 0) || math.IsNaN(multiplier) {
 			t.Fatalf("invalid PERF_BUDGET_MULTIPLIER %q", value)
+		}
+	}
+	if codex {
+		if err := os.WriteFile(filepath.Join(root, "calls"), nil, 0600); err != nil {
+			t.Fatal(err)
 		}
 	}
 	dir := filepath.Join(root, "health")
@@ -106,7 +126,13 @@ esac
 	if h.lastFullStatusSweep.Load() == 0 {
 		t.Fatal("full status path did not complete")
 	}
-	for _, inst := range h.instances {
+	for index, inst := range h.instances {
+		if codex && !inst.CodexDetectedAt.After(preparedDiscovery[index]) {
+			t.Fatalf("%s skipped measured metadata synchronization", inst.ID)
+		}
+		if codex && inst.CodexSessionID != fmt.Sprintf("00000000-0000-4000-8000-%012d", index+1) {
+			t.Fatalf("%s binding changed: %s", inst.ID, inst.CodexSessionID)
+		}
 		if !codex && inst.GetStatusThreadSafe() == session.StatusRunning {
 			t.Fatalf("%s was not polled: status=%s", inst.ID, inst.GetStatusThreadSafe())
 		}
