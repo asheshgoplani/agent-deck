@@ -149,6 +149,9 @@ func TestRemotePollStartAndExitDoNotWaitForSlowRunner(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := session.SaveUserConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{"dev": {Host: "test@invalid"}}}); err != nil {
+		t.Fatal(err)
+	}
 	h := newTestHomeWithItems(100, 30, nil)
 	defer h.cancel()
 	h.sysStatsCollector = nil

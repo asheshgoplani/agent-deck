@@ -4194,6 +4194,7 @@ func (h *Home) remoteFetchLanded(msg remoteSessionsFetchedMsg) bool {
 		h.remoteFetchOutstanding--
 	}
 	if h.remoteFetchOutstanding > 0 {
+		h.remotesFetchActive = true
 		return false
 	}
 	h.remotesFetchActive = false

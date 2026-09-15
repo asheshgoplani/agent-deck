@@ -950,7 +950,8 @@ func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest)
 		// effort: a failed write means the transport is going anyway.
 		cancelLine, _ := json.Marshal(remoteChannelRequest{ID: id, Cancel: true})
 		go func() {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), sshWaitDelay)
+			// The request is already canceled; give its cancel frame a bounded budget.
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sshWaitDelay)
 			defer cancel()
 			if _, err := writeChannelWithin(cancelCtx, stdin, append(cancelLine, '\n')); err != nil {
 				c.markDownGen(gen)

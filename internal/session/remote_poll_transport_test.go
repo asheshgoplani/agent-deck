@@ -20,7 +20,9 @@ func TestRemotePollTransportInheritedPipes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	r := &SSHRunner{Host: "example.invalid", commandTimeout: 30 * time.Millisecond}
+	// Allow the shell to start under race instrumentation. This test bounds
+	// pipe draining after exit; the latency test covers a short command deadline.
+	r := &SSHRunner{Host: "example.invalid", commandTimeout: 3 * time.Second}
 	started := time.Now()
 	_, err := r.Run(context.Background(), "list")
 	if time.Since(started) > time.Second {
