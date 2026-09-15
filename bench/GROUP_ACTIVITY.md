@@ -26,8 +26,8 @@ its measured runtime increased 13.3%.
 The host had concurrent builds and tests. Runtime samples are noisy and the
 before/after runs were sequential, so these percentages do not establish a
 precise speedup. This is a focused method benchmark, not an end-to-end frame
-latency result or a full-suite improvement gate. Suite CI before/after evidence
-is still required for the separate improvement PR.
+latency result. The full-fleet CI comparison below independently measures the
+same method inside the suite.
 
 Raw warm samples: [before](evidence/group-before.txt),
 [after](evidence/group-after.txt).
@@ -82,3 +82,36 @@ go test ./internal/session ./internal/ui \
 
 Observed results: session package `ok` in 0.077s; UI package `ok` in 0.595s.
 This focused validation does not claim the full repository test suite passed.
+
+## Full fleet CI before/after
+
+Both isolated N=3 Linux amd64 jobs completed the 10/100/500 matrix successfully:
+[before run 34982145641](https://github.com/asheshgoplani/agent-deck/actions/runs/34982145641)
+and [after run 34982235286](https://github.com/asheshgoplani/agent-deck/actions/runs/34982235286).
+The baseline is [github-ubuntu-latest.json](baseline/github-ubuntu-latest.json);
+the candidate is [group-fleet-after.json](evidence/group-fleet-after.json).
+
+| Sessions | Group map before p50 / p95, ms | After p50 / p95, ms | p50 change |
+|---:|---:|---:|---:|
+| 10 | 0.003874 / 0.003999 | 0.003806 / 0.004222 | -1.74% |
+| 100 | 0.037209 / 0.038333 | 0.012386 / 0.019158 | -66.71% |
+| 500 | 0.151713 / 0.250197 | 0.014473 / 0.021947 | -90.46% |
+
+Across all 72 matching metrics, no candidate p95 exceeds the baseline by 25%.
+At 500 sessions the group-map p50 decreases 90.46%, while key-repeat frame p95
+changes only +0.37%. This is evidence for the focused method improvement, not
+a claim of a comparable end-to-end rendering speedup.
+
+These first CI jobs were capture-only. The 25% result comes from comparing
+their downloaded raw artifacts with matching platform, machine class, seed,
+run count and metric sets. The subsequently committed runner baseline enables
+the actual advisory comparator in future CI. N=3 hosted-runner timings remain
+exploratory.
+
+GitHub tested merge revisions `d7407a82e2190f814c2710097a50c209116f1a8e`
+(before, suite head `f5ebb6d350c17b5c634b77ee7084c1767d3e9eac`) and
+`a3b68f9a3380cc031de032c674fe48b61bddc676`
+(after, improvement head `efe2807a29db4492156748377fa22f62ce2aed9c`).
+The later rebase carries the fixture path-helper lint fix and committed Linux
+baseline; it leaves the measured group implementation unchanged. Final-head
+CI is checked separately from these source-stamped before/after artifacts.
