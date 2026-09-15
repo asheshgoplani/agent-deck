@@ -87,6 +87,9 @@ func (s *suite) auxGroups() {
 		if err := auxDecode(out, &listing); err != nil {
 			return out, err
 		}
+		if listing.Groups == nil {
+			return out, fmt.Errorf("group list omitted its groups array")
+		}
 		for _, g := range listing.Groups {
 			if g["path"] == group || g["name"] == group {
 				return "The new group appears in the group list", nil
@@ -139,6 +142,9 @@ func (s *suite) auxGroups() {
 		}
 		if err := auxDecode(out, &listing); err != nil {
 			return out, err
+		}
+		if listing.Groups == nil {
+			return out, fmt.Errorf("group list omitted its groups array")
 		}
 		for _, g := range listing.Groups {
 			if g["path"] == group || g["name"] == group {
@@ -289,15 +295,9 @@ func (s *suite) auxAccountsAndMCP() {
 			if err != nil {
 				return "", err
 			}
-			found := false
-			for _, key := range []string{"local", "global", "project"} {
-				if names, ok := rec[key].([]any); ok {
-					for _, name := range names {
-						if name == "funccheck" {
-							found = true
-						}
-					}
-				}
+			found, err := mcpMembership(rec, "funccheck")
+			if err != nil {
+				return "", err
 			}
 			if found != (action == "attach") {
 				return "", fmt.Errorf("MCP membership after %s is %v", action, found)
@@ -541,6 +541,34 @@ func (s *suite) sessionListed(id string) (bool, error) {
 		}
 		if row.ID == id {
 			found = true
+		}
+	}
+	return found, nil
+}
+
+// Missing membership fields are unknown data, never evidence of detachment.
+func mcpMembership(record map[string]any, wanted string) (bool, error) {
+	found := false
+	for _, key := range []string{"local", "global", "project"} {
+		value, exists := record[key]
+		if !exists {
+			return false, fmt.Errorf("MCP record omitted %s membership", key)
+		}
+		if value == nil {
+			continue
+		}
+		names, ok := value.([]any)
+		if !ok {
+			return false, fmt.Errorf("MCP %s membership is not an array", key)
+		}
+		for _, value := range names {
+			name, ok := value.(string)
+			if !ok {
+				return false, fmt.Errorf("MCP %s membership contains a non-string", key)
+			}
+			if name == wanted {
+				found = true
+			}
 		}
 	}
 	return found, nil

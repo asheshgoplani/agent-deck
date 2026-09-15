@@ -182,3 +182,38 @@ func TestTeardownRetainsSandboxWhenPrivateTmuxFails(t *testing.T) {
 		t.Fatalf("sandbox must remain inspectable after failed shutdown: %v", err)
 	}
 }
+
+func TestGroupDeletionRequiresGroupsArray(t *testing.T) {
+	for _, payload := range []string{`{}`, `{"groups":null}`} {
+		s := assertionFixture(t, payload, 0)
+		s.auxGroups()
+		for _, r := range s.results {
+			if r.Name == "Group delete" && r.Status != "FAIL" {
+				t.Fatalf("missing groups array passed: %+v", r)
+			}
+		}
+	}
+}
+func TestMCPDetachmentRequiresMembershipFields(t *testing.T) {
+	for _, tc := range []struct {
+		payload          string
+		found, wantError bool
+	}{
+		{`{}`, false, true},
+		{`{"local":[],"global":[]}`, false, true},
+		{`{"local":false,"global":[],"project":[]}`, false, true},
+		{`{"local":[123],"global":[],"project":[]}`, false, true},
+		{`{"local":["funccheck"],"global":[],"project":false}`, false, true},
+		{`{"local":null,"global":[],"project":[]}`, false, false},
+		{`{"local":["funccheck"],"global":[],"project":[]}`, true, false},
+	} {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(tc.payload), &record); err != nil {
+			t.Fatal(err)
+		}
+		found, err := mcpMembership(record, "funccheck")
+		if found != tc.found || (err != nil) != tc.wantError {
+			t.Fatalf("%s: found=%v err=%v", tc.payload, found, err)
+		}
+	}
+}
