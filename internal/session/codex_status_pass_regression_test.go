@@ -45,7 +45,7 @@ show-environment)
  esac;;
 has-session) exit 0;;
 capture-pane) printf '⠋ Working (esc to interrupt)\n';;
-list-panes) printf '1\n';;
+list-panes) case "$*" in *pane_pid*) printf '1\n';; *) printf '0\n';; esac;;
 display-message) printf '0\n';;
 *) exit 0;;
 esac
@@ -166,7 +166,7 @@ func TestStatusPassSweepPinsOwnershipBeyondTTL(t *testing.T) {
 			t.Fatal(err)
 		}
 		if inst.GetStatusThreadSafe() != StatusRunning {
-			t.Fatalf("instance %d did not take live status path", j)
+			t.Fatalf("instance %d did not take live status path: status=%s", j, inst.GetStatusThreadSafe())
 		}
 	}
 	data, err := os.ReadFile(log)
