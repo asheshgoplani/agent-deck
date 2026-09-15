@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"io/fs"
 	"os"
@@ -348,7 +349,12 @@ func TestRemoteCommandParity(t *testing.T) {
 	}
 
 	// A server stub isolates transport semantics from send readiness and tool APIs.
-	write(filepath.Join(shim, "server"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\ncat\nprintf 'remote diagnostic' >&2\nexit 43\n", 0700)
+	catalogJSON, err := json.Marshal(session.RemoteCreationCatalog{Version: 1, Commands: map[string][]session.RemoteCreationField{"add": creationCommandFields("add"), "launch": creationCommandFields("launch")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverScript := "#!/bin/sh\nif [ \"$1\" = add ] && [ \"$2\" = --capabilities ]; then\ncat <<'CREATION_CATALOG'\n" + string(catalogJSON) + "\nCREATION_CATALOG\nexit 0\nfi\nprintf '%s\\n' \"$@\"\ncat\nprintf 'remote diagnostic' >&2\nexit 43\n"
+	write(filepath.Join(shim, "server"), serverScript, 0700)
 	write(filepath.Join(controller, ".config", "agent-deck", "config.toml"), fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = '%s'\n", filepath.Join(shim, "server")), 0600)
 	payload := strings.Repeat("line ' $value\n", 350)
 	messageFile := filepath.Join(t.TempDir(), "message.txt")
@@ -369,12 +375,17 @@ func TestRemoteCommandParity(t *testing.T) {
 		{"add", "--title", "--message-file=/must-not-read"},
 		{"session", "send", title, "--message-file=", "literal"},
 		{"session", "send", "--", title, "--message-file=/must-not-read"},
-		{"launch", "--allow-repo-scripts"},
 	} {
 		out, stderr, code := run(controller, "", append([]string{"remote", "lab"}, args...)...)
 		if code != 43 || stderr != "remote diagnostic" || out != strings.Join(args, "\n")+"\n" {
 			t.Errorf("literal argv %v: %d %q %q", args, code, out, stderr)
 		}
+	}
+	// An unregistered creation field must now stop at catalog validation,
+	// even when an old transport-only stub would have accepted arbitrary argv.
+	out, stderr, code = run(controller, "", "remote", "lab", "launch", "--allow-repo-scripts")
+	if code != 2 || out != "" || !strings.Contains(stderr, "unsupported remote creation field --allow-repo-scripts") {
+		t.Fatalf("unregistered creation field reached mutation: %d %q %q", code, out, stderr)
 	}
 	out, stderr, code = run(controller, "", "remote", "lab", "send", title, "--message-file", "/missing-superseded", "--message-file", messageFile)
 	if code != 43 || stderr != "remote diagnostic" || !strings.HasSuffix(out, payload) {

@@ -1599,10 +1599,10 @@ func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
 	// account-slot fetch for the selected remote, answered under test control.
 	capture := &remoteCreateCapture{}
 	home.remoteCreateSink = capture.sink
-	home.remoteAccountsFetcher = func(remoteName string) tea.Cmd {
+	home.remoteCreationCatalogFetcher = func(remoteName string) tea.Cmd {
 		capture.accountsFetchedFor = append(capture.accountsFetchedFor, remoteName)
 		return func() tea.Msg {
-			return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: []string{"srv-alice"}}
+			return (remoteAccountsFetchedMsg{remoteName: remoteName, accounts: []string{"srv-alice"}}).catalogMessage()
 		}
 	}
 
@@ -1671,6 +1671,14 @@ func TestRemoteNewDialogCustomizationPreservesRemoteValues(t *testing.T) {
 
 	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	h := model.(*Home)
+	// Remote tool choices become available only after this opening receives
+	// the owning host's catalog. Never select from controller presets.
+	model, _ = h.Update(remoteCreationCatalogFetchedMsg{
+		remoteName: "myserver",
+		catalog:    remoteDialogTestCatalog(),
+		gen:        h.remoteAccountsGen,
+	})
+	h = model.(*Home)
 	h.newDialog.nameInput.SetValue("custom remote")
 	h.newDialog.pathInput.SetValue("~/custom-project")
 	h.newDialog.SetDefaultTool("codex")
@@ -4350,9 +4358,9 @@ func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
 
 // findAccountsFetched digs the account-slot fetch result out of a message
 // that may be a tea.BatchMsg (n batches the account fetch with the MCP fetch).
-func findAccountsFetched(msg tea.Msg) (remoteAccountsFetchedMsg, bool) {
+func findAccountsFetched(msg tea.Msg) (remoteCreationCatalogFetchedMsg, bool) {
 	switch m := msg.(type) {
-	case remoteAccountsFetchedMsg:
+	case remoteCreationCatalogFetchedMsg:
 		return m, true
 	case tea.BatchMsg:
 		for _, c := range m {
@@ -4364,5 +4372,5 @@ func findAccountsFetched(msg tea.Msg) (remoteAccountsFetchedMsg, bool) {
 			}
 		}
 	}
-	return remoteAccountsFetchedMsg{}, false
+	return remoteCreationCatalogFetchedMsg{}, false
 }

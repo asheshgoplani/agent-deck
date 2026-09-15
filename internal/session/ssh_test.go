@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,9 @@ func TestSSHRunnerCreateSession_CleansOrphanOnStartFailure(t *testing.T) {
 	var calls [][]string
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			calls = append(calls, append([]string(nil), args...))
 			switch {
 			case len(args) > 0 && args[0] == "add":
@@ -140,6 +144,9 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 	var calls [][]string
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			calls = append(calls, append([]string(nil), args...))
 			switch {
 			case len(args) > 0 && args[0] == "add":
@@ -327,6 +334,9 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 	var calls [][]string
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			calls = append(calls, append([]string(nil), args...))
 			switch {
 			case len(args) > 0 && args[0] == "add":
@@ -370,6 +380,9 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 func TestSSHRunnerCreateSessionWithOptions_QueuedStartIsNotAttachable(t *testing.T) {
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			switch {
 			case len(args) > 0 && args[0] == "add":
 				return []byte(`{"id":"queued-abc","title":"queued-title"}`), nil

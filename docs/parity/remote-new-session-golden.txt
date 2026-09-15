@@ -1,0 +1,59 @@
+
+
+
+
+
+
+
+
+
+
+
+            ╭────────────────────────────────────────────────────────────────────────────────────╮
+            │                                                                                    │
+            │                                                                                    │
+            │    New Session (remote: fixture-host)                                              │
+            │                                                                                    │
+            │      in group: Remote fixture                                                      │
+            │                                                                                    │
+            │    ▶ Name:                                                                         │
+            │      > session-name                                                                │
+            │                                                                                    │
+            │      Command:                                                                      │
+            │        claude    remote-codex                                                      │
+            │                                                                                    │
+            │      Model ID:                                                                     │
+            │      > tool default (↓ to browse)                                                  │
+            │      Model IDs are resolved on the remote host                                     │
+            │                                                                                    │
+            │      Reasoning effort: Tool default                                                │
+            │                                                                                    │
+            │      Path:                                                                         │
+            │      > ~/projects/remote-only                                                      │
+            │                                                                                    │
+            │      [ ] Create in worktree                                                        │
+            │      [ ] Run in Docker sandbox                                                     │
+            │      MCPs (remote): [ ] remote-memory [ ] remote-github                            │
+            │      Conducting parent:                                                            │
+            │      ▶ None                                                                        │
+            │        Remote owner                                                                │
+            │                                                                                    │
+            │      [ ] Multi-repo mode                                                           │
+            │                                                                                    │
+            │    ─ Claude Options ─                                                              │
+            │      Session: (•) New  ( ) Continue  ( ) Resume                                    │
+            │      [ ] Skip permissions                                                          │
+            │      [ ] Auto mode                                                                 │
+            │      [ ] Chrome mode                                                               │
+            │      [ ] Teammate mode                                                             │
+            │        Extra args: > e.g. --agent reviewer                                         │
+            │        Start query: > initial prompt (not split on spaces)                         │
+            │        Account:   inherit    remote-primary    remote-spare                        │
+            │                                                                                    │
+            │      [ Create session ]                                                            │
+            │                                                                                    │
+            │                                                                                    │
+            │    Tab next │ ↑↓ navigate │ Enter next │ ^S create │ Esc cancel                    │
+            │                                                                                    │
+            │                                                                                    │
+            ╰────────────────────────────────────────────────────────────────────────────────────╯

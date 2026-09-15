@@ -145,6 +145,7 @@ func TestIssue1353_SubmitRoutesToRemote(t *testing.T) {
 	home.cursor = 0
 
 	h := pressN(t, home)
+	h.newDialog.SetRemoteCreationCatalog(remoteDialogTestCatalog())
 	// Type a session name (focus starts on the Name field).
 	for _, r := range "my-remote-task" {
 		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
