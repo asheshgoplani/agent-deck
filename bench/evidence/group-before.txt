@@ -1,0 +1,20 @@
+goos: linux
+goarch: arm64
+pkg: github.com/asheshgoplani/agent-deck/internal/session
+BenchmarkGroupActivityMap/10-2         	  373207	      3496 ns/op	    1592 B/op	      35 allocs/op
+BenchmarkGroupActivityMap/10-2         	  437683	      3535 ns/op	    1592 B/op	      35 allocs/op
+BenchmarkGroupActivityMap/10-2         	  276105	      4207 ns/op	    1592 B/op	      35 allocs/op
+BenchmarkGroupActivityMap/10-2         	  135445	      7397 ns/op	    1592 B/op	      35 allocs/op
+BenchmarkGroupActivityMap/10-2         	  361508	      3691 ns/op	    1592 B/op	      35 allocs/op
+BenchmarkGroupActivityMap/100-2        	   19860	     62771 ns/op	   12264 B/op	     309 allocs/op
+BenchmarkGroupActivityMap/100-2        	   30092	     47751 ns/op	   12264 B/op	     309 allocs/op
+BenchmarkGroupActivityMap/100-2        	   23331	     52068 ns/op	   12264 B/op	     309 allocs/op
+BenchmarkGroupActivityMap/100-2        	   30182	     64144 ns/op	   12264 B/op	     309 allocs/op
+BenchmarkGroupActivityMap/100-2        	   27189	     48948 ns/op	   12264 B/op	     309 allocs/op
+BenchmarkGroupActivityMap/500-2        	    6765	    272807 ns/op	   47464 B/op	    1509 allocs/op
+BenchmarkGroupActivityMap/500-2        	    7258	    174228 ns/op	   47464 B/op	    1509 allocs/op
+BenchmarkGroupActivityMap/500-2        	    5617	    366932 ns/op	   47464 B/op	    1509 allocs/op
+BenchmarkGroupActivityMap/500-2        	    9194	    177493 ns/op	   47464 B/op	    1509 allocs/op
+BenchmarkGroupActivityMap/500-2        	    5911	    218711 ns/op	   47464 B/op	    1509 allocs/op
+PASS
+ok  	github.com/asheshgoplani/agent-deck/internal/session	30.519s
