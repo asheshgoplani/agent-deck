@@ -45,16 +45,29 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 			require.NoError(t, os.MkdirAll(profile, 0700))
 			fifo := filepath.Join(profile, "sessions.json")
 			require.NoError(t, syscall.Mkfifo(fifo, 0600))
-			// RDWR avoids blocking fixture setup. Cleanup's ReadFile waits for EOF.
-			writer, err := os.OpenFile(fifo, os.O_RDWR, 0600)
-			require.NoError(t, err)
-			defer writer.Close()
+			// Nonblocking writer open succeeds only when cleanup has opened the
+			// read end. This handshake avoids guessing when the command is ready.
+			openWriter := func() *os.File {
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					fd, err := syscall.Open(fifo, syscall.O_WRONLY|syscall.O_NONBLOCK, 0600)
+					if err == nil {
+						return os.NewFile(uintptr(fd), fifo)
+					}
+					require.ErrorIs(t, err, syscall.ENXIO)
+					if time.Now().After(deadline) {
+						t.Fatal("cleanup did not open the delayed registry")
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
 			returned := make(chan tea.Cmd, 1)
 			go func() { _, cmd := h.Update(tc.msg); returned <- cmd }()
 			var cmd tea.Cmd
 			select {
 			case cmd = <-returned:
 			case <-time.After(time.Second):
+				writer := openWriter()
 				_, _ = writer.Write([]byte(`{"instances":[]}`))
 				_ = writer.Close()
 				select {
@@ -70,10 +83,12 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 			require.Empty(t, rows, "registry deletion must commit before returning")
 			done := make(chan struct{})
 			go func() { cmd(); close(done) }()
+			writer := openWriter()
+			defer writer.Close()
 			select {
 			case <-done:
 				t.Fatal("cleanup did not wait for the delayed registry")
-			case <-time.After(50 * time.Millisecond):
+			default:
 			}
 			// Input and rendering still work while the command waits on the registry.
 			h.Update(tea.WindowSizeMsg{Width: 110, Height: 35})

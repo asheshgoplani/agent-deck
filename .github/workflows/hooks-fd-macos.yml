@@ -160,8 +160,8 @@ jobs:
             sed "s|WATCH_PACKAGE|$package|" head/.github/scripts/hooks-fd/main.go.txt > "$checkout/.fd-regression/main.go"
           done
           # Confirm baseline source uses the factory measured by the overlay.
-          rg 'watcher, err := fsnotify.NewWatcher\(\)' baseline/internal/session/hook_watcher.go
-          rg 'watcher, err := fswatch.NewWatcher\(\)' head/internal/session/hook_watcher.go
+          grep -F 'watcher, err := fsnotify.NewWatcher()' baseline/internal/session/hook_watcher.go
+          grep -F 'watcher, err := fswatch.NewWatcher()' head/internal/session/hook_watcher.go
           test "$(git -C baseline rev-parse HEAD)" = "$BASE_REVISION"
           test "$(git -C head rev-parse HEAD)" = "$HEAD_REVISION"
           git -C baseline diff --exit-code
@@ -173,10 +173,10 @@ jobs:
           cat evidence/baseline.log
           test "$baseline_status" -eq 1
           # Compile, setup, Add, or inspection errors cannot satisfy baseline red.
-          rg '^FD_BOUND_EXCEEDED delta=1[0-9]{3}$' evidence/baseline.log
+          grep -E '^FD_BOUND_EXCEEDED delta=1[0-9]{3}$' evidence/baseline.log
           echo "command: (cd head && FD_REVISION=$HEAD_REVISION FD_FIXTURE=$FD_FIXTURE go run ./.fd-regression)"
           (cd head && FD_REVISION="$HEAD_REVISION" go run ./.fd-regression) 2>&1 | tee evidence/head.log
-          rg '^FD_BOUND_PASS$' evidence/head.log
+          grep -E '^FD_BOUND_PASS$' evidence/head.log
       - name: Retain SHA-stamped native descriptor evidence
         if: always()
         uses: actions/upload-artifact@v7
