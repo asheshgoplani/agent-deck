@@ -2587,8 +2587,11 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		LastActivityAt string `json:"last_activity_at,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
+	var pass session.StatusUpdatePass
 	for i, inst := range instances {
-		_ = inst.UpdateStatus()
+		// Listings need live status, not native-session discovery. Persisted
+		// rows have no status freshness stamp, so still validate liveness.
+		_ = pass.UpdateStatusOnly(inst)
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
 			ID:                inst.ID,
