@@ -16,8 +16,9 @@ Both the public remote CLI and New Session dialog validate requested fields
 against this response. An unknown catalog version, unknown option, or malformed
 field returns a visible error before creation. If the remote exits with status 2
 because it does not recognize `--capabilities`, creation falls back to the legacy
-contract: title, path, command, group, worktree/branch, sandbox, additional
-repositories, and launch messages. The dialog shows one older-release notice
+contract: title, path, command, group, worktree/branch, sandbox, add create-directory
+retry, and launch messages. Older parsers lack `--additional-path`, so multi-repo
+creation requires updating the remote. The dialog shows one older-release notice
 and hides extra controls. The CLI refuses catalog-only options with the option
 name and an instruction to update the remote. Other catalog failures remain
 refusals with a short reason; full diagnostics go to the application log.

@@ -40,12 +40,16 @@ esac
 	}
 	h.newDialog.SetRemoteCreationCatalog(catalog)
 	d := h.newDialog
+	d.ToggleMultiRepo()
+	if d.multiRepoEnabled {
+		t.Fatal("legacy dialog enables unsupported multi-repo mode")
+	}
 	d.SetSize(120, 50)
 	d.nameInput.SetValue("legacy-session")
 	d.pathInput.SetValue("~/project")
 	d.commandInput.SetValue("gemini")
 	d.updateToolOptions()
-	for _, target := range []focusTarget{focusModel, focusReasoningEffort, focusConductor, focusRemoteMCPs, focusOptions} {
+	for _, target := range []focusTarget{focusModel, focusReasoningEffort, focusConductor, focusRemoteMCPs, focusOptions, focusMultiRepo} {
 		if d.indexOf(target) >= 0 {
 			t.Errorf("unsupported field remains focusable: %v", target)
 		}
@@ -89,18 +93,36 @@ func TestRemoteLegacyDialog_Options(t *testing.T) {
 			d.SetRemoteCreationCatalog(session.LegacyRemoteCreationCatalog())
 			d.nameInput.SetValue("legacy")
 			d.commandInput.SetValue(command)
-			d.multiRepoEnabled = true
-			d.multiRepoPaths = []string{"~/first", "~/second"}
+			d.pathInput.SetValue("~/first")
 			d.worktreeEnabled = true
 			d.branchInput.SetValue("feature")
 			d.sandboxEnabled = true
 			d.modelInput.SetValue("stale-controller-model")
 			got, why := d.GetRemoteCreateOptions()
-			want := session.RemoteAddOptions{Tool: command, Title: "legacy", Path: "~/first", AdditionalPaths: []string{"~/second"}, Group: d.GetSelectedGroup(), WorktreeBranch: "feature", Sandbox: true}
+			want := session.RemoteAddOptions{Tool: command, Title: "legacy", Path: "~/first", Group: d.GetSelectedGroup(), WorktreeBranch: "feature", Sandbox: true}
 			if why != "" || !reflect.DeepEqual(got, want) {
 				t.Fatalf("got %#v (%s), want %#v", got, why, want)
 			}
 		})
+	}
+}
+
+func TestRemoteLegacyDialog_MultiRepoRefused(t *testing.T) {
+	h, _ := newRemoteHome(t, remoteGroupItem("old-host"), "")
+	h = pressN(t, h)
+	d := h.newDialog
+	d.multiRepoEnabled = true
+	d.multiRepoPaths = []string{"~/first", "~/second"}
+	d.SetRemoteCreationCatalog(session.LegacyRemoteCreationCatalog())
+	opts, why := d.GetRemoteCreateOptions()
+	if why != "unsupported remote creation field --additional-path; update the remote" {
+		t.Fatalf("requested multi-repo must be refused: %q", why)
+	}
+	if !d.multiRepoEnabled || !reflect.DeepEqual(opts.AdditionalPaths, []string{"~/second"}) {
+		t.Fatalf("requested paths silently cleared: %#v", opts)
+	}
+	if d.indexOf(focusMultiRepo) >= 0 || strings.Contains(stripAnsi(d.View()), "Multi-repo mode") {
+		t.Fatal("legacy dialog exposes unsupported multi-repo control")
 	}
 }
 

@@ -82,7 +82,7 @@ func (legacyCreationCatalogRunner) FetchCreationCatalog(context.Context) (*sessi
 func TestOldRemotePublicCreationPreflight(t *testing.T) {
 	runner := legacyCreationCatalogRunner{}
 	for _, args := range [][]string{
-		{"add", "--title", "legacy", "-c", "claude", "-g", "work", "-w", "fix", "-b", "--sandbox", "--additional-path", "/srv/other", "/srv/repo"},
+		{"add", "--title", "legacy", "-c", "claude", "-g", "work", "-w", "fix", "-b", "--sandbox", "/srv/repo"},
 		{"launch", "-m", "literal\nmessage", "--json", "/srv/repo"},
 		{"launch", "--message-file", "-", "/srv/repo"},
 	} {
@@ -90,7 +90,7 @@ func TestOldRemotePublicCreationPreflight(t *testing.T) {
 			t.Fatalf("%v: %v", args, err)
 		}
 	}
-	for _, option := range []string{"startup-query", "effort", "yolo", "parent", "account", "mcp", "extra-arg", "model", "skip-permissions"} {
+	for _, option := range []string{"startup-query", "effort", "yolo", "parent", "account", "mcp", "extra-arg", "model", "skip-permissions", "additional-path"} {
 		err := preflightRemoteCreation(context.Background(), runner, []string{"add", "--" + option, "value"})
 		want := "unsupported remote creation field --" + option + "; update the remote"
 		if err == nil || err.Error() != want {

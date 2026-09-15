@@ -1281,6 +1281,9 @@ func (d *NewDialog) ToggleSandbox() {
 // When enabling, initializes multiRepoPaths with the current pathInput value.
 // When disabling, collapses back to the first path.
 func (d *NewDialog) ToggleMultiRepo() {
+	if d.remoteCatalog != nil && d.remoteCatalog.Legacy {
+		return
+	}
 	d.multiRepoEnabled = !d.multiRepoEnabled
 	if d.multiRepoEnabled {
 		currentPath := strings.TrimSpace(d.pathInput.Value())
@@ -1783,8 +1786,10 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.worktreeEnabled {
 		targets = append(targets, focusBranch)
 	}
-	// Multi-repo toggle below the fold (its path list renders here when enabled).
-	targets = append(targets, focusMultiRepo)
+	// Multi-repo requires a catalog-aware remote parser.
+	if d.remoteCatalog == nil || !d.remoteCatalog.Legacy {
+		targets = append(targets, focusMultiRepo)
+	}
 	if d.toolOptions != nil {
 		targets = append(targets, focusOptions)
 	}
@@ -3280,9 +3285,11 @@ func (d *NewDialog) View() string {
 
 	// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
 	// here when enabled; in the common single-repo case it's just a checkbox.
-	content.WriteString("\n")
-	markFocusedRow(focusMultiRepo)
-	d.renderMultiRepoSection(&content, cur)
+	if d.remoteCatalog == nil || !d.remoteCatalog.Legacy {
+		content.WriteString("\n")
+		markFocusedRow(focusMultiRepo)
+		d.renderMultiRepoSection(&content, cur)
+	}
 
 	// Tool options panel
 	if d.toolOptions != nil {
