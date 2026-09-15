@@ -13,6 +13,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/asheshgoplani/agent-deck/internal/fswatch"
+
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -22,7 +24,7 @@ var eventLog = logging.ForComponent(logging.CompSession)
 // using fsnotify. Delivers parsed StatusEvent structs via a channel.
 type StatusEventWatcher struct {
 	eventsDir        string
-	watcher          *fsnotify.Watcher
+	watcher          *fswatch.Watcher
 	eventCh          chan StatusEvent
 	filterInstanceID string // optional: only deliver events for this instance
 	ctx              context.Context
@@ -38,7 +40,7 @@ func NewStatusEventWatcher(filterInstanceID string) (*StatusEventWatcher, error)
 		return nil, fmt.Errorf("create events dir: %w", err)
 	}
 
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := fswatch.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("create fsnotify watcher: %w", err)
 	}

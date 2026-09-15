@@ -17,6 +17,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/asheshgoplani/agent-deck/internal/fswatch"
+
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -222,7 +224,7 @@ type StatusFileWatcher struct {
 	// observes these by watching this dir for subdir-create events and adding
 	// a watch on each per-instance subdir.
 	sandboxDir string
-	watcher    *fsnotify.Watcher
+	watcher    *fswatch.Watcher
 
 	mu       sync.RWMutex
 	statuses map[string]*HookStatus // instance_id -> latest hook status
@@ -239,12 +241,18 @@ type StatusFileWatcher struct {
 func NewStatusFileWatcher(onChange func()) (*StatusFileWatcher, error) {
 	hooksDir := GetHooksDir()
 
+	// The hooks root is shared by all profiles. An unreadable registry must
+	// preserve artifacts; polling still bounds descriptors on kqueue.
+	if err := pruneHookArtifactsOnStartup(); err != nil {
+		hookLog.Warn("hook_prune_failed", slog.String("error", err.Error()))
+	}
+
 	// Ensure directory exists
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
 		return nil, err
 	}
 
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := fswatch.NewWatcher()
 	if err != nil {
 		return nil, err
 	}

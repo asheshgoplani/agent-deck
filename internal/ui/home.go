@@ -1295,8 +1295,9 @@ func (h *Home) actionKey(action string) string {
 
 // deletedSessionEntry holds a deleted session for undo restore
 type deletedSessionEntry struct {
-	instance  *session.Instance
-	deletedAt time.Time
+	instance    *session.Instance
+	deletedAt   time.Time
+	cleanupDone <-chan struct{}
 }
 
 // getLayoutMode returns the current layout mode based on terminal width
@@ -7463,8 +7464,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.instancesMu.Unlock()
 
 		// Push to undo stack before removing from group tree
+		var cleanupDone chan struct{}
 		if deletedInstance != nil {
 			h.pushUndoStack(deletedInstance)
+			cleanupDone = make(chan struct{})
+			h.undoStack[len(h.undoStack)-1].cleanupDone = cleanupDone
 			// Save to recent sessions for quick re-creation
 			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
 				uiLog.Warn("save_recent_session_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
@@ -7492,7 +7496,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update search items
 		h.search.SetItems(h.instances)
 		// Explicitly delete from database to prevent resurrection on reload
-		if err := h.storage.DeleteInstance(msg.deletedID); err != nil {
+		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
+		if err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
@@ -7507,7 +7512,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
 			}
 		}
-		return h, nil
+		return h, hookCleanupCmd(cleanup, cleanupDone)
 
 	case sessionClosedMsg:
 		// Keep session metadata, just reflect runtime termination state.
@@ -8839,7 +8844,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.search.SetItems(h.instances)
 
 		// Delete from database and save
-		if err := h.storage.DeleteInstance(msg.sessionID); err != nil {
+		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.sessionID)
+		if err != nil {
 			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
 		}
 		h.forceSaveInstances()
@@ -8861,7 +8867,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			successMsg += fmt.Sprintf(", merged into %s", msg.targetBranch)
 		}
 		h.setError(fmt.Errorf("%s", successMsg))
-		return h, nil
+		return h, hookCleanupCmd(cleanup, nil)
 
 	case copyResultMsg:
 		if msg.err != nil {
@@ -11920,6 +11926,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.undoStack = h.undoStack[:len(h.undoStack)-1]
 		inst := entry.instance
 		return h, func() tea.Msg {
+			// Restart reuses the ID and can write anchors before the registry row
+			// is restored. Finish deleting old artifacts before creating new ones.
+			if entry.cleanupDone != nil {
+				<-entry.cleanupDone
+			}
 			err := inst.Restart()
 			return sessionRestoredMsg{
 				instance: inst,
@@ -23296,5 +23307,23 @@ func (h *Home) fetchRemoteCreationCatalog(remoteName string) tea.Cmd {
 		defer cancel()
 		catalog, err := runner.FetchCreationCatalog(ctx)
 		return remoteCreationCatalogFetchedMsg{remoteName: remoteName, catalog: catalog, err: err}
+	}
+}
+
+// hookCleanupCmd keeps best-effort filesystem cleanup outside Update. Registry
+// failures return nil cleanup, preserving the handler's existing error logging.
+func hookCleanupCmd(cleanup func(), done chan struct{}) tea.Cmd {
+	if cleanup == nil {
+		if done != nil {
+			close(done)
+		}
+		return nil
+	}
+	return func() tea.Msg {
+		if done != nil {
+			defer close(done)
+		}
+		cleanup()
+		return nil
 	}
 }

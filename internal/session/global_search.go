@@ -18,6 +18,8 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/asheshgoplani/agent-deck/internal/fswatch"
 	"github.com/sahilm/fuzzy"
 	"golang.org/x/time/rate"
 )
@@ -478,7 +480,7 @@ type GlobalSearchIndex struct {
 	trackerMu    sync.RWMutex
 
 	// File watcher
-	watcher *fsnotify.Watcher
+	watcher *fswatch.Watcher
 
 	// Rate limiter for background indexing
 	limiter *rate.Limiter
@@ -573,7 +575,7 @@ func NewGlobalSearchIndex(claudeDir string, config GlobalSearchSettings) (*Globa
 	}
 
 	// Start file watcher
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := fswatch.NewWatcher()
 	if err != nil {
 		cancel()
 		return nil, err
