@@ -3062,8 +3062,17 @@ func (i *Instance) DetectCodexSession() {
 func (i *Instance) resolveCodexDetectionCandidate(sessionID string, probeErr error) string {
 	sessionID = i.filterCodexProcessProbeCandidate(sessionID)
 	if sessionID == "" && probeErr == nil {
-		return i.queryCodexSession(i.collectOtherCodexSessionIDs(), true)
+		codexBootstrapMu.Lock()
+		defer codexBootstrapMu.Unlock()
+		exclude := i.collectOtherCodexSessionIDs()
+		if exclude == nil {
+			return ""
+		}
+		sessionID = i.queryCodexSession(exclude, true)
+		i.recordCodexOwnership(sessionID)
+		return sessionID
 	}
+	i.recordCodexOwnership(sessionID)
 	return sessionID
 }
 
@@ -3379,29 +3388,7 @@ func decodeJSONStringField(raw map[string]json.RawMessage, key string) string {
 // collectOtherCodexSessionIDs enumerates other managed tmux sessions and returns
 // the CODEX_SESSION_ID values they currently own.
 func (i *Instance) collectOtherCodexSessionIDs() map[string]bool {
-	exclude := make(map[string]bool)
-
-	tmuxSessions, err := tmux.ListAgentDeckSessions()
-	if err != nil {
-		return exclude
-	}
-
-	myTmuxName := ""
-	if i.tmuxSession != nil {
-		myTmuxName = i.tmuxSession.Name
-	}
-
-	for _, sessName := range tmuxSessions {
-		if sessName == myTmuxName {
-			continue
-		}
-		other := &tmux.Session{Name: sessName}
-		if id, err := other.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
-			exclude[id] = true
-		}
-	}
-
-	return exclude
+	return i.codexExclusions(nil)
 }
 
 // shouldScanCodexSession returns whether we should run an expensive filesystem
@@ -3944,12 +3931,21 @@ func codexProbeMissingWarning(missingDep string) string {
 // Primary source: tmux environment.
 // Fallback: project-aware filesystem scan.
 func (i *Instance) UpdateCodexSession(excludeIDs map[string]bool) {
+	// Preserve the explicit caller-supplied exclusion API: nil means no exclusions.
+	// Status passes use the lazy ownership lookup through updateCodexSessionForPass.
+	if excludeIDs == nil {
+		excludeIDs = make(map[string]bool)
+	}
 	i.updateCodexSession(excludeIDs, false)
 }
 
 // updateCodexSession refreshes Codex session ID from env/process-files/disk.
 // Returns missing dependency name when probe prerequisites are unavailable.
 func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe bool) string {
+	return i.updateCodexSessionForPass(excludeIDs, forceProbe, nil)
+}
+
+func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forceProbe bool, pass *StatusUpdatePass) string {
 	if !IsCodexCompatible(i.Tool) {
 		return ""
 	}
@@ -3964,6 +3960,7 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 				i.CodexSessionID = sessionID
 			}
 			i.CodexDetectedAt = time.Now()
+			i.recordCodexOwnership(i.CodexSessionID)
 		}
 	}
 
@@ -3983,6 +3980,7 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 			}
 			i.CodexSessionID = sessionID
 			i.CodexDetectedAt = time.Now()
+			i.recordCodexOwnership(i.CodexSessionID)
 			if i.tmuxSession != nil && i.tmuxSession.Exists() && (changed || envSessionID == "") {
 				_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
 			}
@@ -4013,13 +4011,16 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		return missingProbeDep
 	}
 
-	// When we already have a session ID and the process probe didn't find a
-	// running process, add our current ID to the exclude set so the disk scan
-	// won't reassign it to another instance that shares the same project path.
-	// The disk scan should only discover *new* sessions (e.g. after /new rotation),
-	// not re-discover the same ID we already own.
-	if i.CodexSessionID != "" && excludeIDs != nil {
-		excludeIDs[i.CodexSessionID] = true
+	// Serialize fallback selection with publication so peers sharing a project
+	// cannot claim the same rollout from a pinned ownership snapshot.
+	codexBootstrapMu.Lock()
+	defer codexBootstrapMu.Unlock()
+	// Collect peer ownership only when a bootstrap disk scan will actually run.
+	if excludeIDs == nil {
+		excludeIDs = i.codexExclusions(pass)
+		if excludeIDs == nil {
+			return missingProbeDep // Unknown ownership must not become a guessed binding.
+		}
 	}
 
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
@@ -4035,6 +4036,7 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		}
 		i.CodexSessionID = sessionID
 		i.CodexDetectedAt = time.Now()
+		i.recordCodexOwnership(i.CodexSessionID)
 
 		// Sync back to tmux environment for future restarts
 		// Skip redundant writes when env already matches: each write is a tmux subprocess.
@@ -5865,6 +5867,10 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status
 }
 
 func (i *Instance) UpdateStatus() error {
+	return i.updateStatus(nil, true)
+}
+
+func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
 	// Cheap no-op unless the cold-load fold below (or an earlier
@@ -6062,6 +6068,7 @@ func (i *Instance) UpdateStatus() error {
 			case IsCodexCompatible(i.Tool):
 				if i.hookSessionID != i.CodexSessionID {
 					i.CodexSessionID = i.hookSessionID
+					i.recordCodexOwnership(i.CodexSessionID)
 					i.CodexDetectedAt = time.Now()
 				}
 			case i.Tool == "gemini":
@@ -6292,7 +6299,7 @@ func (i *Instance) UpdateStatus() error {
 	// Update session metadata tracking only for active/waiting sessions.
 	// This path can perform filesystem and tmux env reads while i.mu is held, so
 	// rate-limit it to reduce intermittent render/key handling stalls under load.
-	if i.Status == StatusRunning || i.Status == StatusWaiting {
+	if syncMetadata && (i.Status == StatusRunning || i.Status == StatusWaiting) {
 		interval := 2 * time.Second
 		// Bootstrap unknown IDs faster for newly-started sessions.
 		switch {
@@ -6322,12 +6329,7 @@ func (i *Instance) UpdateStatus() error {
 
 			// Update Codex session tracking (non-blocking, best-effort)
 			if IsCodexCompatible(i.Tool) {
-				// Always collect other instances' session IDs to prevent the
-				// disk scan from assigning a session that belongs to another
-				// instance. Without this, instances that share the same
-				// project_path can all claim the same Codex session file.
-				exclude := i.collectOtherCodexSessionIDs()
-				i.UpdateCodexSession(exclude)
+				i.updateCodexSessionForPass(nil, false, pass)
 			}
 
 			// Update OpenCode session tracking (non-blocking, best-effort).
@@ -6649,6 +6651,7 @@ func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) {
 		slog.String("event", hookEvent),
 	)
 	i.CodexSessionID = sessionID
+	i.recordCodexOwnership(sessionID)
 	i.CodexDetectedAt = time.Now()
 	i.hookSessionID = sessionID
 
@@ -7419,6 +7422,7 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 
 	if id, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
 		i.CodexSessionID = id
+		i.recordCodexOwnership(id)
 	}
 
 	if id, err := i.tmuxSession.GetEnvironment("COPILOT_SESSION_ID"); err == nil && id != "" {
@@ -9015,7 +9019,7 @@ func (i *Instance) restart(env map[string]string) error {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
-		if missingDep := i.updateCodexSession(i.collectOtherCodexSessionIDs(), true); missingDep != "" {
+		if missingDep := i.updateCodexSession(nil, true); missingDep != "" {
 			i.mu.Lock()
 			i.pendingCodexRestartWarning = codexProbeMissingWarning(missingDep)
 			i.mu.Unlock()
