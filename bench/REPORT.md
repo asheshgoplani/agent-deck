@@ -97,3 +97,9 @@ At 500 sessions the observed median fell 89.6% and allocations fell 93.4%. At 10
 - Repair Docker's storage/metadata error before claiming a clean end-to-end rerun. Preserve the complete health measurements and partial original measurements independently. Keep the suite and optimization PRs separate, verify their final heads and CI, and park them for the September 25 release without merging or deploying as part of this report.
 
 Run instructions and precise metric boundaries are in [README.md](README.md).
+
+## Clean Linux CI capture
+
+[Suite run 34982145641](https://github.com/asheshgoplani/agent-deck/actions/runs/34982145641) completed every measurement, isolation-test and artifact step successfully. Its [Linux amd64 baseline](baseline/github-ubuntu-latest.json) contains N=3 at all three fleet sizes. Revision `d7407a82e2190f814c2710097a50c209116f1a8e` is GitHub's tested merge of suite head `f5ebb6d350c17b5c634b77ee7084c1767d3e9eac` into the health stack. This provides a clean command-exit receipt independent of the local Docker storage failure. Hosted-runner timing is a separate machine class and must not be compared against the ARM64 table.
+
+The first run was capture-only. Committing its matching runner baseline activates the advisory 25% p95 comparison on subsequent runs. A successful advisory workflow wrapper is insufficient: inspect the comparison step and its regression rows. Required promotion still needs repeated quiet-run calibration and an agreed variance policy.

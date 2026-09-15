@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/creack/pty"
 )
@@ -229,10 +230,14 @@ host = "bench-slow"
 [remotes.auth]
 host = "bench-auth"
 `, socket)
-	if err = os.MkdirAll(filepath.Join(home, ".agent-deck"), 0700); err != nil {
+	configDir, err := agentpaths.LegacyDir()
+	if err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(home, ".agent-deck", "config.toml"), []byte(config), 0600); err != nil {
+	if err = os.MkdirAll(configDir, 0700); err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0600); err != nil {
 		return err
 	}
 	storage, err := session.NewStorageWithProfile("default")
