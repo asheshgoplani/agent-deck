@@ -240,3 +240,50 @@ func TestWatcher_EmptyExeIsInert(t *testing.T) {
 	defer cancel()
 	w.Run(ctx)
 }
+
+func TestInstalledVersionNeedsRestart_LocalBuildIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, running, installed string
+		want                     bool
+	}{
+		{"release to local", "1.16.0", "1.16.0+local.a", true},
+		{"local to local", "1.16.0+local.a", "1.16.0+local.b", true},
+		{"local to release", "1.16.0+local.a", "1.16.0", true},
+		{"same local", "1.16.0+local.a", "v1.16.0+local.a", false},
+		{"unrelated metadata", "1.16.0+build.a", "1.16.0+build.b", false},
+		{"not local prefix", "1.16.0", "1.16.0+locality.a", false},
+		{"local downgrade", "1.16.1", "1.16.0+local.a", false},
+		{"release downgrade", "1.16.1+local.a", "1.16.0", false},
+		{"prerelease downgrade", "1.16.0", "1.16.0-rc.1+local.a", false},
+		{"same prerelease", "1.16.0-rc.1", "1.16.0-rc.1+local.a", true},
+		{"newer release", "1.16.0+local.a", "1.16.1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := InstalledVersionNeedsRestart(tc.installed, tc.running); got != tc.want {
+				t.Fatalf("restart(%q, %q) = %v, want %v", tc.installed, tc.running, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWatcher_LocalBuildWaitsUntilIdle(t *testing.T) {
+	for _, versions := range [][2]string{
+		{"1.16.0", "1.16.0+local.a"},
+		{"1.16.0+local.a", "1.16.0+local.b"},
+		{"1.16.0+local.a", "1.16.0"},
+	} {
+		t.Run(versions[0]+" to "+versions[1], func(t *testing.T) {
+			f := &fakeWatch{fp: fpAt(1, 1), version: versions[1]}
+			w := f.watcher()
+			w.RunningVersion = versions[0]
+			f.fp = fpAt(2, 2)
+			if w.tick() || len(f.restarts) != 0 {
+				t.Fatal("busy process restarted")
+			}
+			f.idle = true
+			if !w.tick() || len(f.restarts) != 1 || f.probes != 1 {
+				t.Fatalf("idle replacement: restarts=%v probes=%d", f.restarts, f.probes)
+			}
+		})
+	}
+}
