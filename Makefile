@@ -249,7 +249,7 @@ check-functional: funccheck-image
 		-v "$(CURDIR):/src" -w /src -e HOME=/tmp/funccheck-home \
 		-v agentdeck-funccheck-gocache:/funccheck-cache \
 		-e GOCACHE=/funccheck-cache -e GOMODCACHE=/go/pkg/mod -e GOTOOLCHAIN=local \
-		-e AGENTDECK_SKIP_UPDATE_CHECK=1 -e FUNCCHECK_SOURCE_CHECKS=1 \
+		-e AGENTDECK_SKIP_UPDATE_CHECK=1 -e FUNCCHECK_SOURCE_CHECKS=1 -e GOFLAGS=-buildvcs=false \
 		-e FUNCCHECK_BINARY="$(FUNCCHECK_BINARY)" "$(FUNCCHECK_IMAGE)" \
-		sh -ec 'mkdir -p "$$HOME"; if [ -z "$$FUNCCHECK_BINARY" ]; then go build -buildvcs=false $(LDFLAGS) -o /tmp/agent-deck-funccheck ./cmd/agent-deck; FUNCCHECK_BINARY=/tmp/agent-deck-funccheck; fi; go run ./tools/funccheck "$$FUNCCHECK_BINARY"'
+		sh -ec 'mkdir -p "$$HOME"; if [ -z "$$FUNCCHECK_BINARY" ]; then go build $(LDFLAGS) -o /tmp/agent-deck-funccheck ./cmd/agent-deck; FUNCCHECK_BINARY=/tmp/agent-deck-funccheck; fi; go run ./tools/funccheck "$$FUNCCHECK_BINARY"'
 endif
