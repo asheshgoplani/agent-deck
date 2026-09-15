@@ -184,6 +184,214 @@ func appendCodexTurnStart(path, turnID string) error {
 	return closeErr
 }
 
+func TestCodexAcceptanceGuardHydratesLegacyIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	rollout := filepath.Join(home, "codex", "sessions", "2026", "09", "15", "rollout-test-"+sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rollout, []byte(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-existing"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := session.NewInstanceWithTool("legacy-codex-identity", project, "codex")
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		t.Fatal("missing tmux session")
+	}
+	if err := tmuxSess.Start("sleep 30"); err != nil {
+		t.Fatalf("start isolated pane: %v", err)
+	}
+	t.Cleanup(func() { _ = tmuxSess.Kill() })
+	if err := tmuxSess.SetEnvironment("CODEX_SESSION_ID", sessionID); err != nil {
+		t.Fatalf("set pane identity: %v", err)
+	}
+
+	storage, err := session.NewStorageWithProfile("legacy_codex_hydration")
+	if err != nil {
+		t.Fatalf("open isolated storage: %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, nil); err != nil {
+		t.Fatalf("seed legacy instance: %v", err)
+	}
+	if inst.CodexSessionID != "" {
+		t.Fatalf("precondition: persisted identity = %q, want empty", inst.CodexSessionID)
+	}
+
+	if err := hydrateLegacyCodexIdentity(inst, []*session.Instance{inst}, storage); err != nil {
+		t.Fatalf("legacy identity was not hydrated before guard acquisition: %v", err)
+	}
+	guard, err := acquireCodexAcceptanceGuard(inst, time.Second)
+	if err != nil {
+		t.Fatalf("guard acquisition after hydration: %v", err)
+	}
+	defer guard.Release()
+	if inst.CodexSessionID != sessionID || guard.fence.codexSessionID != sessionID ||
+		guard.fence.priorTurnGeneration != sessionID+":turn-existing" {
+		t.Fatalf("unexpected hydrated guard: id=%q fence=%#v", inst.CodexSessionID, guard.fence)
+	}
+	if guard.marker != nil {
+		t.Fatal("guard hydration created a submission marker before transport")
+	}
+
+	if persisted := persistedCodexIdentity(t, storage, inst.ID); persisted != sessionID {
+		t.Fatalf("persisted identity = %q, want %q", persisted, sessionID)
+	}
+}
+
+func persistedCodexIdentity(t *testing.T, storage *session.Storage, instanceID string) string {
+	t.Helper()
+	rows, err := storage.GetDB().LoadInstances()
+	if err != nil {
+		t.Fatalf("reload persisted identity: %v", err)
+	}
+	for _, row := range rows {
+		if row.ID != instanceID {
+			continue
+		}
+		var persisted struct {
+			CodexSessionID string `json:"codex_session_id"`
+		}
+		if err := json.Unmarshal(row.ToolData, &persisted); err != nil {
+			t.Fatalf("decode persisted identity: %v", err)
+		}
+		return persisted.CodexSessionID
+	}
+	t.Fatalf("instance %q was not persisted", instanceID)
+	return ""
+}
+
+func startLegacyCodexPane(t *testing.T, inst *session.Instance, identity string) {
+	t.Helper()
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		t.Fatal("missing tmux session")
+	}
+	if err := tmuxSess.Start("sleep 30"); err != nil {
+		t.Fatalf("start isolated pane: %v", err)
+	}
+	t.Cleanup(func() { _ = tmuxSess.Kill() })
+	if identity != "" {
+		if err := tmuxSess.SetEnvironment("CODEX_SESSION_ID", identity); err != nil {
+			t.Fatalf("set pane identity: %v", err)
+		}
+	}
+}
+
+func writeLegacyCodexRollout(t *testing.T, home, identity, suffix string) {
+	t.Helper()
+	path := filepath.Join(home, "sessions", "2026", "09", suffix, "rollout-test-"+identity+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-existing"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countCodexAcceptanceArtifacts(t *testing.T) int {
+	t.Helper()
+	root, err := session.GetAgentDeckDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	err = filepath.Walk(filepath.Join(root, "locks"), func(path string, info os.FileInfo, walkErr error) error {
+		if os.IsNotExist(walkErr) {
+			return filepath.SkipDir
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if !info.IsDir() && (strings.Contains(filepath.Base(path), "codex-acceptance-") ||
+			strings.Contains(path, string(filepath.Separator)+"codex-submissions"+string(filepath.Separator))) {
+			count++
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func TestLegacyCodexIdentityHydrationRefusesUntrustedCandidates(t *testing.T) {
+	const candidate = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	const mismatch = "11111111-2222-4333-8444-666666666666"
+	tests := []struct {
+		name       string
+		paneID     string
+		startPane  bool
+		rolloutIDs []string
+		peer       bool
+		want       string
+	}{
+		{name: "stale missing target", paneID: candidate, want: "identity is unavailable"},
+		{name: "empty identity", startPane: true, want: "identity is unavailable"},
+		{name: "malformed identity", startPane: true, paneID: "not-a-uuid", want: "invalid live Codex session identity"},
+		{name: "missing rollout", startPane: true, paneID: candidate, want: "no unique current rollout"},
+		{name: "mismatched rollout", startPane: true, paneID: candidate, rolloutIDs: []string{mismatch}, want: "no unique current rollout"},
+		{name: "ambiguous rollout", startPane: true, paneID: candidate, rolloutIDs: []string{candidate, candidate}, want: "ambiguous exact context artifact"},
+		{name: "stale peer binding owns live identity", startPane: true, paneID: candidate, rolloutIDs: []string{candidate}, peer: true, want: "already owned"},
+	}
+
+	for n, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "codex")
+			t.Setenv("CODEX_HOME", home)
+			project := filepath.Join(t.TempDir(), "project")
+			if err := os.MkdirAll(project, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			inst := session.NewInstanceWithTool(fmt.Sprintf("legacy-refusal-%d", n), project, "codex")
+			inst.Status = session.StatusWaiting
+			if tt.startPane {
+				startLegacyCodexPane(t, inst, tt.paneID)
+			}
+			for i, identity := range tt.rolloutIDs {
+				writeLegacyCodexRollout(t, home, identity, fmt.Sprintf("%02d", i+15))
+			}
+
+			peers := []*session.Instance{inst}
+			if tt.peer {
+				peer := session.NewInstanceWithTool(fmt.Sprintf("legacy-peer-%d", n), project, "codex")
+				peer.Status = session.StatusWaiting
+				peer.CodexSessionID = mismatch
+				startLegacyCodexPane(t, peer, candidate)
+				peers = append(peers, peer)
+			}
+			storage, err := session.NewStorageWithProfile(fmt.Sprintf("legacy_refusal_%d", n))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = storage.Close() })
+			if err := storage.SaveWithGroups(peers, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			before := countCodexAcceptanceArtifacts(t)
+			err = hydrateLegacyCodexIdentity(inst, peers, storage)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("hydration error = %v, want %q", err, tt.want)
+			}
+			if inst.CodexSessionID != "" || persistedCodexIdentity(t, storage, inst.ID) != "" {
+				t.Fatal("refused identity was retained in memory or storage")
+			}
+			if after := countCodexAcceptanceArtifacts(t); after != before {
+				t.Fatalf("refused hydration created lock/marker artifacts: before=%d after=%d", before, after)
+			}
+		})
+	}
+}
+
 func TestCodexAcceptanceGuardSerializesFenceAssignment(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -440,27 +648,36 @@ func TestCodexAcceptanceGuardRejectsNonLocalStructuredWait(t *testing.T) {
 	tests := []struct {
 		name string
 		inst *session.Instance
+		want string
 	}{
 		{
 			name: "SSH",
 			inst: &session.Instance{
-				ID: "remote-instance", Tool: "codex", CodexSessionID: "thread-remote",
-				SSHHost: "remote",
+				ID: "remote-instance", Tool: "codex", SSHHost: "remote",
 			},
+			want: "unavailable for remote or sandboxed",
 		},
 		{
 			name: "sandbox",
 			inst: &session.Instance{
-				ID: "sandbox-instance", Tool: "codex", CodexSessionID: "thread-sandbox",
-				Sandbox: &session.SandboxConfig{Enabled: true},
+				ID: "sandbox-instance", Tool: "codex", Sandbox: &session.SandboxConfig{Enabled: true},
 			},
+			want: "unavailable for remote or sandboxed",
+		},
+		{
+			name: "non-Codex",
+			inst: &session.Instance{ID: "claude-instance", Tool: "claude"},
+			want: "not Codex-compatible",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if err := hydrateLegacyCodexIdentity(tt.inst, []*session.Instance{tt.inst}, nil); err != nil {
+				t.Fatalf("out-of-scope target entered legacy hydration: %v", err)
+			}
 			guard, err := acquireCodexAcceptanceGuard(tt.inst, 10*time.Millisecond)
-			if guard != nil || err == nil || !strings.Contains(err.Error(), "unavailable for remote or sandboxed") {
+			if guard != nil || err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("guard=(%#v, %v), want explicit pre-send refusal", guard, err)
 			}
 		})
