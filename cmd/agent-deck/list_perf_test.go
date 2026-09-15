@@ -21,19 +21,22 @@ import (
 func TestListJSON_CodexProbeCount(t *testing.T) {
 	sb, env, calls := listPerfFixture(t)
 	started := time.Now()
+	defer func() {
+		data, err := os.ReadFile(calls)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		count := strings.Count(string(data), "show-environment")
+		t.Logf("100 stale Codex sessions: %v; show-environment subprocesses=%d", time.Since(started), count)
+		if count > 500 {
+			t.Errorf("show-environment subprocesses=%d, want <=500 (linear in 100 sessions)", count)
+		}
+		if strings.Contains(string(data), "CODEX_SESSION_ID") {
+			t.Error("status listing performed native Codex session discovery")
+		}
+	}()
 	runListFixture(t, sb, env)
-	data, err := os.ReadFile(calls)
-	if err != nil {
-		t.Fatal(err)
-	}
-	count := strings.Count(string(data), "show-environment")
-	t.Logf("100 stale Codex sessions: %v; show-environment subprocesses=%d", time.Since(started), count)
-	if count > 500 {
-		t.Fatalf("show-environment subprocesses=%d, want <=500 (linear in 100 sessions)", count)
-	}
-	if strings.Contains(string(data), "CODEX_SESSION_ID") {
-		t.Fatal("status listing performed native Codex session discovery")
-	}
 }
 
 func TestPerf_ColdStart_List100(t *testing.T) {
@@ -68,7 +71,7 @@ func listPerfFixture(t *testing.T) (*harness.Sandbox, []string, string) {
 		name := "agentdeck_" + id
 		rows[n] = &statedb.InstanceRow{
 			ID: id, Title: id, ProjectPath: sb.Home, GroupPath: "my-sessions",
-			Tool: "codex", Status: "waiting", TmuxSession: name,
+			Tool: "codex", Command: "codex", Status: "waiting", TmuxSession: name,
 			CreatedAt: time.Now().Add(-time.Hour), ToolData: json.RawMessage(`{}`),
 		}
 		fmt.Fprintln(&names, name)
@@ -94,9 +97,9 @@ while [ "$#" -gt 0 ]; do
   list-sessions) cat "$HOME/names"; exit 0;;
   list-panes) case "$*" in *'pane_pid'*) printf '0\n';; *'-a'*) cat "$HOME/panes";; *) printf '0\n';; esac; exit 0;;
   show-environment) exit 1;;
-  capture-pane) printf 'Working (esc to interrupt)\n'; exit 0;;
+  capture-pane) printf '⠋ Working (esc to interrupt)\n'; exit 0;;
   has-session) exit 0;;
-  display-message) printf '0\n'; exit 0;;
+  display-message) case "$*" in *window_activity*) printf '1\n';; *) printf '0\n';; esac; exit 0;;
  esac
  shift
 done
