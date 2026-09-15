@@ -1,4 +1,4 @@
-.PHONY: build run install clean dev release-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
+.PHONY: build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -223,3 +223,10 @@ test-web-e2e:
 
 # Full suite (default): unit + e2e.
 test-web: test-web-unit test-web-e2e
+
+# Build unpublished archives using the committed release assets.
+# Override with: make dist-local DIST_VERSION=1.16.10+local.custom DIST_OUTPUT=/tmp/dist
+DIST_VERSION ?=
+DIST_OUTPUT ?= dist-local
+dist-local:
+	go run ./tools/dist-local -version "$(DIST_VERSION)" -output "$(DIST_OUTPUT)"

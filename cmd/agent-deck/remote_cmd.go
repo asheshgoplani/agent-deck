@@ -123,6 +123,14 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("\nOptions:")
 		fmt.Println("  --all")
 		fmt.Println("        Update every configured remote that is older than this controller")
+		fmt.Println("  --from-build string")
+		fmt.Println("        Install release-layout archives from a local directory")
+		fmt.Println("  --force")
+		fmt.Println("        Allow reinstalling or downgrading")
+		fmt.Println("  --dry-run")
+		fmt.Println("        Verify artifacts and show destination paths without installing")
+		fmt.Println("  --json")
+		fmt.Println("        Output every result as JSON")
 	default:
 		printRemoteUsage()
 	}
@@ -326,6 +334,7 @@ func handleRemoteList(args []string) {
 			// (empty when never checked); Outdated is true when it is older
 			// than this controller.
 			Version          string `json:"version,omitempty"`
+			InstalledFrom    string `json:"installed_from,omitempty"`
 			VersionCheckedAt string `json:"version_checked_at,omitempty"`
 			Outdated         bool   `json:"outdated"`
 		}
@@ -340,6 +349,7 @@ func handleRemoteList(args []string) {
 			}
 			if state, ok := versions[name]; ok && state.Found {
 				row.Version = state.Version
+				row.InstalledFrom = state.InstalledFrom
 				row.VersionCheckedAt = state.CheckedAt.Format(time.RFC3339)
 				row.Outdated = state.Outdated(Version)
 			}
@@ -384,7 +394,7 @@ func probeRemoteVersions(ctx context.Context, remotes map[string]session.RemoteC
 		states[name] = session.RemoteVersionState{Version: version, Found: found, CheckedAt: time.Now()}
 	}
 	_ = session.RecordRemoteVersions(states)
-	return states
+	return session.LoadRemoteVersions()
 }
 
 func handleRemoteSessions(args []string) {
@@ -594,16 +604,37 @@ func handleRemoteRename(args []string) {
 func handleRemoteUpdate(args []string) {
 	fs := flag.NewFlagSet("remote update", flag.ExitOnError)
 	all := fs.Bool("all", false, "Update every configured remote that is older than this controller")
+	fromBuild := fs.String("from-build", "", "Install archives from a local build directory")
+	force := fs.Bool("force", false, "Allow reinstalling or downgrading")
+	dryRun := fs.Bool("dry-run", false, "Show the verified installation plan without changing remotes")
+	jsonOutput := fs.Bool("json", false, "Output every result as JSON")
 	_ = fs.Parse(reorderRemoteArgs(fs, args))
+	if fs.NArg() > 1 {
+		fmt.Fprintln(os.Stderr, "Error: expected one remote name or --all")
+		os.Exit(2)
+	}
+	opts := remoteUpdateCLIOptions{JSON: *jsonOutput, Update: session.RemoteUpdateOptions{Force: *force, DryRun: *dryRun}}
+	if *fromBuild != "" {
+		build, err := session.LoadLocalBuild(*fromBuild)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		opts.Update.LocalBuild = build
+	}
 
 	config, err := session.LoadUserConfig()
 	if err != nil {
-		fmt.Printf("Error: failed to load config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
 	if len(config.Remotes) == 0 {
-		fmt.Println("No remotes configured.")
+		if *jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("No remotes configured.")
+		}
 		return
 	}
 
@@ -615,23 +646,34 @@ func handleRemoteUpdate(args []string) {
 		}
 		rc, exists := config.Remotes[name]
 		if !exists {
-			fmt.Printf("Error: remote '%s' not found\n", name)
+			fmt.Fprintf(os.Stderr, "Error: remote '%s' not found\n", name)
 			os.Exit(1)
 		}
 		remotes = map[string]session.RemoteConfig{name: rc}
 	}
 
-	results := runRemoteUpdatesCLI(context.Background(), remotes, Version, remoteSweepWait)
-	if failed := session.CountRemoteUpdateFailures(results); failed > 0 {
-		fmt.Printf("\n%s\n", remoteUpdateSummary(results))
+	results := runRemoteUpdatesCLI(context.Background(), remotes, Version, remoteSweepWait, opts)
+	if *jsonOutput {
+		if err := writeRemoteUpdateJSON(os.Stdout, results); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	} else {
+		printRemoteUpdateTable(os.Stdout, results)
+	}
+	if session.CountRemoteUpdateFailures(results) > 0 {
 		os.Exit(1)
 	}
-	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
 }
 
 // remoteSweepWait bounds how long an explicit update waits for a sweep this
 // controller is already running (the TUI's startup sweep, typically).
 const remoteSweepWait = 2 * time.Minute
+
+type remoteUpdateCLIOptions struct {
+	Update session.RemoteUpdateOptions
+	JSON   bool
+}
 
 // runRemoteUpdatesCLI is the explicit `remote update` run. It first waits
 // up to wait for a sweep this controller is already running: racing it
@@ -639,7 +681,17 @@ const remoteSweepWait = 2 * time.Minute
 // afterwards, the remotes it covers are reported as being updated by it
 // (skipped, not failed) and the rest are updated here; otherwise this run
 // marks itself as the sweep so a later one waits in turn (#2244).
-func runRemoteUpdatesCLI(ctx context.Context, remotes map[string]session.RemoteConfig, target string, wait time.Duration) []session.RemoteUpdateResult {
+func runRemoteUpdatesCLI(ctx context.Context, remotes map[string]session.RemoteConfig, target string, wait time.Duration, options ...remoteUpdateCLIOptions) []session.RemoteUpdateResult {
+	opts := remoteUpdateCLIOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	if opts.Update.LocalBuild != nil {
+		target = opts.Update.LocalBuild.Version
+	}
+	if opts.Update.DryRun {
+		return runRemoteUpdates(ctx, remotes, target, true, opts)
+	}
 	names := remoteNames(remotes)
 	deadline := time.Now().Add(wait)
 	var announced bool
@@ -647,12 +699,12 @@ func runRemoteUpdatesCLI(ctx context.Context, remotes map[string]session.RemoteC
 		end, err := session.BeginRemoteSweep(names)
 		if err == nil {
 			defer end()
-			return runRemoteUpdates(ctx, remotes, target, true)
+			return runRemoteUpdates(ctx, remotes, target, true, opts)
 		}
 		if !errors.Is(err, session.ErrRemoteSweepRunning) || time.Now().After(deadline) {
 			break
 		}
-		if sweep, ok := session.RemoteSweepInProgress(); ok && !announced {
+		if sweep, ok := session.RemoteSweepInProgress(); ok && !announced && !opts.JSON {
 			fmt.Printf("A remote sweep is already running on this controller (pid %d, started %s); waiting for it...\n", sweep.PID, sweep.StartedAt.Format(time.Kitchen))
 			announced = true
 		}
@@ -674,13 +726,15 @@ func runRemoteUpdatesCLI(ctx context.Context, remotes map[string]session.RemoteC
 				Note:    fmt.Sprintf("sweep already in progress, remote %s is being updated by %d", name, sweep.PID),
 			}
 			results = append(results, skipped)
-			fmt.Printf("\n═══ Remote: %s (%s) ═══\n  %s\n", name, remotes[name].Host, formatRemoteUpdateResult(skipped))
+			if !opts.JSON {
+				fmt.Printf("\n═══ Remote: %s (%s) ═══\n  %s\n", name, remotes[name].Host, formatRemoteUpdateResult(skipped))
+			}
 			continue
 		}
 		rest[name] = remotes[name]
 	}
 	if len(rest) > 0 {
-		results = append(results, runRemoteUpdates(ctx, rest, target, true)...)
+		results = append(results, runRemoteUpdates(ctx, rest, target, true, opts)...)
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 	return results
@@ -699,23 +753,27 @@ func remoteSweepPoll(wait time.Duration) time.Duration {
 // per-remote reporting. installMissing mirrors the explicit CLI contract
 // (a remote without agent-deck gets it installed); the unattended paths
 // pass false.
-func runRemoteUpdates(ctx context.Context, remotes map[string]session.RemoteConfig, target string, installMissing bool) []session.RemoteUpdateResult {
-	return session.UpdateRemotes(ctx, remotes, target, session.RemoteUpdateOptions{
-		InstallMissing: installMissing,
-		Progress: func(line string) {
-			fmt.Printf("  %s\n", line)
-		},
-		OnResult: func(r session.RemoteUpdateResult) {
-			fmt.Printf("  %s\n", formatRemoteUpdateResult(r))
-		},
-		NewRunner: func(name string, rc session.RemoteConfig) session.RemoteBinaryInstaller {
+func runRemoteUpdates(ctx context.Context, remotes map[string]session.RemoteConfig, target string, installMissing bool, options ...remoteUpdateCLIOptions) []session.RemoteUpdateResult {
+	cli := remoteUpdateCLIOptions{}
+	if len(options) > 0 {
+		cli = options[0]
+	}
+	opts := cli.Update
+	opts.InstallMissing = installMissing
+	if !cli.JSON {
+		opts.Progress = func(line string) { fmt.Printf("  %s\n", line) }
+		opts.OnResult = func(r session.RemoteUpdateResult) { fmt.Printf("  %s\n", formatRemoteUpdateResult(r)) }
+	}
+	opts.NewRunner = func(name string, rc session.RemoteConfig) session.RemoteBinaryInstaller {
+		if !cli.JSON {
 			fmt.Printf("\n═══ Remote: %s (%s) ═══\n", name, rc.Host)
-			if remoteUpdateRunner != nil {
-				return remoteUpdateRunner(name, rc)
-			}
-			return session.NewSSHRunner(name, rc)
-		},
-	})
+		}
+		if remoteUpdateRunner != nil {
+			return remoteUpdateRunner(name, rc)
+		}
+		return session.NewSSHRunner(name, rc)
+	}
+	return session.UpdateRemotes(ctx, remotes, target, opts)
 }
 
 // remoteUpdateRunner builds the installer for the CLI update paths. A
@@ -867,7 +925,12 @@ func reorderRemoteArgs(fs *flag.FlagSet, args []string) []string {
 	// Collect known value flags from the FlagSet
 	valueFlags := map[string]bool{}
 	fs.VisitAll(func(f *flag.Flag) {
-		valueFlags["--"+f.Name] = true
+		isBool := false
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok {
+			isBool = bf.IsBoolFlag()
+		}
+		valueFlags["--"+f.Name] = !isBool
+		valueFlags["-"+f.Name] = !isBool
 	})
 
 	var flags, positional []string
