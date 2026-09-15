@@ -41,7 +41,7 @@ show-environment)
   touch "$STATUS_FIXTURE/entered"
   while [ -f "$STATUS_FIXTURE/gate" ]; do sleep 0.02; done
  fi
- printf 'CODEX_SESSION_ID=peer-%s\n' "$3";;
+ printf 'CODEX_SESSION_ID=\n';;
  esac;;
 has-session) exit 0;;
 capture-pane) printf '⠋ Working (esc to interrupt)\n';;
@@ -178,13 +178,13 @@ func TestStatusPassSweepPinsOwnershipBeyondTTL(t *testing.T) {
 		if strings.Contains(line, "list-sessions") {
 			scans++
 		}
-		if strings.Contains(line, "show-environment") && !strings.Contains(line, "CODEX_SESSION_ID") {
+		if strings.Contains(line, "show-environment") {
 			peers++
 		}
 	}
-	t.Logf("12 production UpdateStatus calls across TTL: scans=%d peer reads=%d elapsed=%s", scans, peers, time.Since(start))
-	if scans != 1 || peers != 12 {
-		t.Fatalf("ownership sweep scans=%d reads=%d, want 1 and 12", scans, peers)
+	t.Logf("12 production UpdateStatus calls across TTL: scans=%d environment reads=%d elapsed=%s", scans, peers, time.Since(start))
+	if scans != 1 || peers != 24 {
+		t.Fatalf("ownership sweep scans=%d environment reads=%d, want 1 and 24", scans, peers)
 	}
 }
 

@@ -40,7 +40,7 @@ list-windows) cat "$SWEEP_FIXTURE/windows";;
 list-panes) case "$*" in *pane_pid*) printf '1\n';; *-a*) cat "$SWEEP_FIXTURE/panes";; *) printf '0\n';; esac;;
 show-environment)
  if [ "$#" = 3 ]; then
-  printf 'CODEX_SESSION_ID=owned-%s\n' "$3"
+  printf 'CODEX_SESSION_ID=\n'
  else
   case "$*" in *CODEX_SESSION_ID*) sleep 0.8;; esac
  fi;;

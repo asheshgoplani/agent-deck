@@ -174,12 +174,10 @@ func (i *Instance) recordCodexOwnership(id string) {
 	}
 	codexOwnershipCache.Lock()
 	defer codexOwnershipCache.Unlock()
-	snapshot := codexOwnershipCache.bySocket[i.tmuxSession.SocketName]
-	if snapshot.claims == nil {
-		snapshot.claims = &codexOwnershipClaims{}
-		codexOwnershipCache.bySocket[i.tmuxSession.SocketName] = snapshot
+	claims := codexOwnershipCache.bySocket[i.tmuxSession.SocketName].claims
+	if claims == nil {
+		return // Refresh registers claims before starting any subprocess reads.
 	}
-	claims := snapshot.claims
 	claims.Lock()
 	defer claims.Unlock()
 	if claims.updates != nil {
