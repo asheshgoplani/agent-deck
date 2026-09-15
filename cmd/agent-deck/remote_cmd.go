@@ -134,7 +134,7 @@ func printRemoteUsage() {
 	fmt.Println("Manage remote agent-deck instances.")
 	fmt.Println("Run commands: agent-deck remote <name> <command> [arguments]")
 	fmt.Println("  Use remote exec <name> <command> when a name matches a management command.")
-	fmt.Println("  list/status, show/output/send, add/launch, session start/stop/restart/fork/archive/unarchive/set,")
+	fmt.Println("  list/status/health, show/output/send, add/launch, session start/stop/restart/fork/archive/unarchive/set,")
 	fmt.Println("  worktree list/info/cleanup, mcp list/attach, skill list/attach, group list/reorder")
 	fmt.Println()
 	fmt.Println("Commands:")

@@ -131,7 +131,7 @@ func RefreshPaneInfoCache() {
 	cmd := tmuxExecContext(ctx, DefaultSocketName(),
 		"list-panes", "-a", "-F",
 		tmuxFmt("#{session_name}", "#{pane_current_command}", "#{pane_dead}", "#{window_index}", "#{pane_index}", "#{pane_title}"))
-	output, err := cmd.Output()
+	output, err := commandOutput(cmd)
 	if err != nil {
 		statusLog.Debug("pane_cache_refresh_failed", "error", err)
 		return

@@ -149,7 +149,7 @@ func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := commandStart(cmd); err != nil {
 		stdin.Close()
 		return nil, fmt.Errorf("start tmux -C: %w", err)
 	}
