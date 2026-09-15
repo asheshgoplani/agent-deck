@@ -115,3 +115,11 @@ GitHub tested merge revisions `d7407a82e2190f814c2710097a50c209116f1a8e`
 The later rebase carries the fixture path-helper lint fix and committed Linux
 baseline; it leaves the measured group implementation unchanged. Final-head
 CI is checked separately from these source-stamped before/after artifacts.
+
+The two later active comparisons on the unchanged rebased head completed
+measurement but flagged different non-group rows. They are retained in
+[run 34983096493, attempts 1 and 2](https://github.com/asheshgoplani/agent-deck/actions/runs/34983096493).
+The earlier zero-regression artifact comparison above remains a result of those
+specific runs, not a promise that every repeat passes. See REPORT.md for the
+calibration finding. CI makes this an explicit advisory warning while keeping
+measurement and correctness failures blocking; the threshold is unchanged.
