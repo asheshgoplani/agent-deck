@@ -1,53 +1,137 @@
-# PR #1952 verification results
+# PR fix/1978-send-delivery-truth verification results
+
+Supersedes PR #2043 on current `main` (27fac197, v1.16.9). Closes #1978 and
+#2033.
 
 ## Rebase evidence
 
-- Pre-rebase head: `ce4debeb6f3ea5b1cffdc9242eb598df4a3dede5`.
-- Rebased head before the final fixes: `70bb777fd94106162f81a208764f42d4cfce84bc` on current `origin/main`.
-- `git range-diff 92bb498f..ce4debeb origin/main..70bb777f` mapped all 16 PR commits one-for-one with `=`; no prior patch changed or disappeared.
-- The rebased branch was pushed with `--force-with-lease` before findings work began.
+- Base: `main` at `27fac197` (v1.16.9). PR #2043 head: `a55ffb5c`
+  (merge-base `01c011b5`, v1.15.0).
+- All four #2043 commits were cherry-picked in order with their author's
+  attribution: `b1449dac`, `e93619d1`, `562ca158`, `a55ffb5c`.
+- Two textual conflicts, both in `cmd/agent-deck/session_cmd.go` against
+  #2263 (composer guard never interrupts; full-body Ctrl-C-then-resend
+  recovery removed). Both resolved in favour of `main`: no interrupt branch
+  exists to gate, so #2043's hook probe now classifies the verdict instead of
+  gating a recovery. `deliveryQueued` sits beside `deliveryComposerBlocked`.
+- `RESULTS.md` conflict: this file is a per-PR record; rewritten for this PR.
+- The #2043 test file was adapted at the first cherry-pick: assertions that
+  the Ctrl-C recovery *fires* for an idle target became assertions that it
+  never fires (#2263 policy).
 
-## Findings addressed
+## Round-2 findings addressed
 
-- Made `SourceRemote` part of every pending-inbox identity decision: event fingerprint, turn fingerprint, last-wins producer replacement, and consumer collapse. This keeps local `boxb:nightly-build`, remote `nightly-build`, and caller-prefixed remote IDs distinct even when their visible child spelling overlaps.
-- Removed prefix inference from `RemoteScopedChildID`; arbitrary caller-selected IDs are always scoped rather than mistaken for an already-scoped record.
-- Converted injected CLI writers to error-tracking writers so `inbox` and `remote drain` cannot return success after partial/failed output.
-- Made writer-status distinguish a missing heartbeat from permission/I/O/read failures; only `ENOENT` means “never stamped,” while other failures report unknown liveness.
-- Fixed the suppressed-session absence test to fail on `ReadInboxEvents` errors instead of passing vacuously.
-- Rechecked earlier findings on orphan export, suppression, completion-copy deduplication, corrupt ledger reads, recurring terminal turns, fetch/probe ordering, consumed-ledger bounds, and writer probe fail-closed behavior; their current-head fixes remain present after rebase.
+1. **Queued is an acknowledgement, not a snapshot.** #2043 returned `queued`
+   the moment the hook read busy. Now `queued` (Claude targets only) needs
+   all of: the hook read busy *before* the send, token movement after it (a
+   new copy of the body relative to the pre-send pane baseline; a composer
+   paste marker is never movement), the composer not holding the body, and
+   Claude's own queued-messages placeholder in the same frame — recognised
+   as the composer element (divider-framed block, parsed like the unsent
+   prompt checks, holding exactly "Press up to edit queued messages"), never
+   as a substring elsewhere in the pane. A target that
+   was already mid-turn gets no `submitted` from the activity heuristic or
+   from held-then-cleared either; it settles on turn advancement (the
+   message's own user record in the transcript, `session.TurnAdvanced`), on
+   the queue acknowledgement, or falls through to today's failure verdict.
+   Hook idle before the send and busy after, with the body landed and the
+   composer clear, is `submitted` (the hook edge is the harness's
+   prompt-submit acknowledgement); that is also the only hook verdict on the
+   non-Claude arrival path.
+2. **Interrupts.** No automated path sends Ctrl-C (inherited from #2263);
+   every busy-target test asserts zero `SendCtrlC` calls and exactly one
+   `SendKeysAndEnter`.
+3. **Turn identity.** `--wait`/`--stream` bind to the transcript user record
+   of the exact message. With a pre-send cursor, position is the proof. With
+   the path learned only after the send (fresh session), the search from
+   offset 0 accepts only records whose timestamp parses and is at or after
+   `sentAt` — no tolerance window, and a missing or malformed timestamp is
+   rejected. Prompt comparison is whitespace/CRLF normalised. Slash commands
+   (Claude records them as `<command-name>` meta records) and non-Claude
+   tools keep the timestamp path.
+4. **Stream boundary.** A turn-scoped stream stops with an error event when
+   a later human prompt appears before end_turn (`ErrStreamTurnInterrupted`);
+   the `--wait` reader already refused that boundary.
+5. **One `--timeout` budget** shared by identity, completion and reply
+   (#2043 spent it up to three times). A reply with text but no end-of-turn
+   at the deadline returns as incomplete with a warning; `stop_sequence` and
+   `max_tokens` end a turn like the streamer.
+6. **Stream errors** before streaming are emitted as JSONL error events.
+7. **Conductor reply attribution.** The bridge's wait path
+   (`conductor_bridge.py`) returned `session output` (the latest reply)
+   after `--wait -q` instead of the turn-bound stdout the CLI printed. It
+   now returns that stdout as the attributed reply, including an empty one
+   when the turn ended with no text (logged, never substituted with the
+   latest output). The remaining `sentAt` consumers are the `last_sent_at`
+   self-heal clock and `waitForFreshOutput` (non-Claude and slash commands).
+8. **Truncation** (CodeRabbit on #2273). A transcript shorter than the
+   pre-send cursor or a turn's start offset has lost the boundary; identity,
+   reply and turn-scoped stream refuse with `ErrTranscriptTruncated` instead
+   of rescanning from offset 0 and replaying earlier turns
+   (`TestIssue1978_TruncatedTranscriptRefusesInsteadOfReplaying`; mutation
+   back to the reset-to-zero paths fails it).
+9. **Test determinism.** The partial-record case is proven by one scan
+   (`scanTurnIdentity`) returning a cursor before the partial line; the
+   `--wait` red-path test drives `awaitClaudeWaitReply`, the single helper
+   `handleSessionSend` obtains a Claude reply from (identity, completion and
+   reply in one call), rather than the phases separately.
 
-## Revert proofs
+What this does not claim: `handleSessionSend` itself is not exercised by a
+test (it calls `os.Exit` and needs a tmux pane); the wiring from it to
+`awaitClaudeWaitReply` and `executeSend` is reviewed, not tested.
 
-Only the production hunks were reverse-applied while the new tests remained, and the focused tests were run in `golang:1.25`:
+## Test evidence
 
-```text
-RED_EXIT=1
-TestIssue1952_OriginSeparatesEveryIdentityRule:
-  local and remote records share EventFingerprint
-TestIssue1952_OutputFailuresAreNotSuccess:
-  remote drain output failure reported success
+All `go test` runs in `golang:1.25` under Docker (`--network none`,
+`--cap-drop ALL`, unprivileged); the host ran only `gofmt`, `go build`,
+`go vet`.
+
+### Red (failing first)
+
+Against the rebased #2043 head (before the round-2 commit), the new CLI tests:
+
+```
+--- FAIL: TestIssue1978_HookBusyWithoutArrivalIsNotQueued
+--- FAIL: TestIssue1978_StaleIdenticalBodyIsNotTokenMovement
+--- FAIL: TestIssue1978_HookIdleBeforeSendThenBusyIsSubmitted
+--- FAIL: TestIssue1978_NoWaitQueuedNeedsArrivalToo
+--- FAIL: TestIssue1978_NonClaudeArrivalPathReportsQueuedWhenHookBusy (since replaced by ...SubmittedOnHookEdge)
 ```
 
-The production patch was then restored. With the fix present, these tests plus `TestIssue1952_WriterStatusReadFailureIsUnknown` pass.
+Mutation proofs on the final branch (tests untouched):
 
-## Container verification
+- drop the `NotBefore` guard / fresh reply budget / drop the movement gate:
+  `IdentityRejectsOlderIdenticalPromptBeforeSentAt`,
+  `HookBusyWithoutArrivalIsNotQueued`, `StaleIdenticalBodyIsNotTokenMovement`,
+  `NoWaitQueuedNeedsArrivalToo`, `WaitReplyHonoursOneDeadline` fail.
+- Codex round (restore the 2s tolerance and pass missing timestamps, disable
+  the stream boundary, drop the affordance requirement, ignore
+  `turnAdvanced`, re-enable the marker-based success on the arrival path):
+  `IdentityGuardRejectsRecordInsideOldToleranceWindow`,
+  `IdentityGuardRejectsMissingOrMalformedTimestamp`,
+  `TurnScopedStreamEndsAtInterruption`, `QueuedNeedsTheQueueAffordance`,
+  `TurnAdvancementIsSubmission`, `NonClaudeNewPasteMarkerIsNeverASuccess`
+  fail; re-enabling the active shortcut on a busy-before target alone fails
+  `ActiveHeuristicIsNotSubmissionOnABusyTarget`.
+- Bridge: `test_wait_reply_is_the_turn_bound_stdout_not_the_latest_output`
+  fails on the unpatched bridge (`LATEST OTHER TURN` returned);
+  `test_empty_attributed_reply_is_preserved_never_substituted` fails on the
+  first fix (fallback substituted the latest output for an empty reply).
+- Round-2 review: `TestIssue1978_QueueAffordanceIsTheComposerElementNotASubstring`
+  fails with the free-substring check restored.
 
-- `go build ./...`: PASS in `golang:1.25`.
-- `go vet ./...`: PASS in `golang:1.25`.
-- Focused regression tests across `./internal/session` and `./cmd/agent-deck`: PASS.
-- A raw `go test ./...` in the stock Go image reaches unrelated environment-dependent tests but lacks CI's tmux/zoxide packages and non-root permission behavior. The authoritative full race suite is the repository's GitHub Actions PR gate, which installs those dependencies.
+### Green
 
-## Invariant check
-
-- Bounds: existing summary, inbox-line, retry, generation, and stale-record bounds are unchanged.
-- Ordering: last-wins still preserves first-seen identity order; the identity is now `(SourceRemote, ChildSessionID)`.
-- Idempotence: repeated drains of one remote retain the same structured origin and fingerprint; separate origins no longer destroy one another.
-- Fail closed: fetch, writer probe, unreadable heartbeat, unreadable export, target resolution, and output failures all return non-success rather than an empty/successful drain.
-- Sibling parity: both inbox producer replacement and consumer collapse use the same origin-aware key; both `EventFingerprint` and `TurnFingerprint` enumerate the same provenance field; both CLI entry paths track writer errors.
-
-## CI state
-
-- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
-- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
-- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
-- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.
+- `go test -race -count=2 ./internal/send/... ./internal/session/... ./cmd/agent-deck/... -run
+  'TestIssue1978|TestInterrupt|TestNoWaitClassifies|TestTurnIdentity|TestAwaitTurn|TestStreamTranscript|TestResend|TestNoResend|TestIssue2104|TestWaitForFreshOutput|TestSendWithRetry|Issue1409|Issue1413|Issue876|Issue1793|Issue1855|Issue1777|Stream|Guard'`
+  — all three packages `ok`.
+- Full `./internal/send/... ./internal/session/... ./cmd/agent-deck/...`:
+  `internal/send` ok; the failures in `internal/session` and
+  `cmd/agent-deck` are byte-identical to unpatched `main` in the same image
+  (every one is `tmux not found`; the `golang:1.25` image has no tmux).
+- Bridge: `pytest conductor/tests/` under a throwaway HOME: the two new
+  tests pass; `test_bridge_proxy.py` fails 6 cases only when run after the
+  other files and passes alone, identically on the unpatched tree
+  (pre-existing ordering dependence).
+- Host: `gofmt -l` clean, `go build ./...` ok, `go vet` ok on the touched
+  packages, `py_compile` ok on the bridge.

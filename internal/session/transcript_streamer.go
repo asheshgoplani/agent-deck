@@ -84,6 +84,12 @@ func (c StreamConfig) WithDefaults() StreamConfig {
 // ErrStreamTimeout is returned when IdleTimeout elapses with no progress.
 var ErrStreamTimeout = errors.New("stream idle timeout")
 
+// ErrStreamTurnInterrupted is returned by a turn-scoped stream when a later
+// human prompt appears before the requested turn reached end_turn: the turn
+// was interrupted, and streaming on would report the next turn's answer as
+// this one's (PR #2043 round 2). An error event is written first.
+var ErrStreamTurnInterrupted = errors.New("turn interrupted before end_turn")
+
 // claudeRecordHeader mirrors the record envelope at the top of each JSONL
 // line. We reparse message subfields after confirming type.
 type claudeRecordHeader struct {
@@ -108,6 +114,17 @@ type claudeMessageEnvelope struct {
 // Returns nil on natural end_turn stop, ctx.Err on cancel, or
 // ErrStreamTimeout on idle timeout (with an error event already written).
 func StreamTranscript(ctx context.Context, path, sessionID string, sentAt time.Time, w io.Writer, cfg StreamConfig) error {
+	return streamTranscript(ctx, path, sessionID, sentAt, 0, false, w, cfg)
+}
+
+// StreamTranscriptForTurn streams only records after the durable user record
+// identified by id. This is the turn-safe entry point for session send
+// --stream; unlike StreamTranscript it has no timestamp freshness heuristic.
+func StreamTranscriptForTurn(ctx context.Context, id TurnIdentity, sessionID string, w io.Writer, cfg StreamConfig) error {
+	return streamTranscript(ctx, id.Path, sessionID, time.Time{}, id.StartOffset, true, w, cfg)
+}
+
+func streamTranscript(ctx context.Context, path, sessionID string, sentAt time.Time, initialOffset int64, turnScoped bool, w io.Writer, cfg StreamConfig) error {
 	cfg = cfg.WithDefaults()
 
 	enc := newEventEncoder(w)
@@ -122,10 +139,11 @@ func StreamTranscript(ctx context.Context, path, sessionID string, sentAt time.T
 	}
 
 	st := newStreamerState(sentAt, cfg, enc)
+	st.turnScoped = turnScoped
 
 	// Tail loop: re-open on missing-file (Claude may not have flushed
 	// yet for a fresh session) but never block if the file exists.
-	var offset int64
+	offset := initialOffset
 	lastProgress := time.Now()
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
@@ -219,11 +237,20 @@ type streamerState struct {
 	textMsgID  string
 	textTS     string
 	toolsSince int // tool events emitted since the last text flush
+
+	// turnScoped streams end at the requested turn's boundary in both
+	// directions: a later human prompt before end_turn is an interruption,
+	// never the continuation of this turn.
+	turnScoped bool
 }
 
 func newStreamerState(sentAt time.Time, cfg StreamConfig, enc *eventEncoder) *streamerState {
+	sentAtSkew := time.Time{}
+	if !sentAt.IsZero() {
+		sentAtSkew = sentAt.Add(-250 * time.Millisecond)
+	}
 	return &streamerState{
-		sentAtSkew: sentAt.Add(-250 * time.Millisecond),
+		sentAtSkew: sentAtSkew,
 		cfg:        cfg,
 		enc:        enc,
 		seen:       make(map[string]struct{}),
@@ -245,8 +272,13 @@ func (s *streamerState) consumeFile(path string, offset int64) (int64, bool, boo
 		return offset, false, false, "", err
 	}
 	// Truncation detection: if the file shrank below our offset, reset
-	// to 0 and replay — rare, but we must not seek past EOF.
+	// to 0 and replay — rare, but we must not seek past EOF. A turn-scoped
+	// stream cannot replay: offset 0 precedes the send, so the records it
+	// would emit belong to earlier turns. Refuse instead.
 	if fi.Size() < offset {
+		if s.turnScoped {
+			return offset, false, false, "", fmt.Errorf("%w: stream started at offset %d, transcript is %d bytes", ErrTranscriptTruncated, offset, fi.Size())
+		}
 		offset = 0
 	}
 	if offset > 0 {
@@ -294,6 +326,10 @@ func (s *streamerState) consumeFile(path string, offset int64) (int64, bool, boo
 				return offset, progressed, stopped, stopReason, nil
 			}
 		case "user":
+			if s.turnScoped && s.isHumanPrompt(line) {
+				s.flushText("")
+				return offset, progressed, false, "", ErrStreamTurnInterrupted
+			}
 			s.handleUser(hdr)
 		}
 	}
@@ -303,7 +339,21 @@ func (s *streamerState) consumeFile(path string, offset int64) (int64, bool, boo
 	return offset, progressed, false, "", nil
 }
 
+// isHumanPrompt reports whether a raw user record is a submitted prompt (as
+// opposed to a tool_result record, which belongs to the running turn).
+func (s *streamerState) isHumanPrompt(line []byte) bool {
+	var rec turnRecord
+	if json.Unmarshal(line, &rec) != nil {
+		return false
+	}
+	_, human := humanPrompt(rec)
+	return human
+}
+
 func (s *streamerState) isFresh(ts string) bool {
+	if s.sentAtSkew.IsZero() {
+		return true
+	}
 	if ts == "" {
 		return true // no timestamp = assume fresh
 	}
