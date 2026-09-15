@@ -284,7 +284,7 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		}
 	}
 
-	if err := PruneHookArtifacts(); err != nil {
+	if err := pruneHookArtifactsOnStartup(); err != nil {
 		storageLog.Warn("hook_cleanup_failed", slog.String("error", err.Error()))
 	}
 

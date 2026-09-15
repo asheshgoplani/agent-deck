@@ -10,9 +10,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+type hookCleanupRoots struct {
+	hooks    string
+	registry string
+}
+
+var hookStartupCleanup = struct {
+	sync.Mutex
+	completed map[hookCleanupRoots]bool
+}{completed: make(map[hookCleanupRoots]bool)}
+
+// Storage is also opened by periodic web refreshes. Only a successful first
+// open sweeps each root pair; explicit cleanup and deletion always run.
+func pruneHookArtifactsOnStartup() error {
+	registry, err := profileDataRootDir()
+	if err != nil {
+		return err
+	}
+	roots := hookCleanupRoots{hooks: GetHooksDir(), registry: registry}
+	hookStartupCleanup.Lock()
+	defer hookStartupCleanup.Unlock()
+	if hookStartupCleanup.completed[roots] {
+		return nil
+	}
+	if err := PruneHookArtifacts(); err != nil {
+		return err
+	}
+	hookStartupCleanup.completed[roots] = true
+	return nil
+}
 
 // PruneHookArtifacts removes orphaned hook artifact groups after a 24-hour
 // creation grace period. IDs in any profile, including archived sessions, are

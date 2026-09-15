@@ -173,6 +173,12 @@ func TestHookCleanupStartupThousandOrphans(t *testing.T) {
 	require.NoError(t, os.WriteFile(registered, []byte("{}"), 0600))
 	require.NoError(t, os.Chtimes(registered, old, old))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "fresh.sid"), []byte("anchor"), 0600))
+	// Simulate a new process while keeping the fixture's registry on disk.
+	registry, err := profileDataRootDir()
+	require.NoError(t, err)
+	hookStartupCleanup.Lock()
+	delete(hookStartupCleanup.completed, hookCleanupRoots{hooks: root, registry: registry})
+	hookStartupCleanup.Unlock()
 	before, beforeErr := os.ReadDir("/proc/self/fd")
 	restarted, err := NewStorageWithProfile("default")
 	require.NoError(t, err)
@@ -191,4 +197,22 @@ func TestHookCleanupStartupThousandOrphans(t *testing.T) {
 	} else {
 		t.Log("1000 old orphan files removed; registered + fresh preserved; /proc descriptor measurement unavailable")
 	}
+}
+
+func TestHookCleanupRepeatedStorageOpenDoesNotSweep(t *testing.T) {
+	_ = hookCleanupStorage(t)
+	root := GetHooksDir()
+	require.NoError(t, os.MkdirAll(root, 0700))
+	path := filepath.Join(root, "arrived-after-startup.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0600))
+	old := time.Now().Add(-48 * time.Hour)
+	require.NoError(t, os.Chtimes(path, old, old))
+	reopened, err := NewStorageWithProfile("default")
+	require.NoError(t, err)
+	require.NoError(t, reopened.Close())
+	_, err = os.Stat(path)
+	require.NoError(t, err, "routine storage reads must not repeat startup cleanup")
+	require.NoError(t, PruneHookArtifacts())
+	_, err = os.Stat(path)
+	require.True(t, os.IsNotExist(err), "explicit cleanup must still run")
 }

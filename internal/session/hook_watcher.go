@@ -243,7 +243,7 @@ func NewStatusFileWatcher(onChange func()) (*StatusFileWatcher, error) {
 
 	// The hooks root is shared by all profiles. An unreadable registry must
 	// preserve artifacts; polling still bounds descriptors on kqueue.
-	if err := PruneHookArtifacts(); err != nil {
+	if err := pruneHookArtifactsOnStartup(); err != nil {
 		hookLog.Warn("hook_prune_failed", slog.String("error", err.Error()))
 	}
 
