@@ -15,6 +15,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestRuntimeHealthStartupConfigAndProfileIsolation(t *testing.T) {
@@ -74,6 +75,9 @@ func TestRuntimeHealthStartupConfigAndProfileIsolation(t *testing.T) {
 }
 
 func TestHealthRemoteExecJSONParity(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Fatalf("health parity requires OpenSSH client: %v", err)
+	}
 	bin := channelsCLIBinary(t)
 	controller, remote, shim := t.TempDir(), t.TempDir(), t.TempDir()
 	configPath := filepath.Join(controller, ".config", "agent-deck", "config.toml")
@@ -158,7 +162,11 @@ func TestRuntimeHealthHeadlessWebStartup(t *testing.T) {
 	}
 	defer output.Close()
 	cmd := exec.Command(channelsCLIBinary(t), "-p", "selected", "web", "--no-tui", "--listen", address)
-	cmd.Env = sandboxedCLIEnv(home)
+	// A normal CLI binary does not have the Go test socket guard. Restore an
+	// explicit private base after sandboxedCLIEnv strips inherited TMUX variables.
+	socket, cleanupTmux := testutil.ShortTmuxSocket()
+	t.Cleanup(cleanupTmux) // resolves this same directory and kills before removal
+	cmd.Env = append(sandboxedCLIEnv(home), "TMUX_TMPDIR="+filepath.Dir(socket))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout, cmd.Stderr = output, output
 	if err := cmd.Start(); err != nil {
