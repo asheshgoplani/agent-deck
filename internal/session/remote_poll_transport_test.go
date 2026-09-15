@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -42,8 +43,8 @@ func TestRemotePollTransportCloseDoesNotWait(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	ch := newRemoteChannel("test", "test", nil)
-	terminated := false
-	ch.closeFn = func() { terminated = true; go func() { <-release }() }
+	var terminated atomic.Bool
+	ch.closeFn = func() { terminated.Store(true); go func() { <-release }() }
 	ch.up.Store(true)
 	done := make(chan struct{})
 	go func() { ch.Close(); close(done) }()
@@ -52,7 +53,7 @@ func TestRemotePollTransportCloseDoesNotWait(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Close waited for transport cleanup")
 	}
-	if !terminated {
+	if !terminated.Load() {
 		t.Fatal("Close returned before signaling transport termination")
 	}
 	if ch.Connected() {
@@ -260,7 +261,7 @@ func TestRemotePollTransportExitingProcessTerminatesSSH(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRemotePollTransportExitingProcessTerminatesSSH$")
-			cmd.Env = append(os.Environ(), "AGENTDECK_EXIT_TRANSPORT_HELPER=1", "AGENTDECK_PID_FILE="+pidFile, "AGENTDECK_EOF_FILE="+eofFile, "PATH="+dir+":"+os.Getenv("PATH"))
+			cmd.Env = append(os.Environ(), "GORACE="+os.Getenv("GORACE")+" atexit_sleep_ms=0", "AGENTDECK_EXIT_TRANSPORT_HELPER=1", "AGENTDECK_PID_FILE="+pidFile, "AGENTDECK_EOF_FILE="+eofFile, "PATH="+dir+":"+os.Getenv("PATH"))
 			if phase == "pending-hello" {
 				cmd.Env = append(cmd.Env, "AGENTDECK_PENDING_HELLO=1")
 			}
