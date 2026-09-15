@@ -411,6 +411,14 @@ func ReconcileRemoteChannels(config map[string]RemoteConfig) {
 	}
 }
 
+// ownedChannelSSH includes transports still waiting for their ready frame, before
+// the channel has installed its close callback. Only these client processes are
+// ours; shared ControlPersist masters keep their SSH-managed idle lifetime.
+var ownedChannelSSH = struct {
+	sync.Mutex
+	close map[*exec.Cmd]func()
+}{close: make(map[*exec.Cmd]func())}
+
 // CloseRemoteChannels closes every channel (TUI shutdown), which ends each
 // remote's agent process instead of leaving it to sshd's keepalive.
 func CloseRemoteChannels() {
@@ -419,6 +427,18 @@ func CloseRemoteChannels() {
 	for name, ch := range remoteChannels {
 		ch.Close()
 		delete(remoteChannels, name)
+	}
+	// Every channel context is cancelled before taking the process registry lock.
+	// A dial either registered its process already, or observes cancellation
+	// before starting it. Signal all registered clients before returning to Quit.
+	ownedChannelSSH.Lock()
+	closers := make([]func(), 0, len(ownedChannelSSH.close))
+	for _, closeFn := range ownedChannelSSH.close {
+		closers = append(closers, closeFn)
+	}
+	ownedChannelSSH.Unlock()
+	for _, closeFn := range closers {
+		closeFn()
 	}
 }
 
@@ -429,10 +449,14 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, nil, nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
 	// A stale ControlMaster socket would hang this dial forever (#1421),
 	// which the hello timeout would then read as a slow remote.
-	CleanStaleSSHSockets()
+	if r.cleanChannelSocketsFn != nil {
+		r.cleanChannelSocketsFn()
+	} else {
+		_ = os.MkdirAll(sshControlDir, 0700)
+		CleanStaleSSHSockets()
+	}
 	// Same argv construction as every other ssh exec in this file (host
 	// validated above, options fixed, remote command shell-quoted).
 	cmd := exec.CommandContext(ctx, "ssh", r.sshChannelArgs(r.buildRemoteCommand("remote-agent"))...) //nolint:gosec // see comment above
@@ -447,19 +471,38 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = sshWaitDelay
+	ownedChannelSSH.Lock()
+	defer ownedChannelSSH.Unlock()
+	if err := ctx.Err(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, nil, nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, err
 	}
+	logger := sessionLog
+	var closeOnce sync.Once
 	closeFn := func() {
-		_ = stdin.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			sessionLog.Warn("remote_channel_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
-		}
+		closeOnce.Do(func() {
+			ownedChannelSSH.Lock()
+			_ = stdin.Close()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			delete(ownedChannelSSH.close, cmd)
+			ownedChannelSSH.Unlock()
+			// Kill only this owned SSH client. Shared ControlPersist masters are
+			// owned by SSH and expire by their configured idle timeout.
+			go func() {
+				_ = cmd.Wait()
+				if detail := strings.TrimSpace(stderr.String()); detail != "" {
+					logger.Warn("remote_channel_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+				}
+			}()
+		})
 	}
+	ownedChannelSSH.close[cmd] = closeFn
 	return stdin, stdout, closeFn, nil
 }
 
@@ -799,10 +842,10 @@ func (c *RemoteChannel) markDownGen(gen uint64) {
 	for _, ch := range pending {
 		ch <- remoteChannelReply{Code: -1, Error: errChannelInterrupted.Error()}
 	}
-	// Cleanup can wait for SSH to exit. Never hold the channel or registry
-	// lock, or make shutdown and request cancellation wait for it.
+	// Terminate the owned process before returning to shutdown. The transport
+	// close callback must reap asynchronously so cancellation stays prompt.
 	if closeFn != nil {
-		go closeFn()
+		closeFn()
 	}
 }
 

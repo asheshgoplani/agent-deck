@@ -1,0 +1,71 @@
+name: Remote poll round 2 Docker proof
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  docker-proof:
+    if: github.head_ref == 'fix/remote-poll-nonblocking-2285'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [main, r1, fixed]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Prepare reviewed revision and regression tests
+        env:
+          REVISION: ${{ matrix.revision }}
+        run: |
+          case "$REVISION" in
+            main) revision=7d2302fb8a41c5fcab7a441d56729b4b6547885a ;;
+            r1) revision=87cf89e544f4366ec464d4420160676793fa8bc9 ;;
+            fixed) revision=$(git rev-parse HEAD) ;;
+          esac
+          git worktree add --detach /tmp/proof "$revision"
+          cp internal/ui/remote_poll_baseline_test.go /tmp/proof/internal/ui/
+          cp internal/session/remote_poll_transport_test.go /tmp/proof/internal/session/
+          if [ "$REVISION" != fixed ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/proof/internal/session/ssh.go')
+          source = path.read_text().replace('type SSHRunner struct {', 'type SSHRunner struct {\n cleanChannelSocketsFn func() // Test compilation only; baseline ignores injection.')
+          path.write_text(source)
+          PY
+          fi
+          mkdir -p evidence
+          git -C /tmp/proof rev-parse HEAD | tee evidence/revision.txt
+      - name: Provision Docker test dependencies
+        run: |
+          mkdir -p /tmp/image
+          cat > /tmp/image/Dockerfile <<'DOCKER'
+          FROM golang:1.25
+          RUN apt-get update -qq && apt-get install -y --no-install-recommends tmux openssh-client git procps zoxide && groupadd -g 1000 decktest && useradd -u 1000 -g 1000 -m decktest
+          DOCKER
+          docker build -t remote-poll-proof /tmp/image
+          docker run --rm -v "$PWD":/src -w /src -v proof-gomod:/tmp/gomod -e GOMODCACHE=/tmp/gomod remote-poll-proof sh -c 'go mod download && chmod -R a+rwX /tmp/gomod'
+      - name: Docker regression evidence
+        env:
+          REVISION: ${{ matrix.revision }}
+        run: |
+          set +e
+          docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
+            -v /tmp/proof:/src -w /src -v proof-gomod:/tmp/gomod \
+            -e HOME=/tmp/h -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/h/.cache \
+            -e GOFLAGS=-mod=mod -e AGENTDECK_SKIP_UPDATE_CHECK=1 \
+            remote-poll-proof sh -c 'go test -race -v -count=1 -timeout 10m ./internal/session ./internal/ui -run "TestRemotePoll"' > evidence/tests.txt 2>&1
+          result=$?
+          cat evidence/tests.txt
+          echo "$result" > evidence/exit-code.txt
+          if [ "$REVISION" = fixed ]; then exit "$result"; fi
+          test "$result" -ne 0
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: remote-poll-proof-${{ matrix.revision }}
+          path: evidence/

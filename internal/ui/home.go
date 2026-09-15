@@ -7900,6 +7900,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateCheckMsg:
 		return h, h.handleUpdateCheck(msg)
 
+	case remotePollRetryFailedMsg:
+		h.setError(msg.err)
+		return h, nil
+
 	case remoteFetchRoundMsg:
 		// Fan out: each remote answers with its own remoteSessionsFetchedMsg.
 		// Outstanding counts add up so an overlapping round (ctrl+r during
@@ -11911,6 +11915,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Restart session (recreate tmux session with resume)
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeRemoteGroup && item.Level == 0 {
+				return h, h.retryRemotePoll(item.RemoteName)
+			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				// Block restart during animations to prevent concurrent restarts
 				if h.hasActiveAnimation(item.Session.ID) {
@@ -17154,7 +17161,7 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 	// pill read 0 for users with only remote sessions.
 	h.remoteSessionsMu.RLock()
 	for name, sessions := range h.remoteSessions {
-		if state, known := h.remotePolls[name]; known && state.LastPollStatus != "ok" {
+		if state, known := h.remotePolls[name]; h.remoteFromCache[name] || (known && state.LastPollStatus != "ok") {
 			continue
 		}
 		for _, rs := range sessions {
@@ -20468,7 +20475,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	if hasPoll && poll.LastPollError != "" {
 		trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
 		if poll.LastPollStatus == "auth_failed" {
-			trailer += " " + DimStyle.Render("(paused; remote list --retry)")
+			trailer += " " + DimStyle.Render("(paused; R retry)")
 		}
 	} else if hasPoll && poll.LastPollStatus == "unknown" && !fromCache {
 		trailer = " " + DimStyle.Render("· unknown")
@@ -20477,11 +20484,18 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		}
 	} else if fromCache {
 		// Honest staleness: this is the startup snapshot, not live state yet.
-		trailer = " " + DimStyle.Render("— cached, refreshing…")
+		trailer = " " + DimStyle.Render("· cached, refreshing…")
 	} else if fetching {
 		// A fetch is in flight: what is shown is the last answer, and the
 		// header says so instead of leaving the user to guess.
 		trailer += " " + DimStyle.Render("· refreshing…")
+	}
+
+	if hasPoll && poll.LastPollMS != nil {
+		trailer += " " + DimStyle.Render(fmt.Sprintf("· poll %dms", *poll.LastPollMS))
+	}
+	if selected && (!hasPoll || poll.LastPollStatus != "auth_failed") {
+		trailer += " " + DimStyle.Render("(R retry)")
 	}
 
 	b.WriteString(fmt.Sprintf("%s%s %s%s%s%s%s\n",
@@ -20531,7 +20545,7 @@ func remoteStatusSuffix(running, waiting int) string {
 	return out
 }
 
-// renderRemoteLatencyMarker returns the colored ` — Xms` (or ` — offline`)
+// renderRemoteLatencyMarker returns the colored ` · network Xms` (or ` · network offline`)
 // suffix for a remote group header. Empty string when no measurement has
 // been taken yet so the header doesn't jitter on first paint. See #1103.
 //
@@ -20551,16 +20565,16 @@ func (h *Home) renderRemoteLatencyMarker(remoteName string, selected bool) strin
 	var color lipgloss.Color
 	switch {
 	case lat.Offline:
-		text = " — offline"
+		text = " · network offline"
 		color = lipgloss.Color("1") // red
 	case lat.MS < 50:
-		text = fmt.Sprintf(" — %dms", lat.MS)
+		text = fmt.Sprintf(" · network %dms", lat.MS)
 		color = lipgloss.Color("2") // green
 	case lat.MS <= 200:
-		text = fmt.Sprintf(" — %dms", lat.MS)
+		text = fmt.Sprintf(" · network %dms", lat.MS)
 		color = lipgloss.Color("3") // yellow
 	default:
-		text = fmt.Sprintf(" — %dms", lat.MS)
+		text = fmt.Sprintf(" · network %dms", lat.MS)
 		color = lipgloss.Color("1") // red
 	}
 

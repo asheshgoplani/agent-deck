@@ -1,4 +1,4 @@
-  ▾ remotes/dev (1) — cached, refreshing…
+  ▾ remotes/dev (1) · cached, refreshing… · poll 13570ms
     └─ ? Remote work claude · last known
-▶ ▾ remotes/dev (1) — cached, refreshing…
+▶ ▾ remotes/dev (1) · cached, refreshing… · poll 13570ms (R retry)
 ▶   └─ ? Remote work claude · last known

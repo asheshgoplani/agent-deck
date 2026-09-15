@@ -171,6 +171,10 @@ type SSHRunner struct {
 	// channel (#2174). Empty for runners built without a name.
 	name string
 
+	// cleanChannelSocketsFn isolates socket cleanup in subprocess tests.
+	// nil uses the shared production ControlMaster directory.
+	cleanChannelSocketsFn func()
+
 	// dialChannelFn lets tests stub the persistent channel's ssh subprocess
 	// (channelFor). nil = real SSH.
 	dialChannelFn func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)

@@ -1,4 +1,4 @@
-  ▾ remotes/dev (1) · unreachable: host down
+  ▾ remotes/dev (1) · unreachable: host down · poll 13570ms
     └─ ? Remote work claude · last known
-▶ ▾ remotes/dev (1) · unreachable: host down
+▶ ▾ remotes/dev (1) · unreachable: host down · poll 13570ms (R retry)
 ▶   └─ ? Remote work claude · last known

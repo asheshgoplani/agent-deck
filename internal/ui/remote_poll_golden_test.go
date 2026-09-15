@@ -20,7 +20,7 @@ func TestRemotePollGoldenFrames(t *testing.T) {
 		active, cached       bool
 	}{
 		{"unknown", "unknown", "", true, false},
-		{"cached", "unknown", "", true, true},
+		{"cached", "ok", "", true, true},
 		{"auth-failed", "auth_failed", "auth failed", false, true},
 		{"timeout", "timeout", "timeout", false, false},
 		{"host-down", "host_down", "host down", false, false},
@@ -29,7 +29,13 @@ func TestRemotePollGoldenFrames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTestHomeWithItems(120, 30, nil)
 			defer h.cancel()
-			h.remotePolls = map[string]session.RemotePollState{"dev": {LastPollStatus: tc.status, LastPollError: tc.reason}}
+			ms := int64(13570)
+			h.remotePolls = map[string]session.RemotePollState{"dev": {LastPollStatus: tc.status, LastPollError: tc.reason, LastPollMS: &ms}}
+			if tc.status == "unknown" {
+				state := h.remotePolls["dev"]
+				state.LastPollMS = nil
+				h.remotePolls["dev"] = state
+			}
 			h.remotePollActive = map[string]bool{"dev": tc.active}
 			h.remoteFromCache = map[string]bool{"dev": tc.cached}
 			rs := session.RemoteSessionInfo{ID: "s1", Title: "Remote work", Tool: "claude", Status: "running", RemoteName: "dev"}
@@ -41,7 +47,7 @@ func TestRemotePollGoldenFrames(t *testing.T) {
 				h.renderRemoteSessionItem(&frame, session.Item{Type: session.ItemTypeRemoteSession, RemoteName: "dev", RemoteSession: &rs, Level: 1, IsLastInGroup: true}, selected)
 			}
 			got := stripAnsi(frame.String())
-			if tc.status != "ok" && strings.Contains(got, "●") {
+			if (tc.status != "ok" || tc.cached) && strings.Contains(got, "●") {
 				t.Fatal("unreachable/unknown remote must not claim a live session")
 			}
 			path := filepath.Join("testdata", "remote_poll", tc.name+".txt")

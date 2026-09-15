@@ -1,7 +1,11 @@
 package ui
 
 import (
+	"fmt"
+	"sync/atomic"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -90,7 +94,7 @@ func (h *Home) remotePollUnavailable(name string) bool {
 	h.remoteSessionsMu.RLock()
 	defer h.remoteSessionsMu.RUnlock()
 	state, known := h.remotePolls[name]
-	return known && state.LastPollStatus != "ok"
+	return h.remoteFromCache[name] || (known && state.LastPollStatus != "ok")
 }
 
 func (h *Home) remotePollConfigMatches(name string, rc session.RemoteConfig) bool {
@@ -99,3 +103,43 @@ func (h *Home) remotePollConfigMatches(name string, rc session.RemoteConfig) boo
 	current, exists := h.remotePollConfig[name]
 	return h.remotePollConfig == nil || (exists && current.Host == rc.Host && current.GetProfile() == rc.GetProfile() && current.GetAgentDeckPath() == rc.GetAgentDeckPath())
 }
+
+// retryRemotePoll resets the selected host's persisted pause off the UI loop,
+// then schedules its normal fetch with the complete configured host list so
+// applying the result preserves the other hosts.
+func (h *Home) retryRemotePoll(name string) tea.Cmd {
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil {
+			return remotePollRetryFailedMsg{err}
+		}
+		rc, exists := config.Remotes[name]
+		if !exists {
+			return remotePollRetryFailedMsg{fmt.Errorf("remote %q is no longer configured", name)}
+		}
+		h.remotePollMu.Lock()
+		h.remoteSessionsMu.RLock()
+		active := h.remotePollActive[name]
+		h.remoteSessionsMu.RUnlock()
+		if active {
+			h.remotePollMu.Unlock()
+			return remotePollRetryFailedMsg{fmt.Errorf("remote %q poll is already in progress", name)}
+		}
+		err = session.ResetRemotePoll(name)
+		h.remotePollMu.Unlock()
+		if err != nil {
+			return remotePollRetryFailedMsg{err}
+		}
+		h.seedRemotePolls(config.Remotes)
+		names := make([]string, 0, len(config.Remotes))
+		for configured := range config.Remotes {
+			names = append(names, configured)
+		}
+		gen := atomic.AddUint64(&h.remoteFetchSeq, 1)
+		return remoteFetchRoundMsg{gen: gen, fetches: []tea.Cmd{
+			func() tea.Msg { return h.fetchOneRemote(gen, name, rc, names) },
+		}}
+	}
+}
+
+type remotePollRetryFailedMsg struct{ err error }
