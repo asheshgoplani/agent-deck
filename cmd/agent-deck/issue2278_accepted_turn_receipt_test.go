@@ -392,6 +392,106 @@ func TestLegacyCodexIdentityHydrationRefusesUntrustedCandidates(t *testing.T) {
 	}
 }
 
+func TestLegacyCodexIdentityHydrationRequiresCurrentGeneration(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codex")
+	t.Setenv("CODEX_HOME", home)
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	const identity = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	rollout := filepath.Join(home, "sessions", "2026", "09", "15", "rollout-test-"+identity+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rollout), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rollout, []byte(`{"type":"event_msg","payload":{"type":"agent_message"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := session.NewInstanceWithTool("legacy-empty-generation", project, "codex")
+	startLegacyCodexPane(t, inst, identity)
+	storage, err := session.NewStorageWithProfile("legacy_empty_generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	before := countCodexAcceptanceArtifacts(t)
+	err = hydrateLegacyCodexIdentity(inst, []*session.Instance{inst}, storage)
+	if err == nil || !strings.Contains(err.Error(), "current turn generation is unavailable") {
+		t.Fatalf("empty-generation hydration error = %v, want pre-acceptance refusal", err)
+	}
+	if inst.CodexSessionID != "" || persistedCodexIdentity(t, storage, inst.ID) != "" {
+		t.Fatal("empty-generation refusal retained identity in memory or storage")
+	}
+	if after := countCodexAcceptanceArtifacts(t); after != before {
+		t.Fatalf("empty-generation refusal created lock/marker artifacts: before=%d after=%d", before, after)
+	}
+}
+
+func TestFailedLegacyCodexHydrationPreservesOtherIdentities(t *testing.T) {
+	inst := session.NewInstanceWithTool("legacy-unrelated-identities", t.TempDir(), "codex")
+	inst.ClaudeSessionID = "claude-before"
+	inst.GeminiSessionID = "gemini-before"
+	inst.OpenCodeSessionID = "opencode-before"
+	inst.CopilotSessionID = "copilot-before"
+	inst.GeminiDetectedAt = time.Unix(11, 12).UTC()
+	inst.OpenCodeDetectedAt = time.Unix(13, 14).UTC()
+	startLegacyCodexPane(t, inst, "not-a-uuid")
+	for name, value := range map[string]string{
+		"CLAUDE_SESSION_ID":   "claude-from-pane",
+		"GEMINI_SESSION_ID":   "gemini-from-pane",
+		"OPENCODE_SESSION_ID": "opencode-from-pane",
+		"COPILOT_SESSION_ID":  "copilot-from-pane",
+	} {
+		if err := inst.GetTmuxSession().SetEnvironment(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+
+	type unrelatedIdentityState struct {
+		claudeID   string
+		claudeAt   time.Time
+		geminiID   string
+		geminiAt   time.Time
+		openCodeID string
+		openCodeAt time.Time
+		copilotID  string
+		copilotAt  time.Time
+		genericID  string
+		genericAt  time.Time
+	}
+	snapshot := func() unrelatedIdentityState {
+		return unrelatedIdentityState{
+			claudeID: inst.ClaudeSessionID, claudeAt: inst.ClaudeDetectedAt,
+			geminiID: inst.GeminiSessionID, geminiAt: inst.GeminiDetectedAt,
+			openCodeID: inst.OpenCodeSessionID, openCodeAt: inst.OpenCodeDetectedAt,
+			copilotID: inst.CopilotSessionID, copilotAt: inst.CopilotDetectedAt,
+			genericID: inst.GenericSessionID, genericAt: inst.GenericDetectedAt,
+		}
+	}
+	beforeState := snapshot()
+	beforeArtifacts := countCodexAcceptanceArtifacts(t)
+
+	err := hydrateLegacyCodexIdentity(inst, []*session.Instance{inst}, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid live Codex session identity") {
+		t.Fatalf("malformed Codex identity error = %v, want refusal", err)
+	}
+	if after := snapshot(); after != beforeState {
+		t.Fatalf("failed Codex hydration mutated unrelated identities: before=%#v after=%#v", beforeState, after)
+	}
+	if inst.CodexSessionID != "" || !inst.CodexDetectedAt.IsZero() {
+		t.Fatalf("failed hydration retained Codex identity: id=%q detected=%v", inst.CodexSessionID, inst.CodexDetectedAt)
+	}
+	if after := countCodexAcceptanceArtifacts(t); after != beforeArtifacts {
+		t.Fatalf("failed hydration created lock/marker artifacts: before=%d after=%d", beforeArtifacts, after)
+	}
+}
+
 func TestCodexAcceptanceGuardSerializesFenceAssignment(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
