@@ -103,3 +103,20 @@ Run instructions and precise metric boundaries are in [README.md](README.md).
 [Suite run 34982145641](https://github.com/asheshgoplani/agent-deck/actions/runs/34982145641) completed every measurement, isolation-test and artifact step successfully. Its [Linux amd64 baseline](baseline/github-ubuntu-latest.json) contains N=3 at all three fleet sizes. Revision `d7407a82e2190f814c2710097a50c209116f1a8e` is GitHub's tested merge of suite head `f5ebb6d350c17b5c634b77ee7084c1767d3e9eac` into the health stack. This provides a clean command-exit receipt independent of the local Docker storage failure. Hosted-runner timing is a separate machine class and must not be compared against the ARM64 table.
 
 The first run was capture-only. Committing its matching runner baseline activates the advisory 25% p95 comparison on subsequent runs. A successful advisory workflow wrapper is insufficient: inspect the comparison step and its regression rows. Required promotion still needs repeated quiet-run calibration and an agreed variance policy.
+
+## Advisory calibration finding
+
+The final improvement's first active comparison and its unchanged-head rerun
+both completed measurement but failed comparison, with different rows flagged.
+[Run 34983096493](https://github.com/asheshgoplani/agent-deck/actions/runs/34983096493)
+retains both attempts. Attempt 1 flagged 500-session list time/calls, a slow-SSH
+count and auth timing. Attempt 2 cleared those rows but flagged small-fleet
+status/model startup and a different slow-SSH count. This limits the stability
+claim of the N=3 hosted-runner baseline; it does not erase the earlier clean
+before/after result or establish causal regressions from group aggregation.
+
+CI keeps measurement failures blocking and comparison failures explicitly
+advisory, with a warning and failed-comparison summary. The comparator still
+returns nonzero at the same25% threshold. No green advisory job should be read
+as an accepted performance gate. Required promotion remains on hold pending
+repeatability calibration and isolated attribution of overlapping SSH counts.

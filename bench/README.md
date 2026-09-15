@@ -37,3 +37,15 @@ See REPORT.md for measured costs, limitations and the separate optimization evid
 ## Shared runtime health dependency
 
 The suite PR is stacked on runtime health (#2289), which in turn includes the status-loop fix (#2290). The UI resource probe calls the existing `health.Start` and `health.Report` APIs, preserving `rss_bytes`, `open_fds` and nullable unsupported values. There is no second platform sampler. Original-main measurements use the same driver with a pre-health UI harness and explicitly mark resource readings unavailable.
+
+## Advisory CI policy
+
+Measurement, isolation or build failures fail the job. Comparison failures keep
+their nonzero outcome and regression rows, emit a workflow warning and add an
+explicit failed-comparison summary, but do not fail the advisory job. A green
+job therefore proves measurement execution, not performance acceptance.
+
+Two unchanged-head three-sample runs flagged different non-group metrics,
+including startup outliers and overlapping SSH counts. Preserve these failures
+and calibrate sampling/variance before removing comparison `continue-on-error`
+to make it required. Do not widen the comparison threshold to erase them.
