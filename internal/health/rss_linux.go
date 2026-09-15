@@ -21,6 +21,10 @@ func residentBytes() *uint64 {
 	if err != nil {
 		return nil
 	}
-	value := pages * uint64(os.Getpagesize())
+	pageSize := os.Getpagesize()
+	if pageSize <= 0 {
+		return nil
+	}
+	value := pages * uint64(pageSize)
 	return &value
 }
