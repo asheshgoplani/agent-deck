@@ -471,6 +471,7 @@ func (s *SessionDataService) refreshStatuses(instances []*session.Instance) {
 		hooksByInstance = s.loadHookStatuses()
 	}
 
+	var statusPass session.StatusUpdatePass
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -494,6 +495,6 @@ func (s *SessionDataService) refreshStatuses(instances []*session.Instance) {
 		if inst.GetTmuxSession() == nil {
 			continue
 		}
-		_ = inst.UpdateStatus()
+		_ = statusPass.UpdateStatus(inst)
 	}
 }

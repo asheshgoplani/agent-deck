@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
-	"github.com/fsnotify/fsnotify"
 )
 
 // Issue #1114: Badge update signal channel from hook to attach.
@@ -39,8 +38,7 @@ import (
 //     drops a per-session file under the effective badge-updates data dir.
 //
 //   - Attach side → WatchBadgeUpdates(ctx, tmuxSessionName, w, configEnabled, ready)
-//     watches the same directory via fsnotify (already a project dep
-//     for hook/event dirs), and when the file for THIS session
+//     polls only the file for THIS session, and when it
 //     changes, reads the new title and emits the OSC through `w`. In
 //     production `w` is `os.Stdout`, which the attach process owns;
 //     the outer iTerm2 sees the OSC directly.
@@ -51,8 +49,7 @@ import (
 // and the attach process to poll or subscribe. Polling has latency
 // (visible badge lag) and subscribing requires a control-mode socket
 // that we'd then have to multiplex. The file-signal approach reuses the
-// same fsnotify machinery as the existing status event channel — zero
-// new dependencies, same operational shape for ops.
+// existing status event file convention with no new dependencies.
 
 // badgeUpdatesDirEnv lets tests redirect the signal directory away from
 // the real badge-updates path so parallel runs do not
@@ -79,7 +76,7 @@ func BadgeUpdatesDir() string {
 // EmitITermBadgeViaTty path.
 //
 // Atomic via tmp + rename — same idiom as WriteStatusEvent — so the
-// fsnotify CREATE/WRITE the watcher sees never points at a partial file.
+// reader never sees a partial file.
 // tmuxSessionName is used verbatim as the filename; tmux session names
 // are constrained enough (no slashes) that the path stays single-segment.
 func WriteBadgeUpdate(tmuxSessionName, title string) error {
@@ -107,10 +104,7 @@ func WriteBadgeUpdate(tmuxSessionName, title string) error {
 // emitITermBadge apply (iTerm2 detection + configEnabled), so the
 // watcher cannot bypass the user's opt-out.
 //
-// ready, if non-nil, is closed once the fsnotify watch is registered.
-// Callers that race a Write against the watcher's startup (i.e. tests)
-// must wait on ready before writing — fsnotify drops events that fire
-// before Add() returns.
+// ready, if non-nil, is closed after the initial file read.
 //
 // Called from Attach() in its own goroutine; the ctx cancel that runs
 // on detach is what stops it.
@@ -146,18 +140,6 @@ func WatchBadgeUpdates(ctx context.Context, tmuxSessionName string, w io.Writer,
 		emitITermBadge(w, title, configEnabled)
 	}
 
-	var events <-chan fsnotify.Event
-	var fsnotifyErrors <-chan error
-	if watcher, err := fsnotify.NewWatcher(); err == nil {
-		if err := watcher.Add(dir); err == nil {
-			defer watcher.Close()
-			events = watcher.Events
-			fsnotifyErrors = watcher.Errors
-		} else {
-			watcher.Close()
-		}
-	}
-
 	// Catch-up: if the hook fired before the watcher registered, we'd
 	// miss the event. Read the file once at startup so a rename that
 	// completed during agent-deck's attach setup still updates the
@@ -176,30 +158,9 @@ func WatchBadgeUpdates(ctx context.Context, tmuxSessionName string, w io.Writer,
 		case <-ctx.Done():
 			return
 		case <-poll.C:
-			// Some filesystems report atomic rename events on the temporary
-			// file only. The low-rate poll is a change-detect fallback for
-			// that case and emits only when content changes.
+			// Poll only this session so retained badge files do not cost
+			// a descriptor each on kqueue. Emit only when content changes.
 			emitCurrent()
-		case ev, ok := <-events:
-			if !ok {
-				events = nil
-				continue
-			}
-			// Filter strictly on filename — concurrent attaches in the
-			// same iTerm2 window must not steal each other's badges.
-			if filepath.Base(ev.Name) != tmuxSessionName {
-				continue
-			}
-			emitCurrent()
-		case _, ok := <-fsnotifyErrors:
-			if !ok {
-				fsnotifyErrors = nil
-				continue
-			}
-			// fsnotify errors are non-fatal here; the next event will
-			// retry. We deliberately do NOT log to stdout because that's
-			// the iTerm2 tty in production — a stray log line would
-			// corrupt the user's display.
 		}
 	}
 }

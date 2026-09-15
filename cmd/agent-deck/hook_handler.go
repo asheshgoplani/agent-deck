@@ -541,76 +541,11 @@ func getHooksDir() string {
 	return session.GetHooksDir()
 }
 
-// cleanStaleHookFiles removes hook status files older than 24 hours.
+// cleanStaleHookFiles prunes orphan artifacts using all profile registries.
 func cleanStaleHookFiles() {
-	hooksDir := getHooksDir()
-	entries, err := os.ReadDir(hooksDir)
-	if err != nil {
-		return
+	if err := session.PruneHookArtifacts(); err != nil {
+		hookHandlerLog.Warn("hook_prune_failed", slog.String("error", err.Error()))
 	}
-
-	cutoff := time.Now().Add(-24 * time.Hour)
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".generation.json") {
-			continue // generation controls are never age-reaped
-		}
-		if strings.HasSuffix(entry.Name(), ".lock") {
-			info, err := entry.Info()
-			if err != nil || !info.ModTime().Before(cutoff) {
-				continue
-			}
-			id := strings.TrimSuffix(entry.Name(), ".lock")
-			if strings.HasSuffix(entry.Name(), ".codex-writer.lock") {
-				id = strings.TrimSuffix(entry.Name(), ".codex-writer.lock")
-			}
-			if _, err := os.Stat(filepath.Join(hooksDir, id+".json")); err == nil {
-				continue
-			}
-			if _, err := os.Stat(filepath.Join(hooksDir, id+".generation.json")); err == nil {
-				continue
-			}
-			path := filepath.Join(hooksDir, entry.Name())
-			f, err := os.OpenFile(path, os.O_RDWR, 0600)
-			if err != nil {
-				continue
-			}
-			if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
-				_ = os.Remove(path)
-				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-			}
-			_ = f.Close()
-			continue
-		}
-		ext := filepath.Ext(entry.Name())
-		if entry.IsDir() || (ext != ".json" && ext != ".sid") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(hooksDir, entry.Name()))
-		}
-	}
-	// Crash-orphaned unique temp files are safe to reap by age. WalkDir does
-	// not follow symlinked directories, preserving sandbox scope boundaries.
-	root, rootErr := os.OpenRoot(hooksDir)
-	if rootErr != nil {
-		return
-	}
-	defer func() { _ = root.Close() }()
-	_ = filepath.WalkDir(hooksDir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil || entry.IsDir() || !strings.Contains(entry.Name(), ".tmp-") {
-			return nil
-		}
-		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
-			if rel, err := filepath.Rel(hooksDir, path); err == nil {
-				_ = root.Remove(rel)
-			}
-		}
-		return nil
-	})
 }
 
 // handleHooks handles the "hooks" CLI subcommand for manual hook management.

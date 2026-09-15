@@ -844,13 +844,8 @@ type Home struct {
 	// remoteCreateSink is an optional override used by tests to capture what
 	// the new-session dialog forwards to the remote-create path (#1353) without
 	// opening an SSH connection. When nil, createRemoteSessionWithOptions runs.
-	remoteCreateSink func(remoteName string, opts session.RemoteAddOptions) tea.Cmd
-	// remoteAccountsFetcher is an optional override used by tests to replace
-	// the SSH fetch of a remote's account slots when its dialog opens.
-	remoteAccountsFetcher func(remoteName string) tea.Cmd
-	// remoteMCPsFetcher is the same override for the fetch of a remote's MCP
-	// names (its `mcp list --quiet`, names only) when its dialog opens.
-	remoteMCPsFetcher func(remoteName string) tea.Cmd
+	remoteCreateSink             func(remoteName string, opts session.RemoteAddOptions) tea.Cmd
+	remoteCreationCatalogFetcher func(remoteName string) tea.Cmd
 	// remoteAccountsGen numbers each opening of the remote new-session dialog;
 	// an account or MCP fetch answers for the opening that requested it and
 	// is dropped otherwise, so a slow answer for an earlier opening can never
@@ -1300,8 +1295,9 @@ func (h *Home) actionKey(action string) string {
 
 // deletedSessionEntry holds a deleted session for undo restore
 type deletedSessionEntry struct {
-	instance  *session.Instance
-	deletedAt time.Time
+	instance    *session.Instance
+	deletedAt   time.Time
+	cleanupDone <-chan struct{}
 }
 
 // getLayoutMode returns the current layout mode based on terminal width
@@ -6062,6 +6058,7 @@ func (h *Home) backgroundStatusUpdate() {
 
 	tracker := h.getTransitionTracker()
 
+	var statusPass session.StatusUpdatePass
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
@@ -6095,7 +6092,7 @@ func (h *Home) backgroundStatusUpdate() {
 		g.Go(func() error {
 			oldStatus := inst.GetStatusThreadSafe()
 			instStart := time.Now()
-			_ = inst.UpdateStatus()
+			_ = statusPass.UpdateStatus(inst)
 			instDur := time.Since(instStart)
 
 			if instDur > 50*time.Millisecond {
@@ -7468,8 +7465,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.instancesMu.Unlock()
 
 		// Push to undo stack before removing from group tree
+		var cleanupDone chan struct{}
 		if deletedInstance != nil {
 			h.pushUndoStack(deletedInstance)
+			cleanupDone = make(chan struct{})
+			h.undoStack[len(h.undoStack)-1].cleanupDone = cleanupDone
 			// Save to recent sessions for quick re-creation
 			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
 				uiLog.Warn("save_recent_session_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
@@ -7497,7 +7497,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update search items
 		h.search.SetItems(h.instances)
 		// Explicitly delete from database to prevent resurrection on reload
-		if err := h.storage.DeleteInstance(msg.deletedID); err != nil {
+		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
+		if err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
@@ -7512,7 +7513,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
 			}
 		}
-		return h, nil
+		return h, hookCleanupCmd(cleanup, cleanupDone)
 
 	case sessionClosedMsg:
 		// Keep session metadata, just reflect runtime termination state.
@@ -8048,10 +8049,26 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("forked '%s' on %s%s", msg.title, msg.remoteName, h.remoteActionTook(msg.remoteName, "fork", msg.sessionID)))
 		return h, h.fetchRemoteSessions
 
-	case remoteAccountsFetchedMsg:
-		h.applyRemoteAccounts(msg)
-	case remoteMCPsFetchedMsg:
-		h.applyRemoteMCPs(msg)
+	case remoteEditAccountsFetchedMsg:
+		h.applyRemoteEditAccounts(msg)
+		return h, nil
+	case remoteSwitchPreviewMsg:
+		return h, h.handleRemoteSwitchPreview(msg)
+	case remoteSwitchResultMsg:
+		return h, h.handleRemoteSwitchResult(msg)
+	case remoteCreationCatalogFetchedMsg:
+		if h.newDialog.IsVisible() && h.pendingRemoteName == msg.remoteName && h.remoteAccountsGen == msg.gen {
+			if msg.err != nil {
+				uiLog.Warn("remote_creation_catalog_failed", slog.String("remote", msg.remoteName), slog.String("error", msg.err.Error()))
+				reason := msg.err.Error()
+				if strings.ContainsAny(reason, "\r\n\x1b") || len(reason) > 160 {
+					reason = "Remote creation unavailable; check SSH and the remote version"
+				}
+				h.newDialog.SetError(reason)
+			} else {
+				h.newDialog.SetRemoteCreationCatalog(msg.catalog)
+			}
+		}
 		return h, nil
 
 	case remoteCreateDirNeededMsg:
@@ -8833,7 +8850,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.search.SetItems(h.instances)
 
 		// Delete from database and save
-		if err := h.storage.DeleteInstance(msg.sessionID); err != nil {
+		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.sessionID)
+		if err != nil {
 			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
 		}
 		h.forceSaveInstances()
@@ -8855,7 +8873,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			successMsg += fmt.Sprintf(", merged into %s", msg.targetBranch)
 		}
 		h.setError(fmt.Errorf("%s", successMsg))
-		return h, nil
+		return h, hookCleanupCmd(cleanup, nil)
 
 	case copyResultMsg:
 		if msg.err != nil {
@@ -9724,8 +9742,6 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.newDialog.SetError(optsErr)
 				return h, nil
 			}
-			// Remember the submitted tool for the next dialog open (UX top-3 #2).
-			rememberTool(h.stateDB(), opts.Tool)
 			h.newDialog.Hide()
 			h.pendingRemoteName = ""
 			h.clearError()
@@ -9921,9 +9937,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // showRemoteNewSessionDialog opens the new-session dialog for a remote target
-// and returns the command that fetches the remote's account slots and MCP
-// names for the dialog's account and MCP rows (see remoteAccountsFetchedMsg
-// and remoteMCPsFetchedMsg).
+// and fetches one authoritative snapshot of its creation fields and catalogs.
 func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	remoteName := item.RemoteName
 	if remoteName == "" {
@@ -9933,8 +9947,6 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	paths := h.remotePathSuggestions(remoteName)
 	h.newDialog.SetPathSuggestions(paths)
 	h.newDialog.SetRecentSessions(nil)
-	// Preselect the last-used tool (UX top-3 #2); explicit [default_tool] wins.
-	h.newDialog.SetDefaultTool(resolveInitialTool(session.GetDefaultTool(), rememberedTool(h.stateDB())))
 	h.pendingRemoteName = remoteName
 
 	groupPath := session.DefaultGroupPath
@@ -9974,23 +9986,17 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	// own defaults. Drop everything ShowInGroup inherited from this machine's
 	// config so only what the user sets in the dialog is forwarded.
 	h.newDialog.ResetRemoteDefaults()
+	h.newDialog.SetRemoteName(remoteName)
 	// The account and MCP rows now list the server's slots and MCPs, not this
 	// machine's: they arrive asynchronously so opening the dialog never
 	// blocks on SSH.
-	fetchAccounts := h.fetchRemoteAccounts
-	if h.remoteAccountsFetcher != nil {
-		fetchAccounts = h.remoteAccountsFetcher
-	}
-	fetchMCPs := h.fetchRemoteMCPs
-	if h.remoteMCPsFetcher != nil {
-		fetchMCPs = h.remoteMCPsFetcher
-	}
 	h.remoteAccountsGen++
 	gen := h.remoteAccountsGen
-	return tea.Batch(
-		stampRemoteFetch(gen, fetchAccounts(remoteName)),
-		stampRemoteFetch(gen, fetchMCPs(remoteName)),
-	)
+	fetchCatalog := h.fetchRemoteCreationCatalog
+	if h.remoteCreationCatalogFetcher != nil {
+		fetchCatalog = h.remoteCreationCatalogFetcher
+	}
+	return stampRemoteFetch(gen, fetchCatalog(remoteName))
 }
 
 // stampRemoteFetch marks a remote dialog fetch's answer with the generation
@@ -10002,10 +10008,7 @@ func stampRemoteFetch(gen uint64, cmd tea.Cmd) tea.Cmd {
 	}
 	return func() tea.Msg {
 		switch fetched := cmd().(type) {
-		case remoteAccountsFetchedMsg:
-			fetched.gen = gen
-			return fetched
-		case remoteMCPsFetchedMsg:
+		case remoteCreationCatalogFetchedMsg:
 			fetched.gen = gen
 			return fetched
 		default:
@@ -10026,83 +10029,6 @@ func remoteRunnerFor(remoteName string) (*session.SSHRunner, error) {
 		return nil, fmt.Errorf("remote '%s' not found", remoteName)
 	}
 	return session.NewSSHRunner(remoteName, rc), nil
-}
-
-// remoteAccountsFetchedMsg carries the account slot names configured on a
-// remote, for the new-session dialog opened on that remote.
-type remoteAccountsFetchedMsg struct {
-	remoteName string
-	accounts   []string
-	err        error
-	// gen is the remoteAccountsGen value of the dialog opening that asked.
-	gen uint64
-}
-
-// fetchRemoteAccounts asks the remote for its configured Claude account slots
-// (`accounts --json`, read-only). Only names come back; nothing local is sent.
-func (h *Home) fetchRemoteAccounts(remoteName string) tea.Cmd {
-	return func() tea.Msg {
-		runner, err := remoteRunnerFor(remoteName)
-		if err != nil {
-			return remoteAccountsFetchedMsg{remoteName: remoteName, err: err}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		accounts, err := runner.FetchAccounts(ctx)
-		return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: accounts, err: err}
-	}
-}
-
-// remoteMCPsFetchedMsg carries the MCP names defined on a remote, for the
-// new-session dialog opened on that remote.
-type remoteMCPsFetchedMsg struct {
-	remoteName string
-	mcps       []string
-	err        error
-	// gen is the remoteAccountsGen value of the dialog opening that asked.
-	gen uint64
-}
-
-// fetchRemoteMCPs asks the remote for the MCP names in its own config
-// (`mcp list --quiet`, read-only, names only; no definition or env travels). Nothing local is sent.
-func (h *Home) fetchRemoteMCPs(remoteName string) tea.Cmd {
-	return func() tea.Msg {
-		runner, err := remoteRunnerFor(remoteName)
-		if err != nil {
-			return remoteMCPsFetchedMsg{remoteName: remoteName, err: err}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		mcps, err := runner.FetchMCPs(ctx)
-		return remoteMCPsFetchedMsg{remoteName: remoteName, mcps: mcps, err: err}
-	}
-}
-
-// applyRemoteMCPs is applyRemoteAccounts for the MCP row: the names reach
-// the dialog only when it is still open for that remote and this opening
-// asked; a failed fetch (offline host, or a remote too old for
-// `mcp list --quiet`) leaves the row hidden rather than offering local names.
-func (h *Home) applyRemoteMCPs(msg remoteMCPsFetchedMsg) {
-	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName || msg.gen != h.remoteAccountsGen {
-		return
-	}
-	h.newDialog.SetRemoteMCPs(msg.mcps)
-}
-
-// applyRemoteAccounts hands the fetched slot names to the dialog when it is
-// still open for that remote and this opening asked for it; a late answer
-// for a closed dialog, a different remote or an earlier opening is dropped. A failed fetch (offline host, or a remote too
-// old for `accounts`) leaves the row hidden rather than offering local names.
-func (h *Home) applyRemoteAccounts(msg remoteAccountsFetchedMsg) {
-	if msg.err != nil || !h.newDialog.IsVisible() || h.pendingRemoteName != msg.remoteName {
-		return
-	}
-	// Same remote, dialog still open, but asked by an earlier opening: the
-	// user may already be choosing from a newer list, so keep it.
-	if msg.gen != h.remoteAccountsGen {
-		return
-	}
-	h.newDialog.SetRemoteAccounts(msg.accounts)
 }
 
 func (h *Home) remotePathSuggestions(remoteName string) []string {
@@ -11057,13 +10983,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "P", "shift+p":
-		// Edit session settings — local sessions only (remote mutators live
-		// on the remote host, not in our Storage).
+		// Edit session settings. A remote row opens the same dialog bound to
+		// that remote: its slots come from the remote and the harness/account
+		// switch runs there (remote_switch.go).
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.editSessionDialog.SetSize(h.width, h.height)
 				h.editSessionDialog.Show(item.Session)
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				return h, h.openRemoteEditSession(item)
 			}
 		}
 		return h, nil
@@ -12003,6 +11932,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.undoStack = h.undoStack[:len(h.undoStack)-1]
 		inst := entry.instance
 		return h, func() tea.Msg {
+			// Restart reuses the ID and can write anchors before the registry row
+			// is restored. Finish deleting old artifacts before creating new ones.
+			if entry.cleanupDone != nil {
+				<-entry.cleanupDone
+			}
 			err := inst.Restart()
 			return sessionRestoredMsg{
 				instance: inst,
@@ -12278,6 +12212,13 @@ func (h *Home) dismissConfirmDialog() {
 
 // confirmAction executes the confirmed destructive action.
 func (h *Home) confirmAction() tea.Cmd {
+	// A switch confirmation opened for a remote row runs on that remote.
+	if h.confirmDialog.GetRemoteName() != "" {
+		switch h.confirmDialog.GetConfirmType() {
+		case ConfirmSwitchAccount, ConfirmCrossHarnessTransfer:
+			return h.confirmRemoteSwitch()
+		}
+	}
 	switch h.confirmDialog.GetConfirmType() {
 	case ConfirmSwitchAccount:
 		sessionID, harness, account := h.confirmDialog.GetTargetID(), h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount()
@@ -13118,6 +13059,9 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if errMsg := h.editSessionDialog.Validate(); errMsg != "" {
 			h.editSessionDialog.SetError(errMsg)
 			return h, nil
+		}
+		if h.editSessionDialog.IsRemote() {
+			return h, h.commitRemoteEditSession()
 		}
 
 		sessionID := h.editSessionDialog.SessionID()
@@ -23350,4 +23294,42 @@ func (h *Home) renderFilterBarHint() string {
 		hint += dim.Render(" • ") + mark(timeFilterKey, false) + dim.Render(" time")
 	}
 	return hint
+}
+
+type remoteCreationCatalogFetchedMsg struct {
+	remoteName string
+	catalog    *session.RemoteCreationCatalog
+	err        error
+	gen        uint64
+}
+
+func (h *Home) fetchRemoteCreationCatalog(remoteName string) tea.Cmd {
+	return func() tea.Msg {
+		runner, err := remoteRunnerFor(remoteName)
+		if err != nil {
+			return remoteCreationCatalogFetchedMsg{remoteName: remoteName, err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		catalog, err := runner.FetchCreationCatalog(ctx)
+		return remoteCreationCatalogFetchedMsg{remoteName: remoteName, catalog: catalog, err: err}
+	}
+}
+
+// hookCleanupCmd keeps best-effort filesystem cleanup outside Update. Registry
+// failures return nil cleanup, preserving the handler's existing error logging.
+func hookCleanupCmd(cleanup func(), done chan struct{}) tea.Cmd {
+	if cleanup == nil {
+		if done != nil {
+			close(done)
+		}
+		return nil
+	}
+	return func() tea.Msg {
+		if done != nil {
+			defer close(done)
+		}
+		cleanup()
+		return nil
+	}
 }

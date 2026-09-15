@@ -39,3 +39,18 @@ func RefreshInstancesForCLIStatus(instances []*Instance) {
 		}
 	}
 }
+
+// ReloadHookStatus re-reads inst's hook status file from disk and applies it.
+// It is the cold-load half of RefreshInstancesForCLIStatus without the tmux
+// cache warm-up, for callers that poll only the hook signal, such as
+// `session send`'s busy probe (issues #1978, #2033), and it goes through the
+// same UpdateHookStatus ownership checks. A missing or unreadable file leaves
+// the instance untouched.
+func ReloadHookStatus(inst *Instance) {
+	if inst == nil {
+		return
+	}
+	if hs := readHookStatusFile(inst.ID); hs != nil {
+		inst.UpdateHookStatus(hs)
+	}
+}

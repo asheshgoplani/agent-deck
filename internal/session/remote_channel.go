@@ -796,10 +796,16 @@ func (c *RemoteChannel) markDownGen(gen uint64) {
 // stdout, or an error that names the exit status and stderr (the same shape
 // SSHRunner.run produces), errChannelDown when the transport failed before
 // the request went out, or errChannelInterrupted when it failed afterwards.
+//
+// On a non-zero exit the command's stdout is returned with the error: a
+// --json verb that refuses (switch-preview) or fails (switch) answers there.
 func (c *RemoteChannel) Request(ctx context.Context, args []string) ([]byte, error) {
 	r, err := c.roundTrip(ctx, remoteChannelRequest{Args: args})
 	if err != nil {
-		return nil, err
+		if r.Stdout == "" {
+			return nil, err
+		}
+		return []byte(r.Stdout), err
 	}
 	return []byte(r.Stdout), nil
 }

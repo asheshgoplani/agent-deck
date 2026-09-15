@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"io/fs"
 	"os"
@@ -348,7 +349,12 @@ func TestRemoteCommandParity(t *testing.T) {
 	}
 
 	// A server stub isolates transport semantics from send readiness and tool APIs.
-	write(filepath.Join(shim, "server"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\ncat\nprintf 'remote diagnostic' >&2\nexit 43\n", 0700)
+	catalogJSON, err := json.Marshal(session.RemoteCreationCatalog{Version: 1, Commands: map[string][]session.RemoteCreationField{"add": creationCommandFields("add"), "launch": creationCommandFields("launch")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverScript := "#!/bin/sh\nif [ \"$1\" = add ] && [ \"$2\" = --capabilities ]; then\ncat <<'CREATION_CATALOG'\n" + string(catalogJSON) + "\nCREATION_CATALOG\nexit 0\nfi\nprintf '%s\\n' \"$@\"\ncat\nprintf 'remote diagnostic' >&2\nexit 43\n"
+	write(filepath.Join(shim, "server"), serverScript, 0700)
 	write(filepath.Join(controller, ".config", "agent-deck", "config.toml"), fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = '%s'\n", filepath.Join(shim, "server")), 0600)
 	payload := strings.Repeat("line ' $value\n", 350)
 	messageFile := filepath.Join(t.TempDir(), "message.txt")
@@ -369,12 +375,17 @@ func TestRemoteCommandParity(t *testing.T) {
 		{"add", "--title", "--message-file=/must-not-read"},
 		{"session", "send", title, "--message-file=", "literal"},
 		{"session", "send", "--", title, "--message-file=/must-not-read"},
-		{"launch", "--allow-repo-scripts"},
 	} {
 		out, stderr, code := run(controller, "", append([]string{"remote", "lab"}, args...)...)
 		if code != 43 || stderr != "remote diagnostic" || out != strings.Join(args, "\n")+"\n" {
 			t.Errorf("literal argv %v: %d %q %q", args, code, out, stderr)
 		}
+	}
+	// An unregistered creation field must now stop at catalog validation,
+	// even when an old transport-only stub would have accepted arbitrary argv.
+	out, stderr, code = run(controller, "", "remote", "lab", "launch", "--allow-repo-scripts")
+	if code != 2 || out != "" || !strings.Contains(stderr, "unsupported remote creation field --allow-repo-scripts") {
+		t.Fatalf("unregistered creation field reached mutation: %d %q %q", code, out, stderr)
 	}
 	out, stderr, code = run(controller, "", "remote", "lab", "send", title, "--message-file", "/missing-superseded", "--message-file", messageFile)
 	if code != 43 || stderr != "remote diagnostic" || !strings.HasSuffix(out, payload) {
@@ -417,5 +428,63 @@ func TestRemoteCommandArgsSessionSet(t *testing.T) {
 	got, err := remoteCommandArgs(args)
 	if err != nil || !reflect.DeepEqual(got, args) {
 		t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+	}
+}
+
+// The switch family runs ON the remote host: the passthrough forwards the
+// session selector, the explicit target and the documented option set only.
+// A path-shaped or unknown option never reaches the remote, so the switch
+// engine there can never be pointed at a controller config dir or transcript.
+func TestRemoteCommandArgsSessionSwitchVerbs(t *testing.T) {
+	accept := [][]string{
+		{"session", "switch-preview", "task"},
+		{"session", "switch-preview", "task", "--to-account", "work", "--json"},
+		{"session", "switch-preview", "task", "--to-harness=codex", "--max-chars", "4000"},
+		{"session", "switch", "task", "--to-harness", "claude", "--to-account", "work", "--json"},
+		{"session", "switch", "task", "--to-harness", "codex", "--confirm-context-loss", "--no-start", "--max-bytes", "8000"},
+		{"session", "switch-account", "task", "work"},
+		{"session", "switch-account", "task", "work", "--no-restart", "--json", "-q"},
+		{"session", "switch", "--help"},
+		{"session", "switch-preview", "-h"},
+		{"session", "switch-preview", "my remote session", "--json"},
+		{"session", "switch", "4b3dee00-1789328952", "--to-account", "ashesh.personal_2"},
+	}
+	for _, args := range accept {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	reject := [][]string{
+		{"session", "switch"},
+		{"session", "switch-preview"},
+		{"session", "switch-account", "task"},
+		{"session", "switch-account", "task", "work", "extra"},
+		{"session", "switch", "task", "--config-dir", "/tmp/x"},
+		{"session", "switch", "task", "--to-harness"},
+		{"session", "switch", "task", "--to-account", "--json"},
+		{"session", "switch", "task", "--to-account=a=b"},
+		{"session", "switch", "task", "--max-bytes", "lots"},
+		{"session", "switch-preview", "task", "extra-positional"},
+		{"session", "switch", "task", "--to-harness", "../claude"},
+		{"session", "switch", "task", "--to-account", "wo rk"},
+		{"session", "switch-account", "task", "/etc/passwd"},
+		{"session", "switch", "task", "--"},
+		// Selector shapes: paths, shell metacharacters, traversal and flag
+		// lookalikes never reach the remote (its own selector resolves ids
+		// and titles; nothing path-shaped is a session name).
+		{"session", "switch", "/etc/passwd", "--to-account", "work"},
+		{"session", "switch-preview", "../task"},
+		{"session", "switch-preview", "task;id"},
+		{"session", "switch-preview", "$(id)"},
+		{"session", "switch-preview", "task\n"},
+		{"session", "switch-account", "-task", "work"},
+		{"session", "switch-account", "task", "../../.claude"},
+		{"session", "switch-account", "task", "$HOME"},
+	}
+	for _, args := range reject {
+		if _, err := remoteCommandArgs(args); err == nil {
+			t.Fatalf("remoteCommandArgs(%v) must be refused", args)
+		}
 	}
 }

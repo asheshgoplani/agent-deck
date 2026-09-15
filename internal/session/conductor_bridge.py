@@ -512,10 +512,14 @@ def send_to_conductor(
         return True, "", False
 
     # wait_for_reply=True: single-call flow used by heartbeats and the idle
-    # user-message path. `--wait` blocks until the assistant's reply is flushed;
-    # we then re-fetch the clean reply via get_session_output (`session output
-    # --json` -> content), rather than parsing the raw `--wait` pane capture.
-    # This mirrors the deployed bridge's reply-capture (issue #926).
+    # user-message path. `--wait -q` blocks until the assistant's reply is
+    # flushed and prints exactly that reply on stdout — the CLI binds it to
+    # the transcript record of THIS message (issue #1978), so it is the one
+    # attributed answer. Re-fetching `session output` afterwards would hand
+    # back whatever the latest reply happens to be (a later turn, another
+    # sender's queued message), reopening the attribution race. An empty
+    # stdout is a valid attributed result — the turn ended with no text — and
+    # is returned as such, never substituted with the latest output.
     result = run_cli(
         "session", "send", session, message,
         "--wait", "--timeout", f"{response_timeout}s", "-q",
@@ -536,7 +540,10 @@ def send_to_conductor(
             return False, "", True
         log.error("Failed to send to conductor: %s", stderr)
         return False, "", False
-    return True, get_session_output(session, profile=profile), False
+    reply = (result.stdout or "").strip()
+    if not reply:
+        log.info("Conductor %s: turn completed with an empty reply", session)
+    return True, reply, False
 
 
 # ---------------------------------------------------------------------------

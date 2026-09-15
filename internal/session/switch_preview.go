@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 )
@@ -289,8 +290,9 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 		preview.Refusal = &SwitchRefusal{
 			Code: "remote",
 			Message: fmt.Sprintf(
-				"session %q runs on %s; its transcript is on the remote host and cannot be "+
-					"migrated or read locally. Account switching for remote sessions is not supported.",
+				"session %q runs on %s over a bare SSH shell; its transcript is on that host and cannot be "+
+					"migrated or read here. Sessions owned by a remote deck switch on that host instead: "+
+					"`agent-deck remote <name> session switch <id> …`, or Shift+P on the remote row in the TUI.",
 				inst.Title, inst.SSHHost),
 		}
 		return preview
@@ -358,6 +360,19 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 			}
 			return preview
 		}
+		// A fresh cross-harness target starts the target CLI on this host (on
+		// a remote deck, the host the target runs on). Refuse before anything
+		// is staged, journaled, persisted or archived when it is absent; the
+		// executor repeats this preview before its first mutation.
+		if command := canonicalSwitchHarness(targetHarness); command != "" {
+			if _, lookErr := lookPathHarness(command); lookErr != nil {
+				preview.Refusal = &SwitchRefusal{
+					Code:    "target-harness-missing",
+					Message: fmt.Sprintf("target harness %q is not on this host's PATH; nothing was staged, copied or archived. Install %q on this host (or fix PATH for agent-deck) and retry.", command, command),
+				}
+				return preview
+			}
+		}
 		if maxBytes <= 0 {
 			maxBytes = DefaultHandoffMaxChars
 		}
@@ -391,6 +406,9 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 
 	return preview
 }
+
+// lookPathHarness resolves a target harness command; tests stub it.
+var lookPathHarness = exec.LookPath
 
 func refusalForCrossHarnessSource(inst *Instance, supplied *SwitchSourceSnapshot) *SwitchRefusal {
 	// A direct caller may not have inventory, but a conductor role on the row is

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -34,6 +35,10 @@ func applyAssertDone(message string, enabled bool) string {
 // handleLaunch combines add + start + optional send into a single command.
 // It creates a new session, starts it, and optionally sends an initial message.
 func handleLaunch(profile string, args []string) {
+	handleLaunchCommand(profile, args, nil)
+}
+
+func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.FlagSet)) {
 	fs := flag.NewFlagSet("launch", flag.ExitOnError)
 	title := fs.String("title", "", "Session title (defaults to folder name; an explicit title is locked against Claude's session-name sync)")
 	titleShort := fs.String("t", "", "Session title (short)")
@@ -128,7 +133,7 @@ func handleLaunch(profile string, args []string) {
 	// Claude Options rows.
 	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
 	claudeFlags := registerClaudeOptionFlags(fs)
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
@@ -138,6 +143,16 @@ func handleLaunch(profile string, args []string) {
 
 	// Issue #1143: auto-stop dormant child sessions.
 	idleTimeout := fs.String("idle-timeout", "", "Auto-stop session after this duration of no tmux output (Go duration: 30m, 1h, 24h). 0 or unset = disabled")
+
+	createDir := fs.Bool("create-dir", false, "Create the project directory when it does not exist")
+	capabilities := fs.Bool("capabilities", false, "Report authoritative creation fields and host catalogs (requires --json)")
+	startupQuery := fs.String("startup-query", "", "Claude startup query, delivered once on initial start")
+	var additionalPaths []string
+	fs.Func("additional-path", "Additional project directory on this host (repeatable)", func(value string) error { additionalPaths = append(additionalPaths, value); return nil })
+	if inspectFlags != nil {
+		inspectFlags(fs)
+		return
+	}
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck launch [path] [options]")
@@ -181,11 +196,20 @@ func handleLaunch(profile string, args []string) {
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
-	args = reorderArgsForFlagParsing(args)
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := fs.Parse(normalizeCreationArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
+	if *capabilities {
+		writeCreationCatalog(profile, fs, *jsonOutput)
+		return
+	}
+	validatedAdditionalPaths, pathValidationErr := validateCreationPaths(additionalPaths)
+	if pathValidationErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error(pathValidationErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	ensureTmuxInPathOrExit()
 
 	quietMode := *quiet || *quietShort
@@ -195,17 +219,6 @@ func handleLaunch(profile string, args []string) {
 	path, err := resolveLaunchPath(strings.Trim(fs.Arg(0), "'\""), mergeFlags(*group, *groupShort), profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to resolve path: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
-	// Verify path exists and is a directory
-	info, err := os.Stat(path)
-	if err != nil {
-		out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
-		os.Exit(1)
-	}
-	if !info.IsDir() {
-		out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -256,10 +269,26 @@ func handleLaunch(profile string, args []string) {
 	}
 	createNewBranch := *newBranch || *newBranchLong
 
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	queryMode := "new"
+	if *resumeSession != "" {
+		queryMode = "resume"
+	}
+	if *claudeFlags.continueMode {
+		queryMode = "continue"
+	}
+	if err := validateCreationStartupQuery(*startupQuery, firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), queryMode, true, extraArgFlags...); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Validate --resume-session requires Claude
 	if *resumeSession != "" {
 		tool := firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
-		if tool != "claude" {
+		if !session.IsClaudeCompatible(tool) {
 			out.Error("--resume-session only works with Claude sessions (-c claude)", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -277,9 +306,60 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
+	launchRegLock, launchRegLockErr := session.AcquireRegistrationLock(profile)
+	if launchRegLockErr != nil {
+		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", launchRegLockErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	releaseLaunchRegistration := func() {
+		if launchRegLock != nil {
+			launchRegLock.Release()
+			launchRegLock = nil
+		}
+	}
+	defer releaseLaunchRegistration()
+	if _, err := session.ParseIdleTimeoutFlag(*idleTimeout); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	var queryGroup string
+	if err := validateStartupQueryCapacity(profile, sessionGroup, sessionParent, path, *noParent, *inheritGroup || wtBranch != "", *startupQuery != "", &queryGroup); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *startupQuery != "" && queryGroup != "" {
+		sessionGroup = queryGroup
+		explicitGroupProvided = true
+	}
+	if err := validateMultiRepoCreation(path, validatedAdditionalPaths, wtBranch, createNewBranch, *worktreeLocation); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := validatePrimaryCreationPath(path, validatedAdditionalPaths); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	// Verify path exists and is a directory
+	if *createDir {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot, worktreeType string
-	if wtBranch != "" {
+	cleanupSingleWorktree := func() error { return nil }
+	if wtBranch != "" && len(validatedAdditionalPaths) == 0 {
 		backend, err := detectAndCreateBackend(path)
 		if err != nil {
 			out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
@@ -339,6 +419,8 @@ func handleLaunch(profile string, args []string) {
 				out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
+			ownedPath := worktreePath
+			cleanupSingleWorktree = func() error { return backend.RemoveWorktree(ownedPath, true) }
 			if setupErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
@@ -414,18 +496,6 @@ func handleLaunch(profile string, args []string) {
 	// location is always local — but it shares the predicate with `add` so the
 	// two can never disagree about what a duplicate is.
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
-	launchRegLock, launchRegLockErr := session.AcquireRegistrationLock(profile)
-	if launchRegLockErr != nil {
-		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", launchRegLockErr), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	releaseLaunchRegistration := func() {
-		if launchRegLock != nil {
-			launchRegLock.Release()
-			launchRegLock = nil
-		}
-	}
-	defer releaseLaunchRegistration()
 	freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
 	if reloadErr != nil {
 		out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
@@ -508,7 +578,7 @@ func handleLaunch(profile string, args []string) {
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
 	if len(channelFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			out.Error("--channel only supported for claude sessions (use -c claude); requires --channels on the claude binary", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -517,7 +587,7 @@ func handleLaunch(profile string, args []string) {
 
 	// Apply --plugin flags (catalog-only, claude-only, RFC docs/rfc/PLUGIN_ATTACH.md).
 	if len(pluginFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			out.Error("--plugin only supported for claude sessions (use -c claude); plugins enable Claude Code plugin features per-session via enabledPlugins", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -534,7 +604,7 @@ func handleLaunch(profile string, args []string) {
 
 	// Apply --extra-arg flags (claude only; mirror of handleAdd).
 	if len(extraArgFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			out.Error("--extra-arg only supported for claude sessions (use -c claude); claude is the only tool whose builder appends user extra args", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -594,13 +664,39 @@ func handleLaunch(profile string, args []string) {
 	if *sandbox {
 		newInstance.Sandbox = session.NewSandboxConfig(*sandboxImage)
 	}
-	if err := applyCLIYoloOverride(newInstance, *yoloMode); err != nil {
+	if err := applyCLIYoloOverride(newInstance, *yoloMode, cliFlagWasSet(fs, "yolo")); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	if err := applyCLIClaudeOptionFlags(newInstance, claudeFlags); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	if *startupQuery != "" {
+		queryTree := session.NewGroupTreeWithGroups(instances, groups)
+		cfg, _ := session.LoadUserConfig()
+		if cfg != nil {
+			queryTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
+		}
+		if session.ShouldQueue(instances, newInstance.GroupPath, session.GroupMaxConcurrent(queryTree, newInstance.GroupPath)) {
+			out.Error("startup query cannot be queued; retry when group capacity is available", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+	if err := applyCreationExtras(newInstance, *startupQuery, validatedAdditionalPaths, wtBranch, createNewBranch, *worktreeLocation); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	var creationRollback *startupCreationRollback
+	if *startupQuery != "" {
+		creationRollback = &startupCreationRollback{
+			id:        newInstance.ID,
+			removeRow: func() error { return storage.RemoveSessionAndVerify(newInstance.ID, nil, nil) },
+			stop:      newInstance.KillAndWait,
+			cleanup:   func() error { return errors.Join(cleanupOwnedCreationArtifacts(newInstance), cleanupSingleWorktree()) },
+		}
 	}
 
 	// Materialize the declarative per-group/per-conductor skill+mcp loadout
@@ -627,7 +723,7 @@ func handleLaunch(profile string, args []string) {
 	// sweep inside SaveInstances; InsertSessionAndVerify uses
 	// SaveInstance (single-row INSERT OR REPLACE) + verify-with-backoff
 	// to guarantee persistence. Mirror of RemoveSessionAndVerify (#909).
-	if err := storage.InsertSessionAndVerify(newInstance, groupTree); err != nil {
+	if err := creationRollback.run("save session", func() error { return storage.InsertSessionAndVerify(newInstance, groupTree) }); err != nil {
 		out.Error(fmt.Sprintf("failed to save session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -635,19 +731,21 @@ func handleLaunch(profile string, args []string) {
 	// attach below must not hold the lock for other registrations.
 	releaseLaunchRegistration()
 
-	// Attach MCPs if specified
-	if len(mcpFlags) > 0 {
-		availableMCPs := session.GetAvailableMCPs()
-		for _, mcpName := range mcpFlags {
-			if _, exists := availableMCPs[mcpName]; !exists {
-				out.Error(fmt.Sprintf("MCP '%s' not found in config.toml", mcpName), ErrCodeNotFound)
-				os.Exit(1)
+	// Keep validation and writing inside the compensated post-insert step.
+	if err := creationRollback.run("configure MCPs", func() error {
+		if len(mcpFlags) == 0 {
+			return nil
+		}
+		available := session.GetAvailableMCPs()
+		for _, name := range mcpFlags {
+			if _, exists := available[name]; !exists {
+				return fmt.Errorf("MCP %q not found in config.toml", name)
 			}
 		}
-		if err := session.WriteMCPJsonFromConfig(path, mcpFlags); err != nil {
-			out.Error(fmt.Sprintf("failed to write MCPs: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
+		return newInstance.WriteLocalMCPConfig(mcpFlags)
+	}); err != nil {
+		out.Error(fmt.Sprintf("failed to configure MCPs: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// v1.9.1 group concurrency cap: if the target group is at its
@@ -656,6 +754,14 @@ func handleLaunch(profile string, args []string) {
 	tree := session.NewGroupTreeWithGroups(instances, groups)
 	maxC := session.GroupMaxConcurrent(tree, newInstance.GroupPath)
 	if session.ShouldQueue(instances, newInstance.GroupPath, maxC) {
+		if creationRollback != nil {
+			err := creationRollback.run("queue startup query", func() error {
+				return fmt.Errorf("startup query cannot be queued; retry when group capacity is available")
+			})
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
 		newInstance.Status = session.StatusQueued
 		// v1.9.x issue #1031: same targeted single-row pattern as the
 		// initial insert above — saveSessionData → SaveWithGroups is
@@ -706,7 +812,7 @@ func handleLaunch(profile string, args []string) {
 	// has no terminal prompt, so the pane-send paths below would type the prompt
 	// into a server's stdin and report success. Every other tool returns nil.
 	if initialMessage != "" {
-		if err := newInstance.PromptDeliveryError(); err != nil {
+		if err := creationRollback.run("validate initial message", newInstance.PromptDeliveryError); err != nil {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -721,12 +827,12 @@ func handleLaunch(profile string, args []string) {
 	promptRidesArgv := initialMessage != "" && newInstance.PromptRidesCommandLine()
 
 	if initialMessage != "" && (!*noWait || promptRidesArgv) {
-		if err := newInstance.StartWithMessage(initialMessage); err != nil {
+		if err := creationRollback.run("start session", func() error { return newInstance.StartWithMessage(initialMessage) }); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 	} else {
-		if err := newInstance.Start(); err != nil {
+		if err := creationRollback.run("start session", newInstance.Start); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -748,7 +854,7 @@ func handleLaunch(profile string, args []string) {
 	if newInstance.GroupPath != "" {
 		postStartTree.CreateGroupPath(newInstance.GroupPath)
 	}
-	if err := storage.InsertSessionAndVerify(newInstance, postStartTree); err != nil {
+	if err := creationRollback.run("save started session", func() error { return storage.InsertSessionAndVerify(newInstance, postStartTree) }); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -781,6 +887,7 @@ func handleLaunch(profile string, args []string) {
 				tool:                        newInstance.Tool,
 				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
 			}); err != nil {
+				err = creationRollback.run("send initial message", func() error { return err })
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}

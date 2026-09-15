@@ -260,7 +260,7 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	// Persistent channel first (#2174): one ssh session per remote carries
 	// every command. A transport failure falls through to a plain exec, so
 	// the channel can only make things faster, never break them.
-	if ch := channelFor(r); ch != nil && ch.Connected() {
+	if ch := channelFor(r); ch != nil && ch.Connected() && remoteChannelArgsSafe(args) {
 		out, err := ch.Request(ctx, args)
 		switch {
 		case err == nil:
@@ -291,11 +291,13 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := cmd.Run(); err != nil {
 		// The remote CLI reports refusals such as "path does not exist" on
 		// stdout; fall back to it so the failure is not a bare exit status.
+		// stdout is returned as well: a --json verb that exits non-zero
+		// (switch-preview refusal, switch failure) still answered there.
 		detail := stderr.String()
 		if strings.TrimSpace(detail) == "" {
 			detail = strings.TrimSpace(stdout.String())
 		}
-		return nil, fmt.Errorf("ssh command failed: %w: %s", err, detail)
+		return stdout.Bytes(), fmt.Errorf("ssh command failed: %w: %s", err, detail)
 	}
 
 	return stdout.Bytes(), nil
@@ -307,12 +309,26 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
+	return r.attachSSHArgs(r.buildAttachArgs(sessionID))
+}
+
+// RunInteractiveCreation uses the same PTY flow as ordinary remote attach.
+// All field/terminal checks must finish before the command reaches the host.
+func (r *SSHRunner) RunInteractiveCreation(args ...string) error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("remote creation attach requires an interactive terminal")
+	}
+	remoteCmd := "env TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand(args...)
+	sshArgs := append([]string{"-tt"}, r.sshConnOpts()...)
+	sshArgs = append(sshArgs, r.Host, remoteCmd)
+	return r.attachSSHArgs(sshArgs)
+}
+
+func (r *SSHRunner) attachSSHArgs(sshArgs []string) error {
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return err
 	}
 	_ = os.MkdirAll(sshControlDir, 0700)
-
-	sshArgs := r.buildAttachArgs(sessionID)
 
 	cmd := exec.Command("ssh", sshArgs...)
 
@@ -1517,6 +1533,8 @@ func remoteVerbReadOnly(args []string) bool {
 		second = args[1]
 	}
 	switch args[0] {
+	case "add":
+		return len(args) == 3 && args[1] == "--capabilities" && args[2] == "--json"
 	case "list", "ls", "accounts", "version", "status":
 		return true
 	case "group":
@@ -1567,10 +1585,16 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 // this machine's config or credentials is copied. Zero values mean "remote
 // default" so an untouched dialog behaves exactly as before.
 type RemoteAddOptions struct {
-	Tool  string // -c; empty means shell
-	Title string // -t; empty means --quick (auto-generated name)
-	Path  string // positional; empty or "." means remote CWD
-	Group string // -g
+	ClaudeOptions   *ClaudeOptions
+	YoloOverride    *bool
+	StartQuery      string
+	AdditionalPaths []string
+	ReasoningEffort string
+	ParentID        string
+	Tool            string // -c; empty means shell
+	Title           string // -t; empty means --quick (auto-generated name)
+	Path            string // positional; empty or "." means remote CWD
+	Group           string // -g
 
 	// Sandbox forwards the "Run in Docker sandbox" checkbox as -sandbox; the
 	// image and other Docker settings come from the remote's own config.
@@ -1621,10 +1645,29 @@ func IsRemotePathMissing(err error) bool {
 // never copied) and an --extra-arg token that would fail the server's own
 // validation.
 func remoteAddArgs(o RemoteAddOptions) ([]string, error) {
+	if o.StartQuery != "" {
+		if o.ResumeSessionID != "" || (o.ClaudeOptions != nil && o.ClaudeOptions.SessionMode != "" && o.ClaudeOptions.SessionMode != "new") {
+			return nil, fmt.Errorf("startup query requires a new session, not resume or continue")
+		}
+		for _, arg := range o.ExtraArgs {
+			name, _, _ := strings.Cut(arg, "=")
+			switch name {
+			case "--resume", "-r", "--continue", "-c":
+				return nil, fmt.Errorf("startup query cannot be combined with resume or continue extra arguments")
+			}
+		}
+	}
+
 	args := []string{"add", "--json"}
+	if o.StartQuery != "" {
+		args = []string{"launch", "--json", "--no-wait", "--startup-query", o.StartQuery}
+		if o.ParentID == "" {
+			args = append(args, "--no-parent")
+		}
+	}
 	if t := strings.TrimSpace(o.Title); t != "" {
 		args = append(args, "-t", t)
-	} else {
+	} else if o.StartQuery == "" {
 		args = append(args, "--quick")
 	}
 	if g := strings.TrimSpace(o.Group); g != "" {
@@ -1662,16 +1705,46 @@ func remoteAddArgs(o RemoteAddOptions) ([]string, error) {
 		}
 		args = append(args, "--extra-arg", token)
 	}
-	if o.Yolo {
+	if o.YoloOverride != nil {
+		args = append(args, fmt.Sprintf("--yolo=%t", *o.YoloOverride))
+	} else if o.Yolo {
 		args = append(args, "--yolo")
 	}
+	if flags := o.ClaudeOptions; flags != nil {
+		args = append(args, fmt.Sprintf("--skip-permissions=%t", flags.SkipPermissions), fmt.Sprintf("--auto-mode=%t", flags.AutoMode), fmt.Sprintf("--chrome=%t", flags.UseChrome), fmt.Sprintf("--teammate-mode=%t", flags.UseTeammateMode))
+		if flags.SessionMode == "continue" {
+			args = append(args, "--continue")
+		}
+		if flags.SessionMode == "resume" && flags.ResumeSessionID == "" {
+			args = append(args, "--extra-arg", "--resume")
+		}
+		if flags.Effort != "" {
+			args = append(args, "--effort", flags.Effort)
+		}
+	}
+
 	if b := strings.TrimSpace(o.WorktreeBranch); b != "" {
 		args = append(args, "-w", b)
+	}
+	if o.ReasoningEffort != "" {
+		args = append(args, "--effort", o.ReasoningEffort)
+	}
+	if o.ParentID != "" {
+		args = append(args, "--parent", o.ParentID)
+	}
+	for _, path := range o.AdditionalPaths {
+		if strings.TrimSpace(path) == "" {
+			return nil, fmt.Errorf("additional remote path must not be blank")
+		}
+		args = append(args, "--additional-path", path)
 	}
 	if o.CreateDir {
 		args = append(args, "--create-dir")
 	}
 	if p := strings.TrimSpace(o.Path); p != "" && p != "." {
+		if strings.HasPrefix(p, "-") {
+			args = append(args, "--")
+		}
 		args = append(args, p)
 	}
 	return args, nil
@@ -1685,6 +1758,13 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAdd
 	if err != nil {
 		return "", err
 	}
+	catalog, err := r.FetchCreationCatalog(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := catalog.ValidateArgs(addArgs); err != nil {
+		return "", err
+	}
 	// Step 1: Create the session
 	output, err := r.Run(ctx, addArgs...)
 	if err != nil {
@@ -1692,8 +1772,9 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAdd
 	}
 
 	var result struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
 		return "", fmt.Errorf("failed to parse remote add output: %w", err)
@@ -1702,6 +1783,12 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAdd
 		return "", fmt.Errorf("remote add returned empty session ID")
 	}
 
+	if addArgs[0] == "launch" {
+		if result.Status == string(StatusQueued) {
+			return "", &RemoteSessionQueuedError{ID: result.ID, Title: result.Title}
+		}
+		return result.ID, nil
+	}
 	// Step 2: Start the session so it has a tmux process to attach to.
 	// Use ID to avoid ambiguity when titles are duplicated.
 	startCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -1828,6 +1915,11 @@ type RemoteSessionInfo struct {
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
 
+	// Account is the stored account slot on the remote ("" = default). It
+	// names the remote's own [profiles.<name>] slot; the Edit Session dialog
+	// shows it as the current slot and the switch confirmation as "from".
+	Account string `json:"account"`
+
 	// Substate and Archived are what the local row needs to pick the same
 	// status glyph a local session would get: the ⚡/🔒 substate refinements
 	// and the archived override (an archived session keeps a live Status, so
@@ -1907,3 +1999,15 @@ func (r *SSHRunner) MeasureLatency(ctx context.Context) (time.Duration, error) {
 // builtin, so no process is forked on the remote and the timing is pure
 // transport.
 const latencyProbeCommand = "true"
+
+// The persistent agent rejects line breaks. Select one-shot SSH before sending
+// such arguments so multiline startup queries are delivered once without a
+// failed mutation or an unsafe retry.
+func remoteChannelArgsSafe(args []string) bool {
+	for _, arg := range args {
+		if strings.ContainsAny(arg, "\n\r") {
+			return false
+		}
+	}
+	return true
+}

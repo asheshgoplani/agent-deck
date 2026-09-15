@@ -284,6 +284,10 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		}
 	}
 
+	if err := pruneHookArtifactsOnStartup(); err != nil {
+		storageLog.Warn("hook_cleanup_failed", slog.String("error", err.Error()))
+	}
+
 	return &Storage{
 		db:      db,
 		dbPath:  dbPath,
@@ -295,6 +299,16 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 // creating directories/files, migrating schema, changing SQLite journal
 // state, or checkpointing WAL files.
 func NewReadOnlyStorageWithProfile(profile string) (*Storage, error) {
+	return newReadOnlyStorageWithProfile(profile, statedb.OpenReadOnly)
+}
+
+// NewLiveReadOnlyStorageWithProfile reads committed WAL state for authoritative
+// live catalogs and preflight. It does not initialize schema or write rows.
+func NewLiveReadOnlyStorageWithProfile(profile string) (*Storage, error) {
+	return newReadOnlyStorageWithProfile(profile, statedb.OpenReadOnlyLive)
+}
+
+func newReadOnlyStorageWithProfile(profile string, open func(string) (*statedb.StateDB, error)) (*Storage, error) {
 	effectiveProfile, err := ResolveProfileForStorage(profile)
 	if err != nil {
 		return nil, err
@@ -303,7 +317,7 @@ func NewReadOnlyStorageWithProfile(profile string) (*Storage, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := statedb.OpenReadOnly(dbPath)
+	db, err := open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state database read-only: %w", err)
 	}
@@ -563,19 +577,35 @@ func (s *Storage) UpdateTitleIfUnlocked(id, title string) (applied bool, err err
 // DeleteInstance removes a single instance from the database by ID.
 // This ensures the row is immediately removed, preventing resurrection on reload.
 func (s *Storage) DeleteInstance(id string) error {
+	cleanup, err := s.DeleteInstanceDeferredCleanup(id)
+	if err != nil {
+		return err
+	}
+	cleanup()
+	return nil
+}
+
+// DeleteInstanceDeferredCleanup commits the registry deletion and returns its
+// best-effort hook cleanup separately. UI callers must run cleanup in a command
+// so filesystem scans and registry contention cannot block the message handler.
+// On deletion failure no cleanup is returned. The cleanup does not use Storage
+// and can run after it closes.
+func (s *Storage) DeleteInstanceDeferredCleanup(id string) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.db == nil {
-		return fmt.Errorf("storage database not initialized")
+		return nil, fmt.Errorf("storage database not initialized")
 	}
-
 	if err := s.db.DeleteInstance(id); err != nil {
-		return fmt.Errorf("failed to delete instance %s: %w", id, err)
+		return nil, fmt.Errorf("failed to delete instance %s: %w", id, err)
 	}
-
 	_ = s.db.Touch()
-	return nil
+	return func() {
+		if err := pruneHookArtifacts(id); err != nil {
+			storageLog.Warn("hook_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+		}
+	}, nil
 }
 
 // DeleteGroupSubtree removes a group and all of its descendants from the groups

@@ -1359,13 +1359,14 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"c": true, "cmd": true,
 		"m": true, "message": true, "message-file": true,
 		"p": true, "parent": true,
-		"mcp":            true,
-		"channel":        true,
-		"plugin":         true,
-		"extra-arg":      true,
-		"wrapper":        true,
-		"model":          true,
-		"effort":         true,
+		"mcp":           true,
+		"channel":       true,
+		"plugin":        true,
+		"extra-arg":     true,
+		"wrapper":       true,
+		"model":         true,
+		"effort":        true,
+		"startup-query": true, "additional-path": true,
 		"w":              true,
 		"worktree":       true,
 		"location":       true,
@@ -1495,6 +1496,10 @@ func shouldLockTitle(userProvidedTitle, titleLockFlag, noTitleSyncFlag bool) boo
 
 // handleAdd adds a new session from CLI
 func handleAdd(profile string, args []string) {
+	handleAddCommand(profile, args, nil)
+}
+
+func handleAddCommand(profile string, args []string, inspectFlags func(*flag.FlagSet)) {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
 	title := fs.String("title", "", "Session title (defaults to folder name)")
 	titleShort := fs.String("t", "", "Session title (short)")
@@ -1589,7 +1594,7 @@ func handleAdd(profile string, args []string) {
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
@@ -1604,6 +1609,15 @@ func handleAdd(profile string, args []string) {
 	// and becomes the most-specific level of CLAUDE_CONFIG_DIR resolution.
 	// Empty = fall through to conductor/group/env/profile/global/default.
 	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
+
+	capabilities := fs.Bool("capabilities", false, "Report authoritative creation fields and host catalogs (requires --json)")
+	startupQuery := fs.String("startup-query", "", "Claude startup query, delivered once on initial start")
+	var additionalPaths []string
+	fs.Func("additional-path", "Additional project directory on this host (repeatable)", func(value string) error { additionalPaths = append(additionalPaths, value); return nil })
+	if inspectFlags != nil {
+		inspectFlags(fs)
+		return
+	}
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
@@ -1666,11 +1680,33 @@ func handleAdd(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	args = reorderArgsForFlagParsing(args)
-
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := fs.Parse(normalizeCreationArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
+	if *capabilities {
+		writeCreationCatalog(profile, fs, *jsonOutput)
+		return
+	}
+	if *attach {
+		if *jsonOutput || *sshHost != "" {
+			NewCLIOutput(*jsonOutput, false).Error("--attach cannot be combined with --json or --ssh", ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+		if !stdinStdoutIsTerminal() {
+			NewCLIOutput(false, false).Error("--attach requires an interactive terminal", ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+	}
+	if *sshHost != "" && len(additionalPaths) > 0 {
+		NewCLIOutput(*jsonOutput, false).Error("--additional-path requires creation on the owning host; use remote add", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	validatedAdditionalPaths, pathValidationErr := validateCreationPaths(additionalPaths)
+	if pathValidationErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error(pathValidationErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	if *sshHost != "" && len(pluginFlags) > 0 {
 		fmt.Fprintln(os.Stderr, "Warning: --plugin is persisted but cannot be installed or enabled automatically over SSH; configure the selected plugins in the remote Claude profile.")
 	}
@@ -1709,10 +1745,26 @@ func handleAdd(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	queryMode := "new"
+	if *resumeSession != "" {
+		queryMode = "resume"
+	}
+	if *claudeFlags.continueMode {
+		queryMode = "continue"
+	}
+	if err := validateCreationStartupQuery(*startupQuery, firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), queryMode, *attach && *sshHost == "", extraArgFlags...); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Validate --resume-session requires Claude
 	if *resumeSession != "" {
 		tool := firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
-		if tool != "claude" {
+		if !session.IsClaudeCompatible(tool) {
 			fmt.Println("Error: --resume-session only works with Claude sessions (-c claude)")
 			os.Exit(1)
 		}
@@ -1730,6 +1782,18 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
+	regLock, regLockErr := session.AcquireRegistrationLock(profile)
+	if regLockErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	releaseRegistration := func() {
+		if regLock != nil {
+			regLock.Release()
+			regLock = nil
+		}
+	}
+	defer releaseRegistration()
 	// Load existing sessions with profile
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
@@ -1748,11 +1812,7 @@ func handleAdd(profile string, args []string) {
 	// Seed groups declared in config.toml into the DB before resolving the
 	// new session's group and working directory.
 	if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
-		if session.ReconcileDeclarativeGroups(groupTree, cfg) {
-			if err := storage.SaveGroupsOnly(groupTree); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to persist declarative groups: %v\n", err)
-			}
-		}
+		session.ReconcileDeclarativeGroups(groupTree, cfg)
 	}
 
 	// Resolve parent session if specified
@@ -1833,6 +1893,20 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
+	if *startupQuery != "" {
+		if err := validateStartupQueryCapacity(profile, sessionGroup, sessionParent, path, *noParent, true, true, nil); err != nil {
+			NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+	if err := validateMultiRepoCreation(path, validatedAdditionalPaths, wtBranch, createNewBranch, *worktreeLocation); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := validatePrimaryCreationPath(path, validatedAdditionalPaths); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	// Verify path exists and is a directory (skip for SSH remote sessions)
 	if *sshHost != "" {
 		// An explicitly given path (positional arg, e.g. `add <remote-path>
@@ -1885,7 +1959,7 @@ func handleAdd(profile string, args []string) {
 
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot, worktreeType string
-	if wtBranch != "" {
+	if wtBranch != "" && len(validatedAdditionalPaths) == 0 {
 		// -w/-b worktree creation is a 100% local filesystem operation
 		// (detectAndCreateBackend + git/jj worktree add below all run against
 		// `path` on THIS machine). Combined with --ssh, `path` at this point
@@ -2013,18 +2087,6 @@ func handleAdd(profile string, args []string) {
 	// lock is the stale snapshot the lock exists to invalidate. Released
 	// explicitly right after the save so an interactive `--attach` does not hold
 	// it for the length of the attach.
-	regLock, regLockErr := session.AcquireRegistrationLock(profile)
-	if regLockErr != nil {
-		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	releaseRegistration := func() {
-		if regLock != nil {
-			regLock.Release()
-			regLock = nil
-		}
-	}
-	defer releaseRegistration()
 	freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
 	if reloadErr != nil {
 		// Never fall back to the pre-lock snapshot: that is the stale list the
@@ -2127,7 +2189,7 @@ func handleAdd(profile string, args []string) {
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
 	if len(channelFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			fmt.Println("Error: --channel only supported for claude sessions (use -c claude); requires --channels on the claude binary")
 			os.Exit(1)
 		}
@@ -2136,7 +2198,7 @@ func handleAdd(profile string, args []string) {
 
 	// Apply --plugin flags (catalog-only, claude-only, RFC docs/rfc/PLUGIN_ATTACH.md).
 	if len(pluginFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			fmt.Println("Error: --plugin only supported for claude sessions (use -c claude); plugins enable Claude Code plugin features per-session via enabledPlugins")
 			os.Exit(1)
 		}
@@ -2156,7 +2218,7 @@ func handleAdd(profile string, args []string) {
 	// Apply --extra-arg flags (claude only for now — these are passed to the
 	// claude binary via buildClaudeExtraFlags; other tools have their own builders).
 	if len(extraArgFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			fmt.Println("Error: --extra-arg only supported for claude sessions (use -c claude); claude is the only tool whose builder appends user extra args")
 			os.Exit(1)
 		}
@@ -2231,12 +2293,17 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
-	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode); err != nil {
+	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode, cliFlagWasSet(fs, "yolo", "gemini-yolo")); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 	if err := applyCLIClaudeOptionFlags(newInstance, claudeFlags); err != nil {
 		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := applyCreationExtras(newInstance, *startupQuery, validatedAdditionalPaths, wtBranch, createNewBranch, *worktreeLocation); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -2252,6 +2319,9 @@ func handleAdd(profile string, args []string) {
 
 	// Rebuild group tree and save
 	groupTree = session.NewGroupTreeWithGroups(instances, groups)
+	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
+		session.ReconcileDeclarativeGroups(groupTree, cfg)
+	}
 	mainCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = mainCfg.GroupDefaults.MaxConcurrent
 	// Ensure the session's group exists
@@ -2587,8 +2657,11 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		LastActivityAt string `json:"last_activity_at,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
+	var pass session.StatusUpdatePass
 	for i, inst := range instances {
-		_ = inst.UpdateStatus()
+		// Listings need live status, not native-session discovery. Persisted
+		// rows have no status freshness stamp, so still validate liveness.
+		_ = pass.UpdateStatusOnly(inst)
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
 			ID:                inst.ID,

@@ -2074,6 +2074,25 @@ func (s *Session) ApplyThemeOptions() error {
 	return s.runBoundedRun(args...)
 }
 
+// ReadEnvironment reads a fresh session environment without the per-session
+// cache. Reading the whole environment distinguishes a missing key (empty,
+// nil) from a failed probe; ownership discovery must not guess after failure.
+func (s *Session) ReadEnvironment(key string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := s.tmuxCmdContext(ctx, "show-environment", "-t", s.Name).Output()
+	if err != nil {
+		return "", err
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix), nil
+		}
+	}
+	return "", nil
+}
+
 // GetEnvironment gets an environment variable from this tmux session.
 // Uses a cache (30s for hits, 5s for misses — issue #1728) to avoid spawning
 // tmux show-environment subprocesses on every poll cycle. Call
@@ -2856,9 +2875,12 @@ func setSocketMismatchProbeForTest(probe func(string) bool) func() {
 //
 // The `=` target prefix makes tmux match the name exactly instead of by
 // prefix, so a sibling named like this session plus a suffix cannot answer
-// for it. A completed non-zero exit is "gone"; a probe that timed out or was
-// refused by a protocol-mismatched server is indeterminate and reported as an
-// error, never as either verdict.
+// for it. Only a tmux client that ran to completion and exited non-zero is
+// "gone"; a probe that timed out, was refused by a protocol-mismatched server,
+// or never produced a completed tmux client (the binary could not be launched,
+// the client was killed by a signal) is indeterminate and reported as an
+// error, never as either verdict. Callers deciding whether a session's process
+// tree may be treated as absent (#1873) depend on that distinction.
 func (s *Session) ProbeExists() (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
@@ -2871,6 +2893,10 @@ func (s *Session) ProbeExists() (bool, error) {
 	}
 	if socketHasProtocolMismatch(s.SocketName) {
 		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", s.SocketName)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !exitErr.Exited() {
+		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", s.Name, err)
 	}
 	return false, nil
 }
@@ -3341,6 +3367,30 @@ func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 		return 0, nil
 	}
 	return panePID, allPIDs
+}
+
+// PanePID returns the pane's initial process id, or an error when the probe is
+// indeterminate.
+//
+// #1873: the ownership receipt is claimed from this pid the instant a spawn
+// commits, so the caller needs the probe outcome, not a degraded 0. A 0 with no
+// error would be recorded as "we own pid 0" or, worse, as "the spawn owns
+// nothing" — both of which turn an unproven claim into a durable one.
+func (s *Session) PanePID() (int, error) {
+	return PanePIDOfSession(s.SocketName, s.Name)
+}
+
+// PanePIDOfSession is the name-explicit variant, for callers holding a session
+// name from somewhere other than a live Session — notably an ownership receipt,
+// which records the tmux session its leader was launched into. An Instance's
+// in-memory tmux name can drift away from the live session (that is its own
+// bug class); the name written into the receipt at spawn cannot.
+func PanePIDOfSession(socketName, sessionName string) (int, error) {
+	if strings.TrimSpace(sessionName) == "" {
+		return 0, fmt.Errorf("no tmux session name")
+	}
+	out, err := runBoundedOutput(socketName, "list-panes", "-t", sessionName+":", "-F", "#{pane_pid}")
+	return parsePanePID(out, err)
 }
 
 // paneProcessTree is getPaneProcessTree with the probe outcome preserved.
@@ -6411,9 +6461,14 @@ func RunLogMaintenance(maxSizeMB int, maxLines int, removeOrphans bool) {
 // those in the current profile. This ensures consistent notification bars
 // when users switch between sessions.
 func ListAgentDeckSessions() ([]string, error) {
+	return ListAgentDeckSessionsOnSocket(DefaultSocketName())
+}
+
+// ListAgentDeckSessionsOnSocket lists managed sessions on the specified server.
+func ListAgentDeckSessionsOnSocket(socket string) ([]string, error) {
 	// Bounded — see tmuxPollTimeout. Drives the cross-profile notification-bar
 	// refresh, i.e. it runs on a timer for every session.
-	output, err := runBoundedOutput(DefaultSocketName(), "list-sessions", "-F", "#{session_name}")
+	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		// No sessions exist
 		if strings.Contains(err.Error(), "no server running") ||

@@ -203,6 +203,13 @@ func paneGoneWithin(inst *Instance, window time.Duration) bool {
 }
 
 func TestMain(m *testing.M) {
+	// #1873 race tests re-execute this binary as a second agent-deck process to
+	// exercise the receipt's cross-process compare-and-swap. Dispatch before
+	// any isolation setup: the child must reach the SAME store directory the
+	// parent passed it, not a fresh isolated HOME of its own.
+	if payload := os.Getenv(ownershipChildEnv); payload != "" {
+		os.Exit(runOwnershipReceiptChild(payload))
+	}
 	os.Exit(runTestMain(m))
 }
 
@@ -240,6 +247,11 @@ func runTestMain(m *testing.M) int {
 	// See .planning/v1716-cleanup/PLAN.md concern 3.
 	cleanupBootstrap := bootstrapTmuxServer()
 	defer cleanupBootstrap()
+
+	// Cross-harness previews refuse when the target CLI is not on PATH. CI has
+	// no claude/codex/pi, so resolve every harness as present by default; the
+	// refusal itself is covered by tests that restore exec.LookPath.
+	lookPathHarness = func(command string) (string, error) { return "/usr/bin/" + command, nil }
 
 	// Force test profile to prevent production data corruption
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"

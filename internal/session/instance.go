@@ -3062,8 +3062,21 @@ func (i *Instance) DetectCodexSession() {
 func (i *Instance) resolveCodexDetectionCandidate(sessionID string, probeErr error) string {
 	sessionID = i.filterCodexProcessProbeCandidate(sessionID)
 	if sessionID == "" && probeErr == nil {
-		return i.queryCodexSession(i.collectOtherCodexSessionIDs(), true)
+		var pass StatusUpdatePass
+		// Warm evidence before serializing selection; no subprocess holds the
+		// bootstrap mutex, including asynchronous startup detection.
+		i.codexExclusions(&pass)
+		codexBootstrapMu.Lock()
+		defer codexBootstrapMu.Unlock()
+		exclude := i.codexExclusions(&pass)
+		if exclude == nil {
+			return ""
+		}
+		sessionID = i.queryCodexSession(exclude, true)
+		i.recordCodexOwnership(sessionID)
+		return sessionID
 	}
+	i.recordCodexOwnership(sessionID)
 	return sessionID
 }
 
@@ -3379,29 +3392,7 @@ func decodeJSONStringField(raw map[string]json.RawMessage, key string) string {
 // collectOtherCodexSessionIDs enumerates other managed tmux sessions and returns
 // the CODEX_SESSION_ID values they currently own.
 func (i *Instance) collectOtherCodexSessionIDs() map[string]bool {
-	exclude := make(map[string]bool)
-
-	tmuxSessions, err := tmux.ListAgentDeckSessions()
-	if err != nil {
-		return exclude
-	}
-
-	myTmuxName := ""
-	if i.tmuxSession != nil {
-		myTmuxName = i.tmuxSession.Name
-	}
-
-	for _, sessName := range tmuxSessions {
-		if sessName == myTmuxName {
-			continue
-		}
-		other := &tmux.Session{Name: sessName}
-		if id, err := other.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
-			exclude[id] = true
-		}
-	}
-
-	return exclude
+	return i.codexExclusions(nil)
 }
 
 // shouldScanCodexSession returns whether we should run an expensive filesystem
@@ -3944,12 +3935,22 @@ func codexProbeMissingWarning(missingDep string) string {
 // Primary source: tmux environment.
 // Fallback: project-aware filesystem scan.
 func (i *Instance) UpdateCodexSession(excludeIDs map[string]bool) {
+	// Preserve the explicit caller-supplied exclusion API: nil means no exclusions.
+	// Status passes use the lazy ownership lookup through updateCodexSessionForPass.
+	if excludeIDs == nil {
+		excludeIDs = make(map[string]bool)
+	}
 	i.updateCodexSession(excludeIDs, false)
 }
 
 // updateCodexSession refreshes Codex session ID from env/process-files/disk.
 // Returns missing dependency name when probe prerequisites are unavailable.
 func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe bool) string {
+	return i.updateCodexSessionForPass(excludeIDs, forceProbe, nil, false)
+}
+
+// statusLocked is true only when called from updateStatus with i.mu held.
+func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forceProbe bool, pass *StatusUpdatePass, statusLocked bool) string {
 	if !IsCodexCompatible(i.Tool) {
 		return ""
 	}
@@ -3964,6 +3965,7 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 				i.CodexSessionID = sessionID
 			}
 			i.CodexDetectedAt = time.Now()
+			i.recordCodexOwnership(i.CodexSessionID)
 		}
 	}
 
@@ -3983,6 +3985,7 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 			}
 			i.CodexSessionID = sessionID
 			i.CodexDetectedAt = time.Now()
+			i.recordCodexOwnership(i.CodexSessionID)
 			if i.tmuxSession != nil && i.tmuxSession.Exists() && (changed || envSessionID == "") {
 				_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
 			}
@@ -4013,13 +4016,45 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		return missingProbeDep
 	}
 
-	// When we already have a session ID and the process probe didn't find a
-	// running process, add our current ID to the exclude set so the disk scan
-	// won't reassign it to another instance that shares the same project path.
-	// The disk scan should only discover *new* sessions (e.g. after /new rotation),
-	// not re-discover the same ID we already own.
-	if i.CodexSessionID != "" && excludeIDs != nil {
-		excludeIDs[i.CodexSessionID] = true
+	// Fetch peer ownership before taking the bootstrap selection lock. Status
+	// readers and authoritative hook updates must remain available during I/O.
+	if excludeIDs == nil {
+		if pass == nil {
+			pass = &StatusUpdatePass{}
+		}
+		socket := tmux.DefaultSocketName()
+		ts := i.tmuxSession
+		started := i.lastStartTime
+		hookID := i.hookSessionID
+		if ts != nil {
+			socket = ts.SocketName
+		}
+		if statusLocked {
+			i.mu.Unlock()
+		}
+		pass.codexOwnership(socket)
+		if statusLocked {
+			i.mu.Lock()
+			// A stop, restart, or authoritative binding while unlocked supersedes
+			// this bootstrap attempt. Do not resurrect or overwrite it.
+			if i.tmuxSession != ts || i.lastStartTime != started || i.hookSessionID != hookID ||
+				i.CodexSessionID != "" || !IsCodexCompatible(i.Tool) ||
+				(i.Status != StatusRunning && i.Status != StatusWaiting) {
+				return missingProbeDep
+			}
+		}
+	}
+
+	// Serialize fallback selection with publication so peers sharing a project
+	// cannot claim the same rollout from a pinned ownership snapshot.
+	codexBootstrapMu.Lock()
+	defer codexBootstrapMu.Unlock()
+	// Collect peer ownership only when a bootstrap disk scan will actually run.
+	if excludeIDs == nil {
+		excludeIDs = i.codexExclusions(pass)
+		if excludeIDs == nil {
+			return missingProbeDep // Unknown ownership must not become a guessed binding.
+		}
 	}
 
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
@@ -4035,6 +4070,7 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		}
 		i.CodexSessionID = sessionID
 		i.CodexDetectedAt = time.Now()
+		i.recordCodexOwnership(i.CodexSessionID)
 
 		// Sync back to tmux environment for future restarts
 		// Skip redundant writes when env already matches: each write is a tmux subprocess.
@@ -4865,11 +4901,29 @@ func (i *Instance) Start() error {
 	if spawnedSince(i.ID, beforeLock) {
 		return nil
 	}
-	defer recordInstanceSpawn(i.ID)
-
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
+	var validatedDeepSeekCommand string
+	if i.Tool == "deepseek" {
+		var err error
+		validatedDeepSeekCommand, err = i.deepSeekStartCommand()
+		if err != nil {
+			return err
+		}
+	}
+
+	// #1873: refuse to spawn while this instance still owns a process tree from
+	// an earlier spawn. Runs before anything is mutated or launched, so a
+	// refusal leaves the session exactly as it was and signals nothing — and
+	// before recordInstanceSpawn is deferred, so a refusal does not stamp a
+	// spawn that never happened. That stamp is what a concurrent caller reads
+	// to decide it can return "already started"; a refusal must not hand it
+	// that answer.
+	if err := i.guardOwnedProcessesBeforeSpawn("start"); err != nil {
+		return err
+	}
+	defer recordInstanceSpawn(i.ID)
 
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
 	// spawn_attempt trace so a spawn that dies before anything else runs still
@@ -5002,11 +5056,7 @@ func (i *Instance) Start() error {
 		// must replay a recorded task or refuse — `dsh --profile headless` with
 		// no positional is a usage error dsh rejects before anything could be
 		// delivered (PR #1942 review, P1b/P1c).
-		dsCommand, dsErr := i.deepSeekStartCommand()
-		if dsErr != nil {
-			return dsErr
-		}
-		command = dsCommand
+		command = validatedDeepSeekCommand
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -5053,6 +5103,18 @@ func (i *Instance) Start() error {
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
 
+	// gen AND the wake channel are both produced here, in the caller, so no
+	// bump can slip into the gap before the watcher subscribes (see
+	// newSpawnGenWatch). The ownership claim below shares the same pair: it
+	// belongs to this spawn, and a second bump would supersede the very watcher
+	// this call starts.
+	gen, wake := i.newSpawnGenWatch()
+
+	// #1873: record the durable ownership receipt — the pane process's pid
+	// bound to its start identity — before anything can die. This is the only
+	// moment at which the claim is provable.
+	i.claimOwnershipAtSpawn(command, gen, wake)
+
 	// #1580: watch for a fast death of the initial process (broken command,
 	// bad PATH, immediate non-zero exit). tmux tears the pane down on exit for
 	// non-remain-on-exit sessions, so this captures the dying output while the
@@ -5065,7 +5127,16 @@ func (i *Instance) Start() error {
 	// the exemption every completed one-shot would be recorded as died-fast and
 	// the preview would paint "⚠ session failed to start" over its answer.
 	if command != "" && !i.expectsFastExit() {
-		i.startFastDeathWatcher(command, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		// Resolve both write targets HERE, synchronously in the caller, not
+		// inside the goroutine: GetSessionIDLifecycleLogPath()/spawnFailureDir()
+		// read the live $HOME, and watchForFastDeath's goroutine is never
+		// joined — it can still be sleeping on its ticker when a later test
+		// changes $HOME out from under it. Capturing the resolved paths as
+		// plain values at spawn time (Go evaluates `go` call arguments in the
+		// calling goroutine) makes the watcher's writes land in the HOME that
+		// was live when this session started, never whichever HOME happens to
+		// be live when the ticker next fires.
+		i.startFastDeathWatcher(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5183,8 +5254,6 @@ func (i *Instance) StartWithMessage(message string) error {
 	if spawnedSince(i.ID, beforeLock) {
 		return nil
 	}
-	defer recordInstanceSpawn(i.ID)
-
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
@@ -5203,6 +5272,21 @@ func (i *Instance) StartWithMessage(message string) error {
 			return err
 		}
 	}
+	var validatedDeepSeekCommand string
+	if i.Tool == "deepseek" && message == "" {
+		var err error
+		validatedDeepSeekCommand, err = i.deepSeekStartCommand()
+		if err != nil {
+			return err
+		}
+	}
+
+	// #1873: same fail-closed ownership gate as Start(), in the same position
+	// relative to the spawn stamp. A second spawn path is still a second tree.
+	if err := i.guardOwnedProcessesBeforeSpawn("start"); err != nil {
+		return err
+	}
+	defer recordInstanceSpawn(i.ID)
 
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
 	// spawn_attempt trace (same as Start()).
@@ -5332,11 +5416,7 @@ func (i *Instance) StartWithMessage(message string) error {
 		if message == "" {
 			// StartWithMessage with no message is an ordinary start, and
 			// headless still needs its recorded task.
-			dsCommand, dsErr := i.deepSeekStartCommand()
-			if dsErr != nil {
-				return dsErr
-			}
-			command = dsCommand
+			command = validatedDeepSeekCommand
 			break
 		}
 		command, promptEmbeddedInCommand = i.buildDeepSeekCommandWithPrompt(i.Command, message)
@@ -5388,9 +5468,20 @@ func (i *Instance) StartWithMessage(message string) error {
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
 
+	// One generation for this spawn, shared by the ownership claim and the
+	// fast-death watcher (sister path to Start()).
+	gen, wake := i.newSpawnGenWatch()
+
+	// #1873: claim the ownership receipt at spawn (sister path to Start()).
+	// The receipt is an on-disk diagnostic like the spawn-failure sidecar, so
+	// it records the prompt-redacted command (#2232), never the raw prompt.
+	i.claimOwnershipAtSpawn(diagnosticCommand, gen, wake)
+
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" && !i.expectsFastExit() {
-		i.startFastDeathWatcher(diagnosticCommand, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		// See the matching comment in Start(): resolve the write targets — and
+		// subscribe to the wake — here, not inside the never-joined goroutine.
+		i.startFastDeathWatcher(diagnosticCommand, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5865,6 +5956,10 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status
 }
 
 func (i *Instance) UpdateStatus() error {
+	return i.updateStatus(nil, true)
+}
+
+func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
 	// Cheap no-op unless the cold-load fold below (or an earlier
@@ -6062,6 +6157,7 @@ func (i *Instance) UpdateStatus() error {
 			case IsCodexCompatible(i.Tool):
 				if i.hookSessionID != i.CodexSessionID {
 					i.CodexSessionID = i.hookSessionID
+					i.recordCodexOwnership(i.CodexSessionID)
 					i.CodexDetectedAt = time.Now()
 				}
 			case i.Tool == "gemini":
@@ -6292,7 +6388,7 @@ func (i *Instance) UpdateStatus() error {
 	// Update session metadata tracking only for active/waiting sessions.
 	// This path can perform filesystem and tmux env reads while i.mu is held, so
 	// rate-limit it to reduce intermittent render/key handling stalls under load.
-	if i.Status == StatusRunning || i.Status == StatusWaiting {
+	if syncMetadata && (i.Status == StatusRunning || i.Status == StatusWaiting) {
 		interval := 2 * time.Second
 		// Bootstrap unknown IDs faster for newly-started sessions.
 		switch {
@@ -6322,12 +6418,7 @@ func (i *Instance) UpdateStatus() error {
 
 			// Update Codex session tracking (non-blocking, best-effort)
 			if IsCodexCompatible(i.Tool) {
-				// Always collect other instances' session IDs to prevent the
-				// disk scan from assigning a session that belongs to another
-				// instance. Without this, instances that share the same
-				// project_path can all claim the same Codex session file.
-				exclude := i.collectOtherCodexSessionIDs()
-				i.UpdateCodexSession(exclude)
+				i.updateCodexSessionForPass(nil, false, pass, true)
 			}
 
 			// Update OpenCode session tracking (non-blocking, best-effort).
@@ -6649,6 +6740,7 @@ func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) {
 		slog.String("event", hookEvent),
 	)
 	i.CodexSessionID = sessionID
+	i.recordCodexOwnership(sessionID)
 	i.CodexDetectedAt = time.Now()
 	i.hookSessionID = sessionID
 
@@ -7419,6 +7511,7 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 
 	if id, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
 		i.CodexSessionID = id
+		i.recordCodexOwnership(id)
 	}
 
 	if id, err := i.tmuxSession.GetEnvironment("COPILOT_SESSION_ID"); err == nil && id != "" {
@@ -8707,6 +8800,14 @@ func (i *Instance) killInternal(sync bool) error {
 		}
 	}
 
+	// #1873: reap whatever the spawn-time ownership receipt still owns, then
+	// clear it. tmux teardown does not reach a tree that has already escaped
+	// the pane — that is the whole report — and a deliberate stop is exactly
+	// the intent that authorises terminating this session's processes. Only
+	// identity-matched processes are signalled; anything unverifiable is left
+	// alone and the receipt is kept so it stays visible.
+	i.clearOwnershipAfterTeardown(sync)
+
 	// An asynchronous Kill only starts process reaping in the background, so
 	// it must not remove the active generation while a delayed flush can still
 	// write through it. KillAndWait is the only lifecycle path here that has
@@ -8769,7 +8870,34 @@ func (i *Instance) restart(env map[string]string) error {
 	if spawnedSince(i.ID, beforeLock) && len(env) == 0 {
 		return nil
 	}
+	// #1873: the case this issue reports IS a restart — a pane that died during
+	// startup, a wrapped tree that escaped it, and a later legitimate restart
+	// that spawns a second one. The gate runs before the generation bump and
+	// before any tmux work, so a refusal changes nothing at all: no kill, no
+	// respawn, no signal, and the receipt left intact for inspection.
+	if err := i.guardOwnedProcessesBeforeSpawn("restart"); err != nil {
+		return err
+	}
+	var validatedDeepSeekRestartCommand string
+	if i.Tool == "deepseek" {
+		i.refreshDeepSeekSessionID()
+		var err error
+		validatedDeepSeekRestartCommand, err = i.deepSeekRestartCommand()
+		if err != nil {
+			return err
+		}
+	}
+	// Deferred only once the gate has passed: a refused restart started nothing,
+	// so it must not leave a spawn stamp that makes a concurrent caller believe
+	// a replacement is already running.
 	defer recordInstanceSpawn(i.ID)
+	// Registered AFTER the gate and BEFORE the tmux work, so it runs on every
+	// exit of this function — including each per-tool respawn-pane fast path —
+	// while the spawn lock is still held (deferred release() was registered
+	// first, so it runs last). A replacement pane that kept the previous
+	// receipt would be an unowned tree.
+	ownershipCommand := i.Command
+	defer func() { i.commitOwnershipAfterRestart(ownershipCommand) }()
 
 	// #1775: supersede the fast-death watcher from the PREVIOUS spawn here, at
 	// the single entry point, rather than deeper down. restart() has several
@@ -8858,6 +8986,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		mcpLog.Debug("respawn_pane_claude", slog.String("command", resumeCmd))
 
 		// #1822 F2: assert AGENTDECK_PROFILE / CLAUDE_CONFIG_DIR host-side
@@ -8914,6 +9043,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_gemini_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: gemini's rebuilt resume command carries no inline
@@ -8973,6 +9103,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_opencode_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: opencode's rebuilt resume command carries no inline
@@ -9015,7 +9146,7 @@ func (i *Instance) restart(env map[string]string) error {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
-		if missingDep := i.updateCodexSession(i.collectOtherCodexSessionIDs(), true); missingDep != "" {
+		if missingDep := i.updateCodexSession(nil, true); missingDep != "" {
 			i.mu.Lock()
 			i.pendingCodexRestartWarning = codexProbeMissingWarning(missingDep)
 			i.mu.Unlock()
@@ -9047,6 +9178,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_codex_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: belt-and-suspenders to the inline prefix buildCodexCommand
@@ -9090,6 +9222,7 @@ func (i *Instance) restart(env map[string]string) error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		ownershipCommand = resumeCmd
 		sessionLog.Info("restart_cursor_respawn", slog.String("command", resumeCmd))
 
 		// #1822 F2: must run BEFORE RespawnPane — see the Claude branch above
@@ -9134,6 +9267,7 @@ func (i *Instance) restart(env map[string]string) error {
 			if containerName != "" {
 				i.SandboxContainer = containerName
 			}
+			ownershipCommand = resumeCmd
 
 			// The resume command embeds the conversation id, so it is not
 			// logged; the fingerprint identifies the binding without
@@ -9223,15 +9357,10 @@ func (i *Instance) restart(env map[string]string) error {
 		// of resuming a dead ID forever. A no-op when [deepseek].resume_flag is
 		// unset (the default), where restart is a plain re-boot and dsh's own
 		// persistence under $DSH_HOME keeps the conversation reachable.
-		i.refreshDeepSeekSessionID()
 		// A headless restart replays the recorded task; every other profile
 		// re-boots as before. deepSeekRestartCommand refuses rather than
 		// rebuilding a taskless one-shot invocation.
-		dsCommand, dsErr := i.deepSeekRestartCommand()
-		if dsErr != nil {
-			return dsErr
-		}
-		command = dsCommand
+		command = validatedDeepSeekRestartCommand
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -9279,6 +9408,7 @@ func (i *Instance) restart(env map[string]string) error {
 		i.recordPrepareFailure(command, err) // #1924, sister path
 		return err
 	}
+	ownershipCommand = command
 	if containerName != "" {
 		i.SandboxContainer = containerName
 	}

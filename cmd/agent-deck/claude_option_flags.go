@@ -13,6 +13,7 @@ import (
 // same store the dialog writes), so a session created from the CLI restarts
 // with the same flags, unlike a bare `-c "claude --chrome"`.
 type claudeOptionFlags struct {
+	fs              *flag.FlagSet
 	continueMode    *bool
 	skipPermissions *bool
 	autoMode        *bool
@@ -22,6 +23,7 @@ type claudeOptionFlags struct {
 
 func registerClaudeOptionFlags(fs *flag.FlagSet) *claudeOptionFlags {
 	return &claudeOptionFlags{
+		fs:              fs,
 		continueMode:    fs.Bool("continue", false, "Claude session mode 'continue' (claude -c: resume the most recent conversation in the directory); requires -c claude"),
 		skipPermissions: fs.Bool("skip-permissions", false, "Claude: --dangerously-skip-permissions for this session (persisted; requires -c claude)"),
 		autoMode:        fs.Bool("auto-mode", false, "Claude: --permission-mode auto for this session (persisted; requires -c claude)"),
@@ -38,7 +40,7 @@ func (f *claudeOptionFlags) any() bool {
 // ClaudeOptions. Nothing is written when no flag is set, so tools without
 // Claude options are unaffected by the flags' mere existence.
 func applyCLIClaudeOptionFlags(inst *session.Instance, f *claudeOptionFlags) error {
-	if inst == nil || f == nil || !f.any() {
+	if inst == nil || f == nil || !f.any() && !cliFlagWasSet(f.fs, "continue", "skip-permissions", "auto-mode", "chrome", "teammate-mode") {
 		return nil
 	}
 	if !session.IsClaudeCompatible(inst.Tool) {
@@ -54,18 +56,20 @@ func applyCLIClaudeOptionFlags(inst *session.Instance, f *claudeOptionFlags) err
 			return fmt.Errorf("--continue and --resume-session cannot be combined")
 		}
 		opts.SessionMode = "continue"
+	} else if cliFlagWasSet(f.fs, "continue") {
+		opts.SessionMode = "new"
 	}
-	if *f.skipPermissions {
-		opts.SkipPermissions = true
+	if *f.skipPermissions || cliFlagWasSet(f.fs, "skip-permissions") {
+		opts.SkipPermissions = *f.skipPermissions
 	}
-	if *f.autoMode {
-		opts.AutoMode = true
+	if *f.autoMode || cliFlagWasSet(f.fs, "auto-mode") {
+		opts.AutoMode = *f.autoMode
 	}
-	if *f.chrome {
-		opts.UseChrome = true
+	if *f.chrome || cliFlagWasSet(f.fs, "chrome") {
+		opts.UseChrome = *f.chrome
 	}
-	if *f.teammateMode {
-		opts.UseTeammateMode = true
+	if *f.teammateMode || cliFlagWasSet(f.fs, "teammate-mode") {
+		opts.UseTeammateMode = *f.teammateMode
 	}
 	return inst.SetClaudeOptions(opts)
 }
@@ -95,4 +99,19 @@ func addClaudeOptionsJSON(target map[string]interface{}, inst *session.Instance)
 	if opts.UseTeammateMode {
 		target["teammate_mode"] = true
 	}
+}
+
+func cliFlagWasSet(fs *flag.FlagSet, names ...string) bool {
+	if fs == nil {
+		return false
+	}
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		for _, name := range names {
+			if f.Name == name {
+				found = true
+			}
+		}
+	})
+	return found
 }
