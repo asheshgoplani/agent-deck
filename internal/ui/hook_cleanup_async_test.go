@@ -30,6 +30,7 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 			require.NotNil(t, h.storage)
 			t.Cleanup(func() { _ = h.storage.Close() })
 			h.width, h.height = 100, 30
+			h.initialLoading = false // Fixture represents an already loaded session list.
 			inst := &session.Instance{ID: "gone", Title: "gone", Tool: "shell", Status: session.StatusStopped, CreatedAt: time.Now()}
 			h.instances = []*session.Instance{inst}
 			h.instanceByID = map[string]*session.Instance{"gone": inst}
