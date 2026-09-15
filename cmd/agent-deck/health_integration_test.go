@@ -80,7 +80,7 @@ func TestHealthRemoteExecJSONParity(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	config := fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = '%s'\n", bin)
+	config := fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nprofile = 'selected'\nagent_deck_path = '%s'\n", bin)
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestHealthRemoteExecJSONParity(t *testing.T) {
 	if len(local.Processes) != 1 || local.Processes[0].Latest.Role != "remote-web" {
 		t.Fatalf("remote fixture missing: %+v", local)
 	}
-	overSSH := read(controller, "remote", "exec", "lab", "-p", "selected", "health", "--json", "--since", "1h")
+	overSSH := read(controller, "remote", "exec", "lab", "health", "--json", "--since", "1h")
 	if !reflect.DeepEqual(local, overSSH) {
 		t.Fatalf("remote JSON differs:\nlocal: %+v\nremote: %+v", local, overSSH)
 	}
