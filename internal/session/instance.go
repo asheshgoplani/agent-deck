@@ -7480,18 +7480,26 @@ type codexRolloutRecord struct {
 	} `json:"payload"`
 }
 
-func (i *Instance) codexRolloutTail() ([]string, error) {
+func (i *Instance) codexRolloutPath() (string, error) {
 	if !i.CodexRolloutIsResolvableLocally() {
-		return nil, fmt.Errorf("Codex rollout is not locally readable")
+		return "", fmt.Errorf("Codex rollout is not locally readable")
 	}
 	if err := validateExactSessionID(i.CodexSessionID); err != nil {
-		return nil, err
+		return "", err
 	}
 	paths, err := exactCodexRolloutMatches(i.CodexSessionID, i.getCodexHomeDir())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	path, err := uniqueRegularArtifact(paths, "rollout for "+i.CodexSessionID)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (i *Instance) codexRolloutTail() ([]string, error) {
+	path, err := i.codexRolloutPath()
 	if err != nil {
 		return nil, err
 	}
@@ -7503,6 +7511,82 @@ func (i *Instance) codexRolloutTail() ([]string, error) {
 		return nil, nil
 	}
 	return TranscriptTailLines(path, 50)
+}
+
+// Codex generation discovery expands backward by bytes rather than limiting
+// the number of records emitted after a turn starts. Most starts resolve from
+// the first small read; the maximum prevents an unresolved submission from
+// causing an unbounded historical read.
+const (
+	codexTurnGenerationInitialScanBytes = int64(64 << 10)
+	codexTurnGenerationScanMaxBytes     = int64(8 << 20)
+)
+
+func latestCodexTurnIDFromRollout(path string) (string, error) {
+	f, err := os.Open(path) // #nosec G304 -- codexRolloutPath resolves one exact, non-symlink rollout
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	size := info.Size()
+	if size == 0 {
+		return "", nil
+	}
+	scanBytes := min(size, codexTurnGenerationInitialScanBytes)
+	for {
+		offset := size - scanBytes
+		data := make([]byte, int(scanBytes))
+		if _, err := f.ReadAt(data, offset); err != nil {
+			return "", err
+		}
+
+		// When the byte window lands mid-record, discard that incomplete
+		// leading fragment. If it lands exactly after a newline, the first
+		// record is whole and remains eligible.
+		if offset > 0 {
+			var previous [1]byte
+			if _, err := f.ReadAt(previous[:], offset-1); err != nil {
+				return "", err
+			}
+			if previous[0] != '\n' {
+				newline := bytes.IndexByte(data, '\n')
+				if newline < 0 {
+					data = nil
+				} else {
+					data = data[newline+1:]
+				}
+			}
+		}
+
+		for end := len(data); end > 0; {
+			newline := bytes.LastIndexByte(data[:end], '\n')
+			line := bytes.TrimSpace(data[newline+1 : end])
+			end = newline
+			if newline < 0 {
+				end = 0
+			}
+			if len(line) == 0 {
+				continue
+			}
+			var record codexRolloutRecord
+			if json.Unmarshal(line, &record) != nil || record.Type != "event_msg" ||
+				(record.Payload.Type != "task_started" && record.Payload.Type != "turn_started") ||
+				record.Payload.TurnID == "" {
+				continue
+			}
+			return record.Payload.TurnID, nil
+		}
+
+		if offset == 0 || scanBytes == codexTurnGenerationScanMaxBytes {
+			return "", nil
+		}
+		scanBytes = min(size, min(scanBytes*2, codexTurnGenerationScanMaxBytes))
+	}
 }
 
 func (i *Instance) getCodexLastResponse() (*ResponseOutput, error) {
@@ -7540,21 +7624,15 @@ func parseCodexLastAssistantMessage(lines []string, sessionID string) (*Response
 // the exact rollout bound to this instance. It never derives identity from
 // prompt or response content.
 func (i *Instance) LatestCodexTurnGeneration() (string, error) {
-	lines, err := i.codexRolloutTail()
+	path, err := i.codexRolloutPath()
 	if err != nil {
 		return "", err
 	}
-	var generation string
-	for _, line := range lines {
-		var record codexRolloutRecord
-		if json.Unmarshal([]byte(line), &record) != nil || record.Type != "event_msg" ||
-			(record.Payload.Type != "task_started" && record.Payload.Type != "turn_started") ||
-			record.Payload.TurnID == "" {
-			continue
-		}
-		generation = i.CodexSessionID + ":" + record.Payload.TurnID
+	turnID, err := latestCodexTurnIDFromRollout(path)
+	if err != nil || turnID == "" {
+		return "", err
 	}
-	return generation, nil
+	return i.CodexSessionID + ":" + turnID, nil
 }
 
 // GetLastResponseBestEffortChecked is the collision-aware variant of
