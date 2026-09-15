@@ -1,53 +1,36 @@
-# PR #1952 verification results
+# PR #2290: status pass ownership refresh
 
-## Rebase evidence
+PR: https://github.com/asheshgoplani/agent-deck/pull/2290
 
-- Pre-rebase head: `ce4debeb6f3ea5b1cffdc9242eb598df4a3dede5`.
-- Rebased head before the final fixes: `70bb777fd94106162f81a208764f42d4cfce84bc` on current `origin/main`.
-- `git range-diff 92bb498f..ce4debeb origin/main..70bb777f` mapped all 16 PR commits one-for-one with `=`; no prior patch changed or disappeared.
-- The rebased branch was pushed with `--force-with-lease` before findings work began.
+Base: `7d2302fb8a41c5fcab7a441d56729b4b6547885a`.
+Reviewed head: `49d69b468a63529ca69611e3d8fc5ee6a5e3dde5`.
 
-## Findings addressed
+## Root cause
 
-- Made `SourceRemote` part of every pending-inbox identity decision: event fingerprint, turn fingerprint, last-wins producer replacement, and consumer collapse. This keeps local `boxb:nightly-build`, remote `nightly-build`, and caller-prefixed remote IDs distinct even when their visible child spelling overlaps.
-- Removed prefix inference from `RemoteScopedChildID`; arbitrary caller-selected IDs are always scoped rather than mistaken for an already-scoped record.
-- Converted injected CLI writers to error-tracking writers so `inbox` and `remote drain` cannot return success after partial/failed output.
-- Made writer-status distinguish a missing heartbeat from permission/I/O/read failures; only `ENOENT` means “never stamped,” while other failures report unknown liveness.
-- Fixed the suppressed-session absence test to fail on `ReadInboxEvents` errors instead of passing vacuously.
-- Rechecked earlier findings on orphan export, suppression, completion-copy deduplication, corrupt ledger reads, recurring terminal turns, fetch/probe ordering, consumed-ledger bounds, and writer probe fail-closed behavior; their current-head fixes remain present after rebase.
+The original quadratic tmux environment scan is confirmed. Round 1 shared the scan but held the process-wide ownership mutex during subprocess reads. A bootstrap refresh could therefore block authoritative hook publication under another instance's lock.
 
-## Revert proofs
+Round 2 moves refresh I/O outside cache, pass, bootstrap-selection, and status-instance locks. Refreshes coalesce per socket. Publications made during refresh override older enumeration results. Failed enumeration remains unknown. The status path rechecks binding, lifecycle, and status after reacquiring its instance lock.
 
-Only the production hunks were reverse-applied while the new tests remained, and the focused tests were run in `golang:1.25`:
+## Reproduction
 
-```text
-RED_EXIT=1
-TestIssue1952_OriginSeparatesEveryIdentityRule:
-  local and remote records share EventFingerprint
-TestIssue1952_OutputFailuresAreNotSuccess:
-  remote drain output failure reported success
+From the PR checkout, on a machine with Docker:
+
+```sh
+scripts/ci/status-pass-regression.sh /tmp/status-pass-receipts
 ```
 
-The production patch was then restored. With the fix present, these tests plus `TestIssue1952_WriterStatusReadFailureIsUnknown` pass.
+The script records immutable base/reviewed/head revisions and Docker image digest. It copies identical fixtures into detached worktrees and executes tests in the same image as UID/GID 1000, with no network and all capabilities dropped. Only dependency preparation has network access. The baseline's test-only pass adapter delegates to unchanged `Instance.UpdateStatus`; it does not add caching or change production source.
 
-## Container verification
+Expected red assertions: baseline production sweep and CLI subprocess bounds; reviewed-head delayed refresh blocks readers/hook rotation. Fixed-head checks include the actual background worker sweep beyond the two-second TTL, cached environment rotation after the existing 30-second TTL, claim merging, failure handling, golden rows, and race detection.
 
-- `go build ./...`: PASS in `golang:1.25`.
-- `go vet ./...`: PASS in `golang:1.25`.
-- Focused regression tests across `./internal/session` and `./cmd/agent-deck`: PASS.
-- A raw `go test ./...` in the stock Go image reaches unrelated environment-dependent tests but lacks CI's tmux/zoxide packages and non-root permission behavior. The authoritative full race suite is the repository's GitHub Actions PR gate, which installs those dependencies.
+## Verification status
 
-## Invariant check
+- Initial isolated host build and targeted vet passed. No host tests ran.
+- Local Docker test attempt could not create a container: engine HTTP 500. Engine `/_ping` also timed out. No restart or other shared-engine mutation was performed.
+- Docker receipts and exact-head CI are pending the PR workflow. No test-pass claim is made before these complete.
 
-- Bounds: existing summary, inbox-line, retry, generation, and stale-record bounds are unchanged.
-- Ordering: last-wins still preserves first-seen identity order; the identity is now `(SourceRemote, ChildSessionID)`.
-- Idempotence: repeated drains of one remote retain the same structured origin and fingerprint; separate origins no longer destroy one another.
-- Fail closed: fetch, writer probe, unreadable heartbeat, unreadable export, target resolution, and output failures all return non-success rather than an empty/successful drain.
-- Sibling parity: both inbox producer replacement and consumer collapse use the same origin-aware key; both `EventFingerprint` and `TurnFingerprint` enumerate the same provenance field; both CLI entry paths track writer errors.
+## Limits
 
-## CI state
+Synthetic tmux fixtures establish call bounds and synchronization behavior. They do not measure the user's live profile or prove native Codex process rotation on macOS. The environment rotation fixture exercises actual cache expiry; the delayed hook fixture proves authoritative publication remains responsive during a peer refresh.
 
-- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
-- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
-- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
-- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.
+CLI live status validation remains in place because storage has no per-row freshness timestamp. No new CLI schema, remote-execution surface, merge, deployment, or release. The PR remains a draft, parked for September 25, 2026.

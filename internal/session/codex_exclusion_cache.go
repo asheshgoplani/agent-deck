@@ -10,21 +10,24 @@ import (
 const codexExclusionTTL = 2 * time.Second
 
 type codexOwnershipSnapshot struct {
-	at     time.Time
-	claims *codexOwnershipClaims
+	at         time.Time
+	claims     *codexOwnershipClaims
+	refreshing chan struct{}
 }
 
 type codexOwnershipClaims struct {
 	sync.Mutex
 	bySession map[string]string
+	// Publications received during a refresh override its earlier tmux reads.
+	updates map[string]string
 }
 
 // Serialize fallback selection and claim publication, not authoritative probes.
 var codexBootstrapMu sync.Mutex
 
 // Share short-lived ownership evidence across standalone detection calls and
-// adjacent status passes. Holding the lock during refresh coalesces concurrent
-// cold misses. Ownership also incorporates bindings made within this process.
+// adjacent status passes. Each socket coalesces cold misses independently;
+// subprocesses never hold the cache mutex. In-process bindings publish immediately.
 var codexOwnershipCache = struct {
 	sync.Mutex
 	bySocket map[string]codexOwnershipSnapshot
@@ -37,6 +40,7 @@ var codexOwnershipCache = struct {
 type StatusUpdatePass struct {
 	mu       sync.Mutex
 	bySocket map[string]codexOwnershipSnapshot
+	loading  map[string]chan struct{}
 }
 
 // UpdateStatus refreshes one instance using this pass's shared evidence.
@@ -52,15 +56,26 @@ func (p *StatusUpdatePass) UpdateStatusOnly(i *Instance) error {
 
 func loadCodexOwnership(socket string) codexOwnershipSnapshot {
 	codexOwnershipCache.Lock()
-	defer codexOwnershipCache.Unlock()
-	if snapshot, ok := codexOwnershipCache.bySocket[socket]; ok && time.Since(snapshot.at) < codexExclusionTTL {
+	snapshot := codexOwnershipCache.bySocket[socket]
+	if snapshot.refreshing != nil {
+		codexOwnershipCache.Unlock()
+		<-snapshot.refreshing
+		return loadCodexOwnership(socket)
+	}
+	if time.Since(snapshot.at) < codexExclusionTTL {
+		codexOwnershipCache.Unlock()
 		return snapshot
 	}
-	owners := codexOwnershipCache.bySocket[socket].claims
-	if owners == nil {
-		owners = &codexOwnershipClaims{}
+	if snapshot.claims == nil {
+		snapshot.claims = &codexOwnershipClaims{}
 	}
-	snapshot := codexOwnershipSnapshot{claims: owners}
+	owners := snapshot.claims
+	owners.Lock()
+	owners.updates = make(map[string]string)
+	owners.Unlock()
+	snapshot.refreshing = make(chan struct{})
+	codexOwnershipCache.bySocket[socket] = snapshot
+	codexOwnershipCache.Unlock()
 	var bySession map[string]string
 	names, err := tmux.ListAgentDeckSessionsOnSocket(socket)
 	if err == nil {
@@ -77,11 +92,23 @@ func loadCodexOwnership(socket string) codexOwnershipSnapshot {
 			}
 		}
 	}
+	// Only a complete enumeration is usable for bootstrap. Publications still
+	// survive successful refreshes that read an older environment value.
+	codexOwnershipCache.Lock()
 	owners.Lock()
+	if bySession != nil {
+		for name, id := range owners.updates {
+			bySession[name] = id
+		}
+	}
 	owners.bySession = bySession
+	owners.updates = nil
 	owners.Unlock()
 	snapshot.at = time.Now()
+	close(snapshot.refreshing)
+	snapshot.refreshing = nil
 	codexOwnershipCache.bySocket[socket] = snapshot
+	codexOwnershipCache.Unlock()
 	return snapshot
 }
 
@@ -90,15 +117,30 @@ func (p *StatusUpdatePass) codexOwnership(socket string) codexOwnershipSnapshot 
 		return loadCodexOwnership(socket)
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if snapshot, ok := p.bySocket[socket]; ok {
+		p.mu.Unlock()
 		return snapshot
 	}
+	if ready := p.loading[socket]; ready != nil {
+		p.mu.Unlock()
+		<-ready
+		return p.codexOwnership(socket)
+	}
+	if p.loading == nil {
+		p.loading = make(map[string]chan struct{})
+	}
+	ready := make(chan struct{})
+	p.loading[socket] = ready
+	p.mu.Unlock()
 	snapshot := loadCodexOwnership(socket)
+	p.mu.Lock()
 	if p.bySocket == nil {
 		p.bySocket = make(map[string]codexOwnershipSnapshot)
 	}
 	p.bySocket[socket] = snapshot
+	delete(p.loading, socket)
+	close(ready)
+	p.mu.Unlock()
 	return snapshot
 }
 
@@ -132,12 +174,17 @@ func (i *Instance) recordCodexOwnership(id string) {
 	}
 	codexOwnershipCache.Lock()
 	defer codexOwnershipCache.Unlock()
-	claims := codexOwnershipCache.bySocket[i.tmuxSession.SocketName].claims
-	if claims == nil {
-		return
-	} // No snapshot exists yet; its first read will see the write.
+	snapshot := codexOwnershipCache.bySocket[i.tmuxSession.SocketName]
+	if snapshot.claims == nil {
+		snapshot.claims = &codexOwnershipClaims{}
+		codexOwnershipCache.bySocket[i.tmuxSession.SocketName] = snapshot
+	}
+	claims := snapshot.claims
 	claims.Lock()
 	defer claims.Unlock()
+	if claims.updates != nil {
+		claims.updates[i.tmuxSession.Name] = id
+	}
 	if claims.bySession != nil {
 		claims.bySession[i.tmuxSession.Name] = id
 	}

@@ -3062,9 +3062,13 @@ func (i *Instance) DetectCodexSession() {
 func (i *Instance) resolveCodexDetectionCandidate(sessionID string, probeErr error) string {
 	sessionID = i.filterCodexProcessProbeCandidate(sessionID)
 	if sessionID == "" && probeErr == nil {
+		var pass StatusUpdatePass
+		// Warm evidence before serializing selection; no subprocess holds the
+		// bootstrap mutex, including asynchronous startup detection.
+		i.codexExclusions(&pass)
 		codexBootstrapMu.Lock()
 		defer codexBootstrapMu.Unlock()
-		exclude := i.collectOtherCodexSessionIDs()
+		exclude := i.codexExclusions(&pass)
 		if exclude == nil {
 			return ""
 		}
@@ -3942,10 +3946,11 @@ func (i *Instance) UpdateCodexSession(excludeIDs map[string]bool) {
 // updateCodexSession refreshes Codex session ID from env/process-files/disk.
 // Returns missing dependency name when probe prerequisites are unavailable.
 func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe bool) string {
-	return i.updateCodexSessionForPass(excludeIDs, forceProbe, nil)
+	return i.updateCodexSessionForPass(excludeIDs, forceProbe, nil, false)
 }
 
-func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forceProbe bool, pass *StatusUpdatePass) string {
+// statusLocked is true only when called from updateStatus with i.mu held.
+func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forceProbe bool, pass *StatusUpdatePass, statusLocked bool) string {
 	if !IsCodexCompatible(i.Tool) {
 		return ""
 	}
@@ -4009,6 +4014,35 @@ func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forcePr
 	allowUnscoped := envSessionID == "" && i.CodexSessionID == "" && i.CodexStartedAt > 0
 	if !i.shouldScanCodexSession(allowUnscoped) {
 		return missingProbeDep
+	}
+
+	// Fetch peer ownership before taking the bootstrap selection lock. Status
+	// readers and authoritative hook updates must remain available during I/O.
+	if excludeIDs == nil {
+		if pass == nil {
+			pass = &StatusUpdatePass{}
+		}
+		socket := tmux.DefaultSocketName()
+		ts := i.tmuxSession
+		started := i.lastStartTime
+		hookID := i.hookSessionID
+		if ts != nil {
+			socket = ts.SocketName
+		}
+		if statusLocked {
+			i.mu.Unlock()
+		}
+		pass.codexOwnership(socket)
+		if statusLocked {
+			i.mu.Lock()
+			// A stop, restart, or authoritative binding while unlocked supersedes
+			// this bootstrap attempt. Do not resurrect or overwrite it.
+			if i.tmuxSession != ts || i.lastStartTime != started || i.hookSessionID != hookID ||
+				i.CodexSessionID != "" || !IsCodexCompatible(i.Tool) ||
+				(i.Status != StatusRunning && i.Status != StatusWaiting) {
+				return missingProbeDep
+			}
+		}
 	}
 
 	// Serialize fallback selection with publication so peers sharing a project
@@ -6329,7 +6363,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 
 			// Update Codex session tracking (non-blocking, best-effort)
 			if IsCodexCompatible(i.Tool) {
-				i.updateCodexSessionForPass(nil, false, pass)
+				i.updateCodexSessionForPass(nil, false, pass, true)
 			}
 
 			// Update OpenCode session tracking (non-blocking, best-effort).
