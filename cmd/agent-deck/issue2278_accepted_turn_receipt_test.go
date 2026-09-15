@@ -675,6 +675,48 @@ func TestEveryLocalCodexSendUsesAcceptanceGuard(t *testing.T) {
 	}
 }
 
+func TestCodexAcceptanceLockWaitNormalizesNonPositiveTimeouts(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "zero uses default then cap", timeout: 0, want: codexAcceptanceLockTimeout},
+		{name: "negative uses default then cap", timeout: -time.Second, want: codexAcceptanceLockTimeout},
+		{name: "positive below cap", timeout: 2 * time.Second, want: 2 * time.Second},
+		{name: "positive equal to cap", timeout: codexAcceptanceLockTimeout, want: codexAcceptanceLockTimeout},
+		{name: "positive above cap", timeout: 10 * time.Second, want: codexAcceptanceLockTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexAcceptanceLockWait(tt.timeout); got != tt.want || got <= 0 {
+				t.Fatalf("codexAcceptanceLockWait(%v) = %v, want positive %v", tt.timeout, got, tt.want)
+			}
+		})
+	}
+
+	local := &session.Instance{Tool: "codex"}
+	for _, tc := range []struct {
+		name string
+		wait bool
+	}{
+		{name: "ordinary no-wait"},
+		{name: "wait", wait: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !shouldAcquireCodexAcceptanceGuard(local, false, tc.wait, false) {
+				t.Fatal("local Codex send bypassed the acceptance guard")
+			}
+			for _, timeout := range []time.Duration{0, -time.Second} {
+				if lockWait := codexAcceptanceLockWait(timeout); lockWait <= 0 {
+					t.Fatalf("lock wait = %v for timeout %v, want positive", lockWait, timeout)
+				}
+			}
+		})
+	}
+}
+
 func TestDelayedCodexAcceptanceRetainsGuardThroughCompletionRetry(t *testing.T) {
 	if !retainCodexAcceptanceGuardForCompletion(true, nil) {
 		t.Fatal("wait with delayed task_started would release before the completion-boundary retry")
