@@ -171,7 +171,7 @@ func TestOldRemoteCreationFallback(t *testing.T) {
 		}
 		return []byte(`{}`), nil
 	}}
-	id, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Title: "legacy", Tool: "claude", Path: "/srv/project", WorktreeBranch: "fix", Sandbox: true, AdditionalPaths: []string{"/srv/other"}})
+	id, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Title: "legacy", Tool: "claude", Path: "/srv/project", WorktreeBranch: "fix", Sandbox: true, CreateDir: true, AdditionalPaths: []string{"/srv/other"}})
 	if err != nil || id != "legacy-id" || len(calls) != 3 {
 		t.Fatalf("id=%q err=%v calls=%v", id, err, calls)
 	}

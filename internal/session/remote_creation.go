@@ -82,7 +82,7 @@ func LegacyRemoteCreationCatalog() *RemoteCreationCatalog {
 		{Name: "additional-path", TakesValue: true},
 		{Name: "json"}, {Name: "quiet", Aliases: []string{"q"}},
 	}
-	add := append(append([]RemoteCreationField(nil), fields...), RemoteCreationField{Name: "quick", Aliases: []string{"Q"}})
+	add := append(append([]RemoteCreationField(nil), fields...), RemoteCreationField{Name: "quick", Aliases: []string{"Q"}}, RemoteCreationField{Name: "create-dir"})
 	launch := append(append([]RemoteCreationField(nil), fields...),
 		RemoteCreationField{Name: "message", Aliases: []string{"m"}, TakesValue: true},
 		RemoteCreationField{Name: "message-file", TakesValue: true},
