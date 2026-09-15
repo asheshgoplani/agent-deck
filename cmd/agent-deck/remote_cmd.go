@@ -394,7 +394,15 @@ func probeRemoteVersions(ctx context.Context, remotes map[string]session.RemoteC
 		states[name] = session.RemoteVersionState{Version: version, Found: found, CheckedAt: time.Now()}
 	}
 	_ = session.RecordRemoteVersions(states)
-	return session.LoadRemoteVersions()
+	// Keep fresh probe results even if the best-effort cache write failed.
+	cached := session.LoadRemoteVersions()
+	for name, state := range states {
+		if cached[name].Version == state.Version {
+			state.InstalledFrom = cached[name].InstalledFrom
+			states[name] = state
+		}
+	}
+	return states
 }
 
 func handleRemoteSessions(args []string) {
