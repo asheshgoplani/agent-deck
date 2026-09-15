@@ -1,0 +1,99 @@
+// This identical harness is overlaid on both revisions. Only WATCH_PACKAGE is
+// substituted: fsnotify on unchanged main, production fswatch on the PR head.
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"syscall"
+
+	watch "WATCH_PACKAGE"
+)
+
+const orphanCount = 1000
+const descriptorLimit = 4096
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	fmt.Printf("sha=%s platform=%s/%s go=%s fixture=%s orphan_count=%d\n",
+		os.Getenv("FD_REVISION"), runtime.GOOS, runtime.GOARCH, runtime.Version(), os.Getenv("FD_FIXTURE"), orphanCount)
+	if runtime.GOOS != "darwin" || os.Getenv("FD_REVISION") == "" {
+		return fmt.Errorf("native macOS and an explicit revision are required")
+	}
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		return fmt.Errorf("read descriptor limit: %w", err)
+	}
+	if limit.Max < descriptorLimit {
+		return fmt.Errorf("descriptor hard limit %d is below %d", limit.Max, descriptorLimit)
+	}
+	limit.Cur = descriptorLimit
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		return fmt.Errorf("set descriptor limit: %w", err)
+	}
+	fixture := os.Getenv("FD_FIXTURE")
+	entries, err := os.ReadDir(fixture)
+	if err != nil {
+		return fmt.Errorf("read fixture: %w", err)
+	}
+	if len(entries) != orphanCount {
+		return fmt.Errorf("fixture contains %d entries, want %d", len(entries), orphanCount)
+	}
+	for i := 0; i < orphanCount; i++ {
+		data, err := os.ReadFile(filepath.Join(fixture, fmt.Sprintf("orphan-%04d.json", i)))
+		if err != nil || string(data) != "{}" {
+			return fmt.Errorf("fixture orphan %d is invalid: %v", i, err)
+		}
+	}
+	before, err := countDescriptors()
+	if err != nil {
+		return err
+	}
+	w, err := watch.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("create watcher: %w", err)
+	}
+	defer w.Close()
+	if err := w.Add(fixture); err != nil {
+		return fmt.Errorf("watch fixture: %w", err)
+	}
+	after, err := countDescriptors()
+	if err != nil {
+		return err
+	}
+	delta := after - before
+	fmt.Printf("inspection=fcntl(F_GETFD) before=%d after=%d delta=%d allowed=16\n", before, after, delta)
+	if delta > 16 {
+		return fmt.Errorf("FD_BOUND_EXCEEDED delta=%d", delta)
+	}
+	fmt.Println("FD_BOUND_PASS")
+	return nil
+}
+
+// F_GETFD measures this process directly, including descriptors held by kqueue.
+// No /proc dependency or inspection failure may turn the required gate green.
+func countDescriptors() (int, error) {
+	count := 0
+	for fd := 0; fd < descriptorLimit; fd++ {
+		_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFD, 0)
+		switch errno {
+		case 0:
+			count++
+		case syscall.EBADF:
+		default:
+			return 0, fmt.Errorf("inspect descriptor %d: %w", fd, errno)
+		}
+	}
+	if count < 3 {
+		return 0, fmt.Errorf("descriptor inspection returned only %d descriptors", count)
+	}
+	return count, nil
+}
