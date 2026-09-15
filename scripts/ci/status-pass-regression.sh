@@ -45,7 +45,9 @@ run_tests() {
     [[ $result -eq 0 ]]
   fi
 }
-run_tests base "$work/base" 'TestStatusPassSweepPinsOwnershipBeyondTTL|TestBackgroundStatusPassOwnershipLinear|TestListJSON_CodexProbeCount' red ./internal/session ./internal/ui ./cmd/agent-deck
+run_tests base-session "$work/base" TestStatusPassSweepPinsOwnershipBeyondTTL red ./internal/session
+run_tests base-ui "$work/base" TestBackgroundStatusPassOwnershipLinear red ./internal/ui
+run_tests base-cli "$work/base" TestListJSON_CodexProbeCount red ./cmd/agent-deck
 run_tests reviewed "$work/reviewed" TestStatusPassRefreshDoesNotBlockReadersOrRotation red ./internal/session
 run_tests head "$repo" 'TestStatusPass|TestBackgroundStatusPass|TestCodexExclusion|TestListJSON_CodexProbeCount|TestPerf_ColdStart_List100' green ./internal/session ./internal/ui ./cmd/agent-deck
 run_tests race "$repo" 'TestStatusPass|TestBackgroundStatusPass|TestCodexExclusion' green -race ./internal/session ./internal/ui

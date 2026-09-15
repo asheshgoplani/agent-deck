@@ -40,7 +40,6 @@ list-windows) cat "$SWEEP_FIXTURE/windows";;
 list-panes) case "$*" in *pane_pid*) printf '1\n';; *-a*) cat "$SWEEP_FIXTURE/panes";; *) printf '0\n';; esac;;
 show-environment)
  if [ "$#" = 3 ]; then
-  printf 'peer\n' >> "$SWEEP_FIXTURE/peers"
   printf 'CODEX_SESSION_ID=owned-%s\n' "$3"
  else
   case "$*" in *CODEX_SESSION_ID*) sleep 0.8;; esac
@@ -62,17 +61,17 @@ esac
 	started := time.Now()
 	h.backgroundStatusUpdate()
 	elapsed := time.Since(started)
-	data, err := os.ReadFile(filepath.Join(dir, "peers"))
+	data, err := os.ReadFile(filepath.Join(dir, "calls"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := strings.Count(string(data), "peer\n")
-	t.Logf("production background sweep: %d instances, %d peer reads, %s", n, reads, elapsed)
+	reads := strings.Count(string(data), "show-environment")
+	t.Logf("production background sweep: %d instances, %d environment reads, %s", n, reads, elapsed)
 	if elapsed < 2*time.Second {
 		t.Fatal("fixture did not cross ownership TTL")
 	}
-	if reads != n {
-		t.Fatalf("peer reads=%d, want exactly %d for one shared scan", reads, n)
+	if reads != 2*n {
+		t.Fatalf("environment reads=%d, want %d (one own read and one shared peer read per instance)", reads, 2*n)
 	}
 	snapshot := h.getSessionRenderSnapshot()
 	for _, inst := range h.instances {
