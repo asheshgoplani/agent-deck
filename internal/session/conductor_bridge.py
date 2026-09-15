@@ -27,6 +27,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -418,35 +419,74 @@ def get_session_output(session: str, profile: str | None = None) -> str:
     assistant reply) instead of the raw pane capture (which includes the
     cosmetic frame / statusline at the top and can be mistaken for a reply).
     """
-    result = run_cli(
-        "session", "output", session, "--json", profile=profile, timeout=30
-    )
+    return get_session_output_state(session, profile=profile)[0]
+
+
+def get_session_output_state(
+    session: str, profile: str | None = None,
+) -> tuple[str, str]:
+    """Return response text and its exact Codex thread:turn identity."""
+    result = run_cli("session", "output", session, "--json", profile=profile, timeout=30)
     if result.returncode != 0:
-        return f"[Error getting output: {result.stderr.strip()}]"
+        return f"[Error getting output: {result.stderr.strip()}]", ""
     try:
         data = json.loads(result.stdout)
-        return (data.get("content") or "").strip()
+        return (
+            (data.get("content") or "").strip(),
+            data.get("codex_turn_generation") or "",
+        )
     except json.JSONDecodeError:
         # Fallback: stdout might be the legacy raw-text format.
-        return result.stdout.strip()
+        return result.stdout.strip(), ""
 
 
 # Async callable type for reply notifications: (response_text: str) -> None
 ReplyCallback = Callable[[str], Coroutine[Any, Any, None]]
 
+_WAIT_SEND_QUEUE_REQUIRED = "queue_required"
+_LEGACY_REPLY_CLAIM = "legacy"
+_reply_owner_lock = threading.Lock()
+_wait_send_reservations: dict[tuple[str | None, str], str | None] = {}
 
-def _is_still_running_timeout(stderr: str) -> bool:
-    """True when a blocking `--wait` failed *only* because the turn outran the
-    timeout while the agent keeps working — the message WAS delivered.
 
-    The CLI reports this with stderr like:
-        "timeout waiting for completion: agent still running after 5m0s"
+def _cli_json(stdout: str) -> dict:
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
-    Distinguishing this benign case from a genuine send failure lets callers
-    deliver the reply asynchronously instead of reporting a false failure.
-    """
-    s = stderr.lower()
-    return "timeout waiting for completion" in s or "still running" in s
+
+def _accepted_turn_from_timeout(payload: dict) -> dict | None:
+    """Return a fail-closed late-reply owner from a structured CLI timeout."""
+    if (
+        payload.get("completion") != "timeout"
+        or payload.get("delivery") != "submitted"
+        or payload.get("submitted") is not True
+        or payload.get("accepted_turn_kind") != "codex_rollout"
+    ):
+        return None
+    receipt = payload.get("accepted_turn")
+    if not isinstance(receipt, dict):
+        return None
+    required = (
+        "receipt_id", "instance_id", "codex_session_id", "turn_generation", "accepted_at",
+    )
+    if any(not isinstance(receipt.get(key), str) or not receipt[key] for key in required):
+        return None
+    if not receipt["turn_generation"].startswith(receipt["codex_session_id"] + ":"):
+        return None
+    return receipt
+
+
+def _legacy_submitted_timeout(payload: dict) -> bool:
+    """Preserve async completion for tools without exact turn receipts."""
+    return (
+        payload.get("completion") == "timeout"
+        and payload.get("delivery") == "submitted"
+        and payload.get("submitted") is True
+        and payload.get("accepted_turn_kind") != "codex_rollout"
+    )
 
 
 def send_to_conductor(
@@ -457,14 +497,14 @@ def send_to_conductor(
     response_timeout: int = RESPONSE_TIMEOUT,
     reply_callback: ReplyCallback | None = None,
     force_queue: bool = False,
-) -> tuple[bool, str, bool]:
+    claim_late_reply: bool = False,
+) -> tuple[bool, str, dict | bool | str]:
     """Send a message to the conductor session.
 
-    Returns (success, response_text, still_running). When wait_for_reply=False,
-    response_text is "". still_running is True only on the wait path when the
-    blocking `--wait` timed out because the agent is still working (the message
-    was delivered and the reply should be awaited asynchronously); it is False
-    in every other case.
+    Returns (success, response_text, pending). An exact receipt means Codex
+    accepted a turn before completion timed out; True preserves the legacy
+    async signal for receipt-less tools; queue_required prevents concurrent
+    remote sends from creating an unowned turn.
 
     When wait_for_reply=False and the conductor is busy (running/active/starting),
     the message is queued in-memory and delivered automatically once the conductor
@@ -474,6 +514,9 @@ def send_to_conductor(
     force_queue=True skips the internal status check and enqueues immediately.
     Use this when the caller already knows the conductor is busy to avoid a
     redundant blocking subprocess call.
+
+    claim_late_reply reserves one in-memory owner across the blocking wait and,
+    on an accepted timeout, until the caller registers its reply watcher.
     """
     if not wait_for_reply:
         # force_queue: caller already confirmed conductor is busy — skip status check.
@@ -511,32 +554,60 @@ def send_to_conductor(
             return False, "", False
         return True, "", False
 
-    # wait_for_reply=True: single-call flow used by heartbeats and the idle
-    # user-message path. `--wait` blocks until the assistant's reply is flushed;
-    # we then re-fetch the clean reply via get_session_output (`session output
-    # --json` -> content), rather than parsing the raw `--wait` pane capture.
-    # This mirrors the deployed bridge's reply-capture (issue #926).
-    result = run_cli(
-        "session", "send", session, message,
-        "--wait", "--timeout", f"{response_timeout}s", "-q",
-        profile=profile,
-        timeout=max(response_timeout + 30, 60),
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        # The turn outran --timeout but the message was delivered and the agent
-        # is still working. Signal still_running so the caller can await the
-        # reply asynchronously rather than reporting a false failure.
-        if _is_still_running_timeout(stderr):
-            log.info(
-                "Conductor %s: --wait timed out but agent still running "
-                "(message delivered, reply pending): %s",
-                session, stderr,
-            )
-            return False, "", True
-        log.error("Failed to send to conductor: %s", stderr)
+    # Serialize accepted-turn ownership before launching the blocking command;
+    # a colliding remote arrival must queue instead of becoming an unowned turn.
+    key = (profile, session)
+    with _reply_owner_lock:
+        if key in _wait_send_reservations or key in _pending_reply_tasks:
+            return False, "", _WAIT_SEND_QUEUE_REQUIRED
+        _wait_send_reservations[key] = None
+
+    retain_reservation = False
+    try:
+        # `--wait --json` returns the accepted turn and its exact correlated
+        # response as one result; never issue a second output read here.
+        result = run_cli(
+            "session", "send", session, message,
+            "--wait", "--timeout", f"{response_timeout}s", "--json",
+            profile=profile,
+            timeout=max(response_timeout + 30, 60),
+        )
+        if result.returncode != 0:
+            payload = _cli_json(result.stdout)
+            receipt = _accepted_turn_from_timeout(payload)
+            if receipt is not None:
+                log.info(
+                    "Conductor %s: accepted turn %s outlasted --wait; reply pending",
+                    session, receipt["receipt_id"],
+                )
+                if claim_late_reply:
+                    with _reply_owner_lock:
+                        _wait_send_reservations[key] = receipt["receipt_id"]
+                    retain_reservation = True
+                return False, "", receipt
+            if _legacy_submitted_timeout(payload):
+                if claim_late_reply:
+                    with _reply_owner_lock:
+                        _wait_send_reservations[key] = _LEGACY_REPLY_CLAIM
+                    retain_reservation = True
+                return False, "", True
+            error = payload.get("error") or result.stderr.strip()
+            log.error("Failed to send to conductor: %s", error)
+            return False, "", False
+        payload = _cli_json(result.stdout)
+        content = payload.get("content")
+        if (
+            payload.get("success") is True
+            and payload.get("completion") == "complete"
+            and isinstance(content, str)
+        ):
+            return True, content.strip(), False
+        log.error("Conductor %s returned an invalid structured wait result", session)
         return False, "", False
-    return True, get_session_output(session, profile=profile), False
+    finally:
+        if not retain_reservation:
+            with _reply_owner_lock:
+                _wait_send_reservations.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +719,10 @@ async def _drain_queue() -> None:
                 continue
 
             message, profile, reply_callback = items[0]
+            with _reply_owner_lock:
+                if ((profile, session) in _wait_send_reservations or
+                        (profile, session) in _pending_reply_tasks):
+                    continue
             loop = asyncio.get_running_loop()
             status = await loop.run_in_executor(
                 None,
@@ -736,8 +811,8 @@ async def _drain_queue() -> None:
 # When the conductor is IDLE on arrival the handler delivers the message with a
 # blocking `session send --wait --timeout {RESPONSE_TIMEOUT}s`. If that single
 # turn outruns the timeout the message is already delivered and the agent keeps
-# working — only the synchronous reply is lost. send_to_conductor flags this
-# (still_running=True); the handler then registers a reply-only watcher here.
+# working — only the synchronous reply is lost. send_to_conductor returns the
+# CLI's accepted-turn receipt; the handler registers its reply owner here.
 #
 # Unlike _drain_queue this NEVER sends a message — the message is already
 # in-flight, so re-sending would double-process it. The watcher only polls
@@ -748,49 +823,51 @@ async def _drain_queue() -> None:
 PENDING_REPLY_MAX_WAIT = 3600  # seconds
 PENDING_REPLY_POLL_INTERVAL = 5  # seconds
 
-# Keeps watcher tasks referenced so the event loop doesn't GC them mid-flight.
-_pending_reply_tasks: set[asyncio.Task] = set()
+# Keep one late-reply owner per session referenced until it finishes.
+_pending_reply_tasks: dict[tuple[str | None, str], asyncio.Task] = {}
 
 
 async def _watch_pending_reply(
     session: str,
     profile: str | None,
+    receipt: dict | None,
     reply_callback: ReplyCallback,
 ) -> None:
-    """Wait for an in-flight conductor turn to finish, then deliver its output.
+    """Deliver the accepted turn's output without re-sending its message.
 
-    Used when a blocking `--wait` send timed out because the agent is still
-    running (not a send failure). The message was already delivered, so this
-    does NOT re-send — it polls until the conductor leaves the busy state and
-    then fires reply_callback exactly once with the captured output.
-
-    Mirrors _drain_queue's polling/backoff but never sends a message. Caps the
-    total wait at PENDING_REPLY_MAX_WAIT and logs if it gives up.
+    Codex requires an exact rollout generation because status, timestamps, and
+    content are not ownership evidence. Receipt-less tools retain the previous
+    status-based watcher until they expose equivalent turn identity.
     """
     loop = asyncio.get_running_loop()
     max_polls = max(1, PENDING_REPLY_MAX_WAIT // PENDING_REPLY_POLL_INTERVAL)
     for _ in range(max_polls):
-        status = await loop.run_in_executor(
-            None, functools.partial(get_session_status, session, profile=profile),
+        if receipt is None:
+            status = await loop.run_in_executor(
+                None, functools.partial(get_session_status, session, profile=profile),
+            )
+            if status in ("running", "active", "starting", "unknown"):
+                await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
+                continue
+            output = await loop.run_in_executor(
+                None, functools.partial(get_session_output, session, profile=profile),
+            )
+            await _fire_callback(
+                reply_callback, output.strip() or "[No output from conductor.]",
+            )
+            return
+        output, generation = await loop.run_in_executor(
+            None, functools.partial(get_session_output_state, session, profile=profile),
         )
-        # Still working, or a transient CLI failure — keep waiting. This also
-        # naturally handles the race where the conductor finishes between the
-        # timeout and this first poll: a non-busy status falls straight through
-        # to fetching the output below.
-        if status in ("running", "active", "starting", "unknown"):
-            await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
-            continue
-        # The turn is no longer running (idle/waiting/error/...) — fetch whatever
-        # output is available and deliver it once.
-        output = await loop.run_in_executor(
-            None, functools.partial(get_session_output, session, profile=profile),
-        )
-        text = output.strip() or "[No output from conductor.]"
-        await _fire_callback(reply_callback, text)
-        log.info(
-            "Pending reply for %s delivered after in-flight turn finished", session,
-        )
-        return
+        if generation == receipt["turn_generation"]:
+            text = output.strip()
+            await _fire_callback(reply_callback, text or "[No output from conductor.]")
+            log.info(
+                "Pending reply %s for %s delivered after matching Codex completion",
+                receipt["receipt_id"], session,
+            )
+            return
+        await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
 
     log.warning(
         "Pending reply watcher for %s gave up after %ds — turn still running",
@@ -806,8 +883,9 @@ async def _watch_pending_reply(
 def _register_pending_reply(
     session: str,
     profile: str | None,
+    receipt: dict | None,
     reply_callback: ReplyCallback,
-) -> None:
+) -> bool:
     """Schedule a reply-only watcher for an in-flight turn (no message re-send).
 
     Safe to call from a running-loop context; skips with a warning if there is
@@ -817,10 +895,39 @@ def _register_pending_reply(
         loop = asyncio.get_running_loop()
     except RuntimeError:
         log.warning("No running event loop — cannot watch for pending reply on %s", session)
-        return
-    task = loop.create_task(_watch_pending_reply(session, profile, reply_callback))
-    _pending_reply_tasks.add(task)
-    task.add_done_callback(_pending_reply_tasks.discard)
+        return False
+    key = (profile, session)
+    claim_id = receipt.get("receipt_id") if receipt is not None else _LEGACY_REPLY_CLAIM
+    with _reply_owner_lock:
+        if key in _pending_reply_tasks:
+            return False
+        reservation = _wait_send_reservations.get(key)
+        if key in _wait_send_reservations and reservation != claim_id:
+            return False
+        task = loop.create_task(
+            _watch_pending_reply(session, profile, receipt, reply_callback)
+        )
+        _wait_send_reservations.pop(key, None)
+        _pending_reply_tasks[key] = task
+
+    def _release_owner(done: asyncio.Task) -> None:
+        with _reply_owner_lock:
+            if _pending_reply_tasks.get(key) is done:
+                _pending_reply_tasks.pop(key, None)
+
+    task.add_done_callback(_release_owner)
+    return True
+
+
+def _release_late_reply_claim(
+    session: str, profile: str | None, receipt: dict | None,
+) -> None:
+    """Release a retained send reservation when watcher setup fails."""
+    key = (profile, session)
+    claim_id = receipt.get("receipt_id") if receipt is not None else _LEGACY_REPLY_CLAIM
+    with _reply_owner_lock:
+        if _wait_send_reservations.get(key) == claim_id:
+            _wait_send_reservations.pop(key, None)
 
 
 def get_status_summary(profile: str | None = None) -> dict:
@@ -1735,6 +1842,7 @@ def create_telegram_bot(config: dict):
                 profile=target_profile,
                 wait_for_reply=True,
                 response_timeout=RESPONSE_TIMEOUT,
+                claim_late_reply=True,
             ),
         )
         if not ok:
@@ -1758,10 +1866,30 @@ def create_telegram_bot(config: dict):
                     for chunk in split_message(html):
                         await tg_bot.send_message(tg_chat_id, chunk, parse_mode="HTML")
 
-                _register_pending_reply(session_title, target_profile, _tg_late_reply)
-                await message.answer(
-                    f"{profile_tag}⏳ Still working — will reply here when done."
-                )
+                if still_running == _WAIT_SEND_QUEUE_REQUIRED:
+                    _enqueue_message(
+                        session_title, cleaned_msg, target_profile, _tg_late_reply,
+                    )
+                    await message.answer(
+                        f"{profile_tag}⏳ Conductor busy — message queued, will reply here when done."
+                    )
+                elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
+                    session_title, target_profile,
+                    still_running if isinstance(still_running, dict) else None,
+                    _tg_late_reply,
+                ):
+                    await message.answer(
+                        f"{profile_tag}⏳ Still working — will reply here when done."
+                    )
+                else:
+                    if still_running is True or isinstance(still_running, dict):
+                        _release_late_reply_claim(
+                            session_title, target_profile,
+                            still_running if isinstance(still_running, dict) else None,
+                        )
+                    await message.answer(
+                        f"[Accepted turn could not acquire a reply watcher [{target_profile}].]"
+                    )
                 return
             await message.answer(
                 f"[Failed to send message to conductor [{target_profile}].]"
@@ -2077,6 +2205,7 @@ def create_slack_app(config: dict):
                 send_to_conductor,
                 session_title, cleaned_msg, profile=profile,
                 wait_for_reply=True, response_timeout=RESPONSE_TIMEOUT,
+                claim_late_reply=True,
             ),
         )
         if not ok:
@@ -2099,12 +2228,25 @@ def create_slack_app(config: dict):
                         text = f"{header}{chunk}" if i == 0 else chunk
                         await _safe_say(say, text=text, thread_ts=thread_ts)
 
-                _register_pending_reply(session_title, profile, _slack_late_reply)
-                await _safe_say(
-                    say,
-                    text=f"{name_tag}\u23f3 Still working \u2014 will reply here when done.",
-                    thread_ts=thread_ts,
-                )
+                if still_running == _WAIT_SEND_QUEUE_REQUIRED:
+                    _enqueue_message(
+                        session_title, cleaned_msg, profile, _slack_late_reply,
+                    )
+                    notice = f"{name_tag}⏳ Conductor busy — message queued, will reply here when done."
+                elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
+                    session_title, profile,
+                    still_running if isinstance(still_running, dict) else None,
+                    _slack_late_reply,
+                ):
+                    notice = f"{name_tag}⏳ Still working — will reply here when done."
+                else:
+                    if still_running is True or isinstance(still_running, dict):
+                        _release_late_reply_claim(
+                            session_title, profile,
+                            still_running if isinstance(still_running, dict) else None,
+                        )
+                    notice = f"[Accepted turn could not acquire a reply watcher {target['name']}]."
+                await _safe_say(say, text=notice, thread_ts=thread_ts)
                 return
             await _safe_say(
                 say,
@@ -2670,6 +2812,7 @@ def create_discord_bot(config: dict):
                     profile=profile,
                     wait_for_reply=True,
                     response_timeout=RESPONSE_TIMEOUT,
+                    claim_late_reply=True,
                 ),
             )
         if not ok:
@@ -2688,10 +2831,25 @@ def create_discord_bot(config: dict):
                         dc_channel, response_text, name_tag=dc_name_tag,
                     )
 
-                _register_pending_reply(session_title, profile, _dc_late_reply)
-                await message.channel.send(
-                    "⏳ Still working — will reply here when done.",
-                )
+                if still_running == _WAIT_SEND_QUEUE_REQUIRED:
+                    _enqueue_message(
+                        session_title, cleaned_msg, profile, _dc_late_reply,
+                    )
+                    notice = "⏳ Conductor busy — message queued, will reply here when done."
+                elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
+                    session_title, profile,
+                    still_running if isinstance(still_running, dict) else None,
+                    _dc_late_reply,
+                ):
+                    notice = "⏳ Still working — will reply here when done."
+                else:
+                    if still_running is True or isinstance(still_running, dict):
+                        _release_late_reply_claim(
+                            session_title, profile,
+                            still_running if isinstance(still_running, dict) else None,
+                        )
+                    notice = "[Accepted turn could not acquire a reply watcher.]"
+                await message.channel.send(notice)
                 return
             await message.channel.send(
                 f"[Failed to send message to conductor {target['name']}.]",
