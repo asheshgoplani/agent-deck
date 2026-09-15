@@ -211,8 +211,8 @@ func TestAddClaudeOptionFlagsPersistAndSurfaceInShow(t *testing.T) {
 		t.Fatalf("show fields = %+v", showResp)
 	}
 
-	stdout, _, code = runAgentDeck(t, home, "add", "-t", "opts-bad", "-c", "gemini", "--chrome", "--no-parent", projectDir)
-	if code == 0 || !strings.Contains(stdout, "only apply to claude") {
-		t.Fatalf("--chrome on gemini should be refused, exit=%d stdout=%s", code, stdout)
+	stdout, stderr, code = runAgentDeck(t, home, "add", "-t", "opts-bad", "-c", "gemini", "--chrome", "--no-parent", projectDir)
+	if code == 0 || !strings.Contains(stdout+stderr, "only apply to claude") {
+		t.Fatalf("--chrome on gemini should be refused, exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
 }

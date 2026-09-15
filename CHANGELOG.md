@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Account and harness switching now works for sessions a remote deck owns, the same way it does locally. `Shift+P` on a remote row opens the Edit Session dialog bound to that remote: the account row lists the remote's own slots, saving a changed harness or account previews the switch on the remote (`session switch-preview --json`) and shows the same "Switch Account?" / "Transfer Context?" confirmation fed by that answer (its losses, warnings and refusals verbatim), and confirming runs the remote's own `session switch` with the same guards it has locally (ownership revalidation, managed-source refusal, journal). Results are reported as verified, pending or failed with the remote's status and `recovery_required` flag; the row updates through the pushed remote events. The CLI forwards `remote <name> session switch|switch-preview|switch-account` with a closed option set, so no local path or credential can reach the remote's switch engine. `accounts --harness codex` lists Codex slots. A cross-harness preview now refuses (`target-harness-missing`) when the target harness is not on the host's `PATH`, before anything is staged, journaled or archived. `session switch --json` reports `source_archived` / `source_superseded_by` in every cross-harness shape (success, pending and the recovery-required failure after the source was already superseded), and the TUI states exactly what happened to the source. Refs #2170.
 
+- Remote session creation uses the owning host's versioned capability catalog for account, model, MCP and worktree options, validates requests before creation, and rolls back failed startup queries (#2275).
+
+### Fixed
+
+- Wrapped session process trees are tracked with a spawn-time ownership receipt for verified descendant cleanup (#2272).
+- Session sends report queued delivery truthfully and bind `--wait` and `--stream` replies to the submitted turn (#2273).
+
 ## [1.16.10] - 2026-09-13
 
 An open deck now attempts to install a new release on its own and, when `auto_restart` allows, restarts in place; `session start` no longer reports success for a pane that is not there; `launch` survives a concurrent session detector; and a new child completion that passed the duplicate gate but whose transcript signal is stale is delivered instead of dropped.

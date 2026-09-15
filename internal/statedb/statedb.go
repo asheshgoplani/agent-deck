@@ -362,7 +362,24 @@ func OpenReadOnly(dbPath string) (*StateDB, error) {
 	}
 	// immutable=1 prevents SQLite from creating/updating WAL/SHM sidecars and
 	// is required by the byte-zero-effect contract of callers using this API.
-	dsn := "file:" + dbPath + "?mode=ro&immutable=1&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	return openReadOnlyDatabase(dbPath, true)
+}
+
+// OpenReadOnlyLive reads the current WAL-backed database without initializing
+// schema, writing rows, changing journal mode or checkpointing. Unlike the
+// immutable evidence reader, SQLite may access WAL/SHM coordination files.
+func OpenReadOnlyLive(dbPath string) (*StateDB, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, err
+	}
+	return openReadOnlyDatabase(dbPath, false)
+}
+
+func openReadOnlyDatabase(dbPath string, immutable bool) (*StateDB, error) {
+	dsn := "file:" + dbPath + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	if immutable {
+		dsn += "&immutable=1"
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("statedb: open read-only: %w", err)

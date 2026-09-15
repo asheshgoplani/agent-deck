@@ -295,6 +295,16 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 // creating directories/files, migrating schema, changing SQLite journal
 // state, or checkpointing WAL files.
 func NewReadOnlyStorageWithProfile(profile string) (*Storage, error) {
+	return newReadOnlyStorageWithProfile(profile, statedb.OpenReadOnly)
+}
+
+// NewLiveReadOnlyStorageWithProfile reads committed WAL state for authoritative
+// live catalogs and preflight. It does not initialize schema or write rows.
+func NewLiveReadOnlyStorageWithProfile(profile string) (*Storage, error) {
+	return newReadOnlyStorageWithProfile(profile, statedb.OpenReadOnlyLive)
+}
+
+func newReadOnlyStorageWithProfile(profile string, open func(string) (*statedb.StateDB, error)) (*Storage, error) {
 	effectiveProfile, err := ResolveProfileForStorage(profile)
 	if err != nil {
 		return nil, err
@@ -303,7 +313,7 @@ func NewReadOnlyStorageWithProfile(profile string) (*Storage, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := statedb.OpenReadOnly(dbPath)
+	db, err := open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state database read-only: %w", err)
 	}

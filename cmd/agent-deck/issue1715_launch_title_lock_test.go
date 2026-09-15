@@ -9,7 +9,7 @@
 // conductor->worker instructions was lost. `launch` was the one creation entry
 // point that still required --title-lock/--no-title-sync on top of -t.
 //
-// Why structural assertions on handleLaunch: it creates a real tmux session and
+// Why structural assertions on handleLaunchCommand: it creates a real tmux session and
 // calls os.Exit on every error path, and this package has no subprocess harness
 // for the launch verb. Precedent: rename_title_lock_test.go,
 // session_remove_kill_test.go. The decision itself is unit-tested behaviourally
@@ -28,7 +28,11 @@ import (
 // decision through the shared shouldLockTitle chokepoint (which locks on an
 // explicit -t/--title), not through the old flags-only condition.
 func TestHandleLaunch_LocksExplicitTitle(t *testing.T) {
-	body := foldSpaces(mustExtractFuncBody(t, "launch_cmd.go", "handleLaunch"))
+	wrapper := foldSpaces(mustExtractFuncBody(t, "launch_cmd.go", "handleLaunch"))
+	if !strings.Contains(wrapper, "handleLaunchCommand(profile, args, nil)") {
+		t.Fatal("handleLaunch must delegate to normal creation, with flag inspection disabled")
+	}
+	body := foldSpaces(mustExtractFuncBody(t, "launch_cmd.go", "handleLaunchCommand"))
 
 	if !strings.Contains(body, "if shouldLockTitle(userProvidedTitle, *titleLock, *noTitleSync) { newInstance.TitleLocked = true }") {
 		t.Error("handleLaunch must set newInstance.TitleLocked via shouldLockTitle(userProvidedTitle, *titleLock, *noTitleSync) so an explicit -t/--title locks (#1715)")
@@ -51,7 +55,11 @@ func TestHandleLaunch_LocksExplicitTitle(t *testing.T) {
 // TestHandleAdd_LocksExplicitTitle keeps the sibling entry point pinned: `add`
 // and `launch` must not drift apart again (#1615/#1715).
 func TestHandleAdd_LocksExplicitTitle(t *testing.T) {
-	body := foldSpaces(mustExtractFuncBody(t, "main.go", "handleAdd"))
+	wrapper := foldSpaces(mustExtractFuncBody(t, "main.go", "handleAdd"))
+	if !strings.Contains(wrapper, "handleAddCommand(profile, args, nil)") {
+		t.Fatal("handleAdd must delegate to normal creation, with flag inspection disabled")
+	}
+	body := foldSpaces(mustExtractFuncBody(t, "main.go", "handleAddCommand"))
 
 	if !strings.Contains(body, "if shouldLockTitle(userProvidedTitle, *titleLock, *noTitleSync) { newInstance.TitleLocked = true }") {
 		t.Error("handleAdd must set newInstance.TitleLocked via shouldLockTitle so an explicit -t/--title locks (#1615)")

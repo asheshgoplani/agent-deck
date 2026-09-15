@@ -156,6 +156,16 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	// Unknown options are conservatively treated as value-taking: they must never
 	// cause a flag-shaped value to be opened as a controller file.
 	boolOptions := " json quiet q no-wait wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts "
+	// Creation booleans come from the same registered parser as capabilities.
+	// Otherwise a new boolean can swallow --message-file as its apparent value.
+	if args[0] == "launch" {
+		boolOptions = " "
+		for _, field := range creationCommandFields("launch") {
+			if !field.TakesValue {
+				boolOptions += field.Name + " "
+			}
+		}
+	}
 	forwarded := append([]string(nil), args[:offset]...)
 	messagePath := ""
 	found := false
@@ -233,6 +243,16 @@ func runRemoteExec(name string, args []string) (int, error) {
 	}
 	defer closeInput()
 	runner := session.NewSSHRunner(name, rc)
+	interactive, err := preflightRemoteCreationMode(context.Background(), runner, args)
+	if err != nil {
+		return 2, err
+	}
+	if interactive {
+		if err := runner.RunInteractiveCreation(args...); err != nil {
+			return 1, err
+		}
+		return 0, nil
+	}
 	if err := runner.RunIO(context.Background(), input, os.Stdout, os.Stderr, args...); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
@@ -241,4 +261,47 @@ func runRemoteExec(name string, args []string) (int, error) {
 		return 1, err
 	}
 	return 0, nil
+}
+
+// The public CLI and TUI negotiate the same owner-host flag catalog. Exact
+// help/catalog requests are read-only and do not depend on a newer binary.
+type remoteCreationCatalogRunner interface {
+	FetchCreationCatalog(context.Context) (*session.RemoteCreationCatalog, error)
+}
+
+func preflightRemoteCreation(ctx context.Context, runner remoteCreationCatalogRunner, args []string) error {
+	_, err := preflightRemoteCreationMode(ctx, runner, args)
+	return err
+}
+
+func preflightRemoteCreationMode(ctx context.Context, runner remoteCreationCatalogRunner, args []string) (bool, error) {
+	if len(args) == 0 || (args[0] != "add" && args[0] != "launch") {
+		return false, nil
+	}
+	if len(args) == 2 && (args[1] == "--help" || args[1] == "-help" || args[1] == "-h") {
+		return false, nil
+	}
+	if len(args) == 3 && args[1] == "--capabilities" && args[2] == "--json" {
+		return false, nil
+	}
+	catalog, err := runner.FetchCreationCatalog(ctx)
+	if err != nil {
+		return false, err
+	}
+	if err := catalog.ValidateArgs(args); err != nil {
+		return false, err
+	}
+	attachValue, _ := catalog.FlagValue(args, "attach")
+	attach, _ := strconv.ParseBool(attachValue)
+	if attach {
+		jsonValue, _ := catalog.FlagValue(args, "json")
+		jsonOutput, _ := strconv.ParseBool(jsonValue)
+		if jsonOutput {
+			return false, fmt.Errorf("--attach cannot be combined with --json; no remote session was created")
+		}
+		if !stdinStdoutIsTerminal() {
+			return false, fmt.Errorf("--attach requires an interactive terminal; no remote session was created")
+		}
+	}
+	return attach, nil
 }
