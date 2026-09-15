@@ -347,8 +347,8 @@ func (s *suite) auxRemote() {
 		if err != nil {
 			return out, err
 		}
-		var rows []map[string]any
-		if err := auxDecode(out, &rows); err != nil {
+		rows, err := remoteCollection(out, false, "name")
+		if err != nil {
 			return out, err
 		}
 		for _, r := range rows {
@@ -382,8 +382,8 @@ func (s *suite) auxRemote() {
 		if err != nil {
 			return out, err
 		}
-		var rows []map[string]any
-		if err := auxDecode(out, &rows); err != nil {
+		rows, err := remoteCollection(out, true, "id", "title")
+		if err != nil {
 			return out, err
 		}
 		for _, r := range rows {
@@ -394,7 +394,9 @@ func (s *suite) auxRemote() {
 		return out, fmt.Errorf("remote list omitted the created session")
 	})
 	help, err := s.cmd("session", "switch", "--help")
-	if err != nil || !strings.Contains(help, "--remote") {
+	if err != nil {
+		s.unknown("Remote switch", "Probe remote switching support", "Switch help probe failed: "+err.Error())
+	} else if !strings.Contains(help, "--remote") {
 		s.skip("Remote switch", "Switch a session on a synthetic remote", "Remote switch flag is not in this build")
 	} else {
 		s.unknown("Remote switch", "Switch a session on a synthetic remote", "Remote switch is advertised but this runner has no verified invocation contract for this build")
@@ -407,14 +409,19 @@ func (s *suite) auxRemote() {
 		if err != nil {
 			return out, err
 		}
-		var sessions []map[string]any
-		if err := auxDecode(out, &sessions); err != nil {
+		sessions, err := remoteCollection(out, true, "id", "title")
+		if err != nil {
 			return out, err
 		}
 		for _, r := range sessions {
 			if r["title"] == title {
 				return out, fmt.Errorf("removed remote session still listed")
 			}
+		}
+		// remote sessions --json also hides transport errors as null on older
+		// builds. Require independent absence in the isolated owning profile.
+		if err := s.requireMissing(title, "-p", profile); err != nil {
+			return "", err
 		}
 		if out, err := s.cmd("remote", "remove", name); err != nil {
 			return out, err
@@ -427,7 +434,8 @@ func (s *suite) auxRemote() {
 		// Older CLIs emit this exact empty-state text even with --json.
 		const emptyRemotes = "No remotes configured.\n\nAdd one with: agent-deck remote add <name> <user@host>"
 		if out != emptyRemotes {
-			if err := auxDecode(out, &remotes); err != nil {
+			remotes, err = remoteCollection(out, false, "name")
+			if err != nil {
 				return out, err
 			}
 		}
@@ -489,11 +497,12 @@ func (s *suite) auxUpdate() {
 }
 
 // A timeout, database failure, or malformed response cannot establish absence.
-func (s *suite) requireMissing(id string) error {
+func (s *suite) requireMissing(id string, globalArgs ...string) error {
 	if id == "" {
 		return errors.New("cannot check absence without a session identifier")
 	}
-	out, err := s.cmd("session", "show", "--json", id)
+	args := append(globalArgs, "session", "show", "--json", id)
+	out, err := s.cmd(args...)
 	if err == nil {
 		return fmt.Errorf("session %s still resolves", id)
 	}
@@ -572,4 +581,25 @@ func mcpMembership(record map[string]any, wanted string) (bool, error) {
 		}
 	}
 	return found, nil
+}
+
+// Validate every identifying field before any lookup, including rows after a
+// match. Only remote sessions has a source-supported null empty collection.
+func remoteCollection(out string, allowNull bool, fields ...string) ([]map[string]any, error) {
+	var rows []map[string]any
+	if err := auxDecode(out, &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil && !allowNull {
+		return nil, fmt.Errorf("remote list must return an array")
+	}
+	for _, row := range rows {
+		for _, field := range fields {
+			value, ok := row[field].(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("remote collection record omitted valid %s", field)
+			}
+		}
+	}
+	return rows, nil
 }

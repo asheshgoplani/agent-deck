@@ -25,7 +25,7 @@ func TestCompletionCollectionContract(t *testing.T) {
 			}
 		})
 	}
-	for _, payload := range []string{`[]`, `[{"child_session_id":"other","done_status":"fail","done_summary":"other completion"}]`} {
+	for _, payload := range []string{`[]`, `[{"child_session_id":"other","done_status":"fail","done_summary":"other completion"}]`, `[{"child_session_id":"child","to_status":"waiting"}]`} {
 		if count, err := completionCount(payload, "child"); err != nil || count != 0 {
 			t.Fatalf("valid consumed drain: count=%d err=%v", count, err)
 		}
@@ -105,6 +105,29 @@ func TestRemoteCleanupCollectionContract(t *testing.T) {
 			requireReviewResult(t, s, "Remote create", "PASS")
 			requireReviewResult(t, s, "Remote sessions", "PASS")
 			requireReviewResult(t, s, "Remote cleanup", tc.status)
+		})
+	}
+}
+
+func TestRemotePresenceValidatesRowsAfterMatch(t *testing.T) {
+	for _, tc := range []struct {
+		name, valid string
+	}{
+		{"Remote list", `[{"name":"funccheck-remote","host":"funccheck.invalid","profile":"funccheck_remote"}]`},
+		{"Remote sessions", `[{"id":"remote-id","title":"funccheck-remote-session"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := remoteReviewFixture(t, `[]`, `[]`, 0)
+			script, err := os.ReadFile(s.bin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			broken := strings.TrimSuffix(tc.valid, "]") + ",{}]"
+			if err := os.WriteFile(s.bin, []byte(strings.ReplaceAll(string(script), tc.valid, broken)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			s.auxRemote()
+			requireReviewResult(t, s, tc.name, "FAIL")
 		})
 	}
 }

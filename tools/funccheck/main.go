@@ -440,6 +440,13 @@ func binaryHash(path string) string {
 // Absence is evidence only when tmux answers successfully or explicitly says
 // the private server does not exist. Timeouts and execution failures fail.
 func (s *suite) paneAbsent() error {
+	return s.paneAbsentFor(s.sessionTmux)
+}
+
+func (s *suite) paneAbsentFor(tmuxName string) error {
+	if tmuxName == "" {
+		return errors.New("session tmux identity was never observed")
+	}
 	out, err := s.exec("tmux", "list-panes", "-a", "-F", "#{session_name}")
 	if err != nil {
 		if tmuxAbsent(out) {
@@ -447,11 +454,8 @@ func (s *suite) paneAbsent() error {
 		}
 		return err
 	}
-	if s.sessionTmux == "" {
-		return errors.New("session tmux identity was never observed")
-	}
 	for _, line := range strings.Split(out, "\n") {
-		if line == s.sessionTmux {
+		if line == tmuxName {
 			return errors.New("session pane remains after removal")
 		}
 	}

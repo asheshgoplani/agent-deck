@@ -238,15 +238,35 @@ func (s *suite) completion() {
 
 func completionCount(out, childID string) (int, error) {
 	var events []struct {
-		ChildID string `json:"child_session_id"`
-		Status  string `json:"done_status"`
-		Summary string `json:"done_summary"`
+		ChildID  string `json:"child_session_id"`
+		Status   string `json:"done_status"`
+		Summary  string `json:"done_summary"`
+		Kind     string `json:"kind"`
+		ToStatus string `json:"to_status"`
 	}
 	if err := auxDecode(out, &events); err != nil {
 		return 0, err
 	}
+	// inbox drain explicitly encodes an empty inbox as [], never null.
+	if events == nil {
+		return 0, fmt.Errorf("inbox drain must return an array")
+	}
 	count := 0
 	for _, event := range events {
+		if event.ChildID == "" {
+			return 0, fmt.Errorf("inbox event omitted child_session_id")
+		}
+		// Ordinary status transitions legitimately omit completion fields.
+		// They still need a destination status to establish a valid event.
+		if event.Kind == "" && event.Status == "" && event.Summary == "" {
+			if event.ToStatus == "" {
+				return 0, fmt.Errorf("inbox event omitted transition and completion fields")
+			}
+			continue
+		}
+		if (event.Kind != "" && event.Kind != "finished") || event.Status == "" || event.Summary == "" {
+			return 0, fmt.Errorf("inbox event has invalid completion fields")
+		}
 		if event.ChildID == childID && event.Status == "ok" && event.Summary == "synthetic prompt completed" {
 			count++
 		}
@@ -282,8 +302,16 @@ func completionPoll(success string, probe func() (string, bool, error)) (string,
 }
 
 func (s *suite) removeCompletionSession(id string, requireHooks bool) (string, error) {
+	row, err := s.auxRecord("session", "show", "--json", id)
+	if err != nil {
+		return "", err
+	}
+	tmuxName, _ := row["tmux_session"].(string)
+	if row["id"] != id || tmuxName == "" {
+		return "", fmt.Errorf("removed session identity was not established")
+	}
 	var hookFiles []string
-	err := filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -311,11 +339,14 @@ func (s *suite) removeCompletionSession(id string, requireHooks bool) (string, e
 	if err := s.requireMissing(id); err != nil {
 		return "", err
 	}
+	if err := s.paneAbsentFor(tmuxName); err != nil {
+		return "", err
+	}
 
 	for _, path := range hookFiles {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			return "", fmt.Errorf("removed session hook remains: %s (stat: %v)", path, err)
 		}
 	}
-	return fmt.Sprintf("Session %s absent; %d hook files removed", id, len(hookFiles)), nil
+	return fmt.Sprintf("Session %s and its pane absent; %d hook files removed", id, len(hookFiles)), nil
 }

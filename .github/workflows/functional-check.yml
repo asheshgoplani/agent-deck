@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          make check-functional FUNCCHECK_MODE=native | tee funccheck-summary.md
+          make check-functional | tee funccheck-summary.md
       - name: Surface advisory failures
         if: always() && steps.fleet.outcome == 'failure'
         run: echo '::warning::Functional checks reported FAIL. Inspect the summary and JSON artifact; advisory CI does not certify the build.'
