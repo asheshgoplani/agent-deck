@@ -38,6 +38,16 @@ func TestHermesStaleGenerationCannotMutateAnchor(t *testing.T) {
 func TestCleanStaleHookFilesPreservesLiveGenerationControlAndLock(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	id := "hermes-long-lived"
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	inst := session.NewInstance("long-lived", t.TempDir())
+	inst.ID = id
+	if err := storage.Save([]*session.Instance{inst}); err != nil {
+		t.Fatal(err)
+	}
 	writeHermesControl(t, id, "g")
 	status := filepath.Join(getHooksDir(), id+".json")
 	lock := filepath.Join(getHooksDir(), id+".lock")
@@ -55,8 +65,8 @@ func TestCleanStaleHookFilesPreservesLiveGenerationControlAndLock(t *testing.T) 
 		}
 	}
 	cleanStaleHookFiles()
-	if _, err := os.Stat(status); !os.IsNotExist(err) {
-		t.Fatalf("old status survived: %v", err)
+	if _, err := os.Stat(status); err != nil {
+		t.Fatalf("registered session status was reaped: %v", err)
 	}
 	for _, path := range []string{lock, control} {
 		if _, err := os.Stat(path); err != nil {
@@ -67,6 +77,11 @@ func TestCleanStaleHookFilesPreservesLiveGenerationControlAndLock(t *testing.T) 
 
 func TestCleanStaleHookFilesReapsOnlyUnlockedAbandonedHermesLock(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
 	if err := os.MkdirAll(getHooksDir(), 0700); err != nil {
 		t.Fatal(err)
 	}

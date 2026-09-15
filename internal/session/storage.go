@@ -284,6 +284,10 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		}
 	}
 
+	if err := PruneHookArtifacts(); err != nil {
+		storageLog.Warn("hook_cleanup_failed", slog.String("error", err.Error()))
+	}
+
 	return &Storage{
 		db:      db,
 		dbPath:  dbPath,
@@ -575,6 +579,9 @@ func (s *Storage) DeleteInstance(id string) error {
 	}
 
 	_ = s.db.Touch()
+	if err := pruneHookArtifacts(id); err != nil {
+		storageLog.Warn("hook_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+	}
 	return nil
 }
 
