@@ -8059,7 +8059,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case remoteCreationCatalogFetchedMsg:
 		if h.newDialog.IsVisible() && h.pendingRemoteName == msg.remoteName && h.remoteAccountsGen == msg.gen {
 			if msg.err != nil {
-				h.newDialog.SetError("Remote creation catalog: " + msg.err.Error())
+				uiLog.Warn("remote_creation_catalog_failed", slog.String("remote", msg.remoteName), slog.String("error", msg.err.Error()))
+				reason := msg.err.Error()
+				if strings.ContainsAny(reason, "\r\n\x1b") || len(reason) > 160 {
+					reason = "Remote creation unavailable; check SSH and the remote version"
+				}
+				h.newDialog.SetError(reason)
 			} else {
 				h.newDialog.SetRemoteCreationCatalog(msg.catalog)
 			}

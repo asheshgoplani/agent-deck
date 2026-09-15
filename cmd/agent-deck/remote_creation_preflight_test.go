@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,5 +70,78 @@ func TestRemoteCreationMessageFileAfterEveryBoolean(t *testing.T) {
 				t.Fatalf("controller filename leaked: %v", args)
 			}
 		})
+	}
+}
+
+type legacyCreationCatalogRunner struct{}
+
+func (legacyCreationCatalogRunner) FetchCreationCatalog(context.Context) (*session.RemoteCreationCatalog, error) {
+	return session.LegacyRemoteCreationCatalog(), nil
+}
+
+func TestOldRemotePublicCreationPreflight(t *testing.T) {
+	runner := legacyCreationCatalogRunner{}
+	for _, args := range [][]string{
+		{"add", "--title", "legacy", "-c", "claude", "-g", "work", "-w", "fix", "-b", "--sandbox", "/srv/repo"},
+		{"launch", "-m", "literal\nmessage", "--json", "/srv/repo"},
+		{"launch", "--message-file", "-", "/srv/repo"},
+	} {
+		if err := preflightRemoteCreation(context.Background(), runner, args); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	for _, option := range []string{"startup-query", "effort", "yolo", "parent", "account", "mcp", "extra-arg", "model", "skip-permissions", "additional-path"} {
+		err := preflightRemoteCreation(context.Background(), runner, []string{"add", "--" + option, "value"})
+		want := "unsupported remote creation field --" + option + "; update the remote"
+		if err == nil || err.Error() != want {
+			t.Errorf("--%s: %v; want %q", option, err, want)
+		}
+	}
+}
+
+func TestOldRemoteCLIRefusalIsOneLine(t *testing.T) {
+	bin := channelsCLIBinary(t)
+	home, shim := t.TempDir(), t.TempDir()
+	configDir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[remotes.legacy]\nhost = 'fake-legacy'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+case "$*" in
+ *--capabilities*) printf 'flag provided but not defined: -capabilities\nUsage: PRIVATE REMOTE STDERR\n' >&2; exit 2 ;;
+ *) printf '{"id":"legacy-created"}\n' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(shim, "ssh"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, unsupported := range []bool{false, true} {
+		args := []string{"remote", "legacy", "add", "--json", "-t", "legacy", "/srv/project"}
+		if unsupported {
+			args = []string{"remote", "legacy", "add", "--effort", "high", "/srv/project"}
+		}
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = home
+		for _, kv := range os.Environ() {
+			key := strings.SplitN(kv, "=", 2)[0]
+			if key == "HOME" || key == "PATH" || strings.HasPrefix(key, "XDG_") || strings.HasPrefix(key, "AGENTDECK_") || strings.HasPrefix(key, "TMUX") {
+				continue
+			}
+			cmd.Env = append(cmd.Env, kv)
+		}
+		cmd.Env = append(cmd.Env, "HOME="+home, "PATH="+shim+":"+os.Getenv("PATH"))
+		output, err := cmd.CombinedOutput()
+		if unsupported {
+			want := "unsupported remote creation field --effort; update the remote"
+			line := strings.TrimSpace(string(output))
+			if err == nil || !strings.Contains(line, want) || strings.ContainsAny(line, "\r\n") {
+				t.Fatalf("refusal: %q %v", output, err)
+			}
+		} else if err != nil || !strings.Contains(string(output), "legacy-created") || strings.Contains(string(output), "PRIVATE") {
+			t.Fatalf("legacy add: %q %v", output, err)
+		}
 	}
 }
