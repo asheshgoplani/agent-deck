@@ -51,6 +51,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          # Hosted checkouts may belong to UID 1001; only the report needs writes.
+          touch funccheck-report.json
+          chmod 666 funccheck-report.json
           make check-functional | tee funccheck-summary.md
       - name: Surface advisory failures
         if: always() && steps.fleet.outcome == 'failure'
