@@ -36,6 +36,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -625,7 +626,11 @@ type Home struct {
 	// One of session.FooterCurated (default), FooterFull, FooterCompact, or
 	// FooterMinimal. Cached so every render of a frame agrees. Additive/opt-in:
 	// it only changes WHAT the footer advertises, never a keybinding.
-	footerMode string
+	footerMode           string
+	healthWarningPending atomic.Pointer[string]
+	healthWarningQueued  atomic.Bool
+	healthWarningText    string
+	healthWarningAt      time.Time
 
 	// attachOnCreate, when true, makes creating a session via the new-session
 	// dialog attach to the new session's pane immediately instead of only
@@ -4526,8 +4531,12 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 	} else {
 		runner = session.NewSSHRunner(name, rc)
 	}
+	remoteStarted := time.Now()
+	remoteOutcome := "ok"
+	defer func() { health.RecordRemote(name, time.Since(remoteStarted), remoteOutcome) }()
 	sessions, err := runner.FetchSessions(ctx)
 	if err != nil {
+		remoteOutcome = "failed"
 		// #1170: the handler keeps this remote's last-good sessions; the
 		// group list can't be trusted either, so keep that too.
 		msg.failed[name] = true
@@ -4582,6 +4591,9 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 		groupPaths, groupErr = runner.FetchGroupPaths(groupCtx)
 	}()
 	side.Wait()
+	if costErr != nil || groupErr != nil {
+		remoteOutcome = "partial"
+	}
 
 	msg.sessions[name] = sessions
 	// #1101: a nil summary (older remote without `costs summary --json`)
@@ -5902,6 +5914,16 @@ func (h *Home) backgroundStatusUpdate() {
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
 
+	tmuxBefore := tmux.SubprocessStarts()
+	defer func() {
+		elapsed := time.Since(totalStart)
+		calls := tmux.SubprocessStarts() - tmuxBefore
+		health.RecordStatusPass(elapsed, len(instances), calls)
+		if health.Enabled() {
+			h.queueHealthWarning(elapsed, len(instances), calls)
+		}
+	}()
+
 	// Claim reconciliation: decide which sessions THIS instance polls. This
 	// runs BEFORE the tmux-alive and empty-instances early returns below:
 	// claims lifecycle (heartbeats, orphan sweep, primary election) is
@@ -6804,6 +6826,7 @@ func appendClearScreen(cmd tea.Cmd) tea.Cmd {
 // component or the appropriate handler and returns the updated model plus any
 // commands to run. Update wraps it to add cross-cutting concerns.
 func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
+	h.consumeHealthWarning()
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -17684,6 +17707,9 @@ func (h *Home) renderFrame() string {
 		helpBar = h.renderInsertModeBar()
 	} else {
 		helpBar = h.renderHelpBar()
+	}
+	if warning := h.renderHealthWarning(); warning != "" {
+		helpBar = warning
 	}
 	b.WriteString(helpBar)
 

@@ -193,7 +193,7 @@ func (s *Session) KillAndWait() error {
 	// synchronous stop.
 	killCtx, cancelKill := context.WithTimeout(context.Background(), tmuxMutationTimeout)
 	defer cancelKill()
-	killErr := s.tmuxCmdContext(killCtx, "kill-session", "-t", s.Name).Run()
+	killErr := commandRun(s.tmuxCmdContext(killCtx, "kill-session", "-t", s.Name))
 
 	reapErr := EnsurePIDsDead(oldPIDs, 3*time.Second)
 

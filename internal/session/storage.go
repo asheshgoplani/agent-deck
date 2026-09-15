@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -1148,7 +1149,9 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 	}
 
 	// Load from SQLite
+	queryStarted := time.Now()
 	snapshot, err := s.db.LoadRegistrySnapshot()
+	health.RecordDBQuery(time.Since(queryStarted))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1280,7 +1283,9 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 	}
 
 	// Load from SQLite
+	queryStarted := time.Now()
 	snapshot, err := s.db.LoadRegistrySnapshot()
+	health.RecordDBQuery(time.Since(queryStarted))
 	if err != nil {
 		return nil, nil, nil, err
 	}

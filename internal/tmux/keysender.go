@@ -116,7 +116,7 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("keysender: stdout pipe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := commandStart(cmd); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		return nil, fmt.Errorf("keysender: start tmux -C -u attach-session: %w", err)

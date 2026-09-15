@@ -165,7 +165,7 @@ func runTerminalFeatureCleanup(socketName, script string) error {
 	defer cancel()
 	cmd := tmuxExecContext(ctx, socketName, "source-file", "-")
 	cmd.Stdin = strings.NewReader(script)
-	return cmd.Run()
+	return commandRun(cmd)
 }
 
 // canCleanTerminalFeatures retains the original conservative cleanup gate:
