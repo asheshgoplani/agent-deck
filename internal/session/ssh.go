@@ -34,6 +34,9 @@ import (
 // their respective attach paths (local tmux vs SSH remote).
 const sshAttachReplyQuarantine = 500 * time.Millisecond
 
+// Bound draining pipes inherited by a surviving SSH ControlPersist process.
+const sshWaitDelay = 100 * time.Millisecond
+
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"
 
@@ -284,16 +287,28 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	sshArgs := r.sshBaseArgs(remoteCmd)
 
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	cmd.WaitDelay = sshWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if detail := strings.TrimSpace(stderr.String()); detail != "" {
+		level := slog.LevelDebug
+		if err != nil {
+			level = slog.LevelWarn
+		}
+		sessionLog.Log(ctx, level, "ssh_command_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+	}
+	if err != nil {
 		// The remote CLI reports refusals such as "path does not exist" on
 		// stdout; fall back to it so the failure is not a bare exit status.
 		detail := stderr.String()
 		if strings.TrimSpace(detail) == "" {
 			detail = strings.TrimSpace(stdout.String())
+		}
+		if ctx.Err() != nil {
+			err = ctx.Err()
 		}
 		return nil, fmt.Errorf("ssh command failed: %w: %s", err, detail)
 	}
@@ -969,13 +984,25 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 
 	sshArgs := r.sshBaseArgs(remoteCmd)
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	cmd.WaitDelay = sshWaitDelay
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if detail := strings.TrimSpace(stderr.String()); detail != "" {
+		level := slog.LevelDebug
+		if err != nil {
+			level = slog.LevelWarn
+		}
+		sessionLog.Log(ctx, level, "ssh_remote_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return nil, fmt.Errorf("remote command failed: %w: %s", err, stderr.String())
 	}
 	return stdout.Bytes(), nil

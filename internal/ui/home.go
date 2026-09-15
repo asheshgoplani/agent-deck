@@ -762,6 +762,10 @@ type Home struct {
 	// dropped; every name in it other than the pusher is kept as is when a
 	// push is applied. Guarded by remoteSessionsMu.
 	remoteConfigured map[string]struct{}
+	remotePolls      map[string]session.RemotePollState // guarded by remoteSessionsMu
+	remotePollMu     sync.Mutex                         // serializes poll cache reads/writes without holding the render lock
+	remotePollConfig map[string]session.RemoteConfig
+	remotePollActive map[string]bool // one session poll per remote, across overlapping rounds
 	// remoteMutationStamp returns the stamp (remote DB mtime, unix ns) of
 	// the last mutating command confirmed over a remote's channel, 0 when
 	// unknown. nil means ask the channel; tests inject a stub.
@@ -1602,6 +1606,8 @@ type remoteFetchRunner interface {
 // change shaped like one). Every other configured remote is listed in
 // failed/groupsFailed so the merge keeps their rows untouched.
 type remoteSessionsFetchedMsg struct {
+	pollName   string
+	pollConfig session.RemoteConfig
 	// gen is the fetch's sequence number (see Home.remoteFetchSeq).
 	gen uint64
 	// pushed marks a result that did not come from a poll round (a change
@@ -1904,6 +1910,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.loadUIState()
 	h.loadRemoteSessionsCache()
 	h.remoteVersions = session.LoadRemoteVersions()
+	h.remotePolls = session.LoadRemotePolls()
 
 	// Apply default_filter from config if no filter was restored from persisted state.
 	// Auto-clears if no sessions match (handled in rebuildFlatItems).
@@ -4017,6 +4024,12 @@ func (h *Home) propagateThemeToSessions() {
 // applyRemoteFetch folds one remote's fetch result (or a pushed change shaped
 // like one) into the cache, the on-disk snapshot and the rows.
 func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cmd) {
+	if msg.pollName != "" && !h.remotePollConfigMatches(msg.pollName, msg.pollConfig) {
+		h.remoteSessionsMu.Lock()
+		h.remoteFetchLanded(msg)
+		h.remoteSessionsMu.Unlock()
+		return h, nil
+	}
 	if msg.configErr != nil || h.remoteFetchIsStale(msg) {
 		// Config unreadable, or a fetch that started before one already
 		// applied for the same remote: keep the current rows. Account for
@@ -4218,11 +4231,15 @@ type remoteChangedMsg struct {
 // waitRemoteChange blocks on the fan-in of remote change pushes and turns the
 // next one into a message. It re-arms itself from the handler.
 func (h *Home) waitRemoteChange() tea.Msg {
-	change, ok := <-session.RemoteChangeEvents()
-	if !ok {
+	select {
+	case <-h.ctx.Done():
 		return nil
+	case change, ok := <-session.RemoteChangeEvents():
+		if !ok {
+			return nil
+		}
+		return remoteChangedMsg{remoteName: change.Remote, change: change}
 	}
-	return remoteChangedMsg{remoteName: change.Remote, change: change}
 }
 
 // remoteIsConfigured reports whether remoteName is in the last config read.
@@ -4466,6 +4483,7 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 	h.remoteConfigured = configured
 	h.remoteSessionsMu.Unlock()
 	if len(remotes) == 0 {
+		h.seedRemotePolls(remotes)
 		return remoteSessionsFetchedMsg{gen: gen, sessions: nil}
 	}
 
@@ -4481,6 +4499,7 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 
 // remoteFetchCmds builds one Cmd per configured remote for fetch round gen.
 func (h *Home) remoteFetchCmds(gen uint64, remotes map[string]session.RemoteConfig) []tea.Cmd {
+	h.seedRemotePolls(remotes)
 	names := make([]string, 0, len(remotes))
 	for name := range remotes {
 		names = append(names, name)
@@ -4499,6 +4518,8 @@ func (h *Home) remoteFetchCmds(gen uint64, remotes map[string]session.RemoteConf
 func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, configured []string) remoteSessionsFetchedMsg {
 	msg := remoteSessionsFetchedMsg{
 		gen:          gen,
+		pollName:     name,
+		pollConfig:   rc,
 		inRound:      true,
 		sessions:     make(map[string][]session.RemoteSessionInfo, 1),
 		costs:        make(map[string]*costs.RemoteCostSummary, 1),
@@ -4512,6 +4533,17 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 			msg.groupsFailed[other] = true
 		}
 	}
+
+	// Reserve the host across periodic, manual and push-triggered rounds.
+	// A skipped host preserves its rows without issuing another SSH command.
+	if !h.beginRemotePoll(name, rc) {
+		msg.failed[name] = true
+		msg.groupsFailed[name] = true
+		return msg
+	}
+	started := time.Now()
+	var pollErr error
+	defer func() { h.finishRemotePoll(name, rc, started, pollErr) }()
 
 	// Honor the per-remote command_timeout_seconds: hosts with large
 	// session fleets legitimately need more than the old flat 15s. Each
@@ -4527,6 +4559,7 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 		runner = session.NewSSHRunner(name, rc)
 	}
 	sessions, err := runner.FetchSessions(ctx)
+	pollErr = err
 	if err != nil {
 		// #1170: the handler keeps this remote's last-good sessions; the
 		// group list can't be trusted either, so keep that too.
@@ -4665,6 +4698,9 @@ func (h *Home) measureRemoteLatencies() tea.Msg {
 	defer cancel()
 
 	for name, rc := range config.Remotes {
+		if h.remoteAuthBlocked(name, rc) {
+			continue
+		}
 		wg.Add(1)
 		go func(name string, rc session.RemoteConfig) {
 			defer wg.Done()
@@ -5111,6 +5147,9 @@ func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 			return previewFetchedMsg{previewKey: key, err: fmt.Errorf("remote '%s' not found", remoteName)}
 		}
 
+		if h.remoteAuthBlocked(remoteName, rc) {
+			return previewFetchedMsg{previewKey: key, err: fmt.Errorf("auth failed; run agent-deck remote list --retry")}
+		}
 		runner := session.NewSSHRunner(remoteName, rc)
 		ctx, cancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
 		defer cancel()
@@ -7867,7 +7906,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.remoteSessionsMu.Lock()
 		h.remotesFetchActive = true
 		h.remoteFetchOutstanding += len(msg.fetches)
+		h.remotesFetchActive = h.remoteFetchOutstanding > 0
+		h.lastRemoteFetch = time.Now()
 		h.remoteSessionsMu.Unlock()
+		h.cachedStatusCounts.valid.Store(false)
+		h.rebuildFlatItems()
 		return h, tea.Batch(msg.fetches...)
 
 	case remoteSessionsFetchedMsg:
@@ -17109,7 +17152,10 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 	// previously only iterated the local-instance snapshot, so the header
 	// pill read 0 for users with only remote sessions.
 	h.remoteSessionsMu.RLock()
-	for _, sessions := range h.remoteSessions {
+	for name, sessions := range h.remoteSessions {
+		if state, known := h.remotePolls[name]; known && state.LastPollStatus != "ok" {
+			continue
+		}
 		for _, rs := range sessions {
 			switch rs.Status {
 			case "running":
@@ -20384,6 +20430,9 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	if item.Level > 0 {
 		groupPath := strings.TrimPrefix(item.Path, "remotes/"+item.RemoteName+"/")
 		counts := h.remoteHeaderCount(item)
+		if h.remotePollUnavailable(item.RemoteName) {
+			counts.running, counts.waiting = 0, 0
+		}
 
 		segName := groupPath
 		if idx := strings.LastIndex(groupPath, "/"); idx >= 0 {
@@ -20403,14 +20452,29 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 
 	// Level 0: the remote host header. Count the sessions this view shows.
 	counts := h.remoteHeaderCount(item)
+	if h.remotePollUnavailable(item.RemoteName) {
+		counts.running, counts.waiting = 0, 0
+	}
 	h.remoteSessionsMu.RLock()
 	fromCache := h.remoteFromCache[item.RemoteName]
 	fetching := h.remotesFetchActive
 	versionState := h.remoteVersions[item.RemoteName]
+	poll, hasPoll := h.remotePolls[item.RemoteName]
+	pollActive := h.remotePollActive[item.RemoteName]
 	h.remoteSessionsMu.RUnlock()
 
 	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
-	if fromCache {
+	if hasPoll && poll.LastPollError != "" {
+		trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
+		if poll.LastPollStatus == "auth_failed" {
+			trailer += " " + DimStyle.Render("(paused; remote list --retry)")
+		}
+	} else if hasPoll && poll.LastPollStatus == "unknown" && !fromCache {
+		trailer = " " + DimStyle.Render("· unknown")
+		if pollActive || fetching {
+			trailer += " " + DimStyle.Render("· refreshing…")
+		}
+	} else if fromCache {
 		// Honest staleness: this is the startup snapshot, not live state yet.
 		trailer = " " + DimStyle.Render("— cached, refreshing…")
 	} else if fetching {
@@ -20516,6 +20580,10 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 	}
 
 	statusIcon, sStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
+	unavailable := h.remotePollUnavailable(item.RemoteName)
+	if unavailable {
+		statusIcon, sStyle = "?", DimStyle
+	}
 	titleStyle := lipgloss.NewStyle().Foreground(ColorText)
 	if selected {
 		sStyle = SessionStatusSelStyle
@@ -20553,6 +20621,9 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 	}
 
 	pendingStr := ""
+	if unavailable {
+		pendingStr = " " + DimStyle.Render("· last known")
+	}
 	if item.RemoteSession != nil {
 		if verb, ok := h.remotePending[item.RemoteSession.ID]; ok {
 			pendingStr = " " + DimStyle.Render("· "+verb)

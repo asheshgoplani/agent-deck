@@ -1,0 +1,4 @@
+  ▾ remotes/dev (1) ● 1 — 42ms
+    └─ ● Remote work claude
+▶ ▾ remotes/dev (1) ● 1 — 42ms
+▶   └─ ● Remote work claude

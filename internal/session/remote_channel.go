@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,15 +28,16 @@ type RemoteChannel struct {
 	// identity is host, profile and binary path of the remote this channel
 	// was dialled for. A config edit that re-points the name at another host
 	// gets a fresh channel instead of requests to the old one.
-	identity string
-	dial     func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)
-	events   *remoteChangeMailbox
-	mu       sync.Mutex
-	stdin    io.WriteCloser
-	closeFn  func()
-	pending  map[int64]chan remoteChannelReply
-	nextID   atomic.Int64
-	up       atomic.Bool
+	identity   string
+	dial       func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)
+	events     *remoteChangeMailbox
+	mu         sync.Mutex
+	stdin      io.WriteCloser
+	closeFn    func()
+	dialCancel context.CancelFunc
+	pending    map[int64]chan remoteChannelReply
+	nextID     atomic.Int64
+	up         atomic.Bool
 	// gen counts transports. markDown only tears down the transport it was
 	// called for, so a reader or ping loop of an old transport can never
 	// kill the one dialled after it.
@@ -442,7 +444,9 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	cmd.Stderr = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = sshWaitDelay
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, err
 	}
@@ -452,6 +456,9 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 			_ = cmd.Process.Kill()
 		}
 		_ = cmd.Wait()
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			sessionLog.Warn("remote_channel_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+		}
 	}
 	return stdin, stdout, closeFn, nil
 }
@@ -465,6 +472,9 @@ func (c *RemoteChannel) Connected() bool { return c.up.Load() }
 func (c *RemoteChannel) Close() {
 	c.mu.Lock()
 	c.closed = true
+	if c.dialCancel != nil {
+		c.dialCancel()
+	}
 	gen := c.gen
 	c.mu.Unlock()
 	c.markDownGen(gen)
@@ -497,6 +507,8 @@ func (c *RemoteChannel) ensureConnected() {
 		c.mu.Unlock()
 		return
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.dialCancel = cancel
 	c.dialing = true
 	c.lastAttempt = time.Now()
 	c.mu.Unlock()
@@ -507,7 +519,6 @@ func (c *RemoteChannel) ensureConnected() {
 		c.backoff = minDuration(c.backoff*2, 30*time.Second)
 		c.mu.Unlock()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	stdin, stdout, closeFn, err := c.dial(ctx)
 	if err != nil {
 		cancel()
@@ -547,7 +558,7 @@ func (c *RemoteChannel) ensureConnected() {
 	c.gen++
 	gen := c.gen
 	c.stdin = stdin
-	c.closeFn = func() { closeFn(); cancel() }
+	c.closeFn = func() { cancel(); closeFn() }
 	c.dialing = false
 	c.backoff = 2 * time.Second
 	c.timeouts = 0
@@ -777,10 +788,8 @@ func (c *RemoteChannel) markDownGen(gen uint64) {
 		return
 	}
 	c.up.Store(false)
-	if c.closeFn != nil {
-		c.closeFn()
-		c.closeFn = nil
-	}
+	closeFn := c.closeFn
+	c.closeFn = nil
 	c.stdin = nil
 	c.watching = ""
 	c.timeouts = 0
@@ -789,6 +798,11 @@ func (c *RemoteChannel) markDownGen(gen uint64) {
 	c.mu.Unlock()
 	for _, ch := range pending {
 		ch <- remoteChannelReply{Code: -1, Error: errChannelInterrupted.Error()}
+	}
+	// Cleanup can wait for SSH to exit. Never hold the channel or registry
+	// lock, or make shutdown and request cancellation wait for it.
+	if closeFn != nil {
+		go closeFn()
 	}
 }
 
@@ -895,11 +909,15 @@ func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest)
 
 	req.ID = id
 	line, _ := json.Marshal(req)
-	if n, err := stdin.Write(append(line, '\n')); err != nil {
+	n, err := writeChannelWithin(ctx, stdin, append(line, '\n'))
+	if err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 		c.markDownGen(gen)
+		if ctx.Err() != nil {
+			return remoteChannelReply{}, ctx.Err()
+		}
 		if n > 0 {
 			// Part of the line may have reached the agent; it cannot have
 			// been executed without the newline, but be conservative.
@@ -931,7 +949,13 @@ func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest)
 		// request slot) on the remote after its caller gave up. Best
 		// effort: a failed write means the transport is going anyway.
 		cancelLine, _ := json.Marshal(remoteChannelRequest{ID: id, Cancel: true})
-		_, _ = stdin.Write(append(cancelLine, '\n'))
+		go func() {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), sshWaitDelay)
+			defer cancel()
+			if _, err := writeChannelWithin(cancelCtx, stdin, append(cancelLine, '\n')); err != nil {
+				c.markDownGen(gen)
+			}
+		}()
 		c.mu.Lock()
 		delete(c.pending, id)
 		drop := false
@@ -953,4 +977,24 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// Writes can block on a full SSH pipe just as reads can. The caller tears
+// down the transport on timeout, releasing the writer goroutine.
+func writeChannelWithin(ctx context.Context, w io.Writer, p []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() { n, err := w.Write(p); done <- result{n, err} }()
+	select {
+	case r := <-done:
+		return r.n, r.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
