@@ -256,7 +256,7 @@ func runSendKeysBounded(cmd *exec.Cmd) error {
 	}
 	cmd.SysProcAttr.Setpgid = true
 
-	if err := cmd.Start(); err != nil {
+	if err := commandStart(cmd); err != nil {
 		return err
 	}
 
@@ -319,7 +319,7 @@ var tmuxPollTimeout = 3 * time.Second
 func runBoundedOutput(socketName string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxPollTimeout)
 	defer cancel()
-	return tmuxExecContext(ctx, socketName, args...).Output()
+	return commandOutput(tmuxExecContext(ctx, socketName, args...))
 }
 
 // runBoundedRun runs a short tmux command (typically a status set-option batch)
@@ -328,7 +328,7 @@ func runBoundedOutput(socketName string, args ...string) ([]byte, error) {
 func runBoundedRun(socketName string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxPollTimeout)
 	defer cancel()
-	return tmuxExecContext(ctx, socketName, args...).Run()
+	return commandRun(tmuxExecContext(ctx, socketName, args...))
 }
 
 // runBoundedOutput is the per-Session convenience wrapper, targeting the
@@ -389,7 +389,7 @@ func annotateDeadline(ctxErr, err error) error {
 func runBoundedMutation(socketName string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
 	defer cancel()
-	err := tmuxExecContext(ctx, socketName, args...).Run()
+	err := commandRun(tmuxExecContext(ctx, socketName, args...))
 	return annotateDeadline(ctx.Err(), err)
 }
 

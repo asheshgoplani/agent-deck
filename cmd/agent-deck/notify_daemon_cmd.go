@@ -67,6 +67,8 @@ func handleNotifyDaemon(args []string) {
 		return
 	}
 
+	defer startRuntimeHealth("", "notify-daemon")()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 

@@ -764,7 +764,7 @@ func (s *Session) AttachWindow(ctx context.Context, windowIndex int, detachByte 
 	// Select the target window before attaching. Routes through
 	// s.selectWindowCmd → s.tmuxCmd so isolation-configured sessions
 	// don't select a same-named window on the default server (#687).
-	if err := s.selectWindowCmd(windowIndex).Run(); err != nil {
+	if err := commandRun(s.selectWindowCmd(windowIndex)); err != nil {
 		target := fmt.Sprintf("%s:%d", s.Name, windowIndex)
 		return fmt.Errorf("failed to select window %s: %w", target, err)
 	}
@@ -777,7 +777,7 @@ func (s *Session) Resize(cols, rows int) error {
 	// Resize the tmux window. Routes through s.resizeCmd so isolation-
 	// configured sessions resize the real pane, not a default-server ghost
 	// (#687 follow-up).
-	if err := s.resizeCmd(cols, rows).Run(); err != nil {
+	if err := commandRun(s.resizeCmd(cols, rows)); err != nil {
 		return fmt.Errorf("failed to resize window: %w", err)
 	}
 	return nil
@@ -805,7 +805,7 @@ func (s *Session) AttachReadOnly(ctx context.Context) error {
 	cmd.Stderr = os.Stderr
 
 	// Start the attach command
-	if err := cmd.Start(); err != nil {
+	if err := commandStart(cmd); err != nil {
 		return fmt.Errorf("failed to attach to session: %w", err)
 	}
 
@@ -836,7 +836,7 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 	cmd.Stdout = w
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Start(); err != nil {
+	if err := commandStart(cmd); err != nil {
 		return fmt.Errorf("failed to start pipe-pane: %w", err)
 	}
 
@@ -855,7 +855,7 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 		// Stop pipe-pane - error is intentionally ignored since we're
 		// already returning ctx.Err() and cleanup failure is non-fatal.
 		// Socket-aware via s.pipePaneStopCmd (#687 follow-up).
-		_ = s.pipePaneStopCmd().Run()
+		_ = commandRun(s.pipePaneStopCmd())
 		// Wait for the goroutine to complete before returning
 		wg.Wait()
 		return ctx.Err()

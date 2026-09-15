@@ -61,7 +61,7 @@ func doCheckAndWarnTmuxVersion(probe VersionProbe, w io.Writer, goos, suppress s
 }
 
 func defaultTmuxVersionProbe() (string, error) {
-	out, err := exec.Command("tmux", "-V").CombinedOutput()
+	out, err := commandCombinedOutput(exec.Command("tmux", "-V"))
 	if err != nil {
 		return "", err
 	}

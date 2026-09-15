@@ -246,7 +246,7 @@ func IsServerAlive() bool {
 	// Quick probe: 1-second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	out, err := tmuxExecContext(ctx, DefaultSocketName(), "list-sessions", "-F", "#{session_name}").CombinedOutput()
+	out, err := commandCombinedOutput(tmuxExecContext(ctx, DefaultSocketName(), "list-sessions", "-F", "#{session_name}"))
 	alive := err == nil || (!strings.Contains(string(out), "server exited") &&
 		!strings.Contains(string(out), "lost server") &&
 		ctx.Err() != context.DeadlineExceeded)
@@ -326,7 +326,7 @@ func RefreshSessionCache() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}"))
-	output, err := cmd.Output()
+	output, err := commandOutput(cmd)
 	if err != nil {
 		sessionCacheMu.Lock()
 		sessionCacheData = nil
@@ -472,7 +472,7 @@ func defaultListSessionsOnSocket(socketName string) (map[string]struct{}, error)
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
 
-	out, err := tmuxExecContext(ctx, socketName, "list-sessions", "-F", "#{session_name}").Output()
+	out, err := commandOutput(tmuxExecContext(ctx, socketName, "list-sessions", "-F", "#{session_name}"))
 	if err != nil {
 		// "no server running" / "no sessions" are legitimate empty results; any
 		// other failure (timeout, exec error) is reported so the caller keeps
@@ -616,7 +616,7 @@ func sessionActivityFromCache(name string) (int64, bool) {
 // Returns nil if tmux is available, otherwise returns an error with details
 func IsTmuxAvailable() error {
 	cmd := exec.Command("tmux", "-V")
-	output, err := cmd.CombinedOutput()
+	output, err := commandCombinedOutput(cmd)
 	if err != nil {
 		return fmt.Errorf("tmux not found or not working: %w (output: %s)", err, string(output))
 	}
@@ -1388,7 +1388,7 @@ var systemdUserRunProbe = func() bool {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return false
 	}
-	return exec.Command("systemd-run", "--user", "--version").Run() == nil
+	return commandRun(exec.Command("systemd-run", "--user", "--version")) == nil
 }
 
 func isSystemdUserScopeAvailable() bool {
@@ -2011,7 +2011,7 @@ func (s *Session) SetEnvironment(key, value string) error {
 	// "exit status 1" is useless for diagnosing a wedged server (#1579): the
 	// real cause ("no server running on ...", "can't find session") lives on
 	// stderr, which Run() discards.
-	out, err := cmd.CombinedOutput()
+	out, err := commandCombinedOutput(cmd)
 	if err == nil {
 		// Invalidate cache entry so next GetEnvironment sees the new value
 		s.envCacheMu.Lock()
@@ -2040,7 +2040,7 @@ func (s *Session) UnsetEnvironment(key string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "set-environment", "-u", "-t", s.Name, key)
-	out, err := cmd.CombinedOutput()
+	out, err := commandCombinedOutput(cmd)
 	if err == nil {
 		s.envCacheMu.Lock()
 		if s.envCache != nil {
@@ -2122,7 +2122,7 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "show-environment", "-t", s.Name, key)
-	output, err := cmd.Output()
+	output, err := commandOutput(cmd)
 	if err != nil {
 		s.storeEnvCacheEntry(key, envCacheEntry{time: time.Now()})
 		return "", fmt.Errorf("variable not found or session doesn't exist: %s", key)
@@ -2378,7 +2378,7 @@ func (s *Session) Start(command string) error {
 	// it starts — runs from SpawnBaseDir and can never inherit a directory that
 	// is later deleted. See workdir_guard.go.
 	cmd := newSpawnCommand(launcher, args...)
-	output, err := cmd.CombinedOutput()
+	output, err := commandCombinedOutput(cmd)
 	if err != nil {
 		if launcher == "tmux" {
 			if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
@@ -2390,7 +2390,7 @@ func (s *Session) Start(command string) error {
 				statusLog.Warn("tmux_start_retry_after_socket_recovery",
 					slog.String("session", s.Name),
 				)
-				output, err = newSpawnCommand(launcher, args...).CombinedOutput()
+				output, err = commandCombinedOutput(newSpawnCommand(launcher, args...))
 			}
 		}
 	}
@@ -2434,7 +2434,7 @@ func (s *Session) Start(command string) error {
 		triedScope := false
 		if wasServiceModeArgs(args) {
 			scopeRetryArgs := buildScopeArgsFromTmuxArgs(s.Name, tmuxArgs)
-			scopeOutput, scopeErr = newSpawnCommand("systemd-run", scopeRetryArgs...).CombinedOutput()
+			scopeOutput, scopeErr = commandCombinedOutput(newSpawnCommand("systemd-run", scopeRetryArgs...))
 			triedScope = true
 			if scopeErr == nil {
 				output = scopeOutput
@@ -2452,7 +2452,7 @@ func (s *Session) Start(command string) error {
 		// initial attempt was scope-mode, in which case it's the next
 		// tier down).
 		if err != nil {
-			retryOutput, retryErr := newSpawnCommand("tmux", tmuxArgs...).CombinedOutput()
+			retryOutput, retryErr := commandCombinedOutput(newSpawnCommand("tmux", tmuxArgs...))
 			if retryErr == nil {
 				output = retryOutput
 				err = nil
@@ -2551,7 +2551,7 @@ func (s *Session) Start(command string) error {
 	if _, ok := s.OptionOverrides["aggressive-resize"]; !ok {
 		startArgs = append(startArgs, ";", "set-window-option", "-t", s.Name, "aggressive-resize", "on")
 	}
-	_ = s.tmuxCmd(startArgs...).Run()
+	_ = commandRun(s.tmuxCmd(startArgs...))
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
@@ -2604,7 +2604,7 @@ func (s *Session) Start(command string) error {
 			args = append(args, "set-option", "-t", s.Name, "-q", key, value)
 			first = false
 		}
-		_ = s.tmuxCmd(args...).Run()
+		_ = commandRun(s.tmuxCmd(args...))
 	}
 
 	// Configure status bar with session info for easy identification
@@ -2828,7 +2828,7 @@ func defaultProbeSocketProtocolMismatch(socketName string) bool {
 
 	cmd := tmuxExecContext(ctx, socketName, "list-sessions", "-F", "")
 	cmd.Stderr = sink // *os.File: passed through to the child, not proxied
-	if err := cmd.Run(); err == nil {
+	if err := commandRun(cmd); err == nil {
 		return false
 	}
 
@@ -2881,7 +2881,7 @@ func setSocketMismatchProbeForTest(probe func(string) bool) func() {
 func (s *Session) ProbeExists() (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	err := s.tmuxCmdContext(ctx, "has-session", "-t", "="+s.Name).Run()
+	err := commandRun(s.tmuxCmdContext(ctx, "has-session", "-t", "="+s.Name))
 	if err == nil {
 		return true, nil
 	}
@@ -2933,7 +2933,7 @@ func (s *Session) Exists() bool {
 	// that actually completes with a non-success status means "gone".
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	err := s.tmuxCmdContext(ctx, "has-session", "-t", s.Name).Run()
+	err := commandRun(s.tmuxCmdContext(ctx, "has-session", "-t", s.Name))
 	if ctx.Err() == context.DeadlineExceeded {
 		return true // probe timed out: indeterminate, assume still alive
 	}
@@ -3013,7 +3013,7 @@ func (s *Session) IsPaneDead() bool {
 	// live pane as dead would flip the session to an error state.
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	out, err := s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
+	out, err := commandOutput(s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}"))
 	if err != nil {
 		return false
 	}
@@ -3036,7 +3036,7 @@ func (s *Session) PaneDeadExitStatus() (int, bool) {
 	// wedged tmux server must not stall it.
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	out, err := s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}|#{pane_dead_status}").Output()
+	out, err := commandOutput(s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}|#{pane_dead_status}"))
 	if err != nil {
 		return 0, false
 	}
@@ -3290,7 +3290,7 @@ func (s *Session) EnableMouseMode() error {
 	enhanceCmd := s.tmuxCmd(enhanceArgs...)
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
-	_ = enhanceCmd.Run()
+	_ = commandRun(enhanceCmd)
 
 	return nil
 }
@@ -3386,7 +3386,7 @@ func (s *Session) paneProcessTree() (panePID int, allPIDs []int, err error) {
 	for len(queue) > 0 {
 		parent := queue[0]
 		queue = queue[1:]
-		pgrepOut, err := exec.Command("pgrep", "-P", strconv.Itoa(parent)).Output()
+		pgrepOut, err := commandOutput(exec.Command("pgrep", "-P", strconv.Itoa(parent)))
 		if err != nil {
 			continue
 		}
@@ -3437,7 +3437,7 @@ func parsePanePID(out []byte, err error) (int, error) {
 // (claude, node, zsh, bash, sh) rather than an unrelated process that
 // reused the PID. This prevents accidentally killing random processes.
 func isOurProcess(pid int) bool {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	out, err := commandOutput(exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm="))
 	if err != nil {
 		return false // Process doesn't exist
 	}
@@ -3614,7 +3614,7 @@ func (s *Session) RespawnPane(command string) error {
 	if s.clearOnRestart {
 		clearTarget := s.Name + ":"
 		clearCmd := s.tmuxCmd("clear-history", "-t", clearTarget)
-		if clearOut, clearErr := clearCmd.CombinedOutput(); clearErr != nil {
+		if clearOut, clearErr := commandCombinedOutput(clearCmd); clearErr != nil {
 			respawnLog.Debug(
 				"clear_history_failed",
 				slog.String("error", clearErr.Error()),
@@ -3645,7 +3645,7 @@ func (s *Session) RespawnPane(command string) error {
 
 	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
 	cmd := s.tmuxCmd(args...)
-	output, err := cmd.CombinedOutput()
+	output, err := commandCombinedOutput(cmd)
 	if err != nil {
 		mcpLog.Debug("respawn_pane_error", slog.String("error", err.Error()), slog.String("output", string(output)))
 		return fmt.Errorf("failed to respawn pane: %w (output: %s)", err, string(output))
@@ -3720,7 +3720,7 @@ func (s *Session) GetWindowActivity() (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "display-message", "-t", s.Name, "-p", "#{window_activity}")
-	output, err := cmd.Output()
+	output, err := commandOutput(cmd)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get window activity: %w", err)
 	}
@@ -3793,7 +3793,7 @@ func (s *Session) CapturePane() (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e")
-		output, err := cmd.Output()
+		output, err := commandOutput(cmd)
 		finish()
 		if err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
@@ -3834,7 +3834,7 @@ func (s *Session) CapturePaneFresh() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e")
-	output, err := cmd.Output()
+	output, err := commandOutput(cmd)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", ErrCaptureTimeout
@@ -3884,7 +3884,7 @@ func (s *Session) CaptureHistoryLines(n int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e", "-S", fmt.Sprintf("-%d", n))
-	output, err := cmd.Output()
+	output, err := commandOutput(cmd)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", ErrCaptureTimeout
@@ -6185,7 +6185,7 @@ func (s *Session) SplitShellPane(workdir string) error {
 		args = append(args, "-c", workdir)
 	}
 	args = append(args, shell)
-	return tmuxExec(s.SocketName, args...).Run()
+	return commandRun(tmuxExec(s.SocketName, args...))
 }
 
 // NewShellWindow adds a new window (tab) to this session running shell in
@@ -6201,7 +6201,7 @@ func (s *Session) NewShellWindow(workdir string) error {
 		args = append(args, "-c", workdir)
 	}
 	args = append(args, shell)
-	return tmuxExec(s.SocketName, args...).Run()
+	return commandRun(tmuxExec(s.SocketName, args...))
 }
 
 // ListAllSessions returns all Agent Deck tmux sessions
@@ -6907,13 +6907,13 @@ func BindMouseStatusRightDetach() error {
 	// #{m:pattern,string} is evaluated entirely inside tmux's format engine
 	// (see ctrlQDetachIfShellFormat) — never handed to a shell, so a session
 	// name containing shell metacharacters can't break out of anything.
-	return tmuxExec(DefaultSocketName(), "bind", "-n", "MouseDown1StatusRight",
-		"if-shell", "-F", ctrlQDetachIfShellFormat(), "detach-client", "").Run()
+	return commandRun(tmuxExec(DefaultSocketName(), "bind", "-n", "MouseDown1StatusRight",
+		"if-shell", "-F", ctrlQDetachIfShellFormat(), "detach-client", ""))
 }
 
 // UnbindMouseStatusClicks removes mouse click bindings from the status bar.
 func UnbindMouseStatusClicks() {
-	_ = tmuxExec(DefaultSocketName(), "unbind", "-n", "MouseDown1StatusRight").Run()
+	_ = commandRun(tmuxExec(DefaultSocketName(), "unbind", "-n", "MouseDown1StatusRight"))
 }
 
 // GetActiveSession returns the session name the user is currently attached to.
