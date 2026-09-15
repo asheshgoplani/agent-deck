@@ -158,3 +158,35 @@ func TestRemoteCreationFlagValueSkipsLiteralOptions(t *testing.T) {
 		t.Fatalf("last flag wins: %q %t", value, found)
 	}
 }
+
+func TestOldRemoteCreationFallback(t *testing.T) {
+	var calls [][]string
+	runner := &SSHRunner{runFn: func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+			return nil, errors.New("ssh command failed: exit status 2: flag provided but not defined: -capabilities\nUsage of add:\n  -account string\n  -Q")
+		}
+		if args[0] == "add" {
+			return []byte(`{"id":"legacy-id"}`), nil
+		}
+		return []byte(`{}`), nil
+	}}
+	id, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Title: "legacy", Tool: "claude", Path: "/srv/project", WorktreeBranch: "fix", Sandbox: true, AdditionalPaths: []string{"/srv/other"}})
+	if err != nil || id != "legacy-id" || len(calls) != 3 {
+		t.Fatalf("id=%q err=%v calls=%v", id, err, calls)
+	}
+}
+
+func TestRemoteCatalogErrorsAreOneLine(t *testing.T) {
+	for _, failure := range []string{
+		"ssh command failed: exit status 255: connection refused\nPRIVATE STDERR",
+		"ssh command failed: exit status 2: flag provided but not defined: -other\nUsage: PRIVATE STDERR",
+		"context deadline exceeded\nPRIVATE STDERR",
+	} {
+		runner := &SSHRunner{runFn: func(context.Context, ...string) ([]byte, error) { return nil, errors.New(failure) }}
+		catalog, err := runner.FetchCreationCatalog(context.Background())
+		if catalog != nil || err == nil || strings.ContainsAny(err.Error(), "\r\n") || strings.Contains(err.Error(), "PRIVATE STDERR") {
+			t.Fatalf("catalog=%v err=%v", catalog, err)
+		}
+	}
+}

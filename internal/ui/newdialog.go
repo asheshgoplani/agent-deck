@@ -655,6 +655,9 @@ func (d *NewDialog) GetSelectedGroup() string {
 
 func (d *NewDialog) effectiveDialogWidth() int {
 	w := newDialogPreferredOuterWidth
+	if d.remoteCatalog != nil && d.remoteCatalog.Legacy {
+		w = max(w, len(legacyRemoteCreationNotice)+10)
+	}
 	if d.width > 0 && d.width < w+newDialogTerminalGutter {
 		w = d.width - newDialogTerminalGutter
 		if w < newDialogMinOuterWidth {
@@ -1585,8 +1588,6 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		Path:    path,
 		Group:   d.GetSelectedGroup(),
 		Sandbox: d.IsSandboxEnabled(),
-		Model:   d.GetLaunchModelID(),
-		MCPs:    d.GetRemoteMCPs(),
 	}
 	if d.remoteTarget && (d.remoteCatalog == nil || len(d.presetCommands) == 0) {
 		return opts, "Remote creation capabilities are not loaded; wait for the remote catalog or reopen the dialog"
@@ -1603,11 +1604,20 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		}
 		opts.Path, opts.AdditionalPaths = paths[0], paths[1:]
 	}
-	opts.ParentID = d.GetParentSessionID()
-	opts.ReasoningEffort = d.GetLaunchReasoningEffort()
 	if d.worktreeEnabled {
 		opts.WorktreeBranch = strings.TrimSpace(d.branchInput.Value())
 	}
+
+	if d.remoteCatalog != nil && d.remoteCatalog.Legacy {
+		if err := d.remoteCatalog.ValidateOptions(opts); err != nil {
+			return opts, err.Error()
+		}
+		return opts, ""
+	}
+	opts.Model = d.GetLaunchModelID()
+	opts.MCPs = d.GetRemoteMCPs()
+	opts.ParentID = d.GetParentSessionID()
+	opts.ReasoningEffort = d.GetLaunchReasoningEffort()
 
 	switch {
 	case d.isClaudeSelected():
@@ -3054,6 +3064,12 @@ func (d *NewDialog) View() string {
 	content.WriteString(groupInfoStyle.Render("  in group: " + d.parentGroupName))
 	content.WriteString("\n")
 
+	if d.remoteCatalog != nil && d.remoteCatalog.Legacy {
+		content.WriteString("\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("  " + legacyRemoteCreationNotice))
+		content.WriteString("\n")
+	}
+
 	// Recent sessions picker
 	if d.showRecentPicker && len(d.recentSessions) > 0 {
 		pickerHeaderStyle := lipgloss.NewStyle().Foreground(ColorComment)
@@ -3771,6 +3787,8 @@ func (d *NewDialog) toolKind(name string) string {
 	}
 	return ""
 }
+
+const legacyRemoteCreationNotice = "Remote runs an older agent-deck; extra options are hidden until it is updated."
 
 func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCatalog) {
 	d.remoteCatalog = catalog

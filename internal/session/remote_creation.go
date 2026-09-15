@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,6 +13,8 @@ import (
 // parsers and selectable definitions. Config directories and credentials are
 // deliberately excluded. Unknown protocol versions fail closed.
 type RemoteCreationCatalog struct {
+	// Legacy is controller-only state, never part of the catalog protocol.
+	Legacy      bool                             `json:"-"`
 	Defaults    map[string]bool                  `json:"defaults"`
 	Version     int                              `json:"version"`
 	Commands    map[string][]RemoteCreationField `json:"commands"`
@@ -43,16 +46,48 @@ type RemoteCreationConductor struct {
 func (r *SSHRunner) FetchCreationCatalog(ctx context.Context) (*RemoteCreationCatalog, error) {
 	data, err := r.Run(ctx, "add", "--capabilities", "--json")
 	if err != nil {
-		return nil, fmt.Errorf("remote creation capabilities unavailable; update the remote before creating a session: %w", err)
+		sessionLog.Warn("remote creation catalog request failed", "error", err)
+		// Only the old parser's rejection of this exact probe permits fallback.
+		if strings.Contains(err.Error(), "exit status 2: flag provided but not defined: -capabilities\n") || strings.HasSuffix(err.Error(), "exit status 2: flag provided but not defined: -capabilities") {
+			return LegacyRemoteCreationCatalog(), nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("remote creation catalog request timed out")
+		}
+		return nil, fmt.Errorf("remote creation catalog unavailable; check the SSH connection")
 	}
 	var catalog RemoteCreationCatalog
 	if err := json.Unmarshal(data, &catalog); err != nil {
-		return nil, fmt.Errorf("invalid remote creation catalog: %w", err)
+		sessionLog.Warn("invalid remote creation catalog", "error", err, "output", string(data))
+		return nil, fmt.Errorf("invalid remote creation catalog; update the remote")
 	}
 	if catalog.Version != 1 || len(catalog.Commands) == 0 {
+		sessionLog.Warn("unsupported remote creation catalog", "output", string(data))
 		return nil, fmt.Errorf("unsupported remote creation catalog version %d; update the remote", catalog.Version)
 	}
 	return &catalog, nil
+}
+
+// LegacyRemoteCreationCatalog describes the pre-catalog creation contract.
+// It deliberately excludes options whose support cannot be established.
+func LegacyRemoteCreationCatalog() *RemoteCreationCatalog {
+	fields := []RemoteCreationField{
+		{Name: "title", Aliases: []string{"t"}, TakesValue: true},
+		{Name: "group", Aliases: []string{"g"}, TakesValue: true},
+		{Name: "cmd", Aliases: []string{"c"}, TakesValue: true},
+		{Name: "worktree", Aliases: []string{"w"}, TakesValue: true},
+		{Name: "new-branch", Aliases: []string{"b"}},
+		{Name: "location", TakesValue: true},
+		{Name: "sandbox"}, {Name: "sandbox-image", TakesValue: true},
+		{Name: "additional-path", TakesValue: true},
+		{Name: "json"}, {Name: "quiet", Aliases: []string{"q"}},
+	}
+	add := append(append([]RemoteCreationField(nil), fields...), RemoteCreationField{Name: "quick", Aliases: []string{"Q"}})
+	launch := append(append([]RemoteCreationField(nil), fields...),
+		RemoteCreationField{Name: "message", Aliases: []string{"m"}, TakesValue: true},
+		RemoteCreationField{Name: "message-file", TakesValue: true},
+		RemoteCreationField{Name: "no-wait"})
+	return &RemoteCreationCatalog{Legacy: true, Version: 1, Commands: map[string][]RemoteCreationField{"add": add, "launch": launch}, Tools: []RemoteCreationTool{{Name: ""}}}
 }
 
 func (c *RemoteCreationCatalog) ValidateOptions(opts RemoteAddOptions) error {

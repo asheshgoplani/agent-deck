@@ -13,9 +13,16 @@ accepted without initializing tables; partial schemas fail visibly. Existing
 immutable evidence readers keep their separate filesystem-preservation contract.
 
 Both the public remote CLI and New Session dialog validate requested fields
-against this response. An old binary, unknown catalog version, unknown option,
-or malformed field returns a visible error before creation. Project and
-additional-repository paths belong to the remote. A CLI message file is read
+against this response. An unknown catalog version, unknown option, or malformed
+field returns a visible error before creation. If the remote exits with status 2
+because it does not recognize `--capabilities`, creation falls back to the legacy
+contract: title, path, command, group, worktree/branch, sandbox, additional
+repositories, and launch messages. The dialog shows one older-release notice
+and hides extra controls. The CLI refuses catalog-only options with the option
+name and an instruction to update the remote. Other catalog failures remain
+refusals with a short reason; full diagnostics go to the application log.
+
+Project and additional-repository paths belong to the remote. A CLI message file is read
 on the controller and forwarded through stdin; its filename is never sent.
 
 | Option | Before | After |
