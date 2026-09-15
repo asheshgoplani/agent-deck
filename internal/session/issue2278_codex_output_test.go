@@ -296,6 +296,72 @@ func TestCodexOutputCarriesExactTurnForRepeatedReply(t *testing.T) {
 	}
 }
 
+func TestLatestCodexTurnGenerationScansBoundedTail(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	writeRollout := func(t *testing.T, sessionID, content string) *Instance {
+		t.Helper()
+		path := filepath.Join(home, "sessions", "2026", "09", "15", "rollout-test-"+sessionID+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return &Instance{Tool: "codex", CodexSessionID: sessionID}
+	}
+
+	t.Run("newest supported start survives noisy malformed tail", func(t *testing.T) {
+		lines := []string{
+			`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-stale"}}`,
+			`{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-new"}}`,
+		}
+		for n := 0; n < 64; n++ {
+			lines = append(lines, `{"type":"event_msg","payload":{"type":"agent_message"}}`)
+		}
+		lines = append(lines,
+			`{"type":"response_item","payload":{"type":"task_started","turn_id":"turn-unrelated"}}`,
+			`{"type":"event_msg","payload":{"type":"task_started"`,
+		)
+		inst := writeRollout(t, "thread-noisy", strings.Join(lines, "\n"))
+		generation, err := inst.LatestCodexTurnGeneration()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if generation != "thread-noisy:turn-new" {
+			t.Fatalf("generation = %q, want newest supported start", generation)
+		}
+	})
+
+	t.Run("start exactly at byte boundary remains visible", func(t *testing.T) {
+		start := `{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-boundary"}}` + "\n"
+		padding := strings.Repeat(" ", int(codexTurnGenerationScanMaxBytes)-len(start))
+		inst := writeRollout(t, "thread-boundary", "outside\n"+start+padding)
+		generation, err := inst.LatestCodexTurnGeneration()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if generation != "thread-boundary:turn-boundary" {
+			t.Fatalf("generation = %q, want exact-boundary start", generation)
+		}
+	})
+
+	t.Run("start beyond byte boundary fails closed", func(t *testing.T) {
+		starts := strings.Join([]string{
+			`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-stale"}}`,
+			`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-outside"}}`,
+		}, "\n") + "\n"
+		inst := writeRollout(t, "thread-outside", starts+strings.Repeat(" ", int(codexTurnGenerationScanMaxBytes)+1))
+		generation, err := inst.LatestCodexTurnGeneration()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if generation != "" {
+			t.Fatalf("generation = %q, want no stale generation beyond scan bound", generation)
+		}
+	})
+}
+
 func TestCodexAcceptanceLockSerializesAcrossProcesses(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)

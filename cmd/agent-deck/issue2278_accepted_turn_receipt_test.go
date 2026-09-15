@@ -301,6 +301,26 @@ func TestCodexAcceptanceGuardReconcilesOrdinarySendBeforeStructuredRetry(t *test
 	if err := appendCodexTurnStart(path, "turn-ordinary"); err != nil {
 		t.Fatal(err)
 	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 0; n < 64; n++ {
+		if _, err := fmt.Fprintf(f, `{"type":"event_msg","payload":{"type":"agent_message","message":"noise-%d"}}`+"\n", n); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.WriteString(
+		`{"type":"response_item","payload":{"type":"task_started","turn_id":"turn-unrelated"}}` + "\n" +
+			`{"type":"event_msg","payload":{"type":"task_started"`,
+	); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 	structured, err := acquireCodexAcceptanceGuard(inst, time.Second)
 	if err != nil {
 		t.Fatalf("durable ordinary generation did not reconcile: %v", err)
