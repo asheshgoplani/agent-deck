@@ -1,0 +1,14 @@
+package session
+
+import (
+ "testing"
+ "time"
+)
+
+// Baseline has no pass API. This test-only adapter invokes the unchanged
+// production UpdateStatus path for identical fixtures and assertions.
+const codexExclusionTTL = 2*time.Second
+type StatusUpdatePass struct{}
+func (*StatusUpdatePass) UpdateStatus(i *Instance) error {return i.UpdateStatus()}
+func resetCodexOwnershipCache(*testing.T) {}
+func (i *Instance) codexExclusions(*StatusUpdatePass) map[string]bool {return i.collectOtherCodexSessionIDs()}

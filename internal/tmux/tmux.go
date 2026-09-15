@@ -2074,6 +2074,25 @@ func (s *Session) ApplyThemeOptions() error {
 	return s.runBoundedRun(args...)
 }
 
+// ReadEnvironment reads a fresh session environment without the per-session
+// cache. Reading the whole environment distinguishes a missing key (empty,
+// nil) from a failed probe; ownership discovery must not guess after failure.
+func (s *Session) ReadEnvironment(key string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := s.tmuxCmdContext(ctx, "show-environment", "-t", s.Name).Output()
+	if err != nil {
+		return "", err
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix), nil
+		}
+	}
+	return "", nil
+}
+
 // GetEnvironment gets an environment variable from this tmux session.
 // Uses a cache (30s for hits, 5s for misses — issue #1728) to avoid spawning
 // tmux show-environment subprocesses on every poll cycle. Call
@@ -6442,9 +6461,14 @@ func RunLogMaintenance(maxSizeMB int, maxLines int, removeOrphans bool) {
 // those in the current profile. This ensures consistent notification bars
 // when users switch between sessions.
 func ListAgentDeckSessions() ([]string, error) {
+	return ListAgentDeckSessionsOnSocket(DefaultSocketName())
+}
+
+// ListAgentDeckSessionsOnSocket lists managed sessions on the specified server.
+func ListAgentDeckSessionsOnSocket(socket string) ([]string, error) {
 	// Bounded — see tmuxPollTimeout. Drives the cross-profile notification-bar
 	// refresh, i.e. it runs on a timer for every session.
-	output, err := runBoundedOutput(DefaultSocketName(), "list-sessions", "-F", "#{session_name}")
+	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		// No sessions exist
 		if strings.Contains(err.Error(), "no server running") ||

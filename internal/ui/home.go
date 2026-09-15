@@ -6058,6 +6058,7 @@ func (h *Home) backgroundStatusUpdate() {
 
 	tracker := h.getTransitionTracker()
 
+	var statusPass session.StatusUpdatePass
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
@@ -6091,7 +6092,7 @@ func (h *Home) backgroundStatusUpdate() {
 		g.Go(func() error {
 			oldStatus := inst.GetStatusThreadSafe()
 			instStart := time.Now()
-			_ = inst.UpdateStatus()
+			_ = statusPass.UpdateStatus(inst)
 			instDur := time.Since(instStart)
 
 			if instDur > 50*time.Millisecond {
