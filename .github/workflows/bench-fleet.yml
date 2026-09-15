@@ -1,0 +1,44 @@
+name: Synthetic fleet performance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/bench/**'
+      - 'bench/**'
+      - 'internal/ui/**'
+      - 'internal/session/**'
+      - 'internal/tmux/**'
+      - 'internal/statedb/**'
+      - 'cmd/agent-deck/**'
+      - '.github/workflows/bench-fleet.yml'
+permissions:
+  contents: read
+jobs:
+  fleet:
+    name: Synthetic fleet (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: Measure isolated fleet
+        run: make bench-fleet BENCH_ARGS='-runs 3 -machine github-ubuntu-latest -out bench/ci.json'
+      - name: Compare when a matching runner baseline exists
+        run: |
+          if [ -f bench/baseline/github-ubuntu-latest.json ]; then
+            docker run --rm --network none --cap-drop ALL -u "$(id -u):$(id -g)" -v "$PWD":/src -w /src -e HOME=/tmp/h -e GOCACHE=/tmp/cache -e GOTOOLCHAIN=local -e GOFLAGS=-p=2 -e GOPROXY=off -e GOSUMDB=off agentdeck-bench:go1.25 go run ./tools/bench compare -baseline bench/baseline/github-ubuntu-latest.json -run bench/ci.json -threshold 0.25
+          else
+            echo 'Advisory capture only: no comparable GitHub runner baseline committed yet.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Publish measurement table
+        if: always()
+        run: |
+          if [ -f bench/ci.md ]; then cat bench/ci.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: synthetic-fleet
+          path: |
+            bench/ci.json
+            bench/ci.md
+          retention-days: 30
