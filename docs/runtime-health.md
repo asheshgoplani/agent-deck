@@ -22,7 +22,7 @@ Default budgets are status pass under 250 ms, fewer than 512 open descriptors, a
 
 Files rotate at 1 MiB with one backup and age out after seven days while a sampler runs. Cleanup retains the newest 128 files plus files modified in the last two minutes, so active writers are not removed. Health collection errors do not interrupt the application; missing data remains visible as unknown in the report. Disabling collection leaves existing history available.
 
-The tagged headless regression runs the status path against 100 fake sessions:
+The tagged headless regression runs the status path against 100 fake sessions in both disconnected and active Codex fleets. The Codex fixture primes discovery caches as a running TUI would, then asserts that the measured pass still synchronizes metadata and retains every session identity:
 
 ```sh
 go test -tags runtimehealthperf ./internal/ui -run TestPerf_RuntimeHealth -count=1 -v
