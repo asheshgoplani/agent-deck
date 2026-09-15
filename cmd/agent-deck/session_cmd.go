@@ -3460,9 +3460,7 @@ func hydrateLegacyCodexIdentity(
 		inst.CodexDetectedAt = previousDetectedAt
 	}
 
-	inst.SyncSessionIDsFromTmux()
-	candidate := strings.TrimSpace(inst.CodexSessionID)
-	inst.CodexSessionID = ""
+	candidate := liveCodexSessionID(inst)
 	if candidate == "" {
 		return fmt.Errorf("Codex session identity is unavailable")
 	}
@@ -3476,16 +3474,20 @@ func hydrateLegacyCodexIdentity(
 			!peer.CodexRolloutIsResolvableLocally() || !peer.Exists() {
 			continue
 		}
-		peer.SyncSessionIDsFromTmux()
-		if strings.TrimSpace(peer.CodexSessionID) == inst.CodexSessionID {
+		if liveCodexSessionID(peer) == inst.CodexSessionID {
 			restore()
 			return fmt.Errorf("live Codex session identity is already owned by another session")
 		}
 	}
 
-	if _, err := inst.LatestCodexTurnGeneration(); err != nil {
+	generation, err := inst.LatestCodexTurnGeneration()
+	if err != nil {
 		restore()
 		return fmt.Errorf("live Codex session identity has no unique current rollout: %w", err)
+	}
+	if strings.TrimSpace(generation) == "" {
+		restore()
+		return fmt.Errorf("live Codex session identity current turn generation is unavailable")
 	}
 	if storage == nil || storage.GetDB() == nil {
 		restore()
@@ -3496,6 +3498,24 @@ func hydrateLegacyCodexIdentity(
 		return fmt.Errorf("persist live Codex session identity: %w", err)
 	}
 	return nil
+}
+
+// liveCodexSessionID reads only the authoritative Codex identity from a live
+// pane. Unlike broad session-ID synchronization, it does not mutate metadata
+// for Codex or any unrelated tool.
+func liveCodexSessionID(inst *session.Instance) string {
+	if inst == nil {
+		return ""
+	}
+	tmuxSession := inst.GetTmuxSession()
+	if tmuxSession == nil || !tmuxSession.Exists() {
+		return ""
+	}
+	identity, err := tmuxSession.GetEnvironment("CODEX_SESSION_ID")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(identity)
 }
 
 func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) (*codexAcceptanceGuard, error) {
