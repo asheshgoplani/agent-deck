@@ -223,3 +223,33 @@ test-web-e2e:
 
 # Full suite (default): unit + e2e.
 test-web: test-web-unit test-web-e2e
+
+# Functional checks run in Docker locally. Native execution is CI-only.
+FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.25.13
+FUNCCHECK_BINARY ?=
+FUNCCHECK_MODE ?= docker
+.PHONY: check-functional funccheck-image
+funccheck-image:
+	@printf '%s\n' 'FROM golang:1.25.13-bookworm' \
+		'RUN apt-get update -qq && apt-get install -y --no-install-recommends tmux git' \
+		'WORKDIR /deps' 'COPY go.mod go.sum ./' \
+		'RUN go mod download && chmod -R a+rX /go/pkg/mod' \
+		'RUN mkdir -p /funccheck-cache && chown 1000:1000 /funccheck-cache' \
+		'ENV GOTOOLCHAIN=local' | docker build -t "$(FUNCCHECK_IMAGE)" -f - .
+
+ifeq ($(FUNCCHECK_MODE),native)
+check-functional:
+	@test "$$CI" = true || { echo 'Native functional checks are CI-only. Use the default Docker mode locally.' >&2; exit 1; }
+	@mkdir -p build
+	@if [ -z "$(FUNCCHECK_BINARY)" ]; then go build $(LDFLAGS) -o build/agent-deck-funccheck ./cmd/agent-deck; fi
+	GOMODCACHE="$$(go env GOMODCACHE)" GOCACHE="$$(go env GOCACHE)" FUNCCHECK_SOURCE_CHECKS=1 go run ./tools/funccheck "$(or $(FUNCCHECK_BINARY),build/agent-deck-funccheck)"
+else
+check-functional: funccheck-image
+	docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
+		-v "$(CURDIR):/src" -w /src -e HOME=/tmp/funccheck-home \
+		-v agentdeck-funccheck-gocache:/funccheck-cache \
+		-e GOCACHE=/funccheck-cache -e GOMODCACHE=/go/pkg/mod -e GOTOOLCHAIN=local \
+		-e AGENTDECK_SKIP_UPDATE_CHECK=1 -e FUNCCHECK_SOURCE_CHECKS=1 \
+		-e FUNCCHECK_BINARY="$(FUNCCHECK_BINARY)" "$(FUNCCHECK_IMAGE)" \
+		sh -ec 'mkdir -p "$$HOME"; if [ -z "$$FUNCCHECK_BINARY" ]; then go build $(LDFLAGS) -o /tmp/agent-deck-funccheck ./cmd/agent-deck; FUNCCHECK_BINARY=/tmp/agent-deck-funccheck; fi; go run ./tools/funccheck "$$FUNCCHECK_BINARY"'
+endif

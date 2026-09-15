@@ -1,0 +1,63 @@
+name: Functional check (advisory)
+
+on:
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'tools/funccheck/**'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/functional-check.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  AGENTDECK_SKIP_UPDATE_CHECK: '1'
+
+jobs:
+  functional:
+    name: Synthetic fleet lifecycle (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Verify runtime dependencies
+        run: |
+          command -v tmux
+          tmux -V
+          git --version
+      - name: Verify runner detects broken binaries
+        run: go test -count=1 -timeout=2m ./tools/funccheck
+      - name: Check the build against a disposable fleet
+        id: fleet
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          make check-functional FUNCCHECK_MODE=native | tee funccheck-summary.md
+      - name: Surface advisory failures
+        if: always() && steps.fleet.outcome == 'failure'
+        run: echo '::warning::Functional checks reported FAIL. Inspect the summary and JSON artifact; advisory CI does not certify the build.'
+      - name: Publish summary
+        if: always()
+        run: |
+          if [ -f funccheck-summary.md ]; then
+            cat funccheck-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Preserve capability evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: functional-check-${{ github.sha }}
+          path: |
+            funccheck-report.json
+            funccheck-summary.md
+          if-no-files-found: warn
