@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,4 +127,81 @@ func TestSessionShow_JSONHasOrderAndPin(t *testing.T) {
 		t.Errorf("after set pin top: order %d pin %q, want 0 and top", order, pin)
 	}
 	expectOrder(t, home, a, 1)
+}
+
+// TestSessionShow_CrossProfileTmuxFallback_ReportsRealOrder is the
+// regression case for the CodeRabbit finding on PR #2300
+// (cmd/agent-deck/session_cmd.go:1739): when `session show` has no
+// explicit id and falls back to findSessionByTmuxAcrossProfiles because the
+// tmux session belongs to a DIFFERENT profile than the CLI's own, the
+// groupTree used to compute `order` must be built from the resolved
+// profile's data, not the original one — otherwise the session isn't in
+// the tree and `order` comes back -1.
+//
+// Does not use the shared runAgentDeck helper: that helper deliberately
+// strips TMUX* from the subprocess environment for isolation, which is
+// exactly the variable this fallback path is gated on.
+func TestSessionShow_CrossProfileTmuxFallback_ReportsRealOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	workPath := filepath.Join(home, "proj")
+	if err := os.MkdirAll(workPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// The session lives in profile "other", never in the CLI's own "base"
+	// profile that the invocation below will start from.
+	addOut, addErr, addCode := runAgentDeck(t, home, "-p", "other", "add", "-t", "brain", "-c", "claude", "--no-parent", "--json", workPath)
+	if addCode != 0 {
+		t.Fatalf("add failed (exit %d)\nstdout: %s\nstderr: %s", addCode, addOut, addErr)
+	}
+
+	// Fake tmux: any "display-message" call reports an agentdeck session
+	// name matching the "brain" title, the same way findSessionByTmux
+	// parses a real tmux session name it manages.
+	fakeBin := t.TempDir()
+	fakeTmux := filepath.Join(fakeBin, "tmux")
+	script := "#!/bin/sh\ncase \"$*\" in\n*display-message*) printf 'agentdeck_brain_ffffffff\\t" + workPath + "\\n'; exit 0 ;;\nesac\nexit 1\n"
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+
+	bin := channelsCLIBinary(t)
+	cmd := exec.Command(bin, "session", "show", "--json")
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"AGENTDECK_PROFILE=base",
+		"TMUX=/tmp/tmux-fake-session,1,0",
+		"TERM=dumb",
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+	)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatalf("run binary: %v\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
+		}
+	}
+
+	var resp struct {
+		Profile string `json:"profile"`
+		Order   *int   `json:"order"`
+	}
+	if err := json.Unmarshal([]byte(outBuf.String()), &resp); err != nil {
+		t.Fatalf("parse show response: %v\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
+	}
+	if resp.Profile != "other" {
+		t.Fatalf("resolved profile = %q, want %q (cross-profile tmux fallback did not fire)", resp.Profile, "other")
+	}
+	if resp.Order == nil {
+		t.Fatalf("show --json lacks order: %s", outBuf.String())
+	}
+	if *resp.Order != 0 {
+		t.Errorf("order = %d, want 0 - cross-profile session/group data was not reloaded before building groupTree", *resp.Order)
+	}
 }

@@ -1701,9 +1701,15 @@ func handleSessionShow(profile string, args []string) {
 				var foundProfile string
 				inst, foundProfile = findSessionByTmuxAcrossProfiles()
 				if inst != nil && foundProfile != profile {
-					// Found in a different profile - show which profile
-					// (jsonData will include the profile info)
+					// Found in a different profile - reload its session/group
+					// data too, or groupTree below is built from the wrong
+					// profile and SessionPosition can't find inst (order: -1).
 					profile = foundProfile
+					_, instances, groupsData, err = loadSessionData(profile)
+					if err != nil {
+						out.Error(err.Error(), ErrCodeNotFound)
+						os.Exit(1)
+					}
 				}
 			}
 			if inst == nil {
