@@ -14718,7 +14718,9 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	if tool == "" {
 		tool = "claude"
 	}
-	if command == "" && tool != "shell" {
+	if session.GetToolDef(tool) != nil {
+		command = tool
+	} else if command == "" && tool != "shell" {
 		if tool == "cursor" {
 			command = session.GetToolCommand("cursor")
 		} else {

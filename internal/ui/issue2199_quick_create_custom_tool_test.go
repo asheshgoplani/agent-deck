@@ -1,0 +1,139 @@
+package ui
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
+)
+
+// TestIssue2199_QuickCreatePreservesCustomTool verifies that quick-creating
+// a session via quickCreateSession inherits the custom tool name rather than
+// downgrading to the underlying binary (issue #2199).
+func TestIssue2199_QuickCreatePreservesCustomTool(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+
+	cfgContent := `
+[tools.claude-qwen]
+command = "claude"
+compatible_with = "claude"
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	if def := session.GetToolDef("claude-qwen"); def == nil {
+		t.Fatal("expected claude-qwen tool definition to be loaded, got nil")
+	}
+
+	t.Run("cursor on custom tool session", func(t *testing.T) {
+		projectDir := t.TempDir()
+		sourceInst := session.NewInstanceWithGroupAndTool("orig-session", projectDir, "test-group", "claude-qwen")
+		sourceInst.Command = "claude"
+		sourceInst.CreatedAt = time.Now().Add(-1 * time.Minute)
+
+		h := &Home{
+			instances: []*session.Instance{sourceInst},
+			flatItems: []session.Item{
+				{
+					Type:    session.ItemTypeSession,
+					Session: sourceInst,
+				},
+			},
+			cursor: 0,
+		}
+
+		cmd := h.quickCreateSession()
+		if cmd == nil {
+			t.Fatal("quickCreateSession returned nil cmd")
+		}
+
+		msg := cmd()
+		createMsg, ok := msg.(sessionCreatedMsg)
+		if !ok {
+			t.Fatalf("quickCreateSession returned %T, want sessionCreatedMsg", msg)
+		}
+		if createMsg.err != nil {
+			t.Fatalf("create session failed: %v", createMsg.err)
+		}
+		inst := createMsg.instance
+		if inst == nil {
+			t.Fatal("created instance is nil")
+		}
+		t.Cleanup(func() {
+			_ = inst.KillAndWait()
+		})
+
+		if inst.Tool != "claude-qwen" {
+			t.Errorf("Tool = %q, want %q (custom tool identity lost)", inst.Tool, "claude-qwen")
+		}
+		if inst.Command != "claude" {
+			t.Errorf("Command = %q, want %q", inst.Command, "claude")
+		}
+	})
+
+	t.Run("cursor on group header whose most recent session is custom tool", func(t *testing.T) {
+		projectDir := t.TempDir()
+		sourceInst := session.NewInstanceWithGroupAndTool("group-session", projectDir, "my-group", "claude-qwen")
+		sourceInst.Command = "claude"
+		sourceInst.CreatedAt = time.Now().Add(-1 * time.Minute)
+
+		group := &session.Group{
+			Path: "my-group",
+			Name: "my-group",
+		}
+
+		h := &Home{
+			instances: []*session.Instance{sourceInst},
+			flatItems: []session.Item{
+				{
+					Type:  session.ItemTypeGroup,
+					Group: group,
+				},
+				{
+					Type:    session.ItemTypeSession,
+					Session: sourceInst,
+				},
+			},
+			cursor: 0, // cursor on group header
+		}
+
+		cmd := h.quickCreateSession()
+		if cmd == nil {
+			t.Fatal("quickCreateSession returned nil cmd")
+		}
+
+		msg := cmd()
+		createMsg, ok := msg.(sessionCreatedMsg)
+		if !ok {
+			t.Fatalf("quickCreateSession returned %T, want sessionCreatedMsg", msg)
+		}
+		if createMsg.err != nil {
+			t.Fatalf("create session failed: %v", createMsg.err)
+		}
+		inst := createMsg.instance
+		if inst == nil {
+			t.Fatal("created instance is nil")
+		}
+		t.Cleanup(func() {
+			_ = inst.KillAndWait()
+		})
+
+		if inst.Tool != "claude-qwen" {
+			t.Errorf("Tool = %q, want %q (custom tool identity lost from group header)", inst.Tool, "claude-qwen")
+		}
+		if inst.Command != "claude" {
+			t.Errorf("Command = %q, want %q", inst.Command, "claude")
+		}
+	})
+}
