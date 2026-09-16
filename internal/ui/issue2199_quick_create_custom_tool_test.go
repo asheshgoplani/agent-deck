@@ -136,4 +136,18 @@ compatible_with = "claude"
 			t.Errorf("Command = %q, want %q", inst.Command, "claude")
 		}
 	})
+
+	t.Run("cursor on remote session row", func(t *testing.T) {
+		t.Skip("quick creation does not apply to remote rows: quickCreateSession is local-only and spawns a local tmux session via createSessionInGroupWithWorktreeAndOptions; remote rows (ItemTypeRemoteSession) do not populate sourceSession (*session.Instance)")
+	})
+}
+
+// TestIssue2199_QuickCreate_RemoteSessionNotApplicable documents, per the
+// internal/ui RemoteSession guideline, why quickCreateSession does not inherit
+// from or apply to RemoteSession rows.
+func TestIssue2199_QuickCreate_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("RemoteSession N/A: quickCreateSession is local-only by design and spawns " +
+		"a local tmux instance via createSessionInGroupWithWorktreeAndOptions. " +
+		"Cursor on ItemTypeRemoteSession rows does not set sourceSession (*session.Instance), " +
+		"so remote sessions cannot provide custom tool templates for local quick-create.")
 }
