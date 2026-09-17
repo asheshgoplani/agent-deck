@@ -1120,7 +1120,7 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 // remoteVersionRe matches the first semver-looking token (with optional
 // dotted/pre-release tail) in `agent-deck version` output. The leading "v" is
 // optional and not captured.
-var remoteVersionRe = regexp.MustCompile(`v?(\d+\.\d+\.\d+(?:[.\-+][0-9A-Za-z.\-]+)?)`)
+var remoteVersionRe = regexp.MustCompile(`v?(\d+\.\d+\.\d+(?:[.\-][0-9A-Za-z.\-]+)?(?:\+[0-9A-Za-z.\-]+)?)`)
 
 // parseRemoteVersion extracts the binary's ACTUAL current version from
 // `agent-deck version` output, e.g. "Agent Deck v0.20.2" -> "0.20.2".
@@ -1253,6 +1253,10 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 // deployResolvedBinary runs the deploy script against a path that has
 // already been resolved through any symlinks.
 func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte, remotePath string) error {
+	return r.deployResolvedPayload(ctx, binaryData, remotePath, "", "")
+}
+
+func (r *SSHRunner) deployResolvedPayload(ctx context.Context, binaryData []byte, remotePath, checksum, expectedVersion string) error {
 	dir := remotePath
 	if idx := strings.LastIndex(remotePath, "/"); idx > 0 {
 		dir = remotePath[:idx]
@@ -1263,7 +1267,7 @@ func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte,
 	// binary (`sh`) the real call does, so a sudoers rule that allows
 	// `true` but not `sh` is not mistaken for permission to deploy.
 	script := shellQuote(remoteDeployScript)
-	args := shellQuote(dir) + " " + shellQuote(remotePath)
+	args := shellQuote(dir) + " " + shellQuote(remotePath) + " " + shellQuote(checksum) + " " + shellQuote(expectedVersion)
 	// Neither route, or sudo refused the real command after allowing the
 	// probe (exit 1 from sudo itself; the script's own failures exit 4 or
 	// 5 and pass through): report "<prefix><path><infix><user>" on stderr
@@ -1406,18 +1410,46 @@ const remoteDeployBusyMarker = "agent-deck: another deploy holds "
 // in place, exit 5), and the mode is
 // then made readable and executable for everyone so a root umask of 077
 // under sudo still leaves the binary runnable by the remote user.
-const remoteDeployScript = `d="$1"; p="$2"; lock="$p.lock"; t="$p.new.$$"
+const remoteDeployScript = `d="$1"; p="$2"; checksum="${3:-}"; expected="${4:-}"; lock="$p.lock"; t="$p.new.$$"; archive="$p.archive.$$"
 if [ -L "$p" ]; then printf '` + remoteDeploySymlinkMarker + `%s\n' "$p" >&2; exit ` + remoteDeploySymlinkExitStr + `; fi
 mkdir -p "$d"
 if [ -d "$lock" ]; then find "$lock" -maxdepth 0 -mmin +15 -exec rmdir {} \; 2>/dev/null || true; fi
 if ! mkdir "$lock" 2>/dev/null; then printf '` + remoteDeployBusyMarker + `%s\n' "$p" >&2; exit 4; fi
-trap 'rm -f "$t"; rmdir "$lock" 2>/dev/null' EXIT HUP INT TERM
+trap '[ ! -f "$t" ] || unlink "$t"; [ ! -f "$archive" ] || unlink "$archive"; rmdir "$lock" 2>/dev/null' EXIT HUP INT TERM
 mode=755; own=""
 if [ -e "$p" ]; then
   m=$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p" 2>/dev/null); [ -n "$m" ] && mode="$m"
   own=$(stat -c %u:%g "$p" 2>/dev/null || stat -f %u:%g "$p" 2>/dev/null)
 fi
-if cat > "$t" && chmod "$mode" "$t" && chmod a+rx "$t"; then
+stage() {
+  if [ -z "$checksum" ]; then cat > "$t"; return $?; fi
+  if ! cat > "$archive"; then return 5; fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest=$(sha256sum "$archive") || return 5
+  elif command -v shasum >/dev/null 2>&1; then
+    digest=$(shasum -a 256 "$archive") || return 5
+  else
+    printf 'agent-deck: sha256sum or shasum is required\n' >&2; return 5
+  fi
+  digest="${digest%% *}"
+  if [ "$digest" != "$checksum" ]; then
+    printf 'agent-deck: archive checksum mismatch\n' >&2; return 5
+  fi
+  members=$(tar -tzf "$archive") || return 5
+  count=$(printf '%s\n' "$members" | awk '$0 == "agent-deck" { n++ } END { print n+0 }')
+  if [ "$count" != 1 ]; then
+    printf 'agent-deck: archive must contain one root agent-deck binary\n' >&2; return 5
+  fi
+  entry=$(tar -tvzf "$archive" agent-deck) || return 5
+  case "$entry" in -*) ;; *) printf 'agent-deck: archive binary must be a regular file\n' >&2; return 5;; esac
+  tar -xzOf "$archive" agent-deck > "$t" && [ -s "$t" ]
+}
+if stage && chmod "$mode" "$t" && chmod a+rx "$t"; then
+  if [ -n "$expected" ]; then
+    output=$(` + update.SkipUpdateCheckEnv + `=1 "$t" version) || { printf 'agent-deck: staged binary cannot execute\n' >&2; exit 5; }
+    actual=$(printf '%s\n' "$output" | sed -n 's/^Agent Deck v\([^ ]*\).*/\1/p' | head -n 1)
+    if [ "$actual" != "$expected" ]; then printf 'agent-deck: staged binary version mismatch\n' >&2; exit 5; fi
+  fi
   if [ -n "$own" ]; then
     if [ "$(id -u)" = 0 ]; then
       if ! chown "$own" "$t"; then printf 'agent-deck: could not keep owner %s on %s\n' "$own" "$p" >&2; exit 5; fi
@@ -1472,6 +1504,45 @@ func parseInstallPathNotWritable(output string) *update.InstallPathNotWritableEr
 // Verification then checks that $PATH resolves to the deployed inode and
 // reports expectedVersion.
 func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expectedVersion string) error {
+	return r.InstallBinaryWithForce(ctx, binaryData, expectedVersion, false)
+}
+
+// InstallBinaryWithForce permits replacing newer PATH targets when forced.
+func (r *SSHRunner) InstallBinaryWithForce(ctx context.Context, binaryData []byte, expectedVersion string, force bool) error {
+	return r.installPayload(ctx, expectedVersion, false, force, func(target string) error {
+		return r.deployResolvedBinary(ctx, binaryData, target)
+	})
+}
+
+// PreviewInstall resolves the same targets as an installation without writing.
+func (r *SSHRunner) PreviewInstall(ctx context.Context, expectedVersion string) error {
+	return r.PreviewInstallWithForce(ctx, expectedVersion, false)
+}
+
+// PreviewInstallWithForce includes newer PATH targets when force is requested.
+func (r *SSHRunner) PreviewInstallWithForce(ctx context.Context, expectedVersion string, force bool) error {
+	return r.installPayload(ctx, expectedVersion, true, force, nil)
+}
+
+var remoteArchiveChecksumRe = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
+
+// InstallLocalArchive streams a release-layout archive and verifies its digest
+// on the remote before extracting or replacing any binary.
+func (r *SSHRunner) InstallLocalArchive(ctx context.Context, archive []byte, checksum, expectedVersion string, dryRun bool) error {
+	return r.InstallLocalArchiveWithForce(ctx, archive, checksum, expectedVersion, dryRun, false)
+}
+
+// InstallLocalArchiveWithForce permits replacing a newer PATH binary when forced.
+func (r *SSHRunner) InstallLocalArchiveWithForce(ctx context.Context, archive []byte, checksum, expectedVersion string, dryRun, force bool) error {
+	if !remoteArchiveChecksumRe.MatchString(checksum) {
+		return fmt.Errorf("invalid archive SHA-256 checksum")
+	}
+	return r.installPayload(ctx, expectedVersion, dryRun, force, func(target string) error {
+		return r.deployResolvedPayload(ctx, archive, target, strings.ToLower(checksum), strings.TrimPrefix(expectedVersion, "v"))
+	})
+}
+
+func (r *SSHRunner) installPayload(ctx context.Context, expectedVersion string, dryRun, force bool, deploy func(string) error) error {
 	r.installReport = ""
 	want := strings.TrimPrefix(expectedVersion, "v")
 	// Every probe must answer before anything is written: a path that
@@ -1487,10 +1558,9 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 	}
 
 	// The $PATH binary is a second target only when it is a different file
-	// with a successfully read version strictly older than what is being
-	// deployed: the remote's own binary may be ahead of the controller (the
-	// no-downgrade rule the sweep applies to the configured path holds for
-	// it too).
+	// with a successfully read version needing replacement. Equal-core builds
+	// with different metadata also need deployment. A newer release stays
+	// untouched unless force explicitly permits a downgrade.
 	var targets []string
 	pathLeft := ""
 	if onPathFound && onPath != configured {
@@ -1498,7 +1568,7 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 		switch {
 		case !found || !isVersionString(pathVer):
 			return fmt.Errorf("%w: could not read the version of the remote's $PATH binary %s (got %q)", ErrRemoteProbeFailed, onPath, pathVer)
-		case update.CompareVersions(pathVer, want) >= 0:
+		case !force && (update.CompareVersions(pathVer, want) > 0 || pathVer == want):
 			pathLeft = fmt.Sprintf("left the remote's $PATH binary %s at v%s (not older than v%s)", onPath, pathVer, want)
 		default:
 			targets = append(targets, onPath)
@@ -1506,9 +1576,16 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 	}
 	targets = append(targets, configured)
 
+	if dryRun {
+		r.installReport = "would deploy v" + want + " to " + strings.Join(targets, " and ")
+		if pathLeft != "" {
+			r.installReport += "; " + pathLeft
+		}
+		return nil
+	}
 	var done []string
 	for _, target := range targets {
-		if err := r.deployResolvedBinary(ctx, binaryData, target); err != nil {
+		if err := deploy(target); err != nil {
 			r.installReport = r.installReportFor(done, onPath, configured, pathLeft)
 			return err
 		}

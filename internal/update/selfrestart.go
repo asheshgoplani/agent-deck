@@ -24,6 +24,21 @@ import (
 // The TUI drives the same primitives from its Bubble Tea tick loop (see
 // internal/ui/binary_watch.go); headless processes run a Watcher.
 
+// InstalledVersionNeedsRestart reports whether a changed executable should
+// replace the running process. Local build metadata identifies distinct builds
+// without changing semantic version precedence. Older versions still require a
+// manual process restart, including an explicitly forced downgrade.
+func InstalledVersionNeedsRestart(installed, running string) bool {
+	installed = strings.TrimPrefix(strings.TrimSpace(installed), "v")
+	running = strings.TrimPrefix(strings.TrimSpace(running), "v")
+	comparison := CompareVersions(installed, running)
+	if comparison != 0 {
+		return comparison > 0
+	}
+	return installed != running &&
+		(strings.Contains(installed, "+local.") || strings.Contains(running, "+local."))
+}
+
 // Fingerprint is the cheap identity of the executable on disk: the mtime
 // and size from one os.Stat. No hashing and no exec, so comparing it every
 // tick costs nothing noticeable.
@@ -196,7 +211,7 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
-// tick is one poll: stat, probe on change, restart when newer and idle.
+// tick is one poll: stat, probe on change, restart an eligible replacement when idle.
 // It returns true once the hand-over succeeded.
 func (w *Watcher) tick() bool {
 	fp, err := w.Stat(w.Exe)
@@ -217,7 +232,7 @@ func (w *Watcher) tick() bool {
 			return false
 		}
 		w.probed, w.failed, w.failures = fp, Fingerprint{}, 0
-		if CompareVersions(version, w.RunningVersion) > 0 {
+		if InstalledVersionNeedsRestart(version, w.RunningVersion) {
 			w.installed = version
 		} else {
 			w.installed = ""

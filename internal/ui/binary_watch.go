@@ -23,7 +23,7 @@ type binaryFingerprint = update.Fingerprint
 const binaryProbeMaxFailures = 3
 
 // binaryWatch tracks whether the executable this process started from has
-// been replaced by a newer release while the TUI runs: `agent-deck update`
+// been replaced by a newer release or distinct local build while the TUI runs: `agent-deck update`
 // from another terminal, the auto-update job, or a manual install. It is a
 // pure state machine. Callers feed it fingerprints and probe results; it
 // never touches the filesystem or runs anything itself, which keeps it
@@ -37,7 +37,7 @@ type binaryWatch struct {
 	failed   binaryFingerprint // fingerprint the last failed probe ran against
 	failures int               // consecutive failures for `failed`
 
-	// installedVersion is the newer version found on disk, or "" while the
+	// installedVersion is the replacement version found on disk, or "" while the
 	// file still matches the running build (or was replaced by an older one).
 	installedVersion string
 }
@@ -71,8 +71,8 @@ func (w *binaryWatch) observe(fp binaryFingerprint) bool {
 }
 
 // recordProbe stores the outcome of a probe started by observe. A newer
-// version than the running one moves the watch into the "installed" state;
-// the same or an older version clears it.
+// version or a distinct local build of equal precedence becomes installed;
+// the same build or an older version clears it.
 func (w *binaryWatch) recordProbe(fp binaryFingerprint, version string, err error) {
 	if w == nil {
 		return
@@ -90,7 +90,7 @@ func (w *binaryWatch) recordProbe(fp binaryFingerprint, version string, err erro
 	w.probed = fp
 	w.failed = binaryFingerprint{}
 	w.failures = 0
-	if update.CompareVersions(version, w.runningVersion) > 0 {
+	if update.InstalledVersionNeedsRestart(version, w.runningVersion) {
 		w.installedVersion = version
 	} else {
 		w.installedVersion = ""
@@ -197,7 +197,7 @@ func (h *Home) pollBinaryChange() tea.Cmd {
 	}
 }
 
-// installedUpdateVersion returns the newer version found on disk, or "" when
+// installedUpdateVersion returns the replacement version found on disk, or "" when
 // the running build is still the one installed.
 func (h *Home) installedUpdateVersion() string {
 	if h.binaryWatch == nil {

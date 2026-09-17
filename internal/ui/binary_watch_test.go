@@ -128,3 +128,26 @@ func TestBinaryWatch_NilIsInert(t *testing.T) {
 		t.Fatal("installedUpdateVersion without a watch should be empty")
 	}
 }
+
+func TestBinaryWatch_LocalBuildReplacement(t *testing.T) {
+	for _, versions := range [][2]string{
+		{"1.16.0", "1.16.0+local.a"},
+		{"1.16.0+local.a", "1.16.0+local.b"},
+		{"1.16.0+local.a", "1.16.0"},
+	} {
+		t.Run(versions[0]+" to "+versions[1], func(t *testing.T) {
+			w := newBinaryWatch("/bin/agent-deck", versions[0], fpAt(1, 1))
+			replaced := fpAt(2, 2)
+			if !w.observe(replaced) {
+				t.Fatal("replacement did not request probe")
+			}
+			w.recordProbe(replaced, versions[1], nil)
+			if w.installedVersion != versions[1] {
+				t.Fatalf("installed = %q, want %q", w.installedVersion, versions[1])
+			}
+			if w.observe(replaced) {
+				t.Fatal("unchanged replacement requested another probe")
+			}
+		})
+	}
+}

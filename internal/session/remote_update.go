@@ -29,9 +29,10 @@ const remoteVersionCacheFile = "remote-versions.json"
 // Found is false when the binary could not be executed (missing, not on
 // $PATH, or the host was unreachable); Version is then empty.
 type RemoteVersionState struct {
-	Version   string    `json:"version,omitempty"`
-	Found     bool      `json:"found"`
-	CheckedAt time.Time `json:"checked_at"`
+	Version       string    `json:"version,omitempty"`
+	InstalledFrom string    `json:"installed_from,omitempty"`
+	Found         bool      `json:"found"`
+	CheckedAt     time.Time `json:"checked_at"`
 }
 
 // Outdated reports whether the remote runs something older than controller.
@@ -44,7 +45,7 @@ func (s RemoteVersionState) Outdated(controller string) bool {
 	if !s.Found || !isVersionString(s.Version) || !isReleaseVersion(controller) {
 		return false
 	}
-	return update.CompareVersions(s.Version, controller) < 0
+	return update.CompareVersions(s.Version, controller) < 0 || localBuildNeedsRelease(s, controller)
 }
 
 // RemoteVersionCompare is how a remote's reported version compares with this
@@ -107,7 +108,7 @@ func isVersionString(v string) bool {
 }
 
 // versionStringRe is remoteVersionRe anchored to the whole string.
-var versionStringRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(?:[.\-+][0-9A-Za-z.\-]+)?$`)
+var versionStringRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(?:[.\-][0-9A-Za-z.\-]+)?(?:\+[0-9A-Za-z.\-]+)?$`)
 
 func isReleaseVersion(v string) bool {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
@@ -371,6 +372,13 @@ func RecordRemoteVersions(states map[string]RemoteVersionState) error {
 	}
 	return updateRemoteVersionCache(func(cache *remoteVersionCache) {
 		for name, state := range states {
+			previous := cache.Remotes[name]
+			if state.InstalledFrom == "" && state.Found && strings.Contains(state.Version, "+local.") {
+				state.InstalledFrom = "local-build"
+			}
+			if state.InstalledFrom == "" && previous.Version == state.Version {
+				state.InstalledFrom = previous.InstalledFrom
+			}
 			cache.Remotes[name] = state
 		}
 	})
@@ -476,7 +484,7 @@ func PlanRemoteUpdates(versions map[string]RemoteVersionState, controller string
 			action.Version = ""
 		case !isVersionString(state.Version):
 			action.Kind = RemoteUpdateUnknown
-		case update.CompareVersions(state.Version, controller) < 0:
+		case update.CompareVersions(state.Version, controller) < 0 || localBuildNeedsRelease(state, controller):
 			action.Kind = RemoteUpdateUpgrade
 		default:
 			action.Kind = RemoteUpdateCurrent
@@ -565,6 +573,11 @@ type installReporter interface {
 
 // RemoteUpdateOptions tunes UpdateRemotes.
 type RemoteUpdateOptions struct {
+	LocalBuild *LocalBuild
+	Force      bool
+	DryRun     bool
+	// ReplaceLocal permits replacing a local build with its equal-core release.
+	ReplaceLocal bool
 	// NewRunner builds the installer for one remote. Nil means NewSSHRunner.
 	NewRunner func(name string, rc RemoteConfig) RemoteBinaryInstaller
 	// InstallMissing deploys onto remotes with no runnable binary. The
@@ -632,6 +645,9 @@ func FetchRemoteUpdateRelease(target string) (*update.Release, error) {
 // (#1171). Returns the version the remote now runs.
 func DeployRemoteBinary(ctx context.Context, runner RemoteBinaryInstaller, targetVersion string, opts RemoteUpdateOptions) (string, error) {
 	opts = opts.withDefaults()
+	if opts.LocalBuild != nil {
+		return deployLocalBuild(ctx, runner, opts)
+	}
 	goos, goarch, err := runner.DetectPlatform(ctx)
 	if err != nil {
 		return "", err
@@ -646,7 +662,9 @@ func DeployRemoteBinary(ctx context.Context, runner RemoteBinaryInstaller, targe
 	if deployed == "" {
 		deployed = strings.TrimPrefix(targetVersion, "v")
 	}
-	if current := strings.TrimPrefix(opts.CurrentVersion, "v"); isVersionString(current) && update.CompareVersions(deployed, current) <= 0 {
+	current := strings.TrimPrefix(opts.CurrentVersion, "v")
+	precedence := update.CompareVersions(deployed, current)
+	if isVersionString(current) && !opts.Force && (precedence < 0 || (precedence == 0 && !opts.ReplaceLocal)) {
 		return "", fmt.Errorf("%w: release v%s is not newer than the remote's v%s", ErrRemoteReleaseNotNewer, deployed, current)
 	}
 
@@ -656,9 +674,27 @@ func DeployRemoteBinary(ctx context.Context, runner RemoteBinaryInstaller, targe
 		return "", fmt.Errorf("download/verify failed: %w", err)
 	}
 
+	if opts.DryRun {
+		preview, ok := runner.(installPreviewer)
+		if !ok {
+			return "", fmt.Errorf("SSH runner does not support install preview")
+		}
+		if err := preview.PreviewInstallWithForce(ctx, deployed, opts.Force); err != nil {
+			return "", err
+		}
+		return deployed, nil
+	}
 	opts.Progress("Deploying...")
-	if err := runner.InstallBinary(ctx, binaryData, deployed); err != nil {
-		return "", fmt.Errorf("deploy failed: %w", err)
+	var installErr error
+	if installer, ok := runner.(interface {
+		InstallBinaryWithForce(context.Context, []byte, string, bool) error
+	}); ok {
+		installErr = installer.InstallBinaryWithForce(ctx, binaryData, deployed, opts.Force)
+	} else {
+		installErr = runner.InstallBinary(ctx, binaryData, deployed)
+	}
+	if installErr != nil {
+		return "", fmt.Errorf("deploy failed: %w", installErr)
 	}
 	return deployed, nil
 }
@@ -685,6 +721,10 @@ var ErrRemoteReleaseNotNewer = errors.New("no newer release to deploy")
 func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetVersion string, opts RemoteUpdateOptions) []RemoteUpdateResult {
 	opts = opts.withDefaults()
 	target := strings.TrimPrefix(targetVersion, "v")
+	if opts.LocalBuild != nil {
+		target = opts.LocalBuild.Version
+	}
+	cached := LoadRemoteVersions()
 
 	names := make([]string, 0, len(remotes))
 	for name := range remotes {
@@ -700,11 +740,14 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 
 		version, found := runner.CheckBinary(ctx)
 		state := RemoteVersionState{Version: version, Found: found, CheckedAt: time.Now()}
+		if cached[name].Version == version {
+			state.InstalledFrom = cached[name].InstalledFrom
+		}
 		plan := PlanRemoteUpdates(map[string]RemoteVersionState{name: state}, target)[0]
 		result.From = plan.Version
 
 		switch {
-		case plan.Kind == RemoteUpdateCurrent:
+		case plan.Kind == RemoteUpdateCurrent && opts.LocalBuild == nil && !opts.Force:
 			result.Outcome = RemoteUpdateOutcomeCurrent
 		case plan.Kind == RemoteUpdateUnknown:
 			result.Outcome = RemoteUpdateOutcomeSkipped
@@ -715,6 +758,7 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 		default:
 			remoteOpts := opts
 			remoteOpts.CurrentVersion = plan.Version
+			remoteOpts.ReplaceLocal = localBuildNeedsRelease(state, target)
 			deployed, err := DeployRemoteBinary(ctx, runner, target, remoteOpts)
 			if reporter, ok := runner.(installReporter); ok {
 				result.Note = reporter.LastInstallReport()
@@ -730,15 +774,28 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 				result.Outcome = RemoteUpdateOutcomeFailed
 				result.Err = err
 			default:
-				result.Outcome = RemoteUpdateOutcomeUpdated
 				result.To = deployed
-				state = RemoteVersionState{Version: deployed, Found: true, CheckedAt: time.Now()}
+				if opts.DryRun {
+					result.Outcome = RemoteUpdateOutcomeSkipped
+					result.Note = "dry run: would install v" + deployed + "; " + result.Note
+				} else {
+					result.Outcome = RemoteUpdateOutcomeUpdated
+					source := "release"
+					if opts.LocalBuild != nil {
+						source = "local-build"
+					}
+					state = RemoteVersionState{Version: deployed, Found: true, CheckedAt: time.Now(), InstalledFrom: source}
+				}
 			}
 		}
 		// Record what this remote runs now, before the next remote and
 		// before the caller hears about it, so `remote list` never shows a
 		// version a finished deploy has already replaced (#2244).
-		_ = RecordRemoteVersions(map[string]RemoteVersionState{name: state})
+		if !opts.DryRun {
+			if err := RecordRemoteVersions(map[string]RemoteVersionState{name: state}); err != nil {
+				result.Note += "; could not record remote version cache: " + err.Error()
+			}
+		}
 		results = append(results, result)
 		opts.OnResult(result)
 	}

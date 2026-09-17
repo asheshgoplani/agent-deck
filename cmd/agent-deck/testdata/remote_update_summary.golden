@@ -1,0 +1,5 @@
+REMOTE  FROM     TO                 RESULT
+alpha   1.16.9   1.16.10+local.abc  updated
+beta    1.17.0   1.16.10+local.abc  failed
+gamma   unknown  1.16.10+local.abc  skipped
+3 remotes: 1 updated, 1 skipped, 1 failed
