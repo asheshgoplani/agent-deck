@@ -323,6 +323,64 @@ func remoteHostLoadLineFiltered(stats session.RemoteHostStats, fields []string, 
 	return strings.Join(parts, " · ")
 }
 
+// accountUsageAgeLabel renders how long ago an account's usage snapshot was
+// updated, in the shape the "accounts" field uses ("3 min ago", "2 h ago") —
+// distinct from humanizeSince's "3m ago" shorthand used elsewhere in this
+// panel, matching the maintainer's requested wording for this field.
+func accountUsageAgeLabel(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return "just now"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%d min ago", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%d h ago", int(d/time.Hour))
+}
+
+// renderAccountUsageEntry renders one account slot's clause for the
+// "accounts" field: "personal 5h 8% · 7d 24% (3 min ago)" when usage is
+// known and fresh, "personal 5h 8% (stale, 2 h ago)" when older than
+// session.AccountUsageStaleAfter, or "<name> usage unknown" when the slot has
+// no usage file at all (never a guessed percentage).
+func renderAccountUsageEntry(u session.AccountUsage, now time.Time) string {
+	var windows []string
+	if u.FiveHour.Known {
+		windows = append(windows, fmt.Sprintf("5h %.0f%%", u.FiveHour.Percent))
+	}
+	if u.SevenDay.Known {
+		windows = append(windows, fmt.Sprintf("7d %.0f%%", u.SevenDay.Percent))
+	}
+	if !u.Known || len(windows) == 0 {
+		return u.Name + " usage unknown"
+	}
+	age := "unknown"
+	if u.HasUpdatedAt {
+		age = accountUsageAgeLabel(now.Sub(u.UpdatedAt))
+	}
+	if session.AccountUsageStale(u.HasUpdatedAt, u.UpdatedAt, now) {
+		return fmt.Sprintf("%s %s (stale, %s)", u.Name, strings.Join(windows, " · "), age)
+	}
+	return fmt.Sprintf("%s %s (%s)", u.Name, strings.Join(windows, " · "), age)
+}
+
+// renderAccountsPreviewLine renders the full "accounts" field line: "accounts
+// none" when the host has zero configured Claude account slots, or "accounts
+// <entry> · <entry> · ..." with one clause per slot from
+// renderAccountUsageEntry.
+func renderAccountsPreviewLine(usage []session.AccountUsage, now time.Time) string {
+	if len(usage) == 0 {
+		return "accounts  none"
+	}
+	parts := make([]string, 0, len(usage))
+	for _, u := range usage {
+		parts = append(parts, renderAccountUsageEntry(u, now))
+	}
+	return "accounts  " + strings.Join(parts, " · ")
+}
+
 // hostStatsFieldSet is the subset of the shared field vocabulary that
 // remoteHostLoadLineFiltered understands; used by remotePreviewFieldLines to
 // group consecutive load/memory/disk entries into a single combined line,
@@ -339,7 +397,7 @@ var hostStatsFieldSet = map[string]bool{
 // load/memory/disk entries collapse into one combined line — the historical
 // shape — so the default field order renders byte-identical to before this
 // config block existed.
-func remotePreviewFieldLines(versionState session.RemoteVersionState, controller string, sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool, fields []string) []string {
+func remotePreviewFieldLines(versionState session.RemoteVersionState, controller string, sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool, fields []string, now time.Time) []string {
 	statsKnown := hasResult && result.Stats.Ok
 	consumed := make(map[int]bool, len(fields))
 	var lines []string
@@ -369,6 +427,15 @@ func remotePreviewFieldLines(versionState session.RemoteVersionState, controller
 		case session.PreviewFieldLastPoll:
 			if statsKnown {
 				lines = append(lines, fmt.Sprintf("Last poll %s · %s", formatPollLatency(result.Latency), remoteStatsPolledLabel(result.FetchedAt)))
+			}
+		case session.PreviewFieldAccounts:
+			switch {
+			case !statsKnown:
+				lines = append(lines, "stats unknown (remote runs an older agent-deck)")
+			case !result.Stats.AccountsAvailable:
+				lines = append(lines, "accounts unknown (remote does not report accounts)")
+			default:
+				lines = append(lines, renderAccountsPreviewLine(result.Stats.Accounts, now))
 			}
 		}
 	}

@@ -516,6 +516,12 @@ const (
 	PreviewFieldMemory           = "memory"
 	PreviewFieldDisk             = "disk"
 	PreviewFieldLastPoll         = "last_poll"
+	// PreviewFieldAccounts is opt-in only (not part of either default field
+	// list, see DefaultRemotePreviewFields/DefaultHeaderFields): the named
+	// Claude account slots on the rendering host (the same slots
+	// `accounts --json` lists) with their live 5h/7d usage limits, read from
+	// each slot's on-disk quota cache. See AccountUsage/CollectAccountUsage.
+	PreviewFieldAccounts = "accounts"
 )
 
 // validPreviewFields is the full set of field names either block accepts.
@@ -529,6 +535,7 @@ var validPreviewFields = map[string]bool{
 	PreviewFieldMemory:           true,
 	PreviewFieldDisk:             true,
 	PreviewFieldLastPoll:         true,
+	PreviewFieldAccounts:         true,
 }
 
 // DefaultRemotePreviewFields is the remote preview panel's field order when
@@ -563,8 +570,9 @@ var DefaultHeaderFields = []string{
 type RemotePreviewSettings struct {
 	// Fields lists which pieces of information the panel shows, in render
 	// order. Valid names: version, sessions_by_status, harnesses, load,
-	// memory, disk, last_poll. Unset/empty uses DefaultRemotePreviewFields.
-	// Unknown names are reported once at startup and dropped.
+	// memory, disk, last_poll, accounts. Unset/empty uses
+	// DefaultRemotePreviewFields. Unknown names are reported once at startup
+	// and dropped.
 	Fields []string `toml:"fields,omitempty"`
 }
 
@@ -621,7 +629,7 @@ func normalizePreviewFieldList(fields []string, key string) []string {
 		if !validPreviewFields[name] {
 			registryLog.Warn("ignored unknown "+key+" entry",
 				"name", raw,
-				"hint", "valid fields: version, sessions_by_status, harnesses, load, memory, disk, last_poll")
+				"hint", "valid fields: version, sessions_by_status, harnesses, load, memory, disk, last_poll, accounts")
 			continue
 		}
 		out = append(out, name)

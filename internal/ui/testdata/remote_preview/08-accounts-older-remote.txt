@@ -1,0 +1,13 @@
+                                                               
+                                                               
+                               ⬡                               
+                                                               
+                          Remote: lab                          
+             Host: alice@lab.example — 5 sessions              
+                                                               
+    agent-deck v1.16.9 · older than here (update available)    
+      accounts unknown (remote does not report accounts)       
+                                                               
+         • Press Enter on a session to attach via SSH          
+                                                               
+                                                               

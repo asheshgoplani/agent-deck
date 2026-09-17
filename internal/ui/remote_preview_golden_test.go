@@ -140,6 +140,64 @@ fields = ["harnesses", "memory", "version"]
 		}},
 	}
 
+	steps = append(steps,
+		struct {
+			name  string
+			setup func(t *testing.T, h *Home)
+		}{"07-accounts-known", func(t *testing.T, h *Home) {
+			writeXDGTestConfig(t, os.Getenv("HOME"), `
+[remotes.lab]
+host = "alice@lab.example"
+agent_deck_path = "/usr/local/bin/agent-deck"
+
+[ui.remote_preview]
+fields = ["version", "accounts"]
+`)
+			h.remoteVersions = map[string]session.RemoteVersionState{
+				"lab": {Version: "1.16.10", Found: true, CheckedAt: fixedPollTime},
+			}
+			h.remoteHostStats = map[string]remoteHostStatsResult{
+				"lab": {
+					Stats: session.RemoteHostStats{
+						Ok:                true,
+						AccountsAvailable: true,
+						Accounts: []session.AccountUsage{
+							{Name: "personal", Known: true, HasUpdatedAt: true, UpdatedAt: fixedPollTime,
+								FiveHour: session.AccountUsageWindow{Known: true, Percent: 8},
+								SevenDay: session.AccountUsageWindow{Known: true, Percent: 24}},
+							{Name: "work", Known: false},
+						},
+					},
+					Latency:   1200 * time.Millisecond,
+					FetchedAt: fixedPollTime,
+				},
+			}
+		}},
+		struct {
+			name  string
+			setup func(t *testing.T, h *Home)
+		}{"08-accounts-older-remote", func(t *testing.T, h *Home) {
+			writeXDGTestConfig(t, os.Getenv("HOME"), `
+[remotes.lab]
+host = "alice@lab.example"
+agent_deck_path = "/usr/local/bin/agent-deck"
+
+[ui.remote_preview]
+fields = ["version", "accounts"]
+`)
+			h.remoteVersions = map[string]session.RemoteVersionState{
+				"lab": {Version: "1.16.9", Found: true, CheckedAt: fixedPollTime},
+			}
+			h.remoteHostStats = map[string]remoteHostStatsResult{
+				"lab": {
+					Stats:     session.RemoteHostStats{Ok: true},
+					Latency:   1200 * time.Millisecond,
+					FetchedAt: fixedPollTime,
+				},
+			}
+		}},
+	)
+
 	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
 			home := goldenRemotePreviewHome(t)

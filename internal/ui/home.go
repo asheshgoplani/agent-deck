@@ -850,6 +850,12 @@ type Home struct {
 	sysStatsCollector *sysinfo.Collector
 	sysStatsConfig    session.SystemStatsSettings
 
+	// accountsUsageCache backs the "accounts" header field: an mtime-cached
+	// reader over this host's own quota files (see session.AccountUsageCache)
+	// so the header render path, called every draw, re-parses a slot's usage
+	// JSON only when it actually changed on disk.
+	accountsUsageCache *session.AccountUsageCache
+
 	// Interval-hook runner: user-configured shell commands run on a wall-clock
 	// cadence ([interval_hooks] in config.toml). nil when none are configured.
 	intervalHookRunner *intervalhook.Runner
@@ -1977,6 +1983,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	if h.sysStatsConfig.GetEnabled() {
 		h.sysStatsCollector = sysinfo.NewCollector(h.sysStatsConfig.GetRefreshSeconds(), nil)
 	}
+	h.accountsUsageCache = session.NewAccountUsageCache()
 
 	// Interval-hook runner. Constructed unconditionally (cheap); Start() is a
 	// no-op when no [interval_hooks] are configured, and hooks are re-read from
@@ -18168,6 +18175,24 @@ func (h *Home) renderFrame() string {
 		}
 	}
 
+	// Accounts segment: named Claude account slots on this host with their
+	// live 5h/7d usage, opt-in via [ui.header].fields (not part of
+	// DefaultHeaderFields — see PreviewFieldAccounts). Reads this host's own
+	// quota cache through h.accountsUsageCache, which re-parses a slot's
+	// usage file only when its mtime changed (#PROMPT accounts field).
+	if headerFieldSet[session.PreviewFieldAccounts] {
+		if headerCfg, err := session.LoadUserConfig(); err == nil && headerCfg != nil {
+			usage := session.CollectAccountUsage(headerCfg, h.accountsUsageCache, time.Now())
+			line := renderAccountsPreviewLine(usage, time.Now())
+			acctStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			if stats == "" {
+				stats = acctStyle.Render(line)
+			} else {
+				stats += statsSep + acctStyle.Render(line)
+			}
+		}
+	}
+
 	// Version badge (right-aligned, subtle inline style - no border to keep single line)
 	versionBadge := ""
 	if headerFieldSet[session.PreviewFieldVersion] {
@@ -21061,7 +21086,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 		if config != nil {
 			fields = config.UI.GetRemotePreviewFields()
 		}
-		body := remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields)
+		body := remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields, time.Now())
 
 		return renderEmptyStateResponsive(EmptyStateConfig{
 			Icon:     "⬡",
