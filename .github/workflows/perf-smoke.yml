@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload perf median log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: perf-medians
           path: perf-medians.txt
@@ -92,7 +92,7 @@ jobs:
             | tee benchout.txt
 
       - name: Upload bench output
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: perf-bench-output
           path: benchout.txt
