@@ -2498,28 +2498,27 @@ func TestSession_MouseMode_EnableMouseMode_Disabled_Integration(t *testing.T) {
 }
 
 // TestSession_MultiClientSizePolicy_Integration verifies that on session
-// creation agent-deck pins window-size=largest (session option) and
-// aggressive-resize=on (window option). This is the fix for the dots-in-
-// window symptom that arose when web's xterm.js control client and a native
-// `tmux attach` client had different geometries — see tmux issue #2594.
+// creation agent-deck pins window-size=smallest (session option) and
+// aggressive-resize=on (window option). This keeps the complete pane visible
+// when attached clients have different or crossed geometries.
 func TestSession_MultiClientSizePolicy_Integration(t *testing.T) {
-	if os.Getenv("AGENTDECK_TEST_PROFILE") == "" {
-		t.Skip("Skipping tmux integration test - no test profile")
-	}
+	skipIfNoTmuxBinary(t)
 
 	s := NewSession("test-size-policy", t.TempDir())
 	s.InstanceID = "test-instance-size-policy"
+	s.SocketName = fmt.Sprintf("ad-size-policy-%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", s.SocketName, "kill-server").Run() })
 
 	err := s.Start("sleep 3600")
 	require.NoError(t, err)
 	defer func() { _ = s.Kill() }()
 
-	winSize, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "window-size").Output()
+	winSize, err := s.tmuxCmd("show-options", "-t", s.Name, "-A", "-v", "window-size").Output()
 	require.NoError(t, err)
-	assert.Equal(t, "largest", strings.TrimSpace(string(winSize)),
-		"new sessions must pin window-size=largest so a smaller client cannot drag the window down (tmux #2594)")
+	assert.Equal(t, "smallest", strings.TrimSpace(string(winSize)),
+		"new sessions must pin window-size=smallest so every attached client can display the complete pane")
 
-	aggResize, err := exec.Command("tmux", "show-options", "-w", "-t", s.Name+":0", "-A", "-v", "aggressive-resize").Output()
+	aggResize, err := s.tmuxCmd("show-options", "-w", "-t", s.Name+":0", "-A", "-v", "aggressive-resize").Output()
 	require.NoError(t, err)
 	assert.Equal(t, "on", strings.TrimSpace(string(aggResize)),
 		"new sessions must enable aggressive-resize so windows only resize when actively viewed")

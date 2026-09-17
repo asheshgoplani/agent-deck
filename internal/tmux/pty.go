@@ -426,10 +426,10 @@ func emitScrollbackClear(w io.Writer) {
 // dimensions.
 //
 // #1167: tmux clients connect at their PTY's size, and a bare pty.Start creates
-// the attach client's PTY at tmux's 80x24 default — so window-size=largest pins
-// the window to 80 cols, ~half of a wide terminal, until an async SIGWINCH grows
-// it. Reading the controlling terminal's real size up front and starting the PTY
-// with it makes the client full-width from frame one.
+// the attach client's PTY at tmux's 80x24 default. That can size the window to
+// 80 cols, ~half of a wide terminal, until an async SIGWINCH grows it. Reading
+// the controlling terminal's real size up front and starting the PTY with it
+// makes the client full-width from frame one.
 //
 // The session's own birth size is the other half of this and is fixed
 // separately: see InitialWindowSize (#1694). Both are needed — this one keeps
