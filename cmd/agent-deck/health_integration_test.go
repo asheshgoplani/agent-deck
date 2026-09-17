@@ -185,6 +185,9 @@ func TestRuntimeHealthHeadlessWebStartup(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(report.Processes) == 1 && report.Processes[0].Latest.Role == "web" && report.Processes[0].Latest.PID == cmd.Process.Pid {
+				if report.Processes[0].Latest.BinaryVersion != Version {
+					t.Fatalf("sample missing running binary's version: got %q, want %q", report.Processes[0].Latest.BinaryVersion, Version)
+				}
 				return
 			}
 		}

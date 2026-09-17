@@ -23,6 +23,12 @@ const (
 	RemotePollBudget = 2 * time.Second
 	maxFileBytes     = 1 << 20
 	retention        = 7 * 24 * time.Hour
+
+	// statusHistoryWindow and statusConsecutiveBreach gate the footer's status
+	// pass budget warning behind a sustained breach, so a single slow pass
+	// (e.g. the first status refresh of a freshly opened deck) never shows it.
+	statusHistoryWindow     = 5
+	statusConsecutiveBreach = 3
 )
 
 type Remote struct {
@@ -30,18 +36,19 @@ type Remote struct {
 	Outcome   string  `json:"outcome"`
 }
 type Sample struct {
-	Version      int       `json:"version"`
-	Timestamp    time.Time `json:"timestamp"`
-	Role         string    `json:"role"`
-	PID          int       `json:"pid"`
-	StartedAt    time.Time `json:"started_at"`
-	CPUPercent   *float64  `json:"cpu_percent"`
-	RSSBytes     *uint64   `json:"rss_bytes"`
-	OpenFDs      *int      `json:"open_fds"`
-	Goroutines   *int      `json:"goroutines"`
-	HookFiles    *int      `json:"hook_files"`
-	StatusPassMS *float64  `json:"status_pass_ms"`
-	Sessions     *int      `json:"session_count"`
+	Version       int       `json:"version"`
+	BinaryVersion string    `json:"binary_version,omitempty"`
+	Timestamp     time.Time `json:"timestamp"`
+	Role          string    `json:"role"`
+	PID           int       `json:"pid"`
+	StartedAt     time.Time `json:"started_at"`
+	CPUPercent    *float64  `json:"cpu_percent"`
+	RSSBytes      *uint64   `json:"rss_bytes"`
+	OpenFDs       *int      `json:"open_fds"`
+	Goroutines    *int      `json:"goroutines"`
+	HookFiles     *int      `json:"hook_files"`
+	StatusPassMS  *float64  `json:"status_pass_ms"`
+	Sessions      *int      `json:"session_count"`
 	// TmuxCalls counts process-wide native command starts during the pass; concurrent work can overlap.
 	TmuxCalls *int64            `json:"tmux_calls"`
 	DBQueryMS *float64          `json:"session_list_db_ms"`
@@ -92,7 +99,7 @@ func RecordRemote(name string, d time.Duration, outcome string) {
 	observations.remotes[name] = Remote{float64(d) / float64(time.Millisecond), outcome}
 }
 func BudgetWarning(d time.Duration, sessions int, tmuxCalls int64) string {
-	if d >= StatusPassBudget {
+	if statusPassSustainedBreach(d) {
 		return "Health: status pass exceeds 250 ms budget"
 	}
 	if tmuxCalls > int64(2*sessions) {
@@ -101,10 +108,58 @@ func BudgetWarning(d time.Duration, sessions int, tmuxCalls int64) string {
 	return ""
 }
 
+var statusBreach struct {
+	sync.Mutex
+	recent          []float64
+	consecutiveOver int
+}
+
+// statusPassSustainedBreach tracks recent status-pass durations and reports
+// whether the budget warning should be active: three consecutive breaches, or
+// the median of the last five samples, over budget. Any single sample under
+// budget clears it immediately.
+func statusPassSustainedBreach(d time.Duration) bool {
+	ms := float64(d) / float64(time.Millisecond)
+	budgetMS := float64(StatusPassBudget / time.Millisecond)
+	over := ms >= budgetMS
+	statusBreach.Lock()
+	defer statusBreach.Unlock()
+	statusBreach.recent = append(statusBreach.recent, ms)
+	if len(statusBreach.recent) > statusHistoryWindow {
+		statusBreach.recent = statusBreach.recent[len(statusBreach.recent)-statusHistoryWindow:]
+	}
+	if !over {
+		statusBreach.consecutiveOver = 0
+		return false
+	}
+	statusBreach.consecutiveOver++
+	if statusBreach.consecutiveOver >= statusConsecutiveBreach {
+		return true
+	}
+	if len(statusBreach.recent) < statusHistoryWindow {
+		return false
+	}
+	sorted := append([]float64(nil), statusBreach.recent...)
+	sort.Float64s(sorted)
+	median := sorted[len(sorted)/2]
+	if len(sorted)%2 == 0 {
+		median = (sorted[len(sorted)/2-1] + median) / 2
+	}
+	return median >= budgetMS
+}
+
+// ResetStatusPassBreachState clears the sustained-breach tracker. Exposed for tests only.
+func ResetStatusPassBreachState() {
+	statusBreach.Lock()
+	defer statusBreach.Unlock()
+	statusBreach.recent = nil
+	statusBreach.consecutiveOver = 0
+}
+
 // Start samples immediately and once per minute. The returned idempotent stop
 // function waits for the writer and records a final sample. Collection errors
 // never affect the caller. dir must be the selected profile's health directory.
-func Start(dir, role, hooksDir string) func() {
+func Start(dir, role, hooksDir, binaryVersion string) func() {
 	started := time.Now().UTC()
 	role = filepath.Base(role)
 	if role == "." || role == string(filepath.Separator) {
@@ -121,7 +176,7 @@ func Start(dir, role, hooksDir string) func() {
 	previousTime := started
 	sample := func() {
 		now := time.Now().UTC()
-		s := Sample{Version: 1, Timestamp: now, Role: role, PID: os.Getpid(), StartedAt: started, RSSBytes: residentBytes()}
+		s := Sample{Version: 1, BinaryVersion: binaryVersion, Timestamp: now, Role: role, PID: os.Getpid(), StartedAt: started, RSSBytes: residentBytes()}
 		g := runtime.NumGoroutine()
 		s.Goroutines = &g
 		if entries, err := os.ReadDir(fdDirectory()); err == nil {

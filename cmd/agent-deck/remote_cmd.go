@@ -179,7 +179,7 @@ func printRemoteUsage() {
 	fmt.Println("  sessions [name] [--json] [--with-errors|--json-envelope]")
 	fmt.Println("                            Fetch sessions from remote(s); --json is a bare array,")
 	fmt.Println("                            --with-errors wraps it with per-remote failures")
-	fmt.Println("  drain <name|user@host>    Pull completion/transition records from a remote")
+	fmt.Println("  drain <name>              Pull completion/transition records from a remote")
 	fmt.Println("                            into this machine's inbox (read-only on the remote)")
 	fmt.Println("  attach <name> <session>   Attach to a remote session")
 	fmt.Println("  rename <name> <session> <new-title>  Rename a remote session")

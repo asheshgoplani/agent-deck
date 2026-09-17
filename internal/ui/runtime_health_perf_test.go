@@ -109,7 +109,7 @@ esac
 		}
 	}
 	dir := filepath.Join(root, "health")
-	stop := health.Start(dir, "perf-test", filepath.Join(root, "hooks"))
+	stop := health.Start(dir, "perf-test", filepath.Join(root, "hooks"), "test")
 	h.backgroundStatusUpdate()
 	stop()
 	if codex {

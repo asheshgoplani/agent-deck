@@ -34,7 +34,7 @@ func startRuntimeHealth(profile, role string) func() {
 	if err != nil {
 		return func() {}
 	}
-	return health.Start(dir, role, session.GetHooksDir())
+	return health.Start(dir, role, session.GetHooksDir(), Version)
 }
 
 func readRuntimeHealth(profile string, since time.Duration) (health.Summary, error) {

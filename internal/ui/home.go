@@ -647,7 +647,6 @@ type Home struct {
 	// it only changes WHAT the footer advertises, never a keybinding.
 	footerMode           string
 	healthWarningPending atomic.Pointer[string]
-	healthWarningQueued  atomic.Bool
 	healthWarningText    string
 	healthWarningAt      time.Time
 
