@@ -1,4 +1,4 @@
-.PHONY: build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
+.PHONY: bench-fleet build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -156,6 +156,10 @@ test-perf:
 bench:
 	go test -run '^$$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
 		./cmd/agent-deck/... ./internal/tmux/...
+
+# Isolated synthetic fleet suite, including a private tmux server (Docker only).
+bench-fleet:
+	./bench/run-docker.sh $(BENCH_ARGS)
 
 # Format code
 fmt:
