@@ -88,7 +88,7 @@ func TestEveryRegisteredCommandHelpIsReadOnly(t *testing.T) {
 	// dispatchers, and intentionally define no nested help surface.
 	noHelpSurface := map[string]bool{
 		"--version": true, "-v": true, "version": true,
-		"codex-notify": true, "hook-handler": true,
+		"codex-notify": true, "hook-handler": true, "__complete": true,
 	}
 	var commands []string
 	for command := range commandRegistry {
