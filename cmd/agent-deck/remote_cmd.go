@@ -189,6 +189,18 @@ func handleRemoteAdd(args []string) {
 		fs.Usage()
 		os.Exit(1)
 	}
+	// A bare trailing "help" is a consent request, not a third operand: this
+	// command takes exactly two positional values, so there is no legitimate
+	// data value it could be confused with (issue #2025).
+	if len(remaining) == 3 && remaining[2] == "help" {
+		fs.Usage()
+		return
+	}
+	if len(remaining) != 2 {
+		fmt.Printf("Error: unexpected extra argument(s): %s\n", strings.Join(remaining[2:], " "))
+		fs.Usage()
+		os.Exit(1)
+	}
 
 	name := remaining[0]
 	host := remaining[1]
