@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -250,7 +252,25 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	path := filepath.Join(hooksDir, base+".json")
 	var prior hookStatusFile
 	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &prior)
+		// An empty file holds no counter to protect. atomicHookWrite renames
+		// without fsync, so a crash leaves exactly this — failing closed on it
+		// would freeze the session's status for good.
+		if len(bytes.TrimSpace(data)) > 0 && json.Unmarshal(data, &prior) != nil {
+			// Ambiguous/partial prior state: never reset the durable counter,
+			// or two turns can share one identity. Say so, since the session's
+			// status stops advancing until the file is repaired.
+			slog.Warn("codex_hook_status_unreadable",
+				slog.String("instance", instanceID),
+				slog.String("path", path),
+				slog.Int("bytes", len(data)))
+			return
+		}
+	} else if !os.IsNotExist(err) {
+		slog.Warn("codex_hook_status_unreadable",
+			slog.String("instance", instanceID),
+			slog.String("path", path),
+			slog.String("error", err.Error()))
+		return
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID != "" {
@@ -268,6 +288,9 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	if started {
 		prior.CodexCompletedGeneration = ""
 		prior.CodexCompletedSessionID = ""
+		prior.CodexTurnSequence++
+		prior.CodexStartedSequence = prior.CodexTurnSequence
+		prior.CodexCompletedSequence = 0
 		if evidenceSessionID != "" && turnID != "" {
 			prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
 			prior.CodexStartedSessionID = evidenceSessionID
@@ -289,6 +312,15 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 		prior.CodexStartedSessionID = evidenceSessionID
 		prior.CodexCompletedGeneration = completionGeneration
 		prior.CodexCompletedSessionID = evidenceSessionID
+		if prior.CodexStartedSequence > 0 && prior.CodexCompletedSequence == 0 {
+			prior.CodexCompletedSequence = prior.CodexStartedSequence
+		}
+	}
+	// Identity-less completion is usable only when it closes a retained start
+	// edge. Completion-only legacy payloads are ambiguous and fail closed.
+	if completed && completionGeneration == "" && prior.Status == "running" &&
+		prior.CodexStartedSequence > 0 && prior.CodexCompletedSequence == 0 {
+		prior.CodexCompletedSequence = prior.CodexStartedSequence
 	}
 	prior.Status, prior.SessionID, prior.Event = status, sessionID, event
 	prior.Timestamp = time.Now().Unix()

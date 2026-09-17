@@ -58,7 +58,7 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Drain pending completion events from the parent's durable outbox.")
-	fmt.Fprintln(w, "The `drain` form (issue #1225) collapses last-wins per child and")
+	fmt.Fprintln(w, "The `drain` form (issue #1225) preserves distinct turns per child and")
 	fmt.Fprintln(w, "dedups re-delivery via turn_fingerprint; run it first on every")
 	fmt.Fprintln(w, "heartbeat. Reading clears the inbox.")
 	fmt.Fprintln(w, "The `export` form (issue #1948) READS this host's completion and")
@@ -164,7 +164,7 @@ func inboxExitCode(err error) int {
 //
 //	agent-deck inbox <session-id>          legacy raw drain (read + truncate)
 //	agent-deck inbox drain [--json] <id>   issue #1225 consumer drain — collapses
-//	                                       last-wins per child and dedups
+//	                                       preserves distinct turns and dedups retries
 //	                                       re-delivery via turn_fingerprint. This
 //	                                       is the conductor's heartbeat step.
 func runInbox(stdout io.Writer, args []string) error {
@@ -209,7 +209,7 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 }
 
 // runInboxDrain is the issue #1225 consumer path: exactly-once-per-turn,
-// last-wins-per-child. Used by the conductor heartbeat and any machine consumer.
+// exactly-once-per-turn. Used by the conductor heartbeat and any machine consumer.
 func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) error {
 	fs := flag.NewFlagSet("inbox drain", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the drained events as a JSON array")

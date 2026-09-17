@@ -6,7 +6,7 @@ package main
 // anything), so two hosts running the same named task mint the SAME id. Before
 // this feature those ids never left the host that minted them; the drain is
 // what makes them cross. Everything downstream keys record identity on the
-// child id — collapseLastWins, TurnFingerprint, EventFingerprint — so without
+// child id — collapseTurnRetries, TurnFingerprint, EventFingerprint — so without
 // namespacing, one host's record silently destroys the other's while the drain
 // reports "1 new".
 //
@@ -65,7 +65,7 @@ func TestIssue1948R2_TwoHostsSameChildID_BothSurviveOneDrainWindow(t *testing.T)
 	}
 
 	// And the conductor's own consumption path must SHOW both. This is where
-	// the loss happened: collapseLastWins keys on the child id, so two records
+	// the loss happened: collapseTurnRetries keys on the child id, so two records
 	// sharing one id collapse to the last-seen.
 	var drained bytes.Buffer
 	if err := runInbox(&drained, []string{"drain", conductor}); err != nil {

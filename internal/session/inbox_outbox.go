@@ -33,7 +33,7 @@ const (
 // not the last-resort graveyard the old push path fell into. Two producers
 // (interactive running→waiting and one-shot run-task kernel-exit) commit here;
 // the parent drains it on its own turn boundary. This file holds the producer
-// side: last-wins-per-child commit, the turn_fingerprint for exactly-once
+// side: distinct-turn retention, the turn_fingerprint for exactly-once
 // consumer effects, and the bounded dead-letter path that replaces the
 // dropped_no_target ~1/sec runaway with a terminal state logged once.
 
@@ -43,6 +43,18 @@ const (
 // JSONL line past the scanner cap and fail the entire drain. 32 KB is generous
 // for a human-readable completion summary while keeping the line scannable.
 const maxDoneSummaryBytes = 32 * 1024
+
+// maxPendingTurnsPerChild preserves distinct turn notifications without
+// allowing one stopped/no-longer-draining child producer to grow its parent's
+// inbox without bound. The total valid queue is therefore bounded by the
+// number of children. A producer gets ErrInboxTurnOverflow instead of an
+// implicit eviction, so no unacknowledged turn is silently lost.
+const maxPendingTurnsPerChild = 64
+
+// ErrInboxTurnOverflow is returned when a distinct turn would exceed the
+// per-child pending-turn bound. Callers can treat it as an observable,
+// retryable backpressure outcome; the inbox remains unchanged.
+var ErrInboxTurnOverflow = errors.New("inbox pending-turn limit reached")
 
 // capDoneSummary truncates an over-long completion summary to maxDoneSummaryBytes,
 // appending a marker so an operator sees the summary was clipped. Truncation is
@@ -116,10 +128,9 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 }
 
 // CommitToInbox writes one completion record to the parent's durable inbox with
-// LAST-WINS-PER-CHILD semantics: any existing unacked record for the same child
-// is dropped first, so there is at most ONE pending record per child (issue
-// #1225 — kills flood at the source; the old path appended one line per busy
-// retry). The write is atomic (temp file + rename via rewriteInboxLocked, then
+// EXACTLY-ONCE-PER-TURN semantics: a retry replaces its matching pending turn,
+// while every distinct unacknowledged turn remains queued. The write is atomic
+// (temp file + rename via rewriteInboxLocked, then
 // a single append under the same lock). Stamps TurnFingerprint when absent.
 //
 // This is the unified producer entry point for both the interactive
@@ -154,18 +165,67 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
-	// Last-wins: drop any prior pending record for this child before appending
-	// the fresh one. rewriteInboxLocked is atomic and invalidates the
+	pendingForChild, retry, err := pendingTurnsForChildLocked(path, event)
+	if err != nil {
+		return err
+	}
+	if !retry && pendingForChild >= maxPendingTurnsPerChild {
+		return fmt.Errorf("%w: child=%s limit=%d", ErrInboxTurnOverflow, event.ChildSessionID, maxPendingTurnsPerChild)
+	}
+
+	// Drop only a retry of this exact turn before appending the fresh copy.
+	// rewriteInboxLocked is atomic and invalidates the
 	// fingerprint cache for the path.
-	child := event.ChildSessionID
-	source := event.SourceRemote
 	if _, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
-		return ev.ChildSessionID == child && ev.SourceRemote == source
+		fp := ev.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(ev)
+		}
+		return fp == event.TurnFingerprint
 	}); err != nil {
 		return err
 	}
 
 	return appendInboxLineLocked(path, event)
+}
+
+// pendingTurnsForChildLocked counts the child's durable pending turns and
+// reports whether event is a retry already present in the queue. Caller holds
+// inboxWriteMu and the cross-process config-file lock.
+func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) (count int, retry bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	defer f.Close()
+
+	// A crash between rewrite and append, or a legacy file, can leave two rows
+	// for one logical turn. Counting rows would then spend the bound twice.
+	seen := map[string]struct{}{}
+	if err := forEachInboxLine(f, func(line []byte) error {
+		ev, decodeErr := decodeInboxLine(line)
+		if decodeErr != nil {
+			return nil
+		}
+		if ev.ChildSessionID != event.ChildSessionID {
+			return nil
+		}
+		fp := ev.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(ev)
+		}
+		if fp == event.TurnFingerprint {
+			retry = true
+		}
+		seen[fp] = struct{}{}
+		return nil
+	}); err != nil {
+		return 0, false, err
+	}
+	return len(seen), retry, nil
 }
 
 // appendInboxLineLocked marshals one event and atomically installs an old-or-new
@@ -539,8 +599,10 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
 	if err := CommitToInbox(parentID, event); err != nil {
+		n.noteCommitBackpressure(event, err)
 		return false, true, ""
 	}
+	n.clearCommitBackpressure(event.ChildSessionID)
 	n.logEvent(event)
 	// A turn the parent's consumed-turn ledger already holds is dropped by its
 	// next drain, so waking it would cost one empty "[INBOX]" turn for nothing
@@ -559,6 +621,40 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	// because this same record is still drained on the parent's next turn.
 	n.fireWakeNudge(parent, event)
 	return true, false, ""
+}
+
+// noteCommitBackpressure logs a saturated parent inbox ONCE per child. The
+// commit stays a transient retry, so only this line tells an operator why a
+// child's completions stopped landing.
+func (n *TransitionNotifier) noteCommitBackpressure(event TransitionNotificationEvent, err error) {
+	if !errors.Is(err, ErrInboxTurnOverflow) {
+		return
+	}
+	child := strings.TrimSpace(event.ChildSessionID)
+	n.overflowMu.Lock()
+	if n.overflowWarned == nil {
+		n.overflowWarned = map[string]bool{}
+	}
+	already := n.overflowWarned[child]
+	n.overflowWarned[child] = true
+	n.overflowMu.Unlock()
+	if already {
+		return
+	}
+	slog.Warn("inbox_turn_overflow",
+		slog.String("child", child),
+		slog.String("parent", event.TargetSessionID),
+		slog.Int("limit", maxPendingTurnsPerChild),
+		slog.String("error", err.Error()))
+}
+
+// clearCommitBackpressure re-arms the saturation warning after a commit for
+// this child succeeds.
+func (n *TransitionNotifier) clearCommitBackpressure(childSessionID string) {
+	child := strings.TrimSpace(childSessionID)
+	n.overflowMu.Lock()
+	delete(n.overflowWarned, child)
+	n.overflowMu.Unlock()
 }
 
 // ReadDeadLetter returns the dead-lettered records for a child (empty if none).
