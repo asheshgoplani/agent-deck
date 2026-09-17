@@ -1,0 +1,11 @@
+# Known-flaky Go tests for the go-test workflow's failure summary.
+#
+# One entry per line. Either a bare test name (TestFoo, matched against the
+# top-level test in any package) or "<relative package> <TestName>"
+# (internal/tui TestFoo) to scope it to one package. Lines starting with "#"
+# and blank lines are ignored.
+#
+# Listing a test here changes NOTHING about pass/fail: the job still fails
+# when the test fails. It only labels the row "known flake" in the job summary
+# so a retry is an informed decision rather than a blind re-push. Remove an
+# entry as soon as the flake is fixed.
