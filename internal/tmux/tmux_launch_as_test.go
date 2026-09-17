@@ -190,7 +190,8 @@ func TestStartCommandSpec_LaunchAs_ServiceWithInitialProcess(t *testing.T) {
 	require.GreaterOrEqual(t, len(tmuxArgs), 3)
 	assert.Equal(t, "bash", tmuxArgs[len(tmuxArgs)-3], "initial process must be exec'd under bash")
 	assert.Equal(t, "-c", tmuxArgs[len(tmuxArgs)-2])
-	assert.Equal(t, "claude --resume xyz", tmuxArgs[len(tmuxArgs)-1])
+	// #2214: cd-asserted so the pane's process never depends on the server's cwd.
+	assert.Equal(t, cwdAssertCommand("/tmp/project", "claude --resume xyz"), tmuxArgs[len(tmuxArgs)-1])
 }
 
 // TestStripSystemdRunPrefix_RecoversTmuxArgsFromServiceForm is the

@@ -3164,10 +3164,11 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 			require.Equal(t, "bash", args[len(args)-3],
 				"command must be exec'd under bash for fish/zsh/bash compatibility")
 			require.Equal(t, "-c", args[len(args)-2])
-			// The command token is passed VERBATIM — no shell-quote escaping,
-			// because it is a distinct argv element, not embedded in a string.
-			require.Equal(t, tc.cmd, args[len(args)-1],
-				"command token must be the original command verbatim; got: %s", args[len(args)-1])
+			// #2214: the command token is prefixed with a `cd -- workDir &&` so
+			// the pane's own process asserts its directory instead of trusting
+			// tmux's -c alone; the original command still follows verbatim.
+			require.Equal(t, cwdAssertCommand("/tmp/project", tc.cmd), args[len(args)-1],
+				"command token must be cd-asserted then the original command verbatim; got: %s", args[len(args)-1])
 		})
 	}
 }
@@ -3281,7 +3282,8 @@ func TestStartCommandSpec_DoesNotDoubleWrapBashC(t *testing.T) {
 	cmd := `bash -c 'stty susp undef; docker exec -it agent-deck-test bash -c '\''export COLORFGBG='\''\''\''15;0'\''\''\'' && opencode -s ses_abc'\'''`
 	_, args := s.startCommandSpec("/tmp", cmd)
 	require.NotEmpty(t, args)
-	require.Equal(t, cmd, args[len(args)-1])
+	// #2214: cd-asserted so the pane's process never depends on the server's cwd.
+	require.Equal(t, cwdAssertCommand("/tmp", cmd), args[len(args)-1])
 }
 
 func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
@@ -3297,7 +3299,8 @@ func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
 	// #1567/#1580: bash -c COMMAND as three trailing argv tokens.
 	require.Equal(t, "bash", args[len(args)-3])
 	require.Equal(t, "-c", args[len(args)-2])
-	require.Equal(t, cmd, args[len(args)-1])
+	// #2214: cd-asserted so the pane's process never depends on the server's cwd.
+	require.Equal(t, cwdAssertCommand("/tmp", cmd), args[len(args)-1])
 }
 
 func TestResolvedAgentDeckTheme_COLORFGBG(t *testing.T) {

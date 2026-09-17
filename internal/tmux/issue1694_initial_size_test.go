@@ -108,7 +108,8 @@ func TestStartCommandSpec_CarriesBirthSize(t *testing.T) {
 			wantCols:       strconv.Itoa(headlessInitialCols),
 			wantRows:       strconv.Itoa(headlessInitialRows),
 			// The #1567/#1580 argv-token delivery must stay intact and stay LAST.
-			wantTrailingArgs: []string{"bash", "-c", "opencode"},
+			// #2214: the command token itself now asserts its cwd via cd.
+			wantTrailingArgs: []string{"bash", "-c", cwdAssertCommand("/tmp/project", "opencode")},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
