@@ -219,13 +219,36 @@ type jsonlEntry struct {
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
-		Model   string `json:"model"`
-		Content []struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		} `json:"content"`
+		Model   string        `json:"model"`
+		Content contentBlocks `json:"content"`
 	} `json:"message"`
 	AgentID string `json:"agent_id,omitempty"`
+}
+
+// contentBlock is one entry of a message's "content" array.
+type contentBlock struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// contentBlocks holds an assistant message's tool_use/text content blocks.
+// User messages commonly carry "content" as a plain string rather than a
+// block array; that shape has nothing to do with tool calls, so it unmarshals
+// to nil instead of failing the whole line as a parse gap.
+type contentBlocks []contentBlock
+
+func (c *contentBlocks) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		*c = nil
+		return nil
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(data, &blocks); err != nil {
+		return err
+	}
+	*c = blocks
+	return nil
 }
 
 const (
