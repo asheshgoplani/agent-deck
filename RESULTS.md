@@ -1,53 +1,76 @@
-# PR #1952 verification results
+# PR #2120 — rebase carry, verification
 
-## Rebase evidence
+## What was done
 
-- Pre-rebase head: `ce4debeb6f3ea5b1cffdc9242eb598df4a3dede5`.
-- Rebased head before the final fixes: `70bb777fd94106162f81a208764f42d4cfce84bc` on current `origin/main`.
-- `git range-diff 92bb498f..ce4debeb origin/main..70bb777f` mapped all 16 PR commits one-for-one with `=`; no prior patch changed or disappeared.
-- The rebased branch was pushed with `--force-with-lease` before findings work began.
+- Cloned `asheshgoplani/agent-deck` into an isolated dir (`/tmp/exec-heldpr-2120/src`).
+- Fetched PR #2120 head (`fix/2061-shell-window-sizing`), checked it out, branched
+  `carry/2120`, and rebased onto `origin/main` (60 commits behind).
+- Rebase was clean — no conflicts. The contributor's single commit
+  (`fix(tmux): retain sizing policy for Deck shell windows`) is preserved intact
+  as the only commit ahead of `origin/main`.
 
-## Findings addressed
+New head: `042e8a359976fb72ba5c85f51bcb0ad0703cd06b` (branch `carry/2120`, base
+`origin/main`).
 
-- Made `SourceRemote` part of every pending-inbox identity decision: event fingerprint, turn fingerprint, last-wins producer replacement, and consumer collapse. This keeps local `boxb:nightly-build`, remote `nightly-build`, and caller-prefixed remote IDs distinct even when their visible child spelling overlaps.
-- Removed prefix inference from `RemoteScopedChildID`; arbitrary caller-selected IDs are always scoped rather than mistaken for an already-scoped record.
-- Converted injected CLI writers to error-tracking writers so `inbox` and `remote drain` cannot return success after partial/failed output.
-- Made writer-status distinguish a missing heartbeat from permission/I/O/read failures; only `ENOENT` means “never stamped,” while other failures report unknown liveness.
-- Fixed the suppressed-session absence test to fail on `ReadInboxEvents` errors instead of passing vacuously.
-- Rechecked earlier findings on orphan export, suppression, completion-copy deduplication, corrupt ledger reads, recurring terminal turns, fetch/probe ordering, consumed-ledger bounds, and writer probe fail-closed behavior; their current-head fixes remain present after rebase.
+Diff vs `origin/main` (unchanged from the PR's own diff, just replayed on a fresh base):
 
-## Revert proofs
-
-Only the production hunks were reverse-applied while the new tests remained, and the focused tests were run in `golang:1.25`:
-
-```text
-RED_EXIT=1
-TestIssue1952_OriginSeparatesEveryIdentityRule:
-  local and remote records share EventFingerprint
-TestIssue1952_OutputFailuresAreNotSuccess:
-  remote drain output failure reported success
+```
+ internal/tmux/shell_window_size_test.go         | 183 ++++++++++++++++++++++++
+ internal/tmux/tmux.go                           |  31 +++-
+ skills/agent-deck/references/troubleshooting.md |  27 ++--
+ 3 files changed, 227 insertions(+), 14 deletions(-)
 ```
 
-The production patch was then restored. With the fix present, these tests plus `TestIssue1952_WriterStatusReadFailureIsUnknown` pass.
+## Build / vet / lint
 
-## Container verification
+- `go build ./...` — clean, no output.
+- `go vet ./...` — clean, no output.
+- `golangci-lint` (host binary is v1.64.8, repo config targets v2, so it refuses
+  to run — this is a pre-existing environment mismatch, not something this PR
+  can fix). Ran the repo's pinned-equivalent lint via
+  `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.0`:
+  - `./internal/tmux/...` — **0 issues.** This confirms the review finding: the
+    gosec G702 flagged at `internal/tmux/socket.go:212` on the stale branch is
+    gone now that the branch carries current `main`'s `#nosec G204,G702`
+    annotation on that call site. It was a stale-branch artifact, not a real
+    finding introduced by this PR.
+  - Full-repo `./...` — 5 unrelated pre-existing gosec findings, all in files
+    this PR never touches (`internal/agents/cron.go:92,140`,
+    `internal/git/git.go:260,267,980`). Confirms the PR's own package is clean.
 
-- `go build ./...`: PASS in `golang:1.25`.
-- `go vet ./...`: PASS in `golang:1.25`.
-- Focused regression tests across `./internal/session` and `./cmd/agent-deck`: PASS.
-- A raw `go test ./...` in the stock Go image reaches unrelated environment-dependent tests but lacks CI's tmux/zoxide packages and non-root permission behavior. The authoritative full race suite is the repository's GitHub Actions PR gate, which installs those dependencies.
+## Tests
 
-## Invariant check
+Per policy, no local `go test` outside the sandboxed Docker container. Ran the
+touched package only, serialized via the docker lock:
 
-- Bounds: existing summary, inbox-line, retry, generation, and stale-record bounds are unchanged.
-- Ordering: last-wins still preserves first-seen identity order; the identity is now `(SourceRemote, ChildSessionID)`.
-- Idempotence: repeated drains of one remote retain the same structured origin and fingerprint; separate origins no longer destroy one another.
-- Fail closed: fetch, writer probe, unreadable heartbeat, unreadable export, target resolution, and output failures all return non-success rather than an empty/successful drain.
-- Sibling parity: both inbox producer replacement and consumer collapse use the same origin-aware key; both `EventFingerprint` and `TurnFingerprint` enumerate the same provenance field; both CLI entry paths track writer errors.
+```
+docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
+  -v "$PWD":/src -w /src -v agentdeck-gomod:/tmp/gomod \
+  -e HOME=/tmp/h -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/h/.cache -e GOFLAGS=-mod=mod \
+  agentdeck-gotest:1.25-tmux sh -c 'go test ./internal/tmux/...'
+```
 
-## CI state
+(Used the pre-built `agentdeck-gotest:1.25-tmux` image, which already has tmux
+installed, since `--network none` blocks `apt-get install` inside the plain
+`golang:1.25` image from the base recipe.)
 
-- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
-- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
-- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
-- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.
+- Full package run: 1 failure — `TestKill_LiveSessionThenSecondKillBothSucceed`
+  (`kill_idempotent_test.go:47`, unrelated to this PR's files).
+- Re-ran that single test 3x in isolation: passed every time (`0.02-0.06s`
+  each). This is a pre-existing flake under concurrent full-package load, not a
+  regression from the rebase or this PR's change.
+- Re-ran the PR's own new tests, `TestSession_NewShellWindowSizePolicy` and its
+  five subtests, 2x back-to-back: **all pass, every run, every subtest.**
+
+## Conclusion
+
+- Rebase: clean, 0 conflicts, contributor's commit preserved verbatim.
+- `go build` / `go vet`: clean.
+- Lint on the touched package: 0 issues — the reported gosec G702 stale-branch
+  artifact is confirmed cleared by the rebase.
+- Tests: the PR's own new tests pass reliably; the one observed failure in the
+  package is a pre-existing, reproducible-only-under-load flake in an untouched
+  test file, confirmed unrelated by isolated re-runs.
+
+No code changes were made beyond the rebase itself (no conflicts to resolve).
+`PR-NOTE.md` in this same directory has the trimmed evidence for the PR body.
