@@ -317,7 +317,7 @@ func ingestRemoteRecords(remoteName, targetID string, records []session.Transiti
 		// Review round 2 (blocking): a child id is caller-chosen and only unique
 		// on the host that minted it, so two hosts running the same named task
 		// mint the same id. Everything downstream keys identity on the child id
-		// — collapseLastWins, TurnFingerprint, EventFingerprint, the sweeps — so
+		// — collapseTurnRetries, TurnFingerprint, EventFingerprint, the sweeps — so
 		// unscoped ids make one host's record silently destroy the other's while
 		// the drain reports "1 new". Namespacing here fixes all of them at once,
 		// in the repo's existing `<remote>:<session>` spelling.

@@ -57,15 +57,23 @@ func TestIssue1948R2_ScopedIDsSeparateEveryIdentityRule(t *testing.T) {
 	if TurnFingerprint(b) == TurnFingerprint(c) {
 		t.Fatalf("two hosts' records must not share a TurnFingerprint")
 	}
-	collapsed := collapseLastWins([]TransitionNotificationEvent{b, c})
+	collapsed := collapseTurnRetries([]TransitionNotificationEvent{b, c})
 	if len(collapsed) != 2 {
-		t.Fatalf("collapseLastWins destroyed one host's record: %+v", collapsed)
+		t.Fatalf("collapseTurnRetries destroyed one host's record: %+v", collapsed)
 	}
 
-	// And the unscoped shape is exactly the collision this guards against.
+	// Distinct-turn retention (#2057) collapses only a retry of the SAME turn,
+	// never two turns that merely share a child id: an unscoped id whose two
+	// records disagree on outcome must still keep both.
 	ub, uc := mk("nightly-build", "ok"), mk("nightly-build", "fail")
-	if len(collapseLastWins([]TransitionNotificationEvent{ub, uc})) != 1 {
-		t.Fatalf("premise check failed: unscoped ids were expected to collapse")
+	if got := collapseTurnRetries([]TransitionNotificationEvent{ub, uc}); len(got) != 2 {
+		t.Fatalf("collapseTurnRetries must retain distinct turns for an unscoped id, got %+v", got)
+	}
+
+	// A genuine retry of the same turn (identical outcome) still collapses.
+	rb, rc := mk("nightly-build", "ok"), mk("nightly-build", "ok")
+	if got := collapseTurnRetries([]TransitionNotificationEvent{rb, rc}); len(got) != 1 {
+		t.Fatalf("collapseTurnRetries must still collapse a true retry, got %+v", got)
 	}
 }
 
@@ -81,7 +89,7 @@ func TestIssue1952_OriginSeparatesEveryIdentityRule(t *testing.T) {
 	if TurnFingerprint(local) == TurnFingerprint(remote) {
 		t.Fatal("local and remote records share TurnFingerprint")
 	}
-	if got := collapseLastWins([]TransitionNotificationEvent{local, remote}); len(got) != 2 {
-		t.Fatalf("collapseLastWins merged distinct origins: %+v", got)
+	if got := collapseTurnRetries([]TransitionNotificationEvent{local, remote}); len(got) != 2 {
+		t.Fatalf("collapseTurnRetries merged distinct origins: %+v", got)
 	}
 }
