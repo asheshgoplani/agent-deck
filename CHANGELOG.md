@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kill-window confirm now re-verifies the tmux window's stable id at confirm time instead of trusting the index captured when the dialog opened, so a window that closed and let tmux slide another window into the same index is no longer killed by mistake (#2070).
 - The conductor heartbeat's busy/interactive guard now gates on the hook-driven status (`session show --json`'s `hook_status`/`hook_status_fresh`) when it is known, instead of inferring an open picker from pane text alone, closing a gap where the heartbeat could fire into a live `AskUserQuestion` picker (#2080, closes #1981).
 - The startup-window prompt bypass now requires an unbroken run of sightings: a poll that could not read the pane, or a session that flaps out of and back into the starting state, resets the count instead of carrying it across the gap (#2078).
+- Mark-unread (`u`) no longer reverts to gray on the next reload; the acknowledged flag is persisted (#2211).
 
 ## [1.16.10] - 2026-09-13
 
