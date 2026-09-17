@@ -69,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Panes now assert their own working directory with `cd --` instead of trusting the tmux server's `-c`, fixing spawns landing in a dead directory once the server's own cwd was unlinked (#2214).
 - `session output` no longer leaks an unrelated, older session's transcript for a freshly spawned session that shares a Claude projects directory but has no transcript of its own yet (#2299).
 - `launch -c claude` into a directory Claude Code has never opened interactively no longer dies silently on the folder-trust dialog; the trust dialog is now pre-accepted before launch like the conductor and worktree-parent paths already do (#2102, closes #1892).
+- A vanished pane now consults the last hook-recorded completion before classifying it as a crash, so a pane lost right after a Stop hook fired reports stopped instead of a false error (#2091).
 
 ## [1.16.10] - 2026-09-13
 
