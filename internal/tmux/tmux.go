@@ -6268,7 +6268,7 @@ func (s *Session) NewShellWindow(workdir string) error {
 	windowID, _, _ := strings.Cut(string(out), "\n")
 	args = nil
 	for _, option := range []struct{ key, value string }{
-		{"window-size", "largest"},
+		{"window-size", "smallest"},
 		{"aggressive-resize", "on"},
 	} {
 		if value, ok := s.OptionOverrides[option.key]; ok {
