@@ -47,7 +47,7 @@ func TestIssue2202_VerifySpawnedRemainOnExitDiesFast(t *testing.T) {
 	// dead pane instead of tearing it down — exactly the #2202 case.
 	const cmd = "sleep 60"
 	require.NoError(t, inst.tmuxSession.Start(cmd))
-	inst.startFastDeathWatcher(cmd, inst.spawnGen.Load(), nil, inst.tmuxSession, inst.ID, inst.Tool, sessionLog)
+	inst.startFastDeathWatcher(cmd, inst.spawnGen.Load(), nil, inst.tmuxSession, inst.ID, inst.Tool, sessionLog, "", "")
 	require.NoError(t, inst.tmuxSession.SendCtrlC())
 
 	err := inst.VerifySpawned(5 * time.Second)
@@ -82,7 +82,7 @@ func TestIssue2202_VerifySpawnedRemainOnExitHealthy(t *testing.T) {
 	})
 
 	require.NoError(t, inst.tmuxSession.Start("sleep 60"))
-	inst.startFastDeathWatcher("sleep 60", inst.spawnGen.Load(), nil, inst.tmuxSession, inst.ID, inst.Tool, sessionLog)
+	inst.startFastDeathWatcher("sleep 60", inst.spawnGen.Load(), nil, inst.tmuxSession, inst.ID, inst.Tool, sessionLog, "", "")
 
 	started := time.Now()
 	require.NoError(t, inst.VerifySpawned(3*time.Second))

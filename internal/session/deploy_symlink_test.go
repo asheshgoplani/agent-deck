@@ -217,7 +217,9 @@ func TestInstallBinary_ConfiguredPathOffPathIsAWarning(t *testing.T) {
 	if got, _ := os.ReadFile(configured); string(got) != fakeAgentDeckPayload("1.16.7") {
 		t.Fatalf("configured path not deployed: %q", got)
 	}
-	for _, want := range []string{"warning", "not on the remote's non-interactive PATH", "add " + configured + " to PATH"} {
+	// ~/bin is a dir the spawn prelude adds, so the sessions the remote
+	// starts are not the ones at risk; the report says so.
+	for _, want := range []string{"warning", "not on the remote's non-interactive PATH", "/home/bin to PATH)", "sessions the remote starts add it to PATH themselves"} {
 		if !strings.Contains(results[0].Note, want) {
 			t.Errorf("report %q lacks %q", results[0].Note, want)
 		}

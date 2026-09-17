@@ -1674,7 +1674,16 @@ func (r *SSHRunner) installPayload(ctx context.Context, expectedVersion string, 
 				return fmt.Errorf("post-deploy verification failed: agent_deck_path %s no longer resolves to the deployed file %s (v%s); "+
 					"check what the path points at on the remote", entry, configured, want)
 			}
-			r.installReport += fmt.Sprintf("; warning: %s is not on the remote's non-interactive PATH, sessions started via SSH may need PATH (add %s to PATH)", configured, configured)
+			r.installReport += fmt.Sprintf("; warning: %s is not on the remote's non-interactive PATH (add %s to PATH)", configured, filepath.Dir(configured))
+			if spawnPathCoversUserBinDir(filepath.Dir(configured), r.remoteHome(ctx)) {
+				// The spawn prelude (spawn_path.go) puts the standard user
+				// bin dirs in front of a session's PATH, so the sessions the
+				// remote starts find this binary; only a bare `ssh host
+				// agent-deck` still needs the entry.
+				r.installReport += "; sessions the remote starts add it to PATH themselves"
+			} else {
+				r.installReport += "; sessions started via SSH may need PATH"
+			}
 			return nil
 		}
 		return fmt.Errorf("installed v%s at %s, but it is not on the remote's $PATH; "+

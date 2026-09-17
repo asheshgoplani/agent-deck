@@ -46,6 +46,16 @@ Prefix every entry with `agent-deck`. The full `session show/output/send` forms 
 
 The configured remote profile selects the server registry. An explicit `--account` on add/launch selects a server account slot. Your computer's account environment is not copied to the server: no config directory, credentials, MCP definition or skill source travels over SSH, only the names, which the server resolves against its own `config.toml`. An account given as a directory path is refused before the command is sent. Long-running sends are not limited by the background remote status-probe timeout.
 
+## PATH for sessions the server starts
+
+A remote runs `session start` under the PATH of a non-login, non-interactive SSH shell, and the tmux server it starts inherits that PATH. A login shell would add `~/.local/bin` (where `claude` and most user-installed tools live); this environment does not, so without help the session's `exec claude ...` fails with "command not found" and the row goes to error after about 250ms.
+
+Every session agent-deck starts, on a remote or locally, therefore begins with a short PATH prelude that prepends, in this order and only when the directory exists and is not already on the pane's PATH: `$HOME/.local/bin`, `$HOME/bin`, the directory of the running `agent-deck` binary, and `/opt/homebrew/bin` (macOS only). Entries the user already has are never moved or duplicated, and the prelude is idempotent, so a pane whose tmux server already had a full login PATH is unchanged. A `--ssh` session's command runs on the other host through the same kind of non-login shell, so it carries the prelude too, with `$HOME/.local/bin` and `$HOME/bin` expanded there and the directory of that remote's configured `agent_deck_path` added; the directories are tested on the remote.
+
+If the tool still cannot be found, the session fails with an explicit reason rather than a generic fast death: `session show <id> --json` reports `spawn_failure.reason = "tool not found on PATH: claude (searched: <PATH>)"`, and the preview and `remote lab session start <id>` say the same. Install the tool into one of the searched directories or use its full path as the session command.
+
+`remote update` still notes when the deployed binary is off the remote's non-interactive PATH, because a bare `ssh <host> agent-deck ...` needs the entry; when the deployed directory is `~/.local/bin` or `~/bin` the note says that the sessions the remote starts already add it themselves.
+
 ## Creating a session from the TUI
 
 Pressing `n` on a remote group or session opens the same new-session dialog as for a local session and creates the session on that remote through its own `add`. The dialog forwards what you set in it; a field left alone is decided by the server's own configuration, so a dialog you do not touch behaves exactly as before.

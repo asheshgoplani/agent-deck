@@ -5093,6 +5093,11 @@ func (i *Instance) Start() error {
 		}
 	}
 
+	// What the pane will exec, read off the bare command before any wrapper
+	// hides it: the fast-death watcher uses it to tell "tool not on PATH"
+	// from a generic early exit.
+	toolBinary, searchPath := i.spawnToolLookup(command)
+
 	var containerName string
 	var err error
 	command, containerName, err = i.prepareCommand(command)
@@ -5163,7 +5168,7 @@ func (i *Instance) Start() error {
 		// calling goroutine) makes the watcher's writes land in the HOME that
 		// was live when this session started, never whichever HOME happens to
 		// be live when the ticker next fires.
-		i.startFastDeathWatcher(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		i.startFastDeathWatcher(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, toolBinary, searchPath)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5462,6 +5467,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if promptEmbeddedInCommand {
 		diagnosticCommand = redactEmbeddedSpawnPrompt(command, message)
 	}
+	toolBinary, searchPath := i.spawnToolLookup(command)
 	var containerName string
 	var err error
 	command, containerName, err = i.prepareCommand(command)
@@ -5510,7 +5516,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if command != "" && !i.expectsFastExit() {
 		// See the matching comment in Start(): resolve the write targets — and
 		// subscribe to the wake — here, not inside the never-joined goroutine.
-		i.startFastDeathWatcher(diagnosticCommand, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		i.startFastDeathWatcher(diagnosticCommand, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, toolBinary, searchPath)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -11919,6 +11925,13 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// exec stays the outermost statement before any user-wrapper / bash -c /
 	// SSH layering. No-op unless opt-in for a built-in agent (issue #1161).
 	cmd = i.wrapExitToShell(cmd)
+
+	// PATH prelude next, so it sits inside every wrapper below (launch shell,
+	// user wrapper's bash -c, sandbox) and the pane resolves the tool the way
+	// a login shell would even when the tmux server was born under a
+	// non-login SSH PATH (remote parity walk, g14). No-op when nothing is
+	// missing. See spawn_path.go.
+	cmd = i.wrapSpawnPath(cmd)
 
 	// Launch-shell wrap SECOND, before user wrapper, so the interactive shell
 	// loads its startup files and then executes the complete command (with
