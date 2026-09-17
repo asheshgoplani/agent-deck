@@ -158,6 +158,9 @@ func (h *Home) remoteHostStatsState(remoteName string) (remoteHostStatsResult, b
 func remoteVersionPreviewLine(state session.RemoteVersionState, controller string) string {
 	switch state.Compare(controller) {
 	case session.RemoteVersionSame:
+		if state.BuildDiffers(controller) {
+			return "agent-deck v" + truncateRemoteVersionDisplay(state.Version) + " · same release, different build"
+		}
 		return "agent-deck v" + truncateRemoteVersionDisplay(state.Version) + " · same as here"
 	case session.RemoteVersionOlder:
 		return "agent-deck v" + truncateRemoteVersionDisplay(state.Version) + " · older than here (update available)"
@@ -188,18 +191,30 @@ func truncateRemoteVersionDisplay(v string) string {
 	return v[:maxLen-1] + "…"
 }
 
+// remoteStatsUnknownLine renders the "stats unknown" fallback honestly: the
+// "runs an older agent-deck" clause is only ever true when the remote is, in
+// fact, older by CompareVersions — a same-release remote (even on a
+// different build) simply doesn't report stats for some other reason
+// (walk defect #1's stats-line half).
+func remoteStatsUnknownLine(state session.RemoteVersionState, controller string) string {
+	if state.Compare(controller) == session.RemoteVersionOlder {
+		return "stats unknown (remote runs an older agent-deck)"
+	}
+	return "stats unknown (remote does not report stats)"
+}
+
 // remoteStatsPreviewLines renders the stats block below the version line:
 // sessions by status and running harnesses (both derived from the sessions
 // this poll already fetched — no extra round trip), then the remote host's
 // own load/memory/disk and the last poll's latency, or one line saying the
 // stats are unknown when the remote never answered (or cannot: an older
 // agent-deck without `system stats`).
-func remoteStatsPreviewLines(sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool) []string {
+func remoteStatsPreviewLines(sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool, state session.RemoteVersionState, controller string) []string {
 	lines := []string{remoteSessionStatusLine(sessions), remoteHarnessLine(sessions)}
 	if !hasResult || !result.Stats.Ok {
-		return append(lines, "stats unknown (remote runs an older agent-deck)")
+		return append(lines, remoteStatsUnknownLine(state, controller))
 	}
-	lines = append(lines, remoteHostLoadLine(result.Stats))
+	lines = append(lines, remoteHostLoadLine(result.Stats, state, controller))
 	lines = append(lines, fmt.Sprintf("Last poll %s · %s", formatPollLatency(result.Latency), remoteStatsPolledLabel(result.FetchedAt)))
 	return lines
 }
@@ -276,15 +291,15 @@ func remoteHarnessLine(sessions []session.RemoteSessionInfo) string {
 // shape as the controller's own header for this Mac, e.g.
 // "28% · 38.2G/48.0G · 715G/926G". A stat the remote could not collect
 // (wrong platform, missing /proc) is simply left out.
-func remoteHostLoadLine(stats session.RemoteHostStats) string {
-	return remoteHostLoadLineFiltered(stats, []string{session.PreviewFieldLoad, session.PreviewFieldMemory, session.PreviewFieldDisk})
+func remoteHostLoadLine(stats session.RemoteHostStats, state session.RemoteVersionState, controller string) string {
+	return remoteHostLoadLineFiltered(stats, []string{session.PreviewFieldLoad, session.PreviewFieldMemory, session.PreviewFieldDisk}, state, controller)
 }
 
 // remoteHostLoadLineFiltered is remoteHostLoadLine restricted to the given
 // subset of {load, memory, disk} fields, in the order given — used when
 // [ui.remote_preview].fields (or [ui.header].fields) asks for only some of
 // the three host-stats sub-fields.
-func remoteHostLoadLineFiltered(stats session.RemoteHostStats, fields []string) string {
+func remoteHostLoadLineFiltered(stats session.RemoteHostStats, fields []string, state session.RemoteVersionState, controller string) string {
 	var parts []string
 	for _, f := range fields {
 		switch f {
@@ -303,7 +318,7 @@ func remoteHostLoadLineFiltered(stats session.RemoteHostStats, fields []string) 
 		}
 	}
 	if len(parts) == 0 {
-		return "stats unknown (remote runs an older agent-deck)"
+		return remoteStatsUnknownLine(state, controller)
 	}
 	return strings.Join(parts, " · ")
 }
@@ -347,9 +362,9 @@ func remotePreviewFieldLines(versionState session.RemoteVersionState, controller
 				consumed[j] = true
 			}
 			if !statsKnown {
-				lines = append(lines, "stats unknown (remote runs an older agent-deck)")
+				lines = append(lines, remoteStatsUnknownLine(versionState, controller))
 			} else {
-				lines = append(lines, remoteHostLoadLineFiltered(result.Stats, group))
+				lines = append(lines, remoteHostLoadLineFiltered(result.Stats, group, versionState, controller))
 			}
 		case session.PreviewFieldLastPoll:
 			if statsKnown {

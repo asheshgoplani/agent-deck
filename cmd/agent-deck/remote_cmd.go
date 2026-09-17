@@ -393,6 +393,11 @@ func handleRemoteList(args []string) {
 			// always present so scripts don't have to re-derive it from
 			// Version/Outdated.
 			VersionState   string `json:"version_state"`
+			// BuildDiffers is true when VersionState is "same" but the raw
+			// version strings differ only in build metadata (a "+local..."
+			// suffix on one side) — the honest label for that case is "same
+			// release, different build", not a bare "same" (walk defect #1).
+			BuildDiffers   bool   `json:"build_differs,omitempty"`
 			LastPollMS     *int64 `json:"last_poll_ms"`
 			LastPollStatus string `json:"last_poll_status"`
 			LastPollError  string `json:"last_poll_error"`
@@ -408,6 +413,7 @@ func handleRemoteList(args []string) {
 			}
 			state := versions[name]
 			row.VersionState = state.Compare(Version).String()
+			row.BuildDiffers = state.BuildDiffers(Version)
 			if !state.CheckedAt.IsZero() {
 				row.VersionCheckedAt = state.CheckedAt.Format(time.RFC3339)
 			}
@@ -565,10 +571,16 @@ func writeRemoteSessionsJSON(output remoteSessionsOutput) {
 	fmt.Println(string(encoded))
 }
 
-// writeRemoteSessionsArray prints the default bare array. A nil slice
-// marshals as `null`, which is what agent-deck emitted before #2207 when
-// there was nothing to report.
+// writeRemoteSessionsArray prints the default bare array. Before walk defect
+// #2 a nil slice marshaled as `null` (matching what agent-deck emitted
+// before #2207); a nil slice here is normalized to `[]` so a zero-session
+// remote gives every `--json` consumer (this bare array and the
+// --with-errors envelope) the same empty-array shape instead of one that
+// makes `jq '.[]'` choke on `null`.
 func writeRemoteSessionsArray(sessions []session.RemoteSessionInfo) {
+	if sessions == nil {
+		sessions = []session.RemoteSessionInfo{}
+	}
 	encoded, err := json.MarshalIndent(sessions, "", "  ")
 	if err != nil {
 		fmt.Printf("Error: failed to format JSON: %v\n", err)
@@ -627,9 +639,9 @@ func handleRemoteSessions(args []string) {
 
 	ctx := context.Background()
 
-	// Both slices start nil and are only appended to, so output.Sessions
-	// marshals as the pre-#2207 `null` when the bare array has nothing to
-	// show. writeRemoteSessionsJSON normalizes them for the envelope.
+	// Both slices start nil and are only appended to; writeRemoteSessionsArray
+	// and writeRemoteSessionsJSON each normalize a nil Sessions to `[]` before
+	// marshaling (walk defect #2).
 	var output remoteSessionsOutput
 
 	for name, rc := range config.Remotes {
