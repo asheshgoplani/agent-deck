@@ -1378,6 +1378,32 @@ const (
 	bashCPrefix = "bash -c '"
 )
 
+// cwdAssertCommand prefixes cmd with a `cd -- <dir> &&` so the pane's own
+// process asserts its working directory itself instead of trusting tmux's
+// `-c` alone (#2214). On some tmux/OS builds, once the tmux SERVER's own cwd
+// has been unlinked (e.g. it was started from a worktree later removed), the
+// server stops honouring `-c` for every new pane and births it in that dead
+// directory instead — see TestGroundTruth_PoisonedServerIgnoresDashCForNewPanes.
+// The shell builtin `cd` does not depend on the process's inherited cwd being
+// valid (it operates on the filesystem via the given path directly), so this
+// lands the pane in the right place regardless of what state the server's own
+// cwd is in. This makes the server's cwd irrelevant to where the pane's real
+// process runs, for every spawn, on the first attempt — not a fallback that
+// only kicks in after detecting a failure.
+//
+// dir is shell-quoted via shellescape.Quote so directories containing spaces
+// or shell metacharacters are embedded safely. cmd is appended verbatim: it is
+// already a complete, valid shell command line built by the caller (including
+// any leading "exec " — cd is a builtin, so a following exec still runs
+// inside the same shell and correctly replaces its process image).
+func cwdAssertCommand(dir, cmd string) string {
+	prefix := "cd -- " + shellescape.Quote(dir)
+	if cmd == "" {
+		return prefix
+	}
+	return prefix + " && " + cmd
+}
+
 // LaunchMode enumerates the resolved spawn form used by startCommandSpec.
 // The string values are stable and used in logs + fallback diagnostics.
 const (
@@ -1490,7 +1516,11 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		// pass through as the command argument verbatim — bash -c "bash -c '…'"
 		// tail-exec's the inner bash, so no extra lingering process and no
 		// re-escaping of the nested single quotes.
-		tmuxArgs = append(tmuxArgs, bashBinary, "-c", command)
+		//
+		// #2214: cwdAssertCommand prefixes a `cd -- workDir &&` so the pane's
+		// actual process asserts its own directory rather than trusting the
+		// `-c workDir` above alone — see cwdAssertCommand's doc comment.
+		tmuxArgs = append(tmuxArgs, bashBinary, "-c", cwdAssertCommand(workDir, command))
 	}
 
 	unitBase := serviceUnitBase(s.Name)
@@ -2751,7 +2781,13 @@ func (s *Session) Start(command string) error {
 	if command != "" && !s.RunCommandAsInitialProcess {
 		// Always wrap in bash -c so the command runs under bash regardless
 		// of the user's login shell. See #526 and bashCWrap for details.
-		if err := s.SendKeysAndEnter(bashCWrap(command)); err != nil {
+		//
+		// #2214: this pane's initial process was already spawned into workDir
+		// via -c above (no command yet at that point), so a poisoned server's
+		// dead cwd could already have landed the pane's shell in the wrong
+		// place before we ever get here. cd-assert the sent command itself so
+		// the same guarantee applies to the send-keys fallback path.
+		if err := s.SendKeysAndEnter(bashCWrap(cwdAssertCommand(workDir, command))); err != nil {
 			return fmt.Errorf("failed to send command: %w", err)
 		}
 	}
@@ -6342,6 +6378,9 @@ func parseAlternateOn(output string) bool {
 // SplitShellPane adds a vertical split pane to this session running shell
 // in workdir. If workdir is empty the pane inherits the session's current
 // working directory. Issue #1470.
+//
+// #2214: when workdir is given, the shell itself asserts it via cd rather than
+// trusting split-window's own -c alone — see cwdAssertCommand.
 func (s *Session) SplitShellPane(workdir string) error {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
@@ -6349,15 +6388,19 @@ func (s *Session) SplitShellPane(workdir string) error {
 	}
 	args := []string{"split-window", "-h", "-t", s.Name}
 	if workdir != "" {
-		args = append(args, "-c", workdir)
+		args = append(args, "-c", workdir, bashBinary, "-c", cwdAssertCommand(workdir, "exec "+shellescape.Quote(shell)))
+	} else {
+		args = append(args, shell)
 	}
-	args = append(args, shell)
 	return commandRun(tmuxExec(s.SocketName, args...))
 }
 
 // NewShellWindow adds a new window (tab) to this session running shell in
 // workdir, instead of splitting the current window. If workdir is empty the
 // window inherits the session's current working directory.
+//
+// #2214: when workdir is given, the shell itself asserts it via cd rather than
+// trusting new-window's own -c alone — see cwdAssertCommand.
 func (s *Session) NewShellWindow(workdir string) error {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
@@ -6365,9 +6408,10 @@ func (s *Session) NewShellWindow(workdir string) error {
 	}
 	args := []string{"new-window", "-P", "-F", "#{window_id}", "-t", s.Name}
 	if workdir != "" {
-		args = append(args, "-c", workdir)
+		args = append(args, "-c", workdir, bashBinary, "-c", cwdAssertCommand(workdir, "exec "+shellescape.Quote(shell)))
+	} else {
+		args = append(args, shell)
 	}
-	args = append(args, shell)
 	out, err := tmuxExec(s.SocketName, args...).Output()
 	if err != nil {
 		return err
