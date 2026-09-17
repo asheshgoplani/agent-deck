@@ -45,7 +45,8 @@ type ConfirmDialog struct {
 
 	remoteName string // Remote name for remote session confirmations.
 
-	windowIndex int // Tmux window index for ConfirmKillWindow.
+	windowIndex int    // Tmux window index for ConfirmKillWindow.
+	windowID    string // Tmux window id (e.g. "@12") captured when the dialog opened, for ConfirmKillWindow.
 
 	// Notice (ConfirmNotice) carries an acknowledge-only title/body.
 	noticeTitle string
@@ -89,13 +90,16 @@ func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, 
 }
 
 // ShowKillWindow shows confirmation for killing a tmux window (sub-tab)
-// inside a session.
-func (c *ConfirmDialog) ShowKillWindow(sessionID string, windowIndex int, windowName string) {
+// inside a session. windowID is the stable tmux window id (e.g. "@12") for
+// the window currently at windowIndex, captured at prompt time so confirm
+// can re-verify it is still the same window before killing anything.
+func (c *ConfirmDialog) ShowKillWindow(sessionID string, windowIndex int, windowName string, windowID string) {
 	c.visible = true
 	c.confirmType = ConfirmKillWindow
 	c.targetID = sessionID
 	c.targetName = windowName
 	c.windowIndex = windowIndex
+	c.windowID = windowID
 	c.buttonCount = 2
 	c.focusedButton = 1 // default to Cancel
 }
@@ -302,6 +306,12 @@ func (c *ConfirmDialog) GetConfirmType() ConfirmType {
 // GetWindowIndex returns the tmux window index for ConfirmKillWindow.
 func (c *ConfirmDialog) GetWindowIndex() int {
 	return c.windowIndex
+}
+
+// GetWindowID returns the tmux window id captured when the ConfirmKillWindow
+// dialog opened, for re-verification at confirm time.
+func (c *ConfirmDialog) GetWindowID() string {
+	return c.windowID
 }
 
 // GetRemoteName returns the remote name for remote session confirmations.

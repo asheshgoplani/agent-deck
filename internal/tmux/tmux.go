@@ -6014,28 +6014,74 @@ func (s *Session) SplitShellPane(workdir string) error {
 // only remaining window; killing it would kill the whole session.
 var ErrLastWindow = errors.New("window is the session's last window")
 
+// ErrWindowChanged is returned by KillWindow when the window currently at
+// the given index is not the one identified by the expectedWindowID passed
+// in (it was closed, or another window slid into that index after tmux
+// renumbered), so the last-window check alone would kill the wrong window.
+var ErrWindowChanged = errors.New("window at that index changed since it was selected")
+
+// WindowID returns the stable tmux window id (e.g. "@12") of the window
+// currently at the given index in this session. Callers capture this when a
+// window is selected (e.g. a confirm dialog opening) so it can be re-verified
+// at confirm time — liveness (the index still exists) is not identity (it is
+// still the same window).
+//
+// This enumerates all windows and matches the index exactly, rather than
+// using `display-message -t session:index`: tmux's target resolution is
+// lenient about a window index that does not exist (it silently falls back
+// to another window in the session instead of erroring), which would make a
+// nonexistent/closed index look like a valid, different window.
+func (s *Session) WindowID(index int) (string, error) {
+	out, err := runBoundedOutput(s.SocketName,
+		"list-windows", "-t", s.Name, "-F", "#{window_index} #{window_id}")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.SplitN(strings.TrimSpace(line), " ", 2)
+		if len(fields) != 2 {
+			continue
+		}
+		if fields[0] == strconv.Itoa(index) {
+			return fields[1], nil
+		}
+	}
+	return "", fmt.Errorf("no window at index %d in session %s", index, s.Name)
+}
+
 // KillWindow kills the window with the given index in this session, leaving
-// the session's other windows intact. The live window count is checked and
-// the window killed in a single server-side command (if-shell -F), so the
-// count cannot change between check and kill; when the target is the
-// session's last window it returns ErrLastWindow instead of killing the
-// session. Bounded (runBoundedOutput) so a wedged server cannot hang the UI.
-func (s *Session) KillWindow(index int) error {
+// the session's other windows intact. expectedWindowID is the stable window
+// id (from WindowID) captured when the window was selected; the kill only
+// proceeds if the window still at that index is the same window and it is
+// not the session's last window. Both checks and the kill happen in a single
+// server-side command (if-shell -F) so neither condition can change between
+// check and kill. Bounded (runBoundedOutput) so a wedged server cannot hang
+// the UI.
+func (s *Session) KillWindow(index int, expectedWindowID string) error {
 	target := fmt.Sprintf("%s:%d", s.Name, index)
 	// The nested command is a tmux command string; s.Name is an agent-deck
-	// generated session name (sanitized charset), so embedding it is safe.
+	// generated session name (sanitized charset) and expectedWindowID is a
+	// tmux-generated id (@<digits>), so embedding them is safe.
+	cond := "#{&&:#{==:#{window_id}," + expectedWindowID + "},#{>:#{session_windows},1}}"
 	out, err := runBoundedOutput(s.SocketName,
-		"if-shell", "-F", "-t", target,
-		"#{>:#{session_windows},1}",
+		"if-shell", "-F", "-t", target, cond,
 		"kill-window -t \""+target+"\"",
-		"display-message -p last-window")
+		"display-message -p refused")
 	if err != nil {
-		return err
+		// The target itself no longer resolves (window index gone entirely).
+		return ErrWindowChanged
 	}
-	if strings.Contains(string(out), "last-window") {
-		return ErrLastWindow
+	if !strings.Contains(string(out), "refused") {
+		return nil
 	}
-	return nil
+	// Refused: figure out why for a clearer error. This second query is not
+	// part of the atomic decision above (nothing was killed either way), so
+	// a race here only affects the message text, never correctness.
+	curID, idErr := s.WindowID(index)
+	if idErr != nil || curID != expectedWindowID {
+		return ErrWindowChanged
+	}
+	return ErrLastWindow
 }
 
 // ListAllSessions returns all Agent Deck tmux sessions
