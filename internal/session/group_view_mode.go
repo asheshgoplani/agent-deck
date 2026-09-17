@@ -84,11 +84,18 @@ func (t *GroupTree) GroupActivityMap(viewArchived bool) map[string]GroupActivity
 		}
 	}
 	for _, g := range t.Groups {
+		// Activity is a pair of OR reductions. Aggregate the group's sessions
+		// before walking its ancestors so that work happens once per group.
+		var activity GroupActivity
 		for _, s := range g.Sessions {
 			if s.IsArchived() != viewArchived {
 				continue
 			}
-			mark(g.Path, isActiveStatus(s.Status))
+			activity.HasAny = true
+			activity.HasActive = activity.HasActive || isActiveStatus(s.Status)
+		}
+		if activity.HasAny {
+			mark(g.Path, activity.HasActive)
 		}
 	}
 	return m
