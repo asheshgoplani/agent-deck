@@ -1,0 +1,21 @@
+{
+  "name": "codex-resumed-session",
+  "description": "A Codex CLI session resumed from an earlier conversation, so its first recorded turn measures a warm window rather than a cold startup prefix. The adapter must refuse to claim an anchor rather than mislabel that turn as a measurement: nothing reconciles, and the fixed total and the unaccounted remainder are both reported as unknown rather than as a number.",
+  "tool": "codex",
+  "adapter": "codex",
+  "title": "fixture-codex-resumed",
+  "profile": "_fixture",
+  "session_id": "sess-fixture-resume",
+  "project_path": "project",
+  "config_dir": "home/.codex",
+  "transcript": "home/.codex/sessions/rollout.jsonl",
+  "expect": {
+    "anchored": false,
+    "reconciles": false,
+    "min_categories": 2,
+    "caveats": [
+      "anchor-unavailable-resumed"
+    ],
+    "notes": "The first recorded turn reports last_token_usage 21579 against total_token_usage 940123: roughly 918k tokens were already in the window before it, which is the CLI's own signal that this turn is not a cold start. There is therefore no anchor to state, so anchor_tokens is absent rather than zero."
+  }
+}
