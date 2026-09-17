@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The startup-window prompt bypass now requires an unbroken run of sightings: a poll that could not read the pane, or a session that flaps out of and back into the starting state, resets the count instead of carrying it across the gap (#2078).
 - Mark-unread (`u`) no longer reverts to gray on the next reload; the acknowledged flag is persisted (#2211).
 - A session created with `--replace` now takes the replaced row's own group slot instead of appending to the end of the group; `session show --json`'s `order` field is also correct for a session auto-detected in a different profile (#2300).
+- Add `--primary` to `session output --pane` and `session send-keys`, addressing the session's first tmux window instead of whatever window is currently active there, so redirecting an auxiliary window doesn't also redirect captures and keystrokes meant for the agent (#2257).
 
 ## [1.16.10] - 2026-09-13
 
