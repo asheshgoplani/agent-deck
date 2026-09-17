@@ -57,7 +57,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 37
+const settingsCount = 38
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
