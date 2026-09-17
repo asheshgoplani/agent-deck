@@ -1,0 +1,116 @@
+{
+  "skill_name": "agent-deck",
+  "trigger_evals": {
+    "should_trigger": [
+      { "query": "I've got a conductor session that just fired off session send to a worker and got exit 0 back — but I'm not sure the worker actually started the turn. How do I tell for sure instead of guessing from the exit code?", "should_trigger": true },
+      { "query": "one of my agent-deck sessions has been running for hours and I want to know what's actually loaded into its context window before I decide whether to restart it", "should_trigger": true },
+      { "query": "set up a telegram bot for my agent-deck conductor named ops so I can talk to it from my phone", "should_trigger": true },
+      { "query": "my deck feels sluggish lately, like status updates lag — is there a way to check agent-deck's own resource usage without SSHing in and running top", "should_trigger": true },
+      { "query": "I need to move a claude session's conversation from my personal account to the work account without losing history", "should_trigger": true },
+      { "query": "spawn a sub-agent from this session to consult codex on whether this Go error-handling pattern is idiomatic, wait for the answer", "should_trigger": true },
+      { "query": "a remote box I registered with agent-deck is a few versions behind and I have a local build I want to push to it before it's released", "should_trigger": true },
+      { "query": "how do i create a git worktree session so this feature branch doesn't touch my main working copy", "should_trigger": true }
+    ],
+    "should_not_trigger": [
+      { "query": "how do I create a new git worktree by hand with `git worktree add ../foo feature-branch` without any session manager involved", "should_trigger": false },
+      { "query": "write a bash script that sends a Slack message when a cron job fails, nothing to do with agent-deck", "should_trigger": false },
+      { "query": "what's the difference between tmux detach and tmux kill-session in plain tmux, I'm not using any wrapper tool", "should_trigger": false },
+      { "query": "review this Go function for a race condition in a mutex-protected counter", "should_trigger": false },
+      { "query": "I want to fan out five parallel research subagents from inside this conversation for a literature review — no external session manager needed", "should_trigger": false },
+      { "query": "how do I configure my personal ~/.ssh/config to use a different identity file per host", "should_trigger": false },
+      { "query": "explain what a Claude Code hook is and how PreToolUse hooks work in general, not specific to any session manager", "should_trigger": false },
+      { "query": "set up a GitHub Actions workflow that runs go test on every PR", "should_trigger": false }
+    ]
+  },
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I sent a message to my worker session with `agent-deck session send worker1 \"status?\" --json` and it printed delivery:\"queued\". Did that actually reach Claude or did it fail?",
+      "expected_output": "Explains `queued` is an exit-0, non-failure outcome specific to Claude targets (message landed while the target was mid-turn and Claude will pick it up when its current turn ends), reads the stable `confirmation` field (here `unknown`, not `failed`) rather than treating `queued` as an error, and does not tell the user to resend.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Audit the context window bloat across all my agent-deck sessions and tell me which ones are worth cleaning up, without disturbing anything.",
+      "expected_output": "Uses `agent-deck list --json` then `agent-deck session context <id>` (or `--tab breakdown --all`) per session — read-only, never passes `--verify` (which mutates the live session) without explicit confirmation, and reports findings without editing another session's files.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Launch 4 child sessions to each fix lint errors in a different package of this monorepo, and let me know when they're all done without me having to keep checking.",
+      "expected_output": "Uses `agent-deck launch <path> -c claude --inherit-group -m \"...\"` per child (not a custom `-g`), and for the non-blocking notification either backgrounds `agent-deck session children --follow --until-done` or polls `session children --json`, rather than blocking the whole session on one `--wait` send.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "My conductor session's tmux server also runs a webhook listener I built as another agent-deck session. It keeps dying silently and nothing restarts it. What's going on?",
+      "expected_output": "Identifies that agent-deck manages interactive sessions, not always-on daemons/listeners, and recommends running the listener under launchd/systemd instead of as a bare agent-deck session (citing the 'What agent-deck is NOT' section), rather than proposing a home-grown agent-deck-based supervisor loop.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "I want a conductor that watches my other sessions and pings me on Telegram when something needs my input, but I also don't want every child session's Claude process to load the Telegram plugin.",
+      "expected_output": "Recommends activating Telegram per-session via `--channels plugin:telegram@claude-plugins-official` on the conductor only, keeping `enabledPlugins` for that plugin absent/false globally, and warns about the many-competing-pollers gotcha (409 conflicts) if it were enabled globally.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "A worker of mine just told me 'PR #142 is merge-ready, clean diff.' Should I trust that and merge it?",
+      "expected_output": "Applies the Trust-but-Verify rule: treats the claim as unverified until an independent peer/root session re-derives it from primary sources (`gh pr checkout 142 && go test -race ./...` plus `gh pr view 142 --json mergeable,statusCheckRollup`), and does not accept a same-session self-review as sufficient.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "I registered a remote named 'lab' with an older agent-deck build. Can I update it from my newer controller, and how would I know it actually worked?",
+      "expected_output": "Uses `agent-deck remote update lab` (or `--all`), mentions the checksum/version verification and that `remote list --check --json` (or the VERSION column) confirms the new version afterward, and does not suggest manually scp'ing a binary onto the remote.",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "Set this session's Claude account from personal to a 'client-acme' account slot, keeping the whole conversation history.",
+      "expected_output": "Uses `agent-deck session switch-account <session> client-acme` (or the `session set <session> account` low-level equivalent followed by a restart), and notes the conversation `.jsonl` is copied (not moved) so the old account keeps its copy, and that a name not present in `agent-deck accounts` will error.",
+      "files": []
+    }
+  ],
+  "agent_friendliness_evals": {
+    "description": "Checks that an agent using this skill treats agent-deck as a well-behaved CLI: reads structured output instead of parsing text, respects documented exit codes, never expects an interactive prompt from a non-TTY context, and stays inside the documented performance budgets. Added per maintainer request (2026-09-18).",
+    "checks": [
+      "Every documented command has --help and --json where output exists",
+      "Exit codes are treated as documented and stable (not re-derived from parsing stdout text)",
+      "A non-TTY/scripted caller never triggers an interactive screen (e.g. session context --verify without --yes, or --attach without a TTY)",
+      "Timings stay inside the health budgets referenced by `agent-deck health`: list --json under 1s at ~100 sessions, session show under 250ms, a send verdict returns without waiting on the completion-ledger journal to fsync"
+    ],
+    "evals": [
+      {
+        "id": "af-1",
+        "prompt": "Write the exact command and how you'd parse its output to check whether a `session send` actually got picked up by the target, for use in an unattended script.",
+        "expected_output": "Uses `agent-deck session send <id> \"...\" --json` and reads the `confirmation` field (confirmed/unknown/failed) — not string-matching the human-readable line, not re-parsing the fine-grained `delivery` value as if it were the pass/fail signal.",
+        "files": []
+      },
+      {
+        "id": "af-2",
+        "prompt": "You're writing a cron job (no TTY) that needs to check what's in a session's context window periodically. Give the exact command.",
+        "expected_output": "Uses `agent-deck session context <id> --json` (or --tab breakdown --json), and explicitly avoids `--verify` (or if included, pairs it with `--yes`) since `--verify` without `--yes` blocks on a confirmation prompt that a non-TTY cron job can never answer.",
+        "files": []
+      },
+      {
+        "id": "af-3",
+        "prompt": "How would you script a check that fires only when `agent-deck list --json` is taking too long on a box with about 100 sessions?",
+        "expected_output": "References the ~1s budget for `list --json` at that scale (e.g. via `time agent-deck list --json` or `agent-deck health --json` budgets) and treats a stall past that as worth investigating with `agent-deck health`, rather than assuming JSON output itself needs custom timeout-handling beyond a normal process timeout.",
+        "files": []
+      },
+      {
+        "id": "af-4",
+        "prompt": "A teammate wants to know: if `session send --json` returns quickly, does that guarantee the completion event already landed in the receiving session's durable inbox?",
+        "expected_output": "Explains no — send's fast return is about delivery to the pane/socket, not about the inbox/completion-ledger journal, which is a separate durable channel (`inbox drain`) that a worker's own completion sentinel populates later; does not conflate the two.",
+        "files": []
+      },
+      {
+        "id": "af-5",
+        "prompt": "Check what exit code `agent-deck session show <id>` uses when the session doesn't exist, and whether that's something you can rely on across versions without re-checking stderr text.",
+        "expected_output": "Points to the Exit Codes section of cli-reference.md as the source of truth, treats the documented exit code as the stable contract (not incidental stderr wording), and flags that this should be verified against `--help`/cli-reference.md for the installed version rather than assumed from memory.",
+        "files": []
+      }
+    ]
+  }
+}

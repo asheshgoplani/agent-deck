@@ -1,0 +1,49 @@
+{
+  "skill_name": "session-share",
+  "trigger_evals": {
+    "should_trigger": [
+      { "query": "I need to hand off my current agent-deck session to a coworker so they can pick up exactly where I left off, conversation and all", "should_trigger": true },
+      { "query": "export this Claude session to a file I can AirDrop to Alice, and strip out any API keys first", "should_trigger": true },
+      { "query": "import the session-2024-01-20-feature.json file Bob sent me over Slack into my own agent-deck", "should_trigger": true },
+      { "query": "how do I send my current conversation context to a colleague without going through a cloud service", "should_trigger": true }
+    ],
+    "should_not_trigger": [
+      { "query": "share this GitHub repo with a colleague by adding them as a collaborator", "should_trigger": false },
+      { "query": "how do I move a session's Claude account from personal to work, same person, same machine", "should_trigger": false },
+      { "query": "export this session's data to a CSV for a spreadsheet report, nothing to do with handing off a conversation", "should_trigger": false },
+      { "query": "fork this Claude conversation so I can try a different approach in parallel, staying on my own machine", "should_trigger": false }
+    ]
+  },
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Export my current agent-deck session so I can send it to a teammate, and make sure Claude's internal reasoning isn't included since some of it discusses a client's infrastructure.",
+      "expected_output": "Runs `$SKILL_DIR/scripts/export.sh` without `--include-thinking` (default already strips thinking blocks), and does not need `--no-sanitize` since redaction (API keys, tokens, absolute paths) is on by default.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I received session-feature.json from a colleague over Slack DM. Import it and give it a title that makes clear it's their handoff.",
+      "expected_output": "Runs `$SKILL_DIR/scripts/import.sh ~/Downloads/session-feature.json --title \"<descriptive title>\"`, and mentions the session appears in agent-deck ready to continue.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Export a specific past session (not my current one) with id abc123, and don't auto-start anything after import on the other end.",
+      "expected_output": "Uses `export.sh --session abc123` for the export step, and separately notes the importer should pass `--no-start` on `import.sh` to skip auto-starting the session.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Before I send this exported session file to anyone, what should I personally check in it first?",
+      "expected_output": "Recommends opening the export file and scanning for sensitive data before sharing (per Best Practices), even though redaction runs by default, and suggests direct transfer (Slack DM/email/AirDrop) over a public cloud link.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "The export script says 'Could not detect current Claude session.' What's going on and how do I fix it?",
+      "expected_output": "Explains this means the script isn't running inside an active agent-deck Claude session, or the session hasn't sent a message yet to be saved, and suggests sending a message first or passing `--session <id>` explicitly.",
+      "files": []
+    }
+  ]
+}

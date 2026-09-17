@@ -1,0 +1,57 @@
+{
+  "skill_name": "fleet",
+  "trigger_evals": {
+    "should_trigger": [
+      { "query": "I need to launch 6 sessions, one per microservice repo, each running a dependency upgrade, and check on all of them from here without blocking", "should_trigger": true },
+      { "query": "fan out three research agents on different competitors and let me know the moment any of them needs my input", "should_trigger": true },
+      { "query": "spin up a fleet of workers under my conductor-ard session, one per open GitHub issue tagged good-first-issue", "should_trigger": true },
+      { "query": "I launched 5 kids earlier today, how do I check which ones are stuck waiting on a question right now", "should_trigger": true },
+      { "query": "kick off background agents for each file in this list and tell me only when the whole batch is finished", "should_trigger": true }
+    ],
+    "should_not_trigger": [
+      { "query": "launch a single child session to consult codex for a second opinion on this diff, just the one", "should_trigger": false },
+      { "query": "use the Agent tool to run three parallel research subagents inside this same conversation, no separate agent-deck sessions needed", "should_trigger": false },
+      { "query": "how do I write a Python multiprocessing pool that fans out work across 8 CPU cores", "should_trigger": false },
+      { "query": "what does the -g flag mean on agent-deck add in general, I'm just reading the docs", "should_trigger": false },
+      { "query": "explain what a git worktree is and why you'd want one, unrelated to launching any sessions", "should_trigger": false }
+    ]
+  },
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Fan out 4 child sessions, one per package (pkg/a, pkg/b, pkg/c, pkg/d) in this git-worktree repo, each fixing lint errors, and let me keep working while they run.",
+      "expected_output": "Uses `agent-deck launch <path> -c claude --inherit-group -m \"...\"` (or relies on worktree auto-inherit) per child, does NOT pass a custom `-g`/`--group`, and does not block on any single `--wait` send for the fan-out itself.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "One of my fleet children is stuck in 'waiting' status — how do I see what it's asking and answer it without disturbing the others?",
+      "expected_output": "Uses `agent-deck session output <child-id> --json` to see the question, then `agent-deck session send <child-id> \"<answer>\"`, and does not touch or restart any of the other children.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I want to be notified the instant my whole fleet of 5 children either finishes or needs me — not by polling every few minutes.",
+      "expected_output": "Recommends running `agent-deck session children --follow --until-done` in the background (e.g. Claude Code's run_in_background) rather than a manual polling loop, and explains it exits 0 once every child needs input or is terminal.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "I launched a fleet with `--no-parent` because I want to supervise them directly at the root level. Now `agent-deck ls --json` shows one of them under a weird detached group instead of with my others. What happened and how do I fix it?",
+      "expected_output": "Explains the group trap for --no-parent worktree sessions (falls back to the branch-leaf cwd-derived group instead of inheriting), and the fix (`agent-deck group move <child-id> \"$AGENTDECK_RESOLVED_GROUP\"` then delete the empty stray group) without needing a restart.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "I need to parent a new fleet of children to a specific named conductor session, not to whatever session I happen to be running this from.",
+      "expected_output": "Uses `--parent <conductor-id-or-title>` (long form) on each `launch`, explicitly avoiding the short `-p` flag (which is the global --profile shorthand and can silently misroute the child into a phantom profile database).",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "A fleet child is a Codex session showing a numbered approval menu. How do I answer it from the parent without accidentally submitting extra text into its next turn?",
+      "expected_output": "Uses `agent-deck session approve <child-id> once` (a single decision key) rather than `agent-deck session send <child-id> \"1\"`, citing that `session send` appends a trailing Enter that can land in the resumed turn.",
+      "files": []
+    }
+  ]
+}

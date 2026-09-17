@@ -305,3 +305,7 @@ it with `AGENTDECK_NO_CHILDREN_CONTEXT=1` in its environment.
   worktree/branch stay on disk).
 - **Stopping / cleanup:** `agent-deck session stop <id>` and
   `agent-deck session remove <id>` (add `--force` if needed) tear a child down.
+
+## Backward Compatibility
+
+Verified against v1.16.11-rc.2. `agent-deck session children` and `launch --assert-done` (the two hard requirements this skill states up front) have been stable for several releases — if `agent-deck session children --help` succeeds, you have them. `--follow`/`--until-done` are the newer, push-style additions: on a deck without them, fall back to the until-loop already shown above (`until agent-deck session children --json | jq -e '...'; do sleep 15; done`). `session send`'s finer-grained `--json` delivery values (`queued`, `delivered`, `unverified`) are recent (see the [agent-deck skill](../agent-deck/SKILL.md#backward-compatibility)); on an older deck, treat any exit-0 send as "delivered, confirm separately" rather than branching on a `confirmation` field that may not exist yet.

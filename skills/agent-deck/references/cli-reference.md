@@ -16,6 +16,8 @@ Complete reference for all agent-deck CLI commands.
 - [Group Commands](#group-commands)
 - [Profile Commands](#profile-commands)
 - [Remote Commands](#remote-commands)
+- [Health Command](#health-command)
+- [Inbox Commands](#inbox-commands)
 - [Codex Hook Commands](#codex-hook-commands)
 - [DeepSeek Commands](#deepseek-commands)
 - [Conductor Commands](#conductor-commands)
@@ -44,7 +46,7 @@ agent-deck add [path] [options]
 |------|-------------|
 | `-t, --title` | Session title |
 | `-g, --group` | Group path |
-| `-c, --cmd` | Tool/command (claude, gemini, opencode, codex, custom) |
+| `-c, --cmd` | Tool/command (claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, deepseek, or a custom command string) — `shell` is a plain terminal with no AI tool attached |
 | `--wrapper` | Wrapper command; use `{command}` placeholder |
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
@@ -361,10 +363,15 @@ Default behavior:
 - Avoids unnecessary retry `Enter` presses when session is already `waiting`/`idle`.
 - Never sends interrupt keys (Ctrl-C) into a target, whatever it observes.
 
-Delivery verdict (`--json` carries `delivery` and a machine-checkable `submitted` boolean):
-- `submitted` (exit 0, `submitted: true`): the target accepted the message and began its turn.
-- `queued` (exit 0, `submitted: false`): Claude targets only. The target was mid-turn per its hook-driven status before the send, the body newly arrived in its pane, and Claude's composer showed its own "Press up to edit queued messages" placeholder (the composer element itself, not those words anywhere in the pane). Claude takes it up when the current turn ends. Do not resend. `submitted` on a Claude target is confirmed by the message's own record appearing in the transcript, or by the hook status flipping from idle to running once the body has landed.
-- `typed`, `typed_not_submitted`, `no_evidence`, `line_too_long`, `composer_blocked`, `send_failed` (exit 1, `code: DELIVERY_FAILED`): not delivered; see the error text for whether a retry is safe.
+**Read `confirmation`, not the human text.** `--json` carries a stable 3-way `confirmation` field (`confirmed` / `unknown` / `failed`) — that is the contract to branch on. `delivery` is a separate, finer-grained diagnostic string (13 possible values, listed below) for logging and debugging, not for scripted decisions: several `delivery` values map to `confirmation: "unknown"` (still exit 0 — a real, non-failed outcome), and only a handful map to `confirmation: "failed"`.
+
+Delivery verdict (`--json` also carries `delivery` and a machine-checkable `submitted` boolean):
+- `submitted` (exit 0, `submitted: true`, `confirmation: "confirmed"`): positive evidence the target accepted the message and began its turn.
+- `queued` (exit 0, `submitted: false`, `confirmation: "unknown"`): Claude targets only. The target was mid-turn per its hook-driven status before the send, the body newly arrived in its pane, and Claude's composer showed its own "Press up to edit queued messages" placeholder (the composer element itself, not those words anywhere in the pane). Claude takes it up when the current turn ends. Do not resend. `submitted` on a Claude target is confirmed by the message's own record appearing in the transcript, or by the hook status flipping from idle to running once the body has landed.
+- `queued_socket` (exit 0, `submitted: false`, `acknowledged: false`): written to the target's Claude Code messaging socket (opt-in `send_transport = "auto"`) after identity verification; Claude's inbox sends no ack, so this means only "the bytes were written", not that the turn started.
+- `delivered` (exit 0, `submitted: false`, `confirmation: "unknown"`) — the message body reached the target and Enter was sent, but the tool exposes no submission signal (a shell, an unknown tool) or its signal didn't arrive in the window; this is the honest "delivered-unconfirmed" outcome, not a failure.
+- `unverified` (exit 0, `confirmation: "unknown"`): the payload was small enough to rule out the overflow failure mode, but neither a Claude-shaped submission signal nor a content-arrival check reached a verdict — genuinely unknown, not "probably failed".
+- `line_too_long`, `menu_open`, `pane_gone`, `typed_not_submitted`, `no_evidence`, `send_failed`, `composer_blocked`, `socket_write_failed` (exit 1, `confirmation: "failed"`, `code: DELIVERY_FAILED`): not delivered on positive evidence (a gone pane, a composer still holding the body, an open menu) — see the error text for whether a retry is safe. (There is no `typed` verdict — that pre-#1793 catch-all was replaced by `delivered`/`unverified` above so the exit code follows the evidence instead of its absence.)
 
 With `--wait` or `--stream` on a Claude target, the reply is bound to the transcript record of this exact message: a message queued behind a live turn waits for its own turn to start, the read begins after that record, and it stops at the next human prompt (an interrupted turn is reported as incomplete or as a stream error, not as the next turn's answer). Slash commands and non-Claude tools keep the timestamp-based best-effort reply.
 
@@ -417,6 +424,21 @@ never summed as zero, and a total containing one is prefixed `≥`.
 - `--strict` — exit 3 when the report fails its own reconciliation. Without it
   the command exits 0 for any report it managed to produce, including an honest
   "token accounting unsupported for <tool>" inventory.
+- `--verify` — the only mode that writes anything: types the harness's own accounting
+  command (`/context` on Claude, `/status` on Codex) into the **live** session and reads
+  the panel back, so it always asks for confirmation first (`--yes` skips the prompt, for
+  CI/non-interactive callers — never combine `--verify` with a non-interactive shell
+  without `--yes`, or it will hang waiting for a confirmation no one can answer). It waits
+  for the agent to go idle first (`--verify-ready-timeout`, default 2m) and moves an unsent
+  draft out of the composer, but the accounting command still joins that session's
+  conversation for good. `--tolerance-pct` (default 10) and `--tolerance-tokens` (default
+  500) set how much disagreement with the harness's own figure still counts as agreement.
+  The TUI's `C` context hotkey never triggers `--verify`.
+- `--timeout <dur>` (default 20s) aborts the whole inspection; `--verify-timeout <dur>`
+  (default 30s) is the narrower wait for the harness's own panel to render during `--verify`.
+- `--glossary` — define every term these screens use (adapter, basis, anchor, residual,
+  CAPT/RECON/ABSENT) and exit; `--verbose` includes the per-category notes on how each
+  figure was obtained.
 
 Claude Code sessions are fully supported (measured first-turn anchor, verbatim
 skill/agent/tool listings, reconstructed CLAUDE.md chain). Harnesses with no
@@ -425,6 +447,24 @@ readable accounting still get a populated inventory with `—` for every figure.
 ```bash
 agent-deck session context my-project --tab breakdown
 agent-deck session context my-project --json | jq '.report.reconciliation'
+agent-deck session context my-project --verify --yes   # CI-safe: skips the confirmation prompt
+```
+
+Exit codes: `0` done (with `--verify`, every graded group agreed within tolerance) · `1` could not run (bad arguments, no live pane, unreadable panel — nothing was compared) · `2` no session matched · `3` `--strict` reconciliation/invariant failure · `4` `--verify` disagreement beyond tolerance · `5` `--verify` had nothing gradable (never read this as a pass).
+
+### session children
+
+```bash
+agent-deck session children [id|title] [--json] [-q] [--follow] [--until-done] [--interval <dur>] [--heartbeat <dur>]
+```
+
+List a session's sub-sessions with live status and last completion history. Completion fields (`done_status`, `done_summary`, `done_at`) describe the last asserted completion; live `status` (running/waiting/idle/error/queued) determines the current turn — a session can show completion history and still be `running` again. Defaults to the current session. Read-only: never clears the inbox, so poll it as often as you like.
+
+`--follow` streams JSONL events instead of a single snapshot: `snapshot` (initial per-child state), `added`, `status` (from/to transition), `done` (completion sentinel), `removed`, `error`, plus a periodic `heartbeat` (default 60s, `--heartbeat 0` disables). `--until-done` exits 0 once every child either needs input or is terminal (waiting, idle with completion history, error, or stopped). `--interval` tunes the poll cadence backing `--follow` (default 2s).
+
+```bash
+agent-deck session children --json
+agent-deck session children --follow --until-done
 ```
 
 ### session set-parent / unset-parent
@@ -804,13 +844,26 @@ agent-deck remote rename <remote-name> <session-title-or-id> <new-title>
 
 Renames a session on a remote instance.
 
+### remote exec (management commands forwarded to a named remote)
+
+```bash
+agent-deck remote <name> <command> [arguments]
+```
+
+`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attach`, `group list/reorder`. Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
+
+`session switch`/`switch-preview` forwarded this way runs the remote's own switch engine with the same guards as a local switch (ownership revalidation, managed-source refusal, journaled account/harness moves) — the CLI only forwards a closed set of subcommands, so no local path or credential can reach it. `switch-preview --json` previews losses/warnings before committing; the confirmed switch reports `verified`, `pending`, or `failed` with `recovery_required` when applicable. This requires the remote to already be a target you can reach and administer — it does not let a controller switch accounts *for* a remote it doesn't own.
+
 ### remote update
 
 ```bash
-agent-deck remote update [name | --all]
+agent-deck remote update [name | --all] [--force] [--dry-run] [--json]
+agent-deck remote update [name | --all] --from-build <dir>
 ```
 
-Downloads and installs the correct agent-deck binary (detected platform/arch) on a specific remote, or with `--all` (or no name) on every configured remote whose version is older than this controller's. Remotes run one at a time and each is reported as updated, already current, or failed with the reason; a remote that fails stays on its version (the archive is checksum-verified before deploy and the remote is re-checked afterwards, never a partial binary). Exit status is 1 when any remote failed. Remotes follow the controller's version automatically unless `[updates] auto_update_remotes = false` is set (see the config reference). When the remote user cannot write the install directory (a root-owned `/usr/local/bin`), the deploy runs through `sudo -n` if the remote allows passwordless sudo; otherwise it fails with `install path <path> is not writable by <user>` and the remedy (move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo). `agent-deck update` on the remote itself reports the same error for that case. The deploy first resolves the install path through symlinks on the remote (`readlink` style), so the documented "symlink at the old path to `~/.local/bin/agent-deck`" layout works: the file behind the link is replaced, its owner and mode are kept (then made readable and executable for everyone), sudo is used only when the resolved file's directory is unwritable, and a symlink is never replaced by a regular file. When `command -v agent-deck` on the remote resolves to a different file than `agent_deck_path`, both are updated and the report names both, unless the `$PATH` binary is already at that version or newer, in which case it is left alone and the report says so. A file owned by another user is replaced through sudo so its owner is kept, and a non-root deploy keeps the file's group; if owner or group cannot be restored the deploy aborts with the original in place. If the remote cannot say what it runs (the `command -v`, resolve or version probe fails or answers ambiguously) nothing is written and the remote is reported as skipped with the probe error. After the deploy, `command -v agent-deck` must resolve to the deployed file's inode and report the new version. When `agent_deck_path` is set explicitly and that entry is verified by inode to be the deployed file (reporting the new version) but sits off the remote's non-interactive `$PATH`, the update counts as a success with a warning in the report (sessions started via SSH may need PATH); without an explicit `agent_deck_path` the controller itself relies on `$PATH`, so that case stays a failure. The deploy stages to a temp file unique to that run, takes a lock directory next to the binary (`<path>.lock`, treated as abandoned after 15 minutes) so two controllers cannot interleave writes; a remote whose lock another deploy holds is reported as skipped, not failed. While a sweep from this controller is still running (the TUI's startup sweep, say), `remote update --all` waits for it up to two minutes and then reports the remotes it covers as `sweep already in progress, remote <name> is being updated by <pid>` with exit status 0. The version cache is refreshed after each remote's deploy, so `remote list` shows the new version right away.
+Downloads and installs the correct agent-deck binary (detected platform/arch) on a specific remote, or with `--all` (or no name) on every configured remote whose version is older than this controller's.
+
+`--from-build <dir>` installs from a local directory of release-layout archives (darwin/arm64, linux/amd64, linux/arm64) instead of downloading a published release — for deploying a verified local build to remotes before it's released. Each archive is still checksum- and version-verified before the atomic install; a remote running a local build takes precedence over one running an equal-or-older published release for restart-watcher purposes. `--force` allows reinstalling the same version or downgrading (normally refused). `--dry-run` verifies the artifacts and prints destination paths without installing. Remotes run one at a time and each is reported as updated, already current, or failed with the reason; a remote that fails stays on its version (the archive is checksum-verified before deploy and the remote is re-checked afterwards, never a partial binary). Exit status is 1 when any remote failed. Remotes follow the controller's version automatically unless `[updates] auto_update_remotes = false` is set (see the config reference). When the remote user cannot write the install directory (a root-owned `/usr/local/bin`), the deploy runs through `sudo -n` if the remote allows passwordless sudo; otherwise it fails with `install path <path> is not writable by <user>` and the remedy (move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo). `agent-deck update` on the remote itself reports the same error for that case. The deploy first resolves the install path through symlinks on the remote (`readlink` style), so the documented "symlink at the old path to `~/.local/bin/agent-deck`" layout works: the file behind the link is replaced, its owner and mode are kept (then made readable and executable for everyone), sudo is used only when the resolved file's directory is unwritable, and a symlink is never replaced by a regular file. When `command -v agent-deck` on the remote resolves to a different file than `agent_deck_path`, both are updated and the report names both, unless the `$PATH` binary is already at that version or newer, in which case it is left alone and the report says so. A file owned by another user is replaced through sudo so its owner is kept, and a non-root deploy keeps the file's group; if owner or group cannot be restored the deploy aborts with the original in place. If the remote cannot say what it runs (the `command -v`, resolve or version probe fails or answers ambiguously) nothing is written and the remote is reported as skipped with the probe error. After the deploy, `command -v agent-deck` must resolve to the deployed file's inode and report the new version. When `agent_deck_path` is set explicitly and that entry is verified by inode to be the deployed file (reporting the new version) but sits off the remote's non-interactive `$PATH`, the update counts as a success with a warning in the report (sessions started via SSH may need PATH); without an explicit `agent_deck_path` the controller itself relies on `$PATH`, so that case stays a failure. The deploy stages to a temp file unique to that run, takes a lock directory next to the binary (`<path>.lock`, treated as abandoned after 15 minutes) so two controllers cannot interleave writes; a remote whose lock another deploy holds is reported as skipped, not failed. While a sweep from this controller is still running (the TUI's startup sweep, say), `remote update --all` waits for it up to two minutes and then reports the remotes it covers as `sweep already in progress, remote <name> is being updated by <pid>` with exit status 0. The version cache is refreshed after each remote's deploy, so `remote list` shows the new version right away.
 
 ### Examples
 
@@ -826,6 +879,34 @@ agent-deck remote update dev      # update specific remote
 ```
 
 SSH uses OpenSSH host-key verification and `BatchMode=yes`; unknown or changed hosts fail instead of prompting. Authenticate with an SSH agent or configured key and establish trust in `known_hosts` before registering a remote. `remote update` verifies the downloaded archive against the release checksums before deployment.
+
+## Health Command
+
+### health - Local runtime health
+
+```bash
+agent-deck health [--json] [--since <dur>]
+```
+
+Reads local runtime health for the selected profile: no data leaves the host. Reports per-process (TUI, notify-daemon, web) samples — CPU%, RSS, open FDs, goroutines, hook files, status-pass latency, session count, tmux calls, session-list DB latency — against the fixed performance budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`). `--since <dur>` sets the history window (default `1h`; positive Go duration, e.g. `30m`). `--json` emits the same data machine-readably.
+
+```bash
+agent-deck health --json --since 1h
+```
+
+## Inbox Commands
+
+### inbox - Durable completion/transition records
+
+```bash
+agent-deck inbox <session-id>                          # summary for a session's inbox
+agent-deck inbox drain [--json] <session-id>            # consume pending completion events
+agent-deck inbox export [--json]                        # read-only: this host's records, nothing consumed
+agent-deck inbox dead-letter list|show [--json]         # inspect physical dead-letter / unowned-ledger records
+agent-deck inbox writer-status [--json]                 # is a notify-daemon actually recording transitions here?
+```
+
+`drain` preserves distinct turns per child and dedups re-delivery via `turn_fingerprint`; run it first on every heartbeat — reading clears the inbox. `export` is what `remote drain` runs over SSH to pull one host's records into another without consuming anything locally. `dead-letter list`/`dead-letter show` inspect records that failed to route, with raw bytes preserved for diagnosis — there is currently no `retry` or `purge` subcommand for dead-letter records (both are explicitly rejected by the CLI; a record must be handled by other means, e.g. fixing the underlying routing issue and re-draining). `writer-status` answers "is anything watching?" — without it, an empty `export` can't be told apart from a host where no notify-daemon has ever run.
 
 ## Codex Hook Commands
 

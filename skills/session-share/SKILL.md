@@ -204,3 +204,7 @@ Path encoding: `/Users/alice/project` becomes `-Users-alice-project`
 - `jq` - JSON processing (install: `brew install jq`)
 - `agent-deck` - Session management
 - `claude` - Claude Code CLI
+
+## Backward Compatibility
+
+This skill's scripts only use `agent-deck add`/basic session creation and `claude --resume`, both stable since well before v1.16.11 — no part of this skill is gated on the recent CLI additions (session send delivery verdicts, context inspector, health, remote dead-letter). It works unchanged on any deck version that can create a Claude session pointed at an existing `.jsonl` transcript.

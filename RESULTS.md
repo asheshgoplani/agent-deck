@@ -1,3 +1,71 @@
+# Skills refresh — docs/skills-refresh-20260918
+
+Verified against `~/.local/bin/agent-deck` v1.16.11-rc.2 (binary `--help` at every level, plus source in `/tmp/exec-rc2-build/src`), CHANGELOG.md's `[1.16.11]` entry, and the three named unmerged branch trees (`/tmp/exec-fix-status-lights-r4/src`, `/tmp/exec-feat-session-metrics-r4/src`, `/tmp/exec-fix-small-followups/src`). Branch off `release/v1.16.11-rc2` at commit `9a781888`.
+
+## Method
+
+A fork subagent built a full CLI truth table (`/tmp/exec-skills-refresh/truth-table.md`, not part of this PR — scratch artifact) by walking every `--help` level and grepping source for each item in PROMPT.md's "what changed" list. I independently re-verified the highest-risk findings (delivery/confirmation field shapes, dead-letter subcommands, tool-alias list, `remote drain --into`) directly against `session_cmd.go`, `internal/send/outcome.go`, and the live binary before writing anything into the skills, since a subagent's summary is a claim, not ground truth.
+
+## Per-skill changes
+
+### `skills/agent-deck/SKILL.md` + `references/cli-reference.md`
+
+**Stale statements fixed (before → after):**
+
+| # | Before | After | Why |
+|---|---|---|---|
+| 1 | "Every command below was verified against the installed binary (v1.10.11)" | "...verified against the installed binary (v1.16.11-rc.2)" | Six minor versions stale |
+| 2 | `-c, --cmd` table: "Tool/command (claude, gemini, opencode, codex, custom)" | Full list: claude, codex, gemini, opencode, pi, shell, copilot, crush, muse, cursor, hermes, deepseek, or custom — with `shell` called out as a plain-terminal, no-AI-tool session | `shell` and 6 other real tool names were missing; a user reading the old list would not know `-c shell` is valid |
+| 3 | `session send`'s delivery-verdict prose led with `delivery`/`submitted` as the primary field, listed a `typed` outcome that doesn't exist, and omitted `queued_socket`, `delivered`, `unverified`, `menu_open`, `pane_gone`, `socket_write_failed` | Leads with the stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) as the contract to branch on, lists all 13 real `delivery` values with their `confirmation` mapping, and explicitly notes `typed` was replaced by `delivered`/`unverified` after #1793 | `confirmation` is the field a scripted caller should actually read; the old text pushed callers toward parsing the wrong (larger, more volatile) field, and `typed` hasn't existed since the #1793 rewrite. Directly answers the conductor's mid-task addendum ("reads confirmation from send --json instead of parsing text") |
+| 4 | `session context`'s exit-code line omitted exit 1 | Added "1 could not run (bad args, no pane, unreadable panel)" and a matching full exit-code table + `--verify`/`--yes`/`--timeout`/`--tolerance-*`/`--glossary`/`--verbose` flags in cli-reference.md (previously undocumented entirely) | `--verify` without `--yes` blocks forever on a non-interactive caller — this is exactly the class of gap the maintainer's agent-friendliness ask is about |
+| 5 | No mention anywhere of `agent-deck health`, `inbox dead-letter`, `remote update --from-build`, `session children` (cli-reference.md), or `remote <name> session switch/switch-preview` | Added dedicated sections for all five (see "New sections" below) | These are net-new-since-last-refresh CLI surface per PROMPT.md scope; zero grep hits for "health", "dead-letter", "children" anywhere in cli-reference.md before this pass |
+
+**New sections added:**
+- `cli-reference.md`: `## Health Command` (`agent-deck health [--json] [--since <dur>]`), `## Inbox Commands` (`inbox <id>`, `drain`, `export`, `dead-letter list|show`, `writer-status`), `### session children`, `### remote exec` (the `remote <name> <command>` forwarding form, including `session switch/switch-preview` on a remote), `--from-build`/`--force`/`--dry-run` on `remote update`, full `--verify`/`--yes`/exit-code documentation on `session context`.
+- `SKILL.md`: `## Runtime Health & Fleet Maintenance (v1.16.11+)` (health/dead-letter/`--from-build`/`[ui.*]` `accounts` field in one place), `## Backward Compatibility` (table of what needs ≥1.16.11 and the fallback on an older deck).
+
+**Verified accurate, no change needed:** `session context` `--tab`/`--item`/`--capabilities` (SKILL.md's existing text matched `--help` exactly once the full flag list was read past the initial truncated capture), `[ui.remote_preview]`/`[ui.header]` field vocabulary including `accounts` (config-reference.md already fully current), `remote drain <name|user@host> --into <session-id>` (matches the binary's actual usage line and flag set — a background research pass had flagged this as possibly stale due to an *unmerged* branch narrowing it to `<name>` only; confirmed against `remote_drain_cmd.go` that the rc.2 binary still accepts `user@host` and has a real `--into` flag, so the existing doc is correct as written and was left alone), Session Identity Inside a Harness section (claude/codex/pi/gemini injection mechanics, gemini trust-folder caveat — already accurate), fleet's own delivery-value list (fleet skill doesn't quote `delivery` values, so no fix needed there).
+
+**Important correction to PROMPT.md's own claims** (verified wrong against the binary, not carried into the skill): `inbox dead-letter` supports **only `list` and `show`** — `retry` and `purge` are explicitly tested-and-rejected as unsupported (`inbox_deadletter_cmd_test.go`: `TestDeadLetterInspectionRejectsUnsafeOrUnknownRequests`). The skill was written to say so explicitly rather than documenting a `retry`/`purge` that doesn't exist. `session metrics` and `make check-functional`/`make bench-fleet` are confirmed branch-only (not in rc.2's Makefile or command dispatch at all) and were **not** added to the skill.
+
+### `skills/fleet/SKILL.md`
+
+No factual command claims contradicted the verified truth table — `session children`, `--follow`/`--until-done`, `--assert-done`, grouping/`--parent` pitfalls all matched the binary exactly. Added one `## Backward Compatibility` section (fleet had none) covering the `--follow`/`--until-done` version gate and cross-referencing the agent-deck skill's delivery/confirmation compat note.
+
+### `skills/session-share/SKILL.md`
+
+No stale claims — its scripts (`export.sh`/`import.sh`/`utils.sh`) match every flag and default documented in the skill body exactly. Added a short `## Backward Compatibility` section noting it has no dependency on any of the 1.16.11-era CLI additions.
+
+## Evals added (skill-creator method)
+
+Read `~/.claude/plugins/marketplaces/anthropic-agent-skills/skills/skill-creator/SKILL.md` (read-only) and followed its schema for trigger + task evals. Wrote `skills/<name>/evals/evals.json` + `evals/RUNNER.md` for all three bundled skills:
+
+- **agent-deck**: 8 should-trigger / 8 should-not-trigger queries (two deliberately adversarial near-misses: "git worktree add" with no session manager, and "fan out subagents" with no agent-deck), 8 task evals with checkable expected outcomes (e.g. "reads `confirmation`, not `delivery`, for a send verdict"; "recommends launchd/systemd instead of an agent-deck session for an always-on listener"; "applies Trust-but-Verify instead of accepting a self-reported PR-merge-ready claim"). Plus a fourth block, **`agent_friendliness_evals`** (5 prompts), added per the maintainer's mid-task addendum: checks an agent reads `confirmation` not text, never fires `--verify` on a non-TTY caller without `--yes`, and reasons about the `list --json`/`session show`/send-verdict performance budgets from `agent-deck health` instead of inventing its own timeout logic.
+- **fleet**: 5/5 trigger queries, 6 task evals (fan-out grouping rules, answering a waiting child, `--follow --until-done`, the `--no-parent` group trap, the `-p`-vs-`--parent` pitfall, Codex `session approve` vs `session send "1"`).
+- **session-share**: 4/4 trigger queries, 5 task evals (default redaction/no-thinking-blocks export, import with a custom title, `--session`/`--no-start`, pre-share manual review, the "could not detect current session" error path).
+
+**What ran:** the skill-creator's own trigger-description optimizer (`scripts/run_loop.py`) shells out to `claude -p`, which PROMPT.md's SAFETY/DELIVERABLE section bans outright — so that automated loop was not run. I instead manually reasoned through all 34 trigger-eval queries (16 agent-deck, 10 fleet, 8 session-share) against each skill's current frontmatter `description`: all 34 classify correctly (should-trigger queries hit an explicit trigger phrase in the description; should-not-trigger queries — including the deliberate near-misses — do not). This is weaker evidence than a real subagent run (no held-out sampling, no live triggering test), which is exactly why `evals/RUNNER.md` in each skill records the gap and names the with-skill/baseline subagent matrix as the next step for whoever runs these for real. **Task evals and the agent-friendliness evals were authored with checkable `expected_output` fields but not executed against live subagent transcripts in this pass** — this was a docs-correctness-and-eval-authoring pass under a fixed budget, not a full skill-creator iteration loop.
+
+## Docs consistency
+
+Grepped `README.md` for the version string and stale delivery-value wording fixed above — zero hits, so no README changes were needed. `docs/COMMAND-CENTER.md` and the `docs/superpowers/plans/*.md` references to `skills/agent-deck/references/*.md` still point at the right files (no renames or moves in this branch).
+
+## Pool skill findings (read-only — for the maintainer, not fixed by this branch)
+
+1. **`~/.agent-deck/skills/pool/agent-deck/SKILL.md`** (an independent 60KB copy, not a symlink to the bundled skill) — same staleness as the bundled skill's pre-fix state: `"verified against the installed binary (v1.10.11)"` (its line ~146) and a `send` section that leads with `delivery`/`unverified` without mentioning the stable `confirmation` field (its lines ~154, ~184-189). This pool copy and the bundled `skills/agent-deck/SKILL.md` have drifted from a common ancestor; fixing only the bundled copy (this branch's scope) leaves the pool copy stale by the same margin. Recommend either symlinking one to the other or documenting which is canonical.
+2. **`~/.agent-deck/skills/pool/agent-deck-tdd-feature/SKILL.md`** — no hits on any changed-surface keyword (dead-letter, session metrics, delivery/confirmation, version strings, session context, etc.). No findings.
+3. **`~/.agent-deck/skills/pool/agentdeck-perf/SKILL.md`** — no correctness findings; one incidental unrelated hit on the word "delivery" (sandbox event delivery). Forward-looking note only: this skill doesn't reference `make bench-fleet`, which would be a natural fit once that branch-only target ships — not a bug today.
+4. **`~/.agent-deck/skills/pool/capability-verification/SKILL.md`** — one incidental `session send` example with no claims about delivery/confirmation fields or exit codes. No findings.
+5. **`~/.agent-deck/skills/pool/account-manager/SKILL.md`** — no correctness findings; its `session send --no-wait` + manual `tmux send-keys ... Enter` workaround for the typed-but-not-submitted race is still accurate. Forward-looking note only: `--defer-if-busy` (real in rc.2) is a cleaner primitive for the same problem than the manual Enter-forcing it documents.
+
+**Total: 4 pool-skill findings** (item 1 counts as one finding-cluster across its 3 stale lines; items 3 and 5 are non-bug forward-looking notes, included for completeness per the maintainer report format).
+
+## Safety
+
+No writes outside this git worktree (`/tmp/exec-skills-refresh/src`, branch `docs/skills-refresh-20260918` off `release/v1.16.11-rc2`). Pool skills under `~/.agent-deck/skills/pool/` were only read. No `rm` (nothing was deleted). No `claude -p` was invoked anywhere in this pass. Nothing pushed; no GitHub API calls made.
+
+---
+
 # Round 3 — carry/2011
 
 Base: `carry/2011` HEAD `80b340db` (round 2, unchanged). New commit

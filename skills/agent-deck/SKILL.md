@@ -11,7 +11,7 @@ Terminal session manager for AI coding agents. Built with Go + Bubble Tea.
 
 **Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck) | **Discord:** [discord.gg/e4xSs6NBN8](https://discord.gg/e4xSs6NBN8)
 
-> Run `agent-deck --version` for your installed version. This skill targets v1.9+ but most patterns work back to v1.7.
+> Run `agent-deck --version` for your installed version. This skill targets v1.16.11+; most patterns work back to v1.7. See [Backward Compatibility](#backward-compatibility) for what's gated behind ≥1.16.11.
 
 ## Script Path Resolution (IMPORTANT)
 
@@ -161,7 +161,7 @@ Reading the output:
 - Figures are as-of-now-on-disk: a running session keeps its boot-time copy until restart.
 - `--verify` types /context into the LIVE session to compare against the harness's own
   accounting. It mutates the session: confirmation required, use sparingly, never on a busy session.
-- Exit codes: 0 ok · 2 not found · 3 invariant/reconciliation failure · 4 verify drift · 5 verify indeterminate.
+- Exit codes: 0 ok · 1 could not run (bad args, no pane, unreadable panel) · 2 not found · 3 invariant/reconciliation failure · 4 verify drift · 5 verify indeterminate. `--verify` always asks first; `--yes` skips the prompt for CI.
 
 Agents may run read-only sweeps freely (`list --json` → context per session) to find
 bloated sessions; report findings, never edit another session's files without its owner.
@@ -171,7 +171,7 @@ bloated sessions; report findings, never edit another session's files without it
 **Use when:** a session needs to message another session, a parent needs to collect child
 results, anyone asks "how do I notify the conductor", "did my child finish", "how do I read
 another session's answer", or a send seems to have vanished. Every command below was
-verified against the installed binary (v1.10.11). From any non-interactive shell
+verified against the installed binary (v1.16.11-rc.2). From any non-interactive shell
 (cron, systemd, hooks) always pass `-p <profile>` explicitly, or session resolution
 silently uses the default profile and the target is "not found".
 
@@ -179,7 +179,7 @@ silently uses the default profile and the target is "not found".
 
 | Channel | Direction | Command | Guarantee |
 |---|---|---|---|
-| **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane. Claude targets get positive-evidence verification (`delivery` field in `--json`); other tools return `delivery:"unverified"`. NOT durable: if the send fails or the sender dies, the message is gone. |
+| **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane (or, opt-in, Claude's own messaging socket). `--json` carries a stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) — read that, not the 11-value `delivery` diagnostic (`submitted`, `queued`, `delivered`, `unverified`, `queued_socket`, `line_too_long`, `menu_open`, `pane_gone`, `typed_not_submitted`, `no_evidence`, `send_failed`, `composer_blocked`, `socket_write_failed`). NOT durable: if the send fails or the sender dies, the message is gone. |
 | **output** | read a session's last reply | `session output <id> -q` | Read-only transcript snapshot; non-consuming; `--pane` returns raw tmux capture instead. |
 | **children** | parent reads its child fleet | `session children --json`, `--follow [--until-done]` | Read-only; merges live status with the completion ledger; explicitly does NOT clear the inbox. |
 | **inbox drain** | child completions → parent | `inbox drain self --json` | THE durable channel: fsync'd append + WAL, at-least-once delivery with exactly-once effects (turn-fingerprint dedup), survives crashes and restarts. Last-wins PER CHILD: intermediate events are dropped by design. Single-profile only. Draining consumes. |
@@ -848,6 +848,21 @@ For trivial mechanical actions where the action IS its own verification (and the
 
 The verifier requirement attaches to claims about external mutable state: PRs, releases, comments, deployments, bulk operations.
 
+## Runtime Health & Fleet Maintenance (v1.16.11+)
+
+**Use when:** anyone asks "is agent-deck healthy", "why is the deck slow", "did that completion event get lost", or you're deploying a local build to a remote ahead of a release.
+
+```bash
+agent-deck health --json --since 1h          # per-process CPU/RSS/FDs/goroutines vs performance budgets, no data leaves the host
+agent-deck inbox dead-letter list --json      # inspect records that failed to route (list/show only — no retry/purge)
+agent-deck remote update dev --from-build /path/to/local/dist   # push a verified local build to a remote, no release needed
+```
+
+- `health` reports against fixed budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`); use `--since` to widen the history window when a regression is intermittent.
+- `inbox dead-letter list|show` is diagnostic-only in this release — there is no `retry` or `purge` subcommand (both are explicitly rejected). Recovering a dead-lettered record means fixing the underlying routing issue and re-draining, not resubmitting the record itself.
+- `remote update --from-build <dir>` is for shipping a verified local three-platform build (darwin/arm64, linux/amd64, linux/arm64) to a remote before it's published as a release — same checksum/version verification and downgrade guard as a normal `remote update`.
+- `[ui.remote_preview]`/`[ui.header]` share one field vocabulary: `version`, `sessions_by_status`, `harnesses`, `load`, `memory`, `disk`, `last_poll`, and the opt-in `accounts` (named Claude account slots with live 5h/7d usage, read from each slot's local quota cache — see [Configuration](#configuration)/config-reference.md).
+
 ## Configuration
 
 **File:** `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored)
@@ -1165,6 +1180,25 @@ These were surfaced by mining real conductor transcripts (see [Self-Improvement]
 | CLI verb inconsistency: `session update --no-parent`, `group remove`, `launch -parent` all rejected | Correct verbs: `session unset-parent`, `group delete`, `launch` does not accept `-parent` (it's automatic) | [#974](https://github.com/asheshgoplani/agent-deck/issues/974) |
 
 See the [Self-Improvement](#self-improvement) section for how these were discovered and how to surface more from your own conductor's transcripts.
+
+## Backward Compatibility
+
+This skill is read by whatever deck version the reading session is on, including a remote running an older build — check with `agent-deck --version` before assuming a feature below exists.
+
+| Needs ≥1.16.11 | On an older deck |
+|---|---|
+| `session send` `confirmation` field, `queued_socket`/`delivered`/`unverified` delivery values, `send_transport = "auto"` | Read `delivery` and `submitted` only; treat any non-`submitted` exit-0 outcome as "sent, not confirmed" and verify with `session show --json` or `output` |
+| `session context` (context inspector), TUI `C` key | No context inspector at all — audit context by reading the instruction files and skills directly |
+| `agent-deck health` | No local health/budget reporting — watch for slowness manually (`top`, `agent-deck status`) |
+| `remote update --from-build`, `remote list --check --json` version fields | `remote update` from published releases only; `remote list` without live version drift detection |
+| `remote sessions --json` bare-array/`--with-errors` split, `remote drain` | Older builds may return `null` instead of `[]` for zero sessions, and lack `remote drain`/`inbox export` entirely (a `remote drain` against one reports a version error pointing at `remote update`) |
+| `inbox dead-letter list\|show` | No dead-letter inspection — a lost completion is invisible; fall back to reading transcripts / RESULTS.md for the child's actual outcome |
+| `[ui.remote_preview]`/`[ui.header]` `accounts` field | Older builds show version/sessions/load only, no per-account usage in the header or remote panel |
+| `session children --follow`, `--until-done` | Fall back to the until-loop in [Fanning out several children?](#sub-agent-launch) polling `--json` on an interval |
+| `shell` as accepted tool alias | Use a `custom` `-c "bash -c '...'"` command instead — same effect, more typing |
+| Harness identity injection (`AGENTDECK_IDENTITY_FILE`, append-system-prompt for claude/pi, developer-instructions override for codex, trust-gated context dir for gemini) | A launched session gets none of this — state its session id, tool, and how to reach its parent explicitly in the launch prompt |
+
+Any command not in this table (session start/stop/send/output, `mcp attach`, `session set-parent`, worktrees, groups) has worked unchanged since well before this refresh.
 
 ## References
 
