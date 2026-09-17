@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
@@ -2353,7 +2354,7 @@ func TestCuratedFooterAlwaysEndsWithSettingsThenHelp(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 
 	settingsKey := home.actionKey(hotkeySettings)
 	helpKey := home.actionKey(hotkeyHelp)
@@ -2380,7 +2381,7 @@ func TestCuratedFooterLiveSessionShowsAttach(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 	if !strings.Contains(result, "⏎ attach") {
 		t.Errorf("live session should advertise Enter attach\nGot: %q", result)
 	}
@@ -2501,7 +2502,7 @@ func TestCuratedFooterGroupShowsCollapseExpand(t *testing.T) {
 		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: true}},
 	}
 	home.cursor = 0
-	if result := home.renderHelpBar(); !strings.Contains(result, "Tab collapse") {
+	if result := tmux.StripANSI(home.renderHelpBar()); !strings.Contains(result, "Tab collapse") {
 		t.Errorf("expanded group should advertise Tab collapse\nGot: %q", result)
 	}
 
@@ -2509,7 +2510,7 @@ func TestCuratedFooterGroupShowsCollapseExpand(t *testing.T) {
 	home.flatItems = []session.Item{
 		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: false}},
 	}
-	if result := home.renderHelpBar(); !strings.Contains(result, "Tab expand") {
+	if result := tmux.StripANSI(home.renderHelpBar()); !strings.Contains(result, "Tab expand") {
 		t.Errorf("collapsed group should advertise Tab expand\nGot: %q", result)
 	}
 }
@@ -2548,7 +2549,7 @@ func TestCuratedFooterRemoteSessionShowsAttach(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 	if !strings.Contains(result, "⏎ attach") {
 		t.Errorf("curated footer for a remote session should advertise Enter attach\nGot: %q", result)
 	}
@@ -2596,7 +2597,7 @@ func TestCuratedFooterNarrowKeepsSettingsAndHelp(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 	settingsKey := home.actionKey(hotkeySettings)
 	helpKey := home.actionKey(hotkeyHelp)
 	if !strings.Contains(result, settingsKey+" settings") {
