@@ -2380,6 +2380,10 @@ func handleAdd(profile string, args []string) {
 		"tool":    newInstance.Tool,
 		"group":   newInstance.GroupPath,
 		"profile": storage.Profile(),
+		// #2202: `add` only registers the session — it never spawns tmux.
+		// Say so explicitly rather than leaving a caller to infer it from
+		// the absence of any start-related field.
+		"started": false,
 	}
 	if sessionCommandInput != "" {
 		jsonData["command"] = sessionCommandInput
