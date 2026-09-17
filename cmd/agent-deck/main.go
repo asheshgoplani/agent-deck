@@ -434,6 +434,9 @@ func main() {
 		case "remote-agent":
 			handleRemoteAgent(profile, args[1:])
 			return
+		case "system":
+			handleSystem(args[1:])
+			return
 		case "worktree", "wt":
 			handleWorktree(profile, args[1:])
 			return
@@ -1192,7 +1195,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "worktree": true, "wt": true, "costs": true, "web": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "web": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,

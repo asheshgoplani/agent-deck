@@ -25,6 +25,8 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[interval_hooks.*] Section](#interval_hooks-section)
 - [[display] Section](#display-section)
 - [[ui] Section](#ui-section)
+  - [[ui.remote_preview] Section](#uiremote_preview-section)
+  - [[ui.header] Section](#uiheader-section)
 - [[global_search] Section](#global_search-section)
 - [[notifications] Section](#notifications-section)
 - [[performance] Section](#performance-section)
@@ -611,6 +613,32 @@ attach_on_create = true                       # Opt IN: instantly attach to a ne
 | `attach_on_create` | bool | `false` | When `true`, creating a session in the TUI (`n` new-session dialog) **immediately attaches** to the new session's pane instead of only moving the cursor to it — "instantly open". Default `false`: today's select-only behavior (press **Enter** to attach). Does not affect the CLI; `agent-deck add` / `session start` attach only with an explicit `--attach`. |
 
 Filters compose: `hidden_tools` is applied first, then `show_only_installed_tools` (when enabled).
+
+### [ui.remote_preview] Section
+
+Controls which fields the remote preview panel (right side, when a `remotes/<name>` host row is selected) shows, and in what order.
+
+```toml
+[ui.remote_preview]
+fields = ["version", "sessions_by_status", "harnesses", "load", "memory", "disk", "last_poll"]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `fields` | []string | `["version", "sessions_by_status", "harnesses", "load", "memory", "disk", "last_poll"]` | Ordered list of what the panel shows. Order in the list is render order. Valid names: `version` (the remote's agent-deck version vs. this controller — same/older/newer/unknown), `sessions_by_status` (running/waiting/idle/stopped/error counts), `harnesses` (running sessions per tool, e.g. `claude:2 · codex:1`), `load`/`memory`/`disk` (the remote host's own CPU/RAM/disk usage — listed separately but rendered as one combined line when adjacent, matching the historical layout), `last_poll` (round-trip latency and time of the last successful poll). Unknown names are reported once at startup (config load) and dropped, never silently ignored. Leaving this unset renders identically to before this config block existed. |
+
+### [ui.header] Section
+
+Controls which fields the controller's own status-bar header (top of the TUI) shows, and in what order. Shares the same field vocabulary as `[ui.remote_preview]`.
+
+```toml
+[ui.header]
+fields = ["version", "sessions_by_status", "load", "memory", "disk"]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `fields` | []string | `["version", "sessions_by_status", "load", "memory", "disk"]` | Ordered list of what the header shows. Same valid names as `[ui.remote_preview].fields`. `harnesses` is also accepted here (per-tool running-session counts) and renders as its own segment when listed; `last_poll` is accepted but has no effect (the controller does not poll itself). `load`/`memory`/`disk` gate the existing `[system_stats]`-driven CPU/RAM/disk segment as a group — which sub-parts actually render within it is still governed by `[system_stats]`. Unknown names are reported once at startup and dropped. Leaving this unset renders identically to before this config block existed. |
 
 ## [web] Section
 

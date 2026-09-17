@@ -582,6 +582,96 @@ func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	return sessions, nil
 }
 
+// RemoteHostStats is one remote's `system stats --json` snapshot: the same
+// load/memory/disk numbers the controller's own header shows for this Mac,
+// gathered by the remote's own agent-deck (never a controller-side ssh to
+// /proc). Ok is false when the remote could not be asked (older agent-deck
+// without the `system stats` subcommand, or the call failed/timed out); the
+// preview panel then renders "stats unknown" instead of a guess.
+type RemoteHostStats struct {
+	Ok bool
+
+	CPUAvailable    bool
+	CPUUsagePercent float64
+
+	LoadAvailable bool
+	Load1         float64
+	Load5         float64
+	Load15        float64
+
+	MemAvailable    bool
+	MemUsedBytes    uint64
+	MemTotalBytes   uint64
+	MemUsagePercent float64
+
+	DiskAvailable    bool
+	DiskUsedBytes    uint64
+	DiskTotalBytes   uint64
+	DiskUsagePercent float64
+}
+
+// remoteHostStatsWire is the JSON shape `agent-deck system stats --json`
+// prints (cmd/agent-deck/system_cmd.go); pointers are omitted fields a
+// remote host could not collect (wrong platform, missing /proc, ...).
+type remoteHostStatsWire struct {
+	CPU *struct {
+		UsagePercent float64 `json:"usage_percent"`
+	} `json:"cpu,omitempty"`
+	Load *struct {
+		Load1  float64 `json:"load1"`
+		Load5  float64 `json:"load5"`
+		Load15 float64 `json:"load15"`
+	} `json:"load,omitempty"`
+	Memory *struct {
+		UsedBytes    uint64  `json:"used_bytes"`
+		TotalBytes   uint64  `json:"total_bytes"`
+		UsagePercent float64 `json:"usage_percent"`
+	} `json:"memory,omitempty"`
+	Disk *struct {
+		UsedBytes    uint64  `json:"used_bytes"`
+		TotalBytes   uint64  `json:"total_bytes"`
+		UsagePercent float64 `json:"usage_percent"`
+	} `json:"disk,omitempty"`
+}
+
+// FetchSystemStats asks the remote for its own `system stats --json`
+// snapshot. An error (older remote without the subcommand, unreachable
+// host, malformed output) is reported to the caller, which must degrade to
+// RemoteHostStats{Ok: false} rather than block or fail the whole poll: the
+// TUI hot path never waits on this beyond the poll it already runs.
+func (r *SSHRunner) FetchSystemStats(ctx context.Context) (RemoteHostStats, error) {
+	output, err := r.Run(ctx, "system", "stats", "--json")
+	if err != nil {
+		return RemoteHostStats{}, err
+	}
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return RemoteHostStats{}, fmt.Errorf("unexpected remote system stats output: %q", string(trimmed))
+	}
+	var wire remoteHostStatsWire
+	if err := json.Unmarshal(trimmed, &wire); err != nil {
+		return RemoteHostStats{}, fmt.Errorf("failed to parse remote system stats: %w", err)
+	}
+	stats := RemoteHostStats{Ok: true}
+	if wire.CPU != nil {
+		stats.CPUAvailable = true
+		stats.CPUUsagePercent = wire.CPU.UsagePercent
+	}
+	if wire.Load != nil {
+		stats.LoadAvailable = true
+		stats.Load1, stats.Load5, stats.Load15 = wire.Load.Load1, wire.Load.Load5, wire.Load.Load15
+	}
+	if wire.Memory != nil {
+		stats.MemAvailable = true
+		stats.MemUsedBytes, stats.MemTotalBytes, stats.MemUsagePercent = wire.Memory.UsedBytes, wire.Memory.TotalBytes, wire.Memory.UsagePercent
+	}
+	if wire.Disk != nil {
+		stats.DiskAvailable = true
+		stats.DiskUsedBytes, stats.DiskTotalBytes, stats.DiskUsagePercent = wire.Disk.UsedBytes, wire.Disk.TotalBytes, wire.Disk.UsagePercent
+	}
+	return stats, nil
+}
+
 // FetchAccounts lists the named Claude account slots configured on the remote
 // (its `accounts --json`), so the TUI's remote new-session dialog offers the
 // server's slots rather than this machine's. Read-only: only names travel back;

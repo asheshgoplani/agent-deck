@@ -341,6 +341,11 @@ func handleRemoteList(args []string) {
 			Version          string `json:"version,omitempty"`
 			VersionCheckedAt string `json:"version_checked_at,omitempty"`
 			Outdated         bool   `json:"outdated"`
+			// VersionState is the same same/older/newer/unknown compare the
+			// remote preview panel shows (session.RemoteVersionCompare),
+			// always present so scripts don't have to re-derive it from
+			// Version/Outdated.
+			VersionState string `json:"version_state"`
 		}
 
 		var remotes []remoteJSON
@@ -351,9 +356,13 @@ func handleRemoteList(args []string) {
 				AgentDeckPath: rc.GetAgentDeckPath(),
 				Profile:       rc.GetProfile(),
 			}
-			if state, ok := versions[name]; ok && state.Found {
-				row.Version = state.Version
+			state := versions[name]
+			row.VersionState = state.Compare(Version).String()
+			if !state.CheckedAt.IsZero() {
 				row.VersionCheckedAt = state.CheckedAt.Format(time.RFC3339)
+			}
+			if state.Found {
+				row.Version = state.Version
 				row.Outdated = state.Outdated(Version)
 			}
 			remotes = append(remotes, row)

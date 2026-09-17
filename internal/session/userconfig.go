@@ -458,6 +458,138 @@ type UISettings struct {
 	// `add`/`session start` are unaffected by this flag — they attach only
 	// with an explicit `--attach`.
 	AttachOnCreate bool `toml:"attach_on_create,omitempty"`
+
+	// RemotePreview configures which fields the remote preview panel
+	// (right side, `remotes/<name>` host row selected) shows, and in what
+	// order. See RemotePreviewSettings.
+	RemotePreview RemotePreviewSettings `toml:"remote_preview,omitempty"`
+
+	// Header configures which fields the controller's own status-bar header
+	// shows, and in what order. See HeaderSettings.
+	Header HeaderSettings `toml:"header,omitempty"`
+}
+
+// PreviewField names are shared between [ui.remote_preview] and [ui.header]
+// so both blocks accept the same vocabulary and validate the same way.
+const (
+	PreviewFieldVersion          = "version"
+	PreviewFieldSessionsByStatus = "sessions_by_status"
+	PreviewFieldHarnesses        = "harnesses"
+	PreviewFieldLoad             = "load"
+	PreviewFieldMemory           = "memory"
+	PreviewFieldDisk             = "disk"
+	PreviewFieldLastPoll         = "last_poll"
+)
+
+// validPreviewFields is the full set of field names either block accepts.
+// A name outside this set is unknown and is reported once at startup by
+// normalizeUIPreviewFields, never silently dropped.
+var validPreviewFields = map[string]bool{
+	PreviewFieldVersion:          true,
+	PreviewFieldSessionsByStatus: true,
+	PreviewFieldHarnesses:        true,
+	PreviewFieldLoad:             true,
+	PreviewFieldMemory:           true,
+	PreviewFieldDisk:             true,
+	PreviewFieldLastPoll:         true,
+}
+
+// DefaultRemotePreviewFields is the remote preview panel's field order when
+// [ui.remote_preview].fields is unset — identical to the panel shipped
+// before this config block existed, so setting nothing changes nothing.
+var DefaultRemotePreviewFields = []string{
+	PreviewFieldVersion,
+	PreviewFieldSessionsByStatus,
+	PreviewFieldHarnesses,
+	PreviewFieldLoad,
+	PreviewFieldMemory,
+	PreviewFieldDisk,
+	PreviewFieldLastPoll,
+}
+
+// DefaultHeaderFields is the controller's own status-bar header field order
+// when [ui.header].fields is unset — identical to today's header (version
+// badge, session-status counts, host load/memory/disk). harnesses and
+// last_poll are valid field names for [ui.header] too (a per-tool harness
+// count is meaningful locally; last_poll is not — the controller does not
+// poll itself — and is a silent no-op there) but are not part of the
+// default so the header's look never changes for users who set nothing.
+var DefaultHeaderFields = []string{
+	PreviewFieldVersion,
+	PreviewFieldSessionsByStatus,
+	PreviewFieldLoad,
+	PreviewFieldMemory,
+	PreviewFieldDisk,
+}
+
+// RemotePreviewSettings configures the remote preview panel's content.
+type RemotePreviewSettings struct {
+	// Fields lists which pieces of information the panel shows, in render
+	// order. Valid names: version, sessions_by_status, harnesses, load,
+	// memory, disk, last_poll. Unset/empty uses DefaultRemotePreviewFields.
+	// Unknown names are reported once at startup and dropped.
+	Fields []string `toml:"fields,omitempty"`
+}
+
+// HeaderSettings configures the controller's own status-bar header content.
+type HeaderSettings struct {
+	// Fields lists which pieces of information the header shows, in render
+	// order. Same vocabulary as RemotePreviewSettings.Fields. Unset/empty
+	// uses DefaultHeaderFields. Unknown names are reported once at startup
+	// and dropped.
+	Fields []string `toml:"fields,omitempty"`
+}
+
+// GetRemotePreviewFields returns the configured remote-preview field order,
+// falling back to DefaultRemotePreviewFields when unset.
+func (u UISettings) GetRemotePreviewFields() []string {
+	if len(u.RemotePreview.Fields) == 0 {
+		return append([]string(nil), DefaultRemotePreviewFields...)
+	}
+	return u.RemotePreview.Fields
+}
+
+// GetHeaderFields returns the configured header field order, falling back
+// to DefaultHeaderFields when unset.
+func (u UISettings) GetHeaderFields() []string {
+	if len(u.Header.Fields) == 0 {
+		return append([]string(nil), DefaultHeaderFields...)
+	}
+	return u.Header.Fields
+}
+
+// normalizeUIPreviewFields lowercases/trims and validates
+// [ui.remote_preview].fields and [ui.header].fields. Unknown entries are
+// logged once (at config load — see LoadUserConfig) via registryLog.Warn,
+// the same mechanism normalizeUIHiddenTools uses for [ui].hidden_tools, and
+// dropped rather than silently kept or silently ignored.
+func normalizeUIPreviewFields(ui *UISettings) {
+	if ui == nil {
+		return
+	}
+	ui.RemotePreview.Fields = normalizePreviewFieldList(ui.RemotePreview.Fields, "ui.remote_preview.fields")
+	ui.Header.Fields = normalizePreviewFieldList(ui.Header.Fields, "ui.header.fields")
+}
+
+func normalizePreviewFieldList(fields []string, key string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(fields))
+	for _, raw := range fields {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" {
+			continue
+		}
+		if !validPreviewFields[name] {
+			registryLog.Warn("ignored unknown "+key+" entry",
+				"name", raw,
+				"hint", "valid fields: version, sessions_by_status, harnesses, load, memory, disk, last_poll")
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // normalizeUIHiddenTools lowercases, dedupes, and drops unknown entries from
@@ -3406,6 +3538,7 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 
 	normalizeUIHiddenTools(&config.UI, config.Tools)
+	normalizeUIPreviewFields(&config.UI)
 
 	// Keep the in-group sort mode in lockstep with the loaded config. This is
 	// the single funnel for TUI, web, and CLI; ReloadUserConfig routes through

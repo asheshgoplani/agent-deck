@@ -702,7 +702,13 @@ type Home struct {
 	// version`, asked at most once per remoteVersionCheckInterval on the
 	// session poll and seeded from the shared cache file (#2164). Guarded
 	// by remoteSessionsMu.
-	remoteVersions     map[string]session.RemoteVersionState
+	remoteVersions map[string]session.RemoteVersionState
+	// remoteHostStats is each remote's most recent `system stats --json`
+	// poll outcome (see remoteHostStatsResult). Unlike remoteVersions, it is
+	// live-only: never persisted, and simply absent for a remote that has
+	// not answered yet or cannot (older agent-deck). Guarded by
+	// remoteSessionsMu.
+	remoteHostStats    map[string]remoteHostStatsResult
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
@@ -1630,6 +1636,29 @@ type remoteSessionsFetchedMsg struct {
 	// versions carries the `agent-deck version` answers collected this
 	// round, only for remotes whose cached answer was stale (#2164).
 	versions map[string]session.RemoteVersionState
+	// stats carries the remote's live load/memory/disk snapshot collected
+	// this round, keyed by remote name. Unlike versions, it is gathered
+	// every round (not throttled), but never blocks the round: a remote
+	// without the `system stats` subcommand or an unreachable one is simply
+	// absent, and the preview panel renders "stats unknown".
+	stats map[string]remoteHostStatsResult
+}
+
+// remoteHostStatsResult is one remote's stats poll outcome: the snapshot
+// (Stats.Ok is false when the remote could not answer), how long the SSH
+// round trip took, and when it landed — the preview panel's "last poll"
+// line.
+type remoteHostStatsResult struct {
+	Stats     session.RemoteHostStats
+	Latency   time.Duration
+	FetchedAt time.Time
+}
+
+// remoteStatsFetcher is the optional part of a remote fetch runner that can
+// ask the remote for its `system stats --json` snapshot; session.SSHRunner
+// satisfies it, test stubs need not.
+type remoteStatsFetcher interface {
+	FetchSystemStats(ctx context.Context) (session.RemoteHostStats, error)
 }
 
 // remoteLatenciesFetchedMsg is sent when an async batch of latency
@@ -4042,6 +4071,7 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 			// The version answer is a fact about the remote, not about
 			// which listing is newer: keep it (#2164).
 			h.recordRemoteVersions(msg.versions)
+			h.recordRemoteStats(msg.stats)
 		} else {
 			h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
 		}
@@ -4083,6 +4113,7 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	h.remoteSessionsMu.Unlock()
 	h.saveRemoteSessionsCache(msg.sessions)
 	h.recordRemoteVersions(msg.versions)
+	h.recordRemoteStats(msg.stats)
 	h.applyRemoteCosts(msg)
 	// #1112 bug 1: a remote running→waiting transition wouldn't update
 	// the header pill ("[◐ Waiting N]") because countSessionStatuses
@@ -4564,6 +4595,30 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 			}
 		}()
 	}
+	// The remote's live load/memory/disk snapshot rides the same round too,
+	// every poll (unlike the version check, which is throttled to once an
+	// hour): the preview panel already waits on this poll, so there is no
+	// new blocking work on the TUI hot path. An older remote without
+	// `system stats` (or an unreachable one) simply fails the call, and the
+	// panel renders "stats unknown" instead of guessing.
+	statsRunner, canStats := runner.(remoteStatsFetcher)
+	if canStats {
+		side.Add(1)
+		go func() {
+			defer side.Done()
+			statsCtx, statsCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+			defer statsCancel()
+			started := time.Now()
+			stats, err := statsRunner.FetchSystemStats(statsCtx)
+			if err != nil {
+				stats = session.RemoteHostStats{}
+			}
+			msg.stats = map[string]remoteHostStatsResult{
+				name: {Stats: stats, Latency: time.Since(started), FetchedAt: time.Now()},
+			}
+		}()
+	}
+
 	side.Add(2)
 	go func() {
 		defer side.Done()
@@ -17478,30 +17533,44 @@ func (h *Home) renderFrame() string {
 	}
 	title := titleStyle.Render(titleText)
 
+	// headerFields drives which of the header's optional segments render,
+	// in the same shared vocabulary as [ui.remote_preview].fields (see
+	// session.UISettings.GetHeaderFields). Unset config keeps every
+	// existing segment, so the header is byte-identical to before this
+	// config block existed.
+	headerFields := session.DefaultHeaderFields
+	if headerCfg, err := session.LoadUserConfig(); err == nil && headerCfg != nil {
+		headerFields = headerCfg.UI.GetHeaderFields()
+	}
+	headerFieldSet := make(map[string]bool, len(headerFields))
+	for _, f := range headerFields {
+		headerFieldSet[f] = true
+	}
+
 	// Status-based stats (more useful than group/session counts)
 	// Format: ● 2 running • ◐ 1 waiting • ○ 3 idle (• ✕ 1 error)
 	var statsParts []string
 	statsSep := lipgloss.NewStyle().Foreground(ColorBorder).Render(" • ")
 
-	if running > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && running > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorGreen).Render(fmt.Sprintf("● %d running", running)),
 		)
 	}
-	if waiting > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && waiting > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorYellow).Render(fmt.Sprintf("◐ %d waiting", waiting)),
 		)
 	}
-	if idle > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && idle > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf("○ %d idle", idle)),
 		)
 	}
-	if stopped > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && stopped > 0 {
 		// Issue #953: stopped sessions get their own segment so users can see
 		// at a glance how many sessions are intentionally off vs. errored.
 		statsParts = append(
@@ -17509,7 +17578,7 @@ func (h *Home) renderFrame() string {
 			lipgloss.NewStyle().Foreground(ColorTextDim).Render(fmt.Sprintf("■ %d stopped", stopped)),
 		)
 	}
-	if errored > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && errored > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorRed).Render(fmt.Sprintf("✕ %d error", errored)),
@@ -17520,7 +17589,7 @@ func (h *Home) renderFrame() string {
 	stats := ""
 	if len(statsParts) > 0 {
 		stats = strings.Join(statsParts, statsSep)
-	} else {
+	} else if headerFieldSet[session.PreviewFieldSessionsByStatus] {
 		stats = lipgloss.NewStyle().Foreground(ColorText).Render("no sessions")
 	}
 
@@ -17546,24 +17615,38 @@ func (h *Home) renderFrame() string {
 	}
 	if rendered := costs.RenderCostLine(h.costLineTemplate, costVars, h.costLineHideWhenZero); rendered != "" {
 		costStyle := lipgloss.NewStyle().Foreground(ColorCyan)
-		stats += statsSep + costStyle.Render(rendered)
+		if stats == "" {
+			stats = costStyle.Render(rendered)
+		} else {
+			stats += statsSep + costStyle.Render(rendered)
+		}
 	}
 
-	// System stats segment (CPU, RAM, etc.)
-	if h.sysStatsCollector != nil {
+	// System stats segment (CPU, RAM, etc.) — shown when [ui.header].fields
+	// requests any of load/memory/disk; the existing [system_stats] config
+	// still governs which of those sysinfo.Format actually renders.
+	headerWantsHostStats := headerFieldSet[session.PreviewFieldLoad] || headerFieldSet[session.PreviewFieldMemory] || headerFieldSet[session.PreviewFieldDisk]
+	if headerWantsHostStats && h.sysStatsCollector != nil {
 		sysStats := h.sysStatsCollector.Get()
 		formatted := sysinfo.Format(sysStats, h.sysStatsConfig.GetFormat(), h.sysStatsConfig.GetShow())
 		if formatted != "" {
 			sysStyle := lipgloss.NewStyle().Foreground(ColorComment)
-			stats += statsSep + sysStyle.Render(formatted)
+			if stats == "" {
+				stats = sysStyle.Render(formatted)
+			} else {
+				stats += statsSep + sysStyle.Render(formatted)
+			}
 		}
 	}
 
 	// Version badge (right-aligned, subtle inline style - no border to keep single line)
-	versionStyle := lipgloss.NewStyle().
-		Foreground(ColorComment).
-		Faint(true)
-	versionBadge := versionStyle.Render("v" + Version)
+	versionBadge := ""
+	if headerFieldSet[session.PreviewFieldVersion] {
+		versionStyle := lipgloss.NewStyle().
+			Foreground(ColorComment).
+			Faint(true)
+		versionBadge = versionStyle.Render("v" + Version)
+	}
 
 	// Fill remaining header space
 	headerLeft := lipgloss.JoinHorizontal(lipgloss.Left, logo, "  ", title, "  ", stats)
@@ -17910,7 +17993,12 @@ type EmptyStateConfig struct {
 	Icon     string
 	Title    string
 	Subtitle string
-	Hints    []string // Full list of hints (will be reduced based on space)
+	// Body is extra plain (non-bulleted) lines shown between Subtitle and
+	// Hints, one per element, in "full" and "compact" tiers only (dropped in
+	// "minimal", same as Subtitle). Unset by every caller except the remote
+	// group preview panel, which uses it for the version/stats block.
+	Body  []string
+	Hints []string // Full list of hints (will be reduced based on space)
 }
 
 // renderEmptyStateResponsive creates a centered empty state that adapts to available space
@@ -17972,6 +18060,15 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 			subtitle = subtitle[:maxSubtitleWidth-3] + "..."
 		}
 		content.WriteString(subtitleStyle.Render(subtitle))
+	}
+
+	// Body - extra plain lines, same tiers as Subtitle.
+	if len(config.Body) > 0 && tier != "minimal" {
+		content.WriteString("\n")
+		for _, line := range config.Body {
+			content.WriteString("\n")
+			content.WriteString(subtitleStyle.Render(line))
+		}
 	}
 
 	// Hints - progressive disclosure based on tier
@@ -20248,7 +20345,8 @@ func (h *Home) remoteSessionsInView(remoteName string) []session.RemoteSessionIn
 func (h *Home) renderRemotePreview(item session.Item, width, height int) string {
 	if item.Type == session.ItemTypeRemoteGroup {
 		h.remoteSessionsMu.RLock()
-		count := len(h.remoteSessionsInView(item.RemoteName))
+		sessions := h.remoteSessionsInView(item.RemoteName)
+		count := len(sessions)
 		h.remoteSessionsMu.RUnlock()
 
 		config, _ := session.LoadUserConfig()
@@ -20259,10 +20357,19 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 			}
 		}
 
+		versionState, _ := h.remoteVersionState(item.RemoteName)
+		statsResult, hasStats := h.remoteHostStatsState(item.RemoteName)
+		fields := session.DefaultRemotePreviewFields
+		if config != nil {
+			fields = config.UI.GetRemotePreviewFields()
+		}
+		body := remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields)
+
 		return renderEmptyStateResponsive(EmptyStateConfig{
 			Icon:     "⬡",
 			Title:    "Remote: " + item.RemoteName,
 			Subtitle: fmt.Sprintf("Host: %s — %d sessions", host, count),
+			Body:     body,
 			Hints:    []string{"Press Enter on a session to attach via SSH"},
 		}, width, height)
 	}
