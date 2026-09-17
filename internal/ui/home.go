@@ -14851,9 +14851,11 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 	if tool == "" {
 		tool = "claude"
 	}
-	command := tool
+	var command string
 	if tool == "shell" {
 		command = ""
+	} else {
+		tool, command = createSessionTool(tool)
 	}
 
 	preferred := deriveSessionNameFromPath(projectPath)
