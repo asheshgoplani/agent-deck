@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestMain isolates the package from the developer's real home directory.
@@ -16,25 +18,14 @@ import (
 // outside t.TempDir, but the isolation is unconditional so a test added later
 // cannot reintroduce the hazard.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "ctxinspect-codex-home-")
-	if err != nil {
-		panic("codex: cannot create isolated HOME for tests: " + err.Error())
+	cleanupHome := testutil.IsolateHome()
+	if err := os.Setenv("CODEX_HOME", filepath.Join(os.Getenv("HOME"), ".codex")); err != nil {
+		panic("codex: cannot isolate CODEX_HOME: " + err.Error())
 	}
-	for k, v := range map[string]string{
-		"HOME":              dir,
-		"XDG_CONFIG_HOME":   filepath.Join(dir, ".config"),
-		"XDG_DATA_HOME":     filepath.Join(dir, ".local", "share"),
-		"XDG_CACHE_HOME":    filepath.Join(dir, ".cache"),
-		"XDG_STATE_HOME":    filepath.Join(dir, ".local", "state"),
-		"CODEX_HOME":        filepath.Join(dir, ".codex"),
-		"AGENTDECK_PROFILE": "_test",
-	} {
-		if err := os.Setenv(k, v); err != nil {
-			panic("codex: cannot isolate " + k + ": " + err.Error())
-		}
-	}
+	cleanupTmux := testutil.IsolateTmuxSocket()
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	cleanupTmux()
+	cleanupHome()
 	os.Exit(code)
 }
 

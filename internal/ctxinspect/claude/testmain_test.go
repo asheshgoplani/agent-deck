@@ -3,6 +3,8 @@ package claude
 import (
 	"os"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestMain isolates the package from the developer's real home directory.
@@ -14,25 +16,14 @@ import (
 // cannot reintroduce the hazard — and so the memory walk, which reads $HOME
 // while expanding "~", can never reach the real one.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "ctxinspect-claude-home-")
-	if err != nil {
-		panic("claude: cannot create isolated HOME for tests: " + err.Error())
+	cleanupHome := testutil.IsolateHome()
+	if err := os.Setenv("CLAUDE_CONFIG_DIR", os.Getenv("HOME")+"/.claude"); err != nil {
+		panic("claude: cannot isolate CLAUDE_CONFIG_DIR: " + err.Error())
 	}
-	for k, v := range map[string]string{
-		"HOME":              dir,
-		"XDG_CONFIG_HOME":   dir + "/.config",
-		"XDG_DATA_HOME":     dir + "/.local/share",
-		"XDG_CACHE_HOME":    dir + "/.cache",
-		"XDG_STATE_HOME":    dir + "/.local/state",
-		"CLAUDE_CONFIG_DIR": dir + "/.claude",
-		"AGENTDECK_PROFILE": "_test",
-	} {
-		if err := os.Setenv(k, v); err != nil {
-			panic("claude: cannot isolate " + k + ": " + err.Error())
-		}
-	}
+	cleanupTmux := testutil.IsolateTmuxSocket()
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	cleanupTmux()
+	cleanupHome()
 	os.Exit(code)
 }
 
