@@ -3170,6 +3170,10 @@ func handleSessionSend(profile string, args []string) {
 			// left it. This is a delivery failure automation may retry once
 			// the composer clears, not an invalid operation.
 			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryTargetBusy:
+			// Nothing was typed: another send held the target for the whole
+			// bounded wait. Retry once it finishes.
+			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliverySocketWriteFailed:
 			// #2089: the write to the Claude messaging socket started and
 			// failed partway. The message may or may not have reached the
@@ -3675,6 +3679,10 @@ const (
 	deliverySendFailed = "send_failed"
 	// deliveryComposerBlocked: no input sent because composer safety was not established.
 	deliveryComposerBlocked = "composer_blocked"
+	// deliveryTargetBusy: no input sent because another send still held the
+	// per-target lock after the bounded wait (messaging audit P2-2, #2104).
+	// Nothing was typed, so a retry is safe.
+	deliveryTargetBusy = "target_busy"
 	// deliveryQueued: the message was typed and Entered once, and the
 	// target's hook-driven status reports it mid-turn (issue #2033). Claude
 	// holds such input as a queued message and takes it up when the turn
@@ -3893,7 +3901,7 @@ func (g *codexAcceptanceGuard) RecordTransportOutcome(delivery string, now time.
 		return fmt.Errorf("Codex submission marker is unavailable")
 	}
 	switch delivery {
-	case deliveryLineTooLong, deliveryComposerBlocked:
+	case deliveryLineTooLong, deliveryComposerBlocked, deliveryTargetBusy:
 		return session.ClearCodexSubmissionMarker(g.marker)
 	case deliverySubmitted:
 		return g.marker.MarkSubmitted(now)

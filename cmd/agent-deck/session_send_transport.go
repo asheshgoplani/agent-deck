@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -249,6 +250,11 @@ func sendTransportFromConfig() (value string, warn string) {
 	return cfg.GetSendTransport(), ""
 }
 
+// sendTargetLockWait bounds how long a send waits for another send to finish
+// with the same target. A tmux send holds the lock through its verification
+// window (a few seconds); a stuck holder surfaces as deliveryTargetBusy.
+var sendTargetLockWait = 30 * time.Second
+
 // performSend is the delivery-leg core of handleSessionSend (#2089): decide
 // tmux vs. Claude's messaging socket via chooseSendTransport, then execute
 // it. hookStatus, resolve and sendFn are seams (all nil in production,
@@ -293,6 +299,23 @@ func performSend(
 ) (sendDeliveryResult, error) {
 	if resolve == nil {
 		resolve = resolveClaudeSocketTargetForInstance
+	}
+	// Messaging audit P2-2 (#2104): one sender at a time per target. The lock
+	// spans the readiness guard, the paste, the Enter and the verification
+	// window on the tmux path, and the write on the socket path, so a second
+	// sender (daemon nudge, heartbeat, sibling) waits instead of interleaving
+	// keystrokes. Nothing has been typed when the wait runs out, so the busy
+	// verdict is a clean retry for automation.
+	if strings.TrimSpace(inst.ID) != "" {
+		lock, err := session.AcquireSendLock(inst.ID, sendTargetLockWait)
+		if err != nil {
+			if errors.Is(err, session.ErrConfigLockBusy) {
+				return sendDeliveryResult{delivery: deliveryTargetBusy},
+					fmt.Errorf("target busy with another send (waited %s): %w", sendTargetLockWait, err)
+			}
+			return sendDeliveryResult{delivery: deliveryTargetBusy}, fmt.Errorf("send lock: %w", err)
+		}
+		defer lock.Release()
 	}
 	transport, fallbackReason, target := chooseSendTransport(transportInputs{
 		tool:            inst.Tool,
