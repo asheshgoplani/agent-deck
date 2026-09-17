@@ -3150,7 +3150,10 @@ func handleSessionSend(profile string, args []string) {
 	// under --wait, which is the only caller that acts on the answer.
 	hookStatus := func() (string, error) { return fetchHookDrivenStatus(profile, sessionRef) }
 	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, *wait, hookStatus, nil, nil)
-	recordSendEvent(profile, inst.ID, sendRes, sendErr, sentAt)
+	// Computed now (accurate ack_ms), journaled after the verdict at every
+	// exit path below — never before it, per the same rule applied to
+	// handleSessionStop/handleSessionRestart.
+	sendDetail := sendEventDetail(sendRes, sendErr, sentAt)
 	if acceptanceGuard != nil {
 		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, time.Now()); markerErr != nil {
 			acceptanceGuard.Release()
@@ -3158,6 +3161,7 @@ func handleSessionSend(profile string, args []string) {
 			extra["session_id"] = inst.ID
 			extra["session_title"] = inst.Title
 			out.ErrorWithData(fmt.Sprintf("cannot persist Codex submission state: %v", markerErr), ErrCodeInvalidOperation, extra)
+			recordSendEvent(profile, inst.ID, sendDetail)
 			os.Exit(1)
 		}
 	}
@@ -3194,6 +3198,7 @@ func handleSessionSend(profile string, args []string) {
 		default:
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
+		recordSendEvent(profile, inst.ID, sendDetail)
 		os.Exit(1)
 	}
 
@@ -3281,6 +3286,7 @@ func handleSessionSend(profile string, args []string) {
 			out.Success(summary, sendData)
 		}
 	}
+	recordSendEvent(profile, inst.ID, sendDetail)
 
 	if !*stream && !*wait {
 		return

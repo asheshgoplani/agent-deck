@@ -233,15 +233,34 @@ func journalSendOutcome(delivery string, sendErr error) string {
 	return health.SendFailed
 }
 
-// recordSendEvent journals one send. ack_ms is only known for a confirmed
-// send: the time from the first byte to the observed acceptance.
-func recordSendEvent(profile, sessionID string, res sendDeliveryResult, sendErr error, sentAt time.Time) {
+// sendEventDetail computes one send's journal detail. ack_ms is only known
+// for a confirmed send: the time from the first byte to the observed
+// acceptance. Computed once, right after performSend returns, so the moved
+// journal write (recordSendEvent, run after the verdict) still measures the
+// real send latency rather than however long the verdict took to print.
+func sendEventDetail(res sendDeliveryResult, sendErr error, sentAt time.Time) map[string]any {
 	outcome := journalSendOutcome(res.delivery, sendErr)
 	detail := map[string]any{"outcome": outcome, "delivery": res.delivery, "transport": res.transport}
 	if outcome == health.SendConfirmed {
 		detail["ack_ms"] = health.Milliseconds(time.Since(sentAt))
 	}
+	return detail
+}
+
+// sendJournalWriter is recordSendEvent's actual journal append, indirected
+// so a test can substitute one that blocks and prove the CLI verdict prints
+// before it can ever stall on that write (see
+// TestSessionSendVerdictNotDelayedByBlockedJournal).
+var sendJournalWriter = func(profile, sessionID string, detail map[string]any) {
 	session.RecordSessionEvent(profile, sessionID, health.KindSend, detail)
+}
+
+// recordSendEvent journals one send's precomputed detail (see
+// sendEventDetail). Callers run this after the send verdict is printed and
+// the exit code decided: the journal write is synchronous, so a slow health
+// volume would otherwise delay the answer the user is waiting on.
+func recordSendEvent(profile, sessionID string, detail map[string]any) {
+	sendJournalWriter(profile, sessionID, detail)
 }
 
 // remoteMetricsUnsupported turns an older remote's "unknown session command"
