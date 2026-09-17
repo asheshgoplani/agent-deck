@@ -61,6 +61,61 @@ func TestCodexCompletionTimeoutRetainsAcceptedTurn(t *testing.T) {
 	}
 }
 
+// TestNoWaitCodexSendSkipsAcceptedTurnPoll is the timing regression for the
+// #2279 review finding: `session send --no-wait` (and any other non-wait
+// send) to a local Codex session must not pay the exact-generation poll,
+// which can run for the real codexAcceptedTurnPollTimeout default (2s) when
+// the rollout file's turn never advances past the fence. It deliberately
+// does NOT shorten codexAcceptedTurnPollTimeout/Interval — a shortened poll
+// would hide exactly the regression this test exists to catch (the PR under
+// review shortened the poll to 1ms in its own tests, so CI never saw the
+// 2s block).
+func TestNoWaitCodexSendSkipsAcceptedTurnPoll(t *testing.T) {
+	if codexAcceptedTurnPollTimeout < time.Second {
+		t.Fatalf("codexAcceptedTurnPollTimeout = %v; test requires the real (unshortened) default to be meaningful", codexAcceptedTurnPollTimeout)
+	}
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	path := filepath.Join(home, "sessions", "2026", "09", "17", "rollout-test-thread-nowait.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The fence's generation is the ONLY generation ever on disk, so if the
+	// poll runs it can never observe an advance and must burn the full
+	// codexAcceptedTurnPollTimeout before giving up.
+	if err := os.WriteFile(path, []byte(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-only"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst := &session.Instance{ID: "instance-nowait", Tool: "codex", CodexSessionID: "thread-nowait"}
+	fence := captureCodexAcceptanceFence(inst)
+	if !fence.available {
+		t.Fatal("fence setup failed; test cannot exercise the poll")
+	}
+
+	// Sanity check: prove this fence really would block for the full
+	// timeout if observed synchronously (i.e. the old, unconditional call
+	// site). This is what --no-wait must never pay.
+	blockingStart := time.Now()
+	if got := waitForAcceptedCodexTurn(inst, deliverySubmitted, time.Now(), fence); got != nil {
+		t.Fatalf("unexpected receipt from a fence with no new generation: %#v", got)
+	}
+	if elapsed := time.Since(blockingStart); elapsed < codexAcceptedTurnPollTimeout {
+		t.Fatalf("test setup does not actually block: waitForAcceptedCodexTurn returned in %v, want >= %v", elapsed, codexAcceptedTurnPollTimeout)
+	}
+
+	// The real assertion: routed through the wait-gated observation used by
+	// `session send`, a non-wait send must return immediately.
+	start := time.Now()
+	got := observeAcceptedCodexTurn(false, inst, deliverySubmitted, time.Now(), fence)
+	elapsed := time.Since(start)
+	if got != nil {
+		t.Fatalf("non-wait send must never observe an accepted turn: %#v", got)
+	}
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("--no-wait blocked for %v (>= 500ms budget); the accepted-turn poll must be skipped when not waiting", elapsed)
+	}
+}
+
 func TestStructuredCodexWaitRequiresExactAcceptedTurn(t *testing.T) {
 	codex := &session.Instance{Tool: "codex"}
 	if err := requireStructuredCodexAcceptedTurn(codex, true, true, nil); err == nil {

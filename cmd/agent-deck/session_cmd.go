@@ -3887,6 +3887,32 @@ func newCodexAcceptedTurnReceipt(
 	}
 }
 
+// observeAcceptedCodexTurn returns the accepted-turn receipt for a `session
+// send`, but only when the caller can actually consume it. A `--wait` send
+// reads accepted_turn immediately (for the wait&&json eager-ack skip) and
+// again at the completion boundary, so it pays the exact-generation poll. A
+// non-wait send (including --no-wait heartbeats and plain human sends)
+// never reads accepted_turn, and the acceptance guard's own release logic
+// (retainCodexAcceptanceGuardForCompletion) already treats every non-wait
+// send identically whether or not this observation ran — so skipping it
+// changes no correctness guarantee, only removes a blocking wait.
+//
+// Before this gate, every local Codex send blocked here for up to
+// codexAcceptedTurnPollTimeout regardless of --wait/--no-wait, adding
+// latency to --no-wait heartbeats and nudges (issue #2279 review).
+func observeAcceptedCodexTurn(
+	wait bool,
+	inst *session.Instance,
+	delivery string,
+	acceptedAt time.Time,
+	fence codexAcceptanceFence,
+) *codexAcceptedTurnReceipt {
+	if !wait {
+		return nil
+	}
+	return waitForAcceptedCodexTurn(inst, delivery, acceptedAt, fence)
+}
+
 func waitForAcceptedCodexTurn(
 	inst *session.Instance,
 	delivery string,
