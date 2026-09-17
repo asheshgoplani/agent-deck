@@ -36,10 +36,10 @@ func Glossary() []GlossaryTerm {
 		{"anchor", "the one token figure the provider itself measured, read back from the harness's own record of a real turn. Every other total is reconciled against it. Without an anchor nothing here is measured, only estimated."},
 		{"attributed", "the part of the anchor agent-deck can point at a named file, skill or server."},
 		{"unattributed remainder", "the rest: anchor minus attributed. It is the harness's own system prompt and built-in tool schemas — real, usually the largest single figure in the report, and nothing you can do removes it. Also called the residual, because it is obtained by subtraction rather than by measuring anything."},
-		{"reconciliation / self-check", "the report grading its own arithmetic: does attributed plus remainder equal the anchor, and does every figure obey the rules the report claims for it. OK means it does. FAILED means it does not, and nothing on the screen should be trusted."},
+		{"reconciliation", "the report grading its own arithmetic: does attributed plus remainder equal the anchor, and does every figure obey the rules the report claims for it. OK means it does. FAILED means it does not, and nothing on the screen should be trusted."},
 		{"lever", "the specific thing you can do about one item: edit a file, delete a directory, or run a named command. An item with no lever is marked 🔒."},
 		{"CAPT", "text axis: captured verbatim from a record the harness itself wrote. The strongest thing this report can say."},
-		{"RECON", "text axis: reconstructed by re-running the harness's own discovery rules over the files as they are RIGHT NOW. Two things follow. It should match what the harness loaded, but a change on their side could make it differ; and a session that is already running is still sending the copy it booted with, so editing one of these files moves the figure here before it moves anything the model receives — restart the session for the two to agree. (In the footer, `self-check` is the arithmetic verdict — a different thing entirely, which is why it no longer shares this abbreviation.)"},
+		{"RECON", "text axis: reconstructed by re-running the harness's own discovery rules over the files as they are RIGHT NOW. Two things follow. It should match what the harness loaded, but a change on their side could make it differ; and a session that is already running is still sending the copy it booted with, so editing one of these files moves the figure here before it moves anything the model receives — restart the session for the two to agree. (In the footer, `reconciliation` is the arithmetic verdict — a different thing entirely, which is why it does not share this abbreviation.)"},
 		{"ABSENT", "text axis: known to be in the context window, and not readable from disk. The cost may still be known even when the bytes are not."},
 		{"~est", "token axis: estimated by agent-deck rather than measured by the provider. The footer states the method and, when there is a measured figure to check it against, the error bound."},
 		{"POTENTIAL", "what a deferred item would cost if it were fully loaded. It is never added to any total, because today it costs what the TOKENS column says."},
@@ -54,7 +54,7 @@ func Glossary() []GlossaryTerm {
 // line and the definition indented under it.
 //
 // Two lines per term rather than a table, because the definitions are sentences
-// and a term column padded to the width of "reconciliation / self-check" leaves
+// and a term column padded to the width of "unattributed remainder" leaves
 // a 40-column terminal nothing to put them in. Each surface wraps them at its
 // own width; nothing here assumes one.
 func GlossaryLines() []string {

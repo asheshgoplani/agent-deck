@@ -1150,7 +1150,7 @@ func validateItem(category string, it Item) []string {
 		// certainty about content nobody looked at, and exactly the failure the
 		// provenance model exists to prevent. See [AvailableUnknownCost].
 		if val, ok := actual.Value(); ok && val != 0 {
-			v = append(v, where+" is marked available but reports a positive cost: content that is not loaded cannot cost anything")
+			v = append(v, where+" is marked available but reports a positive cost: an available item may only cost a certain zero or an explicit unknown, never a positive number for content that is not loaded")
 		}
 	}
 	if it.Content.Prov == TextAbsent && it.Content.Text != "" {

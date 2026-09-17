@@ -1755,7 +1755,7 @@ func (p *ContextPager) verdictLine() string {
 	// "RECON" here is the arithmetic verdict; "RECON" in the PROVENANCE column
 	// is text that was reconstructed. One screen, one abbreviation, two
 	// unrelated meanings. This one spells itself out.
-	out := "self-check: " + contextReconLabel(rec)
+	out := "reconciliation: " + contextReconLabel(rec)
 	if rec.Status == ctxinspect.ReconOK {
 		// A bare "coverage 1.8%" next to an OK verdict reads as "this report is
 		// 1.8% reliable". It is the share of measured tokens that carry a name,

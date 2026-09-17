@@ -489,12 +489,20 @@ func (a *Adapter) agentsMDCategory(req ctxinspect.Request, head *Head, est ctxin
 			// Per file, not per block: a 90%-of-the-whole-block threshold says
 			// nothing about which file the missing 10% belongs to, and stays
 			// silent at 91% even when this particular file is the gap.
-			caveats = append(caveats, ctxinspect.Caveat{
+			//
+			// Recorded both on the item, so the row itself explains its own
+			// pricing, and on the report, so the screens that list caveats
+			// without walking every item (the CLI overview, the Verify tab)
+			// still name the file. The block-level "some of this is
+			// unattributed" caveat elsewhere does not say which file that is.
+			unmatched := ctxinspect.Caveat{
 				Code:     "agents-md-file-unmatched",
 				Message:  fmt.Sprintf("%s did not match the injected block byte-for-byte, and the block still has unattributed text. Attribution is by exact bytes, so a file edited since this session started no longer matches what was injected. Whatever of it is in the block is priced in the unattributed row.", f.Path),
 				Severity: ctxinspect.SeverityWarn,
 				Category: CategoryAgentsMD,
-			})
+			}
+			caveats = append(caveats, unmatched)
+			rep.Caveats = append(rep.Caveats, unmatched)
 		}
 
 		cat.Items = append(cat.Items, ctxinspect.Item{

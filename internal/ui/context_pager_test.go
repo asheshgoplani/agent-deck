@@ -499,6 +499,22 @@ func TestContextPagerVerdictAndCalibrationVisibleOnEveryScreen(t *testing.T) {
 	check("verify")
 }
 
+// TestContextPagerVerdictLineUsesReconciliationLabel pins the footer's own
+// label: it must say "reconciliation:", matching the term the CLI overview
+// and the Verify tab already use, not the old "self-check:" wording.
+func TestContextPagerVerdictLineUsesReconciliationLabel(t *testing.T) {
+	rep := buildContextTestReport()
+	p := newContextPagerForTest(t, rep)
+
+	got := p.verdictLine()
+	if !strings.HasPrefix(got, "reconciliation: ") {
+		t.Fatalf("verdictLine() = %q, want it to start with %q", got, "reconciliation: ")
+	}
+	if strings.Contains(got, "self-check") {
+		t.Fatalf("verdictLine() = %q, still carries the retired self-check label", got)
+	}
+}
+
 func TestContextPagerUnknownTokensRenderAsDashNeverZero(t *testing.T) {
 	if got := contextTokenCount(ctxinspect.UnknownTokens("no figure")); got != "—" {
 		t.Fatalf("an unknown count rendered as %q, want an em dash", got)
