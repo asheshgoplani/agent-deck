@@ -59,6 +59,19 @@ const (
 	// formed there (see internal/session/usagelimit.go, #1802) and surfaced
 	// through Instance.Substate rather than ClassifySubstate.
 	SubstateUsageLimit Substate = "usage-limit"
+
+	// SubstateUnknownExit marks a terminated-pane classification made with NO
+	// evidence at all: the tmux pane vanished without a captured exit code
+	// (no remain-on-exit), and this hook-emitting session never recorded a
+	// single hook status either. classifyTerminatedPane still reports the
+	// coarse status as "error" (unchanged, historical default — see #2091),
+	// but that verdict is a GUESS, not a fact: a crash and a clean exit that
+	// raced pane teardown look identical here. This substate is what keeps
+	// the guess from rendering as confirmed fact (see
+	// pattern_unknown_as_first_class_state) — callers that gate on substate
+	// (self-heal, auto-restart) must treat it like auth-401/model-unavailable
+	// and hold off rather than act on an unverified crash.
+	SubstateUnknownExit Substate = "unknown-exit"
 )
 
 // modelUnavailableSubstrings are fragments of the Fable/model-down no-op the

@@ -89,6 +89,7 @@ const (
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
+	SubstateUnknownExit       = tmux.SubstateUnknownExit
 )
 
 const wrapperPlaceholder = "{command}"
@@ -556,6 +557,16 @@ type Instance struct {
 	restartDB atomic.Pointer[statedb.StateDB]
 
 	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
+
+	// terminatedPaneSubstate is set alongside i.Status by classifyTerminatedPane
+	// (via terminatedPaneStatus/applyTerminatedPaneStatus). It is SubstateNone
+	// except for SubstateUnknownExit (#2091): a terminated-pane StatusError
+	// verdict reached with no exit code AND no hook record, i.e. a guess, not a
+	// fact. Recomputed on every terminated-pane classification and cleared on
+	// restart (see Start / the "session exists again" branch in UpdateStatus),
+	// so it never persists across a lost process (a cold reload recomputes it
+	// from the same exit-code/hook-file evidence, no disk state needed).
+	terminatedPaneSubstate Substate
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
@@ -5931,7 +5942,9 @@ func (i *Instance) terminatedPaneStatus() Status {
 	if i.tmuxSession != nil {
 		exitCode, haveExitCode = i.tmuxSession.PaneDeadExitStatus()
 	}
-	return classifyTerminatedPane(exitCode, haveExitCode, i.Tool)
+	status, substate := classifyTerminatedPane(exitCode, haveExitCode, i.Tool, i.hookStatus)
+	i.terminatedPaneSubstate = substate
+	return status
 }
 
 // applyTerminatedPaneStatus writes the terminated-pane classification to
@@ -5951,6 +5964,7 @@ func (i *Instance) applyTerminatedPaneStatus() {
 	tmuxSession := i.tmuxSession
 	tool := i.Tool
 	paneDeadExitStatus := i.paneDeadExitStatusForTest
+	hookStatus := i.hookStatus
 
 	i.mu.Unlock()
 	exitCode, haveExitCode := 0, false
@@ -5960,28 +5974,67 @@ func (i *Instance) applyTerminatedPaneStatus() {
 		}
 		exitCode, haveExitCode = paneDeadExitStatus()
 	}
-	status := classifyTerminatedPane(exitCode, haveExitCode, tool)
+	status, substate := classifyTerminatedPane(exitCode, haveExitCode, tool, hookStatus)
 	i.mu.Lock()
 
 	if i.Status != StatusStopped {
 		i.Status = status
+		i.terminatedPaneSubstate = substate
 	}
+}
+
+// hookEmittingTool reports whether tool is one of the CLIs that publish
+// lifecycle hook events (see the HOOK FAST PATH condition in UpdateStatus,
+// which this mirrors) — the only tools for which a recorded hookStatus is
+// meaningful evidence for classifyTerminatedPane.
+func hookEmittingTool(tool string) bool {
+	return IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
+		tool == "gemini" || tool == "hermes" || tool == "cursor"
 }
 
 // classifyTerminatedPane is the pure decision behind terminatedPaneStatus,
 // split out so the clean-exit-vs-crash rule can be exercised without a live
 // tmux server. See terminatedPaneStatus for the full rationale.
-func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status {
+//
+// hookStatus is the instance's last-known hook-reported status ("running",
+// "waiting", "idle", "dead", or "" if no hook was ever observed). It is the
+// fix for issue #2091: a hook-emitting tool (Claude, Codex, ...) that
+// finishes its turn fires a Stop-edge hook BEFORE its pane necessarily goes
+// away, so when the pane vanishes without a captured exit code (no
+// remain-on-exit), that recorded hook status is the deciding evidence — not
+// a blind per-tool guess:
+//
+//   - hookStatus "waiting"/"idle": the tool already reported a clean turn
+//     completion. Losing the pane after that is not a crash signal — the
+//     TOCTOU the issue describes is exactly the classifier ignoring this
+//     already-recorded fact. → StatusStopped.
+//   - hookStatus "running"/"starting"/"dead": a turn was still in flight (or
+//     the hook itself reported a dead session) when the pane vanished — a
+//     real crash. → StatusError.
+//   - hookStatus "" (no hook record ever seen for this session): there is no
+//     evidence either way. The historical default is preserved (StatusError)
+//     for backward compatibility, but SubstateUnknownExit says this verdict
+//     is a guess, not a fact (see pattern_unknown_as_first_class_state) —
+//     callers must not treat it as a confirmed crash for e.g. auto-restart.
+func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string, hookStatus string) (Status, Substate) {
 	if haveExitCode {
 		if exitCode == 0 {
-			return StatusStopped
+			return StatusStopped, SubstateNone
 		}
-		return StatusError
+		return StatusError, SubstateNone
 	}
 	if tool == "opencode" {
-		return StatusStopped
+		return StatusStopped, SubstateNone
 	}
-	return StatusError
+	if hookEmittingTool(tool) {
+		switch hookStatus {
+		case "waiting", "idle":
+			return StatusStopped, SubstateNone
+		case "":
+			return StatusError, SubstateUnknownExit
+		}
+	}
+	return StatusError, SubstateNone
 }
 
 func (i *Instance) UpdateStatus() error {
@@ -10862,11 +10915,28 @@ func (i *Instance) Substate() Substate {
 	if i.usageLimited() {
 		return SubstateUsageLimit
 	}
+	if s := i.getTerminatedPaneSubstate(); s != SubstateNone {
+		return s
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone
 	}
 	return tmuxSess.GetSubstate()
+}
+
+// getTerminatedPaneSubstate returns the terminated-pane substate recorded by
+// classifyTerminatedPane, gated on the session still being in StatusError
+// from that same terminated-pane path — any later real status change
+// (restart, hook activity) must not keep surfacing a stale verdict. Acquires
+// its own lock; callers must not already hold i.mu.
+func (i *Instance) getTerminatedPaneSubstate() Substate {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.Status != StatusError {
+		return SubstateNone
+	}
+	return i.terminatedPaneSubstate
 }
 
 // CachedSubstate returns the last substate computed by a prior status check
@@ -10884,6 +10954,9 @@ func (i *Instance) CachedSubstate() Substate {
 	// surfaces while looking supported. usage-limit is a live-Substate signal in
 	// this change (CLI/JSON/fleet); wiring the cached path belongs with whatever
 	// populates it. See usagelimit.go (#1802).
+	if s := i.getTerminatedPaneSubstate(); s != SubstateNone {
+		return s
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone
