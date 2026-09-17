@@ -73,6 +73,19 @@ func (p *OMPOptionsPanel) Blur() {
 }
 func (p *OMPOptionsPanel) IsFocused() bool { return p.focused }
 func (p *OMPOptionsPanel) AtTop() bool     { return p.cursor == 0 }
+
+// AtBottom reports whether focus is on the panel's last control (the
+// "from codex" toggle), so the enclosing dialog knows when Tab/Enter/↓
+// should leave the panel instead of moving within it.
+func (p *OMPOptionsPanel) AtBottom() bool { return p.cursor >= 13 }
+
+// FocusLast focuses the panel's last control, so a backward move
+// (Shift+Tab or ↑ from the row below) enters the panel at its bottom.
+func (p *OMPOptionsPanel) FocusLast() {
+	p.cursor = 13
+	p.syncFocus()
+}
+
 func (p *OMPOptionsPanel) FocusedLine() int {
 	if !p.focused {
 		return -1
