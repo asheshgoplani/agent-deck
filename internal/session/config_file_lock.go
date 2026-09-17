@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 // Serialization for read-modify-write cycles on a shared config file.
@@ -109,6 +111,29 @@ func resolveConfigLockPath(configPath string) (resolved, lockPath string, err er
 // AcquireConfigFileLock blocks until this process and this host both hold
 // exclusive access to configPath. The returned lock must be released.
 func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
+	return acquireConfigFileLock(configPath, 0)
+}
+
+// ErrConfigLockBusy is returned by AcquireConfigFileLockTimeout when another
+// goroutine or process still holds the lock after the bounded wait.
+var ErrConfigLockBusy = errors.New("config file lock: busy")
+
+// AcquireConfigFileLockTimeout is AcquireConfigFileLock with a bounded wait:
+// it returns ErrConfigLockBusy (wrapped) if the lock is not acquired within
+// wait. Used where waiting forever would be worse than trying again later,
+// such as the inbox drain (messaging audit P1-3): a holder that is stuck
+// must not wedge the parent's Stop hook.
+func AcquireConfigFileLockTimeout(configPath string, wait time.Duration) (*ConfigFileLock, error) {
+	if wait <= 0 {
+		wait = time.Nanosecond
+	}
+	return acquireConfigFileLock(configPath, wait)
+}
+
+// lockPollInterval paces the bounded-wait retry loop.
+const lockPollInterval = 10 * time.Millisecond
+
+func acquireConfigFileLock(configPath string, wait time.Duration) (*ConfigFileLock, error) {
 	resolved, lockPath, err := resolveConfigLockPath(configPath)
 	if err != nil {
 		return nil, err
@@ -116,7 +141,18 @@ func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
 
 	mIface, _ := configFileMu.LoadOrStore(resolved, &sync.Mutex{})
 	m := mIface.(*sync.Mutex)
-	m.Lock()
+	var deadline time.Time
+	if wait > 0 {
+		deadline = time.Now().Add(wait)
+		for !m.TryLock() {
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("%w: %s (in-process)", ErrConfigLockBusy, resolved)
+			}
+			time.Sleep(lockPollInterval)
+		}
+	} else {
+		m.Lock()
+	}
 
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		m.Unlock()
@@ -127,7 +163,26 @@ func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
 		m.Unlock()
 		return nil, fmt.Errorf("open config lock file %s: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if wait > 0 {
+		for {
+			err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+				break
+			}
+			if time.Now().After(deadline) {
+				_ = f.Close()
+				m.Unlock()
+				return nil, fmt.Errorf("%w: %s", ErrConfigLockBusy, resolved)
+			}
+			time.Sleep(lockPollInterval)
+		}
+	} else {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	}
+	if err != nil {
 		_ = f.Close()
 		m.Unlock()
 		return nil, fmt.Errorf("flock config %s: %w", resolved, err)
