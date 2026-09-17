@@ -5623,8 +5623,46 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		composerPasteFreeBeforeSend = !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
 	}
 
-	if err := i.tmuxSession.SendKeysAndEnter(message); err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
+	// Issue #2079: a large or slow-mounting composer can swallow the leading
+	// bytes of a paste, submitting a truncated tail that the agent answers as
+	// if it were the whole prompt — and every downstream signal (composer
+	// empty, agent went active) reads identically to a clean delivery. For a
+	// Claude-compatible target the multi-line transport collapses whatever
+	// landed behind a "[Pasted text #N +M lines]" marker whether the paste
+	// arrived whole or was cut short, so the declared M is checked against the
+	// message's real line count BEFORE Enter is pressed — the only point
+	// after which a truncated fragment could still be caught rather than
+	// already being submitted. A mismatch withholds Enter and fails the send
+	// loudly instead of silently reporting success on a fragment.
+	var sendErr error
+	if expectedLines := send.ExpectedPasteMarkerLines(message); expectedLines > 0 && UsesClaudeDeliveryVerify(i.Tool) {
+		sendErr = i.tmuxSession.SendKeysAndEnterChecked(message, i.tmuxSession.CapturePaneFresh, func(pane string, capErr error) (bool, error) {
+			if capErr != nil {
+				// Capture failure is unknown, not unsafe — the pre-#2079
+				// behavior (bare Enter, no check at all) proceeds rather than
+				// blocking delivery on an unrelated pane-read glitch.
+				return true, nil
+			}
+			counts := send.PasteMarkerLineCounts(pane)
+			if len(counts) == 0 {
+				// No marker rendered yet: either the composer hasn't
+				// repainted (benign render lag — the 300ms verify loop below
+				// still catches an unsent prompt) or this pane never frames
+				// pastes at all. Best effort, unchanged from pre-#2079.
+				return true, nil
+			}
+			if declared := counts[len(counts)-1]; declared < expectedLines {
+				return false, fmt.Errorf(
+					"prompt truncated in transit: composer shows a %d-line paste but the message has %d lines; refusing to submit a partial prompt",
+					declared, expectedLines)
+			}
+			return true, nil
+		})
+	} else {
+		sendErr = i.tmuxSession.SendKeysAndEnter(message)
+	}
+	if sendErr != nil {
+		return fmt.Errorf("failed to send message: %w", sendErr)
 	}
 
 	// The verify loop below keys off Claude-specific signals (an

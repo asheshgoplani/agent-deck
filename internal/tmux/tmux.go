@@ -5834,7 +5834,7 @@ func (s *Session) SendNamedKey(key string) error {
 // bracketed paste, contrary to what this comment previously claimed — only
 // `paste-buffer -p` frames, and only when the pane app has enabled it.)
 func (s *Session) SendKeysAndEnter(keys string) error {
-	return s.sendKeysAndEnterToTarget(s.Name, keys)
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, nil, nil)
 }
 
 // SendKeysAndEnterToWindow is SendKeysAndEnter aimed at a specific tmux window
@@ -5842,12 +5842,44 @@ func (s *Session) SendKeysAndEnter(keys string) error {
 // to deliver "1"+Enter to the exact window showing a Claude prompt, which is
 // often not the active one in a multi-window session.
 func (s *Session) SendKeysAndEnterToWindow(windowIndex int, keys string) error {
-	return s.sendKeysAndEnterToTarget(s.windowTarget(windowIndex), keys)
+	return s.sendKeysAndEnterCheckedToTarget(s.windowTarget(windowIndex), keys, nil, nil)
+}
+
+// PostPasteCheck inspects the pane immediately after the body has been staged
+// into it but BEFORE Enter is pressed, and decides whether it is safe to
+// submit. pane is the fresh capture capture() returned (StripANSI not
+// applied); captureErr is non-nil when capture() itself failed. Returning
+// ok=false withholds the Enter; err, if non-nil, is what
+// SendKeysAndEnterChecked returns instead of pressing it.
+//
+// This is the one hook point that can see the composer after the write and
+// before the submit — the only place a caller can catch a paste that landed
+// truncated (issue #2079) instead of pressing Enter on a fragment and
+// discovering the loss only after the agent has already answered it.
+type PostPasteCheck func(pane string, captureErr error) (ok bool, err error)
+
+// SendKeysAndEnterChecked is SendKeysAndEnter with a verification step
+// inserted between the paste and the Enter: once the body is staged, capture
+// is called and its result handed to check. A false ok withholds Enter
+// entirely and SendKeysAndEnterChecked returns check's err (or a generic
+// error when err is nil).
+//
+// check == nil (capture is then never called) reproduces SendKeysAndEnter's
+// unconditional behavior exactly, so every existing caller is unaffected.
+func (s *Session) SendKeysAndEnterChecked(keys string, capture func() (string, error), check PostPasteCheck) error {
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check)
 }
 
 // sendKeysAndEnterToTarget is the shared implementation behind SendKeysAndEnter
-// (active window) and SendKeysAndEnterToWindow (explicit window).
+// (active window) and SendKeysAndEnterToWindow (explicit window), kept as a
+// thin alias so any future direct callers reads unchanged.
 func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
+	return s.sendKeysAndEnterCheckedToTarget(target, keys, nil, nil)
+}
+
+// sendKeysAndEnterCheckedToTarget is the shared implementation behind
+// SendKeysAndEnter, SendKeysAndEnterToWindow and SendKeysAndEnterChecked.
+func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture func() (string, error), check PostPasteCheck) error {
 	s.invalidateCache()
 	// Pin the pane before anything else touches it. A session-name target is
 	// re-resolved by tmux on EVERY command, so the probe, the body and the
@@ -5875,6 +5907,21 @@ func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 	// before Enter arrives. Without this, tmux 3.2+ paste sequences cause
 	// the immediately-following Enter to be swallowed by the paste handler.
 	time.Sleep(100 * time.Millisecond)
+	if check != nil {
+		var pane string
+		var capErr error
+		if capture != nil {
+			pane, capErr = capture()
+		} else {
+			capErr = fmt.Errorf("SendKeysAndEnterChecked: no capture function provided")
+		}
+		if ok, err := check(pane, capErr); !ok {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("prompt delivery check withheld the submit")
+		}
+	}
 	// sendEnterRaw (not SendEnter): we already guaranteed insert mode above and
 	// the paste keeps us in insert; re-escaping here would drop back to normal
 	// mode and swallow the submit.
