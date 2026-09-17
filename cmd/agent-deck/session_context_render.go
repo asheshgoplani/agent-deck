@@ -92,6 +92,7 @@ func renderContextOverview(v contextView) string {
 	b.WriteString("  " + contextActionableLine(rep) + "\n")
 	b.WriteString("\n")
 
+	_, unsupported := contextTokenAccountingUnsupported(rep)
 	rows := [][]string{{"TOKENS", "POTENTIAL", "PROVENANCE", "CATEGORY"}}
 	for _, cat := range rep.Categories {
 		// DisplayTotal, not Total: a category whose contents were never
@@ -104,7 +105,7 @@ func renderContextOverview(v contextView) string {
 			formatTotalTokens(total, catComplete),
 			potentialCell(potential, hasPotential),
 			categoryBadgeCell(cat),
-			categorySummary(cat),
+			categorySummary(cat, unsupported),
 		})
 	}
 	if rep.Unaccounted != nil {
@@ -150,7 +151,7 @@ func renderContextOverview(v contextView) string {
 		b.WriteString(fmt.Sprintf("  %d note%s about how these figures were obtained: pass --verbose to read them.\n", notes, plural(notes)))
 	}
 	b.WriteString("  " + estimatorFooter(rep) + "\n")
-	b.WriteString("  self-check: " + reconVerdict(rep.Reconciliation) + "\n")
+	b.WriteString("  reconciliation: " + reconVerdict(rep.Reconciliation) + "\n")
 
 	// The first screen holds back the caveats that say nothing is wrong. Warns
 	// and bugs stay, because they are the ones that change how a figure above
@@ -239,16 +240,35 @@ func renderContextQuiet(v contextView) string {
 
 // categorySummary is the right-hand cell of an overview row: the title plus the
 // counts that tell the user whether it is worth opening.
-func categorySummary(cat ctxinspect.Category) string {
+//
+// unsupported says this harness exposes no token accounting agent-deck can
+// read, and asks for item labels instead of a count. The row above already
+// says "what follows is an inventory of what is configured, not a measurement
+// of what is loaded" — a count is a measurement, so honoring that promise
+// means naming the items, not tallying them.
+func categorySummary(cat ctxinspect.Category, unsupported bool) string {
+	title := strings.TrimSpace(cat.Title)
+	if title == "" {
+		title = cat.Name
+	}
+	// A handful of names read as an inventory; four dozen MCP servers read as
+	// a wall of text and would have been better off as the count they no
+	// longer are. Above the cap this falls back to counting after all — an
+	// unsupported harness has plenty of single- and few-item categories
+	// (instruction files, AGENTS.md) where naming them is exactly the point.
+	const maxNamedItems = 8
+	if unsupported && len(cat.Items) > 0 && len(cat.Items) <= maxNamedItems {
+		labels := make([]string, 0, len(cat.Items))
+		for _, it := range cat.Items {
+			labels = append(labels, firstNonEmpty(strings.TrimSpace(it.Label), it.ID))
+		}
+		return title + ": " + strings.Join(labels, ", ")
+	}
 	actionable := 0
 	for _, it := range cat.Items {
 		if it.Actionable() {
 			actionable++
 		}
-	}
-	title := strings.TrimSpace(cat.Title)
-	if title == "" {
-		title = cat.Name
 	}
 	// "(0 items)" is a count, and a count is a measurement. A category whose
 	// contents were never established has nothing to count, and printing zero
@@ -698,7 +718,7 @@ func renderContextVerify(v contextView) string {
 
 	b.WriteString("\n  verdict:  " + reconVerdict(rec) + "\n")
 	if rec.Status == ctxinspect.ReconOK {
-		b.WriteString(fmt.Sprintf("  attributed to a named item: %.1f%% of the measured total (the rest is the harness's own prompt and tool schemas)\n", rec.Coverage))
+		b.WriteString(fmt.Sprintf("  coverage: %.1f%% of the measured total is attributed to a named item (the rest is the harness's own prompt and tool schemas)\n", rec.Coverage))
 	}
 	b.WriteString("  " + estimatorFooter(rep) + "\n")
 
