@@ -669,10 +669,12 @@ Lists all configured remotes. The VERSION column shows the agent-deck version ea
 ### remote sessions
 
 ```bash
-agent-deck remote sessions [name] [--json]
+agent-deck remote sessions [name] [--json] [--with-errors|--json-envelope]
 ```
 
-Fetches active sessions from all remotes, or from a specific remote if `name` is provided. Displays title, tool, live status, and session ID. Use `--json` for scripting.
+Fetches active sessions from all remotes, or from a specific remote if `name` is provided. Displays title, tool, live status, and session ID. Use `--json` for scripting: it emits a bare array of sessions, so consumers piping through `jq '.[]'` keep working. Per-remote fetch failures are printed in text mode but are not visible in the bare-array JSON.
+
+To also see fetch failures in JSON, add `--with-errors` (or the equivalent `--json-envelope`, which implies `--json`): the output becomes `{"sessions": [...], "errors": [{"name", "host", "error"}]}` and the command exits `1` if any remote failed. This envelope is always opt-in, so the plain `--json` shape stays stable for existing scripts.
 
 In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
 
