@@ -105,6 +105,12 @@ token), not that the release is bad.
 The two notify workflows expect `secrets.NTFY_TOPIC` to be set on the repo. None of these block
 anything — they can fail silently without affecting merges.
 
+## Merge automation (no gate, no build)
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `dependabot-automerge.yml` | `pull_request_target` opened or synchronized by `dependabot[bot]` | Enables GitHub auto-merge (squash) on Dependabot PRs whose `dependabot/fetch-metadata` update-type is `semver-patch` or `semver-minor` and that touch nothing under `.github/`. It never approves the PR and never bypasses the ruleset: the merge still waits for the required human review and the four required checks (`intake`, `Full test suite (PR gate)`, `golangci`, `analyze`). Major bumps and `.github/` changes are skipped and keep the normal review path (#2131). |
+
 ## Schedule-only (alert-only, not a PR gate)
 
 | Workflow | Trigger | What it does |
