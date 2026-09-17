@@ -421,6 +421,18 @@ func TestRemoteCommandArgsSessionArchiveVerbs(t *testing.T) {
 	}
 }
 
+// `session context` reads context-inspection data the server holds (transcripts,
+// instruction files, MCP catalogue); the passthrough must forward it like the
+// other read-only session verbs.
+func TestRemoteCommandArgsSessionContext(t *testing.T) {
+	for _, args := range [][]string{{"session", "context", "id"}, {"session", "context", "id", "--json"}} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+}
+
 // `session set` (title, title lock, parent, tool session id) is a plain
 // registry update the server owns, so the passthrough forwards it verbatim.
 func TestRemoteCommandArgsSessionSet(t *testing.T) {

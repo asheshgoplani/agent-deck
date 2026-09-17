@@ -84,6 +84,31 @@ func codexRolloutPathInHome(sessionID, codexHome string) string {
 	return matches[0]
 }
 
+// CodexHomeDirForInstance returns the CODEX_HOME directory that applies to a
+// specific instance, honouring a per-session command override before the
+// process-wide default.
+//
+// It is exported for callers outside this package that must read a session's
+// own Codex state: agent-deck's per-session scratch homes make the process
+// default frequently wrong, and resolving it a second time elsewhere would
+// drift from the launch path.
+func CodexHomeDirForInstance(inst *Instance) string {
+	if inst == nil {
+		return getCodexHomeDir()
+	}
+	return inst.getCodexHomeDir()
+}
+
+// CodexRolloutPathForInstance returns the on-disk rollout JSONL path for a
+// codex-compatible instance, or "" when the session has no flushed rollout
+// (never started, or not yet written).
+func CodexRolloutPathForInstance(inst *Instance) string {
+	if inst == nil || !IsCodexCompatible(inst.Tool) {
+		return ""
+	}
+	return codexRolloutPathInHome(inst.CodexSessionID, CodexHomeDirForInstance(inst))
+}
+
 // readCodexRolloutThreadMeta parses the session_meta head line of a rollout.
 // Returns the zero value on any read/parse failure (fail-open: an unreadable
 // head is treated as a user thread).

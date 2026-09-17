@@ -82,6 +82,11 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 			"AGENTDECK_SKIP_UPDATE_CHECK=1",
 			"AGENTDECK_PROFILE=test-obs01",
 			"TERM=dumb",
+			// This test deliberately boots the TUI with no PTY to read the log
+			// line it emits on the way up. Without the opt-in the binary now
+			// refuses that, because for a human it is an unkillable full-screen
+			// app on a pipe.
+			"AGENT_DECK_ALLOW_NO_TTY=1",
 		)
 		cmd := exec.Command(binPath)
 		cmd.Env = env
