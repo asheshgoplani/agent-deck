@@ -248,6 +248,7 @@ func TestSessionMetricsReportsDaemonObservedTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.SyncOnce(context.Background())
+	d.Flush() // the daemon's journal writes are async; wait for them to land
 
 	out, stderr, code := runAgentDeck(t, home, "session", "metrics", "daemon turn", "--json", "--since", "1h")
 	if code != 0 {

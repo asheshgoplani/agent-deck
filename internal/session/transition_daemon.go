@@ -112,14 +112,16 @@ type TransitionDaemon struct {
 	// Accessed only from the single-threaded Run loop, like lastProbeStall.
 	lastDesktopNotify map[string]string
 
-	// journals holds the per-profile session event journal (nil when the
-	// [health] session_events kill switch is off), resolved once per profile
-	// for the daemon's lifetime. lastJournaled is the status|substate the
-	// journal last saw per (profile, instance), seeded silently on the first
-	// pass so a daemon recycle never replays the fleet. Both accessed only
-	// from the single-threaded Run loop.
-	journals      map[string]*health.Journal
-	lastJournaled map[string]map[string]string
+	// journalWriters holds the per-profile writer for the session event
+	// journal, resolved once per profile for the daemon's lifetime and nil
+	// when the [health] session_events kill switch is off. It is async so a
+	// slow or wedged health volume can never stall status detection for every
+	// profile. lastJournaled is the status|substate the journal last saw per
+	// (profile, instance), seeded silently on the first pass so a daemon
+	// recycle never replays the fleet. Both accessed only from the
+	// single-threaded Run loop.
+	journalWriters map[string]*health.AsyncWriter
+	lastJournaled  map[string]map[string]string
 
 	// desktopWG tracks in-flight desktop notifications, which are dispatched
 	// off the poll loop so a wedged notifier binary cannot stall session
@@ -139,7 +141,7 @@ func NewTransitionDaemon() *TransitionDaemon {
 		turnLiveCheck:  func(inst *Instance) bool { return inst.Exists() },
 		lastDoneScan:   map[string]map[string]time.Time{},
 		lastProbeStall: map[string]time.Time{},
-		journals:       map[string]*health.Journal{},
+		journalWriters: map[string]*health.AsyncWriter{},
 		lastJournaled:  map[string]map[string]string{},
 
 		lastDesktopNotify: map[string]string{},
@@ -573,13 +575,14 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 // sees it. It reads only what this pass already observed: no tmux call, no
 // pane read. The first pass for a profile seeds the baseline and writes
 // nothing, so `from` is always a status this daemon observed.
+//
+// The write itself goes through the profile's AsyncWriter (see journalWriter),
+// never straight to the journal: this runs on the daemon's only goroutine, the
+// one every other profile's status detection also depends on, so a slow or
+// wedged health volume must not be able to block it.
 func (d *TransitionDaemon) journalStatusChanges(profile string, statuses, substates map[string]string) {
-	journal, resolved := d.journals[profile]
-	if !resolved {
-		journal = SessionEventJournal(profile)
-		d.journals[profile] = journal
-	}
-	if journal == nil {
+	writer := d.journalWriter(profile)
+	if writer == nil {
 		return
 	}
 	seen, known := d.lastJournaled[profile]
@@ -608,13 +611,31 @@ func (d *TransitionDaemon) journalStatusChanges(profile string, statuses, substa
 		if len(detail) > 0 {
 			event.Detail = detail
 		}
-		_ = journal.Append(event)
+		writer.Append(event)
 	}
 	for id := range seen {
 		if _, ok := statuses[id]; !ok {
 			delete(seen, id)
 		}
 	}
+}
+
+// journalWriter resolves the profile's async journal writer, creating it (and
+// the journal behind it) on first use and caching the answer, nil included,
+// for the daemon's lifetime. A nil writer means the session_events kill switch
+// is off for this profile; Append and Stop on it are no-ops.
+func (d *TransitionDaemon) journalWriter(profile string) *health.AsyncWriter {
+	if writer, ok := d.journalWriters[profile]; ok {
+		return writer
+	}
+	var writer *health.AsyncWriter
+	// The kill switch yields a nil *Journal, which must be caught here: boxed
+	// into a health.Appender it would no longer compare equal to nil.
+	if journal := SessionEventJournal(profile); journal != nil {
+		writer = health.NewAsyncWriter(journal, health.DefaultJournalQueueSize)
+	}
+	d.journalWriters[profile] = writer
+	return writer
 }
 
 // turnBaseline returns the per-instance completed-turn map for profile,
@@ -988,9 +1009,7 @@ func (d *TransitionDaemon) shutdown() {
 	}
 	// Flush any in-flight async dispatches before closing storage so their
 	// logEvent/logMissed writes aren't lost when the process exits.
-	if d.notifier != nil {
-		d.notifier.Flush()
-	}
+	d.Flush()
 	for _, s := range d.storages {
 		if s != nil {
 			_ = s.Close()
@@ -998,12 +1017,22 @@ func (d *TransitionDaemon) shutdown() {
 	}
 }
 
-// Flush exposes the notifier's in-flight-dispatch wait for callers of
-// SyncOnce that need deterministic log output before returning (e.g., the
-// `agent-deck notify-daemon --once` CLI path).
+// journalFlushTimeout bounds how long a clean shutdown waits for queued
+// journal events to land. Short and fixed: a shutdown must not itself hang on
+// the same wedged volume the async writer exists to protect against.
+const journalFlushTimeout = 2 * time.Second
+
+// Flush exposes the notifier's in-flight-dispatch wait, and drains every
+// profile's journal writer, for callers of SyncOnce that need deterministic
+// on-disk state before returning (e.g., the `agent-deck notify-daemon --once`
+// CLI path, and shutdown above). Draining a journal writer also stops it for
+// good, which suits every caller: they are the paths that exit right after.
 func (d *TransitionDaemon) Flush() {
 	if d.notifier != nil {
 		d.notifier.Flush()
+	}
+	for _, w := range d.journalWriters {
+		w.Stop(journalFlushTimeout)
 	}
 }
 

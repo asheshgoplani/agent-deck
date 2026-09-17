@@ -46,6 +46,11 @@ type Sample struct {
 	TmuxCalls *int64            `json:"tmux_calls"`
 	DBQueryMS *float64          `json:"session_list_db_ms"`
 	Remotes   map[string]Remote `json:"remotes"`
+	// JournalDropped is the process-wide, cumulative count of session-journal
+	// events an AsyncWriter dropped because its queue was full. Not a pointer
+	// like the fields above: it is always known, since a process with no
+	// journal writer has simply dropped zero.
+	JournalDropped int64 `json:"journal_dropped"`
 }
 
 var observations struct {
@@ -129,6 +134,7 @@ func Start(dir, role, hooksDir string) func() {
 			s.OpenFDs = &n
 		}
 		s.HookFiles = countHooks(hooksDir)
+		s.JournalDropped = JournalDropped()
 
 		var usage unix.Rusage
 		if unix.Getrusage(unix.RUSAGE_SELF, &usage) == nil {

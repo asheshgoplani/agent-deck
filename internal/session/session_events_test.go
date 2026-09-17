@@ -79,6 +79,7 @@ func TestDaemonPassJournalsStatusChange(t *testing.T) {
 	}
 	d.syncProfile(profile)
 	d.syncProfile(profile) // unchanged status: no second line
+	d.Flush()              // journal writes are async now; wait for them to land
 	events := readJournal(t, profile)
 	if len(events) != 1 {
 		t.Fatalf("want one status event, got %+v", events)
@@ -93,6 +94,50 @@ func TestDaemonPassJournalsStatusChange(t *testing.T) {
 	m := health.ComputeSessionMetrics(inst.ID, events, time.Now().Add(-time.Hour), time.Now())
 	if m.Turns.Count != 1 {
 		t.Fatalf("one running->waiting edge must be one turn: %+v", m.Turns)
+	}
+}
+
+// blockingAppender simulates a slow or wedged health volume: every Append
+// waits on block, which the test controls.
+type blockingAppender struct{ block chan struct{} }
+
+func (b *blockingAppender) Append(health.Event) error {
+	<-b.block
+	return nil
+}
+
+// The daemon's single-threaded loop must never stall on the journal write:
+// swap in a writer whose underlying Append blocks forever and confirm
+// syncProfile still returns promptly.
+func TestDaemonPassJournalDoesNotBlockOnWedgedWriter(t *testing.T) {
+	const profile = "_test_events_wedged_writer"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	inst := &Instance{ID: "events-child-wedged", Title: "worker", ProjectPath: "/tmp/events-child-wedged", GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now()}
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatal(err)
+	}
+	db := storage.GetDB()
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WriteStatus(inst.ID, "running", inst.Tool); err != nil {
+		t.Fatal(err)
+	}
+	// Seed the baseline first (also resolves the real per-profile journal),
+	// then replace the writer with one wrapping a wedged appender.
+	d.syncProfile(profile)
+
+	block := make(chan struct{}) // never closed: the appender blocks forever
+	t.Cleanup(func() { close(block) })
+	d.journalWriters[profile] = health.NewAsyncWriter(&blockingAppender{block: block}, health.DefaultJournalQueueSize)
+
+	if err := db.WriteStatus(inst.ID, "waiting", inst.Tool); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	d.syncProfile(profile)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("syncProfile blocked on a wedged journal writer: took %v", elapsed)
 	}
 }
 

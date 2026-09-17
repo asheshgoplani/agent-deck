@@ -488,8 +488,6 @@ func handleSessionStop(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	session.RecordSessionEvent(profile, inst.ID, health.KindStop, nil)
-
 	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
 	// queued sibling is waiting, start the oldest one. Only one drain per
 	// stop: if max_concurrent>=2 and multiple slots are now free, the next
@@ -513,6 +511,11 @@ func handleSessionStop(profile string, args []string) {
 		result["drained_title"] = drained.Title
 	}
 	out.Success(fmt.Sprintf("Stopped session: %s", inst.Title), result)
+
+	// Journaled after the verdict, not before it: RecordSessionEvent writes
+	// synchronously, so a slow health volume would otherwise delay the answer
+	// the user is waiting on.
+	session.RecordSessionEvent(profile, inst.ID, health.KindStop, nil)
 }
 
 // handleSessionArchive stops a session and marks it archived so it is hidden
@@ -830,7 +833,6 @@ func handleSessionRestart(profile string, args []string) {
 	// Stamp the persisted freshness marker so subsequent watchdog ticks see
 	// this session as "just started" and skip (issue #30).
 	inst.LastStartedAt = time.Now()
-	session.RecordSessionEvent(profile, inst.ID, health.KindRestart, nil)
 	warning := inst.ConsumeCodexRestartWarning()
 	if warning != "" && !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
@@ -857,6 +859,9 @@ func handleSessionRestart(profile string, args []string) {
 		data["warning"] = warning
 	}
 	out.Success(fmt.Sprintf("Restarted session: %s", inst.Title), data)
+
+	// Journaled after the verdict, same reasoning as handleSessionStop.
+	session.RecordSessionEvent(profile, inst.ID, health.KindRestart, nil)
 }
 
 // restartAllSessions restarts every active session, paced and gated by
@@ -883,6 +888,11 @@ func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage
 	}
 
 	results := make(map[string]map[string]interface{}, len(active))
+	// restarted collects the sessions actually restarted so they can be
+	// journaled once every verdict in this batch is printed, rather than
+	// inside the sweep where a slow health volume would delay every remaining
+	// session's restart (same reasoning as handleSessionStop).
+	restarted := make([]string, 0, len(active))
 
 	sweep := session.NewBootSweep()
 	sweepResult := sweep.Run(active, func(inst *session.Instance) error {
@@ -919,7 +929,7 @@ func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage
 			return err
 		}
 		inst.LastStartedAt = time.Now()
-		session.RecordSessionEvent(profile, inst.ID, health.KindRestart, nil)
+		restarted = append(restarted, inst.ID)
 
 		warning := inst.ConsumeCodexRestartWarning()
 		if warning != "" && !out.jsonMode {
@@ -973,6 +983,10 @@ func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage
 			fmt.Printf(" (%d abandoned after auth circuit tripped)", sweepResult.Abandoned)
 		}
 		fmt.Println()
+	}
+
+	for _, id := range restarted {
+		session.RecordSessionEvent(profile, id, health.KindRestart, nil)
 	}
 
 	if restartAllSessionsExitCode(sweepResult) != 0 {
