@@ -29,7 +29,10 @@ func handleNotifyDaemon(args []string) {
 		fmt.Println()
 		fmt.Println("Run status-driven transition notification daemon.")
 	}
-	if helpRequested(args) {
+	// notify-daemon takes no positional operands (only --once), so a bare
+	// "help" can never collide with a legitimate data value; treat it the
+	// same as --help/-h (issue #2025).
+	if hooksHelpRequested(args) {
 		fs.Usage()
 		return
 	}
