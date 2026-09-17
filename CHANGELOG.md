@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool icons and colors now come from the tool registry (built-ins plus `[tools.<name>]` config), so a custom tool's icon/color show consistently everywhere and adding a tool needs one line instead of two switch statements (#2146).
 - `docs(tui)`: copy/text-selection keys get their own help section, YOLO toggle documented, TUI reference reconciled with `help.go` (@borng, #2229).
 - `perf(conductor)`: drop already-drained polling turns instead of re-emitting them (#2051).
+- `test(web)`: refresh the settings drawer visual-regression baseline (#2103, #2056).
 
 ### Fixed
 
