@@ -414,6 +414,7 @@ export function TerminalPanel() {
     }
   }, [sessionId, reconnectKey, cleanup])
 
+
   if (!sessionId) {
     return html`<${EmptyStateDashboard} />`
   }
