@@ -539,6 +539,63 @@ func main() {
 		}
 	}
 
+	// Extract --group / -g and --select, and validate/warn on them, before
+	// the no-TTY gate below: a scripted or non-interactive invocation must
+	// still get its scope/select diagnostics rather than only the "needs an
+	// interactive terminal" error (#2011 follow-up — this used to run after
+	// the gate, so TestEval_SelectFlag_GroupScopeWarning never saw the
+	// warning in a non-PTY harness).
+	var groupScope string
+	groupScope, args = extractGroupFlag(args)
+	var initialSelect string
+	initialSelect, _ = extractSelectFlag(args)
+	if groupScope != "" {
+		normalizedGroup := normalizeGroupPath(groupScope)
+		// Validate group exists by loading current sessions
+		if storage, err := session.NewStorageWithProfile(profile); err == nil {
+			if _, groups, err := storage.LoadWithGroups(); err == nil {
+				groupTree := session.NewGroupTreeWithGroups(nil, groups)
+				if _, exists := groupTree.Groups[normalizedGroup]; !exists {
+					fmt.Fprintf(os.Stderr, "Error: group '%s' not found\n", groupScope)
+					os.Exit(2)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
+		}
+	}
+	// Warn if --select names a session outside the --group scope (#709).
+	// When both are given, the preselect runs AFTER the group scope is
+	// applied: Home.applyInitialSelection will fail silently if the session
+	// is outside the scope; we pre-warn here so the user sees both outputs
+	// without digging through logs.
+	if initialSelect != "" && groupScope != "" {
+		normalizedGroup := normalizeGroupPath(groupScope)
+		if storage, err := session.NewStorageWithProfile(profile); err == nil {
+			if instances, _, err := storage.LoadWithGroups(); err == nil {
+				found := false
+				for _, inst := range instances {
+					if inst == nil {
+						continue
+					}
+					if inst.ID != initialSelect && !strings.EqualFold(inst.Title, initialSelect) {
+						continue
+					}
+					gp := inst.GroupPath
+					if gp == normalizedGroup || strings.HasPrefix(gp, normalizedGroup+"/") {
+						found = true
+					}
+					break
+				}
+				if !found {
+					fmt.Fprintf(os.Stderr, "Warning: --select %q is not in group %q; cursor will not be repositioned\n", initialSelect, groupScope)
+				}
+			}
+		}
+	}
+
 	// Every path that reaches this point boots the bubbletea TUI (which
 	// takes raw-mode ownership of stdin/stdout — term.IsTerminal stays true
 	// in raw mode, so a blocking synchronous read here would race the TUI's
@@ -809,13 +866,6 @@ func main() {
 		}()
 	}
 
-	// Extract --group / -g flag here (TUI-only path; subcommands consume their own -g)
-	var groupScope string
-	groupScope, args = extractGroupFlag(args)
-	// Extract --select flag (#709): preselect a session without scoping groups.
-	var initialSelect string
-	initialSelect, _ = extractSelectFlag(args)
-
 	// v1.7.41: record TUI launch for feedback-prompt pacing. Seeds
 	// FirstSeenAt on the very first launch and bumps LaunchCount on every
 	// subsequent launch, so feedback.ShouldShow can enforce the min-days +
@@ -838,56 +888,13 @@ func main() {
 
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
-	// Apply group scope if specified via --group / -g flag
+	// --group / --select were already extracted and validated above, before
+	// the no-TTY gate; apply them to the model now that it exists.
 	if groupScope != "" {
-		normalizedGroup := normalizeGroupPath(groupScope)
-		// Validate group exists by loading current sessions
-		if storage, err := session.NewStorageWithProfile(profile); err == nil {
-			if _, groups, err := storage.LoadWithGroups(); err == nil {
-				groupTree := session.NewGroupTreeWithGroups(nil, groups)
-				if _, exists := groupTree.Groups[normalizedGroup]; !exists {
-					fmt.Fprintf(os.Stderr, "Error: group '%s' not found\n", groupScope)
-					os.Exit(2)
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
-		}
-		homeModel.SetGroupScope(normalizedGroup)
+		homeModel.SetGroupScope(normalizeGroupPath(groupScope))
 	}
-	// Apply preselection if specified via --select (#709).
-	// When both -g and --select are given, the preselect runs AFTER the group
-	// scope is applied: Home.applyInitialSelection will fail silently if the
-	// session is outside the scope; we pre-warn here so the user sees both
-	// outputs without digging through logs.
 	if initialSelect != "" {
 		homeModel.SetInitialSelection(initialSelect)
-		if groupScope != "" {
-			if storage, err := session.NewStorageWithProfile(profile); err == nil {
-				if instances, _, err := storage.LoadWithGroups(); err == nil {
-					normalizedGroup := normalizeGroupPath(groupScope)
-					found := false
-					for _, inst := range instances {
-						if inst == nil {
-							continue
-						}
-						if inst.ID != initialSelect && !strings.EqualFold(inst.Title, initialSelect) {
-							continue
-						}
-						gp := inst.GroupPath
-						if gp == normalizedGroup || strings.HasPrefix(gp, normalizedGroup+"/") {
-							found = true
-						}
-						break
-					}
-					if !found {
-						fmt.Fprintf(os.Stderr, "Warning: --select %q is not in group %q; cursor will not be repositioned\n", initialSelect, groupScope)
-					}
-				}
-			}
-		}
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
