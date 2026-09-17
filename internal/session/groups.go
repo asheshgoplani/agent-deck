@@ -41,29 +41,34 @@ const (
 
 // Item represents a single item in the flattened group tree view
 type Item struct {
-	Type                ItemType
-	Group               *Group
-	Session             *Instance
-	RemoteSession       *RemoteSessionInfo // Set for ItemTypeRemoteSession/ItemTypeRemoteGroup
-	RemoteName          string             // Remote name for remote items
-	Level               int                // Indentation level (0 for root groups, 1 for sessions)
-	Path                string             // Group path for this item
-	IsLastInGroup       bool               // True if this is the last session in its group (for tree rendering)
-	RootGroupNum        int                // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
-	IsSubSession        bool               // True if this session has a parent session
-	IsLastSubSession    bool               // True if this is the last sub-session of its parent (for tree rendering)
-	ParentIsLastInGroup bool               // True if parent session is last top-level item (for tree line rendering)
-	IsWindow            bool               // True for ItemTypeWindow items
-	IsLastWindow        bool               // True if last window of parent session
-	WindowIndex         int                // Tmux window index (for ItemTypeWindow)
-	WindowID            string             // Stable tmux window id, e.g. "@12" (for ItemTypeWindow)
-	WindowName          string             // Tmux window name (for ItemTypeWindow)
-	WindowSessionID     string             // Parent session ID (for ItemTypeWindow)
-	WindowTool          string             // Detected tool in this window (claude, gemini, etc.)
-	CreatingID          string             // Non-empty for placeholder items (worktree creation in progress)
-	CreatingTitle       string             // Display title for creating placeholder
-	CreatingTool        string             // Tool for creating placeholder
-	DividerLabel        string             // Label shown on an ItemTypeDivider row (e.g. "idle / done")
+	Type          ItemType
+	Group         *Group
+	Session       *Instance
+	RemoteSession *RemoteSessionInfo // Set for ItemTypeRemoteSession/ItemTypeRemoteGroup
+	RemoteName    string             // Remote name for remote items
+	Level         int                // Indentation level (0 for root groups, 1 for sessions)
+	Path          string             // Group path for this item
+	// IsLastInGroup, IsLastSubSession and ParentIsLastInGroup are set here for
+	// cursor navigation but are TEMPORARY for the TUI: rebuildFlatItems calls
+	// RecomputeTreeConnectors on the final visible list (after archived/status
+	// filtering and view-mode partitioning), which recomputes all three from
+	// scratch. Do not trust these three fields' values here for tree rendering.
+	IsLastInGroup       bool   // True if this is the last session in its group (for tree rendering)
+	RootGroupNum        int    // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
+	IsSubSession        bool   // True if this session has a parent session
+	IsLastSubSession    bool   // True if this is the last sub-session of its parent (for tree rendering)
+	ParentIsLastInGroup bool   // True if parent session is last top-level item (for tree line rendering)
+	IsWindow            bool   // True for ItemTypeWindow items
+	IsLastWindow        bool   // True if last window of parent session
+	WindowIndex         int    // Tmux window index (for ItemTypeWindow)
+	WindowID            string // Stable tmux window id, e.g. "@12" (for ItemTypeWindow)
+	WindowName          string // Tmux window name (for ItemTypeWindow)
+	WindowSessionID     string // Parent session ID (for ItemTypeWindow)
+	WindowTool          string // Detected tool in this window (claude, gemini, etc.)
+	CreatingID          string // Non-empty for placeholder items (worktree creation in progress)
+	CreatingTitle       string // Display title for creating placeholder
+	CreatingTool        string // Tool for creating placeholder
+	DividerLabel        string // Label shown on an ItemTypeDivider row (e.g. "idle / done")
 }
 
 // IsCreatingPlaceholder reports whether this row is a still-creating session
