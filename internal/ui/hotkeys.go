@@ -53,7 +53,6 @@ const (
 	hotkeyInstallUpdate    = "install_update" // run `agent-deck update` from the TUI (update_install.go)
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
-	hotkeyDeadLetters      = "dead_letters"
 	// hotkeyAgentsPanel opens the Agents tab.
 	//
 	// The design mockup asks for "a". Every plain letter that reads as
@@ -134,7 +133,6 @@ var hotkeyActionOrder = []string{
 	hotkeyInstallUpdate,
 	hotkeyDetach,
 	hotkeyWatcherPanel,
-	hotkeyDeadLetters,
 	hotkeyAgentsPanel,
 	hotkeySwitchSession,
 }
@@ -185,7 +183,6 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyInstallUpdate:    "ctrl+y",
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
-	hotkeyDeadLetters:      "alt+d",
 	hotkeyAgentsPanel:      "alt+a",
 	hotkeySwitchSession:    "ctrl+s",
 }
