@@ -702,7 +702,13 @@ type Home struct {
 	// version`, asked at most once per remoteVersionCheckInterval on the
 	// session poll and seeded from the shared cache file (#2164). Guarded
 	// by remoteSessionsMu.
-	remoteVersions     map[string]session.RemoteVersionState
+	remoteVersions map[string]session.RemoteVersionState
+	// remoteHostStats is each remote's most recent `system stats --json`
+	// poll outcome (see remoteHostStatsResult). Unlike remoteVersions, it is
+	// live-only: never persisted, and simply absent for a remote that has
+	// not answered yet or cannot (older agent-deck). Guarded by
+	// remoteSessionsMu.
+	remoteHostStats    map[string]remoteHostStatsResult
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
@@ -1634,6 +1640,29 @@ type remoteSessionsFetchedMsg struct {
 	// versions carries the `agent-deck version` answers collected this
 	// round, only for remotes whose cached answer was stale (#2164).
 	versions map[string]session.RemoteVersionState
+	// stats carries the remote's live load/memory/disk snapshot collected
+	// this round, keyed by remote name. Unlike versions, it is gathered
+	// every round (not throttled), but never blocks the round: a remote
+	// without the `system stats` subcommand or an unreachable one is simply
+	// absent, and the preview panel renders "stats unknown".
+	stats map[string]remoteHostStatsResult
+}
+
+// remoteHostStatsResult is one remote's stats poll outcome: the snapshot
+// (Stats.Ok is false when the remote could not answer), how long the SSH
+// round trip took, and when it landed — the preview panel's "last poll"
+// line.
+type remoteHostStatsResult struct {
+	Stats     session.RemoteHostStats
+	Latency   time.Duration
+	FetchedAt time.Time
+}
+
+// remoteStatsFetcher is the optional part of a remote fetch runner that can
+// ask the remote for its `system stats --json` snapshot; session.SSHRunner
+// satisfies it, test stubs need not.
+type remoteStatsFetcher interface {
+	FetchSystemStats(ctx context.Context) (session.RemoteHostStats, error)
 }
 
 // remoteLatenciesFetchedMsg is sent when an async batch of latency
@@ -4046,6 +4075,7 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 			// The version answer is a fact about the remote, not about
 			// which listing is newer: keep it (#2164).
 			h.recordRemoteVersions(msg.versions)
+			h.recordRemoteStats(msg.stats)
 		} else {
 			h.setError(fmt.Errorf("remote refresh skipped, config could not be read: %v", msg.configErr))
 		}
@@ -4087,6 +4117,7 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	h.remoteSessionsMu.Unlock()
 	h.saveRemoteSessionsCache(msg.sessions)
 	h.recordRemoteVersions(msg.versions)
+	h.recordRemoteStats(msg.stats)
 	h.applyRemoteCosts(msg)
 	// #1112 bug 1: a remote running→waiting transition wouldn't update
 	// the header pill ("[◐ Waiting N]") because countSessionStatuses
@@ -4568,6 +4599,30 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 			}
 		}()
 	}
+	// The remote's live load/memory/disk snapshot rides the same round too,
+	// every poll (unlike the version check, which is throttled to once an
+	// hour): the preview panel already waits on this poll, so there is no
+	// new blocking work on the TUI hot path. An older remote without
+	// `system stats` (or an unreachable one) simply fails the call, and the
+	// panel renders "stats unknown" instead of guessing.
+	statsRunner, canStats := runner.(remoteStatsFetcher)
+	if canStats {
+		side.Add(1)
+		go func() {
+			defer side.Done()
+			statsCtx, statsCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+			defer statsCancel()
+			started := time.Now()
+			stats, err := statsRunner.FetchSystemStats(statsCtx)
+			if err != nil {
+				stats = session.RemoteHostStats{}
+			}
+			msg.stats = map[string]remoteHostStatsResult{
+				name: {Stats: stats, Latency: time.Since(started), FetchedAt: time.Now()},
+			}
+		}()
+	}
+
 	side.Add(2)
 	go func() {
 		defer side.Done()
@@ -17933,7 +17988,12 @@ type EmptyStateConfig struct {
 	Icon     string
 	Title    string
 	Subtitle string
-	Hints    []string // Full list of hints (will be reduced based on space)
+	// Body is extra plain (non-bulleted) lines shown between Subtitle and
+	// Hints, one per element, in "full" and "compact" tiers only (dropped in
+	// "minimal", same as Subtitle). Unset by every caller except the remote
+	// group preview panel, which uses it for the version/stats block.
+	Body  []string
+	Hints []string // Full list of hints (will be reduced based on space)
 }
 
 // renderEmptyStateResponsive creates a centered empty state that adapts to available space
@@ -17995,6 +18055,15 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 			subtitle = subtitle[:maxSubtitleWidth-3] + "..."
 		}
 		content.WriteString(subtitleStyle.Render(subtitle))
+	}
+
+	// Body - extra plain lines, same tiers as Subtitle.
+	if len(config.Body) > 0 && tier != "minimal" {
+		content.WriteString("\n")
+		for _, line := range config.Body {
+			content.WriteString("\n")
+			content.WriteString(subtitleStyle.Render(line))
+		}
 	}
 
 	// Hints - progressive disclosure based on tier
@@ -20271,7 +20340,8 @@ func (h *Home) remoteSessionsInView(remoteName string) []session.RemoteSessionIn
 func (h *Home) renderRemotePreview(item session.Item, width, height int) string {
 	if item.Type == session.ItemTypeRemoteGroup {
 		h.remoteSessionsMu.RLock()
-		count := len(h.remoteSessionsInView(item.RemoteName))
+		sessions := h.remoteSessionsInView(item.RemoteName)
+		count := len(sessions)
 		h.remoteSessionsMu.RUnlock()
 
 		config, _ := session.LoadUserConfig()
@@ -20282,10 +20352,15 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 			}
 		}
 
+		versionState, _ := h.remoteVersionState(item.RemoteName)
+		statsResult, hasStats := h.remoteHostStatsState(item.RemoteName)
+		body := append([]string{remoteVersionPreviewLine(versionState, Version)}, remoteStatsPreviewLines(sessions, statsResult, hasStats)...)
+
 		return renderEmptyStateResponsive(EmptyStateConfig{
 			Icon:     "⬡",
 			Title:    "Remote: " + item.RemoteName,
 			Subtitle: fmt.Sprintf("Host: %s — %d sessions", host, count),
+			Body:     body,
 			Hints:    []string{"Press Enter on a session to attach via SSH"},
 		}, width, height)
 	}

@@ -47,6 +47,56 @@ func (s RemoteVersionState) Outdated(controller string) bool {
 	return update.CompareVersions(s.Version, controller) < 0
 }
 
+// RemoteVersionCompare is how a remote's reported version compares with this
+// controller's, per update.CompareVersions. Build metadata after "+" is
+// stripped before comparing (splitPreRelease), so a "+local" build compares
+// equal to its base version: RemoteVersionSame, not RemoteVersionNewer.
+type RemoteVersionCompare int
+
+const (
+	// RemoteVersionUnknown: the remote never answered, or reported something
+	// CompareVersions cannot order. A first-class state, never a guess.
+	RemoteVersionUnknown RemoteVersionCompare = iota
+	RemoteVersionSame
+	RemoteVersionOlder
+	RemoteVersionNewer
+)
+
+// String renders the compare result the way `remote list --json` and the
+// remote preview panel spell it (version_state).
+func (c RemoteVersionCompare) String() string {
+	switch c {
+	case RemoteVersionSame:
+		return "same"
+	case RemoteVersionOlder:
+		return "older"
+	case RemoteVersionNewer:
+		return "newer"
+	default:
+		return "unknown"
+	}
+}
+
+// Compare reports how s compares with the controller's version. Unlike
+// Outdated (which never flags drift against a non-release controller build,
+// so a developer's "dev"/"0.0.0" build does not report every remote as
+// outdated), Compare answers the plain question the preview panel and
+// `remote list --json` ask: same, older, newer, or unknown when either side
+// cannot be parsed as a version.
+func (s RemoteVersionState) Compare(controller string) RemoteVersionCompare {
+	if !s.Found || !isVersionString(s.Version) || !isVersionString(controller) {
+		return RemoteVersionUnknown
+	}
+	switch update.CompareVersions(s.Version, controller) {
+	case 0:
+		return RemoteVersionSame
+	case -1:
+		return RemoteVersionOlder
+	default:
+		return RemoteVersionNewer
+	}
+}
+
 // isVersionString reports whether v is something CompareVersions can order:
 // a dotted numeric core with an optional pre-release tag. parseRemoteVersion
 // hands back raw output ("development build") when it finds no version
