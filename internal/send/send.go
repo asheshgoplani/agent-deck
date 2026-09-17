@@ -4,6 +4,8 @@
 package send
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +28,62 @@ func HasUnsentPastedPrompt(content string) bool {
 // now (the #1777 attribution gate) must not.
 func CountPasteMarkers(content string) int {
 	return strings.Count(strings.ToLower(content), "[pasted text")
+}
+
+// pasteMarkerLineCountRE matches Claude's (and codex's) "[Pasted text #N +M
+// lines]" collapse marker and captures M — the line count the composer
+// declares for that paste. Case-insensitive to match CountPasteMarkers'
+// lower-cased scan.
+var pasteMarkerLineCountRE = regexp.MustCompile(`(?i)\[pasted text[^\]]*\+\s*(\d+)\s*lines?\]`)
+
+// PasteMarkerLineCounts returns the M declared by every "[Pasted text #N +M
+// lines]" marker in content, in order of appearance. Empty when no marker is
+// present, or a marker is present but its line count could not be parsed.
+//
+// This is issue #2079's detection primitive: the framed-paste transport
+// (tmux paste-buffer -p -r, see internal/tmux) is the only delivery path for
+// a multi-line prompt, and Claude's composer collapses whatever landed behind
+// this marker whether the paste arrived whole or was cut short by a
+// remounting composer swallowing the tail end of the write. A truncated paste
+// still produces a well-formed marker — just one declaring fewer lines than
+// the message actually has — so the declared count is the one signal that
+// distinguishes a genuine delivery from a partial one without needing to read
+// back the (now collapsed and unreadable) literal text.
+func PasteMarkerLineCounts(content string) []int {
+	matches := pasteMarkerLineCountRE.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	counts := make([]int, 0, len(matches))
+	for _, m := range matches {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		counts = append(counts, n)
+	}
+	return counts
+}
+
+// ExpectedPasteMarkerLines returns the line count Claude's composer declares
+// for message when it is delivered through the framed-paste transport: the
+// message's total physical line count once CRLF and bare-CR line breaks are
+// normalized to LF, matching the normalization the tmux transport itself
+// applies before choosing a transport (see sendKeysChunkedToTarget).
+//
+// Returns 0 for a single-line message: those go out as a bare `send-keys -l`
+// and never collapse behind a paste marker, so there is nothing to compare a
+// marker's count against.
+func ExpectedPasteMarkerLines(message string) int {
+	normalized := message
+	if strings.Contains(normalized, "\r") {
+		normalized = strings.ReplaceAll(normalized, "\r\n", "\n")
+		normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	}
+	if !strings.Contains(normalized, "\n") {
+		return 0
+	}
+	return strings.Count(normalized, "\n") + 1
 }
 
 // firstNonEmptyLine returns the first physical line of s that is non-empty

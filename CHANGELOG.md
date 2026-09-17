@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `launch --message-file` (and any other multi-line send to a Claude-compatible target) no longer reports success when a slow-mounting composer swallows the leading bytes of a paste. The framed-paste transport collapses whatever landed behind a `[Pasted text #N +M lines]` marker whether the paste arrived whole or was cut short, so the declared `M` is now checked against the message's real physical line count before Enter is pressed; a shorter count withholds the Enter and fails the send with the declared-vs-expected line counts instead of silently submitting a truncated fragment (closes #2079).
+
 ## [1.16.10] - 2026-09-13
 
 An open deck now attempts to install a new release on its own and, when `auto_restart` allows, restarts in place; `session start` no longer reports success for a pane that is not there; `launch` survives a concurrent session detector; and a new child completion that passed the duplicate gate but whose transcript signal is stale is delivered instead of dropped.
