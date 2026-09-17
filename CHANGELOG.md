@@ -78,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A session created with `--replace` now takes the replaced row's own group slot instead of appending to the end of the group; `session show --json`'s `order` field is also correct for a session auto-detected in a different profile (#2300).
 - Add `--primary` to `session output --pane` and `session send-keys`, addressing the session's first tmux window instead of whatever window is currently active there, so redirecting an auxiliary window doesn't also redirect captures and keystrokes meant for the agent (#2257).
 - Web UI: the app shell now sizes itself from the measured viewport (`--app-height`/`--keyboard-inset`), so on iOS Safari the tab bar and the on-screen keyboard no longer cover the composer (#2248).
+- Conductor pipelines now emit a stage-timestamps JSONL (`conductor/scripts/stage-event.sh`, reported by `stage-report.py`), giving each stage a durable start/end record instead of only log-scraped timing (#2144).
 
 ## [1.16.10] - 2026-09-13
 
