@@ -999,6 +999,10 @@ By default the controller pushes its version to older remotes on its own: after 
 
 A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. `remote drain <name>` closes that gap by pulling — it reads the remote's records over the same SSH path (consuming nothing there) and writes them into the local inbox, safe to run on every heartbeat and safe to repeat.
 
+Remote polling runs in the background. A failed poll shows its reason (`auth failed`, `timeout`, `host down`, or `poll failed`) beside the remote. Authentication failures pause automatic polling across restarts until the remote configuration changes or you authenticate and run `agent-deck remote list --retry`. This clears cached poll state for all configured remotes without opening SSH; add `--check` for an explicit version check. The next TUI refresh resumes polling.
+
+`remote list --json` includes `last_poll_ms`, `last_poll_status`, and `last_poll_error`. An unobserved remote has `null` latency, status `unknown`, and an empty error. Other statuses are `ok`, `auth_failed`, `timeout`, `host_down`, and `error`. These fields describe the last session-list poll, independently of the version cache. To inspect or reset the remotes configured on another host, use `agent-deck remote exec <host> remote list --json` or append `--retry`.
+
 Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). `remote list`, `remote sessions` and `remote drain` support `--json` output for scripting. See the [Remote Commands reference](skills/agent-deck/references/cli-reference.md#remote-commands) for flags, security behavior, and examples.
 
 Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**: path suggestions come from the remote host, the remote session's group is pre-filled, and the create routes over SSH with your chosen tool — sessions are never accidentally created on localhost.

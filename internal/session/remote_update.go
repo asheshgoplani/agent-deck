@@ -121,6 +121,7 @@ func isReleaseVersion(v string) bool {
 
 // remoteVersionCache is the on-disk shape of remoteVersionCacheFile.
 type remoteVersionCache struct {
+	Polls   map[string]RemotePollState    `json:"polls,omitempty"`
 	Remotes map[string]RemoteVersionState `json:"remotes"`
 	// AutoUpdateRanAt throttles the startup auto-update sweep.
 	AutoUpdateRanAt time.Time `json:"auto_update_ran_at,omitempty"`

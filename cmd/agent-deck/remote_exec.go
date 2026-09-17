@@ -20,6 +20,10 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		switch args[0] {
 		case "list", "status", "add", "launch":
 			return append([]string(nil), args...), nil
+		case "remote":
+			if len(args) > 1 && (args[1] == "list" || args[1] == "ls") {
+				return append([]string(nil), args...), nil
+			}
 		case "show", "output", "send":
 			return append([]string{"session"}, args...), nil
 		case "session":

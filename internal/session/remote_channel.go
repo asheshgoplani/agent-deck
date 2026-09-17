@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,15 +28,16 @@ type RemoteChannel struct {
 	// identity is host, profile and binary path of the remote this channel
 	// was dialled for. A config edit that re-points the name at another host
 	// gets a fresh channel instead of requests to the old one.
-	identity string
-	dial     func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)
-	events   *remoteChangeMailbox
-	mu       sync.Mutex
-	stdin    io.WriteCloser
-	closeFn  func()
-	pending  map[int64]chan remoteChannelReply
-	nextID   atomic.Int64
-	up       atomic.Bool
+	identity   string
+	dial       func(ctx context.Context) (io.WriteCloser, io.Reader, func(), error)
+	events     *remoteChangeMailbox
+	mu         sync.Mutex
+	stdin      io.WriteCloser
+	closeFn    func()
+	dialCancel context.CancelFunc
+	pending    map[int64]chan remoteChannelReply
+	nextID     atomic.Int64
+	up         atomic.Bool
 	// gen counts transports. markDown only tears down the transport it was
 	// called for, so a reader or ping loop of an old transport can never
 	// kill the one dialled after it.
@@ -409,6 +411,14 @@ func ReconcileRemoteChannels(config map[string]RemoteConfig) {
 	}
 }
 
+// ownedChannelSSH includes transports still waiting for their ready frame, before
+// the channel has installed its close callback. Only these client processes are
+// ours; shared ControlPersist masters keep their SSH-managed idle lifetime.
+var ownedChannelSSH = struct {
+	sync.Mutex
+	close map[*exec.Cmd]func()
+}{close: make(map[*exec.Cmd]func())}
+
 // CloseRemoteChannels closes every channel (TUI shutdown), which ends each
 // remote's agent process instead of leaving it to sshd's keepalive.
 func CloseRemoteChannels() {
@@ -417,6 +427,18 @@ func CloseRemoteChannels() {
 	for name, ch := range remoteChannels {
 		ch.Close()
 		delete(remoteChannels, name)
+	}
+	// Every channel context is cancelled before taking the process registry lock.
+	// A dial either registered its process already, or observes cancellation
+	// before starting it. Signal all registered clients before returning to Quit.
+	ownedChannelSSH.Lock()
+	closers := make([]func(), 0, len(ownedChannelSSH.close))
+	for _, closeFn := range ownedChannelSSH.close {
+		closers = append(closers, closeFn)
+	}
+	ownedChannelSSH.Unlock()
+	for _, closeFn := range closers {
+		closeFn()
 	}
 }
 
@@ -427,10 +449,14 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, nil, nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
 	// A stale ControlMaster socket would hang this dial forever (#1421),
 	// which the hello timeout would then read as a slow remote.
-	CleanStaleSSHSockets()
+	if r.cleanChannelSocketsFn != nil {
+		r.cleanChannelSocketsFn()
+	} else {
+		_ = os.MkdirAll(sshControlDir, 0700)
+		CleanStaleSSHSockets()
+	}
 	// Same argv construction as every other ssh exec in this file (host
 	// validated above, options fixed, remote command shell-quoted).
 	cmd := exec.CommandContext(ctx, "ssh", r.sshChannelArgs(r.buildRemoteCommand("remote-agent"))...) //nolint:gosec // see comment above
@@ -442,17 +468,41 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	cmd.Stderr = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = sshWaitDelay
+	ownedChannelSSH.Lock()
+	defer ownedChannelSSH.Unlock()
+	if err := ctx.Err(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, nil, nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, err
 	}
+	logger := sessionLog
+	var closeOnce sync.Once
 	closeFn := func() {
-		_ = stdin.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
+		closeOnce.Do(func() {
+			ownedChannelSSH.Lock()
+			_ = stdin.Close()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			delete(ownedChannelSSH.close, cmd)
+			ownedChannelSSH.Unlock()
+			// Kill only this owned SSH client. Shared ControlPersist masters are
+			// owned by SSH and expire by their configured idle timeout.
+			go func() {
+				_ = cmd.Wait()
+				if detail := strings.TrimSpace(stderr.String()); detail != "" {
+					logger.Warn("remote_channel_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+				}
+			}()
+		})
 	}
+	ownedChannelSSH.close[cmd] = closeFn
 	return stdin, stdout, closeFn, nil
 }
 
@@ -465,6 +515,9 @@ func (c *RemoteChannel) Connected() bool { return c.up.Load() }
 func (c *RemoteChannel) Close() {
 	c.mu.Lock()
 	c.closed = true
+	if c.dialCancel != nil {
+		c.dialCancel()
+	}
 	gen := c.gen
 	c.mu.Unlock()
 	c.markDownGen(gen)
@@ -497,6 +550,8 @@ func (c *RemoteChannel) ensureConnected() {
 		c.mu.Unlock()
 		return
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.dialCancel = cancel
 	c.dialing = true
 	c.lastAttempt = time.Now()
 	c.mu.Unlock()
@@ -507,7 +562,6 @@ func (c *RemoteChannel) ensureConnected() {
 		c.backoff = minDuration(c.backoff*2, 30*time.Second)
 		c.mu.Unlock()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	stdin, stdout, closeFn, err := c.dial(ctx)
 	if err != nil {
 		cancel()
@@ -547,7 +601,7 @@ func (c *RemoteChannel) ensureConnected() {
 	c.gen++
 	gen := c.gen
 	c.stdin = stdin
-	c.closeFn = func() { closeFn(); cancel() }
+	c.closeFn = func() { cancel(); closeFn() }
 	c.dialing = false
 	c.backoff = 2 * time.Second
 	c.timeouts = 0
@@ -777,10 +831,8 @@ func (c *RemoteChannel) markDownGen(gen uint64) {
 		return
 	}
 	c.up.Store(false)
-	if c.closeFn != nil {
-		c.closeFn()
-		c.closeFn = nil
-	}
+	closeFn := c.closeFn
+	c.closeFn = nil
 	c.stdin = nil
 	c.watching = ""
 	c.timeouts = 0
@@ -789,6 +841,11 @@ func (c *RemoteChannel) markDownGen(gen uint64) {
 	c.mu.Unlock()
 	for _, ch := range pending {
 		ch <- remoteChannelReply{Code: -1, Error: errChannelInterrupted.Error()}
+	}
+	// Terminate the owned process before returning to shutdown. The transport
+	// close callback must reap asynchronously so cancellation stays prompt.
+	if closeFn != nil {
+		closeFn()
 	}
 }
 
@@ -901,11 +958,15 @@ func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest)
 
 	req.ID = id
 	line, _ := json.Marshal(req)
-	if n, err := stdin.Write(append(line, '\n')); err != nil {
+	n, err := writeChannelWithin(ctx, stdin, append(line, '\n'))
+	if err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 		c.markDownGen(gen)
+		if ctx.Err() != nil {
+			return remoteChannelReply{}, ctx.Err()
+		}
 		if n > 0 {
 			// Part of the line may have reached the agent; it cannot have
 			// been executed without the newline, but be conservative.
@@ -937,7 +998,14 @@ func (c *RemoteChannel) roundTrip(ctx context.Context, req remoteChannelRequest)
 		// request slot) on the remote after its caller gave up. Best
 		// effort: a failed write means the transport is going anyway.
 		cancelLine, _ := json.Marshal(remoteChannelRequest{ID: id, Cancel: true})
-		_, _ = stdin.Write(append(cancelLine, '\n'))
+		go func() {
+			// The request is already canceled; give its cancel frame a bounded budget.
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sshWaitDelay)
+			defer cancel()
+			if _, err := writeChannelWithin(cancelCtx, stdin, append(cancelLine, '\n')); err != nil {
+				c.markDownGen(gen)
+			}
+		}()
 		c.mu.Lock()
 		delete(c.pending, id)
 		drop := false
@@ -959,4 +1027,24 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// Writes can block on a full SSH pipe just as reads can. The caller tears
+// down the transport on timeout, releasing the writer goroutine.
+func writeChannelWithin(ctx context.Context, w io.Writer, p []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() { n, err := w.Write(p); done <- result{n, err} }()
+	select {
+	case r := <-done:
+		return r.n, r.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }

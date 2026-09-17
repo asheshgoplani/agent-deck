@@ -122,6 +122,8 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("\nOptions:")
 		fmt.Println("  --check")
 		fmt.Println("        Ask each remote for its agent-deck version now (one SSH call per remote)")
+		fmt.Println("  --retry")
+		fmt.Println("        Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
 		fmt.Println("  --json")
 		fmt.Println("        Output as JSON")
 	case "sessions":
@@ -336,6 +338,7 @@ func handleRemoteList(args []string) {
 	fs := flag.NewFlagSet("remote list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	check := fs.Bool("check", false, "Ask each remote for its agent-deck version now")
+	retry := fs.Bool("retry", false, "Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
 	_ = fs.Parse(args)
 
 	config, err := session.LoadUserConfig()
@@ -350,6 +353,15 @@ func handleRemoteList(args []string) {
 		return
 	}
 
+	if *retry {
+		for name := range config.Remotes {
+			if err := session.ResetRemotePoll(name); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to reset remote poll: %v\n", err)
+				os.Exit(1)
+			}
+		}
+	}
+	polls := session.LoadRemotePolls()
 	versions := session.LoadRemoteVersions()
 	if *check {
 		versions = probeRemoteVersions(context.Background(), config.Remotes)
@@ -371,7 +383,10 @@ func handleRemoteList(args []string) {
 			// remote preview panel shows (session.RemoteVersionCompare),
 			// always present so scripts don't have to re-derive it from
 			// Version/Outdated.
-			VersionState string `json:"version_state"`
+			VersionState   string `json:"version_state"`
+			LastPollMS     *int64 `json:"last_poll_ms"`
+			LastPollStatus string `json:"last_poll_status"`
+			LastPollError  string `json:"last_poll_error"`
 		}
 
 		var remotes []remoteJSON
@@ -391,6 +406,8 @@ func handleRemoteList(args []string) {
 				row.Version = state.Version
 				row.Outdated = state.Outdated(Version)
 			}
+			poll := configuredRemotePoll(polls[name], rc)
+			row.LastPollMS, row.LastPollStatus, row.LastPollError = poll.LastPollMS, poll.LastPollStatus, poll.LastPollError
 			remotes = append(remotes, row)
 		}
 
@@ -403,12 +420,31 @@ func handleRemoteList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION")
+	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION / LAST POLL")
 	fmt.Println(strings.Repeat("-", 84))
 	for name, rc := range config.Remotes {
-		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), remoteVersionColumn(versions[name], Version))
+		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), remoteVersionColumn(versions[name], Version)+" / "+remotePollColumn(configuredRemotePoll(polls[name], rc)))
 	}
 	fmt.Printf("\nTotal: %d remotes (controller v%s)\n", len(config.Remotes), Version)
+}
+
+// configuredRemotePoll treats a changed SSH identity as never polled.
+func configuredRemotePoll(state session.RemotePollState, rc session.RemoteConfig) session.RemotePollState {
+	if !state.Matches(rc) || state.LastPollStatus == "" {
+		return session.RemotePollState{LastPollStatus: "unknown"}
+	}
+	return state
+}
+
+func remotePollColumn(state session.RemotePollState) string {
+	text := state.LastPollStatus
+	if state.LastPollMS != nil {
+		text += fmt.Sprintf(" (%dms)", *state.LastPollMS)
+	}
+	if state.LastPollError != "" {
+		text += ": " + state.LastPollError
+	}
+	return text
 }
 
 // remoteVersionColumn renders the VERSION cell of `remote list`: the cached
@@ -1033,16 +1069,19 @@ func reorderRemoteArgs(fs *flag.FlagSet, args []string) []string {
 // written means no sweep); the explicit `agent-deck update` path resets
 // that stamp too, so a fresh controller version still sweeps promptly.
 func startRemoteAutoUpdate() {
-	settings := session.GetUpdateSettings()
-	config, err := session.LoadUserConfig()
-	if err != nil || config == nil {
-		return
-	}
-	if !session.ClaimRemoteAutoUpdateRun(settings, len(config.Remotes), time.Now()) {
-		return
-	}
-	remotes := config.Remotes
-	go runRemoteAutoUpdate(remotes, Version)
+	// Cache claims can wait on another writer, so they also belong off startup.
+	go func() {
+		settings := session.GetUpdateSettings()
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil {
+			return
+		}
+		if !session.ClaimRemoteAutoUpdateRun(settings, len(config.Remotes), time.Now()) {
+			return
+		}
+		remotes := config.Remotes
+		runRemoteAutoUpdate(remotes, Version)
+	}()
 }
 
 // runRemoteAutoUpdate is the body of the startup sweep, split out so a test
@@ -1051,6 +1090,24 @@ func startRemoteAutoUpdate() {
 // on every restart.
 func runRemoteAutoUpdate(remotes map[string]session.RemoteConfig, target string) []session.RemoteUpdateResult {
 	log := logging.ForComponent(logging.CompSession)
+	// Authentication must not be retried by a startup sweep after a TUI poll
+	// paused it. Explicit remote checks and updates remain user-controlled.
+	polls := session.LoadRemotePolls()
+	eligible := make(map[string]session.RemoteConfig, len(remotes))
+	var skipped []session.RemoteUpdateResult
+	for name, rc := range remotes {
+		if state := polls[name]; state.Matches(rc) && state.LastPollStatus == "auth_failed" {
+			skipped = append(skipped, session.RemoteUpdateResult{Name: name, Host: rc.Host, Outcome: session.RemoteUpdateOutcomeSkipped, Note: "auth failed; polling paused"})
+			log.Info("remote_auto_update_skipped", slog.String("remote", name), slog.String("reason", "auth failed"))
+			continue
+		}
+		eligible[name] = rc
+	}
+	remotes = eligible
+	if len(remotes) == 0 {
+		sort.Slice(skipped, func(i, j int) bool { return skipped[i].Name < skipped[j].Name })
+		return skipped
+	}
 	end, err := session.BeginRemoteSweep(remoteNames(remotes))
 	if err != nil {
 		log.Info("remote_auto_update_skipped", slog.String("reason", err.Error()))
@@ -1070,6 +1127,8 @@ func runRemoteAutoUpdate(remotes map[string]session.RemoteConfig, target string)
 			}
 		},
 	})
+	results = append(results, skipped...)
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 	log.Info("remote_auto_update_done", slog.String("summary", remoteUpdateSummary(results)))
 	return results
 }
