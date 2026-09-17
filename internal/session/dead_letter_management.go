@@ -208,15 +208,15 @@ func removeDeadLetterEntry(entry deadLetterEntry) error {
 	var kept [][]byte
 	removed := false
 	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := []byte(strings.TrimSpace(line))
-		if len(trimmed) == 0 {
+		original := []byte(line)
+		if len(strings.TrimSpace(line)) == 0 {
 			continue
 		}
-		if !removed && deadLetterRecordID(entry.record.Store, trimmed) == entry.record.ID {
+		if !removed && deadLetterRecordID(entry.record.Store, original) == entry.record.ID {
 			removed = true
 			continue
 		}
-		kept = append(kept, trimmed)
+		kept = append(kept, original)
 	}
 	if !removed {
 		return fmt.Errorf("dead-letter record %q changed or no longer exists", entry.record.ID)
