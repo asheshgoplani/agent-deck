@@ -7,14 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.11] - 2026-09-25
+
 ### Added
 
-- Account and harness switching now works for sessions a remote deck owns, the same way it does locally. `Shift+P` on a remote row opens the Edit Session dialog bound to that remote: the account row lists the remote's own slots, saving a changed harness or account previews the switch on the remote (`session switch-preview --json`) and shows the same "Switch Account?" / "Transfer Context?" confirmation fed by that answer (its losses, warnings and refusals verbatim), and confirming runs the remote's own `session switch` with the same guards it has locally (ownership revalidation, managed-source refusal, journal). Results are reported as verified, pending or failed with the remote's status and `recovery_required` flag; the row updates through the pushed remote events. The CLI forwards `remote <name> session switch|switch-preview|switch-account` with a closed option set, so no local path or credential can reach the remote's switch engine. `accounts --harness codex` lists Codex slots. A cross-harness preview now refuses (`target-harness-missing`) when the target harness is not on the host's `PATH`, before anything is staged, journaled or archived. `session switch --json` reports `source_archived` / `source_superseded_by` in every cross-harness shape (success, pending and the recovery-required failure after the source was already superseded), and the TUI states exactly what happened to the source. Refs #2170.
-
+- Account and harness switching now works for sessions a remote deck owns, the same way it does locally. `Shift+P` on a remote row opens the Edit Session dialog bound to that remote: the account row lists the remote's own slots, saving a changed harness or account previews the switch on the remote (`session switch-preview --json`) and shows the same "Switch Account?" / "Transfer Context?" confirmation fed by that answer (its losses, warnings and refusals verbatim), and confirming runs the remote's own `session switch` with the same guards it has locally (ownership revalidation, managed-source refusal, journal). Results are reported as verified, pending or failed with the remote's status and `recovery_required` flag; the row updates through the pushed remote events. The CLI forwards `remote <name> session switch|switch-preview|switch-account` with a closed option set, so no local path or credential can reach the remote's switch engine. `accounts --harness codex` lists Codex slots. A cross-harness preview now refuses (`target-harness-missing`) when the target harness is not on the host's `PATH`, before anything is staged, journaled or archived. `session switch --json` reports `source_archived` / `source_superseded_by` in every cross-harness shape (success, pending and the recovery-required failure after the source was already superseded), and the TUI states exactly what happened to the source (#2274, refs #2170).
 - Remote session creation uses the owning host's versioned capability catalog for account, model, MCP and worktree options, validates requests before creation, and rolls back failed startup queries (#2275).
+- Web UI: select a group in the sidebar for stats and group-aware new-session creation (working directory, tool, model prefilled from the group), including archived sessions and a stopped-status filter chip (@dbeaudoin, #2047).
+- Added `agent-deck completion bash|zsh|fish` — shell completion for commands, subcommands, and live resource names (sessions, remotes, profiles, groups, agents) (@boyvinall, #2085).
+- Add Muse Code CLI as a builtin agent tool with launch, status detection, and restart-resume support (@MauriceDHanisch, #2095).
+- `session send` to a live Claude Code session can now deliver over Claude's own messaging socket instead of typing into the tmux pane (opt-in via `send_transport = "auto"`), cutting no-wait send latency roughly 5x with automatic fallback to the tmux path whenever the socket isn't verifiably safe to use (@tarekrached, #2100).
+- Add `agent-deck inbox dead-letter list|show [--json]` to inspect physical dead-letter and unowned-ledger records, raw bytes preserved (#2111).
+- Add opt-in `[ui].embedded_terminal` layout: a persistent session sidebar with an interactive embedded tmux pane (Enter to focus, Alt+Enter for full-screen attach, Ctrl+Alt+B to toggle sidebar, Ctrl+Q to return), off by default (#2118).
+- Add CI stalled-notify workflow: labels fork PRs `needs-ci` and pings ntfy when a gating workflow sits at action_required awaiting maintainer approval (#2142).
+- Add advisory-only structural delta check (sentrux) to PRs touching source files; never blocks merge (#2149).
+- Ship the GitHub event watcher as an opt-in conductor daemon (`conductor/gh-watcher/`) — polls repo events with ETag dedup, paces/coalesces/bursts delivery, and forwards lean `[github:...]` triggers to the conductor; off by default (#2150, closes #2134).
+- Added `agent-deck usage` to show remaining Claude subscription quota (5h/7d windows) from statusLine-ingested rate_limits data, with a new `internal/quota` cache — no network calls, no token estimation (@FreakySurgeon, #2192).
+- CLI: `list --json`, `list --all --json`, and `session show --json` now include `codex_session_id` and `resolved_codex_home` for Codex-compatible sessions, so external tools can locate a session's rollout JSONL without reimplementing `CODEX_HOME` resolution (@efenex, #2256).
+- Add local runtime health metrics and performance budgets, surfaced via `agent-deck health` (#2289).
+- Add `agent-deck remote update --from-build <dir>` to install verified local three-platform builds (darwin/arm64, linux/amd64, linux/arm64) onto remotes without publishing a release, with downgrade guard, checksum/version-verified atomic install, and correct local-build-vs-release precedence for restart watchers (#2291).
+- The remote preview panel now shows the remote agent-deck's live version and stats, with the panel and header content configurable (#2274 groundwork).
+- Added a durable accepted-turn receipt so `session send --json --wait` on Codex correlates late replies to the exact accepted turn instead of delivering stale output (@p4p3r, #2279).
+
+### Changed
+
+- Group and session-path dialogs now offer fzf-style fuzzy path suggestions with live filesystem completions, instead of plain substring filtering (@ArgusGuardian, #2072).
+- `ci`: Dependabot patch/minor bumps auto-merge once required review + CI are green (no gate change) (#2141).
+- `ci`: the go-test workflow names failing tests (known flake vs new failure) with an exact repro line in the job summary (#2145).
+- Tool icons and colors now come from the tool registry (built-ins plus `[tools.<name>]` config), so a custom tool's icon/color show consistently everywhere and adding a tool needs one line instead of two switch statements (#2146).
+- `docs(tui)`: copy/text-selection keys get their own help section, YOLO toggle documented, TUI reference reconciled with `help.go` (@borng, #2229).
+- `perf(conductor)`: drop already-drained polling turns instead of re-emitting them (#2051).
 
 ### Fixed
 
+- `agent-deck notify-daemon` and `remote add` no longer mutate state on a bare trailing `--help`/`-h` (closes #2025).
+- `fix(tmux)`: bound stalled startup handover — a pane stuck mid-handoff no longer holds the startup-timeout watcher past its own generation (#2052).
+- Codex turn dedup now uses persisted hook generation/sequence instead of collapsing to running→waiting, so back-to-back Codex completions aren't merged into one notification (@benbergg, #2057).
+- Open Shell Here windows now inherit the session's configured tmux sizing policy (window-size/aggressive-resize) instead of tmux's global latest/off defaults (#2120).
+- Detect pi's "Working" banner (horizontal-rule spinner frame, whole-pane scan) as busy in headless status probes, fixing false "waiting" status for pi sessions on remote/headless hosts (@barjatiyasaurabh, #2154).
+- Open `AskUserQuestion`/permission menus are now classified as their own interactive-menu substate instead of being read as idle-at-empty-prompt (closes #2185).
+- Default multi-client tmux sessions to `window-size=smallest` so crossed client dimensions can no longer produce a pane no attached client can fully display (@siraben, #2186).
+- Codex session cards no longer stick on stale yellow "waiting" after a turn completes; the web dashboard now reflects live running/error state without needing a restart (@florentbo, #2190, closes #2189).
+- `session start`/`session restart` now detect a sandbox (remain-on-exit) session whose initial command exited immediately instead of reporting a false success; `add --json` now reports `started: false` explicitly (closes #2202).
+- Restart bookkeeping now writes to the profile that owns the instance instead of the process-global database, fixing lost tmux-name updates for non-default profiles (@jwiegley, #2206).
+- `remote sessions --json` now returns a stable `{sessions, errors}` envelope, accepts `--json` after a positional remote name, and exits nonzero when any remote fails (@jwiegley, #2207).
+- A queued remote-agent request cancelled just as capacity freed could still start and mutate state (@jwiegley, #2208).
+- Web event streams recover automatically after network or service outages (@kickinrad, #2227).
+- `list --json` prints `[]` instead of `null` when there are no sessions (@efenex, #2277).
+- Restart now imports the transcript from another config dir instead of silently starting a blank conversation when a session resumes under a different account/config dir (@scottyallen, #2280, closes #2269).
+- Prune orphan hook artifacts and bound kqueue descriptors (#2287).
+- Remote polling and SSH client cleanup are now nonblocking, with auth-pause/retry (`remote list --retry`, TUI `R`); restored session snapshots no longer report stale live status (#2288, fixes #2285).
+- Share Codex status scans and skip list metadata discovery instead of duplicating both per session (#2290).
+- Quick-create (Ctrl+N and zoxide quick-create) now preserves custom tool identity and configured command instead of reverting to the raw binary (@muffadal53, #2298, closes #2199).
+- `session switch` now persists the account atomically, archives stale destinations, and unblocks retries after a failed journal write.
 - Wrapped session process trees are tracked with a spawn-time ownership receipt for verified descendant cleanup (#2272).
 - Session sends report queued delivery truthfully and bind `--wait` and `--stream` replies to the submitted turn (#2273).
 
