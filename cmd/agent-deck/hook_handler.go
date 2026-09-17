@@ -307,13 +307,22 @@ func handleHookHandler() {
 	// SYNCHRONOUSLY. The install flips the conductor's Stop hook to sync — see
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
-	if isStopHookEvent(payload.HookEventName) {
+	if isStopHookEvent(payload.HookEventName) && stopHookIsSyncInstall() {
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
 			}
 		}
 	}
+}
+
+// stopHookIsSyncInstall reports whether this Stop hook was installed in the
+// synchronous form (messaging audit P2-1). Only the sync install exports
+// session.StopHookSyncMarkerEnv into the hook command; a stale async entry
+// runs without it, and draining there would consume the parent's inbox into a
+// {decision:"block"} that Claude Code never reads.
+func stopHookIsSyncInstall() bool {
+	return os.Getenv(session.StopHookSyncMarkerEnv) == "1"
 }
 
 // parentIsDSP reports whether the parent process (typically the claude binary)
@@ -608,6 +617,12 @@ func handleHooksInstall() {
 	} else {
 		fmt.Println("Claude Code hooks are already installed.")
 	}
+	// Messaging audit P1-1: the hook is pinned to this binary's absolute
+	// path, so say which one — a stale PATH entry can no longer hijack it.
+	report := session.ClaudeHooksStatus(configDir, Version)
+	for _, b := range report.Binaries {
+		fmt.Printf("Hook command: %s\n", b.Command)
+	}
 }
 
 func handleHooksUninstall() {
@@ -629,15 +644,7 @@ func handleHooksStatus() {
 	cleanStaleHookFiles()
 
 	configDir := getClaudeConfigDirForHooks()
-	installed := session.CheckClaudeHooksInstalled(configDir)
-
-	if installed {
-		fmt.Println("Status: INSTALLED")
-		fmt.Printf("Config: %s/settings.json\n", configDir)
-	} else {
-		fmt.Println("Status: NOT INSTALLED")
-		fmt.Println("Run 'agent-deck hooks install' to install.")
-	}
+	printClaudeHooksStatus(os.Stdout, session.ClaudeHooksStatus(configDir, Version))
 
 	// Show hook status files
 	hooksDir := getHooksDir()
@@ -663,6 +670,54 @@ func handleHooksStatus() {
 
 	fmt.Printf("Active hook files: %d (in %s)\n", activeCount, hooksDir)
 	fmt.Printf("Total hook files: %d\n", len(entries))
+}
+
+// printClaudeHooksStatus renders the install state plus, per messaging audit
+// P1-1, what each installed hook command actually resolves to. A bare command
+// that PATH resolves to a different file than this binary is a shadow; a hook
+// binary reporting a different version is a mismatch. Either means the hook
+// half of the delivery spine (Stop-hook drain, sentinel scan, events history)
+// runs code the daemon does not, and the fix is one `hooks install`.
+func printClaudeHooksStatus(w io.Writer, report session.ClaudeHooksStatusReport) {
+	problems := report.Problems()
+	switch {
+	case report.Installed && len(problems) == 0:
+		fmt.Fprintln(w, "Status: INSTALLED")
+	case report.Present:
+		fmt.Fprintln(w, "Status: INSTALLED (needs reinstall)")
+	default:
+		fmt.Fprintln(w, "Status: NOT INSTALLED")
+	}
+	fmt.Fprintf(w, "Config: %s/settings.json\n", report.ConfigDir)
+	if report.Executable != "" {
+		fmt.Fprintf(w, "This binary: %s (v%s)\n", report.Executable, report.Version)
+	}
+	for _, b := range report.Binaries {
+		line := "Hook command: " + b.Command
+		switch {
+		case b.ResolveError != "":
+			line += " (unresolvable)"
+		case b.Bare:
+			line += " (bare; PATH resolves to " + b.ResolvedPath
+			if b.Version != "" {
+				line += ", v" + b.Version
+			}
+			line += ")"
+		default:
+			line += " (" + b.ResolvedPath
+			if b.Version != "" {
+				line += ", v" + b.Version
+			}
+			line += ")"
+		}
+		fmt.Fprintln(w, line)
+	}
+	for _, p := range problems {
+		fmt.Fprintln(w, "WARNING: "+p)
+	}
+	if !report.Installed || len(problems) > 0 {
+		fmt.Fprintln(w, "Run 'agent-deck hooks install' to pin the hooks to this binary.")
+	}
 }
 
 // costEventFile is the JSON written to ~/.agent-deck/cost-events/{instance}_{ts}.json

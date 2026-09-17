@@ -8,11 +8,74 @@ import (
 	"path/filepath"
 	"strings"
 
+	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
 
-// agentDeckHookCommand is the marker command used to identify agent-deck hooks in settings.json.
+// agentDeckHookCommand is the legacy bare form of the hook command. It is
+// still recognised (and rewritten) on install, and is what the install falls
+// back to when the running executable cannot be resolved.
 const agentDeckHookCommand = "agent-deck hook-handler"
+
+// hookHandlerSubcommand is the subcommand every agent-deck hook entry invokes.
+const hookHandlerSubcommand = "hook-handler"
+
+// hookExecutablePath resolves the absolute, symlink-free path of the running
+// agent-deck binary. Messaging audit P1-1: the hook command used to be the
+// bare `agent-deck hook-handler`, so each Claude session ran whatever
+// `agent-deck` came first on ITS PATH — on the maintainer's machine a stale
+// /usr/local/bin symlink eight releases behind the daemon. Installing the
+// absolute path pins the hook to the binary that installed it. Test seam.
+var hookExecutablePath = func() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// hookHandlerCommand returns the command the install writes: the absolute
+// executable path plus the hook-handler subcommand, or the legacy bare form
+// when the executable cannot be resolved (so a hook is always installed).
+func hookHandlerCommand() string {
+	exe, err := hookExecutablePath()
+	if err != nil || exe == "" {
+		return agentDeckHookCommand
+	}
+	return shellescape.Quote(exe) + " " + hookHandlerSubcommand
+}
+
+// isAgentDeckHookCommand reports whether a settings.json hook command is one
+// of ours, in either the legacy bare form or the absolute-path form. Only the
+// command-position word and the subcommand are inspected, so a user hook that
+// merely mentions agent-deck in an argument is not claimed.
+func isAgentDeckHookCommand(command string) bool {
+	words, ok := shellwords.Split(command)
+	if !ok {
+		return false
+	}
+	// Skip leading VAR=value exports (the Stop sync marker).
+	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.ContainsRune(words[0], os.PathSeparator) {
+		words = words[1:]
+	}
+	if len(words) < 2 || words[1] != hookHandlerSubcommand {
+		return false
+	}
+	if words[0] == "agent-deck" {
+		return true
+	}
+	// An absolute form: ours if it is the binary the install would write now,
+	// or any agent-deck binary a previous install wrote.
+	if exe, err := hookExecutablePath(); err == nil && exe != "" && words[0] == exe {
+		return true
+	}
+	return strings.TrimSuffix(filepath.Base(words[0]), ".exe") == "agent-deck"
+}
 
 // claudeHookEntry represents a single hook entry in Claude Code settings.
 type claudeHookEntry struct {
@@ -27,21 +90,43 @@ type claudeHookMatcher struct {
 	Hooks   []claudeHookEntry `json:"hooks"`
 }
 
-// agentDeckHook returns the standard agent-deck hook entry.
-func agentDeckHook(async bool) claudeHookEntry {
+// StopHookSyncMarkerEnv is exported into the Stop hook's command by the sync
+// install (messaging audit P2-1). DrainForStopHook consumes the parent's inbox
+// and answers with {decision:"block"}; Claude Code only reads that answer from
+// a SYNCHRONOUS hook. A Stop entry left async by an older install would still
+// drain — consuming records into a reply nobody reads. The handler therefore
+// drains only when this marker is present, and only the sync install writes it.
+const StopHookSyncMarkerEnv = "AGENTDECK_STOP_SYNC"
+
+// claudeHookEventConfig is one row of hookEventConfigs.
+type claudeHookEventConfig struct {
+	Event   string
+	Matcher string // empty = no matcher
+	Async   bool   // false = synchronous (blocks via exit code)
+	// Env is an optional VAR=value prefix written in front of the command,
+	// which the shell that runs the hook exports to the handler.
+	Env string
+}
+
+// command is the exact command string the install writes for this event.
+func (cfg claudeHookEventConfig) command() string {
+	if cfg.Env != "" {
+		return cfg.Env + " " + hookHandlerCommand()
+	}
+	return hookHandlerCommand()
+}
+
+// agentDeckHook returns the standard agent-deck hook entry for an event.
+func agentDeckHook(cfg claudeHookEventConfig) claudeHookEntry {
 	return claudeHookEntry{
 		Type:    "command",
-		Command: agentDeckHookCommand,
-		Async:   async,
+		Command: cfg.command(),
+		Async:   cfg.Async,
 	}
 }
 
 // hookEventConfigs defines which Claude Code events we subscribe to and their matcher patterns.
-var hookEventConfigs = []struct {
-	Event   string
-	Matcher string // empty = no matcher
-	Async   bool   // false = synchronous (blocks via exit code)
-}{
+var hookEventConfigs = []claudeHookEventConfig{
 	{Event: "SessionStart", Async: true},
 	{Event: "UserPromptSubmit", Async: true},
 	// Issue #1225/#1226 ACTIVATION: Stop is SYNCHRONOUS so Claude Code reads the
@@ -53,7 +138,9 @@ var hookEventConfigs = []struct {
 	//   - The MaxStopHookBlocks loop guard is crash-safe (B4) and fails safe on an
 	//     absent stop_hook_active flag (B8), so it cannot be defeated into a loop.
 	// Canary one conductor before flipping fleet-wide (GAP §5).
-	{Event: "Stop", Async: false},
+	// The Env marker is what lets the handler tell this sync install from a
+	// stale async one (messaging audit P2-1).
+	{Event: "Stop", Async: false, Env: StopHookSyncMarkerEnv + "=1"},
 	// PermissionRequest is synchronous so the hook handler's stdout decision is
 	// consulted by Claude Code. In headless / /remote-control contexts an async
 	// hook with no UI fallback caused silent deny; the sync hook plus an
@@ -96,14 +183,16 @@ func InjectClaudeHooks(configDir string) (bool, error) {
 		existingHooks = make(map[string]json.RawMessage)
 	}
 
-	// Check if already installed (all events present with our hook command)
-	if hooksAlreadyInstalled(existingHooks) {
+	// Check if already installed (all events present with our hook command
+	// AND pointing at this binary). A legacy bare entry, or an absolute entry
+	// for a different binary, counts as drift and is rewritten in place.
+	if hooksInstalledWithCommand(existingHooks, true) {
 		return false, nil
 	}
 
 	// Inject our hook entries for each event
 	for _, cfg := range hookEventConfigs {
-		existingHooks[cfg.Event] = mergeHookEvent(existingHooks[cfg.Event], cfg.Matcher, cfg.Async)
+		existingHooks[cfg.Event] = mergeHookEvent(existingHooks[cfg.Event], cfg)
 	}
 
 	// Marshal hooks back into raw settings
@@ -236,13 +325,31 @@ func CheckClaudeHooksInstalled(configDir string) bool {
 // async-true to async-false flip in the /remote-control parity fix
 // surfaced the bug: settings.json kept the old flag because hooks install
 // no-opped on "already installed."
+//
+// The command is accepted in any recognised form (bare or absolute). This is
+// the check the TUI runs at startup before silently re-installing, and a bare
+// install must keep counting as installed there: otherwise every developer
+// build started as a TUI would rewrite the operator's hooks to point at
+// itself. Only the explicit install (hooksInstalledWithCommand) treats a
+// command that differs from this binary as drift.
 func hooksAlreadyInstalled(hooks map[string]json.RawMessage) bool {
+	return hooksInstalledWithCommand(hooks, false)
+}
+
+// hooksInstalledWithCommand is hooksAlreadyInstalled with the command pinned:
+// when pinned, every agent-deck entry must equal the command the install
+// writes for that event now (this binary's path plus any Env marker).
+func hooksInstalledWithCommand(hooks map[string]json.RawMessage, pinned bool) bool {
 	for _, cfg := range hookEventConfigs {
 		raw, ok := hooks[cfg.Event]
 		if !ok {
 			return false
 		}
-		if !eventHasAgentDeckHookMatchingConfig(raw, cfg.Matcher, cfg.Async) {
+		expected := ""
+		if pinned {
+			expected = cfg.command()
+		}
+		if !eventHasAgentDeckHookMatchingConfig(raw, cfg.Matcher, cfg.Async, expected) {
 			return false
 		}
 	}
@@ -251,8 +358,9 @@ func hooksAlreadyInstalled(hooks map[string]json.RawMessage) bool {
 
 // eventHasAgentDeckHookMatchingConfig checks both presence AND config match:
 // the agent-deck hook entry must live under a matcher block whose Matcher
-// field equals the expected value, and its Async flag must match.
-func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, expectedMatcher string, expectedAsync bool) bool {
+// field equals the expected value, its Async flag must match, and — when
+// expectedCommand is non-empty — its command must equal it.
+func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, expectedMatcher string, expectedAsync bool, expectedCommand string) bool {
 	var matchers []claudeHookMatcher
 	if err := json.Unmarshal(raw, &matchers); err != nil {
 		return false
@@ -262,7 +370,10 @@ func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, expectedMatcher st
 			continue
 		}
 		for _, h := range m.Hooks {
-			if strings.Contains(h.Command, agentDeckHookCommand) {
+			if isAgentDeckHookCommand(h.Command) {
+				if expectedCommand != "" && h.Command != expectedCommand {
+					return false
+				}
 				return h.Async == expectedAsync
 			}
 		}
@@ -272,7 +383,7 @@ func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, expectedMatcher st
 
 // mergeHookEvent adds agent-deck's hook to an existing event's matcher array.
 // Preserves all existing matchers and hooks.
-func mergeHookEvent(existing json.RawMessage, matcher string, async bool) json.RawMessage {
+func mergeHookEvent(existing json.RawMessage, cfg claudeHookEventConfig) json.RawMessage {
 	var matchers []claudeHookMatcher
 
 	if existing != nil {
@@ -283,21 +394,21 @@ func mergeHookEvent(existing json.RawMessage, matcher string, async bool) json.R
 
 	// Check if we already have a matcher entry with our hook
 	for i, m := range matchers {
-		if m.Matcher == matcher {
+		if m.Matcher == cfg.Matcher {
 			// Update our existing entry to the current config (Async/Type),
 			// or append if it is missing. In-place update covers the
 			// binary-upgrade case where the hookEventConfigs table changes
 			// (e.g., flipping Async from true to false) and the persisted
 			// settings.json must drift to follow.
 			for j, h := range m.Hooks {
-				if strings.Contains(h.Command, agentDeckHookCommand) {
-					matchers[i].Hooks[j] = agentDeckHook(async)
+				if isAgentDeckHookCommand(h.Command) {
+					matchers[i].Hooks[j] = agentDeckHook(cfg)
 					result, _ := json.Marshal(matchers)
 					return result
 				}
 			}
 			// Append our hook to existing matcher
-			matchers[i].Hooks = append(matchers[i].Hooks, agentDeckHook(async))
+			matchers[i].Hooks = append(matchers[i].Hooks, agentDeckHook(cfg))
 			result, _ := json.Marshal(matchers)
 			return result
 		}
@@ -305,8 +416,8 @@ func mergeHookEvent(existing json.RawMessage, matcher string, async bool) json.R
 
 	// No matching matcher found; add a new one
 	newMatcher := claudeHookMatcher{
-		Matcher: matcher,
-		Hooks:   []claudeHookEntry{agentDeckHook(async)},
+		Matcher: cfg.Matcher,
+		Hooks:   []claudeHookEntry{agentDeckHook(cfg)},
 	}
 	matchers = append(matchers, newMatcher)
 	result, _ := json.Marshal(matchers)
@@ -327,7 +438,7 @@ func removeAgentDeckFromEvent(raw json.RawMessage) (json.RawMessage, bool) {
 	for _, m := range matchers {
 		var hooks []claudeHookEntry
 		for _, h := range m.Hooks {
-			if strings.Contains(h.Command, agentDeckHookCommand) {
+			if isAgentDeckHookCommand(h.Command) {
 				removed = true
 				continue
 			}
