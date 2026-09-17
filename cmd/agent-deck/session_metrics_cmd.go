@@ -12,27 +12,36 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// readSessionEvents reads the profile's journal for [now-since, now). journal
-// tells the reader whether an empty result means "nothing happened" or
-// "nothing is recorded" (kill switch off).
-func readSessionEvents(profile string, since time.Duration) (events []health.Event, journal string, until time.Time, flags []string, err error) {
-	until = time.Now().UTC()
-	journal = health.JournalOK
-	if config, cfgErr := session.LoadUserConfig(); cfgErr == nil && !config.Health.SessionEventsEnabled() {
-		journal = health.JournalDisabled
+// journalWindow is one read of the profile's journal for [since, until).
+// journal tells the reader whether an empty result means "nothing happened"
+// or "nothing is recorded" (kill switch off).
+type journalWindow struct {
+	events  []health.Event
+	journal string
+	since   time.Time
+	until   time.Time
+	flags   []string
+}
+
+func readSessionEvents(profile string, since time.Duration) (journalWindow, error) {
+	now := time.Now().UTC()
+	w := journalWindow{journal: health.JournalOK, since: now.Add(-since), until: now}
+	if config, err := session.LoadUserConfig(); err == nil && !config.Health.SessionEventsEnabled() {
+		w.journal = health.JournalDisabled
 	}
 	dir, err := session.HealthLogDir(profile)
 	if err != nil {
-		return nil, journal, until, nil, err
+		return w, err
 	}
-	events, incomplete, err := health.ReadEvents(dir, until.Add(-since), until)
+	events, incomplete, err := health.ReadEvents(dir, w.since, w.until)
 	if err != nil {
-		return nil, journal, until, nil, err
+		return w, err
 	}
+	w.events = events
 	if incomplete {
-		flags = append(flags, "some session events are unknown: incomplete or corrupt journal lines")
+		w.flags = append(w.flags, "some session events are unknown: incomplete or corrupt journal lines")
 	}
-	return events, journal, until, flags, nil
+	return w, nil
 }
 
 // deadLettersBySession groups the host's dead-letter records by session.
@@ -59,7 +68,7 @@ func workerFromRecords(records []session.CompletionRecord, sessionID string) *he
 		}
 		w := &health.WorkerMetrics{Status: rec.Status, FinishedAt: rec.FinishedAt.UTC().Format(time.RFC3339)}
 		if !rec.CreatedAt.IsZero() && rec.FinishedAt.After(rec.CreatedAt) {
-			d := float64(rec.FinishedAt.Sub(rec.CreatedAt)) / float64(time.Millisecond)
+			d := health.Milliseconds(rec.FinishedAt.Sub(rec.CreatedAt))
 			w.DurationMS = &d
 		}
 		return w
@@ -67,13 +76,13 @@ func workerFromRecords(records []session.CompletionRecord, sessionID string) *he
 	return nil
 }
 
-func finishSessionMetrics(m *health.SessionMetrics, journal string, flags []string, deadLetters map[string]int, deadLetterErr error, records []session.CompletionRecord) {
+func finishSessionMetrics(m *health.SessionMetrics, w journalWindow, deadLetters map[string]int, deadLetterErr error, records []session.CompletionRecord) {
 	// A switched-off journal is reported as such even when older lines exist:
 	// the numbers below are then history, not the current state.
-	if journal != health.JournalOK {
-		m.Journal = journal
+	if w.journal != health.JournalOK {
+		m.Journal = w.journal
 	}
-	m.Flags = append(m.Flags, flags...)
+	m.Flags = append(m.Flags, w.flags...)
 	if deadLetterErr != nil {
 		m.Flags = append(m.Flags, "dead letters unknown: "+deadLetterErr.Error())
 	} else {
@@ -106,26 +115,25 @@ func handleSessionMetrics(profile string, args []string) {
 		os.Exit(2)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
-	events, journal, until, flags, err := readSessionEvents(profile, *since)
+	w, err := readSessionEvents(profile, *since)
 	if err != nil {
 		out.Error(fmt.Sprintf("session metrics: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	sinceAt := until.Add(-*since)
 	deadLetters, deadLetterErr := deadLettersBySession()
 	records, _ := session.LoadCompletionRecords(profile)
 
 	if *all {
-		metrics := health.ComputeAllSessionMetrics(events, sinceAt, until)
+		metrics := health.ComputeAllSessionMetrics(w.events, w.since, w.until)
 		for i := range metrics {
-			finishSessionMetrics(&metrics[i], journal, flags, deadLetters, deadLetterErr, records)
+			finishSessionMetrics(&metrics[i], w, deadLetters, deadLetterErr, records)
 		}
 		if *jsonOutput {
 			encodeMetricsJSON(metrics)
 			return
 		}
 		if len(metrics) == 0 {
-			fmt.Printf("Session metrics: journal %s in the last %s\n", journal, since)
+			fmt.Printf("Session metrics: journal %s in the last %s\n", w.journal, since)
 		}
 		for _, m := range metrics {
 			fmt.Print(formatSessionMetrics(m))
@@ -142,9 +150,9 @@ func handleSessionMetrics(profile string, args []string) {
 			sessionID, title = inst.ID, inst.Title
 		}
 	}
-	m := health.ComputeSessionMetrics(sessionID, events, sinceAt, until)
+	m := health.ComputeSessionMetrics(sessionID, w.events, w.since, w.until)
 	m.Title = title
-	finishSessionMetrics(&m, journal, flags, deadLetters, deadLetterErr, records)
+	finishSessionMetrics(&m, w, deadLetters, deadLetterErr, records)
 	if title == "" && m.Events == 0 {
 		out.Error(fmt.Sprintf("session '%s' not found in the registry and has no journal events in the last %s", identifier, since), ErrCodeNotFound)
 		os.Exit(2)
@@ -174,11 +182,7 @@ func formatSessionMetrics(m health.SessionMetrics) string {
 	fmt.Fprintf(&b, "  waiting on input: %s\n", health.FormatMS(m.WaitingMS))
 	fmt.Fprintf(&b, "  sends: %d (confirmed %d, unconfirmed %d, failed %d, unknown %d); unconfirmed rate %s; ack p50/p95 %s / %s\n", m.Sends.Count, m.Sends.Confirmed, m.Sends.Unconfirmed, m.Sends.Failed, m.Sends.Unknown, health.FormatRate(m.Sends.UnconfirmedRate), health.FormatMS(m.Sends.AckP50MS), health.FormatMS(m.Sends.AckP95MS))
 	fmt.Fprintf(&b, "  restarts: %d\n", m.Restarts)
-	if m.DeadLetters != nil {
-		fmt.Fprintf(&b, "  dead letters: %d\n", *m.DeadLetters)
-	} else {
-		b.WriteString("  dead letters: unknown\n")
-	}
+	fmt.Fprintf(&b, "  dead letters: %s\n", health.FormatCount(m.DeadLetters))
 	if m.Worker != nil {
 		fmt.Fprintf(&b, "  worker completion: %s in %s (finished %s)\n", m.Worker.Status, health.FormatMS(m.Worker.DurationMS), m.Worker.FinishedAt)
 	}
@@ -196,13 +200,13 @@ func formatSessionMetrics(m health.SessionMetrics) string {
 // sessionAggregateForHealth is the per-profile roll-up `health` reports next
 // to the process samples, computed from one journal read.
 func sessionAggregateForHealth(profile string, since time.Duration) health.SessionAggregate {
-	events, journal, until, _, err := readSessionEvents(profile, since)
+	w, err := readSessionEvents(profile, since)
 	if err != nil {
 		return health.SessionAggregate{Journal: "unknown: " + err.Error(), WindowHours: since.Hours()}
 	}
-	a := health.AggregateSessions(events, until.Add(-since), until)
-	if journal != health.JournalOK {
-		a.Journal = journal
+	a := health.AggregateSessions(w.events, w.since, w.until)
+	if w.journal != health.JournalOK {
+		a.Journal = w.journal
 	}
 	if counts, err := deadLettersBySession(); err == nil {
 		n := len(counts)
@@ -235,7 +239,7 @@ func recordSendEvent(profile, sessionID string, res sendDeliveryResult, sendErr 
 	outcome := journalSendOutcome(res.delivery, sendErr)
 	detail := map[string]any{"outcome": outcome, "delivery": res.delivery, "transport": res.transport}
 	if outcome == health.SendConfirmed {
-		detail["ack_ms"] = float64(time.Since(sentAt)) / float64(time.Millisecond)
+		detail["ack_ms"] = health.Milliseconds(time.Since(sentAt))
 	}
 	session.RecordSessionEvent(profile, sessionID, health.KindSend, detail)
 }
@@ -244,11 +248,12 @@ func recordSendEvent(profile, sessionID string, res sendDeliveryResult, sendErr 
 // reply to `session metrics` into one clear line. Any other failure passes
 // through as the remote printed it.
 func remoteMetricsUnsupported(remote string, args []string, code int, stderr string) (string, bool) {
-	if code == 0 || len(args) < 2 || args[0] != "session" || args[1] != "metrics" {
-		return "", false
-	}
-	if !strings.Contains(stderr, "unknown session command: metrics") {
+	if code == 0 || !isSessionMetricsArgs(args) || !strings.Contains(stderr, "unknown session command: metrics") {
 		return "", false
 	}
 	return fmt.Sprintf("remote %q does not support 'session metrics' (its agent-deck predates session metrics; update it with 'agent-deck remote %s update')", remote, remote), true
+}
+
+func isSessionMetricsArgs(args []string) bool {
+	return len(args) > 1 && args[0] == "session" && args[1] == "metrics"
 }

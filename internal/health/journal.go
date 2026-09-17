@@ -63,13 +63,19 @@ func validKind(kind string) bool {
 	return false
 }
 
+// valid is the shared gate for writing and reading a line: a timestamp, a
+// session id and a known kind.
+func (e Event) valid() bool {
+	return !e.TS.IsZero() && e.SessionID != "" && validKind(e.Kind)
+}
+
 // Append writes one event. It is safe across processes: lines are short
 // O_APPEND writes, and a concurrent rotation loses at most the rename race.
 func (j *Journal) Append(e Event) error {
 	if j == nil {
 		return nil
 	}
-	if e.TS.IsZero() || e.SessionID == "" || !validKind(e.Kind) {
+	if !e.valid() {
 		return fmt.Errorf("session event needs a timestamp, a session id and a known kind")
 	}
 	e.TS = e.TS.UTC()
@@ -144,7 +150,7 @@ func ReadEvents(dir string, since, until time.Time) (events []Event, incomplete 
 			line, readErr := reader.ReadBytes('\n')
 			if len(line) > 0 {
 				var e Event
-				if line[len(line)-1] != '\n' || json.Unmarshal(line, &e) != nil || e.TS.IsZero() || e.SessionID == "" || !validKind(e.Kind) {
+				if line[len(line)-1] != '\n' || json.Unmarshal(line, &e) != nil || !e.valid() {
 					incomplete = true
 				} else if !e.TS.Before(since) && e.TS.Before(until) {
 					events = append(events, e)

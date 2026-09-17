@@ -257,7 +257,7 @@ func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRec
 		"status":      rec.Status,
 		"exit_code":   rec.ExitCode,
 		"created_at":  rec.CreatedAt.UTC().Format(time.RFC3339Nano),
-		"duration_ms": float64(rec.FinishedAt.Sub(rec.CreatedAt)) / float64(time.Millisecond),
+		"duration_ms": health.Milliseconds(rec.FinishedAt.Sub(rec.CreatedAt)),
 	}})
 	// Mirror the finished completion into the non-destructive ledger so the
 	// task-worker fleet shows up in `session children` alongside interactive

@@ -598,14 +598,15 @@ func (d *TransitionDaemon) journalStatusChanges(profile string, statuses, substa
 		}
 		from, fromSubstate, _ := strings.Cut(previous, "|")
 		event := health.Event{TS: now, SessionID: id, Kind: health.KindStatus, From: from, To: to}
-		if substate != "" || fromSubstate != "" {
-			event.Detail = map[string]any{}
-			if substate != "" {
-				event.Detail["substate"] = substate
-			}
-			if fromSubstate != "" {
-				event.Detail["substate_from"] = fromSubstate
-			}
+		detail := map[string]any{}
+		if substate != "" {
+			detail["substate"] = substate
+		}
+		if fromSubstate != "" {
+			detail["substate_from"] = fromSubstate
+		}
+		if len(detail) > 0 {
+			event.Detail = detail
 		}
 		_ = journal.Append(event)
 	}

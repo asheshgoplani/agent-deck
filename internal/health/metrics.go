@@ -90,7 +90,8 @@ type SessionAggregate struct {
 	SessionsWithDeadLetters *int     `json:"sessions_with_dead_letters"`
 }
 
-func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+// Milliseconds is the unit every duration in the metrics JSON is reported in.
+func Milliseconds(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
 
 // percentiles returns the interpolated median and the nearest-rank p95.
 func percentiles(v []float64) (p50, p95 float64) {
@@ -106,6 +107,26 @@ func percentiles(v []float64) (p50, p95 float64) {
 		rank = 0
 	}
 	return p50, sorted[rank]
+}
+
+// nullablePercentiles is percentiles for the JSON contract: nil, not 0, when
+// nothing was measured.
+func nullablePercentiles(v []float64) (p50, p95 *float64) {
+	if len(v) == 0 {
+		return nil, nil
+	}
+	a, b := percentiles(v)
+	return &a, &b
+}
+
+// unconfirmedRate is unconfirmed over the classified sends (confirmed,
+// unconfirmed, failed); nil when no send was classified.
+func unconfirmedRate(unconfirmed, classified int) *float64 {
+	if classified == 0 {
+		return nil
+	}
+	rate := float64(unconfirmed) / float64(classified)
+	return &rate
 }
 
 func number(v any) (float64, bool) {
@@ -136,15 +157,16 @@ type sessionFold struct {
 	restarts      int
 	worker        *WorkerMetrics
 	last          *Event
-	events        int
+}
+
+func (f sessionFold) classifiedSends() int {
+	return f.sends.Confirmed + f.sends.Unconfirmed + f.sends.Failed
 }
 
 func foldSession(events []Event, until time.Time) sessionFold {
 	var f sessionFold
 	var runStart, waitStart time.Time
-	for i := range events {
-		e := events[i]
-		f.events++
+	for i, e := range events {
 		switch e.Kind {
 		case KindStatus:
 			if !waitStart.IsZero() {
@@ -156,7 +178,7 @@ func foldSession(events []Event, until time.Time) sessionFold {
 			} else if isTerminalStatus(e.To) {
 				f.turns++
 				if !runStart.IsZero() {
-					f.turnDurations = append(f.turnDurations, ms(e.TS.Sub(runStart)))
+					f.turnDurations = append(f.turnDurations, Milliseconds(e.TS.Sub(runStart)))
 					runStart = time.Time{}
 				}
 			}
@@ -197,23 +219,14 @@ func foldSession(events []Event, until time.Time) sessionFold {
 
 func (f sessionFold) turnMetrics() TurnMetrics {
 	t := TurnMetrics{Count: f.turns, Measured: len(f.turnDurations)}
-	if len(f.turnDurations) > 0 {
-		p50, p95 := percentiles(f.turnDurations)
-		t.P50MS, t.P95MS = &p50, &p95
-	}
+	t.P50MS, t.P95MS = nullablePercentiles(f.turnDurations)
 	return t
 }
 
 func (f sessionFold) sendMetrics() SendMetrics {
 	s := f.sends
-	if classified := s.Confirmed + s.Unconfirmed + s.Failed; classified > 0 {
-		rate := float64(s.Unconfirmed) / float64(classified)
-		s.UnconfirmedRate = &rate
-	}
-	if len(f.acks) > 0 {
-		p50, p95 := percentiles(f.acks)
-		s.AckP50MS, s.AckP95MS = &p50, &p95
-	}
+	s.UnconfirmedRate = unconfirmedRate(s.Unconfirmed, f.classifiedSends())
+	s.AckP50MS, s.AckP95MS = nullablePercentiles(f.acks)
 	return s
 }
 
@@ -238,15 +251,15 @@ func computeSessionMetrics(sessionID string, own []Event, since, until time.Time
 	}
 	f := foldSession(own, until)
 	m.Journal = JournalOK
-	m.Events = f.events
+	m.Events = len(own)
 	m.Turns = f.turnMetrics()
 	m.Sends = f.sendMetrics()
 	m.Restarts = f.restarts
 	m.Worker = f.worker
 	if f.last != nil {
-		w := ms(f.waiting)
+		w := Milliseconds(f.waiting)
 		m.WaitingMS = &w
-		m.LastStatusChange = &StatusChange{Status: f.last.To, At: f.last.TS.Format(time.RFC3339), AgeMS: ms(until.Sub(f.last.TS))}
+		m.LastStatusChange = &StatusChange{Status: f.last.To, At: f.last.TS.Format(time.RFC3339), AgeMS: Milliseconds(until.Sub(f.last.TS))}
 	}
 	if m.Turns.Count > m.Turns.Measured {
 		m.Flags = append(m.Flags, "some turns have unknown duration: no running observation before the terminal status")
@@ -289,20 +302,14 @@ func AggregateSessions(events []Event, since, until time.Time) SessionAggregate 
 		a.Turns += f.turns
 		a.Restarts += f.restarts
 		durations = append(durations, f.turnDurations...)
-		classified += f.sends.Confirmed + f.sends.Unconfirmed + f.sends.Failed
+		classified += f.classifiedSends()
 		unconfirmed += f.sends.Unconfirmed
 	}
 	days := a.WindowHours / 24
 	turnsPerDay, restartsPerDay := float64(a.Turns)/days, float64(a.Restarts)/days
 	a.TurnsPerDay, a.RestartsPerDay = &turnsPerDay, &restartsPerDay
-	if len(durations) > 0 {
-		p50, _ := percentiles(durations)
-		a.MedianTurnMS = &p50
-	}
-	if classified > 0 {
-		rate := float64(unconfirmed) / float64(classified)
-		a.UnconfirmedSendRate = &rate
-	}
+	a.MedianTurnMS, _ = nullablePercentiles(durations)
+	a.UnconfirmedSendRate = unconfirmedRate(unconfirmed, classified)
 	return a
 }
 
@@ -322,24 +329,28 @@ func FormatRate(v *float64) string {
 	return fmt.Sprintf("%.0f%%", *v*100)
 }
 
+// FormatCount renders a nullable count for human output.
+func FormatCount(v *int) string {
+	if v == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+func formatPerDay(v *float64) string {
+	if v == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.1f", *v)
+}
+
 func formatSessionAggregate(a *SessionAggregate) string {
 	if a == nil {
 		return ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Session metrics (journal %s, %.1f h window, %d sessions observed)\n", a.Journal, a.WindowHours, a.SessionsObserved)
-	turnsPerDay, restartsPerDay := "unknown", "unknown"
-	if a.TurnsPerDay != nil {
-		turnsPerDay = fmt.Sprintf("%.1f", *a.TurnsPerDay)
-	}
-	if a.RestartsPerDay != nil {
-		restartsPerDay = fmt.Sprintf("%.1f", *a.RestartsPerDay)
-	}
-	fmt.Fprintf(&b, "  turns/day: %s; median turn: %s; unconfirmed send rate: %s; restarts/day: %s\n", turnsPerDay, FormatMS(a.MedianTurnMS), FormatRate(a.UnconfirmedSendRate), restartsPerDay)
-	if a.SessionsWithDeadLetters != nil {
-		fmt.Fprintf(&b, "  sessions with dead letters: %d\n", *a.SessionsWithDeadLetters)
-	} else {
-		b.WriteString("  sessions with dead letters: unknown\n")
-	}
+	fmt.Fprintf(&b, "  turns/day: %s; median turn: %s; unconfirmed send rate: %s; restarts/day: %s\n", formatPerDay(a.TurnsPerDay), FormatMS(a.MedianTurnMS), FormatRate(a.UnconfirmedSendRate), formatPerDay(a.RestartsPerDay))
+	fmt.Fprintf(&b, "  sessions with dead letters: %s\n", FormatCount(a.SessionsWithDeadLetters))
 	return b.String()
 }

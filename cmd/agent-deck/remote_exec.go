@@ -262,22 +262,22 @@ func runRemoteExec(name string, args []string) (int, error) {
 	// command" (plus its help text) reads as one clear line instead.
 	var stderr io.Writer = os.Stderr
 	var captured bytes.Buffer
-	if len(args) > 1 && args[0] == "session" && args[1] == "metrics" {
+	if isSessionMetricsArgs(args) {
 		stderr = &captured
 	}
-	if err := runner.RunIO(context.Background(), input, os.Stdout, stderr, args...); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
-			if msg, ok := remoteMetricsUnsupported(name, args, exitErr.ExitCode(), captured.String()); ok {
-				return 2, errors.New(msg)
-			}
-			_, _ = os.Stderr.Write(captured.Bytes())
-			return exitErr.ExitCode(), nil // SSH already forwarded the diagnostic.
+	err = runner.RunIO(context.Background(), input, os.Stdout, stderr, args...)
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		if msg, ok := remoteMetricsUnsupported(name, args, exitErr.ExitCode(), captured.String()); ok {
+			return 2, errors.New(msg)
 		}
 		_, _ = os.Stderr.Write(captured.Bytes())
-		return 1, err
+		return exitErr.ExitCode(), nil // SSH already forwarded the diagnostic.
 	}
 	_, _ = os.Stderr.Write(captured.Bytes())
+	if err != nil {
+		return 1, err
+	}
 	return 0, nil
 }
 
