@@ -134,5 +134,8 @@ func buildChildrenContextSummary(instanceID string) string {
 		return ""
 	}
 	session.RefreshInstancesForCLIStatus(kids)
-	return formatChildrenContext(buildChildRows(kids))
+	// No pane capture here: this runs inside the parent's hook handler on
+	// every prompt (review round 4 P2). The hook-lag sample is taken by the
+	// polling surfaces (`session children --json` / `--follow`).
+	return formatChildrenContext(buildChildRows(kids, cachedChildStatus))
 }

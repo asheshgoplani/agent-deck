@@ -77,10 +77,13 @@ type InstanceData struct {
 	// last_activity_persist.go). Zero means unknown (old record or never
 	// active).
 	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
-	ArchivedAt     time.Time `json:"archived_at,omitempty"`
-	SupersededBy   string    `json:"superseded_by,omitempty"`
-	Supersedes     string    `json:"supersedes,omitempty"`
-	TmuxSession    string    `json:"tmux_session"`
+	// HookLag mirrors Instance.hookLag (status-light audit defect B): the
+	// persisted completed-turn samples, extras zone (see hook_lag.go).
+	HookLag      hookLagRecord `json:"hook_lag,omitempty"`
+	ArchivedAt   time.Time     `json:"archived_at,omitempty"`
+	SupersededBy string        `json:"superseded_by,omitempty"`
+	Supersedes   string        `json:"supersedes,omitempty"`
+	TmuxSession  string        `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
 	// the default server after upgrade.
@@ -1275,6 +1278,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			GenericSessionCommand:     genericScopeCommand(r.ToolData),
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
+			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
@@ -1411,6 +1415,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			GenericSessionCommand:     genericScopeCommand(r.ToolData),
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
+			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
@@ -1719,6 +1724,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			// throttle has an accurate baseline.
 			lastActivityAt:        instData.LastActivityAt,
 			lastActivityPersisted: instData.LastActivityAt,
+			hookLag:               instData.HookLag,
+			hookLagPersisted:      instData.HookLag,
+			hookLagDB:             s.db,
 			Sandbox:               instData.Sandbox,
 			SandboxContainer:      instData.SandboxContainer,
 			SSHHost:               instData.SSHHost,

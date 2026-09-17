@@ -2780,7 +2780,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Model             string    `json:"model,omitempty"`
 		ModelVersion      string    `json:"model_version,omitempty"`
 		Status            string    `json:"status"`
-		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
+		Substate          string    `json:"substate,omitempty"`        // Honest Status v2: additive refinement
+		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
 		Profile           string    `json:"profile"`
 		CreatedAt         time.Time `json:"created_at"`
@@ -2806,6 +2807,10 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		// Listings need live status, not native-session discovery. Persisted
 		// rows have no status freshness stamp, so still validate liveness.
 		_ = pass.UpdateStatusOnly(inst)
+		// The substate read is this pass's one pane capture and can settle
+		// the status it reads (hook lag, session/hook_lag.go): take it
+		// before the status so both describe the same frame.
+		substate := string(inst.Substate())
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
 			ID:                inst.ID,
@@ -2818,7 +2823,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Account:           inst.Account,
 			Command:           inst.Command,
 			Status:            StatusString(inst.Status),
-			Substate:          string(inst.Substate()),
+			Substate:          substate,
+			SubstateDetail:    inst.SubstateDetail(),
 			Profile:           profileName,
 			CreatedAt:         inst.CreatedAt,
 			SSHHost:           inst.SSHHost,
@@ -3373,7 +3379,10 @@ func handleStatus(profile string, args []string) {
 			// ADDED, never renamed: existing fields stay byte-stable; omitempty
 			// so the default "" never appears in output.
 			Substate string `json:"substate,omitempty"`
-			Path     string `json:"path"`
+			// SubstateDetail is free text for the substate (today the codex
+			// usage-limit retry time). Same omitempty contract.
+			SubstateDetail string `json:"substate_detail,omitempty"`
+			Path           string `json:"path"`
 		}
 		type statusJSON struct {
 			Waiting  int                 `json:"waiting"`
@@ -3397,13 +3406,15 @@ func handleStatus(profile string, args []string) {
 			resp.Sessions = make([]statusSessionJSON, 0, len(instances))
 			for _, inst := range instances {
 				_ = inst.UpdateStatus()
+				substate := string(inst.Substate()) // before Status: see buildListJSON
 				sj := statusSessionJSON{
-					ID:       inst.ID,
-					Title:    inst.Title,
-					Tool:     inst.Tool,
-					Status:   StatusString(inst.Status),
-					Substate: string(inst.Substate()),
-					Path:     inst.ProjectPath,
+					ID:             inst.ID,
+					Title:          inst.Title,
+					Tool:           inst.Tool,
+					Status:         StatusString(inst.Status),
+					Substate:       substate,
+					SubstateDetail: inst.SubstateDetail(),
+					Path:           inst.ProjectPath,
 				}
 				if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
 					sj.ModelID = modelInfo.ModelID

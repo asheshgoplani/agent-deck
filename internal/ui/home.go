@@ -6376,6 +6376,10 @@ func (h *Home) backgroundStatusUpdate() {
 				if !ok {
 					continue
 				}
+				// Hook-lag samples a CLI pass persisted for this session (no
+				// extra read: they ride the status row). The next sweep's
+				// hook fast path consults them (session/hook_lag.go).
+				inst.ApplyPersistedHookLag(s.HookLag)
 				// Sessions NOT freshly polled by this instance this sweep
 				// (neither owned nor orphan-due) render the owner's status
 				// from the shared row. Gated on isPolledByMe, not isOwned:

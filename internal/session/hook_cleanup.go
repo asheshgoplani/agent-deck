@@ -136,7 +136,7 @@ func hookArtifactID(name string) string {
 		name = name[1:index]
 	}
 	name = strings.TrimSuffix(name, ".tmp")
-	for _, suffix := range []string{".generation.json", ".codex-writer.lock", ".projectdir-missing", ".json", ".sid", ".lock"} {
+	for _, suffix := range []string{".generation.json", ".codex-writer.lock", ".projectdir-missing", ".events.jsonl", ".json", ".sid", ".lock"} {
 		if strings.HasSuffix(name, suffix) {
 			id := strings.TrimSuffix(name, suffix)
 			if validHookArtifactID(id) {

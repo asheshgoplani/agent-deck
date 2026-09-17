@@ -445,6 +445,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 	if mutateAnchor && isTerminalHookEvent(statusFile.Event) {
 		session.ClearHookSessionAnchor(instanceID)
 	}
+	appendHookEvent(instanceID, statusFile)
 	return true
 }
 

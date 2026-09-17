@@ -1739,8 +1739,10 @@ func handleSessionShow(profile string, args []string) {
 	// Warm tmux pane-title cache + load hook status so `session show --json`
 	// reports the same Status the TUI and /api/menu do (issue #610).
 	session.RefreshInstancesForCLIStatus([]*session.Instance{inst})
-	// Update status
+	// Update status, then the substate read (the pass's pane capture, which
+	// can settle the status under hook lag — session/hook_lag.go).
 	_ = inst.UpdateStatus()
+	substate := string(inst.Substate())
 
 	// #2080: surface the raw hook-driven status and its freshness alongside
 	// the derived "status" field. `--defer-if-busy` and the send verification
@@ -1788,8 +1790,11 @@ func handleSessionShow(profile string, args []string) {
 	}
 	// Honest Status v2: additive substate refinement (omit when none so the
 	// existing keys stay byte-stable for consumers that don't expect it).
-	if sub := string(inst.Substate()); sub != "" {
-		jsonData["substate"] = sub
+	if substate != "" {
+		jsonData["substate"] = substate
+	}
+	if detail := inst.SubstateDetail(); detail != "" {
+		jsonData["substate_detail"] = detail
 	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
@@ -6244,7 +6249,7 @@ func handleSessionChildren(profile string, args []string) {
 	kids := childrenOf(parent.ID, instances)
 	session.RefreshInstancesForCLIStatus(kids)
 
-	rows := buildChildRows(kids)
+	rows := buildChildRows(kids, sampleChildPanes)
 	var human strings.Builder
 	fmt.Fprintf(&human, "Children of %s (%s):\n", parent.Title, parent.ID)
 	for _, row := range rows {
