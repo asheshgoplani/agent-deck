@@ -1219,10 +1219,12 @@ type Session struct {
 	// classifier captured one (the codex usage-limit retry time); "" otherwise.
 	lastSubstateDetail string
 
-	// completedTurnIdle / completedTurnCheckedAt cache the hook-lag pane probe
-	// (CompletedTurnAtIdlePrompt): the last verdict and when it was sampled.
+	// completedTurnIdle / completedTurnSampledAt: the completed-turn verdict
+	// (finished Claude turn at an idle prompt) of the last classified pane
+	// frame and when it was captured — the hook-lag rule's evidence, taken
+	// from reads GetStatus/GetSubstate make anyway (see completed_turn.go).
 	completedTurnIdle      bool
-	completedTurnCheckedAt time.Time
+	completedTurnSampledAt time.Time
 
 	// lastSampleAuthFailure is the credential-failure verdict of the most recent
 	// sample that could READ the pane, and lastAuthFailureContent the snapshot
@@ -4383,8 +4385,7 @@ func (s *Session) GetStatus() (string, error) {
 			// Honest Status v2: compute the additive substate from the content we
 			// already captured (pure string ops; no extra pane capture). This
 			// keeps lastSubstate fresh for the reporting layers.
-			s.lastSubstate = s.classifySubstate(content)
-			s.lastSubstateDetail = s.substateDetailLocked(content)
+			s.classifyFrameLocked(content)
 
 			// Record whether THIS sample is specifically a credential failure.
 			// auth-401 as a substate also covers a dropped socket, which IS
@@ -5482,16 +5483,27 @@ func (s *Session) GetSubstate() Substate {
 	// Hold s.mu across classifySubstate: it mutates the shared
 	// cachedPromptDetector, which GetStatus also touches under the same lock.
 	s.mu.Lock()
-	sub := s.classifySubstate(content)
-	s.lastSubstate = sub
-	s.lastSubstateDetail = s.substateDetailLocked(content)
+	sub := s.classifyFrameLocked(content)
 	s.mu.Unlock()
 	return sub
 }
 
+// classifyFrameLocked records everything a captured (ANSI-stripped) pane
+// frame tells the reporting layers — the substate, its detail and the
+// completed-turn verdict for the hook-lag rule — and returns the substate.
+// Pure string ops; no capture. Shared by GetStatus and GetSubstate so the
+// two reads can never record different things from the same frame. Caller
+// holds s.mu.
+func (s *Session) classifyFrameLocked(content string) Substate {
+	s.lastSubstate = s.classifySubstate(content)
+	s.lastSubstateDetail = s.substateDetailLocked(content)
+	s.recordCompletedTurnSampleLocked(content)
+	return s.lastSubstate
+}
+
 // CachedSubstateDetail returns the detail recorded with the last substate
-// classification (GetStatus / GetSubstate / CompletedTurnAtIdlePrompt), without
-// capturing the pane. "" when the substate carries none.
+// classification (GetStatus / GetSubstate), without capturing the pane. ""
+// when the substate carries none.
 func (s *Session) CachedSubstateDetail() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

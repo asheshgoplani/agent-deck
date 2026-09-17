@@ -262,18 +262,20 @@ var codexUsageLimitBannerPatterns = []string{
 	"usage limit",
 }
 
-// codexAuthBannerPatterns: credentials missing or expired. INFERRED, not
-// captured — the codex CLI's own vocabulary for a failed login ("codex login",
-// "not logged in", "unauthorized"), carried as a default and anchored on the
-// same "■" banner glyph. A banner that says something else degrades to the
-// pre-existing "waiting" verdict, never to a false error.
+// codexAuthBannerPatterns: the session cannot make progress until the user
+// logs in again. Deliberately NARROW (review P2-7): an auth verdict feeds the
+// fleet auth gate, which counts it toward halting fleet boots, so only the
+// exact phrasing Codex prints for an expired/missing login is matched — the
+// "codex login" instruction it appends to every login-required banner, and
+// its "not logged in" wording. No capture of the banner exists yet; the
+// instruction text is Codex's own command name and cannot appear in a
+// warning that merely mentions authentication. Generic words
+// ("authentication", "unauthorized", "log in to", "sign in to") are NOT
+// matched: a "■" warning carrying them degrades to the pre-existing waiting
+// verdict, never to auth-401.
 var codexAuthBannerPatterns = []string{
 	"codex login",
 	"not logged in",
-	"log in to",
-	"sign in to",
-	"unauthorized",
-	"authentication",
 }
 
 // codexRetryAtRe pulls the retry time out of the usage-limit banner text.
@@ -285,11 +287,34 @@ const (
 	codexBannerAuth       = "auth"
 )
 
+// codexComposerPlaceholder is the empty composer's placeholder text.
+const codexComposerPlaceholder = "Ask Codex to do anything"
+
+// codexTurnGlyphs lead the lines that prove the session moved on after a
+// banner: "›" the echoed submitted prompt (and the composer), "•" an
+// assistant reply or tool call.
+const (
+	codexPromptGlyph    = "›"
+	codexAssistantGlyph = "•"
+)
+
+// codexBusyCues are the codex busy patterns (see DefaultRawPatterns "codex"):
+// while one is on screen the session is visibly working, so no banner above
+// it is current.
+var codexBusyCues = []string{"ctrl+c to interrupt", "esc to interrupt"}
+
 // scanCodexErrorBanner scans the last 15 non-empty lines for a "■"-led codex
-// error banner and returns its kind ("" when none) and, for a usage-limit
-// banner, the retry time it prints ("try again at Oct 10th, 2026 8:03 AM").
-// The banner wraps, so the continuation lines up to the next "■"/"›" line are
-// joined before the retry time is read.
+// error banner that belongs to the CURRENT turn and returns its kind (""
+// when none) and, for a usage-limit banner, the retry time it prints ("try
+// again at Oct 10th, 2026 8:03 AM"). The banner wraps, so the continuation
+// lines up to the next "■"/"›" line are joined before the retry time is read.
+//
+// Newest signal wins (review P1-2, the same rule the Claude scans apply): the
+// walk goes up from the bottom and stops at the first line that proves the
+// session continued after any banner above it — a submitted prompt ("› text"
+// above the composer, which is always the bottom-most "›" line), an
+// assistant/tool line ("• …"), or a live busy cue anywhere in the tail. A
+// banner sitting directly above the composer is still an error.
 func scanCodexErrorBanner(content string) (kind, detail string) {
 	lines := strings.Split(content, "\n")
 	var recent []string
@@ -300,10 +325,23 @@ func scanCodexErrorBanner(content string) (kind, detail string) {
 		}
 		recent = append([]string{line}, recent...)
 	}
-	// Newest banner wins: scan from the bottom.
+	if containsAny(strings.ToLower(strings.Join(recent, "\n")), codexBusyCues) {
+		return "", ""
+	}
+	seenComposer := false
 	for i := len(recent) - 1; i >= 0; i-- {
 		line := recent[i]
-		if !strings.HasPrefix(line, codexErrorBannerPrefix) {
+		switch {
+		case strings.HasPrefix(line, codexPromptGlyph):
+			text := strings.TrimSpace(strings.TrimPrefix(line, codexPromptGlyph))
+			if seenComposer && text != "" && !strings.HasPrefix(text, codexComposerPlaceholder) {
+				return "", "" // a later turn was submitted; anything above is history
+			}
+			seenComposer = true
+			continue
+		case strings.HasPrefix(line, codexAssistantGlyph):
+			return "", "" // the session produced output after any banner above
+		case !strings.HasPrefix(line, codexErrorBannerPrefix):
 			continue
 		}
 		lower := strings.ToLower(line)
@@ -311,7 +349,7 @@ func scanCodexErrorBanner(content string) (kind, detail string) {
 		case containsAny(lower, codexUsageLimitBannerPatterns):
 			banner := line
 			for j := i + 1; j < len(recent); j++ {
-				if strings.HasPrefix(recent[j], codexErrorBannerPrefix) || strings.HasPrefix(recent[j], "›") {
+				if strings.HasPrefix(recent[j], codexErrorBannerPrefix) || strings.HasPrefix(recent[j], codexPromptGlyph) {
 					break
 				}
 				banner += " " + recent[j]

@@ -473,40 +473,28 @@ func hasClaudeErrorBanner(content string) bool {
 // skipped, and an assistant-turn line must also show a structural banner marker
 // so prose merely mentioning the text does not match.
 //
-// The scan walks up from the bottom and stops at the first completed turn
-// (see completed_turn.go): a banner above a turn the session has since
-// finished is history, not state. The newest signal wins (audit C).
+// The scan only reads the LAST turn (forEachCurrentTurnLine): it walks up from
+// the bottom and stops at the first submitted prompt below which a later turn
+// ran, so a banner the session has since moved past is history, not state
+// (audit C). A banner inside the last turn — including one printed just above
+// that turn's own "✻ Worked for 45s · done" summary, the mid-turn 401 shape
+// #1400 exists for — is current and still matches.
 //
 // Shared by hasClaudeErrorBanner (any tool-rendered failure banner) and the
 // auth-specific scan (authFailureBannerPatterns) so the two can never drift
 // apart on the guards.
 func scanClaudeBannerLines(content string, patterns []string) bool {
-	lines := strings.Split(content, "\n")
-	checked := 0
-	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
-		line := strings.TrimSpace(StripANSI(lines[i]))
-		if line == "" {
-			continue
-		}
-		checked++
-		if isClaudeCompletedTurnLine(line) {
-			return false
-		}
+	return forEachCurrentTurnLine(content, 15, func(line string) bool {
 		if hasAnyPrefix(line, claudeQuotedLinePrefixes) {
-			continue
+			return false
 		}
 		// On an assistant-turn line, require a structural banner marker so
 		// prose mentioning the banner text is not misread as a live banner.
 		if strings.HasPrefix(line, claudeAssistantLinePrefix) && !containsAny(line, claudeBannerStructuralMarkers) {
-			continue
+			return false
 		}
-		for _, pat := range patterns {
-			if strings.Contains(line, pat) {
-				return true
-			}
-		}
-	}
-	return false
+		return containsAny(line, patterns)
+	})
 }
 
 // containsAny reports whether s contains any of the given substrings.

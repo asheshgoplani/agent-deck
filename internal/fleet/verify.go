@@ -160,9 +160,10 @@ func defaultProbe(inst *session.Instance) ProbeResult {
 	// TUI and notify daemon use). Its error is advisory: a failed read just
 	// leaves the previous status in place and we poll again.
 	_ = inst.UpdateStatus()
+	substate := inst.Substate() // before the status read: see session/hook_lag.go
 	return ProbeResult{
 		PaneAlive: true,
 		Status:    inst.GetStatusThreadSafe(),
-		Substate:  inst.Substate(),
+		Substate:  substate,
 	}
 }

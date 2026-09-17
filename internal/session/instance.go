@@ -654,13 +654,17 @@ type Instance struct {
 	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
 	tmuxFlipFromRunningPending bool
 
-	// Hook-lag evidence (see hook_lag.go): how many consecutive pane samples
-	// have shown a completed turn at an idle prompt while the hook file still
-	// said running, and which hook update those samples were taken under. Not
-	// serialized — a fresh process starts from zero, so a single CLI pass can
-	// never flip the light on its own.
-	hookLagPasses     int
-	hookLagHookUpdate time.Time
+	// Hook-lag evidence (see hook_lag.go): the samples of a completed turn at
+	// an idle prompt taken while the hook file still said running, keyed by
+	// the hook event they were taken under. Persisted in tool_data.hook_lag
+	// so every process (one-pass CLI, daemon, TUI) reasons from the same
+	// samples; hookLagPersisted is what this process last wrote.
+	hookLag          hookLagRecord
+	hookLagPersisted hookLagRecord
+	// hookLagDB is the profile database this instance was loaded from, so a
+	// CLI process (which registers no global StateDB) can persist the record
+	// to the row it read. Nil for instances not loaded from storage.
+	hookLagDB *statedb.StateDB
 
 	// Auth-hold state (see auth_hold.go). authFailureSeenAt is when a live
 	// credential-failure banner was last observed, used to attribute a LATER
@@ -6134,23 +6138,15 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			if i.tmuxSession != nil {
 				i.tmuxSession.ResetAcknowledged()
 			}
-			// Hook lag: Claude's Stop hook can land minutes after the pane
-			// shows the turn finished. The pane is the newer evidence, but one
-			// frame never overrules a fresh hook — two independent samples of
-			// a completed turn at an idle prompt do (see hook_lag.go).
-			// CompletedTurnAtIdlePrompt captures the pane, so release i.mu
-			// around it like BackgroundWorkPending below, then re-check for a
-			// concurrent Kill().
-			if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
-				i.mu.Unlock()
-				paneIdle, sampled := i.tmuxSession.CompletedTurnAtIdlePrompt()
-				i.mu.Lock()
-				if i.Status == StatusStopped {
-					return nil
-				}
-				if i.noteHookLagSampleLocked(paneIdle, sampled) {
-					i.Status = StatusWaiting
-				}
+			// Hook lag: a turn can end without a Stop hook (see hook_lag.go),
+			// leaving this "running" as the last event while the pane shows
+			// the turn finished. The pane is the newer evidence, but one frame
+			// never overrules a fresh hook — two independent samples of a
+			// completed turn at an idle prompt do. No capture here: the
+			// samples are the ones GetStatus/GetSubstate already recorded
+			// (this process or, via the persisted record, another one).
+			if IsClaudeCompatible(i.Tool) && i.noteHookLagSampleLocked() {
+				i.Status = StatusWaiting
 			}
 		case "waiting":
 			if IsCodexCompatible(i.Tool) {
@@ -10875,7 +10871,11 @@ func (i *Instance) Substate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	return i.reconcileSubstate(tmuxSess.GetSubstate())
+	sub := tmuxSess.GetSubstate()
+	// The frame just read is hook-lag evidence too (see hook_lag.go); feed it
+	// back so status and substate describe the same frame.
+	i.absorbCompletedTurnSample()
+	return i.reconcileSubstate(sub)
 }
 
 // SubstateDetail returns free-text detail for the substate the last

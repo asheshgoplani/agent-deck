@@ -90,7 +90,11 @@ type MenuSession struct {
 	// explains WHY a session is in its coarse status so consumers like the
 	// Command Center can surface model-unavailable/401 distinctly instead of
 	// hiding them as plain "running". Empty when there is no refinement.
-	Substate        string `json:"substate,omitempty"`
+	Substate string `json:"substate,omitempty"`
+	// SubstateDetail is free text for the substate — today the codex
+	// usage-limit retry time ("try again at Oct 10th, 2026 8:03 AM"). Same
+	// omitempty contract as Substate.
+	SubstateDetail  string `json:"substateDetail,omitempty"`
 	GroupPath       string `json:"groupPath"`
 	ProjectPath     string `json:"projectPath"`
 	ParentSessionID string `json:"parentSessionId,omitempty"`
@@ -355,6 +359,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		MCPSupported:       session.ToolSupportsMCPManager(inst.GetToolThreadSafe()),
 		Status:             inst.GetStatusThreadSafe(),
 		Substate:           string(inst.CachedSubstate()),
+		SubstateDetail:     inst.SubstateDetail(),
 		GroupPath:          inst.GroupPath,
 		ProjectPath:        inst.ProjectPath,
 		ParentSessionID:    inst.ParentSessionID,

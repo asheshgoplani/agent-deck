@@ -141,6 +141,102 @@ func TestAudit_A_CodexBannerDoesNotOverMatch(t *testing.T) {
 	}
 }
 
+// Review P1-2 (round 2): the codex banner gate needs the same "newest signal
+// wins" rule as the Claude scans. After the rate-limit picker (audit E) the
+// user keeps working in the same session, or logs in from another terminal
+// and retries; the "■" banner then sits a few lines above the new turn. A
+// banner followed by a later submitted prompt, an assistant/tool line or a
+// live busy cue is history; a banner directly above the composer is current.
+func TestAudit_A_CodexBannerClearedByLaterTurn(t *testing.T) {
+	d := NewPromptDetector("codex")
+	banner := "■ You've hit your usage limit. To continue using Codex, start a free\n" +
+		"trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th, 2026 8:03 AM.\n"
+	cleared := []struct {
+		name    string
+		content string
+	}{
+		{"later submitted prompt and reply",
+			banner + "› continue with the rebase\n" +
+				"• Rebased onto main; 3 commits replayed.\n" +
+				"› Ask Codex to do anything\n" +
+				"  gpt-5.6-luna · ~/work · Context 98% left"},
+		{"later submitted prompt, reply still streaming",
+			banner + "› continue with the rebase\n" +
+				"• Working (12s · esc to interrupt)\n" +
+				"› Ask Codex to do anything"},
+		{"assistant tool line after the banner",
+			banner + "• Ran git status\n" +
+				"› Ask Codex to do anything"},
+		{"live busy cue in the tail",
+			banner + "  Thinking (3s · ctrl+c to interrupt)\n"},
+	}
+	for _, tc := range cleared {
+		t.Run(tc.name, func(t *testing.T) {
+			if d.HasErrorBanner(tc.content) {
+				t.Fatal("a codex banner the session has moved past must not keep it in error")
+			}
+			if got := d.ClassifySubstate(tc.content); got == SubstateUsageLimit || got == SubstateAuth401 {
+				t.Fatalf("substate = %q, want no error substate", got)
+			}
+			if got := d.SubstateDetail(tc.content); got != "" {
+				t.Fatalf("detail = %q, want none once the banner is history", got)
+			}
+		})
+	}
+	current := []struct {
+		name    string
+		content string
+	}{
+		{"banner directly above the empty composer", banner + "› Ask Codex to do anything\n  gpt-5.6-luna · ~/work"},
+		{"banner above typed-but-unsent composer text", banner + "› what now\n  gpt-5.6-luna · ~/work"},
+		{"banner as the last thing on screen", banner},
+	}
+	for _, tc := range current {
+		t.Run(tc.name, func(t *testing.T) {
+			if !d.HasErrorBanner(tc.content) {
+				t.Fatal("a codex banner with no later turn is current")
+			}
+			if got := d.ClassifySubstate(tc.content); got != SubstateUsageLimit {
+				t.Fatalf("substate = %q, want %q", got, SubstateUsageLimit)
+			}
+		})
+	}
+}
+
+// Review P2-7: only Codex's exact login-required wording is an auth banner.
+// A "■" warning that merely mentions authentication (an MCP server, a git
+// remote) must never become auth-401, because that verdict feeds the fleet
+// auth gate. Such a banner degrades to the pre-existing waiting verdict.
+func TestAudit_A_CodexAuthPatternsAreNarrow(t *testing.T) {
+	d := NewPromptDetector("codex")
+	notAuth := []string{
+		"■ Warning: authentication for MCP server \"jira\" failed; continuing without it.\n› Ask Codex to do anything",
+		"■ git push rejected: unauthorized (remote requires a token).\n› Ask Codex to do anything",
+		"■ Sign in to GitHub in your browser to enable code search.\n› Ask Codex to do anything",
+		"■ Could not log in to the registry; skipping package metadata.\n› Ask Codex to do anything",
+	}
+	for _, content := range notAuth {
+		if d.HasErrorBanner(content) {
+			t.Fatalf("must not be an error banner: %q", content)
+		}
+		if got := d.ClassifySubstate(content); got != SubstateNone {
+			t.Fatalf("substate = %q for %q, want none", got, content)
+		}
+	}
+	auth := []string{
+		"■ Your access token could not be refreshed. Please run `codex login` again.\n› Ask Codex to do anything",
+		"■ You are not logged in. Run `codex login` to continue.\n› Ask Codex to do anything",
+	}
+	for _, content := range auth {
+		if !d.HasErrorBanner(content) {
+			t.Fatalf("login-required banner must be an error: %q", content)
+		}
+		if got := d.ClassifySubstate(content); got != SubstateAuth401 {
+			t.Fatalf("substate = %q for %q, want %q", got, content, SubstateAuth401)
+		}
+	}
+}
+
 // Defect C: the session recovered (a later completed turn sits BELOW the
 // banner and the zero-work "Crunched for 0s" line) but stayed error /
 // model-unavailable because the scan window still contained the stale lines.
@@ -184,6 +280,64 @@ func TestAudit_C_ErrorClearsAfterLaterCompletedTurn(t *testing.T) {
 	}
 	if got := d.ClassifySubstate(recovered); got != SubstateIdleAtEmptyPrompt {
 		t.Fatalf("substate = %q, want %q", got, SubstateIdleAtEmptyPrompt)
+	}
+}
+
+// Review P1-1 (round 2): the boundary is a LATER submitted prompt, never the
+// failed turn's own summary line. Claude prints the turn summary BELOW an
+// error banner (the recovered tail above shows "⏺ Your organization has
+// disabled …" then "✻ Crunched for 0s · done"), so a turn that fails after
+// doing work ends "⏺ Please run /login · API Error: 401 …" / "✻ Worked for
+// 45s · done" / "❯ " — the mid-turn OAuth-expiry shape #1400 and the fleet
+// auth hold exist for. That banner is current: error, auth-401, hold armed.
+const auditFailedLastTurnPane = "❯ run the release checklist and report\n" +
+	"⏺ Bash(make verify)\n" +
+	"  ⎿  ok\n" +
+	"⏺ Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"OAuth token has expired\"}}\n" +
+	"✻ Worked for 45s · done 9:41 PM\n" +
+	"──────────────────────────────────────────────────── worker ─\n" +
+	"❯ \n" +
+	"──────────────────────────────────────────────────────────────\n" +
+	"  [profile] user@host:~/work | [Opus 5 (1M context)] ctx:12%\n" +
+	"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+
+func TestAudit_C_FailedLastTurnBannerIsCurrent(t *testing.T) {
+	d := NewPromptDetector("claude")
+	if !d.HasErrorBanner(auditFailedLastTurnPane) {
+		t.Fatal("a 401 banner inside the LAST turn is current even though the turn's summary line follows it")
+	}
+	if got := d.ClassifySubstate(auditFailedLastTurnPane); got != SubstateAuth401 {
+		t.Fatalf("substate = %q, want %q", got, SubstateAuth401)
+	}
+	if !IsAuthFailureContent("claude", auditFailedLastTurnPane) {
+		t.Fatal("the fleet auth hold must arm on a mid-turn 401 (IsAuthFailureContent)")
+	}
+	sess := &Session{Command: "claude"}
+	if !sess.hasErrorBannerIndicator(auditFailedLastTurnPane) {
+		t.Fatal("GetStatus's banner gate must route this frame to error")
+	}
+
+	// Same rule for the model-unavailable no-op: the failed turn's own
+	// "Crunched for 0s" summary is not a recovery.
+	failedNoop := "❯ recall the token\n" +
+		"⏺ Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic\n" +
+		"  API key instead, or ask your admin to enable access\n" +
+		"✻ Crunched for 0s · done 8:25 PM\n" +
+		"❯ "
+	if !hasModelUnavailableNoop(failedNoop) {
+		t.Fatal("the no-op banner of the last turn is current")
+	}
+	if got := d.ClassifySubstate(failedNoop); got != SubstateModelUnavailable {
+		t.Fatalf("substate = %q, want %q", got, SubstateModelUnavailable)
+	}
+
+	// Typed-but-unsent text in the input box is not a new turn: the banner
+	// above it stays current.
+	typing := "⏺ Please run /login · API Error: 401 {\"type\":\"error\"}\n" +
+		"✻ Worked for 45s · done 9:41 PM\n" +
+		"❯ what happened"
+	if !d.HasErrorBanner(typing) {
+		t.Fatal("text typed into the input box is not a submitted prompt; the banner above it is still current")
 	}
 }
 

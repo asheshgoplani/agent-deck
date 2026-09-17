@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Status lights and substates for the six defects the 2026-09-17 read-only audit of 92 live sessions found: the idle Claude footer ("… +N lines" + "/clear to save Nk tokens") no longer reads as `running`; the codex `■ You've hit your usage limit …` banner is `error` / `usage-limit` (with the retry time in the new `substate_detail`), a codex login-required banner is `error` / `auth-401`, and both clear once a later turn is submitted; a Claude auth/model banner clears once a LATER prompt is submitted (the failed turn's own banner stays current); the feedback survey, the trust-folder dialog and the codex model picker are `interactive-menu`; and a Claude turn that ends without a Stop hook (a `/loop` wake-up) no longer holds the light green — two pane samples of the finished turn flip it to `waiting` with substate `hook-lag`, taken from the pane reads the CLI already makes (the running hook fast path itself reads no pane) and persisted on the instance record so `list --json`, `session children --json`, `status`, the daemon and the TUI agree.
+- `substate_detail` (free text for the substate, today the codex usage-limit retry time) is emitted beside `substate` by `list --json`, `session show --json`, `status --json --verbose`, `status --stale --json`, the web `/api/menu` (`substateDetail`) and the remote sessions feed. Omitted when empty, so existing consumers are unaffected.
+
 ## [1.16.11] - 2026-09-25
 
 ### Added

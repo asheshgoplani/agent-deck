@@ -11,16 +11,22 @@ import (
 )
 
 // Status-light audit defect B (2026-09-17): the hook file still said
-// "running" eight minutes after the pane showed a completed turn
-// ("✻ Sautéed for 3m 4s · done 9:08 PM") at an empty prompt. UpdateStatus took
-// the fresh hook at face value, so the light stayed green and the CLI paired
-// status=running with substate=idle-at-empty-prompt — a pair the substate's
-// own contract forbids.
+// "running" while the pane showed a completed turn ("✻ Sautéed for 3m 4s ·
+// done 9:08 PM") at an empty prompt. The turn had ended by calling
+// ScheduleWakeup, for which Claude Code fires no Stop hook (see hook_lag.go),
+// so UpdateStatus took the UserPromptSubmit "running" at face value and the
+// CLI paired status=running with substate=idle-at-empty-prompt — a pair the
+// substate's own contract forbids.
 //
-// Rule under test: when the hook says running but the pane shows a completed
-// turn at an idle prompt with no busy cue for ≥ 2 consecutive passes, the
-// light is waiting and the substate says hook-lag. Never on a single pass;
-// never against a live spinner.
+// Rules under test:
+//   - two independent samples of a completed turn at an idle prompt, taken
+//     by the pane reads the status/substate path already makes, flip the
+//     light to waiting and the substate says hook-lag; never on one sample;
+//     never against a live spinner;
+//   - the running hook fast path itself never captures the pane (review
+//     P2-5): its tmux subprocess count is zero;
+//   - the samples are persisted on the instance record, so a one-pass CLI
+//     caller in a fresh process continues from them (review P2-4).
 
 // auditConductorIdlePane is the captured conductor tail (account text
 // replaced). The idle footer also carries the defect-F trap ("… +N lines" and
@@ -73,6 +79,7 @@ func startHookLagInstance(t *testing.T, name, paneText string) (*Instance, func(
 	cleanup := func() { _ = inst.tmuxSession.Kill() }
 	// The pane is a plain shell rendering a captured Claude frame; tell the
 	// tmux layer whose renderings it is reading.
+	inst.Command = "claude"
 	inst.tmuxSession.Command = "claude"
 	// Past UpdateStatus's 1.5s tmux grace window.
 	time.Sleep(2 * time.Second)
@@ -82,50 +89,53 @@ func startHookLagInstance(t *testing.T, name, paneText string) (*Instance, func(
 	return inst, cleanup
 }
 
-func TestAudit_B_HookLagFlipsToWaitingAfterTwoPasses(t *testing.T) {
+// cliPass is one `list --json` / `session children --json` pass over inst:
+// hook cold-load, UpdateStatus, then the substate read (which is the pass's
+// single pane capture).
+func cliPass(t *testing.T, inst *Instance) (Status, Substate) {
+	t.Helper()
+	RefreshInstancesForCLIStatus([]*Instance{inst})
+	var pass StatusUpdatePass
+	if err := pass.UpdateStatusOnly(inst); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	sub := inst.Substate()
+	return inst.GetStatusThreadSafe(), sub
+}
+
+func TestAudit_B_HookLagFlipsToWaitingAfterTwoSamples(t *testing.T) {
 	inst, cleanup := startHookLagInstance(t, "idle", auditConductorIdlePane)
 	defer cleanup()
 
 	// Pass 1: the hook is fresh and says running. One pane sample is not
 	// enough to overrule it — the light stays running — but the substate
 	// already names the disagreement instead of claiming idle-at-empty-prompt.
-	if err := inst.UpdateStatus(); err != nil {
-		t.Fatalf("pass 1: %v", err)
-	}
-	if got := inst.GetStatusThreadSafe(); got != StatusRunning {
-		t.Fatalf("pass 1 status = %q, want running (never flip on a single pass)", got)
-	}
-	if got := inst.Substate(); got != SubstateHookLag {
-		t.Fatalf("pass 1 substate = %q, want %q", got, SubstateHookLag)
+	if status, sub := cliPass(t, inst); status != StatusRunning || sub != SubstateHookLag {
+		t.Fatalf("pass 1 = %q/%q, want running/%q (never flip on a single sample)", status, sub, SubstateHookLag)
 	}
 
-	// Pass 2: a second independent sample of the same finished frame.
+	// Pass 2: a second independent sample of the same finished frame, taken
+	// by the same substate read — no capture of the fast path's own.
 	time.Sleep(tmux.CompletedTurnSampleInterval + 200*time.Millisecond)
-	if err := inst.UpdateStatus(); err != nil {
-		t.Fatalf("pass 2: %v", err)
-	}
-	if got := inst.GetStatusThreadSafe(); got != StatusWaiting {
-		t.Fatalf("pass 2 status = %q, want waiting (hook lag confirmed)", got)
-	}
-	if got := inst.Substate(); got != SubstateHookLag {
-		t.Fatalf("pass 2 substate = %q, want %q", got, SubstateHookLag)
+	if status, sub := cliPass(t, inst); status != StatusWaiting || sub != SubstateHookLag {
+		t.Fatalf("pass 2 = %q/%q, want waiting/%q (hook lag confirmed)", status, sub, SubstateHookLag)
 	}
 	if got := inst.CachedSubstate(); got != SubstateHookLag {
 		t.Fatalf("pass 2 cached substate = %q, want %q (TUI rows read the cache)", got, SubstateHookLag)
+	}
+	// The verdict holds on the next status pass without any new sample.
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatal(err)
+	}
+	if got := inst.GetStatusThreadSafe(); got != StatusWaiting {
+		t.Fatalf("status after confirmation = %q, want waiting", got)
 	}
 
 	// The Stop hook finally lands: the lag is over and the ordinary hook
 	// verdict applies again (waiting, idle-at-empty-prompt).
 	writeHookLagStopFile(t, inst.ID)
-	RefreshInstancesForCLIStatus([]*Instance{inst})
-	if err := inst.UpdateStatus(); err != nil {
-		t.Fatalf("pass 3: %v", err)
-	}
-	if got := inst.GetStatusThreadSafe(); got != StatusWaiting {
-		t.Fatalf("pass 3 status = %q, want waiting", got)
-	}
-	if got := inst.Substate(); got != SubstateIdleAtEmptyPrompt {
-		t.Fatalf("pass 3 substate = %q, want %q (lag cleared by the new hook event)", got, SubstateIdleAtEmptyPrompt)
+	if status, sub := cliPass(t, inst); status != StatusWaiting || sub != SubstateIdleAtEmptyPrompt {
+		t.Fatalf("pass 3 = %q/%q, want waiting/%q (lag cleared by the new hook event)", status, sub, SubstateIdleAtEmptyPrompt)
 	}
 }
 
@@ -134,16 +144,143 @@ func TestAudit_B_LiveSpinnerNeverContradicted(t *testing.T) {
 	defer cleanup()
 
 	for pass := 1; pass <= 3; pass++ {
+		if status, sub := cliPass(t, inst); status != StatusRunning || sub != SubstateRunning {
+			t.Fatalf("pass %d = %q/%q, want running/%q (live spinner on screen)", pass, status, sub, SubstateRunning)
+		}
+		time.Sleep(tmux.CompletedTurnSampleInterval + 200*time.Millisecond)
+	}
+}
+
+// Review P2-5: the running hook fast path reads no pane. This is the same
+// counter the health sampler reports as tmux_calls per status pass; round 1
+// added one capture-pane per running Claude session every 3s here, which
+// this test fails on (delta 1 per spaced pass) and the current tree passes
+// (delta 0).
+func TestAudit_B_RunningFastPathMakesNoTmuxCalls(t *testing.T) {
+	inst, cleanup := startHookLagInstance(t, "quiet", auditConductorIdlePane)
+	defer cleanup()
+
+	for pass := 1; pass <= 2; pass++ {
+		tmux.RefreshExistingSessions() // the once-per-tick cache the TUI warms
+		before := tmux.SubprocessStarts()
 		if err := inst.UpdateStatus(); err != nil {
 			t.Fatalf("pass %d: %v", pass, err)
 		}
-		if got := inst.GetStatusThreadSafe(); got != StatusRunning {
-			t.Fatalf("pass %d status = %q, want running (live spinner on screen)", pass, got)
+		if got := tmux.SubprocessStarts() - before; got != 0 {
+			t.Fatalf("pass %d: running fast path started %d tmux subprocesses, want 0", pass, got)
 		}
-		if got := inst.Substate(); got != SubstateRunning {
-			t.Fatalf("pass %d substate = %q, want %q", pass, got, SubstateRunning)
+		if got := inst.GetStatusThreadSafe(); got != StatusRunning {
+			t.Fatalf("pass %d: status = %q, want running (no sample was ever taken)", pass, got)
 		}
 		time.Sleep(tmux.CompletedTurnSampleInterval + 200*time.Millisecond)
+	}
+}
+
+// Review P2-4: the samples are persisted on the instance record, so the
+// verdict does not depend on which process took them. Three "processes"
+// (fresh instance objects loaded from the same profile DB) mirror three
+// one-pass CLI invocations: the first samples, the second samples again and
+// flips, the third reports the flip from the record alone.
+func TestAudit_B_HookLagPersistsAcrossCLIProcesses(t *testing.T) {
+	inst, cleanup := startHookLagInstance(t, "persist", auditConductorIdlePane)
+	defer cleanup()
+	storage, err := NewStorageWithProfile("_test-hook-lag")
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	defer storage.Close()
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	load := func() *Instance {
+		t.Helper()
+		instances, _, err := storage.LoadWithGroups()
+		if err != nil || len(instances) != 1 {
+			t.Fatalf("load: %v (%d instances)", err, len(instances))
+		}
+		return instances[0]
+	}
+
+	// Process 1: one sample, persisted.
+	p1 := load()
+	if status, sub := cliPass(t, p1); status != StatusRunning || sub != SubstateHookLag {
+		t.Fatalf("process 1 = %q/%q, want running/%q", status, sub, SubstateHookLag)
+	}
+	if rec := load().hookLag; rec.FirstIdleAt == 0 {
+		t.Fatal("process 1's sample was not persisted to tool_data.hook_lag")
+	}
+
+	// Process 2: a fresh object, hydrated with process 1's sample; its own
+	// sample is the second one, so it reports the flip.
+	time.Sleep(tmux.CompletedTurnSampleInterval + 200*time.Millisecond)
+	p2 := load()
+	if status, sub := cliPass(t, p2); status != StatusWaiting || sub != SubstateHookLag {
+		t.Fatalf("process 2 = %q/%q, want waiting/%q", status, sub, SubstateHookLag)
+	}
+
+	// Process 3: no sample of its own needed — the status pass alone reads
+	// the confirmed record, so every one-pass caller agrees.
+	p3 := load()
+	RefreshInstancesForCLIStatus([]*Instance{p3})
+	if err := p3.UpdateStatus(); err != nil {
+		t.Fatal(err)
+	}
+	if got := p3.GetStatusThreadSafe(); got != StatusWaiting {
+		t.Fatalf("process 3 status = %q, want waiting from the persisted record", got)
+	}
+	if got := p3.CachedSubstate(); got != SubstateHookLag && got != SubstateNone {
+		// CachedSubstate has no frame of its own yet; the reconciled label is
+		// the only thing it can add.
+		t.Fatalf("process 3 cached substate = %q", got)
+	}
+
+	// A later hook event supersedes the record: the ordinary hook verdict
+	// applies (waiting, or idle for a row loaded as already acknowledged).
+	writeHookLagStopFile(t, inst.ID)
+	p4 := load()
+	if status, sub := cliPass(t, p4); status == StatusRunning || sub != SubstateIdleAtEmptyPrompt {
+		t.Fatalf("after Stop = %q/%q, want not running/%q", status, sub, SubstateIdleAtEmptyPrompt)
+	}
+}
+
+// Pure rule tests: sample accounting is by whole seconds, keyed by the hook
+// event, and a busy sample clears the run.
+func TestHookLagRecord(t *testing.T) {
+	hook := time.Unix(1_000_000, 0)
+	var r hookLagRecord
+	r.note(true, hook, hook) // same second as the hook: not attributable
+	if r.observed(hook) {
+		t.Fatal("a sample in the hook's own second must not count")
+	}
+	r.note(true, hook.Add(2*time.Second), hook)
+	if !r.observed(hook) || r.confirmed(hook) {
+		t.Fatalf("one sample: observed but not confirmed, got %+v", r)
+	}
+	r.note(true, hook.Add(2*time.Second), hook) // the same cached frame again
+	if r.confirmed(hook) {
+		t.Fatal("re-applying the same frame must not count as a second sample")
+	}
+	r.note(true, hook.Add(4*time.Second), hook)
+	if r.confirmed(hook) {
+		t.Fatal("two samples 2s apart are not independent")
+	}
+	r.note(true, hook.Add(5*time.Second), hook)
+	if !r.confirmed(hook) {
+		t.Fatalf("samples 3s apart must confirm, got %+v", r)
+	}
+	r.note(false, hook.Add(6*time.Second), hook)
+	if r.observed(hook) {
+		t.Fatal("a busy sample clears the evidence")
+	}
+	later := hook.Add(30 * time.Second)
+	r.note(true, hook.Add(7*time.Second), later)
+	if r.HookTS != later.Unix() || r.observed(later) {
+		t.Fatalf("a new hook event starts over and predating samples are ignored, got %+v", r)
+	}
+	if !(hookLagRecord{HookTS: 2}).newerThan(hookLagRecord{HookTS: 1}) ||
+		!(hookLagRecord{HookTS: 1, LastSampleAt: 5}).newerThan(hookLagRecord{HookTS: 1, LastSampleAt: 4}) ||
+		(hookLagRecord{HookTS: 1, LastSampleAt: 4}).newerThan(hookLagRecord{HookTS: 1, LastSampleAt: 4}) {
+		t.Fatal("newerThan ordering")
 	}
 }
 

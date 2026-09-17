@@ -57,6 +57,7 @@ type staleCandidate struct {
 	Tool                string   `json:"tool"`
 	Status              string   `json:"status"`
 	Substate            string   `json:"substate,omitempty"`
+	SubstateDetail      string   `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 	Path                string   `json:"path"`
 	GroupPath           string   `json:"group_path,omitempty"`
 	ParentSessionID     string   `json:"parent_session_id,omitempty"`
@@ -171,12 +172,14 @@ func computeStaleCandidates(instances []*session.Instance, now time.Time, thresh
 			}
 		}
 		lastActivity := staleActivityEvidence(inst)
+		substate := string(inst.Substate()) // before Status: see buildListJSON
 		c := staleCandidate{
 			ID:              inst.ID,
 			Title:           inst.Title,
 			Tool:            inst.Tool,
 			Status:          StatusString(inst.Status),
-			Substate:        string(inst.Substate()),
+			Substate:        substate,
+			SubstateDetail:  inst.SubstateDetail(),
 			Path:            inst.ProjectPath,
 			GroupPath:       inst.GroupPath,
 			ParentSessionID: inst.ParentSessionID,

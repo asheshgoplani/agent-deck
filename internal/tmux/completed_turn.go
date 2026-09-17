@@ -15,17 +15,70 @@ import (
 //	✻ Worked for 2s · done 8:26 PM
 //	✶ Crunched for 12s (1.2k tokens)
 //
-// That line is the newest structural evidence a pane can carry about a turn:
-// everything above it belongs to an earlier turn. Two consumers rely on it:
+// Two consumers rely on turn structure:
 //
-//   - the banner scans (auth-401 / model-unavailable) stop at it, so a banner
-//     the session has since recovered from is history, not state (defect C);
+//   - the banner scans (auth-401 / model-unavailable) only look at the LAST
+//     turn: a banner above a LATER submitted prompt is history, not state
+//     (defect C). The summary line itself is NOT a boundary — a turn that
+//     fails after doing work prints the banner and then its summary
+//     ("⏺ Please run /login · API Error: 401 …" / "✻ Worked for 45s · done"),
+//     and that banner is current;
 //   - the hook-lag rule in session.UpdateStatus, which needs to know that the
 //     pane shows a FINISHED turn at an idle prompt while the lifecycle hook
 //     still says running (defect B).
 //
 // The zero-duration "Crunched for 0s" line is Claude's no-op completion (the
 // model-unavailable loop) and is deliberately NOT a completed turn.
+
+// claudePromptGlyphs lead the input box and the echoed copy of a submitted
+// prompt ("❯ " on current Claude Code, "> " on older builds).
+var claudePromptGlyphs = []string{"❯", ">"}
+
+// isClaudePromptLine reports whether the (trimmed) line is led by a prompt
+// glyph, and whether it carries typed text after it.
+func isClaudePromptLine(line string) (isPrompt, hasText bool) {
+	for _, glyph := range claudePromptGlyphs {
+		if !strings.HasPrefix(line, glyph) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.ReplaceAll(strings.TrimPrefix(line, glyph), "\u00A0", " "))
+		return true, rest != ""
+	}
+	return false, false
+}
+
+// forEachCurrentTurnLine walks the last n non-empty lines of content from the
+// bottom up and calls fn on each line that belongs to the LAST turn. It stops
+// (without calling fn) at the first submitted prompt — the echoed "❯ <text>"
+// that started the newest turn — because everything above it belongs to an
+// earlier turn: a banner or no-op line up there has already been answered by
+// a later prompt, so it is history. The bottom-most prompt line is the input
+// box (Claude Code always draws it last, with only footer lines below), so
+// typed-but-unsent text there is never mistaken for a submitted prompt.
+//
+// fn returns true to stop early. The walk reports whether fn stopped it.
+func forEachCurrentTurnLine(content string, n int, fn func(line string) bool) bool {
+	lines := strings.Split(content, "\n")
+	checked := 0
+	seenInputBox := false
+	for i := len(lines) - 1; i >= 0 && checked < n; i-- {
+		line := strings.TrimSpace(StripANSI(lines[i]))
+		if line == "" {
+			continue
+		}
+		checked++
+		if isPrompt, hasText := isClaudePromptLine(line); isPrompt {
+			if seenInputBox && hasText {
+				return false // a later turn started here; above is history
+			}
+			seenInputBox = true
+		}
+		if fn(line) {
+			return true
+		}
+	}
+	return false
+}
 
 // claudeCompletedTurnRe matches the turn-summary line and captures its
 // duration. Anchored at line start on the glyph so prose quoting the phrase
@@ -103,52 +156,29 @@ func (d *PromptDetector) CompletedTurnAtIdlePrompt(content string) bool {
 	return !claudeBackgroundWorkPending(content)
 }
 
-// CompletedTurnSampleInterval bounds how often CompletedTurnAtIdlePrompt
-// captures the pane for a session whose hook says running. Each capture is one
-// "pass" for the hook-lag rule, so two confirming passes are at least this far
-// apart — a single frame can never flip the light. Same ceiling as the
-// background-work probe on the waiting path.
+// CompletedTurnSampleInterval is the minimum spacing between two pane
+// samples for the hook-lag rule to count them as independent: a single frame
+// can never flip the light. Same ceiling as the background-work probe on the
+// waiting path.
 const CompletedTurnSampleInterval = bgWorkCacheTTL
 
-// CompletedTurnAtIdlePrompt captures the pane (at most once per
-// CompletedTurnSampleInterval) and reports whether it shows a finished Claude
-// turn at an idle prompt. sampled is true only when THIS call captured and
-// classified the pane; a call served from the cache returns the previous
-// verdict with sampled=false so the caller does not count it as a new pass.
-// The captured frame also refreshes the cached substate, so a TUI row can show
-// the verdict without a second capture. Safe to call without holding s.mu.
-func (s *Session) CompletedTurnAtIdlePrompt() (idle, sampled bool) {
-	s.mu.Lock()
-	if !s.isClaudeTool() {
-		s.mu.Unlock()
-		return false, false
-	}
-	if !s.completedTurnCheckedAt.IsZero() && time.Since(s.completedTurnCheckedAt) < CompletedTurnSampleInterval {
-		idle = s.completedTurnIdle
-		s.mu.Unlock()
-		return idle, false
-	}
-	s.mu.Unlock()
+// recordCompletedTurnSampleLocked stores the completed-turn verdict for a pane
+// frame that a status or substate read has ALREADY captured and classified
+// (pure string ops; no capture of its own). The hook-lag rule in
+// session.UpdateStatus consumes it through CachedCompletedTurnSample, so the
+// running hook fast path never has to read the pane itself. Caller holds s.mu;
+// classifySubstate leaves the detector nil only when the tool cannot be
+// inferred, which is not a Claude pane.
+func (s *Session) recordCompletedTurnSampleLocked(content string) {
+	s.completedTurnIdle = s.cachedPromptDetector != nil && s.cachedPromptDetector.CompletedTurnAtIdlePrompt(content)
+	s.completedTurnSampledAt = time.Now()
+}
 
-	rawContent, err := s.CapturePane()
-	if err != nil {
-		// A failed capture is not evidence of anything; keep the previous
-		// verdict and leave the timestamp alone so the next call retries.
-		s.mu.Lock()
-		idle = s.completedTurnIdle
-		s.mu.Unlock()
-		return idle, false
-	}
-	content := StripANSI(rawContent)
-
+// CachedCompletedTurnSample returns the last completed-turn verdict recorded
+// by a pane read (GetStatus / GetSubstate) and when that frame was captured;
+// a zero time means no frame has been classified yet. Never captures.
+func (s *Session) CachedCompletedTurnSample() (idle bool, sampledAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// classifySubstate owns the cached detector; it leaves it nil only when the
-	// tool cannot be inferred, which is not a Claude pane.
-	s.lastSubstate = s.classifySubstate(content)
-	s.lastSubstateDetail = s.substateDetailLocked(content)
-	idle = s.cachedPromptDetector != nil && s.cachedPromptDetector.CompletedTurnAtIdlePrompt(content)
-	s.completedTurnIdle = idle
-	s.completedTurnCheckedAt = time.Now()
-	return idle, true
+	return s.completedTurnIdle, s.completedTurnSampledAt
 }

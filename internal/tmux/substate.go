@@ -294,35 +294,17 @@ func (d *PromptDetector) hasClaudeBusyIndicator(content string) bool {
 // hasModelUnavailableNoop scans the last 15 non-empty lines (same window as the
 // error-banner heuristic) for the model-unavailable / zero-work no-op markers.
 // Quoted/prompt lines are skipped so prose mentioning "unavailable" does not
-// match. The scan walks up from the bottom and stops at the first completed
-// turn: a no-op line above a later real turn is history, not state (audit C).
+// match. Only the last turn is read (forEachCurrentTurnLine): a no-op line
+// above a later submitted prompt is history, not state (audit C).
 func hasModelUnavailableNoop(content string) bool {
-	lines := strings.Split(content, "\n")
-	checked := 0
-	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
-		line := strings.TrimSpace(StripANSI(lines[i]))
-		if line == "" {
-			continue
-		}
-		checked++
-		if isClaudeCompletedTurnLine(line) {
-			return false
-		}
+	return forEachCurrentTurnLine(content, 15, func(line string) bool {
 		// Skip quoted/input lines (user typing ABOUT a model being unavailable,
 		// or a tool result quoting another session). Mirrors the banner guard.
 		if hasAnyPrefix(line, claudeQuotedLinePrefixes) {
-			continue
+			return false
 		}
-		if strings.Contains(line, crunchedNoopMarker) {
-			return true
-		}
-		for _, pat := range modelUnavailableSubstrings {
-			if strings.Contains(line, pat) {
-				return true
-			}
-		}
-	}
-	return false
+		return strings.Contains(line, crunchedNoopMarker) || containsAny(line, modelUnavailableSubstrings)
+	})
 }
 
 // recentTailLower returns a lowercased join of the last n non-empty lines.
