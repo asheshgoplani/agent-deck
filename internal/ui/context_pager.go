@@ -547,10 +547,44 @@ func (p *ContextPager) pageStep() int {
 	return step
 }
 
+// pageEndFor is the widow-adjusted end index of the page of lines that starts
+// at offset and is body rows tall: never end a frame on a heading — or, where
+// keepWithNext is chained, on a block — whose continuation falls below the
+// fold. The heading or block is withheld (its rows pad blank) until a scroll
+// brings it in together with what follows. When the buffer's true end is
+// visible there is nothing below the fold and nothing to withhold.
+func (p *ContextPager) pageEndFor(lines []contextLine, offset, body int) int {
+	end := offset + body
+	if end > len(lines) {
+		end = len(lines)
+	}
+	for end < len(lines) && end-offset > 1 && lines[end-1].keepWithNext {
+		end--
+	}
+	return end
+}
+
 // PageUp / PageDown scroll by a page, carrying the selection with them so the
 // cursor never falls off screen.
-func (p *ContextPager) PageUp()   { p.pageBy(-p.pageStep()) }
-func (p *ContextPager) PageDown() { p.pageBy(p.pageStep()) }
+func (p *ContextPager) PageUp() { p.pageBy(-p.pageStep()) }
+
+// PageDown steps to exactly where the currently rendered page ends, keeping
+// the same one-line overlap pageStep does, rather than striding a fixed body
+// height. A fixed stride can outrun a page that a widow deferral (keepWithNext
+// chained across a multi-line block, such as the Verify tab's measured-figure
+// block) shrank by more than one line, skipping past the deferred content so
+// that it never scrolls into view at all.
+func (p *ContextPager) PageDown() {
+	s := p.current()
+	if s == nil {
+		return
+	}
+	step := p.pageEndFor(p.body(), s.offset, p.bodyHeight()) - s.offset - 1
+	if step < 1 {
+		step = p.pageStep()
+	}
+	p.pageBy(step)
+}
 
 func (p *ContextPager) pageBy(delta int) {
 	s := p.current()
@@ -1205,17 +1239,28 @@ func (p *ContextPager) renderVerify() []contextLine {
 		out = append(out, contextPlain(text))
 	}
 
-	out = append(out, p.renderAnchorMeasurement()...)
-
-	out = append(out, contextPlain(""))
+	// The measured-figure block is worthless split across a page break: a
+	// reader who scrolls into the middle of it sees numbers with no heading,
+	// and the block's own verdict line can land on a different page than the
+	// arithmetic it closes. Chain keepWithNext through the whole block plus
+	// its closing verdict line so the pager's widow control either shows all
+	// of it together or defers all of it to the next page.
+	block := p.renderAnchorMeasurement()
+	block = append(block, contextPlain(""))
 	verdict := "  verdict:  " + contextReconVerdict(rec)
 	if rec.Status == ctxinspect.ReconFailed {
-		out = append(out, contextBad(verdict))
+		block = append(block, contextBad(verdict))
 	} else {
-		out = append(out, contextPlain(verdict))
+		block = append(block, contextPlain(verdict))
 	}
+	// Every line but the last: the chain says "this line needs the next one",
+	// which the closing verdict line does not.
+	for i := 0; i < len(block)-1; i++ {
+		block[i].keepWithNext = true
+	}
+	out = append(out, block...)
 	if rec.Status == ctxinspect.ReconOK {
-		out = append(out, contextDim(fmt.Sprintf("  attributed to a named item: %.1f%% of the measured total (the rest is the harness's own prompt and tool schemas)", rec.Coverage)))
+		out = append(out, contextDim(fmt.Sprintf("  coverage: %.1f%% of the measured total is attributed to a named item (the rest is the harness's own prompt and tool schemas)", rec.Coverage)))
 	}
 	out = append(out, contextDim("  "+contextEstimatorFooter(rep)))
 
@@ -1549,18 +1594,7 @@ func (p *ContextPager) View() string {
 		if offset > len(lines) {
 			offset = max0(len(lines) - 1)
 		}
-		end := offset + body
-		if end > len(lines) {
-			end = len(lines)
-		}
-		// Widow control: never end a frame on a heading whose body continues
-		// below the fold. The heading is withheld (its row pads blank) until a
-		// scroll brings it in together with its first body line. When the
-		// buffer's true end is visible there is nothing below the fold and
-		// nothing to withhold.
-		for end < len(lines) && end-offset > 1 && lines[end-1].keepWithNext {
-			end--
-		}
+		end := p.pageEndFor(lines, offset, body)
 		selectable := p.rowCount() > 0
 		for i := offset; i < end; i++ {
 			line := lines[i]
