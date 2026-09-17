@@ -60,6 +60,7 @@ func createIssue1607Session(t *testing.T, title string, autoName bool) *session.
 	msg := h.createSessionInGroupWithWorktreeAndOptions(
 		title,
 		t.TempDir(),
+		"",
 		"sleep 30",
 		"test",
 		"", "", "",
