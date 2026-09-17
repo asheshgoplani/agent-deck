@@ -5777,6 +5777,7 @@ func handleSessionOutput(profile string, args []string) {
 	// response". The local TUI preview uses capture-pane; remote sessions
 	// fetched via SSH need this same content to render claude-formatted output.
 	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (full UI with ANSI)")
+	primaryPane := fs.Bool("primary", false, "With --pane, capture the managed first window")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -5794,6 +5795,10 @@ func handleSessionOutput(profile string, args []string) {
 	identifier := fs.Arg(0)
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
+	if *primaryPane && !*paneFlag {
+		out.Error("--primary requires --pane", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Load sessions
 	_, instances, _, err := loadSessionData(profile)
@@ -5830,7 +5835,13 @@ func handleSessionOutput(profile string, args []string) {
 	// content the local preview shows. We still emit a ResponseOutput-shaped
 	// JSON so the wire format is unchanged.
 	if *paneFlag {
-		paneContent, paneErr := inst.PreviewFull()
+		var paneContent string
+		var paneErr error
+		if *primaryPane {
+			paneContent, paneErr = inst.PreviewPrimaryFull()
+		} else {
+			paneContent, paneErr = inst.PreviewFull()
+		}
 		if paneErr != nil {
 			out.Error(fmt.Sprintf("failed to capture pane: %v", paneErr), ErrCodeInvalidOperation)
 			os.Exit(1)
