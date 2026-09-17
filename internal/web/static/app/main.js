@@ -2,7 +2,7 @@
 // Handles: auth token extraction, SSE connection, route sync, service worker registration
 import { render, html } from 'htm/preact'
 import { App, applyPath } from './App.js'
-import { apiFetch } from './api.js'
+import { apiFetch, authHeaders } from './api.js'
 import {
   sessionsSignal,
   sessionsLoadedSignal,
@@ -42,6 +42,122 @@ import { addToast } from './Toast.js'
 // ---------- SSE connection ----------
 
 let _menuSource = null
+let _ccSource = null
+
+const SSE_RECOVERY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000]
+const SSE_PROBE_TIMEOUT_MS = 5000
+let _sseRecoveryTimer = null
+let _sseRecoveryAbort = null
+let _sseRecoveryGeneration = 0
+let _sseRecoveryAttempt = 0
+let _sseTerminalFailures = new WeakSet()
+
+function closedSSESources(includeTerminal = false) {
+  const closed = []
+  if (
+    _menuSource &&
+    _menuSource.readyState === EventSource.CLOSED &&
+    (includeTerminal || !_sseTerminalFailures.has(_menuSource))
+  ) {
+    closed.push({ kind: 'menu', source: _menuSource })
+  }
+  if (
+    _ccSource &&
+    _ccSource.readyState === EventSource.CLOSED &&
+    (includeTerminal || !_sseTerminalFailures.has(_ccSource))
+  ) {
+    closed.push({ kind: 'command-center', source: _ccSource })
+  }
+  return closed
+}
+
+async function probeSSEEndpoint(source, signal) {
+  let response
+  try {
+    response = await fetch(source.url, {
+      method: 'GET',
+      headers: authHeaders({ Accept: 'text/event-stream' }),
+      cache: 'no-store',
+      signal,
+    })
+  } catch (_) {
+    return 'transient'
+  }
+
+  const status = response.status
+  const contentType = (response.headers.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase()
+  try {
+    await response.body?.cancel()
+  } catch (_) {
+    // The status and headers are sufficient for this readiness probe.
+  }
+
+  if (status === 200 && contentType === 'text/event-stream') return 'ready'
+  if (status === 408 || status === 425 || status === 429 || status >= 500) return 'transient'
+  return 'terminal'
+}
+
+function scheduleSSERecovery(delay) {
+  if (_sseRecoveryTimer || _sseRecoveryAbort || closedSSESources().length === 0) return
+
+  const wait = delay ?? SSE_RECOVERY_DELAYS_MS[Math.min(_sseRecoveryAttempt, SSE_RECOVERY_DELAYS_MS.length - 1)]
+  const generation = _sseRecoveryGeneration
+  _sseRecoveryTimer = setTimeout(async () => {
+    _sseRecoveryTimer = null
+    const closed = closedSSESources()
+    if (closed.length === 0 || generation !== _sseRecoveryGeneration) return
+
+    const controller = new AbortController()
+    _sseRecoveryAbort = controller
+    const probeTimeout = setTimeout(() => controller.abort(), SSE_PROBE_TIMEOUT_MS)
+    const outcomes = await Promise.all(closed.map(({ source }) => probeSSEEndpoint(source, controller.signal)))
+    clearTimeout(probeTimeout)
+    if (_sseRecoveryAbort === controller) _sseRecoveryAbort = null
+    if (generation !== _sseRecoveryGeneration) return
+
+    let retryTransient = false
+    _sseRecoveryAttempt = Math.min(_sseRecoveryAttempt + 1, SSE_RECOVERY_DELAYS_MS.length - 1)
+    for (let i = 0; i < closed.length; i += 1) {
+      const { kind, source } = closed[i]
+      if (outcomes[i] === 'transient') {
+        retryTransient = true
+        continue
+      }
+      if (outcomes[i] !== 'ready') {
+        _sseTerminalFailures.add(source)
+        continue
+      }
+
+      if (kind === 'menu' && _menuSource === source) {
+        source.close()
+        _menuSource = null
+        startSSE()
+      } else if (kind === 'command-center' && _ccSource === source) {
+        source.close()
+        _ccSource = null
+        startCommandCenterSSE()
+      }
+    }
+
+    if (retryTransient) scheduleSSERecovery()
+  }, wait)
+}
+
+function markSSEHealthy() {
+  if (closedSSESources().length === 0) _sseRecoveryAttempt = 0
+}
+
+function wakeSSERecovery() {
+  if (closedSSESources(true).length === 0) return
+  _sseRecoveryGeneration += 1
+  if (_sseRecoveryTimer) clearTimeout(_sseRecoveryTimer)
+  _sseRecoveryTimer = null
+  _sseRecoveryAbort?.abort()
+  _sseRecoveryAbort = null
+  _sseRecoveryAttempt = 0
+  _sseTerminalFailures = new WeakSet()
+  scheduleSSERecovery(0)
+}
 
 export function startSSE() {
   if (_menuSource) return
@@ -76,6 +192,7 @@ export function startSSE() {
         // request per real change while a panel is open, not a poll.
         if (selectedGroupSignal.value) loadArchivedSessions()
       }
+      markSSEHealthy()
       connectionSignal.value = 'connected'
     } catch (_) {
       // malformed JSON; keep current connection state
@@ -84,11 +201,20 @@ export function startSSE() {
 
   source.addEventListener('error', () => {
     connectionSignal.value = 'disconnected'
-    // EventSource auto-reconnects; we'll update to 'connected' on next successful "menu" event
+    if (source.readyState === EventSource.CLOSED && _menuSource === source) {
+      scheduleSSERecovery()
+    }
   })
 }
 
 export function stopSSE() {
+  _sseRecoveryGeneration += 1
+  if (_sseRecoveryTimer) clearTimeout(_sseRecoveryTimer)
+  _sseRecoveryTimer = null
+  _sseRecoveryAbort?.abort()
+  _sseRecoveryAbort = null
+  _sseRecoveryAttempt = 0
+  _sseTerminalFailures = new WeakSet()
   if (_menuSource) {
     _menuSource.close()
     _menuSource = null
@@ -105,7 +231,6 @@ export function stopSSE() {
 // server-side), so the panel never polls. recentlyCompleted entries drive
 // "✅ X just finished" notifications.
 
-let _ccSource = null
 // Track which completion ids we've already toasted so a steady-state re-emit
 // of the same snapshot (or a reconnect) doesn't re-fire notifications.
 const _ccSeenCompletions = new Set()
@@ -140,14 +265,26 @@ export function startCommandCenterSSE() {
           _ccSeenCompletions.clear()
         }
       }
+      markSSEHealthy()
     } catch (_) {
       // malformed JSON; ignore
+    }
+  })
+
+  source.addEventListener('error', () => {
+    if (source.readyState === EventSource.CLOSED && _ccSource === source) {
+      scheduleSSERecovery()
     }
   })
 
   // The command-center stream shares the connection-state signal via the menu
   // stream; we don't flip it here to avoid fighting the menu reconnect logic.
 }
+
+window.addEventListener('online', wakeSSERecovery)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') wakeSSERecovery()
+})
 
 // ---------- Initial menu load + SSE kick-off ----------
 
