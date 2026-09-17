@@ -410,6 +410,9 @@ func main() {
 		case "launch":
 			handleLaunch(profile, args[1:])
 			return
+		case "health":
+			handleHealth(profile, args[1:])
+			return
 		case "doctor":
 			handleDoctor(args[1:])
 			return
@@ -611,6 +614,13 @@ func main() {
 		ensureTmuxInPathOrExit()
 	}
 
+	healthRole := "tui"
+	if webHeadless {
+		healthRole = "web"
+	}
+	stopHealth := startRuntimeHealth(profile, healthRole)
+	defer stopHealth()
+
 	// Create storage early to register instance via SQLite
 	earlyStorage, err := session.NewStorageWithProfile(profile)
 	if err == nil {
@@ -646,6 +656,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		stopHealth()
 		// Stop interval hooks and wait for their kill to land. Hook commands
 		// run in their own process groups — intentionally detached from the
 		// terminal's hangup safety net — and only the in-app quit path
@@ -1231,7 +1242,7 @@ func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.I
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
 var commandRegistry = map[string]bool{
-	"add": true, "accounts": true, "doctor": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"add": true, "accounts": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
 	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
@@ -4045,7 +4056,8 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
-	fmt.Println("  doctor           Check named Claude account directory sharing")
+	fmt.Println("  doctor           Check accounts and runtime health")
+	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")
 	fmt.Println("  list, ls         List all sessions")
 	fmt.Println("  remove, rm       Remove a session")

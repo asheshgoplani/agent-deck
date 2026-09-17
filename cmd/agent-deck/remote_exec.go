@@ -18,7 +18,7 @@ import (
 func remoteCommandArgs(args []string) ([]string, error) {
 	if len(args) > 0 {
 		switch args[0] {
-		case "list", "status", "add", "launch":
+		case "list", "status", "health", "add", "launch":
 			return append([]string(nil), args...), nil
 		case "remote":
 			if len(args) > 1 && (args[1] == "list" || args[1] == "ls") {

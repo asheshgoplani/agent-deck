@@ -19,6 +19,9 @@ on:
     paths:
       - 'cmd/agent-deck/main.go'
       - 'cmd/agent-deck/coldstart_perf_test.go'
+      - 'internal/health/**'
+      - 'internal/ui/home.go'
+      - 'internal/tmux/**'
       - 'internal/testutil/perfbudget.go'
       - 'internal/testutil/perfbudget_test.go'
       - '**/*_perf_test.go'
@@ -94,3 +97,16 @@ jobs:
           name: perf-bench-output
           path: benchout.txt
           retention-days: 30
+
+  runtime-health:
+    name: Runtime health (100 sessions)
+    runs-on: ubuntu-latest
+    container: golang:1.25
+    env:
+      PERF_BUDGET_MULTIPLIER: '2.0'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install isolated tmux dependency
+        run: apt-get update && apt-get install -y tmux
+      - name: Run headless runtime health budgets
+        run: go test -tags runtimehealthperf ./internal/ui -run '^TestPerf_RuntimeHealth' -count=1 -v -timeout 120s

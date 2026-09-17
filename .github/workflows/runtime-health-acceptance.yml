@@ -1,0 +1,50 @@
+name: Runtime health acceptance
+on:
+  pull_request:
+    paths:
+      - 'cmd/agent-deck/health*'
+      - 'cmd/agent-deck/remote_exec_ssh_test.go'
+      - 'internal/health/**'
+      - 'internal/ui/runtime_health*'
+      - 'scripts/runtime-health/**'
+      - '.github/workflows/runtime-health-acceptance.yml'
+  workflow_dispatch:
+jobs:
+  acceptance:
+    name: Runtime health red and green acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Build disposable test image
+        run: docker build -t runtime-health-test -f scripts/runtime-health/Dockerfile .
+      - name: Prepare module cache and receipt directory
+        run: |
+          mkdir -p evidence
+          chmod 777 evidence
+          docker run --rm --cap-drop ALL -v "$PWD":/src -w /src -v runtime-health-gomod:/tmp/gomod -e GOMODCACHE=/tmp/gomod runtime-health-test sh -c 'go mod download && chmod -R a+rX /tmp/gomod'
+      - name: Red and green acceptance in isolated Docker
+        run: |
+          docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
+            -v "$PWD":/src:ro -w /src -v "$PWD/evidence":/evidence \
+            -v runtime-health-gomod:/tmp/gomod \
+            -e HOME=/tmp/h -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/h/.cache -e GOFLAGS=-mod=mod \
+            runtime-health-test bash scripts/runtime-health/acceptance.sh /src /evidence
+      - name: Red and green performance in isolated Docker
+        run: |
+          docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
+            -v "$PWD":/src:ro -w /src -v "$PWD/evidence":/evidence \
+            -v runtime-health-gomod:/tmp/gomod \
+            -e HOME=/tmp/h -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/h/.cache -e GOFLAGS=-mod=mod \
+            -e PERF_BUDGET_MULTIPLIER=2 \
+            runtime-health-test bash scripts/runtime-health/performance.sh /src /evidence/perf
+      - name: Upload source-stamped evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-health-acceptance-${{ github.event.pull_request.head.sha || github.sha }}
+          path: evidence
+          retention-days: 90

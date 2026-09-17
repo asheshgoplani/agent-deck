@@ -50,7 +50,16 @@ var ErrRefusingConfigSectionDrop = fmt.Errorf("session: refusing to save config.
 // or omitzero (int/struct) so zero-value fields are not written to disk. Without
 // this, SaveUserConfig bloats the file with sections the user never configured.
 // TestSaveUserConfig_ZeroValueConfigProducesNoSections enforces this invariant.
+// HealthSettings controls local-only runtime self-sampling.
+type HealthSettings struct {
+	Enabled *bool `toml:"enabled,omitempty"`
+}
+
+func (h HealthSettings) IsEnabled() bool { return h.Enabled == nil || *h.Enabled }
+
 type UserConfig struct {
+	Health HealthSettings `toml:"health,omitempty"`
+
 	// DefaultTool is the pre-selected AI tool when creating new sessions
 	// Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
 	// If empty or invalid, defaults to "shell" (no pre-selection)
