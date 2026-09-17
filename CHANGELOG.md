@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `perf(conductor)`: drop already-drained polling turns instead of re-emitting them (#2051).
 - `test(web)`: refresh the settings drawer visual-regression baseline (#2103, #2056).
 - `docs(skills)`: describe Codex project support (#2225).
+- Add a Docker-based functional check suite (`make check-functional`, `tools/funccheck`) that drives a built binary through the TUI's real screens and asserts against golden output, plus a CI workflow that runs it (#2292).
 
 ### Fixed
 
