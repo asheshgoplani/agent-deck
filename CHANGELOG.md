@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add a Docker-based functional check suite (`make check-functional`, `tools/funccheck`) that drives a built binary through the TUI's real screens and asserts against golden output, plus a CI workflow that runs it (#2292).
 - Add an isolated synthetic fleet performance suite (`make bench-fleet`, `tools/bench`) with a committed baseline and a CI workflow that distinguishes measurement failures from advisory regressions (#2293).
 - `perf`: group activity is now aggregated once before walking ancestors instead of re-walking per session, cutting large-fleet group-status cost (#2294).
+- `launch -m/--message-file` now reports "pane exited before delivery" (with the recorded reason and elapsed time) instead of a misleading "paste-buffer failed, delivery is indeterminate" when the pane died before the send was attempted (#2217, fixes #2215).
 
 ### Fixed
 
