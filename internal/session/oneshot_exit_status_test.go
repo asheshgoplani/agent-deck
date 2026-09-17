@@ -13,37 +13,58 @@ import "testing"
 // non-zero exit is a real crash → StatusError.
 //
 // When no exit code is available (pane torn down without remain-on-exit, so
-// tmux discarded the exit status), classification falls back to the per-tool
-// heuristic: OpenCode's hookless `/exit` reads as stopped (#1617); every other
-// tool's vanished pane stays a crash signal.
+// tmux discarded the exit status), classification consults the hook-emitting
+// tool's last recorded hook status (issue #2091): a Stop-edge hook ("waiting"/
+// "idle") already proves the turn finished cleanly before the pane vanished,
+// so that TOCTOU must not read as a crash. No hook record at all keeps the
+// historical StatusError default (backward compatible) but flags the verdict
+// as SubstateUnknownExit — a guess, not a fact — rather than silently
+// asserting a crash that was never observed. OpenCode's hookless `/exit`
+// reads as stopped regardless (#1617).
 func TestClassifyTerminatedPane_CleanExitVsCrash(t *testing.T) {
 	tests := []struct {
 		name         string
 		exitCode     int
 		haveExitCode bool
 		tool         string
+		hookStatus   string
 		want         Status
+		wantSubstate Substate
 	}{
 		// Exit code known (remain-on-exit): the code decides, tool is irrelevant.
-		{"clean exit 0 (shell)", 0, true, "shell", StatusStopped},
-		{"clean exit 0 (claude)", 0, true, "claude", StatusStopped},
-		{"clean exit 0 (sandboxed worker)", 0, true, "codex", StatusStopped},
-		{"crash exit 1", 1, true, "shell", StatusError},
-		{"crash exit 137 (SIGKILL)", 137, true, "claude", StatusError},
-		{"crash exit 2 (opencode)", 2, true, "opencode", StatusError},
+		{name: "clean exit 0 (shell)", exitCode: 0, haveExitCode: true, tool: "shell", want: StatusStopped},
+		{name: "clean exit 0 (claude)", exitCode: 0, haveExitCode: true, tool: "claude", want: StatusStopped},
+		{name: "clean exit 0 (sandboxed worker)", exitCode: 0, haveExitCode: true, tool: "codex", want: StatusStopped},
+		{name: "crash exit 1", exitCode: 1, haveExitCode: true, tool: "shell", want: StatusError},
+		{name: "crash exit 137 (SIGKILL)", exitCode: 137, haveExitCode: true, tool: "claude", want: StatusError},
+		{name: "crash exit 2 (opencode)", exitCode: 2, haveExitCode: true, tool: "opencode", want: StatusError},
 
-		// No exit code (pane torn down): fall back to the per-tool heuristic.
-		{"no exit code, opencode clean /exit", 0, false, "opencode", StatusStopped},
-		{"no exit code, claude crash", 0, false, "claude", StatusError},
-		{"no exit code, shell", 0, false, "shell", StatusError},
-		{"no exit code, unknown tool", 0, false, "", StatusError},
+		// No exit code (pane torn down), OpenCode: always the hookless heuristic.
+		{name: "no exit code, opencode clean /exit", tool: "opencode", want: StatusStopped},
+
+		// No exit code, hook-emitting tool: the hook record decides (#2091).
+		{name: "no exit code, claude Stop already fired (waiting)", tool: "claude", hookStatus: "waiting", want: StatusStopped},
+		{name: "no exit code, claude Stop already fired (idle)", tool: "claude", hookStatus: "idle", want: StatusStopped},
+		{name: "no exit code, codex turn complete (waiting)", tool: "codex", hookStatus: "waiting", want: StatusStopped},
+		{name: "no exit code, claude turn in flight", tool: "claude", hookStatus: "running", want: StatusError},
+		{name: "no exit code, codex reported dead", tool: "codex", hookStatus: "dead", want: StatusError},
+
+		// No exit code AND no hook record: unverifiable — keep the historical
+		// error default but mark it as a guess.
+		{name: "no exit code, claude, no hook record", tool: "claude", want: StatusError, wantSubstate: SubstateUnknownExit},
+		{name: "no exit code, shell (not hook-emitting)", tool: "shell", want: StatusError},
+		{name: "no exit code, unknown tool", tool: "", want: StatusError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := classifyTerminatedPane(tt.exitCode, tt.haveExitCode, tt.tool)
+			got, gotSubstate := classifyTerminatedPane(tt.exitCode, tt.haveExitCode, tt.tool, tt.hookStatus)
 			if got != tt.want {
-				t.Errorf("classifyTerminatedPane(%d, %v, %q) = %q, want %q",
-					tt.exitCode, tt.haveExitCode, tt.tool, got, tt.want)
+				t.Errorf("classifyTerminatedPane(%d, %v, %q, %q) = %q, want %q",
+					tt.exitCode, tt.haveExitCode, tt.tool, tt.hookStatus, got, tt.want)
+			}
+			if gotSubstate != tt.wantSubstate {
+				t.Errorf("classifyTerminatedPane(%d, %v, %q, %q) substate = %q, want %q",
+					tt.exitCode, tt.haveExitCode, tt.tool, tt.hookStatus, gotSubstate, tt.wantSubstate)
 			}
 		})
 	}
@@ -64,5 +85,42 @@ func TestTerminatedPaneStatus_NilTmuxFallsBackToTool(t *testing.T) {
 		if got := i.terminatedPaneStatus(); got != want {
 			t.Errorf("terminatedPaneStatus() nil tmux, tool %q = %q, want %q", tool, got, want)
 		}
+	}
+}
+
+// TestTerminatedPaneStatus_HookCompletionOverridesError is the issue #2091
+// regression: a hook-emitting session (Claude/Codex) whose Stop-edge hook
+// already recorded a clean turn completion must not read as StatusError just
+// because its tmux pane vanished with no captured exit code (no
+// remain-on-exit) — the TOCTOU the issue reports. Also pins the companion
+// "we genuinely don't know" case: no hook record at all keeps the historical
+// StatusError default but surfaces SubstateUnknownExit instead of silently
+// asserting a crash that was never observed.
+func TestTerminatedPaneStatus_HookCompletionOverridesError(t *testing.T) {
+	tests := []struct {
+		name         string
+		tool         string
+		hookStatus   string
+		wantStatus   Status
+		wantSubstate Substate
+	}{
+		{name: "claude Stop already fired", tool: "claude", hookStatus: "waiting", wantStatus: StatusStopped},
+		{name: "codex turn already completed", tool: "codex", hookStatus: "waiting", wantStatus: StatusStopped},
+		{name: "claude crash mid-turn", tool: "claude", hookStatus: "running", wantStatus: StatusError},
+		{name: "claude pane vanished, no hook ever seen", tool: "claude", hookStatus: "", wantStatus: StatusError, wantSubstate: SubstateUnknownExit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			i := &Instance{Tool: tt.tool, hookStatus: tt.hookStatus, Status: StatusRunning}
+			if got := i.terminatedPaneStatus(); got != tt.wantStatus {
+				t.Errorf("terminatedPaneStatus() tool %q hookStatus %q = %q, want %q",
+					tt.tool, tt.hookStatus, got, tt.wantStatus)
+			}
+			i.Status = StatusError // gate getTerminatedPaneSubstate checks this
+			if got := i.getTerminatedPaneSubstate(); got != tt.wantSubstate {
+				t.Errorf("getTerminatedPaneSubstate() tool %q hookStatus %q = %q, want %q",
+					tt.tool, tt.hookStatus, got, tt.wantSubstate)
+			}
+		})
 	}
 }
