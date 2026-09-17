@@ -85,6 +85,7 @@ const (
 	SubstateNone              = tmux.SubstateNone
 	SubstateRunning           = tmux.SubstateRunning
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
+	SubstateInteractiveMenu   = tmux.SubstateInteractiveMenu
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit

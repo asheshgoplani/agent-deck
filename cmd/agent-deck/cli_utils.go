@@ -902,6 +902,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "usage limit"
 	case session.SubstateIdleAtEmptyPrompt:
 		return "idle at prompt"
+	case session.SubstateInteractiveMenu:
+		return "awaiting menu choice"
 	case session.SubstateRunning:
 		return "working"
 	default:

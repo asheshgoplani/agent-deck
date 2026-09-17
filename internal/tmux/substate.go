@@ -24,8 +24,18 @@ const (
 
 	// SubstateIdleAtEmptyPrompt marks a session sitting at its input prompt
 	// with no activity — genuinely idle, distinct from a session that LOOKS
-	// idle but is actually wedged. Pairs with status "idle"/"waiting".
+	// idle but is actually wedged. Pairs with status "idle"/"waiting". Does
+	// NOT apply when an interactive menu is open (see SubstateInteractiveMenu).
 	SubstateIdleAtEmptyPrompt Substate = "idle-at-empty-prompt"
+
+	// SubstateInteractiveMenu marks a session sitting at an open selection
+	// menu (an AskUserQuestion picker or a Yes/No permission dialog) awaiting
+	// the operator's choice. Pairs with status "waiting". Before this
+	// substate existed, an open menu satisfied the same pane-text checks as a
+	// bare empty prompt and was misreported as idle-at-empty-prompt, which
+	// reads as "nothing happening" when work is in fact blocked on a pending
+	// answer (#2185).
+	SubstateInteractiveMenu Substate = "interactive-menu"
 
 	// SubstateModelUnavailable marks the Fable-down no-op loop: the model
 	// reports unavailable ("X is currently unavailable", "Crunched for 0s")
@@ -84,8 +94,12 @@ const crunchedNoopMarker = "Crunched for 0s"
 //     "unavailable" line is stale. Deliberately does NOT treat a bare "✶" as a
 //     cue, so the no-op completion line's decorative asterisk does not match.
 //  3. model-unavailable — the Fable-down no-op loop with no live busy cue.
-//  4. idle-at-empty-prompt — sitting at the prompt with nothing happening.
-//  5. none      — no distinct refinement.
+//  4. interactive-menu — an open AskUserQuestion picker or permission dialog
+//     is on screen. Checked before idle-at-empty-prompt: both conditions make
+//     hasClaudePrompt true, but a menu awaiting a choice is blocked-on-input,
+//     not idle (#2185).
+//  5. idle-at-empty-prompt — sitting at the prompt with nothing happening.
+//  6. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
 	if d.tool != "claude" {
 		return SubstateNone
@@ -113,12 +127,52 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 		return SubstateModelUnavailable
 	}
 
-	// 4. Sitting at the input prompt with no busy/error signal = genuinely idle.
+	// 4/5. Sitting at the input prompt with no busy/error signal. hasClaudePrompt
+	//    is also true for an open selection menu (its footer/option text is
+	//    what makes the coarse status "waiting" in the first place), so an
+	//    open menu must be told apart from a genuinely empty prompt before
+	//    defaulting to idle.
 	if d.hasClaudePrompt(content) {
+		if hasOpenInteractiveMenu(content) {
+			return SubstateInteractiveMenu
+		}
 		return SubstateIdleAtEmptyPrompt
 	}
 
 	return SubstateNone
+}
+
+// interactiveMenuMarkers are the footer/option strings Claude Code renders
+// for an open selection menu — an AskUserQuestion picker or a permission
+// dialog (Yes/No, Allow once/always). These are a subset of the
+// permissionPrompts checked by hasClaudePrompt (detector.go), which is why
+// such a pane already satisfies hasClaudePrompt: it is genuinely "waiting",
+// just not idle. Kept separate from permissionPrompts so this list only
+// needs to be unambiguous, not exhaustive — a marker missing here degrades to
+// the pre-existing idle-at-empty-prompt label rather than a false positive.
+var interactiveMenuMarkers = []string{
+	"Use arrow keys to navigate",
+	"Press Enter to select",
+	"Tab/Arrow keys to navigate",
+	"Enter to select",
+	"No, and tell Claude what to do differently",
+	"Do you want",
+	"Would you like",
+	"Allow once",
+	"Allow always",
+}
+
+// hasOpenInteractiveMenu reports whether the pane shows an open selection
+// menu awaiting the operator's choice, scoped to the recent tail so a stale
+// menu scrolled out of view does not keep matching forever.
+func hasOpenInteractiveMenu(content string) bool {
+	recent := recentTailLower(content, 15)
+	for _, marker := range interactiveMenuMarkers {
+		if strings.Contains(recent, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasClaudeBusyIndicator reports whether the recent pane tail shows Claude
