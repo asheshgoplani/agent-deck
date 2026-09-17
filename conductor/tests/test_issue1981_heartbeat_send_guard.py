@@ -13,6 +13,11 @@ send. ``heartbeat_loop`` now captures the pane and skips the cycle when
 ``_pane_blocks_automated_send`` reports either state; any capture/parse failure
 fails OPEN (the send proceeds) so heartbeats are never permanently blocked.
 
+#2080 review: picker/busy detection is now gated on the hook-driven signal
+first (see test_issue2080_hook_gates_heartbeat.py) — the pane-text picker
+check below is exercised through this file's pre-#2080 call shape (no hook
+args), which is the fallback path used only when the hook signal is unknown.
+
 These are pure function tests on synthetic pane strings — no agent-deck runtime
 and no third-party packages required.
 """
@@ -139,9 +144,13 @@ class TestPaneBlocksAutomatedSend(unittest.TestCase):
         self.assertIsNone(bridge._pane_blocks_automated_send(EMPTY_COMPOSER))
 
     def test_open_picker_skips(self):
+        # #2080: with no hook signal supplied (the pre-#2080 call shape),
+        # picker detection still falls back to pane text, but the verdict is
+        # now reported at "unknown" confidence — see
+        # test_issue2080_hook_gates_heartbeat.py for the hook-gated path.
         self.assertEqual(
             bridge._pane_blocks_automated_send(OPEN_PICKER),
-            "askuserquestion-picker-open",
+            "unknown:askuserquestion-picker-open",
         )
 
     def test_empty_capture_sends_fail_open(self):

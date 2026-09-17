@@ -1631,6 +1631,17 @@ func handleSessionShow(profile string, args []string) {
 	// Update status
 	_ = inst.UpdateStatus()
 
+	// #2080: surface the raw hook-driven status and its freshness alongside
+	// the derived "status" field. `--defer-if-busy` and the send verification
+	// loop (#1578, #2273) already treat a FRESH hook status of
+	// "running"/"starting" as the authoritative busy/interactive signal — it
+	// covers an open AskUserQuestion picker (whose PreToolUse event never
+	// advances to Stop until the human answers) even while "status" still
+	// reads "waiting". Callers that need to gate on real interactive state
+	// (e.g. the conductor heartbeat guard) read these two fields directly
+	// instead of re-deriving it from a raw pane-text capture.
+	hookStatus, hookStatusFresh := inst.GetHookStatus()
+
 	// Get MCP info if Claude session
 	var mcpInfo *session.MCPInfo
 	if session.IsClaudeCompatible(inst.Tool) {
@@ -1651,6 +1662,11 @@ func handleSessionShow(profile string, args []string) {
 		"title_locked":         inst.TitleLocked,
 		"tool":                 inst.Tool,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
+		// Always present (see the #1924 "wrapper" reasoning above): an
+		// absent key would be ambiguous with "the hook never fired", when
+		// what actually happened is "this build predates the field".
+		"hook_status":       hookStatus,
+		"hook_status_fresh": hookStatusFresh,
 	}
 	// Honest Status v2: additive substate refinement (omit when none so the
 	// existing keys stay byte-stable for consumers that don't expect it).

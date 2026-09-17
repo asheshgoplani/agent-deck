@@ -420,6 +420,45 @@ def get_session_status(session: str, profile: str | None = None) -> str:
         return "unknown"
 
 
+
+# Hook-driven statuses that mean "mid-turn / interactive", mirroring the Go
+# send path's send.StatusIsBusy (internal/send/deferbusy.go) — the same
+# signal `session send --defer-if-busy` and the post-#2273 verification loop
+# already treat as authoritative. A fresh "running" hook status also covers
+# an OPEN AskUserQuestion picker: its PreToolUse event writes "running" and
+# nothing advances it to a Stop/PostToolUse event until the human answers, so
+# the picker window reads as busy here even though the derived "status"
+# field can still show "waiting" (issue #1981's original false-negative).
+_HOOK_INTERACTIVE_STATUSES = {"running", "starting"}
+
+
+def hook_driven_interactive(session: str, profile: str | None = None) -> tuple[bool, bool]:
+    """Hook-driven busy/interactive signal for one session: (interactive, known).
+
+    ``known`` is False whenever the signal cannot be trusted — the hook has
+    never fired for this session, its last sample is stale, or the CLI call
+    itself failed/parsed badly. Callers MUST treat known=False as "no
+    evidence either way", never as "not interactive": that distinction is the
+    whole point of gating on this instead of a raw pane-text guess (#2080
+    review of #1981/#2043's heartbeat guard).
+    """
+    try:
+        result = run_cli(
+            "session", "show", session, "--json", profile=profile, timeout=15
+        )
+        if result.returncode != 0:
+            return False, False
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return False, False
+    if not data.get("hook_status_fresh"):
+        return False, False
+    status = data.get("hook_status") or ""
+    if not status:
+        return False, False
+    return status in _HOOK_INTERACTIVE_STATUSES, True
+
+
 def get_session_output(session: str, profile: str | None = None) -> str:
     """Get the last response from a session.
 
@@ -646,20 +685,36 @@ def _composer_has_unsent_draft(pane_text: str) -> bool:
     return False
 
 
-def _pane_blocks_automated_send(pane_text: str) -> str | None:
+def _pane_blocks_automated_send(
+    pane_text: str, hook_known: bool = False, hook_interactive: bool = False
+) -> str | None:
     """Reason string if an automated send into this pane would disrupt live
-    interaction — an AskUserQuestion picker is open (the send's Enter selects
-    its default), or the composer holds the user's unsent draft (the send
-    clobbers it) — else None. Cheapest check first.
+    interaction, else None. Cheapest/most-authoritative check first.
 
-    Pure and total: an empty or unparseable capture yields None (send allowed),
-    so callers fail OPEN.
+    Interactive/busy detection is now gated on the hook-driven signal
+    (``hook_driven_interactive``, #2080) whenever it is known: a fresh
+    "running"/"starting" hook status is the same evidence the Go send path
+    treats as authoritative (``--defer-if-busy``, the #2273 verification
+    loop), and it catches an open AskUserQuestion picker without guessing
+    from pane glyphs. Pane-text picker detection (``_pane_has_open_picker``)
+    is used ONLY as a fallback when the hook signal is unknown (hooks never
+    fired for this session, the last sample went stale, or the CLI read
+    failed) — that verdict is reported with an "unknown:" prefix, since it is
+    a heuristic guess rather than confirmed evidence.
+
+    The composer-unsent-draft check is orthogonal to turn state (a user can
+    be mid-typing while the hook genuinely reads idle) and always runs off
+    pane text regardless of hook_known.
+
+    Pure and total: an empty or unparseable capture, plus hook_known=False
+    with no picker match, yields None (send allowed) — callers fail OPEN.
     """
-    if not pane_text:
-        return None
-    if _pane_has_open_picker(pane_text):
-        return "askuserquestion-picker-open"
-    if _composer_has_unsent_draft(pane_text):
+    if hook_known:
+        if hook_interactive:
+            return "hook-busy-interactive"
+    elif pane_text and _pane_has_open_picker(pane_text):
+        return "unknown:askuserquestion-picker-open"
+    if pane_text and _composer_has_unsent_draft(pane_text):
         return "composer-holds-unsent-input"
     return None
 
@@ -3141,27 +3196,41 @@ async def heartbeat_loop(
                     )
                     continue
 
-                # issue #1981: a routine send types text + Enter. If the pane is
-                # mid-interaction — an AskUserQuestion picker is open, or the
-                # composer holds the user's unsent draft — that Enter selects the
-                # picker default or clobbers the draft. Skip this cycle when the
-                # pane shows either. Fail OPEN: any capture/parse failure leaves
-                # block_reason None so the send still goes out (heartbeats are
-                # never permanently blocked). The capture runs in the executor so
-                # the blocking CLI call never freezes the event loop.
+                # issue #1981 / #2080: a routine send types text + Enter. If the
+                # target is mid-interaction — an AskUserQuestion picker is open,
+                # or the composer holds the user's unsent draft — that Enter
+                # selects the picker default or clobbers the draft. Skip this
+                # cycle when either is true.
+                #
+                # #2080 review: interactive/busy detection is gated on the
+                # hook-driven signal (the same fresh "running"/"starting" status
+                # `--defer-if-busy` and the send verification loop already treat
+                # as authoritative) whenever it is known — it covers an open
+                # picker without guessing from pane glyphs. Raw pane-text picker
+                # detection now runs ONLY as a fallback when the hook signal is
+                # unknown. Fail OPEN throughout: any read/capture/parse failure
+                # leaves block_reason None so the send still goes out (heartbeats
+                # are never permanently blocked). Both calls run in the executor
+                # so the blocking CLI calls never freeze the event loop.
                 #
                 # NOTE this narrows but does NOT close the clobber window: the
-                # capture and the send are separate steps, so a user who starts
-                # typing in the gap between them can still be clobbered. It is a
-                # best-effort guard, not a guarantee — see the bounded override
-                # below, which stops a persistently-blocking pane from starving
-                # heartbeats entirely (issue #1999).
+                # checks and the send are separate steps, so a user who starts
+                # typing (or a turn that starts) in the gap between them can
+                # still be clobbered. It is a best-effort guard, not a guarantee
+                # — see the bounded override below, which stops a persistently-
+                # blocking signal from starving heartbeats entirely (issue #1999).
                 try:
+                    hook_interactive, hook_known = await loop.run_in_executor(
+                        None,
+                        functools.partial(hook_driven_interactive, session_title, profile=profile),
+                    )
                     pane_text = await loop.run_in_executor(
                         None,
                         functools.partial(capture_pane, session_title, profile=profile),
                     )
-                    block_reason = _pane_blocks_automated_send(pane_text)
+                    block_reason = _pane_blocks_automated_send(
+                        pane_text, hook_known=hook_known, hook_interactive=hook_interactive
+                    )
                 except Exception as e:  # noqa: BLE001 — fail-open: ANY capture/parse error must allow the send
                     log.warning(
                         "Heartbeat [%s]: interactive-state check failed (%s); allowing send",
