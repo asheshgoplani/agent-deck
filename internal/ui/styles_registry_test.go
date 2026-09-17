@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -64,6 +66,38 @@ func TestToolIconColor_UnknownFallsBackToSwitch(t *testing.T) {
 	}
 	if got := ToolColor("no-such-tool"); got != ColorTextDim {
 		t.Errorf("ToolColor(unknown) = %q, want %q", got, ColorTextDim)
+	}
+}
+
+// TestGetToolStyle_CustomToolColor asserts that GetToolStyle — the function
+// every real row/preview render call site actually calls, unlike ToolColor()
+// — honors a custom [tools.<name>].color from config.toml. Before issue
+// #2136's color half was wired, GetToolStyle only consulted the hardcoded
+// ToolStyleCache/DefaultToolStyle and silently ignored the registry, so a
+// custom tool's row rendered with the default text color no matter what
+// color it declared.
+func TestGetToolStyle_CustomToolColor(t *testing.T) {
+	InitTheme("dark")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	configDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configToml := "[tools.mywrap]\ncommand = \"mywrap\"\nicon = \"🧪\"\ncolor = \"#ff00ff\"\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	style := GetToolStyle("mywrap")
+	if got := style.GetForeground(); got != lipgloss.Color("#ff00ff") {
+		t.Fatalf("GetToolStyle(%q).GetForeground() = %v, want #ff00ff", "mywrap", got)
+	}
+	if got := style.GetForeground(); got == DefaultToolStyle.GetForeground() {
+		t.Fatalf("GetToolStyle(%q) fell back to DefaultToolStyle's foreground, ignoring the registry color", "mywrap")
 	}
 }
 
