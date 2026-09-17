@@ -18216,29 +18216,20 @@ func (h *Home) renderFrame() string {
 		"cost_last_month": h.costLastMonth.Load() + remoteAgg.CostLastMonthMicrodollars,
 		"cost_projected":  h.costProjected.Load() + remoteAgg.CostProjectedMicrodollars,
 	}
+	var costSegment string
 	if rendered := costs.RenderCostLine(h.costLineTemplate, costVars, h.costLineHideWhenZero); rendered != "" {
-		costStyle := lipgloss.NewStyle().Foreground(ColorCyan)
-		if stats == "" {
-			stats = costStyle.Render(rendered)
-		} else {
-			stats += statsSep + costStyle.Render(rendered)
-		}
+		costSegment = lipgloss.NewStyle().Foreground(ColorCyan).Render(rendered)
 	}
 
 	// System stats segment (CPU, RAM, etc.) — shown when [ui.header].fields
 	// requests any of load/memory/disk; the existing [system_stats] config
 	// still governs which of those sysinfo.Format actually renders.
+	var sysStatsSegment string
 	headerWantsHostStats := headerFieldSet[session.PreviewFieldLoad] || headerFieldSet[session.PreviewFieldMemory] || headerFieldSet[session.PreviewFieldDisk]
 	if headerWantsHostStats && h.sysStatsCollector != nil {
 		sysStats := h.sysStatsCollector.Get()
-		formatted := sysinfo.Format(sysStats, h.sysStatsConfig.GetFormat(), h.sysStatsConfig.GetShow())
-		if formatted != "" {
-			sysStyle := lipgloss.NewStyle().Foreground(ColorComment)
-			if stats == "" {
-				stats = sysStyle.Render(formatted)
-			} else {
-				stats += statsSep + sysStyle.Render(formatted)
-			}
+		if formatted := sysinfo.Format(sysStats, h.sysStatsConfig.GetFormat(), h.sysStatsConfig.GetShow()); formatted != "" {
+			sysStatsSegment = lipgloss.NewStyle().Foreground(ColorComment).Render(formatted)
 		}
 	}
 
@@ -18247,16 +18238,18 @@ func (h *Home) renderFrame() string {
 	// DefaultHeaderFields — see PreviewFieldAccounts). Reads this host's own
 	// quota cache through h.accountsUsageCache, which re-parses a slot's
 	// usage file only when its mtime changed (#PROMPT accounts field).
+	//
+	// Rendered in two forms: the full per-slot line, and a compact
+	// "N slots · lowest 5h x%" fallback the width-aware layout below
+	// switches to (instead of truncating the full line mid-text) when the
+	// header is too narrow to show every optional field in full.
+	var accountsSegment, accountsCompactSegment string
+	acctStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	if headerFieldSet[session.PreviewFieldAccounts] {
 		if headerCfg, err := session.LoadUserConfig(); err == nil && headerCfg != nil {
 			usage := session.CollectAccountUsage(headerCfg, h.accountsUsageCache, time.Now())
-			line := renderAccountsPreviewLine(usage, time.Now())
-			acctStyle := lipgloss.NewStyle().Foreground(ColorComment)
-			if stats == "" {
-				stats = acctStyle.Render(line)
-			} else {
-				stats += statsSep + acctStyle.Render(line)
-			}
+			accountsSegment = acctStyle.Render(renderAccountsPreviewLine(usage, time.Now()))
+			accountsCompactSegment = acctStyle.Render(renderAccountsCompactLine(usage))
 		}
 	}
 
@@ -18269,8 +18262,23 @@ func (h *Home) renderFrame() string {
 		versionBadge = versionStyle.Render("v" + Version)
 	}
 
-	// Fill remaining header space
-	headerLeft := lipgloss.JoinHorizontal(lipgloss.Left, logo, "  ", title, "  ", stats)
+	// Width-aware assembly (issue: optional fields rendering at the far
+	// right got cut off by MaxWidth's blind byte-truncation, pushing the
+	// version badge off screen). Optional segments are appended in this
+	// priority order (highest first); when the assembled line would not
+	// fit, the LOWEST-priority segment is shed first — accounts drops to
+	// its compact form before being dropped entirely, then sysStats, then
+	// cost — never truncating a field mid-text.
+	optionalSegments := []string{costSegment, sysStatsSegment, accountsSegment}
+	headerLeft, versionFits := assembleHeaderLeft(logo, title, stats, statsSep, optionalSegments, versionBadge, h.width)
+	if !versionFits {
+		// Retry with the accounts field's compact form before dropping it
+		// outright.
+		optionalSegments[2] = accountsCompactSegment
+		headerLeft, versionFits = assembleHeaderLeft(logo, title, stats, statsSep, optionalSegments, versionBadge, h.width)
+	}
+	_ = versionFits // best-effort below this point; an unreasonably narrow terminal still gets a legible (if cramped) header
+
 	headerPadding := h.width - lipgloss.Width(headerLeft) - lipgloss.Width(versionBadge) - 2
 	if headerPadding < 1 {
 		headerPadding = 1
