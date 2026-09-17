@@ -2050,9 +2050,20 @@ func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, opts RemoteAdd
 		startOutput, err = r.run(startCtx, remoteStartArgs(result.ID, false)...)
 	}
 	if err != nil {
-		// Compensate: the remote DB has the row but no tmux process. Best-effort
-		// delete with a fresh context so an upstream cancellation doesn't skip
-		// the cleanup. Surface the original start failure.
+		// A remote that verified the spawn (#2099) and found the pane gone
+		// has already persisted the session as an error with its
+		// spawn_failure record, exactly what `remote <r> add` followed by
+		// `session start` leaves behind. Keep it and tell the caller what
+		// the remote said, so the row is drawn with the error light and
+		// the explainer instead of flashing and vanishing (g14 parity walk).
+		if spawnFailed := parseRemoteStartSpawnFailure(startOutput, result.ID, result.Title); spawnFailed != nil {
+			return "", spawnFailed
+		}
+		// Any other shape (an older remote, a failure before the spawn was
+		// attempted) says nothing about what the remote kept. Compensate as
+		// before: the remote DB has the row but no tmux process, so delete
+		// it best-effort with a fresh context (an upstream cancellation must
+		// not skip the cleanup) and surface the original start failure.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
 		_ = r.DeleteSession(cleanupCtx, result.ID)
@@ -2084,6 +2095,74 @@ func remoteStartArgs(sessionID string, noWait bool) []string {
 // "flag provided but not defined: -name").
 func isUnknownFlagError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "flag provided but not defined")
+}
+
+// RemoteSessionSpawnFailedError reports that `add` succeeded and `session
+// start` ran, but the remote found the new session's process gone at once
+// and recorded why (#2099's `reason` + `spawn_failure` JSON). The session
+// exists on the remote as an error record with that explainer; it was
+// deliberately NOT deleted, so it can be inspected, retried or removed like
+// one created from the CLI.
+type RemoteSessionSpawnFailedError struct {
+	ID     string
+	Title  string
+	Reason string
+	// Record is the remote's spawn_failure block, nil when the remote sent
+	// only a reason.
+	Record *SpawnFailureRecord
+	// Message is the remote's own error line.
+	Message string
+}
+
+func (e *RemoteSessionSpawnFailedError) Error() string {
+	detail := e.Message
+	if detail == "" {
+		detail = e.Reason
+	}
+	return fmt.Sprintf("remote session %q was created but did not start: %s", e.Title, detail)
+}
+
+// Preview is the explainer block the remote's own preview would show for
+// the record: the same text `session show` prints there.
+func (e *RemoteSessionSpawnFailedError) Preview() string {
+	if e.Record != nil {
+		return e.Record.FormatForDisplay()
+	}
+	return "⚠  session failed to start\n" + e.Reason + "\n"
+}
+
+// parseRemoteStartSpawnFailure recognises the #2099 failure shape in a
+// failed `session start --json`'s stdout. It returns nil for anything else
+// (an older remote's shape, plain text, nothing), which the caller treats
+// as unknown.
+func parseRemoteStartSpawnFailure(output []byte, id, title string) *RemoteSessionSpawnFailedError {
+	var payload struct {
+		Success      *bool               `json:"success"`
+		Error        string              `json:"error"`
+		ID           string              `json:"id"`
+		Title        string              `json:"title"`
+		Reason       string              `json:"reason"`
+		SpawnFailure *SpawnFailureRecord `json:"spawn_failure"`
+	}
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || json.Unmarshal(trimmed, &payload) != nil {
+		return nil
+	}
+	if payload.Success == nil || *payload.Success || payload.Reason == "" {
+		return nil
+	}
+	// The remote names the session it kept; a mismatch means the answer is
+	// about something else and nothing can be assumed about this one.
+	if payload.ID != "" && payload.ID != id {
+		return nil
+	}
+	if payload.Title != "" {
+		title = payload.Title
+	}
+	if payload.SpawnFailure != nil {
+		payload.SpawnFailure.InstanceID = id
+	}
+	return &RemoteSessionSpawnFailedError{ID: id, Title: title, Reason: payload.Reason, Message: payload.Error, Record: payload.SpawnFailure}
 }
 
 // RemoteSessionQueuedError reports that `add` succeeded but `session start`

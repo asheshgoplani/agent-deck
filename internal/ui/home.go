@@ -2676,6 +2676,16 @@ func (h *Home) insertRemoteSession(info session.RemoteSessionInfo) {
 	h.rebuildFlatItems()
 }
 
+// seedRemotePreview stores content as the preview for a remote session so
+// it renders at once; the regular remote preview fetch replaces it later.
+func (h *Home) seedRemotePreview(remoteName, sessionID, content string) {
+	key := remotePreviewCacheKey(remoteName, sessionID)
+	h.previewCacheMu.Lock()
+	defer h.previewCacheMu.Unlock()
+	h.previewCache[key] = content
+	h.previewCacheTime[key] = time.Now()
+}
+
 // dropRemoteSession removes one session from the cache and redraws.
 func (h *Home) dropRemoteSession(remoteName, sessionID string) {
 	h.remoteSessionsMu.Lock()
@@ -8427,6 +8437,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// remote's own title (a quick-create gets its name there) and
 			// status.
 			h.insertRemoteSession(*msg.created)
+			if msg.preview != "" {
+				h.seedRemotePreview(msg.created.RemoteName, msg.created.ID, msg.preview)
+			}
 		}
 		// This message is returned after tea.Exec finishes the remote
 		// create+attach. Mirror the statusUpdateMsg attach-return cleanup so
@@ -16777,6 +16790,9 @@ type remoteSessionCreatedMsg struct {
 	notice string
 	// created describes the session the remote confirmed, drawn at once.
 	created *session.RemoteSessionInfo
+	// preview, when set, seeds the preview pane for created so a session the
+	// remote recorded as failed shows its explainer before any fetch.
+	preview string
 }
 
 // remoteRenameResultMsg reports the remote's answer to a rename started from
@@ -17340,37 +17356,65 @@ func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.Re
 		onExit: func() { h.isAttaching.Store(false) },
 	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
-		var created *session.RemoteSessionInfo
-		if createdID != "" {
-			tool := opts.Tool
-			if tool == "" {
-				tool = "shell"
-			}
-			created = &session.RemoteSessionInfo{
-				ID: createdID, Title: opts.Title, Group: opts.Group, Tool: tool,
-				Path: opts.Path, Status: string(session.StatusRunning), RemoteName: remoteName,
-			}
-		}
-		if err != nil {
-			var attachErr remoteAttachFailedError
-			if errors.As(err, &attachErr) {
-				return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to remote session after creating it: %w", attachErr)}
-			}
-			if !opts.CreateDir && strings.TrimSpace(opts.Path) != "" && session.IsRemotePathMissing(err) {
-				return remoteCreateDirNeededMsg{remoteName: remoteName, opts: opts, err: err}
-			}
-			var queued *session.RemoteSessionQueuedError
-			if errors.As(err, &queued) {
-				// The session exists on the remote; it starts when the group
-				// has a free slot. Not a failure, and the row must show now.
-				return remoteSessionCreatedMsg{notice: fmt.Sprintf("created '%s' on %s, queued until group '%s' has a free slot", queued.Title, remoteName, opts.Group)}
-			}
-			// Routed as the remote message so the terminal cleanup after
-			// tea.Exec (mouse, keyboard mode, resize) runs on failure too.
-			return remoteSessionCreatedMsg{err: fmt.Errorf("on %s: %w", remoteName, err)}
-		}
-		return remoteSessionCreatedMsg{created: created}
+		return remoteCreateOutcomeMsg(remoteName, opts, createdID, err)
 	})
+}
+
+// remoteCreateOutcomeMsg turns the create+attach result into the message the
+// update loop applies: the row to draw (if the remote confirmed one), the
+// footer error or notice, and the preview to seed for it.
+//
+// A spawn failure the remote recorded (session.RemoteSessionSpawnFailedError)
+// is a confirmed row too: the remote kept the session as an error with its
+// explainer, so the row is drawn with the error light and that explainer in
+// the preview, the same picture `remote <r> add` + `session start` leaves.
+// Pre-fix the row was never drawn and the create path had deleted the
+// session, so it flashed in the header counts and vanished (g14 parity walk).
+func remoteCreateOutcomeMsg(remoteName string, opts session.RemoteAddOptions, createdID string, err error) tea.Msg {
+	tool := opts.Tool
+	if tool == "" {
+		tool = "shell"
+	}
+	if err != nil {
+		var attachErr remoteAttachFailedError
+		if errors.As(err, &attachErr) {
+			return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to remote session after creating it: %w", attachErr)}
+		}
+		var spawnFailed *session.RemoteSessionSpawnFailedError
+		if errors.As(err, &spawnFailed) && spawnFailed.ID != "" {
+			title := spawnFailed.Title
+			if title == "" {
+				title = opts.Title
+			}
+			return remoteSessionCreatedMsg{
+				err: fmt.Errorf("on %s: %w", remoteName, err),
+				created: &session.RemoteSessionInfo{
+					ID: spawnFailed.ID, Title: title, Group: opts.Group, Tool: tool,
+					Path: opts.Path, Status: string(session.StatusError), RemoteName: remoteName,
+				},
+				preview: spawnFailed.Preview(),
+			}
+		}
+		if !opts.CreateDir && strings.TrimSpace(opts.Path) != "" && session.IsRemotePathMissing(err) {
+			return remoteCreateDirNeededMsg{remoteName: remoteName, opts: opts, err: err}
+		}
+		var queued *session.RemoteSessionQueuedError
+		if errors.As(err, &queued) {
+			// The session exists on the remote; it starts when the group
+			// has a free slot. Not a failure, and the row must show now.
+			return remoteSessionCreatedMsg{notice: fmt.Sprintf("created '%s' on %s, queued until group '%s' has a free slot", queued.Title, remoteName, opts.Group)}
+		}
+		// Routed as the remote message so the terminal cleanup after
+		// tea.Exec (mouse, keyboard mode, resize) runs on failure too.
+		return remoteSessionCreatedMsg{err: fmt.Errorf("on %s: %w", remoteName, err)}
+	}
+	if createdID == "" {
+		return remoteSessionCreatedMsg{}
+	}
+	return remoteSessionCreatedMsg{created: &session.RemoteSessionInfo{
+		ID: createdID, Title: opts.Title, Group: opts.Group, Tool: tool,
+		Path: opts.Path, Status: string(session.StatusRunning), RemoteName: remoteName,
+	}}
 }
 
 // attachWindowCmd implements tea.ExecCommand for attaching to a specific tmux window

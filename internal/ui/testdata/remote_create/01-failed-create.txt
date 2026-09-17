@@ -1,0 +1,26 @@
+  ▾ remotes/lab (1)
+▶   └─ ✕ parity-1789685743 claude
+--- preview ---
+parity-1789685743  ✕ error
+
+Remote:  lab
+Path:    /tmp
+Tool:    claude
+Group:   tmp
+
+Last response
+----------------------------------------
+⚠  session failed to start
+The tool was not found on PATH: claude (searched: /usr/bin:/bin).
+The command exited after 261ms. Install the tool into one of the searched directories
+(~/.local/bin and ~/bin are added to PATH automatically), or use its full path as the command.
+
+command: export AGENTDECK_INSTANCE_ID=parity-1; exec claude --session-id 1
+
+(no output was captured before the process exited)
+
+Tip: run the command manually in this directory to see the full error,
+or check logs/session-id-lifecycle.jsonl for the spawn trace.
+
+
+Press Enter to attach via SSH
