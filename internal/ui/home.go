@@ -11991,6 +11991,23 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.IsWorktree())
+			} else if item.Type == session.ItemTypeWindow {
+				// Capture the window's stable tmux id now, at prompt time, so
+				// confirm can refuse if the window at this index changed by
+				// the time the user answers (liveness of the index is not
+				// identity of the window — see tmux.KillWindow).
+				inst := h.getInstanceByID(item.WindowSessionID)
+				var tmuxSess *tmux.Session
+				if inst != nil {
+					tmuxSess = inst.GetTmuxSession()
+				}
+				if tmuxSess == nil {
+					h.setError(fmt.Errorf("kill window %d: session is not attached to tmux", item.WindowIndex))
+				} else if windowID, err := tmuxSess.WindowID(item.WindowIndex); err != nil {
+					h.setError(fmt.Errorf("kill window %d: %w", item.WindowIndex, err))
+				} else {
+					h.confirmDialog.ShowKillWindow(item.WindowSessionID, item.WindowIndex, item.WindowName, windowID)
+				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			} else if item.Type == session.ItemTypeRemoteGroup && item.Level > 0 {
@@ -12857,6 +12874,38 @@ func (h *Home) confirmAction() tea.Cmd {
 		if inst := h.getInstanceByID(sessionID); inst != nil {
 			h.confirmDialog.Hide()
 			return h.deleteSession(inst)
+		}
+	case ConfirmKillWindow:
+		sessionID := h.confirmDialog.GetTargetID()
+		windowIndex := h.confirmDialog.GetWindowIndex()
+		windowID := h.confirmDialog.GetWindowID()
+		h.confirmDialog.Hide()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				// The window row was rendered — and windowID captured — when
+				// the confirm dialog opened, but windows can change before
+				// the user answers: the other window can close (last-window
+				// guard), or the targeted window itself can close and get
+				// replaced by a different window sliding into the same index
+				// (identity guard). KillWindow checks both and kills
+				// atomically server-side, by window id, never by stale
+				// index/name alone.
+				if err := tmuxSess.KillWindow(windowIndex, windowID); err != nil {
+					switch {
+					case errors.Is(err, tmux.ErrLastWindow):
+						h.setError(fmt.Errorf("not killing window %d: it is the session's last window", windowIndex))
+					case errors.Is(err, tmux.ErrWindowChanged):
+						h.setError(fmt.Errorf("not killing window %d: it changed since it was selected, refusing", windowIndex))
+					default:
+						h.setError(fmt.Errorf("kill window %d: %w", windowIndex, err))
+					}
+					return nil
+				}
+				// Prune the cache so the row disappears now, not on the
+				// next background refresh tick.
+				tmux.RemoveCachedWindow(tmuxSess.Name, windowIndex)
+				h.rebuildFlatItems()
+			}
 		}
 	case ConfirmCloseSession:
 		sessionID := h.confirmDialog.GetTargetID()
@@ -20105,8 +20154,10 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 		}
 
 	case session.ItemTypeWindow:
-		// A tmux window row attaches just like its session.
+		// A tmux window row attaches just like its session, and 'd' kills
+		// the selected window (with confirmation).
 		add("⏎", "attach")
+		add(h.actionKey(hotkeyDelete), "delete")
 
 	case session.ItemTypeRemoteSession:
 		// A remote session row attaches over SSH just like a local session;
