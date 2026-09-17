@@ -98,6 +98,19 @@ func (s RemoteVersionState) Compare(controller string) RemoteVersionCompare {
 	}
 }
 
+// BuildDiffers reports whether s and controller describe the same release
+// (RemoteVersionSame) but differ in their raw version string: build metadata
+// after "+", or its presence on only one side. CompareVersions ignores build
+// metadata entirely (so the update decision is unaffected), but a label that
+// only says "same" would overclaim when the two builds are not, in fact,
+// identical (walk defect #1).
+func (s RemoteVersionState) BuildDiffers(controller string) bool {
+	if s.Compare(controller) != RemoteVersionSame {
+		return false
+	}
+	return strings.TrimPrefix(strings.TrimSpace(s.Version), "v") != strings.TrimPrefix(strings.TrimSpace(controller), "v")
+}
+
 // isVersionString reports whether v is something CompareVersions can order:
 // a dotted numeric core with an optional pre-release tag. parseRemoteVersion
 // hands back raw output ("development build") when it finds no version
@@ -749,6 +762,9 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 		switch {
 		case plan.Kind == RemoteUpdateCurrent && opts.LocalBuild == nil && !opts.Force:
 			result.Outcome = RemoteUpdateOutcomeCurrent
+			if state.BuildDiffers(target) {
+				result.Note = "same release, different build"
+			}
 		case plan.Kind == RemoteUpdateUnknown:
 			result.Outcome = RemoteUpdateOutcomeSkipped
 			result.Err = fmt.Errorf("%w: %q", ErrRemoteVersionUnknown, state.Version)

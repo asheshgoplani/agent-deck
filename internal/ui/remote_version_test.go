@@ -142,10 +142,20 @@ func TestRemoteVersionPreviewLine(t *testing.T) {
 			"version unknown (last checked never)",
 		},
 		{
-			"+local build on the controller's release reads same",
+			// walk defect #1: build metadata differs but the release is the
+			// same; CompareVersions still calls it "same" (update decisions
+			// are unaffected), but the label must not claim the builds are
+			// identical.
+			"+local build on the controller's release reads same release, different build",
 			session.RemoteVersionState{Version: "1.16.10+local.abc123", Found: true},
 			"1.16.10",
-			"agent-deck v1.16.10+local.abc123 · same as here",
+			"agent-deck v1.16.10+local.abc123 · same release, different build",
+		},
+		{
+			"controller +local build, remote plain release reads same release, different build",
+			session.RemoteVersionState{Version: "1.16.10", Found: true},
+			"1.16.10+local.20260917f",
+			"agent-deck v1.16.10 · same release, different build",
 		},
 	}
 	for _, tc := range cases {
@@ -181,7 +191,8 @@ func TestRemotePreviewStatsLines_UnknownWhenNoResult(t *testing.T) {
 		{Status: "waiting", Tool: "claude"},
 		{Status: "idle", Tool: "codex"},
 	}
-	lines := remoteStatsPreviewLines(sessions, remoteHostStatsResult{}, false)
+	same := session.RemoteVersionState{Version: "1.16.10", Found: true}
+	lines := remoteStatsPreviewLines(sessions, remoteHostStatsResult{}, false, same, "1.16.10")
 	if len(lines) != 3 {
 		t.Fatalf("got %d lines, want 3: %+v", len(lines), lines)
 	}
@@ -191,8 +202,15 @@ func TestRemotePreviewStatsLines_UnknownWhenNoResult(t *testing.T) {
 	if lines[1] != "Harnesses  claude:2 · codex:1" {
 		t.Errorf("harnesses line = %q", lines[1])
 	}
-	if lines[2] != "stats unknown (remote runs an older agent-deck)" {
-		t.Errorf("stats line = %q, want the unknown fallback", lines[2])
+	// walk defect #1: a same-release remote must never be told it is older.
+	if lines[2] != "stats unknown (remote does not report stats)" {
+		t.Errorf("stats line = %q, want the same-release unknown fallback", lines[2])
+	}
+
+	older := session.RemoteVersionState{Version: "1.16.9", Found: true}
+	olderLines := remoteStatsPreviewLines(sessions, remoteHostStatsResult{}, false, older, "1.16.10")
+	if olderLines[2] != "stats unknown (remote runs an older agent-deck)" {
+		t.Errorf("stats line = %q, want the older fallback", olderLines[2])
 	}
 }
 
@@ -216,7 +234,7 @@ func TestRemotePreviewStatsLines_PresentWhenResultOk(t *testing.T) {
 		Latency:   250 * time.Millisecond,
 		FetchedAt: fetchedAt,
 	}
-	lines := remoteStatsPreviewLines(nil, result, true)
+	lines := remoteStatsPreviewLines(nil, result, true, session.RemoteVersionState{Version: "1.16.10", Found: true}, "1.16.10")
 	if len(lines) != 4 {
 		t.Fatalf("got %d lines, want 4: %+v", len(lines), lines)
 	}

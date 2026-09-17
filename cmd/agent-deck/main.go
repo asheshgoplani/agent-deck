@@ -524,6 +524,26 @@ func main() {
 		}
 	}
 
+	// walk defect #4: args[0] not matching any case above is silently
+	// discarded below (nothing reads the raw `args` slice again — only
+	// flags like --group/--select survive extraction), so a stale or
+	// unrecognized command word falls all the way through into the
+	// alt-screen TUI boot exactly like a bare `agent-deck` invocation. That
+	// is how a remote on an agent-deck release that predates a given
+	// subcommand (a forwarded `remote <name> health` reaching a remote that
+	// predates `health`, or any future command added to only one side)
+	// hangs instead of erroring: the forwarded SSH exec has no pty, so the
+	// TUI's synchronous input read never returns. Refuse instead of hanging
+	// whenever this fallthrough is reached without a real terminal.
+	// "web" is the one case above that intentionally falls through instead
+	// of returning (it needs the shared boot code below to start its HTTP
+	// server, headless or not) — it is a recognized command, not the
+	// unrecognized-args[0] fallthrough this guard targets.
+	if len(args) > 0 && !webEnabled && !stdinStdoutIsTerminal() {
+		fmt.Fprintf(os.Stderr, "Error: %q is not a recognized command and stdout is not a terminal, so the interactive UI cannot open; run 'agent-deck help' for the command list\n", args[0])
+		os.Exit(2)
+	}
+
 	// Every path that reaches this point boots the bubbletea TUI (which
 	// takes raw-mode ownership of stdin/stdout — term.IsTerminal stays true
 	// in raw mode, so a blocking synchronous read here would race the TUI's

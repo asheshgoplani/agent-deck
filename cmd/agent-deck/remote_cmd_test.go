@@ -141,6 +141,12 @@ func tempHomeWithConfig(t *testing.T, contents string) string {
 // failure must not turn the output into an object. The configured remote is
 // deliberately unreachable, so FetchSessions fails and exercises the "some
 // remotes errored" branch of the plain (non-envelope) --json path.
+//
+// walk defect #2: a zero-session result must marshal as `[]`, never `null`
+// — `jq '.[]'` and `for row in $(jq -c '.[]')` both choke on `null` (no
+// iteration at all, or a "cannot iterate over null" error), while `[]`
+// degrades to "no rows" cleanly. `[]` was already the shape for
+// --with-errors's "sessions" field; this makes the bare-array form match.
 func TestRemoteSessionsPlainJSONStaysBareArray(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
@@ -151,8 +157,8 @@ func TestRemoteSessionsPlainJSONStaysBareArray(t *testing.T) {
 		t.Fatalf("plain --json must not fail the process on a per-remote error: code=%d stdout=%q", code, stdout)
 	}
 
-	if trimmed := strings.TrimSpace(stdout); trimmed != "null" && !strings.HasPrefix(trimmed, "[") {
-		t.Fatalf("plain --json must stay a bare array (or null), got: %s", stdout)
+	if trimmed := strings.TrimSpace(stdout); !strings.HasPrefix(trimmed, "[") {
+		t.Fatalf("plain --json must always be a bare array, never null, got: %s", stdout)
 	}
 
 	var asArray []session.RemoteSessionInfo
@@ -234,4 +240,44 @@ func TestRemoteSessionsEnvelopeFlagCoversEmptyAndConfigError(t *testing.T) {
 			t.Fatalf("config error output = %#v", output)
 		}
 	})
+}
+
+// TestRemoteForwardedList_JSON_EmptyProfilePrintsEmptyArray is walk defect
+// #3's regression test: `agent-deck remote <name> list --json` forwards
+// "list --json" verbatim over SSH (remoteCommandArgs, runRemoteExec) and
+// prints whatever the remote's own `list` command prints. The walk saw
+// plain text ("No sessions found in profile 'default'.") from g14 because
+// g14 still runs the pre-fix v1.16.10 binary; this branch's `list --json`
+// already prints `[]` for an empty profile (fixed by ac626d0e, an ancestor
+// of this branch, well before today's walk). This test proves the fix
+// survives the SSH-forwarding path end to end: a fake `ssh` on PATH execs
+// this branch's own just-built binary as the "remote", with its own empty
+// HOME standing in for an empty remote profile.
+func TestRemoteForwardedList_JSON_EmptyProfilePrintsEmptyArray(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	bin := channelsCLIBinary(t)
+	remoteHome := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.Symlink(bin, filepath.Join(binDir, "agent-deck")); err != nil {
+		t.Fatal(err)
+	}
+	sshScript := "#!/bin/sh\nfor last; do :; done\nexport HOME=\"$FAKESSH_REMOTE_HOME\"\nexport PATH=\"$FAKESSH_BIN_DIR:$PATH\"\neval \"$last\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ssh"), []byte(sshScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKESSH_REMOTE_HOME", remoteHome)
+	t.Setenv("FAKESSH_BIN_DIR", binDir)
+
+	home := tempHomeWithConfig(t, "[remotes.g14]\nhost = 'fake@g14'\n")
+	stdout, stderr, code := runAgentDeck(t, home, "remote", "g14", "list", "--json")
+	if code != 0 {
+		t.Fatalf("forwarded list --json: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if trimmed := strings.TrimSpace(stdout); trimmed != "[]" {
+		t.Fatalf("forwarded `remote g14 list --json` on an empty profile = %q, want \"[]\"", trimmed)
+	}
 }
