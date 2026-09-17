@@ -5050,6 +5050,8 @@ func (i *Instance) Start() error {
 		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
+	case i.Tool == "muse":
+		command = i.buildMuseCommand(i.Command)
 	case i.Tool == "cursor":
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
@@ -5407,6 +5409,8 @@ func (i *Instance) StartWithMessage(message string) error {
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "crush":
 		command = i.buildCrushCommand(i.Command)
+	case i.Tool == "muse":
+		command = i.buildMuseCommand(i.Command)
 	case i.Tool == "cursor":
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
@@ -9661,6 +9665,18 @@ func (i *Instance) restart(env map[string]string) error {
 		// re-boots as before. deepSeekRestartCommand refuses rather than
 		// rebuilding a taskless one-shot invocation.
 		command = validatedDeepSeekRestartCommand
+	} else if i.Tool == "muse" {
+		// Re-discover the workspace's newest muse session on EVERY restart,
+		// for the same self-healing reason as hermes/deepseek: a pruned
+		// session yields the current newest, or "" — in which case the
+		// launch boots fresh instead of resuming a dead ID forever. Bounded
+		// by the last start so a restart cannot rebind to an older
+		// unrelated conversation.
+		if sid := i.discoverMuseResumeID(); sid != "" {
+			command = i.buildMuseResumeCommand(sid)
+		} else {
+			command = i.buildMuseCommand(i.Command)
+		}
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -11760,6 +11776,7 @@ var builtinAgentTools = map[string]bool{
 	"cursor":   true,
 	"hermes":   true,
 	"crush":    true,
+	"muse":     true,
 }
 
 // isBuiltinAgentTool reports whether tool is a first-party agent (or a custom

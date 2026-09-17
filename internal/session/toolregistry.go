@@ -259,6 +259,15 @@ func (r *Registry) Match(cmd string) string {
 		// position gets basename treatment — argument paths such as
 		// "copilot --cwd /home/pi" must not flip detection.
 		for _, tok := range bt.detectTokens {
+			// executableOnly tools (muse) match solely on the executable
+			// slot: `echo muse` must not classify. All other tools keep
+			// the legacy whole-line token match.
+			if bt.executableOnly {
+				if exe != "" && exe == tok {
+					return name
+				}
+				continue
+			}
 			if slices.Contains(fields, tok) || exe == tok {
 				return name
 			}
