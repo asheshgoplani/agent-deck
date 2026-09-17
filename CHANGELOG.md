@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Wrapped session process trees are tracked with a spawn-time ownership receipt for verified descendant cleanup (#2272).
 - Session sends report queued delivery truthfully and bind `--wait` and `--stream` replies to the submitted turn (#2273).
 - Panes now assert their own working directory with `cd --` instead of trusting the tmux server's `-c`, fixing spawns landing in a dead directory once the server's own cwd was unlinked (#2214).
+- `session output` no longer leaks an unrelated, older session's transcript for a freshly spawned session that shares a Claude projects directory but has no transcript of its own yet (#2299).
 
 ## [1.16.10] - 2026-09-13
 
