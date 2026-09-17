@@ -128,7 +128,12 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("Usage: agent-deck remote sessions [name] [options]")
 		fmt.Println("\nOptions:")
 		fmt.Println("  --json")
-		fmt.Println("        Output as JSON")
+		fmt.Println("        Output as JSON: a bare array of sessions")
+		fmt.Println("  --with-errors")
+		fmt.Println("        With --json, wrap output as {\"sessions\":[...],\"errors\":[...]} and")
+		fmt.Println("        exit 1 if any remote failed")
+		fmt.Println("  --json-envelope")
+		fmt.Println("        Alias for --json --with-errors")
 	case "drain":
 		printRemoteDrainUsage(os.Stdout)
 	case "attach":
@@ -161,7 +166,9 @@ func printRemoteUsage() {
 	fmt.Println("  add <name> <user@host>    Add a remote agent-deck instance")
 	fmt.Println("  remove <name>             Remove a remote")
 	fmt.Println("  list                      List configured remotes")
-	fmt.Println("  sessions [name] [--json]  Fetch sessions from remote(s)")
+	fmt.Println("  sessions [name] [--json] [--with-errors|--json-envelope]")
+	fmt.Println("                            Fetch sessions from remote(s); --json is a bare array,")
+	fmt.Println("                            --with-errors wraps it with per-remote failures")
 	fmt.Println("  drain <name|user@host>    Pull completion/transition records from a remote")
 	fmt.Println("                            into this machine's inbox (read-only on the remote)")
 	fmt.Println("  attach <name> <session>   Attach to a remote session")
@@ -439,20 +446,30 @@ type remoteSessionsOutput struct {
 	Errors   []remoteSessionError        `json:"errors"`
 }
 
-func parseRemoteSessionsArgs(args []string) (remoteName string, jsonOutput bool, err error) {
+// parseRemoteSessionsArgs parses `remote sessions` flags. envelope reports
+// whether --with-errors or --json-envelope opted into the
+// {"sessions":[...],"errors":[...]} shape; jsonOutput covers either JSON
+// form. --json alone must keep emitting the bare array, since existing
+// consumers (conductor scripts, skills) pipe it through `jq '.[]'` and a
+// shape change breaks them silently.
+func parseRemoteSessionsArgs(args []string) (remoteName string, jsonOutput bool, envelope bool, err error) {
 	fs := flag.NewFlagSet("remote sessions", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	jsonFlag := fs.Bool("json", false, "Output as JSON")
+	jsonFlag := fs.Bool("json", false, "Output as JSON (bare array of sessions)")
+	withErrorsFlag := fs.Bool("with-errors", false, "With --json, wrap output as {\"sessions\":[...],\"errors\":[...]}")
+	jsonEnvelopeFlag := fs.Bool("json-envelope", false, "Alias for --json --with-errors")
 	if err := fs.Parse(reorderRemoteArgs(fs, args)); err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	if len(fs.Args()) > 1 {
-		return "", false, fmt.Errorf("accepts at most one remote name")
+		return "", false, false, fmt.Errorf("accepts at most one remote name")
 	}
 	if len(fs.Args()) == 1 {
 		remoteName = fs.Args()[0]
 	}
-	return remoteName, *jsonFlag, nil
+	envelope = *withErrorsFlag || *jsonEnvelopeFlag
+	jsonOutput = *jsonFlag || envelope
+	return remoteName, jsonOutput, envelope, nil
 }
 
 func addRemoteSessionFetch(
@@ -477,7 +494,15 @@ func addRemoteSessionFetch(
 	return true
 }
 
+// writeRemoteSessionsJSON prints the opt-in envelope. Both slices are
+// normalized to non-nil so they always marshal as `[]` rather than `null`.
 func writeRemoteSessionsJSON(output remoteSessionsOutput) {
+	if output.Sessions == nil {
+		output.Sessions = []session.RemoteSessionInfo{}
+	}
+	if output.Errors == nil {
+		output.Errors = []remoteSessionError{}
+	}
 	encoded, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to format JSON: %v\n", err)
@@ -486,31 +511,42 @@ func writeRemoteSessionsJSON(output remoteSessionsOutput) {
 	fmt.Println(string(encoded))
 }
 
+// writeRemoteSessionsArray prints the default bare array. A nil slice
+// marshals as `null`, which is what agent-deck emitted before #2207 when
+// there was nothing to report.
+func writeRemoteSessionsArray(sessions []session.RemoteSessionInfo) {
+	encoded, err := json.MarshalIndent(sessions, "", "  ")
+	if err != nil {
+		fmt.Printf("Error: failed to format JSON: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(encoded))
+}
+
 func handleRemoteSessions(args []string) {
-	remoteName, jsonOutput, err := parseRemoteSessionsArgs(args)
+	remoteName, jsonOutput, envelope, err := parseRemoteSessionsArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: remote sessions flag parsing failed: %v\n", err)
 		os.Exit(2)
 	}
-	output := remoteSessionsOutput{
-		Sessions: []session.RemoteSessionInfo{},
-		Errors:   []remoteSessionError{},
-	}
 
 	config, err := session.LoadUserConfig()
 	if err != nil {
-		if jsonOutput {
-			output.Errors = append(output.Errors, remoteSessionError{Name: "config", Error: err.Error()})
-			writeRemoteSessionsJSON(output)
+		if envelope {
+			writeRemoteSessionsJSON(remoteSessionsOutput{
+				Errors: []remoteSessionError{{Name: "config", Error: err.Error()}},
+			})
 		} else {
+			// Matches the pre-#2207 release: plain text even under --json,
+			// since a config load failure has no session list to report.
 			fmt.Printf("Error: failed to load config: %v\n", err)
 		}
 		os.Exit(1)
 	}
 
 	if len(config.Remotes) == 0 {
-		if jsonOutput {
-			writeRemoteSessionsJSON(output)
+		if envelope {
+			writeRemoteSessionsJSON(remoteSessionsOutput{})
 		} else {
 			fmt.Println("No remotes configured.")
 		}
@@ -524,12 +560,10 @@ func handleRemoteSessions(args []string) {
 
 	if remoteName != "" {
 		if _, exists := config.Remotes[remoteName]; !exists {
-			output.Errors = append(output.Errors, remoteSessionError{
-				Name:  remoteName,
-				Error: "remote not found",
-			})
-			if jsonOutput {
-				writeRemoteSessionsJSON(output)
+			if envelope {
+				writeRemoteSessionsJSON(remoteSessionsOutput{
+					Errors: []remoteSessionError{{Name: remoteName, Error: "remote not found"}},
+				})
 			} else {
 				fmt.Printf("Error: remote '%s' not found\n", remoteName)
 			}
@@ -538,6 +572,11 @@ func handleRemoteSessions(args []string) {
 	}
 
 	ctx := context.Background()
+
+	// Both slices start nil and are only appended to, so output.Sessions
+	// marshals as the pre-#2207 `null` when the bare array has nothing to
+	// show. writeRemoteSessionsJSON normalizes them for the envelope.
+	var output remoteSessionsOutput
 
 	for name, rc := range config.Remotes {
 		if remoteName != "" && name != remoteName {
@@ -575,10 +614,13 @@ func handleRemoteSessions(args []string) {
 		}
 	}
 
-	if jsonOutput {
+	switch {
+	case envelope:
 		writeRemoteSessionsJSON(output)
+	case jsonOutput:
+		writeRemoteSessionsArray(output.Sessions)
 	}
-	if len(output.Errors) != 0 {
+	if envelope && len(output.Errors) != 0 {
 		os.Exit(1)
 	}
 }
