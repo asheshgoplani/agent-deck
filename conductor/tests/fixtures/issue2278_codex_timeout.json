@@ -1,0 +1,1 @@
+{"accepted_turn":{"receipt_id":"receipt-1","instance_id":"instance-1","codex_session_id":"thread-1","turn_generation":"thread-1:turn-new","accepted_at":"2026-09-14T15:00:00Z"},"accepted_turn_kind":"codex_rollout","code":"INVALID_OPERATION","completion":"timeout","delivery":"submitted","error":"timeout waiting for completion: agent still running","submitted":true,"success":false}
