@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `agent-deck remote update --from-build <dir>` to install verified local three-platform builds (darwin/arm64, linux/amd64, linux/arm64) onto remotes without publishing a release, with downgrade guard, checksum/version-verified atomic install, and correct local-build-vs-release precedence for restart watchers (#2291).
 - The remote preview panel now shows the remote agent-deck's live version and stats, with the panel and header content configurable (#2274 groundwork).
 - Added a durable accepted-turn receipt so `session send --json --wait` on Codex correlates late replies to the exact accepted turn instead of delivering stale output (@p4p3r, #2279).
+- Add an opt-in `accounts` field to the shared preview-field vocabulary (`[ui.remote_preview].fields` / `[ui.header].fields`): named Claude account slots with live 5h/7d usage read from each slot's on-disk quota cache, gathered remote-side so the controller never fetches usage itself (#2274 groundwork).
+- Add a context inspector: `agent-deck session context [--json]` and a TUI `C` key render what a Claude or Codex session's transcript, memory and instructions currently hold, with a verified-parity harness against the live host (#2011).
 
 ### Changed
 
@@ -53,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `remote sessions --json` now returns a stable `{sessions, errors}` envelope, accepts `--json` after a positional remote name, and exits nonzero when any remote fails (@jwiegley, #2207).
 - A queued remote-agent request cancelled just as capacity freed could still start and mutate state (@jwiegley, #2208).
 - Web event streams recover automatically after network or service outages (@kickinrad, #2227).
+- Six remote-command defects fixed together: honest version/stats labels when builds differ but the release matches, `remote sessions --json` prints `[]` instead of `null` for zero sessions (including the forwarded `remote <name> list --json` path), the TUI no longer opens on a non-TTY for an unrecognized command, `shell` is accepted as an alias for a plain shell session, and a legacy remote's New Session dialog offers the full built-in tool list instead of collapsing to a single shell pill.
+- `session send` never reports "NOT delivered" without evidence: delivery now has three outcomes (confirmed, delivered-unconfirmed, failed) so a delivered message on a target with no queue placeholder, or a shell send with no capture signal, is no longer misreported as failed (closes #1793).
 - `list --json` prints `[]` instead of `null` when there are no sessions (@efenex, #2277).
 - Restart now imports the transcript from another config dir instead of silently starting a blank conversation when a session resumes under a different account/config dir (@scottyallen, #2280, closes #2269).
 - Prune orphan hook artifacts and bound kqueue descriptors (#2287).
