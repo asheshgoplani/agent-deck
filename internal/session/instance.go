@@ -8316,6 +8316,20 @@ func (i *Instance) findLatestClaudeTranscriptOnDisk() (string, *ResponseOutput) 
 	})
 
 	for _, c := range candidates {
+		// Issue #2299: this scan exists to recover THIS instance's own
+		// conversation after it rolls over (/clear or compaction), not to
+		// adopt some other session's transcript that merely lives in the
+		// same project directory. A transcript last written before this
+		// instance's own LastStartedAt cannot be a rollover of a
+		// conversation that instance hasn't started yet — it predates this
+		// run entirely, so a pure newest-mtime pick would otherwise hand a
+		// brand-new, never-messaged session another session's reply. Zero
+		// LastStartedAt (legacy record, or a test that never calls Start())
+		// means "unknown" and does not filter, preserving prior recovery
+		// behavior for those records.
+		if !i.LastStartedAt.IsZero() && c.mod.Before(i.LastStartedAt) {
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(projectDir, c.id+".jsonl"))
 		if err != nil {
 			continue
