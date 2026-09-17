@@ -249,7 +249,13 @@ func TestBuildOMPCommand_UsesInstanceScopedSessionDir(t *testing.T) {
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
-	inst := &Instance{ID: "test-instance-id", Tool: "omp"}
+	// Identity injection (added to main after this test was written) embeds
+	// its own absolute, host-side file path in every built command by
+	// design (the identity file lives on this machine regardless of tool).
+	// Disable it here so this test stays focused on what it actually
+	// checks: that the OMP session-dir template uses target-side $HOME
+	// instead of a baked-in host path.
+	inst := &Instance{ID: "test-instance-id", Tool: "omp", IdentityInjectionDisabled: true}
 	got := inst.buildOMPCommand("omp")
 
 	wantSessionDir := "${HOME}/.omp/agent-deck/test-instance-id"
