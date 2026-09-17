@@ -35,6 +35,11 @@ const (
 	ConfirmUpdateRemote      // push this controller's release to an older remote (TUI 'u' on its header, #2164)
 	ConfirmCrossHarnessTransfer
 	ConfirmSwitchAccount // Edit Session: same-harness account switch (restart, conversation carried over)
+	// ConfirmArchiveDestinationSwitch offers the explicit "archive destination
+	// copy and switch" retry after a switch was refused because the
+	// destination already holds a newer or genuinely divergent conversation
+	// that install could not prove stale. It is never a dead end.
+	ConfirmArchiveDestinationSwitch
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -316,6 +321,23 @@ func (c *ConfirmDialog) ShowCrossHarnessTransfer(source *session.Instance, harne
 // before the asynchronous switch captures its own execution-time snapshot.
 func (c *ConfirmDialog) CrossHarnessSourceMatches(inst *session.Instance) bool {
 	return c.sourceSnapshot.matches(inst)
+}
+
+// ShowArchiveDestinationSwitch offers to archive an existing destination
+// transcript that a same-harness account switch could not prove stale (newer,
+// or diverging after its common prefix with the source) and retry. reason is
+// the refusal text from the failed attempt. Default focus is Cancel: this is
+// a data-preserving retry, not a routine action.
+func (c *ConfirmDialog) ShowArchiveDestinationSwitch(source *session.Instance, harness, account, reason string) {
+	c.visible = true
+	c.confirmType = ConfirmArchiveDestinationSwitch
+	c.sourceSnapshot = snapshotCrossHarnessConfirmationSource(source)
+	c.targetID, c.targetName = c.sourceSnapshot.id, c.sourceSnapshot.title
+	c.targetHarness, c.targetAccount = harness, account
+	c.switchFrom = source.Account
+	c.noticeBody = reason
+	c.buttonCount = 2
+	c.focusedButton = 1
 }
 
 func (c *ConfirmDialog) TargetHarness() string { return c.targetHarness }
@@ -694,6 +716,17 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y switch · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmArchiveDestinationSwitch:
+		title = "Archive Destination Copy?"
+		warning = fmt.Sprintf("Move this session to another %s account:\n\n  \"%s\"\n  %s  →  %s", c.targetHarness, c.targetName, displayConfirmAccount(c.switchFrom), displayConfirmAccount(c.targetAccount))
+		details = "The target account already has a conversation for this session that is newer or has diverged:\n\n  " + c.noticeBody + "\n\n• Its current copy is archived alongside it as \"<file>.pre-switch-<timestamp>\", never deleted\n• The source conversation is then installed in its place and the switch proceeds"
+		borderColor = ColorRed
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Archive & Switch", ColorRed, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y archive & switch · n cancel · ←/→ navigate · Enter select · Esc"))
 
 	case ConfirmNotice:
 		title = c.noticeTitle

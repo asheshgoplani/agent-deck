@@ -7718,6 +7718,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// operation, like the CLI. Ordinary readiness-pending results retain their
 		// pending notice even though the backend uses ErrCrossHarnessPending to
 		// make callers inspect the result.
+		if msg.destinationDivergent && current != nil {
+			// A refused-but-recoverable stale/divergent destination is never a
+			// dead end: offer the explicit archive-and-retry action instead of an
+			// acknowledge-only notice with no way forward.
+			h.confirmDialog.ShowArchiveDestinationSwitch(current, msg.targetHarness, msg.account, msg.err.Error())
+			return h, nil
+		}
 		if msg.err != nil && (!msg.pending || errors.Is(msg.err, session.ErrCrossHarnessRecoveryRequired)) {
 			// A refused switch explains why in a paragraph the footer banner
 			// would clip, and the session may be left stopped — show it in the
@@ -12293,6 +12300,19 @@ func (h *Home) confirmAction() tea.Cmd {
 		h.editSessionDialog.Hide()
 		h.resumingSessions[sessionID] = time.Now()
 		return h.switchSessionHarness(sessionID, harness, account)
+	case ConfirmArchiveDestinationSwitch:
+		sessionID, harness, account := h.confirmDialog.GetTargetID(), h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount()
+		h.instancesMu.RLock()
+		inst := h.instanceByID[sessionID]
+		unchanged := h.confirmDialog.CrossHarnessSourceMatches(inst)
+		h.instancesMu.RUnlock()
+		if !unchanged {
+			h.confirmDialog.ShowNotice("Account switch cancelled", "The source session changed while this confirmation was open. Review the current session and confirm a new switch.")
+			return nil
+		}
+		h.confirmDialog.Hide()
+		h.resumingSessions[sessionID] = time.Now()
+		return h.switchSessionHarnessWithOptions(sessionID, harness, account, true)
 	case ConfirmCrossHarnessTransfer:
 		sessionID, harness, account := h.confirmDialog.GetTargetID(), h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount()
 		h.instancesMu.RLock()
@@ -15769,7 +15789,12 @@ type accountSwitchedMsg struct {
 	warnings       []string
 	target         *session.Instance // distinct cross-harness target; source remains unchanged
 	nativeResult   *session.HarnessSwitchResult
-	err            error
+	// destinationDivergent is set when err is (or wraps)
+	// session.ErrSwitchDestinationDivergent: the destination transcript is not
+	// provably stale, so the refusal is not a dead end — the user can retry
+	// with an explicit "archive destination and switch" action.
+	destinationDivergent bool
+	err                  error
 }
 
 func switchTUIStatus(committed, ready, pending bool) string {
@@ -15829,6 +15854,7 @@ func crossHarnessSwitchMessage(msg accountSwitchedMsg, preview *session.SwitchPr
 // must never be presented as a pending or successful switch.
 func nativeHarnessSwitchMessage(msg accountSwitchedMsg, result *session.HarnessSwitchResult, err error) accountSwitchedMsg {
 	msg.err = err
+	msg.destinationDivergent = errors.Is(err, session.ErrSwitchDestinationDivergent)
 	if result == nil {
 		return msg
 	}
@@ -15928,6 +15954,13 @@ func (h *Home) switchSessionAccount(sessionID, account string) tea.Cmd {
 // confirmation/result notice is shared with the legacy account-only path, so
 // the TUI cannot accidentally bypass the journalled backend.
 func (h *Home) switchSessionHarness(sessionID, harness, account string) tea.Cmd {
+	return h.switchSessionHarnessWithOptions(sessionID, harness, account, false)
+}
+
+// switchSessionHarnessWithOptions is switchSessionHarness plus the ability to
+// authorize archiving an already-refused destination transcript, used by the
+// "Archive destination copy and switch" retry action.
+func (h *Home) switchSessionHarnessWithOptions(sessionID, harness, account string, archiveDestination bool) tea.Cmd {
 	// Capture immutable source identity and claim an operation generation before
 	// releasing the registry lock. A reload or newer operation may replace the
 	// pointer while the filesystem/lifecycle work is in flight.
@@ -15977,7 +16010,7 @@ func (h *Home) switchSessionHarness(sessionID, harness, account string) tea.Cmd 
 			})
 			return crossHarnessSwitchMessage(msg, preview, crossResult, err)
 		}
-		result, err := session.ExecuteHarnessSwitch(cfg, inst, session.HarnessSwitchOptions{Target: target})
+		result, err := session.ExecuteHarnessSwitch(cfg, inst, session.HarnessSwitchOptions{Target: target, Storage: h.storage, ArchiveDestination: archiveDestination})
 		return nativeHarnessSwitchMessage(msg, result, err)
 	}
 }

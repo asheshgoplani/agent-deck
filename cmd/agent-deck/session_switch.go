@@ -24,6 +24,7 @@ func handleSessionSwitch(profile string, args []string) {
 	maxBytes := fs.Int("max-bytes", session.DefaultHandoffMaxChars, "Maximum transferred context bytes for cross-harness handoff")
 	noStart := fs.Bool("no-start", false, "Create the distinct target without starting it")
 	confirmContextLoss := fs.Bool("confirm-context-loss", false, "Required for lossy cross-harness transfer after reviewing switch-preview")
+	archiveDestination := fs.Bool("archive-destination", false, "Archive a destination conversation that is newer or diverged instead of refusing")
 	jsonOutput := fs.Bool("json", false, "Output the switch result as JSON")
 
 	fs.Usage = func() {
@@ -81,6 +82,7 @@ func handleSessionSwitch(profile string, args []string) {
 	} else {
 		result, switchErr = session.ExecuteHarnessSwitch(cfg, inst, session.HarnessSwitchOptions{
 			Target: target, MaxBytes: *maxBytes, NoStart: *noStart,
+			Storage: storage, ArchiveDestination: *archiveDestination,
 		})
 	}
 	if result == nil && crossResult == nil {
@@ -131,9 +133,13 @@ func handleSessionSwitch(profile string, args []string) {
 				fmt.Fprintf(os.Stderr, "Switch failed; status=failed; recovery-required=%t; target_id=%s; target_created=%t; target_ready=%t: %v\n", recoveryRequired, crossHarnessTargetID(crossResult), crossResult.TargetCreated, crossResult.TargetReady, switchErr)
 			}
 		} else if *jsonOutput {
-			out.ErrorWithData(switchErr.Error(), ErrCodeInvalidOperation, map[string]interface{}{"status": switchPresentationStatus(false, false), "pending": false, "committed": result != nil && result.Committed, "recovery_required": result != nil && result.Committed})
+			out.ErrorWithData(switchErr.Error(), ErrCodeInvalidOperation, map[string]interface{}{"status": switchPresentationStatus(false, false), "pending": false, "committed": result != nil && result.Committed, "recovery_required": result != nil && result.Committed, "archive_destination_available": errors.Is(switchErr, session.ErrSwitchDestinationDivergent)})
 		} else {
-			fmt.Fprintf(os.Stderr, "Switch failed; status=failed; recovery-required=%t: %v\n", result != nil && result.Committed, switchErr)
+			message := switchErr.Error()
+			if errors.Is(switchErr, session.ErrSwitchDestinationDivergent) {
+				message += "; re-run with --archive-destination to archive it and switch anyway"
+			}
+			fmt.Fprintf(os.Stderr, "Switch failed; status=failed; recovery-required=%t: %v\n", result != nil && result.Committed, message)
 		}
 		// Native lifecycle work may have completed before a later journal/error
 		// boundary. Persist that exact bounded mutation without replaying the
@@ -174,7 +180,8 @@ func handleSessionSwitch(profile string, args []string) {
 		"old_account": result.OldAccount, "new_account": result.NewAccount,
 		"continuity": result.Continuity, "source_sha256": result.SourceArtifactSHA256,
 		"destination_path": result.DestinationPath, "destination_ready": result.DestinationReady,
-		"restarted": result.Restarted, "loss_disclosure": result.LossDisclosure,
+		"destination_archived": result.DestinationArchived,
+		"restarted":            result.Restarted, "loss_disclosure": result.LossDisclosure,
 	}
 	if *jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
