@@ -529,7 +529,13 @@ func main() {
 		// full-screen app instead of saying "no such command", and with no TTY
 		// it hung until killed. A word that is not a flag and not a command is a
 		// mistake, and the shell's job is to say so.
-		if !webEnabled && args[0] != "" && !strings.HasPrefix(args[0], "-") {
+		//
+		// Only handled here when there's a real terminal to print the
+		// "did you mean" suggestion to; the non-TTY case (a forwarded SSH
+		// exec, a redirect, CI) falls through to the walk-defect-#4 guard
+		// below, which carries the "not a terminal" wording that guard's
+		// own regression test checks for.
+		if !webEnabled && args[0] != "" && !strings.HasPrefix(args[0], "-") && stdinStdoutIsTerminal() {
 			fmt.Fprintf(os.Stderr, "Error: unknown command %q.\n", args[0])
 			if suggestion := suggestCommand(args[0]); suggestion != "" {
 				fmt.Fprintf(os.Stderr, "Did you mean: %s\n", suggestion)
