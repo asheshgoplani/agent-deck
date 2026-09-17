@@ -1693,7 +1693,7 @@ func handleSessionShow(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// Load sessions
-	_, instances, _, err := loadSessionData(profile)
+	_, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -1711,9 +1711,15 @@ func handleSessionShow(profile string, args []string) {
 				var foundProfile string
 				inst, foundProfile = findSessionByTmuxAcrossProfiles()
 				if inst != nil && foundProfile != profile {
-					// Found in a different profile - show which profile
-					// (jsonData will include the profile info)
+					// Found in a different profile - reload its session/group
+					// data too, or groupTree below is built from the wrong
+					// profile and SessionPosition can't find inst (order: -1).
 					profile = foundProfile
+					_, instances, groupsData, err = loadSessionData(profile)
+					if err != nil {
+						out.Error(err.Error(), ErrCodeNotFound)
+						os.Exit(1)
+					}
 				}
 			}
 			if inst == nil {
@@ -1753,7 +1759,11 @@ func handleSessionShow(profile string, args []string) {
 		mcpInfo = inst.GetMCPInfo()
 	}
 
-	// Prepare JSON output
+	// Prepare JSON output. "order" is the position in the group's session
+	// slice as the storage layer sorts it (what `session set <id> order <n>`
+	// consumes), not the raw sort_order, which ties at 0 on every
+	// launch-appended row.
+	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	jsonData := map[string]interface{}{
 		"id":                   inst.ID,
 		"title":                inst.Title,
@@ -1761,6 +1771,8 @@ func handleSessionShow(profile string, args []string) {
 		"status":               StatusString(inst.Status),
 		"path":                 inst.ProjectPath,
 		"group":                inst.GroupPath,
+		"order":                groupTree.SessionPosition(inst),
+		"pin":                  string(inst.Pin),
 		"parent_session_id":    inst.ParentSessionID,
 		"parent_project_path":  inst.ParentProjectPath,
 		"no_transition_notify": inst.NoTransitionNotify,
@@ -2006,6 +2018,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
+		fmt.Println("  order              0-based position in the group (see `session show --json` .order); clamps to the end")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2090,6 +2103,33 @@ func handleSessionSet(profile string, args []string) {
 			out.Error(msg, code)
 			os.Exit(1)
 		}
+	}
+
+	// "order" needs the group tree, which SetField (instance-only by
+	// contract) cannot see, so it is handled here like set-parent is.
+	if field == "order" {
+		n, perr := strconv.Atoi(value)
+		if perr != nil || n < 0 {
+			out.Error(fmt.Sprintf("invalid order %q: expected a non-negative integer", value), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+		oldPos := strconv.Itoa(groupTree.SessionPosition(inst))
+		groupTree.SetSessionOrder(inst, n)
+		if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+			out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		newPos := strconv.Itoa(groupTree.SessionPosition(inst))
+		out.Success(fmt.Sprintf("Updated order: %q -> %q", oldPos, newPos), map[string]interface{}{
+			"success":   true,
+			"id":        inst.ID,
+			"title":     inst.Title,
+			"field":     field,
+			"old_value": oldPos,
+			"new_value": newPos,
+		})
+		return
 	}
 
 	// #924 follow-up: the conversation follows the account. Capture the old
