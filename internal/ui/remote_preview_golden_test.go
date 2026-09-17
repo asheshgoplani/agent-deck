@@ -103,6 +103,41 @@ func TestRemotePreview_Golden(t *testing.T) {
 				},
 			}
 		}},
+		// 06: a custom [ui.remote_preview].fields list — harnesses first,
+		// then only memory (dropping load/disk/last_poll), then version
+		// last. Pins that a non-default field list both reorders the panel
+		// and drops the fields it omits, and that a single sub-field out of
+		// load/memory/disk renders alone rather than as the combined line.
+		{"06-custom-fields", func(t *testing.T, h *Home) {
+			writeXDGTestConfig(t, os.Getenv("HOME"), `
+[remotes.lab]
+host = "alice@lab.example"
+agent_deck_path = "/usr/local/bin/agent-deck"
+
+[ui.remote_preview]
+fields = ["harnesses", "memory", "version"]
+`)
+			h.remoteVersions = map[string]session.RemoteVersionState{
+				"lab": {Version: "1.16.9", Found: true, CheckedAt: fixedPollTime},
+			}
+			h.remoteHostStats = map[string]remoteHostStatsResult{
+				"lab": {
+					Stats: session.RemoteHostStats{
+						Ok:              true,
+						CPUAvailable:    true,
+						CPUUsagePercent: 28,
+						MemAvailable:    true,
+						MemUsedBytes:    38_200_000_000,
+						MemTotalBytes:   48_000_000_000,
+						DiskAvailable:   true,
+						DiskUsedBytes:   715_000_000_000,
+						DiskTotalBytes:  926_000_000_000,
+					},
+					Latency:   1200 * time.Millisecond,
+					FetchedAt: fixedPollTime,
+				},
+			}
+		}},
 	}
 
 	for _, step := range steps {

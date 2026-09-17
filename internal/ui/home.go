@@ -17556,30 +17556,44 @@ func (h *Home) renderFrame() string {
 	}
 	title := titleStyle.Render(titleText)
 
+	// headerFields drives which of the header's optional segments render,
+	// in the same shared vocabulary as [ui.remote_preview].fields (see
+	// session.UISettings.GetHeaderFields). Unset config keeps every
+	// existing segment, so the header is byte-identical to before this
+	// config block existed.
+	headerFields := session.DefaultHeaderFields
+	if headerCfg, err := session.LoadUserConfig(); err == nil && headerCfg != nil {
+		headerFields = headerCfg.UI.GetHeaderFields()
+	}
+	headerFieldSet := make(map[string]bool, len(headerFields))
+	for _, f := range headerFields {
+		headerFieldSet[f] = true
+	}
+
 	// Status-based stats (more useful than group/session counts)
 	// Format: ● 2 running • ◐ 1 waiting • ○ 3 idle (• ✕ 1 error)
 	var statsParts []string
 	statsSep := lipgloss.NewStyle().Foreground(ColorBorder).Render(" • ")
 
-	if running > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && running > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorGreen).Render(fmt.Sprintf("● %d running", running)),
 		)
 	}
-	if waiting > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && waiting > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorYellow).Render(fmt.Sprintf("◐ %d waiting", waiting)),
 		)
 	}
-	if idle > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && idle > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf("○ %d idle", idle)),
 		)
 	}
-	if stopped > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && stopped > 0 {
 		// Issue #953: stopped sessions get their own segment so users can see
 		// at a glance how many sessions are intentionally off vs. errored.
 		statsParts = append(
@@ -17587,7 +17601,7 @@ func (h *Home) renderFrame() string {
 			lipgloss.NewStyle().Foreground(ColorTextDim).Render(fmt.Sprintf("■ %d stopped", stopped)),
 		)
 	}
-	if errored > 0 {
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] && errored > 0 {
 		statsParts = append(
 			statsParts,
 			lipgloss.NewStyle().Foreground(ColorRed).Render(fmt.Sprintf("✕ %d error", errored)),
@@ -17598,7 +17612,7 @@ func (h *Home) renderFrame() string {
 	stats := ""
 	if len(statsParts) > 0 {
 		stats = strings.Join(statsParts, statsSep)
-	} else {
+	} else if headerFieldSet[session.PreviewFieldSessionsByStatus] {
 		stats = lipgloss.NewStyle().Foreground(ColorText).Render("no sessions")
 	}
 
@@ -17624,24 +17638,38 @@ func (h *Home) renderFrame() string {
 	}
 	if rendered := costs.RenderCostLine(h.costLineTemplate, costVars, h.costLineHideWhenZero); rendered != "" {
 		costStyle := lipgloss.NewStyle().Foreground(ColorCyan)
-		stats += statsSep + costStyle.Render(rendered)
+		if stats == "" {
+			stats = costStyle.Render(rendered)
+		} else {
+			stats += statsSep + costStyle.Render(rendered)
+		}
 	}
 
-	// System stats segment (CPU, RAM, etc.)
-	if h.sysStatsCollector != nil {
+	// System stats segment (CPU, RAM, etc.) — shown when [ui.header].fields
+	// requests any of load/memory/disk; the existing [system_stats] config
+	// still governs which of those sysinfo.Format actually renders.
+	headerWantsHostStats := headerFieldSet[session.PreviewFieldLoad] || headerFieldSet[session.PreviewFieldMemory] || headerFieldSet[session.PreviewFieldDisk]
+	if headerWantsHostStats && h.sysStatsCollector != nil {
 		sysStats := h.sysStatsCollector.Get()
 		formatted := sysinfo.Format(sysStats, h.sysStatsConfig.GetFormat(), h.sysStatsConfig.GetShow())
 		if formatted != "" {
 			sysStyle := lipgloss.NewStyle().Foreground(ColorComment)
-			stats += statsSep + sysStyle.Render(formatted)
+			if stats == "" {
+				stats = sysStyle.Render(formatted)
+			} else {
+				stats += statsSep + sysStyle.Render(formatted)
+			}
 		}
 	}
 
 	// Version badge (right-aligned, subtle inline style - no border to keep single line)
-	versionStyle := lipgloss.NewStyle().
-		Foreground(ColorComment).
-		Faint(true)
-	versionBadge := versionStyle.Render("v" + Version)
+	versionBadge := ""
+	if headerFieldSet[session.PreviewFieldVersion] {
+		versionStyle := lipgloss.NewStyle().
+			Foreground(ColorComment).
+			Faint(true)
+		versionBadge = versionStyle.Render("v" + Version)
+	}
 
 	// Fill remaining header space
 	headerLeft := lipgloss.JoinHorizontal(lipgloss.Left, logo, "  ", title, "  ", stats)
@@ -20354,7 +20382,11 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 
 		versionState, _ := h.remoteVersionState(item.RemoteName)
 		statsResult, hasStats := h.remoteHostStatsState(item.RemoteName)
-		body := append([]string{remoteVersionPreviewLine(versionState, Version)}, remoteStatsPreviewLines(sessions, statsResult, hasStats)...)
+		fields := session.DefaultRemotePreviewFields
+		if config != nil {
+			fields = config.UI.GetRemotePreviewFields()
+		}
+		body := remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields)
 
 		return renderEmptyStateResponsive(EmptyStateConfig{
 			Icon:     "⬡",

@@ -277,18 +277,85 @@ func remoteHarnessLine(sessions []session.RemoteSessionInfo) string {
 // "28% · 38.2G/48.0G · 715G/926G". A stat the remote could not collect
 // (wrong platform, missing /proc) is simply left out.
 func remoteHostLoadLine(stats session.RemoteHostStats) string {
+	return remoteHostLoadLineFiltered(stats, []string{session.PreviewFieldLoad, session.PreviewFieldMemory, session.PreviewFieldDisk})
+}
+
+// remoteHostLoadLineFiltered is remoteHostLoadLine restricted to the given
+// subset of {load, memory, disk} fields, in the order given — used when
+// [ui.remote_preview].fields (or [ui.header].fields) asks for only some of
+// the three host-stats sub-fields.
+func remoteHostLoadLineFiltered(stats session.RemoteHostStats, fields []string) string {
 	var parts []string
-	if stats.CPUAvailable {
-		parts = append(parts, fmt.Sprintf("%.0f%%", stats.CPUUsagePercent))
-	}
-	if stats.MemAvailable {
-		parts = append(parts, sysinfo.FormatBytes(stats.MemUsedBytes)+"/"+sysinfo.FormatBytes(stats.MemTotalBytes))
-	}
-	if stats.DiskAvailable {
-		parts = append(parts, sysinfo.FormatBytes(stats.DiskUsedBytes)+"/"+sysinfo.FormatBytes(stats.DiskTotalBytes))
+	for _, f := range fields {
+		switch f {
+		case session.PreviewFieldLoad:
+			if stats.CPUAvailable {
+				parts = append(parts, fmt.Sprintf("%.0f%%", stats.CPUUsagePercent))
+			}
+		case session.PreviewFieldMemory:
+			if stats.MemAvailable {
+				parts = append(parts, sysinfo.FormatBytes(stats.MemUsedBytes)+"/"+sysinfo.FormatBytes(stats.MemTotalBytes))
+			}
+		case session.PreviewFieldDisk:
+			if stats.DiskAvailable {
+				parts = append(parts, sysinfo.FormatBytes(stats.DiskUsedBytes)+"/"+sysinfo.FormatBytes(stats.DiskTotalBytes))
+			}
+		}
 	}
 	if len(parts) == 0 {
 		return "stats unknown (remote runs an older agent-deck)"
 	}
 	return strings.Join(parts, " · ")
+}
+
+// hostStatsFieldSet is the subset of the shared field vocabulary that
+// remoteHostLoadLineFiltered understands; used by remotePreviewFieldLines to
+// group consecutive load/memory/disk entries into a single combined line,
+// matching the panel's historical one-line stats display.
+var hostStatsFieldSet = map[string]bool{
+	session.PreviewFieldLoad:   true,
+	session.PreviewFieldMemory: true,
+	session.PreviewFieldDisk:   true,
+}
+
+// remotePreviewFieldLines renders the remote preview panel's body (version
+// line + stats block) driven by an ordered field list, honoring
+// [ui.remote_preview].fields (UISettings.GetRemotePreviewFields). Consecutive
+// load/memory/disk entries collapse into one combined line — the historical
+// shape — so the default field order renders byte-identical to before this
+// config block existed.
+func remotePreviewFieldLines(versionState session.RemoteVersionState, controller string, sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool, fields []string) []string {
+	statsKnown := hasResult && result.Stats.Ok
+	consumed := make(map[int]bool, len(fields))
+	var lines []string
+	for i, f := range fields {
+		if consumed[i] {
+			continue
+		}
+		switch f {
+		case session.PreviewFieldVersion:
+			lines = append(lines, remoteVersionPreviewLine(versionState, controller))
+		case session.PreviewFieldSessionsByStatus:
+			lines = append(lines, remoteSessionStatusLine(sessions))
+		case session.PreviewFieldHarnesses:
+			lines = append(lines, remoteHarnessLine(sessions))
+		case session.PreviewFieldLoad, session.PreviewFieldMemory, session.PreviewFieldDisk:
+			group := []string{f}
+			consumed[i] = true
+			for j := i + 1; j < len(fields) && hostStatsFieldSet[fields[j]]; j++ {
+				group = append(group, fields[j])
+				consumed[j] = true
+			}
+			if !statsKnown {
+				lines = append(lines, "stats unknown (remote runs an older agent-deck)")
+			} else {
+				lines = append(lines, remoteHostLoadLineFiltered(result.Stats, group))
+			}
+		case session.PreviewFieldLastPoll:
+			if statsKnown {
+				lines = append(lines, fmt.Sprintf("Last poll %s · %s", formatPollLatency(result.Latency), remoteStatsPolledLabel(result.FetchedAt)))
+			}
+		}
+	}
+	return lines
 }
