@@ -82,6 +82,54 @@ compatible_with = "claude"
 		}
 	})
 
+	t.Run("cursor on custom tool session whose session command was edited before quick-create", func(t *testing.T) {
+		projectDir := t.TempDir()
+		sourceInst := session.NewInstanceWithGroupAndTool("edited-session", projectDir, "test-group", "claude-qwen")
+		// Simulate an explicit session command override (e.g. via session set <id> command ...)
+		sourceInst.Command = "my-custom-wrapper --model qwen-turbo"
+		sourceInst.CreatedAt = time.Now().Add(-1 * time.Minute)
+
+		h := &Home{
+			instances: []*session.Instance{sourceInst},
+			flatItems: []session.Item{
+				{
+					Type:    session.ItemTypeSession,
+					Session: sourceInst,
+				},
+			},
+			cursor: 0,
+		}
+
+		cmd := h.quickCreateSession()
+		if cmd == nil {
+			t.Fatal("quickCreateSession returned nil cmd")
+		}
+
+		msg := cmd()
+		createMsg, ok := msg.(sessionCreatedMsg)
+		if !ok {
+			t.Fatalf("quickCreateSession returned %T, want sessionCreatedMsg", msg)
+		}
+		if createMsg.err != nil {
+			t.Fatalf("create session failed: %v", createMsg.err)
+		}
+		inst := createMsg.instance
+		if inst == nil {
+			t.Fatal("created instance is nil")
+		}
+		t.Cleanup(func() {
+			_ = inst.KillAndWait()
+		})
+
+		// Both custom tool identity and explicit command override must be preserved.
+		if inst.Tool != "claude-qwen" {
+			t.Errorf("Tool = %q, want %q (custom tool identity lost)", inst.Tool, "claude-qwen")
+		}
+		if inst.Command != "my-custom-wrapper --model qwen-turbo" {
+			t.Errorf("Command = %q, want %q (explicit command override lost)", inst.Command, "my-custom-wrapper --model qwen-turbo")
+		}
+	})
+
 	t.Run("cursor on group header whose most recent session is custom tool", func(t *testing.T) {
 		projectDir := t.TempDir()
 		sourceInst := session.NewInstanceWithGroupAndTool("group-session", projectDir, "my-group", "claude-qwen")

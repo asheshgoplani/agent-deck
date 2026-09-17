@@ -9879,6 +9879,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.createSessionInGroupWithWorktreeAndOptions(
 			name,
 			path,
+			"",
 			command,
 			groupPath,
 			worktreePath,
@@ -12406,6 +12407,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 	return h.createSessionInGroupWithWorktreeAndOptions(
 		name,
 		path,
+		"",
 		command,
 		groupPath,
 		"",
@@ -14131,7 +14133,7 @@ func (h *Home) loadUIState() {
 
 // createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
 func (h *Home) createSessionInGroupWithWorktreeAndOptions(
-	name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string,
+	name, path, tool, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string,
 	geminiYoloMode bool,
 	sandboxEnabled bool,
 	toolOptionsJSON json.RawMessage,
@@ -14189,7 +14191,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			path = worktreePath
 		}
 
-		tool, command := createSessionTool(command)
+		if tool == "" {
+			tool, command = createSessionTool(command)
+		}
 
 		var inst *session.Instance
 		if groupPath != "" {
@@ -14718,10 +14722,10 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	if tool == "" {
 		tool = "claude"
 	}
-	if session.GetToolDef(tool) != nil {
-		command = tool
-	} else if command == "" && tool != "shell" {
-		if tool == "cursor" {
+	if command == "" && tool != "shell" {
+		if toolDef := session.GetToolDef(tool); toolDef != nil {
+			command = toolDef.Command
+		} else if tool == "cursor" {
 			command = session.GetToolCommand("cursor")
 		} else {
 			command = tool
@@ -14734,7 +14738,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	h.instancesMu.RUnlock()
 
 	return h.createSessionInGroupWithWorktreeAndOptions(
-		name, projectPath, command, groupPath,
+		name, projectPath, tool, command, groupPath,
 		"", "", "", // no worktree
 		geminiYoloMode, false, toolOptionsJSON,
 		nil,        // no extra claude args (recent-session path)
@@ -14858,7 +14862,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 	h.instancesMu.RUnlock()
 
 	return h.createSessionInGroupWithWorktreeAndOptions(
-		name, projectPath, command,
+		name, projectPath, tool, command,
 		"",         // empty group → creator derives from path via extractGroupPath
 		"", "", "", // no worktree
 		false, false, nil,
