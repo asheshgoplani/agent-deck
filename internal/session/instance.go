@@ -1392,6 +1392,27 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, recorded, extraFlags)
 			}
+			// #2301: with no owned id, `-c` used to ship unconditionally and
+			// let the CLI itself pick "the newest conversation in this
+			// directory" — even when there is no conversation at all, which
+			// makes the CLI print "No conversation found to continue" and
+			// exit instead of starting. Check transcript existence first
+			// (the same discovery machinery canResumeClaudeSession/disk-scan
+			// use elsewhere) so a directory that has never run Claude falls
+			// through to a fresh session instead of a guaranteed-dead `-c`.
+			if i.TranscriptIsResolvableLocally() {
+				if _, found := discoverLatestClaudeJSONL(i.EffectiveWorkingDir()); !found {
+					sessionLog.Info("resume: none reason=continue_mode_no_transcript",
+						slog.String("instance_id", logging.SanitizeValue(i.ID)),
+						slog.String("path", logging.SanitizeValue(i.EffectiveWorkingDir())),
+						slog.String("reason", "continue_mode_no_transcript"))
+					freshID := generateUUID()
+					i.ClaudeSessionID = freshID
+					i.markClaudeSessionIDVerified()
+					return fmt.Sprintf(`%sexec %s%s --session-id "%s"%s`,
+						bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
+				}
+			}
 			sessionLog.Warn("resume: continue_mode_unverifiable",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("path", logging.SanitizeValue(i.ProjectPath)),

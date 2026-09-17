@@ -532,3 +532,56 @@ func TestResumeGuard_ForkResumeIDNeverAdoptedAsOwnIdentity(t *testing.T) {
 		t.Fatalf("standalone ClaudeSessionID = %q, want %q", standalone.ClaudeSessionID, parentID)
 	}
 }
+
+// TestResumeGuard_ContinueModeNoTranscriptStartsFresh pins issue #2301: a
+// session with SessionMode="continue", no owned ClaudeSessionID, and no
+// transcript on disk for its directory (never started Claude before) must
+// not ship a bare `-c` — the Claude CLI reads that as "continue the newest
+// conversation in this directory" and, finding none, prints "No conversation
+// found to continue" and exits immediately, tearing down the pane. It must
+// fall through to a fresh --session-id session instead.
+func TestResumeGuard_ContinueModeNoTranscriptStartsFresh(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+	// Never started before: no transcript staged for inst.ProjectPath.
+
+	opts := NewClaudeOptions(nil)
+	opts.SessionMode = "continue"
+	if err := inst.SetClaudeOptions(opts); err != nil {
+		t.Fatalf("SetClaudeOptions: %v", err)
+	}
+
+	cmd := inst.buildClaudeCommand("claude")
+	if strings.Contains(cmd, " -c") {
+		t.Fatalf("#2301: continue mode with no transcript on disk must not emit bare -c (CLI exits with \"No conversation found to continue\").\ncommand: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--session-id") {
+		t.Fatalf("#2301: continue mode with no transcript must fall through to a fresh --session-id session.\ncommand: %s", cmd)
+	}
+}
+
+// TestResumeGuard_ContinueModeWithTranscriptStillUnverifiable is the sibling
+// path: a transcript DOES exist in the directory but this instance has no
+// owned id (e.g. the id was lost to an account switch). The existing
+// #1815 mitigation cannot safely resume an unverified transcript — it may
+// belong to another session sharing the directory — so `-c` remains the
+// documented fallback (the operator's explicit instruction), unchanged by
+// the #2301 fix.
+func TestResumeGuard_ContinueModeWithTranscriptStillUnverifiable(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+
+	const foreignID = "cccccccc-3333-4444-8555-666666666666"
+	stageConversation(t, home, inst.ProjectPath, foreignID)
+
+	opts := NewClaudeOptions(nil)
+	opts.SessionMode = "continue"
+	if err := inst.SetClaudeOptions(opts); err != nil {
+		t.Fatalf("SetClaudeOptions: %v", err)
+	}
+
+	cmd := inst.buildClaudeCommand("claude")
+	if !strings.Contains(cmd, " -c") {
+		t.Fatalf("#2301: continue mode with an existing-but-unowned transcript must still fall back to -c.\ncommand: %s", cmd)
+	}
+}
