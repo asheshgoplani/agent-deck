@@ -2705,7 +2705,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Model             string    `json:"model,omitempty"`
 		ModelVersion      string    `json:"model_version,omitempty"`
 		Status            string    `json:"status"`
-		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
+		Substate          string    `json:"substate,omitempty"`        // Honest Status v2: additive refinement
+		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
 		Profile           string    `json:"profile"`
 		CreatedAt         time.Time `json:"created_at"`
@@ -2744,6 +2745,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Command:           inst.Command,
 			Status:            StatusString(inst.Status),
 			Substate:          string(inst.Substate()),
+			SubstateDetail:    inst.SubstateDetail(),
 			Profile:           profileName,
 			CreatedAt:         inst.CreatedAt,
 			SSHHost:           inst.SSHHost,

@@ -906,6 +906,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "awaiting menu choice"
 	case session.SubstateRunning:
 		return "working"
+	case session.SubstateHookLag:
+		return "turn done, hook lagging"
 	default:
 		return ""
 	}

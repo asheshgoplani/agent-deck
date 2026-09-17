@@ -244,6 +244,89 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 	}
 }
 
+// Codex error banners (status-light audit 2026-09-17, defect A). Codex renders
+// a terminal error as a line led by "■" and then redraws its composer
+// ("› Ask Codex to do anything") underneath, so prompt detection alone reads
+// the pane as an ordinary idle prompt. Captured live:
+//
+//	■ You've hit your usage limit. To continue using Codex and get access to GPT-5.3-Codex, start a free
+//	trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th, 2026 8:03 AM.
+//
+// Every pattern is matched only on a "■"-led banner line (lowercased), never on
+// prose or the composer, so a user typing about the limit cannot trip it.
+const codexErrorBannerPrefix = "■"
+
+// codexUsageLimitBannerPatterns: the plan's usage window is exhausted. CAPTURED.
+var codexUsageLimitBannerPatterns = []string{
+	"hit your usage limit",
+	"usage limit",
+}
+
+// codexAuthBannerPatterns: credentials missing or expired. INFERRED, not
+// captured — the codex CLI's own vocabulary for a failed login ("codex login",
+// "not logged in", "unauthorized"), carried as a default and anchored on the
+// same "■" banner glyph. A banner that says something else degrades to the
+// pre-existing "waiting" verdict, never to a false error.
+var codexAuthBannerPatterns = []string{
+	"codex login",
+	"not logged in",
+	"log in to",
+	"sign in to",
+	"unauthorized",
+	"authentication",
+}
+
+// codexRetryAtRe pulls the retry time out of the usage-limit banner text.
+var codexRetryAtRe = regexp.MustCompile(`(?i)try again at\s+([^.]+)`)
+
+// Codex banner kinds returned by scanCodexErrorBanner.
+const (
+	codexBannerUsageLimit = "usage-limit"
+	codexBannerAuth       = "auth"
+)
+
+// scanCodexErrorBanner scans the last 15 non-empty lines for a "■"-led codex
+// error banner and returns its kind ("" when none) and, for a usage-limit
+// banner, the retry time it prints ("try again at Oct 10th, 2026 8:03 AM").
+// The banner wraps, so the continuation lines up to the next "■"/"›" line are
+// joined before the retry time is read.
+func scanCodexErrorBanner(content string) (kind, detail string) {
+	lines := strings.Split(content, "\n")
+	var recent []string
+	for i := len(lines) - 1; i >= 0 && len(recent) < 15; i-- {
+		line := strings.TrimSpace(StripANSI(lines[i]))
+		if line == "" {
+			continue
+		}
+		recent = append([]string{line}, recent...)
+	}
+	// Newest banner wins: scan from the bottom.
+	for i := len(recent) - 1; i >= 0; i-- {
+		line := recent[i]
+		if !strings.HasPrefix(line, codexErrorBannerPrefix) {
+			continue
+		}
+		lower := strings.ToLower(line)
+		switch {
+		case containsAny(lower, codexUsageLimitBannerPatterns):
+			banner := line
+			for j := i + 1; j < len(recent); j++ {
+				if strings.HasPrefix(recent[j], codexErrorBannerPrefix) || strings.HasPrefix(recent[j], "›") {
+					break
+				}
+				banner += " " + recent[j]
+			}
+			if m := codexRetryAtRe.FindStringSubmatch(banner); m != nil {
+				return codexBannerUsageLimit, "try again at " + strings.TrimSpace(m[1])
+			}
+			return codexBannerUsageLimit, ""
+		case containsAny(lower, codexAuthBannerPatterns):
+			return codexBannerAuth, ""
+		}
+	}
+	return "", ""
+}
+
 // defaultSpinnerChars returns the braille + asterisk spinner characters used by Claude Code.
 func defaultSpinnerChars() []string {
 	return []string{

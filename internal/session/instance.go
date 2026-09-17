@@ -89,6 +89,7 @@ const (
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
+	SubstateHookLag           = tmux.SubstateHookLag
 )
 
 const wrapperPlaceholder = "{command}"
@@ -652,6 +653,14 @@ type Instance struct {
 	// conductor. Set when we hold the first such sample at running; cleared on any
 	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
 	tmuxFlipFromRunningPending bool
+
+	// Hook-lag evidence (see hook_lag.go): how many consecutive pane samples
+	// have shown a completed turn at an idle prompt while the hook file still
+	// said running, and which hook update those samples were taken under. Not
+	// serialized — a fresh process starts from zero, so a single CLI pass can
+	// never flip the light on its own.
+	hookLagPasses     int
+	hookLagHookUpdate time.Time
 
 	// Auth-hold state (see auth_hold.go). authFailureSeenAt is when a live
 	// credential-failure banner was last observed, used to attribute a LATER
@@ -6109,6 +6118,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
+		if i.hookStatus != "running" {
+			// The hook moved on (Stop landed, or a new lifecycle event): any
+			// lag observed under the old running event is over.
+			i.resetHookLagLocked()
+		}
 		switch i.hookStatus {
 		case "starting":
 			i.Status = StatusStarting
@@ -6119,6 +6133,24 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			// to idle (gray) after Stop, skipping the waiting (orange) state.
 			if i.tmuxSession != nil {
 				i.tmuxSession.ResetAcknowledged()
+			}
+			// Hook lag: Claude's Stop hook can land minutes after the pane
+			// shows the turn finished. The pane is the newer evidence, but one
+			// frame never overrules a fresh hook — two independent samples of
+			// a completed turn at an idle prompt do (see hook_lag.go).
+			// CompletedTurnAtIdlePrompt captures the pane, so release i.mu
+			// around it like BackgroundWorkPending below, then re-check for a
+			// concurrent Kill().
+			if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
+				i.mu.Unlock()
+				paneIdle, sampled := i.tmuxSession.CompletedTurnAtIdlePrompt()
+				i.mu.Lock()
+				if i.Status == StatusStopped {
+					return nil
+				}
+				if i.noteHookLagSampleLocked(paneIdle, sampled) {
+					i.Status = StatusWaiting
+				}
 			}
 		case "waiting":
 			if IsCodexCompatible(i.Tool) {
@@ -6274,6 +6306,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// Prior status, captured before this tmux-derived sample overwrites it, so the
 	// debounce below can tell a flip AWAY from running from a steady state.
 	prevStatus := i.Status
+
+	// The pane itself decided this status; there is no hook verdict to lag
+	// behind it. Drop any hook-lag evidence so the substate cannot keep
+	// reporting a disagreement that no longer exists.
+	i.resetHookLagLocked()
 
 	if err != nil {
 		// Debounce a transient capture failure: subprocess churn can make a single
@@ -10838,7 +10875,19 @@ func (i *Instance) Substate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	return tmuxSess.GetSubstate()
+	return i.reconcileSubstate(tmuxSess.GetSubstate())
+}
+
+// SubstateDetail returns free-text detail for the substate the last
+// classification produced (today: the codex usage-limit retry time), or "".
+// Call after Substate/CachedSubstate; it reads the cached value and never
+// captures the pane.
+func (i *Instance) SubstateDetail() string {
+	tmuxSess := i.GetTmuxSession()
+	if tmuxSess == nil {
+		return ""
+	}
+	return tmuxSess.CachedSubstateDetail()
 }
 
 // CachedSubstate returns the last substate computed by a prior status check
@@ -10860,7 +10909,7 @@ func (i *Instance) CachedSubstate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	return tmuxSess.CachedSubstate()
+	return i.reconcileSubstate(tmuxSess.CachedSubstate())
 }
 
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance

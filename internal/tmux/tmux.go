@@ -1215,6 +1215,14 @@ type Session struct {
 	// CLI/TUI/transition-event layers can report WHY a session is in its status
 	// without changing the byte-stable canonical status string.
 	lastSubstate Substate
+	// lastSubstateDetail is free-text detail for lastSubstate when the
+	// classifier captured one (the codex usage-limit retry time); "" otherwise.
+	lastSubstateDetail string
+
+	// completedTurnIdle / completedTurnCheckedAt cache the hook-lag pane probe
+	// (CompletedTurnAtIdlePrompt): the last verdict and when it was sampled.
+	completedTurnIdle      bool
+	completedTurnCheckedAt time.Time
 
 	// lastSampleAuthFailure is the credential-failure verdict of the most recent
 	// sample that could READ the pane, and lastAuthFailureContent the snapshot
@@ -4261,6 +4269,7 @@ func (s *Session) GetStatus() (string, error) {
 		// the transition daemon + TUI) cannot emit/show a stale error substate
 		// for a stopped session.
 		s.lastSubstate = SubstateNone
+		s.lastSubstateDetail = ""
 		s.mu.Unlock()
 		statusLog.Debug("session_inactive", slog.String("session", shortName))
 		return "inactive", nil
@@ -4271,6 +4280,7 @@ func (s *Session) GetStatus() (string, error) {
 		s.mu.Lock()
 		s.lastStableStatus = "inactive"
 		s.lastSubstate = SubstateNone
+		s.lastSubstateDetail = ""
 		s.mu.Unlock()
 		statusLog.Debug("pane_dead", slog.String("session", shortName))
 		return "inactive", nil
@@ -4374,6 +4384,7 @@ func (s *Session) GetStatus() (string, error) {
 			// already captured (pure string ops; no extra pane capture). This
 			// keeps lastSubstate fresh for the reporting layers.
 			s.lastSubstate = s.classifySubstate(content)
+			s.lastSubstateDetail = s.substateDetailLocked(content)
 
 			// Record whether THIS sample is specifically a credential failure.
 			// auth-401 as a substate also covers a dropped socket, which IS
@@ -5433,6 +5444,16 @@ func (s *Session) classifySubstate(content string) Substate {
 	return s.cachedPromptDetector.ClassifySubstate(content)
 }
 
+// substateDetailLocked returns the detail for the substate classifySubstate
+// just computed from content. Caller holds s.mu; classifySubstate leaves the
+// detector nil for a session whose tool cannot be inferred.
+func (s *Session) substateDetailLocked(content string) string {
+	if s.cachedPromptDetector == nil {
+		return ""
+	}
+	return s.cachedPromptDetector.SubstateDetail(content)
+}
+
 // GetSubstate captures the pane once and returns the additive Honest-Status-v2
 // substate (see Substate). It is an independent read used by the status-reporting
 // layers (CLI status --json, TUI label/glyph, transition events); it does NOT
@@ -5446,6 +5467,7 @@ func (s *Session) GetSubstate() Substate {
 		// session in the TUI.
 		s.mu.Lock()
 		s.lastSubstate = SubstateNone
+		s.lastSubstateDetail = ""
 		s.mu.Unlock()
 		return SubstateNone
 	}
@@ -5462,8 +5484,18 @@ func (s *Session) GetSubstate() Substate {
 	s.mu.Lock()
 	sub := s.classifySubstate(content)
 	s.lastSubstate = sub
+	s.lastSubstateDetail = s.substateDetailLocked(content)
 	s.mu.Unlock()
 	return sub
+}
+
+// CachedSubstateDetail returns the detail recorded with the last substate
+// classification (GetStatus / GetSubstate / CompletedTurnAtIdlePrompt), without
+// capturing the pane. "" when the substate carries none.
+func (s *Session) CachedSubstateDetail() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSubstateDetail
 }
 
 // CachedSubstate returns the last substate computed by GetStatus/GetSubstate

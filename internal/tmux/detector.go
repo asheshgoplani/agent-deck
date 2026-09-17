@@ -201,8 +201,10 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 	// Check for timing indicators that show Claude is processing
 	// Claude 2.1.25+ uses whimsical words (90+ words like "Hullaballooing", "Clauding", etc.)
 	// with unicode ellipsis: "✢ Hullaballooing… (53s · ↓ 749 tokens)"
-	// Check for the universal pattern: unicode ellipsis + "tokens" in recent content
-	if strings.Contains(recentLower, "…") && strings.Contains(recentLower, "tokens") {
+	// The ellipsis and "tokens" must share a LINE: the idle footer carries both
+	// on separate lines ("… +24 lines (ctrl+o to expand)" + "new task? /clear
+	// to save 380k tokens"), which is not work (status-light audit, defect F).
+	if hasSameLineTimingCue(recentLower) {
 		return false // Actively processing (any whimsical word with timing info)
 	}
 	// Legacy patterns (pre-2.1.25)
@@ -249,6 +251,9 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 		// Claude Code renders selection options with these indicators
 		"Use arrow keys to navigate",
 		"Press Enter to select",
+		// End-of-session feedback survey ("1: Bad 2: Fine 3: Good 0: Dismiss"):
+		// an open picker awaiting a choice (status-light audit, defect D).
+		"How is Claude doing this session?",
 	}
 	for _, prompt := range permissionPrompts {
 		if strings.Contains(content, prompt) {
@@ -295,11 +300,14 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 
 	// ═══════════════════════════════════════════════════════════════════════
 	// WAITING indicators - Prompt in recent lines (not just last line)
-	// Claude Code's UI has status bar AFTER the prompt, so check last 5 lines
+	// Claude Code's UI has status bar AFTER the prompt, so check last 8 lines:
+	// the footer under the input box runs up to seven lines (rule, status
+	// line, mode line, update notice, compaction hint, /rc), as captured on
+	// live sessions in the status-light audit.
 	// ═══════════════════════════════════════════════════════════════════════
 	checkLines := lastLines
-	if len(checkLines) > 5 {
-		checkLines = checkLines[len(checkLines)-5:]
+	if len(checkLines) > 8 {
+		checkLines = checkLines[len(checkLines)-8:]
 	}
 	for _, line := range checkLines {
 		cleanLine := strings.TrimSpace(StripANSI(line))
@@ -388,12 +396,17 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 // tool redraws its input prompt below the banner, so prompt detection alone
 // reports waiting while the session cannot actually make progress (#1400).
 //
-// Currently implemented for Claude Code only; other tools return false.
+// Implemented for Claude Code and codex; other tools return false.
 func (d *PromptDetector) HasErrorBanner(content string) bool {
-	if d.tool != "claude" {
+	switch d.tool {
+	case "claude":
+		return hasClaudeErrorBanner(content)
+	case "codex":
+		kind, _ := scanCodexErrorBanner(content)
+		return kind != ""
+	default:
 		return false
 	}
-	return hasClaudeErrorBanner(content)
 }
 
 // claudeErrorBannerSubstrings are fragments of error banners Claude Code
@@ -460,6 +473,10 @@ func hasClaudeErrorBanner(content string) bool {
 // skipped, and an assistant-turn line must also show a structural banner marker
 // so prose merely mentioning the text does not match.
 //
+// The scan walks up from the bottom and stops at the first completed turn
+// (see completed_turn.go): a banner above a turn the session has since
+// finished is history, not state. The newest signal wins (audit C).
+//
 // Shared by hasClaudeErrorBanner (any tool-rendered failure banner) and the
 // auth-specific scan (authFailureBannerPatterns) so the two can never drift
 // apart on the guards.
@@ -472,6 +489,9 @@ func scanClaudeBannerLines(content string, patterns []string) bool {
 			continue
 		}
 		checked++
+		if isClaudeCompletedTurnLine(line) {
+			return false
+		}
 		if hasAnyPrefix(line, claudeQuotedLinePrefixes) {
 			continue
 		}
