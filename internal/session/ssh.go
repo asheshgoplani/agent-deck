@@ -626,6 +626,13 @@ type RemoteHostStats struct {
 	DiskUsedBytes    uint64
 	DiskTotalBytes   uint64
 	DiskUsagePercent float64
+
+	// AccountsAvailable is false when the remote's `system stats --json`
+	// omitted the accounts key entirely — an older agent-deck that predates
+	// this field, distinct from a remote answering with zero configured
+	// slots (AccountsAvailable true, Accounts empty).
+	AccountsAvailable bool
+	Accounts          []AccountUsage
 }
 
 // remoteHostStatsWire is the JSON shape `agent-deck system stats --json`
@@ -650,6 +657,23 @@ type remoteHostStatsWire struct {
 		TotalBytes   uint64  `json:"total_bytes"`
 		UsagePercent float64 `json:"usage_percent"`
 	} `json:"disk,omitempty"`
+	// Accounts is nil when the remote predates this field (backward
+	// compatible: FetchSystemStats leaves RemoteHostStats.AccountsAvailable
+	// false) and an empty, non-nil slice when the remote has this field but
+	// no configured Claude account slots.
+	Accounts *[]remoteAccountUsageWire `json:"accounts,omitempty"`
+}
+
+// remoteAccountUsageWire is the JSON shape of one entry in
+// remoteHostStatsWire.Accounts. Only the name and usage numbers travel: no
+// config_dir, no credential, matching FetchAccounts' existing privacy
+// contract for `accounts --json`.
+type remoteAccountUsageWire struct {
+	Name            string   `json:"name"`
+	Known           bool     `json:"known"`
+	UpdatedAt       int64    `json:"updated_at,omitempty"`
+	FiveHourPercent *float64 `json:"five_hour_percent,omitempty"`
+	SevenDayPercent *float64 `json:"seven_day_percent,omitempty"`
 }
 
 // FetchSystemStats asks the remote for its own `system stats --json`
@@ -686,6 +710,24 @@ func (r *SSHRunner) FetchSystemStats(ctx context.Context) (RemoteHostStats, erro
 	if wire.Disk != nil {
 		stats.DiskAvailable = true
 		stats.DiskUsedBytes, stats.DiskTotalBytes, stats.DiskUsagePercent = wire.Disk.UsedBytes, wire.Disk.TotalBytes, wire.Disk.UsagePercent
+	}
+	if wire.Accounts != nil {
+		stats.AccountsAvailable = true
+		stats.Accounts = make([]AccountUsage, 0, len(*wire.Accounts))
+		for _, a := range *wire.Accounts {
+			usage := AccountUsage{Name: a.Name, Known: a.Known}
+			if a.UpdatedAt > 0 {
+				usage.UpdatedAt = time.Unix(a.UpdatedAt, 0)
+				usage.HasUpdatedAt = true
+			}
+			if a.FiveHourPercent != nil {
+				usage.FiveHour = AccountUsageWindow{Known: true, Percent: *a.FiveHourPercent}
+			}
+			if a.SevenDayPercent != nil {
+				usage.SevenDay = AccountUsageWindow{Known: true, Percent: *a.SevenDayPercent}
+			}
+			stats.Accounts = append(stats.Accounts, usage)
+		}
 	}
 	return stats, nil
 }

@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 )
 
@@ -51,6 +53,53 @@ type systemStatsJSON struct {
 		TotalBytes   uint64  `json:"total_bytes"`
 		UsagePercent float64 `json:"usage_percent"`
 	} `json:"disk,omitempty"`
+	// Accounts is this host's named Claude account slots and their cached
+	// quota usage — read from the remote's OWN local quota cache (never a
+	// controller-side fetch), same as accounts_cmd.go's `accounts --json`
+	// lists the slots themselves. nil (key omitted) only when the user
+	// config could not be loaded; an empty slice means zero slots configured.
+	Accounts *[]systemStatsAccountJSON `json:"accounts,omitempty"`
+}
+
+// systemStatsAccountJSON is one entry of systemStatsJSON.Accounts. Only the
+// name and usage numbers are exposed: no config_dir, no credential — the
+// remote side of this call already has FetchAccounts' contract to follow.
+type systemStatsAccountJSON struct {
+	Name            string   `json:"name"`
+	Known           bool     `json:"known"`
+	UpdatedAt       int64    `json:"updated_at,omitempty"`
+	FiveHourPercent *float64 `json:"five_hour_percent,omitempty"`
+	SevenDayPercent *float64 `json:"seven_day_percent,omitempty"`
+}
+
+// collectSystemStatsAccounts gathers this host's account-slot usage for the
+// systemStatsJSON.Accounts field. Returns nil when the user config cannot be
+// loaded — the caller then omits the key, and the controller renders
+// "accounts unknown" exactly as it does for an older remote.
+func collectSystemStatsAccounts() *[]systemStatsAccountJSON {
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil {
+		return nil
+	}
+	cache := session.NewAccountUsageCache()
+	usage := session.CollectAccountUsage(config, cache, time.Now())
+	out := make([]systemStatsAccountJSON, 0, len(usage))
+	for _, u := range usage {
+		entry := systemStatsAccountJSON{Name: u.Name, Known: u.Known}
+		if u.HasUpdatedAt {
+			entry.UpdatedAt = u.UpdatedAt.Unix()
+		}
+		if u.FiveHour.Known {
+			pct := u.FiveHour.Percent
+			entry.FiveHourPercent = &pct
+		}
+		if u.SevenDay.Known {
+			pct := u.SevenDay.Percent
+			entry.SevenDayPercent = &pct
+		}
+		out = append(out, entry)
+	}
+	return &out
 }
 
 // handleSystemStats implements `agent-deck system stats --json`, printing a
@@ -77,6 +126,22 @@ func handleSystemStats(args []string) {
 		}
 		if stats.Disk.Available {
 			fmt.Printf("Disk:   %s/%s (%.0f%%)\n", sysinfo.FormatBytes(stats.Disk.UsedBytes), sysinfo.FormatBytes(stats.Disk.TotalBytes), stats.Disk.UsagePercent)
+		}
+		if accounts := collectSystemStatsAccounts(); accounts != nil {
+			for _, a := range *accounts {
+				if !a.Known {
+					fmt.Printf("Account %s: usage unknown\n", a.Name)
+					continue
+				}
+				fmt.Printf("Account %s:", a.Name)
+				if a.FiveHourPercent != nil {
+					fmt.Printf(" 5h %.0f%%", *a.FiveHourPercent)
+				}
+				if a.SevenDayPercent != nil {
+					fmt.Printf(" 7d %.0f%%", *a.SevenDayPercent)
+				}
+				fmt.Println()
+			}
 		}
 		return
 	}
@@ -108,6 +173,7 @@ func handleSystemStats(args []string) {
 			UsagePercent float64 `json:"usage_percent"`
 		}{UsedBytes: stats.Disk.UsedBytes, TotalBytes: stats.Disk.TotalBytes, UsagePercent: stats.Disk.UsagePercent}
 	}
+	out.Accounts = collectSystemStatsAccounts()
 
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

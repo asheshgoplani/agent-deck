@@ -65,6 +65,27 @@ func TestGetHeaderFields_DefaultsWhenUnset(t *testing.T) {
 	}
 }
 
+// TestNormalizeUIPreviewFields_AcceptsAccounts pins that "accounts" is a
+// valid entry in both blocks' field lists (opt-in only: neither default list
+// includes it, pinned separately by TestGetRemotePreviewFields_DefaultsWhenUnset
+// and TestGetHeaderFields_DefaultsWhenUnset).
+func TestNormalizeUIPreviewFields_AcceptsAccounts(t *testing.T) {
+	ui := UISettings{
+		RemotePreview: RemotePreviewSettings{Fields: []string{"version", "accounts"}},
+		Header:        HeaderSettings{Fields: []string{"accounts"}},
+	}
+	normalizeUIPreviewFields(&ui)
+
+	wantRemote := []string{"version", "accounts"}
+	if !reflect.DeepEqual(ui.RemotePreview.Fields, wantRemote) {
+		t.Fatalf("RemotePreview.Fields = %v, want %v", ui.RemotePreview.Fields, wantRemote)
+	}
+	wantHeader := []string{"accounts"}
+	if !reflect.DeepEqual(ui.Header.Fields, wantHeader) {
+		t.Fatalf("Header.Fields = %v, want %v", ui.Header.Fields, wantHeader)
+	}
+}
+
 // TestGetRemotePreviewFields_ExplicitOrderPreserved pins that a configured
 // list is returned verbatim (order is render order, never resorted).
 func TestGetRemotePreviewFields_ExplicitOrderPreserved(t *testing.T) {
