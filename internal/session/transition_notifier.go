@@ -38,12 +38,6 @@ const (
 	// callers that haven't been wired to populate LastOutputHash still
 	// get the legacy guarantee.
 	shortWindowDedupSeconds = 90
-
-	// codexTurnSignalPrefix distinguishes a validated Codex completion
-	// generation from transcript-size and legacy pane signals carried in the
-	// existing LastOutputHash field. Only signals minted after
-	// codexCompletionConverged may bypass the legacy short-window guard.
-	codexTurnSignalPrefix = "codex:"
 )
 
 type TransitionNotificationEvent struct {
@@ -64,10 +58,8 @@ type TransitionNotificationEvent struct {
 
 	// LastOutputHash is a stable per-turn signal used by the notifier's #1142
 	// deduplication. Claude uses a transcript-derived signal; Codex uses its
-	// persisted hook generation or sequence, preferring the fail-closed,
-	// session-bound validated completion generation when it is available.
-	// Optional — an empty string disables hash-based deduplication and falls
-	// back to the legacy 90-second short window.
+	// persisted hook generation or sequence. Optional — an empty string disables
+	// hash-based deduplication and falls back to the legacy 90-second short window.
 	LastOutputHash string `json:"last_output_hash,omitempty"`
 
 	// OutputHashStale marks an interactive transition whose LastOutputHash did
@@ -460,8 +452,7 @@ func isLiveSessionStatus(status Status) bool {
 //
 //  1. Short-window (legacy): identical (from→to) within shortWindowDedupSeconds.
 //     Catches duplicate polls inside one daemon tick and back-compat callers
-//     that don't populate LastOutputHash. Distinct validated Codex turn
-//     signals bypass this layer; same-turn retries continue to layer 2.
+//     that don't populate LastOutputHash.
 //
 //  2. Output-hash (issue #1142): identical to_status AND identical
 //     LastOutputHash within outputHashDedupTTL. Suppresses a dormant child
@@ -486,10 +477,6 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	// one — otherwise there is nothing to compare and the legacy window is the
 	// floor. Requiring both sides to be empty would let a child whose signal is
 	// momentarily unavailable re-emit the identical transition (issue #1187).
-	// This subsumes a Codex-specific "distinct turn" bypass: any two distinct
-	// non-empty signals (Codex-formatted or not) already skip this layer, so
-	// two proven-distinct Codex turns are never suppressed here regardless of
-	// which signal format produced them.
 	if (event.LastOutputHash == "" || record.OutputHash == "") &&
 		record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
 		return true
@@ -554,36 +541,13 @@ func transitionEventOutputHash(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
-	if signal := codexCompletionTurnSignal(inst); signal != "" {
-		return signal
-	}
 	return transitionContentSignal(inst)
 }
 
-// codexCompletionTurnSignal snapshots the retained hook evidence under the
-// instance lock. codexCompletionConverged is the fail-closed authority check:
-// only matching start/completion generations for the session currently bound
-// to this Instance may identify a completed turn. Preferred over
-// transitionContentSignal's raw hook-file read (codexTurnSignal) because it
-// additionally validates the completion is bound to this Instance's current
-// CodexSessionID, so stale evidence surviving a process restart onto a new
-// session cannot be replayed as a fresh turn.
-func codexCompletionTurnSignal(inst *Instance) string {
-	inst.mu.RLock()
-	defer inst.mu.RUnlock()
-	if !inst.codexCompletionConverged() {
-		return ""
-	}
-	return codexTurnSignalPrefix + inst.codexCompletedGeneration
-}
-
-// transitionContentSignal returns a stable signal for the child's logical
-// turn when codexCompletionTurnSignal did not already resolve one. Claude
-// uses the append-only transcript size (grows ONLY when a real message is
-// written, so it stays identical across idle polls and strictly changes on a
-// genuine new turn); Codex uses its persisted hook generation or sequence.
-// Returns "" when neither source is available, which routes the caller to
-// the legacy 90-second window.
+// transitionContentSignal returns a stable signal for the child's logical turn.
+// Claude uses the append-only transcript size; Codex uses its persisted hook
+// generation or sequence. Returns "" when neither source is available, which
+// routes the caller to the legacy 90-second window.
 func transitionContentSignal(inst *Instance) string {
 	if signal := codexTurnSignal(inst); signal != "" {
 		return signal
