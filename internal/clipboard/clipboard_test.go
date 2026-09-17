@@ -1,9 +1,40 @@
 package clipboard
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
+	"os/exec"
 	"testing"
 )
+
+// The embedded terminal copies on a worker with a per-copy deadline; that only
+// bounds a stuck desktop clipboard service if the deadline reaches the child
+// process. Drive runClipCmd with a controlled executable so the assertion does
+// not depend on which clipboard tools the host happens to have.
+func TestRunClipCmdHonorsCancellation(t *testing.T) {
+	if _, err := exec.LookPath("cat"); err != nil {
+		t.Skip("no cat on PATH")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runClipCmd(ctx, "cat", nil, "cancelled clipboard copy")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runClipCmd with a cancelled context = %v, want context.Canceled", err)
+	}
+}
+
+func TestCopyContextPropagatesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Whatever native tool the host resolves, a cancelled context must not
+	// report success.
+	if _, err := CopyContext(ctx, "cancelled clipboard copy", false); err == nil {
+		t.Fatal("cancelled clipboard copy unexpectedly succeeded")
+	}
+}
 
 func TestCopy_EmptyContent(t *testing.T) {
 	_, err := Copy("", false)
