@@ -68,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session sends report queued delivery truthfully and bind `--wait` and `--stream` replies to the submitted turn (#2273).
 - Panes now assert their own working directory with `cd --` instead of trusting the tmux server's `-c`, fixing spawns landing in a dead directory once the server's own cwd was unlinked (#2214).
 - `session output` no longer leaks an unrelated, older session's transcript for a freshly spawned session that shares a Claude projects directory but has no transcript of its own yet (#2299).
+- `launch -c claude` into a directory Claude Code has never opened interactively no longer dies silently on the folder-trust dialog; the trust dialog is now pre-accepted before launch like the conductor and worktree-parent paths already do (#2102, closes #1892).
 
 ## [1.16.10] - 2026-09-13
 
