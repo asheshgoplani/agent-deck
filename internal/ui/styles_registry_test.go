@@ -28,6 +28,7 @@ func TestToolIconColor_RegistryMatchesLegacySwitch(t *testing.T) {
 		"copilot":  {"🐙", ColorAccent},
 		"crush":    {"💘", ColorPurple},
 		"cursor":   {"📝", ColorAccent},
+		"muse":     {"🔮", ColorGreen},
 		"hermes":   {"☤", ColorYellow},
 		"deepseek": {"🐋", ColorCyan},
 		"aider":    {"🐚", ColorRed},
