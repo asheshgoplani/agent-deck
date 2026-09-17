@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
+	"github.com/asheshgoplani/agent-deck/internal/health"
 )
 
 const (
@@ -111,6 +112,15 @@ type TransitionDaemon struct {
 	// Accessed only from the single-threaded Run loop, like lastProbeStall.
 	lastDesktopNotify map[string]string
 
+	// journals holds the per-profile session event journal (nil when the
+	// [health] session_events kill switch is off), resolved once per profile
+	// for the daemon's lifetime. lastJournaled is the status|substate the
+	// journal last saw per (profile, instance), seeded silently on the first
+	// pass so a daemon recycle never replays the fleet. Both accessed only
+	// from the single-threaded Run loop.
+	journals      map[string]*health.Journal
+	lastJournaled map[string]map[string]string
+
 	// desktopWG tracks in-flight desktop notifications, which are dispatched
 	// off the poll loop so a wedged notifier binary cannot stall session
 	// monitoring. Only tests wait on it.
@@ -129,6 +139,8 @@ func NewTransitionDaemon() *TransitionDaemon {
 		turnLiveCheck:  func(inst *Instance) bool { return inst.Exists() },
 		lastDoneScan:   map[string]map[string]time.Time{},
 		lastProbeStall: map[string]time.Time{},
+		journals:       map[string]*health.Journal{},
+		lastJournaled:  map[string]map[string]string{},
 
 		lastDesktopNotify: map[string]string{},
 	}
@@ -426,6 +438,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	}
 
 	statuses := map[string]string{}
+	// substates holds the cached substate of instances this pass probed
+	// itself; anything else is unknown to the journal, never "none".
+	substates := map[string]string{}
 	if tuiAlive {
 		if db != nil {
 			if rows, err := db.ReadAllStatuses(); err == nil {
@@ -474,6 +489,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			}
 			status := normalizeStatusString(string(inst.GetStatusThreadSafe()))
 			statuses[inst.ID] = status
+			substates[inst.ID] = string(inst.CachedSubstate())
 			if db != nil && status != previousStatus {
 				_ = db.WriteStatus(inst.ID, status, inst.Tool)
 			}
@@ -496,6 +512,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// Runs on EVERY pass, the first scan included — see the FIRST SCAN note on
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
+	d.journalStatusChanges(profile, statuses, substates)
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.
@@ -549,6 +566,54 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
+}
+
+// journalStatusChanges appends one status event per instance whose observed
+// status or substate differs from what the journal last saw, on the pass that
+// sees it. It reads only what this pass already observed: no tmux call, no
+// pane read. The first pass for a profile seeds the baseline and writes
+// nothing, so `from` is always a status this daemon observed.
+func (d *TransitionDaemon) journalStatusChanges(profile string, statuses, substates map[string]string) {
+	journal, resolved := d.journals[profile]
+	if !resolved {
+		journal = SessionEventJournal(profile)
+		d.journals[profile] = journal
+	}
+	if journal == nil {
+		return
+	}
+	seen, known := d.lastJournaled[profile]
+	if !known {
+		seen = map[string]string{}
+		d.lastJournaled[profile] = seen
+	}
+	now := time.Now()
+	for id, to := range statuses {
+		substate := substates[id]
+		key := to + "|" + substate
+		previous, ok := seen[id]
+		seen[id] = key
+		if !known || !ok || previous == key {
+			continue
+		}
+		from, fromSubstate, _ := strings.Cut(previous, "|")
+		event := health.Event{TS: now, SessionID: id, Kind: health.KindStatus, From: from, To: to}
+		if substate != "" || fromSubstate != "" {
+			event.Detail = map[string]any{}
+			if substate != "" {
+				event.Detail["substate"] = substate
+			}
+			if fromSubstate != "" {
+				event.Detail["substate_from"] = fromSubstate
+			}
+		}
+		_ = journal.Append(event)
+	}
+	for id := range seen {
+		if _, ok := statuses[id]; !ok {
+			delete(seen, id)
+		}
+	}
 }
 
 // turnBaseline returns the per-instance completed-turn map for profile,

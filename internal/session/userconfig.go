@@ -53,9 +53,17 @@ var ErrRefusingConfigSectionDrop = fmt.Errorf("session: refusing to save config.
 // HealthSettings controls local-only runtime self-sampling.
 type HealthSettings struct {
 	Enabled *bool `toml:"enabled,omitempty"`
+	// SessionEvents is the kill switch for the per-session event journal
+	// (status, send, restart, stop, worker_done lines next to the health
+	// samples). Default on; health.enabled = false disables it as well.
+	SessionEvents *bool `toml:"session_events,omitempty"`
 }
 
 func (h HealthSettings) IsEnabled() bool { return h.Enabled == nil || *h.Enabled }
+
+func (h HealthSettings) SessionEventsEnabled() bool {
+	return h.IsEnabled() && (h.SessionEvents == nil || *h.SessionEvents)
+}
 
 type UserConfig struct {
 	Health HealthSettings `toml:"health,omitempty"`

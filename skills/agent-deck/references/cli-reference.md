@@ -388,6 +388,31 @@ agent-deck session output [id|title] [--json] [-q]
 
 Get the last response from a session. Transcript-backed extraction is tool-dependent; use `--pane` for a raw tmux capture when structured output is unavailable.
 
+### session metrics
+
+```bash
+agent-deck session metrics <id|title> [--json] [--since 24h]
+agent-deck session metrics --all [--json] [--since 24h]
+agent-deck remote exec <name> session metrics <id> --json
+```
+
+Per-session numbers for evals, derived on demand from the profile's local session event journal (see `[health] session_events` in the configuration reference). Nothing is probed: the command reads the journal once, the dead-letter stores once, and the task-worker completion records once.
+
+| Field | Meaning |
+|-------|---------|
+| `turns.count` / `turns.measured` | Turns observed (a status leaving `running`); `measured` is how many also had an observed start, so `p50_ms`/`p95_ms` (running → waiting/idle) come only from those. |
+| `waiting_ms` | Time the session sat at `waiting` (for input) in the window, including an open interval up to now. |
+| `sends.*` | Sends with outcome `confirmed`, `delivered-unconfirmed` or `failed`; `unconfirmed_rate` excludes unknown outcomes; `ack_p50_ms`/`ack_p95_ms` are send-to-confirmed-accept times for confirmed sends only. |
+| `restarts` | `session restart` runs (single and `--all`). |
+| `dead_letters` | Records in the dead-letter and `_unowned` stores for this session. |
+| `worker` | Task-worker completion (status, created → finished duration) when a completion record exists. |
+| `last_status_change` | Last observed status, when, and its age. |
+| `journal` | `ok`, `no events`, or `disabled` (kill switch off; any numbers are history). |
+
+Unknown values are `null`, never `0`. `--all` returns a JSON array for every session with events in the window. Over `remote exec`, an older remote without the command answers with one line saying so (exit 2).
+
+**How to read these numbers.** Turn duration is measured at the daemon's poll cadence (1–3 s), so treat it as coarse: compare medians across many turns, not single values. A rising `unconfirmed_rate` means sends are landing without a visible accept signal (a busy composer, a tool without hooks), a rising `waiting_ms` means the session is blocked on a human, restarts and dead letters are the "something broke" counters. An eval compares two builds on the same window: `agent-deck health --json` gives the profile roll-up (turns/day, median turn, unconfirmed send rate, restarts/day, sessions with dead letters).
+
 ### session set-parent / unset-parent
 
 ```bash

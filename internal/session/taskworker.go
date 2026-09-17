@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/health"
 )
 
 // Issue #1214: kernel-exact task-worker completion.
@@ -212,11 +214,12 @@ func deriveCompletion(childID, profile, title, output string, exitCode int) Comp
 // error; a returned error means the wrapper itself failed (record write, etc.).
 func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRecord, error) {
 	// Claim: an empty-Status record present for the whole run.
+	claimedAt := time.Now()
 	_ = WriteCompletionRecord(CompletionRecord{
 		ChildID:   childID,
 		Profile:   profile,
 		Title:     title,
-		CreatedAt: time.Now(),
+		CreatedAt: claimedAt,
 	})
 
 	var buf bytes.Buffer
@@ -244,9 +247,18 @@ func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRec
 	}
 
 	rec := deriveCompletion(childID, profile, title, buf.String(), exitCode)
+	// The finished record keeps the claim time so created->finished is the
+	// worker's real completion time, not zero.
+	rec.CreatedAt = claimedAt
 	if err := WriteCompletionRecord(rec); err != nil {
 		return rec, err
 	}
+	_ = SessionEventJournal(profile).Append(health.Event{TS: rec.FinishedAt, SessionID: childID, Kind: health.KindWorkerDone, Detail: map[string]any{
+		"status":      rec.Status,
+		"exit_code":   rec.ExitCode,
+		"created_at":  rec.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"duration_ms": float64(rec.FinishedAt.Sub(rec.CreatedAt)) / float64(time.Millisecond),
+	}})
 	// Mirror the finished completion into the non-destructive ledger so the
 	// task-worker fleet shows up in `session children` alongside interactive
 	// children. Best-effort; never fail the run on a ledger write.

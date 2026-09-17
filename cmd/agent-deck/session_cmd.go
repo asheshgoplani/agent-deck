@@ -19,6 +19,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -101,6 +102,8 @@ func handleSession(profile string, args []string) {
 		handleSessionOwnership(profile, args[1:])
 	case "search":
 		handleSessionSearch(profile, args[1:])
+	case "metrics":
+		handleSessionMetrics(profile, args[1:])
 	case "help", "--help", "-h":
 		printSessionHelp()
 	default:
@@ -142,6 +145,7 @@ func printSessionHelp() {
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
 	fmt.Println("  ownership <cmd> <id>    Inspect/reconcile the processes a session owns (#1873)")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
+	fmt.Println("  metrics <id>|--all      Per-session eval numbers from the local event journal (--json, --since)")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
 	fmt.Println("  update <id> --no-parent          Alias for unset-parent <id>")
@@ -484,6 +488,8 @@ func handleSessionStop(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	session.RecordSessionEvent(profile, inst.ID, health.KindStop, nil)
+
 	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
 	// queued sibling is waiting, start the oldest one. Only one drain per
 	// stop: if max_concurrent>=2 and multiple slots are now free, the next
@@ -774,7 +780,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	if *all {
-		restartAllSessions(out, storage, instances, groups, envFlags)
+		restartAllSessions(profile, out, storage, instances, groups, envFlags)
 		return
 	}
 
@@ -824,6 +830,7 @@ func handleSessionRestart(profile string, args []string) {
 	// Stamp the persisted freshness marker so subsequent watchdog ticks see
 	// this session as "just started" and skip (issue #30).
 	inst.LastStartedAt = time.Now()
+	session.RecordSessionEvent(profile, inst.ID, health.KindRestart, nil)
 	warning := inst.ConsumeCodexRestartWarning()
 	if warning != "" && !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
@@ -862,7 +869,7 @@ func handleSessionRestart(profile string, args []string) {
 // already held for auth, staggers boots with jitter, caps how many unverified
 // boots contend for the token at once, and stops entirely after a few
 // consecutive auth-deaths with one loud message instead of burning the fleet.
-func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, env map[string]string) {
+func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, env map[string]string) {
 	var active []*session.Instance
 	for _, inst := range instances {
 		if inst.Exists() {
@@ -912,6 +919,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			return err
 		}
 		inst.LastStartedAt = time.Now()
+		session.RecordSessionEvent(profile, inst.ID, health.KindRestart, nil)
 
 		warning := inst.ConsumeCodexRestartWarning()
 		if warning != "" && !out.jsonMode {
@@ -3128,6 +3136,7 @@ func handleSessionSend(profile string, args []string) {
 	// under --wait, which is the only caller that acts on the answer.
 	hookStatus := func() (string, error) { return fetchHookDrivenStatus(profile, sessionRef) }
 	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, *wait, hookStatus, nil, nil)
+	recordSendEvent(profile, inst.ID, sendRes, sendErr, sentAt)
 	if acceptanceGuard != nil {
 		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, time.Now()); markerErr != nil {
 			acceptanceGuard.Release()

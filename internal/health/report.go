@@ -36,6 +36,9 @@ type Summary struct {
 	Since     time.Time       `json:"since"`
 	Processes []ProcessReport `json:"processes"`
 	Flags     []string        `json:"flags"`
+	// Sessions is the per-profile session journal roll-up, filled by the CLI
+	// (it needs the dead-letter stores); null when not computed.
+	Sessions *SessionAggregate `json:"sessions"`
 }
 
 func numeric(s Sample) map[string]float64 {
@@ -92,7 +95,7 @@ func Report(dir string, since time.Duration) (Summary, error) {
 	grouped := map[string][]Sample{}
 	incomplete := false
 	for _, entry := range entries {
-		if !healthFile(entry.Name()) || !entry.Type().IsRegular() {
+		if !healthFile(entry.Name()) || sessionEventFile(entry.Name()) || !entry.Type().IsRegular() {
 			continue
 		}
 		info, err := entry.Info()
@@ -199,6 +202,7 @@ func Format(s Summary) string {
 	for _, flag := range s.Flags {
 		fmt.Fprintf(&b, "  %s\n", flag)
 	}
+	b.WriteString(formatSessionAggregate(s.Sessions))
 	for _, p := range s.Processes {
 		fmt.Fprintf(&b, "  %s pid %d, latest %s\n", strconv.QuoteToASCII(p.Latest.Role), p.Latest.PID, p.Latest.Timestamp.Format(time.RFC3339))
 		names := []string{"cpu_percent", "rss_bytes", "open_fds", "goroutines", "hook_files", "status_pass_ms", "session_count", "tmux_calls", "session_list_db_ms"}
