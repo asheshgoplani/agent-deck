@@ -6,6 +6,7 @@ Complete reference for all agent-deck CLI commands.
 
 - [Global Options](#global-options)
 - [Basic Commands](#basic-commands)
+- [Shell Completion](#shell-completion)
 - [Web Command](#web-command)
 - [Session Commands](#session-commands)
 - [Fleet Recovery Commands](#fleet-recovery-commands)
@@ -154,6 +155,44 @@ agent-deck update --timer-status
 - `--unattended` is what the daily timer and the TUI's `auto_install` run. It honours `[updates] auto_install` (off means "nothing installed", exit 0), never runs Homebrew (prints the `brew` command, exit 2), takes `<cache dir>/update.lock` so two runs never replace the binary at once (busy means exit 0), skips the remotes prompt, and exits 1 when the install or the macOS launchd hygiene failed. `--trigger` (default `$AGENTDECK_UPDATE_TRIGGER`, then `manual`) only tags the debug log lines.
 - `--install-timer` writes `~/Library/LaunchAgents/com.agentdeck.autoupdate.plist` (macOS, daily at 07:MM with a random minute, program `/bin/sh`) or `~/.config/systemd/user/agent-deck-autoupdate.{service,timer}` (Linux, `OnCalendar=daily`, `RandomizedDelaySec=1h`) and loads it. Installing over an existing timer replaces it; `--dry-run` prints the exact files and commands and executes nothing. The timer's output goes to `<log dir>/auto-update.log` on macOS and the journal on Linux.
 - On macOS every install (interactive, `--version`, the TUI prompt and `--unattended`) re-registers the `com.agentdeck.*` launch agents whose program is the replaced binary (`launchctl bootout` then `bootstrap`, then a `state = running` check for KeepAlive/RunAtLoad agents). Without this they crash-loop with `EX_CONFIG` (exit 78) because macOS ties a launch agent's identity to the file at its program path. If an agent does not come back the command exits 1 and prints the two `launchctl` commands to run by hand; the binary is already updated at that point.
+
+## Shell Completion
+
+### completion - Print a shell completion script
+
+```bash
+agent-deck completion bash    # -> stdout
+agent-deck completion zsh     # -> stdout
+agent-deck completion fish    # -> stdout
+```
+
+Completes top-level commands and, for the ones with their own subcommand dispatch (`session`, `mcp`, `skill`, `group`, `remote`, `worktree`, `profile`, `conductor`, `agent(s)`, `watcher`, `openclaw`, `costs`, `hooks`, the `*-hooks` family, `deepseek`), the next word too.
+
+For commands that name a specific resource, the argument after that completes to live values, fetched via the hidden `agent-deck __complete <kind>` helper (not a command you'd run directly):
+
+| Kind | Used by |
+|------|---------|
+| session titles | `remove`/`rename`, most `session <verb>` subcommands (including both positions of `set-parent`), `mcp`/`plugin`/`skill attached\|attach\|detach`, `worktree info\|finish`, `group move`, `conductor move`, `remote attach\|rename` (2nd arg) |
+| remote names | `remote remove\|sessions\|attach\|rename\|update` |
+| profile names | `profile delete\|default`, `session switch-account` (2nd arg), and right after a leading `-p`/`--profile` |
+| group paths | `group show\|update\|delete\|move (2nd arg)\|change\|reorder` |
+| adopted agent names | `agent show` |
+
+This is what lets `agent-deck remote update <Tab>` offer your configured remotes and `agent-deck session set-parent <Tab> <Tab>` offer session titles at both positions, three and four words in — dynamic completion isn't limited to the first word after a subcommand. A leading `-p`/`--profile` is detected and forwarded, so completions match the profile being typed rather than the default one. Any other argument (paths, free-form text) falls back to the shell's default completion.
+
+```bash
+# bash
+echo 'source <(agent-deck completion bash)' >> ~/.bashrc
+
+# zsh — either source it directly, or save it as a file named `_agent_deck`
+# in a directory on $fpath for autoload
+echo 'source <(agent-deck completion zsh)' >> ~/.zshrc
+
+# fish
+agent-deck completion fish > ~/.config/fish/completions/agent-deck.fish
+```
+
+Open a new shell (or re-source the config file) for it to take effect.
 
 ## Web Command
 

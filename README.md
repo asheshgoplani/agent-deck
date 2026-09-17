@@ -79,6 +79,26 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 
 </details>
 
+<details>
+<summary>Shell completion</summary>
+
+`agent-deck completion <bash|zsh|fish>` prints a completion script for commands and subcommands (`agent-deck se<Tab>` → `session`, `agent-deck session st<Tab>` → `start`/`stop`), plus live resource names where it matters — `agent-deck remote update <Tab>` offers your configured remotes, `agent-deck session set-parent <Tab> <Tab>` offers session titles at both positions, and `agent-deck -p <Tab>` offers your profiles.
+
+```bash
+# bash
+echo 'source <(agent-deck completion bash)' >> ~/.bashrc
+
+# zsh
+echo 'source <(agent-deck completion zsh)' >> ~/.zshrc
+
+# fish
+agent-deck completion fish > ~/.config/fish/completions/agent-deck.fish
+```
+
+Open a new shell (or re-source the config file) afterwards.
+
+</details>
+
 ## Quick Start
 
 ```bash
