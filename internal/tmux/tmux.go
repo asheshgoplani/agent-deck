@@ -5322,22 +5322,6 @@ func lastNLines(content string, n int) []string {
 	return lines[start:]
 }
 
-// startsWithBoxDrawing checks if a line starts with box-drawing characters (UI borders).
-func startsWithBoxDrawing(line string) bool {
-	trimmedLine := strings.TrimSpace(line)
-	if len(trimmedLine) == 0 {
-		return false
-	}
-	r := []rune(trimmedLine)[0]
-	return r == '│' || r == '├' || r == '└' || r == '─' || r == '┌' || r == '┐' || r == '┘' || r == '┤' || r == '┬' ||
-		r == '┴' ||
-		r == '┼' ||
-		r == '╭' ||
-		r == '╰' ||
-		r == '╮' ||
-		r == '╯'
-}
-
 // isSustainedActivity checks if activity is sustained (real work) or a spike.
 // Checks 5 times over 1 second, counts timestamp changes.
 // Returns true if 1+ changes detected AFTER initial check (sustained activity).
