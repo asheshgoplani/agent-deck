@@ -9,25 +9,28 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// Hook lag (status-light audit 2026-09-17, defect B; review round 2 P2-3/4/5).
+// Hook lag (status-light audit 2026-09-17, defect B; review rounds 2 and 3).
 //
 // Claude's lifecycle hooks are the primary truth for a Claude session's light,
 // and a "running" hook within its freshness window (hookFastPathWindow)
-// short-circuits pane inspection. What the audit called an "8-minute Stop
-// lag" has a plainer cause, read from the conductor's own transcript: Claude
-// Code fires NO Stop hook for a turn that ends by calling ScheduleWakeup (the
-// /loop wake-up) — 35 of 35 such turns carry a turn_duration record and no
-// stop_hook_summary, while 328 of 330 text-terminated turns carry both. The
-// pane still prints "✻ Sautéed for 3m 4s · done" and the empty prompt, so the
-// UserPromptSubmit "running" is the last hook event and the light stays green
-// until that event ages out of the fast-path window (at most two minutes
-// after the prompt was submitted; the audit's extra minutes were defect F,
-// the pane heuristic then misreading the idle footer as work).
+// short-circuits pane inspection. The audit caught the conductor's hook file
+// still saying "running" (UserPromptSubmit) while the pane showed "✻ Sautéed
+// for 3m 4s · done 9:08 PM" at an empty prompt, and a Stop for that file only
+// minutes later. WHY the Stop was late is not established. An earlier draft
+// of this note blamed turns that end by calling ScheduleWakeup (counting
+// stop_hook_summary transcript records suggested Claude Code fires no Stop
+// hook for them); that is wrong — the conductor's own hook file reads
+// {"status":"waiting","event":"Stop",…} stamped in the same second such a
+// turn ends, so the transcript count measured the wrong thing. The cause is
+// unknown; the per-instance hook event history the hook-handler now keeps
+// (~/.agent-deck/hooks/<id>.events.jsonl, see cmd/agent-deck/hook_events.go)
+// is what would let it be found from the next occurrence.
 //
-// So the rule below covers a real gap — a running hook whose Stop will never
-// come — and is bounded by the window it shortens. Its evidence is never a
-// pane capture of its own (review P2-5): the completed-turn verdict is
-// recorded by the reads GetStatus and GetSubstate already make
+// So the rule below is a disclosed TIE-BREAK for one observable situation —
+// the hook says running while the pane shows a finished turn, twice — not a
+// fix for a known defect. Its evidence is never a pane capture of its own
+// (review P2-5): the completed-turn verdict is recorded by the reads
+// GetStatus and GetSubstate already make
 // (tmux.Session.recordCompletedTurnSampleLocked), and the running fast path
 // only consults that cached sample. Two independent samples of a completed
 // turn at an idle prompt (no spinner, no interrupt hint, no open menu, no
@@ -36,15 +39,22 @@ import (
 // flip the light to waiting; the substate says hook-lag from the first sample
 // so the disagreement is visible before the light moves. Any busy sample
 // clears the evidence, so a live spinner is never contradicted, and a new
-// hook event starts over.
+// hook event starts over. The pass's own live evidence always wins over the
+// persisted record (review round 3 P2-3): a status pass that set waiting from
+// the record alone is reverted to running by a busy capture in the same pass
+// (absorbCompletedTurnSample), so no single CLI pass prints waiting beside a
+// running substate.
 //
 // The evidence is persisted on the instance record (tool_data.hook_lag,
-// review P2-4) so that one-pass CLI callers — `list --json`, `session
-// children --json`, `status`, fleet verify — accumulate samples across
+// review P2-4) so that one-pass CLI callers accumulate samples across
 // invocations, the transition daemon (which re-hydrates instances every
 // poll) sees the same record, and the TUI picks it up from the status rows it
-// already reads each sweep. Every surface therefore reaches the same verdict
-// from the same two samples, whichever process captured them.
+// already reads each sweep. The surfaces that take a sample are the ones
+// that call Instance.Substate — `list --json`, `session children --json` /
+// `--follow` (review round 3 P2-4), `status --json --verbose`, `status
+// --stale`, `session show --json`, `fleet verify` — and the TUI/daemon pane
+// path; every surface reaches the same verdict from the same two samples,
+// whichever process captured them.
 
 // toolDataHookLagKey is the tool_data extras-zone key (see
 // statedb.MergeToolDataExtras: unknown keys survive full saves).
@@ -171,19 +181,30 @@ func (i *Instance) hookSaysRunningLocked() bool {
 
 // absorbCompletedTurnSample is the seam behind Instance.Substate: the
 // substate read just captured and classified a frame, so feed its
-// completed-turn verdict to the hook-lag rule and, when that confirms the
-// lag, report the flip in the SAME pass that captured the confirming frame
-// (a one-pass CLI caller would otherwise print running beside hook-lag once
-// more). Persists the record when it changed. Takes i.mu briefly.
+// completed-turn verdict to the hook-lag rule and settle the status in the
+// SAME pass that captured the frame, in either direction (the pass's own
+// live evidence wins over a persisted record; a one-pass CLI caller must
+// never print waiting beside running, nor running beside hook-lag):
+//   - the frame confirms the lag: running → waiting;
+//   - the frame is busy and this pass had set waiting from the record alone
+//     (hookLagFlipped, review round 3 P2-3): waiting → running. The busy
+//     sample also cleared the run, so the persisted reset is what the next
+//     pass reads.
+//
+// Persists the record when it changed. Takes i.mu briefly.
 func (i *Instance) absorbCompletedTurnSample() {
 	i.mu.Lock()
 	if !i.hookSaysRunningLocked() {
 		i.mu.Unlock()
 		return
 	}
-	if i.noteHookLagSampleLocked() && i.Status == StatusRunning {
+	confirmed := i.noteHookLagSampleLocked()
+	if confirmed && i.Status == StatusRunning {
 		i.Status = StatusWaiting
+	} else if !confirmed && i.hookLagFlipped && i.Status == StatusWaiting {
+		i.Status = StatusRunning
 	}
+	i.hookLagFlipped = false
 	i.mu.Unlock()
 	i.persistHookLag()
 }

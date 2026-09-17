@@ -203,6 +203,65 @@ func TestAudit_A_CodexBannerClearedByLaterTurn(t *testing.T) {
 	}
 }
 
+// Review round 3 P3-6: a "■ … usage limit" line INSIDE tool output (a cat or
+// grep of a file that quotes the banner) is content, not a banner. Tool
+// output sits below its "• Ran …" line — "  └ first line", then lines
+// indented to the same column — so the "•" stop alone never excludes it when
+// the block sits directly above the composer. Codex prints its own banners
+// at column 0; only a column-0 "■" counts.
+func TestAudit_A_CodexBannerQuotedInToolOutputIsNotError(t *testing.T) {
+	d := NewPromptDetector("codex")
+	composer := "› Ask Codex to do anything\n  gpt-5.6-luna · ~/work · Context 97% left"
+	quoted := []struct {
+		name    string
+		content string
+	}{
+		{"cat output: banner on the └ line",
+			"• Ran cat notes/limits.txt\n" +
+				"  └ ■ You've hit your usage limit. To continue using Codex, start a free\n" +
+				"    trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th, 2026 8:03 AM.\n" +
+				composer},
+		{"cat output: banner on a later indented line",
+			"• Ran cat notes/limits.txt\n" +
+				"  └ Seen on 2026-09-17:\n" +
+				"    ■ You've hit your usage limit. Try again at Oct 10th, 2026 8:03 AM.\n" +
+				"    ■ You are not logged in. Run `codex login` to continue.\n" +
+				composer},
+		{"cat output: banner as the last thing on screen",
+			"• Ran cat notes/limits.txt\n" +
+				"  └ ■ You've hit your usage limit. Try again at Oct 10th, 2026 8:03 AM."},
+	}
+	for _, tc := range quoted {
+		t.Run(tc.name, func(t *testing.T) {
+			if d.HasErrorBanner(tc.content) {
+				t.Fatal("a banner quoted inside tool output must not be an error")
+			}
+			if got := d.ClassifySubstate(tc.content); got == SubstateUsageLimit || got == SubstateAuth401 {
+				t.Fatalf("substate = %q, want no error substate", got)
+			}
+			if got := d.SubstateDetail(tc.content); got != "" {
+				t.Fatalf("detail = %q, want none", got)
+			}
+		})
+	}
+	// The real banner, printed by Codex at column 0 after the tool block,
+	// is still current.
+	real := "• Ran cat notes/limits.txt\n" +
+		"  └ nothing here\n" +
+		"■ You've hit your usage limit. To continue using Codex, start a free\n" +
+		"trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th, 2026 8:03 AM.\n" +
+		composer
+	if !d.HasErrorBanner(real) {
+		t.Fatal("a column-0 banner below the tool block is current")
+	}
+	if got := d.ClassifySubstate(real); got != SubstateUsageLimit {
+		t.Fatalf("substate = %q, want %q", got, SubstateUsageLimit)
+	}
+	if got := d.SubstateDetail(real); got != "try again at Oct 10th, 2026 8:03 AM" {
+		t.Fatalf("detail = %q", got)
+	}
+}
+
 // Review P2-7: only Codex's exact login-required wording is an auth banner.
 // A "■" warning that merely mentions authentication (an MCP server, a git
 // remote) must never become auth-401, because that verdict feeds the fleet

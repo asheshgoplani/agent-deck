@@ -1582,9 +1582,14 @@ func (s *StateDB) WriteLastAccessed(id string, at time.Time) error {
 }
 
 // ReadAllStatuses returns status + acknowledged flag (+ the hook_lag extra)
-// for every instance.
+// for every instance. json_extract raises "malformed JSON" for a tool_data
+// value that is not JSON (an empty string, a partial write), which would
+// abort the whole query and silently blank every session's shared status;
+// the json_valid guard turns such a row into a NULL hook_lag instead.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
-	rows, err := s.db.Query("SELECT id, status, tool, acknowledged, json_extract(tool_data, '$.hook_lag') FROM instances")
+	rows, err := s.db.Query(`SELECT id, status, tool, acknowledged,
+		CASE WHEN json_valid(tool_data) THEN json_extract(tool_data, '$.hook_lag') ELSE NULL END
+		FROM instances`)
 	if err != nil {
 		return nil, err
 	}

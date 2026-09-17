@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,11 +13,10 @@ import (
 
 // Status-light audit defect B (2026-09-17): the hook file still said
 // "running" while the pane showed a completed turn ("✻ Sautéed for 3m 4s ·
-// done 9:08 PM") at an empty prompt. The turn had ended by calling
-// ScheduleWakeup, for which Claude Code fires no Stop hook (see hook_lag.go),
-// so UpdateStatus took the UserPromptSubmit "running" at face value and the
-// CLI paired status=running with substate=idle-at-empty-prompt — a pair the
-// substate's own contract forbids.
+// done 9:08 PM") at an empty prompt; why the Stop was late is unknown (see
+// hook_lag.go). UpdateStatus took the UserPromptSubmit "running" at face
+// value and the CLI paired status=running with substate=idle-at-empty-prompt
+// — a pair the substate's own contract forbids.
 //
 // Rules under test:
 //   - two independent samples of a completed turn at an idle prompt, taken
@@ -240,6 +240,70 @@ func TestAudit_B_HookLagPersistsAcrossCLIProcesses(t *testing.T) {
 	p4 := load()
 	if status, sub := cliPass(t, p4); status == StatusRunning || sub != SubstateIdleAtEmptyPrompt {
 		t.Fatalf("after Stop = %q/%q, want not running/%q", status, sub, SubstateIdleAtEmptyPrompt)
+	}
+}
+
+// Review round 3 P2-3: the pass's own live evidence wins over a persisted
+// record. Another process confirmed the lag (record persisted); by the time
+// this one-pass CLI caller runs, the pane is busy again under the SAME hook
+// event (a continuation turn that wrote no new UserPromptSubmit). The status
+// pass sets waiting from the record alone, then the pass's single capture
+// sees the spinner: the same pass must report running/running, never
+// waiting + running, and persist the reset for the next caller.
+func TestAudit_B_BusyCaptureRevertsRecordDrivenWaitingInSamePass(t *testing.T) {
+	inst, cleanup := startHookLagInstance(t, "revert", auditConductorBusyPane)
+	defer cleanup()
+	storage, err := NewStorageWithProfile("_test-hook-lag-revert")
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	defer storage.Close()
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// The record another process left: confirmed under the current hook
+	// event, sampled before this pass runs.
+	hookTS := inst.hookLastUpdate.Unix()
+	rec := hookLagRecord{HookTS: hookTS, FirstIdleAt: hookTS + 2, LastIdleAt: hookTS + 6, LastSampleAt: hookTS + 6}
+	if !rec.confirmed(inst.hookLastUpdate) {
+		t.Fatalf("test record must be confirmed: %+v", rec)
+	}
+	raw, _ := json.Marshal(rec)
+	if err := storage.db.WriteToolDataExtra(inst.ID, toolDataHookLagKey, raw); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+	load := func() *Instance {
+		t.Helper()
+		instances, _, err := storage.LoadWithGroups()
+		if err != nil || len(instances) != 1 {
+			t.Fatalf("load: %v (%d instances)", err, len(instances))
+		}
+		return instances[0]
+	}
+	p := load()
+	if !p.hookLag.confirmed(inst.hookLastUpdate) {
+		t.Fatalf("loaded instance did not hydrate the confirmed record: %+v", p.hookLag)
+	}
+	// The status pass alone (no capture) reads waiting from the record.
+	RefreshInstancesForCLIStatus([]*Instance{p})
+	var pass StatusUpdatePass
+	if err := pass.UpdateStatusOnly(p); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.GetStatusThreadSafe(); got != StatusWaiting {
+		t.Fatalf("status from the record alone = %q, want waiting (the pass has not captured yet)", got)
+	}
+	// The pass's single capture is busy: live evidence wins, same pass.
+	sub := p.Substate()
+	if status := p.GetStatusThreadSafe(); status != StatusRunning || sub != SubstateRunning {
+		t.Fatalf("one pass = %q/%q, want running/%q (busy capture reverts the record-driven waiting)", status, sub, SubstateRunning)
+	}
+	// The reset is persisted, so the next one-pass caller does not flip again.
+	if rec := load().hookLag; rec.FirstIdleAt != 0 || rec.HookTS != hookTS {
+		t.Fatalf("persisted record after the busy sample = %+v, want cleared run under hook %d", rec, hookTS)
+	}
+	if status, sub := cliPass(t, load()); status != StatusRunning || sub != SubstateRunning {
+		t.Fatalf("next pass = %q/%q, want running/%q", status, sub, SubstateRunning)
 	}
 }
 

@@ -303,6 +303,18 @@ const (
 // it is current.
 var codexBusyCues = []string{"ctrl+c to interrupt", "esc to interrupt"}
 
+// codexLine is one line of the tail as scanCodexErrorBanner sees it: the
+// trimmed text and whether it starts at column 0 of the pane. Codex prints
+// its own "■" banners at column 0; the tool-output block under a "• Ran …"
+// line ("  └ first line", then lines indented to the same column) never
+// does, so a "■" inside a cat/grep result is quoted content, not a banner
+// (review round 3 P3-6). Tool output sits BELOW its "•" line, so the "•"
+// stop alone cannot exclude it when the block is directly above the composer.
+type codexLine struct {
+	text    string
+	column0 bool
+}
+
 // scanCodexErrorBanner scans the last 15 non-empty lines for a "■"-led codex
 // error banner that belongs to the CURRENT turn and returns its kind (""
 // when none) and, for a usage-limit banner, the retry time it prints ("try
@@ -315,22 +327,26 @@ var codexBusyCues = []string{"ctrl+c to interrupt", "esc to interrupt"}
 // above the composer, which is always the bottom-most "›" line), an
 // assistant/tool line ("• …"), or a live busy cue anywhere in the tail. A
 // banner sitting directly above the composer is still an error.
+//
+// Only a "■" Codex printed itself counts: a column-0 line (see codexLine).
 func scanCodexErrorBanner(content string) (kind, detail string) {
 	lines := strings.Split(content, "\n")
-	var recent []string
+	var recent []codexLine
 	for i := len(lines) - 1; i >= 0 && len(recent) < 15; i-- {
-		line := strings.TrimSpace(StripANSI(lines[i]))
+		raw := StripANSI(lines[i])
+		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		recent = append([]string{line}, recent...)
-	}
-	if containsAny(strings.ToLower(strings.Join(recent, "\n")), codexBusyCues) {
-		return "", ""
+		if containsAny(strings.ToLower(line), codexBusyCues) {
+			return "", ""
+		}
+		column0 := !strings.HasPrefix(raw, " ") && !strings.HasPrefix(raw, "\t")
+		recent = append([]codexLine{{text: line, column0: column0}}, recent...)
 	}
 	seenComposer := false
 	for i := len(recent) - 1; i >= 0; i-- {
-		line := recent[i]
+		line := recent[i].text
 		switch {
 		case strings.HasPrefix(line, codexPromptGlyph):
 			text := strings.TrimSpace(strings.TrimPrefix(line, codexPromptGlyph))
@@ -341,18 +357,18 @@ func scanCodexErrorBanner(content string) (kind, detail string) {
 			continue
 		case strings.HasPrefix(line, codexAssistantGlyph):
 			return "", "" // the session produced output after any banner above
-		case !strings.HasPrefix(line, codexErrorBannerPrefix):
-			continue
+		case !strings.HasPrefix(line, codexErrorBannerPrefix), !recent[i].column0:
+			continue // not a banner, or one quoted inside indented tool output
 		}
 		lower := strings.ToLower(line)
 		switch {
 		case containsAny(lower, codexUsageLimitBannerPatterns):
 			banner := line
 			for j := i + 1; j < len(recent); j++ {
-				if strings.HasPrefix(recent[j], codexErrorBannerPrefix) || strings.HasPrefix(recent[j], codexPromptGlyph) {
+				if strings.HasPrefix(recent[j].text, codexErrorBannerPrefix) || strings.HasPrefix(recent[j].text, codexPromptGlyph) {
 					break
 				}
-				banner += " " + recent[j]
+				banner += " " + recent[j].text
 			}
 			if m := codexRetryAtRe.FindStringSubmatch(banner); m != nil {
 				return codexBannerUsageLimit, "try again at " + strings.TrimSpace(m[1])

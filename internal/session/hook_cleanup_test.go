@@ -26,7 +26,7 @@ func hookCleanupStorage(t *testing.T) *Storage {
 func TestHookCleanupDeleteInstance(t *testing.T) {
 	s := hookCleanupStorage(t)
 	root := GetHooksDir()
-	artifacts := []string{"gone.json", "gone.sid", "gone.sid.tmp", "gone.generation.json", ".gone.json.tmp-123", "gone.codex-writer.lock", "gone.lock", "gone.projectdir-missing", "sandbox/gone/gone.json", ".codex-consumed/gone/evidence.json", ".codex-consumed/gone.lock"}
+	artifacts := []string{"gone.json", "gone.sid", "gone.sid.tmp", "gone.generation.json", ".gone.json.tmp-123", "gone.codex-writer.lock", "gone.lock", "gone.projectdir-missing", "gone.events.jsonl", ".gone.events.jsonl.tmp-456", "sandbox/gone/gone.json", ".codex-consumed/gone/evidence.json", ".codex-consumed/gone.lock"}
 	for _, name := range artifacts {
 		path := filepath.Join(root, name)
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))

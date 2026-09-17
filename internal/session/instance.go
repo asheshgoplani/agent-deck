@@ -661,6 +661,10 @@ type Instance struct {
 	// samples; hookLagPersisted is what this process last wrote.
 	hookLag          hookLagRecord
 	hookLagPersisted hookLagRecord
+	// hookLagFlipped records that the CURRENT status pass set waiting from
+	// the hook-lag record alone (no capture of its own), so a busy frame the
+	// same pass captures afterwards can revert it (review round 3 P2-3).
+	hookLagFlipped bool
 	// hookLagDB is the profile database this instance was loaded from, so a
 	// CLI process (which registers no global StateDB) can persist the record
 	// to the row it read. Nil for instances not loaded from storage.
@@ -6122,6 +6126,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
+		i.hookLagFlipped = false
 		if i.hookStatus != "running" {
 			// The hook moved on (Stop landed, or a new lifecycle event): any
 			// lag observed under the old running event is over.
@@ -6138,15 +6143,19 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			if i.tmuxSession != nil {
 				i.tmuxSession.ResetAcknowledged()
 			}
-			// Hook lag: a turn can end without a Stop hook (see hook_lag.go),
-			// leaving this "running" as the last event while the pane shows
-			// the turn finished. The pane is the newer evidence, but one frame
-			// never overrules a fresh hook — two independent samples of a
-			// completed turn at an idle prompt do. No capture here: the
-			// samples are the ones GetStatus/GetSubstate already recorded
-			// (this process or, via the persisted record, another one).
+			// Hook lag: the hook file can keep saying "running" while the
+			// pane shows the turn finished (see hook_lag.go; cause unknown).
+			// The pane is the newer evidence, but one frame never overrules a
+			// fresh hook — two independent samples of a completed turn at an
+			// idle prompt do. No capture here: the samples are the ones
+			// GetStatus/GetSubstate already recorded (this process or, via
+			// the persisted record, another one). A capture this same pass
+			// makes afterwards (Instance.Substate) wins over the record: if
+			// the pane is busy again, absorbCompletedTurnSample reverts the
+			// flip in the same pass.
 			if IsClaudeCompatible(i.Tool) && i.noteHookLagSampleLocked() {
 				i.Status = StatusWaiting
+				i.hookLagFlipped = true
 			}
 		case "waiting":
 			if IsCodexCompatible(i.Tool) {

@@ -49,10 +49,21 @@ type followSummary struct {
 // buildChildRows converts refreshed child instances into rows. Callers must
 // have run session.RefreshInstancesForCLIStatus on kids first so UpdateStatus
 // sees warm tmux caches and hook statuses (issue #610).
+//
+// Each child gets the same single pane capture the other CLI surfaces take
+// (`list --json`, `status`, `session show`): one Substate() per child per
+// call, i.e. one capture-pane subprocess per child that has a live tmux
+// session, taken after UpdateStatus and before the status is read. This is
+// the sample the hook-lag rule (session/hook_lag.go) accumulates, so a
+// conductor whose only poll is `session children --json` / `--follow` still
+// advances it (review round 3 P2-4), and the status printed describes the
+// frame the capture saw. Cost per call: N children × one capture, the same
+// as `list --json` over N sessions; --follow pays it once per interval.
 func buildChildRows(kids []*session.Instance) []childRow {
 	rows := make([]childRow, 0, len(kids))
 	for _, k := range kids {
 		_ = k.UpdateStatus()
+		_ = k.Substate() // before Status: see buildListJSON
 		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status)}
 		if e, ok := session.ReadLedgerEntry(k.ID); ok {
 			row.DoneStatus = e.Status
