@@ -55,6 +55,7 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox export [--json]")
+	fmt.Fprintln(w, "       agent-deck inbox dead-letter list|show [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Drain pending completion events from the parent's durable outbox.")
@@ -179,6 +180,9 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 			retErr = fmt.Errorf("write inbox output: %w", tracked.err)
 		}
 	}()
+	if len(args) > 0 && args[0] == "dead-letter" {
+		return runInboxDeadLetter(stdout, args[1:])
+	}
 	if len(args) > 0 && args[0] == "drain" {
 		return runInboxDrain(stdout, args[1:], explicitProfile)
 	}
