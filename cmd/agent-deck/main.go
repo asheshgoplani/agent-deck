@@ -2580,6 +2580,12 @@ func handleList(profile string, args []string) {
 	}
 
 	if len(instances) == 0 {
+		if *jsonOutput {
+			// Still a list: --json consumers decode stdout as an array, and the
+			// human sentinel below is not JSON.
+			fmt.Println("[]")
+			return
+		}
 		fmt.Printf("No sessions found in profile '%s'.\n", storage.Profile())
 		return
 	}
@@ -2754,7 +2760,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 			CodexSessionID    string    `json:"codex_session_id,omitempty"`
 			ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		}
-		var allSessions []sessionJSON
+		// Non-nil so an empty result marshals as [] rather than null.
+		allSessions := []sessionJSON{}
 
 		for _, profileName := range profiles {
 			storage, err := session.NewStorageWithProfile(profileName)
