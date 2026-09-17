@@ -3792,7 +3792,16 @@ func (d *NewDialog) toolKind(name string) string {
 	return ""
 }
 
-const legacyRemoteCreationNotice = "Remote runs an older agent-deck; extra options are hidden until it is updated."
+// walk defect #6: a legacy catalog (no capability catalog at all, #2275's
+// fallback) used to collapse the Command picker to shell-only ({Name: ""}),
+// hiding claude/codex/pi/etc even though the remote's bare -c/--cmd flag
+// happily runs any of them (agent-deck just execs the tool). Degrade
+// gracefully instead: offer the same built-in tool list the local dialog
+// does. Their *kind* is still unverified (Legacy's Tools stays
+// [{Name: ""}], so toolKind() returns "" for all of them), which is what
+// correctly keeps the catalog-dependent rows — model ids, account slots,
+// MCPs, worktree/sandbox availability — hidden.
+const legacyRemoteCreationNotice = "Remote runs an older agent-deck; options are not verified on the remote (model, account, MCP and worktree options hidden)."
 
 func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCatalog) {
 	d.remoteCatalog = catalog
@@ -3801,8 +3810,12 @@ func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCata
 	d.geminiOptions.SetDefaults(catalog.Defaults["gemini_yolo"])
 	d.hermesOptions.SetDefaults(catalog.Defaults["hermes_yolo"])
 	d.presetCommands = nil
-	for _, tool := range catalog.Tools {
-		d.presetCommands = append(d.presetCommands, tool.Name)
+	if catalog.Legacy {
+		d.presetCommands = buildPresetCommands()
+	} else {
+		for _, tool := range catalog.Tools {
+			d.presetCommands = append(d.presetCommands, tool.Name)
+		}
 	}
 	d.commandCursor = 0
 	d.SetDefaultTool(catalog.DefaultTool)

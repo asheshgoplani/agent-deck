@@ -55,8 +55,12 @@ esac
 		}
 	}
 	frame := strings.TrimRight(stripAnsi(d.View()), "\n") + "\n"
-	notice := "Remote runs an older agent-deck; extra options are hidden until it is updated."
-	if strings.Count(frame, notice) != 1 {
+	// The notice is long enough to wrap inside the box at this width, so
+	// compare against the box-drawing-stripped, whitespace-collapsed frame
+	// rather than the raw multi-line rendering (mirrors the flattening in
+	// TestRemoteUpdatedMsg_FailureOpensNoticeWithFullMessage).
+	flat := strings.Join(strings.Fields(strings.NewReplacer("│", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(frame)), " ")
+	if strings.Count(flat, legacyRemoteCreationNotice) != 1 {
 		t.Fatalf("expected single legacy notice:\n%s", frame)
 	}
 	path := filepath.Join("testdata", "newdialog_flow", "06-legacy-remote.txt")
@@ -104,6 +108,48 @@ func TestRemoteLegacyDialog_Options(t *testing.T) {
 				t.Fatalf("got %#v (%s), want %#v", got, why, want)
 			}
 		})
+	}
+}
+
+// TestRemoteLegacyDialog_OffersBuiltinTools is walk defect #6's regression
+// test: a remote with no capability catalog at all (#2275's Legacy
+// fallback) used to collapse the Command picker to shell-only, hiding
+// claude/codex/pi/etc even though the remote's bare -c/--cmd flag runs any
+// of them. It must instead offer the same built-in list the local dialog
+// does, with the tool-specific option panels still hidden (kind stays
+// unverified for anything but shell).
+func TestRemoteLegacyDialog_OffersBuiltinTools(t *testing.T) {
+	h, _ := newRemoteHome(t, remoteGroupItem("old-host"), "")
+	h = pressN(t, h)
+	d := h.newDialog
+	d.SetRemoteCreationCatalog(session.LegacyRemoteCreationCatalog())
+
+	want := buildPresetCommands()
+	if !reflect.DeepEqual(d.presetCommands, want) {
+		t.Fatalf("presetCommands = %#v, want the local built-in list %#v", d.presetCommands, want)
+	}
+	for _, tool := range []string{"claude", "codex", "gemini", "pi", "hermes"} {
+		found := false
+		for _, cmd := range d.presetCommands {
+			if cmd == tool {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%q missing from legacy dialog's command picker: %v", tool, d.presetCommands)
+		}
+	}
+
+	// Selecting a builtin still leaves its kind unverified (Legacy's Tools
+	// stays [{Name: ""}]), so the tool-specific options panel never opens —
+	// this is what correctly keeps model/account/MCP rows hidden.
+	d.SetDefaultTool("claude")
+	if d.toolKind(d.GetSelectedCommand()) != "" {
+		t.Errorf("toolKind(%q) = %q, want empty (unverified) on a legacy remote", d.GetSelectedCommand(), d.toolKind(d.GetSelectedCommand()))
+	}
+	if d.toolOptions != nil {
+		t.Error("tool options panel must stay hidden on a legacy remote even when a known builtin is picked")
 	}
 }
 
