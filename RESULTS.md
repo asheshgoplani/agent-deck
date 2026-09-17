@@ -1,53 +1,111 @@
-# PR #1952 verification results
+# Issue #2079 — round 2 verification results
 
-## Rebase evidence
+## What round 1 missed
 
-- Pre-rebase head: `ce4debeb6f3ea5b1cffdc9242eb598df4a3dede5`.
-- Rebased head before the final fixes: `70bb777fd94106162f81a208764f42d4cfce84bc` on current `origin/main`.
-- `git range-diff 92bb498f..ce4debeb origin/main..70bb777f` mapped all 16 PR commits one-for-one with `=`; no prior patch changed or disappeared.
-- The rebased branch was pushed with `--force-with-lease` before findings work began.
+Round 1 (head `c14ae7a4`) guarded only the first of the two call sites the
+issue names: `sendMessageWhenReady` (`internal/session/instance.go`), which
+withholds Enter before it is pressed if the composer's collapsed paste marker
+declares fewer lines than the message.
 
-## Findings addressed
+The second call site — the `launch --no-wait` post-send verifier,
+`pollPromptConsumed` in `cmd/agent-deck/launch_verify_prompt.go` — was left
+checking only "did the composer clear?". A truncated fragment that gets
+submitted clears the composer exactly like a clean delivery, so this poller
+reported success on the same truncation round 1 fixed at the other site.
 
-- Made `SourceRemote` part of every pending-inbox identity decision: event fingerprint, turn fingerprint, last-wins producer replacement, and consumer collapse. This keeps local `boxb:nightly-build`, remote `nightly-build`, and caller-prefixed remote IDs distinct even when their visible child spelling overlaps.
-- Removed prefix inference from `RemoteScopedChildID`; arbitrary caller-selected IDs are always scoped rather than mistaken for an already-scoped record.
-- Converted injected CLI writers to error-tracking writers so `inbox` and `remote drain` cannot return success after partial/failed output.
-- Made writer-status distinguish a missing heartbeat from permission/I/O/read failures; only `ENOENT` means “never stamped,” while other failures report unknown liveness.
-- Fixed the suppressed-session absence test to fail on `ReadInboxEvents` errors instead of passing vacuously.
-- Rechecked earlier findings on orphan export, suppression, completion-copy deduplication, corrupt ledger reads, recurring terminal turns, fetch/probe ordering, consumed-ledger bounds, and writer probe fail-closed behavior; their current-head fixes remain present after rebase.
+## Fix
 
-## Revert proofs
+`pollPromptConsumed` now applies the same declared-line-count check
+(`send.ExpectedPasteMarkerLines` / `send.PasteMarkerLineCounts`) once the
+composer looks consumed:
 
-Only the production hunks were reverse-applied while the new tests remained, and the focused tests were run in `golang:1.25`:
+- Marker declares fewer lines than the message → `promptTruncated`. Reported
+  to the caller's warning writer as `"prompt truncated in transit"`; the
+  retry is skipped (retyping and re-pressing Enter on an already-submitted
+  fragment risks a duplicate submission, not a fix).
+- Composer looks consumed but no marker is visible at all, for a message
+  that expects one → `promptUnknown` (held as a render-lag candidate across
+  the poll window, only classified at the deadline). Reported as
+  `"...delivery unknown..."`; never reported as success.
+- Marker declares at least as many lines as the message (or the message is
+  single-line and never collapses behind a marker) → `promptConsumed`,
+  unchanged silent success.
+
+`verifyPromptConsumedAfterLaunchAttributed` now switches on this outcome at
+both poll points (before and after the one retry) instead of treating any
+"composer is empty" shape as success.
+
+## Failing-first test
+
+New file: `cmd/agent-deck/issue2079_launch_verify_prompt_test.go` (uses the
+existing `mockSendRetryTarget` fake from `session_send_test.go`, no new test
+infrastructure).
+
+Revert proof (production logic only reverted — the declared-line-count check
+in `pollPromptConsumed` was disabled to reproduce pre-fix behavior; the new
+test file was left in place), run in `golang:1.25`:
 
 ```text
-RED_EXIT=1
-TestIssue1952_OriginSeparatesEveryIdentityRule:
-  local and remote records share EventFingerprint
-TestIssue1952_OutputFailuresAreNotSuccess:
-  remote drain output failure reported success
+=== RUN   TestPollPromptConsumed_TruncatedMarker_ReportsTruncatedNotSuccess
+    issue2079_launch_verify_prompt_test.go:61: a truncated marker must be reported, not silently treated as success
+--- FAIL: TestPollPromptConsumed_TruncatedMarker_ReportsTruncatedNotSuccess (0.00s)
+=== RUN   TestPollPromptConsumed_NoMarkerObserved_ReportsUnknownNotSuccess
+    issue2079_launch_verify_prompt_test.go:81: an unconfirmed delivery must be reported, not silently treated as success
+--- FAIL: TestPollPromptConsumed_NoMarkerObserved_ReportsUnknownNotSuccess (0.00s)
+=== RUN   TestPollPromptConsumed_MatchingMarker_StillReportsSuccess
+--- PASS: TestPollPromptConsumed_MatchingMarker_StillReportsSuccess (0.00s)
+FAIL
 ```
 
-The production patch was then restored. With the fix present, these tests plus `TestIssue1952_WriterStatusReadFailureIsUnknown` pass.
+With the fix restored, the same three tests plus the full pre-existing
+`TestVerifyPromptConsumedAfterLaunch_*` suite in the same file pass:
+
+```text
+--- PASS: TestPollPromptConsumed_TruncatedMarker_ReportsTruncatedNotSuccess (0.00s)
+--- PASS: TestPollPromptConsumed_NoMarkerObserved_ReportsUnknownNotSuccess (0.01s)
+--- PASS: TestPollPromptConsumed_MatchingMarker_StillReportsSuccess (0.00s)
+--- PASS: TestVerifyPromptConsumedAfterLaunch_ConsumedFirstPoll_NoRetry_NoWarning (0.00s)
+--- PASS: TestVerifyPromptConsumedAfterLaunch_UnsentFirstWindow_RetryThenConsumed_OneRetry_NoWarning (0.03s)
+--- PASS: TestVerifyPromptConsumedAfterLaunch_UnsentBothWindows_OneRetry_WarningEmitted (0.02s)
+--- PASS: TestVerifyPromptConsumedAfterLaunch_WelcomeScreenNoComposer_NotConsumed_TriggersRetry (0.01s)
+--- PASS: TestVerifyPromptConsumedAfterLaunch_RespectsWallTimeBudget (0.06s)
+--- PASS: TestVerifyPromptConsumedAfterLaunch_ForeignComposerContent_NoRetry_WarningEmitted (0.01s)
+PASS
+ok  	github.com/asheshgoplani/agent-deck/cmd/agent-deck	2.025s
+```
+
+`internal/send` (declaration-count primitives this test also depends on,
+unchanged this round) also passes in full in the same container.
 
 ## Container verification
 
 - `go build ./...`: PASS in `golang:1.25`.
 - `go vet ./...`: PASS in `golang:1.25`.
-- Focused regression tests across `./internal/session` and `./cmd/agent-deck`: PASS.
-- A raw `go test ./...` in the stock Go image reaches unrelated environment-dependent tests but lacks CI's tmux/zoxide packages and non-root permission behavior. The authoritative full race suite is the repository's GitHub Actions PR gate, which installs those dependencies.
+- `go test ./cmd/agent-deck/...`: PASS in `golang:1.25` (includes the new
+  test file and the full pre-existing suite in the same package).
+- `go test ./internal/send/...`: PASS in `golang:1.25`.
+- A broader `go test ./internal/tmux/... ./internal/session/...` run in the
+  same stock `golang:1.25` image (not required by this round's scope, run
+  for extra confidence) fails on pre-existing environment gaps unrelated to
+  this change — `tmux` is not installed in the plain Go image, so every test
+  that spawns a real tmux session errors with `exec: "tmux": executable file
+  not found in $PATH`. Neither touched file (`launch_verify_prompt.go`,
+  `issue2079_launch_verify_prompt_test.go`) is exercised by those failures.
+  Same caveat round 1 documented: the authoritative full suite is CI's PR
+  gate, which installs tmux.
+- Host `go build ./...` and `go vet ./...`: PASS (no `go test` run on the
+  host, per instructions).
 
-## Invariant check
+## Docker serialization
 
-- Bounds: existing summary, inbox-line, retry, generation, and stale-record bounds are unchanged.
-- Ordering: last-wins still preserves first-seen identity order; the identity is now `(SourceRemote, ChildSessionID)`.
-- Idempotence: repeated drains of one remote retain the same structured origin and fingerprint; separate origins no longer destroy one another.
-- Fail closed: fetch, writer probe, unreadable heartbeat, unreadable export, target resolution, and output failures all return non-success rather than an empty/successful drain.
-- Sibling parity: both inbox producer replacement and consumer collapse use the same origin-aware key; both `EventFingerprint` and `TurnFingerprint` enumerate the same provenance field; both CLI entry paths track writer errors.
+The shared `/tmp/agentdeck-docker.lock.d` lock was held for the duration of
+all `docker run` invocations above and removed immediately after the last
+one completed.
 
-## CI state
+## Scope
 
-- Verified head `14122746b119b6024209c4ef750c45ced5d56fac`: all 12 reported checks completed successfully.
-- The required `Full test suite (PR gate)` completed in 6m30s, including the repository's full `-race` suite with CI's tmux/zoxide environment.
-- Performance walltime and benchmark checks, CodeQL, govulncheck, golangci-lint, release snapshot drift, Homebrew verification, diff-scope, intake, and CodeRabbit all completed successfully.
-- This results-only commit is the final branch mutation; its exact-head CI conclusions were checked after push.
+Only `cmd/agent-deck/launch_verify_prompt.go` (production) and
+`cmd/agent-deck/issue2079_launch_verify_prompt_test.go` (new test) plus
+`CHANGELOG.md`/`RESULTS.md`/`PR-BODY.md` changed this round.
+`internal/send/send.go`'s `ExpectedPasteMarkerLines` / `PasteMarkerLineCounts`
+(added in round 1) are reused as-is, not modified.

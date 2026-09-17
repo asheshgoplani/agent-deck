@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `launch --message-file` (and any other multi-line send to a Claude-compatible target) no longer reports success when a slow-mounting composer swallows the leading bytes of a paste. The framed-paste transport collapses whatever landed behind a `[Pasted text #N +M lines]` marker whether the paste arrived whole or was cut short, so the declared `M` is now checked against the message's real physical line count before Enter is pressed; a shorter count withholds the Enter and fails the send with the declared-vs-expected line counts instead of silently submitting a truncated fragment (closes #2079).
+- `launch --message-file` (and any other multi-line send to a Claude-compatible target) no longer reports success when a slow-mounting composer swallows the leading bytes of a paste. The framed-paste transport collapses whatever landed behind a `[Pasted text #N +M lines]` marker whether the paste arrived whole or was cut short, so the declared `M` is now checked against the message's real physical line count before Enter is pressed; a shorter count withholds the Enter and fails the send with the declared-vs-expected line counts instead of silently submitting a truncated fragment. `launch --no-wait`'s post-send verifier applies the same declared-line-count check against its paste marker: a marker that declares fewer lines than the message is reported as "prompt truncated in transit" instead of a consumed prompt, and a consumed-looking composer with no marker at all for a message that expects one is reported as unknown — neither is ever reported as success (closes #2079).
 
 ## [1.16.10] - 2026-09-13
 
