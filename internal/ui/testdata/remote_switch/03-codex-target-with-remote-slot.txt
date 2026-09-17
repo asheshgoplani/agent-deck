@@ -19,8 +19,8 @@
                              │      Harness (choose destination first):                   │                             
                              │                                                            │                             
                              │      shell    claude    gemini    opencode    codex        │                             
-                             │    pi    copilot    crush    cursor agent    hermes        │                             
-                             │    deepseek                                                │                             
+                             │    pi    copilot    crush    muse    cursor agent    he    │                             
+                             │    rmes    deepseek                                        │                             
                              │    ▶ Account for selected harness (configured; auth u…:    │                             
                              │        inherit    codexwork                                │                             
                              │                                                            │                             
