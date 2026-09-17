@@ -204,8 +204,10 @@ func TestIssue1978_UnknownHookNeverClaimsQueued(t *testing.T) {
 	if delivery == deliveryQueued {
 		t.Fatalf("delivery = queued without any hook signal")
 	}
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery = %q, want the pre-#2043 verdict %q for arrival without submission", delivery, deliveryTyped)
+	// Arrival without submission, and without any positive failure signal,
+	// is delivered with confirmation unknown (#1793 three-outcome rule).
+	if delivery != deliveryDelivered {
+		t.Fatalf("delivery = %q, want %q for arrival without submission", delivery, deliveryDelivered)
 	}
 }
 
@@ -319,8 +321,13 @@ func TestIssue1978_QueuedNeedsTheQueueAffordance(t *testing.T) {
 		panes:    []string{busyPaneNoBody(), busyPaneBodyNoAffordance(msg)},
 	}
 	delivery, err := sendWithRetryTarget(mock, msg, false, queuedOpts(hookSeq(probeBusy)))
-	if delivery == deliveryQueued || delivery == deliverySubmitted || err == nil {
-		t.Fatalf("delivery=%q err=%v: a busy target without the queue affordance must not be reported delivered", delivery, err)
+	if delivery == deliveryQueued || delivery == deliverySubmitted {
+		t.Fatalf("delivery=%q: a busy target without the queue affordance must not be reported queued or submitted", delivery)
+	}
+	// Issue #1793 three-outcome rule: the body landed and nothing failed, so
+	// this is `delivered` with confirmation unknown (exit 0), not a failure.
+	if delivery != deliveryDelivered || err != nil {
+		t.Fatalf("delivery=%q err=%v, want %q with no error", delivery, err, deliveryDelivered)
 	}
 }
 
@@ -390,8 +397,9 @@ func TestIssue1978_NonClaudeNewPasteMarkerIsNeverASuccess(t *testing.T) {
 }
 
 // TestIssue1978_NonClaudeBusyBeforeSendIsNotQueued: the content-arrival path
-// has no queue acknowledgement to read, so a target that was already busy
-// keeps the #1793 verdict rather than an inferred queued.
+// has no queue acknowledgement to read, so a target that was already busy is
+// never inferred queued — and never inferred submitted. It is delivered with
+// confirmation unknown (exit 0, submitted=false).
 func TestIssue1978_NonClaudeBusyBeforeSendIsNotQueued(t *testing.T) {
 	const msg = "PROBE reply with only OK"
 	mock := &mockSendRetryTarget{
@@ -401,8 +409,11 @@ func TestIssue1978_NonClaudeBusyBeforeSendIsNotQueued(t *testing.T) {
 	opts := queuedOpts(hookSeq(probeBusy))
 	opts.tool = "codex"
 	delivery, err := sendWithRetryTarget(mock, msg, true, opts)
-	if delivery != deliveryTyped || err == nil {
-		t.Fatalf("delivery=%q err=%v, want the #1793 typed verdict", delivery, err)
+	if delivery == deliveryQueued || delivery == deliverySubmitted {
+		t.Fatalf("delivery=%q: a busy non-Claude target can be neither queued nor submitted on inference", delivery)
+	}
+	if delivery != deliveryDelivered || err != nil {
+		t.Fatalf("delivery=%q err=%v, want %q with no error", delivery, err, deliveryDelivered)
 	}
 }
 
@@ -439,7 +450,10 @@ func TestIssue1978_QueueAffordanceIsTheComposerElementNotASubstring(t *testing.T
 		panes:    []string{busyPaneNoBody(), busyPaneMentioningQueuedMessages(msg)},
 	}
 	delivery, err := sendWithRetryTarget(mock, msg, false, queuedOpts(hookSeq(probeBusy)))
-	if delivery == deliveryQueued || delivery == deliverySubmitted || err == nil {
-		t.Fatalf("delivery=%q err=%v: the words in ordinary output must not yield a queued success", delivery, err)
+	if delivery == deliveryQueued || delivery == deliverySubmitted {
+		t.Fatalf("delivery=%q: the words in ordinary output must not yield a queued or submitted verdict", delivery)
+	}
+	if delivery != deliveryDelivered || err != nil {
+		t.Fatalf("delivery=%q err=%v, want %q (arrived, confirmation unknown) with no error", delivery, err, deliveryDelivered)
 	}
 }

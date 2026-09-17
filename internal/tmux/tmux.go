@@ -3996,6 +3996,12 @@ func (s *Session) CapturePaneFresh() (string, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", ErrCaptureTimeout
 		}
+		// A pane that no longer exists is positive evidence for the send
+		// verifier (issue #1793: "pane gone" is a failure, not an unknown).
+		// Wrapped, so every existing `err != nil` caller is unchanged.
+		if captureGoneFromErr(err) {
+			return "", fmt.Errorf("failed to capture pane: %w", ErrCaptureGone)
+		}
 		return "", fmt.Errorf("failed to capture pane: %w", err)
 	}
 

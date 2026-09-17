@@ -25,7 +25,7 @@ import (
 // exact phantom success issues #1793 and #876 were written to close, reopened
 // for the payload class the #1855 transport change retargets. Before the
 // transport change the same send left the (fused) body verbatim in the pane
-// and correctly reported deliveryTyped with a non-zero exit.
+// and correctly reported a non-zero exit.
 //
 // The marker is measured as a TRANSITION from the pre-send baseline, exactly
 // like the body-occurrence signal it joins: a marker already parked in the
@@ -58,20 +58,22 @@ func TestIssue1855_CollapsedPasteMarkerIsArrivalEvidence_NotAnUnverifiedSuccess(
 	}
 
 	delivery, err := sendWithRetryTarget(mock, pasteCollapseMessage, true, sendRetryOptions{
-		maxRetries: 4, checkDelay: 0,
+		maxRetries: 4, checkDelay: 0, tool: "codex",
 	})
 
 	if err == nil {
 		t.Fatal("issue #1855: a framed multi-line send whose collapse marker sits unsubmitted in the composer must not report success")
 	}
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
+	// The composer positively holds this send's collapsed paste after every
+	// Enter: text sitting unsent, the #1413/#1793 failure.
+	if delivery != deliveryTypedNotSubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliveryTypedNotSubmitted, delivery)
 	}
 	if delivery == deliveryUnverified {
 		t.Fatal("issue #1855: deliveryUnverified here is the #1793 phantom success, reopened by the -p frame")
 	}
 	if fields := (sendDeliveryResult{delivery: delivery}).jsonFields(); fields["submitted"] != false {
-		t.Fatalf("typed must report submitted=false in --json, got %v", fields["submitted"])
+		t.Fatalf("typed_not_submitted must report submitted=false in --json, got %v", fields["submitted"])
 	}
 }
 
@@ -84,8 +86,9 @@ func TestIssue1855_CollapsedPasteMarkerIsArrivalEvidence_NotAnUnverifiedSuccess(
 // This body's lines are all below arrivalSafeLineBytes, so the historical
 // best-effort contract applies and the correct outcome is deliveryUnverified
 // with no error (see TestIssue1793_SmallPayloadKeepsTheBestEffortContract).
-// The assertion that matters is the one against deliveryTyped: reaching that
-// would mean the stale marker had been counted as this send's arrival.
+// The assertion that matters is the one against a failure or a `delivered`
+// verdict: reaching either would mean the stale marker had been counted as
+// this send's arrival.
 func TestIssue1855_PreExistingPasteMarkerIsNotArrivalEvidence(t *testing.T) {
 	// The marker is present in the baseline capture and never changes.
 	mock := &mockSendRetryTarget{
@@ -94,10 +97,10 @@ func TestIssue1855_PreExistingPasteMarkerIsNotArrivalEvidence(t *testing.T) {
 	}
 
 	delivery, err := sendWithRetryTarget(mock, pasteCollapseMessage, true, sendRetryOptions{
-		maxRetries: 4, checkDelay: 0,
+		maxRetries: 4, checkDelay: 0, tool: "codex",
 	})
 
-	if delivery == deliveryTyped {
+	if delivery == deliveryTypedNotSubmitted || delivery == deliveryDelivered {
 		t.Fatal("a paste marker that predates the send must not be counted as this send's arrival")
 	}
 	if err != nil {

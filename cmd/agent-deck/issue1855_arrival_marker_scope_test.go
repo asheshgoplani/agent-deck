@@ -49,7 +49,7 @@ func paneTranscriptMarkerPlusComposerMarker() string {
 // transcript with the composer empty.
 //
 // Read whole-pane, that transcript marker is "a marker that was not there
-// before" and the send is reported as deliveryTyped with
+// before" and the send was reported as typed with
 // "submission was never confirmed … Treat this as NOT delivered" — exit 1 for a
 // send that worked. A false "not delivered" is the input to the
 // double-delivery class (#876), so this is the more dangerous of the two
@@ -74,8 +74,8 @@ func TestIssue1855_TranscriptMarkerWithEmptyComposerIsNotArrivalEvidence(t *test
 		maxRetries: 4, checkDelay: 0,
 	})
 
-	if delivery == deliveryTyped {
-		t.Fatal("issue #1855: a marker in the TRANSCRIPT above an empty composer is a submitted send, not unsent bytes; reporting it as typed fails a delivery that worked and invites a double send (#876)")
+	if delivery == deliveryTypedNotSubmitted {
+		t.Fatal("issue #1855: a marker in the TRANSCRIPT above an empty composer is a submitted send, not unsent bytes; reporting it as unsent fails a delivery that worked and invites a double send (#876)")
 	}
 	if err != nil {
 		t.Fatalf("small unmatched sends must stay best-effort, got error: %v", err)
@@ -85,14 +85,14 @@ func TestIssue1855_TranscriptMarkerWithEmptyComposerIsNotArrivalEvidence(t *test
 	}
 }
 
-// TestIssue1855_SecondSendWithStaleTranscriptMarkerIsStillTyped pins the false
+// TestIssue1855_SecondSendWithStaleTranscriptMarkerIsStillUnsent pins the false
 // SUCCESS on the other side of the same defect. This is the SECOND multi-line
 // send to a pane: the first one's marker is permanently on screen in the
 // transcript, so a boolean baseline is armed before this send even starts and
 // "marker && !baseline.pasteMarker" can never fire again. This send's Enter is
 // swallowed and its payload sits collapsed in the composer — the #1793/#876
 // phantom, which round 2 closed only for the first multi-line send per pane.
-func TestIssue1855_SecondSendWithStaleTranscriptMarkerIsStillTyped(t *testing.T) {
+func TestIssue1855_SecondSendWithStaleTranscriptMarkerIsStillUnsent(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		// Idle throughout: the agent never takes the message up.
 		statuses: []string{"waiting"},
@@ -102,14 +102,16 @@ func TestIssue1855_SecondSendWithStaleTranscriptMarkerIsStillTyped(t *testing.T)
 	}
 
 	delivery, err := sendWithRetryTarget(mock, pasteCollapseMessage, true, sendRetryOptions{
-		maxRetries: 4, checkDelay: 0,
+		maxRetries: 4, checkDelay: 0, tool: "codex",
 	})
 
 	if err == nil {
 		t.Fatal("issue #1855: the second multi-line send to a pane must still be verifiable — a marker left in the transcript by an earlier send must not disarm the signal")
 	}
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
+	// The composer positively holds this send's marker after Enter: that is
+	// the text-sitting-unsent failure (#1413/#1793), not an unknown.
+	if delivery != deliveryTypedNotSubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliveryTypedNotSubmitted, delivery)
 	}
 }
 
@@ -129,13 +131,17 @@ func TestIssue1855_StaleMarkerCountsWhereNoComposerCanBeScoped(t *testing.T) {
 	}
 
 	delivery, err := sendWithRetryTarget(mock, pasteCollapseMessage, true, sendRetryOptions{
-		maxRetries: 4, checkDelay: 0,
+		maxRetries: 4, checkDelay: 0, tool: "cursor",
 	})
 
-	if err == nil {
-		t.Fatal("issue #1855: on a pane with no introspectable composer, one MORE paste marker than before is still this send's payload arriving")
+	// One MORE paste marker than before is this send's payload arriving. With
+	// no composer to read and no signal either way, that is delivered with
+	// confirmation unknown (exit 0) — arrival is not "NOT delivered", and it
+	// is not `unverified` either: the bytes were seen.
+	if err != nil {
+		t.Fatalf("issue #1855: arrival on a pane with no introspectable composer is not a failure: %v", err)
 	}
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
+	if delivery != deliveryDelivered {
+		t.Fatalf("delivery: want %q, got %q", deliveryDelivered, delivery)
 	}
 }

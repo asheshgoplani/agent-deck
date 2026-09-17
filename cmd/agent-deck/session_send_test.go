@@ -1545,11 +1545,11 @@ func TestSendWithRetryTarget_VerifyDelivery_MessageInPaneIsReceiptNotSubmission(
 	// is direct evidence the keystrokes were RECEIVED — so this must never be
 	// reported as the #876 silent drop.
 	//
-	// Updated for issue #1793: it is not evidence the message was SUBMITTED.
-	// This test previously asserted err == nil, which meant a body sitting in
-	// a composer whose Enter was swallowed exited 0 as "delivered" — the
-	// phantom success #1793 was filed about. Receipt and submission are now
-	// separate verdicts.
+	// Updated for issue #1793: it is not evidence the message was SUBMITTED,
+	// so it is never `submitted`. Nor is it evidence of a failure: the body is
+	// not sitting at a composer glyph, no menu is open, the pane is alive. The
+	// honest verdict is `delivered` with confirmation unknown — exit 0,
+	// submitted=false — and the CLI says so instead of "NOT delivered".
 	statuses := make([]string, 6)
 	panes := make([]string, 6)
 	for i := range statuses {
@@ -1566,11 +1566,14 @@ func TestSendWithRetryTarget_VerifyDelivery_MessageInPaneIsReceiptNotSubmission(
 	if err != nil && strings.Contains(err.Error(), "dropped silently") {
 		t.Fatalf("#876: must not report a silent drop when the body is visible: %v", err)
 	}
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery: want %q (received, submission unconfirmed), got %q", deliveryTyped, delivery)
+	if delivery == deliverySubmitted {
+		t.Fatal("issue #1793: a visible body is receipt, not submission")
 	}
-	if err == nil {
-		t.Fatal("issue #1793: received-but-not-submitted must not report success")
+	if delivery != deliveryDelivered {
+		t.Fatalf("delivery: want %q (received, submission unconfirmed), got %q", deliveryDelivered, delivery)
+	}
+	if err != nil {
+		t.Fatalf("issue #1793: received-but-unconfirmed is not a failure without positive evidence: %v", err)
 	}
 }
 
