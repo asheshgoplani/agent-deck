@@ -332,7 +332,12 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			return
 		}
 
-		if sess.Exists() {
+		// #2202: remain-on-exit (sandbox sessions, and anything configured
+		// that way) keeps the tmux session alive with a dead pane instead of
+		// tearing it down when the initial process exits — Exists() alone
+		// would call that "alive" forever and never record the fast death.
+		// A dead pane is therefore treated exactly like a vanished session.
+		if sess.Exists() && !sess.IsPaneDead() {
 			// Alive: snapshot the current pane so we hold the dying output the
 			// instant it disappears (tmux discards the pane on process exit for
 			// non-remain-on-exit sessions).
@@ -369,6 +374,17 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 		// the iteration. Everything below therefore commits under the write
 		// barrier, which re-checks the generation, rather than trusting the
 		// earlier check.
+		//
+		// A dead-but-still-existing pane (remain-on-exit) still holds its
+		// content, unlike a torn-down session — grab it now in case the
+		// process died before any earlier tick captured a snapshot.
+		if lastSnapshot == "" {
+			if content, err := sess.CapturePane(); err == nil {
+				if trimmed := strings.TrimSpace(content); trimmed != "" {
+					lastSnapshot = trimmed
+				}
+			}
+		}
 		elapsed := time.Since(start).Milliseconds()
 		rec := SpawnFailureRecord{
 			InstanceID:  id,
