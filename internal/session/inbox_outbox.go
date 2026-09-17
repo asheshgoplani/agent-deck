@@ -431,48 +431,51 @@ func deadLetterContainsFingerprint(path, fingerprint string) (bool, error) {
 	return false, scanner.Err()
 }
 
+// DeadLetterStoreCounts is the per-store breakdown of parked records.
+type DeadLetterStoreCounts struct {
+	DeadLetter int `json:"dead_letter"`
+	Unowned    int `json:"unowned"`
+}
+
+// Total is the sum across stores.
+func (c DeadLetterStoreCounts) Total() int { return c.DeadLetter + c.Unowned }
+
 // CountDeadLetterRecords returns the number of unresolved records currently in
 // the dead-letter directory and the discovery-only _unowned ledger. Inbox
 // drain uses this to avoid reporting a clean state while undelivered events are
 // parked out of sight.
 func CountDeadLetterRecords() (int, error) {
+	counts, err := CountDeadLetterStores()
+	return counts.Total(), err
+}
+
+// CountDeadLetterStores is CountDeadLetterRecords with the per-store split, so
+// an operator can tell a dead letter from a discovery copy (audit P1-4).
+func CountDeadLetterStores() (DeadLetterStoreCounts, error) {
+	var counts DeadLetterStoreCounts
 	entries, err := os.ReadDir(DeadLetterDir())
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			return 0, err
+			return counts, err
 		}
 		entries = nil
 	}
-	count := 0
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
-		f, err := os.Open(filepath.Join(DeadLetterDir(), entry.Name()))
+		// Unknown/corrupt is still pending operator work. Counting every
+		// nonblank physical record prevents a truncated legacy append from
+		// making a non-empty ledger look clean (#1877).
+		n, err := countNonblankInboxRecords(filepath.Join(DeadLetterDir(), entry.Name()))
+		counts.DeadLetter += n
 		if err != nil {
-			return count, err
-		}
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-		for scanner.Scan() {
-			// Unknown/corrupt is still pending operator work. Counting every
-			// nonblank physical record prevents a truncated legacy append from
-			// making a non-empty ledger look clean (#1877).
-			if strings.TrimSpace(scanner.Text()) != "" {
-				count++
-			}
-		}
-		scanErr := scanner.Err()
-		closeErr := f.Close()
-		if scanErr != nil {
-			return count, scanErr
-		}
-		if closeErr != nil {
-			return count, closeErr
+			return counts, err
 		}
 	}
 	unowned, err := countNonblankInboxRecords(InboxPathFor(UnownedInboxID))
-	return count + unowned, err
+	counts.Unowned = unowned
+	return counts, err
 }
 
 func countNonblankInboxRecords(path string) (int, error) {

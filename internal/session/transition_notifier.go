@@ -231,13 +231,19 @@ func NewTransitionNotifier() *TransitionNotifier {
 // terminalDrop records a synchronously-determined terminal-undeliverable event
 // (audit B5/B9). Intentional suppressions (no_notify, self_conductor) are silent
 // and orphan is already logged once at resolve time, so those return early.
-// Every other reason (child_removed, parent_removed/cross-profile, unresolvable)
-// gets an operator-visible missed-log line AND a dead-letter record, deduped
-// once per (child|reason) so a chatty child can't flood. This is what makes a
-// dropped completion visible instead of silent.
+// child_removed (the conductor removed the worker between observe and resolve)
+// is log-only: the operator sees a missed-log line, but no dead-letter record
+// is parked because nothing can ack one and the record has no recipient
+// (messaging audit P1-4, #2101). Every other reason (parent_removed /
+// cross-profile, unresolvable) gets an operator-visible missed-log line AND a
+// dead-letter record, deduped once per (child|reason) so a chatty child can't
+// flood. This is what makes a dropped completion visible instead of silent.
 func (n *TransitionNotifier) terminalDrop(event TransitionNotificationEvent, reason string) {
 	switch reason {
 	case "", deadLetterReasonNoNotify, deadLetterReasonSelfConductor, deadLetterReasonOrphan:
+		return
+	case deadLetterReasonChildMissing:
+		n.logMissed(event, reason)
 		return
 	}
 	key := strings.TrimSpace(event.ChildSessionID) + "|" + reason
@@ -429,12 +435,12 @@ func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance)
 	if parent.ID == child.ID {
 		return nil
 	}
-	if isConductorSessionTitle(parent.Title) {
-		_ = parent.UpdateStatus()
-		if !isLiveSessionStatus(parent.Status) {
-			return nil
-		}
-	}
+	// Messaging audit P1-4 (#2101, #2062): there is deliberately no
+	// conductor-liveness gate here. A registered parent that is not
+	// running|waiting|idle at this instant (restarting, stopped, mid-switch)
+	// is exactly what the durable inbox is for — it drains the record at its
+	// next turn. Gating on liveness diverted such completions to _unowned +
+	// dead-letter, where nothing could ever re-attach or ack them.
 	return parent
 }
 

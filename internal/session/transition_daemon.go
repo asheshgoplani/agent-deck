@@ -203,7 +203,7 @@ func (d *TransitionDaemon) ReplayUnackedCompletions(profile string) {
 		if rec.Acked || strings.TrimSpace(rec.Status) == "" {
 			continue
 		}
-		committed, parked := d.notifier.deliverCompletion(rec)
+		committed, parked, reason := d.notifier.deliverCompletion(rec)
 		if committed {
 			_ = AckCompletion(rec.Profile, rec.ChildID)
 			continue
@@ -212,6 +212,13 @@ func (d *TransitionDaemon) ReplayUnackedCompletions(profile string) {
 		// completion record replayable across daemon/parent restart, but do not
 		// spend its dead-letter budget merely because the parent is absent.
 		if parked {
+			continue
+		}
+		// The child is gone from the registry: no retry can ever deliver this,
+		// and a dead letter for it could never be acked (messaging audit P1-4).
+		// The terminal drop already wrote the missed-log line; ack and move on.
+		if reason == deadLetterReasonChildMissing {
+			_ = AckCompletion(rec.Profile, rec.ChildID)
 			continue
 		}
 		// Not committed: the parent is unresolvable (e.g. removed) or a
