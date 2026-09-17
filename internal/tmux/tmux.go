@@ -1683,6 +1683,16 @@ func (s *Session) inStartupWindowLocked() bool {
 	return !s.startupAt.IsZero() && time.Since(s.startupAt) < startupStateWindow
 }
 
+// SetStartupAtForTest backdates the startup clock so tests outside this
+// package (e.g. internal/session, exercising the agent-deck session layer
+// rather than this package's own white-box startup-timeout tests) can
+// deterministically exhaust startupStateWindow without a real 2-minute wait.
+func (s *Session) SetStartupAtForTest(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startupAt = t
+}
+
 // expireStartupHandover replaces an alive-but-unowned pane with an inert,
 // non-echoing recovery hold when the startup deadline expires. It is called
 // without s.mu held; claiming the flag prevents concurrent pollers from
