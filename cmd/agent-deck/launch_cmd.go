@@ -32,6 +32,26 @@ func applyAssertDone(message string, enabled bool) string {
 	return message + assertDoneInstruction
 }
 
+// preAcceptLaunchTrust seeds Claude Code's per-directory trust flag
+// (projects[dir].hasTrustDialogAccepted) in the root ~/.claude.json before
+// the launch spawn, for claude-tool instances only — no other tool shows
+// this prompt. Keyed by realpath, matching the loadout trust seed (#1149),
+// since Claude resolves the cwd through symlinks. Best-effort: a failure is
+// reported to stderr and never blocks launch, matching every other
+// PreAcceptClaudeTrust call site.
+func preAcceptLaunchTrust(inst *session.Instance) {
+	if inst.Tool != "claude" {
+		return
+	}
+	trustDir := inst.EffectiveWorkingDir()
+	if real, err := filepath.EvalSymlinks(trustDir); err == nil {
+		trustDir = real
+	}
+	if err := session.PreAcceptClaudeTrust(session.GetUserMCPRootPath(), trustDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for %q failed (Claude launch may stall on the trust prompt): %v\n", trustDir, err)
+	}
+}
+
 // handleLaunch combines add + start + optional send into a single command.
 // It creates a new session, starts it, and optionally sends an initial message.
 func handleLaunch(profile string, args []string) {
@@ -794,6 +814,17 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// so even non-claude descendants of the pane (Bash-tool spawns,
 	// fork claudes, restart respawn) start with a clean env.
 	session.ScrubProcessEnvForChildLaunch(newInstance)
+
+	// Issue #2102: pre-accept Claude Code's per-directory trust dialog
+	// before the first spawn. A directory Claude has never opened
+	// interactively (no entry in ~/.claude.json) shows "do you trust the
+	// files in this folder?" on startup; nothing on this path answers it,
+	// so the pane exits immediately, the instance is left in `error` with
+	// no tmux session and no log, and the caller sees a false "Launched"
+	// success. This mirrors the same pre-seed already used for conductor
+	// dirs (#1359) and worktree parents (#1149) — best-effort, never
+	// blocks the launch.
+	preAcceptLaunchTrust(newInstance)
 
 	// Start the session.
 	// - default: StartWithMessage waits for readiness and delivers initial prompt
