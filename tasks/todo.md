@@ -34,3 +34,9 @@
 - [x] P3-5 `ReadAllStatuses` guards `json_extract` with `json_valid`; test with `''` and `'not json'`.
 - [x] P3-6 codex banner scan ignores `■` inside tool output (indented / under `└`); `cat` output test.
 - [x] go build/vet; Docker suites; live read-only check; code-simplifier; commit; RESULTS.md + PR-BODY.md.
+
+## Round 4 (rereview-status-lights-r3: PASS, 1 P2 + 1 P3 before merge)
+
+- [x] P2 hook-context children summary takes no pane capture (`buildChildRows(kids, cachedChildStatus)`); `session children --json`/`--follow` keep sampling; 0-tmux-call test; disclosure in hook_lag.go, CHANGELOG, PR-BODY.
+- [x] P3 hook-lag samples ordered at millisecond resolution (`last_sample_at_ms`, round-3 seconds field still read); a busy sample always clears the run; same-second idle-then-busy test.
+- [x] go build/vet; Docker session + cmd suites; live read-only check; commit; RESULTS.md + PR-BODY.md.

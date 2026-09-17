@@ -54,7 +54,10 @@ import (
 // `--follow` (review round 3 P2-4), `status --json --verbose`, `status
 // --stale`, `session show --json`, `fleet verify` — and the TUI/daemon pane
 // path; every surface reaches the same verdict from the same two samples,
-// whichever process captured them.
+// whichever process captured them. Hook handlers never capture: the
+// children summary the parent's UserPromptSubmit/SessionStart hook injects
+// (cmd/agent-deck/hook_children_context.go) reads each child's status from
+// the hook file and the cached/persisted evidence only (review round 4 P2).
 
 // toolDataHookLagKey is the tool_data extras-zone key (see
 // statedb.MergeToolDataExtras: unknown keys survive full saves).
@@ -66,8 +69,8 @@ var hookLagSampleSeconds = int64(tmux.CompletedTurnSampleInterval / time.Second)
 
 // hookLagRecord is the evidence for one hook event: the samples of a
 // completed turn at an idle prompt taken while that event said "running".
-// Unix seconds throughout, so the in-memory and persisted forms compare
-// identically in every process.
+// Unix seconds throughout except LastSampleAtMs, so the in-memory and
+// persisted forms compare identically in every process.
 type hookLagRecord struct {
 	// HookTS is the hook event (hookLastUpdate) the samples were taken under.
 	// A record for any other event is stale and ignored.
@@ -76,9 +79,22 @@ type hookLagRecord struct {
 	// Zero when no idle sample has been seen under HookTS.
 	FirstIdleAt int64 `json:"first_idle_at,omitempty"`
 	LastIdleAt  int64 `json:"last_idle_at,omitempty"`
-	// LastSampleAt is the newest sample of any kind, so re-applying a cached
-	// frame never counts twice.
-	LastSampleAt int64 `json:"last_sample_at,omitempty"`
+	// LastSampleAt is the newest sample of any kind, in whole seconds. Kept
+	// for records written by the round-3 build, which had only this field;
+	// LastSampleAtMs is the resolution samples are actually ordered at
+	// (review round 4 P3: two processes can sample one pane within the same
+	// wall-clock second, and the later capture must not be dropped).
+	LastSampleAt   int64 `json:"last_sample_at,omitempty"`
+	LastSampleAtMs int64 `json:"last_sample_at_ms,omitempty"`
+}
+
+// lastSampleMs is the newest sample time in Unix milliseconds, reading the
+// round-3 seconds field when the record predates LastSampleAtMs.
+func (r hookLagRecord) lastSampleMs() int64 {
+	if r.LastSampleAtMs != 0 {
+		return r.LastSampleAtMs
+	}
+	return r.LastSampleAt * 1000
 }
 
 // note folds one pane sample into the record. idle is the completed-turn
@@ -86,6 +102,13 @@ type hookLagRecord struct {
 // the event the sample must postdate. Samples are only counted when they were
 // captured at least a full second after the hook event, so a frame read in
 // the same second the hook file was written can never be attributed to it.
+//
+// Ordering is by millisecond: an idle sample older than (or the same as) the
+// newest one on record is a re-applied cached frame or another process's
+// earlier capture and counts nothing. A busy sample is never discarded on
+// ordering: whichever process captured it and however it interleaved with
+// another process's persisted idle sample, a live spinner under this hook
+// event clears the run (review round 4 P3).
 func (r *hookLagRecord) note(idle bool, at, hook time.Time) {
 	hookTS := hook.Unix()
 	if r.HookTS != hookTS {
@@ -94,13 +117,19 @@ func (r *hookLagRecord) note(idle bool, at, hook time.Time) {
 	if at.IsZero() {
 		return
 	}
-	sec := at.Unix()
-	if sec <= hookTS || sec <= r.LastSampleAt {
+	sec, ms := at.Unix(), at.UnixMilli()
+	if sec <= hookTS {
 		return
 	}
-	r.LastSampleAt = sec
+	newer := ms > r.lastSampleMs()
+	if newer {
+		r.LastSampleAt, r.LastSampleAtMs = sec, ms
+	}
 	if !idle {
 		r.FirstIdleAt, r.LastIdleAt = 0, 0
+		return
+	}
+	if !newer {
 		return
 	}
 	if r.FirstIdleAt == 0 {
@@ -133,7 +162,7 @@ func (r hookLagRecord) newerThan(o hookLagRecord) bool {
 	if r.HookTS != o.HookTS {
 		return r.HookTS > o.HookTS
 	}
-	return r.LastSampleAt > o.LastSampleAt
+	return r.lastSampleMs() > o.lastSampleMs()
 }
 
 // evidenceKey identifies what other processes need to know: which hook

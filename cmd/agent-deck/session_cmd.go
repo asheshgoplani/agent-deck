@@ -6058,7 +6058,7 @@ func handleSessionChildren(profile string, args []string) {
 	kids := childrenOf(parent.ID, instances)
 	session.RefreshInstancesForCLIStatus(kids)
 
-	rows := buildChildRows(kids)
+	rows := buildChildRows(kids, sampleChildPanes)
 	var human strings.Builder
 	fmt.Fprintf(&human, "Children of %s (%s):\n", parent.Title, parent.ID)
 	for _, row := range rows {

@@ -307,8 +307,9 @@ func TestAudit_B_BusyCaptureRevertsRecordDrivenWaitingInSamePass(t *testing.T) {
 	}
 }
 
-// Pure rule tests: sample accounting is by whole seconds, keyed by the hook
-// event, and a busy sample clears the run.
+// Pure rule tests: sample accounting is keyed by the hook event, idle samples
+// are ordered at millisecond resolution, and a busy sample clears the run
+// whatever its order.
 func TestHookLagRecord(t *testing.T) {
 	hook := time.Unix(1_000_000, 0)
 	var r hookLagRecord
@@ -343,8 +344,71 @@ func TestHookLagRecord(t *testing.T) {
 	}
 	if !(hookLagRecord{HookTS: 2}).newerThan(hookLagRecord{HookTS: 1}) ||
 		!(hookLagRecord{HookTS: 1, LastSampleAt: 5}).newerThan(hookLagRecord{HookTS: 1, LastSampleAt: 4}) ||
-		(hookLagRecord{HookTS: 1, LastSampleAt: 4}).newerThan(hookLagRecord{HookTS: 1, LastSampleAt: 4}) {
+		(hookLagRecord{HookTS: 1, LastSampleAt: 4}).newerThan(hookLagRecord{HookTS: 1, LastSampleAt: 4}) ||
+		!(hookLagRecord{HookTS: 1, LastSampleAt: 4, LastSampleAtMs: 4_700}).newerThan(hookLagRecord{HookTS: 1, LastSampleAt: 4, LastSampleAtMs: 4_200}) ||
+		!(hookLagRecord{HookTS: 1, LastSampleAt: 4, LastSampleAtMs: 4_200}).newerThan(hookLagRecord{HookTS: 1, LastSampleAt: 4}) {
 		t.Fatal("newerThan ordering")
+	}
+}
+
+// Review round 4 P3: two processes sampling one pane within the same
+// wall-clock second. The persisted idle sample (seconds and milliseconds)
+// arrived first; this pass's busy capture, later in the same second, must
+// clear the run — it used to be dropped by the whole-second dedupe, leaving
+// the record confirmed and the pass printing waiting beside running.
+func TestHookLagRecord_SameSecondBusyAfterIdleClearsTheRun(t *testing.T) {
+	hook := time.Unix(1_000_000, 0)
+	var r hookLagRecord
+	r.note(true, hook.Add(2*time.Second), hook)
+	idle := hook.Add(5*time.Second + 200*time.Millisecond)
+	r.note(true, idle, hook)
+	if !r.confirmed(hook) {
+		t.Fatalf("setup: samples 3s apart must confirm, got %+v", r)
+	}
+	if r.LastSampleAt != idle.Unix() || r.LastSampleAtMs != idle.UnixMilli() {
+		t.Fatalf("both sample fields must be written, got %+v", r)
+	}
+	// Round trip through the persisted form, as another process would read it.
+	raw, _ := json.Marshal(r)
+	var other hookLagRecord
+	if err := json.Unmarshal(raw, &other); err != nil || other != r {
+		t.Fatalf("persisted round trip: %v %+v vs %+v", err, other, r)
+	}
+	// Busy capture 500 ms later, same second: clears the run.
+	other.note(false, idle.Add(500*time.Millisecond), hook)
+	if other.confirmed(hook) || other.observed(hook) {
+		t.Fatalf("busy sample in the same second must clear the run, got %+v", other)
+	}
+	if other.LastSampleAtMs != idle.UnixMilli()+500 {
+		t.Fatalf("LastSampleAtMs = %d, want %d", other.LastSampleAtMs, idle.UnixMilli()+500)
+	}
+	// Busy capture OLDER than the newest idle sample (the other process
+	// persisted between this pass's capture and its record load): still clears.
+	r2 := r
+	r2.note(false, idle.Add(-300*time.Millisecond), hook)
+	if r2.confirmed(hook) || r2.observed(hook) {
+		t.Fatalf("an out-of-order busy sample must still clear the run, got %+v", r2)
+	}
+	if r2.LastSampleAtMs != idle.UnixMilli() {
+		t.Fatalf("an older busy sample must not move LastSampleAtMs back, got %+v", r2)
+	}
+	// An idle sample in the same second as the newest idle one is the same
+	// frame re-read at second resolution, or an earlier process's capture:
+	// it never counts twice, in either order.
+	r3 := r
+	r3.note(true, idle.Add(-300*time.Millisecond), hook)
+	if r3 != r {
+		t.Fatalf("older idle sample changed the record: %+v vs %+v", r3, r)
+	}
+	// A round-3 record (seconds only) is read as that second's start, so a
+	// later sample in the same second counts and a busy one clears.
+	legacy := hookLagRecord{HookTS: hook.Unix(), FirstIdleAt: hook.Unix() + 2, LastIdleAt: hook.Unix() + 5, LastSampleAt: hook.Unix() + 5}
+	if legacy.lastSampleMs() != (hook.Unix()+5)*1000 || !legacy.confirmed(hook) {
+		t.Fatalf("legacy record: %+v", legacy)
+	}
+	legacy.note(false, hook.Add(5*time.Second+900*time.Millisecond), hook)
+	if legacy.confirmed(hook) || legacy.LastSampleAtMs != hook.UnixMilli()+5_900 {
+		t.Fatalf("legacy record after same-second busy sample: %+v", legacy)
 	}
 }
 
