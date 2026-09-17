@@ -19,8 +19,8 @@ func writeAccountingTranscript(t *testing.T, lines ...string) string {
 	return path
 }
 
-// assistantLine builds an assistant record with the given usage counters.
-func assistantLine(model string, input, output, cacheCreate, cacheRead int) string {
+// usageAssistantLine builds an assistant record with the given usage counters.
+func usageAssistantLine(model string, input, output, cacheCreate, cacheRead int) string {
 	return fmt.Sprintf(
 		`{"type":"assistant","timestamp":"2026-07-26T10:00:00Z","message":{"model":%q,"usage":{"input_tokens":%d,"output_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d}}}`,
 		model, input, output, cacheCreate, cacheRead,
@@ -32,7 +32,7 @@ func assistantLine(model string, input, output, cacheCreate, cacheRead int) stri
 // cache_creation_input_tokens. Omitting it reported a 6-token context for a
 // ~125k-token prompt.
 func TestParseSessionJSONL_CacheWriteTurnCountsCacheCreation(t *testing.T) {
-	path := writeAccountingTranscript(t, assistantLine("claude-opus-4-7", 6, 42, 125207, 0))
+	path := writeAccountingTranscript(t, usageAssistantLine("claude-opus-4-7", 6, 42, 125207, 0))
 
 	analytics, err := ParseSessionJSONL(path)
 	if err != nil {
@@ -50,8 +50,8 @@ func TestParseSessionJSONL_CacheWriteTurnCountsCacheCreation(t *testing.T) {
 // case: a cache-read turn that also creates new cache entries.
 func TestParseSessionJSONL_ContextTokensSumAllPromptSideCounters(t *testing.T) {
 	path := writeAccountingTranscript(t,
-		assistantLine("claude-opus-4-7", 6, 10, 125207, 0),
-		assistantLine("claude-opus-4-7", 12, 20, 3000, 700000),
+		usageAssistantLine("claude-opus-4-7", 6, 10, 125207, 0),
+		usageAssistantLine("claude-opus-4-7", 12, 20, 3000, 700000),
 	)
 
 	analytics, err := ParseSessionJSONL(path)
@@ -77,7 +77,7 @@ func TestParseSessionJSONL_ContextTokensSumAllPromptSideCounters(t *testing.T) {
 // "the last turn" would zero a live context.
 func TestParseSessionJSONL_UsagelessRecordDoesNotResetContext(t *testing.T) {
 	path := writeAccountingTranscript(t,
-		assistantLine("claude-opus-4-7", 6, 10, 125207, 0),
+		usageAssistantLine("claude-opus-4-7", 6, 10, 125207, 0),
 		`{"type":"assistant","timestamp":"2026-07-26T10:01:00Z","message":{"model":"<synthetic>","content":[{"type":"text"}]}}`,
 	)
 
@@ -99,9 +99,9 @@ func TestParseSessionJSONL_UsagelessRecordDoesNotResetContext(t *testing.T) {
 // counted, not silently dropped.
 func TestParseSessionJSONL_MalformedLineRecordedAsGap(t *testing.T) {
 	path := writeAccountingTranscript(t,
-		assistantLine("claude-opus-4-7", 100, 10, 0, 0),
+		usageAssistantLine("claude-opus-4-7", 100, 10, 0, 0),
 		`{"type":"assistant","message":{`, // truncated JSON
-		assistantLine("claude-opus-4-7", 200, 20, 0, 0),
+		usageAssistantLine("claude-opus-4-7", 200, 20, 0, 0),
 	)
 
 	analytics, err := ParseSessionJSONL(path)
@@ -138,10 +138,10 @@ func TestParseSessionJSONL_MalformedLineRecordedAsGap(t *testing.T) {
 // file structure, not parse failures.
 func TestParseSessionJSONL_BlankLinesAreNotGaps(t *testing.T) {
 	path := writeAccountingTranscript(t,
-		assistantLine("claude-opus-4-7", 100, 10, 0, 0),
+		usageAssistantLine("claude-opus-4-7", 100, 10, 0, 0),
 		"",
 		"   ",
-		assistantLine("claude-opus-4-7", 200, 20, 0, 0),
+		usageAssistantLine("claude-opus-4-7", 200, 20, 0, 0),
 	)
 
 	analytics, err := ParseSessionJSONL(path)
@@ -168,9 +168,9 @@ func TestParseSessionJSONL_OversizeLineIsGapNotTruncation(t *testing.T) {
 
 	huge := `{"type":"user","payload":"` + strings.Repeat("x", maxTranscriptLineBytes+1024) + `"}`
 	path := writeAccountingTranscript(t,
-		assistantLine("claude-opus-4-7", 100, 10, 0, 0),
+		usageAssistantLine("claude-opus-4-7", 100, 10, 0, 0),
 		huge,
-		assistantLine("claude-opus-4-7", 999, 20, 0, 0),
+		usageAssistantLine("claude-opus-4-7", 999, 20, 0, 0),
 	)
 
 	analytics, err := ParseSessionJSONL(path)
@@ -222,7 +222,7 @@ func TestParseSessionJSONL_GapSampleIsCapped(t *testing.T) {
 // warning must not fire on a healthy transcript.
 func TestParseSessionJSONL_CleanTranscriptHasNoGaps(t *testing.T) {
 	path := writeAccountingTranscript(t,
-		assistantLine("claude-opus-4-7", 100, 10, 0, 0),
+		usageAssistantLine("claude-opus-4-7", 100, 10, 0, 0),
 		`{"type":"user","message":{"content":"hi"}}`,
 	)
 
@@ -242,8 +242,8 @@ func TestParseSessionJSONL_CleanTranscriptHasNoGaps(t *testing.T) {
 // the harness is still appending to.
 func TestParseSessionJSONL_NoTrailingNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
-	body := assistantLine("claude-opus-4-7", 100, 10, 0, 0) + "\n" +
-		assistantLine("claude-opus-4-7", 555, 20, 0, 0) // no trailing \n
+	body := usageAssistantLine("claude-opus-4-7", 100, 10, 0, 0) + "\n" +
+		usageAssistantLine("claude-opus-4-7", 555, 20, 0, 0) // no trailing \n
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
