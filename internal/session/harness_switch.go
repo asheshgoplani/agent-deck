@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,7 +20,28 @@ type HarnessSwitchOptions struct {
 	Target   SwitchPreviewTarget
 	MaxBytes int
 	NoStart  bool
+	// Storage, when set, makes ExecuteHarnessSwitch persist the account/native-ID
+	// mutation to the registry itself, in the same operation as the transcript
+	// install, instead of leaving that write to a second caller-side step that
+	// can be skipped or forgotten. A caller that still performs its own
+	// follow-up Storage.CommitNativeHarnessSwitch call gets a safe no-op
+	// acknowledgement (HarnessSwitchResult.nativeStorageAcknowledgement).
+	Storage *Storage
+	// ArchiveDestination authorizes archiving an existing destination transcript
+	// that is not provably stale (newer, or diverges after its common prefix
+	// with the source) instead of refusing the switch. Nil/false preserves the
+	// safe-by-default refusal; a stale destination (its newest event strictly
+	// predates the source's) is always archived automatically regardless of
+	// this flag.
+	ArchiveDestination bool
 }
+
+// ErrSwitchDestinationDivergent marks the specific "destination already has a
+// newer or genuinely divergent transcript" refusal so callers (CLI/TUI) can
+// offer an explicit "archive destination and switch" retry instead of a dead
+// end. It is never returned for a destination that install already proved
+// stale: that case is archived automatically.
+var ErrSwitchDestinationDivergent = errors.New("destination contains a divergent or newer conversation")
 
 // HarnessSwitchResult is deliberately explicit about continuity. Committed is
 // true only after the destination identity and readiness checks pass (or when
@@ -39,6 +61,10 @@ type HarnessSwitchResult struct {
 	Committed            bool
 	Warnings             []string
 	LossDisclosure       []string
+	// DestinationArchived is the path an existing destination transcript was
+	// moved to before this switch installed the source's transcript in its
+	// place, or "" when no archive happened.
+	DestinationArchived string
 	// nativeSource/nativeTarget are the exact durable mutation for the
 	// post-lifecycle registry CAS. They remain private so callers cannot forge
 	// a switch commit without ExecuteHarnessSwitch's journal binding.
@@ -99,6 +125,10 @@ type switchJournal struct {
 	RequestGeneration string         `json:"request_generation"`
 	DestinationReady  bool           `json:"destination_ready"`
 	TargetObserved    bool           `json:"target_observed"`
+	// DestinationArchived is optional so journals written by older releases
+	// (before this field existed) remain readable; its zero value means "no
+	// archive happened", which is also correct for their operations.
+	DestinationArchived string `json:"destination_archived,omitempty"`
 }
 
 // ExecuteHarnessSwitch is the only mutating account/harness switch entry
@@ -210,9 +240,12 @@ func ExecuteHarnessSwitch(cfg *UserConfig, inst *Instance, opts HarnessSwitchOpt
 	}
 	if journal != nil && journal.State == switchFailed {
 		// A failed journal is a tombstone, not permission to replay an old
-		// mutation. A new request gets a fresh operation only after the caller
-		// has restored the source identity.
-		return nil, fmt.Errorf("previous switch failed: %s", journal.Failure)
+		// mutation, and it must never block every future retry either: archive
+		// it as history at this exact operation path and start a fresh attempt.
+		if _, archiveErr := archiveFailedSwitchJournal(journalPath, journal); archiveErr != nil {
+			return nil, fmt.Errorf("previous switch failed: %s; preserving that failure as history also failed: %w", journal.Failure, archiveErr)
+		}
+		journal = nil
 	}
 	if IsClaudeCompatible(preview.SourceTool) && IsClaudeCompatible(preview.TargetHarness) {
 		return executeNativeClaudeSwitch(cfg, inst, preview, opts, journalPath, journal)
@@ -355,9 +388,11 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		// resolver used to locate the source.
 		dst := filepath.Join(ExpandPath(targetDir), "projects", filepath.Base(filepath.Dir(sourcePath)), filepath.Base(sourcePath))
 		j.Destination = dst
-		if err := installStagedArtifact(stagePath, dst, sourceHash); err != nil {
+		archived, err := installStagedArtifact(stagePath, dst, sourceHash, opts.ArchiveDestination)
+		if err != nil {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
 		}
+		j.DestinationArchived = archived
 		if info, statErr := os.Stat(stageSidecar); statErr == nil && info.IsDir() {
 			if err := installStagedDirectory(stageSidecar, filepath.Join(filepath.Dir(dst), inst.ClaudeSessionID)); err != nil {
 				return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
@@ -372,7 +407,8 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		j.Failure = "folder trust pre-seed: " + trustErr.Error()
 	}
 	oldAccount := inst.Account
-	if err := commitNativeSwitchAccount(journalPath, j, inst, preview.TargetAccount, wasRunning); err != nil {
+	storageAcknowledged, err := commitNativeSwitchAccount(journalPath, j, inst, preview.TargetAccount, wasRunning, opts.Storage)
+	if err != nil {
 		return nil, err
 	}
 
@@ -380,13 +416,16 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 	if sourcePath == "" {
 		conversation = "no conversation to migrate (fresh session); target account committed; native destination readiness was not asserted"
 	}
-	result := nativeHarnessSwitchResult(&HarnessSwitchResult{Preview: preview, OldTool: inst.Tool, NewTool: inst.Tool, OldAccount: oldAccount, NewAccount: inst.Account, Continuity: "native", Conversation: conversation, SourceArtifactSHA256: sourceHash, DestinationPath: j.Destination, Committed: true, LossDisclosure: append([]string(nil), preview.Fidelity.Exclusions...)}, j.Source, j.Target)
+	result := nativeHarnessSwitchResult(&HarnessSwitchResult{Preview: preview, OldTool: inst.Tool, NewTool: inst.Tool, OldAccount: oldAccount, NewAccount: inst.Account, Continuity: "native", Conversation: conversation, SourceArtifactSHA256: sourceHash, DestinationPath: j.Destination, DestinationArchived: j.DestinationArchived, Committed: true, LossDisclosure: append([]string(nil), preview.Fidelity.Exclusions...)}, j.Source, j.Target)
 	result.nativeJournalPath = journalPath
+	result.nativeStorageAcknowledgement = storageAcknowledged
 	if !opts.NoStart && wasRunning {
 		if err := startNativeSwitchInstance(inst); err != nil {
 			result.Committed = false
 			inst.Account = oldAccount
-			if restartErr := startNativeSwitchInstance(inst); restartErr != nil {
+			if restoreErr := revertNativeSwitchStorage(opts.Storage, inst, storageAcknowledged, j.Target, j.Source); restoreErr != nil {
+				j.Failure = fmt.Sprintf("target start failed: %v; persisted account restore failed: %v", err, restoreErr)
+			} else if restartErr := startNativeSwitchInstance(inst); restartErr != nil {
 				j.Failure = fmt.Sprintf("target start failed: %v; source rollback failed: %v", err, restartErr)
 			} else {
 				j.Failure = "target start failed; source account restored"
@@ -504,12 +543,14 @@ func executeNativeCodexSwitch(cfg *UserConfig, inst *Instance, preview *SwitchPr
 	}
 	destination := filepath.Join(ExpandPath(targetHome), rel)
 	j.Destination = destination
-	if err := installStagedArtifact(stagePath, destination, sourceHash); err != nil {
+	archived, err := installStagedArtifact(stagePath, destination, sourceHash, opts.ArchiveDestination)
+	if err != nil {
 		if wasRunning {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
 		}
 		return switchFailedNative(journalPath, j, err)
 	}
+	j.DestinationArchived = archived
 	j.State = switchInstalled
 	if err := writeSwitchJournal(journalPath, j); err != nil {
 		if wasRunning {
@@ -519,21 +560,32 @@ func executeNativeCodexSwitch(cfg *UserConfig, inst *Instance, preview *SwitchPr
 	}
 	oldAccount := inst.Account
 	oldIdentity := identityForInstance(inst)
-	if err := commitNativeSwitchAccount(journalPath, j, inst, preview.TargetAccount, wasRunning); err != nil {
+	storageAcknowledged, err := commitNativeSwitchAccount(journalPath, j, inst, preview.TargetAccount, wasRunning, opts.Storage)
+	if err != nil {
 		return nil, err
 	}
-	result := nativeHarnessSwitchResult(&HarnessSwitchResult{Preview: preview, OldTool: inst.Tool, NewTool: inst.Tool, OldAccount: oldAccount, NewAccount: inst.Account, Continuity: "native", Conversation: "Codex rollout migrated; native destination readiness has not yet been asserted", SourceArtifactSHA256: sourceHash, DestinationPath: destination, Committed: true, LossDisclosure: append([]string(nil), preview.Fidelity.Exclusions...)}, j.Source, j.Target)
+	result := nativeHarnessSwitchResult(&HarnessSwitchResult{Preview: preview, OldTool: inst.Tool, NewTool: inst.Tool, OldAccount: oldAccount, NewAccount: inst.Account, Continuity: "native", Conversation: "Codex rollout migrated; native destination readiness has not yet been asserted", SourceArtifactSHA256: sourceHash, DestinationPath: destination, DestinationArchived: j.DestinationArchived, Committed: true, LossDisclosure: append([]string(nil), preview.Fidelity.Exclusions...)}, j.Source, j.Target)
 	result.nativeJournalPath = journalPath
+	result.nativeStorageAcknowledgement = storageAcknowledged
 	if !opts.NoStart && wasRunning {
 		if err := startNativeSwitchInstance(inst); err != nil {
 			result.Committed = false
 			restoreSwitchIdentity(inst, oldIdentity, oldIdentity.Command)
-			rollbackErr := startNativeSwitchInstance(inst)
+			storageErr := revertNativeSwitchStorage(opts.Storage, inst, storageAcknowledged, j.Target, j.Source)
+			var rollbackErr error
+			if storageErr == nil {
+				rollbackErr = startNativeSwitchInstance(inst)
+			}
 			j.State, j.Failure = switchFailed, err.Error()
-			if rollbackErr != nil {
+			if storageErr != nil {
+				j.Failure += "; persisted account restore failed: " + storageErr.Error()
+			} else if rollbackErr != nil {
 				j.Failure += "; source rollback failed: " + rollbackErr.Error()
 			}
 			_ = writeSwitchJournal(journalPath, j)
+			if storageErr != nil {
+				return result, fmt.Errorf("%w; persisted account restore failed: %v", err, storageErr)
+			}
 			if rollbackErr != nil {
 				return result, fmt.Errorf("%w; source rollback failed: %v", err, rollbackErr)
 			}
@@ -699,18 +751,51 @@ func startNativeSwitchInstance(inst *Instance) error {
 // commitNativeSwitchAccount is the last durable boundary before a native
 // target can start. If writing it fails after the source was stopped, restore
 // the complete original identity and restart the source before returning.
-func commitNativeSwitchAccount(path string, j *switchJournal, inst *Instance, account string, wasRunning bool) error {
+//
+// When storage is provided, the account/native-ID mutation is persisted to
+// the registry right here, as part of this same operation, instead of being
+// left to a second caller-side step that a crash or an early return could
+// skip — the historical cause of a "successful" switch that left the
+// session's account field empty. A storage write failure rolls the identity
+// back and fails the whole switch before the target is ever started, exactly
+// like any other post-install failure. The returned bool reports whether
+// storage already durably holds the new account, so the caller's own
+// eventual Storage.CommitNativeHarnessSwitch call (CLI/TUI) becomes a safe,
+// idempotent acknowledgement rather than a second required mutation.
+func commitNativeSwitchAccount(path string, j *switchJournal, inst *Instance, account string, wasRunning bool, storage *Storage) (bool, error) {
 	if inst == nil || j == nil {
-		return fmt.Errorf("native switch commit is missing source identity")
+		return false, fmt.Errorf("native switch commit is missing source identity")
 	}
 	inst.Account = account
 	j.State = switchCommitted
 	if err := harnessSwitchJournalWrite(path, j); err != nil {
 		returnCause := fmt.Errorf("persist native switch commit: %w", err)
 		_, rollbackErr := switchFailedAfterStop(path, j, inst, wasRunning, returnCause)
-		return rollbackErr
+		return false, rollbackErr
 	}
-	return nil
+	if storage == nil {
+		return false, nil
+	}
+	stub := nativeHarnessSwitchResult(&HarnessSwitchResult{Committed: true}, j.Source, identityForInstance(inst))
+	if err := storage.CommitNativeHarnessSwitch(inst, stub); err != nil {
+		cause := fmt.Errorf("persist account to session record: %w", err)
+		_, rollbackErr := switchFailedAfterStop(path, j, inst, wasRunning, cause)
+		return false, rollbackErr
+	}
+	return true, nil
+}
+
+// revertNativeSwitchStorage undoes an already-acknowledged storage account
+// commit when a later step (starting the target) fails, so the in-memory
+// identity restored by the caller never diverges from what storage durably
+// holds. It is a no-op when storage was never written (storageAcknowledged is
+// false, e.g. Storage was nil).
+func revertNativeSwitchStorage(storage *Storage, inst *Instance, storageAcknowledged bool, committed, restored switchIdentity) error {
+	if !storageAcknowledged || storage == nil {
+		return nil
+	}
+	stub := nativeHarnessSwitchResult(&HarnessSwitchResult{Committed: true}, committed, restored)
+	return storage.CommitNativeHarnessSwitch(inst, stub)
 }
 
 func nativeHarnessSwitchResult(result *HarnessSwitchResult, source, target switchIdentity) *HarnessSwitchResult {
@@ -861,118 +946,153 @@ func installStagedDirectory(stage, destination string) error {
 // clobbering a destination conversation. An identical destination is already
 // installed. A shorter destination may be advanced only when it is a strict
 // byte prefix of the staged exact source; its own fsynced .bak- snapshot is
-// retained before an atomic replacement. Diverged or newer destinations are
-// left intact alongside the staged source for explicit recovery.
-func installStagedArtifact(stage, destination, expectedHash string) error {
+// retained before an atomic replacement.
+//
+// A destination that is not a strict prefix (a genuinely different history)
+// is not automatically an unrecoverable refusal: if its own newest event
+// timestamp is strictly older than the staged source's, it is a stale copy
+// left behind by an earlier switch (for example, a prior account's pre-switch
+// snapshot) and is archived to "<destination>.pre-switch-<timestamp>" before
+// installing the source in its place. Only a destination that is provably
+// newer, or whose staleness cannot be determined, still refuses by default;
+// archiveDestination authorizes archiving it anyway (the CLI
+// --archive-destination flag / TUI "Archive destination copy and switch"
+// action).
+func installStagedArtifact(stage, destination, expectedHash string, archiveDestination bool) (archivedPath string, err error) {
 	if expectedHash == "" {
-		return fmt.Errorf("staged source hash is required")
+		return "", fmt.Errorf("staged source hash is required")
 	}
 	stageInfo, err := os.Lstat(stage)
 	if err != nil {
-		return fmt.Errorf("inspect staged artifact: %w", err)
+		return "", fmt.Errorf("inspect staged artifact: %w", err)
 	}
 	if stageInfo.Mode()&os.ModeSymlink != 0 || !stageInfo.Mode().IsRegular() {
-		return fmt.Errorf("staged artifact is not a regular file: %s", stage)
+		return "", fmt.Errorf("staged artifact is not a regular file: %s", stage)
 	}
 	stageHash, err := sha256File(stage)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if stageHash != expectedHash {
-		return fmt.Errorf("staged source hash mismatch")
+		return "", fmt.Errorf("staged source hash mismatch")
 	}
 	if err := ensureNoSymlinkPath(filepath.Dir(destination)); err != nil {
-		return fmt.Errorf("unsafe destination: %w", err)
+		return "", fmt.Errorf("unsafe destination: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return err
+		return "", err
 	}
+	// A prior failed attempt at this exact destination may have left its lock
+	// file behind; sweep it before taking a fresh one (flock itself does not
+	// need this, but litter should not accumulate forever).
+	cleanupStaleSwitchInstallLocks(filepath.Dir(destination))
 	// All Agent Deck writers use this destination-specific interprocess lock.
 	// The final hash revalidation below makes an external change a bounded
 	// refusal rather than permission to overwrite bytes we did not snapshot.
 	lock, err := AcquireConfigFileLock(destination + ".switch-install")
 	if err != nil {
-		return fmt.Errorf("lock destination install: %w", err)
+		return "", fmt.Errorf("lock destination install: %w", err)
 	}
 	defer lock.Release()
 
 	info, err := os.Lstat(destination)
 	if os.IsNotExist(err) {
 		if err := copyFileVerified(stage, destination); err != nil {
-			return err
+			return "", err
 		}
 		got, err := sha256File(destination)
 		if err != nil || got != expectedHash {
 			if err == nil {
 				err = fmt.Errorf("destination hash mismatch")
 			}
-			return err
+			return "", err
 		}
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return fmt.Errorf("reinspect destination artifact: %w", err)
+		return "", fmt.Errorf("reinspect destination artifact: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("refusing destination artifact: %s", destination)
+		return "", fmt.Errorf("refusing destination artifact: %s", destination)
 	}
 	destinationHash, err := sha256File(destination)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if destinationHash == expectedHash {
-		return nil
+		return "", nil
 	}
 
 	isPrefix, err := strictBytePrefix(destination, stage)
 	if err != nil {
-		return fmt.Errorf("validate destination ancestry: %w", err)
+		return "", fmt.Errorf("validate destination ancestry: %w", err)
 	}
 	if !isPrefix {
-		return fmt.Errorf("destination contains a divergent or newer conversation; preserving both files and refusing overwrite: %s", destination)
+		stale, staleErr := destinationIsStaleByEvents(destination, stage)
+		if staleErr != nil {
+			stale = false
+		}
+		if !stale && !archiveDestination {
+			return "", fmt.Errorf("%w; preserving both files and refusing overwrite: %s", ErrSwitchDestinationDivergent, destination)
+		}
+		archivedPath, err = archiveStaleDestination(destination)
+		if err != nil {
+			return "", fmt.Errorf("archive stale destination: %w", err)
+		}
+		if err := copyFileVerified(stage, destination); err != nil {
+			return archivedPath, err
+		}
+		got, err := sha256File(destination)
+		if err != nil || got != expectedHash {
+			if err == nil {
+				err = fmt.Errorf("destination hash mismatch after archiving stale destination")
+			}
+			return archivedPath, err
+		}
+		return archivedPath, nil
 	}
 	backup, err := snapshotConversationArtifact(destination, destinationHash)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// A concurrent non-cooperating writer cannot be safely overwritten. Keep
 	// the durable snapshot and require an explicit retry/recovery instead.
 	currentHash, err := sha256File(destination)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if currentHash != destinationHash {
-		return fmt.Errorf("destination changed during safe append preparation; preserved snapshot at %s and refusing overwrite", backup)
+		return "", fmt.Errorf("destination changed during safe append preparation; preserved snapshot at %s and refusing overwrite", backup)
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(destination), ".switch-install-")
 	if err != nil {
-		return err
+		return "", err
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		return err
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return "", err
 	}
 	if err := copyFileVerified(stage, tmpPath); err != nil {
-		return err
+		return "", err
 	}
 	if err := syncRegularFile(tmpPath); err != nil {
-		return fmt.Errorf("sync replacement artifact: %w", err)
+		return "", fmt.Errorf("sync replacement artifact: %w", err)
 	}
 	currentHash, err = sha256File(destination)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if currentHash != destinationHash {
-		return fmt.Errorf("destination changed before safe append install; preserved snapshot at %s and refusing overwrite", backup)
+		return "", fmt.Errorf("destination changed before safe append install; preserved snapshot at %s and refusing overwrite", backup)
 	}
 	if err := os.Rename(tmpPath, destination); err != nil {
-		return fmt.Errorf("atomically install advanced conversation: %w", err)
+		return "", fmt.Errorf("atomically install advanced conversation: %w", err)
 	}
 	fsyncDir(filepath.Dir(destination))
 	got, err := sha256File(destination)
@@ -980,9 +1100,91 @@ func installStagedArtifact(stage, destination, expectedHash string) error {
 		if err == nil {
 			err = fmt.Errorf("destination hash mismatch after safe append install")
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return "", nil
+}
+
+// destinationIsStaleByEvents compares the newest event timestamp recorded
+// inside each JSONL transcript. It reports true only when both files parse at
+// least one timestamped event and the destination's newest event strictly
+// predates the source's: an empty, unparseable, or tied comparison is never
+// treated as stale, since that is not proof the destination is safe to lose.
+func destinationIsStaleByEvents(destination, source string) (bool, error) {
+	destTime, err := newestJSONLEventTimestamp(destination)
+	if err != nil {
+		return false, err
+	}
+	sourceTime, err := newestJSONLEventTimestamp(source)
+	if err != nil {
+		return false, err
+	}
+	if destTime.IsZero() || sourceTime.IsZero() {
+		return false, fmt.Errorf("no timestamped events found for ancestry comparison")
+	}
+	return destTime.Before(sourceTime), nil
+}
+
+// newestJSONLEventTimestamp scans a Claude/Codex transcript JSONL file and
+// returns the latest "timestamp" field across all lines. Lines that are not
+// valid JSON objects, or that omit/misparse the field, are skipped rather
+// than failing the whole scan: a transcript can carry a handful of malformed
+// or unrelated lines without losing every other event's evidence.
+func newestJSONLEventTimestamp(path string) (time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer f.Close()
+	var newest time.Time
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var event struct {
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil || event.Timestamp == "" {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+		if err != nil {
+			continue
+		}
+		if ts.After(newest) {
+			newest = ts
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return time.Time{}, err
+	}
+	return newest, nil
+}
+
+// archiveStaleDestination moves an existing destination transcript aside as
+// "<destination>.pre-switch-<YYYYMMDD-HHMMSS>" so installing the source's
+// transcript in its place never discards it.
+func archiveStaleDestination(destination string) (string, error) {
+	for n := 0; ; n++ {
+		suffix := time.Now().UTC().Format("20060102-150405")
+		if n > 0 {
+			suffix = fmt.Sprintf("%s-%d", suffix, n)
+		}
+		archived := destination + ".pre-switch-" + suffix
+		if _, statErr := os.Lstat(archived); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		if err := os.Rename(destination, archived); err != nil {
+			return "", err
+		}
+		fsyncDir(filepath.Dir(archived))
+		return archived, nil
+	}
 }
 
 func strictBytePrefix(prefixPath, fullPath string) (bool, error) {
@@ -1334,6 +1536,71 @@ func incompleteSwitchJournalPath(id, exceptPath string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// archiveFailedSwitchJournal renames a terminal failed journal out of the
+// active request path so the same request generation can start a genuinely
+// fresh attempt. The failure is preserved on disk as history (never deleted)
+// instead of blocking every subsequent retry forever.
+func archiveFailedSwitchJournal(path string, journal *switchJournal) (string, error) {
+	if journal == nil {
+		return "", nil
+	}
+	stamp := journal.UpdatedAt
+	if stamp.IsZero() {
+		stamp = time.Now()
+	}
+	base := strings.TrimSuffix(path, ".json")
+	for n := 0; ; n++ {
+		suffix := stamp.UTC().Format("20060102-150405")
+		if n > 0 {
+			suffix = fmt.Sprintf("%s-%d", suffix, n)
+		}
+		archived := base + ".failed-" + suffix + ".json"
+		if _, statErr := os.Lstat(archived); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		if err := os.Rename(path, archived); err != nil {
+			if os.IsNotExist(err) {
+				// Already archived or removed by a racing recovery; nothing left
+				// to preserve, and the caller can safely start a fresh journal.
+				return "", nil
+			}
+			return "", fmt.Errorf("archive failed switch journal: %w", err)
+		}
+		fsyncDir(filepath.Dir(archived))
+		return archived, nil
+	}
+}
+
+// staleSwitchInstallLockAge bounds how long an orphaned *.switch-install.lock
+// file (left beside a destination transcript by a prior attempt) is kept
+// around before a fresh attempt sweeps it. flock releases automatically when
+// the process holding it exits, so a lock file surviving past its own process
+// is inert clutter, not a live hold; this is housekeeping, not a hang fix.
+const staleSwitchInstallLockAge = time.Hour
+
+// cleanupStaleSwitchInstallLocks removes stale *.switch-install.lock files
+// from dir before a new install attempt, so failed installs do not leave
+// permanent litter beside the destination transcript.
+func cleanupStaleSwitchInstallLocks(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleSwitchInstallLockAge)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".switch-install.lock") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
 }
 
 func switchStageRoot(id string) (string, error) {

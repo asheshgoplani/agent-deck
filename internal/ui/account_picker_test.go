@@ -280,6 +280,16 @@ func TestEditSessionDialogCommitRoutesAccountThroughSwitch(t *testing.T) {
 	home.instancesMu.Unlock()
 	home.groupTree = session.NewGroupTree(home.instances)
 	home.rebuildFlatItems()
+	// The switch now persists its own account mutation atomically with the
+	// transcript install (instead of relying solely on a later, skippable
+	// caller-side commit), so the storage row must exist beforehand exactly
+	// like it would for any real, already-saved session.
+	if home.storage == nil {
+		t.Fatal("test setup requires a real storage instance")
+	}
+	if err := home.storage.Save([]*session.Instance{inst}); err != nil {
+		t.Fatalf("seed storage: %v", err)
+	}
 
 	home.editSessionDialog.SetSize(home.width, home.height)
 	home.editSessionDialog.Show(inst)

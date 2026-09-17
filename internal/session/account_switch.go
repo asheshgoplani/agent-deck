@@ -15,6 +15,15 @@ var (
 
 type AccountSwitchOptions struct {
 	NoRestart bool
+	// Storage, when set, makes the switch persist the account mutation to the
+	// registry as part of this same operation instead of requiring the
+	// caller's separate CommitAccountSwitch step to be the only place that
+	// ever writes it.
+	Storage *Storage
+	// ArchiveDestination authorizes archiving a destination transcript that is
+	// not provably stale instead of refusing the switch; see
+	// HarnessSwitchOptions.ArchiveDestination.
+	ArchiveDestination bool
 }
 
 type AccountSwitchResult struct {
@@ -24,6 +33,10 @@ type AccountSwitchResult struct {
 	Conversation string
 	Restarted    bool
 	Warnings     []string
+	// DestinationArchived is the path an existing destination transcript was
+	// archived to before this switch installed the source's transcript in its
+	// place, or "" when no archive happened.
+	DestinationArchived string
 
 	// nativeResult is the executor-issued storage-CAS capability. It is kept
 	// private so compatibility callers cannot construct a result that commits
@@ -66,8 +79,10 @@ func SwitchAccount(cfg *UserConfig, inst *Instance, account string, opts Account
 		return nil, fmt.Errorf("%w: %s", sentinel, preview.Refusal.Message)
 	}
 	result, err := ExecuteHarnessSwitch(cfg, inst, HarnessSwitchOptions{
-		Target:  SwitchPreviewTarget{Harness: inst.Tool, Account: account},
-		NoStart: opts.NoRestart,
+		Target:             SwitchPreviewTarget{Harness: inst.Tool, Account: account},
+		NoStart:            opts.NoRestart,
+		Storage:            opts.Storage,
+		ArchiveDestination: opts.ArchiveDestination,
 	})
 	if result == nil {
 		return nil, err
@@ -83,13 +98,14 @@ func SwitchAccount(cfg *UserConfig, inst *Instance, account string, opts Account
 		conversation = "no conversation to migrate (fresh session)"
 	}
 	return &AccountSwitchResult{
-		OldAccount:   result.OldAccount,
-		NewAccount:   result.NewAccount,
-		MigratedPath: result.DestinationPath,
-		Conversation: conversation,
-		Restarted:    result.Restarted,
-		Warnings:     result.Warnings,
-		nativeResult: result,
+		OldAccount:          result.OldAccount,
+		NewAccount:          result.NewAccount,
+		MigratedPath:        result.DestinationPath,
+		Conversation:        conversation,
+		Restarted:           result.Restarted,
+		Warnings:            result.Warnings,
+		DestinationArchived: result.DestinationArchived,
+		nativeResult:        result,
 	}, err
 }
 

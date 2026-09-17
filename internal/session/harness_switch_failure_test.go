@@ -48,7 +48,7 @@ func TestHarnessSwitchFailure_PrefixBackupAndReplacementSyncParentDirectory(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := installStagedArtifact(stage, destination, hash); err != nil {
+	if _, err := installStagedArtifact(stage, destination, hash, false); err != nil {
 		t.Fatal(err)
 	}
 	if directorySyncs != 2 {
@@ -69,7 +69,7 @@ func TestHarnessSwitchFailure_ConflictingDestinationIsRefused(t *testing.T) {
 	if err := os.WriteFile(destination, []byte(`{"sessionId":"other","message":"do not overwrite"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := installStagedArtifact(stage, destination, "not-the-destination-hash"); err == nil {
+	if _, err := installStagedArtifact(stage, destination, "not-the-destination-hash", false); err == nil {
 		t.Fatal("conflicting destination must be refused")
 	}
 	got, err := os.ReadFile(destination)
@@ -107,7 +107,7 @@ func TestHarnessSwitchFailure_DivergedOrNewerDestinationIsPreserved(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = installStagedArtifact(stage, destination, hash)
+			_, err = installStagedArtifact(stage, destination, hash, false)
 			if err == nil || !strings.Contains(err.Error(), "divergent or newer") {
 				t.Fatalf("install error = %v, want bounded divergent/newer refusal", err)
 			}
@@ -150,7 +150,7 @@ func TestHarnessSwitchFailure_CommittedJournalFailureRestoresRunningNativeSource
 		return errors.New("injected committed journal failure")
 	}
 
-	err := commitNativeSwitchAccount(filepath.Join(t.TempDir(), "switch.json"), journal, inst, "work", true)
+	_, err := commitNativeSwitchAccount(filepath.Join(t.TempDir(), "switch.json"), journal, inst, "work", true, nil)
 	if err == nil || !strings.Contains(err.Error(), "injected committed journal failure") || !strings.Contains(err.Error(), "source restore failed: injected source restart failure") {
 		t.Fatalf("commit error = %v, want journal and rollback failures", err)
 	}
@@ -184,7 +184,7 @@ func TestHarnessSwitchFailure_CommittedJournalFailureRestoresStoppedNativeSource
 		return errors.New("injected committed journal failure")
 	}
 
-	err := commitNativeSwitchAccount(filepath.Join(t.TempDir(), "switch.json"), journal, inst, "work", false)
+	_, err := commitNativeSwitchAccount(filepath.Join(t.TempDir(), "switch.json"), journal, inst, "work", false, nil)
 	if err == nil || !strings.Contains(err.Error(), "injected committed journal failure") {
 		t.Fatalf("commit error = %v, want journal failure", err)
 	}
