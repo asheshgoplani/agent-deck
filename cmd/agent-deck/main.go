@@ -2665,6 +2665,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		ArchivedAt        time.Time `json:"archived_at,omitempty"`
 		SupersededBy      string    `json:"superseded_by,omitempty"`
 		Supersedes        string    `json:"supersedes,omitempty"`
+		CodexSessionID    string    `json:"codex_session_id,omitempty"`
+		ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
 		// apply the local recency filter (session.TimeFilterMode) to this
 		// session, the same way it applies to a local one.
@@ -2700,6 +2702,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			ArchivedAt:        inst.ArchivedAt,
 			SupersededBy:      inst.SupersededBy,
 			Supersedes:        inst.Supersedes,
+			CodexSessionID:    inst.CodexSessionID,
+			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
@@ -2747,6 +2751,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 			CreatedAt         time.Time `json:"created_at"`
 			SSHHost           string    `json:"ssh_host,omitempty"`
 			SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
+			CodexSessionID    string    `json:"codex_session_id,omitempty"`
+			ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		}
 		var allSessions []sessionJSON
 
@@ -2777,6 +2783,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 					CreatedAt:         inst.CreatedAt,
 					SSHHost:           inst.SSHHost,
 					SSHRemotePath:     inst.SSHRemotePath,
+					CodexSessionID:    inst.CodexSessionID,
+					ResolvedCodexHome: inst.ResolvedCodexHome(),
 				})
 			}
 		}

@@ -1810,6 +1810,7 @@ func handleSessionShow(profile string, args []string) {
 			jsonData["auto_linked_channels"] = inst.AutoLinkedChannels
 		}
 	}
+	addCodexMetadataJSON(jsonData, inst)
 
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
 		jsonData["tmux_session"] = tmuxSession.Name
