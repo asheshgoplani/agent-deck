@@ -51,13 +51,17 @@ func TestIssue1793_LargePayloadNeverSeenInPane_IsAFailureNotAnUnverifiedSuccess(
 	}
 }
 
-// TestIssue1793_LargePayloadVisibleInPane_IsReportedTypedNotSubmitted pins the
-// positive direction, and pins it through terminal line wrapping: a pane wraps long
-// content at its width and capture-pane returns those wraps as newlines, so a
-// byte-exact search for the body fails on any real wide message. Verification
-// that cannot see a delivered message is worse than none — it turns working
-// sends into failures.
-func TestIssue1793_LargePayloadVisibleInPane_IsReportedTypedNotSubmitted(t *testing.T) {
+// TestIssue1793_LargePayloadVisibleInPane_StillInComposerIsAFailure pins the
+// positive direction, and pins it through terminal line wrapping: a pane wraps
+// long content at its width and capture-pane returns those wraps as newlines,
+// so a byte-exact search for the body fails on any real wide message.
+// Verification that cannot see a delivered message is worse than none — it
+// turns working sends into failures.
+//
+// The body is sitting at the composer glyph after Enter with nothing taking
+// it: that is positive evidence the Enter was not accepted (the reported
+// bug), so this is typed_not_submitted, exit 1 — never exit 0.
+func TestIssue1793_LargePayloadVisibleInPane_StillInComposerIsAFailure(t *testing.T) {
 	msg := bigMessage(4095)
 
 	// Render the message the way a 80-column pane would: hard-wrapped.
@@ -78,51 +82,94 @@ func TestIssue1793_LargePayloadVisibleInPane_IsReportedTypedNotSubmitted(t *test
 	}
 
 	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
-		maxRetries: 4, checkDelay: 0,
+		maxRetries: 4, checkDelay: 0, tool: "codex",
 	})
-	// Seen in the pane, but the agent never took it up: typed, NOT submitted,
-	// and NOT a success. Text sitting unsent in a composer is the reported
-	// bug; returning nil here would give the caller exit 0 and
-	// "success": true right next to "submitted": false.
 	if err == nil {
-		t.Fatal("issue #1793: a message that reached the pane but was never submitted must not report success")
+		t.Fatal("issue #1793: a message still sitting in the composer after Enter must not report success")
 	}
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
+	if delivery != deliveryTypedNotSubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliveryTypedNotSubmitted, delivery)
 	}
 	if fields := (sendDeliveryResult{delivery: delivery}).jsonFields(); fields["submitted"] != false {
-		t.Fatalf("typed must report submitted=false in --json, got %v", fields["submitted"])
+		t.Fatalf("typed_not_submitted must report submitted=false in --json, got %v", fields["submitted"])
 	}
 }
 
-// TestIssue1793_ClaudePath_TypedButNeverSubmitted_IsNotSuccess is the Claude
-// half of the same defect. The Claude verification loop treated "the body is
+// TestIssue1793_LargePayloadInTranscriptNotComposer_IsDeliveredUnconfirmed is
+// the other half of the same frame: the body landed in the pane and the
+// composer is empty again, but no submission signal arrived in the window.
+// Nothing showed it failing, so this is delivered with confirmation unknown
+// (exit 0), never "NOT delivered".
+func TestIssue1793_LargePayloadInTranscriptNotComposer_IsDeliveredUnconfirmed(t *testing.T) {
+	msg := bigMessage(4095)
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"› \n", "› " + msg + "\n› \n"},
+	}
+	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, tool: "codex",
+	})
+	if err != nil {
+		t.Fatalf("a delivered body with the composer clear is not a failure: %v", err)
+	}
+	if delivery != deliveryDelivered {
+		t.Fatalf("delivery: want %q, got %q", deliveryDelivered, delivery)
+	}
+	fields := (sendDeliveryResult{delivery: delivery}).jsonFields()
+	if fields["submitted"] != false || fields["confirmation"] != "unknown" {
+		t.Fatalf("delivered must carry submitted=false, confirmation=unknown; got %v", fields)
+	}
+}
+
+// TestIssue1793_ClaudePath_BodyVisibleNeverSubmitted_IsDeliveredUnconfirmed is
+// the Claude half. The Claude verification loop used to treat "the body is
 // visible in the pane" as delivery evidence and, at the end of its budget,
-// returned deliverySubmitted on the strength of it — re-certifying the exact
-// state #1793 is about, on the path most sessions actually use.
+// return deliverySubmitted on the strength of it; the fix for that then went
+// too far the other way and reported the same frame as "NOT delivered" (the
+// false negative of #1978/#2071 and the remote-walk `echo` case).
 //
-// Body visible, composer never shows an unsent marker, agent never goes
-// active: that is arrival without submission and must fail.
-func TestIssue1793_ClaudePath_TypedButNeverSubmitted_IsNotSuccess(t *testing.T) {
+// Body visible, composer not holding it, no menu, no pane loss, agent never
+// seen going active: arrival without a signal either way. That is delivered
+// with confirmation unknown — exit 0, submitted=false — not submitted and not
+// a failure.
+func TestIssue1793_ClaudePath_BodyVisibleNeverSubmitted_IsDeliveredUnconfirmed(t *testing.T) {
 	const msg = "please re-run the integration suite against staging"
-	// The body is on screen, but no composer marker and the status never
-	// leaves "waiting" — nothing ever showed the agent taking it up.
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
 		panes:    []string{"some prior output\n" + msg + "\n"},
 	}
 
 	delivery, err := sendWithRetryTarget(mock, msg, false, sendRetryOptions{
-		maxRetries: 5, checkDelay: 0, verifyDelivery: true,
+		maxRetries: 5, checkDelay: 0, verifyDelivery: true, tool: "claude",
 	})
-	if err == nil {
-		t.Fatal("issue #1793: body text alone is arrival, not submission, and must not report success")
+	if err != nil {
+		t.Fatalf("issue #1793: arrival without a failure signal must not be an error: %v", err)
 	}
 	if delivery == deliverySubmitted {
 		t.Fatal("issue #1793: the Claude path must not promote visible body text to submitted")
 	}
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
+	if delivery != deliveryDelivered {
+		t.Fatalf("delivery: want %q, got %q", deliveryDelivered, delivery)
+	}
+}
+
+// TestIssue1793_ClaudePath_BodyStillAtComposer_IsAFailure pins the failure
+// direction on the same path: the body sitting at the composer glyph after
+// every Enter retry is positive evidence and exits 1.
+func TestIssue1793_ClaudePath_BodyStillAtComposer_IsAFailure(t *testing.T) {
+	const msg = "please re-run the integration suite against staging"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"some prior output\n❯ " + msg + "\n"},
+	}
+	delivery, err := sendWithRetryTarget(mock, msg, false, sendRetryOptions{
+		maxRetries: 5, checkDelay: 0, verifyDelivery: true, tool: "claude",
+	})
+	if err == nil {
+		t.Fatal("issue #1793: a body still in the composer must not report success")
+	}
+	if delivery != deliveryTypedNotSubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliveryTypedNotSubmitted, delivery)
 	}
 }
 
@@ -147,24 +194,33 @@ func TestIssue1793_ClaudePath_ActiveTransitionStillReportsSubmitted(t *testing.T
 	}
 }
 
-// TestIssue1793_TypedIsAFailingExitNotASuccessfulOne pins the contract the
-// CLI exposes: JSON, exit code and human text must agree. `typed` carries
-// submitted=false, so it must also carry success=false and a nonzero exit.
-func TestIssue1793_TypedIsAFailingExitNotASuccessfulOne(t *testing.T) {
-	fields := (sendDeliveryResult{delivery: deliveryTyped}).jsonFields()
-	if fields["submitted"] != false {
-		t.Fatalf("typed must report submitted=false, got %v", fields["submitted"])
-	}
+// TestIssue1793_ConfirmationFollowsTheEvidence pins the contract the CLI
+// exposes: JSON, exit code and human text must agree. Failing statuses carry
+// submitted=false and confirmation=failed; delivered carries submitted=false
+// and confirmation=unknown; only submitted and Claude's own queued
+// acknowledgement are confirmed.
+func TestIssue1793_ConfirmationFollowsTheEvidence(t *testing.T) {
 	// The command maps a non-nil sendErr to ErrorWithData + os.Exit(1); the
 	// statuses that must travel that path are pinned here so a future edit
-	// cannot quietly route `typed` into the success branch.
-	for _, failing := range []string{deliveryTyped, deliveryNoEvidence, deliveryLineTooLong, deliveryTypedNotSubmitted} {
-		if failing == deliverySubmitted {
-			t.Fatalf("%q must never be treated as a successful delivery", failing)
+	// cannot quietly route one into the success branch.
+	for _, failing := range []string{deliveryNoEvidence, deliveryLineTooLong, deliveryTypedNotSubmitted, deliveryMenuOpen, deliveryPaneGone} {
+		fields := (sendDeliveryResult{delivery: failing}).jsonFields()
+		if fields["submitted"] != false {
+			t.Errorf("%q must report submitted=false, got %v", failing, fields["submitted"])
 		}
-		if got := (sendDeliveryResult{delivery: failing}).jsonFields()["submitted"]; got != false {
-			t.Errorf("%q must report submitted=false, got %v", failing, got)
+		if fields["confirmation"] != "failed" {
+			t.Errorf("%q must report confirmation=failed, got %v", failing, fields["confirmation"])
 		}
+	}
+	fields := (sendDeliveryResult{delivery: deliveryDelivered}).jsonFields()
+	if fields["submitted"] != false || fields["confirmation"] != "unknown" || fields["delivery"] != "delivered" {
+		t.Errorf("delivered must be submitted=false, confirmation=unknown: %v", fields)
+	}
+	if got := (sendDeliveryResult{delivery: deliverySubmitted}).jsonFields()["confirmation"]; got != "confirmed" {
+		t.Errorf("submitted must be confirmation=confirmed, got %v", got)
+	}
+	if got := (sendDeliveryResult{delivery: deliveryQueued}).jsonFields()["confirmation"]; got != "confirmed" {
+		t.Errorf("queued is Claude's own acknowledgement: confirmation=confirmed, got %v", got)
 	}
 }
 
@@ -409,7 +465,7 @@ func TestIssue1793_CanonicalOverflowSurvivesTheClaudeVerifiedPath(t *testing.T) 
 // statuses are actually machine-readable by the callers that key off them
 // (watchers, conductors, bridges), rather than only existing in Go.
 func TestIssue1793_DeliveryStatusReachesTheJSONContract(t *testing.T) {
-	for _, status := range []string{deliveryLineTooLong, deliveryNoEvidence, deliveryTyped} {
+	for _, status := range []string{deliveryLineTooLong, deliveryNoEvidence, deliveryDelivered, deliveryMenuOpen, deliveryPaneGone} {
 		res := sendDeliveryResult{delivery: status}
 		fields := res.jsonFields()
 		if fields["delivery"] != status {

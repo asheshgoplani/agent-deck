@@ -3153,8 +3153,10 @@ func handleSessionSend(profile string, args []string) {
 			// left it. Retrying the same body is pointless; the actionable
 			// advice is to break the line or send a file reference.
 			out.ErrorWithData(fmt.Sprintf("message too long for '%s' to receive as one line: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
-		case deliveryTyped:
-			out.ErrorWithData(fmt.Sprintf("message reached '%s' but was never confirmed submitted: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryMenuOpen, deliveryPaneGone:
+			// Positive evidence the send did not go through (issue #1793):
+			// the evidence line is the message.
+			out.ErrorWithData(fmt.Sprintf("message not submitted to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliveryNoEvidence:
 			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliveryComposerBlocked:
@@ -3246,6 +3248,11 @@ func handleSessionSend(profile string, args []string) {
 		// times out. Human and non-wait output keep their existing eager ack.
 		if !*wait || !*jsonOutput {
 			summary := fmt.Sprintf("Sent message to '%s'", inst.Title)
+			if sendRes.delivery == deliveryDelivered {
+				// Delivered, confirmation unknown (issue #1793): say exactly
+				// what could not be established, never "NOT delivered".
+				summary = fmt.Sprintf("Sent message to '%s' (%s)", inst.Title, sendRes.note)
+			}
 			if sendRes.delivery == deliveryQueued {
 				summary = fmt.Sprintf("Queued message for '%s' (target is mid-turn; it takes the message up when the current turn ends)", inst.Title)
 			}
@@ -3629,20 +3636,29 @@ const (
 	// canonical-overflow failure mode cannot apply and it carries no token
 	// distinctive enough to look for in the pane.
 	deliveryUnverified = "unverified"
-	// deliveryTyped: the message body was observed reaching the target pane,
-	// but nothing proved the agent accepted it as a turn. Content sitting in
-	// a composer is not an accepted turn, and calling it one is how issue
-	// #1793 happened in the first place — so this is a FAILURE: nonzero exit,
-	// `"success": false`, `"submitted": false`. It is distinct from
-	// deliveryTypedNotSubmitted, which is the stronger claim that the
-	// composer was still positively holding the message at the end of the
-	// bounded Enter retries.
-	deliveryTyped = "typed"
+	// deliveryDelivered: the message body reached the target pane and Enter
+	// was sent, and nothing positive was observed either way afterwards —
+	// the tool exposes no submission signal (a shell, an unknown tool) or
+	// its signal did not arrive within the window. Exit 0, `"submitted":
+	// false`, `"confirmation": "unknown"`, and the human line says so.
+	// This replaces the `typed` failure (issue #1793's false-negative half,
+	// #1978, #2071): the exit code follows the evidence, never its absence,
+	// and "NOT delivered" is only ever said on positive evidence — a pane
+	// that is gone, a composer still holding the body, an open menu.
+	deliveryDelivered = "delivered"
 	// deliveryLineTooLong: refused before typing anything because the pane's
 	// reader is in canonical mode and a payload line exceeds its line buffer
 	// (issue #1793). The kernel would discard the overflow and the
 	// submitting Enter with it, so this can never be reported as success.
 	deliveryLineTooLong = "line_too_long"
+	// deliveryMenuOpen: an AskUserQuestion picker or permission dialog was
+	// open at the end of the budget and the message was never taken; a menu
+	// consumes keystrokes as option selections (internal/tmux substate).
+	// Positive evidence of a swallowed send: nonzero exit.
+	deliveryMenuOpen = "menu_open"
+	// deliveryPaneGone: the target pane disappeared during verification.
+	// Positive evidence: nonzero exit.
+	deliveryPaneGone = "pane_gone"
 	// deliveryTypedNotSubmitted: the message body is still sitting unsent in
 	// the composer after the bounded Enter-retry budget (issue #1413).
 	deliveryTypedNotSubmitted = "typed_not_submitted"
@@ -3754,10 +3770,25 @@ func sendSkippedWaitWarning(title, outcome string) string {
 		title, reason, outcome)
 }
 
+// deliveryConfirmation maps a delivery status to its --json "confirmation".
+func deliveryConfirmation(delivery string) string {
+	switch delivery {
+	case deliverySubmitted, deliveryQueued:
+		return send.ConfirmationConfirmed
+	case deliveryDelivered, deliveryUnverified, deliveryQueuedSocket:
+		return send.ConfirmationUnknown
+	default:
+		return send.ConfirmationFailed
+	}
+}
+
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
 type sendDeliveryResult struct {
 	// delivery is one of the delivery* constants above.
 	delivery string
+	// note is the human wording for a deliveryDelivered outcome: which tool
+	// could not confirm, or within what window (send.UnconfirmedMessage).
+	note string
 	// held is how long the composer guard waited/worked before the send
 	// (bounded hold plus the final read-only settle check).
 	held time.Duration
@@ -4138,6 +4169,11 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 		// proves the write completed, not that the inbox accepted it
 		// (maintainer review of #2100).
 		fields["submitted"] = r.delivery == deliverySubmitted
+		// confirmation is the three-outcome contract (issue #1793): what was
+		// established about the harness taking the message. `confirmed`
+		// (submitted, or Claude's own queued acknowledgement), `unknown`
+		// (delivered, no signal either way), `failed` (positive evidence).
+		fields["confirmation"] = deliveryConfirmation(r.delivery)
 	}
 	if r.transport == "socket" {
 		// Claude's inbox never confirms delivery in-band, so nothing can
@@ -4279,6 +4315,9 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	tun.retry.tool = tool
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
+	if delivery == deliveryDelivered {
+		res.note = send.UnconfirmedMessage(tool, verificationWindow(tun.retry.verificationChecks(claudeLike), tun.retry.checkDelay))
+	}
 
 	return res, err
 }
@@ -4440,6 +4479,21 @@ type sendRetryOptions struct {
 	turnAdvanced func() bool
 }
 
+// verificationChecks is how many post-send checks the verify loop runs for
+// this tool: the full budget on the Claude path, the capped arrival poll
+// otherwise (arrivalVerifyChecks). verifyContentArrival sizes its loop by
+// it, and executeSend words the verification window with it.
+func (o sendRetryOptions) verificationChecks(claudeLike bool) int {
+	checks := o.maxRetries
+	if checks < 1 {
+		checks = 1
+	}
+	if !claudeLike && checks > arrivalVerifyChecks {
+		checks = arrivalVerifyChecks
+	}
+	return checks
+}
+
 // hookBusyNow reads targetBusyByHook once and reports whether the hook
 // signal is fresh AND busy. Idle, unknown (hooks absent, not firing, or
 // stale) and "no probe wired" all read false, so no caller can mistake
@@ -4553,13 +4607,11 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// return deliverySubmitted for a message still sitting in a composer:
 	// the exact phantom success of issue #1793, on the Claude path.
 	sawDeliveryEvidence := false
-	// sawUnsentMarker records that the composer was positively observed
-	// HOLDING this message at some point. Combined with the composer being
-	// clear at the end of the budget (checked below), held-then-cleared is
+	// The composer positively HOLDING this message at some point, combined
+	// with it being clear at the end of the budget (held-then-cleared), is
 	// genuine submission evidence: the agent took the message out of the
-	// composer. Body text merely being visible is not the same thing and must
-	// not be treated as if it were.
-	sawUnsentMarker := false
+	// composer. That latch lives in obs (send.Observer.ComposerHeld); body
+	// text merely being visible is not the same thing.
 	// Snippet of the message body to look for in captured pane content. Some
 	// TUI frameworks (and non-Claude tools) won't render a "[Pasted text …]"
 	// or "❯ <msg>" marker, so direct verbatim content is the only signal.
@@ -4584,6 +4636,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// is deliberately NOT movement here: a marker the composer newly holds is
 	// the shape of bytes sitting unsent, the opposite of a delivery.
 	sawTokenMovement := false
+	// obs folds every frame below into the evidence the end-of-budget verdict
+	// rests on (issue #1793): arrival, the composer holding then releasing
+	// the body, an open menu, a gone pane. The early returns in the loop are
+	// the positive submission signals; obs decides what an exhausted budget
+	// means.
+	obs := newSendObserver(opts.tool, message, arrivalBaseline, true, hookBusyBeforeSend)
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
 
@@ -4599,6 +4657,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		// capture succeeded at all), and is what the attribution gate reads.
 		captured, captureErr := target.CapturePaneFresh()
 		paneNow := send.CaptureOutcome(captured, captureErr)
+		obs.Observe(paneNow)
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
@@ -4642,7 +4701,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 
 		if unsentPromptDetected {
 			sawDeliveryEvidence = true
-			sawUnsentMarker = true
+			obs.NoteComposerHeld()
 			waitingNoMarkerChecks = 0
 			activeChecks = 0
 			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
@@ -4705,58 +4764,72 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		}
 	}
 
-	// Budget exhausted without a confirmed submit. Classify the final state
-	// (issue #1413): a message still sitting unsent in the composer after
-	// every bounded Enter retry must surface as typed_not_submitted (nonzero
-	// exit + `delivery` in --json) instead of the historical silent exit 0.
+	// Budget exhausted without a confirmed submit. The verdict follows the
+	// evidence, never its absence (issue #1793): one last fresh frame goes to
+	// the observer, then it classifies.
 	if opts.verifyDelivery {
-		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
-			content := tmux.StripANSI(rawContent)
-			if send.ComposerHoldsPasteMarker(rawContent, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message) {
-				return deliveryTypedNotSubmitted, fmt.Errorf(
-					"message typed but not submitted after %d verification checks (issue #1413): "+
-						"the composer still holds the message despite bounded Enter retries. "+
-						"The recipient agent's input handler is not accepting Enter", opts.maxRetries)
-			}
-		}
-
-		// Issue #876: with verifyDelivery, refuse to claim success when no
-		// positive signal was ever observed — the message was very likely
-		// dropped silently.
-		if !sawDeliveryEvidence {
-			return deliveryNoEvidence, fmt.Errorf("send dropped silently: no evidence of delivery after %d checks (issue #876). "+
-				"The agent never transitioned to 'active', no composer/unsent-paste marker appeared, "+
-				"and the message body was not visible in the pane. Verify the inner agent is reading from "+
-				"its TTY before retrying", opts.maxRetries)
-		}
 		if sawActiveAfterSend {
 			// The agent went active after the send: it took the message up.
-			return deliverySubmitted, nil
+			obs.NoteTurnStarted()
 		}
-		if sawUnsentMarker && !hookBusyBeforeSend {
-			// The composer was observed holding this message and — per the
-			// typed_not_submitted check just above, which did not fire — is
-			// no longer holding it. Held-then-cleared means the agent took it
-			// out of the composer, which is submission. On a target that was
-			// already mid-turn it only means the input moved somewhere out
-			// of view, which is an inference this verdict must not rest on
-			// (issue #1978): that target settles on turn advancement or the
-			// queue acknowledgement, or falls through to the failure below.
-			return deliverySubmitted, nil
+		if sawDeliveryEvidence && !arrivalBaseline.paneOK {
+			// With no pre-send baseline the token being on screen at all is
+			// the only arrival evidence there is. With a baseline the
+			// observer's delta is the truth: a copy that predates the send
+			// is not this send arriving (#1978).
+			obs.NoteBodyArrived()
 		}
-		// The only thing ever observed was the body being visible somewhere in
-		// the pane. That proves the bytes arrived and proves nothing about the
-		// agent accepting them: the Enter can still have been swallowed. Do
-		// not promote arrival to submission — that promotion IS issue #1793.
-		return deliveryTyped, fmt.Errorf(
-			"message reached the pane but submission was never confirmed after %d checks (issue #1793): "+
-				"the body was visible but the agent never began processing it and the composer was never "+
-				"observed taking it. Treat this as NOT delivered — the submitting Enter may have been "+
-				"swallowed", opts.maxRetries)
+		final, finalErr := target.CapturePaneFresh()
+		obs.Observe(send.CaptureOutcome(final, finalErr))
+		v := obs.Verdict(opts.maxRetries, verificationWindow(opts.maxRetries, opts.checkDelay))
+		switch v.Outcome {
+		case send.OutcomeConfirmed:
+			// Active edge, or held-then-cleared on a target that was not
+			// already mid-turn (issue #1978: on a busy target the body
+			// moving out of view is not this message's turn).
+			return deliverySubmitted, nil
+		case send.OutcomeFailed:
+			return deliveryFailure(v, opts.maxRetries)
+		case send.OutcomeDeliveredUnconfirmed:
+			// The body reached the pane and Enter was sent; nothing showed
+			// the harness taking it, nothing showed it failing. Delivered,
+			// confirmation unknown: exit 0, and the CLI says so.
+			return deliveryDelivered, nil
+		}
+		// Issue #876: with verifyDelivery, refuse to claim success when no
+		// positive signal was ever observed — the message was very likely
+		// dropped silently. Claude echoes what it is typed, so a pane that
+		// never showed the body after a send is evidence, not silence.
+		return deliveryNoEvidence, fmt.Errorf("send dropped silently: no evidence of delivery after %d checks (issue #876). "+
+			"The agent never transitioned to 'active', no composer/unsent-paste marker appeared, "+
+			"and the message body was not visible in the pane. Verify the inner agent is reading from "+
+			"its TTY before retrying", opts.maxRetries)
 	}
 
 	// Legacy best-effort contract for paths that gate verification elsewhere.
 	return deliveryUnverified, nil
+}
+
+// deliveryFailure maps a Failed verdict's positive evidence to the delivery
+// status and error line the CLI reports (exit 1).
+func deliveryFailure(v send.Verdict, checks int) (string, error) {
+	switch v.Failure {
+	case send.FailurePaneGone:
+		return deliveryPaneGone, errors.New(v.Message)
+	case send.FailureInteractiveMenu:
+		return deliveryMenuOpen, errors.New(v.Message)
+	default:
+		return composerHoldsFailure(checks)
+	}
+}
+
+// composerHoldsFailure is the typed_not_submitted outcome (issue #1413): the
+// composer still holds the message after every bounded Enter retry.
+func composerHoldsFailure(checks int) (string, error) {
+	return deliveryTypedNotSubmitted, fmt.Errorf(
+		"message typed but not submitted after %d verification checks (issue #1413): "+
+			"the composer still holds the message despite bounded Enter retries. "+
+			"The recipient agent's input handler is not accepting Enter", checks)
 }
 
 // messageDeliveryToken returns a short, content-bearing slice of the message
@@ -4806,6 +4879,9 @@ type sendArrivalBaseline struct {
 	// multi-line send to a pane and kills the signal for every later one.
 	// Only "one more than before" is attributable to THIS send.
 	pasteMarkers int
+	// raw is the pre-send capture itself (only meaningful when paneOK), the
+	// baseline the send.Observer measures arrival against.
+	raw string
 	// wasActive reports whether the agent was already working before the
 	// send, in which case "it is active now" proves nothing.
 	wasActive bool
@@ -4818,15 +4894,35 @@ type sendArrivalBaseline struct {
 // captureArrivalBaseline snapshots the pane and status before a send. Each
 // signal records whether it was actually observed; a signal without a valid
 // baseline is disabled, never guessed.
+//
+// The capture is taken even for a message too short to yield a token: the
+// observer still needs the pre-send frame for the paste-marker delta.
 func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
 	base := sendArrivalBaseline{}
-	if n, markers, _, ok := paneArrivalObservation(target, message); ok {
-		base.occurrences, base.pasteMarkers, base.paneOK = n, markers, true
+	if raw, err := target.CapturePaneFresh(); err == nil {
+		base.raw, base.paneOK = raw, true
+		base.occurrences, base.pasteMarkers, _ = paneArrivalCounts(raw, message)
 	}
 	if status, err := target.GetStatus(); err == nil {
 		base.wasActive, base.statusOK = status == "active", true
 	}
 	return base
+}
+
+// newSendObserver starts the send.Observer for one send over the pre-send
+// baseline. It is the one reader of the pane for the end-of-budget verdict
+// (issue #1793): every frame the verification loops capture is fed to it.
+func newSendObserver(tool, message string, baseline sendArrivalBaseline, claudeLike, hookBusyBeforeSend bool) *send.Observer {
+	obs := send.NewObserver(tool, message, send.PaneCapture{Raw: baseline.raw, OK: baseline.paneOK})
+	obs.ClaudeLike = claudeLike
+	obs.BusyBeforeSend = hookBusyBeforeSend
+	return obs
+}
+
+// verificationWindow is the wording for how long a submission signal was
+// awaited: checks × delay, e.g. "6s".
+func verificationWindow(checks int, delay time.Duration) string {
+	return (time.Duration(checks) * delay).Round(100 * time.Millisecond).String()
 }
 
 // verifyContentArrival confirms that message reached the target pane, for
@@ -4894,15 +4990,16 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		return deliveryUnverified, nil
 	}
 
-	checks := opts.maxRetries
-	if checks > arrivalVerifyChecks {
-		checks = arrivalVerifyChecks
-	}
-	if checks < 1 {
-		checks = 1
-	}
+	checks := opts.verificationChecks(false)
 
+	// obs is the reader of record for the verdict (issue #1793): it sees
+	// every frame this loop captures and decides what an exhausted budget
+	// means. For a shell-like tool it also supplies the only confirmation
+	// such a tool has: the sent line consumed, new output or a fresh prompt
+	// below it (send.ShellProgressed).
+	obs := newSendObserver(opts.tool, message, baseline, false, hookBusyBeforeSend)
 	sawBody := false
+	lastContent := ""
 	for i := 0; i < checks; i++ {
 		// Strongest signal first: an idle agent that starts working received
 		// what it started working on, which is submission, not just arrival.
@@ -4912,7 +5009,14 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			}
 		}
 		if baseline.paneOK {
-			if n, markers, content, ok := paneArrivalObservation(target, message); ok {
+			raw, captureErr := target.CapturePaneFresh()
+			obs.Observe(send.CaptureOutcome(raw, captureErr))
+			if obs.TurnStarted() {
+				return deliverySubmitted, nil
+			}
+			if n, markers, ok := paneArrivalCounts(raw, message); captureErr == nil && ok {
+				content := tmux.StripANSI(raw)
+				lastContent = content
 				if n > baseline.occurrences {
 					if opts.tool == "pi" && piComposerEmpty(content, message) {
 						return deliverySubmitted, nil
@@ -4959,16 +5063,27 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	}
 
 	if sawBody {
-		// The bytes demonstrably reached the pane and nothing showed the
-		// agent taking them up. This is NOT a success: text sitting unsent in
-		// a composer is precisely the state issue #1793 reported as a false
-		// success, and returning nil here would hand the caller exit 0 and
-		// `"success": true` next to `"submitted": false`. Fail, so scripts and
-		// agents cannot read it as delivered.
-		return deliveryTyped, fmt.Errorf(
-			"message reached the pane but submission was never confirmed after %d checks (issue #1793): "+
-				"the body is visible but the agent never began processing it. Treat this as NOT delivered — "+
-				"the submitting Enter may have been swallowed", checks)
+		obs.NoteBodyArrived()
+		// The bytes demonstrably reached the pane. What that means is the
+		// observer's call (issue #1793): a composer still holding the body
+		// after Enter is a failure (the reported bug: text sitting unsent
+		// must never be exit 0); a gone pane is a failure; a shell whose
+		// prompt moved on is confirmed; and arrival with no signal either
+		// way is delivered, confirmation unknown — exit 0, never "NOT
+		// delivered" on the absence of a signal this tool may not even have.
+		v := obs.Verdict(checks, verificationWindow(checks, opts.checkDelay))
+		switch v.Outcome {
+		case send.OutcomeConfirmed:
+			return deliverySubmitted, nil
+		case send.OutcomeFailed:
+			return deliveryFailure(v, checks)
+		}
+		if opts.tool == "pi" && piComposerHoldsMessage(lastContent, message) {
+			// Pi's editor is border-framed rather than glyph-led, so the
+			// generic composer check cannot see it holding the body.
+			return composerHoldsFailure(checks)
+		}
+		return deliveryDelivered, nil
 	}
 
 	if riskyLine {
@@ -5026,41 +5141,6 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 	return arrivalSafeLineBytes
 }
 
-// paneArrivalObservation reads the pane ONCE and reports both arrival signals
-// the check compares against its baseline: how many times the message's
-// distinctive token is visible in the pane, and how many "[Pasted text …]"
-// collapse markers the COMPOSER holds. It also returns stripped pane content
-// for tool-specific submission checks. One capture serving all signals is
-// deliberate — they must describe the same instant, and the scripted-capture
-// test fakes index captures by call count. The final bool reports whether the
-// pane was actually read: a failed look is not "zero occurrences", it is no
-// observation at all, and callers must not treat the two the same. A message
-// too short to yield a token reports false without reading the pane.
-//
-// The two signals are scoped differently on purpose. The body token is looked
-// for across the WHOLE pane, because a body that scrolled out of the composer
-// into the transcript still arrived. The marker is scoped to the COMPOSER
-// (send.ComposerPasteMarkerCount, the counting form of the helper the sibling
-// paths at launch_verify_prompt.go:76 and internal/ui/home.go:10308 already
-// use), because a marker in the TRANSCRIPT is the ordinary trace of a
-// SUCCESSFUL multi-line send: reading it as this send's unsent bytes turns a
-// delivered message into a "submission was never confirmed" failure, and a
-// false negative is the input to the double-delivery class (#876). Only a
-// composer holding one more marker than before is unsubmitted payload.
-//
-// Both counts are raw observations; the caller compares them to its baseline.
-func paneArrivalObservation(target sendRetryTarget, message string) (int, int, string, bool) {
-	if collapseWhitespace(messageDeliveryToken(message)) == "" {
-		return 0, 0, "", false
-	}
-	raw, err := target.CapturePaneFresh()
-	if err != nil {
-		return 0, 0, "", false
-	}
-	n, markers, ok := paneArrivalCounts(raw, message)
-	return n, markers, tmux.StripANSI(raw), ok
-}
-
 // claudeQueuePlaceholder is the composer placeholder Claude Code renders
 // while it holds input behind the running turn.
 const claudeQueuePlaceholder = "Press up to edit queued messages"
@@ -5099,10 +5179,21 @@ func claudeQueueAcknowledged(content string) bool {
 	return ok && strings.EqualFold(body, claudeQueuePlaceholder)
 }
 
-// paneArrivalCounts is paneArrivalObservation over a capture the caller
-// already holds: the token occurrence count and the composer paste-marker
-// count for one pane frame. ok is false when the message carries no usable
-// token, so a short body can never register as movement.
+// paneArrivalCounts reports both arrival signals for one pane frame: how
+// many times the message's distinctive token is visible in the pane, and how
+// many "[Pasted text …]" collapse markers the COMPOSER holds. ok is false
+// when the message carries no usable token, so a short body can never
+// register as movement. Both counts are raw observations; the caller
+// compares them to its baseline.
+//
+// The two signals are scoped differently on purpose. The body token is looked
+// for across the WHOLE pane, because a body that scrolled out of the composer
+// into the transcript still arrived. The marker is scoped to the COMPOSER
+// (send.ComposerPasteMarkerCount), because a marker in the TRANSCRIPT is the
+// ordinary trace of a SUCCESSFUL multi-line send: reading it as this send's
+// unsent bytes turns a delivered message into a failure, and a false negative
+// is the input to the double-delivery class (#876). Only a composer holding
+// one more marker than before is unsubmitted payload.
 func paneArrivalCounts(raw, message string) (int, int, bool) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
@@ -5136,6 +5227,33 @@ func piComposerEmpty(content, message string) bool {
 	}
 	top, bottom := borders[len(borders)-2], borders[len(borders)-1]
 	return strings.TrimSpace(strings.Join(lines[top+1:bottom], "\n")) == ""
+}
+
+// piComposerHoldsMessage is piComposerEmpty's positive counterpart: Pi's
+// editor (between its final two borders) still shows this send's body, which
+// is the text-sitting-unsent state issue #1793 is about. A message that
+// contains a border-like line is undecidable and reports false (unknown).
+func piComposerHoldsMessage(content, message string) bool {
+	if strings.Contains(tmux.StripANSI(message), strings.Repeat("─", 20)) {
+		return false
+	}
+	token := collapseWhitespace(messageDeliveryToken(message))
+	if token == "" {
+		return false
+	}
+	lines := strings.Split(content, "\n")
+	borders := make([]int, 0, 2)
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Count(line, "\u2500") >= 20 && strings.Trim(line, "\u2500") == "" {
+			borders = append(borders, i)
+		}
+	}
+	if len(borders) < 2 {
+		return false
+	}
+	top, bottom := borders[len(borders)-2], borders[len(borders)-1]
+	return strings.Contains(collapseWhitespace(strings.Join(lines[top+1:bottom], "\n")), token)
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives

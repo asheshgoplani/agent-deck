@@ -61,22 +61,22 @@ func TestSend_PiComposerDistinguishesSubmittedFromTyped(t *testing.T) {
 		{
 			name: "still in composer", message: ordinaryMessage,
 			pane: "transcript\n" + border + "\n" + ordinaryMessage + "\n" + border + "\n~/src/project",
-			want: deliveryTyped, wantErr: true,
+			want: deliveryTypedNotSubmitted, wantErr: true,
 		},
 		{
 			name: "unsent divider tail", message: ordinaryMessage + "\n" + border,
 			pane: "transcript\n" + border + "\n" + ordinaryMessage + "\n" + border + "\n" + border + "\n~/src/project",
-			want: deliveryTyped, wantErr: true,
+			want: deliveryDelivered,
 		},
 		{
 			name: "unsent divider and blank tail", message: ordinaryMessage + "\n" + border + "\n  ",
 			pane: "transcript\n" + border + "\n" + ordinaryMessage + "\n" + border + "\n  \n" + border + "\n~/src/project",
-			want: deliveryTyped, wantErr: true,
+			want: deliveryDelivered,
 		},
 		{
 			name: "ambiguous accepted divider requires evidence", message: ordinaryMessage + "\n" + border,
 			pane: "transcript\n" + ordinaryMessage + "\n" + border + "\nanswer\n" + border + "\n  \n" + border + "\n~/src/project",
-			want: deliveryTyped, wantErr: true,
+			want: deliveryDelivered,
 		},
 		{
 			name: "transcript divider is not payload", message: ordinaryMessage,
@@ -86,12 +86,12 @@ func TestSend_PiComposerDistinguishesSubmittedFromTyped(t *testing.T) {
 		{
 			name: "missing editor border", message: ordinaryMessage,
 			pane: ordinaryMessage + "\n" + border,
-			want: deliveryTyped, wantErr: true,
+			want: deliveryDelivered,
 		},
 		{
 			name: "narrow editor", message: ordinaryMessage,
 			pane: ordinaryMessage + "\n" + strings.Repeat("─", 19) + "\n  \n" + strings.Repeat("─", 19),
-			want: deliveryTyped, wantErr: true,
+			want: deliveryDelivered,
 		},
 		{
 			name: "divider with activity evidence", message: ordinaryMessage + "\n" + border,

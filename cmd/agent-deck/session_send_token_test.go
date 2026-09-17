@@ -121,18 +121,22 @@ func TestSendWithRetryTarget_VerifyDelivery_LargePromptBodyMatch(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), "dropped silently") {
 		t.Fatalf("#876: a visible body must not be reported as a silent drop: %v", err)
 	}
-	// Updated for issue #1793. This test used to assert err == nil, i.e. that
-	// a visible body means "delivered". It does not: here the status never
-	// leaves "waiting" and the composer is never seen taking the message, so
-	// the body arrived and nothing shows the agent accepted it. Reporting that
-	// as success is the phantom #1793 was filed about, so the honest outcome
-	// is `typed` with a non-nil error. #876's own guarantee — don't call a
+	// Updated for issue #1793. Here the status never leaves "waiting" and
+	// the composer is never seen holding or taking the message, so the body
+	// arrived and nothing shows the agent accepting it — or refusing it.
+	// Calling that `submitted` is the phantom #1793 was filed about; calling
+	// it "NOT delivered" is the false negative the same issue's follow-ups
+	// (#1978, #2071) are about. The honest outcome is `delivered` with
+	// confirmation unknown and no error. #876's own guarantee — don't call a
 	// visible body a silent drop — is asserted above and still holds.
-	if delivery != deliveryTyped {
-		t.Fatalf("delivery: want %q (arrived, submission unconfirmed), got %q", deliveryTyped, delivery)
+	if delivery == deliverySubmitted {
+		t.Fatal("issue #1793: body visible without a submission signal must not be reported submitted")
 	}
-	if err == nil {
-		t.Fatal("issue #1793: body visible but never submitted must not report success")
+	if delivery != deliveryDelivered {
+		t.Fatalf("delivery: want %q (arrived, submission unconfirmed), got %q", deliveryDelivered, delivery)
+	}
+	if err != nil {
+		t.Fatalf("issue #1793: arrival without positive failure evidence must not error: %v", err)
 	}
 	// Sanity: the initial send fired exactly once. A regression that decided
 	// "large body → just retry harder" would inflate this and re-open #479.
