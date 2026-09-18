@@ -1,0 +1,2 @@
+terminal_width=80 list_width=28
+   └─ ○ a genuinely… claude

@@ -550,6 +550,18 @@ func GetClaudeConfigDirSourceForInstance(inst *Instance) (path, source string) {
 	return resolveClaudeConfigDir(resolveOpts{inst: inst})
 }
 
+// GetClaudeConfigDirForInstanceInGroup resolves the config dir the instance
+// WOULD have if its GroupPath were groupPath, without mutating the instance.
+// Used by `session move --group` (#2086 follow-up) to compute the destination
+// config dir from the group the session is about to land in. Priority is
+// unchanged: Instance.Account and conductor still beat the group level.
+// Passing "" falls back to inst.GroupPath, i.e. it is then identical to
+// GetClaudeConfigDirForInstance.
+func GetClaudeConfigDirForInstanceInGroup(inst *Instance, groupPath string) string {
+	path, _ := resolveClaudeConfigDir(resolveOpts{inst: inst, groupPath: groupPath})
+	return path
+}
+
 // IsClaudeConfigDirExplicitForInstance returns true if ANY priority level
 // sets a config dir for this Instance.
 func IsClaudeConfigDirExplicitForInstance(inst *Instance) bool {

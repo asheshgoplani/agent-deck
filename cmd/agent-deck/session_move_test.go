@@ -11,20 +11,21 @@ import (
 // sessionMoveAddSession is a helper that creates a test session and returns
 // its resolved ID. All moves-tests start from the same setup: one claude
 // session pointing at home/old-proj, seeded Claude session history in
-// ~/.claude/projects/<old-encoded>/.
-func sessionMoveAddSession(t *testing.T, home, oldPath, title string) string {
+// ~/.claude/projects/<old-encoded>/. extraArgs are appended to `add` before
+// the project path (e.g. "--account", "work").
+func sessionMoveAddSession(t *testing.T, home, oldPath, title string, extraArgs ...string) string {
 	t.Helper()
 	if err := os.MkdirAll(oldPath, 0o755); err != nil {
 		t.Fatalf("mkdir old path: %v", err)
 	}
-	stdout, stderr, code := runAgentDeck(t, home,
+	args := append([]string{
 		"add",
 		"-t", title,
 		"-c", "claude",
 		"--no-parent",
 		"--json",
-		oldPath,
-	)
+	}, extraArgs...)
+	stdout, stderr, code := runAgentDeck(t, home, append(args, oldPath)...)
 	if code != 0 {
 		t.Fatalf("agent-deck add failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}

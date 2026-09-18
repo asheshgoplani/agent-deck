@@ -130,12 +130,25 @@ func handleSessionMove(profile string, args []string) {
 	oldPath := inst.ProjectPath
 	oldGroup := inst.GroupPath
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		out.Error(fmt.Sprintf("resolve home dir: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+	// Resolve the target group (empty when --group wasn't passed) BEFORE
+	// migrating, so the destination config dir below reflects where the
+	// session will live after this invocation, not where it lives now.
+	targetGroupPath := *group
+	if targetGroupPath == "root" {
+		targetGroupPath = session.DefaultGroupPath
 	}
-	if err := session.MigrateClaudeProjectDir(home, oldPath, newPath, *copyHistory); err != nil {
+
+	// Resolve the effective Claude config dirs the way launch/start do rather
+	// than hardcoding ~/.claude, so history under a per-account or per-group
+	// config_dir override is actually migrated (#2086). Source and destination
+	// are resolved separately and can differ: a --group retarget in this same
+	// invocation can cross a config_dir boundary, and migrating into the OLD
+	// config dir would leave the restarted session unable to see its own
+	// history (cross-config-dir follow-up to #2086).
+	srcConfigDir := session.GetClaudeConfigDirForInstance(inst)
+	dstConfigDir := session.GetClaudeConfigDirForInstanceInGroup(inst, targetGroupPath)
+	historyFilesMoved, err := session.MigrateClaudeProjectDir(srcConfigDir, dstConfigDir, oldPath, newPath, *copyHistory)
+	if err != nil {
 		out.Error(fmt.Sprintf("migrate claude history: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -145,11 +158,7 @@ func handleSessionMove(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	moveCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = moveCfg.GroupDefaults.MaxConcurrent
-	if *group != "" {
-		targetGroupPath := *group
-		if targetGroupPath == "root" {
-			targetGroupPath = session.DefaultGroupPath
-		}
+	if targetGroupPath != "" {
 		if _, ok := groupTree.Groups[targetGroupPath]; !ok && targetGroupPath != session.DefaultGroupPath {
 			created := groupTree.CreateGroup(targetGroupPath)
 			targetGroupPath = created.Path
@@ -178,16 +187,26 @@ func handleSessionMove(profile string, args []string) {
 		restarted = true
 	}
 
-	out.Success(fmt.Sprintf("Moved %q: %s → %s", inst.Title, oldPath, newPath), map[string]interface{}{
-		"success":   true,
-		"id":        inst.ID,
-		"title":     inst.Title,
-		"old_path":  oldPath,
-		"new_path":  newPath,
-		"old_group": oldGroup,
-		"new_group": inst.GroupPath,
-		"restarted": restarted,
-		"copied":    *copyHistory,
+	message := fmt.Sprintf("Moved %q: %s → %s", inst.Title, oldPath, newPath)
+	if historyFilesMoved > 0 {
+		message = fmt.Sprintf("%s (%d history file%s)", message, historyFilesMoved, plural(historyFilesMoved))
+		if srcConfigDir != dstConfigDir {
+			message = fmt.Sprintf("%s [%s → %s]", message, srcConfigDir, dstConfigDir)
+		}
+	}
+	out.Success(message, map[string]interface{}{
+		"success":                  true,
+		"id":                       inst.ID,
+		"title":                    inst.Title,
+		"old_path":                 oldPath,
+		"new_path":                 newPath,
+		"old_group":                oldGroup,
+		"new_group":                inst.GroupPath,
+		"restarted":                restarted,
+		"copied":                   *copyHistory,
+		"history_files_moved":      historyFilesMoved,
+		"source_claude_config_dir": srcConfigDir,
+		"target_claude_config_dir": dstConfigDir,
 	})
 }
 
