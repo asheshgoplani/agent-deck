@@ -893,6 +893,104 @@ func discoverLatestClaudeJSONL(projectPath string) (string, bool) {
 	return bestUUID, true
 }
 
+// claudeConfigDirRootsForInstance returns every Claude config-dir root that
+// could plausibly hold this instance's transcript, symlink-resolved and
+// deduplicated:
+//
+//  1. GetClaudeConfigDirForInstance(inst) — the dir the resume/spawn code
+//     itself resolves (account/conductor/group/env/profile/global/default).
+//  2. The raw CLAUDE_CONFIG_DIR env var, in case it differs from (1) (the
+//     resolver can rank a more-specific TOML override above it).
+//  3. Every OTHER configured account slot's config_dir (#924) — a session
+//     can legitimately belong to an account other than Instance.Account
+//     right after an account switch that hasn't been persisted onto the
+//     instance yet, the exact #2301/#1815 incident shape.
+//  4. The bare default ~/.claude.
+//
+// Used by the #2301 continue-mode existence check
+// (buildClaudeResumeCommand) so it can't mistake "wrong root" for
+// "no transcript" the way a single process-wide GetClaudeConfigDir() call
+// does for any account/conductor/group-scoped instance.
+func claudeConfigDirRootsForInstance(inst *Instance) []string {
+	seen := make(map[string]bool)
+	var roots []string
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		resolved := dir
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			resolved = r
+		}
+		if seen[resolved] {
+			return
+		}
+		seen[resolved] = true
+		roots = append(roots, resolved)
+	}
+
+	add(GetClaudeConfigDirForInstance(inst))
+	add(envClaudeConfigDirIgnoringScratchLeak())
+
+	if userConfig, _ := LoadUserConfig(); userConfig != nil {
+		for name := range userConfig.Profiles {
+			add(userConfig.GetProfileClaudeConfigDir(name))
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".claude"))
+	}
+
+	return roots
+}
+
+// transcriptEvidenceAcrossRoots reports whether ANY of the given Claude
+// config-dir roots holds a transcript for projectPath (found), and whether
+// any root could not be conclusively checked, e.g. a permission error
+// (uncertain). A root that simply doesn't exist is confirmed-empty, not
+// uncertain — only a real read failure counts, since it means the root's
+// true contents are unknown rather than known-absent.
+//
+// Callers must fail towards "a transcript might exist" whenever uncertain
+// is true: an unreadable root is exactly the case where guessing "no
+// transcript" risks silently discarding a real, resumable conversation.
+func transcriptEvidenceAcrossRoots(projectPath string, roots []string) (found bool, uncertain bool) {
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	encoded := ConvertToClaudeDirName(resolvedPath)
+	if encoded == "" {
+		encoded = "-"
+	}
+
+	for _, configDir := range roots {
+		projectDir := filepath.Join(configDir, "projects", encoded)
+		entries, err := os.ReadDir(projectDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			uncertain = true
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			base := e.Name()
+			if strings.HasPrefix(base, "agent-") {
+				continue
+			}
+			if uuidSessionFileRegex.MatchString(base) {
+				return true, false
+			}
+		}
+	}
+	return false, uncertain
+}
+
 // getProjectSettingsPath returns the path to .claude/settings.local.json for a project
 func getProjectSettingsPath(projectPath string) string {
 	return filepath.Join(projectPath, ".claude", "settings.local.json")

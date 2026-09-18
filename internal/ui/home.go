@@ -18196,6 +18196,24 @@ func (h *Home) renderFrame() string {
 		stats = lipgloss.NewStyle().Foreground(ColorText).Render("no sessions")
 	}
 
+	// Compact fallback for the base status-counts segment: a busy fleet's
+	// per-status breakdown (e.g. "● 12 running • ◐ 8 waiting • ○ 24 idle •
+	// ■ 6 stopped • ✕ 3 error") can by itself overflow a narrow terminal
+	// even with every optional field already off, which the old
+	// MaxWidth-only fallback truncated mid-text and dropped the version
+	// badge. assembleHeaderLeft collapses to this single total before
+	// giving up any further-protected field. Mirrors renderAccountsCompactLine's
+	// "N slots" shape.
+	statsCompact := stats
+	if headerFieldSet[session.PreviewFieldSessionsByStatus] {
+		total := running + waiting + idle + stopped + errored
+		word := "session"
+		if total != 1 {
+			word = "sessions"
+		}
+		statsCompact = lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf("%d %s", total, word))
+	}
+
 	// Cost tracking segment, rendered through the resolved template.
 	// See session.ResolveCostLineTemplate for the [costs] / per-profile
 	// override chain. RenderCostLine returns "" when hide_when_zero is on
@@ -18264,18 +18282,24 @@ func (h *Home) renderFrame() string {
 
 	// Width-aware assembly (issue: optional fields rendering at the far
 	// right got cut off by MaxWidth's blind byte-truncation, pushing the
-	// version badge off screen). Optional segments are appended in this
-	// priority order (highest first); when the assembled line would not
-	// fit, the LOWEST-priority segment is shed first — accounts drops to
-	// its compact form before being dropped entirely, then sysStats, then
-	// cost — never truncating a field mid-text.
-	optionalSegments := []string{costSegment, sysStatsSegment, accountsSegment}
-	headerLeft, versionFits := assembleHeaderLeft(logo, title, stats, statsSep, optionalSegments, versionBadge, h.width)
+	// version badge off screen). Optional segments are appended in
+	// least-protected-first order (dropped first → dropped last): accounts
+	// drops to its compact form before being dropped entirely, then cost,
+	// then sysStats (load/memory/disk) last — sysStats is protected longest
+	// because it is the field an operator most needs on a busy host. The
+	// version badge and profile-qualified title are never dropped or
+	// truncated; when even every optional field gone still doesn't leave
+	// room, the base status-counts segment itself collapses to a single
+	// total (statsCompact) rather than falling through to MaxWidth's blind
+	// mid-text byte truncation, which used to eat the badge on a busy
+	// fleet even with every optional field off (#2301 round-2).
+	optionalSegments := []string{sysStatsSegment, costSegment, accountsSegment}
+	headerLeft, versionFits := assembleHeaderLeft(logo, title, stats, statsCompact, statsSep, optionalSegments, versionBadge, h.width)
 	if !versionFits {
 		// Retry with the accounts field's compact form before dropping it
 		// outright.
 		optionalSegments[2] = accountsCompactSegment
-		headerLeft, versionFits = assembleHeaderLeft(logo, title, stats, statsSep, optionalSegments, versionBadge, h.width)
+		headerLeft, versionFits = assembleHeaderLeft(logo, title, stats, statsCompact, statsSep, optionalSegments, versionBadge, h.width)
 	}
 	_ = versionFits // best-effort below this point; an unreasonably narrow terminal still gets a legible (if cramped) header
 

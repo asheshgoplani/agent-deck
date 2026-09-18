@@ -585,3 +585,133 @@ func TestResumeGuard_ContinueModeWithTranscriptStillUnverifiable(t *testing.T) {
 		t.Fatalf("#2301: continue mode with an existing-but-unowned transcript must still fall back to -c.\ncommand: %s", cmd)
 	}
 }
+
+// writeAccountSlotConfig writes ~/.agent-deck/config.toml declaring a
+// [profiles.<name>.claude] config_dir override and clears the user-config
+// cache so the resolver picks it up.
+func writeAccountSlotConfig(t *testing.T, home, profileName, configDir string) {
+	t.Helper()
+	agentDeckDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir .agent-deck: %v", err)
+	}
+	body := "[profiles." + profileName + ".claude]\nconfig_dir = \"" + configDir + "\"\n"
+	if err := os.WriteFile(filepath.Join(agentDeckDir, "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+}
+
+// TestResumeGuard_ContinueModeAccountSlotTranscriptStillFallsToDashC is the
+// #2301 round-2 gap: the instance's OWN transcript lives under a configured
+// account slot's config_dir, not the process-wide default ~/.claude the old
+// single-root check looked at. The existence check must walk every
+// configured account slot, find the transcript there, and treat it as
+// evidence — falling to the `-c` path, exactly like the same-directory
+// unverifiable case, instead of wrongly minting a fresh session.
+func TestResumeGuard_ContinueModeAccountSlotTranscriptStillFallsToDashC(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+
+	slotDir := filepath.Join(home, ".claude-work")
+	writeAccountSlotConfig(t, home, "work", slotDir)
+
+	const slotID = "dddddddd-4444-4444-8555-777777777777"
+	stageConversation(t, home, inst.ProjectPath, slotID) // note: this writes under home/.claude by default
+	// Move the staged transcript from the default dir into the account
+	// slot's dir so it exists ONLY under the slot, not the default root.
+	defaultProjDir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), inst.ProjectPath)
+	slotProjDir := claudeProjectDirForTest(t, slotDir, inst.ProjectPath)
+	if err := os.MkdirAll(filepath.Dir(slotProjDir), 0o755); err != nil {
+		t.Fatalf("mkdir slot project parent: %v", err)
+	}
+	if err := os.Rename(defaultProjDir, slotProjDir); err != nil {
+		t.Fatalf("move staged transcript into account slot: %v", err)
+	}
+
+	opts := NewClaudeOptions(nil)
+	opts.SessionMode = "continue"
+	if err := inst.SetClaudeOptions(opts); err != nil {
+		t.Fatalf("SetClaudeOptions: %v", err)
+	}
+
+	cmd := inst.buildClaudeCommand("claude")
+	if !strings.Contains(cmd, " -c") {
+		t.Fatalf("#2301: a transcript under a configured account slot must count as evidence and fall back to -c, not mint a fresh session.\ncommand: %s", cmd)
+	}
+	if strings.Contains(cmd, "--session-id") {
+		t.Fatalf("#2301: must not mint a fresh --session-id when the account slot has a transcript.\ncommand: %s", cmd)
+	}
+}
+
+// TestResumeGuard_ContinueModeNoTranscriptAnywhereStartsFresh confirms the
+// negative case still holds once multi-root discovery is in play: no
+// transcript in the default root NOR in any configured account slot must
+// still start fresh, not fail-safe into a permanent -c fallback.
+func TestResumeGuard_ContinueModeNoTranscriptAnywhereStartsFresh(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+
+	slotDir := filepath.Join(home, ".claude-work")
+	writeAccountSlotConfig(t, home, "work", slotDir)
+	// slotDir intentionally has no projects/ dir at all: confirmed absence.
+
+	opts := NewClaudeOptions(nil)
+	opts.SessionMode = "continue"
+	if err := inst.SetClaudeOptions(opts); err != nil {
+		t.Fatalf("SetClaudeOptions: %v", err)
+	}
+
+	cmd := inst.buildClaudeCommand("claude")
+	if strings.Contains(cmd, " -c") {
+		t.Fatalf("#2301: no transcript in any root must not emit bare -c.\ncommand: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--session-id") {
+		t.Fatalf("#2301: no transcript in any root must fall through to a fresh --session-id session.\ncommand: %s", cmd)
+	}
+}
+
+// TestResumeGuard_ContinueModeUnreadableRootFailsSafeToDashC pins the
+// fail-safe direction: when a configured account slot's projects dir
+// exists but cannot be read (permission error, not confirmed-absent), the
+// existence check must not conclude "no transcript" from that root — an
+// unreadable root's real contents are unknown, and guessing wrong risks
+// discarding a real, resumable conversation. It must fall back to -c, the
+// same as a known-existing-but-unowned transcript.
+func TestResumeGuard_ContinueModeUnreadableRootFailsSafeToDashC(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permission bits; the unreadable-root path is not exercisable")
+	}
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+
+	slotDir := filepath.Join(home, ".claude-work")
+	writeAccountSlotConfig(t, home, "work", slotDir)
+
+	slotProjDir := claudeProjectDirForTest(t, slotDir, inst.ProjectPath)
+	if err := os.MkdirAll(slotProjDir, 0o755); err != nil {
+		t.Fatalf("mkdir slot project dir: %v", err)
+	}
+	if err := os.Chmod(slotProjDir, 0o000); err != nil {
+		t.Fatalf("chmod slot project dir unreadable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(slotProjDir, 0o755) })
+	if _, err := os.ReadDir(slotProjDir); err == nil {
+		t.Skip("this user ignores directory permissions; the unreadable-root path is not exercisable")
+	}
+
+	opts := NewClaudeOptions(nil)
+	opts.SessionMode = "continue"
+	if err := inst.SetClaudeOptions(opts); err != nil {
+		t.Fatalf("SetClaudeOptions: %v", err)
+	}
+
+	cmd := inst.buildClaudeCommand("claude")
+	if !strings.Contains(cmd, " -c") {
+		t.Fatalf("#2301: an unreadable account-slot root must fail safe to -c, not mint a fresh session.\ncommand: %s", cmd)
+	}
+	if strings.Contains(cmd, "--session-id") {
+		t.Fatalf("#2301: an unreadable account-slot root must not be treated as confirmed-absent.\ncommand: %s", cmd)
+	}
+}

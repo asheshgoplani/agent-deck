@@ -416,18 +416,36 @@ func renderAccountsCompactLine(usage []session.AccountUsage) string {
 
 // assembleHeaderLeft composes the header bar's left-hand content (logo,
 // title, and the base + optional stats segments) and reports whether the
-// result plus the version badge fits within width. When it does not fit,
-// optional segments are dropped ENTIRELY (never truncated mid-text) starting
-// from the lowest-priority end of optional (index len-1) until it fits or
-// every optional segment has been shed. Callers that want a lower-priority
-// segment to degrade to a compact form first (rather than disappear) should
-// retry with that segment already replaced before calling this again — see
-// the accounts field's compact-form retry in renderView.
-func assembleHeaderLeft(logo, title, statsBase, statsSep string, optional []string, versionBadge string, width int) (string, bool) {
-	compose := func(segs []string) string {
+// result plus the version badge fits within width. The logo and title are
+// NEVER dropped or truncated — they, and the caller-appended version badge,
+// must always survive.
+//
+// When the full assembly does not fit, optional segments are dropped
+// ENTIRELY (never truncated mid-text) starting from the lowest-priority end
+// of optional (index len-1) until it fits or every optional segment has
+// been shed; callers order optional least-protected-first → most-protected-
+// last (see renderView's header assembly for why sysStats/load-memory-disk
+// is ordered last). Callers that want a lower-priority segment to degrade
+// to a compact form first (rather than disappear outright) should retry
+// with that segment already replaced before calling this again — see the
+// accounts field's compact-form retry in renderView.
+//
+// statsBase is the base status-counts segment (session-status counts),
+// which — unlike optional — used to be unconditionally included and could
+// by itself overflow a busy fleet's header even with every optional field
+// already off, falling through to the header bar's MaxWidth call and
+// silently truncating the version badge off the end of the line (#2301
+// round-2). statsBaseCompact is its single-total fallback form (e.g. "24
+// sessions"); it is tried, in addition to the full form, at every shedding
+// step so the base line degrades before any higher-protected optional
+// field is permanently dropped, and as the final fallback once every
+// optional segment is gone. Pass "" (or equal to statsBase) to skip
+// compacting.
+func assembleHeaderLeft(logo, title, statsBase, statsBaseCompact, statsSep string, optional []string, versionBadge string, width int) (string, bool) {
+	compose := func(base string, segs []string) string {
 		parts := make([]string, 0, len(segs)+1)
-		if statsBase != "" {
-			parts = append(parts, statsBase)
+		if base != "" {
+			parts = append(parts, base)
 		}
 		for _, s := range segs {
 			if s != "" {
@@ -442,9 +460,10 @@ func assembleHeaderLeft(logo, title, statsBase, statsSep string, optional []stri
 		// the version badge.
 		return lipgloss.Width(left)+lipgloss.Width(versionBadge)+3 <= width
 	}
+	hasCompactBase := statsBaseCompact != "" && statsBaseCompact != statsBase
 
 	segs := append([]string(nil), optional...)
-	left := compose(segs)
+	left := compose(statsBase, segs)
 	if fits(left) {
 		return left, true
 	}
@@ -453,10 +472,23 @@ func assembleHeaderLeft(logo, title, statsBase, statsSep string, optional []stri
 			continue
 		}
 		segs[i] = ""
-		left = compose(segs)
+		left = compose(statsBase, segs)
 		if fits(left) {
 			return left, true
 		}
+		if hasCompactBase {
+			if compact := compose(statsBaseCompact, segs); fits(compact) {
+				return compact, true
+			}
+		}
+	}
+	// Every optional segment is gone; the compact base is the last thing
+	// left to shed before conceding the badge doesn't fit.
+	if hasCompactBase {
+		if compact := compose(statsBaseCompact, segs); fits(compact) {
+			return compact, true
+		}
+		return compose(statsBaseCompact, segs), false
 	}
 	return left, fits(left)
 }
