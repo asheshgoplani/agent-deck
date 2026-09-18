@@ -4604,35 +4604,21 @@ func composerPasteFree(target sendRetryTarget) bool {
 	return !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
 }
 
-// sendInitialKeysChecked sends message and presses Enter, withholding Enter
-// when expectedBreaks > 0 and the composer's "[Pasted text #N +M lines]"
-// marker declares fewer hard line breaks than the message has (issue #2079).
-// expectedBreaks == 0 (a single-line message, or a non-Claude target that
-// never populates sendRetryOptions.expectedPasteBreaks) sends unchecked,
-// identical to plain SendKeysAndEnter.
+// sendInitialKeysChecked sends message and presses Enter, routing the submit
+// through send.PasteTruncationCheck when expectedBreaks > 0 so a paste cut
+// short in transit withholds Enter instead of submitting a fragment (issue
+// #2079). expectedBreaks == 0 (a single-line message, or a non-Claude target
+// that never populates sendRetryOptions.expectedPasteBreaks) sends
+// unchecked, identical to plain SendKeysAndEnter.
 //
-// This mirrors Instance.sendMessageWhenReady's launch-path guard for
-// `session send` (#2148 item 4b): before this, only launch delivered a
-// multi-line prompt through the paste-marker check — `session send` and
-// `--message-file` had no truncation guard of their own.
+// This gives `session send` and its `--message-file` form the same guard
+// Instance.sendMessageWhenReady has always applied on the launch path
+// (#2148 item 4b); before this they had no truncation guard of their own.
 func sendInitialKeysChecked(target sendRetryTarget, message string, expectedBreaks int) error {
 	if expectedBreaks <= 0 {
 		return target.SendKeysAndEnter(message)
 	}
-	return target.SendKeysAndEnterChecked(message, target.CapturePaneFresh, func(pane string, capErr error) (bool, error) {
-		if capErr != nil {
-			// Capture failure is unknown, not unsafe — proceed rather than
-			// blocking delivery on an unrelated pane-read glitch.
-			return true, nil
-		}
-		verdict, declared := send.CheckPasteMarker(pane, expectedBreaks)
-		if verdict == send.PasteMarkerTruncated {
-			return false, fmt.Errorf(
-				"prompt truncated in transit: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
-				declared, declared, expectedBreaks)
-		}
-		return true, nil
-	})
+	return target.SendKeysAndEnterChecked(message, target.CapturePaneFresh, send.PasteTruncationCheck(expectedBreaks))
 }
 
 // sendWithRetryTarget sends the message and runs the bounded submit

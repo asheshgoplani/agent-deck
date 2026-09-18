@@ -162,6 +162,39 @@ func CheckPasteMarker(content string, expectedBreaks int) (verdict PasteMarkerVe
 	return PasteMarkerIntact, declared
 }
 
+// PasteTruncationCheck builds the pre-Enter guard both send paths use
+// (Instance.sendMessageWhenReady on the launch path, sendInitialKeysChecked
+// behind `session send`): it reads the composer's newest paste marker and
+// reports ok=false — withholding Enter — only when the marker proves a
+// fragment, not the whole prompt, landed (issue #2079).
+//
+// The returned function has tmux.PostPasteCheck's shape and is assignable to
+// it; the type is spelled structurally here so this package keeps no
+// dependency on internal/tmux.
+//
+// Three outcomes, only one of which refuses:
+//   - capture failed: unknown, not unsafe. Proceed, exactly as the pre-#2079
+//     bare Enter did, rather than blocking delivery on a pane-read glitch.
+//   - no marker, or an intact one: either the composer has not repainted yet
+//     (benign render lag, which the callers' verify loops still catch) or the
+//     pane never frames pastes at all. Proceed.
+//   - truncated: refuse, with an error naming the declared and expected
+//     break counts.
+func PasteTruncationCheck(expectedBreaks int) func(pane string, captureErr error) (bool, error) {
+	return func(pane string, captureErr error) (bool, error) {
+		if captureErr != nil {
+			return true, nil
+		}
+		verdict, declared := CheckPasteMarker(pane, expectedBreaks)
+		if verdict == PasteMarkerTruncated {
+			return false, fmt.Errorf(
+				"prompt truncated in transit: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
+				declared, declared, expectedBreaks)
+		}
+		return true, nil
+	}
+}
+
 // firstNonEmptyLine returns the first physical line of s that is non-empty
 // after trimming. Used to reconstruct what the composer actually renders for a
 // multi-line message: Claude's input box shows the message's first physical

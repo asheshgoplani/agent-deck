@@ -365,17 +365,17 @@ func (m *mockSendRetryTarget) SendKeysAndEnter(_ string) error {
 }
 
 // SendKeysAndEnterChecked mirrors *tmux.Session's real contract closely
-// enough for tests exercising sendRetryOptions.expectedPasteBreaks: it types
-// the keys, runs check against the next captured pane, and only presses
-// Enter (counted the same as SendKeysAndEnter) when check reports ok.
+// enough for tests exercising sendRetryOptions.expectedPasteBreaks: the keys
+// count as one send-keys call either way, then check runs against the next
+// captured pane and a not-ok verdict withholds the Enter and returns its
+// error.
 func (m *mockSendRetryTarget) SendKeysAndEnterChecked(_ string, capture func() (string, error), check tmux.PostPasteCheck) error {
 	atomic.AddInt32(&m.sendKeysCalls, 1)
 	if m.sendKeysErr != nil {
 		return m.sendKeysErr
 	}
 	pane, capErr := capture()
-	ok, err := check(pane, capErr)
-	if !ok {
+	if ok, err := check(pane, capErr); !ok {
 		return err
 	}
 	return nil
@@ -1682,8 +1682,8 @@ func TestExecuteSend_MultilineMessageRefusedOnTruncatedPasteMarker(t *testing.T)
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
 		panes: []string{
-			claudeComposer(""),                    // guard: composer empty, not busy
-			"❯ [Pasted text #1 +1 lines]\n",        // post-send: truncated marker (message has 2 breaks)
+			claudeComposer(""),              // guard: composer empty, not busy
+			"❯ [Pasted text #1 +1 lines]\n", // post-send: truncated marker (message has 2 breaks)
 		},
 	}
 	tun := testGuardTuning(sendRetryOptions{maxRetries: 5, checkDelay: 0, verifyDelivery: true})
