@@ -505,3 +505,155 @@ func TestResolveWorktreeSettingsForDir_GlobalConfigTrustedUnchanged(t *testing.T
 		t.Errorf("rejections = %+v, want none (global config is not validated)", rejections)
 	}
 }
+
+// --- Round 3 follow-up: per-file boundary (#2093 review round 2, finding 1) ---
+// (a dir-local file may only bound a value to its OWN directory tree; only
+// the outermost file gets the workspace-wide bound, for values it itself
+// contributes.)
+
+// mkdirs creates each directory (and its parents), failing the test if it
+// cannot.
+func mkdirs(t *testing.T, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// requireTemplateBoundaryRejection asserts that path_template was refused by
+// the resolved-path bound check, that nothing was applied in its place, and
+// that the recorded rejection names offendingFile (the dir-local file the
+// value came from). explain describes what the rejected value was trying to
+// reach, for the failure message.
+func requireTemplateBoundaryRejection(
+	t *testing.T,
+	settings WorktreeSettings,
+	sources map[string]string,
+	rejections map[string][]string,
+	offendingFile, explain string,
+) {
+	t.Helper()
+	if settings.Template() != "" {
+		t.Errorf("Template() = %q, want empty (%s)", settings.Template(), explain)
+	}
+	if sources[WorktreeKeyPathTemplate] != sourceDefault {
+		t.Errorf("sources[path_template] = %q, want fallback to %q", sources[WorktreeKeyPathTemplate], sourceDefault)
+	}
+	requireOneRejection(t, rejections, WorktreeKeyPathTemplate, "resolves outside workspace boundary")
+	if got := rejections[WorktreeKeyPathTemplate][0]; !strings.Contains(got, offendingFile) {
+		t.Errorf("rejection %q does not name the offending file %q", got, offendingFile)
+	}
+}
+
+// TestResolveWorktreeSettingsForDir_RejectsInnerFileEscapeViaOuterBoundary
+// reproduces review round 2 finding 1 live: a legitimate outer workspace-
+// parent file (default_location = "sibling" only) plus an untrusted inner
+// dir-local file (as would ship inside a cloned third-party repo) that tries
+// to redirect worktree creation into a SIBLING repo it does not own, via
+// "{repo-root}/../repo1-important/{branch}". Before the fix this was accepted
+// because the boundary was computed once from the outer file and reused for
+// the inner file's value; it must now be rejected, bounded to the inner
+// file's own directory.
+func TestResolveWorktreeSettingsForDir_RejectsInnerFileEscapeViaOuterBoundary(t *testing.T) {
+	_, workspace, _ := setupDirLocalWorkspace(t)
+
+	repo1 := filepath.Join(workspace, "repo1-important")
+	repo2Evil := filepath.Join(workspace, "repo2-evil")
+	mkdirs(t, repo1, repo2Evil)
+
+	writeDirLocalConfig(t, workspace, "[worktree]\ndefault_location = \"sibling\"\n")
+	evilPath := writeDirLocalConfig(t, repo2Evil,
+		"[worktree]\npath_template = \"{repo-root}/../repo1-important/{branch}\"\n")
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(repo2Evil)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	requireTemplateBoundaryRejection(t, settings, sources, rejections, evilPath,
+		"inner file's escape into a sibling repo must be rejected")
+}
+
+// TestResolveWorktreeSettingsForDir_OuterOnlySiblingStillWorks confirms the
+// legitimate workspace-parent pattern (an outer-only file, no inner file at
+// all) is unaffected by the per-file boundary: the outer file's own
+// directory IS the workspace boundary, so a sibling-worktree template it
+// contributes itself must still be accepted.
+func TestResolveWorktreeSettingsForDir_OuterOnlySiblingStillWorks(t *testing.T) {
+	_, workspace, target := setupDirLocalWorkspace(t)
+
+	outerPath := writeDirLocalConfig(t, workspace, "[worktree]\npath_template = \"{repo-root}/../wt-{branch}\"\n")
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.Template() != "{repo-root}/../wt-{branch}" {
+		t.Errorf("Template() = %q, want the outer file's sibling template", settings.Template())
+	}
+	if sources[WorktreeKeyPathTemplate] != outerPath {
+		t.Errorf("sources[path_template] = %q, want %q", sources[WorktreeKeyPathTemplate], outerPath)
+	}
+	if len(rejections[WorktreeKeyPathTemplate]) != 0 {
+		t.Errorf("rejections[path_template] = %v, want none", rejections[WorktreeKeyPathTemplate])
+	}
+}
+
+// TestResolveWorktreeSettingsForDir_ThreeLevelNestingBoundsToOwnFile checks a
+// three-file chain: outermost workspace file, a middle directory with its own
+// file, and an innermost target directory with an untrusted file that tries
+// to reach a directory that sits within the MIDDLE file's tree (and inside
+// the overall workspace boundary) but outside the innermost file's own
+// directory. It must still be rejected: each file is bounded to its own
+// subtree regardless of how many outer files exist above it.
+func TestResolveWorktreeSettingsForDir_ThreeLevelNestingBoundsToOwnFile(t *testing.T) {
+	_, workspace, _ := setupDirLocalWorkspace(t)
+
+	mid := filepath.Join(workspace, "mid")
+	midSibling := filepath.Join(workspace, "mid-sibling")
+	inner := filepath.Join(mid, "inner")
+	mkdirs(t, mid, midSibling, inner)
+
+	writeDirLocalConfig(t, workspace, "[worktree]\ndefault_location = \"sibling\"\n")
+	writeDirLocalConfig(t, mid, "[worktree]\ndefault_location = \"sibling\"\n")
+	innerPath := writeDirLocalConfig(t, inner,
+		"[worktree]\npath_template = \"{repo-root}/../../mid-sibling/{branch}\"\n")
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(inner)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	requireTemplateBoundaryRejection(t, settings, sources, rejections, innerPath,
+		"innermost file cannot reach the middle file's sibling")
+}
+
+// --- Round 3 follow-up: empty path_template is inherently safe (#2093
+// review round 2, finding 2) ---
+
+// TestResolveWorktreeSettingsForDir_EmptyTemplateSingleFileNoOuter
+// reproduces review round 2 finding 2 live: a single dir-local file with
+// path_template = "" and NO outer file above it (so the boundary would
+// otherwise collapse to targetDir itself). This must restore the built-in
+// default (sibling) behavior, not be rejected as "outside the workspace
+// boundary" — an empty template is inherently safe, same as
+// default_location's empty/sibling/subdirectory values.
+func TestResolveWorktreeSettingsForDir_EmptyTemplateSingleFileNoOuter(t *testing.T) {
+	_, _, target := setupDirLocalWorkspace(t)
+
+	path := writeDirLocalConfig(t, target, "[worktree]\npath_template = \"\"\n")
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.PathTemplate == nil || *settings.PathTemplate != "" {
+		t.Errorf("PathTemplate = %v, want an explicit empty-string override", settings.PathTemplate)
+	}
+	if len(rejections[WorktreeKeyPathTemplate]) != 0 {
+		t.Errorf("rejections[path_template] = %v, want none (empty template is inherently safe)", rejections[WorktreeKeyPathTemplate])
+	}
+	if sources[WorktreeKeyPathTemplate] != path {
+		t.Errorf("sources[path_template] = %q, want %q", sources[WorktreeKeyPathTemplate], path)
+	}
+}

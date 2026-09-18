@@ -29,17 +29,22 @@ import (
 // silently ignored.
 //
 // default_location and path_template get a second layer of scrutiny (P1
-// review follow-up, #2093): unlike sparse_checkout, both are used to build a
-// filesystem path that GenerateWorktreePath/resolveTemplate will write a
-// worktree to, with no containment check of their own (see
+// review follow-up, #2093, round 3): unlike sparse_checkout, both are used to
+// build a filesystem path that GenerateWorktreePath/resolveTemplate will
+// write a worktree to, with no containment check of their own (see
 // internal/git/git.go and internal/git/template.go). So a dir-local value for
-// either key is bounded to the "workspace boundary" — the directory
-// containing the OUTERMOST discovered dir-local config file for the target
-// directory — which still allows the legitimate "workspace-parent"
-// sibling-worktree case (e.g. path_template = "{repo-root}/../wt-{branch}"
-// set in a file that sits ABOVE the repo root) that the boundary is drawn
-// around. Global config and explicit CLI flags are unaffected and remain
-// fully trusted, as before. See validateDirLocalWorktreeValue.
+// either key is bounded to the directory containing the file it was actually
+// READ FROM — a dir-local file may only target its own subtree. A
+// workspace-parent file (one that sits ABOVE the repos it configures, with no
+// dir-local file of its own above it) is, by construction, its own boundary
+// and so still gets the wider "workspace" bound for values it contributes
+// itself (e.g. path_template = "{repo-root}/../wt-{branch}" set in that
+// file) — but an INNER file nested below it (e.g. inside one of the sibling
+// repos) is bounded to its own directory tree only, and cannot use a
+// path_template/default_location to point outside it, even into a sibling
+// repo the outer file's boundary would otherwise permit. Global config and
+// explicit CLI flags are unaffected and remain fully trusted, as before. See
+// validateDirLocalWorktreeValue.
 
 // dirLocalWorktreeConfig is the allowlisted [worktree] surface for dir-local
 // config files. Pointer fields distinguish "not set" from "explicitly
@@ -229,16 +234,16 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 		return settings, sources, rejections, err
 	}
 
-	// The workspace boundary that untrusted dir-local default_location/
-	// path_template values must resolve within: the directory containing the
-	// OUTERMOST discovered dir-local config file (paths is outermost-first).
-	// Computed once so every file in the chain is bounded against the same
-	// workspace root, not just its own parent directory.
-	var boundary string
-	if len(paths) > 0 {
-		// paths[0] is "<workspace>/.agent-deck/config.toml"; the two Dir
-		// calls strip the file name and the ".agent-deck" directory.
-		boundary = resolveSymlinks(filepath.Dir(filepath.Dir(paths[0])))
+	// dirBoundary returns the boundary an untrusted default_location/
+	// path_template value read from path must resolve within: the directory
+	// containing path itself (stripping the file name and ".agent-deck").
+	// This bounds every file to its OWN subtree — an inner file nested below
+	// an outer workspace-parent file cannot borrow the outer file's wider
+	// boundary. The outermost file's own directory IS the workspace boundary
+	// by construction, so it (and only it) still gets the workspace-wide
+	// bound for values it contributes itself.
+	dirBoundary := func(path string) string {
+		return resolveSymlinks(filepath.Dir(filepath.Dir(path)))
 	}
 
 	// accept reports whether an untrusted dir-local value for key, read from
@@ -246,7 +251,7 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 	// source; on rejection it records the reason and the source the key falls
 	// back to (which is still the pre-existing, lower-precedence one).
 	accept := func(key, raw, path string) bool {
-		reason := validateDirLocalWorktreeValue(key, raw, targetDir, boundary)
+		reason := validateDirLocalWorktreeValue(key, raw, targetDir, dirBoundary(path))
 		if reason != "" {
 			rejections[key] = append(rejections[key], fmt.Sprintf(
 				"%s: %s %q rejected (%s); falling back to %s value",
@@ -333,6 +338,11 @@ func resolveSymlinksBestEffort(path string) string {
 //     ResolveWorktreeSettingsForDir and to WorktreePath/GenerateWorktreePath
 //     as RepoDir). This catches template ".." escapes, symlink escapes, and
 //     anything the raw check misses.
+//
+// boundary is the directory containing the specific file raw was read from
+// (see dirBoundary in ResolveWorktreeSettingsForDir), never a workspace-wide
+// bound shared across files — an inner dir-local file may only target its
+// own subtree, even when an outer workspace-parent file exists above it.
 func validateDirLocalWorktreeValue(key, raw, targetDir, boundary string) string {
 	if filepath.IsAbs(raw) {
 		return "absolute path not allowed"
@@ -345,9 +355,9 @@ func validateDirLocalWorktreeValue(key, raw, targetDir, boundary string) string 
 	}
 
 	if boundary == "" {
-		// No dir-local file was discovered at all, so there is nothing to
-		// bound against; unreachable in practice (validateDirLocalWorktreeValue
-		// is only called once a dir-local file supplied raw), but fail safe.
+		// No boundary to bound against; unreachable in practice (the only
+		// caller derives boundary from the path of the file that supplied
+		// raw, which is always non-empty), but fail safe.
 		return "no workspace boundary available"
 	}
 
@@ -363,6 +373,16 @@ func validateDirLocalWorktreeValue(key, raw, targetDir, boundary string) string 
 		}
 		candidate = git.GenerateWorktreePath(targetDir, "boundary-check", raw)
 	case WorktreeKeyPathTemplate:
+		// An empty template clears any inherited template and restores the
+		// built-in default (sibling) strategy — the same "inherently safe,
+		// no bound check" treatment default_location's own empty/sibling/
+		// subdirectory values get above. Without this, the default sibling
+		// candidate (which sits beside targetDir by design) gets rejected by
+		// the bound check whenever the boundary has collapsed to targetDir
+		// itself (the ordinary single-file, no-outer-file case).
+		if raw == "" {
+			return ""
+		}
 		candidate = git.WorktreePath(git.WorktreePathOptions{
 			Branch:    "boundary-check",
 			RepoDir:   targetDir,

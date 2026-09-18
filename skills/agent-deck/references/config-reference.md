@@ -488,15 +488,27 @@ is also validated before it is trusted:
 - An absolute path, or a `~`-relative path, is refused.
 - For `default_location` (used verbatim, never templated), a literal `..`
   path segment is refused.
-- Either key is refused if it would resolve — after expanding `~`,
+- An empty `path_template` (`""`) is always allowed regardless of the bound
+  below — it clears an inherited template and restores the built-in default
+  (`sibling`) behavior, which is inherently safe the same way
+  `default_location`'s `"sibling"`/`"subdirectory"`/`""` values are.
+- Otherwise, either key is refused if it would resolve — after expanding `~`,
   `{repo-root}`, and other template variables, and resolving symlinks — to a
-  path outside the **workspace boundary**: the directory containing the
-  *outermost* discovered dir-local config file for the target directory (in
-  the example above, `~/projects/example`). This is what still allows the
-  workspace-parent case's `path_template = "{repo-root}/../wt-{branch}"`
-  (a legitimate `..` that stays inside `~/projects/example`) while refusing
-  one that escapes it, e.g. `"{repo-root}/../../../../etc/{branch}"` or a
-  symlink planted inside the workspace that points outside it.
+  path outside the directory it is allowed to point into. **That bound is
+  per file, not shared workspace-wide: a dir-local file can only point inside
+  its own directory tree; a workspace-parent file (one with no dir-local file
+  of its own above it) may point inside the workspace it defines.** In the
+  example above, `~/projects/example/.agent-deck/config.toml` has no
+  dir-local file above it, so it defines the workspace and its own
+  `path_template = "{repo-root}/../wt-{branch}"` (a legitimate `..` that
+  stays inside `~/projects/example`) is allowed. But a `.agent-deck/config.toml`
+  living *inside* one of the sibling checkouts (e.g. committed in a
+  third-party repo you clone as `~/projects/example/some-dependency`) is
+  bounded to `some-dependency`'s own directory only — it cannot use
+  `path_template`/`default_location` to redirect worktree creation into a
+  sibling checkout it doesn't own, even though that sibling sits inside the
+  same workspace. A symlink planted inside a file's own tree that points
+  outside its bound is refused the same way.
 
 A refused value is **not** a hard failure of the whole file (unlike an
 unknown key, which is): it is simply not applied, and the setting falls back
