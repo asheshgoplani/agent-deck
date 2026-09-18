@@ -109,9 +109,9 @@ type toolDataBlob struct {
 	// (not used directly by MigrateFromJSON) purely so toolDataKnownKeys sees
 	// it as typed-schema-authoritative: an explicit clear (`session set <id>
 	// context-level ""`, which omits the key) must win over the stored row,
-	// the same way idle_timeout_secs and other omitempty scalar fields do —
-	// MergeToolDataExtras would otherwise treat the omission as "a binary
-	// that doesn't know this key" and resurrect the old value.
+	// the same way Color and other omitempty scalar fields already in this
+	// struct do — MergeToolDataExtras would otherwise treat the omission as
+	// "a binary that doesn't know this key" and resurrect the old value.
 	ContextLevel string `json:"context_level,omitempty"`
 }
 

@@ -208,6 +208,18 @@ mcps       = ["memory"]              # Declarative loadout ([mcps.X] catalog nam
 | `plugins` | array | Top-level `[plugins.X]` catalog keys appended to `Instance.Plugins`. Existing manual plugin selections are preserved. Catalog refusal and validation rules remain authoritative. |
 | `mcps` | array | Declarative MCP loadout (`[mcps.X]` catalog names appended to the session's local `.mcp.json`). Same attach-only floor semantics; unknown catalog names skip with a warning. |
 
+`[groups."<path>"]` also carries one top-level key outside the `.claude`
+block:
+
+```toml
+[groups."conductor/workers"]
+context_level = "full"   # none | primer | full — overrides [launch].context_level (issue #2260)
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `context_level` | string | Overrides `[launch].context_level` for sessions in this group subtree. Ancestor-walking: a child group with no explicit value inherits the nearest ancestor group's setting. Overridden per session with `agent-deck session set <id> context-level <level>`. See `## [launch] Section` for full precedence and `agent-deck session primer` for inspection. |
+
 Verify what a group actually resolves to — including whether the `env_file`
 exists and whether config.toml parsed at all:
 
@@ -497,11 +509,13 @@ Tool-agnostic spawn settings.
 ```toml
 [launch]
 inject_identity = true   # Default: true
+context_level = "primer" # none | primer | full — global default (issue #2260)
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `inject_identity` | bool | `true` | Tell every spawned session, through its harness's own instruction mechanism, that it runs inside agent-deck: its session id, title, tool, group, profile, account, parent session and project path, the six most useful `agent-deck` commands, `session current --json` as the way to fetch the live record, and the `===AGENTDECK_DONE===` completion sentinel. The block (under 40 lines) is regenerated from the session record on every start/restart and written to `<data-dir>/agent-deck/runtime/identity/<session-id>/identity.md`; its path is exported as `AGENTDECK_IDENTITY_FILE`. Nothing is written into the project directory. Per-session opt-out: `agent-deck add|launch --no-identity`. |
+| `inject_identity` | bool | `true` | Tell every spawned session, through its harness's own instruction mechanism, that it runs inside agent-deck: its session id, title, tool, group, profile, account, parent session and project path, the six most useful `agent-deck` commands, `session current --json` as the way to fetch the live record, and the `===AGENTDECK_DONE===` completion sentinel. The block (under 40 lines) is regenerated from the session record on every start/restart and written to `<data-dir>/agent-deck/runtime/identity/<session-id>/identity.md`; its path is exported as `AGENTDECK_IDENTITY_FILE`. Per-session opt-out: `agent-deck add|launch --no-identity`. `inject_identity = false` is the *global* layer's value only — a `context_level` set on a group or session still overrides it (global < group < session precedence; the per-session `--no-identity` opt-out is the one thing that keeps winning over everything). |
+| `context_level` | string | `""` (falls back to `full`) | Global default for how much of the identity block a spawned session's harness receives (issue #2260): `none` (no injection, same as `inject_identity = false`), `primer` (short session-identity block: id/title/tool/parent), or `full` (the complete block `inject_identity` describes). Overridden per group (`[groups."<path>"].context_level`, ancestor-walking) or per session (`agent-deck session set <id> context-level <level>`). Precedence: `--no-identity` (session) > session `context_level` > group `context_level` (nearest ancestor) > global `context_level` > global `inject_identity=false` > default `full`. Inspect what a session actually resolves to with `agent-deck session primer [id]`. |
 
 How each harness receives the block (`documentation/HARNESS_IDENTITY.md` has the details):
 

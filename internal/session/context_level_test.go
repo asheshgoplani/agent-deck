@@ -124,6 +124,34 @@ func TestEffectiveContextLevel_Precedence(t *testing.T) {
 		}
 	})
 
+	t.Run("group context_level overrides legacy global inject_identity=false", func(t *testing.T) {
+		off := false
+		restore := resetUserConfigCache(t, &UserConfig{
+			Launch: LaunchSettings{InjectIdentity: &off},
+			Groups: map[string]GroupSettings{
+				"conductor/workers": {ContextLevel: ContextLevelPrimer},
+			},
+		})
+		defer restore()
+		inst := identityTestInstance("claude") // GroupPath: conductor/workers
+		level, source := inst.EffectiveContextLevel()
+		if level != ContextLevelPrimer || source != "group:conductor/workers" {
+			t.Errorf("got (%q, %q), want (primer, group:conductor/workers)", level, source)
+		}
+	})
+
+	t.Run("session context_level overrides legacy global inject_identity=false", func(t *testing.T) {
+		off := false
+		restore := resetUserConfigCache(t, &UserConfig{Launch: LaunchSettings{InjectIdentity: &off}})
+		defer restore()
+		inst := identityTestInstance("claude")
+		inst.ContextLevel = ContextLevelFull
+		level, source := inst.EffectiveContextLevel()
+		if level != ContextLevelFull || source != "session" {
+			t.Errorf("got (%q, %q), want (full, session)", level, source)
+		}
+	})
+
 	t.Run("malformed config value falls through instead of failing", func(t *testing.T) {
 		restore := resetUserConfigCache(t, &UserConfig{Launch: LaunchSettings{ContextLevel: "bogus"}})
 		defer restore()

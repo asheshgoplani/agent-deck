@@ -157,9 +157,12 @@ agent-deck session set <id> context-level primer
 agent-deck session set <id> context-level ""       # clear: inherit group/global
 ```
 
-The legacy `inject_identity = false` / `--no-identity` opt-out keeps meaning
-`none` and keeps winning over a positive `context_level` at any layer, so
-existing configs and scripts are unaffected.
+The legacy `--no-identity` per-session opt-out keeps meaning `none` and
+keeps winning over a positive `context_level` at any layer (backward
+compatibility for an operator who set it before this issue existed). The
+legacy *global* `inject_identity = false`, however, is just the global
+layer's value: a group or session `context_level` overrides it, the same as
+any other global < group < session precedence.
 
 ### Inspecting what a session actually gets
 

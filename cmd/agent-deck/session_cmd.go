@@ -6300,6 +6300,21 @@ func handleSessionPrimer(profileArg string, args []string) {
 	out.Print(sb.String(), jsonData)
 }
 
+// remotePrimerUnsupported turns an older remote's "unknown session command"
+// reply to `session primer` into one clear line, the same pattern as
+// remoteMetricsUnsupported. Any other failure passes through as the remote
+// printed it.
+func remotePrimerUnsupported(remote string, args []string, code int, stderr string) (string, bool) {
+	if code == 0 || !isSessionPrimerArgs(args) || !strings.Contains(stderr, "unknown session command: primer") {
+		return "", false
+	}
+	return fmt.Sprintf("remote %q does not support 'session primer' (its agent-deck predates session primer; update it with 'agent-deck remote %s update')", remote, remote), true
+}
+
+func isSessionPrimerArgs(args []string) bool {
+	return len(args) > 1 && args[0] == "session" && args[1] == "primer"
+}
+
 // getCurrentTmuxSessionName gets the current tmux session name (single subprocess call)
 func getCurrentTmuxSessionName() (string, error) {
 	// Bounded — see tmuxProbeTimeout.
