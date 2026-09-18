@@ -8028,11 +8028,27 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		// transcript on disk that carries a real assistant reply. Mirrors the
 		// Gemini syncGeminiSessionFromDisk fallback below.
 		//
-		// Issue #2299: only do that when this instance already owns a local
-		// transcript at the currently bound ClaudeSessionID. An empty ID or a
-		// missing <id>.jsonl is not evidence that the newest file in the
-		// shared project directory belongs here.
-		if i.GetJSONLPath() != "" {
+		// Issue #2299 (samratashoka007, #2303) + carry fix: the mtime filter
+		// inside findLatestClaudeTranscriptOnDisk already excludes candidates
+		// older than i.LastStartedAt, but treats a ZERO LastStartedAt as
+		// "unknown" and does not filter at all — the exact case #2303 caught,
+		// where a session record predates the LastStartedAt field (or the
+		// caller never started it) and LastStartedAt gives no evidence either
+		// way. #2303's own fix (require i.GetJSONLPath() != "", i.e. the
+		// bound id must already have a local file) is safe there, but applied
+		// unconditionally it also blocks legitimate /clear-rollover recovery:
+		// a session can be live (LastStartedAt known and reliable) with a
+		// bound id that has not been flushed to disk yet while Claude has
+		// already written the rollover under a NEW id — GetJSONLPath() on the
+		// OLD id is "" in that window, so the unconditional gate would wrongly
+		// refuse the newer, legitimate rollover transcript.
+		//
+		// Only require #2303's stronger "already owns a local file" evidence
+		// when LastStartedAt itself gives no evidence (zero/unknown). When
+		// LastStartedAt is known, the existing per-candidate mtime filter
+		// alone is sufficient and rollover recovery must not be blocked by
+		// the bound id's own file having not appeared yet.
+		if !i.LastStartedAt.IsZero() || i.GetJSONLPath() != "" {
 			if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
 				// #1815: this is an mtime-based disk scan — the same evidence
 				// class as the restart discovery prelude, and in a shared working
