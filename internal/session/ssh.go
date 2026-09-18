@@ -633,6 +633,22 @@ type RemoteHostStats struct {
 	// slots (AccountsAvailable true, Accounts empty).
 	AccountsAvailable bool
 	Accounts          []AccountUsage
+
+	// SSHAvailable is false when the remote sent no ssh_sessions: an older
+	// agent-deck (SSHError empty) or one that could not gather them
+	// (SSHError says why). Never guessed.
+	SSHAvailable bool
+	SSHError     string
+	SSHSessions  []RemoteSSHSession
+}
+
+// RemoteSSHSession is one user's live SSH logins on a remote host.
+type RemoteSSHSession struct {
+	User     string
+	Count    int
+	HasSince bool
+	Since    time.Time
+	From     string
 }
 
 // remoteHostStatsWire is the JSON shape `agent-deck system stats --json`
@@ -662,6 +678,18 @@ type remoteHostStatsWire struct {
 	// false) and an empty, non-nil slice when the remote has this field but
 	// no configured Claude account slots.
 	Accounts *[]remoteAccountUsageWire `json:"accounts,omitempty"`
+	// SSHSessions is nil when the remote predates the field or could not
+	// gather it (SSHError set).
+	SSHSessions *[]remoteSSHSessionWire `json:"ssh_sessions,omitempty"`
+	SSHError    string                  `json:"ssh_error,omitempty"`
+}
+
+// remoteSSHSessionWire is one entry of remoteHostStatsWire.SSHSessions.
+type remoteSSHSessionWire struct {
+	User  string `json:"user"`
+	Count int    `json:"count"`
+	Since int64  `json:"since,omitempty"`
+	From  string `json:"from,omitempty"`
 }
 
 // remoteAccountUsageWire is the JSON shape of one entry in
@@ -671,6 +699,7 @@ type remoteHostStatsWire struct {
 type remoteAccountUsageWire struct {
 	Name            string   `json:"name"`
 	Known           bool     `json:"known"`
+	UnknownReason   string   `json:"unknown_reason,omitempty"`
 	UpdatedAt       int64    `json:"updated_at,omitempty"`
 	FiveHourPercent *float64 `json:"five_hour_percent,omitempty"`
 	SevenDayPercent *float64 `json:"seven_day_percent,omitempty"`
@@ -686,6 +715,12 @@ func (r *SSHRunner) FetchSystemStats(ctx context.Context) (RemoteHostStats, erro
 	if err != nil {
 		return RemoteHostStats{}, err
 	}
+	return parseRemoteHostStats(output)
+}
+
+// parseRemoteHostStats decodes `system stats --json` output; a field the
+// remote omitted stays unavailable rather than zero.
+func parseRemoteHostStats(output []byte) (RemoteHostStats, error) {
 	trimmed := bytes.TrimSpace(output)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return RemoteHostStats{}, fmt.Errorf("unexpected remote system stats output: %q", string(trimmed))
@@ -715,7 +750,7 @@ func (r *SSHRunner) FetchSystemStats(ctx context.Context) (RemoteHostStats, erro
 		stats.AccountsAvailable = true
 		stats.Accounts = make([]AccountUsage, 0, len(*wire.Accounts))
 		for _, a := range *wire.Accounts {
-			usage := AccountUsage{Name: a.Name, Known: a.Known}
+			usage := AccountUsage{Name: a.Name, Known: a.Known, UnknownReason: a.UnknownReason}
 			if a.UpdatedAt > 0 {
 				usage.UpdatedAt = time.Unix(a.UpdatedAt, 0)
 				usage.HasUpdatedAt = true
@@ -727,6 +762,18 @@ func (r *SSHRunner) FetchSystemStats(ctx context.Context) (RemoteHostStats, erro
 				usage.SevenDay = AccountUsageWindow{Known: true, Percent: *a.SevenDayPercent}
 			}
 			stats.Accounts = append(stats.Accounts, usage)
+		}
+	}
+	stats.SSHError = wire.SSHError
+	if wire.SSHSessions != nil {
+		stats.SSHAvailable = true
+		stats.SSHSessions = make([]RemoteSSHSession, 0, len(*wire.SSHSessions))
+		for _, s := range *wire.SSHSessions {
+			entry := RemoteSSHSession{User: s.User, Count: s.Count, From: s.From}
+			if s.Since > 0 {
+				entry.Since, entry.HasSince = time.Unix(s.Since, 0), true
+			}
+			stats.SSHSessions = append(stats.SSHSessions, entry)
 		}
 	}
 	return stats, nil

@@ -59,14 +59,49 @@ type systemStatsJSON struct {
 	// lists the slots themselves. nil (key omitted) only when the user
 	// config could not be loaded; an empty slice means zero slots configured.
 	Accounts *[]systemStatsAccountJSON `json:"accounts,omitempty"`
+	// SSHSessions is who is connected to this host over SSH right now, per
+	// user (sysinfo.CollectSSHSessions via `who`), for the opt-in "ssh"
+	// field. Omitted when it could not be gathered; SSHError then says why.
+	// A remote that predates the field omits both, and the controller
+	// renders "ssh unknown" — never a guess.
+	SSHSessions *[]systemStatsSSHJSON `json:"ssh_sessions,omitempty"`
+	SSHError    string                `json:"ssh_error,omitempty"`
+}
+
+// systemStatsSSHJSON is one entry of systemStatsJSON.SSHSessions.
+type systemStatsSSHJSON struct {
+	User  string `json:"user"`
+	Count int    `json:"count"`
+	Since int64  `json:"since,omitempty"`
+	From  string `json:"from,omitempty"`
+}
+
+// collectSystemStatsSSH gathers this host's SSH sessions for the wire.
+func collectSystemStatsSSH() (*[]systemStatsSSHJSON, string) {
+	snap := sysinfo.CollectSSHSessions()
+	if !snap.Available {
+		return nil, snap.Error
+	}
+	out := make([]systemStatsSSHJSON, 0, len(snap.Sessions))
+	for _, s := range snap.Sessions {
+		entry := systemStatsSSHJSON{User: s.User, Count: s.Count, From: s.From}
+		if s.HasSince {
+			entry.Since = s.Since.Unix()
+		}
+		out = append(out, entry)
+	}
+	return &out, ""
 }
 
 // systemStatsAccountJSON is one entry of systemStatsJSON.Accounts. Only the
 // name and usage numbers are exposed: no config_dir, no credential — the
 // remote side of this call already has FetchAccounts' contract to follow.
 type systemStatsAccountJSON struct {
-	Name            string   `json:"name"`
-	Known           bool     `json:"known"`
+	Name  string `json:"name"`
+	Known bool   `json:"known"`
+	// UnknownReason names why Known is false (session.AccountUsageNoFeed,
+	// AccountUsageNoData, AccountUsageUnreadable); omitted when known.
+	UnknownReason   string   `json:"unknown_reason,omitempty"`
 	UpdatedAt       int64    `json:"updated_at,omitempty"`
 	FiveHourPercent *float64 `json:"five_hour_percent,omitempty"`
 	SevenDayPercent *float64 `json:"seven_day_percent,omitempty"`
@@ -85,7 +120,7 @@ func collectSystemStatsAccounts() *[]systemStatsAccountJSON {
 	usage := session.CollectAccountUsage(config, cache, time.Now())
 	out := make([]systemStatsAccountJSON, 0, len(usage))
 	for _, u := range usage {
-		entry := systemStatsAccountJSON{Name: u.Name, Known: u.Known}
+		entry := systemStatsAccountJSON{Name: u.Name, Known: u.Known, UnknownReason: u.UnknownReason}
 		if u.HasUpdatedAt {
 			entry.UpdatedAt = u.UpdatedAt.Unix()
 		}
@@ -130,7 +165,7 @@ func handleSystemStats(args []string) {
 		if accounts := collectSystemStatsAccounts(); accounts != nil {
 			for _, a := range *accounts {
 				if !a.Known {
-					fmt.Printf("Account %s: usage unknown\n", a.Name)
+					fmt.Printf("Account %s: usage unknown (%s)\n", a.Name, accountUnknownReasonText(a.UnknownReason))
 					continue
 				}
 				fmt.Printf("Account %s:", a.Name)
@@ -139,6 +174,24 @@ func handleSystemStats(args []string) {
 				}
 				if a.SevenDayPercent != nil {
 					fmt.Printf(" 7d %.0f%%", *a.SevenDayPercent)
+				}
+				fmt.Println()
+			}
+		}
+		sshSessions, sshErr := collectSystemStatsSSH()
+		switch {
+		case sshErr != "":
+			fmt.Printf("SSH:    unknown (%s)\n", sshErr)
+		case len(*sshSessions) == 0:
+			fmt.Println("SSH:    nobody connected")
+		default:
+			for _, s := range *sshSessions {
+				fmt.Printf("SSH:    %s ×%d", s.User, s.Count)
+				if s.Since > 0 {
+					fmt.Printf(" since %s", time.Unix(s.Since, 0).Format("Jan 2 15:04"))
+				}
+				if s.From != "" {
+					fmt.Printf(" from %s", s.From)
 				}
 				fmt.Println()
 			}
@@ -174,6 +227,7 @@ func handleSystemStats(args []string) {
 		}{UsedBytes: stats.Disk.UsedBytes, TotalBytes: stats.Disk.TotalBytes, UsagePercent: stats.Disk.UsagePercent}
 	}
 	out.Accounts = collectSystemStatsAccounts()
+	out.SSHSessions, out.SSHError = collectSystemStatsSSH()
 
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -181,4 +235,17 @@ func handleSystemStats(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println(string(data))
+}
+
+// accountUnknownReasonText is the human form of an unknown reason.
+func accountUnknownReasonText(reason string) string {
+	switch reason {
+	case session.AccountUsageNoFeed:
+		return "no feed: run `agent-deck hooks install`"
+	case session.AccountUsageNoData:
+		return "no data yet"
+	case session.AccountUsageUnreadable:
+		return "unreadable"
+	}
+	return "unknown"
 }
