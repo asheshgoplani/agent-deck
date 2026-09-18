@@ -692,11 +692,19 @@ func paletteColor(value string) (lipgloss.Color, bool) {
 	}
 }
 
-// GetToolStyle returns cached style for tool or default.
+// GetToolStyle returns the style for tool: the registry's color (built-in
+// palette slot or custom [tools.<name>].color) if one resolves, else the
+// cached built-in style, else DefaultToolStyle. This is the function every
+// row/preview render call site actually uses, so it must consult the
+// registry the same way ToolColor() does rather than only the hardcoded
+// ToolStyleCache (issue #2136 — ToolColor() alone was never wired in here).
 // Read-locked to protect against concurrent map access during live theme switches.
 func GetToolStyle(tool string) lipgloss.Style {
 	themeMu.RLock()
 	defer themeMu.RUnlock()
+	if c, ok := paletteColor(session.ToolColorFor(tool)); ok {
+		return lipgloss.NewStyle().Foreground(c)
+	}
 	if style, ok := ToolStyleCache[tool]; ok {
 		return style
 	}

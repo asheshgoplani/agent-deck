@@ -1420,6 +1420,38 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, recorded, extraFlags)
 			}
+			// #2301: with no owned id, `-c` used to ship unconditionally and
+			// let the CLI itself pick "the newest conversation in this
+			// directory" — even when there is no conversation at all, which
+			// makes the CLI print "No conversation found to continue" and
+			// exit instead of starting. Check transcript existence first so
+			// a directory that has never run Claude falls through to a
+			// fresh session instead of a guaranteed-dead `-c`.
+			//
+			// The existence check walks every config-dir root this instance
+			// could plausibly have written to (account/conductor/group/env
+			// slots, plus every other configured account slot, plus the
+			// default), not just the process-wide default dir — an
+			// account/conductor/group-scoped instance's transcript lives
+			// elsewhere, and a single-root check would wrongly declare "no
+			// transcript" and mint a fresh session over a resumable one.
+			// A root that can't be read (uncertain) fails towards resume:
+			// only a confirmed absence across every root starts fresh.
+			if i.TranscriptIsResolvableLocally() {
+				roots := claudeConfigDirRootsForInstance(i)
+				found, uncertain := transcriptEvidenceAcrossRoots(i.EffectiveWorkingDir(), roots)
+				if !found && !uncertain {
+					sessionLog.Info("resume: none reason=continue_mode_no_transcript",
+						slog.String("instance_id", logging.SanitizeValue(i.ID)),
+						slog.String("path", logging.SanitizeValue(i.EffectiveWorkingDir())),
+						slog.String("reason", "continue_mode_no_transcript"))
+					freshID := generateUUID()
+					i.ClaudeSessionID = freshID
+					i.markClaudeSessionIDVerified()
+					return fmt.Sprintf(`%sexec %s%s --session-id "%s"%s`,
+						bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
+				}
+			}
 			sessionLog.Warn("resume: continue_mode_unverifiable",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("path", logging.SanitizeValue(i.ProjectPath)),

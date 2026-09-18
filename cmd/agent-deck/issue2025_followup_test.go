@@ -31,6 +31,41 @@ func TestNotifyDaemonBareHelpDoesNotStartDaemon(t *testing.T) {
 	}
 }
 
+func TestCredsRefreshBareHelpDoesNotStartDaemon(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, "claude-config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	credPath := filepath.Join(configDir, ".credentials.json")
+	credBody := `{"claudeAiOauth":{"accessToken":"tok","refreshToken":"rt","clientId":"c","expiresAt":9999999999999}}`
+	if err := os.WriteFile(credPath, []byte(credBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(credPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runIssue2025Helper(t, home, []string{"creds-refresh", "--config-dir", configDir, "help"})
+	if err != nil {
+		t.Fatalf("creds-refresh bare trailing help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "Usage: agent-deck creds-refresh") {
+		t.Fatalf("bare trailing help did not print usage:\n%s", out)
+	}
+	if strings.Contains(string(out), "keeping") {
+		t.Fatalf("bare trailing help entered the keep-warm daemon loop:\n%s", out)
+	}
+	after, err := os.Stat(credPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("bare trailing help mutated the credentials file: before=%v after=%v", before.ModTime(), after.ModTime())
+	}
+}
+
 func TestRemoteAddTrailingBareHelpDoesNotAddRemote(t *testing.T) {
 	home := t.TempDir()
 

@@ -381,6 +381,118 @@ func renderAccountsPreviewLine(usage []session.AccountUsage, now time.Time) stri
 	return "accounts  " + strings.Join(parts, " · ")
 }
 
+// renderAccountsCompactLine renders the compact fallback form of the
+// "accounts" header field: "N slots · lowest 5h x%" — used by the header's
+// width-aware layout in place of the full per-slot line (renderAccountsPreviewLine)
+// when there is not enough width to show every optional field without
+// truncating one mid-text. "lowest 5h x%" is the minimum FiveHour.Percent
+// across slots that have a known 5h reading — the single number most likely
+// to matter to an operator glancing at a cramped header. Slots with no known
+// 5h reading still count toward N but do not affect the minimum.
+func renderAccountsCompactLine(usage []session.AccountUsage) string {
+	if len(usage) == 0 {
+		return "accounts  none"
+	}
+	lowest := 0.0
+	haveLowest := false
+	for _, u := range usage {
+		if !u.FiveHour.Known {
+			continue
+		}
+		if !haveLowest || u.FiveHour.Percent < lowest {
+			lowest = u.FiveHour.Percent
+			haveLowest = true
+		}
+	}
+	slotWord := "slot"
+	if len(usage) != 1 {
+		slotWord = "slots"
+	}
+	if !haveLowest {
+		return fmt.Sprintf("accounts  %d %s", len(usage), slotWord)
+	}
+	return fmt.Sprintf("accounts  %d %s · lowest 5h %.0f%%", len(usage), slotWord, lowest)
+}
+
+// assembleHeaderLeft composes the header bar's left-hand content (logo,
+// title, and the base + optional stats segments) and reports whether the
+// result plus the version badge fits within width. The logo and title are
+// NEVER dropped or truncated — they, and the caller-appended version badge,
+// must always survive.
+//
+// When the full assembly does not fit, optional segments are dropped
+// ENTIRELY (never truncated mid-text) starting from the lowest-priority end
+// of optional (index len-1) until it fits or every optional segment has
+// been shed; callers order optional least-protected-first → most-protected-
+// last (see renderView's header assembly for why sysStats/load-memory-disk
+// is ordered last). Callers that want a lower-priority segment to degrade
+// to a compact form first (rather than disappear outright) should retry
+// with that segment already replaced before calling this again — see the
+// accounts field's compact-form retry in renderView.
+//
+// statsBase is the base status-counts segment (session-status counts),
+// which — unlike optional — used to be unconditionally included and could
+// by itself overflow a busy fleet's header even with every optional field
+// already off, falling through to the header bar's MaxWidth call and
+// silently truncating the version badge off the end of the line (#2301
+// round-2). statsBaseCompact is its single-total fallback form (e.g. "24
+// sessions"); it is tried, in addition to the full form, at every shedding
+// step so the base line degrades before any higher-protected optional
+// field is permanently dropped, and as the final fallback once every
+// optional segment is gone. Pass "" (or equal to statsBase) to skip
+// compacting.
+func assembleHeaderLeft(logo, title, statsBase, statsBaseCompact, statsSep string, optional []string, versionBadge string, width int) (string, bool) {
+	compose := func(base string, segs []string) string {
+		parts := make([]string, 0, len(segs)+1)
+		if base != "" {
+			parts = append(parts, base)
+		}
+		for _, s := range segs {
+			if s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Left, logo, "  ", title, "  ", strings.Join(parts, statsSep))
+	}
+	fits := func(left string) bool {
+		// Mirrors the header bar's own padding budget: 2 border/padding
+		// columns plus at least 1 space separating the left content from
+		// the version badge.
+		return lipgloss.Width(left)+lipgloss.Width(versionBadge)+3 <= width
+	}
+	hasCompactBase := statsBaseCompact != "" && statsBaseCompact != statsBase
+
+	segs := append([]string(nil), optional...)
+	left := compose(statsBase, segs)
+	if fits(left) {
+		return left, true
+	}
+	for i := len(segs) - 1; i >= 0; i-- {
+		if segs[i] == "" {
+			continue
+		}
+		segs[i] = ""
+		left = compose(statsBase, segs)
+		if fits(left) {
+			return left, true
+		}
+		if hasCompactBase {
+			if compact := compose(statsBaseCompact, segs); fits(compact) {
+				return compact, true
+			}
+		}
+	}
+	// Every optional segment is gone; the compact base is the last thing
+	// left to shed before conceding the badge doesn't fit.
+	if hasCompactBase {
+		if compact := compose(statsBaseCompact, segs); fits(compact) {
+			return compact, true
+		}
+		return compose(statsBaseCompact, segs), false
+	}
+	return left, fits(left)
+}
+
 // hostStatsFieldSet is the subset of the shared field vocabulary that
 // remoteHostLoadLineFiltered understands; used by remotePreviewFieldLines to
 // group consecutive load/memory/disk entries into a single combined line,

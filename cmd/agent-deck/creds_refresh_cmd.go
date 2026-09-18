@@ -73,7 +73,12 @@ func handleCredsRefresh(args []string) {
 		fs.SetOutput(os.Stdout)
 		fs.PrintDefaults()
 	}
-	if helpRequested(args) {
+	// creds-refresh takes no positional operand (only flags), so a bare
+	// trailing "help" can never collide with a legitimate data value; treat
+	// it the same as --help/-h (issue #2025). Checked before flag.Parse
+	// because flag.Parse would otherwise swallow a trailing "help" as an
+	// unconsulted fs.Args() entry and fall through to starting the daemon.
+	if hooksHelpRequested(args) {
 		fs.Usage()
 		return
 	}
