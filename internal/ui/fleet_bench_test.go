@@ -147,7 +147,7 @@ func benchTmuxCalls(t *testing.T) int {
 func benchRuntimeResources(t *testing.T, record func(string, float64)) {
 	t.Helper()
 	dir := t.TempDir()
-	stop := health.Start(dir, "bench-ui", session.GetHooksDir())
+	stop := health.Start(dir, "bench-ui", session.GetHooksDir(), "bench-test")
 	stop()
 	report, err := health.Report(dir, time.Minute)
 	if err != nil {

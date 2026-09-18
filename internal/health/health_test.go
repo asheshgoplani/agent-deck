@@ -238,7 +238,7 @@ func TestSamplerReportsJournalDropped(t *testing.T) {
 	d := t.TempDir()
 	before := JournalDropped()
 	journalDropped.Add(2)
-	stop := Start(d, "tui", t.TempDir())
+	stop := Start(d, "tui", t.TempDir(), "1.16.11-test")
 	stop()
 	r, err := Report(d, time.Hour)
 	if err != nil {
