@@ -2643,13 +2643,25 @@ func (s *Session) Start(command string) error {
 	// already be poisoned, so confirm where the pane actually landed. Reporting
 	// such a session as started is the exact "looked created, never ran the
 	// agent" failure from the report — tear it down and say why instead.
-	if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
-		if killErr := s.Kill(); killErr != nil {
-			statusLog.Warn("deleted_cwd_session_cleanup_failed",
-				slog.String("session", logging.SanitizeValue(s.Name)),
-				slog.String("error", killErr.Error()))
+	//
+	// #2214 (shell-tool gap): when RunCommandAsInitialProcess is false and a
+	// command is pending, this pane was just opened as a BARE interactive
+	// shell — no cd-assert has been sent into it yet, so checking now would
+	// inspect the still-poisoned pane and fail closed before the send-keys
+	// fallback below ever gets a chance to recover it exactly like the
+	// initial-process path does. Defer the guard for that path until after
+	// the cd-assert command has actually been sent (see the check further
+	// down, right after SendKeysAndEnter).
+	deferCwdGuardForShellFallback := command != "" && !s.RunCommandAsInitialProcess
+	if !deferCwdGuardForShellFallback {
+		if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
+			if killErr := s.Kill(); killErr != nil {
+				statusLog.Warn("deleted_cwd_session_cleanup_failed",
+					slog.String("session", logging.SanitizeValue(s.Name)),
+					slog.String("error", killErr.Error()))
+			}
+			return cwdErr
 		}
-		return cwdErr
 	}
 
 	// PERFORMANCE: Batch all session options into a single subprocess call.
@@ -2799,6 +2811,22 @@ func (s *Session) Start(command string) error {
 		// the same guarantee applies to the send-keys fallback path.
 		if err := s.SendKeysAndEnter(bashCWrap(cwdAssertCommand(workDir, command))); err != nil {
 			return fmt.Errorf("failed to send command: %w", err)
+		}
+
+		// #2214: the guard was deferred above because this pane's initial
+		// process is a bare shell that only just received its cd-assert.
+		// Verify now, after the assert has actually been sent, so a
+		// genuinely poisoned server is still caught — just without
+		// rejecting the pane before it had a chance to recover.
+		if deferCwdGuardForShellFallback {
+			if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
+				if killErr := s.Kill(); killErr != nil {
+					statusLog.Warn("deleted_cwd_session_cleanup_failed",
+						slog.String("session", logging.SanitizeValue(s.Name)),
+						slog.String("error", killErr.Error()))
+				}
+				return cwdErr
+			}
 		}
 	}
 

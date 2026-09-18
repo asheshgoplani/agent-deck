@@ -257,6 +257,65 @@ func TestStart_FailsClosedWhenTargetDirItselfIsGone(t *testing.T) {
 	assert.False(t, s.Exists(), "nothing may be left running when the target directory never existed")
 }
 
+// TestStart_SurvivesExternallyPoisonedServer_ShellTool covers the gap left by
+// TestStart_SurvivesExternallyPoisonedServer: sessions whose tool resolves to
+// the generic "shell" launcher (RunCommandAsInitialProcess=false) still open
+// their pane as a bare interactive shell first, with no cd-assert in it yet.
+// verifyPaneWorkDirUnlessPlaceholder used to run immediately after that bare
+// pane was created — before the later SendKeysAndEnter(cwdAssertCommand(...))
+// fallback ever sent the real command — so it inspected the untouched,
+// still-poisoned pane and rejected the session with ErrPaneCwdDeleted, even
+// though the deferred cd-assert would have recovered it exactly like the
+// initial-process path does. The fix must defer the guard for this path until
+// after the cd-assert command has actually been sent.
+func TestStart_SurvivesExternallyPoisonedServer_ShellTool(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	socket := privateSocketName2214(t)
+	poisonServerCwd(t, socket)
+
+	workDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "pwd.out")
+
+	s := &Session{
+		Name:                       "agentdeck_2214_shelltool",
+		DisplayName:                "survive-poisoned-server-shell-tool",
+		SocketName:                 socket,
+		WorkDir:                    workDir,
+		RunCommandAsInitialProcess: false,
+	}
+
+	err := s.Start("/bin/sh -c 'pwd > " + marker + " 2>&1; sleep 5'")
+	if err == nil {
+		t.Cleanup(func() { _ = s.Kill() })
+	}
+
+	require.NoError(t, err, "Start must not fail with ErrPaneCwdDeleted for the shell-tool "+
+		"(RunCommandAsInitialProcess=false) path against an externally-poisoned server (#2214)")
+	assert.False(t, errors.Is(err, ErrPaneCwdDeleted))
+	assert.True(t, s.Exists())
+
+	deadline := time.Now().Add(3 * time.Second)
+	var reported string
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(marker)
+		if readErr == nil && strings.TrimSpace(string(data)) != "" {
+			reported = strings.TrimSpace(string(data))
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.NotEmpty(t, reported, "the shell-tool session's process never ran (or never got a working getcwd())")
+
+	resolvedWant, err := filepath.EvalSymlinks(workDir)
+	require.NoError(t, err)
+	resolvedGot, err := filepath.EvalSymlinks(reported)
+	require.NoError(t, err)
+	assert.Equal(t, resolvedWant, resolvedGot,
+		"the shell-tool pane's actual process must run in the session's project directory, "+
+			"never wherever the poisoned server happened to be born")
+}
+
 // --- cwdAssertCommand ---------------------------------------------------------
 
 func TestCwdAssertCommand_PlainDirAndCommand(t *testing.T) {
