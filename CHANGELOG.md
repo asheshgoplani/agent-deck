@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add an opt-in `accounts` field to the shared preview-field vocabulary (`[ui.remote_preview].fields` / `[ui.header].fields`): named Claude account slots with live 5h/7d usage read from each slot's on-disk quota cache, gathered remote-side so the controller never fetches usage itself (#2274 groundwork).
 - Add a context inspector: `agent-deck session context [--json]` and a TUI `C` key render what a Claude or Codex session's transcript, memory and instructions currently hold, with a verified-parity harness against the live host (#2011).
 - Add `agent-deck session metrics <id|title> [--all] [--json] [--since 24h]` (also `remote exec <name> session metrics`): per-session turn, waiting-time, send-outcome, restart and dead-letter numbers derived from the local session event journal for evals, with nothing probed live.
+- Add an alternate-session toggle (`` ` ``, swaps with the previous session vim `Ctrl-^` style) and an MRU walk (`Alt+←`/`Alt+→`, steps back/forward through recently used sessions) to the TUI, both crossing group boundaries and backed by the persisted `last_accessed` column so the order survives a restart; `agent-deck session recent [--json]` is the CLI counterpart (#2058).
 
 ### Changed
 

@@ -152,6 +152,46 @@ The trigger is configured under `[hotkeys]` as `switch_session` (must be a
 `ctrl+<letter>` chord); it is unbound by default and never overrides the
 detach key.
 
+## Jump to a recently used session
+
+The switcher above is one way to hop across the tree without scrolling;
+these two are faster for the common case of bouncing between a couple of
+sessions and don't open any overlay. Both are backed by the same persisted
+`last_accessed` column the switcher's MRU ordering uses, so the order
+survives a restart — see `agent-deck session recent` below for the CLI view
+of the same data.
+
+| Key | What happens |
+| --- | ------------ |
+| `` ` `` | **Alternate-session toggle.** Swap straight to the session you were on immediately before this one — vim's `Ctrl-^` for sessions. Press it again and you're back where you started. |
+| `Alt-Left` | **MRU walk back.** Step to the previous session in visit order. |
+| `Alt-Right` | **MRU walk forward.** Step to the next session in visit order (redo). |
+
+Both cross group boundaries, like the switcher does. A burst of `Alt-Left`/
+`Alt-Right` holds the walk order stable instead of reshuffling after every
+hop — only a genuinely new selection (an ordinary `Enter`, or the alternate
+toggle) advances the ring. Rebind them under `[hotkeys]` as `alt_session`,
+`mru_back` and `mru_forward` if they collide with your terminal.
+
+Unlike `switch_session`, these three work from the session list only — they
+are not intercepted inside an attach loop, so pressing them while attached
+to a session sends the keystroke to whatever is running inside that
+session instead.
+
+### `agent-deck session recent`
+
+The CLI counterpart, useful for scripting or checking the ordering agent-deck
+will walk without opening the TUI:
+
+```console
+$ agent-deck session recent
+2026-08-23 07:21:34  FP-Agent-Desk                  a1b2c3d4
+2026-08-23 07:20:19  Gog-Secure                      e5f6a7b8
+2026-08-23 07:19:54  FP-Max-Memory                   c9d0e1f2
+
+$ agent-deck session recent --json --limit 5
+```
+
 ## Known terminal gotchas
 
 ### iTerm2 tabs disconnect on `Ctrl-Q` (expected)

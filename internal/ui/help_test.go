@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -264,5 +266,54 @@ func TestHelpOverlayMoreBelowClearsAtTrueEnd(t *testing.T) {
 	after := overlay.View()
 	if before != after {
 		t.Errorf("view should be stable once at the true end; got a change after another 'j'")
+	}
+}
+
+// TestHelpOverlayMRUKeys_Golden is the golden-frame regression for the #2058
+// help rows: the alternate-session toggle and the MRU walk key pair. Rather
+// than golden the whole 100+-line overlay (any unrelated section edit would
+// force a fixture update), it isolates the two NAVIGATION rows their labels
+// appear on, plain-text and colon-delimited so a diff shows exactly the key
+// column and the description. Regenerate with
+// UPDATE_GOLDEN=1 go test ./internal/ui/ -run TestHelpOverlayMRUKeys_Golden
+func TestHelpOverlayMRUKeys_Golden(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetSize(100, 120)
+	overlay.Show()
+
+	view := stripAnsi(overlay.View())
+	lines := strings.Split(view, "\n")
+
+	var got strings.Builder
+	for _, marker := range []string{"Alternate session", "Walk back through", "Walk forward through"} {
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, marker) {
+				got.WriteString(strings.TrimRight(line, " ") + "\n")
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("help overlay missing a row for %q, got:\n%s", marker, view)
+		}
+	}
+
+	path := filepath.Join("testdata", "help_mru", "navigation_rows.txt")
+	if os.Getenv("UPDATE_GOLDEN") != "" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(got.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden %s: %v (UPDATE_GOLDEN=1 to create)", path, err)
+	}
+	if string(want) != got.String() {
+		t.Fatalf("golden %s differs from the rendered help rows.\n--- want\n%s\n--- got\n%s", path, want, got.String())
 	}
 }

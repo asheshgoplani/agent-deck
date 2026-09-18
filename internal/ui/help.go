@@ -277,6 +277,9 @@ func (h *HelpOverlay) View() string {
 	unarchiveKey := h.key(hotkeyUnarchiveSession, "Shift+U")
 	viewArchivedKey := h.key(hotkeyViewArchived, "^")
 	detachKey := DetachByteLabel(DetachByteFromBinding(h.key(hotkeyDetach, "ctrl+q")))
+	altSessionKey := h.key(hotkeyAltSession, "`")
+	mruBackKey := h.key(hotkeyMRUBack, "alt+left")
+	mruForwardKey := h.key(hotkeyMRUForward, "alt+right")
 	navigationItems := [][2]string{
 		{"j / Down", "Move down"},
 		{"k / Up", "Move up"},
@@ -289,6 +292,9 @@ func (h *HelpOverlay) View() string {
 		{"l / Right", "Expand / toggle"},
 		{"1-9", "Jump to root group"},
 		{"Space", "Jump mode"},
+		{altSessionKey, "Alternate session (swap with the previous one, vim-style)"},
+		{mruBackKey, "Walk back through recently used sessions"},
+		{mruForwardKey, "Walk forward through recently used sessions"},
 	}
 	quickStartEnter := "Attach to selected session"
 	if h.embeddedLayout {

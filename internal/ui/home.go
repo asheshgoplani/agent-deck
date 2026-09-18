@@ -319,6 +319,12 @@ type Home struct {
 	hotkeyLookup   map[string]string // pressed key -> canonical key used by switch cases
 	blockedHotkeys map[string]bool   // canonical keys disabled via remap/unbind
 
+	// mru backs the alternate-session toggle and MRU walk (#2058): a bounded,
+	// in-memory ring of visited session IDs, seeded at startup from the
+	// persisted last_accessed column so it survives a restart. See
+	// internal/ui/mru_nav.go and internal/session/mru.go.
+	mru *session.MRUHistory
+
 	// Inline preview notes editing
 	notesEditor           textarea.Model
 	notesEditing          bool
@@ -1991,6 +1997,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		pendingTitleChanges:       make(map[string]pendingTitle),
 		debugMode:                 logging.IsDebugEnabled(),
 		lastClickIndex:            -1,
+		mru:                       session.NewMRUHistory(session.DefaultMRUCapacity),
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
 
@@ -7493,6 +7500,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			h.instancesMu.Unlock()
+			if firstLoad {
+				// Seed the MRU ring from persisted last_accessed (#2058) once,
+				// on the process's first load — a later reload (ctrl+r) or
+				// storage-watcher refresh must not reset the walk/alternate
+				// state the user has built up since startup.
+				h.mru = session.NewMRUHistoryFromInstances(msg.instances, session.DefaultMRUCapacity)
+			}
 			h.refreshSessionRenderSnapshot(msg.instances)
 			// Invalidate status counts cache
 			h.cachedStatusCounts.valid.Store(false)
@@ -12630,6 +12644,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.openSessionSwitcher(fromID, false)
 		return h, nil
 
+	case "`":
+		// Alternate-session toggle (#2058): swap to the session you were on
+		// immediately before this one, vim Ctrl+^ style.
+		return h.handleAltSessionToggle()
+
+	case "alt+left":
+		// MRU walk back (#2058): step to the previous session in visit order.
+		return h.handleMRUWalk(false)
+
+	case "alt+right":
+		// MRU walk forward (#2058): redo — step to the next session in visit order.
+		return h.handleMRUWalk(true)
+
 	case "ctrl+e":
 		// Open feedback dialog on demand (per D-11: bypasses ShouldShow -- user-initiated)
 		if h.feedbackDialog != nil {
@@ -17245,7 +17272,8 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// Mark session as accessed (for recency-sorted path suggestions).
 	// Do not synchronously save here; saving on attach blocks transition and causes
 	// visible blank-screen delay before tmux attach starts.
-	inst.MarkAccessed()
+	// #2058: also records the visit for the alternate-session toggle / MRU walk.
+	h.markSessionVisited(inst)
 
 	// #1114 follow-up: Claude's /rename fires no agent-deck hook, so an idle
 	// session's title and iTerm2 badge can be stale at attach time (the

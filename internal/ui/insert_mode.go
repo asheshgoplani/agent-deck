@@ -168,7 +168,7 @@ func (h *Home) enterEmbeddedMode() bool {
 		h.previewScrollOffset = 0
 	}
 	if inst := h.resolveInsertTarget(); inst != nil {
-		inst.MarkAccessed()
+		h.markSessionVisited(inst) // #2058: embedded focus counts as a visit too
 		if inst.GetStatusThreadSafe() == session.StatusWaiting {
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				tmuxSess.Acknowledge()
