@@ -6026,13 +6026,6 @@ func (s *Session) SendKeysAndEnterChecked(keys string, capture func() (string, e
 	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check)
 }
 
-// sendKeysAndEnterToTarget is the shared implementation behind SendKeysAndEnter
-// (active window) and SendKeysAndEnterToWindow (explicit window), kept as a
-// thin alias so any future direct callers reads unchanged.
-func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
-	return s.sendKeysAndEnterCheckedToTarget(target, keys, nil, nil)
-}
-
 // sendKeysAndEnterCheckedToTarget is the shared implementation behind
 // SendKeysAndEnter, SendKeysAndEnterToWindow and SendKeysAndEnterChecked.
 func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture func() (string, error), check PostPasteCheck) error {

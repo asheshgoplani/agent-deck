@@ -104,7 +104,7 @@ func remoteSwitchValueOK(name, value string) bool {
 // forwarded. A help request passes through unchanged so the remote's own
 // usage text answers.
 func validateRemoteSwitchArgs(verb string, args []string) error {
-	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") { //nolint:gosec // G602: guarded by len(args) == 1
 		return nil
 	}
 	options := remoteSwitchOptions[verb]

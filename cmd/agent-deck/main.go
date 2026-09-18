@@ -298,11 +298,14 @@ func applyProfileFlag(profile string) {
 // keeps resolving the profile it always did. Without -p nothing was
 // overridden and the environment is passed through untouched.
 func inheritedEnviron() []string {
+	// The statusLine wrapper passes the shell's environment through to the
+	// wrapped command verbatim; it is the user's own command, not an agent
+	// child, so the childenv scrubbing does not apply here.
 	if !profileEnvOverridden {
-		return os.Environ()
+		return os.Environ() //nolint:forbidigo // verbatim pass-through for the wrapped statusLine command
 	}
-	env := make([]string, 0, len(os.Environ())+1)
-	for _, kv := range os.Environ() {
+	env := make([]string, 0, len(os.Environ())+1) //nolint:forbidigo // see above
+	for _, kv := range os.Environ() {             //nolint:forbidigo // see above
 		if !strings.HasPrefix(kv, "AGENTDECK_PROFILE=") {
 			env = append(env, kv)
 		}

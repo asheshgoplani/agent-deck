@@ -253,7 +253,7 @@ host = "bench-auth"
 			return err
 		}
 	}
-	rng := rand.New(rand.NewSource(seed))
+	rng := rand.New(rand.NewSource(seed)) //nolint:gosec // G404: seeded synthetic fleet, reproducibility matters, not secrecy
 	instances := make([]*session.Instance, 0, size)
 	var shellID, shellName string
 	for i := 0; i < size; i++ {
@@ -477,7 +477,7 @@ func lines(path string) int { b, _ := os.ReadFile(path); return bytes.Count(b, [
 func command(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := exec.CommandContext(ctx, name, args...)
+	c := exec.CommandContext(ctx, name, args...) //nolint:gosec // G702: bench tool, name and args come from this program's own constants and flags
 	bindChildLifetime(c)
 	var stderr bytes.Buffer
 	c.Stderr = &stderr
