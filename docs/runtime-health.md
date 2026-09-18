@@ -4,7 +4,8 @@ The TUI, `web --no-tui`, and `notify-daemon` sample their own runtime once a min
 
 ```toml
 [health]
-enabled = false # default: true; restart long-lived processes after changing
+enabled = false        # default: true; restart long-lived processes after changing
+session_events = false # default: true; the per-session event journal `session metrics` reads
 ```
 
 ```sh
@@ -29,3 +30,7 @@ go test -tags runtimehealthperf ./internal/ui -run TestPerf_RuntimeHealth -count
 ```
 
 Run tests inside Docker as required by the repository development workflow. `PERF_BUDGET_MULTIPLIER` scales timing budgets for shared runners. Synthetic sessions exercise the local status path, not live SSH latency or production-scale filesystem histories.
+
+## Session metrics
+
+Next to the process samples, the transition daemon, the CLI send/restart/stop paths and the task-worker wrapper append per-session events to `logs/health/sessions-YYYYMMDD.jsonl` in the same directory (one file per UTC day, the same 1 MiB cap, backup and seven-day retention). `agent-deck session metrics <id> --json` derives turns, turn duration, waiting time, send outcomes and ack times, restarts, dead letters and worker completion time from it; `agent-deck health --json` carries the profile roll-up under `sessions`. `[health] session_events = false` stops the writers; readers then report `journal: disabled`. See the CLI reference for the field table and how to read the numbers.

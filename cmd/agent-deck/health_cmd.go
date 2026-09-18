@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
@@ -13,17 +12,7 @@ import (
 )
 
 // healthLogDir resolves without creating profile state, including for remote exec.
-func healthLogDir(profile string) (string, error) {
-	profile, err := session.ResolveProfileForStorage(profile)
-	if err != nil {
-		return "", err
-	}
-	dir, err := session.GetProfileDir(profile)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "logs", "health"), nil
-}
+func healthLogDir(profile string) (string, error) { return session.HealthLogDir(profile) }
 
 func startRuntimeHealth(profile, role string) func() {
 	config, err := session.LoadUserConfig()
@@ -69,6 +58,8 @@ func handleHealth(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "Error: runtime health: %v\n", err)
 		os.Exit(1)
 	}
+	aggregate := sessionAggregateForHealth(profile, *since)
+	report.Sessions = &aggregate
 	if *jsonOutput {
 		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 			fmt.Fprintln(os.Stderr, err)

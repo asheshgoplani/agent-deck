@@ -207,3 +207,20 @@ func TestSamplerConsumesIntervalObservations(t *testing.T) {
 		t.Fatal("initial observation missing")
 	}
 }
+
+// journal_dropped must reach health --json's Sample so an operator can see a
+// wedged volume even without reading the daemon's own log.
+func TestSamplerReportsJournalDropped(t *testing.T) {
+	d := t.TempDir()
+	before := JournalDropped()
+	journalDropped.Add(2)
+	stop := Start(d, "tui", t.TempDir())
+	stop()
+	r, err := Report(d, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Processes[0].Latest.JournalDropped; got < before+2 {
+		t.Fatalf("want journal_dropped >= %d, got %d", before+2, got)
+	}
+}

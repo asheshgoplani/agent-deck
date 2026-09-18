@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,7 +30,7 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		case "session":
 			if len(args) > 1 {
 				switch args[1] {
-				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context":
+				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics":
 					return append([]string(nil), args...), nil
 				case "switch", "switch-preview", "switch-account":
 					if err := validateRemoteSwitchArgs(args[1], args[2:]); err != nil {
@@ -257,11 +258,24 @@ func runRemoteExec(name string, args []string) (int, error) {
 		}
 		return 0, nil
 	}
-	if err := runner.RunIO(context.Background(), input, os.Stdout, os.Stderr, args...); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
-			return exitErr.ExitCode(), nil // SSH already forwarded the diagnostic.
+	// session metrics captures stderr so an older remote's "unknown session
+	// command" (plus its help text) reads as one clear line instead.
+	var stderr io.Writer = os.Stderr
+	var captured bytes.Buffer
+	if isSessionMetricsArgs(args) {
+		stderr = &captured
+	}
+	err = runner.RunIO(context.Background(), input, os.Stdout, stderr, args...)
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		if msg, ok := remoteMetricsUnsupported(name, args, exitErr.ExitCode(), captured.String()); ok {
+			return 2, errors.New(msg)
 		}
+		_, _ = os.Stderr.Write(captured.Bytes())
+		return exitErr.ExitCode(), nil // SSH already forwarded the diagnostic.
+	}
+	_, _ = os.Stderr.Write(captured.Bytes())
+	if err != nil {
 		return 1, err
 	}
 	return 0, nil

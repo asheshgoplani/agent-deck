@@ -19,6 +19,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -103,6 +104,8 @@ func handleSession(profile string, args []string) {
 		handleSessionOwnership(profile, args[1:])
 	case "search":
 		handleSessionSearch(profile, args[1:])
+	case "metrics":
+		handleSessionMetrics(profile, args[1:])
 	case "help", "--help", "-h":
 		printSessionHelp()
 	default:
@@ -145,6 +148,7 @@ func printSessionHelp() {
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
 	fmt.Println("  ownership <cmd> <id>    Inspect/reconcile the processes a session owns (#1873)")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
+	fmt.Println("  metrics <id>|--all      Per-session eval numbers from the local event journal (--json, --since)")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
 	fmt.Println("  update <id> --no-parent          Alias for unset-parent <id>")
@@ -513,6 +517,11 @@ func handleSessionStop(profile string, args []string) {
 		result["drained_title"] = drained.Title
 	}
 	out.Success(fmt.Sprintf("Stopped session: %s", inst.Title), result)
+
+	// Journaled after the verdict, not before it: RecordSessionEvent writes
+	// synchronously, so a slow health volume would otherwise delay the answer
+	// the user is waiting on.
+	session.RecordSessionEvent(profile, inst.ID, health.KindStop, nil)
 }
 
 // handleSessionArchive stops a session and marks it archived so it is hidden
@@ -780,7 +789,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	if *all {
-		restartAllSessions(out, storage, instances, groups, envFlags)
+		restartAllSessions(profile, out, storage, instances, groups, envFlags)
 		return
 	}
 
@@ -856,6 +865,9 @@ func handleSessionRestart(profile string, args []string) {
 		data["warning"] = warning
 	}
 	out.Success(fmt.Sprintf("Restarted session: %s", inst.Title), data)
+
+	// Journaled after the verdict, same reasoning as handleSessionStop.
+	session.RecordSessionEvent(profile, inst.ID, health.KindRestart, nil)
 }
 
 // restartAllSessions restarts every active session, paced and gated by
@@ -868,7 +880,7 @@ func handleSessionRestart(profile string, args []string) {
 // already held for auth, staggers boots with jitter, caps how many unverified
 // boots contend for the token at once, and stops entirely after a few
 // consecutive auth-deaths with one loud message instead of burning the fleet.
-func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, env map[string]string) {
+func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, env map[string]string) {
 	var active []*session.Instance
 	for _, inst := range instances {
 		if inst.Exists() {
@@ -882,6 +894,11 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 	}
 
 	results := make(map[string]map[string]interface{}, len(active))
+	// restarted collects the sessions actually restarted so they can be
+	// journaled once every verdict in this batch is printed, rather than
+	// inside the sweep where a slow health volume would delay every remaining
+	// session's restart (same reasoning as handleSessionStop).
+	restarted := make([]string, 0, len(active))
 
 	sweep := session.NewBootSweep()
 	sweepResult := sweep.Run(active, func(inst *session.Instance) error {
@@ -918,6 +935,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			return err
 		}
 		inst.LastStartedAt = time.Now()
+		restarted = append(restarted, inst.ID)
 
 		warning := inst.ConsumeCodexRestartWarning()
 		if warning != "" && !out.jsonMode {
@@ -971,6 +989,10 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			fmt.Printf(" (%d abandoned after auth circuit tripped)", sweepResult.Abandoned)
 		}
 		fmt.Println()
+	}
+
+	for _, id := range restarted {
+		session.RecordSessionEvent(profile, id, health.KindRestart, nil)
 	}
 
 	if restartAllSessionsExitCode(sweepResult) != 0 {
@@ -3108,7 +3130,7 @@ func handleSessionSend(profile string, args []string) {
 		if pathErr != nil {
 			// #1400: a colliding transcript is refused before anything is
 			// typed, exactly as the legacy freshness path refused it.
-			failSessionSend(out, *stream, fmt.Sprintf("cannot establish turn identity: %v", pathErr))
+			failSessionSend(out, *stream, fmt.Sprintf("cannot establish turn identity: %v", pathErr), nil)
 		}
 		// turnPath == "" here is a fresh session whose transcript Claude has
 		// not written yet (or a session ID not yet visible). For --wait and
@@ -3118,7 +3140,7 @@ func handleSessionSend(profile string, args []string) {
 		if turnPath != "" {
 			turnCursor, pathErr = session.TranscriptCursor(turnPath)
 			if pathErr != nil {
-				failSessionSend(out, *stream, fmt.Sprintf("cannot capture turn identity cursor: %v", pathErr))
+				failSessionSend(out, *stream, fmt.Sprintf("cannot capture turn identity cursor: %v", pathErr), nil)
 			}
 		}
 	}
@@ -3195,6 +3217,10 @@ func handleSessionSend(profile string, args []string) {
 	// under --wait, which is the only caller that acts on the answer.
 	hookStatus := func() (string, error) { return fetchHookDrivenStatus(profile, sessionRef) }
 	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, *wait, hookStatus, nil, nil)
+	// Computed now (accurate ack_ms), journaled after the verdict at every
+	// exit path below — never before it, per the same rule applied to
+	// handleSessionStop/handleSessionRestart.
+	sendDetail := sendEventDetail(sendRes, sendErr, sentAt)
 	if acceptanceGuard != nil {
 		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, time.Now()); markerErr != nil {
 			acceptanceGuard.Release()
@@ -3202,6 +3228,7 @@ func handleSessionSend(profile string, args []string) {
 			extra["session_id"] = inst.ID
 			extra["session_title"] = inst.Title
 			out.ErrorWithData(fmt.Sprintf("cannot persist Codex submission state: %v", markerErr), ErrCodeInvalidOperation, extra)
+			recordSendEvent(profile, inst.ID, sendDetail)
 			os.Exit(1)
 		}
 	}
@@ -3240,6 +3267,7 @@ func handleSessionSend(profile string, args []string) {
 		default:
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
+		recordSendEvent(profile, inst.ID, sendDetail)
 		os.Exit(1)
 	}
 
@@ -3310,6 +3338,20 @@ func handleSessionSend(profile string, args []string) {
 		skippedOutcome = skippedWaitOutcome(sendRes)
 	}
 
+	// sendEventRecorded guards against double-journaling: some branches below
+	// print their verdict and record immediately (and then return), others
+	// fall through to --wait/--stream continuations whose own, later verdict
+	// site records instead. Never journal before the verdict a given flag
+	// combination actually prints (round-3 re-review finding).
+	sendEventRecorded := false
+	recordSendEventOnce := func() {
+		if sendEventRecorded {
+			return
+		}
+		sendEventRecorded = true
+		recordSendEvent(profile, inst.ID, sendDetail)
+	}
+
 	if !*stream {
 		// JSON --wait is one result, emitted only when completion succeeds or
 		// times out. Human and non-wait output keep their existing eager ack.
@@ -3330,6 +3372,7 @@ func handleSessionSend(profile string, args []string) {
 				summary = fmt.Sprintf("Wrote message to '%s' inbox (unacknowledged: Claude's inbox never confirms delivery)", inst.Title)
 			}
 			out.Success(summary, sendData)
+			recordSendEventOnce()
 		}
 	}
 
@@ -3353,7 +3396,7 @@ func handleSessionSend(profile string, args []string) {
 			var err error
 			turnPath, err = awaitTranscriptPath(inst, sessionRef, profile, instances, waitDeadline)
 			if err != nil {
-				failSessionSend(out, *stream, err.Error())
+				failSessionSend(out, *stream, err.Error(), recordSendEventOnce)
 			}
 		}
 		turnQuery = session.TurnQuery{Path: turnPath, Prompt: message, Cursor: turnCursor}
@@ -3370,7 +3413,7 @@ func handleSessionSend(profile string, args []string) {
 			var identityErr error
 			turnID, identityErr = session.AwaitTurnIdentity(turnQuery, time.Until(waitDeadline), 100*time.Millisecond)
 			if identityErr != nil {
-				failSessionSend(out, true, fmt.Sprintf("turn identity not established: %v", identityErr))
+				failSessionSend(out, true, fmt.Sprintf("turn identity not established: %v", identityErr), recordSendEventOnce)
 			}
 		}
 		if err := streamSessionSend(inst, sessionRef, profile, turnID, sentAt, streamOptions{
@@ -3380,8 +3423,10 @@ func handleSessionSend(profile string, args []string) {
 			timeout:    time.Until(waitDeadline),
 		}); err != nil {
 			// Error already serialized as a stream event; exit 1.
+			recordSendEventOnce()
 			os.Exit(1)
 		}
+		recordSendEventOnce()
 		return
 	}
 
@@ -3396,6 +3441,7 @@ func handleSessionSend(profile string, args []string) {
 		// signal for a non-JSON caller, which would otherwise see --wait
 		// return instantly with nothing.
 		fmt.Fprintln(os.Stderr, sendSkippedWaitWarning(inst.Title, skippedOutcome))
+		recordSendEventOnce()
 		return
 	}
 	var finalStatus string
@@ -3408,10 +3454,12 @@ func handleSessionSend(profile string, args []string) {
 		})
 		if identityErr != nil {
 			out.Error(fmt.Sprintf("turn identity not established: %v", identityErr), ErrCodeInvalidOperation)
+			recordSendEventOnce()
 			os.Exit(1)
 		}
 		if completionErr != nil {
 			out.Error(fmt.Sprintf("timeout waiting for completion: %v", completionErr), ErrCodeInvalidOperation)
+			recordSendEventOnce()
 			os.Exit(1)
 		}
 		if errors.Is(responseErr, session.ErrTurnResponseIncomplete) && response != nil {
@@ -3439,6 +3487,7 @@ func handleSessionSend(profile string, args []string) {
 					ErrCodeInvalidOperation,
 					completionTimeoutPayload(sendData),
 				)
+				recordSendEventOnce()
 				os.Exit(1)
 			}
 		}
@@ -3448,6 +3497,7 @@ func handleSessionSend(profile string, args []string) {
 		}
 		if receiptErr != nil {
 			out.ErrorWithData(receiptErr.Error(), ErrCodeInvalidOperation, sendData)
+			recordSendEventOnce()
 			os.Exit(1)
 		}
 		if err != nil {
@@ -3456,6 +3506,7 @@ func handleSessionSend(profile string, args []string) {
 				ErrCodeInvalidOperation,
 				completionTimeoutPayload(sendData),
 			)
+			recordSendEventOnce()
 			os.Exit(1)
 		}
 		// Refresh session ID: the instance was loaded before sending the
@@ -3502,6 +3553,7 @@ func handleSessionSend(profile string, args []string) {
 			ErrCodeInvalidOperation,
 			responseReadFailureData(sendData),
 		)
+		recordSendEventOnce()
 		os.Exit(1)
 	}
 	if *jsonOutput {
@@ -3519,6 +3571,7 @@ func handleSessionSend(profile string, args []string) {
 			fmt.Fprintln(os.Stderr, sendUncorrelatedOutputNote())
 		}
 	}
+	recordSendEventOnce()
 
 	// Exit 1 for error/inactive status
 	if finalStatus == "inactive" || finalStatus == "error" {
@@ -3573,12 +3626,18 @@ func sendTracksTurn(tool, message string) bool {
 
 // failSessionSend reports a post-delivery failure and exits 1. --stream
 // consumers read stdout as JSONL events and must always get a parseable
-// response, so the failure is emitted as an error event there.
-func failSessionSend(out *CLIOutput, stream bool, msg string) {
+// response, so the failure is emitted as an error event there. record, when
+// non-nil, journals the send event after this verdict is printed and before
+// exit — the pre-send call sites (turn identity setup before performSend)
+// pass nil since there is no send to journal yet.
+func failSessionSend(out *CLIOutput, stream bool, msg string, record func()) {
 	if stream {
 		emitStreamErrorEvent(msg)
 	} else {
 		out.Error(msg, ErrCodeInvalidOperation)
+	}
+	if record != nil {
+		record()
 	}
 	os.Exit(1)
 }
