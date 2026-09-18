@@ -21,7 +21,7 @@ func (e *SpawnFailedError) Error() string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "tmux session %q is gone: %s", e.TmuxName, e.Record.Reason)
-	if e.Record.Reason == "spawn_died_fast" && e.Record.ElapsedMs > 0 {
+	if (e.Record.Reason == "spawn_died_fast" || e.Record.IsToolNotFound()) && e.Record.ElapsedMs > 0 {
 		fmt.Fprintf(&b, " (exited after %dms)", e.Record.ElapsedMs)
 	}
 	if out := strings.TrimSpace(e.Record.DyingOutput); out != "" {

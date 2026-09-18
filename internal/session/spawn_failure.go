@@ -28,7 +28,7 @@ type SpawnFailureRecord struct {
 	InstanceID  string `json:"instance_id"`
 	Tool        string `json:"tool"`
 	Command     string `json:"command,omitempty"`
-	Reason      string `json:"reason"`                 // tmux_start_failed | spawn_died_fast | prepare_failed
+	Reason      string `json:"reason"`                 // tmux_start_failed | spawn_died_fast | prepare_failed | "tool not found on PATH: <tool> (searched: <the pane's PATH>)"
 	DyingOutput string `json:"dying_output,omitempty"` // last pane snapshot captured while alive
 	ElapsedMs   int64  `json:"elapsed_ms"`             // ms from spawn to observed death (0 for tmux_start_failed)
 	Timestamp   int64  `json:"ts"`
@@ -188,6 +188,7 @@ func readSpawnFailureRecord(instanceID string) (*SpawnFailureRecord, error) {
 // masks a now-healthy session.
 func clearSpawnFailureRecord(instanceID string) {
 	_ = safeio.SafeRemove(spawnFailureRecordPath(instanceID), safeio.RemoveOptions{})
+	clearSpawnToolProbeMarker(instanceID)
 }
 
 // SpawnFailure returns the recorded spawn-failure diagnostic for this instance,
@@ -213,12 +214,18 @@ func (r *SpawnFailureRecord) FormatForDisplay() string {
 	redactSpawnFailureRecord(&rec)
 	var b strings.Builder
 	b.WriteString("⚠  session failed to start\n")
-	switch rec.Reason {
-	case "tmux_start_failed":
+	switch {
+	case rec.IsToolNotFound():
+		// "<tool> (searched: <PATH>)" is the tail of the reason; say what it
+		// means and where to put the binary.
+		fmt.Fprintf(&b, "The tool was not found on PATH: %s.\n", strings.TrimPrefix(rec.Reason, spawnToolNotFoundPrefix))
+		fmt.Fprintf(&b, "The command exited after %dms. Install the tool into one of the searched directories\n", rec.ElapsedMs)
+		b.WriteString("(~/.local/bin and ~/bin are added to PATH automatically), or use its full path as the command.\n")
+	case rec.Reason == "tmux_start_failed":
 		b.WriteString("The terminal session could not be created.\n")
-	case "spawn_died_fast":
+	case rec.Reason == "spawn_died_fast":
 		fmt.Fprintf(&b, "The command exited almost immediately (after %dms).\n", rec.ElapsedMs)
-	case "prepare_failed":
+	case rec.Reason == "prepare_failed":
 		// Nothing was launched, so the default arm's "ended unexpectedly
 		// during startup" would be actively misleading here.
 		b.WriteString("The command could not be prepared, so nothing was launched.\n")
@@ -238,6 +245,15 @@ func (r *SpawnFailureRecord) FormatForDisplay() string {
 	b.WriteString("\nTip: run the command manually in this directory to see the full error,\n")
 	b.WriteString("or check logs/session-id-lifecycle.jsonl for the spawn trace.\n")
 	return b.String()
+}
+
+// lifecycleFastDeathReason words the spawn_died_fast lifecycle event: the
+// elapsed time, prefixed by the not-found attribution when there is one.
+func lifecycleFastDeathReason(reason string, elapsedMs int64) string {
+	if strings.HasPrefix(reason, spawnToolNotFoundPrefix) {
+		return fmt.Sprintf("%s; exited after %dms", reason, elapsedMs)
+	}
+	return fmt.Sprintf("exited after %dms", elapsedMs)
 }
 
 // spawnFastDeathWindow / spawnFastDeathTick bound the fast-death watcher: a
@@ -288,13 +304,17 @@ const (
 // lifecycleLogPath and failureDir are resolved before the goroutine starts and
 // passed by value, so the watcher cannot write through a later process-global
 // HOME value.
-func (i *Instance) startFastDeathWatcher(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger) {
+//
+// probeTool and probeMarker (see Instance.spawnToolLookup) let a death be
+// attributed to a tool the pane could not find; both are "" when no probe
+// was emitted.
+func (i *Instance) startFastDeathWatcher(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, probeTool, probeMarker string) {
 	lifecycleLogPath := GetSessionIDLifecycleLogPath()
 	failureDir := spawnFailureDir()
 	i.spawnWatchers.Add(1)
 	go func() {
 		defer i.spawnWatchers.Done()
-		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir)
+		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir, probeTool, probeMarker)
 	}()
 }
 
@@ -302,7 +322,7 @@ func (i *Instance) waitForFastDeathWatchers() {
 	i.spawnWatchers.Wait()
 }
 
-func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
+func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string, probeTool, probeMarker string) {
 	if sess == nil {
 		return
 	}
@@ -347,10 +367,15 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 				}
 			}
 			if time.Now().After(deadline) {
-				// Survived the window: healthy start. The commit re-checks the
-				// generation under the write barrier — CapturePane above shells
-				// out to tmux, so a teardown can easily have started since the
-				// check at the top of this iteration.
+				// Survived the window: healthy start. A probe marker left by a
+				// pane that fell through to a shell (exit-to-shell) is not a
+				// spawn failure; drop it. The commit re-checks the generation
+				// under the write barrier — CapturePane above shells out to
+				// tmux, so a teardown can easily have started since the check
+				// at the top of this iteration.
+				if probeMarker != "" {
+					_ = os.Remove(probeMarker)
+				}
 				_ = i.commitSpawnWatchWrite(gen, func() {
 					_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
 						InstanceID: id,
@@ -386,11 +411,19 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			}
 		}
 		elapsed := time.Since(start).Milliseconds()
+		// A tool the pane itself could not find (the probe's marker, see
+		// spawn_path.go) is named instead of leaving the user to infer it
+		// from a 261ms exit (g14 parity walk). Any other death, marker or
+		// not, keeps the generic reason with the dying output.
+		reason := "spawn_died_fast"
+		if notFound := spawnToolNotFoundReason(probeTool, probeMarker); notFound != "" {
+			reason = notFound
+		}
 		rec := SpawnFailureRecord{
 			InstanceID:  id,
 			Tool:        tool,
 			Command:     command,
-			Reason:      "spawn_died_fast",
+			Reason:      reason,
 			DyingOutput: lastSnapshot,
 			ElapsedMs:   elapsed,
 		}
@@ -402,7 +435,7 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 				Tool:       tool,
 				Action:     "spawn_died_fast",
 				Source:     "spawn_watcher",
-				Reason:     fmt.Sprintf("exited after %dms", elapsed),
+				Reason:     lifecycleFastDeathReason(reason, elapsed),
 			}, lifecycleLogPath)
 		})
 		if !committed {

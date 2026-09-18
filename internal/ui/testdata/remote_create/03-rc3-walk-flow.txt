@@ -1,0 +1,26 @@
+  ▾ remotes/lab (1)
+▶   └─ ✕ parity-1789689143 claude
+--- preview ---
+parity-1789689143  ✕ error
+
+Remote:  lab
+Path:    /tmp
+Tool:    claude
+Group:   my-sessions
+
+Last response
+----------------------------------------
+⚠  session failed to start
+The command exited almost immediately (after 262ms).
+
+command: export AGENTDECK_INSTANCE_ID=parity-1; export AGENTDECK_PROFILE=personal; exec env -u TELEGRAM_STATE_DIR -u TELEGRAM_BOT_TOKEN claude --session-id 2f4e --name parity-1789689143
+
+(no output was captured before the process exited)
+
+Tip: run the command manually in this directory to see the full error,
+or check logs/session-id-lifecycle.jsonl for the spawn trace.
+
+
+Press Enter to attach via SSH
+--- footer ---
+⚠ on lab: remote session "parity-1789689143" was created but did not start: failed to start session: tmux session "agentdeck_parity-1789689143_a1b2" is gone: spawn_died_fast (exited after 262ms)

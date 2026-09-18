@@ -1663,13 +1663,51 @@ func resolvedProcessProfile() string {
 	return resolved
 }
 
-// ensureInteractiveShellAccount updates the already-running shell as well as
-// tmux's environment. Setting a tmux option cannot change that shell's env.
-func (i *Instance) ensureInteractiveShellAccount() {
-	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
-		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
-			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
+// ensureInteractiveShellEnv updates the already-running shell as well as
+// tmux's environment. Setting a tmux option cannot change that shell's env,
+// so the exports are typed into it.
+//
+// A plain shell session (tool "shell", no command) is the one kind of
+// session whose pane process gets no command prefix at all: every other
+// tool exports AGENTDECK_INSTANCE_ID, AGENTDECK_PROFILE and the identity
+// file (identity_injection.go) in front of its command. `env | grep
+// AGENTDECK` in such a session was empty, on a remote and locally alike
+// (remote parity walk on g14, 2026-09-18), so a bare `agent-deck` run there
+// could not tell which session it was in, and the identity block never
+// reached it. One export line gives it the same environment; the identity
+// file is written by the agent-deck that spawns the pane, so on a remote it
+// is the remote's own. A shell session running a custom command keeps its
+// pre-existing account export only: the command already owns the pane's
+// input, and its environment comes from its own command line.
+func (i *Instance) ensureInteractiveShellEnv() {
+	if i.Tool != "shell" || i.tmuxSession == nil || i.tmuxSession.RunCommandAsInitialProcess {
+		return
+	}
+	plainShell := strings.TrimSpace(i.Command) == ""
+	var exports []string
+	if plainShell {
+		exports = append(exports,
+			"AGENTDECK_INSTANCE_ID="+shellescape.Quote(i.ID),
+			"AGENTDECK_PROFILE="+shellescape.Quote(sessionProfileEnvValue()),
+			"AGENTDECK_TOOL="+shellescape.Quote(i.Tool),
+			"AGENTDECK_TITLE="+shellescape.Quote(identityOneLine(i.Title)))
+	}
+	if i.Account != "" {
+		exports = append(exports, "AGENTDECK_ACCOUNT="+shellescape.Quote(i.Account))
+	}
+	if plainShell {
+		if identityExport := i.identityEnvExport(); identityExport != "" {
+			exports = append(exports, strings.TrimPrefix(identityExport, "export "))
 		}
+	}
+	if len(exports) == 0 {
+		return
+	}
+	// The leading space keeps the line out of a history that ignores
+	// space-prefixed commands (bash HISTCONTROL=ignorespace, zsh
+	// HIST_IGNORE_SPACE); it is agent-deck's line, not the user's.
+	if err := i.tmuxSession.SendKeysAndEnter(" export " + strings.Join(exports, " ")); err != nil {
+		sessionLog.Warn("set_interactive_shell_env_failed", slog.String("error", err.Error()))
 	}
 }
 
@@ -5153,6 +5191,12 @@ func (i *Instance) Start() error {
 		}
 	}
 
+	// The tool the pane's probe checks and the marker it leaves when the
+	// tool is missing, read off the bare command before any wrapper hides
+	// it: the fast-death watcher tells "tool not on PATH" from a generic
+	// early exit by that marker alone (spawn_path.go).
+	probeTool, probeMarker := i.spawnToolLookup(command)
+
 	var containerName string
 	var err error
 	command, containerName, err = i.prepareCommand(command)
@@ -5223,7 +5267,7 @@ func (i *Instance) Start() error {
 		// calling goroutine) makes the watcher's writes land in the HOME that
 		// was live when this session started, never whichever HOME happens to
 		// be live when the ticker next fires.
-		i.startFastDeathWatcher(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		i.startFastDeathWatcher(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, probeTool, probeMarker)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5244,7 +5288,7 @@ func (i *Instance) Start() error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	i.ensureInteractiveShellAccount()
+	i.ensureInteractiveShellEnv()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -5522,6 +5566,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if promptEmbeddedInCommand {
 		diagnosticCommand = redactEmbeddedSpawnPrompt(command, message)
 	}
+	probeTool, probeMarker := i.spawnToolLookup(command)
 	var containerName string
 	var err error
 	command, containerName, err = i.prepareCommand(command)
@@ -5570,7 +5615,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if command != "" && !i.expectsFastExit() {
 		// See the matching comment in Start(): resolve the write targets — and
 		// subscribe to the wake — here, not inside the never-joined goroutine.
-		i.startFastDeathWatcher(diagnosticCommand, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		i.startFastDeathWatcher(diagnosticCommand, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, probeTool, probeMarker)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5591,7 +5636,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	i.ensureInteractiveShellAccount()
+	i.ensureInteractiveShellEnv()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -9993,7 +10038,7 @@ func (i *Instance) restart(env map[string]string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	i.ensureInteractiveShellAccount()
+	i.ensureInteractiveShellEnv()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate all known tool session IDs to the tmux environment (host-side).
@@ -12145,6 +12190,13 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// exec stays the outermost statement before any user-wrapper / bash -c /
 	// SSH layering. No-op unless opt-in for a built-in agent (issue #1161).
 	cmd = i.wrapExitToShell(cmd)
+
+	// PATH prelude next, so it sits inside every wrapper below (launch shell,
+	// user wrapper's bash -c, sandbox) and the pane resolves the tool the way
+	// a login shell would even when the tmux server was born under a
+	// non-login SSH PATH (remote parity walk, g14). No-op when nothing is
+	// missing. See spawn_path.go.
+	cmd = i.wrapSpawnPath(cmd)
 
 	// Launch-shell wrap SECOND, before user wrapper, so the interactive shell
 	// loads its startup files and then executes the complete command (with
