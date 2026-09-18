@@ -108,13 +108,14 @@ func (i *Instance) buildOMPCommand(baseCommand string) string {
 	lifecycleSuffix := ompArgsSuffix(opts.sessionArgs())
 
 	return envPrefix + fmt.Sprintf(
-		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s%s%s --session-dir \"$session_dir\"",
+		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s%s%s --session-dir \"$session_dir\"%s",
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
 		cmd,
 		harnessSuffix,
 		lifecycleSuffix,
+		i.ompIdentityFlag(),
 	)
 }
 
@@ -141,13 +142,14 @@ func (i *Instance) buildOMPForkCommandForTarget(target *Instance, baseCommand st
 	argsSuffix := ompArgsSuffix(opts.harnessArgs())
 
 	return envPrefix + fmt.Sprintf(
-		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No omp session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
+		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No omp session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"%s%s",
 		parentSessionDir,
 		sessionDir,
 		quotedInstanceID,
 		quotedProfile,
 		cmd,
 		argsSuffix,
+		target.ompIdentityFlag(),
 	), nil
 }
 

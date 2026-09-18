@@ -268,6 +268,24 @@ func TestIdentityInjection_PerHarnessCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("omp command carries --append-system-prompt file", func(t *testing.T) {
+		inst := identityTestInstance("omp")
+		file, _ := inst.IdentityFilePath()
+
+		args := inst.identityNativeArgs("omp", "")
+		if !reflect.DeepEqual(args, []string{"--append-system-prompt", file}) {
+			t.Errorf("omp native args = %v, want [--append-system-prompt %s]", args, file)
+		}
+
+		cmd := inst.buildOMPCommand("omp")
+		if !strings.HasSuffix(cmd, "--append-system-prompt "+file) {
+			t.Errorf("omp command missing identity flag:\n%s", cmd)
+		}
+		if !strings.Contains(cmd, "export "+IdentityFileEnv+"="+file) {
+			t.Errorf("omp command missing env export:\n%s", cmd)
+		}
+	})
+
 	t.Run("gemini command withholds include-directories until the root is trusted", func(t *testing.T) {
 		inst := identityTestInstance("gemini")
 		cmd := inst.buildGeminiCommand("gemini")
