@@ -543,6 +543,7 @@ func main() {
 			return
 		case "tmux-hooks":
 			handleTmuxHooks(args[1:])
+			return
 		case "pi-hooks":
 			handlePiHooks(args[1:])
 			return

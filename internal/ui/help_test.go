@@ -58,7 +58,7 @@ func TestHelpOverlayShowsNotesShortcutWhenEnabled(t *testing.T) {
 	setPreviewShowNotesConfigForTest(t, &enabled)
 
 	overlay := NewHelpOverlay()
-	overlay.SetSize(100, 80)
+	overlay.SetSize(100, 120) // tall enough for the SESSIONS list after the #2058 navigation rows
 	overlay.Show()
 
 	view := overlay.View()
