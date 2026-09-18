@@ -721,9 +721,9 @@ agent-deck conductor list [--profile <name>]
 ```bash
 agent-deck inbox dead-letter list [--json]
 agent-deck inbox dead-letter show [--json] <record-id>
-agent-deck inbox dead-letter retry <record-id>
-agent-deck inbox dead-letter purge --older-than <duration>
-agent-deck inbox dead-letter purge --yes
+agent-deck inbox dead-letter retry [--json] <record-id>
+agent-deck inbox dead-letter purge [--json] --older-than <duration>
+agent-deck inbox dead-letter purge [--json] --yes
 ```
 
 `list` and `show` (#2111) are read-only forensic inspection of every physical
@@ -740,12 +740,23 @@ is what `retry`/`purge` (#2062) actually key off (accepting a unique prefix).
 `retry` re-resolves the child's current parent and commits the event to that
 parent's durable inbox before removing exactly the delivered dead-letter record.
 If the child or parent no longer exists, or the target remains undeliverable,
-the command exits non-zero and retains the record.
+the command exits non-zero and retains the record. `retry` may act on an
+`_unowned` record (it is redelivered like any other).
 
 An unbounded purge requires `--yes`. `--older-than` is the non-interactive,
 bounded alternative; corrupt or undated records are never selected by an age
-bound. The command family also includes the `_unowned` discovery ledger so a
-successful triage can clear the warning reported by `inbox drain`.
+bound. Unlike `retry`, `purge` never removes a record from the `_unowned`
+discovery ledger — that ledger has no ack path, so only the TTL sweep
+(`SweepInboxByTTL`, the same 7-day-default horizon `inbox` events use) may
+reclaim one; purging otherwise would erase the only evidence a remote
+session had stalled. `purge`'s human-readable summary reports how many
+`_unowned` records were skipped; the count still shows up in `inbox drain`'s
+pending total until the TTL sweep clears it.
+
+`retry` and `purge` both accept `--json`, printing a JSON array of
+`{"id", "action", "outcome", "reason"}` objects — one entry per record
+retry/purge actually considered, including any `_unowned` record purge
+skipped (`outcome: "skipped"`) — instead of the human-readable summary line.
 
 ## Remote Commands
 

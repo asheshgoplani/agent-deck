@@ -182,6 +182,77 @@ pre-Enter check closure duplicated between this new code and
   `executeSend` wiring reverted); plus unit tests for
   `sendInitialKeysChecked` directly.
 
+## Item 5 — r2 review follow-ups (P2-1, P2-2 from `review-verify-gaps-r2`)
+
+Both from the independent review of this branch's own `fb142a6f`
+(`/Users/ashesh/agent-deck-recovery/plans-20260917/receipts/review-verify-gaps-r2/RESULTS.md`).
+Neither was a correctness bug or a blocker; both were flagged as worth a
+follow-up before rc.4.
+
+**P2-1 — `purge` must never touch the `_unowned` ledger.**
+`readDeadLetterEntries` unconditionally included `_unowned` among purge's
+candidate records, so `purge --yes`/`--older-than`/a single-ID purge could
+all delete `_unowned` records — in tension with `unowned_inbox.go`'s own
+documented invariant that "the `_unowned` ledger has NO consumer... only
+`SweepInboxByTTL` ever removes a record." A single `--yes` could silently
+erase the only on-disk evidence that a remote session had stalled, with no
+way to tell "purge dead-letter records" from "also erase unresolved
+discovery evidence" apart.
+
+Fix: `purgeDeadLetters` (`internal/session/dead_letter_management.go`) now
+skips every `_unowned` record instead of matching it, and
+`PurgeDeadLetter` (the single-ID path the TUI's `Alt+D` purge key uses)
+refuses one outright with an explicit error. `retry` is unchanged — it may
+still act on an `_unowned` record, since redelivering one to a now-resolvable
+parent is the point of retry, not evidence-destruction. The bulk purge
+functions now return `[]DeadLetterActionOutcome` (one `{id, action, outcome,
+reason}` per record considered, `outcome: "skipped"` for a record left
+alone) instead of a bare count, so both the human-readable summary and the
+new `--json` output (item 2, below) come from the same data.
+
+`cmd/agent-deck/inbox_cmd.go`'s human-readable purge summary now reports
+both counts: `"Purged N dead-letter record(s); skipped M _unowned
+record(s) (...)"`.
+
+**Red/green.** `TestIssue2062PurgeYesNeverTouchesUnowned` (replaces the
+prior `TestIssue2062PurgeYesClearsUnownedDedupState`, whose premise — that
+`purge --yes` was *supposed* to clear `_unowned` — is exactly what this item
+reverses) seeds one `_unowned` and one ordinary dead-letter record, runs
+`purge --yes`, and asserts the ordinary record is gone, the `_unowned`
+record and its pending-count are untouched, and the summary line reports
+`skipped 1`. `TestIssue2062PurgeSingleUnownedRecordRefused` covers the
+single-ID/TUI path directly against `session.PurgeDeadLetter`.
+
+**P2-2 — `retry`/`purge` parity: add `--json`.**
+`list`/`show` already had `--json`; `retry`/`purge` printed plain text only.
+Both subcommands now accept `--json` and, instead of the human-readable
+line, print a JSON array of `{"id", "action", "outcome", "reason"}` objects
+— one entry per record the command actually considered. For `retry` that is
+always a single `{"action":"retry","outcome":"delivered",...}` entry (errors
+are unchanged — still a plain Go error on stderr with a non-zero exit,
+matching `list`/`show`'s own error handling). For `purge` it is one entry
+per matched record, `outcome` either `"removed"` or `"skipped"` (an
+`_unowned` record, always carrying a `reason`).
+
+Documented in `skills/agent-deck/references/cli-reference.md`'s `dead-letter`
+section, including the `_unowned` exclusion from item P2-1.
+
+**Red/green.** `TestIssue2062RetryJSONShape` and `TestIssue2062PurgeJSONShape`
+decode the `--json` output into `[]session.DeadLetterActionOutcome` and
+assert the field values and outcome mix (purge's case seeds one ordinary and
+one `_unowned` record so both `removed` and `skipped` appear in one call).
+
+**Item 5 verification.** `go build ./...` and `go vet ./...` clean on the
+host. `go test -timeout 20m ./internal/session/... ./cmd/agent-deck/...`
+(Docker, `agentdeck-gotest:1.25-tmux`, `--init`, lock at
+`/tmp/agentdeck-docker.lock.d`) — clean except exactly the 5 known-pre-existing
+root-permission failures (`TestStartupNamePermissionChangeFailsClosed`,
+`TestDeployScript_NonRootKeepsGroup`, `TestDeployScript_NonRootGroupFailureAborts`,
+`TestWriteJSONFileAtomic_SkipsUnchangedWrite`, `TestCleanupReviewCrossProfileBoundary`
+— all fail because the container lacks `DAC_OVERRIDE`/root to exercise the
+permission-drop path being tested, unrelated to this change). No dead-letter/
+purge test failed; no other regressions.
+
 ## VERIFY
 
 - Host: `go build ./...` and `go vet ./...` — clean, one build at a time.

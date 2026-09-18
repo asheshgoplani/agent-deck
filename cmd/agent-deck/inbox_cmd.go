@@ -218,14 +218,26 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 // runInboxDeadLetterRetry and runInboxDeadLetterPurge are the #2062 management
 // subcommands; runInboxDeadLetter in inbox_deadletter_cmd.go dispatches to them.
 func runInboxDeadLetterRetry(stdout io.Writer, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: agent-deck inbox dead-letter retry <record-id>")
+	fs := flag.NewFlagSet("inbox dead-letter retry", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "output JSON")
+	fs.SetOutput(stdout)
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		return err
 	}
-	target, err := session.RetryDeadLetter(args[0])
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: agent-deck inbox dead-letter retry [--json] <record-id>")
+	}
+	id := fs.Arg(0)
+	target, err := session.RetryDeadLetter(id)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Delivered dead-letter record %s to inbox %s.\n", args[0], target)
+	if *asJSON {
+		return json.NewEncoder(stdout).Encode([]session.DeadLetterActionOutcome{
+			{ID: id, Action: "retry", Outcome: "delivered", Reason: "delivered to inbox " + target},
+		})
+	}
+	fmt.Fprintf(stdout, "Delivered dead-letter record %s to inbox %s.\n", id, target)
 	return nil
 }
 
@@ -233,6 +245,7 @@ func runInboxDeadLetterPurge(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("inbox dead-letter purge", flag.ContinueOnError)
 	olderThan := fs.Duration("older-than", 0, "purge records older than this duration")
 	yes := fs.Bool("yes", false, "confirm an unbounded purge")
+	asJSON := fs.Bool("json", false, "output JSON")
 	fs.SetOutput(stdout)
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
@@ -243,19 +256,34 @@ func runInboxDeadLetterPurge(stdout io.Writer, args []string) error {
 	if *olderThan < 0 {
 		return fmt.Errorf("--older-than must be a positive duration")
 	}
-	var count int
+	var results []session.DeadLetterActionOutcome
 	var err error
 	if *olderThan > 0 {
-		count, err = session.PurgeDeadLettersOlderThan(time.Now().Add(-*olderThan))
+		results, err = session.PurgeDeadLettersOlderThan(time.Now().Add(-*olderThan))
 	} else if *yes {
-		count, err = session.PurgeAllDeadLetters()
+		results, err = session.PurgeAllDeadLetters()
 	} else {
 		return fmt.Errorf("refusing unbounded purge: pass --yes or a positive --older-than duration")
 	}
 	if err != nil {
 		return fmt.Errorf("purge dead letters: %w", err)
 	}
-	fmt.Fprintf(stdout, "Purged %d dead-letter record(s).\n", count)
+	if *asJSON {
+		if results == nil {
+			results = []session.DeadLetterActionOutcome{}
+		}
+		return json.NewEncoder(stdout).Encode(results)
+	}
+	removed, skipped := 0, 0
+	for _, r := range results {
+		switch r.Outcome {
+		case "removed":
+			removed++
+		case "skipped":
+			skipped++
+		}
+	}
+	fmt.Fprintf(stdout, "Purged %d dead-letter record(s); skipped %d _unowned record(s) (%s).\n", removed, skipped, session.UnownedPurgeSkipReason)
 	return nil
 }
 

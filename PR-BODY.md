@@ -101,6 +101,26 @@ findings from that fix's review:
   pre-Enter check into `send.PasteTruncationCheck`, shared by both send
   paths.
 
+## r2 review follow-ups (P2-1, P2-2)
+
+Two P2 findings from the independent review of this branch's own `fb142a6f`:
+
+- **`purge` must never touch the `_unowned` ledger.** It previously could
+  (`--yes`, `--older-than`, or a single-ID purge), in tension with that
+  ledger's own documented invariant that only the TTL sweep removes a
+  record. Fixed: `purge` now always skips `_unowned` records and reports how
+  many it skipped, both in its human-readable summary and its new `--json`
+  output. `retry` is unchanged — it may still redeliver an `_unowned`
+  record.
+- **`retry`/`purge` now accept `--json`**, matching `list`/`show`. Output is
+  a JSON array of `{"id","action","outcome","reason"}` objects, one per
+  record considered.
+
+Documented in `skills/agent-deck/references/cli-reference.md`. New tests:
+`TestIssue2062PurgeYesNeverTouchesUnowned`,
+`TestIssue2062PurgeSingleUnownedRecordRefused`,
+`TestIssue2062RetryJSONShape`, `TestIssue2062PurgeJSONShape`.
+
 ## Test plan
 
 - [x] `go build ./...`

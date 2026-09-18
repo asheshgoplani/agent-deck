@@ -279,45 +279,75 @@ func RetryDeadLetter(id string) (string, error) {
 	return parent.ID, nil
 }
 
-// PurgeDeadLetter removes exactly one selected record.
+// UnownedPurgeSkipReason explains, in both the human-readable summary and the
+// --json outcome, why purge leaves an _unowned record alone: unlike a
+// dead-letter or a parent inbox, that ledger has no consumer to ack a
+// record — unowned_inbox.go documents that only SweepInboxByTTL may ever
+// remove one, on the TTL sweep's generous (default 7-day) horizon, not an
+// operator's purge. Purge including it (the reviewed rc.4 behavior) let a
+// single `--yes` erase the only evidence a remote session ever stalled.
+const UnownedPurgeSkipReason = "_unowned ledger has no ack path; only the TTL sweep may remove its records"
+
+// DeadLetterActionOutcome is one --json record for a management call
+// (retry or purge) that may affect several physical records, so a machine
+// consumer gets the same per-record detail the human-readable summary does.
+type DeadLetterActionOutcome struct {
+	ID      string `json:"id"`
+	Action  string `json:"action"`
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// PurgeDeadLetter removes exactly one selected record. It refuses an
+// _unowned record for the same reason purgeDeadLetters skips them in bulk.
 func PurgeDeadLetter(id string) error {
 	entry, err := findDeadLetterEntry(id)
 	if err != nil {
 		return err
 	}
+	if entry.record.Store == "unowned" {
+		return fmt.Errorf("dead-letter record %q: %s", entry.record.ID, UnownedPurgeSkipReason)
+	}
 	return removeDeadLetterEntry(entry)
 }
 
-// purgeDeadLetters removes every record selected by match, stopping at the
-// first removal failure and reporting how many were already removed.
-func purgeDeadLetters(match func(DeadLetterRecord) bool) (int, error) {
+// purgeDeadLetters removes every matched record except those in the
+// _unowned ledger, which it always skips (see UnownedPurgeSkipReason),
+// stopping at the first removal failure. It returns one outcome per record
+// considered so callers can report counts or emit them as --json.
+func purgeDeadLetters(match func(DeadLetterRecord) bool) ([]DeadLetterActionOutcome, error) {
 	entries, err := readDeadLetterEntries(time.Now())
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	removed := 0
+	var results []DeadLetterActionOutcome
 	for _, entry := range entries {
 		if match != nil && !match(entry.record) {
 			continue
 		}
-		if err := removeDeadLetterEntry(entry); err != nil {
-			return removed, err
+		if entry.record.Store == "unowned" {
+			results = append(results, DeadLetterActionOutcome{ID: entry.record.ID, Action: "purge", Outcome: "skipped", Reason: UnownedPurgeSkipReason})
+			continue
 		}
-		removed++
+		if err := removeDeadLetterEntry(entry); err != nil {
+			return results, err
+		}
+		results = append(results, DeadLetterActionOutcome{ID: entry.record.ID, Action: "purge", Outcome: "removed"})
 	}
-	return removed, nil
+	return results, nil
 }
 
 // PurgeDeadLettersOlderThan removes only records with a valid timestamp older
 // than cutoff. Corrupt/undated records require explicit per-record or all purge.
-func PurgeDeadLettersOlderThan(cutoff time.Time) (int, error) {
+func PurgeDeadLettersOlderThan(cutoff time.Time) ([]DeadLetterActionOutcome, error) {
 	return purgeDeadLetters(func(record DeadLetterRecord) bool {
 		return !record.Timestamp.IsZero() && record.Timestamp.Before(cutoff)
 	})
 }
 
-// PurgeAllDeadLetters removes every selected physical record. Callers must
-// enforce explicit user confirmation before invoking this unbounded operation.
-func PurgeAllDeadLetters() (int, error) {
+// PurgeAllDeadLetters removes every selected physical record except the
+// _unowned ledger. Callers must enforce explicit user confirmation before
+// invoking this unbounded operation.
+func PurgeAllDeadLetters() ([]DeadLetterActionOutcome, error) {
 	return purgeDeadLetters(nil)
 }

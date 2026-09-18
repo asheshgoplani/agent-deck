@@ -20,7 +20,7 @@ import (
 // internal/session/deadletter_inspection.go for why the two identifier
 // schemes coexist on one shared type).
 func runInboxDeadLetter(stdout io.Writer, args []string) error {
-	usage := "usage: inbox dead-letter list|show|retry|purge (list [--store all|dead-letter|unowned] [--json], show <ref> [--json], retry <id>, purge --older-than <duration>|--yes)"
+	usage := "usage: inbox dead-letter list|show|retry|purge (list [--store all|dead-letter|unowned] [--json], show <ref> [--json], retry [--json] <id>, purge [--json] --older-than <duration>|--yes)"
 	if len(args) == 0 {
 		return errors.New(usage)
 	}
@@ -31,9 +31,10 @@ func runInboxDeadLetter(stdout io.Writer, args []string) error {
 		fmt.Fprintln(stdout, "Commands:")
 		fmt.Fprintln(stdout, "  list [--store all|dead-letter|unowned] [--json]  List every physical record")
 		fmt.Fprintln(stdout, "  show [--json] <ref>                              Show one record without raw content")
-		fmt.Fprintln(stdout, "  retry <id>                                       Re-resolve and redeliver one record")
-		fmt.Fprintln(stdout, "  purge --older-than <duration>                    Purge only records older than a bound")
-		fmt.Fprintln(stdout, "  purge --yes                                      Purge every record with explicit consent")
+		fmt.Fprintln(stdout, "  retry [--json] <id>                              Re-resolve and redeliver one record")
+		fmt.Fprintln(stdout, "  purge [--json] --older-than <duration>           Purge only records older than a bound")
+		fmt.Fprintln(stdout, "  purge [--json] --yes                             Purge every record with explicit consent")
+		fmt.Fprintln(stdout, "  purge never removes an _unowned record; only the TTL sweep may reclaim one.")
 		return nil
 	case "retry":
 		return runInboxDeadLetterRetry(stdout, args[1:])

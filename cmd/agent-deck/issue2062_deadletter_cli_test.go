@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,7 +118,53 @@ func TestIssue2062HelpListsAllFourSubcommands(t *testing.T) {
 	}
 }
 
-func TestIssue2062PurgeYesClearsUnownedDedupState(t *testing.T) {
+// TestIssue2062PurgeYesNeverTouchesUnowned is the r2 follow-up: purge --yes
+// (and --older-than) must never remove an _unowned record, because that
+// ledger has no ack path — only SweepInboxByTTL may reclaim it (see
+// session.UnownedPurgeSkipReason and unowned_inbox.go). Earlier behavior
+// (superseded here) let purge silently erase the only evidence a remote
+// session had stalled; this test now asserts the opposite and checks the
+// human-readable skip count purge reports.
+func TestIssue2062PurgeYesNeverTouchesUnowned(t *testing.T) {
+	cliInboxTestHome(t)
+	event := session.TransitionNotificationEvent{
+		ChildSessionID:   "unowned-child",
+		Profile:          "default",
+		FromStatus:       "running",
+		ToStatus:         "waiting",
+		Timestamp:        time.Now().Add(-time.Hour),
+		DeadLetterReason: "orphan",
+	}
+	if err := session.WriteInboxEvent(session.UnownedInboxID, event); err != nil {
+		t.Fatal(err)
+	}
+	seedDeadLetterCLIRecord(t, "dead-letter-child", "orphan", time.Now())
+	records, err := session.ListDeadLetters()
+	if err != nil || len(records) != 2 {
+		t.Fatalf("seed failed: %+v err=%v", records, err)
+	}
+
+	var out bytes.Buffer
+	if err := runInbox(&out, []string{"dead-letter", "purge", "--yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Purged 1 dead-letter record(s); skipped 1 _unowned record(s)") {
+		t.Fatalf("purge summary missing skip count: %q", out.String())
+	}
+	remaining, err := session.ListDeadLetters()
+	if err != nil || len(remaining) != 1 || remaining[0].Store != "unowned" {
+		t.Fatalf("purge must leave the _unowned record alone: %+v err=%v", remaining, err)
+	}
+	if count, err := session.CountDeadLetterRecords(); err != nil || count != 1 {
+		t.Fatalf("unowned record should still be pending: count=%d err=%v", count, err)
+	}
+}
+
+// TestIssue2062PurgeSingleUnownedRecordRefused covers the TUI/single-ID path
+// (session.PurgeDeadLetter): it must refuse an _unowned record outright
+// rather than silently skipping it, since there is no bulk summary line to
+// report the skip through.
+func TestIssue2062PurgeSingleUnownedRecordRefused(t *testing.T) {
 	cliInboxTestHome(t)
 	event := session.TransitionNotificationEvent{
 		ChildSessionID:   "unowned-child",
@@ -131,19 +178,92 @@ func TestIssue2062PurgeYesClearsUnownedDedupState(t *testing.T) {
 		t.Fatal(err)
 	}
 	records, err := session.ListDeadLetters()
-	if err != nil || len(records) != 1 || records[0].Store != "unowned" {
-		t.Fatalf("unowned record missing: %+v err=%v", records, err)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("seed failed: %+v err=%v", records, err)
 	}
-	if err := runInbox(&bytes.Buffer{}, []string{"dead-letter", "purge", "--yes"}); err != nil {
-		t.Fatal(err)
+	if err := session.PurgeDeadLetter(records[0].ID); err == nil {
+		t.Fatal("PurgeDeadLetter must refuse an _unowned record")
 	}
-	if count, err := session.CountDeadLetterRecords(); err != nil || count != 0 {
-		t.Fatalf("warning could not be cleared: count=%d err=%v", count, err)
+	remaining, err := session.ListDeadLetters()
+	if err != nil || len(remaining) != 1 {
+		t.Fatalf("refused purge must not remove the record: %+v err=%v", remaining, err)
+	}
+}
+
+// TestIssue2062RetryJSONShape and TestIssue2062PurgeJSONShape cover the r2
+// --json parity follow-up: retry/purge now emit the same per-record
+// {id, action, outcome, reason} shape as each other.
+func TestIssue2062RetryJSONShape(t *testing.T) {
+	cliInboxTestHome(t)
+	parent := session.NewInstance("parent", t.TempDir())
+	parent.ID = "live-parent"
+	child := session.NewInstance("child", t.TempDir())
+	child.ID = "retry-json-child"
+	child.ParentSessionID = parent.ID
+	saveInboxResolutionSessions(t, "default", parent, child)
+	seedDeadLetterCLIRecord(t, child.ID, "parent_removed", time.Now())
+	records, _ := session.ListDeadLetters()
+	if len(records) != 1 {
+		t.Fatalf("seed failed: %+v", records)
+	}
+
+	var out bytes.Buffer
+	if err := runInbox(&out, []string{"dead-letter", "retry", "--json", records[0].ID}); err != nil {
+		t.Fatalf("retry --json: %v", err)
+	}
+	var results []session.DeadLetterActionOutcome
+	if err := json.Unmarshal(out.Bytes(), &results); err != nil {
+		t.Fatalf("retry --json output not valid JSON array: %v (%q)", err, out.String())
+	}
+	if len(results) != 1 || results[0].ID != records[0].ID || results[0].Action != "retry" || results[0].Outcome != "delivered" {
+		t.Fatalf("unexpected retry --json shape: %+v", results)
+	}
+}
+
+func TestIssue2062PurgeJSONShape(t *testing.T) {
+	cliInboxTestHome(t)
+	event := session.TransitionNotificationEvent{
+		ChildSessionID:   "unowned-child",
+		Profile:          "default",
+		FromStatus:       "running",
+		ToStatus:         "waiting",
+		Timestamp:        time.Now().Add(-time.Hour),
+		DeadLetterReason: "orphan",
 	}
 	if err := session.WriteInboxEvent(session.UnownedInboxID, event); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := session.CountDeadLetterRecords(); err != nil || count != 1 {
-		t.Fatalf("purge left stale dedup state: count=%d err=%v", count, err)
+	seedDeadLetterCLIRecord(t, "purge-json-child", "orphan", time.Now())
+
+	var out bytes.Buffer
+	if err := runInbox(&out, []string{"dead-letter", "purge", "--json", "--yes"}); err != nil {
+		t.Fatalf("purge --json: %v", err)
+	}
+	var results []session.DeadLetterActionOutcome
+	if err := json.Unmarshal(out.Bytes(), &results); err != nil {
+		t.Fatalf("purge --json output not valid JSON array: %v (%q)", err, out.String())
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected one removed and one skipped record, got: %+v", results)
+	}
+	var sawRemoved, sawSkipped bool
+	for _, r := range results {
+		if r.Action != "purge" {
+			t.Fatalf("unexpected action: %+v", r)
+		}
+		switch r.Outcome {
+		case "removed":
+			sawRemoved = true
+		case "skipped":
+			sawSkipped = true
+			if r.Reason == "" {
+				t.Fatalf("skipped record must carry a reason: %+v", r)
+			}
+		default:
+			t.Fatalf("unexpected outcome: %+v", r)
+		}
+	}
+	if !sawRemoved || !sawSkipped {
+		t.Fatalf("expected both a removed and a skipped record: %+v", results)
 	}
 }
