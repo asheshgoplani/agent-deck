@@ -5161,6 +5161,16 @@ func (i *Instance) Start() error {
 			break
 		}
 		command = i.buildPiCommand(i.Command)
+	case i.Tool == "omp":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
+		command = i.buildOMPCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "muse":
@@ -5524,6 +5534,16 @@ func (i *Instance) StartWithMessage(message string) error {
 			break
 		}
 		command = i.buildPiCommand(i.Command)
+	case i.Tool == "omp":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
+		command = i.buildOMPCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "crush":
@@ -9940,6 +9960,8 @@ func (i *Instance) restart(env map[string]string) error {
 			i.CodexStartedAt = time.Now().UnixMilli()
 		case i.Tool == "pi":
 			command = i.buildPiCommand(i.Command)
+		case i.Tool == "omp":
+			command = i.buildOMPCommand(i.Command)
 		case i.Tool == "copilot":
 			command = i.buildCopilotCommand(i.Command)
 		case i.Tool == "crush":
@@ -10269,7 +10291,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || IsCodexCompatible(tool)
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || IsCodexCompatible(tool)
 }
 
 // ApplyLaunchModel stores a per-session model override in the tool-specific
@@ -10300,6 +10322,14 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 		}
 		opts.Model = model
 		return i.SetOpenCodeOptions(opts)
+	case i.Tool == "omp":
+		opts := i.GetOMPOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewOMPOptions(userConfig)
+		}
+		opts.Model = model
+		return i.SetOMPOptions(opts)
 	case IsCodexCompatible(i.Tool):
 		opts := i.GetCodexOptions()
 		if opts == nil {
@@ -10339,6 +10369,13 @@ func (i *Instance) ClearLaunchModel() error {
 		}
 		opts.Model = ""
 		return i.SetOpenCodeOptions(opts)
+	case i.Tool == "omp":
+		opts := i.GetOMPOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetOMPOptions(opts)
 	case IsCodexCompatible(i.Tool):
 		opts := i.GetCodexOptions()
 		if opts == nil {
@@ -10406,6 +10443,13 @@ func (i *Instance) CanRestart() bool {
 	// Pi sessions are scoped to an Agent Deck instance-specific session dir and
 	// can always be relaunched with --continue.
 	if i.Tool == "pi" {
+		return true
+	}
+
+	// omp sessions are scoped to an Agent Deck instance-specific session dir
+	// and can always be relaunched with --continue (verified live: --continue
+	// on a fresh empty --session-dir starts a new session gracefully).
+	if i.Tool == "omp" {
 		return true
 	}
 
@@ -10478,7 +10522,17 @@ func (i *Instance) CanRestartFresh() bool {
 	return i.CanRestartGeneric()
 }
 
-// CanFork returns true if this session can be forked
+// SupportsNativeFork reports whether tool has a concrete native fork
+// dispatcher. Keep CLI/API capability gates routed through this helper so a
+// newly supported tool cannot be admitted by Instance.CanFork while remaining
+// rejected or hidden at another surface.
+func SupportsNativeFork(tool string) bool {
+	return IsClaudeCompatible(tool) || tool == "pi" || tool == "opencode" ||
+		IsCodexCompatible(tool) || tool == "omp"
+}
+
+// CanFork returns true if this session currently has the source state needed
+// by its native fork implementation.
 func (i *Instance) CanFork() bool {
 	// Gemini CLI doesn't support forking
 	if i.Tool == "gemini" {
@@ -10503,6 +10557,12 @@ func (i *Instance) CanFork() bool {
 	// Pi session directory. The launch command validates that a JSONL exists.
 	if i.Tool == "pi" {
 		return i.CanForkPi()
+	}
+
+	// omp sessions fork by source JSONL path under Agent Deck's per-instance
+	// omp session directory, identical shape to Pi's fork gate.
+	if i.Tool == "omp" {
+		return i.CanForkOMP()
 	}
 
 	// Codex-compatible sessions fork via `codex fork <sid>`, gated on a
@@ -10748,6 +10808,8 @@ func (i *Instance) CreateForkedInstanceForTool(newTitle, newGroupPath string, op
 		return i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, nil, workDir, repoRoot, branch)
 	case i.Tool == "pi":
 		return i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, opts)
+	case i.Tool == "omp":
+		return i.CreateForkedOMPInstanceWithOptions(newTitle, newGroupPath, opts)
 	case IsCodexCompatible(i.Tool):
 		return i.CreateForkedCodexInstanceWithOptions(newTitle, newGroupPath, opts)
 	default:
@@ -11250,6 +11312,27 @@ func (i *Instance) GetOpenCodeOptions() *OpenCodeOptions {
 
 // SetOpenCodeOptions stores OpenCode-specific options
 func (i *Instance) SetOpenCodeOptions(opts *OpenCodeOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
+func (i *Instance) GetOMPOptions() *OMPOptions {
+	opts, err := UnmarshalOMPOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+func (i *Instance) SetOMPOptions(opts *OMPOptions) error {
 	if opts == nil {
 		i.ToolOptionsJSON = nil
 		return nil

@@ -119,7 +119,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
-| `agent-deck session fork <name>` | Fork Claude/Pi conversation |
+| `agent-deck session fork <name>` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi conversation |
 | `agent-deck session switch-account <name> <account>` | Switch Claude account, conversation follows |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
@@ -511,7 +511,7 @@ Key constraints:
 | `R` | Restart session (reloads MCPs) |
 | `m` | MCP Manager |
 | `s` | Skills Manager |
-| `f/F` | Fork Claude/OpenCode/Pi/Codex session |
+| `f/F` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi session |
 | `d` | Delete |
 | `A` | Archive (stops tmux, hides from default list) |
 | `Shift+U` | Unarchive (does not auto-start tmux) |

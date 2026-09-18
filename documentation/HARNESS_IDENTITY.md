@@ -3,8 +3,8 @@
 Every session agent-deck launches is told, at runtime and in a form the model
 can read, that it runs inside agent-deck, what its own session identity is,
 and how to use the `agent-deck` CLI from inside. This works in every harness
-(`claude`, `codex`, `pi`, `gemini`) and, through an environment variable, in
-custom `--cmd` sessions too.
+(`claude`, `codex`, `pi`, `omp`, `gemini`) and, through an environment
+variable, in custom `--cmd` sessions too.
 
 ## What the session learns
 
@@ -57,6 +57,7 @@ Nothing is ever written into the project directory: no `AGENTS.md`,
 | `claude` | `--append-system-prompt-file <file>` (Claude's own prompt is kept) | yes, incl. `--resume` and forks | custom `[claude].command` wrappers, `claude <subcommand>` passthrough: env var only |
 | `codex` | `-c developer_instructions="<block>"`, the block inlined as a TOML basic string (lossless for any title/path); a `developer_instructions` you configured in that launch's `CODEX_HOME/config.toml` is placed first so it is never replaced. `model_instructions_file` would replace the base prompt and is not used | yes, incl. `resume` / `fork` | custom codex commands (`-c "codex --flag"`): env var only |
 | `pi` | `--append-system-prompt <file>` | yes, incl. `session fork` | |
+| `omp` | `--append-system-prompt <file>` (Oh My Pi, same shape as `pi`; upstream docs `docs/cli-reference.md`) | yes, incl. `session fork` | |
 | `gemini` | `--include-directories <dir>` with `GEMINI.md` inside, loaded as project memory next to the project's own | yes, incl. `--resume` | see folder trust below |
 | custom `--cmd`, opencode, cursor, copilot, crush, hermes, deepseek | `AGENTDECK_IDENTITY_FILE` in the environment | yes | no prompt injection; the command decides whether to read the file |
 | plain shell session (`shell`, no command) | `AGENTDECK_IDENTITY_FILE` exported into the pane shell by one line typed at start, together with `AGENTDECK_INSTANCE_ID`, `AGENTDECK_PROFILE`, `AGENTDECK_TOOL` and `AGENTDECK_TITLE` (the pane shell was already running when tmux's session environment was set, so an export is the only way to reach it) | yes | the line is visible in the pane; it is space-prefixed so a history that ignores such lines skips it |

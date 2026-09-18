@@ -11,8 +11,9 @@
        │      > demo                                                                        │       
        │                                                                                    │       
        │      Command:                                                                      │       
-       │        shell     claude     gemini     opencode     codex     pi     copilot       │       
-       │      crush     muse     cursor agent     hermes     deepseek                       │       
+       │                                                                                    │       
+       │      shell    claude    gemini    opencode    codex    pi    copilot    crush      │       
+       │      muse    cursor agent    hermes    deepseek    omp                             │       
        │                                                                                    │       
        │      Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       
@@ -36,8 +37,7 @@
        │      [ ] Teammate mode                                                             │       
        │        Extra args: > e.g. --agent reviewer                                         │       
        │        Start query: > initial prompt (not split on spaces)                         │       
-       │        Account:                                                                    │       
-       │          inherit     personal     work                                             │       
+       │        Account:   inherit    personal    work                                      │       
        │                                                                                    │       
        │      [ Create session ]                                                            │       
        │                                                                                    │       

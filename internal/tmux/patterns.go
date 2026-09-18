@@ -146,6 +146,35 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				`re:(?mi)^dsh web:\s+https?://`,
 			},
 		}
+	case "omp":
+		// Oh My Pi (github.com/can1357/oh-my-pi). PROVENANCE — CAPTURED LIVE
+		// against the real installed binary (v17.3.8) via a PTY-driven omp
+		// session (not inferred from docs):
+		//
+		//   Busy    "⠋ Working… ⟨esc⟩" (generic) or "⠴ Echo hi ⟨esc⟩" (tool-
+		//           derived label). The stable anchor across every busy state
+		//           is the literal "⟨esc⟩" marker (U+27E8/U+27E9 angle
+		//           brackets), which is distinct from every other registered
+		//           tool's ascii "esc to interrupt" phrasing.
+		//   Waiting "Allow tool: bash\nCommand: echo hi\n\n  Approve\n   Deny\n\n
+		//           up/down navigate  enter select  esc cancel" — captured by
+		//           launching with --approval-mode always-ask and triggering
+		//           a bash tool call.
+		//
+		// No distinct idle-only literal string was found: the idle status bar
+		// is visually identical (same box-drawn border) whether busy or not,
+		// differing only in the presence/absence of the spinner+"⟨esc⟩" line
+		// beneath it, which BusyPatterns already covers. This mirrors "pi"
+		// and "deepseek", which also rely on busy-pattern absence for idle.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				`re:⟨esc⟩`,
+			},
+			PromptPatterns: []string{
+				`re:(?m)^\s*Allow tool:\s`,
+			},
+			SpinnerChars: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		}
 	case "pi":
 		return &RawPatterns{
 			BusyPatterns: []string{

@@ -540,7 +540,15 @@ func tomlBasicString(s string) string {
 // of a shell string (the #2237 cross-harness launch plan). Empty when
 // injection is off or the tool has no instruction mechanism (env var only).
 func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
-	switch canonicalSwitchHarness(tool) {
+	harness := canonicalSwitchHarness(tool)
+	if harness == "" && strings.EqualFold(strings.TrimSpace(tool), "omp") {
+		// omp is not a cross-harness switch destination yet, so
+		// canonicalSwitchHarness does not name it, but it takes pi's
+		// --append-system-prompt <file>. buildOMPCommand uses the
+		// shell-string counterpart, ompIdentityFlag.
+		harness = "omp"
+	}
+	switch harness {
 	case "claude":
 		_, file, ok := i.ensureIdentityFile()
 		if !ok {
@@ -556,7 +564,7 @@ func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
 			return nil
 		}
 		return []string{"-c", value}
-	case "pi":
+	case "pi", "omp":
 		_, file, ok := i.ensureIdentityFile()
 		if !ok {
 			return nil
@@ -569,6 +577,17 @@ func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
 // piIdentityFlag returns pi's `--append-system-prompt <file>` (pi reads a
 // path argument as file contents) or "".
 func (i *Instance) piIdentityFlag() string {
+	_, file, ok := i.ensureIdentityFile()
+	if !ok {
+		return ""
+	}
+	return " --append-system-prompt " + shellescape.Quote(file)
+}
+
+// ompIdentityFlag returns omp's `--append-system-prompt <file>` or "". It is
+// the same flag as pi's, documented in can1357/oh-my-pi
+// docs/cli-reference.md.
+func (i *Instance) ompIdentityFlag() string {
 	_, file, ok := i.ensureIdentityFile()
 	if !ok {
 		return ""
