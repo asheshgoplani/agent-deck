@@ -156,3 +156,66 @@ func TestHooksStatus_ReportsUsageFeed(t *testing.T) {
 		t.Errorf("status after install:\n%s", out)
 	}
 }
+
+// TestHooksInstall_SkipsSlotsItCannotWire covers review findings 1 and 5 at
+// the CLI: a slot whose name the quota cache cannot store ("team.a") and a
+// slot whose config dir does not exist are skipped, said so, and left alone
+// (no directory, no file, no wrapper); `hooks status` names the reason and
+// does not ask for a reinstall that would change nothing.
+func TestHooksInstall_SkipsSlotsItCannotWire(t *testing.T) {
+	home, personalDir, _ := setupUsageFeedTest(t)
+	teamDir := filepath.Join(home, ".claude-team")
+	if err := os.MkdirAll(teamDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := `{"statusLine":{"type":"command","command":"~/team.sh"}}`
+	if err := os.WriteFile(filepath.Join(teamDir, "settings.json"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goneDir := filepath.Join(home, ".claude-gone")
+	if err := os.WriteFile(filepath.Join(home, ".config", "agent-deck", "config.toml"), []byte(`
+[profiles.personal.claude]
+config_dir = "~/.claude"
+[profiles."team.a".claude]
+config_dir = "~/.claude-team"
+[profiles.gone.claude]
+config_dir = "~/.claude-gone"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session.ClearUserConfigCache()
+
+	out := captureStdout(t, handleHooksInstall)
+	for _, want := range []string{
+		"personal  wired:",
+		`team.a    skipped: unusable profile name "team.a" for quota cache`,
+		"gone      skipped: slot dir missing",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("install output missing %q:\n%s", want, out)
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(teamDir, "settings.json")); string(data) != original {
+		t.Errorf("team.a settings.json was rewritten:\n%s", data)
+	}
+	if _, err := os.Stat(goneDir); !os.IsNotExist(err) {
+		t.Errorf("install created the missing slot dir: %v", err)
+	}
+	if feed := session.UsageFeedStatus(personalDir, "personal"); !feed.Wired {
+		t.Errorf("personal must still be wired: %+v", feed)
+	}
+
+	out = captureStdout(t, handleHooksStatus)
+	for _, want := range []string{
+		"personal  wired (wraps ~/.claude/statusline.sh)",
+		`team.a    cannot wire (unusable profile name "team.a" for quota cache`,
+		"gone      cannot wire (slot dir missing)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "to wire the usage feed") {
+		t.Errorf("status must not ask for an install that changes nothing:\n%s", out)
+	}
+}

@@ -12,6 +12,7 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
+	"github.com/asheshgoplani/agent-deck/internal/quota"
 	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
 
@@ -55,6 +56,26 @@ type UsageFeed struct {
 	// Inner is the wrapped user command, verbatim ("" when the plain
 	// ingester or not a wrapper).
 	Inner string `json:"inner,omitempty"`
+	// Blocked is why the slot cannot be wired ("" when it can): its config
+	// dir does not exist (install never creates one), or its name is one
+	// the quota cache cannot store (the ingester would have nowhere to
+	// write). InstallUsageFeed skips such a slot; hooks status reports it.
+	Blocked string `json:"blocked,omitempty"`
+}
+
+// usageFeedBlockedSlotDir is UsageFeed.Blocked for a slot whose config dir
+// is not there.
+const usageFeedBlockedSlotDir = "slot dir missing"
+
+// usageFeedBlocker is UsageFeed.Blocked for slot under configDir.
+func usageFeedBlocker(configDir, slot string) string {
+	if err := quota.CheckProfileName(slot); err != nil {
+		return err.Error()
+	}
+	if fi, err := os.Stat(configDir); err != nil || !fi.IsDir() {
+		return usageFeedBlockedSlotDir
+	}
+	return ""
 }
 
 // parseUsageFeedCommand recognises a feed wrapper: program, slot named by
@@ -161,7 +182,7 @@ func statusLineObject(root jsonObject) (jsonObject, bool, error) {
 // UsageFeedStatus reports how slot's statusLine under configDir is wired.
 // Read-only.
 func UsageFeedStatus(configDir, slot string) UsageFeed {
-	feed := UsageFeed{Slot: slot, ConfigDir: configDir}
+	feed := UsageFeed{Slot: slot, ConfigDir: configDir, Blocked: usageFeedBlocker(configDir, slot)}
 	root, _, err := readSettingsObject(filepath.Join(configDir, "settings.json"))
 	if err != nil {
 		return feed
@@ -184,8 +205,13 @@ func UsageFeedStatus(configDir, slot string) UsageFeed {
 // inner command, and a slot with no statusLine gets the plain ingester.
 // Every other key and the statusLine's own siblings (padding, type) survive
 // verbatim; nothing is written when nothing changes, and malformed JSON is
-// an error, never overwritten. Returns whether the file was written.
+// an error, never overwritten. A slot that cannot be wired (usageFeedBlocker:
+// no config dir, a name the quota cache refuses) is skipped without error;
+// UsageFeedStatus names the reason. Returns whether the file was written.
 func InstallUsageFeed(configDir, slot string) (bool, error) {
+	if usageFeedBlocker(configDir, slot) != "" {
+		return false, nil
+	}
 	settingsPath := filepath.Join(configDir, "settings.json")
 	root, data, err := readSettingsObject(settingsPath)
 	if err != nil {
@@ -216,9 +242,6 @@ func InstallUsageFeed(configDir, slot string) (bool, error) {
 	if bytes.Equal(finalData, data) {
 		return false, nil
 	}
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		return false, fmt.Errorf("create config dir: %w", err)
-	}
 	if err := atomicfile.WriteFile(settingsPath, finalData, 0o644); err != nil {
 		return false, fmt.Errorf("write settings.json: %w", err)
 	}
@@ -227,8 +250,12 @@ func InstallUsageFeed(configDir, slot string) (bool, error) {
 }
 
 // RemoveUsageFeed undoes InstallUsageFeed under configDir: the wrapped
-// command is restored verbatim, a plain ingester entry is dropped. Returns
-// whether the file was written.
+// command is restored verbatim; a plain ingester's entry is taken out key by
+// key (the command, and the "type": "command" install writes with it), and
+// the statusLine object goes only when that leaves it empty, so an object
+// install merely added a command to ({"type": "static", "text": ...},
+// {"padding": 0}) comes back as it was. Returns whether the file was
+// written.
 func RemoveUsageFeed(configDir string) (bool, error) {
 	settingsPath := filepath.Join(configDir, "settings.json")
 	root, data, err := readSettingsObject(settingsPath)
@@ -243,11 +270,19 @@ func RemoveUsageFeed(configDir string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if parsed.Inner == "" {
-		root.del("statusLine")
-	} else {
+	if parsed.Inner != "" {
 		obj.set("command", mustMarshal(parsed.Inner))
 		root.set("statusLine", mustMarshal(obj))
+	} else {
+		obj.del("command")
+		if obj.getString("type") == "command" {
+			obj.del("type")
+		}
+		if len(obj) == 0 {
+			root.del("statusLine")
+		} else {
+			root.set("statusLine", mustMarshal(obj))
+		}
 	}
 	finalData, err := indentSettings(root)
 	if err != nil {

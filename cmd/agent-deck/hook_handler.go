@@ -666,6 +666,8 @@ func installUsageFeeds(w io.Writer) {
 		switch {
 		case r.Err != nil:
 			fmt.Fprintf(w, "  %-*s  error: %v\n", width, r.Slot, r.Err)
+		case r.Feed.Blocked != "":
+			fmt.Fprintf(w, "  %-*s  skipped: %s\n", width, r.Slot, r.Feed.Blocked)
 		case r.Changed:
 			fmt.Fprintf(w, "  %-*s  wired: %s\n", width, r.Slot, r.Feed.Command)
 		default:
@@ -720,6 +722,9 @@ func printUsageFeedStatus(w io.Writer, feeds []session.UsageFeed, ages map[strin
 	for _, f := range feeds {
 		var wiring string
 		switch {
+		case f.Blocked != "":
+			// Not wired and hooks install would not change that.
+			wiring = "cannot wire (" + f.Blocked + ")"
 		case f.Wired && f.Inner != "":
 			wiring = "wired (wraps " + f.Inner + ")"
 		case f.Wired:

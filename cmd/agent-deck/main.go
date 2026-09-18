@@ -267,6 +267,44 @@ func initColorProfile() {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 }
 
+// inheritedProfileEnv is AGENTDECK_PROFILE as this process inherited it,
+// before -p/--profile overwrote it (inheritedProfileEnvSet false: it was
+// unset). See inheritedEnviron.
+var (
+	inheritedProfileEnv    string
+	inheritedProfileEnvSet bool
+)
+
+// applyProfileFlag propagates an explicit -p/--profile selection so config
+// lookups (e.g., per-profile Claude config) resolve consistently across all
+// command paths in this process. The inherited value is kept so a child
+// this process runs on the user's behalf (the wrapped statusLine command)
+// sees the environment it would have seen without the flag.
+func applyProfileFlag(profile string) {
+	if profile == "" {
+		return
+	}
+	inheritedProfileEnv, inheritedProfileEnvSet = os.LookupEnv("AGENTDECK_PROFILE")
+	_ = os.Setenv("AGENTDECK_PROFILE", profile)
+}
+
+// inheritedEnviron is os.Environ with AGENTDECK_PROFILE as it was inherited:
+// the -p flag selects a profile for THIS process, not for a command it runs
+// on the user's behalf. A statusLine script that itself calls agent-deck
+// keeps resolving the profile it always did.
+func inheritedEnviron() []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "AGENTDECK_PROFILE=") {
+			env = append(env, kv)
+		}
+	}
+	if inheritedProfileEnvSet {
+		env = append(env, "AGENTDECK_PROFILE="+inheritedProfileEnv)
+	}
+	return env
+}
+
 func main() {
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
@@ -281,11 +319,7 @@ func main() {
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
-	if profile != "" {
-		// Propagate explicit profile selection so config lookups (e.g., per-profile Claude config)
-		// resolve consistently across all command paths in this process.
-		_ = os.Setenv("AGENTDECK_PROFILE", profile)
-	}
+	applyProfileFlag(profile)
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer

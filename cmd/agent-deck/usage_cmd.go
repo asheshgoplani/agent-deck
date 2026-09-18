@@ -78,17 +78,26 @@ func handleUsage(profile string, args []string) {
 // command does. ResolveProfileForStorage carries the #1790 guard that stops a
 // CLAUDE_CONFIG_DIR-inferred profile from materialising a phantom directory.
 func openQuotaStore(profile string) *quota.Store {
-	resolved, err := session.ResolveProfileForStorage(profile)
+	store, err := resolveQuotaStore(profile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: resolving profile: %v\n", err)
-		os.Exit(1)
-	}
-	store, err := quota.NewStore(resolved)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: opening quota cache: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	return store
+}
+
+// resolveQuotaStore is openQuotaStore without the exit: the ingester, which
+// must never fail closed, reports the error and carries on.
+func resolveQuotaStore(profile string) (*quota.Store, error) {
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, fmt.Errorf("resolving profile: %w", err)
+	}
+	store, err := quota.NewStore(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("opening quota cache: %w", err)
+	}
+	return store, nil
 }
 
 // collectQuota reads the cached snapshots.
@@ -234,19 +243,14 @@ func handleUsageIngest(profile string, args []string) {
 
 	// The payload is read once and reused, because stdin cannot be replayed and
 	// the wrapped command must receive exactly what Claude sent.
-	payload, err := readStatusLinePayload(os.Stdin)
-	if err != nil {
+	payload, readErr := readStatusLinePayload(os.Stdin)
+	if err := ingestClaudeStatusLine(profile, payload, readErr); err != nil {
 		// Claude Code renders a statusLine command's failure as a BLANK status
 		// line, so a loud failure here would replace the user's status bar with
-		// nothing. The diagnostic goes to stderr and the wrapped command still
-		// runs.
-		fmt.Fprintf(os.Stderr, "agent-deck: reading statusLine payload: %v\n", err)
-	} else if snapshot, ok, parseErr := quota.ParseStatusLine(strings.NewReader(string(payload))); parseErr != nil {
-		fmt.Fprintf(os.Stderr, "agent-deck: parsing statusLine payload: %v\n", parseErr)
-	} else if ok {
-		if saveErr := openQuotaStore(profile).Save(snapshot); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "agent-deck: caching Claude quota: %v\n", saveErr)
-		}
+		// nothing. Every failure of ours (reading, parsing, opening the cache,
+		// saving) is a diagnostic on stderr; the wrapped command still runs
+		// and its bytes and exit status are forwarded whatever happened here.
+		fmt.Fprintf(os.Stderr, "agent-deck: %v\n", err)
 	}
 
 	if len(wrapped) == 0 {
@@ -255,6 +259,31 @@ func handleUsageIngest(profile string, args []string) {
 		return
 	}
 	runWrappedStatusLine(wrapped, payload)
+}
+
+// ingestClaudeStatusLine caches the rate_limits block of one statusLine
+// payload for profile. readErr is the error reading the payload, if any.
+// Nothing here exits: the caller forwards the payload to the wrapped
+// command regardless.
+func ingestClaudeStatusLine(profile string, payload []byte, readErr error) error {
+	if readErr != nil {
+		return fmt.Errorf("reading statusLine payload: %w", readErr)
+	}
+	snapshot, ok, err := quota.ParseStatusLine(strings.NewReader(string(payload)))
+	if err != nil {
+		return fmt.Errorf("parsing statusLine payload: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+	store, err := resolveQuotaStore(profile)
+	if err != nil {
+		return err
+	}
+	if err := store.Save(snapshot); err != nil {
+		return fmt.Errorf("caching Claude quota: %w", err)
+	}
+	return nil
 }
 
 // maxIngestBytes bounds the stdin read at the same size the parser accepts, so
@@ -283,7 +312,9 @@ func readStatusLinePayload(stdin *os.File) ([]byte, error) {
 }
 
 // runWrappedStatusLine runs the user's own statusLine command with the same
-// bytes on stdin and forwards its stdout, stderr and exit status.
+// bytes on stdin and forwards its stdout, stderr and exit status. The
+// command sees the environment this process inherited: the -p that named
+// the slot is not passed on as AGENTDECK_PROFILE (inheritedEnviron).
 //
 // argv comes straight from os.Args and is passed to exec.Command as separate
 // arguments: there is no shell and no string interpolation anywhere on this
@@ -294,6 +325,7 @@ func runWrappedStatusLine(argv []string, payload []byte) {
 	// There is no shell and no string interpolation on this path, so neither
 	// the payload nor anything Claude sends can become a command.
 	command := exec.Command(argv[0], argv[1:]...)
+	command.Env = inheritedEnviron()
 	command.Stdin = strings.NewReader(string(payload))
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr

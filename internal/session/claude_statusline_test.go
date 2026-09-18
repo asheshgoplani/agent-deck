@@ -109,16 +109,58 @@ func TestInstallUsageFeed_NoStatusLine(t *testing.T) {
 }
 
 // TestInstallUsageFeed_MissingSettings creates settings.json for a slot whose
-// config dir has none yet.
+// config dir exists but holds none yet.
 func TestInstallUsageFeed_MissingSettings(t *testing.T) {
 	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
-	dir := filepath.Join(t.TempDir(), ".claude-new")
+	dir := t.TempDir()
 	changed, err := InstallUsageFeed(dir, "new")
 	if err != nil || !changed {
 		t.Fatalf("InstallUsageFeed = %v, %v", changed, err)
 	}
 	if cmd, _ := statusLineCommand(t, filepath.Join(dir, "settings.json")); cmd != "/usr/local/bin/agent-deck -p new usage ingest claude" {
 		t.Fatalf("command = %q", cmd)
+	}
+}
+
+// TestInstallUsageFeed_MissingDir (review finding 5): a slot whose config
+// dir does not exist is skipped, never created; status names the reason.
+func TestInstallUsageFeed_MissingDir(t *testing.T) {
+	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
+	dir := filepath.Join(t.TempDir(), ".claude-new")
+	changed, err := InstallUsageFeed(dir, "new")
+	if err != nil || changed {
+		t.Fatalf("InstallUsageFeed = %v, %v; want skipped", changed, err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("install created the config dir: %v", err)
+	}
+	if feed := UsageFeedStatus(dir, "new"); feed.Wired || feed.Blocked != usageFeedBlockedSlotDir {
+		t.Fatalf("status = %+v", feed)
+	}
+}
+
+// TestInstallUsageFeed_RefusesUnusableSlotName (review finding 1): a profile
+// name the quota cache cannot store ("team.a": profile names allow a dot,
+// the cache directory does not) is never wired, since the ingester would
+// have nowhere to write; the file stays as it was and status says why.
+func TestInstallUsageFeed_RefusesUnusableSlotName(t *testing.T) {
+	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
+	dir := t.TempDir()
+	original := `{"statusLine":{"type":"command","command":"~/sl.sh"}}`
+	path := writeSettings(t, dir, original)
+	changed, err := InstallUsageFeed(dir, "team.a")
+	if err != nil || changed {
+		t.Fatalf("InstallUsageFeed = %v, %v; want skipped", changed, err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != original {
+		t.Fatalf("file was rewritten:\n%s", data)
+	}
+	feed := UsageFeedStatus(dir, "team.a")
+	if feed.Wired || !strings.Contains(feed.Blocked, `unusable profile name "team.a"`) {
+		t.Fatalf("status = %+v", feed)
+	}
+	if feed := UsageFeedStatus(dir, "team-a"); feed.Blocked != "" {
+		t.Fatalf("a usable name must not be blocked: %+v", feed)
 	}
 }
 
@@ -219,6 +261,36 @@ func TestRemoveUsageFeed(t *testing.T) {
 	data, _ := os.ReadFile(plainPath)
 	if strings.Contains(string(data), "statusLine") {
 		t.Fatalf("plain ingester entry not dropped:\n%s", data)
+	}
+
+	// Review finding 7: an object install only added a command to comes
+	// back as it was; only what install itself writes (the command and a
+	// "type": "command") goes. A pre-existing {"type": "command"} with no
+	// command, which shows nothing in Claude Code either way, is the one
+	// shape not told apart from install's own.
+	for _, c := range []struct{ before, after string }{
+		{`{"statusLine":{"type":"static","text":"hello"},"model":"opus"}`, `{"statusLine":{"type":"static","text":"hello"},"model":"opus"}`},
+		{`{"statusLine":{"padding":0},"model":"opus"}`, `{"statusLine":{"padding":0},"model":"opus"}`},
+		{`{"statusLine":{"type":"command"},"model":"opus"}`, `{"model":"opus"}`},
+		{`{"statusLine":{"type":"command","padding":0},"model":"opus"}`, `{"statusLine":{"padding":0},"model":"opus"}`},
+	} {
+		dir := t.TempDir()
+		path := writeSettings(t, dir, c.before)
+		if _, err := InstallUsageFeed(dir, "personal"); err != nil {
+			t.Fatal(err)
+		}
+		if removed, err := RemoveUsageFeed(dir); err != nil || !removed {
+			t.Fatalf("%s: RemoveUsageFeed = %v, %v", c.before, removed, err)
+		}
+		data, _ := os.ReadFile(path)
+		var got, want any
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("%s: %v\n%s", c.before, err, data)
+		}
+		_ = json.Unmarshal([]byte(c.after), &want)
+		if gotJSON, wantJSON := mustMarshal(got), mustMarshal(want); string(gotJSON) != string(wantJSON) {
+			t.Errorf("%s: after uninstall %s, want %s", c.before, gotJSON, wantJSON)
+		}
 	}
 }
 
