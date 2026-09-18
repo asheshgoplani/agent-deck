@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Harness context-level controls (`none`/`primer`/`full`) with global < group < session precedence (`[launch].context_level`, `[groups."<path>"].context_level`, `session set <id> context-level`), on top of the rc.6 identity injection. `agent-deck session primer [id] [--json]` inspects the resolved level, its source, and the exact primer/identity text a session receives (#2260).
+
 ## [1.16.11] - 2026-09-25
 
 ### Added

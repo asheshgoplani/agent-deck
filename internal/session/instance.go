@@ -466,6 +466,14 @@ type Instance struct {
 	// `--no-identity` on `agent-deck add` / `agent-deck launch`.
 	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
 
+	// ContextLevel is the per-session override of the harness context-level
+	// (issue #2260): "none", "primer", or "full". Empty means unset — falls
+	// through to the group then global config (global < group < session
+	// precedence; see EffectiveContextLevel). Persisted in the tool_data
+	// extras zone (context_level_persist.go). CLI:
+	// `session set <id> context-level <none|primer|full>` (empty clears).
+	ContextLevel string `json:"context_level,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT

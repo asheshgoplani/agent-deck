@@ -1058,6 +1058,10 @@ type GroupSettings struct {
 	Hermes GroupHermesSettings `toml:"hermes,omitempty"`
 	// DeepSeek defines DeepSeek Harness overrides for a specific group.
 	DeepSeek GroupDeepSeekSettings `toml:"deepseek,omitempty"`
+	// ContextLevel overrides [launch].context_level for sessions in this
+	// group (issue #2260): "none", "primer", or "full". Walks ancestor
+	// groups like the other per-group settings — see GetGroupContextLevel.
+	ContextLevel string `toml:"context_level,omitempty"`
 }
 
 // GroupDefaultsSettings carries [group_defaults] — defaults stamped onto new
@@ -1626,6 +1630,17 @@ type LaunchSettings struct {
 	// into the project directory. nil => true. Per-session opt-out:
 	// `add`/`launch --no-identity`.
 	InjectIdentity *bool `toml:"inject_identity,omitempty"`
+
+	// ContextLevel is the global default for the harness context-level
+	// (issue #2260): "none" (no injection at all — supersedes
+	// InjectIdentity), "primer" (short session-identity block, no CLI
+	// reference), or "full" (the block InjectIdentity has always produced).
+	// Empty (unset) falls back to InjectIdentity's bool for backward
+	// compatibility, then to "full". Group ([groups."<path>"].context_level)
+	// and session (`session set <id> context-level`) override this; the
+	// precedence is global < group < session. See
+	// Instance.EffectiveContextLevel.
+	ContextLevel string `toml:"context_level,omitempty"`
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting
@@ -1897,6 +1912,23 @@ func (c *UserConfig) GetGroupClaudeConfigDir(groupPath string) string {
 		}
 	}
 	return ""
+}
+
+// GetGroupContextLevel returns the group-specific context-level override
+// (issue #2260) and the ancestor group path that set it, walking ancestor
+// groups exactly like GetGroupClaudeConfigDir: a child group inherits its
+// parent's context_level when it has none of its own. Returns ("", "") when
+// no group in the chain sets one.
+func (c *UserConfig) GetGroupContextLevel(groupPath string) (value, matchedGroup string) {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return "", ""
+	}
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && groupCfg.ContextLevel != "" {
+			return groupCfg.ContextLevel, p
+		}
+	}
+	return "", ""
 }
 
 // GetGroupClaudeEnvFile returns the group-specific Claude env file, walking

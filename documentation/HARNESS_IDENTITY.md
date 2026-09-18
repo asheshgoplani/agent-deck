@@ -127,8 +127,77 @@ agent-deck launch --no-identity . -c claude -m "..."
 The TUI New Session dialog has no row for this in this release; use the CLI
 flag or the config key.
 
+## Context levels (issue #2260)
+
+`inject_identity = false` is an all-or-nothing switch. Context levels give
+three sizes of the same block instead of just on/off:
+
+| Level | What is written |
+|-------|------------------|
+| `none` | nothing — no file, no harness flag (same as `inject_identity = false` / `--no-identity`) |
+| `primer` | a short block: session id, title, tool and parent only, no CLI reference or skills list |
+| `full` | the block shown above (session record + CLI reference + skills + completion sentinel) — the only behaviour that existed before this issue, and the default |
+
+Precedence is **global < group < session**: the nearest, most specific
+setting wins.
+
+```toml
+# config.toml — global default
+[launch]
+context_level = "primer"   # none | primer | full
+
+# per group, walks ancestor groups like other [groups."<path>"] overrides
+[groups."conductor/workers"]
+context_level = "full"
+```
+
+```bash
+# per session, persisted; restart required (baked into the spawn command)
+agent-deck session set <id> context-level primer
+agent-deck session set <id> context-level ""       # clear: inherit group/global
+```
+
+The legacy `inject_identity = false` / `--no-identity` opt-out keeps meaning
+`none` and keeps winning over a positive `context_level` at any layer, so
+existing configs and scripts are unaffected.
+
+### Inspecting what a session actually gets
+
+`agent-deck session primer [id]` resolves the level for a session (or the
+current one, auto-detected, if `id` is omitted) and prints exactly the text
+that session's harness receives — or would receive on its next
+start/restart — plus which layer decided the level:
+
+```
+$ agent-deck session primer my-project
+Session:       my-project (8c211446-1789219548)
+Context level: primer
+Source:        group:conductor/workers
+Identity file: /Users/you/.local/share/agent-deck/runtime/identity/8c211446-1789219548/identity.md
+
+# agent-deck session (primer)
+You are running inside agent-deck, a terminal session manager for AI coding agents.
+- session id: 8c211446-1789219548
+- title: my-project
+- tool: claude
+- parent session id: (none: this is a root session)
+Run `agent-deck session current --json` for the full record and CLI reference.
+It is at $AGENTDECK_IDENTITY_FILE and is regenerated on every start/restart.
+```
+
+`--json` gives the same fields programmatically (`context_level`, `source`,
+`active`, `identity_file`, `text`, and `skip_reason` when injection is
+skipped for an SSH/sandboxed session or the level is `none`). `source` is one
+of `session`, `session (--no-identity)`, `group:<path>`, `global`,
+`global (inject_identity=false)`, or `default`. Fields that are unset on the
+session record render as `(none)` (or `(none: this is a root session)` for
+the parent) exactly as the full block does — the command never invents a
+value that isn't on the record.
+
 ## Verifying
 
 Inside any session: `echo $AGENTDECK_IDENTITY_FILE`, `cat` it, or run
 `agent-deck session current --json`. From outside, the flag is visible on the
-pane's start command (`tmux display-message -p '#{pane_start_command}'`).
+pane's start command (`tmux display-message -p '#{pane_start_command}'`), or
+run `agent-deck session primer <id>` to see the resolved level and text
+without attaching.

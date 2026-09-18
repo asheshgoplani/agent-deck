@@ -65,6 +65,8 @@ func handleSession(profile string, args []string) {
 		handleSessionShow(profile, args[1:])
 	case "current":
 		handleSessionCurrent(profile, args[1:])
+	case "primer":
+		handleSessionPrimer(profile, args[1:])
 	case "set-parent":
 		handleSessionSetParent(profile, args[1:])
 	case "unset-parent":
@@ -137,6 +139,7 @@ func printSessionHelp() {
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
+	fmt.Println("  primer [id]             Show the resolved context-level and rendered primer/identity text (#2260; auto-detect current if no id)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
 	fmt.Println("  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target")
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
@@ -2045,6 +2048,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
+		fmt.Println("  context-level      Harness context-level override: none, primer, or full (#2260; empty clears; global < group < session; see `session primer`); restart required")
 		fmt.Println("  order              0-based position in the group (see `session show --json` .order); clamps to the end")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -2058,6 +2062,8 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  agent-deck session set my-project color \"#ff00aa\"     # truecolor hex tint")
 		fmt.Println("  agent-deck session set my-project color 203              # ANSI 256-palette pink")
 		fmt.Println("  agent-deck session set my-project color \"\"              # clear (opt-out)")
+		fmt.Println("  agent-deck session set my-project context-level primer")
+		fmt.Println("  agent-deck session set my-project context-level \"\"       # clear (inherit group/global)")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -6184,6 +6190,111 @@ func handleSessionCurrent(profileArg string, args []string) {
 	}
 	if instData.ParentSessionID != "" {
 		sb.WriteString(fmt.Sprintf("Parent:  %s\n", instData.ParentSessionID))
+	}
+
+	out.Print(sb.String(), jsonData)
+}
+
+// handleSessionPrimer implements `agent-deck session primer [id] [--json]`
+// (issue #2260): inspects the resolved context-level for a session
+// (global < group < session precedence) and prints exactly the primer/
+// identity text that session's harness receives, or would receive on its
+// next start/restart — without inventing values for facts that aren't
+// available (SSH/sandboxed sessions never inject; an unset field renders as
+// the same "(none)" placeholder BuildIdentityPrompt/BuildPrimerPrompt use).
+func handleSessionPrimer(profileArg string, args []string) {
+	fs := flag.NewFlagSet("session primer", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session primer [id] [options]")
+		fmt.Println()
+		fmt.Println("Show the resolved context-level and the exact primer/identity text a session's harness receives (issue #2260).")
+		fmt.Println("Precedence: global ([launch].context_level) < group ([groups.\"<path>\"].context_level) < session (`session set <id> context-level`).")
+		fmt.Println("If no id is given, auto-detects the current session (like `session current`).")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck session primer                  # current session")
+		fmt.Println("  agent-deck session primer my-project")
+		fmt.Println("  agent-deck session primer my-project --json")
+	}
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	out := NewCLIOutput(*jsonOutput, false)
+
+	identifier := ""
+	if fs.NArg() > 0 {
+		identifier = fs.Arg(0)
+	}
+
+	_, instances, _, err := loadSessionData(profileArg)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
+	if inst == nil {
+		out.Error(errMsg, errCode)
+		if errCode == ErrCodeNotFound {
+			os.Exit(2)
+		}
+		os.Exit(1)
+		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	level, source := inst.EffectiveContextLevel()
+	active := inst.ContextInjectionActive()
+
+	skipReason := ""
+	switch {
+	case inst.IsSSH():
+		skipReason = "ssh session: injection never runs (the file would live on the controller host, not where the harness runs)"
+	case inst.IsSandboxed():
+		skipReason = "sandboxed session: injection never runs (the file would not be visible inside the container)"
+	case level == session.ContextLevelNone:
+		skipReason = "context level is none: no text is generated"
+	}
+
+	text := ""
+	if active {
+		text = inst.BuildContextPromptForLevel(level)
+	}
+
+	identityFile, _ := inst.IdentityFilePath()
+
+	jsonData := map[string]interface{}{
+		"id":            inst.ID,
+		"title":         inst.Title,
+		"context_level": level,
+		"source":        source,
+		"active":        active,
+		"identity_file": identityFile,
+		"text":          text,
+	}
+	if skipReason != "" {
+		jsonData["skip_reason"] = skipReason
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Session:       %s (%s)\n", inst.Title, inst.ID)
+	fmt.Fprintf(&sb, "Context level: %s\n", level)
+	fmt.Fprintf(&sb, "Source:        %s\n", source)
+	fmt.Fprintf(&sb, "Identity file: %s\n", identityFile)
+	if skipReason != "" {
+		fmt.Fprintf(&sb, "Skipped:       %s\n", skipReason)
+	}
+	sb.WriteString("\n")
+	if text == "" {
+		sb.WriteString("(no primer/identity text)\n")
+	} else {
+		sb.WriteString(text)
 	}
 
 	out.Print(sb.String(), jsonData)

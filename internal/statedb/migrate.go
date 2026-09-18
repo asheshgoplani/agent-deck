@@ -103,6 +103,16 @@ type toolDataBlob struct {
 	MultiRepoWorktrees []multiRepoWorktreeBlob `json:"multi_repo_worktrees,omitempty"`
 	// Presentation
 	Color string `json:"color,omitempty"` // issue #391 — per-session TUI row tint
+
+	// ContextLevel is the per-session context-level override (issue #2260),
+	// written/read via internal/session/context_level_persist.go. Listed here
+	// (not used directly by MigrateFromJSON) purely so toolDataKnownKeys sees
+	// it as typed-schema-authoritative: an explicit clear (`session set <id>
+	// context-level ""`, which omits the key) must win over the stored row,
+	// the same way idle_timeout_secs and other omitempty scalar fields do —
+	// MergeToolDataExtras would otherwise treat the omission as "a binary
+	// that doesn't know this key" and resurrect the old value.
+	ContextLevel string `json:"context_level,omitempty"`
 }
 
 // multiRepoWorktreeBlob is the JSON representation of a multi-repo worktree in tool_data.
