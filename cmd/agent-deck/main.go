@@ -100,7 +100,8 @@ func recordCLITelemetry(subcommand string, rest []string) {
 		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
 		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
 		"remote", "worktree", "wt", "costs", "usage", "web", "uninstall", "migrate-paths", "hooks",
-		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "deepseek", "feedback", "creds-refresh":
+		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "deepseek", "feedback", "creds-refresh",
+		"config":
 	default:
 		return
 	}
@@ -454,6 +455,9 @@ func main() {
 			return
 		case "usage":
 			handleUsage(profile, args[1:])
+			return
+		case "config":
+			handleConfig(profile, args[1:])
 			return
 		case "web":
 			webEnabled = true
@@ -1323,7 +1327,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true, "config": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -2121,8 +2125,15 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		repoRoot := backend.RepoDir()
 
 		// Determine worktree settings and apply configured branch prefix
-		// (e.g., "$USER/" -> "dani.fernandez/") before validation/existence checks
-		wtSettings := session.GetWorktreeSettings()
+		// (e.g., "$USER/" -> "dani.fernandez/") before validation/existence
+		// checks. Resolved for repoRoot so directory-local
+		// .agent-deck/config.toml overrides (#2093) apply before the
+		// worktree path is calculated.
+		wtSettings, err := session.GetWorktreeSettingsForDir(repoRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid directory-local config: %v\n", err)
+			os.Exit(1)
+		}
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
 		// Pre-validate branch name for better error messages
@@ -2142,17 +2153,14 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 			os.Exit(1)
 		}
 
-		location := wtSettings.DefaultLocation
-		if *worktreeLocation != "" {
-			location = *worktreeLocation
-		}
+		location, template := worktreeLocationAndTemplate(wtSettings, *worktreeLocation)
 
 		// Generate worktree path
 		worktreePath = backend.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  location,
 			SessionID: git.GeneratePathID(),
-			Template:  wtSettings.Template(),
+			Template:  template,
 		})
 
 		// Check for an existing worktree for this branch before creating a new one
@@ -4247,6 +4255,10 @@ func printHelp() {
 	fmt.Println("  worktree list             List worktrees with session associations")
 	fmt.Println("  worktree info <session>   Show worktree info for a session")
 	fmt.Println("  worktree cleanup          Find and remove orphaned worktrees/sessions")
+	fmt.Println()
+	fmt.Println("Config Commands:")
+	fmt.Println("  config show --effective [path] [--json]   Show merged [worktree] settings and their source")
+	fmt.Println("                                             (built-in default / global / dir-local file)")
 	fmt.Println()
 	fmt.Println("Profile Commands:")
 	fmt.Println("  profile list              List all profiles")

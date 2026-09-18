@@ -15029,7 +15029,12 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				}
 				inst.MultiRepoTempDir = parentDir
 
-				wtSettings := session.GetWorktreeSettings()
+				// Resolved for inst.ProjectPath (the primary repo, per #2093)
+				// so directory-local .agent-deck/config.toml overrides apply.
+				wtSettings, wtSettingsErr := session.GetWorktreeSettingsForDir(inst.ProjectPath)
+				if wtSettingsErr != nil {
+					return sessionCreatedMsg{err: fmt.Errorf("invalid directory-local config: %w", wtSettingsErr), tempID: tempID}
+				}
 				wtResult := session.CreateMultiRepoWorktreesWithOptions(allPaths, parentDir, worktreeBranch, wtSettings.SetupTimeout(), wtSettings.InheritSparseCheckout())
 				for _, w := range wtResult.Warnings {
 					uiLog.Warn("multi_repo_worktree", slog.String("detail", w))
@@ -15130,7 +15135,12 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 // sparsity instead of the invoking one's.
 func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDir string) (setupErr error, err error) {
 	var buf bytes.Buffer
-	wtSettings := session.GetWorktreeSettings()
+	// Resolved for sourceDir (the session's target directory, per #2093) so
+	// directory-local .agent-deck/config.toml overrides apply.
+	wtSettings, settingsErr := session.GetWorktreeSettingsForDir(sourceDir)
+	if settingsErr != nil {
+		return nil, fmt.Errorf("invalid directory-local config: %w", settingsErr)
+	}
 	setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch,
 		git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), sourceDir),
 		&buf, &buf, wtSettings.SetupTimeout())
@@ -15724,7 +15734,24 @@ type forkWithStateWorktreeDeps struct {
 // `[worktree] sparse_checkout = "inherit"` the fork's worktree inherits ITS
 // sparse-checkout state (#1708). Pass "" to keep git's default checkout.
 func defaultForkWithStateWorktreeDeps(sparseSourceDir string) forkWithStateWorktreeDeps {
-	createOpts := git.SparseInheritOptions(session.GetWorktreeSettings().InheritSparseCheckout(), sparseSourceDir)
+	// Resolved for sparseSourceDir (the session's target directory, per
+	// #2093) so directory-local .agent-deck/config.toml overrides apply. This
+	// helper has no error return, so an invalid dir-local config here falls
+	// back to the conservative default (no sparse-checkout inheritance)
+	// rather than blocking the fork; the CLI/TUI call sites that resolve the
+	// worktree PATH itself (session_cmd.go, worktree_target.go) still fail
+	// closed on the same error. With no source dir there is nothing to
+	// inherit from, so SparseInheritOptions yields the same zero options
+	// either way and the lookup is skipped.
+	inheritSparse := false
+	if sparseSourceDir != "" {
+		if wtSettings, err := session.GetWorktreeSettingsForDir(sparseSourceDir); err != nil {
+			uiLog.Warn("dir_local_config_invalid", slog.String("dir", sparseSourceDir), slog.String("error", err.Error()))
+		} else {
+			inheritSparse = wtSettings.InheritSparseCheckout()
+		}
+	}
+	createOpts := git.SparseInheritOptions(inheritSparse, sparseSourceDir)
 	return forkWithStateWorktreeDeps{
 		statPath:                  os.Stat,
 		mkdirAll:                  os.MkdirAll,

@@ -448,6 +448,74 @@ branch_prefix = "$USER/"          # "my-session" -> "dani/my-session"
 branch_prefix = ""                # "my-session" -> "my-session"
 ```
 
+### Directory-local overrides (#2093)
+
+A `.agent-deck/config.toml` placed in a directory (a repo root, or a
+**workspace-parent** folder that holds sibling git worktree checkouts but is
+not itself a git repo) can override `[worktree]` settings for sessions
+created within that directory tree, without touching the global
+`~/.agent-deck/config.toml`:
+
+```
+~/projects/example/
+├── .agent-deck/
+│   └── config.toml       # applies to main/ AND feature-one/ (siblings)
+├── main/                 # a git worktree/checkout
+└── feature-one/          # a sibling git worktree
+```
+
+```toml
+# ~/projects/example/.agent-deck/config.toml
+[worktree]
+default_location = "sibling"
+path_template = "{repo-root}/../wt-{branch}"
+```
+
+**Allowlisted keys.** Only `default_location`, `path_template`, and
+`sparse_checkout` are eligible for directory-local overrides — the same three
+settings that affect *where* a worktree lands. `auto_cleanup`,
+`branch_prefix`, `setup_timeout_seconds`, `run_repo_scripts`, and every other
+top-level section stay global-only, since a dir-local file can come from a
+checkout you don't fully trust. **Any other key or section is refused** with
+an error naming the file and the bad key, rather than being silently
+ignored — a typo never silently downgrades behavior.
+
+**Discovery.** Resolution starts from the session's *target directory* (not
+necessarily the current working directory) and walks upward through every
+ancestor, checking each for `.agent-deck/config.toml`. The walk stops once it
+reaches `$HOME`, inclusive; if the target directory is outside `$HOME`, it
+stops at the filesystem root instead. The legacy global config file itself
+(`$HOME/.agent-deck/config.toml`) is never double-counted as a directory-local
+override — it is already applied as "global".
+
+**Precedence**, lowest to highest: built-in defaults < global user config <
+directory-local files, outermost ancestor first (so a file closer to the
+target directory overrides one further up) < an explicit CLI flag such as
+`--location`, which always wins even over an inherited `path_template`.
+Merging happens per key: a directory-local file only needs to specify the
+keys it changes. Setting `path_template = ""` explicitly clears an inherited
+non-empty template from a further-out directory and falls back to
+`default_location`-based behavior — this is distinguishable from not setting
+`path_template` at all.
+
+**Inspecting the effective settings.** `agent-deck config show --effective
+[path]` (default: current directory) prints the merged `[worktree]` settings
+and which file supplied each one:
+
+```
+$ agent-deck config show --effective ~/projects/example/feature-one
+
+Effective [worktree] settings for /Users/you/projects/example/feature-one:
+
+  default_location  = sibling                            (source: /Users/you/projects/example/.agent-deck/config.toml)
+  path_template     = {repo-root}/../wt-{branch}          (source: /Users/you/projects/example/.agent-deck/config.toml)
+  sparse_checkout   = ""                                  (source: default)
+```
+
+Add `--json` for machine-readable output. Source is one of `default`
+(built-in), `global` (`~/.agent-deck/config.toml`), or the path of the
+winning directory-local file.
+
 ## [fork] Section
 
 Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog. By default a fork creates a new git worktree + branch, carries the parent's uncommitted working-tree changes (staged, unstaged, and untracked files), matches Docker isolation, and inherits the Claude launch options. Copying **gitignored** files is **opt-in** (`with_ignored = false`): that tree is unbounded (data sets, virtual envs, `node_modules`) and can carry secrets, so it would otherwise block the fork silently. These settings are **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (which govern non-fork session creation).

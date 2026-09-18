@@ -195,9 +195,17 @@ func applyCreationExtras(inst *session.Instance, query string, additional []stri
 	if err := validateMultiRepoCreation(inst.ProjectPath, additional, branch, newBranch, location); err != nil {
 		return err
 	}
+	// Resolved for inst.ProjectPath so directory-local .agent-deck/config.toml
+	// overrides (#2093) apply (sparse_checkout in particular; default_location
+	// and path_template do not apply to multi-repo worktrees, whose layout is
+	// owned by the host data directory). Only branch mode consults them.
+	var wtSettings session.WorktreeSettings
 	if branch != "" {
-		settings := session.GetWorktreeSettings()
-		branch = settings.ApplyBranchPrefix(branch)
+		wtSettings, err = session.GetWorktreeSettingsForDir(inst.ProjectPath)
+		if err != nil {
+			return fmt.Errorf("invalid directory-local config: %w", err)
+		}
+		branch = wtSettings.ApplyBranchPrefix(branch)
 	}
 	root, err := agentpaths.EffectiveDataPath("multi-repo-worktrees", "multi-repo-worktrees")
 	if err != nil {
@@ -218,8 +226,7 @@ func applyCreationExtras(inst *session.Instance, query string, additional []stri
 		}
 	}()
 	if branch != "" {
-		settings := session.GetWorktreeSettings()
-		result, createErr := session.CreateMultiRepoWorktreesStrictWithOptions(allPaths, parent, branch, settings.SetupTimeout(), settings.InheritSparseCheckout())
+		result, createErr := session.CreateMultiRepoWorktreesStrictWithOptions(allPaths, parent, branch, wtSettings.SetupTimeout(), wtSettings.InheritSparseCheckout())
 		inst.MultiRepoWorktrees = result.Worktrees
 		if createErr != nil {
 			return createErr
@@ -413,7 +420,10 @@ func validateMultiRepoCreation(primary string, additional []string, branch strin
 		if location != "" {
 			return fmt.Errorf("--location cannot be combined with multi-repo worktrees; layout is owned by the host data directory")
 		}
-		settings := session.GetWorktreeSettings()
+		settings, err := session.GetWorktreeSettingsForDir(primary)
+		if err != nil {
+			return fmt.Errorf("invalid directory-local config: %w", err)
+		}
 		branch = settings.ApplyBranchPrefix(branch)
 		if err := git.ValidateBranchName(branch); err != nil {
 			return err
