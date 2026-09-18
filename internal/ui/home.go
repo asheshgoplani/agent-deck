@@ -6160,9 +6160,15 @@ func (h *Home) backgroundStatusUpdate() {
 	defer func() {
 		elapsed := time.Since(totalStart)
 		calls := tmux.SubprocessStarts() - tmuxBefore
-		health.RecordStatusPass(elapsed, len(instances), calls)
+		// session_count must agree with list --json's tracked set (the same
+		// filter countByStatus/countSessionStatuses/renderGroupPreview use),
+		// not the raw snapshot: archived-cross-harness sources superseded by
+		// a "Restart with new session ID" target otherwise inflate the
+		// health/doctor sample even though status/list already agree.
+		visibleCount := len(session.VisibleInstances(instances))
+		health.RecordStatusPass(elapsed, visibleCount, calls)
 		if health.Enabled() {
-			h.queueHealthWarning(elapsed, len(instances), calls)
+			h.queueHealthWarning(elapsed, visibleCount, calls)
 		}
 	}()
 
@@ -17870,9 +17876,6 @@ func (h *Home) importSessions() tea.Msg {
 	return importReloadMsg{}
 }
 
-// visibleInstanceIDSet returns the IDs of the tracked session set — the same
-// set list --json enumerates — so header counts and group previews can
-// exclude archived cross-harness sources without re-deriving the filter.
 // countSessionStatuses counts sessions by status for the logo display
 // Uses cache to avoid O(n) iteration on every View() call
 // Cache expires after 500ms to balance freshness with performance
