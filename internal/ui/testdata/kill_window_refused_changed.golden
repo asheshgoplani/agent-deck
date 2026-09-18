@@ -1,21 +1,21 @@
 
 
 
+
               ╭──────────────────────────────────────────────────╮
               │                                                  │
-              │  ⚠  Kill Window?                                 │
+              │  ⚠  Window Not Killed                            │
               │                                                  │
-              │  This will kill tmux window 2 (@42):             │
+              │  not killing window 2 (@42) "agent": it changed  │
+              │  since it was selected, refusing                 │
               │                                                  │
-              │    "agent"                                       │
-              │                                                  │
-              │  • Any processes in the window will be killed    │
-              │  • Other windows in the session are unaffected   │
+              │  Nothing was closed.                             │
               │                                                  │
               │                                                  │
-              │      Kill      ▸ Cancel                          │
-              │  y kill · n cancel · ←/→ navigate · Enter        │
-              │  select · Esc                                    │
+              │                                                  │
+              │                                                  │
+              │    ▸ OK                                          │
+              │  Enter / Esc / o dismiss                         │
               │                                                  │
               ╰──────────────────────────────────────────────────╯
 

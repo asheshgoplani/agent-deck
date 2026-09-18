@@ -325,7 +325,7 @@ func RefreshSessionCache() {
 	// Subprocess fallback: list-windows -a (3s timeout to prevent freeze when server is dead)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}"))
+	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_id}", "#{window_name}"))
 	output, err := commandOutput(cmd)
 	if err != nil {
 		sessionCacheMu.Lock()
@@ -350,8 +350,8 @@ func RefreshSessionCache() {
 
 // parseListWindowsOutput parses the output of `tmux list-windows -a` with the
 // extended format tmuxFmt("#{session_name}", "#{window_activity}",
-// "#{window_index}", "#{window_name}"). window_name is last so a tmuxFieldSep
-// inside it survives SplitN.
+// "#{window_index}", "#{window_id}", "#{window_name}"). window_name is last
+// so a tmuxFieldSep inside it survives SplitN.
 // Returns session-level max activity and per-session window info.
 func parseListWindowsOutput(output string) (map[string]int64, map[string][]WindowInfo) {
 	sessionCache := make(map[string]int64)
@@ -361,7 +361,7 @@ func parseListWindowsOutput(output string) (map[string]int64, map[string][]Windo
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, tmuxFieldSep, 4)
+		parts := strings.SplitN(line, tmuxFieldSep, 5)
 		if len(parts) < 2 {
 			continue
 		}
@@ -374,13 +374,14 @@ func parseListWindowsOutput(output string) (map[string]int64, map[string][]Windo
 			sessionCache[name] = activity
 		}
 
-		// Window-level: only if we have index and name fields
-		if len(parts) == 4 {
+		// Window-level: only if we have index, id and name fields
+		if len(parts) == 5 {
 			var idx int
 			_, _ = fmt.Sscanf(parts[2], "%d", &idx)
 			windowCache[name] = append(windowCache[name], WindowInfo{
 				Index:    idx,
-				Name:     parts[3],
+				ID:       parts[3],
+				Name:     parts[4],
 				Activity: activity,
 			})
 		}
@@ -6614,61 +6615,104 @@ func (s *Session) NewShellWindow(workdir string) error {
 // only remaining window; killing it would kill the whole session.
 var ErrLastWindow = errors.New("window is the session's last window")
 
-// ErrWindowChanged is returned by KillWindow when the window currently at
-// the given index is not the one identified by the expectedWindowID passed
-// in (it was closed, or another window slid into that index after tmux
-// renumbered), so the last-window check alone would kill the wrong window.
-var ErrWindowChanged = errors.New("window at that index changed since it was selected")
+// ErrWindowChanged is returned by KillWindow when the window the caller
+// selected is no longer what it was selected as: it is gone from the session
+// (closed, or moved elsewhere), or it has since been renamed. Ids are never
+// reused by a tmux server, so the check by id can never pick a different
+// window; the name check catches the "same window, no longer what the user
+// read on screen" case.
+var ErrWindowChanged = errors.New("window changed since it was selected")
+
+// listWindows returns the session's live windows (index, id, name) from the
+// tmux server. It enumerates all windows and matches in Go rather than using
+// `display-message -t session:index`: tmux's target resolution is lenient
+// about a window index that does not exist (it silently falls back to another
+// window in the session instead of erroring), which would make a
+// nonexistent/closed index look like a valid, different window.
+func (s *Session) listWindows() ([]WindowInfo, error) {
+	out, err := runBoundedOutput(s.SocketName,
+		"list-windows", "-t", s.Name, "-F", tmuxFmt("#{window_index}", "#{window_id}", "#{window_name}"))
+	if err != nil {
+		return nil, err
+	}
+	var wins []WindowInfo
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.SplitN(line, tmuxFieldSep, 3)
+		if len(fields) != 3 {
+			continue
+		}
+		idx, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		wins = append(wins, WindowInfo{Index: idx, ID: fields[1], Name: fields[2]})
+	}
+	return wins, nil
+}
 
 // WindowID returns the stable tmux window id (e.g. "@12") of the window
-// currently at the given index in this session. Callers capture this when a
-// window is selected (e.g. a confirm dialog opening) so it can be re-verified
-// at confirm time — liveness (the index still exists) is not identity (it is
-// still the same window).
-//
-// This enumerates all windows and matches the index exactly, rather than
-// using `display-message -t session:index`: tmux's target resolution is
-// lenient about a window index that does not exist (it silently falls back
-// to another window in the session instead of erroring), which would make a
-// nonexistent/closed index look like a valid, different window.
+// currently at the given index in this session. The CLI uses it to accept an
+// index; the TUI carries the id from the window cache instead, so the row the
+// user read is the window that gets killed even if tmux renumbered since.
 func (s *Session) WindowID(index int) (string, error) {
-	out, err := runBoundedOutput(s.SocketName,
-		"list-windows", "-t", s.Name, "-F", "#{window_index} #{window_id}")
+	wins, err := s.listWindows()
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.SplitN(strings.TrimSpace(line), " ", 2)
-		if len(fields) != 2 {
-			continue
-		}
-		if fields[0] == strconv.Itoa(index) {
-			return fields[1], nil
+	for _, w := range wins {
+		if w.Index == index {
+			return w.ID, nil
 		}
 	}
 	return "", fmt.Errorf("no window at index %d in session %s", index, s.Name)
 }
 
-// KillWindow kills the window with the given index in this session, leaving
-// the session's other windows intact. expectedWindowID is the stable window
-// id (from WindowID) captured when the window was selected; the kill only
-// proceeds if the window still at that index is the same window and it is
-// not the session's last window. Both checks and the kill happen in a single
-// server-side command (if-shell -F) so neither condition can change between
-// check and kill. Bounded (runBoundedOutput) so a wedged server cannot hang
-// the UI.
-func (s *Session) KillWindow(index int, expectedWindowID string) error {
-	target := fmt.Sprintf("%s:%d", s.Name, index)
+// Window returns the live index and name of the window with the given
+// stable id in this session, or ErrWindowChanged if the session has no such
+// window (any more).
+func (s *Session) Window(windowID string) (WindowInfo, error) {
+	wins, err := s.listWindows()
+	if err != nil {
+		return WindowInfo{}, err
+	}
+	for _, w := range wins {
+		if w.ID == windowID {
+			return w, nil
+		}
+	}
+	return WindowInfo{}, ErrWindowChanged
+}
+
+// KillWindow kills the window with the stable id windowID in this session,
+// leaving the session's other windows intact. expectedName is the window
+// name the user read when they selected it; the kill is refused with
+// ErrWindowChanged if the window is gone from the session or its live name
+// differs, and with ErrLastWindow if it is the session's last window. The
+// id/last-window check and the kill happen in a single server-side command
+// (if-shell -F) so neither condition can change between check and kill.
+// Bounded (runBoundedOutput) so a wedged server cannot hang the UI.
+func (s *Session) KillWindow(windowID, expectedName string) error {
+	live, err := s.Window(windowID)
+	if err != nil {
+		return err
+	}
+	if live.Name != expectedName {
+		return ErrWindowChanged
+	}
+	// Target the window by session:@id: tmux verifies the id belongs to the
+	// session, so a window that moved to another session does not resolve.
+	target := s.Name + ":" + windowID
 	// The nested command is a tmux command string; s.Name is an agent-deck
-	// generated session name (sanitized charset) and expectedWindowID is a
-	// tmux-generated id (@<digits>), so embedding them is safe.
-	cond := "#{&&:#{==:#{window_id}," + expectedWindowID + "},#{>:#{session_windows},1}}"
+	// generated session name (sanitized charset) and windowID is a
+	// tmux-generated id (@<digits>), so embedding them is safe. The name is
+	// free text and is compared in Go above, never embedded in a format.
+	cond := "#{&&:#{==:#{window_id}," + windowID + "},#{>:#{session_windows},1}}"
 	out, err := runBoundedOutput(s.SocketName,
 		"if-shell", "-F", "-t", target, cond,
 		"kill-window -t \""+target+"\"",
 		"display-message -p refused")
 	if err != nil {
-		// The target itself no longer resolves (window index gone entirely).
+		// The target no longer resolves (window gone from the session).
 		return ErrWindowChanged
 	}
 	if !strings.Contains(string(out), "refused") {
@@ -6677,9 +6721,8 @@ func (s *Session) KillWindow(index int, expectedWindowID string) error {
 	// Refused: figure out why for a clearer error. This second query is not
 	// part of the atomic decision above (nothing was killed either way), so
 	// a race here only affects the message text, never correctness.
-	curID, idErr := s.WindowID(index)
-	if idErr != nil || curID != expectedWindowID {
-		return ErrWindowChanged
+	if _, err := s.Window(windowID); err != nil {
+		return err
 	}
 	return ErrLastWindow
 }

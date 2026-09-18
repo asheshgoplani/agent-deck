@@ -30,6 +30,7 @@ type PaneInfo struct {
 // WindowInfo holds basic info about a tmux window within a session.
 type WindowInfo struct {
 	Index    int
+	ID       string // Stable tmux window id (e.g. "@12"); unlike Index it never changes or gets reused
 	Name     string
 	Activity int64
 	Tool     string // Detected tool (claude, gemini, etc.) or empty
@@ -95,15 +96,15 @@ func GetCachedWindows(sessionName string) []WindowInfo {
 	return result
 }
 
-// RemoveCachedWindow prunes one window from the cache so the TUI drops the
-// row immediately after a kill-window instead of waiting up to a full
-// refresh tick for the stale entry to age out.
-func RemoveCachedWindow(sessionName string, index int) {
+// RemoveCachedWindow prunes one window (by stable id) from the cache so the
+// TUI drops the row immediately after a kill-window instead of waiting up to
+// a full refresh tick for the stale entry to age out.
+func RemoveCachedWindow(sessionName string, windowID string) {
 	windowCacheMu.Lock()
 	defer windowCacheMu.Unlock()
 	wins := windowCacheData[sessionName]
 	for i, w := range wins {
-		if w.Index == index {
+		if w.ID == windowID {
 			windowCacheData[sessionName] = append(wins[:i:i], wins[i+1:]...)
 			return
 		}

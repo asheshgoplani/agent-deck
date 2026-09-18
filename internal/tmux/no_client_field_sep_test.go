@@ -102,7 +102,7 @@ func TestNoClientMangling_RootCause(t *testing.T) {
 	const sess = "agentdeck_conductor-rootcause_aabbccdd"
 	socket := makeIsolatedServerNamed(t, sess)
 
-	legacyFormat := "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}"
+	legacyFormat := "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_id}\t#{window_name}"
 	out := listWindows(t, socket, legacyFormat)
 
 	if strings.Contains(out, "\t") {
@@ -123,7 +123,7 @@ func TestNoClientFieldSep_FixResolvesSession(t *testing.T) {
 	const sess = "agentdeck_conductor-fixcase_aabbccdd"
 	socket := makeIsolatedServerNamed(t, sess)
 
-	format := tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}")
+	format := tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_id}", "#{window_name}")
 	out := listWindows(t, socket, format)
 
 	if !strings.Contains(out, tmuxFieldSep) {
@@ -265,7 +265,7 @@ func TestPipePath_FieldSepResolvesSessionAndPane(t *testing.T) {
 func TestParseListWindowsOutput_FieldSepInWindowName(t *testing.T) {
 	const sess = "agentdeck_conductor-x_deadbeef"
 	weirdName := "my|weird|window"
-	line := tmuxFmt(sess, "1781842421", "0", weirdName)
+	line := tmuxFmt(sess, "1781842421", "0", "@1", weirdName)
 
 	sessions, windows := parseListWindowsOutput(line)
 	if _, ok := sessions[sess]; !ok {
