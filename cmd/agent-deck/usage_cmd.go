@@ -24,7 +24,8 @@ provider's own numbers.
 
 Options:
   --json      Print the report as JSON
-  --refresh   Force a fetch for pull-based providers, ignoring the cache
+  --refresh   Fetch pull-based providers (Z.ai) now instead of serving the
+              cache. Claude is push-only (see ingest) and is unaffected.
 
 Subcommands:
   ingest claude   Read a Claude Code statusLine payload on stdin and cache the
