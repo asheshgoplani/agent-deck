@@ -35,24 +35,32 @@ func previewMoreLine(hidden int) string {
 // previewClauseSep joins the clauses of a one-line field ("a · b · c").
 const previewClauseSep = " · "
 
+// previewContinuationLead opens a continuation line that carries on a
+// clause list, so it reads as the rest of the same field.
+const previewContinuationLead = "· "
+
 // wrapPreviewLine wraps one body line to width, continuation lines indented
 // by previewListIndent. Clauses (previewClauseSep-separated) are the unit:
 // a break lands between clauses when it can, and the continuation line
-// starts with "· " so it reads as the rest of the same field. Only a clause
-// wider than the line breaks at spaces, and only a word wider than the line
-// is cut mid-word — a hyphenated slot name never splits at its hyphen (which
-// ansi.Wrap would do). A width of 0 or less leaves the line alone.
+// starts with previewContinuationLead. Only a clause that fits neither the
+// current line nor a continuation line of its own (lead and indent
+// included) breaks at spaces, and only a word wider than the line is cut
+// mid-word — a hyphenated slot name never splits at its hyphen (which
+// ansi.Wrap would do). Every line returned is at most width columns, so a
+// second pass over the result is the identity. A width of 0 or less leaves
+// the line alone.
 func wrapPreviewLine(line string, width int) []string {
 	if width <= 0 || lipgloss.Width(line) <= width {
 		return []string{line}
 	}
 	var out []string
 	cur := ""
+	continuationLimit := max(1, width-len(previewListIndent))
 	limit := func() int {
 		if len(out) == 0 {
 			return width
 		}
-		return max(1, width-len(previewListIndent))
+		return continuationLimit
 	}
 	flush := func() {
 		if len(out) > 0 {
@@ -62,40 +70,79 @@ func wrapPreviewLine(line string, width int) []string {
 		cur = ""
 	}
 	// add appends a piece to the current line under sep, starting a new line
-	// (prefixed with lead) when it does not fit.
+	// when it does not fit; the new line opens with lead when there is room
+	// for both. A piece wider than a line on its own is cut at the line
+	// (the only mid-word break there is), against the width of the line it
+	// actually lands on.
 	add := func(piece, sep, lead string) {
 		if cur == "" {
-			cur = piece
-			return
-		}
-		if lipgloss.Width(cur+sep+piece) <= limit() {
+			lead = "" // a line's first piece follows nothing
+		} else if lipgloss.Width(cur+sep+piece) <= limit() {
 			cur += sep + piece
 			return
+		} else {
+			flush()
 		}
-		flush()
-		cur = lead + piece
+		if lipgloss.Width(lead+piece) <= limit() {
+			cur = lead + piece
+			return
+		}
+		for lipgloss.Width(piece) > limit() {
+			cur = ansi.Truncate(piece, limit(), "")
+			piece = strings.TrimPrefix(piece, cur)
+			flush()
+		}
+		cur = piece
 	}
 	for _, clause := range strings.Split(line, previewClauseSep) {
-		if lipgloss.Width(clause) <= limit() {
-			add(clause, previewClauseSep, "· ")
+		// Whole when it fits where add would put it: on the current line,
+		// or on a continuation line behind its lead.
+		fitsHere := lipgloss.Width(clause) <= limit()
+		if cur != "" {
+			fitsHere = lipgloss.Width(cur+previewClauseSep+clause) <= limit()
+		}
+		fitsContinuation := lipgloss.Width(previewContinuationLead+clause) <= continuationLimit
+		if fitsHere || fitsContinuation {
+			add(clause, previewClauseSep, previewContinuationLead)
 			continue
 		}
+		// Word by word; the first word still parts from the previous clause
+		// the way a whole clause would.
+		sep, lead := " ", ""
+		if cur != "" {
+			sep, lead = previewClauseSep, previewContinuationLead
+		}
 		for _, word := range strings.Fields(clause) {
-			for lipgloss.Width(word) > limit() {
-				if cur != "" {
-					flush()
-				}
-				cur = ansi.Truncate(word, limit(), "")
-				word = strings.TrimPrefix(word, cur)
-				flush()
-			}
-			add(word, " ", "")
+			add(word, sep, lead)
+			sep, lead = " ", ""
 		}
 	}
 	if cur != "" {
 		flush()
 	}
 	return out
+}
+
+// capPreviewLines trims wrapped lines to rows, folding what was cut into the
+// last kept line behind "…" so the reader sees that the field goes on. A
+// rows of 0 or less applies no cap.
+func capPreviewLines(lines []string, width, rows int) []string {
+	if rows <= 0 || len(lines) <= rows {
+		return lines
+	}
+	rest := make([]string, 0, len(lines)-rows)
+	for _, l := range lines[rows:] {
+		rest = append(rest, strings.TrimSpace(l))
+	}
+	kept := append([]string(nil), lines[:rows]...)
+	kept[rows-1] = ansi.Truncate(kept[rows-1]+" "+strings.Join(rest, " "), width, "…")
+	return kept
+}
+
+// fitPreviewLine is one single-line field fitted to layout: wrapped to
+// layout.width and capped to layout.rows.
+func fitPreviewLine(line string, layout previewLayout) []string {
+	return capPreviewLines(wrapPreviewLine(line, layout.width), layout.width, layout.rows)
 }
 
 // truncatePreviewCell shortens s to width columns with a trailing "…" when
@@ -257,7 +304,7 @@ func renderAccountsPreviewBlock(usage []session.AccountUsage, now time.Time, lay
 	if len(usage) == 0 {
 		return []string{"accounts  none"}
 	}
-	summary := wrapPreviewLine(renderAccountsSummaryLine(usage, now), layout.width)
+	summary := fitPreviewLine(renderAccountsSummaryLine(usage, now), layout)
 	cells := make([]accountRowCells, 0, len(usage))
 	nameW, fiveW, sevenW, tailW := 0, 0, 0, 0
 	for _, u := range sortAccountUsage(usage) {
@@ -282,7 +329,10 @@ func renderAccountsPreviewBlock(usage []session.AccountUsage, now time.Time, lay
 	// The summary may itself have wrapped; the rows share what is left
 	// under its last line.
 	head, last := summary[:len(summary)-1], summary[len(summary)-1]
-	rowLayout := previewLayout{width: layout.width, rows: layout.rows - len(head)}
+	rowLayout := layout
+	if layout.rows > 0 {
+		rowLayout.rows = max(1, layout.rows-len(head))
+	}
 	return append(head, capPreviewList(last, rows, rowLayout)...)
 }
 

@@ -505,20 +505,18 @@ var hostStatsFieldSet = map[string]bool{
 // config block existed.
 //
 // Every line is fitted to layout: a single-line field wraps at layout.width
-// and a list field (accounts, ssh) caps itself so the body never exceeds
-// layout.rows, each remaining field keeping at least its one line. A zero
-// layout applies no limit (tests of the raw text).
+// and every field, wrapped line or list (accounts, ssh), caps itself to
+// the rows left so the body never exceeds layout.rows, each remaining field
+// keeping at least its one line. A zero layout applies no limit (tests of
+// the raw text).
 func remotePreviewFieldLines(versionState session.RemoteVersionState, controller string, sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool, fields []string, now time.Time, layout previewLayout) []string {
 	statsKnown := hasResult && result.Stats.Ok
 	consumed := make(map[int]bool, len(fields))
 	var lines []string
-	single := func(line string) {
-		lines = append(lines, wrapPreviewLine(line, layout.width)...)
-	}
-	// listLayout is the room a list field may take: the rows left after
-	// what is already rendered, minus one line for every field still to
-	// come, so a long list never starves the fields below it.
-	listLayout := func(i int) previewLayout {
+	// fieldLayout is the room field i may take: the rows left after what is
+	// already rendered, minus one line for every field still to come, so a
+	// long list or a wrapped line never starves the fields below it.
+	fieldLayout := func(i int) previewLayout {
 		if layout.rows <= 0 {
 			return layout
 		}
@@ -533,6 +531,9 @@ func remotePreviewFieldLines(versionState session.RemoteVersionState, controller
 	for i, f := range fields {
 		if consumed[i] {
 			continue
+		}
+		single := func(line string) {
+			lines = append(lines, fitPreviewLine(line, fieldLayout(i))...)
 		}
 		switch f {
 		case session.PreviewFieldVersion:
@@ -564,13 +565,13 @@ func remotePreviewFieldLines(versionState session.RemoteVersionState, controller
 			case !result.Stats.AccountsAvailable:
 				single("accounts unknown (remote does not report accounts)")
 			default:
-				lines = append(lines, renderAccountsPreviewBlock(result.Stats.Accounts, now, listLayout(i))...)
+				lines = append(lines, renderAccountsPreviewBlock(result.Stats.Accounts, now, fieldLayout(i))...)
 			}
 		case session.PreviewFieldSSH:
 			if !statsKnown || !result.Stats.SSHAvailable {
 				single(remoteSSHUnknownLine(result, hasResult, versionState, controller))
 			} else {
-				lines = append(lines, renderSSHPreviewBlock(result.Stats.SSHSessions, now, listLayout(i))...)
+				lines = append(lines, renderSSHPreviewBlock(result.Stats.SSHSessions, now, fieldLayout(i))...)
 			}
 		}
 	}

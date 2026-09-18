@@ -1,0 +1,20 @@
+                                                            
+                                                            
+                             ⬡                              
+                                                            
+                        Remote: lab                         
+           Host: alice@lab.example — 13 sessions            
+                                                            
+    agent-deck v1.16.10+local.abcdef012… · older than h…    
+    Sessions  3 running · 3 waiting · 3 idle · 2 stoppe…    
+    Harnesses  aider:1 · amp:1 · claude:1 · codex:1 · c…    
+    100% · 2048.0G/4096.0G · 65536.0G/131072.0G             
+    Last poll 125.0s · 1mo 1w ago                           
+    accounts  12 slots · 5h lowest 70% · 4 unknown          
+      a-very-long-account-…  5h 100%  7d 0%   5 min ago     
+      +11 more                                              
+    ssh  6 users · 45 sessions                              
+                                                            
+        • Press Enter on a session to attach via SSH        
+                                                            
+                                                            
