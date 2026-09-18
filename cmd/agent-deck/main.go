@@ -2838,8 +2838,14 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		// apply the local recency filter (session.TimeFilterMode) to this
 		// session, the same way it applies to a local one.
 		LastActivityAt string `json:"last_activity_at,omitempty"`
+		// Viewers are the people attached to the tmux session (the remote
+		// deck's "who else is viewing" indicator reads it from here). A
+		// pointer so "nobody" ([]) and "unknown" (absent: tmux could not be
+		// asked, or a build predating the field) stay distinct.
+		Viewers *[]tmux.Viewer `json:"viewers,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
+	viewers := session.ViewersByTmuxSession(context.Background(), instances)
 	var pass session.StatusUpdatePass
 	for i, inst := range instances {
 		// Listings need live status, not native-session discovery. Persisted
@@ -2880,6 +2886,9 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			sj.TmuxSession = tmuxSess.Name
+			if v, known := viewers[tmuxSess.Name]; known {
+				sj.Viewers = &v
+			}
 		}
 		if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
 			sj.ModelID = modelInfo.ModelID
@@ -4232,6 +4241,7 @@ func printHelp() {
 	fmt.Println("  session fork <id>         Fork Claude or Pi session with context")
 	fmt.Println("  session attach <id>       Attach to session interactively")
 	fmt.Println("  session show [id]         Show session details")
+	fmt.Println("  session viewers [id]      Who is viewing a session (attached terminals)")
 	fmt.Println("  session context [id]      Show what is loaded into every turn, and what you can remove")
 	fmt.Println()
 	fmt.Println("Fleet Recovery Commands:")

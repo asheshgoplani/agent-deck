@@ -1,0 +1,10 @@
+    ├─ ◐ Remote worker claude
+
+Remote worker  ◐ waiting
+
+Remote:  lab
+Path:    /srv/app
+Tool:    claude
+Viewers: unknown (remote did not report viewers)
+
+Last response

@@ -9,25 +9,74 @@ import (
 )
 
 // windowPolicyOption is one of the per-window sizing options Deck applies to
-// every window of a session. accepted lists the values tmux takes for the
-// option (tmux(1) "window-size", and the flag spellings of "aggressive-resize");
-// anything else in [tmux.options] is a typo tmux would reject.
+// every window of a session. defaultValue is Deck's value for the tmux the
+// session runs on (a `tmux -V` version string, see parseTmuxVersion).
+// accepted lists the values tmux takes for the option (tmux(1)
+// "window-size", and the flag spellings of "aggressive-resize"); anything
+// else in [tmux.options] is a typo tmux would reject.
 type windowPolicyOption struct {
-	key, defaultValue, userOption string
-	accepted                      []string
+	key, userOption string
+	defaultValue    func(tmuxVersion string) string
+	accepted        []string
 }
 
-// windowPolicyOptions are the per-window sizing options Deck applies to every
-// window of a session: Start() sets them on the initial window, NewShellWindow
-// on windows Deck opens, and the after-new-window hook installed by
-// installWindowPolicyHook on windows opened any other way (#2259). Each
-// option's effective value (Deck's default, or the user's [tmux.options]
-// override) is published on the session as a @agentdeck_* user option so the
-// hook, which is shared by every session on the server, can read the
-// per-session value.
+// windowPolicyOptions is the one definition of the multi-client size policy
+// (#2186, #2259, shared attach): the per-window sizing options Deck applies
+// to every window of a session. Start() sets them on the initial window,
+// NewShellWindow on windows Deck opens, the after-new-window hook installed
+// by installWindowPolicyHook on windows opened any other way (#2259), and
+// ApplySharedViewSize on every window again before each attach (sharedview.go:
+// resize-window pins a window to `manual`, and a session created by an older
+// build still carries `smallest`). Each option's effective value (Deck's
+// default, or the user's [tmux.options] override) is published on the session
+// as a @agentdeck_* user option so the hook, which is shared by every session
+// on the server, can read the per-session value.
+//
+// The policy is `latest`: the window follows the client that most recently
+// attached, typed or resized, so the person using the session sees it
+// full-size and nobody's idle terminal can pin it. `smallest` (rc.6, #2186)
+// boxes every client larger than the smallest one into a corner with dots;
+// `largest` produces a synthetic size no client can show once the client
+// geometries cross. tmux < 3.1 has no `latest`; there the closest policy is
+// `largest` with aggressive-resize, so at least the active window follows
+// its viewers.
 var windowPolicyOptions = []windowPolicyOption{
-	{"window-size", "smallest", "@agentdeck_window_size", []string{"largest", "smallest", "manual", "latest"}},
-	{"aggressive-resize", "on", "@agentdeck_aggressive_resize", []string{"on", "off", "yes", "no", "1", "0"}},
+	{"window-size", "@agentdeck_window_size", windowSizeDefault, []string{"largest", "smallest", "manual", "latest"}},
+	{"aggressive-resize", "@agentdeck_aggressive_resize", func(string) string { return "on" }, []string{"on", "off", "yes", "no", "1", "0"}},
+}
+
+// Deck's window-size policy and its fallback for a tmux without `latest`.
+const (
+	windowSizePolicy         = "latest"
+	windowSizePolicyFallback = "largest"
+)
+
+// windowSizeLatestMinTmux{Major,Minor} name tmux 3.1, the first tmux with
+// `window-size latest` (tmux CHANGES, 3.1: "Add a latest value for
+// window-size"). Unparseable versions ("master", "next", "") are assumed new
+// enough, as for hook arrays.
+const (
+	windowSizeLatestMinTmuxMajor = 3
+	windowSizeLatestMinTmuxMinor = 1
+)
+
+// windowSizeDefault is Deck's window-size for the given tmux version.
+func windowSizeDefault(tmuxVersion string) string {
+	if tmuxSupportsWindowSizeLatest(tmuxVersion) {
+		return windowSizePolicy
+	}
+	return windowSizePolicyFallback
+}
+
+// tmuxSupportsWindowSizeLatest reports whether a parsed tmux version names a
+// tmux with `window-size latest` (3.1 or later).
+func tmuxSupportsWindowSizeLatest(ver string) bool {
+	major, minor, _, ok := splitTmuxVersion(ver)
+	if !ok {
+		return true
+	}
+	return major > windowSizeLatestMinTmuxMajor ||
+		(major == windowSizeLatestMinTmuxMajor && minor >= windowSizeLatestMinTmuxMinor)
 }
 
 // afterNewWindowHookIndex is the fixed slot Deck owns in the server-wide
@@ -55,17 +104,18 @@ const (
 )
 
 // value returns the value Deck applies for the option: the user's override
-// when one is configured and tmux would accept it, else Deck's default. An
-// override tmux would reject is reported once per call site and yields
-// ok=false: nothing is applied and nothing is published for the hook, which
-// would otherwise fail on every new window and make the `new-window`
-// command itself exit 1 (the duplicate-tab path #2186 exists to prevent).
-// The generic override pass in Start() still applies the raw value with
-// `-q`, so the failure surfaces there exactly as it did before the hook.
-func (o windowPolicyOption) value(overrides map[string]string) (value string, ok bool) {
+// when one is configured and tmux would accept it, else Deck's default for
+// tmuxVersion (the host's, see hostTmuxVersionString). An override tmux
+// would reject is reported once per call site and yields ok=false: nothing
+// is applied and nothing is published for the hook, which would otherwise
+// fail on every new window and make the `new-window` command itself exit 1
+// (the duplicate-tab path #2186 exists to prevent). The generic override
+// pass in Start() still applies the raw value with `-q`, so the failure
+// surfaces there exactly as it did before the hook.
+func (o windowPolicyOption) value(overrides map[string]string, tmuxVersion string) (value string, ok bool) {
 	override, overridden := overrides[o.key]
 	if !overridden {
-		return o.defaultValue, true
+		return o.defaultValue(tmuxVersion), true
 	}
 	if slices.Contains(o.accepted, override) {
 		return override, true
@@ -75,17 +125,47 @@ func (o windowPolicyOption) value(overrides map[string]string) (value string, ok
 	return "", false
 }
 
-// windowPolicyOptionArgs publishes the session's effective window policy as
-// @agentdeck_* session options for the after-new-window hook to read. It is
-// meant to be appended to an in-progress `;`-separated tmux command chain.
-// An option whose override is invalid is not published, so the hook (which
-// tests the option with `if-shell -F`) leaves that option alone.
-func (s *Session) windowPolicyOptionArgs() []string {
-	args := make([]string, 0, len(windowPolicyOptions)*6)
-	for _, option := range windowPolicyOptions {
-		if value, ok := option.value(s.OptionOverrides); ok {
-			args = append(args, ";", "set-option", "-t", s.Name, option.userOption, value)
+// windowPolicyArgs chains one `setCmd -t <target> <option> <value>` per
+// target and policy option, separated by ";", for the tmux named by
+// tmuxVersion. An option whose override is invalid is skipped. Callers pick
+// the set command: ApplySharedViewSize uses `set-option -w -q`,
+// NewShellWindow `set-window-option -oq` (-o keeps an option a user's
+// after-new-window hook already set on the brand-new window).
+func windowPolicyArgs(targets []string, overrides map[string]string, tmuxVersion string, setCmd ...string) []string {
+	var args []string
+	for _, target := range targets {
+		for _, option := range windowPolicyOptions {
+			value, ok := option.value(overrides, tmuxVersion)
+			if !ok {
+				continue
+			}
+			if len(args) > 0 {
+				args = append(args, ";")
+			}
+			args = append(args, setCmd...)
+			args = append(args, "-t", target, option.key, value)
 		}
+	}
+	return args
+}
+
+// windowPolicyStartArgs applies the window policy to the session's initial
+// window and publishes the effective values as @agentdeck_* session options
+// for the after-new-window hook to read. It is meant to be appended to an
+// in-progress `;`-separated tmux command chain. An option whose override is
+// invalid is neither applied nor published, so the hook (which tests the
+// option with `if-shell -F`) leaves that option alone.
+func (s *Session) windowPolicyStartArgs() []string {
+	tmuxVersion := hostTmuxVersionString()
+	args := make([]string, 0, len(windowPolicyOptions)*14)
+	for _, option := range windowPolicyOptions {
+		value, ok := option.value(s.OptionOverrides, tmuxVersion)
+		if !ok {
+			continue
+		}
+		args = append(args,
+			";", "set-option", "-w", "-q", "-t", s.Name, option.key, value,
+			";", "set-option", "-t", s.Name, option.userOption, value)
 	}
 	return args
 }
@@ -185,15 +265,23 @@ var (
 	hostTmuxVersion     string
 )
 
-// hostTmuxSupportsHookArrays probes `tmux -V` once per process.
-func hostTmuxSupportsHookArrays() bool {
+// hostTmuxVersionString probes `tmux -V` once per process and returns the
+// parsed version ("" when the probe failed, which every consumer treats as
+// new enough). Every tmux Deck talks to is the host's: a remote attach runs
+// the remote's own agent-deck binary against the remote's tmux.
+func hostTmuxVersionString() string {
 	hostTmuxVersionOnce.Do(func() {
 		raw, err := defaultTmuxVersionProbe()
 		if err == nil {
 			hostTmuxVersion = parseTmuxVersion(raw)
 		}
 	})
-	return tmuxSupportsHookArrays(hostTmuxVersion)
+	return hostTmuxVersion
+}
+
+// hostTmuxSupportsHookArrays reports whether the host tmux has array hooks.
+func hostTmuxSupportsHookArrays() bool {
+	return tmuxSupportsHookArrays(hostTmuxVersionString())
 }
 
 // installWindowPolicyHook is Start()'s best-effort install of the hook on

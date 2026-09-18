@@ -1,0 +1,2 @@
+terminal_width=100 list_width=35
+   └─ ● a genuinely lo… shell 👁️ 2

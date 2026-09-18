@@ -63,6 +63,8 @@ func handleSession(profile string, args []string) {
 		handleSessionFocus(profile, args[1:])
 	case "show":
 		handleSessionShow(profile, args[1:])
+	case "viewers":
+		handleSessionViewers(profile, args[1:])
 	case "current":
 		handleSessionCurrent(profile, args[1:])
 	case "set-parent":
@@ -138,6 +140,7 @@ func printSessionHelp() {
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
+	fmt.Println("  viewers [id]            List the terminals attached to a session (who is viewing it)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
 	fmt.Println("  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target")
@@ -1688,6 +1691,70 @@ func handleSessionFocus(profile string, args []string) {
 	}
 }
 
+// formatViewersLine renders a viewer list for humans: the names, sizes and
+// activity of everyone attached, "none" for nobody, "unknown" when tmux
+// could not be asked.
+func formatViewersLine(viewers []tmux.Viewer, known bool) string {
+	switch {
+	case !known:
+		return "unknown"
+	case len(viewers) == 0:
+		return "none"
+	}
+	return tmux.FormatViewers(viewers)
+}
+
+// handleSessionViewers prints who is attached to a session: the CLI form of
+// the TUI's viewers badge and the "also viewing" notice on attach.
+func handleSessionViewers(profile string, args []string) {
+	fs := flag.NewFlagSet("session viewers", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session viewers [id|title] [--json]")
+		fmt.Println()
+		fmt.Println("List the terminals attached to a session (who else is viewing it).")
+		fmt.Println("If no ID is provided, auto-detects the current session.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+	out := NewCLIOutput(*jsonOutput, false)
+
+	_, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+	inst, errMsg, errCode := ResolveSessionOrCurrent(fs.Arg(0), instances)
+	if inst == nil {
+		out.Error(errMsg, errCode)
+		if errCode == ErrCodeNotFound {
+			os.Exit(2)
+		}
+		os.Exit(1)
+		return // unreachable, satisfies staticcheck SA5011
+	}
+	viewers, known := inst.Viewers(context.Background())
+	data := map[string]interface{}{
+		"id":    inst.ID,
+		"title": inst.Title,
+		"known": known,
+	}
+	if known {
+		data["viewers"] = viewers
+	}
+	var human strings.Builder
+	fmt.Fprintf(&human, "Session: %s\n", inst.Title)
+	fmt.Fprintf(&human, "Viewers: %s\n", formatViewersLine(viewers, known))
+	for _, v := range viewers {
+		fmt.Fprintf(&human, "  %s\t%s\n", v.Label(time.Now()), v.TTY)
+	}
+	out.Print(human.String(), data)
+}
+
 // handleSessionShow shows session details
 func handleSessionShow(profile string, args []string) {
 	fs := flag.NewFlagSet("session show", flag.ExitOnError)
@@ -1878,6 +1945,12 @@ func handleSessionShow(profile string, args []string) {
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
 		jsonData["tmux_session"] = tmuxSession.Name
 	}
+	// Who else has this session open (shared attach). Present only when tmux
+	// answered: [] is "nobody", an absent key is "unknown".
+	viewers, viewersKnown := inst.Viewers(context.Background())
+	if viewersKnown {
+		jsonData["viewers"] = viewers
+	}
 
 	// #1580: surface a spawn-failure diagnostic when the session errored at
 	// startup (bare "error" with no pane). Include the structured record in
@@ -1988,6 +2061,7 @@ func handleSessionShow(profile string, args []string) {
 		if tmuxSession != nil {
 			sb.WriteString(fmt.Sprintf("Tmux:    %s\n", tmuxSession.Name))
 		}
+		sb.WriteString(fmt.Sprintf("Viewers: %s\n", formatViewersLine(viewers, viewersKnown)))
 	}
 
 	// #1580: print the spawn-failure block so `session show` on an errored

@@ -7,6 +7,7 @@ Remote:  lab
 Path:    /tmp
 Tool:    claude
 Group:   tmp
+Viewers: unknown (remote did not report viewers)
 
 Last response
 ----------------------------------------

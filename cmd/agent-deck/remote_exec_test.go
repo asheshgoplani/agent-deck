@@ -434,6 +434,21 @@ func TestRemoteCommandArgsSessionContext(t *testing.T) {
 	}
 }
 
+// `session viewers` reads the server's own tmux clients (who is attached to
+// a session there); the passthrough forwards it like the other read-only
+// session verbs, and `show --json` / `list --json` carry the same field.
+func TestRemoteCommandArgsSessionViewers(t *testing.T) {
+	for _, args := range [][]string{{"session", "viewers", "id"}, {"session", "viewers", "id", "--json"}} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	if _, err := remoteCommandArgs([]string{"viewers", "id"}); err == nil {
+		t.Fatal("bare viewers is not a command; only the session form is forwarded")
+	}
+}
+
 // `session set` (title, title lock, parent, tool session id) is a plain
 // registry update the server owns, so the passthrough forwards it verbatim.
 func TestRemoteCommandArgsSessionSet(t *testing.T) {

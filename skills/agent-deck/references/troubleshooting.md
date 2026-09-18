@@ -236,11 +236,25 @@ terminal-features = "*:hyperlinks:extkeys"
 ### One tmux Window Stuck at 80x24 While Its Siblings Are Full Width
 
 `window-size` and `aggressive-resize` are tmux **window** options. Agent Deck
-applies `window-size smallest` and `aggressive-resize on` to every window of a
-Deck session: the initial window at session start, windows created by **Open
-Shell Here** in window mode, and, since v1.16.11, windows opened any other way
-inside the session (`prefix c`, an agent's own `tmux new-window`, a control
-client). Explicit `[tmux.options]` values replace those defaults everywhere.
+applies `window-size latest` (`largest` on a tmux older than 3.1, which has no
+`latest`) and `aggressive-resize on` to every window of a Deck session: the
+initial window at session start, windows created by **Open Shell Here** in
+window mode, windows opened any other way inside the session (`prefix c`, an
+agent's own `tmux new-window`, a control client; since v1.16.11), and, again,
+every existing window right before each attach (TUI Enter, `session attach` on
+a remote, the web and embedded clients), because `resize-window` pins a window
+to `manual` and a session created by an older build keeps the `smallest` it
+was given. Explicit `[tmux.options]` values replace those defaults on every
+path. For a new shell window, a local option installed by your
+`after-new-window` hook takes precedence.
+
+With two people on one session under `latest`, the window follows whoever
+attached, typed or resized last: the person using the session sees it
+full-size, and the idle terminal shows the other person's size (clipped if it
+is smaller, the pane in the top-left corner with dots around it if it is
+larger) until they type or resize. That is tmux's one-size-per-window rule,
+not a stuck window. The deck's `👁️ N` row badge and `session viewers` say who
+else has the session open.
 
 Windows opened by hand get the policy from one `after-new-window` hook that
 Deck keeps in a reserved slot (`after-new-window[2259]`) of the server's
@@ -276,11 +290,11 @@ windows get the policy. A `[tmux.options]` value tmux would reject (say
 never published to the hook, so it cannot make `new-window` fail; the
 generic override pass reports it as before.
 
-Note the window in a session created before v1.16.11 keeps whatever it had:
-the hook only reaches windows created after the session started on the new
-binary. If a hand-opened window in such a session is stuck, fix it in place
-with `tmux set-option -w -t <session>:<window> window-size smallest`, or
-restart the session.
+Note that the hook only reaches windows created after the session started on
+the new binary; a session created before v1.16.11 keeps whatever its windows
+had until the next attach re-applies the policy to all of them. If a window is
+still stuck, fix it in place with `tmux set-option -w -t <session>:<window>
+window-size latest`, or restart the session.
 
 A size policy difference does not by itself establish that a size-less control
 client caused a collapse to 80x24; capture window dimensions and client flags
@@ -291,11 +305,11 @@ set it in config.toml:
 
 ```toml
 [tmux.options]
-window-size = "largest"
+window-size = "smallest"
 ```
 
 or set your own global default in `~/.tmux.conf` (`set -wg window-size
-largest`) for sessions Deck does not manage.
+smallest`) for sessions Deck does not manage.
 
 ## Debugging
 

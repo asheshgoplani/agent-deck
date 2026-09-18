@@ -1131,6 +1131,13 @@ func (h *Home) openInNewWindow(req terminal.AttachRequest, sessionExists bool) e
 	if !sessionExists {
 		return nil
 	}
+	if req.Remote == nil {
+		// The new window is one more viewer of a possibly shared session
+		// (internal/tmux sharedview.go), with the user's [tmux.options]
+		// honoured as on every other attach path; a remote one gets this
+		// from its own `session attach`.
+		tmux.ApplySharedViewSize(req.SocketName, req.Name, session.SharedViewOverrides())
+	}
 	return terminal.OpenSessionInNewWindow(req)
 }
 
@@ -21322,14 +21329,24 @@ func (h *Home) renderSessionItem(
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
 		cellWidth(agentBadge) + cellWidth(timestampBadge)
-	// Reserve the title's floor before the account badge claims any of the
-	// remaining width, so a narrow column shrinks and then drops the badge
-	// instead of collapsing the title (#2201).
-	accountBudget := instState.accountDisplay.width
+	// Reserve the title's floor before the viewers and account badges claim
+	// any of the remaining width, so a narrow column shrinks and then drops
+	// the badges instead of collapsing the title (#2201). The viewers badge
+	// (how many terminals have this session open, from the per-socket cache
+	// so the row never spawns tmux) is fitted first: it is the smaller of
+	// the two and says the session is being looked at right now; the
+	// account badge takes what is left.
+	badgeBudget := -1
 	if listWidth > 0 {
 		available := max(0, listWidth-reserved-2)
 		titleFloor := min(available, minSessionTitleWidth)
-		accountBudget = min(accountBudget, max(0, available-titleFloor))
+		badgeBudget = max(0, available-titleFloor)
+	}
+	cachedViewers, cachedViewersKnown := inst.ViewersCached()
+	viewersBadgeText, viewersWidth := fitViewersBadge(cachedViewers, cachedViewersKnown, selected, badgeBudget)
+	accountBudget := instState.accountDisplay.width
+	if badgeBudget >= 0 {
+		accountBudget = min(accountBudget, badgeBudget-viewersWidth)
 	}
 	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
 	if accountBadge != "" {
@@ -21340,7 +21357,7 @@ func (h *Home) renderSessionItem(
 		accountBadge = accountStyle.Render(accountBadge)
 	}
 	if listWidth > 0 {
-		budget := max(0, listWidth-reserved-accountWidth-1)
+		budget := max(0, listWidth-reserved-viewersWidth-accountWidth-1)
 		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
@@ -21351,7 +21368,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -21367,6 +21384,7 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 		agentBadge,
+		viewersBadgeText,
 		accountBadge,
 		timestampBadge,
 	)
@@ -21549,6 +21567,13 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	if rs.Group != "" {
 		b.WriteString(dimStyle.Render("Group:   ") + rs.Group + "\n")
 	}
+	remoteViewers, remoteViewersKnown := rs.ViewerList()
+	unknownReason := ""
+	if !remoteViewersKnown {
+		versionState, _ := h.remoteVersionState(item.RemoteName)
+		unknownReason = remoteViewersUnknownReason(versionState, Version)
+	}
+	b.WriteString(dimStyle.Render("Viewers: ") + viewersText(remoteViewers, remoteViewersKnown, unknownReason, time.Now()) + "\n")
 	b.WriteString("\n")
 
 	pvKey := remotePreviewCacheKey(item.RemoteName, rs.ID)
@@ -21896,13 +21921,18 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		}
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s\n",
+	// Viewers badge, as on local rows; nothing when the remote did not say.
+	remoteViewers, remoteViewersKnown := rs.ViewerList()
+	remoteViewersBadge := renderViewersBadge(remoteViewers, remoteViewersKnown, selected)
+
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
 		titleStyle.Render(titleStr),
 		toolStr,
+		remoteViewersBadge,
 		pendingStr,
 	))
 }
@@ -22480,6 +22510,15 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 	b.WriteString(infoStyle.Render("⏱ " + activityStr))
 	b.WriteString("\n")
+
+	// Who else has this session open (shared attach), from the per-socket
+	// viewer cache so the render path never spawns tmux. A stopped session
+	// has no tmux to view, so the line is for live ones.
+	if selectedStatus != session.StatusStopped {
+		previewViewers, previewViewersKnown := selected.ViewersCached()
+		b.WriteString(infoStyle.Render(viewersLine(previewViewers, previewViewersKnown, time.Now())))
+		b.WriteString("\n")
+	}
 
 	toolBadge := lipgloss.NewStyle().
 		Foreground(ColorBg).

@@ -47,15 +47,15 @@ func TestSession_HandOpenedWindowInheritsWindowPolicy(t *testing.T) {
 		overrides         map[string]string
 		wantSize, wantAgg string
 	}{
-		{"defaults", nil, "smallest", "on"},
+		{"defaults", nil, "latest", "on"},
 		{"overrides", map[string]string{"window-size": "largest", "aggressive-resize": "on"}, "largest", "on"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			socket, unrelated := makeIsolatedServer(t)
 			ctl := tmuxCtl(t, socket)
 			// Server-wide defaults differ from Deck's policy, so a window that
-			// never had the policy applied reads back latest/off here.
-			ctl("set-option", "-gw", "window-size", "latest")
+			// never had the policy applied reads back smallest/off here.
+			ctl("set-option", "-gw", "window-size", "smallest")
 			ctl("set-option", "-gw", "aggressive-resize", "off")
 
 			s := NewSession("hand-opened", t.TempDir())
@@ -72,7 +72,7 @@ func TestSession_HandOpenedWindowInheritsWindowPolicy(t *testing.T) {
 			// The hook is server-wide but must leave sessions Deck did not
 			// start alone.
 			otherID := ctl("new-window", "-P", "-F", "#{window_id}", "-t", unrelated)
-			assert.Equal(t, "latest", ctl("show-options", "-wAv", "-t", otherID, "window-size"), "window-size in a non-Deck session")
+			assert.Equal(t, "smallest", ctl("show-options", "-wAv", "-t", otherID, "window-size"), "window-size in a non-Deck session")
 			assert.Equal(t, "off", ctl("show-options", "-wAv", "-t", otherID, "aggressive-resize"), "aggressive-resize in a non-Deck session")
 		})
 	}
@@ -85,12 +85,13 @@ func TestSession_HandOpenedWindowInheritsWindowPolicy(t *testing.T) {
 func TestSession_HandOpenedWindowKeepsUserGlobalHook(t *testing.T) {
 	requireTmux(t)
 	for _, tc := range []struct{ name, userHook, wantAgg, wantSize string }{
-		{"unrelated user hook", "set-option -w @user_hook_ran yes", "on", "smallest"},
+		{"unrelated user hook", "set-option -w @user_hook_ran yes", "on", "latest"},
 		{"user opts out of the policy", "set-option -w @user_hook_ran yes ; set-option -w aggressive-resize off ; set-option -w window-size manual", "off", "manual"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			socket, _ := makeIsolatedServer(t)
 			ctl := tmuxCtl(t, socket)
+			ctl("set-option", "-gw", "window-size", "smallest")
 			ctl("set-option", "-gw", "aggressive-resize", "off")
 			ctl("set-hook", "-g", "after-new-window", tc.userHook)
 
@@ -136,4 +137,39 @@ func TestSession_WindowPolicyHookInstallIsIdempotent(t *testing.T) {
 	deck, other := countAfterNewWindowHooks(hooks)
 	assert.Equal(t, 1, deck, "repeated installs must not pile up Deck entries:\n%s", hooks)
 	assert.Equal(t, 1, other, "the user's entry must survive repeated installs:\n%s", hooks)
+}
+
+// Shared attach and #2259 share one policy definition (windowPolicyOptions):
+// the value the after-new-window hook applies to a hand-opened window is the
+// value Start() published for it, and the value ApplySharedViewSize installs
+// before an attach. With the server default pinned to rc.6's `smallest`, a
+// hand-opened window still comes out `latest`, and an attach against a
+// session whose windows an older build left at `smallest` corrects every one
+// of them to the same value.
+func TestSession_HandOpenedWindowAndAttachShareOnePolicy(t *testing.T) {
+	requireTmux(t)
+	socket, _ := makeIsolatedServer(t)
+	ctl := tmuxCtl(t, socket)
+	ctl("set-option", "-gw", "window-size", "smallest")
+	ctl("set-option", "-gw", "aggressive-resize", "off")
+
+	s := NewSession("one-policy", t.TempDir())
+	s.SocketName = socket
+	require.NoError(t, s.Start(""))
+
+	published := ctl("show-options", "-qv", "-t", s.Name, "@agentdeck_window_size")
+	assert.Equal(t, "latest", published, "Start publishes the shared policy for the hook")
+
+	handID := ctl("new-window", "-P", "-F", "#{window_id}", "-t", s.Name)
+	assert.Equal(t, published, ctl("show-options", "-wAv", "-t", handID, "window-size"), "the hook applies the published value")
+	assert.Equal(t, "on", ctl("show-options", "-wAv", "-t", handID, "aggressive-resize"))
+
+	// An rc.6 build left both windows at smallest; the next attach fixes them.
+	for _, id := range []string{ctl("display-message", "-p", "-t", s.Name+":0", "#{window_id}"), handID} {
+		ctl("set-option", "-w", "-t", id, "window-size", "smallest")
+	}
+	ApplySharedViewSize(socket, s.Name, nil)
+	for _, id := range strings.Fields(ctl("list-windows", "-t", s.Name, "-F", "#{window_id}")) {
+		assert.Equal(t, published, ctl("show-options", "-wAv", "-t", id, "window-size"), "attach corrects window %s to the same value the hook applies", id)
+	}
 }

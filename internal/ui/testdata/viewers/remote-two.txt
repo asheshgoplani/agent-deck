@@ -1,0 +1,10 @@
+    ├─ ◐ Remote worker claude 👁️ 2
+
+Remote worker  ◐ waiting
+
+Remote:  lab
+Path:    /srv/app
+Tool:    claude
+Viewers: ashesh (200x60, active 5s ago) · yasir (120x40, 3m ago)
+
+Last response

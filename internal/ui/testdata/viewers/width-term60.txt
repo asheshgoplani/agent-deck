@@ -1,0 +1,2 @@
+terminal_width=60 list_width=21
+   └─ ● a gen… shell

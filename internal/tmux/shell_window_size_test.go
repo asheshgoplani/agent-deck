@@ -25,11 +25,11 @@ func TestSession_NewShellWindowSizePolicy(t *testing.T) {
 		wantAgg   string
 		hook      bool
 	}{
-		{"defaults", nil, "smallest", "on", false},
+		{"defaults", nil, "latest", "on", false},
 		{"explicit overrides", map[string]string{"window-size": "smallest", "aggressive-resize": "off"}, "smallest", "off", false},
 		{"size override", map[string]string{"window-size": "smallest"}, "smallest", "on", false},
-		{"resize override", map[string]string{"aggressive-resize": "off"}, "smallest", "off", false},
-		{"hook selects another window", nil, "smallest", "on", true},
+		{"resize override", map[string]string{"aggressive-resize": "off"}, "latest", "off", false},
+		{"hook selects another window", nil, "latest", "on", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			socket, unrelated := makeIsolatedServer(t)
@@ -39,7 +39,9 @@ func TestSession_NewShellWindowSizePolicy(t *testing.T) {
 				require.NoError(t, err, "%s", out)
 				return strings.TrimSpace(string(out))
 			}
-			ctl("set-option", "-gw", "window-size", "latest")
+			// Server-wide defaults differ from Deck's policy (rc.6's smallest),
+			// so a window that never had the policy applied is telling.
+			ctl("set-option", "-gw", "window-size", "smallest")
 			ctl("set-option", "-gw", "aggressive-resize", "off")
 			s := NewSession("size-policy", t.TempDir())
 			s.SocketName = socket
@@ -81,8 +83,8 @@ func TestSession_NewShellWindowSizePolicy(t *testing.T) {
 				tc.wantSize = "manual"
 			}
 			check(initial, tc.wantSize, tc.wantAgg)
-			check(unrelated, "latest", "off")
-			assert.Equal(t, "latest", ctl("show-options", "-gwv", "window-size"))
+			check(unrelated, "smallest", "off")
+			assert.Equal(t, "smallest", ctl("show-options", "-gwv", "window-size"))
 			assert.Equal(t, "off", ctl("show-options", "-gwv", "aggressive-resize"))
 		})
 	}

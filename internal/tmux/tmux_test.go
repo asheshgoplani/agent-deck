@@ -2519,9 +2519,10 @@ func TestSession_MouseMode_EnableMouseMode_Disabled_Integration(t *testing.T) {
 }
 
 // TestSession_MultiClientSizePolicy_Integration verifies that on session
-// creation agent-deck pins window-size=smallest (session option) and
-// aggressive-resize=on (window option). This keeps the complete pane visible
-// when attached clients have different or crossed geometries.
+// creation agent-deck installs window-size=latest and aggressive-resize=on
+// on the window (both are window options). The window follows the client
+// that most recently attached, typed or resized, so two people on one
+// session each see it full-size while using it (sharedview.go).
 func TestSession_MultiClientSizePolicy_Integration(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 
@@ -2534,10 +2535,10 @@ func TestSession_MultiClientSizePolicy_Integration(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Kill() }()
 
-	winSize, err := s.tmuxCmd("show-options", "-t", s.Name, "-A", "-v", "window-size").Output()
+	winSize, err := s.tmuxCmd("show-options", "-w", "-t", s.Name+":0", "-A", "-v", "window-size").Output()
 	require.NoError(t, err)
-	assert.Equal(t, "smallest", strings.TrimSpace(string(winSize)),
-		"new sessions must pin window-size=smallest so every attached client can display the complete pane")
+	assert.Equal(t, "latest", strings.TrimSpace(string(winSize)),
+		"new sessions must install window-size=latest so the window follows the client using it")
 
 	aggResize, err := s.tmuxCmd("show-options", "-w", "-t", s.Name+":0", "-A", "-v", "aggressive-resize").Output()
 	require.NoError(t, err)

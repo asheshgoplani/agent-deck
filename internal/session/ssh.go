@@ -2318,8 +2318,24 @@ type RemoteSessionInfo struct {
 	// "" — see LastActivity below.
 	LastActivityAt string `json:"last_activity_at,omitempty"`
 
+	// Viewers are the terminals attached to the session on the remote (its
+	// `list --json` viewers field): the "who else is viewing" indicator for
+	// a remote row. nil means the remote did not say (an agent-deck older
+	// than 1.16.11, or tmux could not be asked there); an empty list means
+	// nobody. See ViewerList.
+	Viewers *[]tmux.Viewer `json:"viewers,omitempty"`
+
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
+}
+
+// ViewerList returns the remote session's viewers and whether the remote
+// reported them at all.
+func (r RemoteSessionInfo) ViewerList() (viewers []tmux.Viewer, known bool) {
+	if r.Viewers == nil {
+		return nil, false
+	}
+	return *r.Viewers, true
 }
 
 // LastActivity parses LastActivityAt. ok is false when the field is empty or
