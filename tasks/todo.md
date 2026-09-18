@@ -9,3 +9,13 @@
 - [x] P3-1 _unowned excluded from TTL sweep (sweep locked via P1-3)
 - [x] go build/vet on host; Docker suite; code-simplifier; live `hooks status` read-only proof
 - [x] RESULTS.md, PR-BODY.md (sanitized), commits with Claude-Session trailer
+
+## Round 2 (review HOLD 7a5ae428)
+
+- [ ] P1-A stable hook path (invoked symlink, never a Cellar dir) + self-heal on daemon start and `hooks status` (dangling / version-mismatched entry rewritten, idempotent, atomic, logged once); tests: Cellar-style upgrade heals, stable symlink chosen
+- [ ] P1-B marker-less Stop entry keeps draining; only an explicit non-sync marker disables; unpinned check requires the marker so the heal / TUI path adds it; tests
+- [ ] P2-C transcript roots include every [groups.*.claude] and [conductors.*.claude] config_dir; conductor fixture test
+- [ ] P2-D wake-nudge idle gate re-probes status (hook fast path, pane fallback) under the daemon's probe budget; test
+- [ ] P3 nudge subprocess timeout covers the send lock wait (constants tied); test
+- [ ] go build/vet host; Docker suite; code-simplifier; live `hooks status` read-only
+- [ ] RESULTS.md, PR-BODY.md, commits with Claude-Session trailer
