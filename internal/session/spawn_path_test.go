@@ -1,13 +1,16 @@
 package session
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,8 +18,9 @@ import (
 // Remote parity walk on g14 (2026-09-18): a session spawned by a remote
 // agent-deck runs under the non-login SSH PATH, so a `claude` that lives only
 // in ~/.local/bin is not found and the pane dies in ~260ms with a generic
-// spawn_died_fast. These tests pin the PATH the spawn environment gets and the
-// reason a still-unresolvable tool is reported with.
+// spawn_died_fast. These tests pin the PATH the spawn environment gets, which
+// directories may ever be put in front of it, and the pane-side evidence a
+// still-unresolvable tool is reported on.
 
 func fakeIsDir(existing ...string) func(string) bool {
 	set := map[string]bool{}
@@ -63,12 +67,59 @@ func TestMissingPathDirs_PresentAbsentDuplicatesOrder(t *testing.T) {
 	// Empty PATH still gets the existing dirs.
 	got = missingPathDirs("", candidates, isDir)
 	assert.Equal(t, []string{"/home/u/.local/bin", "/home/u/bin", "/opt/deck"}, got)
+
+	// A relative candidate names no directory the pane could be trusted to
+	// resolve, whatever the predicate says.
+	got = missingPathDirs("", []string{"bin", "./bin", "/home/u/bin"}, func(string) bool { return true })
+	assert.Equal(t, []string{"/home/u/bin"}, got)
 }
 
-func TestPrependPathDirs_KeepsUserOrder(t *testing.T) {
-	assert.Equal(t, "/a:/b:/usr/bin:/bin", prependPathDirs("/usr/bin:/bin", []string{"/a", "/b"}))
-	assert.Equal(t, "/usr/bin:/bin", prependPathDirs("/usr/bin:/bin", nil))
-	assert.Equal(t, "/a", prependPathDirs("", []string{"/a"}))
+// statInfo is an os.FileInfo with a chosen owner, for the ownership arm of
+// spawnPathDirInfoUsable (a test cannot chown to another user).
+type statInfo struct {
+	fs.FileInfo
+	uid uint32
+}
+
+func (s statInfo) Sys() any { return &syscall.Stat_t{Uid: s.uid} }
+
+// Only a directory nobody but its owner can write to, owned by this user or
+// root, may be put in front of every session's PATH. Running the deck from
+// /tmp (world-writable, sticky), a dir another user owns, or a file must
+// never get that dir prepended.
+func TestSpawnPathDirUsable_RejectsWorldWritableAndForeign(t *testing.T) {
+	root := t.TempDir()
+	mk := func(name string, mode os.FileMode) string {
+		dir := filepath.Join(root, name)
+		require.NoError(t, os.Mkdir(dir, 0o755))
+		require.NoError(t, os.Chmod(dir, mode))
+		return dir
+	}
+	private := mk("private", 0o755)
+	groupWritable := mk("group", 0o775)
+	worldWritable := mk("world", 0o777)
+	sticky := mk("sticky", 0o1777)
+	file := filepath.Join(root, "file")
+	require.NoError(t, os.WriteFile(file, nil, 0o755))
+
+	assert.True(t, spawnPathDirUsable(private))
+	assert.True(t, spawnPathDirUsable(groupWritable), "group-writable is the owner's call")
+	assert.False(t, spawnPathDirUsable(worldWritable), "world-writable: anyone could plant a binary")
+	assert.False(t, spawnPathDirUsable(sticky), "the sticky bit does not make /tmp-like dirs safe")
+	assert.False(t, spawnPathDirUsable(file), "not a directory")
+	assert.False(t, spawnPathDirUsable(filepath.Join(root, "missing")))
+
+	// Ownership: this user or root, nobody else.
+	info, err := os.Stat(private)
+	require.NoError(t, err)
+	me := uint32(os.Geteuid())
+	assert.True(t, spawnPathDirInfoUsable(statInfo{info, me}, os.Geteuid()))
+	assert.True(t, spawnPathDirInfoUsable(statInfo{info, 0}, os.Geteuid()), "root-owned system dirs are fine")
+	assert.False(t, spawnPathDirInfoUsable(statInfo{info, me + 1}, os.Geteuid()), "another user's dir is theirs to change")
+
+	// The real filter drops such a dir even when it is missing from PATH.
+	got := missingPathDirs("/usr/bin", []string{worldWritable, private, sticky}, spawnPathDirUsable)
+	assert.Equal(t, []string{private}, got)
 }
 
 // The shell snippet is what the pane actually evaluates, so run it under
@@ -112,26 +163,58 @@ func TestBuildSpawnPathExport_UnderBash(t *testing.T) {
 	assert.Equal(t, a+":"+b+":/usr/bin", string(out))
 
 	assert.Empty(t, buildSpawnPathExport(nil))
+
+	// The --ssh variant cannot be filtered here, so the remote shell asks
+	// for ownership too: the user's own dir is added, a root-owned system
+	// dir (/usr/bin exists everywhere and is never the test user's) is not.
+	remote := buildSpawnPathExportWords([]string{shellescape.Quote(a), "/usr/bin"}, sshSpawnPathTest)
+	cmd = exec.Command("bash", "-c", remote+`printf '%s' "$PATH"`)
+	cmd.Env = []string{"PATH=/bin", "HOME=" + root}
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	if os.Geteuid() == 0 {
+		assert.Equal(t, a+":/usr/bin:/bin", string(out), "root owns /usr/bin")
+	} else {
+		assert.Equal(t, a+":/bin", string(out))
+	}
 }
 
-func TestSpawnToolBinaryFromCommand(t *testing.T) {
+// The probe target is the first program the pane runs, and only when
+// nothing ahead of it can change how it resolves. Every refused shape here
+// is one the round-1 review showed would have been misattributed: an env
+// file or init script that may extend PATH, a PATH export, a builtin first
+// word (`cd ~/proj && ./run.sh`), an expansion.
+func TestSpawnToolProbeTarget(t *testing.T) {
 	cases := map[string]string{
 		`export AGENTDECK_INSTANCE_ID=abc; export AGENTDECK_PROFILE='_test'; exec env -u TELEGRAM_STATE_DIR -u TELEGRAM_BOT_TOKEN claude --session-id 1 --name 'x y'`: "claude",
 		`export A=b; exec cdw --resume 123`: "cdw",
 		`npx codex@0.144`:                   "npx",
 		`/opt/tools/gemini --yolo`:          "/opt/tools/gemini",
 		`export COLORFGBG='15;0' && unset TELEGRAM_STATE_DIR TELEGRAM_BOT_TOKEN && export A=b; exec env -u TELEGRAM_STATE_DIR claude --session-id "1"`: "claude",
-		`export X=1 && [ -f ~/.env ] && . ~/.env && cmd --flag=1`:                                                                                      "cmd",
 		`cmd | tee log`:         "cmd",
-		`$(which tool) --x`:     "",
 		`tool > out`:            "tool",
 		`bash -c 'exec claude'`: "bash",
-		`$HOME/bin/tool`:        "",
-		``:                      "",
-		`export A=b;`:           "",
+		`[ -n "$X" ] && claude`: "claude",
+		// Refused: something before the program may change the lookup.
+		`export X=1 && [ -f ~/.env ] && . ~/.env && cmd --flag=1`: "",
+		`source "/home/u/.nvm/nvm.sh" && claude`:                  "",
+		`eval "$(direnv hook bash)" && claude`:                    "",
+		`export PATH='/opt/x/bin' && exec claude`:                 "",
+		`export A=b PATH=/x; exec claude`:                         "",
+		`PATH=/x:$PATH claude`:                                    "",
+		`unset PATH; claude`:                                      "",
+		// Refused: the first word is not a program PATH answers for.
+		`cd ~/proj && ./run.sh`:         "",
+		`echo hi && tool`:               "",
+		`if [ -x tool ]; then tool; fi`: "",
+		// Refused: an expansion or nothing to run.
+		`$(which tool) --x`: "",
+		`$HOME/bin/tool`:    "",
+		``:                  "",
+		`export A=b;`:       "",
 	}
 	for cmd, want := range cases {
-		assert.Equal(t, want, spawnToolBinaryFromCommand(cmd), "command %q", cmd)
+		assert.Equal(t, want, spawnToolProbeTarget(cmd), "command %q", cmd)
 	}
 }
 
@@ -159,19 +242,69 @@ func TestSpawnPathCoversUserBinDir(t *testing.T) {
 	}
 }
 
-func TestSpawnToolNotFoundReason(t *testing.T) {
+// The verdict comes from the marker the pane's probe leaves, and from
+// nothing else: no marker, no attribution, whatever this process's PATH
+// says. The marker is consumed once read.
+func TestSpawnToolNotFoundReason_MarkerOnly(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "x.notfound")
+	assert.Equal(t, "", spawnToolNotFoundReason("claude", marker), "no marker: no evidence")
+	assert.Equal(t, "", spawnToolNotFoundReason("", marker), "no probe target: nothing to attribute")
+
+	require.NoError(t, os.WriteFile(marker, []byte("/home/u/.local/bin:/usr/bin:/bin\n"), 0o600))
+	assert.Equal(t, "tool not found on PATH: claude (searched: /home/u/.local/bin:/usr/bin:/bin)", spawnToolNotFoundReason("claude", marker))
+	_, err := os.Stat(marker)
+	assert.True(t, os.IsNotExist(err), "the marker is consumed with the verdict")
+
+	require.NoError(t, os.WriteFile(marker, []byte("\n"), 0o600))
+	assert.Equal(t, "tool not found on PATH: claude (searched: (empty PATH))", spawnToolNotFoundReason("claude", marker))
+	assert.Equal(t, "", spawnToolNotFoundReason("claude", ""), "no marker path: no probe was emitted")
+}
+
+// The probe is what the pane actually evaluates, so run prelude + probe under
+// bash and look at the marker: written with the pane's PATH (the prepended
+// dir included) only when the pane cannot resolve the tool; a tool found in
+// a prepended dir, or a shell function of that name (what a launch shell's
+// rc file defines), leaves no marker.
+func TestBuildSpawnToolProbe_UnderBash(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
 	root := t.TempDir()
-	bin := filepath.Join(root, "bin")
+	bin := filepath.Join(root, "local bin") // a space: the marker and dirs must survive quoting
 	require.NoError(t, os.MkdirAll(bin, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "present"), []byte("#!/bin/sh\n"), 0o755))
+	marker := filepath.Join(root, "spawn failure", "id.notfound")
+	require.NoError(t, os.MkdirAll(filepath.Dir(marker), 0o700))
 
-	searched := "/usr/bin:" + bin
-	assert.Equal(t, "", spawnToolNotFoundReason("present", searched), "a resolvable tool is not 'not found'")
-	assert.Equal(t, "", spawnToolNotFoundReason("", searched), "no binary known: fall back to the generic reason")
-	assert.Equal(t, "tool not found on PATH: claude (searched: "+searched+")", spawnToolNotFoundReason("claude", searched))
-	// An absolute path is checked as a file, never resolved on PATH.
-	assert.Equal(t, "", spawnToolNotFoundReason(filepath.Join(bin, "present"), "/usr/bin"))
-	assert.Equal(t, "tool not found on PATH: /nope/claude (searched: /usr/bin)", spawnToolNotFoundReason("/nope/claude", "/usr/bin"))
+	run := func(tool, preamble string) (string, bool) {
+		t.Helper()
+		_ = os.Remove(marker)
+		snippet := preamble + buildSpawnPathExport([]string{bin}) + buildSpawnToolProbe(tool, marker)
+		cmd := exec.Command("bash", "-c", snippet+`printf '%s' "$PATH"`)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "snippet failed: %s", out)
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			return "", false
+		}
+		return strings.TrimSpace(string(data)), true
+	}
+
+	searched, written := run("absent-tool", "")
+	require.True(t, written, "a tool the pane cannot resolve leaves the marker")
+	assert.Equal(t, bin+":/usr/bin:/bin", searched, "the marker holds the pane's PATH, prepended dir first")
+
+	_, written = run("present", "")
+	assert.False(t, written, "a tool found through the prepended dir leaves no marker")
+
+	_, written = run("absent-tool", "absent-tool() { :; }; ")
+	assert.False(t, written, "a function of that name (launch shell rc) resolves; no marker")
+
+	_, written = run("cd", "")
+	assert.False(t, written, "a builtin resolves; no marker even if probed")
+
+	assert.NotContains(t, buildSpawnToolProbe("claude", marker), "exec ", "must not look like an exec launcher to wrapExitToShell")
 }
 
 // A spawn that dies fast because its tool is not on PATH must be recorded
@@ -223,23 +356,46 @@ func TestPrepareCommand_PrependsMissingUserBinDirs(t *testing.T) {
 	inst.Tool = "claude"
 	got, _, err := inst.prepareCommand("exec claude --session-id 1")
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(got, buildSpawnPathExport([]string{localBin})), "got %q", got)
-	assert.True(t, strings.HasSuffix(got, "exec claude --session-id 1"), "got %q", got)
+	marker := spawnToolProbeMarkerPath(inst.ID)
+	assert.Equal(t, buildSpawnPathExport([]string{localBin})+buildSpawnToolProbe("claude", marker)+"exec claude --session-id 1", got)
 	assert.Equal(t, 1, strings.Count(got, localBin), "each dir is named exactly once")
+	probeTool, probeMarker := inst.spawnToolLookup("exec claude --session-id 1")
+	assert.Equal(t, "claude", probeTool, "the watcher is told the same tool the pane probes")
+	assert.Equal(t, marker, probeMarker)
+	// A stale marker from an earlier spawn is dropped when the probe is
+	// emitted, so it can never be read as this spawn's evidence.
+	require.NoError(t, os.WriteFile(marker, []byte("/stale\n"), 0o600))
+	_, _, err = inst.prepareCommand("exec claude --session-id 1")
+	require.NoError(t, err)
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr), "stale marker must be removed at spawn")
 
-	// Already on PATH: byte-identical command.
+	// A shape the probe cannot judge (an env file may extend PATH) gets the
+	// prelude alone, and the watcher is told there is no probe.
+	got, _, err = inst.prepareCommand("[ -f ~/.env ] && . ~/.env && exec claude --session-id 1")
+	require.NoError(t, err)
+	assert.Equal(t, buildSpawnPathExport([]string{localBin})+"[ -f ~/.env ] && . ~/.env && exec claude --session-id 1", got)
+	probeTool, probeMarker = inst.spawnToolLookup("[ -f ~/.env ] && . ~/.env && exec claude --session-id 1")
+	assert.Equal(t, "", probeTool)
+	assert.Equal(t, "", probeMarker)
+
+	// Already on PATH: byte-identical command, no prelude and no probe.
 	t.Setenv("PATH", "/usr/bin:"+localBin+":/bin:/opt/homebrew/bin")
 	got, _, err = inst.prepareCommand("exec claude --session-id 1")
 	require.NoError(t, err)
 	assert.Equal(t, "exec claude --session-id 1", got)
+	probeTool, probeMarker = inst.spawnToolLookup("exec claude --session-id 1")
+	assert.Equal(t, "", probeTool, "no prelude, no probe: the generic reason stands")
+	assert.Equal(t, "", probeMarker)
 
-	// A wrapper keeps the export inside the bash -c payload.
+	// A wrapper keeps the prelude and probe inside the bash -c payload.
 	t.Setenv("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
 	inst.Wrapper = "{command} --extra"
 	got, _, err = inst.prepareCommand("tool")
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(got, "bash -c '"), "got %q", got)
 	assert.Contains(t, got, localBin)
+	assert.Contains(t, got, "command -v tool ")
 	assert.True(t, strings.HasSuffix(got, "tool --extra'"), "got %q", got)
 
 	// An empty command (interactive shell pane) gets nothing prepended.
@@ -276,8 +432,10 @@ agent_deck_path = "/home/alice/.local/bin/agent-deck"
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(got, "ssh -t "), "got %q", got)
 	assert.Contains(t, got, `for __d in "$HOME/.local/bin" "$HOME/bin" /home/alice/.local/bin;`)
+	assert.Contains(t, got, `[ -d "$__d" ] && [ -O "$__d" ]`, "the remote shell checks ownership, this process cannot")
 	assert.NotContains(t, got, "/opt/homebrew/bin")
 	assert.NotContains(t, got, home)
+	assert.NotContains(t, got, "command -v", "no probe: the marker would be on the other host")
 	assert.True(t, strings.HasSuffix(got, "exec claude --session-id 1'"), "got %q", got)
 
 	// The prelude precedes the export prefix inside the remote program, after
@@ -343,12 +501,47 @@ func TestSpawnPath_FakeClaudeOnlyInLocalBin(t *testing.T) {
 	missing := NewInstanceWithTool("spawn-path-nobin", t.TempDir(), "claude")
 	t.Cleanup(func() { _ = missing.Kill(); clearSpawnFailureRecord(missing.ID) })
 	require.NoError(t, missing.Start())
-	err := missing.VerifySpawned(8 * time.Second)
+	// VerifySpawned answers "alive" the instant the pane still exists, so
+	// wait for the watcher's record (the pane dies within a few hundred ms)
+	// before reading the verdict.
+	recordFor := func(inst *Instance) *SpawnFailureRecord {
+		t.Helper()
+		var rec *SpawnFailureRecord
+		require.Eventually(t, func() bool {
+			rec = inst.SpawnFailure()
+			return rec != nil
+		}, 15*time.Second, 100*time.Millisecond, "the pane must die and be recorded")
+		return rec
+	}
+	rec := recordFor(missing)
+	assert.True(t, strings.HasPrefix(rec.Reason, "tool not found on PATH: claude (searched: "+localBin+":"), "the searched PATH is the pane's, prepended dir first: %q", rec.Reason)
+	err := missing.VerifySpawned(2 * time.Second)
 	require.Error(t, err)
 	var spawnErr *SpawnFailedError
 	require.ErrorAs(t, err, &spawnErr)
-	require.NotNil(t, spawnErr.Record)
-	assert.True(t, strings.HasPrefix(spawnErr.Record.Reason, "tool not found on PATH: claude (searched: "), "reason = %q", spawnErr.Record.Reason)
-	assert.Contains(t, spawnErr.Record.Reason, localBin)
 	assert.Contains(t, err.Error(), "tool not found on PATH: claude")
+	_, statErr := os.Stat(spawnToolProbeMarkerPath(missing.ID))
+	assert.True(t, os.IsNotExist(statErr), "the marker is consumed with the verdict")
+
+	// Misattribution guard (round-1 review, finding 1): the pane resolves
+	// `claude` through an env file that extends PATH, which this process
+	// never sees, and the tool then dies for its own reason. The deck's own
+	// PATH lookup would have blamed PATH; the pane's evidence says nothing
+	// of the kind, so the generic reason stands with the dying output.
+	envBin := filepath.Join(home, "env-bin")
+	require.NoError(t, os.MkdirAll(envBin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(envBin, "claude"), []byte("#!/bin/sh\necho 'claude: config is broken' >&2\nexit 3\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".env-path"), []byte("export PATH=\"$PATH:"+envBin+"\"\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".config", "agent-deck"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".config", "agent-deck", "config.toml"), []byte("[shell]\nenv_files = [\"~/.env-path\"]\n"), 0o644))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	viaEnv := NewInstanceWithTool("spawn-path-envfile", t.TempDir(), "claude")
+	t.Cleanup(func() { _ = viaEnv.Kill(); clearSpawnFailureRecord(viaEnv.ID) })
+	require.NoError(t, viaEnv.Start())
+	rec = recordFor(viaEnv)
+	assert.Equal(t, "spawn_died_fast", rec.Reason, "no pane evidence of a missing tool: generic reason (dying output %q)", rec.DyingOutput)
+	err = viaEnv.VerifySpawned(2 * time.Second)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "not found on PATH")
 }

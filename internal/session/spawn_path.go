@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"al.essio.dev/pkg/shellescape"
 
@@ -25,19 +26,35 @@ import (
 // is off the non-interactive PATH.
 //
 // The rule: the spawn environment prepends the standard user bin dirs that
-// exist and are missing from PATH ($HOME/.local/bin, $HOME/bin, the directory
-// of the running agent-deck binary, /opt/homebrew/bin on macOS, and the
-// directory of an explicitly configured agent_deck_path) exactly once, in that
-// order, without reordering anything the user already has. It is applied on
-// every host, remote or local, so a session behaves the same wherever it is
-// spawned. The prepend happens inside the pane command (buildSpawnPathExport)
-// rather than in the deck process's own environment because a tmux server
-// that is already running keeps the PATH it was born with: only the command
-// itself is guaranteed to run in the pane.
+// are missing from PATH, exactly once, in this documented order, without
+// reordering anything the user already has:
+//
+//  1. $HOME/.local/bin
+//  2. $HOME/bin
+//  3. the directory of the running agent-deck binary
+//  4. /opt/homebrew/bin (macOS only)
+//  5. the directory of an explicitly configured agent_deck_path (--ssh)
+//
+// A candidate is prepended only when it is an absolute path to an existing
+// directory that is not world-writable and is owned by the current user or
+// root (spawnPathDirUsable): the prelude puts these dirs in FRONT of every
+// tool the session and its children launch, so a directory anyone else can
+// write to (/tmp, a shared checkout) must never get there, whichever binary
+// happened to be run. It is applied on every host, remote or local, so a
+// session behaves the same wherever it is spawned. The prepend happens inside
+// the pane command (buildSpawnPathExport) rather than in the deck process's
+// own environment because a tmux server that is already running keeps the
+// PATH it was born with: only the command itself is guaranteed to run in the
+// pane.
 //
 // A tool that still cannot be found is reported as
 // "tool not found on PATH: <tool> (searched: <PATH>)" instead of the generic
-// fast death (spawnToolNotFoundReason).
+// fast death, but only on the pane's own evidence: a probe run inside the
+// pane environment after the PATH prelude (spawnToolProbe). The deck
+// process's PATH is never consulted for that verdict, because the pane may
+// resolve the tool through a richer tmux PATH, a launch shell's aliases and
+// functions, or an env file; without the pane's evidence the generic reason
+// stands together with the dying output.
 
 // spawnPathCandidates returns the user bin dirs to consider, in the order they
 // are prepended. exe is the running binary (os.Executable, symlinks resolved)
@@ -61,9 +78,11 @@ func spawnPathCandidates(home, exe, configured, goos string) []string {
 	return dirs
 }
 
-// missingPathDirs filters candidates down to the directories that exist and
-// are not already on pathEnv, deduplicated and in candidate order.
-func missingPathDirs(pathEnv string, candidates []string, isDir func(string) bool) []string {
+// missingPathDirs filters candidates down to the directories usable
+// reports as safe to prepend (spawnPathDirUsable for real spawns) and not
+// already on pathEnv, deduplicated and in candidate order. A relative
+// candidate is dropped here too: the pane's working directory is not known.
+func missingPathDirs(pathEnv string, candidates []string, usable func(string) bool) []string {
 	onPath := map[string]bool{}
 	for _, d := range filepath.SplitList(pathEnv) {
 		if d != "" {
@@ -74,7 +93,7 @@ func missingPathDirs(pathEnv string, candidates []string, isDir func(string) boo
 	seen := map[string]bool{}
 	for _, dir := range candidates {
 		dir = filepath.Clean(dir)
-		if seen[dir] || onPath[dir] || !isDir(dir) {
+		if seen[dir] || onPath[dir] || !filepath.IsAbs(dir) || !usable(dir) {
 			continue
 		}
 		seen[dir] = true
@@ -83,18 +102,30 @@ func missingPathDirs(pathEnv string, candidates []string, isDir func(string) boo
 	return missing
 }
 
-// prependPathDirs returns pathEnv with dirs in front, in order. It is the
-// Go-side view of what buildSpawnPathExport does in the pane and is what the
-// "searched:" part of the not-found reason reports.
-func prependPathDirs(pathEnv string, dirs []string) string {
-	if len(dirs) == 0 {
-		return pathEnv
+// spawnPathDirUsable reports whether dir may be put in front of a spawned
+// session's PATH: an existing directory that nobody but its owner (this
+// user or root) can write to. A world-writable directory would let any
+// other user on the host plant a binary that every session then runs; a
+// directory owned by someone else is theirs to change. The sticky bit is no
+// exemption (/tmp is sticky and still world-writable).
+func spawnPathDirUsable(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
 	}
-	joined := strings.Join(dirs, string(os.PathListSeparator))
-	if pathEnv == "" {
-		return joined
+	return spawnPathDirInfoUsable(info, os.Geteuid())
+}
+
+// spawnPathDirInfoUsable is spawnPathDirUsable's verdict on a stat result.
+func spawnPathDirInfoUsable(info os.FileInfo, uid int) bool {
+	if info.Mode().Perm()&0o002 != 0 {
+		return false
 	}
-	return joined + string(os.PathListSeparator) + pathEnv
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return int(stat.Uid) == uid || stat.Uid == 0
 }
 
 // buildSpawnPathExport renders the shell prelude that prepends dirs to the
@@ -102,27 +133,39 @@ func prependPathDirs(pathEnv string, dirs []string) string {
 // the PATH the pane actually has (which can differ from the deck process's
 // when the tmux server predates this spawn), so evaluating it is idempotent
 // and never reorders existing entries. Empty when there is nothing to add.
+// dirs have already passed spawnPathDirUsable here.
 func buildSpawnPathExport(dirs []string) string {
 	words := make([]string, 0, len(dirs))
 	for _, d := range dirs {
 		words = append(words, shellescape.Quote(d))
 	}
-	return buildSpawnPathExportWords(words)
+	return buildSpawnPathExportWords(words, `[ -d "$__d" ]`)
 }
 
 // buildSpawnPathExportWords is buildSpawnPathExport over shell words that
 // are already quoted, so an --ssh session can hand over "$HOME/.local/bin"
-// for the remote shell to expand.
-func buildSpawnPathExportWords(words []string) string {
+// for the remote shell to expand. test is the per-dir shell test that
+// decides whether a dir is added; the local prelude only asks whether it
+// exists (the deck process already checked ownership and mode), the --ssh
+// prelude also asks whether it is owned by the remote user (sshSpawnPathTest).
+func buildSpawnPathExportWords(words []string, test string) string {
 	if len(words) == 0 {
 		return ""
 	}
 	// __p accumulates the dirs to add in order; a single prepend at the end
 	// keeps A:B:$PATH rather than the reversed order a per-dir prepend gives.
 	return `for __d in ` + strings.Join(words, " ") +
-		`; do case ":$PATH:" in *":$__d:"*) ;; *) [ -d "$__d" ] && __p="${__p:+$__p:}$__d";; esac; done; ` +
+		`; do case ":$PATH:" in *":$__d:"*) ;; *) ` + test + ` && __p="${__p:+$__p:}$__d";; esac; done; ` +
 		`[ -n "$__p" ] && PATH="$__p:$PATH"; export PATH; unset __d __p; `
 }
+
+// sshSpawnPathTest is the per-dir test of the --ssh prelude. The controller
+// cannot stat the remote's directories, so the remote shell checks what it
+// can: the dir exists and is owned by the user the session runs as (-O).
+// A configured agent_deck_path directory owned by root (/usr/local/bin) is
+// therefore not added there; such a directory is on the remote's PATH
+// already, or the user put the binary there knowing it is not.
+const sshSpawnPathTest = `[ -d "$__d" ] && [ -O "$__d" ]`
 
 // spawnPathDirs resolves the dirs this process would add for a local spawn:
 // the candidates that exist and are missing from the process PATH.
@@ -136,10 +179,7 @@ func (i *Instance) spawnPathDirs() []string {
 		}
 	}
 	candidates := spawnPathCandidates(os.Getenv("HOME"), exe, "", runtime.GOOS)
-	return missingPathDirs(os.Getenv("PATH"), candidates, func(dir string) bool {
-		info, err := os.Stat(dir)
-		return err == nil && info.IsDir()
-	})
+	return missingPathDirs(os.Getenv("PATH"), candidates, spawnPathDirUsable)
 }
 
 // sshSpawnPathWords is the --ssh counterpart of spawnPathDirs. The command
@@ -147,7 +187,7 @@ func (i *Instance) spawnPathDirs() []string {
 // the same PATH gap, but this process cannot see that host's directories:
 // the home dirs travel as $HOME expressions the remote shell expands, the
 // configured agent_deck_path's directory as a literal, and the prelude's
-// own -d test decides what exists there.
+// own test (sshSpawnPathTest) decides what exists there.
 func (i *Instance) sshSpawnPathWords() []string {
 	words := []string{`"$HOME/.local/bin"`, `"$HOME/bin"`}
 	if cfg, _ := LoadUserConfig(); cfg != nil {
@@ -164,68 +204,94 @@ func (i *Instance) sshSpawnPathWords() []string {
 	return words
 }
 
-// spawnSearchPath is the PATH the spawned pane resolves its tool on, as far
-// as this process can tell: the process PATH with the missing user bin dirs
-// in front.
-func (i *Instance) spawnSearchPath() string {
-	return prependPathDirs(os.Getenv("PATH"), i.spawnPathDirs())
-}
-
-// wrapSpawnPath prepends the PATH prelude to a non-empty pane command.
+// wrapSpawnPath prepends the PATH prelude, then the tool probe, to a
+// non-empty pane command. With nothing to add the command is returned
+// byte-identical: no prelude, and no probe either (see spawnToolLookup).
 func (i *Instance) wrapSpawnPath(command string) string {
 	if command == "" {
 		return command
 	}
 	if i.IsSSH() {
-		return buildSpawnPathExportWords(i.sshSpawnPathWords()) + command
+		return buildSpawnPathExportWords(i.sshSpawnPathWords(), sshSpawnPathTest) + command
 	}
-	return buildSpawnPathExport(i.spawnPathDirs()) + command
+	dirs := i.spawnPathDirs()
+	if len(dirs) == 0 {
+		return command
+	}
+	prelude := buildSpawnPathExport(dirs)
+	if tool, marker := i.spawnToolLookup(command); tool != "" {
+		// A marker left by an earlier spawn of this instance (the tool was
+		// missing then, and an exit-to-shell pane never died) must not be
+		// read as evidence about this one.
+		_ = os.Remove(marker)
+		if err := os.MkdirAll(filepath.Dir(marker), 0o700); err == nil {
+			prelude += buildSpawnToolProbe(tool, marker)
+		}
+	}
+	return prelude + command
 }
 
-// spawnPathCoversUserBinDir reports whether dir is one of the standard user
-// bin dirs the spawn prelude adds on any host: ~/.local/bin or ~/bin under
-// home. With an unknown home the shape /home/<u>, /Users/<u> or /root is
-// accepted instead.
-func spawnPathCoversUserBinDir(dir, home string) bool {
-	dir = cleanResolved(dir)
-	if home = strings.TrimSpace(home); home != "" {
-		home = cleanResolved(home)
-		return dir == filepath.Join(home, ".local", "bin") || dir == filepath.Join(home, "bin")
-	}
-	return strings.HasSuffix(dir, "/.local/bin") || userHomeBinRe.MatchString(dir)
-}
+// Tool probe.
+//
+// Whether the pane can find its tool is decided in the pane: right after
+// the PATH prelude, `command -v <tool>` runs in the pane's own shell (so a
+// launch shell's rc files, functions and aliases count, and so does a tmux
+// server born with a richer PATH than this process has) and, only when it
+// fails, writes the pane's PATH to a marker file next to the spawn-failure
+// records. The fast-death watcher promotes a death to "tool not found on
+// PATH" only when that marker exists, and reports the PATH the pane
+// searched, never this process's. Without a marker the generic reason stands.
+//
+// The probe accompanies the PATH prelude: it answers whether the dirs the
+// deck added were enough. When the deck has nothing to add the pane command
+// stays byte-identical to what it was before this file existed, and a fast
+// death keeps the generic reason with the dying output.
+//
+// The probe is emitted only when the command's shape lets it prove
+// something: the first program to run is a plain word and nothing before it
+// can change how that word resolves (spawnToolProbeTarget). A sourced env
+// file, an init script, an `eval`, or a PATH assignment ahead of the tool
+// disables the probe rather than risking a wrong verdict.
 
-// cleanResolved cleans path and follows symlinks when it exists here (a
-// resolved deploy target and the home it was derived from must compare
-// equal even when one of them went through /private/var-style links).
-func cleanResolved(path string) string {
-	path = filepath.Clean(path)
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
-	}
-	return path
-}
-
-var userHomeBinRe = regexp.MustCompile(`^/(?:home/[^/]+|Users/[^/]+|root)/bin$`)
-
-// spawnToolLookup returns what the fast-death watcher needs to name a tool
-// that is not on PATH: the program the bare command execs and the PATH the
-// pane resolves it on. Both are "" for a sandboxed or --ssh session, whose
-// program runs on a filesystem this process cannot check.
-func (i *Instance) spawnToolLookup(command string) (binary, searchPath string) {
-	if i.IsSandboxed() || i.IsSSH() {
+// spawnToolLookup returns the tool the probe checks and the marker it
+// writes, or "" when no probe accompanies this spawn: nothing to prepend, a
+// command whose shape allows no verdict, or a sandboxed or --ssh session,
+// whose program runs where this process cannot read the marker.
+func (i *Instance) spawnToolLookup(command string) (tool, marker string) {
+	if i.IsSandboxed() || i.IsSSH() || len(i.spawnPathDirs()) == 0 {
 		return "", ""
 	}
-	return spawnToolBinaryFromCommand(command), i.spawnSearchPath()
+	tool = spawnToolProbeTarget(command)
+	if tool == "" {
+		return "", ""
+	}
+	return tool, spawnToolProbeMarkerPath(i.ID)
 }
 
-// spawnToolBinaryFromCommand returns the program a built pane command execs,
-// or "" when it cannot be told without evaluating shell syntax. Statements
-// are split on `;` and `&&`; the env prelude (`export`, `unset`, sourced env
-// files, `[ -f ... ]` tests) is skipped, as are `exec`, an `env -u NAME`
-// wrapper and inline assignments. Anything that reaches an expansion, a
-// pipe, a redirection or a subshell first is refused.
-func spawnToolBinaryFromCommand(command string) string {
+// spawnToolProbeMarkerPath is where the probe for instanceID records a
+// missing tool: the pane's PATH, one line, beside the instance's
+// spawn-failure record (spawnFailureRecordPath).
+func spawnToolProbeMarkerPath(instanceID string) string {
+	return filepath.Join(spawnFailureDir(), instanceID+".notfound")
+}
+
+// buildSpawnToolProbe renders the in-pane probe for tool: when the shell
+// cannot resolve it, the pane's PATH is written to marker. The command's
+// own failure is left to happen (and to print the shell's own message);
+// the probe only records the evidence.
+func buildSpawnToolProbe(tool, marker string) string {
+	return `command -v ` + shellescape.Quote(tool) + ` >/dev/null 2>&1 || printf "%s\n" "$PATH" > ` + shellescape.Quote(marker) + ` 2>/dev/null; `
+}
+
+// spawnToolProbeTarget returns the program a built pane command runs first,
+// or "" when the shape allows no verdict. Statements are split on `;` and
+// `&&`; `export` and `unset` statements and `[ ... ]` tests are skipped, as
+// are `exec`, an `env -u NAME` wrapper and inline assignments in front of
+// the program. Anything that could change how the program resolves before
+// it runs (a sourced file, `eval`, a PATH assignment), a shell builtin or
+// keyword as the program, or an expansion, pipe, redirection or subshell
+// reached first, refuses the probe.
+func spawnToolProbeTarget(command string) string {
 	words, ok := shellwords.Split(command)
 	if !ok {
 		return ""
@@ -255,7 +321,14 @@ func spawnToolBinaryFromCommand(command string) string {
 	flush()
 	for _, statement := range statements {
 		switch statement[0] {
-		case "export", "unset", ".", "source", "[", "test":
+		case ".", "source", "eval":
+			return ""
+		case "export", "unset", "[", "test":
+			for _, w := range statement[1:] {
+				if w == "PATH" || strings.HasPrefix(w, "PATH=") {
+					return ""
+				}
+			}
 			continue
 		}
 		skipNext := false
@@ -270,9 +343,13 @@ func spawnToolBinaryFromCommand(command string) string {
 			case w == "-u":
 				skipNext = true
 				continue
+			case strings.HasPrefix(w, "PATH="):
+				return ""
 			case isShellAssignment(w):
 				continue
 			case strings.ContainsAny(w, "&|<>$`(){}"):
+				return ""
+			case spawnShellBuiltins[w]:
 				return ""
 			}
 			return w
@@ -280,6 +357,41 @@ func spawnToolBinaryFromCommand(command string) string {
 	}
 	return ""
 }
+
+// spawnShellBuiltins are words a custom command may start with that no
+// PATH lookup answers for (a builtin or keyword the shell runs itself); a
+// probe for them proves nothing.
+var spawnShellBuiltins = map[string]bool{
+	"cd": true, "echo": true, "printf": true, "eval": true, "exit": true, "set": true,
+	"true": true, "false": true, ":": true, "trap": true, "wait": true, "read": true,
+	"if": true, "while": true, "until": true, "for": true, "case": true, "!": true,
+}
+
+// spawnPathCoversUserBinDir reports whether dir is one of the standard user
+// bin dirs the spawn prelude adds on any host: ~/.local/bin or ~/bin under
+// home. With an unknown home the shape /home/<u>, /Users/<u> or /root is
+// accepted instead.
+func spawnPathCoversUserBinDir(dir, home string) bool {
+	dir = cleanResolved(dir)
+	if home = strings.TrimSpace(home); home != "" {
+		home = cleanResolved(home)
+		return dir == filepath.Join(home, ".local", "bin") || dir == filepath.Join(home, "bin")
+	}
+	return strings.HasSuffix(dir, "/.local/bin") || userHomeBinRe.MatchString(dir)
+}
+
+// cleanResolved cleans path and follows symlinks when it exists here (a
+// resolved deploy target and the home it was derived from must compare
+// equal even when one of them went through /private/var-style links).
+func cleanResolved(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
+var userHomeBinRe = regexp.MustCompile(`^/(?:home/[^/]+|Users/[^/]+|root)/bin$`)
 
 // isShellAssignment reports whether word is a NAME=value shell assignment.
 func isShellAssignment(word string) bool {
@@ -295,30 +407,30 @@ func isShellAssignment(word string) bool {
 	return true
 }
 
-// spawnToolNotFoundReason returns the explicit failure reason when binary
-// cannot be resolved on searchPath, or "" when it can (or is unknown).
-func spawnToolNotFoundReason(binary, searchPath string) string {
-	if binary == "" {
+// spawnToolNotFoundReason reads the probe's verdict for tool: the
+// explicit failure reason when marker exists (the pane could not resolve
+// the tool on the PATH the marker holds), or "" when there is no evidence.
+// The marker is consumed either way.
+func spawnToolNotFoundReason(tool, marker string) string {
+	if tool == "" || marker == "" {
 		return ""
 	}
-	if strings.Contains(binary, string(os.PathSeparator)) {
-		if isExecutableFile(binary) {
-			return ""
-		}
-	} else {
-		for _, dir := range filepath.SplitList(searchPath) {
-			if dir != "" && isExecutableFile(filepath.Join(dir, binary)) {
-				return ""
-			}
-		}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return ""
 	}
-	return fmt.Sprintf("%s%s (searched: %s)", spawnToolNotFoundPrefix, binary, searchPath)
+	_ = os.Remove(marker)
+	searched := strings.TrimSpace(string(data))
+	if searched == "" {
+		searched = "(empty PATH)"
+	}
+	return fmt.Sprintf("%s%s (searched: %s)", spawnToolNotFoundPrefix, tool, searched)
 }
 
-// isExecutableFile reports whether path is a regular file with an execute bit.
-func isExecutableFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
+// clearSpawnToolProbeMarker drops the marker for instanceID, if any (a
+// pane that outlived the fast-death window keeps its verdict to itself).
+func clearSpawnToolProbeMarker(instanceID string) {
+	_ = os.Remove(spawnToolProbeMarkerPath(instanceID))
 }
 
 // spawnToolNotFoundPrefix is how a not-found reason starts; the record and

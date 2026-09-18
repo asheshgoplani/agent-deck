@@ -5093,10 +5093,11 @@ func (i *Instance) Start() error {
 		}
 	}
 
-	// What the pane will exec, read off the bare command before any wrapper
-	// hides it: the fast-death watcher uses it to tell "tool not on PATH"
-	// from a generic early exit.
-	toolBinary, searchPath := i.spawnToolLookup(command)
+	// The tool the pane's probe checks and the marker it leaves when the
+	// tool is missing, read off the bare command before any wrapper hides
+	// it: the fast-death watcher tells "tool not on PATH" from a generic
+	// early exit by that marker alone (spawn_path.go).
+	probeTool, probeMarker := i.spawnToolLookup(command)
 
 	var containerName string
 	var err error
@@ -5168,7 +5169,7 @@ func (i *Instance) Start() error {
 		// calling goroutine) makes the watcher's writes land in the HOME that
 		// was live when this session started, never whichever HOME happens to
 		// be live when the ticker next fires.
-		i.startFastDeathWatcher(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, toolBinary, searchPath)
+		i.startFastDeathWatcher(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, probeTool, probeMarker)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5467,7 +5468,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if promptEmbeddedInCommand {
 		diagnosticCommand = redactEmbeddedSpawnPrompt(command, message)
 	}
-	toolBinary, searchPath := i.spawnToolLookup(command)
+	probeTool, probeMarker := i.spawnToolLookup(command)
 	var containerName string
 	var err error
 	command, containerName, err = i.prepareCommand(command)
@@ -5516,7 +5517,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if command != "" && !i.expectsFastExit() {
 		// See the matching comment in Start(): resolve the write targets — and
 		// subscribe to the wake — here, not inside the never-joined goroutine.
-		i.startFastDeathWatcher(diagnosticCommand, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, toolBinary, searchPath)
+		i.startFastDeathWatcher(diagnosticCommand, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, probeTool, probeMarker)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
