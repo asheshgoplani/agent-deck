@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -115,7 +116,18 @@ func ParseWho(output string, now time.Time, loc *time.Location) ([]SSHSession, e
 // whoCommand runs `who` (POSIX, utmp-backed, no root needed on Linux or
 // macOS); a test seam.
 var whoCommand = func(ctx context.Context) ([]byte, error) {
-	return exec.CommandContext(ctx, "who").Output()
+	return newWhoCommand(ctx).Output()
+}
+
+// newWhoCommand is `who` under the C locale. BSD `who` (macOS) formats the
+// login time in the current locale ("5 Sep. 18:32" under de_DE), which
+// whoLine does not match, and an SSH client sends its LANG/LC_* along by
+// default, so the inherited locale is whatever the operator's terminal
+// speaks. GNU `who` prints ISO dates whatever the locale; C costs it nothing.
+func newWhoCommand(ctx context.Context) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "who")
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd
 }
 
 // CollectSSHSessions gathers who is connected over SSH right now, via

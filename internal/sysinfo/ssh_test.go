@@ -1,6 +1,8 @@
 package sysinfo
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,5 +77,55 @@ func TestParseWho_Empty(t *testing.T) {
 	}
 	if _, err := ParseWho("USER TTY IDLE TIME HOST\nroot pts/0 00:01 12:00 1.2.3.4\n", time.Now(), loc); err == nil {
 		t.Fatal("busybox header must be rejected")
+	}
+}
+
+// TestWhoCommand_CLocale is review finding 4: BSD `who` formats the login
+// time in the current locale, which the parser does not read, and an SSH
+// client forwards LANG/LC_* by default; the command therefore runs under
+// LC_ALL=C, whatever the inherited environment says.
+func TestWhoCommand_CLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	t.Setenv("LANG", "de_DE.UTF-8")
+	cmd := newWhoCommand(context.Background())
+	if len(cmd.Args) == 0 || cmd.Args[0] != "who" {
+		t.Fatalf("args = %q", cmd.Args)
+	}
+	last := ""
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "LC_ALL=") {
+			last = kv
+		}
+	}
+	if last != "LC_ALL=C" {
+		t.Fatalf("LC_ALL must be C and win over the inherited value: env %q", cmd.Env)
+	}
+	if got, err := cmd.Output(); err == nil {
+		// Whatever `who` printed under C, the parser must read it (this
+		// host's own logins: local or remote, never an unrecognised line).
+		if _, perr := ParseWho(string(got), time.Now(), time.Local); perr != nil {
+			t.Errorf("who under LC_ALL=C is unparseable: %v\n%s", perr, got)
+		}
+	}
+}
+
+// TestParseWho_LocaleFixtures pins both shapes as `who` prints them under
+// the C locale (macOS "Sep  5 18:32", GNU "2026-09-17 11:41"), and that the
+// German macOS shape, which the C locale exists to avoid, is refused rather
+// than misread.
+func TestParseWho_LocaleFixtures(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, loc)
+	for name, out := range map[string]string{
+		"bsd-c": "alice            console      Sep  5 18:32 \nalice            ttys000      Sep 15 14:56 (10.0.0.5)\n",
+		"gnu-c": "alice    tty1         2026-09-05 18:32\nalice    pts/0        2026-09-15 14:56 (10.0.0.5)\n",
+	} {
+		got, err := ParseWho(out, now, loc)
+		if err != nil || len(got) != 1 || got[0].User != "alice" || got[0].Count != 1 || got[0].From != "10.0.0.5" {
+			t.Errorf("%s: %+v, %v", name, got, err)
+		}
+	}
+	if _, err := ParseWho("alice            console       5 Sep. 18:32 \nalice            ttys000      15 Sep. 14:56 (10.0.0.5)\n", now, loc); err == nil {
+		t.Error("de_DE BSD output must be an error (unknown), never a guess")
 	}
 }
