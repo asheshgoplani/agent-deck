@@ -59,9 +59,15 @@ Nothing is ever written into the project directory: no `AGENTS.md`,
 | `pi` | `--append-system-prompt <file>` | yes, incl. `session fork` | |
 | `gemini` | `--include-directories <dir>` with `GEMINI.md` inside, loaded as project memory next to the project's own | yes, incl. `--resume` | see folder trust below |
 | custom `--cmd`, opencode, cursor, copilot, crush, hermes, deepseek | `AGENTDECK_IDENTITY_FILE` in the environment | yes | no prompt injection; the command decides whether to read the file |
+| plain shell session (`shell`, no command) | `AGENTDECK_IDENTITY_FILE` exported into the pane shell by one line typed at start, together with `AGENTDECK_INSTANCE_ID`, `AGENTDECK_PROFILE`, `AGENTDECK_TOOL` and `AGENTDECK_TITLE` (the pane shell was already running when tmux's session environment was set, so an export is the only way to reach it) | yes | the line is visible in the pane; it is space-prefixed so a history that ignores such lines skips it |
 
 SSH (`--ssh`) and Docker-sandboxed sessions are skipped entirely: the file
 lives on the controller host and would not be visible where the harness runs.
+
+A session created on a remote through `remote <name> add` or the TUI dialog
+is spawned by that remote's own agent-deck, so it gets the block like a local
+session there: the file is written on the remote, and `$AGENTDECK_IDENTITY_FILE`
+in the session is a path on that host.
 
 A session switched to another harness (`session switch-harness`, #2237) is a
 new instance in the new harness; its launch command carries the new

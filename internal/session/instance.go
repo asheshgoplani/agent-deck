@@ -1603,13 +1603,50 @@ func resolvedProcessProfile() string {
 	return resolved
 }
 
-// ensureInteractiveShellAccount updates the already-running shell as well as
-// tmux's environment. Setting a tmux option cannot change that shell's env.
-func (i *Instance) ensureInteractiveShellAccount() {
-	if i.Tool == "shell" && i.Account != "" && !i.tmuxSession.RunCommandAsInitialProcess {
-		if err := i.tmuxSession.SendKeysAndEnter("export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account)); err != nil {
-			sessionLog.Warn("set_interactive_account_failed", slog.String("error", err.Error()))
+// ensureInteractiveShellEnv updates the already-running shell as well as
+// tmux's environment. Setting a tmux option cannot change that shell's env,
+// so the exports are typed into it.
+//
+// A plain shell session (tool "shell", no command) is the one kind of
+// session whose pane process gets no command prefix at all: every other
+// tool exports AGENTDECK_INSTANCE_ID, AGENTDECK_PROFILE and the identity
+// file (identity_injection.go) in front of its command. `env | grep
+// AGENTDECK` in such a session was empty, on a remote and locally alike
+// (remote parity walk on g14, 2026-09-18), so a bare `agent-deck` run there
+// could not tell which session it was in, and the identity block never
+// reached it. One export line gives it the same environment; the identity
+// file is written by the agent-deck that spawns the pane, so on a remote it
+// is the remote's own. A shell session running a custom command keeps its
+// pre-existing account export only: the command already owns the pane's
+// input, and its environment comes from its own command line.
+func (i *Instance) ensureInteractiveShellEnv() {
+	if i.Tool != "shell" || i.tmuxSession == nil || i.tmuxSession.RunCommandAsInitialProcess {
+		return
+	}
+	var exports []string
+	if strings.TrimSpace(i.Command) == "" {
+		exports = append(exports,
+			"AGENTDECK_INSTANCE_ID="+shellescape.Quote(i.ID),
+			"AGENTDECK_PROFILE="+shellescape.Quote(sessionProfileEnvValue()),
+			"AGENTDECK_TOOL="+shellescape.Quote(i.Tool),
+			"AGENTDECK_TITLE="+shellescape.Quote(identityOneLine(i.Title)))
+	}
+	if i.Account != "" {
+		exports = append(exports, "AGENTDECK_ACCOUNT="+shellescape.Quote(i.Account))
+	}
+	if len(exports) == 0 {
+		return
+	}
+	if strings.TrimSpace(i.Command) == "" {
+		if identityExport := i.identityEnvExport(); identityExport != "" {
+			exports = append(exports, strings.TrimPrefix(identityExport, "export "))
 		}
+	}
+	// The leading space keeps the line out of a history that ignores
+	// space-prefixed commands (bash HISTCONTROL=ignorespace, zsh
+	// HIST_IGNORE_SPACE); it is agent-deck's line, not the user's.
+	if err := i.tmuxSession.SendKeysAndEnter(" export " + strings.Join(exports, " ")); err != nil {
+		sessionLog.Warn("set_interactive_shell_env_failed", slog.String("error", err.Error()))
 	}
 }
 
@@ -5190,7 +5227,7 @@ func (i *Instance) Start() error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	i.ensureInteractiveShellAccount()
+	i.ensureInteractiveShellEnv()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -5538,7 +5575,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	i.ensureInteractiveShellAccount()
+	i.ensureInteractiveShellEnv()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
@@ -9810,7 +9847,7 @@ func (i *Instance) restart(env map[string]string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
-	i.ensureInteractiveShellAccount()
+	i.ensureInteractiveShellEnv()
 	i.ensureClaudeConfigDirEnv()
 
 	// Propagate all known tool session IDs to the tmux environment (host-side).
