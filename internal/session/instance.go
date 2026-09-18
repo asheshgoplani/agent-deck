@@ -8036,10 +8036,12 @@ func (i *Instance) GetLastResponseBestEffortChecked(peers []*Instance) (*Respons
 // over hard errors.
 //
 // Behavior for Claude:
-// 1. Try structured JSONL read via stored ClaudeSessionID.
-// 2. Refresh ID from tmux env and retry.
-// 3. Fallback to terminal parsing.
-// 4. If still unavailable, return an empty response (no error).
+//  1. Try structured JSONL read via stored ClaudeSessionID.
+//  2. Refresh ID from tmux env and retry.
+//  3. If the currently bound ID already has a local transcript file, scan for a
+//     /clear rollover. A missing file is not ownership of a neighboring JSONL.
+//  4. Fallback to terminal parsing.
+//  5. If still unavailable, return an empty response (no error).
 //
 // Behavior for Gemini (mirrors Claude):
 // 1. Try structured JSON read via stored GeminiSessionID.
@@ -8077,19 +8079,42 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		// compaction it points at a stale, empty transcript. Find the newest
 		// transcript on disk that carries a real assistant reply. Mirrors the
 		// Gemini syncGeminiSessionFromDisk fallback below.
-		if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
-			// #1815: this is an mtime-based disk scan — the same evidence
-			// class as the restart discovery prelude, and in a shared working
-			// directory the newest transcript can belong to another session.
-			// Good enough to READ a last response from; never ownership. Mark
-			// it unverified so it cannot authorize a later `--resume`, and do
-			// NOT write it into this pane's CLAUDE_SESSION_ID: that would
-			// launder a scanned id into a "bound from my own tmux env" one on
-			// the next status poll, which is exactly the resume this guard
-			// exists to prevent.
-			i.adoptDiscoveredClaudeSessionID(id)
-			i.ClaudeDetectedAt = time.Now()
-			return recovered, nil
+		//
+		// Issue #2299 (samratashoka007, #2303) + carry fix: the mtime filter
+		// inside findLatestClaudeTranscriptOnDisk already excludes candidates
+		// older than i.LastStartedAt, but treats a ZERO LastStartedAt as
+		// "unknown" and does not filter at all — the exact case #2303 caught,
+		// where a session record predates the LastStartedAt field (or the
+		// caller never started it) and LastStartedAt gives no evidence either
+		// way. #2303's own fix (require i.GetJSONLPath() != "", i.e. the
+		// bound id must already have a local file) is safe there, but applied
+		// unconditionally it also blocks legitimate /clear-rollover recovery:
+		// a session can be live (LastStartedAt known and reliable) with a
+		// bound id that has not been flushed to disk yet while Claude has
+		// already written the rollover under a NEW id — GetJSONLPath() on the
+		// OLD id is "" in that window, so the unconditional gate would wrongly
+		// refuse the newer, legitimate rollover transcript.
+		//
+		// Only require #2303's stronger "already owns a local file" evidence
+		// when LastStartedAt itself gives no evidence (zero/unknown). When
+		// LastStartedAt is known, the existing per-candidate mtime filter
+		// alone is sufficient and rollover recovery must not be blocked by
+		// the bound id's own file having not appeared yet.
+		if !i.LastStartedAt.IsZero() || i.GetJSONLPath() != "" {
+			if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
+				// #1815: this is an mtime-based disk scan — the same evidence
+				// class as the restart discovery prelude, and in a shared working
+				// directory the newest transcript can belong to another session.
+				// Good enough to READ a last response from; never ownership. Mark
+				// it unverified so it cannot authorize a later `--resume`, and do
+				// NOT write it into this pane's CLAUDE_SESSION_ID: that would
+				// launder a scanned id into a "bound from my own tmux env" one on
+				// the next status poll, which is exactly the resume this guard
+				// exists to prevent.
+				i.adoptDiscoveredClaudeSessionID(id)
+				i.ClaudeDetectedAt = time.Now()
+				return recovered, nil
+			}
 		}
 	}
 
