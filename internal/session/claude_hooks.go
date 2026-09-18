@@ -59,10 +59,7 @@ func isAgentDeckHookCommand(command string) bool {
 	if !ok {
 		return false
 	}
-	// Skip leading VAR=value exports (the Stop sync marker).
-	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.ContainsRune(words[0], os.PathSeparator) {
-		words = words[1:]
-	}
+	words = stripLeadingEnvAssignments(words)
 	if len(words) < 2 || words[1] != hookHandlerSubcommand {
 		return false
 	}
@@ -75,6 +72,17 @@ func isAgentDeckHookCommand(command string) bool {
 		return true
 	}
 	return strings.TrimSuffix(filepath.Base(words[0]), ".exe") == "agent-deck"
+}
+
+// stripLeadingEnvAssignments drops the leading VAR=value words a hook command
+// may carry in front of the program (the Stop sync marker), leaving the
+// program in command position. A word containing a path separator is never
+// treated as an assignment.
+func stripLeadingEnvAssignments(words []string) []string {
+	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.ContainsRune(words[0], os.PathSeparator) {
+		words = words[1:]
+	}
+	return words
 }
 
 // claudeHookEntry represents a single hook entry in Claude Code settings.

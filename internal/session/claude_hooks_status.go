@@ -144,9 +144,7 @@ func readClaudeHooksSection(configDir string) map[string]json.RawMessage {
 func resolveHookBinary(command, executable, currentVersion string) ClaudeHookBinaryStatus {
 	st := ClaudeHookBinaryStatus{Command: command}
 	words, _ := shellwords.Split(command)
-	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.ContainsRune(words[0], os.PathSeparator) {
-		words = words[1:] // leading VAR=value exports
-	}
+	words = stripLeadingEnvAssignments(words)
 	if len(words) == 0 {
 		st.ResolveError = "empty command"
 		return st

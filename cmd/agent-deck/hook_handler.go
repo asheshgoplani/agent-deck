@@ -693,22 +693,18 @@ func printClaudeHooksStatus(w io.Writer, report session.ClaudeHooksStatusReport)
 		fmt.Fprintf(w, "This binary: %s (v%s)\n", report.Executable, report.Version)
 	}
 	for _, b := range report.Binaries {
+		resolved := b.ResolvedPath
+		if b.Version != "" {
+			resolved += ", v" + b.Version
+		}
 		line := "Hook command: " + b.Command
 		switch {
 		case b.ResolveError != "":
 			line += " (unresolvable)"
 		case b.Bare:
-			line += " (bare; PATH resolves to " + b.ResolvedPath
-			if b.Version != "" {
-				line += ", v" + b.Version
-			}
-			line += ")"
+			line += " (bare; PATH resolves to " + resolved + ")"
 		default:
-			line += " (" + b.ResolvedPath
-			if b.Version != "" {
-				line += ", v" + b.Version
-			}
-			line += ")"
+			line += " (" + resolved + ")"
 		}
 		fmt.Fprintln(w, line)
 	}

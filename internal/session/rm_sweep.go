@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -106,14 +105,9 @@ func sweepInboxFilesForChild(dir string, entries []os.DirEntry, childSessionID s
 // sweepOneInboxFileForChild rewrites one inbox file under its flock (messaging
 // audit P1-3: every inbox rewrite takes the producers' lock).
 func sweepOneInboxFileForChild(path, childSessionID string) (int, error) {
-	fileLock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
-	if err != nil {
-		return 0, fmt.Errorf("lock inbox %s: %w", filepath.Base(path), err)
-	}
-	defer fileLock.Release()
-	inboxWriteMu.Lock()
-	defer inboxWriteMu.Unlock()
-	return sweepOneInboxLocked(path, childSessionID)
+	return withInboxFileLocked(path, func() (int, error) {
+		return sweepOneInboxLocked(path, childSessionID)
+	})
 }
 
 // sweepOneInboxLocked rewrites one inbox file without lines whose

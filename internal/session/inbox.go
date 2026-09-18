@@ -486,6 +486,23 @@ func SweepInboxByTTL(maxAge time.Duration) (int, error) {
 // audit P1-3: the sweep is a rewrite like any producer's, and the daemon runs
 // it in a different process from the consumer).
 func sweepOneInboxByTTL(path string, cutoff time.Time) (int, error) {
+	return withInboxFileLocked(path, func() (int, error) {
+		return rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
+			// Drop entries whose timestamp is older than the cutoff.
+			// Entries with a zero timestamp (e.g. legacy or test data
+			// without a stable clock) are conservatively kept.
+			if ev.Timestamp.IsZero() {
+				return false
+			}
+			return ev.Timestamp.Before(cutoff)
+		})
+	})
+}
+
+// withInboxFileLocked runs rewrite with the inbox file's flock (bounded wait)
+// and inboxWriteMu held, lock order 1 then 3, for sweeps that walk the inbox
+// directory by file rather than by parent id.
+func withInboxFileLocked(path string, rewrite func() (int, error)) (int, error) {
 	fileLock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
 	if err != nil {
 		return 0, fmt.Errorf("lock inbox %s: %w", filepath.Base(path), err)
@@ -493,15 +510,7 @@ func sweepOneInboxByTTL(path string, cutoff time.Time) (int, error) {
 	defer fileLock.Release()
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
-	return rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
-		// Drop entries whose timestamp is older than the cutoff.
-		// Entries with a zero timestamp (e.g. legacy or test data
-		// without a stable clock) are conservatively kept.
-		if ev.Timestamp.IsZero() {
-			return false
-		}
-		return ev.Timestamp.Before(cutoff)
-	})
+	return rewrite()
 }
 
 // rewriteInboxLocked streams one inbox file and writes out every line
