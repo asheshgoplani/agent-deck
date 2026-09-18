@@ -867,8 +867,11 @@ Claude  updated 2m ago
 `agent-deck usage --json` prints the same report for scripting.
 
 **Claude** is read from the documented `rate_limits` block in the JSON Claude
-Code pipes to a `statusLine` command. Wire the ingester into
-`~/.claude/settings.json`:
+Code pipes to a `statusLine` command. `agent-deck hooks install` wires the
+ingester into every configured account slot's `settings.json` for you
+(wrapping an existing `statusLine` command, byte-for-byte, or installing the
+plain ingester when there is none); `agent-deck hooks status` reports the feed
+per slot. To wire it by hand in `~/.claude/settings.json`:
 
 ```json
 {"statusLine": {"type": "command", "command": "agent-deck usage ingest claude"}}
