@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -361,6 +362,23 @@ func (m *mockSendRetryTarget) SendKeysChunked(_ string) error {
 func (m *mockSendRetryTarget) SendKeysAndEnter(_ string) error {
 	atomic.AddInt32(&m.sendKeysCalls, 1)
 	return m.sendKeysErr
+}
+
+// SendKeysAndEnterChecked mirrors *tmux.Session's real contract closely
+// enough for tests exercising sendRetryOptions.expectedPasteBreaks: it types
+// the keys, runs check against the next captured pane, and only presses
+// Enter (counted the same as SendKeysAndEnter) when check reports ok.
+func (m *mockSendRetryTarget) SendKeysAndEnterChecked(_ string, capture func() (string, error), check tmux.PostPasteCheck) error {
+	atomic.AddInt32(&m.sendKeysCalls, 1)
+	if m.sendKeysErr != nil {
+		return m.sendKeysErr
+	}
+	pane, capErr := capture()
+	ok, err := check(pane, capErr)
+	if !ok {
+		return err
+	}
+	return nil
 }
 
 func (m *mockSendRetryTarget) GetStatus() (string, error) {
@@ -1612,5 +1630,71 @@ func TestNoWaitSendOptions_EnablesVerifyDelivery(t *testing.T) {
 	opts := noWaitSendOptions()
 	if !opts.verifyDelivery {
 		t.Fatal("issue #876: noWaitSendOptions().verifyDelivery must be true")
+	}
+}
+
+// --- #2148 item 4b: `session send` gets #2079's truncation guard too -------
+//
+// Before this, only the launch/instance send path (Instance.
+// sendMessageWhenReady) compared Claude's collapsed "[Pasted text #N +M
+// lines]" marker against the message's hard line-break count before
+// pressing Enter. `session send` (and its `--message-file` form, which most
+// commonly carries a multi-line body) called SendKeysAndEnter directly and
+// had no such guard: a paste truncated in transit would submit whatever
+// fragment landed and report success.
+
+func TestSendInitialKeysChecked_SingleLineMessageSendsUnchecked(t *testing.T) {
+	mock := &mockSendRetryTarget{}
+	if err := sendInitialKeysChecked(mock, "one line", send.ExpectedPasteMarkerLineBreaks("one line")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
+		t.Fatalf("want 1 SendKeysAndEnter-family call, got %d", got)
+	}
+}
+
+func TestSendInitialKeysChecked_WithholdsEnterOnTruncatedMarker(t *testing.T) {
+	message := "line one\nline two\nline three"
+	expected := send.ExpectedPasteMarkerLineBreaks(message)
+	mock := &mockSendRetryTarget{panes: []string{"❯ [Pasted text #1 +1 lines]\n"}}
+	err := sendInitialKeysChecked(mock, message, expected)
+	if err == nil || !strings.Contains(err.Error(), "prompt truncated in transit") {
+		t.Fatalf("want a truncation error, got %v", err)
+	}
+}
+
+func TestSendInitialKeysChecked_IntactMarkerSendsCleanly(t *testing.T) {
+	message := "line one\nline two\nline three"
+	expected := send.ExpectedPasteMarkerLineBreaks(message)
+	mock := &mockSendRetryTarget{panes: []string{"❯ [Pasted text #1 +2 lines]\n"}}
+	if err := sendInitialKeysChecked(mock, message, expected); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestExecuteSend_MultilineMessageRefusedOnTruncatedPasteMarker is the
+// end-to-end regression: a Claude `session send` (as `--message-file` would
+// produce) with a multi-line body must be refused, not silently submitted,
+// when the composer's collapsed marker declares fewer hard breaks than the
+// message has. Before wiring expectedPasteBreaks into executeSend, this send
+// went through unchecked and reported deliverySubmitted on a fragment.
+func TestExecuteSend_MultilineMessageRefusedOnTruncatedPasteMarker(t *testing.T) {
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes: []string{
+			claudeComposer(""),                    // guard: composer empty, not busy
+			"❯ [Pasted text #1 +1 lines]\n",        // post-send: truncated marker (message has 2 breaks)
+		},
+	}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 5, checkDelay: 0, verifyDelivery: true})
+	res, err := executeSend(mock, "claude", "line one\nline two\nline three", false, tun)
+	if err == nil || !strings.Contains(err.Error(), "prompt truncated in transit") {
+		t.Fatalf("want a truncation error, got %v (res=%+v)", err, res)
+	}
+	if res.delivery != deliverySendFailed {
+		t.Fatalf("delivery: want %q, got %q", deliverySendFailed, res.delivery)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("Enter must be withheld on a truncated paste, got %d SendEnter calls", got)
 	}
 }

@@ -69,14 +69,34 @@ func TestExpectedPasteMarkerLineBreaks_NormalizesCRLFAndBareCR(t *testing.T) {
 	}
 }
 
-func TestExpectedPasteMarkerLineBreaks_TrailingNewlineNotCounted(t *testing.T) {
-	// A trailing newline may or may not survive into the composer's count;
-	// excluding it makes the expectation the floor of what Claude declares.
-	if got := ExpectedPasteMarkerLineBreaks("a\nb\nc\n"); got != 2 {
-		t.Fatalf("trailing LF: want 2, got %d", got)
+func TestExpectedPasteMarkerLineBreaks_TrailingBreaksAreCounted(t *testing.T) {
+	// A trailing hard break is counted like any other (rc.4 P2-1): excluding
+	// it made the expectation ambiguous with a paste truncated one line
+	// short of a newline-terminated message (see
+	// TestCheckPasteMarker_DetectsLastLineLostFromNewlineTerminatedMessage).
+	if got := ExpectedPasteMarkerLineBreaks("a\nb\nc\n"); got != 3 {
+		t.Fatalf("trailing LF: want 3, got %d", got)
 	}
-	if got := ExpectedPasteMarkerLineBreaks("a\r\nb\r\nc\r\n\r\n"); got != 2 {
-		t.Fatalf("trailing CRLFs: want 2, got %d", got)
+	if got := ExpectedPasteMarkerLineBreaks("a\r\nb\r\nc\r\n\r\n"); got != 4 {
+		t.Fatalf("trailing CRLFs: want 4, got %d", got)
+	}
+}
+
+// TestCheckPasteMarker_DetectsLastLineLostFromNewlineTerminatedMessage is the
+// failing-first regression for rc.4 P2-1: with the old TrimRight-before-count
+// floor, a 3-line message ending in "\n" expected only 2 breaks, so a paste
+// truncated to "a\nb\n" (line "c" lost) still declared "+2 lines" and was
+// accepted as PasteMarkerIntact. Counting the trailing break like any other
+// makes the full message expect 3, so the same truncated declaration is
+// correctly reported as PasteMarkerTruncated.
+func TestCheckPasteMarker_DetectsLastLineLostFromNewlineTerminatedMessage(t *testing.T) {
+	message := "a\nb\nc\n"
+	expected := ExpectedPasteMarkerLineBreaks(message)
+	pane := "❯ [Pasted text #1 +2 lines]\n"
+	verdict, declared := CheckPasteMarker(pane, expected)
+	if verdict != PasteMarkerTruncated {
+		t.Fatalf("lost last line of a newline-terminated message: want PasteMarkerTruncated, got %v (declared=%d expected=%d)",
+			verdict, declared, expected)
 	}
 }
 
@@ -236,11 +256,13 @@ func TestCheckPasteMarker_Table(t *testing.T) {
 			markerPane("", "[Pasted text #1 +3 lines]"), 3, PasteMarkerIntact},
 		{"CRLF message truncated", "one\r\ntwo\r\nthree\r\nfour",
 			markerPane("", "[Pasted text #1 +2 lines]"), 3, PasteMarkerTruncated},
-		// Trailing newline: accepted whether or not the composer counts it.
-		{"trailing newline counted by composer", "a\nb\nc\n",
-			markerPane("", "[Pasted text #1 +3 lines]"), 2, PasteMarkerIntact},
-		{"trailing newline dropped by composer", "a\nb\nc\n",
-			markerPane("", "[Pasted text #1 +2 lines]"), 2, PasteMarkerIntact},
+		// Trailing newline: counted like any other hard break (rc.4 P2-1) —
+		// a declaration one short of it means the last line was lost, not
+		// that the composer trimmed it.
+		{"trailing newline, full paste intact", "a\nb\nc\n",
+			markerPane("", "[Pasted text #1 +3 lines]"), 3, PasteMarkerIntact},
+		{"trailing newline, last line lost", "a\nb\nc\n",
+			markerPane("", "[Pasted text #1 +2 lines]"), 3, PasteMarkerTruncated},
 		// Unicode wide characters: 320 cells per line wrap to many rows.
 		{"CJK wide chars, 3 lines, pane 80", threeCJKLines,
 			markerPane(wrapAt(threeCJKLines, 80), "[Pasted text #1 +2 lines]"), 2, PasteMarkerIntact},

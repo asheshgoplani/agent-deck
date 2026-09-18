@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // ---------------------------------------------------------------------------
@@ -138,6 +140,16 @@ type guardedSendMock struct {
 
 func (m *guardedSendMock) SendKeysAndEnter(string) error {
 	atomic.AddInt32(&m.sendKeysCalls, 1)
+	return nil
+}
+
+func (m *guardedSendMock) SendKeysAndEnterChecked(_ string, capture func() (string, error), check tmux.PostPasteCheck) error {
+	atomic.AddInt32(&m.sendKeysCalls, 1)
+	pane, capErr := capture()
+	ok, err := check(pane, capErr)
+	if !ok {
+		return err
+	}
 	return nil
 }
 
