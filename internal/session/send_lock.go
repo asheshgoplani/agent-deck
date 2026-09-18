@@ -16,6 +16,15 @@ import (
 // cross-process lock a sender holds through the readiness guard, the paste
 // and the Enter, so concurrent sends to one target serialize instead.
 
+// SendTargetLockWait bounds how long `session send` waits for another send to
+// finish with the same target before answering "target busy". A tmux send
+// holds the lock through its readiness guard, paste, Enter and verification
+// window (well under this), so a wait that runs out means a stuck holder.
+// Exported so the daemon's wake-nudge subprocess timeout can be derived from
+// it (review round 2, P3): the nudge must outlive the lock wait or it is
+// killed while still queued behind another sender.
+const SendTargetLockWait = 30 * time.Second
+
 func sendLockDir() string {
 	dir, err := runtimeDataPath("send-locks")
 	if err != nil {

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -251,9 +250,9 @@ func sendTransportFromConfig() (value string, warn string) {
 }
 
 // sendTargetLockWait bounds how long a send waits for another send to finish
-// with the same target. A tmux send holds the lock through its verification
-// window (a few seconds); a stuck holder surfaces as deliveryTargetBusy.
-var sendTargetLockWait = 30 * time.Second
+// with the same target (session.SendTargetLockWait; a var so tests can shorten
+// it). A stuck holder surfaces as deliveryTargetBusy.
+var sendTargetLockWait = session.SendTargetLockWait
 
 // performSend is the delivery-leg core of handleSessionSend (#2089): decide
 // tmux vs. Claude's messaging socket via chooseSendTransport, then execute
