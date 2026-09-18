@@ -215,11 +215,8 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	return nil
 }
 
-// runInboxDeadLetter dispatches list/show (#2111, inbox_deadletter_cmd.go —
-// read-only inspection, byte-offset Ref identifiers) and retry/purge (#2062,
-// carry/2230 — content-hash ID identifiers, see DeadLetterRecord's doc
-// comment in deadletter_inspection.go) lives in inbox_deadletter_cmd.go.
-
+// runInboxDeadLetterRetry and runInboxDeadLetterPurge are the #2062 management
+// subcommands; runInboxDeadLetter in inbox_deadletter_cmd.go dispatches to them.
 func runInboxDeadLetterRetry(stdout io.Writer, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: agent-deck inbox dead-letter retry <record-id>")

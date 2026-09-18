@@ -46,22 +46,24 @@ jobs:
           sentrux --version
           sentrux analytics off || true
 
-      # #2148 review: github.event.pull_request.base.sha is the base branch's
-      # current tip, not the PR's actual merge base — using it directly
-      # attributes unrelated main-branch drift (any commit landed on main
-      # after the PR branched) to the PR's own structural delta. Check out
-      # full history once and compute the real common ancestor instead.
-      - name: Check out repository (full history for merge-base)
+      # Full history here so the next step can compute the real merge base;
+      # this same checkout is also the head tree that gets measured.
+      - name: Check out PR head (full history for merge-base)
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          path: repo
+          path: head
           fetch-depth: 0
           persist-credentials: false
 
+      # #2148 review: github.event.pull_request.base.sha is the base branch's
+      # current tip, not the PR's actual merge base — using it directly
+      # attributes unrelated main-branch drift (any commit landed on main
+      # after the PR branched) to the PR's own structural delta. Compute the
+      # real common ancestor instead.
       - name: Resolve merge base
         id: mergebase
-        working-directory: repo
+        working-directory: head
         run: |
           set -eu
           base_sha=$(git merge-base "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
@@ -72,14 +74,6 @@ jobs:
         with:
           ref: ${{ steps.mergebase.outputs.base_sha }}
           path: base
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Check out PR head
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: head
           fetch-depth: 1
           persist-credentials: false
 
@@ -115,11 +109,14 @@ jobs:
                  "| Metric | Base | Head | Delta |", "|---|---:|---:|---:|"]
           def is_number(v):
               return isinstance(v, (int, float)) and not isinstance(v, bool)
+          def shown(v):
+              if is_number(v):
+                  return v
+              return "n/a" if v is None else "invalid"
           worse = []
           for key, label, nd in rows:
               bv, hv = b.get(key), h.get(key)
               if not is_number(bv) or not is_number(hv):
-                  shown = lambda v: v if is_number(v) else ("n/a" if v is None else "invalid")
                   out.append(f"| {label} | {shown(bv)} | {shown(hv)} | |")
                   continue
               d = hv - bv
@@ -140,7 +137,6 @@ jobs:
           # adversarial log can never be pulled fully into memory here.
           MAX_LOG_BYTES = 200_000
           for name in ("base.log", "head.log"):
-              txt = ""
               try:
                   size = os.path.getsize(name)
                   with open(name, "rb") as f:

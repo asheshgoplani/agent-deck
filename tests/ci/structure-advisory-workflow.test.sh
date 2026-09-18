@@ -59,7 +59,7 @@ else
 fi
 
 # (3) Checkout and binary provenance.
-CHECKOUT_COUNT=$(grep -cF 'uses: actions/checkout@' <<<"$(cat "$WORKFLOW")" || true)
+CHECKOUT_COUNT=$(grep -cF 'uses: actions/checkout@' "$WORKFLOW" || true)
 PERSIST_FALSE_COUNT=$(grep -cF 'persist-credentials: false' "$WORKFLOW" || true)
 if [[ "$PERSIST_FALSE_COUNT" -ge "$CHECKOUT_COUNT" ]] && [[ "$CHECKOUT_COUNT" -gt 0 ]]; then
   pass "every checkout step sets persist-credentials: false ($PERSIST_FALSE_COUNT/$CHECKOUT_COUNT)"

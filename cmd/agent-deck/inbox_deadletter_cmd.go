@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,9 +20,9 @@ import (
 // internal/session/deadletter_inspection.go for why the two identifier
 // schemes coexist on one shared type).
 func runInboxDeadLetter(stdout io.Writer, args []string) error {
-	usage := "usage: inbox dead-letter list|show|retry|purge (list [--store all|dead-letter|unowned] [--json], show <ref-or-id> [--json], retry <id>, purge --older-than <duration>|--yes)"
+	usage := "usage: inbox dead-letter list|show|retry|purge (list [--store all|dead-letter|unowned] [--json], show <ref> [--json], retry <id>, purge --older-than <duration>|--yes)"
 	if len(args) == 0 {
-		return fmt.Errorf("%s", usage)
+		return errors.New(usage)
 	}
 	switch args[0] {
 	case "help", "--help", "-h":
@@ -39,22 +40,22 @@ func runInboxDeadLetter(stdout io.Writer, args []string) error {
 	case "purge":
 		return runInboxDeadLetterPurge(stdout, args[1:])
 	case "list", "show":
-		return runInboxDeadLetterInspect(stdout, args)
+		return runInboxDeadLetterInspect(stdout, args[0], args[1:])
 	default:
-		return fmt.Errorf("%s", usage)
+		return errors.New(usage)
 	}
 }
 
-func runInboxDeadLetterInspect(stdout io.Writer, args []string) error {
-	action := args[0]
+// runInboxDeadLetterInspect serves the read-only `list` and `show` actions.
+func runInboxDeadLetterInspect(stdout io.Writer, action string, args []string) error {
 	fs := flag.NewFlagSet("inbox dead-letter "+action, flag.ContinueOnError)
 	fs.SetOutput(stdout)
 	asJSON := fs.Bool("json", false, "output JSON")
 	store := fs.String("store", "all", "host store: all, dead-letter, or unowned")
-	if err := fs.Parse(normalizeArgs(fs, args[1:])); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
 	}
-	if action == "list" && fs.NArg() != 0 || action == "show" && fs.NArg() != 1 {
+	if (action == "list" && fs.NArg() != 0) || (action == "show" && fs.NArg() != 1) {
 		return fmt.Errorf("list takes no record reference; show requires exactly one reference")
 	}
 	if action == "show" {

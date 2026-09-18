@@ -2655,12 +2655,7 @@ func (s *Session) Start(command string) error {
 	deferCwdGuardForShellFallback := command != "" && !s.RunCommandAsInitialProcess
 	if !deferCwdGuardForShellFallback {
 		if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
-			if killErr := s.Kill(); killErr != nil {
-				statusLog.Warn("deleted_cwd_session_cleanup_failed",
-					slog.String("session", logging.SanitizeValue(s.Name)),
-					slog.String("error", killErr.Error()))
-			}
-			return cwdErr
+			return s.killAfterPaneCwdFailure(cwdErr)
 		}
 	}
 
@@ -2813,20 +2808,13 @@ func (s *Session) Start(command string) error {
 			return fmt.Errorf("failed to send command: %w", err)
 		}
 
-		// #2214: the guard was deferred above because this pane's initial
-		// process is a bare shell that only just received its cd-assert.
-		// Verify now, after the assert has actually been sent, so a
-		// genuinely poisoned server is still caught — just without
-		// rejecting the pane before it had a chance to recover.
-		if deferCwdGuardForShellFallback {
-			if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
-				if killErr := s.Kill(); killErr != nil {
-					statusLog.Warn("deleted_cwd_session_cleanup_failed",
-						slog.String("session", logging.SanitizeValue(s.Name)),
-						slog.String("error", killErr.Error()))
-				}
-				return cwdErr
-			}
+		// #2214: this is exactly the path whose cwd guard was deferred above
+		// (deferCwdGuardForShellFallback is true for every session reaching
+		// here). Run it now, after the cd-assert has actually been sent, so a
+		// genuinely poisoned server is still caught — just without rejecting
+		// the pane before it had a chance to recover.
+		if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
+			return s.killAfterPaneCwdFailure(cwdErr)
 		}
 	}
 
@@ -3053,6 +3041,19 @@ func setSocketMismatchProbeForTest(probe func(string) bool) func() {
 		defer socketMismatchMu.Unlock()
 		probeSocketProtocolMismatch = prev
 	}
+}
+
+// killAfterPaneCwdFailure tears down a session whose pane provably landed in a
+// dead directory (#1713/#2214) and returns the original cwd error, so Start
+// never reports a session that looked created but never ran the agent. A
+// failure to clean up is logged, never substituted for the real cause.
+func (s *Session) killAfterPaneCwdFailure(cwdErr error) error {
+	if killErr := s.Kill(); killErr != nil {
+		statusLog.Warn("deleted_cwd_session_cleanup_failed",
+			slog.String("session", logging.SanitizeValue(s.Name)),
+			slog.String("error", killErr.Error()))
+	}
+	return cwdErr
 }
 
 // ProbeExists asks the tmux server on this session's own socket whether a

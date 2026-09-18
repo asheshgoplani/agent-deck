@@ -20,9 +20,8 @@ import (
 // read-only inspection surface (list/show, #2111) and the management surface
 // (retry/purge/TUI, #2062/#2230). The two surfaces need different identifiers:
 //
-//   - Ref (inspection): identifies an exact source snapshot and byte offset.
-//     An append or rewrite invalidates old refs — see classifyPaneCwd-style
-//     staleness checks in InspectDeadLetters's callers. Deliberately brittle:
+//   - Ref (inspection): identifies an exact source snapshot and byte offset, so
+//     an append or rewrite invalidates old refs. Deliberately brittle:
 //     inspection never acts on a record, so refusing a stale ref is safe.
 //   - ID (management): a content hash of the record's raw bytes
 //     (deadLetterRecordID), stable across unrelated file mutations elsewhere

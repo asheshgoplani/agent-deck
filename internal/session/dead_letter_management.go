@@ -192,18 +192,17 @@ func removeDeadLetterEntry(entry deadLetterEntry) error {
 	if err != nil {
 		return err
 	}
-	var kept [][]byte
+	var kept []string
 	removed := false
 	for _, line := range strings.Split(string(raw), "\n") {
-		original := []byte(line)
-		if len(strings.TrimSpace(line)) == 0 {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if !removed && deadLetterRecordID(entry.record.Store, original) == entry.record.ID {
+		if !removed && deadLetterRecordID(entry.record.Store, []byte(line)) == entry.record.ID {
 			removed = true
 			continue
 		}
-		kept = append(kept, original)
+		kept = append(kept, line)
 	}
 	if !removed {
 		return fmt.Errorf("dead-letter record %q changed or no longer exists", entry.record.ID)
@@ -218,7 +217,7 @@ func removeDeadLetterEntry(entry deadLetterEntry) error {
 		}
 		return nil
 	}
-	data := append([]byte(strings.Join(byteLinesToStrings(kept), "\n")), '\n')
+	data := []byte(strings.Join(kept, "\n") + "\n")
 	if err := writeFileDurable(entry.path, data, 0o644); err != nil {
 		return err
 	}
@@ -226,14 +225,6 @@ func removeDeadLetterEntry(entry deadLetterEntry) error {
 		delete(inboxFingerprintCache, entry.path)
 	}
 	return nil
-}
-
-func byteLinesToStrings(lines [][]byte) []string {
-	out := make([]string, len(lines))
-	for i := range lines {
-		out[i] = string(lines[i])
-	}
-	return out
 }
 
 // RetryDeadLetter re-resolves the child's current parent, commits the event to
@@ -297,16 +288,16 @@ func PurgeDeadLetter(id string) error {
 	return removeDeadLetterEntry(entry)
 }
 
-// PurgeDeadLettersOlderThan removes only records with a valid timestamp older
-// than cutoff. Corrupt/undated records require explicit per-record or all purge.
-func PurgeDeadLettersOlderThan(cutoff time.Time) (int, error) {
+// purgeDeadLetters removes every record selected by match, stopping at the
+// first removal failure and reporting how many were already removed.
+func purgeDeadLetters(match func(DeadLetterRecord) bool) (int, error) {
 	entries, err := readDeadLetterEntries(time.Now())
 	if err != nil {
 		return 0, err
 	}
 	removed := 0
 	for _, entry := range entries {
-		if entry.record.Timestamp.IsZero() || !entry.record.Timestamp.Before(cutoff) {
+		if match != nil && !match(entry.record) {
 			continue
 		}
 		if err := removeDeadLetterEntry(entry); err != nil {
@@ -317,19 +308,16 @@ func PurgeDeadLettersOlderThan(cutoff time.Time) (int, error) {
 	return removed, nil
 }
 
+// PurgeDeadLettersOlderThan removes only records with a valid timestamp older
+// than cutoff. Corrupt/undated records require explicit per-record or all purge.
+func PurgeDeadLettersOlderThan(cutoff time.Time) (int, error) {
+	return purgeDeadLetters(func(record DeadLetterRecord) bool {
+		return !record.Timestamp.IsZero() && record.Timestamp.Before(cutoff)
+	})
+}
+
 // PurgeAllDeadLetters removes every selected physical record. Callers must
 // enforce explicit user confirmation before invoking this unbounded operation.
 func PurgeAllDeadLetters() (int, error) {
-	entries, err := readDeadLetterEntries(time.Now())
-	if err != nil {
-		return 0, err
-	}
-	removed := 0
-	for _, entry := range entries {
-		if err := removeDeadLetterEntry(entry); err != nil {
-			return removed, err
-		}
-		removed++
-	}
-	return removed, nil
+	return purgeDeadLetters(nil)
 }
