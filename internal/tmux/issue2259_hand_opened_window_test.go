@@ -125,10 +125,11 @@ func TestSession_WindowPolicyHookInstallIsIdempotent(t *testing.T) {
 		s.SocketName = socket
 		require.NoError(t, s.Start(""))
 	}
-	// The installer on its own, twice more, against the same server ([1:]
-	// drops the leading `;` chain separator Start() relies on).
+	// The installer on its own, twice more, against the same server.
 	for range 2 {
-		ctl(windowPolicyHookArgs()[1:]...)
+		state, err := InstallWindowPolicyHook(socket)
+		require.NoError(t, err)
+		assert.Equal(t, WindowPolicyHookOwned, state)
 	}
 
 	hooks := ctl("show-hooks", "-g")

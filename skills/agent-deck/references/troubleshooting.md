@@ -251,6 +251,31 @@ Sessions Deck did not start are not touched. `tmux show-hooks -g` shows both
 entries; `set-hook -g after-new-window ...` without `-a` replaces the whole
 array, including Deck's slot, until the next Deck session starts.
 
+What persists, and how to remove it. The hook lives on the tmux **server**
+(the default one, or `[tmux].socket_name`), so it outlives every Deck
+process and stays after Deck is uninstalled, until the server restarts or
+you remove it. It is inert on its own: with no `@agentdeck_*` option on the
+session every `if-shell -F` test is false and nothing is written. The
+`@agentdeck_window_size` / `@agentdeck_aggressive_resize` options are
+per-session and disappear with the session. To inspect or remove the hook:
+
+```bash
+agent-deck tmux-hooks status      # absent, agent-deck's, or foreign
+agent-deck tmux-hooks uninstall   # removes after-new-window[2259] only if it is agent-deck's
+tmux set-hook -gu 'after-new-window[2259]'   # the same by hand (add -L <socket_name> if set)
+```
+
+Run the uninstall before `agent-deck uninstall` if you want the server clean;
+the next Deck session start reinstalls it. If something else already occupies
+index 2259, Deck leaves it alone, logs `window_policy_hook_slot_foreign`, and
+hand-opened windows keep tmux's own defaults until the slot is free. Hooks are
+array options from tmux 3.0; on an older server Deck logs
+`window_policy_hook_skipped` and only the initial window and Deck-opened
+windows get the policy. A `[tmux.options]` value tmux would reject (say
+`window-size = "biggest"`) is logged as `window_policy_override_invalid` and
+never published to the hook, so it cannot make `new-window` fail; the
+generic override pass reports it as before.
+
 Note the window in a session created before v1.16.11 keeps whatever it had:
 the hook only reaches windows created after the session started on the new
 binary. If a hand-opened window in such a session is stuck, fix it in place

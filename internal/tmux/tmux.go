@@ -2730,10 +2730,10 @@ func (s *Session) Start(command string) error {
 	// (tmux's own `c` binding) goes through neither path, and tmux has no way
 	// to retarget a window option once the window exists. Publish the
 	// effective policy on the session and let a server-wide after-new-window
-	// hook apply it to every later window (see windowPolicyHookArgs).
+	// hook apply it to every later window (see installWindowPolicyHook).
 	startArgs = append(startArgs, s.windowPolicyOptionArgs()...)
-	startArgs = append(startArgs, windowPolicyHookArgs()...)
 	_ = commandRun(s.tmuxCmd(startArgs...))
+	s.installWindowPolicyHook()
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
@@ -6598,15 +6598,23 @@ func (s *Session) NewShellWindow(workdir string) error {
 	windowID, _, _ := strings.Cut(string(out), "\n")
 	args = nil
 	for _, option := range windowPolicyOptions {
+		// Like Start, apply Deck's defaults/configuration, but preserve any
+		// local option a user's after-new-window hook explicitly installed.
+		// An invalid override applies nothing (value logs it).
+		value, ok := option.value(s.OptionOverrides)
+		if !ok {
+			continue
+		}
 		if len(args) > 0 {
 			args = append(args, ";")
 		}
-		// Like Start, apply Deck's defaults/configuration, but preserve any
-		// local option a user's after-new-window hook explicitly installed.
-		args = append(args, "set-window-option", "-oq", "-t", windowID, option.key, s.windowPolicyValue(option.key, option.defaultValue))
+		args = append(args, "set-window-option", "-oq", "-t", windowID, option.key, value)
 	}
 	// Creation succeeded. As in Start, option configuration is best effort;
 	// an invalid override must not report failure and invite a duplicate tab.
+	if len(args) == 0 {
+		return nil
+	}
 	if err := s.runBoundedMutation(args...); err != nil {
 		statusLog.Warn("shell_window_options_failed", slog.String("window", windowID), slog.String("error", err.Error()))
 	}

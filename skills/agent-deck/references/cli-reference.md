@@ -988,6 +988,16 @@ agent-deck codex-hooks uninstall
 
 Codex turn-level status uses its notify hook. Install it once per Codex home; if `CODEX_HOME` is set, use the same environment for installation and Codex sessions.
 
+## tmux Hook Commands
+
+```bash
+agent-deck tmux-hooks status      # absent, agent-deck's, or foreign
+agent-deck tmux-hooks install     # install or refresh (every session start does this too)
+agent-deck tmux-hooks uninstall   # remove, only if the slot holds agent-deck's hook
+```
+
+The window policy hook (`after-new-window[2259]`, see the config reference under `[tmux.options]`) lives on the tmux server named by `[tmux].socket_name` (else the default server) and persists after agent-deck exits. `uninstall` never touches a foreign entry at that index.
+
 ## DeepSeek Commands
 
 Inspect the DeepSeek Harness (`dsh`) integration. Read-only; every subcommand takes `--json`.
