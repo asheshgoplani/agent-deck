@@ -117,3 +117,54 @@ func TestCreateSessionWithOptions_StartFailureOldShapeRollsBack(t *testing.T) {
 		})
 	}
 }
+
+// rc3RemoteStartNoWaitJSON is what the rc.3 remote of the second parity walk
+// printed for the TUI's own `session start --json --no-wait` (CLI-2 of that
+// walk, through the same path: exit 1, generic spawn_died_fast, no
+// not-found attribution because rc.3 predates the PATH prelude). An rc.3
+// controller rolled the session back on it and the dialog "silently created
+// nothing": no row, and the footer error gone before anyone looked.
+const rc3RemoteStartNoWaitJSON = `{
+  "code": "INVALID_OPERATION",
+  "error": "failed to start session: tmux session \"agentdeck_parity-1789689143_a1b2\" is gone: spawn_died_fast (exited after 262ms)",
+  "id": "parity-1",
+  "reason": "spawn_died_fast",
+  "spawn_failure": {
+    "instance_id": "parity-1",
+    "tool": "claude",
+    "command": "export AGENTDECK_INSTANCE_ID=parity-1; export AGENTDECK_PROFILE=personal; exec env -u TELEGRAM_STATE_DIR -u TELEGRAM_BOT_TOKEN claude --session-id 2f4e --name parity-1789689143",
+    "dying_output": "",
+    "elapsed_ms": 262,
+    "reason": "spawn_died_fast",
+    "ts": 1789689143
+  },
+  "success": false,
+  "title": "parity-1789689143",
+  "tmux": "agentdeck_parity-1789689143_a1b2"
+}`
+
+// The rc.3 walk's exact flow: the start the dialog issues is the --no-wait
+// one, the remote answers with the #2099 shape and a generic reason, and the
+// controller keeps the record instead of rolling back, typed for the TUI.
+func TestCreateSessionWithOptions_RC3NoWaitSpawnDeathKeepsRecord(t *testing.T) {
+	runner, calls := newSpawnFailureCreateRunner(t, rc3RemoteStartNoWaitJSON,
+		errors.New("ssh command failed: exit status 1: "+rc3RemoteStartNoWaitJSON))
+
+	_, err := runner.CreateSessionWithOptions(context.Background(), RemoteAddOptions{Tool: "claude", Title: "parity-1789689143", Path: "/tmp"})
+	require.Error(t, err)
+	var spawnFailed *RemoteSessionSpawnFailedError
+	require.ErrorAs(t, err, &spawnFailed, "%v", err)
+	assert.Equal(t, "spawn_died_fast", spawnFailed.Reason)
+	require.NotNil(t, spawnFailed.Record)
+	assert.Equal(t, int64(262), spawnFailed.Record.ElapsedMs)
+	assert.Contains(t, spawnFailed.Preview(), "exited almost immediately (after 262ms)")
+
+	startedNoWait := false
+	for _, call := range *calls {
+		if len(call) >= 2 && call[0] == "session" && call[1] == "start" {
+			startedNoWait = startedNoWait || reflect.DeepEqual(call, []string{"session", "start", "--json", "--no-wait", "parity-1"})
+		}
+		assert.NotEqual(t, "remove", call[0], "the record must survive; calls: %v", *calls)
+	}
+	assert.True(t, startedNoWait, "the dialog path starts with --no-wait; calls: %v", *calls)
+}

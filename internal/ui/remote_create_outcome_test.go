@@ -8,7 +8,8 @@ package ui
 // with the error light and the explainer in the preview.
 //
 // Golden frames (row + preview): after a failed create, after a successful
-// create. Regenerate with:
+// create, and the rc.3 walk's flow (a remote that reports only the generic
+// reason, with the footer the dialog returns to). Regenerate with:
 //
 //	UPDATE_GOLDEN=1 go test ./internal/ui/ -run TestRemoteCreateOutcome_Golden
 
@@ -56,6 +57,15 @@ func renderRemoteCreateFrame(t *testing.T, h *Home) string {
 		frame.WriteString(h.renderRemotePreview(item, 70, 30))
 	} else {
 		frame.WriteString("(no rows)")
+	}
+	// The footer line View() draws under the help bar while an error is
+	// live (it auto-dismisses after 5s, which is why the walk's later
+	// captures showed nothing).
+	frame.WriteString("\n--- footer ---\n")
+	if h.err != nil {
+		frame.WriteString("⚠ " + h.err.Error())
+	} else {
+		frame.WriteString("(no error)")
 	}
 	return frame.String()
 }
@@ -157,6 +167,55 @@ func TestRemoteCreateOutcome_OldShapeDrawsNoRow(t *testing.T) {
 	}
 }
 
+// rc3WalkSpawnFailure is what the rc.3 walk's remote answers today through
+// this controller: `add` succeeded, the dialog's `session start --json
+// --no-wait` found the pane gone after 262ms, and the remote (rc.3, before
+// the PATH prelude) recorded only the generic reason. Same values as the
+// walk's CLI-2 and the session package's rc3RemoteStartNoWaitJSON fixture.
+func rc3WalkSpawnFailure() *session.RemoteSessionSpawnFailedError {
+	return &session.RemoteSessionSpawnFailedError{
+		ID: "parity-1", Title: "parity-1789689143",
+		Reason:  "spawn_died_fast",
+		Message: `failed to start session: tmux session "agentdeck_parity-1789689143_a1b2" is gone: spawn_died_fast (exited after 262ms)`,
+		Record: &session.SpawnFailureRecord{
+			InstanceID: "parity-1", Tool: "claude",
+			Command:   "export AGENTDECK_INSTANCE_ID=parity-1; export AGENTDECK_PROFILE=personal; exec env -u TELEGRAM_STATE_DIR -u TELEGRAM_BOT_TOKEN claude --session-id 2f4e --name parity-1789689143",
+			Reason:    "spawn_died_fast",
+			ElapsedMs: 262, Timestamp: 1789689143,
+		},
+	}
+}
+
+var rc3WalkOpts = session.RemoteAddOptions{Tool: "claude", Title: "parity-1789689143", Path: "/tmp", Group: "my-sessions"}
+
+// The rc.3 walk's case 2b, "TUI New Session with tool=claude on a remote
+// silently creates nothing": the remote is an rc.3 (generic reason, no
+// not-found attribution) and this controller carries the fix. The row must
+// be drawn with the error light, the preview must explain, and the footer
+// must say so at the moment the dialog returns.
+func TestRemoteCreateOutcome_RC3WalkFlowShowsRowAndFooter(t *testing.T) {
+	h := remoteCreateOutcomeHome(t)
+	h.Update(remoteCreateOutcomeMsg("lab", rc3WalkOpts, "", rc3WalkSpawnFailure()))
+	h.remoteSessionsMu.RLock()
+	rows := h.remoteSessions["lab"]
+	h.remoteSessionsMu.RUnlock()
+	if len(rows) != 1 || rows[0].ID != "parity-1" || rows[0].Status != "error" || rows[0].Group != "my-sessions" {
+		t.Fatalf("rows = %+v, want the remote's error row in the dialog's group", rows)
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "on lab:") || !strings.Contains(h.err.Error(), "did not start") {
+		t.Fatalf("footer must report the failure when the dialog returns, got %v", h.err)
+	}
+	frame := stripAnsi(renderRemoteCreateFrame(t, h))
+	for _, want := range []string{"✕ parity-1789689143", "exited almost immediately (after 262ms)", "--- footer ---\n⚠ on lab:"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("frame lacks %q:\n%s", want, frame)
+		}
+	}
+	if strings.Contains(frame, "not found on PATH") {
+		t.Fatalf("an rc.3 remote gave no not-found evidence; the frame must not invent it:\n%s", frame)
+	}
+}
+
 func TestRemoteCreateOutcome_Golden(t *testing.T) {
 	t.Run("01-failed-create", func(t *testing.T) {
 		h := remoteCreateOutcomeHome(t)
@@ -167,5 +226,10 @@ func TestRemoteCreateOutcome_Golden(t *testing.T) {
 		h := remoteCreateOutcomeHome(t)
 		h.Update(remoteCreateOutcomeMsg("lab", parityOpts, "parity-2", nil))
 		assertRemoteCreateGolden(t, "02-successful-create", renderRemoteCreateFrame(t, h))
+	})
+	t.Run("03-rc3-walk-flow", func(t *testing.T) {
+		h := remoteCreateOutcomeHome(t)
+		h.Update(remoteCreateOutcomeMsg("lab", rc3WalkOpts, "", rc3WalkSpawnFailure()))
+		assertRemoteCreateGolden(t, "03-rc3-walk-flow", renderRemoteCreateFrame(t, h))
 	})
 }

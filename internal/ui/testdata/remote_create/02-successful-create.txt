@@ -13,3 +13,5 @@ Last response
 Fetching remote preview...
 
 Press Enter to attach via SSH
+--- footer ---
+(no error)

@@ -24,3 +24,5 @@ or check logs/session-id-lifecycle.jsonl for the spawn trace.
 
 
 Press Enter to attach via SSH
+--- footer ---
+⚠ on lab: remote session "parity-1789685743" was created but did not start: failed to start session: tmux session "agentdeck_parity_1" is gone: tool not found on PATH: claude (searched: /usr/bin:/bin) (exited after 261ms)
