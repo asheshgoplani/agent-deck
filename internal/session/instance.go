@@ -5647,12 +5647,17 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// Claude-compatible target the multi-line transport collapses whatever
 	// landed behind a "[Pasted text #N +M lines]" marker whether the paste
 	// arrived whole or was cut short, so the declared M is checked against the
-	// message's real line count BEFORE Enter is pressed — the only point
+	// message's hard line-break count BEFORE Enter is pressed — the only point
 	// after which a truncated fragment could still be caught rather than
 	// already being submitted. A mismatch withholds Enter and fails the send
 	// loudly instead of silently reporting success on a fragment.
+	//
+	// M is Claude's count of hard line breaks in the paste (a 6-line prompt
+	// shows "+5 lines"), not a line count and not the rows the pane wraps it
+	// to; comparing it with anything else refuses intact prompts (the rc.3
+	// launch regression). send.CheckPasteMarker owns that comparison.
 	var sendErr error
-	if expectedLines := send.ExpectedPasteMarkerLines(message); expectedLines > 0 && UsesClaudeDeliveryVerify(i.Tool) {
+	if expectedBreaks := send.ExpectedPasteMarkerLineBreaks(message); expectedBreaks > 0 && UsesClaudeDeliveryVerify(i.Tool) {
 		sendErr = i.tmuxSession.SendKeysAndEnterChecked(message, i.tmuxSession.CapturePaneFresh, func(pane string, capErr error) (bool, error) {
 			if capErr != nil {
 				// Capture failure is unknown, not unsafe — the pre-#2079
@@ -5660,19 +5665,16 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				// blocking delivery on an unrelated pane-read glitch.
 				return true, nil
 			}
-			counts := send.PasteMarkerLineCounts(pane)
-			if len(counts) == 0 {
-				// No marker rendered yet: either the composer hasn't
-				// repainted (benign render lag — the 300ms verify loop below
-				// still catches an unsent prompt) or this pane never frames
-				// pastes at all. Best effort, unchanged from pre-#2079.
-				return true, nil
-			}
-			if declared := counts[len(counts)-1]; declared < expectedLines {
+			verdict, declared := send.CheckPasteMarker(pane, expectedBreaks)
+			if verdict == send.PasteMarkerTruncated {
 				return false, fmt.Errorf(
-					"prompt truncated in transit: composer shows a %d-line paste but the message has %d lines; refusing to submit a partial prompt",
-					declared, expectedLines)
+					"prompt truncated in transit: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
+					declared, declared, expectedBreaks)
 			}
+			// Intact, or no marker rendered yet: either the composer hasn't
+			// repainted (benign render lag — the 300ms verify loop below
+			// still catches an unsent prompt) or this pane never frames
+			// pastes at all. Best effort, unchanged from pre-#2079.
 			return true, nil
 		})
 	} else {
