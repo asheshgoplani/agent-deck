@@ -23,7 +23,7 @@
 
 https://github.com/user-attachments/assets/e4f55917-435c-45ba-92cc-89737d0d1401
 
-## Maintainers & contributors wanted
+## Contributing: start here
 
 agent-deck is actively maintained by [Ashesh](https://github.com/asheshgoplani), and it welcomes both contributors and co-maintainers. PRs here don't sit: every incoming PR is validated (applied, built, tested) within about a day, and good ones merge in the next release batch. Recent releases have shipped dozens of community fixes.
 
@@ -31,9 +31,14 @@ Beyond one-off PRs, we're looking for 1-2 regular co-maintainers: people who wan
 
 To get started:
 
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) for how the review pipeline works.
-- Start at the pinned issue: [Looking for contributors — start here (#1650)](https://github.com/asheshgoplani/agent-deck/issues/1650).
-- The [agent-deck-contributor skill](.github/skills/agent-deck-contributor) walks an AI agent (or you) through building, testing, and shaping a clean PR.
+1. Read [CONTRIBUTING.md](CONTRIBUTING.md): how the pipeline works, what makes a PR land fast, and the house rules.
+2. Contributing with an AI agent? Point it at [.github/INTAKE.md](.github/INTAKE.md), the machine-readable intake spec — or the [agent-deck-contributor skill](.github/skills/agent-deck-contributor), which walks an agent (or you) through building, testing, and shaping a clean PR.
+3. Comment on an issue before starting work so we can tell you if someone (human or agent) is already on it.
+4. Look for issues labeled [`good first issue`](https://github.com/asheshgoplani/agent-deck/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22): curated to be small and self-contained.
+
+If you've had a couple of PRs land here and want to help steer, open an issue titled "maintainer: your area". We'd love the help.
+
+Looking for something specific to work on? [docs/ROADMAP.md](docs/ROADMAP.md) lists ideas and follow-ups that are real but not yet scheduled.
 
 If you've had a couple of PRs land here and want to help steer, say so on #1650 or open an issue titled "maintainer: your area". We'd love the help.
 
