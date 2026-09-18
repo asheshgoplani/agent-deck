@@ -525,6 +525,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	// and silently attached to the user's default server (#687 follow-up).
 	cmd := s.attachCmd(ctx)
 
+	// Shared attach: size the window to the client about to attach and
+	// remember who is already looking, so they can be announced to the new
+	// client once tmux registers it (sharedview.go, viewers.go).
+	others := s.prepareSharedAttach(ctx)
+
 	// Temporarily ignore SIGINT for the duration of the attach session.
 	// The global SIGINT handler in main.go calls os.Exit(0); suppressing
 	// delivery during attach prevents the race window between tea.Exec
@@ -611,6 +616,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	// attach that client (g14 rc.5 parity walk). Cancel the view so the agent
 	// pane is live and receives keys. See DismissConfigErrorView.
 	go s.DismissConfigErrorView(ctx, configErrorViewWindow)
+	go s.finishSharedAttach(ctx, others, os.Stdin)
 
 	// Channel to signal detach
 	detachCh := make(chan struct{})
@@ -810,10 +816,13 @@ func (s *Session) AttachReadOnly(ctx context.Context) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	others := s.prepareSharedAttach(ctx)
+
 	// Start the attach command
 	if err := commandStart(cmd); err != nil {
 		return fmt.Errorf("failed to attach to session: %w", err)
 	}
+	go s.finishSharedAttach(ctx, others, os.Stdin)
 
 	// Wait for command to finish
 	if err := cmd.Wait(); err != nil {

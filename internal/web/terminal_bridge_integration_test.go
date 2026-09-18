@@ -41,13 +41,12 @@ func TestTmuxPTYBridgeResize(t *testing.T) {
 		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	}()
 
-	// Match what Session.Start does in production — without these options,
-	// tmux defaults to window-size=latest which doesn't reliably re-arbitrate
-	// to the bridge's attach client size on CI's headless tmux. Production
-	// session creation always sets these (see internal/tmux/tmux.go); the
-	// test's manual `tmux new-session` bypassed that path.
-	if output, err := exec.Command("tmux", "set-option", "-t", sessionName, "window-size", "smallest").CombinedOutput(); err != nil {
-		t.Fatalf("tmux set-option window-size=smallest failed: %v (%s)", err, strings.TrimSpace(string(output)))
+	// Match what Session.Start does in production (internal/tmux
+	// sharedview.go): the window follows the client that last attached,
+	// typed or resized. newTmuxPTYBridge re-applies it before attaching, so
+	// this only mirrors production for a session the test created by hand.
+	if output, err := exec.Command("tmux", "set-option", "-w", "-t", sessionName, "window-size", "latest").CombinedOutput(); err != nil {
+		t.Fatalf("tmux set-option window-size=latest failed: %v (%s)", err, strings.TrimSpace(string(output)))
 	}
 	_ = exec.Command("tmux", "set-window-option", "-t", sessionName, "aggressive-resize", "on").Run()
 

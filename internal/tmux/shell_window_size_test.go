@@ -25,11 +25,11 @@ func TestSession_NewShellWindowSizePolicy(t *testing.T) {
 		wantAgg   string
 		hook      bool
 	}{
-		{"defaults", nil, "smallest", "on", false},
+		{"defaults", nil, "latest", "on", false},
 		{"explicit overrides", map[string]string{"window-size": "smallest", "aggressive-resize": "off"}, "smallest", "off", false},
 		{"size override", map[string]string{"window-size": "smallest"}, "smallest", "on", false},
-		{"resize override", map[string]string{"aggressive-resize": "off"}, "smallest", "off", false},
-		{"hook selects another window", nil, "smallest", "on", true},
+		{"resize override", map[string]string{"aggressive-resize": "off"}, "latest", "off", false},
+		{"hook selects another window", nil, "latest", "on", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			socket, unrelated := makeIsolatedServer(t)

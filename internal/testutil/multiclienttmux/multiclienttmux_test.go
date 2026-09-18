@@ -57,7 +57,7 @@ func requireWindowSize(t *testing.T, h *multiclienttmux.Harness, wantWidth, want
 	}
 }
 
-func TestAggregateSize_FitsCrossedClientDimensions(t *testing.T) {
+func TestAggregateSize_FollowsTheActiveClient(t *testing.T) {
 	skipIfNoTmux(t)
 
 	h := multiclienttmux.New(t, "agg")
@@ -68,18 +68,19 @@ func TestAggregateSize_FitsCrossedClientDimensions(t *testing.T) {
 	if err := h.AddClient(189, 62); err != nil {
 		t.Fatalf("AddClient 189x62: %v", err)
 	}
-	requireWindowSize(t, h, 100, 61)
+	// The client that attached last sees the whole window at its own size;
+	// neither `smallest` (boxes it at 100x61 with dots) nor `largest`.
+	requireWindowSize(t, h, 189, 61)
 
 	// Simulate a font-size change making the narrow client taller. Neither
 	// client now dominates both axes; with a one-row status line, their usable
-	// sizes are 88x70 and 189x61.
+	// sizes are 88x70 and 189x61. The resize makes that client the active
+	// viewer and the window follows it: never a synthetic 189x70 nobody can
+	// show completely.
 	if err := h.ResizeClient(0, 88, 71); err != nil {
 		t.Fatalf("ResizeClient 88x71: %v", err)
 	}
-
-	// The component-wise minimum is the only shared size both viewers can show
-	// completely.
-	requireWindowSize(t, h, 88, 61)
+	requireWindowSize(t, h, 88, 70)
 }
 
 func TestResizeClient_RejectsInvalidDimensions(t *testing.T) {

@@ -2709,22 +2709,12 @@ func (s *Session) Start(command string) error {
 	// #1625: the key-handling defaults are gated through OptionOverrides so an
 	// explicit user tmux setting wins (see gatedTmuxKeyOptionArgs).
 	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
-	// Multi-client size negotiation. Web's xterm.js connects at the same time
-	// as native `tmux attach` clients (Ghostty, iTerm). `window-size=largest`
-	// maximizes each axis independently, so crossed client dimensions such as
-	// 88x71 and 189x62 produce a synthetic 189x70 pane that no client can fully
-	// display. `smallest` keeps the complete pane visible in every attached
-	// client; larger clients may show unused cells. `aggressive-resize` limits
-	// resizing to windows that are actively viewed (avoids resize storms).
-	// See tmux(1) "window-size" / "aggressive-resize" and tmux issue #2594.
-	// Both are gated through OptionOverrides so users can opt out.
-	if _, ok := s.OptionOverrides["window-size"]; !ok {
-		startArgs = append(startArgs, ";", "set-option", "-t", s.Name, "window-size", "smallest")
-	}
-	if _, ok := s.OptionOverrides["aggressive-resize"]; !ok {
-		startArgs = append(startArgs, ";", "set-window-option", "-t", s.Name, "aggressive-resize", "on")
-	}
 	_ = commandRun(s.tmuxCmd(startArgs...))
+	// Multi-client size policy: the window follows the client that is using
+	// it (window-size=latest), re-applied before every attach. See
+	// sharedview.go for why neither `largest` (#1167) nor `smallest` (#2186)
+	// survives two people on one session.
+	s.applySharedViewSize()
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
@@ -6587,24 +6577,15 @@ func (s *Session) NewShellWindow(workdir string) error {
 	// new-window prints its ID before running after-new-window hooks, which
 	// may print more output or select another window. Configure that exact ID.
 	windowID, _, _ := strings.Cut(string(out), "\n")
-	args = nil
-	for _, option := range []struct{ key, value string }{
-		{"window-size", "smallest"},
-		{"aggressive-resize", "on"},
-	} {
-		if value, ok := s.OptionOverrides[option.key]; ok {
-			option.value = value
-		}
-		if len(args) > 0 {
-			args = append(args, ";")
-		}
-		// Like Start, apply Deck's defaults/configuration, but preserve any
-		// local option a user's after-new-window hook explicitly installed.
-		args = append(args, "set-window-option", "-oq", "-t", windowID, option.key, option.value)
-	}
-	// Creation succeeded. As in Start, option configuration is best effort;
-	// an invalid override must not report failure and invite a duplicate tab.
-	if err := s.runBoundedMutation(args...); err != nil {
+	// Like Start, apply Deck's shared-view size policy (sharedview.go), but
+	// preserve any local option a user's after-new-window hook explicitly
+	// installed (-o). Creation succeeded; as in Start, option configuration
+	// is best effort: an invalid override must not report failure and
+	// invite a duplicate tab. A tmux without `latest` gets the fallback.
+	err = applySharedViewPolicy(func(windowSize string) error {
+		return s.runBoundedMutation(shellWindowOptionArgs(windowID, s.OptionOverrides, windowSize)...)
+	})
+	if err != nil {
 		statusLog.Warn("shell_window_options_failed", slog.String("window", windowID), slog.String("error", err.Error()))
 	}
 	return nil

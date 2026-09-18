@@ -15,6 +15,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	deckterminal "github.com/asheshgoplani/agent-deck/internal/terminal"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -170,6 +171,12 @@ func startEmbeddedTerminalWithClipboard(
 		return nil, fmt.Errorf("embedded terminal: invalid size %dx%d", size.Cols, size.Rows)
 	}
 	size = clampEmbeddedTerminalSize(size)
+	if req.Remote == nil {
+		// One more viewer of a possibly shared local session: size the
+		// window to whoever is using it (internal/tmux sharedview.go). A
+		// remote session gets the same from its own `session attach`.
+		tmux.ApplySharedViewSize(req.SocketName, req.Name, nil)
+	}
 
 	ctx, cancel := context.WithCancel(parent)
 	// #nosec G204 -- BuildAttachCommand single-quotes every dynamic local and

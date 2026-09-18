@@ -1,8 +1,9 @@
-// Package multiclienttmux boots an isolated tmux server with
-// window-size=smallest and aggressive-resize=on, then lets a test attach N
-// pty clients at chosen sizes — the harness from TEST-PLAN.md §6.1 /
-// TUI-TEST-PLAN.md §6.8
-// for the "two web clients hijacking pane size" regression (J4 / F2).
+// Package multiclienttmux boots an isolated tmux server with Agent Deck's
+// multi-client size policy (window-size=latest, aggressive-resize=on: the
+// window follows the client that last attached, typed or resized), then lets
+// a test attach N pty clients at chosen sizes — the harness from
+// TEST-PLAN.md §6.1 / TUI-TEST-PLAN.md §6.8 for the "two web clients
+// hijacking pane size" regression (J4 / F2).
 //
 // Every harness instance gets its own socket under a short isolated temp
 // dir, never touching the user's real tmux server. Cleanup tears down the server,
@@ -14,7 +15,7 @@
 //	h.AddClient(100, 62)
 //	h.AddClient(189, 62)
 //	h.ResizeClient(0, 88, 71)
-//	w, hgt, _ := h.WindowSize() // expect 88x61 (smallest, minus status row)
+//	w, hgt, _ := h.WindowSize() // expect 88x70 (the resized client, minus status row)
 package multiclienttmux
 
 import (
@@ -77,12 +78,11 @@ func New(t *testing.T, sessionName string) *Harness {
 		t.Fatalf("multiclienttmux: new-session: %v\n%s", err, out)
 	}
 
-	// Explicitly mirror Session.Start. tmux defaults to window-size=latest,
-	// which would make this harness depend on client attach/input order instead
-	// of exercising Agent Deck's policy.
+	// Explicitly mirror Session.Start (internal/tmux sharedview.go) rather
+	// than trusting the server default, which is `smallest` on tmux < 3.1.
 	if out, err := exec.Command("tmux", "-S", socketPath,
-		"set-option", "-t", sessionName, "window-size", "smallest", ";",
-		"set-window-option", "-t", sessionName, "aggressive-resize", "on",
+		"set-option", "-w", "-t", sessionName, "window-size", "latest", ";",
+		"set-option", "-w", "-t", sessionName, "aggressive-resize", "on",
 	).CombinedOutput(); err != nil {
 		t.Fatalf("multiclienttmux: set window-size/aggressive-resize: %v\n%s", err, out)
 	}
@@ -100,6 +100,10 @@ func New(t *testing.T, sessionName string) *Harness {
 // size. The pty stays alive (and the client attached) until cleanup.
 func (h *Harness) AddClient(cols, rows int) error {
 	cmd := exec.Command("tmux", "-S", h.SocketPath, "attach-session", "-t", h.SessionName)
+	// A tmux client needs a terminal type; a headless runner (CI, Docker)
+	// may have none, and the client would exit at once with "terminal does
+	// not support clear", leaving the window at its birth size.
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}) // #nosec G115 -- test helper, sizes provided by caller fit uint16
 	if err != nil {

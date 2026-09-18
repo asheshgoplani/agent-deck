@@ -1123,6 +1123,12 @@ func (h *Home) openInNewWindow(req terminal.AttachRequest, sessionExists bool) e
 	if !sessionExists {
 		return nil
 	}
+	if req.Remote == nil {
+		// The new window is one more viewer of a possibly shared session
+		// (internal/tmux sharedview.go); a remote one gets this from its
+		// own `session attach`.
+		tmux.ApplySharedViewSize(req.SocketName, req.Name, nil)
+	}
 	return terminal.OpenSessionInNewWindow(req)
 }
 
@@ -21115,6 +21121,11 @@ func (h *Home) renderSessionItem(
 		agentBadge = agStyle.Render(" ⚙")
 	}
 
+	// Viewers badge: how many terminals have this session open (shared
+	// attach). Read from the per-socket cache so the row never spawns tmux.
+	cachedViewers, cachedViewersKnown := inst.ViewersCached()
+	viewersBadgeText := renderViewersBadge(cachedViewers, cachedViewersKnown, selected)
+
 	// Last-update timestamp badge — see pickBadgeTime for the formula.
 	// Selected rows reuse the selection-bar style instead of dim, so the
 	// badge stays legible inside the highlight.
@@ -21175,7 +21186,7 @@ func (h *Home) renderSessionItem(
 		cellWidth(status) + 1 + cellWidth(tool) +
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
-		cellWidth(agentBadge) + cellWidth(timestampBadge)
+		cellWidth(agentBadge) + cellWidth(viewersBadgeText) + cellWidth(timestampBadge)
 	accountBudget := instState.accountDisplay.width
 	if listWidth > 0 {
 		accountBudget = min(accountBudget, max(0, listWidth-reserved-2))
@@ -21200,7 +21211,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -21216,6 +21227,7 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 		agentBadge,
+		viewersBadgeText,
 		accountBadge,
 		timestampBadge,
 	)
@@ -21399,6 +21411,13 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	if rs.Group != "" {
 		b.WriteString(dimStyle.Render("Group:   ") + rs.Group + "\n")
 	}
+	remoteViewers, remoteViewersKnown := rs.ViewerList()
+	unknownReason := ""
+	if !remoteViewersKnown {
+		versionState, _ := h.remoteVersionState(item.RemoteName)
+		unknownReason = remoteViewersUnknownReason(versionState, Version)
+	}
+	b.WriteString(dimStyle.Render("Viewers: ") + viewersText(remoteViewers, remoteViewersKnown, unknownReason, time.Now()) + "\n")
 	b.WriteString("\n")
 
 	pvKey := remotePreviewCacheKey(item.RemoteName, rs.ID)
@@ -21729,13 +21748,18 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		}
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s\n",
+	// Viewers badge, as on local rows; nothing when the remote did not say.
+	remoteViewers, remoteViewersKnown := rs.ViewerList()
+	remoteViewersBadge := renderViewersBadge(remoteViewers, remoteViewersKnown, selected)
+
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
 		titleStyle.Render(titleStr),
 		toolStr,
+		remoteViewersBadge,
 		pendingStr,
 	))
 }
@@ -22313,6 +22337,15 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 	b.WriteString(infoStyle.Render("⏱ " + activityStr))
 	b.WriteString("\n")
+
+	// Who else has this session open (shared attach), from the per-socket
+	// viewer cache so the render path never spawns tmux. A stopped session
+	// has no tmux to view, so the line is for live ones.
+	if selectedStatus != session.StatusStopped {
+		previewViewers, previewViewersKnown := selected.ViewersCached()
+		b.WriteString(infoStyle.Render(viewersLine(previewViewers, previewViewersKnown, time.Now())))
+		b.WriteString("\n")
+	}
 
 	toolBadge := lipgloss.NewStyle().
 		Foreground(ColorBg).

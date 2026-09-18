@@ -15,6 +15,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
@@ -79,6 +80,10 @@ func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsC
 	}
 
 	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
+
+	// The web client is one more viewer of a possibly shared session: size
+	// the window to whoever is using it (internal/tmux sharedview.go).
+	tmux.ApplySharedViewSize(tmuxSocketName, tmuxSession, nil)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -182,13 +187,12 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	// process. Because the attach client (see tmuxAttachCommand) is no longer
 	// flagged `-f ignore-size`, the tmux server now uses this client's PTY
 	// size as its declared geometry and re-arbitrates the window dimensions
-	// per the session's `window-size` policy (`smallest` — set at Session.Start
-	// in internal/tmux/tmux.go). The previous `tmux resize-window` call here
-	// was removed because it implicitly flipped the session option to
-	// `window-size=manual` and pinned the window to the web viewport, which
-	// dragged native attached clients (Ghostty, iTerm) along with it. Letting
-	// tmux arbitrate via `smallest` keeps the complete pane visible in every
-	// attached client, with unused cells possible in larger clients.
+	// per the window's `window-size` policy (`latest`: the window follows the
+	// client that most recently attached or typed; see internal/tmux
+	// sharedview.go). The previous `tmux resize-window` call here was removed
+	// because it implicitly flipped the window to `window-size=manual` and
+	// pinned it to the web viewport, which dragged native attached clients
+	// (Ghostty, iTerm) along with it.
 	if err := pty.Setsize(b.ptmx, &pty.Winsize{
 		Rows: uint16(rows), // #nosec G115 -- terminal rows fits in uint16; PTY ABI enforces this
 		Cols: uint16(cols), // #nosec G115 -- terminal cols fits in uint16; PTY ABI enforces this
@@ -306,14 +310,12 @@ func tmuxCommandContext(ctx context.Context, socketName string, args ...string) 
 }
 
 func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
-	// Web's attach is now a normal client whose PTY size participates in tmux's
-	// `window-size=smallest` arbitration (set at Session.Start). Previously we
-	// passed `-f ignore-size` together with a manual `tmux resize-window` call
-	// in (*tmuxPTYBridge).Resize; the manual resize-window flipped the session
-	// option to `window-size=manual` and pinned the window to the web viewport
-	// for ALL attached clients (Ghostty, iTerm). With smallest in effect, every
-	// client can display the complete shared pane; larger clients may show
-	// unused cells around it.
+	// Web's attach is a normal client whose PTY size participates in tmux's
+	// `window-size=latest` arbitration (applied by newTmuxPTYBridge before the
+	// attach). Previously we passed `-f ignore-size` together with a manual
+	// `tmux resize-window` call in (*tmuxPTYBridge).Resize; the manual
+	// resize-window flipped the window to `window-size=manual` and pinned it
+	// to the web viewport for ALL attached clients (Ghostty, iTerm).
 	// `-u` forces UTF-8 output regardless of the daemon's locale. Same class of
 	// bug as the TERM handling below: when the web daemon runs under launchd/
 	// systemd its environment carries no LANG/LC_*, so tmux treats this client as
