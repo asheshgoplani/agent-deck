@@ -130,12 +130,12 @@ func handleSessionMove(profile string, args []string) {
 	oldPath := inst.ProjectPath
 	oldGroup := inst.GroupPath
 
-	home, err := os.UserHomeDir()
+	// Resolve the session's effective Claude config dir the way launch/start do
+	// rather than hardcoding ~/.claude, so history under a per-account or
+	// per-group config_dir override is actually migrated (#2086).
+	configDir := session.GetClaudeConfigDirForInstance(inst)
+	historyFilesMoved, err := session.MigrateClaudeProjectDir(configDir, oldPath, newPath, *copyHistory)
 	if err != nil {
-		out.Error(fmt.Sprintf("resolve home dir: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	if err := session.MigrateClaudeProjectDir(home, oldPath, newPath, *copyHistory); err != nil {
 		out.Error(fmt.Sprintf("migrate claude history: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -178,16 +178,21 @@ func handleSessionMove(profile string, args []string) {
 		restarted = true
 	}
 
-	out.Success(fmt.Sprintf("Moved %q: %s → %s", inst.Title, oldPath, newPath), map[string]interface{}{
-		"success":   true,
-		"id":        inst.ID,
-		"title":     inst.Title,
-		"old_path":  oldPath,
-		"new_path":  newPath,
-		"old_group": oldGroup,
-		"new_group": inst.GroupPath,
-		"restarted": restarted,
-		"copied":    *copyHistory,
+	message := fmt.Sprintf("Moved %q: %s → %s", inst.Title, oldPath, newPath)
+	if historyFilesMoved > 0 {
+		message = fmt.Sprintf("%s (%d history file%s)", message, historyFilesMoved, plural(historyFilesMoved))
+	}
+	out.Success(message, map[string]interface{}{
+		"success":             true,
+		"id":                  inst.ID,
+		"title":               inst.Title,
+		"old_path":            oldPath,
+		"new_path":            newPath,
+		"old_group":           oldGroup,
+		"new_group":           inst.GroupPath,
+		"restarted":           restarted,
+		"copied":              *copyHistory,
+		"history_files_moved": historyFilesMoved,
 	})
 }
 

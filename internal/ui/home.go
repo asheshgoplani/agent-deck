@@ -151,6 +151,12 @@ const (
 // rendered width of the "N·" hotkey label.
 const leftGutterWidth = 2
 
+// minSessionTitleWidth is the floor the session title cell keeps in narrow
+// list columns. The account badge (" [account:...]") is the first thing
+// shortened, then dropped, when the row runs out of room — never the title,
+// which is the one piece of the row a user can't do without (#2201).
+const minSessionTitleWidth = 12
+
 // Minimum terminal size requirements (reduced for mobile support)
 const (
 	minTerminalWidth  = 40 // Reduced from 80 - supports mobile terminals
@@ -21176,9 +21182,14 @@ func (h *Home) renderSessionItem(
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
 		cellWidth(agentBadge) + cellWidth(timestampBadge)
+	// Reserve the title's floor before the account badge claims any of the
+	// remaining width, so a narrow column shrinks and then drops the badge
+	// instead of collapsing the title (#2201).
 	accountBudget := instState.accountDisplay.width
 	if listWidth > 0 {
-		accountBudget = min(accountBudget, max(0, listWidth-reserved-2))
+		available := max(0, listWidth-reserved-2)
+		titleFloor := min(available, minSessionTitleWidth)
+		accountBudget = min(accountBudget, max(0, available-titleFloor))
 	}
 	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
 	if accountBadge != "" {
