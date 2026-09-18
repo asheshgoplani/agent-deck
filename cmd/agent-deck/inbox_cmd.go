@@ -56,7 +56,6 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox export [--json]")
-	fmt.Fprintln(w, "       agent-deck inbox dead-letter list|show [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox dead-letter <list|show|retry|purge>")
 	fmt.Fprintln(w)
@@ -196,9 +195,6 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	if len(args) > 0 && args[0] == "writer-status" {
 		return runInboxWriterStatus(stdout, args[1:])
 	}
-	if len(args) > 0 && args[0] == "dead-letter" {
-		return runInboxDeadLetter(stdout, args[1:])
-	}
 
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	fs.Usage = func() { printInboxUsage(stdout) }
@@ -219,92 +215,10 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	return nil
 }
 
-func runInboxDeadLetter(stdout io.Writer, args []string) error {
-	usage := func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox dead-letter <command>")
-		fmt.Fprintln(stdout)
-		fmt.Fprintln(stdout, "Commands:")
-		fmt.Fprintln(stdout, "  list [--json]                 List bounded record metadata")
-		fmt.Fprintln(stdout, "  show [--json] <record-id>     Show one record without raw content")
-		fmt.Fprintln(stdout, "  retry <record-id>             Re-resolve and redeliver one record")
-		fmt.Fprintln(stdout, "  purge --older-than <duration> Purge only records older than a bound")
-		fmt.Fprintln(stdout, "  purge --yes                   Purge every record with explicit consent")
-	}
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		usage()
-		return nil
-	}
-	switch args[0] {
-	case "list":
-		return runInboxDeadLetterList(stdout, args[1:])
-	case "show":
-		return runInboxDeadLetterShow(stdout, args[1:])
-	case "retry":
-		return runInboxDeadLetterRetry(stdout, args[1:])
-	case "purge":
-		return runInboxDeadLetterPurge(stdout, args[1:])
-	default:
-		usage()
-		return fmt.Errorf("unknown inbox dead-letter command %q", args[0])
-	}
-}
-
-func runInboxDeadLetterList(stdout io.Writer, args []string) error {
-	fs := flag.NewFlagSet("inbox dead-letter list", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "emit a JSON array")
-	fs.SetOutput(stdout)
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("inbox dead-letter list accepts no arguments")
-	}
-	records, err := session.ListDeadLetters()
-	if err != nil {
-		return fmt.Errorf("list dead letters: %w", err)
-	}
-	if *asJSON {
-		if records == nil {
-			records = []session.DeadLetterRecord{}
-		}
-		return json.NewEncoder(stdout).Encode(records)
-	}
-	if len(records) == 0 {
-		fmt.Fprintln(stdout, "No dead-lettered events.")
-		return nil
-	}
-	fmt.Fprintln(stdout, "ID               AGE        REASON          CHILD")
-	for _, record := range records {
-		fmt.Fprintf(stdout, "%-16s %-10s %-15s %s\n", record.ID, formatDeadLetterAge(record.AgeSeconds), record.Reason, record.ChildSessionID)
-	}
-	return nil
-}
-
-func runInboxDeadLetterShow(stdout io.Writer, args []string) error {
-	fs := flag.NewFlagSet("inbox dead-letter show", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "emit a JSON object")
-	fs.SetOutput(stdout)
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: agent-deck inbox dead-letter show [--json] <record-id>")
-	}
-	record, err := session.GetDeadLetter(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	if *asJSON {
-		return json.NewEncoder(stdout).Encode(record)
-	}
-	fmt.Fprintf(stdout, "ID: %s\nChild: %s\n", record.ID, record.ChildSessionID)
-	if record.ChildTitle != "" {
-		fmt.Fprintf(stdout, "Title: %s\n", record.ChildTitle)
-	}
-	fmt.Fprintf(stdout, "Target: %s\nProfile: %s\nReason: %s\nAge: %s\nAttempts: %d\nPayload: %s\n",
-		record.TargetSessionID, record.Profile, record.Reason, formatDeadLetterAge(record.AgeSeconds), record.Attempts, record.PayloadSummary)
-	return nil
-}
+// runInboxDeadLetter dispatches list/show (#2111, inbox_deadletter_cmd.go —
+// read-only inspection, byte-offset Ref identifiers) and retry/purge (#2062,
+// carry/2230 — content-hash ID identifiers, see DeadLetterRecord's doc
+// comment in deadletter_inspection.go) lives in inbox_deadletter_cmd.go.
 
 func runInboxDeadLetterRetry(stdout io.Writer, args []string) error {
 	if len(args) != 1 {
@@ -346,13 +260,6 @@ func runInboxDeadLetterPurge(stdout io.Writer, args []string) error {
 	}
 	fmt.Fprintf(stdout, "Purged %d dead-letter record(s).\n", count)
 	return nil
-}
-
-func formatDeadLetterAge(seconds int64) string {
-	if seconds <= 0 {
-		return "now"
-	}
-	return (time.Duration(seconds) * time.Second).Round(time.Second).String()
 }
 
 // runInboxDrain is the issue #1225 consumer path: exactly-once-per-turn,

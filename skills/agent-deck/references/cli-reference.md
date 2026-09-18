@@ -726,10 +726,16 @@ agent-deck inbox dead-letter purge --older-than <duration>
 agent-deck inbox dead-letter purge --yes
 ```
 
-`list` and `show` expose stable, bounded metadata only: record/session identity,
-reason, age, attempts, and a payload-type summary. They never print the raw
-record, prompt, completion summary, or pane output. IDs may be shortened to a
-unique prefix for `show` and `retry`.
+`list` and `show` (#2111) are read-only forensic inspection of every physical
+record, including malformed and undecodable ones: they intentionally do
+include the raw on-disk bytes (base64 in `--json`) so a broken record can be
+diagnosed without routing or repairing it. They never consume or mutate a
+store, and each record's `ref` identifies an exact source snapshot and byte
+offset — any append or rewrite to that source invalidates old refs, so a
+stale `show <ref>` is refused rather than silently pointing at the wrong
+record. `list`/`show` output also includes each record's `id`: a content hash
+that stays stable across unrelated changes elsewhere in the same store, and
+is what `retry`/`purge` (#2062) actually key off (accepting a unique prefix).
 
 `retry` re-resolves the child's current parent and commits the event to that
 parent's durable inbox before removing exactly the delivered dead-letter record.

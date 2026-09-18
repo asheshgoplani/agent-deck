@@ -12,10 +12,40 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// runInboxDeadLetter dispatches the full `inbox dead-letter` family:
+// list/show (#2111, this file — read-only inspection of every physical
+// record, keyed by Ref) and retry/purge (#2062, inbox_cmd.go — content-hash
+// ID identifiers; see DeadLetterRecord's doc comment in
+// internal/session/deadletter_inspection.go for why the two identifier
+// schemes coexist on one shared type).
 func runInboxDeadLetter(stdout io.Writer, args []string) error {
-	if len(args) == 0 || (args[0] != "list" && args[0] != "show") {
-		return fmt.Errorf("usage: inbox dead-letter list [--store all|dead-letter|unowned] [--json], or show <ref> [--json]")
+	usage := "usage: inbox dead-letter list|show|retry|purge (list [--store all|dead-letter|unowned] [--json], show <ref-or-id> [--json], retry <id>, purge --older-than <duration>|--yes)"
+	if len(args) == 0 {
+		return fmt.Errorf("%s", usage)
 	}
+	switch args[0] {
+	case "help", "--help", "-h":
+		fmt.Fprintln(stdout, usage)
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "Commands:")
+		fmt.Fprintln(stdout, "  list [--store all|dead-letter|unowned] [--json]  List every physical record")
+		fmt.Fprintln(stdout, "  show [--json] <ref>                              Show one record without raw content")
+		fmt.Fprintln(stdout, "  retry <id>                                       Re-resolve and redeliver one record")
+		fmt.Fprintln(stdout, "  purge --older-than <duration>                    Purge only records older than a bound")
+		fmt.Fprintln(stdout, "  purge --yes                                      Purge every record with explicit consent")
+		return nil
+	case "retry":
+		return runInboxDeadLetterRetry(stdout, args[1:])
+	case "purge":
+		return runInboxDeadLetterPurge(stdout, args[1:])
+	case "list", "show":
+		return runInboxDeadLetterInspect(stdout, args)
+	default:
+		return fmt.Errorf("%s", usage)
+	}
+}
+
+func runInboxDeadLetterInspect(stdout io.Writer, args []string) error {
 	action := args[0]
 	fs := flag.NewFlagSet("inbox dead-letter "+action, flag.ContinueOnError)
 	fs.SetOutput(stdout)
@@ -43,7 +73,7 @@ func runInboxDeadLetter(stdout io.Writer, args []string) error {
 		}
 		fmt.Fprintf(stdout, "%d host-level record(s); inspection does not consume records\n", len(records))
 		for _, rec := range records {
-			fmt.Fprintf(stdout, "%s store=%s source=%q child=%q profile=%q problem=%q\n", rec.Ref, rec.Store, rec.Source, rec.ChildSessionID, rec.Profile, rec.Problem)
+			fmt.Fprintf(stdout, "%s store=%s source=%q child=%q profile=%q problem=%q id=%s\n", rec.Ref, rec.Store, rec.Source, rec.ChildSessionID, rec.Profile, rec.Problem, rec.ID)
 		}
 		return nil
 	}
@@ -64,7 +94,7 @@ func runInboxDeadLetter(stdout io.Writer, args []string) error {
 				RawBase64 string          `json:"raw_base64"`
 			}{rec, event, raw})
 		}
-		fmt.Fprintf(stdout, "%s store=%s source=%q offset=%d problem=%q\nraw=%q\n", rec.Ref, rec.Store, rec.Source, rec.Offset, rec.Problem, rec.Raw)
+		fmt.Fprintf(stdout, "%s store=%s source=%q offset=%d problem=%q id=%s\nraw=%q\n", rec.Ref, rec.Store, rec.Source, rec.Offset, rec.Problem, rec.ID, rec.Raw)
 		return nil
 	}
 	return fmt.Errorf("record reference is stale or absent; list records again")

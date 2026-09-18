@@ -11,6 +11,17 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// These tests exercise the retry/purge/help surface added back for #2062
+// (originally carry/2230, PR #2230 by nandanadileep, reapplied on top of
+// #2111's DeadLetterRecord/InspectDeadLetters after the type collision
+// documented in RESULTS.md). `list`/`show` themselves, and their exact
+// output shape, remain #2111's inspection surface and are covered by
+// TestDeadLetterInspectionPreservesBothRawStores and
+// TestDeadLetterInspectionRejectsUnsafeOrUnknownRequests in
+// inbox_deadletter_cmd_test.go — this file uses session.ListDeadLetters
+// directly (the management-side reader) to find IDs to retry/purge, exactly
+// as the TUI panel does.
+
 func seedDeadLetterCLIRecord(t *testing.T, child, reason string, at time.Time) string {
 	t.Helper()
 	path := session.DeadLetterPathFor(child)
@@ -22,34 +33,6 @@ func seedDeadLetterCLIRecord(t *testing.T, child, reason string, at time.Time) s
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestIssue2062DeadLetterListAndShow(t *testing.T) {
-	cliInboxTestHome(t)
-	seedDeadLetterCLIRecord(t, "dead-child", "parent_removed", time.Now().Add(-2*time.Hour))
-
-	var list bytes.Buffer
-	if err := runInbox(&list, []string{"dead-letter", "list", "--json"}); err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if !strings.Contains(list.String(), `"reason":"parent_removed"`) || !strings.Contains(list.String(), `"child_session_id":"dead-child"`) {
-		t.Fatalf("stable JSON omitted identity/reason: %s", list.String())
-	}
-	if strings.Contains(list.String(), "secret payload") {
-		t.Fatalf("list exposed payload: %s", list.String())
-	}
-
-	records, err := session.ListDeadLetters()
-	if err != nil || len(records) != 1 {
-		t.Fatalf("records=%+v err=%v", records, err)
-	}
-	var show bytes.Buffer
-	if err := runInbox(&show, []string{"dead-letter", "show", records[0].ID, "--json"}); err != nil {
-		t.Fatalf("show: %v", err)
-	}
-	if !strings.Contains(show.String(), `"age_seconds":`) || !strings.Contains(show.String(), `"payload_summary":`) {
-		t.Fatalf("show omitted bounded operator detail: %s", show.String())
-	}
 }
 
 func TestIssue2062RetryMissingTargetRetainsRecord(t *testing.T) {
@@ -103,23 +86,6 @@ func TestIssue2062SuccessfulRetryRemovesOnlyDeliveredRecord(t *testing.T) {
 	}
 }
 
-func TestIssue2062JSONDistinguishesPersistedReasons(t *testing.T) {
-	cliInboxTestHome(t)
-	reasons := []string{"child_removed", "parent_removed", "orphan", "unresolvable", "no_notify", "self_conductor"}
-	for i, reason := range reasons {
-		seedDeadLetterCLIRecord(t, "reason-child-"+reason, reason, time.Now().Add(time.Duration(-i)*time.Minute))
-	}
-	var out bytes.Buffer
-	if err := runInbox(&out, []string{"dead-letter", "list", "--json"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, reason := range reasons {
-		if !strings.Contains(out.String(), `"reason":"`+reason+`"`) {
-			t.Errorf("JSON did not distinguish %q: %s", reason, out.String())
-		}
-	}
-}
-
 func TestIssue2062PurgeRequiresConsentOrAgeBound(t *testing.T) {
 	cliInboxTestHome(t)
 	seedDeadLetterCLIRecord(t, "old-child", "orphan", time.Now().Add(-48*time.Hour))
@@ -138,7 +104,20 @@ func TestIssue2062PurgeRequiresConsentOrAgeBound(t *testing.T) {
 	}
 }
 
-func TestIssue2062HelpIsSideEffectFreeAndUnownedCanClear(t *testing.T) {
+func TestIssue2062HelpListsAllFourSubcommands(t *testing.T) {
+	cliInboxTestHome(t)
+	var help bytes.Buffer
+	if err := runInbox(&help, []string{"dead-letter", "help"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"list", "show", "retry", "purge"} {
+		if !strings.Contains(help.String(), want) {
+			t.Fatalf("subcommand help missing %q: %q", want, help.String())
+		}
+	}
+}
+
+func TestIssue2062PurgeYesClearsUnownedDedupState(t *testing.T) {
 	cliInboxTestHome(t)
 	event := session.TransitionNotificationEvent{
 		ChildSessionID:   "unowned-child",
@@ -151,16 +130,9 @@ func TestIssue2062HelpIsSideEffectFreeAndUnownedCanClear(t *testing.T) {
 	if err := session.WriteInboxEvent(session.UnownedInboxID, event); err != nil {
 		t.Fatal(err)
 	}
-	var help bytes.Buffer
-	if err := runInbox(&help, []string{"dead-letter", "help"}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(help.String(), "show") || !strings.Contains(help.String(), "purge") {
-		t.Fatalf("subcommand help is not specific: %q", help.String())
-	}
 	records, err := session.ListDeadLetters()
 	if err != nil || len(records) != 1 || records[0].Store != "unowned" {
-		t.Fatalf("unowned record missing after help: %+v err=%v", records, err)
+		t.Fatalf("unowned record missing: %+v err=%v", records, err)
 	}
 	if err := runInbox(&bytes.Buffer{}, []string{"dead-letter", "purge", "--yes"}); err != nil {
 		t.Fatal(err)

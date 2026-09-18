@@ -14,22 +14,9 @@ import (
 	"time"
 )
 
-// DeadLetterRecord is the bounded, operator-safe view of one persisted record.
-// It deliberately omits prompt/output content and the raw on-disk payload.
-type DeadLetterRecord struct {
-	ID              string    `json:"id"`
-	Store           string    `json:"store"`
-	ChildSessionID  string    `json:"child_session_id"`
-	ChildTitle      string    `json:"child_title,omitempty"`
-	TargetSessionID string    `json:"target_session_id,omitempty"`
-	Profile         string    `json:"profile,omitempty"`
-	Reason          string    `json:"reason"`
-	Timestamp       time.Time `json:"timestamp"`
-	AgeSeconds      int64     `json:"age_seconds"`
-	Attempts        int       `json:"attempts"`
-	PayloadSummary  string    `json:"payload_summary"`
-	Corrupt         bool      `json:"corrupt,omitempty"`
-}
+// DeadLetterRecord is defined in deadletter_inspection.go — it is shared with
+// the read-only inspection surface (#2111); see that file's doc comment for
+// why the two identifier fields (Ref, ID) exist and mean different things.
 
 type deadLetterEntry struct {
 	record DeadLetterRecord
