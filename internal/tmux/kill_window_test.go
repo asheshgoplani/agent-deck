@@ -297,3 +297,44 @@ func TestRemoveCachedWindow(t *testing.T) {
 		t.Errorf("remaining window id = %s, want @1", wins[0].ID)
 	}
 }
+
+// TestRefreshCachedWindows verifies RefreshCachedWindows replaces the whole
+// cached window list for a session with its live state, so a row for a
+// window closed externally (not through KillWindow) drops out of the cache
+// immediately instead of lingering until the next background poll tick.
+func TestRefreshCachedWindows(t *testing.T) {
+	requireTmux(t)
+	socket, target := makeIsolatedServer(t)
+	extraID := newNamedWindow(t, socket, target, "extra-shell")
+	live := windowsByID(t, socket, target)
+	if len(live) != 2 {
+		t.Fatalf("setup: window count = %d, want 2", len(live))
+	}
+
+	windowCacheMu.Lock()
+	windowCacheData = map[string][]WindowInfo{
+		target: {live[extraID], {Index: 99, ID: "@stale", Name: "gone"}},
+	}
+	windowCacheTime = time.Now()
+	windowCacheMu.Unlock()
+	t.Cleanup(func() {
+		windowCacheMu.Lock()
+		windowCacheData = nil
+		windowCacheMu.Unlock()
+	})
+
+	s := &Session{Name: target, SocketName: socket}
+	if err := RefreshCachedWindows(s); err != nil {
+		t.Fatalf("RefreshCachedWindows: %v", err)
+	}
+
+	wins := GetCachedWindows(target)
+	if len(wins) != 2 {
+		t.Fatalf("cached window count after refresh = %d, want 2: %v", len(wins), wins)
+	}
+	for _, w := range wins {
+		if w.ID == "@stale" {
+			t.Fatalf("stale externally-closed window still cached: %v", wins)
+		}
+	}
+}

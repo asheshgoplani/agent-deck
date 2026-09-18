@@ -12977,9 +12977,13 @@ func (h *Home) confirmAction() tea.Cmd {
 					h.confirmDialog.ShowKillWindowRefused(err.Error())
 					return nil
 				}
-				// Prune the cache so the row disappears now, not on the
-				// next background refresh tick.
-				tmux.RemoveCachedWindow(tmuxSess.Name, windowID)
+				// Refresh the whole window cache for this session so the row
+				// disappears now rather than on the next background tick, and
+				// so does any other row closed externally meanwhile. If the
+				// re-query fails, prune just the killed window.
+				if err := tmux.RefreshCachedWindows(tmuxSess); err != nil {
+					tmux.RemoveCachedWindow(tmuxSess.Name, windowID)
+				}
 				h.rebuildFlatItems()
 			}
 		}

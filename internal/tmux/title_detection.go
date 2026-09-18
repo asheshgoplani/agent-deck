@@ -111,6 +111,34 @@ func RemoveCachedWindow(sessionName string, windowID string) {
 	}
 }
 
+// RefreshCachedWindows re-queries sess's live windows from the tmux server and
+// replaces its cache entry wholesale, so a caller that just killed a window
+// also sees every other window's current state at once instead of waiting a
+// background poll tick for stale rows (e.g. one closed externally meanwhile)
+// to age out. Activity is carried over by window id where the previous entry
+// had it; a newly-seen window gets 0 until the next full poll fills it in.
+func RefreshCachedWindows(sess *Session) error {
+	wins, err := sess.listWindows()
+	if err != nil {
+		return err
+	}
+	windowCacheMu.Lock()
+	defer windowCacheMu.Unlock()
+	if windowCacheData == nil {
+		windowCacheData = make(map[string][]WindowInfo)
+	}
+	cached := windowCacheData[sess.Name]
+	prevActivity := make(map[string]int64, len(cached))
+	for _, w := range cached {
+		prevActivity[w.ID] = w.Activity
+	}
+	for i := range wins {
+		wins[i].Activity = prevActivity[wins[i].ID]
+	}
+	windowCacheData[sess.Name] = wins
+	return nil
+}
+
 // updateWindowToolCache replaces the entire tool cache with new data.
 // Called ONLY by RefreshPaneInfoCache — tool detection lives there.
 func updateWindowToolCache(windowTools map[string]map[int]string) {
