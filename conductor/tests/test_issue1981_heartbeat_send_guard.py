@@ -226,3 +226,78 @@ class TestBoundedSkip(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# #2080 review gap: `session output --pane` returns up to 2000 lines of
+# scrollback. A picker resolved EARLIER in the transcript (its footer is still in
+# the buffer, with the composer that replaced it below) must not hide a picker
+# that is genuinely open at the bottom, and the inverse must still send.
+RESOLVED_PICKER_THEN_LIVE_PICKER = _pane(
+    " ☐ Sequencing",
+    "❯ 1. Identity fix first",
+    "  2. One combined build",
+    RULE,
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    "",
+    "  Assistant: ok, identity fix first. Working on it.",
+    RULE,
+    " ❯ ",
+    RULE,
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+    "",
+    "  Assistant: done. One more question before I ship.",
+    RULE,
+    " ❯ ",
+    RULE,
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+    "",
+    " ☐ Release",
+    "❯ 1. Tag rc.7 now",
+    "  2. Wait for the docker run",
+    RULE,
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+)
+
+RESOLVED_PICKER_THEN_COMPOSER = _pane(
+    " ☐ Sequencing",
+    "❯ 1. Identity fix first",
+    "  2. One combined build",
+    RULE,
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    "",
+    "  Assistant: ok, identity fix first. Working on it.",
+    RULE,
+    " ❯ ",
+    RULE,
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+    "",
+    " ☐ Release",
+    "❯ 1. Tag rc.7 now",
+    "  2. Wait for the docker run",
+    RULE,
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    "",
+    "  Assistant: tagging rc.7 now.",
+    RULE,
+    " ❯ ",
+    RULE,
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+)
+
+
+class TestPickerInScrollback(unittest.TestCase):
+    def test_live_picker_below_resolved_one_is_open(self):
+        self.assertTrue(bridge._pane_has_open_picker(RESOLVED_PICKER_THEN_LIVE_PICKER))
+        self.assertEqual(
+            bridge._pane_blocks_automated_send(RESOLVED_PICKER_THEN_LIVE_PICKER),
+            "unknown:askuserquestion-picker-open",
+        )
+
+    def test_only_resolved_pickers_in_scrollback_sends(self):
+        self.assertFalse(bridge._pane_has_open_picker(RESOLVED_PICKER_THEN_COMPOSER))
+        self.assertFalse(_skips(RESOLVED_PICKER_THEN_COMPOSER))
+
+    def test_live_picker_after_long_scrollback_is_open(self):
+        # 2000 lines of resolved-picker scrollback above a live picker.
+        long_pane = RESOLVED_PICKER_THEN_COMPOSER * 80 + OPEN_PICKER
+        self.assertTrue(bridge._pane_has_open_picker(long_pane))

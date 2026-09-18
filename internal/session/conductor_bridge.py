@@ -572,7 +572,16 @@ def _pane_has_open_picker(pane_text: str) -> bool:
     tolerated inside the block but not counted as answer options.
     """
     lines = _ANSI_RE.sub("", pane_text).splitlines()
-    footer_idx = next((i for i, ln in enumerate(lines) if _PICKER_FOOTER_RE.search(ln)), None)
+    # The capture is up to 2000 lines of scrollback, so a picker resolved
+    # earlier in the transcript still has its footer in the buffer (with the
+    # composer that replaced it below). Only the LAST footer can be live — a
+    # picker occupies the bottom of the pane — so anchor on it rather than on
+    # the first match, which the composer-below guard would always reject
+    # (#2080 review). Scanning from the end also keeps this independent of the
+    # pane height, unlike a fixed tail window.
+    footer_idx = next(
+        (i for i in range(len(lines) - 1, -1, -1) if _PICKER_FOOTER_RE.search(lines[i])), None
+    )
     if footer_idx is None:
         return False
     # A genuine picker occupies the input region — a composer footer below the
