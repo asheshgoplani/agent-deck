@@ -812,6 +812,18 @@ func renderConductorInstructionsTemplate(baseTemplate, name, profile string, spe
 	return content
 }
 
+// renderConductorInstructionsGenerations renders every prior generated-template
+// generation of baseTemplate, newest first, exactly as the release that shipped
+// it would have written the file.
+func renderConductorInstructionsGenerations(baseTemplate, name, profile string, spec ConductorAgentSpec) []string {
+	generations := conductorInstructionsGenerations(baseTemplate)
+	rendered := make([]string, 0, len(generations))
+	for _, generation := range generations {
+		rendered = append(rendered, renderConductorInstructionsTemplate(generation, name, profile, spec))
+	}
+	return rendered
+}
+
 func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
 	spec, _ := GetConductorAgentSpec(ConductorAgentClaude)
 	return renderConductorInstructionsTemplate(baseTemplate, name, profile, spec)
@@ -819,6 +831,17 @@ func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
 
 func matchesTemplateContent(actual, expected string) bool {
 	return strings.TrimSuffix(actual, "\n") == strings.TrimSuffix(expected, "\n")
+}
+
+// matchesAnyTemplateContent reports whether actual matches any of the given
+// generated-template generations.
+func matchesAnyTemplateContent(actual string, candidates []string) bool {
+	for _, c := range candidates {
+		if matchesTemplateContent(actual, c) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetupConductor creates a Claude conductor for backward compatibility.
@@ -917,8 +940,8 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 			perNameTemplate = conductorPerNameClaudeMDTemplate
 		}
 		content := renderConductorInstructionsTemplate(perNameTemplate, name, profile, spec)
-		oldContent := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(perNameTemplate), name, profile, spec)
-		if err := writeGeneratedFileOrMigrate(targetPath, oldContent, content, 0o644); err != nil {
+		oldGenerations := renderConductorInstructionsGenerations(perNameTemplate, name, profile, spec)
+		if err := writeGeneratedFileOrMigrate(targetPath, oldGenerations, content, 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
 		}
 	}
@@ -1443,10 +1466,11 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 var exchangeGeneratedFiles = exchangeGeneratedFile
 
 // writeGeneratedFileOrMigrate creates a generated file when absent and upgrades
-// it only when its contents exactly match the previous generated template.
-// Edited files and existing symlinks remain user-owned. Migration retains the
+// it only when its contents exactly match one of the prior generated-template
+// generations (newest first; see conductorInstructionsGenerations). Edited
+// files and existing symlinks remain user-owned. Migration retains the
 // displaced inode so an editor with an open descriptor cannot lose its writes.
-func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMode) error {
+func writeGeneratedFileOrMigrate(path string, previousGenerations []string, current string, perm os.FileMode) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return writeFileIfAbsent(path, []byte(current), perm)
@@ -1464,7 +1488,7 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 	if err != nil {
 		return err
 	}
-	if !matchesTemplateContent(string(content), previous) {
+	if !matchesAnyTemplateContent(string(content), previousGenerations) {
 		return nil
 	}
 	dir := filepath.Dir(path)
@@ -1510,7 +1534,7 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 	if err != nil {
 		return fmt.Errorf("recheck generated content: %w", err)
 	}
-	if !matchesTemplateContent(string(latest), previous) {
+	if !matchesAnyTemplateContent(string(latest), previousGenerations) {
 		return fmt.Errorf("generated target was edited during migration: %s", path)
 	}
 	if err := exchangeGeneratedFiles(tmpPath, path); err != nil {
@@ -1527,7 +1551,7 @@ func writeGeneratedFileOrMigrate(path, previous, current string, perm os.FileMod
 		displaced, readErr = os.ReadFile(tmpPath)
 	}
 	if statErr != nil || !displacedInfo.Mode().IsRegular() || readErr != nil ||
-		!os.SameFile(info, displacedInfo) || !matchesTemplateContent(string(displaced), previous) {
+		!os.SameFile(info, displacedInfo) || !matchesAnyTemplateContent(string(displaced), previousGenerations) {
 		// A second exchange could overwrite a newer visible edit. Keep both
 		// paths and make the publication conflict actionable instead.
 		return fmt.Errorf("generated target %q changed during publication; publication occurred, displaced file retained at %q for reconciliation", path, tmpPath)
@@ -1558,11 +1582,11 @@ func InstallSharedConductorInstructions(agent, customPath string) error {
 	}
 
 	// No custom path: create the current generated template, or migrate an exact
-	// copy of the previous generated template. Customized files and symlinks are
-	// preserved.
+	// copy of a prior generated-template generation. Customized files and
+	// symlinks are preserved.
 	content := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-	oldContent := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
-	if err := writeGeneratedFileOrMigrate(targetPath, oldContent, content, 0o644); err != nil {
+	oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
+	if err := writeGeneratedFileOrMigrate(targetPath, oldGenerations, content, 0o644); err != nil {
 		return fmt.Errorf("failed to write shared %s: %w", spec.InstructionsFileName, err)
 	}
 	return nil

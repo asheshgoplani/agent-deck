@@ -26,7 +26,7 @@ func TestWriteGeneratedFileOrMigrateReplacesInodeAndRejectsUnsafeTargets(t *test
 		if err := os.Link(path, backup); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err != nil {
+		if err := writeGeneratedFileOrMigrate(path, []string{"old"}, "new", 0o644); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := os.ReadFile(backup)
@@ -44,7 +44,7 @@ func TestWriteGeneratedFileOrMigrateReplacesInodeAndRejectsUnsafeTargets(t *test
 		if err := os.Mkdir(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
+		if err := writeGeneratedFileOrMigrate(path, []string{"old"}, "new", 0o644); err == nil {
 			t.Fatal("directory target silently accepted")
 		}
 	})
@@ -57,7 +57,7 @@ func TestWriteGeneratedFileOrMigratePreservesEditedAndNewerAssets(t *testing.T) 
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err != nil {
+		if err := writeGeneratedFileOrMigrate(path, []string{"old"}, "new", 0o644); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := os.ReadFile(path)
@@ -76,7 +76,7 @@ func TestWriteGeneratedFileOrMigrateExchangeFailureCleansTemporaryFile(t *testin
 	originalExchange := exchangeGeneratedFiles
 	exchangeGeneratedFiles = func(string, string) error { return errors.New("injected exchange failure") }
 	t.Cleanup(func() { exchangeGeneratedFiles = originalExchange })
-	if err := writeGeneratedFileOrMigrate(path, "old", "new", 0o644); err == nil {
+	if err := writeGeneratedFileOrMigrate(path, []string{"old"}, "new", 0o644); err == nil {
 		t.Fatal("expected replacement error")
 	}
 	got, _ := os.ReadFile(path)
@@ -107,7 +107,7 @@ func TestWriteGeneratedFileOrMigratePublishesOnlyCompleteContent(t *testing.T) {
 	}
 	t.Cleanup(func() { exchangeGeneratedFiles = originalExchange })
 	done := make(chan error, 1)
-	go func() { done <- writeGeneratedFileOrMigrate(path, old, newContent, 0o644) }()
+	go func() { done <- writeGeneratedFileOrMigrate(path, []string{old}, newContent, 0o644) }()
 	<-ready
 	before, _ := os.ReadFile(path)
 	if string(before) != old {

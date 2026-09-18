@@ -119,9 +119,10 @@ func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, 
 }
 
 // ShowKillWindow shows confirmation for killing a tmux window (sub-tab)
-// inside a session. windowID is the stable tmux window id (e.g. "@12") for
-// the window currently at windowIndex, captured at prompt time so confirm
-// can re-verify it is still the same window before killing anything.
+// inside a session. windowIndex, windowName and windowID (the stable tmux
+// window id, e.g. "@12") all describe the one cached row the user selected;
+// the dialog shows id and name so the user confirms a specific window, and
+// confirm re-verifies both live before killing anything.
 func (c *ConfirmDialog) ShowKillWindow(sessionID string, windowIndex int, windowName string, windowID string) {
 	c.visible = true
 	c.confirmType = ConfirmKillWindow
@@ -131,6 +132,14 @@ func (c *ConfirmDialog) ShowKillWindow(sessionID string, windowIndex int, window
 	c.windowID = windowID
 	c.buttonCount = 2
 	c.focusedButton = 1 // default to Cancel
+}
+
+// ShowKillWindowRefused replaces a kill-window confirmation with the reason
+// the kill was refused (last window, or the window changed since it was
+// selected). Shown in the modal because the footer error is clamped away on
+// a full viewport.
+func (c *ConfirmDialog) ShowKillWindowRefused(reason string) {
+	c.ShowNotice("⚠  Window Not Killed", reason+"\n\nNothing was closed.")
 }
 
 // ShowArchiveSession shows confirmation for archiving a session.
@@ -553,6 +562,12 @@ func (c *ConfirmDialog) GetWindowID() string {
 	return c.windowID
 }
 
+// GetWindowName returns the window name shown in the ConfirmKillWindow
+// dialog, re-verified against the live window at confirm time.
+func (c *ConfirmDialog) GetWindowName() string {
+	return c.targetName
+}
+
 // GetRemoteName returns the remote name for remote session confirmations.
 func (c *ConfirmDialog) GetRemoteName() string {
 	return c.remoteName
@@ -685,7 +700,7 @@ func (c *ConfirmDialog) View() string {
 
 	case ConfirmKillWindow:
 		title = "⚠  Kill Window?"
-		warning = fmt.Sprintf("This will kill tmux window %d:\n\n  \"%s\"", c.windowIndex, c.targetName)
+		warning = fmt.Sprintf("This will kill tmux window %d (%s):\n\n  \"%s\"", c.windowIndex, c.windowID, c.targetName)
 		details = "• Any processes in the window will be killed\n• Other windows in the session are unaffected"
 		borderColor = ColorRed
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,

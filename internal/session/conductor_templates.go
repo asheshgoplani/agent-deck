@@ -22,6 +22,43 @@ func previousConductorInstructionsTemplate(template string) string {
 	return template
 }
 
+// preSubstateGuidanceConductorInstructionsTemplate reconstructs the shared
+// template's shape from before #1814 added the substate-guidance row: the
+// plain "crashed or missing" error row with no paragraph after it. This is
+// what v1.10.9-v1.10.11 (and earlier, back to the local-first rewrite in
+// v1.9.73) shipped. Per-name templates carried no such row, so this is a
+// no-op for them.
+func preSubstateGuidanceConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template,
+		`| `+"`"+`error`+"`"+` (red) | Crashed, missing, or wedged (auth/model failure) | Check the substate first. Then try `+"`"+`session restart`+"`"+`; if that fails, escalate. |
+
+**Substate (Claude sessions only; refines status in `+"`"+`list`+"`"+`/`+"`"+`show`+"`"+` JSON):** `+"`"+`auth-401`+"`"+` covers two different pane banners. A credential banner (`+"`"+`Please run /login`+"`"+`, `+"`"+`API Error: 401`+"`"+`) means the fleet is HOLDING the session; restarting will NOT fix it. Check `+"`"+`session show --json <id>`+"`"+` for the `+"`"+`auth_hold`+"`"+` object (the authoritative source, present even after the pane exits) and escalate for re-login. A dropped-socket banner (`+"`"+`socket connection closed`+"`"+`) also classifies as `+"`"+`auth-401`+"`"+` but is NOT held and IS restart-recoverable: restart it. `+"`"+`model-unavailable`+"`"+` means the selected model is down (shows as error, not running); self-heal currently only observes this and takes no action, so switch it yourself with `+"`"+`agent-deck -p <PROFILE> session set <id> model <model>`+"`"+` then `+"`"+`agent-deck -p <PROFILE> session restart <id>`+"`"+`. `+"`"+`idle-at-empty-prompt`+"`"+` (shown as coarse status `+"`"+`idle`+"`"+` or `+"`"+`waiting`+"`"+`) means the session is genuinely sitting at its prompt with nothing happening. Never restart-loop an `+"`"+`error`+"`"+` session that `+"`"+`auth_hold`+"`"+` confirms is credential-held.`,
+		`| `+"`"+`error`+"`"+` (red) | Session crashed or missing | Try `+"`"+`session restart`+"`"+`. If that fails, escalate. |`, 1)
+}
+
+// conductorInstructionsGenerations reconstructs every prior generated-template
+// generation for the given template, newest first, that
+// writeGeneratedFileOrMigrate should recognise as a migratable predecessor of
+// the current one. Each step reverts one more shipped change; a step that
+// changes nothing (the template never carried that wording) is dropped so
+// migration never checks a duplicate generation.
+//
+// Verified against fixtures rendered from the actual shipped source
+// (testdata/conductor_templates_shipped.tsv): this reconstructs the
+// v1.11.0-v1.16.10 generation and the v1.10.9-v1.10.11 generation. It does
+// NOT reconstruct v1.9.73 or v1.9.70, which shipped further template
+// changes (Codex `session approve` docs, the local-first rewrite) that are
+// not reverted here; a conductor instructions file last written by one of
+// those releases is treated as user-edited and left alone.
+func conductorInstructionsGenerations(template string) []string {
+	previous := previousConductorInstructionsTemplate(template)
+	gens := []string{previous}
+	if older := preSubstateGuidanceConductorInstructionsTemplate(previous); older != previous {
+		gens = append(gens, older)
+	}
+	return gens
+}
+
 // conductorSharedClaudeMDTemplate is the shared instructions file written to
 // ~/.agent-deck/conductor/<instructions-file> for the selected conductor agent.
 // It contains CLI reference, protocols, and formats shared by all conductors (mechanism).

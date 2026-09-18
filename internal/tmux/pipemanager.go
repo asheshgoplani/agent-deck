@@ -242,7 +242,7 @@ func (pm *PipeManager) RefreshAllActivities() (map[string]int64, map[string][]Wi
 		// subprocess path). A control client negotiates UTF-8, so TAB would usually
 		// survive here, but the delimiter MUST still match what the parser splits on.
 		// tmux control mode requires the format string double-quoted.
-		output, err := pipe.SendCommand(`list-windows -a -F "` + tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}") + `"`)
+		output, err := pipe.SendCommand(`list-windows -a -F "` + tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_id}", "#{window_name}") + `"`)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

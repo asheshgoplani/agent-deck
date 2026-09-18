@@ -3453,6 +3453,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				expanded = append(expanded, session.Item{
 					Type:                session.ItemTypeWindow,
 					WindowIndex:         win.Index,
+					WindowID:            win.ID,
 					WindowName:          win.Name,
 					WindowTool:          win.Tool,
 					WindowSessionID:     item.Session.ID,
@@ -12084,21 +12085,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.IsWorktree())
 			} else if item.Type == session.ItemTypeWindow {
-				// Capture the window's stable tmux id now, at prompt time, so
-				// confirm can refuse if the window at this index changed by
-				// the time the user answers (liveness of the index is not
-				// identity of the window — see tmux.KillWindow).
-				inst := h.getInstanceByID(item.WindowSessionID)
-				var tmuxSess *tmux.Session
-				if inst != nil {
-					tmuxSess = inst.GetTmuxSession()
-				}
-				if tmuxSess == nil {
-					h.setError(fmt.Errorf("kill window %d: session is not attached to tmux", item.WindowIndex))
-				} else if windowID, err := tmuxSess.WindowID(item.WindowIndex); err != nil {
-					h.setError(fmt.Errorf("kill window %d: %w", item.WindowIndex, err))
+				// The dialog names exactly the row the user is looking at:
+				// id and name come from the same cached WindowInfo, never a
+				// live lookup by index (the cache can be up to a tick stale,
+				// so the live window at this index may already be a
+				// different one — see tmux.KillWindow).
+				if item.WindowID == "" {
+					h.setError(fmt.Errorf("kill window %d: window id not known yet, try again", item.WindowIndex))
 				} else {
-					h.confirmDialog.ShowKillWindow(item.WindowSessionID, item.WindowIndex, item.WindowName, windowID)
+					h.confirmDialog.ShowKillWindow(item.WindowSessionID, item.WindowIndex, item.WindowName, item.WindowID)
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
@@ -12982,31 +12977,40 @@ func (h *Home) confirmAction() tea.Cmd {
 		sessionID := h.confirmDialog.GetTargetID()
 		windowIndex := h.confirmDialog.GetWindowIndex()
 		windowID := h.confirmDialog.GetWindowID()
+		windowName := h.confirmDialog.GetWindowName()
 		h.confirmDialog.Hide()
 		if inst := h.getInstanceByID(sessionID); inst != nil {
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-				// The window row was rendered — and windowID captured — when
-				// the confirm dialog opened, but windows can change before
-				// the user answers: the other window can close (last-window
-				// guard), or the targeted window itself can close and get
-				// replaced by a different window sliding into the same index
-				// (identity guard). KillWindow checks both and kills
-				// atomically server-side, by window id, never by stale
-				// index/name alone.
-				if err := tmuxSess.KillWindow(windowIndex, windowID); err != nil {
+				// The dialog showed the id and name of one cached row, but
+				// windows can change before the user answers: the other
+				// window can close (last-window guard), or the selected
+				// window can close or be renamed (identity guard). KillWindow
+				// re-reads the live window by id, checks both, and kills
+				// atomically server-side; never by index or name alone.
+				if err := tmuxSess.KillWindow(windowID, windowName); err != nil {
+					label := fmt.Sprintf("window %d (%s) %q", windowIndex, windowID, windowName)
 					switch {
 					case errors.Is(err, tmux.ErrLastWindow):
-						h.setError(fmt.Errorf("not killing window %d: it is the session's last window", windowIndex))
+						err = fmt.Errorf("not killing %s: it is the session's last window", label)
 					case errors.Is(err, tmux.ErrWindowChanged):
-						h.setError(fmt.Errorf("not killing window %d: it changed since it was selected, refusing", windowIndex))
+						err = fmt.Errorf("not killing %s: it changed since it was selected, refusing", label)
 					default:
-						h.setError(fmt.Errorf("kill window %d: %w", windowIndex, err))
+						err = fmt.Errorf("kill %s: %w", label, err)
 					}
+					h.setError(err)
+					// The footer error can be clamped off the bottom of a
+					// full viewport, so a refusal there is invisible; keep
+					// it in the modal the user is already looking at.
+					h.confirmDialog.ShowKillWindowRefused(err.Error())
 					return nil
 				}
-				// Prune the cache so the row disappears now, not on the
-				// next background refresh tick.
-				tmux.RemoveCachedWindow(tmuxSess.Name, windowIndex)
+				// Refresh the whole window cache for this session so the row
+				// disappears now rather than on the next background tick, and
+				// so does any other row closed externally meanwhile. If the
+				// re-query fails, prune just the killed window.
+				if err := tmux.RefreshCachedWindows(tmuxSess); err != nil {
+					tmux.RemoveCachedWindow(tmuxSess.Name, windowID)
+				}
 				h.rebuildFlatItems()
 			}
 		}

@@ -2734,11 +2734,11 @@ func TestSplitIntoChunks_SplitsAtNewlineBoundary(t *testing.T) {
 
 func TestParseWindowCacheFromListWindows(t *testing.T) {
 	// Simulate list-windows output with extended format (tmuxFieldSep-delimited,
-	// session_name | window_activity | window_index | window_name).
+	// session_name | window_activity | window_index | window_id | window_name).
 	lines := []string{
-		tmuxFmt("agentdeck_proj_abc12345", "1704067200", "0", "main"),
-		tmuxFmt("agentdeck_proj_abc12345", "1704067300", "1", "tests"),
-		tmuxFmt("agentdeck_other_def67890", "1704067100", "0", "bash"),
+		tmuxFmt("agentdeck_proj_abc12345", "1704067200", "0", "@3", "main"),
+		tmuxFmt("agentdeck_proj_abc12345", "1704067300", "1", "@7", "tests"),
+		tmuxFmt("agentdeck_other_def67890", "1704067100", "0", "@5", "bash"),
 	}
 
 	sessionCache, windowCache := parseListWindowsOutput(strings.Join(lines, "\n"))
@@ -2750,7 +2750,9 @@ func TestParseWindowCacheFromListWindows(t *testing.T) {
 	// Window cache: per-window entries
 	assert.Len(t, windowCache["agentdeck_proj_abc12345"], 2)
 	assert.Equal(t, "main", windowCache["agentdeck_proj_abc12345"][0].Name)
+	assert.Equal(t, "@3", windowCache["agentdeck_proj_abc12345"][0].ID)
 	assert.Equal(t, 1, windowCache["agentdeck_proj_abc12345"][1].Index)
+	assert.Equal(t, "@7", windowCache["agentdeck_proj_abc12345"][1].ID)
 	assert.Len(t, windowCache["agentdeck_other_def67890"], 1)
 }
 

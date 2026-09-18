@@ -56,6 +56,7 @@ type Item struct {
 	IsWindow            bool               // True for ItemTypeWindow items
 	IsLastWindow        bool               // True if last window of parent session
 	WindowIndex         int                // Tmux window index (for ItemTypeWindow)
+	WindowID            string             // Stable tmux window id, e.g. "@12" (for ItemTypeWindow)
 	WindowName          string             // Tmux window name (for ItemTypeWindow)
 	WindowSessionID     string             // Parent session ID (for ItemTypeWindow)
 	WindowTool          string             // Detected tool in this window (claude, gemini, etc.)
