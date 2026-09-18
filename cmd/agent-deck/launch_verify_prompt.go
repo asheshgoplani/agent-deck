@@ -133,11 +133,11 @@ func verifyPromptConsumedAfterLaunchAttributed(
 
 // warnTruncated reports issue #2079's truncated-paste outcome: the composer
 // cleared (Enter was accepted) but the paste marker it collapsed behind
-// declares fewer lines than the message actually has, so a fragment — not
-// the whole prompt — was submitted. Must never be reported as success.
+// declares fewer line breaks than the message actually has, so a fragment —
+// not the whole prompt — was submitted. Must never be reported as success.
 func warnTruncated(warn io.Writer) {
 	if warn != nil {
-		fmt.Fprintln(warn, "warning: prompt truncated in transit: the composer's paste marker declares fewer lines than the launch prompt; a fragment, not the whole prompt, was submitted")
+		fmt.Fprintln(warn, "warning: prompt truncated in transit: the composer's paste marker declares fewer line breaks than the launch prompt has; a fragment, not the whole prompt, was submitted")
 	}
 }
 
@@ -159,10 +159,12 @@ func warnUnknown(warn io.Writer) {
 // slow-mounting composer that swallows the leading bytes of a paste, and a
 // truncated fragment being submitted reads identically to a clean delivery
 // on every signal this function used to check. So once the base "consumed"
-// shape is observed for a multi-line message, the declared line count on
-// Claude's "[Pasted text #N +M lines]" collapse marker (present anywhere in
-// the pane — the transcript still shows it after submission) is checked
-// against the message's real line count before promptConsumed is returned.
+// shape is observed for a multi-line message, the count declared on Claude's
+// "[Pasted text #N +M lines]" collapse marker (present anywhere in the pane —
+// the transcript still shows it after submission) is checked against the
+// message's hard line-break count (send.CheckPasteMarker: M counts line
+// breaks, not lines, and never display rows) before promptConsumed is
+// returned.
 //
 // Consumed must NOT be inferred merely from "our message isn't in the
 // composer" (#1777): a materialized autosuggestion or an unrelated draft
@@ -173,7 +175,7 @@ func warnUnknown(warn io.Writer) {
 // ComposerHasDraft reports true for ANY visible draft, ours or foreign, so
 // only a truly empty (or suggestion/placeholder) composer counts as consumed.
 //
-// Returns promptTruncated the moment a marker declares fewer lines than
+// Returns promptTruncated the moment a marker declares fewer line breaks than
 // expected — that signal is final, not a render-lag artifact, so there is no
 // reason to keep polling. A consumed-looking pane with no marker at all is
 // held as a candidate (render lag: the marker may not have painted yet) and
@@ -184,21 +186,21 @@ func pollPromptConsumed(target sendRetryTarget, message string, maxWait, pollInt
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
 	}
-	expectedLines := send.ExpectedPasteMarkerLines(message)
+	expectedBreaks := send.ExpectedPasteMarkerLineBreaks(message)
 	deadline := time.Now().Add(maxWait)
 	sawConsumedWithoutMarker := false
 	for {
 		if raw, err := target.CapturePaneFresh(); err == nil {
 			content := tmux.StripANSI(raw)
 			if send.HasCurrentComposerPrompt(content) && !send.ComposerHasDraft(raw, tmux.StripANSI) {
-				if expectedLines == 0 {
+				if expectedBreaks == 0 {
 					return promptConsumed
 				}
-				counts := send.PasteMarkerLineCounts(content)
-				switch {
-				case len(counts) == 0:
+				verdict, _ := send.CheckPasteMarker(content, expectedBreaks)
+				switch verdict {
+				case send.PasteMarkerAbsent:
 					sawConsumedWithoutMarker = true
-				case counts[len(counts)-1] < expectedLines:
+				case send.PasteMarkerTruncated:
 					return promptTruncated
 				default:
 					return promptConsumed
