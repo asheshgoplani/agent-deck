@@ -392,7 +392,7 @@ func handleRemoteList(args []string) {
 			// remote preview panel shows (session.RemoteVersionCompare),
 			// always present so scripts don't have to re-derive it from
 			// Version/Outdated.
-			VersionState   string `json:"version_state"`
+			VersionState string `json:"version_state"`
 			// BuildDiffers is true when VersionState is "same" but the raw
 			// version strings differ only in build metadata (a "+local..."
 			// suffix on one side) — the honest label for that case is "same

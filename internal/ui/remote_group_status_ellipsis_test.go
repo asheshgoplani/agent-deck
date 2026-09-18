@@ -61,4 +61,3 @@ func TestRemoteGroupHeaderNoTruncationWhenWide(t *testing.T) {
 		t.Errorf("expected the full 'cached, refreshing…' trailer to survive untruncated at a wide width, got %q", line)
 	}
 }
-

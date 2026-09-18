@@ -300,4 +300,3 @@ default_tool = "cursor"
 		}
 	})
 }
-
