@@ -267,17 +267,21 @@ func runRemoteExec(name string, args []string) (int, error) {
 		}
 		return 0, nil
 	}
-	// session metrics captures stderr so an older remote's "unknown session
-	// command" (plus its help text) reads as one clear line instead.
+	// session metrics and session primer capture stderr so an older remote's
+	// "unknown session command" (plus its help text) reads as one clear line
+	// instead of raw remote output.
 	var stderr io.Writer = os.Stderr
 	var captured bytes.Buffer
-	if isSessionMetricsArgs(args) {
+	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) {
 		stderr = &captured
 	}
 	err = runner.RunIO(context.Background(), input, os.Stdout, stderr, args...)
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
 		if msg, ok := remoteMetricsUnsupported(name, args, exitErr.ExitCode(), captured.String()); ok {
+			return 2, errors.New(msg)
+		}
+		if msg, ok := remotePrimerUnsupported(name, args, exitErr.ExitCode(), captured.String()); ok {
 			return 2, errors.New(msg)
 		}
 		_, _ = os.Stderr.Write(captured.Bytes())

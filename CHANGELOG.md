@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - pi (`pi-coding-agent`) sessions now get event-driven status like claude/codex/gemini/hermes/cursor do, instead of status guessed from the pane. `agent-deck pi-hooks install` writes a small agent-deck extension into pi's global extension directory; it forwards pi's `session_start`, `turn_start`, `turn_end` and `session_shutdown` events, and agent-deck prefers that signal whenever it is fresh, falling back to pane detection when it is not. `pi-hooks status` and `pi-hooks uninstall` round it out (#2222).
+### Added
+
+- Harness context-level controls (`none`/`primer`/`full`) with global < group < session precedence (`[launch].context_level`, `[groups."<path>"].context_level`, `session set <id> context-level`), on top of the rc.6 identity injection. `agent-deck session primer [id] [--json]` inspects the resolved level, its source, and the exact primer/identity text a session receives (#2260).
 
 ## [1.16.11] - 2026-09-25
 

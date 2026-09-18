@@ -353,15 +353,47 @@ agent-deck session recent
 agent-deck session recent --json --limit 5
 ```
 
+### session primer
+
+```bash
+agent-deck session primer [id|title] [--json]
+```
+
+Inspects the resolved context-level for a session (global < group < session precedence) and prints exactly the primer/identity text its harness receives, or would receive on its next start/restart. Auto-detects the current session when `id` is omitted, like `session current`.
+
+```bash
+agent-deck session primer my-project
+# Session:       my-project (8c211446-1700000000)
+# Context level: primer
+# Source:        group:conductor/workers
+# Identity file: /.../runtime/identity/8c211446-.../identity.md
+#
+# # agent-deck session (primer)
+# ...
+
+agent-deck session primer my-project --json
+# {"context_level":"primer","source":"group:conductor/workers","active":true,
+#  "identity_file":"/.../identity.md","text":"..."}
+```
+
+`--json` adds `skip_reason` when injection is skipped (SSH/sandboxed sessions never inject, regardless of level). Against an older remote (`agent-deck remote <r> session primer`) that predates this command, the controller prints a one-line "remote does not support 'session primer'" message instead of forwarding raw stderr.
+
 ### session set
 
 ```bash
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account
+**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
+
+`context-level` sets the per-session harness context-level override (issue #2260): `none`, `primer`, or `full` (case-insensitive), persisted and applied on the session's next start/restart. An empty value clears the override so the session inherits the nearest ancestor group's or the global `[launch].context_level`. Precedence is global < group < session (see `config-reference.md`'s `[launch]` section); inspect the resolved value with `session primer`.
+
+```bash
+agent-deck session set my-project context-level primer
+agent-deck session set my-project context-level ""       # clear: inherit group/global
+```
 
 ### session send
 

@@ -48,6 +48,11 @@ const (
 	// baked/default model. Restart-required (the running process keeps the
 	// model it launched with).
 	FieldModel = "model"
+	// FieldContextLevel persists the per-session override of the harness
+	// context-level (issue #2260): "none", "primer", or "full". Empty
+	// clears the override (back to group/global resolution). See
+	// Instance.EffectiveContextLevel.
+	FieldContextLevel = "context-level"
 )
 
 var ValidMutableFields = []string{
@@ -74,6 +79,7 @@ var ValidMutableFields = []string{
 	FieldIdleTimeout,
 	FieldPin,
 	FieldModel,
+	FieldContextLevel,
 }
 
 type FieldRestartPolicy int
@@ -86,7 +92,7 @@ const (
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
-		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel,
+		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel, FieldContextLevel,
 		// Resume flags are baked into the next spawn command.
 		FieldToolSessionID:
 		return FieldRestartRequired
@@ -451,6 +457,22 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
 		}
 		inst.IdleTimeoutSecs = secs
+
+	case FieldContextLevel:
+		// #2260: empty clears the override (inherit group/global); anything
+		// else must be one of none/primer/full. Restart-required — the level
+		// is baked into the spawn command's identity/primer flag.
+		oldValue = inst.ContextLevel
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			inst.ContextLevel = ""
+		} else {
+			norm, perr := NormalizeContextLevel(trimmed)
+			if perr != nil {
+				return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
+			}
+			inst.ContextLevel = norm
+		}
 
 	case FieldModel:
 		// #1436: persist the operator's selected model into the tool-specific

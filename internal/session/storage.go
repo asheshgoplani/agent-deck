@@ -183,6 +183,10 @@ type InstanceData struct {
 	// Lives in the tool_data extras zone (identity_injection_persist.go).
 	IdentityInjectionDisabled bool `json:"identity_injection_disabled,omitempty"`
 
+	// ContextLevel mirrors Instance.ContextLevel (issue #2260). Lives in the
+	// tool_data extras zone (context_level_persist.go).
+	ContextLevel string `json:"context_level,omitempty"`
+
 	// DeepSeekTask mirrors Instance.DeepSeekTask (PR #1942 review, P1c).
 	// Persisted via the tool_data extras zone (see deepseek_task_persist.go).
 	// Empty for every profile but headless.
@@ -1064,6 +1068,9 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// Identity-injection opt-out lives in the same extras zone so a restart
 	// from any process honours `--no-identity`.
 	toolData = WriteIdentityInjectionDisabledToToolData(toolData, inst.IdentityInjectionDisabled)
+	// #2260: the per-session context-level override lives in the same extras
+	// zone so a restart from any process honours `session set ... context-level`.
+	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
 	// #1815: the resume-identity taint travels with the id it describes, so a
 	// writer that saves a discovered conversation id without ever passing
 	// through the resume builder (e.g. `switch-account --no-restart`) cannot
@@ -1270,6 +1277,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
+			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1407,6 +1415,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
+			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1713,6 +1722,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			DeepSeekTask:                 instData.DeepSeekTask,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
+			ContextLevel:                 instData.ContextLevel,
 			LastStartedAt:                instData.LastStartedAt,
 			GenericSessionID:             instData.GenericSessionID,
 			GenericDetectedAt:            instData.GenericDetectedAt,
