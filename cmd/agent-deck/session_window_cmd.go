@@ -15,6 +15,8 @@ import (
 // kill-window confirm (internal/ui: ConfirmKillWindow, tmux.Session.KillWindow).
 // A TUI-only destructive action needs a scriptable equivalent; this is it.
 
+var errSessionWindowNotFound = errors.New("session window not found")
+
 func handleSessionWindow(profile string, args []string) {
 	if len(args) == 0 {
 		printSessionWindowHelp()
@@ -46,12 +48,9 @@ func printSessionWindowHelp() {
 	fmt.Println("'session stop' to end the whole session instead.")
 }
 
-// handleSessionWindowClose kills one tmux window inside a session. It mirrors
-// the TUI's ConfirmKillWindow action: the window's stable id is looked up
-// immediately before the kill and the kill only proceeds if that id still
-// matches what tmux reports live, atomically with the session's other windows
-// remaining (tmux.Session.KillWindow) — the same liveness-is-not-identity
-// guard as the confirm dialog, just without a human in between the two steps.
+// handleSessionWindowClose parses `session window close <id> <index>` and
+// reports the outcome of closeSessionWindow, which carries the kill's
+// identity guard.
 func handleSessionWindowClose(profile string, args []string) {
 	fs := flag.NewFlagSet("session window close", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -66,9 +65,8 @@ func handleSessionWindowClose(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 	inst := resolveOwnershipTarget(profile, fs.Arg(0), out)
 
-	indexArg := fs.Arg(1)
-	index, atoiErr := strconv.Atoi(indexArg)
-	if indexArg == "" || atoiErr != nil {
+	index, err := strconv.Atoi(fs.Arg(1))
+	if err != nil {
 		out.Error("window index is required and must be an integer (see 'agent-deck session show "+fs.Arg(0)+"')", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -93,8 +91,6 @@ func handleSessionWindowClose(profile string, args []string) {
 		"window":  index,
 	})
 }
-
-var errSessionWindowNotFound = errors.New("session window not found")
 
 // closeSessionWindow kills window `index` of inst's live tmux session. It
 // mirrors the TUI's ConfirmKillWindow action exactly: the window's stable id
