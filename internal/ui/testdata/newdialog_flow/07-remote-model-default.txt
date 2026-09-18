@@ -6,13 +6,13 @@
        │                                                                                    │       
        │    New Session (remote: agentbox)                                                  │       
        │                                                                                    │       
-       │      in group: My Sessions                                                         │       
+       │      in group: agentbox                                                            │       
        │                                                                                    │       
        │      Name:                                                                         │       
        │      > demo                                                                        │       
        │                                                                                    │       
        │      Command:                                                                      │       
-       │        shell    claude    codex    gemini    hermes    opencode                    │       
+       │        shell     claude     codex     gemini     hermes     opencode               │       
        │                                                                                    │       
        │    ▶ Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       
