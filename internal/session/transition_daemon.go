@@ -310,6 +310,20 @@ func init() {
 // bounded in practice because the subprocess context timeouts let the detached
 // probe return within a few seconds.
 func (d *TransitionDaemon) refreshInstanceStatusBounded(profile string, inst *Instance) (timedOut bool) {
+	if refreshStatusBounded(inst, statusProbeBudget) {
+		d.logProbeStall(profile, inst.ID, "probe_budget")
+		return true
+	}
+	return false
+}
+
+// refreshStatusBounded runs the status probe seam (hook-driven state first,
+// pane fallback: (*Instance).UpdateStatus) for inst under budget. It reports
+// timedOut=true when the probe did not finish in time; see
+// refreshInstanceStatusBounded for why the caller must then not touch
+// lock-guarded instance state. Shared by the daemon's sync pass and the
+// wake-nudge idle gate (review round 2, P2-D).
+func refreshStatusBounded(inst *Instance, budget time.Duration) (timedOut bool) {
 	probe := updateInstanceStatus.Load().(statusProbeFunc)
 	done := make(chan struct{})
 	go func() {
@@ -319,8 +333,7 @@ func (d *TransitionDaemon) refreshInstanceStatusBounded(profile string, inst *In
 	select {
 	case <-done:
 		return false
-	case <-time.After(statusProbeBudget):
-		d.logProbeStall(profile, inst.ID, "probe_budget")
+	case <-time.After(budget):
 		return true
 	}
 }
