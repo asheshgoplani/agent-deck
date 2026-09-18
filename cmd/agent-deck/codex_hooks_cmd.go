@@ -493,24 +493,80 @@ func handleCodexHooksUninstall() {
 
 func handleCodexHooksStatus() {
 	configPath := getCodexConfigPath()
-	content, _ := readFileOrEmpty(configPath)
-
-	switch {
-	case strings.Contains(content, codexNotifyMarkerBegin), codexNotifyExactRe.MatchString(content):
+	switch codexHooksStateForConfig(configPath) {
+	case codexHooksInstalled:
 		fmt.Println("Status: INSTALLED")
-	case hasLegacyCodexNotifyTable(content):
+	case codexHooksLegacy:
 		fmt.Println("Status: LEGACY_NOTIFY_TABLE")
 		fmt.Println("Run 'agent-deck codex-hooks install' to migrate to current Codex format.")
-	case codexNotifyTableRe.MatchString(content):
-		fmt.Println("Status: LEGACY_NOTIFY_TABLE")
-		fmt.Println("Run 'agent-deck codex-hooks install' to migrate to current Codex format.")
-	case codexNotifyKeyRe.MatchString(content):
+	case codexHooksCustom:
 		fmt.Println("Status: CUSTOM_NOTIFY")
 	default:
 		fmt.Println("Status: NOT INSTALLED")
 		fmt.Println("Run 'agent-deck codex-hooks install' to install.")
 	}
 	fmt.Printf("Config: %s\n", configPath)
+}
+
+// Codex notify-hook state of one CODEX_HOME, as `session show` / `doctor`
+// report it. Nothing in `add` / `remote add` installs the hook, so a codex
+// session's light is content detection only until `codex-hooks install` is
+// run for its CODEX_HOME; that has to be said, not left blank. Unknown is a
+// first-class answer: a remote session's CODEX_HOME is on the other host.
+const (
+	codexHooksInstalled    = "installed"
+	codexHooksNotInstalled = "not-installed"
+	codexHooksLegacy       = "legacy"
+	codexHooksCustom       = "custom"
+	codexHooksUnknown      = "unknown"
+)
+
+// codexHooksStateForConfig classifies the notify setting of a codex
+// config.toml the same way `codex-hooks status` prints it.
+func codexHooksStateForConfig(configPath string) string {
+	content, _ := readFileOrEmpty(configPath)
+	switch {
+	case strings.Contains(content, codexNotifyMarkerBegin), codexNotifyExactRe.MatchString(content):
+		return codexHooksInstalled
+	case hasLegacyCodexNotifyTable(content), codexNotifyTableRe.MatchString(content):
+		return codexHooksLegacy
+	case codexNotifyKeyRe.MatchString(content):
+		return codexHooksCustom
+	default:
+		return codexHooksNotInstalled
+	}
+}
+
+// codexHooksStateForInstance resolves the session's CODEX_HOME and classifies
+// its config. "" for non-codex tools; unknown (with no path) for a remote
+// session.
+func codexHooksStateForInstance(inst *session.Instance) (state, configPath string) {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) {
+		return "", ""
+	}
+	home := inst.ResolvedCodexHome()
+	if home == "" {
+		return codexHooksUnknown, ""
+	}
+	configPath = filepath.Join(home, "config.toml")
+	return codexHooksStateForConfig(configPath), configPath
+}
+
+// codexHooksLine is the human line for a hook state; the not-installed case
+// names the exact install command for that CODEX_HOME.
+func codexHooksLine(state, configPath string) string {
+	switch state {
+	case codexHooksInstalled:
+		return fmt.Sprintf("hooks installed (%s)", configPath)
+	case codexHooksLegacy:
+		return fmt.Sprintf("hooks legacy notify table (%s); run 'agent-deck codex-hooks install' to migrate", configPath)
+	case codexHooksCustom:
+		return fmt.Sprintf("hooks custom notify (%s); agent-deck receives no turn events", configPath)
+	case codexHooksNotInstalled:
+		return fmt.Sprintf("hooks not installed (content detection only); run 'CODEX_HOME=%s agent-deck codex-hooks install'", filepath.Dir(configPath))
+	default:
+		return "hooks unknown (remote CODEX_HOME)"
+	}
 }
 
 func getCodexConfigPath() string {

@@ -665,6 +665,17 @@ type Instance struct {
 	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
 	tmuxFlipFromRunningPending bool
 
+	// statusSampledLive records that THIS process has settled at least one
+	// status verdict for the instance (hook fast path, SSE, or a tmux sample).
+	// Until then i.Status is only the persisted row — what the notify daemon's
+	// db.WriteStatus or `session start` left behind — and must not seed the
+	// running debounce above: a one-pass process (`list --json`, `session
+	// show`, the remote-agent probe, each daemon pass, which re-hydrates its
+	// instances) never takes the confirming second sample, so a row loaded as
+	// "running" beside an idle pane stayed green forever (the "remotes always
+	// green" codex-without-hooks case). Not serialized, by design.
+	statusSampledLive bool
+
 	// Hook-lag evidence (see hook_lag.go): the samples of a completed turn at
 	// an idle prompt taken while the hook file still said running, keyed by
 	// the hook event they were taken under. Persisted in tool_data.hook_lag
@@ -6436,6 +6447,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		// reports through the hook fast path and returns before the tmux-derived
 		// reconciliation below would ever run.
 		i.releaseAuthHoldIfHealthyLocked()
+		i.statusSampledLive = true
 		return nil
 	}
 
@@ -6454,6 +6466,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				i.tmuxSession.ResetAcknowledged()
 			}
 			i.releaseAuthHoldIfHealthyLocked()
+			i.statusSampledLive = true
 			return nil
 		case "waiting":
 			if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
@@ -6462,6 +6475,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				i.Status = StatusWaiting
 			}
 			i.releaseAuthHoldIfHealthyLocked()
+			i.statusSampledLive = true
 			return nil
 		}
 	}
@@ -6483,6 +6497,17 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// Prior status, captured before this tmux-derived sample overwrites it, so the
 	// debounce below can tell a flip AWAY from running from a steady state.
 	prevStatus := i.Status
+	// For the running→waiting/error debounce only a status this process
+	// settled itself counts as prior: a row loaded as "running" is a persisted
+	// guess, not an observation, and holding on it is what kept hook-less codex
+	// sessions green forever (statusSampledLive). A transient capture failure
+	// below still keeps the persisted status for one sample: that hold cannot
+	// stick, the next readable capture settles it.
+	livePrevStatus := prevStatus
+	if !i.statusSampledLive {
+		livePrevStatus = ""
+	}
+	i.statusSampledLive = true
 
 	// The pane itself decided this status; there is no hook verdict to lag
 	// behind it. Drop any hook-lag evidence so the substate cannot keep
@@ -6563,13 +6588,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// completion/error to the conductor. A genuinely dead pane (tmux "inactive")
 	// and a "dead" hook are NOT debounced — those are real terminal signals.
 	// Skip debounce for tools without hooks (pi, shell): their tmux status is
-	// the ground truth and there's no hook fast-path to race against. Without
-	// this skip, each fresh CLI invocation (e.g. `agent-deck list --json`) sees
-	// tmuxFlipFromRunningPending = false and holds the status at running on the
-	// first sample, then exits before the second confirming sample can fire.
+	// the ground truth and there's no hook fast-path to race against. For every
+	// tool the hold also needs a running verdict THIS process made (livePrevStatus
+	// is "" on a fresh load, see statusSampledLive): a one-pass process cannot
+	// take the confirming sample, so holding there is a guess it never checks.
 	bypassWaitingDebounce := i.shouldBypassCodexWaitingDebounce(i.Status)
 	if shouldDebounceTmuxFlipForTool(i.Tool) && !bypassWaitingDebounce {
-		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
+		if apply, nextPending, held := debounceFlipFromRunning(livePrevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
 			i.tmuxFlipFromRunningPending = nextPending
 			i.Status = apply
 			return nil
