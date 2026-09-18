@@ -59,15 +59,27 @@ jobs:
           git -C async-baseline diff --exit-code
           cp head/internal/ui/hook_cleanup_async_test.go async-baseline/internal/ui/
           cp head/internal/ui/testdata/hook_cleanup_search.txt async-baseline/internal/ui/testdata/
+          # The containers run with --network none, so the image must hold the
+          # module graph of EVERY checkout it tests. The pinned baselines keep
+          # their own go.mod/go.sum (older dependency versions than head), and
+          # warming from head alone leaves them with "[setup failed]" instead of
+          # a behavioral red.
+          context="$RUNNER_TEMP/hooks-test-context"
+          mkdir -p "$context"
+          for checkout in head baseline async-baseline; do
+            mkdir -p "$context/$checkout"
+            cp "$checkout/go.mod" "$checkout/go.sum" "$context/$checkout/"
+          done
           cat > "$RUNNER_TEMP/hooks-test.Dockerfile" <<'DOCKERFILE'
           FROM golang:1.25
           RUN apt-get update && apt-get install -y --no-install-recommends tmux
           ENV GOMODCACHE=/tmp/gomod
           WORKDIR /deps
-          COPY go.mod go.sum ./
-          RUN go mod download && chmod -R a+rwX /tmp/gomod
+          COPY . ./
+          RUN for checkout in head baseline async-baseline; do (cd "$checkout" && go mod download); done \
+              && chmod -R a+rwX /tmp/gomod
           DOCKERFILE
-          docker build -f "$RUNNER_TEMP/hooks-test.Dockerfile" -t hooks-cleanup-test head 2>&1 | tee evidence/image-build.log
+          docker build -f "$RUNNER_TEMP/hooks-test.Dockerfile" -t hooks-cleanup-test "$context" 2>&1 | tee evidence/image-build.log
       - name: Require behavioral red and run head regression suite in Docker
         shell: bash
         run: |
