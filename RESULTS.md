@@ -1,3 +1,113 @@
+# Release Candidate 6 (v1.16.11-rc.6) — final candidate
+
+Base: `release/v1.16.11-rc5` head `a75f202b` (`docs(results): rc.5 verification report`).
+
+Head: `f9f82bcd` (`chore(release): fold rc.6 content`).
+
+## Merges (2/2, `--no-ff`)
+
+| # | Branch | SHA | Result |
+|---|---|---|---|
+| 1 | `fix/final-polish-20260918` | `4cfca95d` | Clean, no conflicts |
+| 2 | `fix/remote-attach-20260918` | `fdaeded4` | Clean, no conflicts |
+
+Both items merged. Nothing dropped or skipped; no overlapping-logic conflicts encountered.
+
+**#1 `fix/final-polish-20260918`** (base rc.5): CHANGELOG `[1.16.11]` `#2025` entry now credits `creds-refresh` alongside `notify-daemon`/`remote add` (fix was already present, entry was incomplete); adds `tests/ci/dependabot-automerge-workflow.test.sh` (static-grep lint test for the Dependabot auto-merge workflow — actor gate, patch/minor-only matching, `.github/` path exclusion, no self-approval, #2131); wires it and the existing structure-advisory lint test into `eval-smoke.yml` as advisory-free plain-bash jobs. `.github/workflows/eval-smoke.yml`, `CHANGELOG.md`, `tests/ci/dependabot-automerge-workflow.test.sh` — 3 files, no conflicts.
+
+**#2 `fix/remote-attach-20260918`** (base rc.5, 2 commits): embedded remote attach now watches the pane for up to 2s after the tmux client starts and sends `send-keys -X cancel` when tmux parked it in view-mode over a broken `~/.tmux.conf` (rc.5 g14 parity finding — the pane underneath was live the whole time but the `[tmux]` warning frame ate every keystroke); `remote <name> skill detach` and `skill attached` are now forwarded instead of refused as unsupported, so an attach made over a remote can be undone or inspected from the controller. 9 files (`cmd/agent-deck/remote_cmd.go`, `remote_exec.go` + test, `internal/tmux/config_error_view.go` + test, `internal/tmux/pty.go`, `internal/ui/embedded_remote_leading_output_test.go`, `testmain_test.go`, `skills/agent-deck/references/cli-reference.md`), no conflicts.
+
+`cmd/agent-deck/main.go` `Version` stays `"1.16.11"` — checked after every merge, unchanged.
+
+### CHANGELOG audit (`git log --merges --oneline v1.16.10..HEAD`)
+
+86 merge commits since v1.16.10; extracted 60 distinct `#NNNN` references from their subjects and checked each against `CHANGELOG.md`'s `[1.16.11]` section. **3 flagged, 1 genuine gap:**
+
+- **`#2136`** (`fix(ui): wire ToolColor into GetToolStyle, the actual row-render path`) — genuinely missing, distinct from the already-changelogged `#2146` (tool registry icons/colors: that one wired the registry into `ToolColor`/lookup; `#2136` is the follow-up fixing the actual row-render call path, `GetToolStyle`, which still ignored a custom tool's declared color). **Bullet added** under `[1.16.11]` → `Fixed`.
+- `#2224` (Codex completion-turn preservation carry) — merged then immediately reverted (`61d692cf` "Revert \"Merge carry-e/2224 …\"") in this same tree; not shipped, correctly absent from the changelog.
+- `#2282` (deps: bump `upload-artifact` action version across 6 CI workflow files) — pure CI dependency bump, no user-facing behavior; consistent with how other Dependabot-class version bumps aren't individually changelogged elsewhere in this file.
+
+Also added the 2 bullets for this round's own merges (final-polish's `#2131` dependabot lint test; remote-attach's config-error view-mode fix + skill detach/attached forwarding — the `#2025` creds-refresh credit line was already correct on merge, no bullet needed there). **3 new CHANGELOG bullets total this round**, all under `[1.16.11]` → `Fixed`. Sanitized with `~/.agent-deck/conductor/scripts/sanitize-for-github.sh` — confirmed clean on every new line (108–116); the script's other findings are all pre-existing lines far below in the file's older history, untouched by this work.
+
+## Docker: package group
+
+`./internal/send/... ./internal/tmux/... ./internal/session/... ./internal/ui/... ./internal/ctxinspect/... ./internal/health/... ./internal/statedb/... ./internal/web/... ./cmd/agent-deck/...`
+
+- `internal/tmux`: **FAIL** `TestKill_LiveSessionThenSecondKillBothSucceed` — pre-existing (listed).
+- `cmd/agent-deck`: **FAIL** `TestHealthRemoteExecJSONParity`, `TestRemoteCreatePathCarriesIdentity`, `TestRemoteCommandParity`, `TestRemoteCompositionForwardsCommandHelp` (5 subtests), `TestRemoteSuccessfulMutationParity` (15 subtests) — all "No user exists for uid 1000" / remote-catalog-over-SSH-stub, the uid-1000 root-permission class — pre-existing (listed).
+- All other packages in the group (`internal/send`, `internal/session`, `internal/ui`, `internal/ctxinspect` + subpackages, `internal/health`, `internal/statedb`, `internal/web`): **ok**.
+- No new failures.
+
+## Docker: full suite
+
+`go test -timeout 30m ./...` — same pre-existing failure set as the package group, plus:
+
+- `internal/testutil/multiclienttmux`: **FAIL** `TestAggregateSize_FitsCrossedClientDimensions` — pre-existing (listed).
+- `internal/tuitest`: **FAIL** `TestSmoke_BuildVersion` — pre-existing (listed); failure mode this run was `go: downloading go1.25.13 (linux/arm64): dial tcp: lookup proxy.golang.org: network is unreachable`, expected under `--network none`.
+
+`internal/ui` passed clean this run (the telemetry-tempdir flake didn't reproduce). `TestTmuxBootstrap_ServerIsRunning` and `internal/testutil` `TestTestMainDoesNotLeakBootstrapServer` both passed (no FAIL lines for either). **No new failures beyond the documented pre-existing set.**
+
+## Functional check
+
+`make check-functional FUNCCHECK_BINARY=<copy of the rc.4 linux/amd64 binary from /tmp/exec-rc4-build/out/agent-deck_linux_amd64>` (sha256 `96815c51577307b5e0121f84a86168a34802b67ef5af2425b2c872307156c4c6` — same binary rc.4's and rc.5's own reports used, confirmed byte-identical). Result: **36 PASS / 0 FAIL / 4 SKIPPED / 1 UNKNOWN** — matches the expected shape exactly, no regressions vs rc.5.
+
+| Check | Result |
+|---|---|
+| sandbox, session add/start/send/stop/restart | PASS (all 6) |
+| Launch prompt, Status running/waiting, Completion sentinel | PASS (all 4) |
+| Inbox delivers once, Inbox drain consumes | PASS (both) |
+| Fork, Fork removal, Child removal and hooks | PASS (all 3) |
+| Group create/move/delete | PASS (all 3) |
+| Worktree create/cleanup | PASS (both) |
+| Accounts list, Account switch, MCP attach/detach, Account fixture cleanup | PASS (all 5) |
+| Remote list/create/sessions/cleanup | PASS (all 4) |
+| Remote switch | SKIPPED (flag not in this build — same as rc.4/rc.5) |
+| Update offline command, Update cache, Health | PASS / UNKNOWN / PASS |
+| TUI binary vs source (home list, new-session dialog, remote row states) | SKIPPED (binary) / PASS (source) — ×3 |
+| session remove, sandbox teardown | PASS (both) |
+
+No table-vs-rc.5 deltas: every PASS/SKIPPED/UNKNOWN cell matches rc.5's report line for line.
+
+## Web (vitest, panes registry)
+
+`tests/web/` has no vendored `node_modules` and this environment has no network — cannot run without violating the no-network Docker constraint. **Recorded, not run**, same as expected for the unvendored case; no panes-registry-touching code shipped in either of this round's two branches.
+
+## Packaging
+
+`goreleaser build --snapshot --clean --single-target` — succeeded (`dist/agent-deck_darwin_arm64_v8.0/agent-deck`), version `1.16.11-next` (snapshot), single-target `darwin_arm64_v8.0`. No errors, no partial-build warnings beyond the expected `brews`→`homebrew_casks` deprecation notice.
+
+## Binaries
+
+| Target | Path | sha256 |
+|---|---|---|
+| darwin/arm64 (CGO) | `/tmp/exec-rc6-build/out/agent-deck` | `0645bb0918edf47e6337619f9d04f42b3ca3ac00c8d0f9f4544237e0615c7b8a` |
+| linux/amd64 (CGO_ENABLED=0) | `/tmp/exec-rc6-build/out/agent-deck_linux_amd64` | `2b1fbd88bf94344a99d78599a1237e7a1eb2e5b8f4eb5862e21c9d9bd9fb38bc` |
+
+`./out/agent-deck --version` → `Agent Deck v1.16.11-rc.6`.
+
+## Extra smoke
+
+- `./out/agent-deck hooks status` — read-only (no mtime changes; the command is read-only by construction), reported `Status: INSTALLED`, hook commands already carry the absolute path `/Users/ashesh/.local/bin/agent-deck` against `~/.claude/settings.json`, 159 total hook files / 0 active. **PATH shadow on this Mac, verified independently** (`which -a agent-deck`): bare `agent-deck` resolves first to `/usr/local/bin/agent-deck` (**v1.16.3**, stale) ahead of `~/.local/bin/agent-deck` (**v1.16.11-rc.5**, the one actually in daily use) and `~/go/bin/agent-deck` (v0.19.0); the installed hooks sidestep this by pinning the absolute `~/.local/bin` path, so the shadow doesn't affect hook execution, but a bare `agent-deck` invocation on this Mac's PATH does not resolve to the current dev build.
+- `./out/agent-deck inbox dead-letter --help` — lists `agent-deck inbox dead-letter <list|show|retry|purge>` ✓.
+- `./out/agent-deck inbox drain --help` — **pre-existing gap, not a regression, confirmed identical to rc.5's finding**: `--strict` (documented in `runInboxDrain`'s own inline usage string) still doesn't reach `--help`'s output, because both `inbox drain --help` and `inbox dead-letter --help` fall through `handleInbox`'s dispatch to the generic top-level `printInboxUsage`. Predates both of this round's branches and is outside their scope; left unfixed per the CLAUDE.md rule that code changes need an approved plan.
+
+## Smoke: throwaway HOME, private tmux socket
+
+Fresh `HOME` and `TMUX_TMPDIR` under `/tmp/exec-rc6-build/rc6-smoke-home-<pid>`, built with `env -i` (no inherited environment at all — this session's ambient `AGENTDECK_ACCOUNT=personal`/`AGENTDECK_PROFILE`/`CLAUDE_CONFIG_DIR`/etc. would otherwise leak in and produce a spurious `account "personal" is not configured` error, which is what the first attempt hit before switching to `env -i`), minimal `PATH`.
+
+- `launch /tmp -t t1 -c bash -m "<190-char one-line message>"` → **started**, `✓ Launched session: t1 (message sent)` — the rc.3 regression stays fixed.
+- `session metrics --help | head -2` → prints usage.
+- `session context --help | head -2` → prints usage.
+- `inbox --help | grep dead-letter` → matches (`dead-letter <list|show|retry|purge>` line and the family description line).
+- `list --json` → one entry for `t1`, `status: "idle"`.
+- Cleanup: `session stop t1` (no `tmux kill-server` — blocked by the destructive-action hook regardless of socket; the private-socket tmux server was left to the throwaway `TMUX_TMPDIR`), then throwaway `HOME`/`TMUX_TMPDIR` removed via `trash`. No real `HOME`, host tmux server, or remote touched.
+
+## Safety
+
+Never installed; no `rm` (all cleanup via `trash`); no `claude -p`; no push; no GitHub writes. Nothing touched outside `/private/tmp/exec-rc6-build` and a scratch copy of the rc.4 linux/amd64 binary in `/tmp/exec-local-integration-e/funccheck/` (removed via `trash` after the check ran). Docker runs used `--network none --cap-drop ALL`, one at a time via the shared lock directory (acquired/released cleanly for both the package-group+full-suite run and the separate functional-check run).
+
+---
+
 # Release Candidate 5 (v1.16.11-rc.5)
 
 Base: `release/v1.16.11-rc4` head `26265b75` (`chore(release): fold rc.4 content`).
