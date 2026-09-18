@@ -21,7 +21,7 @@
                              │                                                            │                             
                              │      shell    claude    gemini    opencode    codex        │                             
                              │    pi    copilot    crush    muse    cursor agent    he    │                             
-                             │    rmes    deepseek                                        │                             
+                             │    rmes    deepseek    omp                                 │                             
                              │      Account for selected harness (configured; auth u…:    │                             
                              │        inherit    personal (not configured)                │                             
                              │                                                            │                             

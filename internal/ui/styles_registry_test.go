@@ -27,6 +27,7 @@ func TestToolIconColor_RegistryMatchesLegacySwitch(t *testing.T) {
 		"opencode": {"🌐", ColorTextDim},
 		"codex":    {"💻", ColorCyan},
 		"pi":       {"π", ColorAccent},
+		"omp":      {"⌥", ColorAccent},
 		"copilot":  {"🐙", ColorAccent},
 		"crush":    {"💘", ColorPurple},
 		"cursor":   {"📝", ColorAccent},

@@ -16,8 +16,7 @@ func TestAgentDeckSkillDocumentsOMPForkSupport(t *testing.T) {
 			"| `f/F` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi session |",
 		},
 		filepath.Join("..", "..", "skills", "agent-deck", "references", "tui-reference.md"): {
-			"| `f` | Quick fork (Claude/OpenCode/Pi/Codex/Oh My Pi) |",
-			"| `F` | Fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi) |",
+			"| `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi) (**rebindable**) |",
 		},
 	}
 
