@@ -5722,6 +5722,12 @@ type sessionRenderState struct {
 	title          string // Instance.Title at snapshot time
 	autoName       bool   // session displays a captured/live task description
 	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
+	// archivedSuperseded mirrors session.VisibleInstances' exclusion: true
+	// for an archived cross-harness source still superseded by a "Restart
+	// with new session ID" target. Zero value (false) means "counted" —
+	// callers that build a fake snapshot without touching this field (many
+	// tests do) get the pre-finding-1 behavior of counting everything.
+	archivedSuperseded bool
 }
 
 // displaySessionTitle returns the label to render for a session row. For an
@@ -5898,9 +5904,10 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			continue
 		}
 		state := sessionRenderState{
-			status:   inst.GetStatusThreadSafe(),
-			substate: inst.CachedSubstate(),
-			tool:     inst.GetToolThreadSafe(),
+			status:             inst.GetStatusThreadSafe(),
+			substate:           inst.CachedSubstate(),
+			tool:               inst.GetToolThreadSafe(),
+			archivedSuperseded: inst.IsArchived() && inst.SupersededBy != "",
 			// Label fields: read here, on the refresher's goroutine, so the
 			// render path never takes Instance.mu per row (#1753). Title goes
 			// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/
@@ -6156,9 +6163,15 @@ func (h *Home) backgroundStatusUpdate() {
 	defer func() {
 		elapsed := time.Since(totalStart)
 		calls := tmux.SubprocessStarts() - tmuxBefore
-		health.RecordStatusPass(elapsed, len(instances), calls)
+		// session_count must agree with list --json's tracked set (the same
+		// filter countByStatus/countSessionStatuses/renderGroupPreview use),
+		// not the raw snapshot: archived-cross-harness sources superseded by
+		// a "Restart with new session ID" target otherwise inflate the
+		// health/doctor sample even though status/list already agree.
+		visibleCount := len(session.VisibleInstances(instances))
+		health.RecordStatusPass(elapsed, visibleCount, calls)
 		if health.Enabled() {
-			h.queueHealthWarning(elapsed, len(instances), calls)
+			h.queueHealthWarning(elapsed, visibleCount, calls)
 		}
 	}()
 
@@ -17884,7 +17897,15 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		h.refreshSessionRenderSnapshot(nil)
 		snapshot = h.getSessionRenderSnapshot()
 	}
+	// Skip archived cross-harness sources superseded by a "Restart with new
+	// session ID": their old tmux session can still be alive, but they are
+	// hidden from list --json and must not inflate this header pill either
+	// (issue: header/status totals exceeded list --json's by the number of
+	// superseded sources still holding a live tmux process).
 	for _, state := range snapshot {
+		if state.archivedSuperseded {
+			continue
+		}
 		switch state.status {
 		case session.StatusRunning:
 			running++
@@ -23680,16 +23701,24 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	b.WriteString(headerStyle.Render("📁 " + group.Name))
 	b.WriteString("\n\n")
 
+	// Archived cross-harness sources superseded by a "Restart with new
+	// session ID" stay in the group tree (so toggling to the archived view
+	// still finds them) but must not leak into this preview: their old tmux
+	// session can still be alive, and list --json already hides them, so
+	// this panel has to derive from the same tracked set or it overcounts
+	// and shows phantom rows for sessions the enumerable list doesn't have.
+	visibleSessions := session.VisibleInstances(group.Sessions)
+
 	// Session count
 	countStyle := lipgloss.NewStyle().
 		Foreground(ColorText).
 		Bold(true)
-	b.WriteString(countStyle.Render(fmt.Sprintf("%d sessions", len(group.Sessions))))
+	b.WriteString(countStyle.Render(fmt.Sprintf("%d sessions", len(visibleSessions))))
 	b.WriteString("\n\n")
 
 	// Status breakdown with inline badges
 	running, waiting, idle, stopped, errored := 0, 0, 0, 0, 0
-	for _, sess := range group.Sessions {
+	for _, sess := range visibleSessions {
 		switch sess.Status {
 		case session.StatusRunning:
 			running++
@@ -23774,7 +23803,7 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	b.WriteString("\n")
 
 	// Session list (compact)
-	if len(group.Sessions) == 0 {
+	if len(visibleSessions) == 0 {
 		emptyStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
 		b.WriteString(emptyStyle.Render("  No sessions in this group"))
 		b.WriteString("\n")
@@ -23783,9 +23812,9 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 		if maxShow < 3 {
 			maxShow = 3
 		}
-		for i, sess := range group.Sessions {
+		for i, sess := range visibleSessions {
 			if i >= maxShow {
-				remaining := len(group.Sessions) - i
+				remaining := len(visibleSessions) - i
 				b.WriteString(DimStyle.Render(fmt.Sprintf("  ... +%d more", remaining)))
 				break
 			}

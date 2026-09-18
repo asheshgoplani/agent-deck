@@ -2750,13 +2750,7 @@ func handleList(profile string, args []string) {
 // normal archive flag (via `session unarchive`) intentionally restores a source
 // row to the default list without replaying or deleting its retained lineage.
 func defaultListInstances(instances []*session.Instance) []*session.Instance {
-	visible := make([]*session.Instance, 0, len(instances))
-	for _, inst := range instances {
-		if inst != nil && !(inst.IsArchived() && inst.SupersededBy != "") {
-			visible = append(visible, inst)
-		}
-	}
-	return visible
+	return session.VisibleInstances(instances)
 }
 
 // buildListJSON is the body of `list --json`: every session with its status
@@ -3256,6 +3250,11 @@ func countByStatus(instances []*session.Instance) statusCounts {
 	// Warm tmux pane-title cache + load hook statuses so `status`/`status --json`
 	// reports the same counts the TUI and /api/menu do (issue #610).
 	session.RefreshInstancesForCLIStatus(instances)
+	// Superseded/archived source rows (from cross-harness "Restart with new
+	// session ID") stay in storage with their old tmux session still
+	// reachable, but `list --json` hides them. Without this filter `status`
+	// counts them anyway, so its total silently exceeds `list --json`'s.
+	instances = session.VisibleInstances(instances)
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
@@ -3349,6 +3348,10 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		os.Exit(1)
 	}
+	// Same tracked set as `list --json`: hide archived cross-harness sources
+	// superseded by a "Restart with new session ID" so status totals never
+	// exceed the enumerable session list.
+	instances = session.VisibleInstances(instances)
 
 	if len(instances) == 0 {
 		if *jsonOutput {

@@ -34,6 +34,51 @@ func readRuntimeHealth(profile string, since time.Duration) (health.Summary, err
 	return health.Report(dir, since)
 }
 
+// untrackedTmuxSessionsForHealth loads this profile's tracked instances and
+// reports live agentdeck_-prefixed tmux sessions outside that set (see
+// session.UntrackedTmuxSessions). Read-only by construction: it resolves the
+// profile directory first and returns empty rather than touching storage at
+// all when that directory does not exist yet, matching doctor's "never
+// writes to HOME" contract — NewStorageWithProfile's MkdirAll would
+// otherwise create it as a side effect of a diagnostic read. Used only by
+// `doctor` (see doctor_cmd.go): `health --json`'s output is forwarded
+// byte-for-byte over `remote exec` and compared for parity, and this field's
+// live-computed ages would make two back-to-back calls disagree.
+func untrackedTmuxSessionsForHealth(profile string) []health.UntrackedTmuxSession {
+	effectiveProfile, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil
+	}
+	profileDir, err := session.GetProfileDir(effectiveProfile)
+	if err != nil {
+		return nil
+	}
+	if _, err := os.Stat(profileDir); err != nil {
+		return nil
+	}
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		return nil
+	}
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		return nil
+	}
+	untracked, err := session.UntrackedTmuxSessions(instances)
+	if err != nil {
+		return nil
+	}
+	out := make([]health.UntrackedTmuxSession, 0, len(untracked))
+	for _, u := range untracked {
+		out = append(out, health.UntrackedTmuxSession{
+			Name:        u.Name,
+			AgeSeconds:  u.Age.Seconds(),
+			PaneCommand: u.PaneCommand,
+		})
+	}
+	return out
+}
+
 func handleHealth(profile string, args []string) {
 	fs := flag.NewFlagSet("health", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
