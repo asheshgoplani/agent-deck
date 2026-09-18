@@ -40,7 +40,7 @@ func TestRemoteRows_AlignWithRootGroups_NoExtraIndent(t *testing.T) {
 		var b strings.Builder
 		switch item.Type {
 		case session.ItemTypeRemoteGroup:
-			h.renderRemoteGroupItem(&b, item, selected)
+			h.renderRemoteGroupItem(&b, item, selected, 0)
 		case session.ItemTypeRemoteSession:
 			h.renderRemoteSessionItem(&b, item, selected)
 		}

@@ -293,7 +293,7 @@ func TestRemoteHeaderCounts_RenderIdenticalToScan(t *testing.T) {
 		var b strings.Builder
 		for _, it := range home.flatItems {
 			if it.Type == session.ItemTypeRemoteGroup {
-				home.renderRemoteGroupItem(&b, it, false)
+				home.renderRemoteGroupItem(&b, it, false, 0)
 			}
 		}
 		return b.String()

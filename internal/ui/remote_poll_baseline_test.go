@@ -86,7 +86,7 @@ func TestRemotePollBaselineRestartPersistedSuccess(t *testing.T) {
 	}
 	var frame strings.Builder
 	rs := reader.remoteSessions["dev"][0]
-	reader.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "dev", Path: "remotes/dev"}, false)
+	reader.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "dev", Path: "remotes/dev"}, false, 0)
 	reader.renderRemoteSessionItem(&frame, session.Item{Type: session.ItemTypeRemoteSession, RemoteName: "dev", RemoteSession: &rs}, false)
 	got := stripAnsi(frame.String())
 	if strings.Contains(got, "●") || !strings.Contains(got, "last known") {
@@ -111,7 +111,7 @@ func TestRemotePollBaselineHeaderDuration(t *testing.T) {
 	defer h.cancel()
 	h.remoteLatency = map[string]session.RemoteLatency{"dev": {MS: 97, MeasuredAt: time.Now()}}
 	var frame strings.Builder
-	h.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "dev", Path: "remotes/dev"}, true)
+	h.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "dev", Path: "remotes/dev"}, true, 0)
 	got := stripAnsi(frame.String())
 	if !strings.Contains(got, "poll 13570ms") || !strings.Contains(got, "network 97ms") || !strings.Contains(got, "R retry") {
 		t.Fatalf("missing distinct durations/retry from persisted poll: %s", got)

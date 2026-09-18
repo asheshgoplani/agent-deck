@@ -42,7 +42,7 @@ func TestRemotePollAuthBackoffAndReason(t *testing.T) {
 		t.Errorf("auth failure retried %d times; want one attempt until user retries", got)
 	}
 	var row strings.Builder
-	h.renderRemoteGroupItem(&row, session.Item{Type: session.ItemTypeRemoteGroup, Path: "remotes/dev", RemoteName: "dev"}, false)
+	h.renderRemoteGroupItem(&row, session.Item{Type: session.ItemTypeRemoteGroup, Path: "remotes/dev", RemoteName: "dev"}, false, 0)
 	if !strings.Contains(stripAnsi(row.String()), "auth failed") {
 		t.Errorf("missing auth failure reason: %s", row.String())
 	}

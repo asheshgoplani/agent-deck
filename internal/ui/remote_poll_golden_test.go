@@ -43,7 +43,7 @@ func TestRemotePollGoldenFrames(t *testing.T) {
 			h.remoteLatency = map[string]session.RemoteLatency{"dev": {MS: 42, MeasuredAt: time.Now()}}
 			var frame strings.Builder
 			for _, selected := range []bool{false, true} {
-				h.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, Path: "remotes/dev", RemoteName: "dev"}, selected)
+				h.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, Path: "remotes/dev", RemoteName: "dev"}, selected, 0)
 				h.renderRemoteSessionItem(&frame, session.Item{Type: session.ItemTypeRemoteSession, RemoteName: "dev", RemoteSession: &rs, Level: 1, IsLastInGroup: true}, selected)
 			}
 			got := stripAnsi(frame.String())

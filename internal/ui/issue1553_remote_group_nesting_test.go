@@ -188,7 +188,7 @@ func TestIssue1553_IntegrationThroughRebuild(t *testing.T) {
 	// Render the sub-group header: it must show the segment name "work" and a
 	// subtree count of 2 (work + work/api), indented, no host-latency marker.
 	var b strings.Builder
-	home.renderRemoteGroupItem(&b, workHeader, false)
+	home.renderRemoteGroupItem(&b, workHeader, false, 0)
 	out := b.String()
 	if !strings.Contains(out, "work") {
 		t.Errorf("sub-group header render missing segment name: %q", out)

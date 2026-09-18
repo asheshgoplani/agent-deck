@@ -20671,7 +20671,7 @@ func (h *Home) renderItem(
 	case session.ItemTypeWindow:
 		h.renderWindowItem(b, item, selected)
 	case session.ItemTypeRemoteGroup:
-		h.renderRemoteGroupItem(b, item, selected)
+		h.renderRemoteGroupItem(b, item, selected, listWidth)
 	case session.ItemTypeRemoteSession:
 		h.renderRemoteSessionItemAtWidth(b, item, selected, listWidth)
 	case session.ItemTypeDivider:
@@ -21453,7 +21453,7 @@ func remoteRowGutter(selected bool) string {
 }
 
 // renderRemoteGroupItem renders a remote group header (e.g., "remotes/dev")
-func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, selected bool) {
+func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, selected bool, listWidth int) {
 	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow
 	countStyle := DimStyle
 	expandIcon := "▾"
@@ -21480,14 +21480,16 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			segName = groupPath[idx+1:]
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s%s %s%s%s\n",
+		line := fmt.Sprintf("%s%s%s %s%s%s",
 			remoteRowGutter(selected),        // align with group hotkey gutter
 			strings.Repeat("  ", item.Level), // nest under the remote header
 			expandIcon,
 			nameStyle.Render(segName),
 			countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
 			remoteStatusSuffix(counts.running, counts.waiting),
-		))
+		)
+		b.WriteString(truncateRemoteGroupLine(line, listWidth))
+		b.WriteString("\n")
 		return
 	}
 
@@ -21531,7 +21533,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		trailer += " " + DimStyle.Render("(R retry)")
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s %s%s%s%s%s\n",
+	line := fmt.Sprintf("%s%s %s%s%s%s%s",
 		remoteRowGutter(selected), // align with group hotkey gutter (flush with local root groups)
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
@@ -21539,7 +21541,22 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		renderRemoteVersionMarker(versionState, Version, selected), // #2164: drift marker, e.g. " v1.15.0 ↑"
 		remoteStatusSuffix(counts.running, counts.waiting),
 		trailer,
-	))
+	)
+	b.WriteString(truncateRemoteGroupLine(line, listWidth))
+	b.WriteString("\n")
+}
+
+// truncateRemoteGroupLine applies the same ellipsis truncation used for
+// session titles (cellTruncate) to a remote-group header row. Without this,
+// the row got hard-cut by whatever clips the final rendered line to the
+// terminal width, with no "…" marker — unlike every session title, which
+// truncates itself proactively with cellTruncate before assembly (finding
+// 12, audit 2026-09-18).
+func truncateRemoteGroupLine(line string, listWidth int) string {
+	if listWidth <= 0 || cellWidth(line) <= listWidth {
+		return line
+	}
+	return cellTruncate(line, listWidth, "…")
 }
 
 // remoteHeaderCount returns the counts for a remote header row: the ones
