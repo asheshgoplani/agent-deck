@@ -24,6 +24,13 @@ func TestMain(m *testing.M) {
 // the isolated TMUX_TMPDIR and HOME temp dirs are removed (2026-06-07
 // pty-exhaustion incident class).
 func runTestMain(m *testing.M) int {
+	// Attach-helper mode for the fake SSH endpoint in
+	// embedded_remote_leading_output_test.go: the binary stands in for the
+	// remote `agent-deck session attach` inside the embedded PTY. Must run
+	// before any isolation so it inherits the parent test's TMUX_TMPDIR/HOME.
+	if socket := os.Getenv(attachHelperSocketEnv); socket != "" {
+		return runAttachHelper(socket, os.Getenv(attachHelperSessionEnv))
+	}
 	// Resolve tool caches before HOME isolation; only the build-dependent proof uses them.
 	watcherBuildCaches, watcherBuildCacheErr = resolveWatcherBuildCaches(os.Environ())
 	// Isolate HOME+XDG FIRST. This package was the concrete trigger of the
