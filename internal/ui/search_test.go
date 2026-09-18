@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -93,5 +94,60 @@ func TestSearchView(t *testing.T) {
 	view = s.View()
 	if view == "" {
 		t.Error("View should not be empty when visible")
+	}
+}
+
+// searchBoxBorderWidth returns the cell-width of the input box's top border.
+// The first "╭" in the view belongs to the outer overlay box; the second is
+// the input box's own opening corner.
+func searchBoxBorderWidth(t *testing.T, view string) int {
+	t.Helper()
+	seen := 0
+	for _, line := range strings.Split(view, "\n") {
+		if !strings.Contains(line, "╭") {
+			continue
+		}
+		seen++
+		if seen < 2 {
+			continue
+		}
+		// A corrupted render splits the closing corner onto its own line.
+		if !strings.Contains(line, "╮") {
+			t.Fatalf("search box border corrupted: corner split onto its own line: %q", line)
+		}
+		return cellWidth(strings.TrimLeft(line, " "))
+	}
+	t.Fatal("search box top border not found in view")
+	return 0
+}
+
+// TestSearchInputBoxFixedWidth is a regression test for the search overlay
+// input box corrupting (its rounded corners splitting onto their own lines)
+// once a short query narrows the rendered content below the empty
+// placeholder's width. The box must stay a single closed rectangle at a
+// fixed width regardless of query length.
+func TestSearchInputBoxFixedWidth(t *testing.T) {
+	s := NewSearch()
+	s.SetSize(200, 50)
+	s.Show()
+
+	emptyView := s.View()
+	emptyWidth := searchBoxBorderWidth(t, emptyView)
+
+	s.input.SetValue("car")
+	s.updateResults()
+
+	carView := s.View()
+	carWidth := searchBoxBorderWidth(t, carView)
+
+	if carWidth != emptyWidth {
+		t.Errorf("search box width changed with query length: empty=%d car=%d, want equal (fixed width)", emptyWidth, carWidth)
+	}
+
+	for _, line := range strings.Split(carView, "\n") {
+		switch strings.TrimSpace(line) {
+		case "╭", "╮", "╰", "╯":
+			t.Errorf("search box corner rendered alone on its own line: %q", line)
+		}
 	}
 }

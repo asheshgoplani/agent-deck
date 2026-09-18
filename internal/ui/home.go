@@ -560,9 +560,6 @@ type Home struct {
 	// Double ESC to quit (#28) - for non-English keyboard users
 	lastEscTime time.Time // When ESC was last pressed (double-tap within 500ms quits)
 
-	// Vi-style gg to jump to top (#38)
-	lastGTime time.Time // When 'g' was last pressed (double-tap within 500ms jumps to top)
-
 	// Mouse double-click tracking
 	lastClickTime   time.Time // When left button was last pressed
 	lastClickIndex  int       // flatItems index of last click (-1 = none)
@@ -10383,6 +10380,14 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	groupPath := session.DefaultGroupPath
 	groupName := session.DefaultGroupName
 	defaultPath := ""
+	// remoteRoot: the cursor is on the "remotes/<host>" header itself (level
+	// 0), a synthetic local UI bucket rather than a user-defined remote
+	// group. That row has no group on the remote, so the dialog must default
+	// to the remote's own top level — forwarding the local "My Sessions"
+	// default instead would file the session into an unrelated remote
+	// subgroup. A deeper header is one of the remote's real groups, so the
+	// session is offered there, exactly as `n` on a local group header does.
+	remoteRoot := false
 	if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 		if item.RemoteSession.Group != "" {
 			groupPath = item.RemoteSession.Group
@@ -10390,18 +10395,11 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 		}
 		defaultPath = item.RemoteSession.Path
 	} else if item.Type == session.ItemTypeRemoteGroup {
-		// Level 0 is the "remotes/<host>" header, a synthetic local UI bucket,
-		// not a user-defined remote group: keep the default group so
-		// handleNewDialogKey doesn't forward it and create a bogus remote
-		// group. A deeper header is one of the remote's own groups, so the new
-		// session is offered in that group, exactly as n on a local group
-		// header does.
 		if gp := remoteGroupPathFromItem(item); item.Level > 0 && gp != "" {
 			groupPath = gp
 			groupName = displayGroupName(gp)
 		} else {
-			groupPath = session.DefaultGroupPath
-			groupName = session.DefaultGroupName
+			remoteRoot = true
 		}
 		defaultPath = "."
 	} else if len(paths) > 0 {
@@ -10409,6 +10407,12 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	}
 
 	h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, nil, "")
+	if remoteRoot {
+		// ShowInGroup coerces an empty group to the local "my-sessions"
+		// default, so clear it afterwards: no group is forwarded (remote
+		// root) and the dialog names the remote itself.
+		h.newDialog.SetParentGroupOverride("", remoteName)
+	}
 	if defaultPath == "" {
 		h.newDialog.pathInput.SetValue(".")
 		h.newDialog.pathSoftSelected = true
@@ -11727,21 +11731,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "g":
-		// Vi-style gg to jump to top (#38) - check for double-tap first
-		if time.Since(h.lastGTime) < 500*time.Millisecond {
-			// Double g - jump to top
-			if len(h.flatItems) > 0 {
-				h.cursor = 0
-				h.syncViewport()
-				h.markNavigationActivity()
-				return h, h.fetchSelectedPreview()
-			}
-			return h, nil
-		}
-		// Record time for potential gg detection
-		h.lastGTime = time.Now()
-
-		// Create new group with context-aware Tab toggle (Issue #111):
+		// New group, with context-aware Tab toggle (Issue #111). 'g' always
+		// opens the dialog immediately; jump-to-top lives on "home", not on
+		// a "gg" chord a single-key 'g' binding can never reach.
 		// - Group header: defaults to subgroup, Tab toggles to root
 		// - Grouped session: defaults to root, Tab toggles to subgroup
 		// - Ungrouped item: root only, no toggle
@@ -14365,7 +14357,6 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		h.groupDialog.Hide()
-		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
 		return h, remoteCmd
 	case "esc":
 		// First Esc dismisses the path suggestion dropdown only; the dialog
@@ -14374,8 +14365,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		h.groupDialog.Hide()
-		h.clearError()            // Clear any validation error
-		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
+		h.clearError() // Clear any validation error
 		return h, nil
 	}
 
@@ -19888,30 +19878,46 @@ func (h *Home) renderHelpBarCompact() string {
 		}
 	}
 
-	// Global hints (abbreviated)
+	// Global hints (abbreviated), most essential first: "↑↓ Nav" always
+	// stays, the rest are dropped from the tail as they stop fitting. Each
+	// entry keeps its key and label glued together as a single unit so the
+	// width-fit loop below can only drop a whole entry, never strip a label
+	// while leaving its bare key behind.
 	globalStyle := lipgloss.NewStyle().Foreground(ColorComment)
-	globalParts := []string{globalStyle.Render("↑↓ Nav")}
-	if key := h.actionKey(hotkeySearch); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key))
+	globalHints := []string{globalStyle.Render("↑↓ Nav")}
+	for _, hint := range []struct {
+		action string
+		label  string
+	}{
+		{hotkeySearch, "Search"},
+		{hotkeySettings, "Settings"},
+		{hotkeyHelp, "Help"},
+		{hotkeyQuit, "Quit"},
+	} {
+		if key := h.actionKey(hint.action); key != "" {
+			globalHints = append(globalHints, globalStyle.Render(key+" "+hint.label))
+		}
 	}
-	if key := h.actionKey(hotkeySettings); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key))
-	}
-	if key := h.actionKey(hotkeyHelp); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key))
-	}
-	if key := h.actionKey(hotkeyQuit); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key))
-	}
-	globalHints := strings.Join(globalParts, " ")
 
 	leftPart := strings.Join(contextHints, " ")
-	rightPart := globalHints
-	// Drop lowest-priority context hints as whole units. MaxWidth alone can
-	// truncate a label (notably "Skills") halfway through at exactly 100 cols.
-	for len(contextHints) > 0 && lipgloss.Width(leftPart)+lipgloss.Width(rightPart)+6 > h.width {
-		contextHints = contextHints[:len(contextHints)-1]
-		leftPart = strings.Join(contextHints, " ")
+	rightPart := strings.Join(globalHints, " ")
+	// Drop lowest-priority entries as whole units — context hints first (the
+	// rarer, more optional per-item actions), then global hints from the
+	// tail. MaxWidth alone can truncate a label halfway through instead of
+	// dropping a full entry, which is what used to leave a key glued onto
+	// whatever text survived truncation.
+	for lipgloss.Width(leftPart)+lipgloss.Width(rightPart)+6 > h.width {
+		if len(contextHints) > 0 {
+			contextHints = contextHints[:len(contextHints)-1]
+			leftPart = strings.Join(contextHints, " ")
+			continue
+		}
+		if len(globalHints) > 1 {
+			globalHints = globalHints[:len(globalHints)-1]
+			rightPart = strings.Join(globalHints, " ")
+			continue
+		}
+		break
 	}
 	padding := max(2, h.width-lipgloss.Width(leftPart)-lipgloss.Width(rightPart)-4)
 
@@ -19921,14 +19927,16 @@ func (h *Home) renderHelpBarCompact() string {
 	return lipgloss.NewStyle().MaxWidth(h.width).Render(raw)
 }
 
-// helpKeyShort formats a compact keyboard shortcut (no padding)
+// helpKeyShort formats a compact keyboard shortcut. The key chip and its
+// label need an explicit space between them — the chip's own styling
+// provides no separator, so without it they read as "n/NNew", "⏎Toggle".
 func (h *Home) helpKeyShort(key, desc string) string {
 	keyStyle := lipgloss.NewStyle().
 		Foreground(ColorBg).
 		Background(ColorAccent).
 		Bold(true)
 	descStyle := lipgloss.NewStyle().Foreground(ColorText)
-	return keyStyle.Render(key) + descStyle.Render(desc)
+	return keyStyle.Render(key) + " " + descStyle.Render(desc)
 }
 
 // previewModeShort returns a short description of current preview mode for help bar

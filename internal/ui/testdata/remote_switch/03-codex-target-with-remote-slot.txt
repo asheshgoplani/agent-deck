@@ -4,6 +4,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
                              ╭────────────────────────────────────────────────────────────╮                             
                              │                                                            │                             
                              │                                                            │                             
@@ -17,12 +18,11 @@
                              │      Title:                                                │                             
                              │      > remote session                                      │                             
                              │      Harness (choose destination first):                   │                             
-                             │                                                            │                             
-                             │      shell    claude    gemini    opencode    codex        │                             
-                             │    pi    copilot    crush    muse    cursor agent    he    │                             
-                             │    rmes    deepseek                                        │                             
+                             │        shell     claude     gemini     opencode            │                             
+                             │      codex     pi     copilot     crush     muse           │                             
+                             │      cursor agent     hermes     deepseek                  │                             
                              │    ▶ Account for selected harness (configured; auth u…:    │                             
-                             │        inherit    codexwork                                │                             
+                             │        inherit     codexwork                               │                             
                              │                                                            │                             
                              │      Slots and harnesses are lab's; the switch runs        │                             
                              │    there.                                                  │                             

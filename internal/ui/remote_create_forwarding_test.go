@@ -128,8 +128,10 @@ func submitRemoteDialogExpectingError(t *testing.T, h *Home, capture *remoteCrea
 	}
 }
 
-// An untouched dialog forwards only tool, title, path and group: the remote
-// applies its own defaults, exactly as before this change.
+// An untouched dialog forwards only tool, title and path: opened from the
+// remote's own root row the group is empty, so no -g flag reaches the
+// remote's add command and the session lands at the remote's true top level
+// instead of a local-only bucket.
 func TestRemoteDialog_UntouchedOptions_ForwardOnlyBasics(t *testing.T) {
 	h, capture := openRemoteDialogAndTypeName(t, "myserver", "claude", "plain-task")
 
@@ -138,7 +140,7 @@ func TestRemoteDialog_UntouchedOptions_ForwardOnlyBasics(t *testing.T) {
 	if capture.calls != 1 {
 		t.Fatalf("remote create called %d times, want 1", capture.calls)
 	}
-	want := session.RemoteAddOptions{Tool: "claude", Title: "plain-task", Path: ".", Group: session.DefaultGroupPath}
+	want := session.RemoteAddOptions{Tool: "claude", Title: "plain-task", Path: ".", Group: ""}
 	if capture.remoteName != "myserver" {
 		t.Fatalf("remoteName = %q, want myserver", capture.remoteName)
 	}
@@ -547,15 +549,17 @@ func TestRemoteDialog_RemoteGroupHeader_ForwardsThatGroup(t *testing.T) {
 }
 
 // The Level-0 "remotes/<host>" header is a local UI bucket, not a remote
-// group: the dialog keeps the default group so nothing bogus is created.
+// group: the dialog forwards no group at all, landing the session at the
+// remote's true top level. Forwarding the local "my-sessions" default here
+// used to file it into an unrelated, empty subgroup instead.
 func TestRemoteDialog_RemoteHostHeader_KeepsDefaultGroup(t *testing.T) {
 	item := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "myserver", Path: "remotes/myserver", Level: 0}
 	h, capture := openRemoteDialogOn(t, item, "", "claude", "root-task")
 
 	submitRemoteDialog(t, h)
 
-	if capture.calls != 1 || capture.opts.Group != session.DefaultGroupPath {
-		t.Fatalf("opts = %+v (calls=%d), want the default group for the host header", capture.opts, capture.calls)
+	if capture.calls != 1 || capture.opts.Group != "" {
+		t.Fatalf("opts = %+v (calls=%d), want an empty group (remote root) for the host header", capture.opts, capture.calls)
 	}
 }
 

@@ -2030,7 +2030,11 @@ func TestRenderHelpBarCompact(t *testing.T) {
 
 func TestRenderHelpBarCompactWithSession(t *testing.T) {
 	home := NewHome()
-	home.width = 85 // Compact mode (70-99)
+	// 99: top of Compact mode (70-99). The footer now separates every key
+	// chip from its label with a space and gives every global key a label,
+	// so the bar is wider at a given width and a lower-priority hint like
+	// Fork needs more room than the narrow end of this range affords.
+	home.width = 99
 	home.height = 30
 	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 

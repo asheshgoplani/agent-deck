@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestHelpOverlayQuickStartUsesCanonicalRecoveryAndDetachNames(t *testing.T) {
@@ -187,5 +189,80 @@ func TestHelpOverlayShowsYoloToggle(t *testing.T) {
 
 	if view := overlay.View(); !strings.Contains(view, "Toggle YOLO mode") {
 		t.Fatalf("help overlay should document the yolo toggle, got %q", view)
+	}
+}
+
+// TestHelpOverlayWrappedKeyColumnKeepsAlignmentAndSeparator: a
+// three-alternative key label (e.g. "+ / K / Shift+↑") used to be hard-wrapped
+// by the key column's fixed Width() into a misaligned block, and a key label
+// that exactly filled the column (e.g. "--group <name>") glued onto its
+// description with no separating space.
+func TestHelpOverlayWrappedKeyColumnKeepsAlignmentAndSeparator(t *testing.T) {
+	// Tall enough that no scrolling is needed, so a key/description pair
+	// that wraps across rows is never split across a scroll-page boundary.
+	overlay := NewHelpOverlay()
+	overlay.SetSize(200, 300)
+	overlay.Show()
+
+	view := overlay.View()
+
+	if strings.Contains(view, "<name>Launch") {
+		t.Errorf("STARTUP FLAGS key/description glued with no space: %q", view)
+	}
+
+	found := false
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "+ / K /") || !strings.Contains(line, "Reorder up") || i+1 >= len(lines) {
+			continue
+		}
+		found = true
+		// The continuation ("Shift+↑") must be the very next row, aligned
+		// under the key column (not flush at the dialog's left margin, and
+		// not carrying a second, duplicate description).
+		cont := lines[i+1]
+		if !strings.Contains(cont, "Shift+↑") {
+			t.Fatalf("expected 'Shift+↑' continuation on the row after %q, got %q", line, cont)
+		}
+		if strings.Contains(cont, "Reorder") {
+			t.Errorf("continuation row %q should not repeat the description", cont)
+		}
+		if keyIdx, contIdx := strings.Index(line, "+ / K /"), strings.Index(cont, "Shift+↑"); keyIdx != contIdx {
+			t.Errorf("continuation 'Shift+↑' not aligned under the key column: key at %d, continuation at %d", keyIdx, contIdx)
+		}
+	}
+	if !found {
+		t.Fatalf("expected wrapped '+ / K / Shift+↑' key column in help view, got %q", view)
+	}
+}
+
+// TestHelpOverlayMoreBelowClearsAtTrueEnd: the "▼ more below" indicator used
+// to stay lit forever once scrolled, because the scroll-offset clamp assumed a
+// bigger content budget than the render path had once indicator rows were
+// reserved, so the last page could never be reached.
+func TestHelpOverlayMoreBelowClearsAtTrueEnd(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetSize(200, 60)
+	overlay.Show()
+
+	// Scroll far past the end, as "j" held down would.
+	for i := 0; i < 200; i++ {
+		overlay, _ = overlay.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	}
+
+	view := overlay.View()
+	if strings.Contains(view, "▼ more below") {
+		t.Errorf("help overlay still shows '▼ more below' at the true end of content: %q", view)
+	}
+	if !strings.Contains(view, "STARTUP FLAGS") {
+		t.Fatalf("expected to have scrolled to the final section, got %q", view)
+	}
+
+	// Further presses must be idempotent (no further movement possible).
+	before := overlay.View()
+	overlay, _ = overlay.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	after := overlay.View()
+	if before != after {
+		t.Errorf("view should be stable once at the true end; got a change after another 'j'")
 	}
 }

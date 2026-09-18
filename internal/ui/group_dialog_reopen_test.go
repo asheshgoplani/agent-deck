@@ -8,15 +8,11 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// TestGroupDialogReopensAfterClose is a regression guard for the gg-detection
-// collision: pressing the create-group key ('g') arms the Vi-style "gg"
-// double-tap timer. After the dialog closes, a second 'g' pressed within the
-// 500ms window used to be swallowed as a gg-jump-to-top instead of reopening
-// the dialog — so the group appeared to need a "second try" to create.
-//
-// The two key presses in this test are microseconds apart (well inside the
-// 500ms window), so without the lastGTime reset on close the second press
-// jumps to top and the dialog stays hidden.
+// TestGroupDialogReopensAfterClose is a regression guard: pressing the
+// create-group key ('g') must always open the dialog immediately, and
+// reopen it again right after a close, regardless of how quickly the two
+// presses happen. 'g' has no double-tap ("gg") behavior — that chord was
+// unreachable and was removed; jump-to-top lives on "home" instead.
 func TestGroupDialogReopensAfterClose(t *testing.T) {
 	pressG := func(h *Home) *Home {
 		model, _ := h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
@@ -53,7 +49,7 @@ func TestGroupDialogReopensAfterClose(t *testing.T) {
 			h.groupTree = session.NewGroupTree([]*session.Instance{})
 			h.rebuildFlatItems()
 
-			// First 'g' opens the dialog and arms the gg timer.
+			// First 'g' opens the dialog.
 			h = pressG(h)
 			if !h.groupDialog.IsVisible() {
 				t.Fatal("first 'g' should open the group dialog")
@@ -65,8 +61,7 @@ func TestGroupDialogReopensAfterClose(t *testing.T) {
 				t.Fatal("dialog should be hidden after close")
 			}
 
-			// Second 'g', microseconds later, must reopen the dialog — NOT be
-			// eaten as a gg-jump-to-top.
+			// Second 'g', microseconds later, must reopen the dialog.
 			h = pressG(h)
 			if !h.groupDialog.IsVisible() {
 				t.Error("second 'g' right after close should reopen the dialog, not jump to top")
