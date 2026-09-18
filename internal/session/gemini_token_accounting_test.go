@@ -38,19 +38,15 @@ func TestGeminiContextWindowForModel_MostSpecificPrefixWins(t *testing.T) {
 	}
 }
 
-func TestGeminiSessionAnalytics_ContextPercent(t *testing.T) {
-	// 500k of a 2M window = 25%, not the 50% a hardcoded 1M window would report.
+func TestGeminiSessionAnalytics_ContextUsage(t *testing.T) {
 	a := &GeminiSessionAnalytics{Model: "gemini-1.5-pro", CurrentContextTokens: 500000}
-	if got := a.ContextPercent(0); got < 24.99 || got > 25.01 {
-		t.Errorf("ContextPercent(0) = %f, want 25", got)
+	// 500000 / 2000000 = 25%, marked inferred because the window came from the model table
+	u := a.ContextUsage()
+	if !u.Known || !u.Inferred || u.Percent < 24.99 || u.Percent > 25.01 {
+		t.Errorf("ContextUsage() = %+v, want 25%% inferred", u)
 	}
-	// Explicit limit overrides the model table.
-	if got := a.ContextPercent(1000000); got < 49.99 || got > 50.01 {
-		t.Errorf("ContextPercent(1000000) = %f, want 50", got)
-	}
-	// No divide-by-zero on a nonsensical limit.
-	if got := (&GeminiSessionAnalytics{}).ContextPercent(-1); got != 0 {
-		t.Errorf("ContextPercent(-1) = %f, want 0", got)
+	if u := (&GeminiSessionAnalytics{}).ContextUsage(); u.Percent != 0 {
+		t.Errorf("empty analytics ContextUsage().Percent = %f, want 0", u.Percent)
 	}
 }
 

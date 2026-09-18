@@ -5,10 +5,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sort"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect"
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/claude"
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/ctxtext"
 )
 
 // SessionAnalytics holds parsed session metrics from Claude JSONL files
@@ -26,6 +31,14 @@ type SessionAnalytics struct {
 	// cache_read=0) report a 6-token context. This is the same sum Claude Code's
 	// own /context uses.
 	CurrentContextTokens int `json:"current_context_tokens"`
+
+	// PeakContextTokens is the largest prompt any turn carried: the same sum
+	// as CurrentContextTokens, at its maximum. It is the one thing the
+	// transcript can say about the context window — the window is at least
+	// this large — and it is what disproves an inferred window that is
+	// smaller (issue #2026). Unlike CurrentContextTokens it does not drop
+	// after a /clear or a compaction, because a proof does not expire.
+	PeakContextTokens int `json:"peak_context_tokens"`
 
 	// Session metrics
 	TotalTurns int           `json:"total_turns"`
@@ -104,65 +117,64 @@ func (a *SessionAnalytics) TotalTokens() int {
 	return a.InputTokens + a.OutputTokens + a.CacheReadTokens + a.CacheWriteTokens
 }
 
-// modelContextWindow maps model ID prefixes to their context window sizes.
-// More specific prefixes must come first to ensure correct matching
-// (e.g. "claude-sonnet-4-6" before "claude-sonnet-4").
-var modelContextWindowPrefixes = []struct {
-	prefix string
-	size   int
-}{
-	// Claude 5 family: 1M context
-	{"claude-fable-5", 1_000_000},
-	{"claude-mythos-5", 1_000_000},
-	{"claude-opus-5", 1_000_000},
-	{"claude-sonnet-5", 1_000_000},
-	// 4.8 models: 1M context (must precede 4.x fallback)
-	{"claude-opus-4-8", 1_000_000},
-	// 4.7 models: 1M context (must precede 4.x fallback)
-	{"claude-opus-4-7", 1000000},
-	// 4.6 models: 1M context
-	{"claude-opus-4-6", 1000000},
-	{"claude-sonnet-4-6", 1000000},
-	// 4.x models (non-4.6/4.7): 200k context
-	{"claude-opus-4", 200000},
-	{"claude-sonnet-4", 200000},
-	{"claude-haiku-4", 200000},
-	// 3.x models: 200k context
-	{"claude-3-5", 200000},
-	{"claude-3-opus", 200000},
-	// MiniMax models
-	{"MiniMax-M3", 1000000},            // 1M context
-	{"MiniMax-M2.7", 204800},           // 204.8K context
-	{"MiniMax-M2.5-highspeed", 204000}, // 204K context (must precede M2.5)
-	{"MiniMax-M2.5", 204000},           // 204K context
+// resolvedWindow is the window before observed usage gets its say: the
+// AGENTDECK_CONTEXT_WINDOW override, then the model-id registry, then unknown.
+func (a *SessionAnalytics) resolvedWindow() ctxinspect.WindowInfo {
+	return claude.ResolveWindow(a.Model, os.Getenv)
 }
 
-// contextWindowForModel returns the context window size for a model ID.
-// Returns on first prefix match; entries are ordered most-specific first
-// (e.g. "claude-sonnet-4-6" before "claude-sonnet-4") to ensure correct resolution.
-func contextWindowForModel(model string) int {
-	for _, entry := range modelContextWindowPrefixes {
-		if len(model) >= len(entry.prefix) && model[:len(entry.prefix)] == entry.prefix {
-			return entry.size
+// windowDisproved reports whether observed usage rules the window out. A model
+// id does not carry its window — the same id has been seen on 200k and 1M
+// sessions — but the transcript records how much context a turn held, and no
+// turn can hold more than the window. A peak above the figure is proof the
+// figure is wrong, and the proof does not expire when a later turn is smaller.
+func (a *SessionAnalytics) windowDisproved(w ctxinspect.WindowInfo) bool {
+	return w.Known() && a.PeakContextTokens > w.Tokens
+}
+
+// ContextWindow resolves this session's context window and how it was
+// established.
+//
+// The size comes from the one registry the project keeps, in
+// internal/ctxinspect/claude. Nothing here falls back to a global default,
+// because a denominator invented for an unrecognised model is exactly the
+// confidently wrong figure issue #2026 is about. A window observed usage has
+// disproved is reported unknown, with the disproved figure named, rather than
+// carried forward as a number the bar would clamp and an automatic /clear
+// would trust.
+func (a *SessionAnalytics) ContextWindow() ctxinspect.WindowInfo {
+	if a == nil {
+		return ctxinspect.WindowInfo{Source: ctxinspect.WindowUnknown}
+	}
+	w := a.resolvedWindow()
+	if a.windowDisproved(w) {
+		return ctxinspect.WindowInfo{
+			Source: ctxinspect.WindowUnknown,
+			Detail: fmt.Sprintf("one turn held %s tokens, more than the %s window %s gives for %q, so that figure is wrong and the real window is unknown",
+				ctxtext.TokenAmount(a.PeakContextTokens), ctxtext.TokenAmount(w.Tokens), w.Source, a.Model),
 		}
 	}
-	return 200000 // Default Claude limit
+	return w
 }
 
-// ContextWindowForModel is the exported form of contextWindowForModel, so other
-// packages resolve a window from the same table instead of hardcoding a number.
-func ContextWindowForModel(model string) int {
-	return contextWindowForModel(model)
-}
-
-// ContextPercent returns the percentage of context window used
-// Uses CurrentContextTokens (last turn's input + cache) for accurate context usage
-// modelLimit is the model's context window size; if 0, it is inferred from the Model field
-func (a *SessionAnalytics) ContextPercent(modelLimit int) float64 {
-	if modelLimit == 0 {
-		modelLimit = contextWindowForModel(a.Model)
+// ContextUsage is the context bar's reading: the current prompt size against
+// the session's window, with the trust of both attached.
+//
+// Every consumer of a context percentage reads this rather than dividing for
+// itself. Known is false when the window is unknown or disproved, Inferred
+// says the window came from the model-id table, and OverLimit says observed
+// usage disproved it. A reading is never above 100. For an over-limit reading
+// Used is the peak that proved it and Window is the disproved figure, so a
+// surface can name both even after a compaction shrank the current turn.
+func (a *SessionAnalytics) ContextUsage() ctxinspect.Occupancy {
+	if a == nil {
+		return ctxinspect.Occupancy{}
 	}
-	return float64(a.CurrentContextTokens) / float64(modelLimit) * 100
+	w := a.resolvedWindow()
+	if a.windowDisproved(w) {
+		return ctxinspect.Occupancy{Used: a.PeakContextTokens, Window: w, Inferred: w.Inferred(), OverLimit: true}
+	}
+	return w.Occupancy(a.CurrentContextTokens)
 }
 
 // ModelPricing holds pricing per million tokens for a model
@@ -353,6 +365,9 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 		// (synthetic/error assistant messages) must not reset the number to 0.
 		if prompt := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens; prompt > 0 {
 			analytics.CurrentContextTokens = prompt
+			if prompt > analytics.PeakContextTokens {
+				analytics.PeakContextTokens = prompt
+			}
 		}
 
 		// Count turn

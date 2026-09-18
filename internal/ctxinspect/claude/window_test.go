@@ -244,3 +244,19 @@ func TestResolveWindowNilEnv(t *testing.T) {
 		t.Fatalf("Tokens = %d, want the model default", got.Tokens)
 	}
 }
+
+// TestResolveWindow_MiniMaxRows keeps the MiniMax ids, which reach the deck
+// through the Claude-compatible harness, in the single window registry.
+func TestResolveWindow_MiniMaxRows(t *testing.T) {
+	for id, want := range map[string]int{
+		"MiniMax-M3":             1000000,
+		"MiniMax-M2.7":           204800,
+		"MiniMax-M2.5":           204000,
+		"MiniMax-M2.5-highspeed": 204000,
+	} {
+		w := ResolveWindow(id, nil)
+		if w.Tokens != want || w.Source != ctxinspect.WindowModelDefault {
+			t.Errorf("%s: got %+v, want %d model-default", id, w, want)
+		}
+	}
+}
