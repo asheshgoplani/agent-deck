@@ -127,7 +127,7 @@ func yesAnswer(s string) bool { return s == "y" || s == "yes" }
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
-	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude or codex)")
+	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude, codex, hermes, or pi)")
 	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up (the /clear only arms on an established context window: AGENTDECK_CONTEXT_WINDOW or a harness-reported size)")
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
@@ -156,7 +156,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fmt.Println("  -agent string")
-		fmt.Println("        Conductor agent runtime: claude or codex (default \"claude\")")
+		fmt.Println("        Conductor agent runtime: claude, codex, hermes, or pi (default \"claude\")")
 		fmt.Println("  -description string")
 		fmt.Println("        Description for this conductor")
 		fmt.Println("  -heartbeat")

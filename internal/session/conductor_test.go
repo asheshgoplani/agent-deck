@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -912,29 +913,125 @@ func TestGenerateTransitionNotifierDaemons_SurfaceLogPathErrors(t *testing.T) {
 	}
 }
 
-func TestInstallSharedConductorInstructions_CodexDefault(t *testing.T) {
+// neutralSessionExample is the session-creation row the shared AGENTS.md must
+// render: codex and pi both write that one file, so it names a placeholder
+// tool instead of one agent's flavor, which would strand the other (#2297).
+const neutralSessionExample = "agent-deck -p <PROFILE> add <path> -t \"Title\" -c <tool>"
+
+// useTempConductorHome points HOME and XDG_DATA_HOME at a fresh temp tree so
+// conductor files are written in isolation.
+func useTempConductorHome(t *testing.T) {
+	t.Helper()
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, "xdg-data"))
+}
+
+// readSharedAgentsMD returns the shared conductor/AGENTS.md contents.
+func readSharedAgentsMD(t *testing.T) string {
+	t.Helper()
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(conductorDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("failed to read shared AGENTS.md: %v", err)
+	}
+	return string(content)
+}
+
+// readConductorAgentsMD returns a single conductor's own AGENTS.md contents.
+func readConductorAgentsMD(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		t.Fatalf("ConductorNameDir(%s): %v", name, err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("failed to read %s AGENTS.md: %v", name, err)
+	}
+	return string(content)
+}
+
+// assertNeutralSessionExamples fails if the shared AGENTS.md lost its
+// placeholder tool or picked up one agent's flavor of the CLI examples.
+func assertNeutralSessionExamples(t *testing.T, content string) {
+	t.Helper()
+	if !strings.Contains(content, neutralSessionExample) {
+		t.Fatalf("shared AGENTS.md should render agent-neutral session examples:\n%s", content)
+	}
+	if strings.Contains(content, "-c codex ") || strings.Contains(content, "-c pi ") {
+		t.Fatalf("shared AGENTS.md is biased toward one AGENTS.md-sharing agent:\n%s", content)
+	}
+}
+
+func TestInstallSharedConductorInstructions_CodexDefault(t *testing.T) {
+	useTempConductorHome(t)
 
 	if err := InstallSharedConductorInstructions(ConductorAgentCodex, ""); err != nil {
 		t.Fatalf("InstallSharedConductorInstructions returned error: %v", err)
 	}
 
-	conductorDir, err := ConductorDir()
-	if err != nil {
-		t.Fatalf("ConductorDir: %v", err)
-	}
-	target := filepath.Join(conductorDir, "AGENTS.md")
-	content, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("failed to read AGENTS.md: %v", err)
-	}
-	if !strings.Contains(string(content), "Codex") {
+	content := readSharedAgentsMD(t)
+	if !strings.Contains(content, "Codex") {
 		t.Fatal("AGENTS.md should mention Codex")
 	}
-	if !strings.Contains(string(content), "agent-deck -p <PROFILE> add <path> -t \"Title\" -c codex") {
-		t.Fatal("AGENTS.md should render codex session examples")
+	assertNeutralSessionExamples(t, content)
+}
+
+// codex and pi both write the shared AGENTS.md (#2297): whichever sets up
+// first must not strand the other in its flavor of the CLI examples. The
+// shared template is agent-neutral, so setup order must not matter.
+func TestInstallSharedConductorInstructions_CodexPiOrderIndependent(t *testing.T) {
+	for _, order := range [][]string{
+		{ConductorAgentCodex, ConductorAgentPi},
+		{ConductorAgentPi, ConductorAgentCodex},
+	} {
+		t.Run(order[0]+"_then_"+order[1], func(t *testing.T) {
+			useTempConductorHome(t)
+
+			for _, agent := range order {
+				if err := InstallSharedConductorInstructions(agent, ""); err != nil {
+					t.Fatalf("InstallSharedConductorInstructions(%s): %v", agent, err)
+				}
+			}
+
+			assertNeutralSessionExamples(t, readSharedAgentsMD(t))
+		})
+	}
+}
+
+// Setting up both a codex and a pi conductor by name in one HOME (the "two
+// runtimes in the same dir" case from the #2297 review) must leave the
+// shared AGENTS.md neutral AND each per-name AGENTS.md correctly flavored
+// for its own agent.
+func TestSetupConductorWithAgent_CodexAndPiCoexistInSameHome(t *testing.T) {
+	useTempConductorHome(t)
+
+	for _, conductor := range []struct {
+		name  string
+		agent string
+	}{
+		{"cdxreview", ConductorAgentCodex},
+		{"pireview", ConductorAgentPi},
+	} {
+		if err := SetupConductorWithAgent(conductor.name, "default", conductor.agent, true, true, "", "", "", "", nil, ""); err != nil {
+			t.Fatalf("failed to set up %s conductor: %v", conductor.agent, err)
+		}
+		if err := InstallSharedConductorInstructions(conductor.agent, ""); err != nil {
+			t.Fatalf("InstallSharedConductorInstructions(%s): %v", conductor.agent, err)
+		}
+	}
+
+	assertNeutralSessionExamples(t, readSharedAgentsMD(t))
+
+	if content := readConductorAgentsMD(t, "cdxreview"); !strings.Contains(content, "Codex") {
+		t.Fatal("cdxreview's per-name AGENTS.md should identify it as Codex")
+	}
+	if content := readConductorAgentsMD(t, "pireview"); !strings.Contains(content, "Pi") {
+		t.Fatal("pireview's per-name AGENTS.md should identify it as Pi")
 	}
 }
 
@@ -1043,6 +1140,92 @@ func TestSetupConductorWithAgent_Codex(t *testing.T) {
 	}
 	if meta.GetClearOnCompact() {
 		t.Fatal("codex conductor should not enable clear_on_compact")
+	}
+}
+
+func TestSetupConductorWithAgent_Pi(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "test-pi"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentPi, true, true, "pi conductor", "", "", "", nil, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	agentsPath := filepath.Join(dir, "AGENTS.md")
+	content, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("failed to read AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(content), "Pi") {
+		t.Fatal("AGENTS.md should mention Pi")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatal("CLAUDE.md should not be created for Pi conductor")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "HERMES.md")); !os.IsNotExist(err) {
+		t.Fatal("HERMES.md should not be created for Pi conductor")
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.Agent != ConductorAgentPi {
+		t.Fatalf("agent = %q, want %q", meta.Agent, ConductorAgentPi)
+	}
+	if meta.GetClearOnCompact() {
+		t.Fatal("pi conductor should not enable clear_on_compact")
+	}
+}
+
+// pi and codex both read AGENTS.md (#2297): setting up a pi conductor for a
+// name previously set up as codex must not delete the file it just wrote
+// (the stale-instructions cleanup loop keys off filename collisions, not
+// just agent identity).
+func TestSetupConductorWithAgent_CodexToPiSharesAgentsFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "codex-then-pi"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentCodex, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("failed to create initial Codex conductor: %v", err)
+	}
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentPi, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("failed to switch conductor to Pi: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	content, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("AGENTS.md should still exist after switching Codex conductor to Pi: %v", err)
+	}
+	if !strings.Contains(string(content), "Pi") {
+		t.Fatal("AGENTS.md should have been rewritten with Pi's content")
+	}
+}
+
+// ListConductors (the data source for `conductor list`) must surface a Pi
+// conductor's agent like any other registry-driven runtime.
+func TestListConductors_IncludesPiRuntime(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := SetupConductorWithAgent("pi-fleet", "default", ConductorAgentPi, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("SetupConductorWithAgent: %v", err)
+	}
+
+	conductors, err := ListConductors()
+	if err != nil {
+		t.Fatalf("ListConductors: %v", err)
+	}
+	index := slices.IndexFunc(conductors, func(c ConductorMeta) bool { return c.Name == "pi-fleet" })
+	if index < 0 {
+		t.Fatal("pi-fleet conductor not found in ListConductors output")
+	}
+	if agent := conductors[index].GetAgent(); agent != ConductorAgentPi {
+		t.Fatalf("agent = %q, want %q", agent, ConductorAgentPi)
 	}
 }
 

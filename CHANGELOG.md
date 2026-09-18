@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `accounts` preview field scales: a summary line (`accounts  7 slots · 5h lowest 8% · 1 stale · 2 unknown`) followed by one aligned row per slot (name, 5h, 7d, age or reason), most-loaded first, capped to the pane height.
 - Opt-in `ssh` field for `[ui.remote_preview].fields` and `[ui.header].fields`: who is connected to the host over SSH right now, per user (`ssh  carol ×2 since 09:10 · alice ×3 since 08:54`), gathered by the host's own `system stats --json` (new `ssh_sessions` list from `who`; Linux and macOS, no root) and shown as `ssh  unknown (remote older than 1.16.11)` when the remote does not send it. The default field lists are unchanged.
+### Added
+
+- Add `pi` as a supported conductor agent runtime (`conductor setup <name> --agent pi`): AGENTS.md instructions, no clear-on-compact (pi has no auto-compaction to block), and identity injection via pi's own `--append-system-prompt`. Registry-driven — heartbeat, bridge send/read, and `conductor list` already work tool-agnostically (closes #2297).
 
 ## [1.16.11] - 2026-09-25
 

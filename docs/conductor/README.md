@@ -59,7 +59,7 @@ It watches for sessions in `waiting` or `error`, auto-responds when its policy m
 
 Under the hood, a conductor is:
 
-- A `claude` (or `codex`) process pinned inside a named tmux session managed by agent-deck.
+- A `claude` (or `codex`, `hermes`, `pi`) process pinned inside a named tmux session managed by agent-deck.
 - A directory at `~/.local/share/agent-deck/conductor/<name>/` that holds its instructions, policy, learnings, state, and task log.
 - An agent-deck session record (`agent-deck list` will show it) with `is_conductor: true`.
 - Optionally, one or more remote channels attached (Telegram, Slack, Discord) so you can talk to it from your phone.
@@ -113,7 +113,7 @@ Format is freeform markdown; each entry is timestamped.
 
 ```bash
 # Create
-agent-deck conductor setup <name> [--description "..."] [--agent claude|codex] \
+agent-deck conductor setup <name> [--description "..."] [--agent claude|codex|hermes|pi] \
     [--heartbeat|--no-heartbeat] [--instructions-md path] [--policy-md path]
 
 # Observe

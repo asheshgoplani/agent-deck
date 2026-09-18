@@ -19,6 +19,15 @@ func previousConductorInstructionsTemplate(template string) string {
 	template = strings.ReplaceAll(template,
 		`4. Only if the compact counts require action, inspect the affected child through `+"`"+`session children`+"`"+`/`+"`"+`session show`+"`"+`; never use `+"`"+`list --json`+"`"+` for triage`,
 		`4. Run `+"`"+`agent-deck -p {PROFILE} list --json`+"`"+` to know what sessions exist`)
+	// The session-creation rows used to be rendered per agent; they are now
+	// agent-neutral so codex and pi can share one AGENTS.md (#2297).
+	template = strings.ReplaceAll(template, `-c <tool>`, `-c {AGENT}`)
+	template = strings.Replace(template,
+		`| Create a new session. `+"`"+`<tool>`+"`"+` is claude, codex, hermes or pi; default to this conductor's own tool. |`,
+		`| Create a new {AGENT_DISPLAY} session |`, 1)
+	template = strings.Replace(template,
+		`| Create a new session with a worktree |`,
+		`| Create a new {AGENT_DISPLAY} session with a worktree |`, 1)
 	return template
 }
 
@@ -98,9 +107,9 @@ Each conductor has its own identity in its subdirectory and its own policy in PO
 | ` + "`" + `agent-deck -p <PROFILE> session start <id_or_title>` + "`" + ` | Start a stopped session |
 | ` + "`" + `agent-deck -p <PROFILE> session stop <id_or_title>` + "`" + ` | Stop a running session |
 | ` + "`" + `agent-deck -p <PROFILE> session restart <id_or_title>` + "`" + ` | Restart a managed session |
-| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c {AGENT} -g "group"` + "`" + ` | Create a new {AGENT_DISPLAY} session |
-| ` + "`" + `agent-deck -p <PROFILE> launch <path> -t "Title" -c {AGENT} -g "group" -m "prompt"` + "`" + ` | Create + start + send initial prompt in one command (preferred for new task sessions) |
-| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c {AGENT} --worktree feature/branch -b` + "`" + ` | Create a new {AGENT_DISPLAY} session with a worktree |
+| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c <tool> -g "group"` + "`" + ` | Create a new session. ` + "`" + `<tool>` + "`" + ` is claude, codex, hermes or pi; default to this conductor's own tool. |
+| ` + "`" + `agent-deck -p <PROFILE> launch <path> -t "Title" -c <tool> -g "group" -m "prompt"` + "`" + ` | Create + start + send initial prompt in one command (preferred for new task sessions) |
+| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c <tool> --worktree feature/branch -b` + "`" + ` | Create a new session with a worktree |
 
 ### Session Resolution
 Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**, or **fuzzy match**.
