@@ -25,6 +25,20 @@ func FilterInstancesByArchive(instances []*Instance, archived bool) []*Instance 
 	return out
 }
 
+// VisibleInstances returns instances excluding archived rows retained for
+// cross-harness recovery (superseded sources) — the canonical tracked set
+// that list --json, status --json, TUI header counts and group preview panels
+// must all derive from, so aggregates never diverge from the enumerable list.
+func VisibleInstances(instances []*Instance) []*Instance {
+	visible := make([]*Instance, 0, len(instances))
+	for _, inst := range instances {
+		if inst != nil && !(inst.IsArchived() && inst.SupersededBy != "") {
+			visible = append(visible, inst)
+		}
+	}
+	return visible
+}
+
 // ArchiveTimeUTC returns the archive timestamp in UTC, or zero when not archived.
 func ArchiveTimeUTC(t time.Time) time.Time {
 	if t.IsZero() {

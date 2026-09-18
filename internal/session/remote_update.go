@@ -41,11 +41,19 @@ type RemoteVersionState struct {
 // developer build must not flag every remote. A pre-release controller
 // ("1.16.4-preview.abc") is older than release 1.16.4, so a remote on that
 // release is not flagged either (#2164).
+//
+// Outdated must agree with Compare, i.e. it is exactly
+// Compare(controller) == RemoteVersionOlder. A local build at an identical
+// version number is a separate "redeploy the release binary" signal
+// (localBuildNeedsRelease, still used by PlanRemoteUpdates and the deploy's
+// ReplaceLocal option), not "older": ORing it in here made `remote list
+// --check --json` emit a self-contradictory
+// {"outdated":true,"version_state":"same"}.
 func (s RemoteVersionState) Outdated(controller string) bool {
 	if !s.Found || !isVersionString(s.Version) || !isReleaseVersion(controller) {
 		return false
 	}
-	return update.CompareVersions(s.Version, controller) < 0 || localBuildNeedsRelease(s, controller)
+	return update.CompareVersions(s.Version, controller) < 0
 }
 
 // RemoteVersionCompare is how a remote's reported version compares with this

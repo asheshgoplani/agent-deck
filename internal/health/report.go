@@ -39,6 +39,26 @@ type Summary struct {
 	// Sessions is the per-profile session journal roll-up, filled by the CLI
 	// (it needs the dead-letter stores); null when not computed.
 	Sessions *SessionAggregate `json:"sessions"`
+	// UntrackedTmuxSessions lists live tmux sessions carrying the agentdeck_
+	// prefix that are not part of the current tracked set (the same set
+	// `list --json` enumerates) — leftovers from a crash, or the old side of
+	// a "Restart with new session ID" whose tmux process was never torn
+	// down. Read-only surfacing; nothing here is stopped automatically.
+	// Filled only by `doctor` (which has session storage access); omitted
+	// (nil) otherwise. Deliberately NOT filled by `health`: health's JSON is
+	// forwarded byte-for-byte over `remote exec` and compared for parity,
+	// and this field's live-computed ages would never match between two
+	// separate invocations of the same command.
+	UntrackedTmuxSessions []UntrackedTmuxSession `json:"untracked_tmux_sessions,omitempty"`
+}
+
+// UntrackedTmuxSession describes one live tmux session that carries the
+// agentdeck_ prefix but is not referenced by any tracked (non-archived)
+// session instance.
+type UntrackedTmuxSession struct {
+	Name        string  `json:"name"`
+	AgeSeconds  float64 `json:"age_seconds"`
+	PaneCommand string  `json:"pane_command,omitempty"`
 }
 
 func numeric(s Sample) map[string]float64 {
@@ -203,6 +223,16 @@ func Format(s Summary) string {
 		fmt.Fprintf(&b, "  %s\n", flag)
 	}
 	b.WriteString(formatSessionAggregate(s.Sessions))
+	if len(s.UntrackedTmuxSessions) > 0 {
+		fmt.Fprintf(&b, "  Untracked tmux sessions (%d, agentdeck_ prefix, not in list --json):\n", len(s.UntrackedTmuxSessions))
+		for _, u := range s.UntrackedTmuxSessions {
+			cmd := u.PaneCommand
+			if cmd == "" {
+				cmd = "unknown"
+			}
+			fmt.Fprintf(&b, "    %s  age %.0fs  pane %s\n", u.Name, u.AgeSeconds, cmd)
+		}
+	}
 	for _, p := range s.Processes {
 		fmt.Fprintf(&b, "  %s pid %d, latest %s\n", strconv.QuoteToASCII(p.Latest.Role), p.Latest.PID, p.Latest.Timestamp.Format(time.RFC3339))
 		names := []string{"cpu_percent", "rss_bytes", "open_fds", "goroutines", "hook_files", "status_pass_ms", "session_count", "tmux_calls", "session_list_db_ms"}

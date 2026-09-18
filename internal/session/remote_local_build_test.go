@@ -128,10 +128,28 @@ func TestLocalBuildReleaseSweepAndProvenance(t *testing.T) {
 	if got := LoadRemoteVersions()["box"].InstalledFrom; got != "local-build" {
 		t.Fatal(got)
 	}
+	// A local build at the same version number as target is a sweep-eligible
+	// upgrade (PlanRemoteUpdates, via localBuildNeedsRelease) regardless of
+	// whether it is also "outdated" in the version_state sense.
 	for _, target := range []string{"1.16.10", "1.16.11"} {
-		if !state.Outdated(target) || PlanRemoteUpdates(map[string]RemoteVersionState{"box": state}, target)[0].Kind != RemoteUpdateUpgrade {
+		if PlanRemoteUpdates(map[string]RemoteVersionState{"box": state}, target)[0].Kind != RemoteUpdateUpgrade {
 			t.Fatal("local build not replaced by release", target)
 		}
+	}
+	// But Outdated() must agree with Compare()==same, never true just because
+	// it is a local build at the identical version (finding 4, 2026-09-18
+	// audit: `outdated` and `version_state` used to disagree for exactly
+	// this state, since Outdated used to OR in localBuildNeedsRelease).
+	if state.Outdated("1.16.10") {
+		t.Fatal("Outdated(\"1.16.10\") must be false for a same-version local build; only version_state=older flips it")
+	}
+	if got := state.Compare("1.16.10"); got != RemoteVersionSame {
+		t.Fatalf("Compare(\"1.16.10\") = %v, want same", got)
+	}
+	// 1.16.11 is a real, later core version, so this one genuinely is older —
+	// unaffected by the local-build special case either way.
+	if !state.Outdated("1.16.11") {
+		t.Fatal("state on 1.16.10 core must be outdated against a real 1.16.11 release")
 	}
 	if state.Outdated("1.16.9") {
 		t.Fatal("local build downgrades in sweep")

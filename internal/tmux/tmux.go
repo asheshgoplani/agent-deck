@@ -7411,8 +7411,12 @@ func GetActiveSession() (string, error) {
 
 // DiscoverAllTmuxSessions returns all tmux sessions (including non-Agent Deck ones)
 func DiscoverAllTmuxSessions() ([]*Session, error) {
-	// Bounded — see tmuxPollTimeout.
-	output, err := runBoundedOutput(DefaultSocketName(), "list-sessions", "-F", "#{session_name}:#{pane_current_path}")
+	// Bounded — see tmuxPollTimeout. pane_current_path goes LAST: it is the
+	// one field that can legitimately contain a colon (a path component),
+	// and SplitN below relies on that so the path is never truncated at an
+	// embedded colon.
+	output, err := runBoundedOutput(DefaultSocketName(), "list-sessions", "-F",
+		"#{session_name}:#{session_created}:#{pane_current_command}:#{pane_current_path}")
 	if err != nil {
 		// No sessions exist
 		if strings.Contains(err.Error(), "no server running") ||
@@ -7430,11 +7434,21 @@ func DiscoverAllTmuxSessions() ([]*Session, error) {
 			continue
 		}
 
-		parts := strings.SplitN(line, ":", 2)
+		parts := strings.SplitN(line, ":", 4)
 		sessionName := parts[0]
+		var created time.Time
+		if len(parts) > 1 {
+			if epoch, convErr := strconv.ParseInt(parts[1], 10, 64); convErr == nil {
+				created = time.Unix(epoch, 0)
+			}
+		}
+		command := ""
+		if len(parts) > 2 {
+			command = parts[2]
+		}
 		workDir := ""
-		if len(parts) == 2 {
-			workDir = parts[1]
+		if len(parts) > 3 {
+			workDir = parts[3]
 		}
 
 		// Create session object
@@ -7442,6 +7456,8 @@ func DiscoverAllTmuxSessions() ([]*Session, error) {
 			Name:        sessionName,
 			DisplayName: sessionName,
 			WorkDir:     workDir,
+			Created:     created,
+			Command:     command,
 		}
 
 		// If it's an agent-deck session, clean up the display name

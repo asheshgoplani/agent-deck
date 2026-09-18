@@ -3,6 +3,7 @@ package session
 import (
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -81,6 +82,54 @@ func DiscoverExistingTmuxSessions(existingInstances []*Instance) ([]*Instance, e
 	}
 
 	return discovered, nil
+}
+
+// UntrackedTmuxSession describes a live tmux session carrying the
+// agentdeck_ prefix that is not referenced by any tracked (non-archived)
+// instance — a leftover from a crash, or the old side of a "Restart with
+// new session ID" whose tmux process was never torn down.
+type UntrackedTmuxSession struct {
+	Name        string
+	Age         time.Duration
+	PaneCommand string
+}
+
+// UntrackedTmuxSessions reports live agentdeck_-prefixed tmux sessions that
+// are not part of the tracked set (the same set VisibleInstances/list --json
+// enumerates). It never tears anything down — the caller (doctor/health)
+// only surfaces the list so the operator can decide.
+func UntrackedTmuxSessions(instances []*Instance) ([]UntrackedTmuxSession, error) {
+	tmuxSessions, err := tmux.DiscoverAllTmuxSessions()
+	if err != nil {
+		return nil, err
+	}
+
+	tracked := make(map[string]bool)
+	for _, inst := range VisibleInstances(instances) {
+		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
+			tracked[ts.Name] = true
+		}
+	}
+
+	var untracked []UntrackedTmuxSession
+	for _, sess := range tmuxSessions {
+		if !strings.HasPrefix(sess.Name, tmux.SessionPrefix) {
+			continue
+		}
+		if tracked[sess.Name] {
+			continue
+		}
+		age := time.Duration(0)
+		if !sess.Created.IsZero() {
+			age = time.Since(sess.Created)
+		}
+		untracked = append(untracked, UntrackedTmuxSession{
+			Name:        sess.Name,
+			Age:         age,
+			PaneCommand: sess.Command,
+		})
+	}
+	return untracked, nil
 }
 
 // GroupByProject groups sessions by their parent project directory

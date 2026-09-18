@@ -3819,12 +3819,13 @@ func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCata
 	}
 	d.commandCursor = 0
 	d.SetDefaultTool(catalog.DefaultTool)
-	for _, tool := range catalog.Tools {
-		if tool.Name == d.GetSelectedCommand() {
-			d.modelInput.SetValue(tool.DefaultModel)
-			break
-		}
-	}
+	// The model field is deliberately left as PrepareForRemoteTarget cleared
+	// it. Unlike preselectDefaultModel, which prefills only from the *local
+	// user's own* configured default_model, the catalog's tool.DefaultModel
+	// is the remote host's config — never a choice this user made here — so
+	// seeding from it silently pinned a concrete model (e.g. "fable") before
+	// any tool was even chosen. Leaving it empty shows the same "tool
+	// default (↓ to browse)" placeholder the local dialog shows.
 	d.SetRemoteAccounts(catalog.Accounts)
 	d.SetRemoteMCPs(catalog.MCPs)
 	d.conductorSessions = nil

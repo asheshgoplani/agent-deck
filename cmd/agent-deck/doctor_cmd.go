@@ -18,7 +18,7 @@ func handleDoctor(args []string) {
 	fs.SetOutput(os.Stderr)
 	jsonOutput := fs.Bool("json", false, "Output account and runtime health diagnostics as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck doctor [--json]\n\nReport local runtime health and check named Claude slots configured as [profiles.<name>.claude].config_dir.\nWarn when slots share a directory; missing or unreadable paths remain unknown.\nAccount checks read directory metadata; health reads local samples. Neither verifies live login identities.")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck doctor [--json]\n\nReport local runtime health and check named Claude slots configured as [profiles.<name>.claude].config_dir.\nWarn when slots share a directory; missing or unreadable paths remain unknown.\nAccount checks read directory metadata; health reads local samples. Neither verifies live login identities.\nAlso lists untracked tmux sessions (agentdeck_ prefix, not in `list --json`) so you can decide whether to keep or stop them; never stops any itself.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -41,6 +41,7 @@ func handleDoctor(args []string) {
 		// Report returns its schema and budgets even when history cannot be read.
 		runtimeHealth.Flags = append(runtimeHealth.Flags, "runtime health unknown: "+strconv.QuoteToASCII(err.Error()))
 	}
+	runtimeHealth.UntrackedTmuxSessions = untrackedTmuxSessionsForHealth("")
 	slots := session.DiagnoseClaudeAccountDirectories(config)
 	if *jsonOutput {
 		report := struct {

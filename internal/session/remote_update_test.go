@@ -96,10 +96,25 @@ func TestRemoteVersionState_Outdated(t *testing.T) {
 		{"preview controller flags the previous release", RemoteVersionState{Version: "1.16.3", Found: true}, "1.16.4-switch-preview.abc1234", true},
 		{"remote on a pre-release of the controller's release is behind", RemoteVersionState{Version: "1.16.4-rc.1", Found: true}, "1.16.4", true},
 		{"unparseable remote version never flags", RemoteVersionState{Version: "development build", Found: true}, "1.16.4", false},
+		// Finding 4, 2026-09-18 live UI audit: `remote list --check --json`
+		// reported outdated:true next to version_state:"same" for four
+		// remotes on the identical "1.16.11-rc.6" build. Outdated must never
+		// disagree with Compare()'s same/older/newer verdict — these cases
+		// pin every same-rc-suffix, rc-vs-final and +local-metadata shape.
+		{"identical rc.N on both sides", RemoteVersionState{Version: "1.16.11-rc.6", Found: true}, "1.16.11-rc.6", false},
+		{"remote on rc.N, controller on the final release", RemoteVersionState{Version: "1.16.11-rc.6", Found: true}, "1.16.11", true},
+		{"remote on the final release, controller on rc.N", RemoteVersionState{Version: "1.16.11", Found: true}, "1.16.11-rc.6", false},
+		{"remote +local metadata at the same core version never flags", RemoteVersionState{Version: "1.16.10+local.20260915.abc", Found: true, InstalledFrom: "local-build"}, "1.16.10", false},
 	}
 	for _, tc := range cases {
 		if got := tc.state.Outdated(tc.controller); got != tc.want {
 			t.Errorf("%s: Outdated(%q) = %v, want %v", tc.name, tc.controller, got, tc.want)
+		}
+		// Outdated is defined purely by Compare's older/other split — assert
+		// the two never contradict each other (the exact bug shape).
+		compareOlder := tc.state.Compare(tc.controller) == RemoteVersionOlder
+		if got := tc.state.Outdated(tc.controller); got != compareOlder {
+			t.Errorf("%s: Outdated(%q) = %v disagrees with Compare()==older (%v)", tc.name, tc.controller, got, compareOlder)
 		}
 	}
 }
