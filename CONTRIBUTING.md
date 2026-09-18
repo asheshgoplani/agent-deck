@@ -6,6 +6,13 @@ This page tells you how the project actually works, what makes a PR land fast, a
 
 **Contributing with an AI agent?** Point it at the [agent-deck contributor skill](.github/skills/agent-deck-contributor/SKILL.md). It packages this whole page, the intake contract, and the review criteria as an agent skill, including a `self-check.sh` that runs every gate check locally before you open the PR. An agent that follows it opens a PR we can merge on the first try.
 
+## Start here
+
+1. Read this page end to end: how the pipeline works, what makes a PR land fast, and the house rules (stated up front so nobody wastes effort).
+2. AI agent? Read [.github/INTAKE.md](.github/INTAKE.md) first; it is the machine-readable intake spec and reading it means you pass intake on the first try.
+3. Comment on an issue before starting work so we can tell you if someone (human or agent) is already on it.
+4. Look for issues labeled [`good first issue`](https://github.com/asheshgoplani/agent-deck/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22): curated to be small and self-contained. [docs/ROADMAP.md](docs/ROADMAP.md) has more ideas that are real but not yet scheduled, if you want to bring one of those to an issue.
+
 ## How this project works (the honest version)
 
 agent-deck has one human maintainer and a fleet of AI agents that do the heavy lifting on intake. That is not a gimmick, it is the reason your PR does not sit for weeks:
