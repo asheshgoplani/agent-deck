@@ -16,6 +16,12 @@ import (
 // Claude Code replaces all such characters with hyphens in project directory names
 var claudeDirNameRegex = regexp.MustCompile(`[^a-zA-Z0-9-]`)
 
+// claudeProjectDirNameRegex accepts exactly the alphabet ConvertToClaudeDirName
+// emits: one non-empty path component with no separator and no "..". It is
+// the bound claudeProjectDir enforces before a project path chosen by a
+// caller (the web API accepts one in a request body) selects a directory.
+var claudeProjectDirNameRegex = regexp.MustCompile(`^[a-zA-Z0-9-]+$`)
+
 // uuidSessionFileRegex matches UUID-format JSONL session filenames.
 var uuidSessionFileRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$`)
 
@@ -137,6 +143,18 @@ func extractExplicitClaudeIDForFlags(command, flag string) (string, bool) {
 // Example: /Users/master/Code cloud/!Project → -Users-master-Code-cloud--Project
 func ConvertToClaudeDirName(path string) string {
 	return claudeDirNameRegex.ReplaceAllString(path, "-")
+}
+
+// claudeProjectDir returns configDir/projects/<encoded> and true when encoded
+// is a single safe path component, which is what ConvertToClaudeDirName
+// always produces. Anything else (empty, a separator, "..") yields false so a
+// caller-supplied project path can never select a directory outside the
+// projects tree of the config dir.
+func claudeProjectDir(configDir, encoded string) (string, bool) {
+	if !claudeProjectDirNameRegex.MatchString(encoded) {
+		return "", false
+	}
+	return filepath.Join(configDir, "projects", encoded), true
 }
 
 // ClaudeProject represents a project entry in Claude's config
@@ -864,9 +882,10 @@ func discoverLatestClaudeJSONL(projectPath string) (string, bool) {
 		encoded = "-"
 	}
 
-	projectDir := filepath.Join(configDir, "projects", encoded)
-	// #nosec G703 -- projectDir is derived from configDir (CLAUDE_CONFIG_DIR)
-	// joined with an encoded session ID; not from untrusted input.
+	projectDir, ok := claudeProjectDir(configDir, encoded)
+	if !ok {
+		return "", false
+	}
 	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
 		return "", false
 	}
@@ -978,7 +997,10 @@ func transcriptEvidenceAcrossRoots(projectPath string, roots []string) (found bo
 	}
 
 	for _, configDir := range roots {
-		projectDir := filepath.Join(configDir, "projects", encoded)
+		projectDir, ok := claudeProjectDir(configDir, encoded)
+		if !ok {
+			return false, false
+		}
 		entries, err := os.ReadDir(projectDir)
 		if err != nil {
 			if os.IsNotExist(err) {

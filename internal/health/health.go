@@ -288,9 +288,12 @@ func appendSample(path string, s Sample) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(data)
-	return err
+	// Close can be the call that surfaces a failed append; report it.
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 func healthFile(name string) bool {
 	return strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.1")

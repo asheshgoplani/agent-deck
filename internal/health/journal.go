@@ -111,9 +111,12 @@ func appendLine(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(data)
-	return err
+	// Close can be the call that surfaces a failed append; report it.
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func sessionEventFile(name string) bool {
