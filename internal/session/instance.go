@@ -1623,8 +1623,9 @@ func (i *Instance) ensureInteractiveShellEnv() {
 	if i.Tool != "shell" || i.tmuxSession == nil || i.tmuxSession.RunCommandAsInitialProcess {
 		return
 	}
+	plainShell := strings.TrimSpace(i.Command) == ""
 	var exports []string
-	if strings.TrimSpace(i.Command) == "" {
+	if plainShell {
 		exports = append(exports,
 			"AGENTDECK_INSTANCE_ID="+shellescape.Quote(i.ID),
 			"AGENTDECK_PROFILE="+shellescape.Quote(sessionProfileEnvValue()),
@@ -1634,13 +1635,13 @@ func (i *Instance) ensureInteractiveShellEnv() {
 	if i.Account != "" {
 		exports = append(exports, "AGENTDECK_ACCOUNT="+shellescape.Quote(i.Account))
 	}
-	if len(exports) == 0 {
-		return
-	}
-	if strings.TrimSpace(i.Command) == "" {
+	if plainShell {
 		if identityExport := i.identityEnvExport(); identityExport != "" {
 			exports = append(exports, strings.TrimPrefix(identityExport, "export "))
 		}
+	}
+	if len(exports) == 0 {
+		return
 	}
 	// The leading space keeps the line out of a history that ignores
 	// space-prefixed commands (bash HISTCONTROL=ignorespace, zsh

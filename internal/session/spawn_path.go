@@ -139,15 +139,13 @@ func buildSpawnPathExport(dirs []string) string {
 	for _, d := range dirs {
 		words = append(words, shellescape.Quote(d))
 	}
-	return buildSpawnPathExportWords(words, `[ -d "$__d" ]`)
+	return buildSpawnPathExportWords(words, localSpawnPathTest)
 }
 
 // buildSpawnPathExportWords is buildSpawnPathExport over shell words that
 // are already quoted, so an --ssh session can hand over "$HOME/.local/bin"
 // for the remote shell to expand. test is the per-dir shell test that
-// decides whether a dir is added; the local prelude only asks whether it
-// exists (the deck process already checked ownership and mode), the --ssh
-// prelude also asks whether it is owned by the remote user (sshSpawnPathTest).
+// decides whether a dir is added (localSpawnPathTest or sshSpawnPathTest).
 func buildSpawnPathExportWords(words []string, test string) string {
 	if len(words) == 0 {
 		return ""
@@ -158,6 +156,11 @@ func buildSpawnPathExportWords(words []string, test string) string {
 		`; do case ":$PATH:" in *":$__d:"*) ;; *) ` + test + ` && __p="${__p:+$__p:}$__d";; esac; done; ` +
 		`[ -n "$__p" ] && PATH="$__p:$PATH"; export PATH; unset __d __p; `
 }
+
+// localSpawnPathTest is the per-dir test of the local prelude: only whether
+// the dir exists, since the deck process already checked ownership and mode
+// (spawnPathDirUsable).
+const localSpawnPathTest = `[ -d "$__d" ]`
 
 // sshSpawnPathTest is the per-dir test of the --ssh prelude. The controller
 // cannot stat the remote's directories, so the remote shell checks what it
