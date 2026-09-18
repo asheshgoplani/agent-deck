@@ -5,10 +5,10 @@
                              Remote: lab                              
                  Host: alice@lab.example — 5 sessions                 
                                                                       
-                agent-deck v1.16.11 · newer than here                 
+    agent-deck v1.16.11 · newer than here                             
     Sessions  1 running · 1 waiting · 1 idle · 1 stopped · 1 error    
-                 Harnesses  claude:2 · codex:2 · pi:1                 
-             stats unknown (remote does not report stats)             
+    Harnesses  claude:2 · codex:2 · pi:1                              
+    stats unknown (remote does not report stats)                      
                                                                       
              • Press Enter on a session to attach via SSH             
                                                                       

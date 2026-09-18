@@ -1,13 +1,15 @@
-                                                                          
-                                                                          
-                                    ⬡                                     
-                                                                          
-                               Remote: lab                                
-                   Host: alice@lab.example — 5 sessions                   
-                                                                          
-                    agent-deck v1.16.10 · same as here                    
-    accounts  personal 5h 8% · 7d 24% (5 min ago) · work usage unknown    
-                                                                          
-               • Press Enter on a session to attach via SSH               
-                                                                          
-                                                                          
+                                                    
+                                                    
+                         ⬡                          
+                                                    
+                    Remote: lab                     
+        Host: alice@lab.example — 5 sessions        
+                                                    
+    agent-deck v1.16.10 · same as here              
+    accounts  2 slots · 5h lowest 8% · 1 unknown    
+      personal  5h 8%  7d 24%  5 min ago            
+      work      —      —       usage unknown        
+                                                    
+    • Press Enter on a session to attach via SSH    
+                                                    
+                                                    

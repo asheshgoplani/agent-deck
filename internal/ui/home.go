@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -856,6 +857,10 @@ type Home struct {
 	// System stats collector (CPU, RAM, disk, etc.)
 	sysStatsCollector *sysinfo.Collector
 	sysStatsConfig    session.SystemStatsSettings
+
+	// sshCollector backs the opt-in "ssh" header field (who is connected to
+	// this host over SSH); nil unless [ui.header].fields lists it.
+	sshCollector *sysinfo.SSHCollector
 
 	// accountsUsageCache backs the "accounts" header field: an mtime-cached
 	// reader over this host's own quota files (see session.AccountUsageCache)
@@ -2028,6 +2033,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	if h.sysStatsConfig.GetEnabled() {
 		h.sysStatsCollector = sysinfo.NewCollector(h.sysStatsConfig.GetRefreshSeconds(), nil)
 	}
+	if cfg, _ := session.LoadUserConfig(); cfg != nil && slices.Contains(cfg.UI.GetHeaderFields(), session.PreviewFieldSSH) {
+		h.sshCollector = sysinfo.NewSSHCollector(0)
+	}
 	h.accountsUsageCache = session.NewAccountUsageCache()
 
 	// Interval-hook runner. Constructed unconditionally (cheap); Start() is a
@@ -2184,6 +2192,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 			} else {
 				uiLog.Info("claude_hooks_reinstalled", slog.String("config_dir", configDir))
 			}
+		}
+		if decision.reinstall || decision.watch {
+			logUsageFeedResults(session.HealUsageFeeds(userConfig))
 		}
 		if decision.watch {
 			hookWatcher, err := session.NewStatusFileWatcher(nil)
@@ -3940,6 +3951,9 @@ func (h *Home) Init() tea.Cmd {
 	}
 
 	// Start system stats collection
+	if h.sshCollector != nil {
+		h.sshCollector.Start()
+	}
 	if h.sysStatsCollector != nil {
 		h.sysStatsCollector.Start()
 	}
@@ -13099,6 +13113,45 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 	)
 }
 
+// renderHeaderSSHSegments renders the header's "ssh" field from the local
+// collector: the full one-line form and the compact "ssh  N users" form the
+// width-aware layout falls back to. Unknown (collector missing or not yet
+// polled, `who` failed) is said, never rendered as nobody.
+func (h *Home) renderHeaderSSHSegments(now time.Time) (full, compact string) {
+	style := lipgloss.NewStyle().Foreground(ColorComment)
+	if h.sshCollector == nil {
+		return style.Render("ssh  unknown"), ""
+	}
+	snap := h.sshCollector.Get()
+	if !snap.Available {
+		if snap.Error != "" {
+			return style.Render("ssh  unknown (" + snap.Error + ")"), style.Render("ssh  unknown")
+		}
+		return style.Render("ssh  unknown"), ""
+	}
+	sessions := make([]session.RemoteSSHSession, 0, len(snap.Sessions))
+	for _, s := range snap.Sessions {
+		sessions = append(sessions, session.RemoteSSHSession{User: s.User, Count: s.Count, HasSince: s.HasSince, Since: s.Since, From: s.From})
+	}
+	full = style.Render(renderSSHPreviewBlock(sessions, now, previewLayout{})[0])
+	if len(sessions) == 0 {
+		return full, ""
+	}
+	return full, style.Render(renderSSHSummaryLine(sessions))
+}
+
+// logUsageFeedResults logs what the accounts usage feed heal changed.
+func logUsageFeedResults(results []session.UsageFeedResult) {
+	for _, r := range results {
+		switch {
+		case r.Err != nil:
+			uiLog.Warn("claude_usage_feed_heal_failed", slog.String("slot", r.Slot), slog.String("error", r.Err.Error()))
+		case r.Changed:
+			uiLog.Info("claude_usage_feed_wired", slog.String("slot", r.Slot), slog.String("command", r.Feed.Command))
+		}
+	}
+}
+
 // confirmInstallHooks handles the "yes" action for ConfirmInstallHooks.
 func (h *Home) confirmInstallHooks() tea.Cmd {
 	h.confirmDialog.Hide()
@@ -13108,6 +13161,9 @@ func (h *Home) confirmInstallHooks() tea.Cmd {
 		uiLog.Warn("hook_install_failed", slog.String("error", err.Error()))
 	} else {
 		uiLog.Info("claude_hooks_installed", slog.String("config_dir", configDir))
+	}
+	if config, err := session.LoadUserConfig(); err == nil {
+		logUsageFeedResults(session.HealUsageFeeds(config))
 	}
 	// Start the status file watcher
 	hookWatcher, err := session.NewStatusFileWatcher(nil)
@@ -13211,6 +13267,9 @@ func (h *Home) performQuit(shutdownPool bool) tea.Cmd {
 func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 	return func() tea.Msg {
 		// Stop system stats collector
+		if h.sshCollector != nil {
+			h.sshCollector.Stop()
+		}
 		if h.sysStatsCollector != nil {
 			h.sysStatsCollector.Stop()
 		}
@@ -18442,6 +18501,15 @@ func (h *Home) renderFrame() string {
 		}
 	}
 
+	// SSH segment: who is connected to this host over SSH, opt-in via
+	// [ui.header].fields. Read from the background collector's snapshot
+	// (never a `who` on the render path); unknown until its first poll.
+	// Full form is the one-line list, the compact fallback is the summary.
+	var sshSegment, sshCompactSegment string
+	if headerFieldSet[session.PreviewFieldSSH] {
+		sshSegment, sshCompactSegment = h.renderHeaderSSHSegments(time.Now())
+	}
+
 	// Version badge (right-aligned, subtle inline style - no border to keep single line)
 	versionBadge := ""
 	if headerFieldSet[session.PreviewFieldVersion] {
@@ -18464,11 +18532,15 @@ func (h *Home) renderFrame() string {
 	// total (statsCompact) rather than falling through to MaxWidth's blind
 	// mid-text byte truncation, which used to eat the badge on a busy
 	// fleet even with every optional field off (#2301 round-2).
-	optionalSegments := []string{sysStatsSegment, costSegment, accountsSegment}
+	optionalSegments := []string{sysStatsSegment, costSegment, accountsSegment, sshSegment}
 	headerLeft, versionFits := assembleHeaderLeft(logo, title, stats, statsCompact, statsSep, optionalSegments, versionBadge, h.width)
 	if !versionFits {
-		// Retry with the accounts field's compact form before dropping it
-		// outright.
+		// Retry with the ssh and accounts fields' compact forms before
+		// dropping them outright.
+		optionalSegments[3] = sshCompactSegment
+		headerLeft, versionFits = assembleHeaderLeft(logo, title, stats, statsCompact, statsSep, optionalSegments, versionBadge, h.width)
+	}
+	if !versionFits {
 		optionalSegments[2] = accountsCompactSegment
 		headerLeft, versionFits = assembleHeaderLeft(logo, title, stats, statsCompact, statsSep, optionalSegments, versionBadge, h.width)
 	}
@@ -18930,26 +19002,56 @@ type EmptyStateConfig struct {
 
 // renderEmptyStateResponsive creates a centered empty state that adapts to available space
 // Uses progressive disclosure: full → compact → minimal based on width/height
-func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) string {
-	// Determine content tier based on available space
-	// Use the more restrictive of width or height constraints
-	tier := "full"
-	if width < emptyStateWidthCompact || height < emptyStateHeightCompact {
-		tier = "minimal"
-	} else if width < emptyStateWidthFull || height < emptyStateHeightFull {
-		tier = "compact"
+// emptyStateTier picks the content tier for the available space (the more
+// restrictive of width and height) and the padding that tier renders with.
+func emptyStateTier(width, height int) (tier string, vPad, hPad int) {
+	switch {
+	case width < emptyStateWidthCompact || height < emptyStateHeightCompact:
+		return "minimal", 0, spacingTight
+	case width < emptyStateWidthFull || height < emptyStateHeightFull:
+		return "compact", spacingTight, spacingNormal
 	}
+	return "full", spacingNormal, spacingLarge
+}
 
-	// Adaptive padding based on tier
-	var vPad, hPad int
+// emptyStateHintCount is how many of hints the tier shows.
+func emptyStateHintCount(tier string, hints int) int {
 	switch tier {
-	case "full":
-		vPad, hPad = spacingNormal, spacingLarge
 	case "compact":
-		vPad, hPad = spacingTight, spacingNormal
+		return min(hints, 2)
 	case "minimal":
-		vPad, hPad = 0, spacingTight
+		return min(hints, 1)
 	}
+	return hints
+}
+
+// emptyStateBodyLayout is the room renderEmptyStateResponsive leaves for
+// config.Body: the columns one body line may use inside the padding, and the
+// rows left once the icon, title, subtitle, hints and padding have taken
+// theirs. Callers that build Body from variable-length data (the remote
+// preview's stats block) fit it into this so no field can push another off
+// the pane. Rows is 0 when the tier drops the body altogether.
+func emptyStateBodyLayout(config EmptyStateConfig, width, height int) previewLayout {
+	tier, vPad, hPad := emptyStateTier(width, height)
+	if tier == "minimal" {
+		return previewLayout{width: max(1, width-hPad*2)}
+	}
+	fixed := 2 // icon, title
+	if tier == "full" {
+		fixed++ // blank after the icon
+	}
+	if config.Subtitle != "" {
+		fixed++
+	}
+	fixed++ // blank before the body
+	if n := emptyStateHintCount(tier, len(config.Hints)); n > 0 {
+		fixed += n + 1 // blank before the hints
+	}
+	return previewLayout{width: max(1, width-hPad*2), rows: max(0, height-vPad*2-fixed)}
+}
+
+func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) string {
+	tier, vPad, hPad := emptyStateTier(width, height)
 
 	// Styles
 	iconStyle := lipgloss.NewStyle().
@@ -18989,32 +19091,33 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 		content.WriteString(subtitleStyle.Render(subtitle))
 	}
 
-	// Body - extra plain lines, same tiers as Subtitle.
+	// Body - extra plain lines, same tiers as Subtitle. Rendered as one
+	// left-aligned block (every line padded to the widest) that the centred
+	// layout below places as a whole: labels and table columns line up, and
+	// a line longer than the padded width wraps here rather than widening
+	// the block. Without this, Align(Center) centred each line against the
+	// longest one and MaxWidth then cut every line from the right, so one
+	// over-wide field shifted the entire block off the pane (rc.6 accounts
+	// defect).
 	if len(config.Body) > 0 && tier != "minimal" {
-		content.WriteString("\n")
+		var body []string
 		for _, line := range config.Body {
+			body = append(body, wrapPreviewLine(line, width-hPad*2)...)
+		}
+		blockWidth := 0
+		for _, line := range body {
+			blockWidth = max(blockWidth, lipgloss.Width(line))
+		}
+		content.WriteString("\n")
+		for _, line := range body {
 			content.WriteString("\n")
-			content.WriteString(subtitleStyle.Render(line))
+			content.WriteString(subtitleStyle.Render(line + strings.Repeat(" ", blockWidth-lipgloss.Width(line))))
 		}
 	}
 
 	// Hints - progressive disclosure based on tier
 	if len(config.Hints) > 0 {
-		var hintsToShow []string
-		switch tier {
-		case "full":
-			hintsToShow = config.Hints // Show all
-		case "compact":
-			// Show first 2 hints max
-			if len(config.Hints) > 2 {
-				hintsToShow = config.Hints[:2]
-			} else {
-				hintsToShow = config.Hints
-			}
-		case "minimal":
-			// Show only the first (most important) hint
-			hintsToShow = config.Hints[:1]
-		}
+		hintsToShow := config.Hints[:emptyStateHintCount(tier, len(config.Hints))]
 
 		if tier == "full" {
 			content.WriteString("\n\n")
@@ -21358,15 +21461,14 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 		if config != nil {
 			fields = config.UI.GetRemotePreviewFields()
 		}
-		body := remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields, time.Now())
-
-		return renderEmptyStateResponsive(EmptyStateConfig{
+		state := EmptyStateConfig{
 			Icon:     "⬡",
 			Title:    "Remote: " + item.RemoteName,
 			Subtitle: fmt.Sprintf("Host: %s — %d sessions", host, count),
-			Body:     body,
 			Hints:    []string{"Press Enter on a session to attach via SSH"},
-		}, width, height)
+		}
+		state.Body = remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields, time.Now(), emptyStateBodyLayout(state, width, height))
+		return renderEmptyStateResponsive(state, width, height)
 	}
 
 	// Remote session preview

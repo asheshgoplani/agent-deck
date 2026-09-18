@@ -40,12 +40,31 @@ type AccountUsage struct {
 	Name string
 	// Known is false when no usage file exists for this slot, or it exists
 	// but could not be read or parsed. Never a guess at percentages.
-	Known        bool
-	HasUpdatedAt bool
-	UpdatedAt    time.Time
-	FiveHour     AccountUsageWindow
-	SevenDay     AccountUsageWindow
+	Known bool
+	// UnknownReason says why Known is false, one of the AccountUsage*
+	// reason constants, so the preview can name the cause ("no feed", "no
+	// data yet", "unreadable") instead of a bare "usage unknown". Empty
+	// when the reason is not known — a remote older than this field.
+	UnknownReason string
+	HasUpdatedAt  bool
+	UpdatedAt     time.Time
+	FiveHour      AccountUsageWindow
+	SevenDay      AccountUsageWindow
 }
+
+// Reasons an account slot's usage is unknown (AccountUsage.UnknownReason).
+const (
+	// AccountUsageNoFeed: the slot's Claude settings.json statusLine does
+	// not run `agent-deck usage ingest claude`, so nothing ever writes the
+	// quota file. `agent-deck hooks install` wires it.
+	AccountUsageNoFeed = "no_feed"
+	// AccountUsageNoData: the feed is wired but Claude has not run a
+	// statusLine refresh for this slot yet, so the quota file does not exist.
+	AccountUsageNoData = "no_data"
+	// AccountUsageUnreadable: the quota file exists but could not be read
+	// or parsed, or carries no claude snapshot.
+	AccountUsageUnreadable = "unreadable"
+)
 
 // AccountUsageStale reports whether usage last updated at updatedAt (valid
 // only when hasUpdatedAt) is older than AccountUsageStaleAfter as of now.
@@ -85,7 +104,7 @@ func NewAccountUsageCache() *AccountUsageCache {
 func (c *AccountUsageCache) Get(name string, now time.Time) AccountUsage {
 	store, err := quota.NewStore(name)
 	if err != nil {
-		return AccountUsage{Name: name}
+		return AccountUsage{Name: name, UnknownReason: AccountUsageUnreadable}
 	}
 	path := filepath.Join(store.Dir(), quota.ProviderClaude+".json")
 	fi, statErr := os.Stat(path)
@@ -98,7 +117,7 @@ func (c *AccountUsageCache) Get(name string, now time.Time) AccountUsage {
 	defer c.mu.Unlock()
 	if statErr != nil {
 		delete(c.entries, name)
-		return AccountUsage{Name: name}
+		return AccountUsage{Name: name, UnknownReason: AccountUsageNoData}
 	}
 	if entry, ok := c.entries[name]; ok && entry.mtime.Equal(info) {
 		return entry.usage
@@ -113,11 +132,12 @@ func (c *AccountUsageCache) Get(name string, now time.Time) AccountUsage {
 // claude provider's five_hour/seven_day windows. Any failure — no claude
 // snapshot present, an unreadable or corrupt cache file (quota.Store reports
 // those as Snapshot.Error rather than an error return) — yields Known: false
-// rather than a guessed number.
+// with AccountUsageUnreadable rather than a guessed number.
 func loadAccountUsage(store *quota.Store, name string) AccountUsage {
+	unreadable := AccountUsage{Name: name, UnknownReason: AccountUsageUnreadable}
 	snapshots, err := store.Load()
 	if err != nil {
-		return AccountUsage{Name: name}
+		return unreadable
 	}
 	for _, snap := range snapshots {
 		if snap.ID != quota.ProviderClaude || snap.Error != "" {
@@ -138,7 +158,7 @@ func loadAccountUsage(store *quota.Store, name string) AccountUsage {
 		}
 		return usage
 	}
-	return AccountUsage{Name: name}
+	return unreadable
 }
 
 // CollectAccountUsage lists this host's named Claude account slots — the same
@@ -157,7 +177,14 @@ func CollectAccountUsage(config *UserConfig, cache *AccountUsageCache, now time.
 	}
 	out := make([]AccountUsage, 0, len(names))
 	for _, name := range names {
-		out = append(out, cache.Get(name, now))
+		usage := cache.Get(name, now)
+		// A slot whose statusLine does not run the ingester has no feed:
+		// its quota file will never appear, which is a different fix
+		// (`hooks install`) than waiting for Claude to refresh.
+		if !usage.Known && usage.UnknownReason == AccountUsageNoData && !UsageFeedStatus(config.GetProfileClaudeConfigDir(name), name).Wired {
+			usage.UnknownReason = AccountUsageNoFeed
+		}
+		out = append(out, usage)
 	}
 	return out
 }

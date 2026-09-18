@@ -5,10 +5,13 @@
                              Remote: lab                              
                  Host: alice@lab.example — 5 sessions                 
                                                                       
-    version unknown (last checked never)                              
+    agent-deck v1.16.10 · same as here                                
     Sessions  1 running · 1 waiting · 1 idle · 1 stopped · 1 error    
     Harnesses  claude:2 · codex:2 · pi:1                              
-    stats unknown (remote does not report stats)                      
+    accounts  12 slots · 5h lowest 11% · 3 stale · 3 unknown          
+      alice-team-a    5h 90%  7d 40%  6 min ago                       
+      bob-team-b      5h 62%  7d 44%  10 min ago                      
+      +10 more                                                        
                                                                       
              • Press Enter on a session to attach via SSH             
                                                                       
