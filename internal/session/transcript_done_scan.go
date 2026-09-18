@@ -83,9 +83,12 @@ func ValidateTranscriptPath(path string) (string, bool) {
 // transcriptRoots returns the absolute, cleaned directories a Claude Code
 // transcript may legitimately live under: ~/.claude, $CLAUDE_CONFIG_DIR (the
 // hook handler inherits it from the session), every [profiles.<name>.claude]
-// config_dir account slot, the global [claude].config_dir, and the
-// worker-scratch root (whose per-session homes symlink `projects` back into
-// the owning profile). Empty when the home directory cannot be resolved.
+// config_dir account slot, the global [claude].config_dir, every
+// [conductors.<name>.claude] and [groups."<path>".claude] config_dir (the
+// same dirs resolveClaudeConfigDir can launch a session under; review round
+// 2, P2-C), and the worker-scratch root (whose per-session homes symlink
+// `projects` back into the owning config dir). Empty when the home directory
+// cannot be resolved.
 func transcriptRoots() []string {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
@@ -112,6 +115,12 @@ func transcriptRoots() []string {
 			add(cfg.GetProfileClaudeConfigDir(name))
 		}
 		add(cfg.Claude.ConfigDir)
+		for _, c := range cfg.Conductors {
+			add(c.Claude.ConfigDir)
+		}
+		for _, g := range cfg.Groups {
+			add(g.Claude.ConfigDir)
+		}
 	}
 	add(workerScratchDirRoot())
 	return roots

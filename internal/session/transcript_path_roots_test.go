@@ -164,3 +164,51 @@ func TestValidateTranscriptPath_SymlinkEscapeFailsClosed(t *testing.T) {
 		t.Fatal("a not-yet-written transcript under a root must be accepted")
 	}
 }
+
+// Review round 2 (P2-C): a session launched under a [conductors.<name>.claude]
+// or [groups."<path>".claude] config_dir that is NOT also a profile slot
+// reports its transcript under that dir (directly, or through a worker-scratch
+// home whose `projects` symlinks into it). Both the hook handler and the
+// daemon rescan must accept it; an unconfigured sibling stays rejected.
+func TestValidateTranscriptPath_AcceptsConductorAndGroupConfigDirs(t *testing.T) {
+	home := transcriptRootsHome(t)
+	writeTranscriptRootsConfig(t, home, `
+[profiles.work.claude]
+config_dir = '~/.claude-work'
+[conductors.coordinator.claude]
+config_dir = '~/.claude-coordinator'
+[groups."team-a".claude]
+config_dir = '~/.claude-team-a'
+`)
+	for _, dir := range []string{".claude-coordinator", ".claude-team-a"} {
+		path := filepath.Join(home, dir, "projects", "-tmp-p", "t.jsonl")
+		writeDoneTranscriptAt(t, path)
+		if cleaned, ok := ValidateTranscriptPath(path); !ok || cleaned != path {
+			t.Fatalf("transcript under configured %s must be accepted: ok=%v cleaned=%q", dir, ok, cleaned)
+		}
+	}
+	if _, ok := ValidateTranscriptPath(filepath.Join(home, ".claude-team-b", "projects", "t.jsonl")); ok {
+		t.Fatal("an unconfigured sibling dir must be rejected")
+	}
+
+	// The live layout: the conductor's scratch home links `projects` into the
+	// conductor config dir, which is no profile slot. The daemon (no
+	// CLAUDE_CONFIG_DIR) must still resolve the real location under a root.
+	realProjects := filepath.Join(home, ".claude-coordinator", "projects")
+	scratch := filepath.Join(workerScratchDirRoot(), "conductor-1", "generation-7")
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realProjects, filepath.Join(scratch, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	reported := filepath.Join(scratch, "projects", "-tmp-p", "t.jsonl")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	cleaned, ok := ValidateTranscriptPath(reported)
+	if !ok {
+		t.Fatal("daemon rescan must accept a scratch path resolving into the conductor config dir")
+	}
+	if sig, found, pending := ScanTranscriptTailForDone(cleaned); !found || pending || sig.Status != "ok" {
+		t.Fatalf("sentinel not detected: found=%v pending=%v sig=%+v", found, pending, sig)
+	}
+}
