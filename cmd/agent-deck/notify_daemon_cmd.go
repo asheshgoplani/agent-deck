@@ -59,6 +59,11 @@ func handleNotifyDaemon(args []string) {
 		"debug", os.Getenv("AGENTDECK_DEBUG") != "",
 	)
 
+	// Review round 2 (P1-A/P1-B): the hook half of the spine must not stay
+	// broken until an operator runs `hooks install`. Repair a dangling,
+	// stale-version or marker-less install before the first sync pass.
+	healClaudeHooksAtDaemonStart()
+
 	daemon := session.NewTransitionDaemon()
 	if *once {
 		daemon.SyncOnce(context.Background())
@@ -199,4 +204,22 @@ func parseAgentDeckVersion(s string) string {
 		}
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// healClaudeHooksAtDaemonStart runs session.HealClaudeHooks for the daemon's
+// Claude config dir when hooks are enabled. Best-effort: a failure is logged
+// and the daemon still runs.
+func healClaudeHooksAtDaemonStart() {
+	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.Claude.GetHooksEnabled() {
+		return
+	}
+	configDir := getClaudeConfigDirForHooks()
+	res, err := session.HealClaudeHooks(configDir, Version)
+	log := logging.ForComponent(logging.CompNotif)
+	switch {
+	case err != nil:
+		log.Warn("claude_hooks_heal_failed", "config_dir", configDir, "error", err.Error())
+	case res.Healed:
+		log.Info("claude_hooks_healed", "config_dir", configDir, "reasons", strings.Join(res.Reasons, "; "))
+	}
 }

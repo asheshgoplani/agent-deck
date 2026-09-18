@@ -32,7 +32,7 @@ type ClaudeHookBinaryStatus struct {
 	ResolvedPath string `json:"resolved_path,omitempty"`
 	ResolveError string `json:"resolve_error,omitempty"`
 	// Shadowed is true when the command runs a different file than this
-	// binary (for a bare command: a PATH shadow).
+	// binary, both symlink-resolved (for a bare command: a PATH shadow).
 	Shadowed bool `json:"shadowed"`
 	// Version is the version the hook binary reports, "" when unknown.
 	Version string `json:"version,omitempty"`
@@ -50,7 +50,8 @@ type ClaudeHooksStatusReport struct {
 	// Present is the weaker check: our hook is installed in some recognised
 	// form (possibly bare or for another binary).
 	Present bool `json:"present"`
-	// Executable is this process's symlink-resolved path ("" if unknown).
+	// Executable is the stable path the install pins for this process ("" if
+	// unknown); see hookExecutablePath.
 	Executable string `json:"executable,omitempty"`
 	// Version is this process's version, as passed by the caller.
 	Version string `json:"version"`
@@ -108,21 +109,8 @@ func ClaudeHooksStatus(configDir, currentVersion string) ClaudeHooksStatusReport
 	report.Present = hooksAlreadyInstalled(hooks)
 	report.Installed = hooksInstalledWithCommand(hooks, true)
 
-	seen := map[string]bool{}
-	for _, cfg := range hookEventConfigs {
-		var matchers []claudeHookMatcher
-		if raw, ok := hooks[cfg.Event]; ok {
-			_ = json.Unmarshal(raw, &matchers)
-		}
-		for _, m := range matchers {
-			for _, h := range m.Hooks {
-				if !isAgentDeckHookCommand(h.Command) || seen[h.Command] {
-					continue
-				}
-				seen[h.Command] = true
-				report.Binaries = append(report.Binaries, resolveHookBinary(h.Command, report.Executable, currentVersion))
-			}
-		}
+	for _, command := range distinctAgentDeckHookCommands(hooks) {
+		report.Binaries = append(report.Binaries, resolveHookBinary(command, report.Executable, currentVersion))
 	}
 	return report
 }
@@ -166,7 +154,14 @@ func resolveHookBinary(command, executable, currentVersion string) ClaudeHookBin
 		return st
 	}
 	st.ResolvedPath = filepath.Clean(resolved)
-	st.Shadowed = executable != "" && st.ResolvedPath != executable
+	if executable != "" {
+		// executable is the stable pinned path (possibly a symlink); the
+		// shadow comparison is between the files actually run.
+		if realExe, err := filepath.EvalSymlinks(executable); err == nil {
+			executable = filepath.Clean(realExe)
+		}
+		st.Shadowed = st.ResolvedPath != executable
+	}
 	if st.Shadowed {
 		st.Version = hookBinaryVersion(st.ResolvedPath)
 	} else {

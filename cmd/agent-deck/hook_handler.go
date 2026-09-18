@@ -307,7 +307,7 @@ func handleHookHandler() {
 	// SYNCHRONOUSLY. The install flips the conductor's Stop hook to sync — see
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
-	if isStopHookEvent(payload.HookEventName) && stopHookIsSyncInstall() {
+	if isStopHookEvent(payload.HookEventName) && stopHookDrainEnabled() {
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
@@ -316,13 +316,18 @@ func handleHookHandler() {
 	}
 }
 
-// stopHookIsSyncInstall reports whether this Stop hook was installed in the
-// synchronous form (messaging audit P2-1). Only the sync install exports
-// session.StopHookSyncMarkerEnv into the hook command; a stale async entry
-// runs without it, and draining there would consume the parent's inbox into a
-// {decision:"block"} that Claude Code never reads.
-func stopHookIsSyncInstall() bool {
-	return os.Getenv(session.StopHookSyncMarkerEnv) == "1"
+// stopHookDrainEnabled reports whether this Stop hook may drain the parent's
+// inbox (messaging audit P2-1, review round 2 P1-B). The sync install exports
+// session.StopHookSyncMarkerEnv=1 into the hook command, but every install
+// made before the marker existed is ALSO synchronous (Stop has been sync since
+// issue #1225), so an absent marker must not switch the drain off: that
+// silently disabled the delivery leg on every existing machine. Only an
+// explicit non-empty marker with a value other than "1" (an async-installed
+// entry that opts out) disables the drain; the heal path rewrites a marker-less entry
+// with the marker on the daemon's next start.
+func stopHookDrainEnabled() bool {
+	v := os.Getenv(session.StopHookSyncMarkerEnv)
+	return v == "" || v == "1"
 }
 
 // parentIsDSP reports whether the parent process (typically the claude binary)
@@ -644,6 +649,14 @@ func handleHooksStatus() {
 	cleanStaleHookFiles()
 
 	configDir := getClaudeConfigDirForHooks()
+	// Review round 2 (P1-A): status heals a dangling / stale-version /
+	// marker-less install before reporting, so the report describes the
+	// install as it is after the repair.
+	if res, err := session.HealClaudeHooks(configDir, Version); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not heal hooks: %v\n", err)
+	} else if res.Healed {
+		fmt.Printf("Healed hook install: %s\n", strings.Join(res.Reasons, "; "))
+	}
 	printClaudeHooksStatus(os.Stdout, session.ClaudeHooksStatus(configDir, Version))
 
 	// Show hook status files

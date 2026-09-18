@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
@@ -21,22 +22,65 @@ const agentDeckHookCommand = "agent-deck hook-handler"
 // hookHandlerSubcommand is the subcommand every agent-deck hook entry invokes.
 const hookHandlerSubcommand = "hook-handler"
 
-// hookExecutablePath resolves the absolute, symlink-free path of the running
+// hookExecutablePath returns the absolute, STABLE path of the running
 // agent-deck binary. Messaging audit P1-1: the hook command used to be the
 // bare `agent-deck hook-handler`, so each Claude session ran whatever
 // `agent-deck` came first on ITS PATH — on the maintainer's machine a stale
-// /usr/local/bin symlink eight releases behind the daemon. Installing the
-// absolute path pins the hook to the binary that installed it. Test seam.
+// /usr/local/bin symlink eight releases behind the daemon. Installing an
+// absolute path pins the hook to the binary that installed it.
+//
+// Review round 2 (P1-A): the pinned path must survive a package upgrade. The
+// first version pinned the symlink-RESOLVED file, which for a Homebrew
+// install is /opt/homebrew/Cellar/agent-deck/<version>/bin/agent-deck, a
+// directory the upgrade deletes, leaving every hook entry dangling. The path
+// pinned now is the symlink the operator invokes (/opt/homebrew/bin/agent-deck,
+// ~/.local/bin/agent-deck) whenever it resolves to the running binary, and
+// never a versioned Cellar directory; see stableHookExecutablePath. Test seam.
 var hookExecutablePath = func() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(exe)
+	return stableHookExecutablePath(exe, os.Getenv("PATH"))
+}
+
+// stableHookExecutablePath picks the path a hook entry should pin for the
+// running executable exe: the first of (exe as invoked, then the binary's
+// name in each PATH directory) that resolves to the same file as exe and does
+// not live in a versioned install directory. When nothing stable resolves to
+// the binary, the resolved file itself is returned.
+func stableHookExecutablePath(exe, pathEnv string) (string, error) {
+	real, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Clean(resolved), nil
+	real = filepath.Clean(real)
+	candidates := []string{filepath.Clean(exe)}
+	for _, dir := range filepath.SplitList(pathEnv) {
+		candidates = append(candidates, filepath.Join(dir, filepath.Base(real)))
+	}
+	for _, candidate := range candidates {
+		// A relative candidate (empty or relative PATH entry) is never stable.
+		if !filepath.IsAbs(candidate) || isVersionedInstallPath(candidate) {
+			continue
+		}
+		if resolvesToFile(candidate, real) {
+			return candidate, nil
+		}
+	}
+	return real, nil
+}
+
+// resolvesToFile reports whether path, symlinks followed, is the file real.
+func resolvesToFile(path, real string) bool {
+	resolved, err := filepath.EvalSymlinks(path)
+	return err == nil && filepath.Clean(resolved) == real
+}
+
+// isVersionedInstallPath reports whether path sits inside a per-version
+// install directory that a package upgrade replaces (a Homebrew Cellar keg).
+func isVersionedInstallPath(path string) bool {
+	return slices.Contains(strings.Split(filepath.ToSlash(path), "/"), "Cellar")
 }
 
 // hookHandlerCommand returns the command the install writes: the absolute
@@ -79,10 +123,16 @@ func isAgentDeckHookCommand(command string) bool {
 // program in command position. A word containing a path separator is never
 // treated as an assignment.
 func stripLeadingEnvAssignments(words []string) []string {
-	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.ContainsRune(words[0], os.PathSeparator) {
+	for len(words) > 0 && isEnvAssignmentWord(words[0]) {
 		words = words[1:]
 	}
 	return words
+}
+
+// isEnvAssignmentWord reports whether word is a VAR=value prefix rather than
+// a program or argument (a word containing a path separator never is).
+func isEnvAssignmentWord(word string) bool {
+	return strings.Contains(word, "=") && !strings.ContainsRune(word, os.PathSeparator)
 }
 
 // claudeHookEntry represents a single hook entry in Claude Code settings.
@@ -101,9 +151,10 @@ type claudeHookMatcher struct {
 // StopHookSyncMarkerEnv is exported into the Stop hook's command by the sync
 // install (messaging audit P2-1). DrainForStopHook consumes the parent's inbox
 // and answers with {decision:"block"}; Claude Code only reads that answer from
-// a SYNCHRONOUS hook. A Stop entry left async by an older install would still
-// drain — consuming records into a reply nobody reads. The handler therefore
-// drains only when this marker is present, and only the sync install writes it.
+// a SYNCHRONOUS hook. The handler drains unless the marker is present with a
+// value other than "1": an absent marker means an install from before the
+// marker existed, which is sync too (review round 2, P1-B), and the heal adds
+// the marker to such an entry on the daemon's next start.
 const StopHookSyncMarkerEnv = "AGENTDECK_STOP_SYNC"
 
 // claudeHookEventConfig is one row of hookEventConfigs.
@@ -340,8 +391,37 @@ func CheckClaudeHooksInstalled(configDir string) bool {
 // build started as a TUI would rewrite the operator's hooks to point at
 // itself. Only the explicit install (hooksInstalledWithCommand) treats a
 // command that differs from this binary as drift.
+//
+// Two things ARE drift even unpinned (review round 2, P1-A/P1-B): an absolute
+// command whose program no longer exists (a Homebrew keg removed by the
+// upgrade), and a Stop entry without the sync marker (installed before the
+// marker existed). Both are repaired by HealClaudeHooks and by the TUI's
+// accepted-reinstall path.
 func hooksAlreadyInstalled(hooks map[string]json.RawMessage) bool {
 	return hooksInstalledWithCommand(hooks, false)
+}
+
+// distinctAgentDeckHookCommands returns each agent-deck hook command found in
+// hooks once, in first-seen event order, in any form (bare or absolute, with
+// or without an Env marker). Empty when no agent-deck entry is installed.
+func distinctAgentDeckHookCommands(hooks map[string]json.RawMessage) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, cfg := range hookEventConfigs {
+		var matchers []claudeHookMatcher
+		if raw, ok := hooks[cfg.Event]; !ok || json.Unmarshal(raw, &matchers) != nil {
+			continue
+		}
+		for _, m := range matchers {
+			for _, h := range m.Hooks {
+				if isAgentDeckHookCommand(h.Command) && !seen[h.Command] {
+					seen[h.Command] = true
+					out = append(out, h.Command)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // hooksInstalledWithCommand is hooksAlreadyInstalled with the command pinned:
@@ -357,7 +437,7 @@ func hooksInstalledWithCommand(hooks map[string]json.RawMessage, pinned bool) bo
 		if pinned {
 			expected = cfg.command()
 		}
-		if !eventHasAgentDeckHookMatchingConfig(raw, cfg.Matcher, cfg.Async, expected) {
+		if !eventHasAgentDeckHookMatchingConfig(raw, cfg, expected) {
 			return false
 		}
 	}
@@ -366,27 +446,69 @@ func hooksInstalledWithCommand(hooks map[string]json.RawMessage, pinned bool) bo
 
 // eventHasAgentDeckHookMatchingConfig checks both presence AND config match:
 // the agent-deck hook entry must live under a matcher block whose Matcher
-// field equals the expected value, its Async flag must match, and — when
-// expectedCommand is non-empty — its command must equal it.
-func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, expectedMatcher string, expectedAsync bool, expectedCommand string) bool {
+// field equals cfg.Matcher, its Async flag must match, its program must still
+// exist when absolute, it must carry cfg.Env when the row has one, and — when
+// expectedCommand is non-empty — its command must equal it exactly.
+func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, cfg claudeHookEventConfig, expectedCommand string) bool {
 	var matchers []claudeHookMatcher
 	if err := json.Unmarshal(raw, &matchers); err != nil {
 		return false
 	}
 	for _, m := range matchers {
-		if m.Matcher != expectedMatcher {
+		if m.Matcher != cfg.Matcher {
 			continue
 		}
 		for _, h := range m.Hooks {
-			if isAgentDeckHookCommand(h.Command) {
-				if expectedCommand != "" && h.Command != expectedCommand {
-					return false
-				}
-				return h.Async == expectedAsync
+			if !isAgentDeckHookCommand(h.Command) {
+				continue
 			}
+			if expectedCommand != "" && h.Command != expectedCommand {
+				return false
+			}
+			if hookCommandProgramMissing(h.Command) || !hookCommandHasEnv(h.Command, cfg.Env) {
+				return false
+			}
+			return h.Async == cfg.Async
 		}
 	}
 	return false
+}
+
+// hookCommandHasEnv reports whether command carries the VAR=value prefix env
+// in front of its program (always true for an empty env).
+func hookCommandHasEnv(command, env string) bool {
+	if env == "" {
+		return true
+	}
+	words, ok := shellwords.Split(command)
+	if !ok {
+		return false
+	}
+	for _, w := range words {
+		if w == env {
+			return true
+		}
+		if !isEnvAssignmentWord(w) {
+			return false
+		}
+	}
+	return false
+}
+
+// hookCommandProgramMissing reports whether command names an absolute program
+// that no longer exists on disk (a dangling pin). A bare command is resolved
+// through PATH at hook time and is never reported missing here.
+func hookCommandProgramMissing(command string) bool {
+	words, ok := shellwords.Split(command)
+	if !ok {
+		return false
+	}
+	words = stripLeadingEnvAssignments(words)
+	if len(words) == 0 || !filepath.IsAbs(words[0]) {
+		return false
+	}
+	_, err := os.Stat(words[0])
+	return err != nil
 }
 
 // mergeHookEvent adds agent-deck's hook to an existing event's matcher array.
