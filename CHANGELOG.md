@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-deck notify-daemon` and `remote add` no longer mutate state on a bare trailing `--help`/`-h` (closes #2025).
+- `agent-deck notify-daemon`, `remote add`, and `creds-refresh` no longer mutate state on a bare trailing `--help`/`-h` (closes #2025).
 - `fix(tmux)`: bound stalled startup handover — a pane stuck mid-handoff no longer holds the startup-timeout watcher past its own generation (#2052).
 - Codex turn dedup now uses persisted hook generation/sequence instead of collapsing to running→waiting, so back-to-back Codex completions aren't merged into one notification (@benbergg, #2057).
 - Open Shell Here windows now inherit the session's configured tmux sizing policy (window-size/aggressive-resize) instead of tmux's global latest/off defaults (#2120).
