@@ -71,6 +71,32 @@ func shouldBoundAgentOutput(jsonOutput, quietMode, copyMode bool) bool {
 	return !jsonOutput && !quietMode && !copyMode
 }
 
+// boundSessionOutputOrExit applies the agent-boundary budget to raw when
+// bound is set, retains the full text on disk whenever it was truncated, and
+// records the read in the guardrail log either way. Path and snapshot
+// failures are fatal because the footer would otherwise point at a file that
+// does not exist.
+func boundSessionOutputOrExit(out *CLIOutput, profile, sessionID, source, raw string, maxTokens int, bound bool) string {
+	emitted := raw
+	truncated := false
+	if bound {
+		fullPath, err := outputSnapshotPath(sessionID, source)
+		if err != nil {
+			out.Error(fmt.Sprintf("failed to resolve full-output path: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		emitted, truncated = prepareAgentBoundaryOutput(raw, maxTokens, fullPath)
+		if truncated {
+			if err := writeOutputSnapshot(fullPath, raw); err != nil {
+				out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		}
+	}
+	noteOutputRead(profile, outputReadEvent{SessionID: sessionID, Source: source, Truncated: truncated, MaxTokens: maxTokens})
+	return emitted
+}
+
 // truncateUTF8 returns the largest valid UTF-8 prefix within maxBytes.
 func truncateUTF8(s string, maxBytes int) string {
 	if maxBytes <= 0 {
@@ -156,16 +182,44 @@ func writeOutputSnapshot(path, raw string) (retErr error) {
 	return nil
 }
 
+// outputReadLogMaxBytes bounds the read log: every `session output` call
+// (including the remote TUI's periodic `--pane --json` polls) appends one
+// line, so without a cap the file grows forever. One rotated generation is
+// kept so the evaluation window survives the roll.
+const outputReadLogMaxBytes = 4 << 20
+
+// outputReadLogPath resolves the JSONL file that records every output read.
+func outputReadLogPath() (string, error) {
+	dataDir, err := session.GetAgentDeckDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, "logs", "session-output-reads.jsonl"), nil
+}
+
+// noteOutputRead records the read and reports a failure on stderr instead of
+// dropping it silently: the read itself still succeeds because the log is a
+// guardrail, not the data, and stdout stays clean for --json/-q consumers.
+func noteOutputRead(profile string, event outputReadEvent) {
+	if err := recordOutputRead(profile, event); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record output read: %v\n", err)
+	}
+}
+
 // recordOutputRead makes the spec's re-fetch guardrail queryable: a re-fetch
 // is a second event for the same child session_id in the evaluation window.
 func recordOutputRead(profile string, event outputReadEvent) error {
-	dataDir, err := session.GetAgentDeckDir()
+	path, err := outputReadLogPath()
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(dataDir, "logs", "session-output-reads.jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
+	}
+	if info, statErr := os.Stat(path); statErr == nil && info.Size() >= outputReadLogMaxBytes {
+		if err := os.Rename(path, path+".1"); err != nil {
+			return err
+		}
 	}
 	event.Profile = profile
 	if event.Timestamp == 0 {

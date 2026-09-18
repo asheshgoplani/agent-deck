@@ -5894,6 +5894,12 @@ func handleSessionOutput(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Printf("Output budget: default text output (also with --pane) strips ANSI escapes and is capped at\n"+
+			"--max-tokens (default %d, about %d bytes per token). Longer output keeps its beginning and end\n"+
+			"around an explicit \"output omitted\" seam and ends with the path of the full output retained on\n"+
+			"disk. --json, -q/--quiet and --copy always carry the complete, unstripped source.\n",
+			defaultOutputMaxTokens, outputBytesPerToken)
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -5906,6 +5912,7 @@ func handleSessionOutput(profile string, args []string) {
 
 	identifier := fs.Arg(0)
 	quietMode := *quiet || *quietShort
+	boundAgentOutput := shouldBoundAgentOutput(*jsonOutput, quietMode, *copyFlag)
 	out := NewCLIOutput(*jsonOutput, quietMode)
 	if *primaryPane && !*paneFlag {
 		out.Error("--primary requires --pane", ErrCodeInvalidOperation)
@@ -5913,11 +5920,14 @@ func handleSessionOutput(profile string, args []string) {
 	}
 
 	// Load sessions
-	_, instances, _, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
 	}
+	// The read log names the effective profile so an empty -p (env or
+	// default profile) does not record as "".
+	profile = storage.Profile()
 
 	// Resolve session (allow current session detection)
 	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
@@ -5958,23 +5968,7 @@ func handleSessionOutput(profile string, args []string) {
 			out.Error(fmt.Sprintf("failed to capture pane: %v", paneErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		emitted := paneContent
-		truncated := false
-		if shouldBoundAgentOutput(*jsonOutput, quietMode, *copyFlag) {
-			fullPath, pathErr := outputSnapshotPath(inst.ID, "pane")
-			if pathErr != nil {
-				out.Error(fmt.Sprintf("failed to resolve full-output path: %v", pathErr), ErrCodeInvalidOperation)
-				os.Exit(1)
-			}
-			emitted, truncated = prepareAgentBoundaryOutput(paneContent, *maxTokens, fullPath)
-			if truncated {
-				if err := writeOutputSnapshot(fullPath, paneContent); err != nil {
-					out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
-					os.Exit(1)
-				}
-			}
-		}
-		_ = recordOutputRead(profile, outputReadEvent{SessionID: inst.ID, Source: "pane", Truncated: truncated, MaxTokens: *maxTokens})
+		emitted := boundSessionOutputOrExit(out, profile, inst.ID, "pane", paneContent, *maxTokens, boundAgentOutput)
 		jsonData := map[string]interface{}{
 			"success":       true,
 			"session_id":    inst.ID,
@@ -6002,23 +5996,7 @@ func handleSessionOutput(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	bounded := response.Content
-	truncated := false
-	if shouldBoundAgentOutput(*jsonOutput, quietMode, *copyFlag) {
-		fullPath, pathErr := outputSnapshotPath(inst.ID, "response")
-		if pathErr != nil {
-			out.Error(fmt.Sprintf("failed to resolve full-output path: %v", pathErr), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		bounded, truncated = prepareAgentBoundaryOutput(response.Content, *maxTokens, fullPath)
-		if truncated {
-			if err := writeOutputSnapshot(fullPath, response.Content); err != nil {
-				out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
-			}
-		}
-	}
-	_ = recordOutputRead(profile, outputReadEvent{SessionID: inst.ID, Source: "response", Truncated: truncated, MaxTokens: *maxTokens})
+	bounded := boundSessionOutputOrExit(out, profile, inst.ID, "response", response.Content, *maxTokens, boundAgentOutput)
 
 	// Copy to clipboard mode
 	if *copyFlag {

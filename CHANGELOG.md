@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add an opt-in `accounts` field to the shared preview-field vocabulary (`[ui.remote_preview].fields` / `[ui.header].fields`): named Claude account slots with live 5h/7d usage read from each slot's on-disk quota cache, gathered remote-side so the controller never fetches usage itself (#2274 groundwork).
 - Add a context inspector: `agent-deck session context [--json]` and a TUI `C` key render what a Claude or Codex session's transcript, memory and instructions currently hold, with a verified-parity harness against the live host (#2011).
 - Add `agent-deck session metrics <id|title> [--all] [--json] [--since 24h]` (also `remote exec <name> session metrics`): per-session turn, waiting-time, send-outcome, restart and dead-letter numbers derived from the local session event journal for evals, with nothing probed live.
+- `session output` (and `--pane`) default text is now safe to feed back into an agent: ANSI escapes are stripped UTF-8-safely (multi-byte and combining characters survive byte-exact) and the output is capped at `--max-tokens` (default 25000). Long output keeps its beginning and end around an explicit "output omitted" seam and ends with the path of the full output retained on disk; every read is recorded in `logs/session-output-reads.jsonl` (rotated at 4 MB). `--json`, `-q`/`--quiet` and `--copy` still carry the complete, unstripped source, so remote pane previews and clipboard copies are unchanged (#2050).
 
 ### Changed
 

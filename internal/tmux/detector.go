@@ -779,7 +779,14 @@ func StripANSI(content string) string {
 			continue
 		}
 		// Copy a whole UTF-8 character so a continuation byte such as 0x9B
-		// cannot be mistaken for a standalone 8-bit CSI introducer.
+		// cannot be mistaken for a standalone 8-bit CSI introducer. ASCII
+		// takes the byte path: decoding every rune costs ~40% on ANSI-heavy
+		// captures that are almost entirely ASCII.
+		if content[i] < utf8.RuneSelf {
+			b.WriteByte(content[i])
+			i++
+			continue
+		}
 		_, size := utf8.DecodeRuneInString(content[i:])
 		b.WriteString(content[i : i+size])
 		i += size
