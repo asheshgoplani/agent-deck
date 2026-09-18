@@ -221,5 +221,9 @@ func healClaudeHooksAtDaemonStart() {
 		log.Warn("claude_hooks_heal_failed", "config_dir", configDir, "error", err.Error())
 	case res.Healed:
 		log.Info("claude_hooks_healed", "config_dir", configDir, "reasons", strings.Join(res.Reasons, "; "))
+	case res.Skipped != "":
+		// An unpinnable dev build, or a hook binary newer than this one:
+		// reported, never written (review round 3, finding 2).
+		log.Info("claude_hooks_heal_skipped", "config_dir", configDir, "reason", res.Skipped)
 	}
 }

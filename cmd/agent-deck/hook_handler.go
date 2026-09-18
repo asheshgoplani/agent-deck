@@ -624,7 +624,11 @@ func handleHooksInstall() {
 	}
 	// Messaging audit P1-1: the hook is pinned to this binary's absolute
 	// path, so say which one — a stale PATH entry can no longer hijack it.
+	// A build outside the install dirs cannot be pinned and says so.
 	report := session.ClaudeHooksStatus(configDir, Version)
+	if report.Unpinnable != "" {
+		fmt.Printf("This binary: %s\n", report.Unpinnable)
+	}
 	for _, b := range report.Binaries {
 		fmt.Printf("Hook command: %s\n", b.Command)
 	}
@@ -649,14 +653,9 @@ func handleHooksStatus() {
 	cleanStaleHookFiles()
 
 	configDir := getClaudeConfigDirForHooks()
-	// Review round 2 (P1-A): status heals a dangling / stale-version /
-	// marker-less install before reporting, so the report describes the
-	// install as it is after the repair.
-	if res, err := session.HealClaudeHooks(configDir, Version); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not heal hooks: %v\n", err)
-	} else if res.Healed {
-		fmt.Printf("Healed hook install: %s\n", strings.Join(res.Reasons, "; "))
-	}
+	// Review round 3 (finding 2): status is read-only. It never touches
+	// settings.json; the self-heal runs at daemon start and on an explicit
+	// `hooks install`, and only from a binary in a known install directory.
 	printClaudeHooksStatus(os.Stdout, session.ClaudeHooksStatus(configDir, Version))
 
 	// Show hook status files
@@ -705,6 +704,9 @@ func printClaudeHooksStatus(w io.Writer, report session.ClaudeHooksStatusReport)
 	if report.Executable != "" {
 		fmt.Fprintf(w, "This binary: %s (v%s)\n", report.Executable, report.Version)
 	}
+	if report.Unpinnable != "" {
+		fmt.Fprintf(w, "This binary: %s (v%s)\n", report.Unpinnable, report.Version)
+	}
 	for _, b := range report.Binaries {
 		resolved := b.ResolvedPath
 		if b.Version != "" {
@@ -724,8 +726,14 @@ func printClaudeHooksStatus(w io.Writer, report session.ClaudeHooksStatusReport)
 	for _, p := range problems {
 		fmt.Fprintln(w, "WARNING: "+p)
 	}
-	if !report.Installed || len(problems) > 0 {
-		fmt.Fprintln(w, "Run 'agent-deck hooks install' to pin the hooks to this binary.")
+	needsRepair := !report.Installed || len(problems) > 0
+	if !needsRepair {
+		return
+	}
+	if report.Unpinnable != "" {
+		fmt.Fprintln(w, "Run 'agent-deck hooks install' from an installed agent-deck (or start its notify daemon) to repair the hooks.")
+	} else {
+		fmt.Fprintln(w, "Run 'agent-deck hooks install' to pin the hooks to this binary (the notify daemon heals this on its next start).")
 	}
 }
 

@@ -60,20 +60,25 @@ func setHookExecutable(t *testing.T, path string) {
 	t.Cleanup(func() { hookExecutablePath = prev })
 }
 
-func TestStableHookExecutablePath_NeverPinsCellarKeg(t *testing.T) {
+// Review round 3 (finding 2): only a path in a known install directory is
+// pinned. Each path class: the invoked install symlink, the keg reached
+// through an install symlink (Linuxbrew: os.Executable is the keg), a
+// ~/.local/bin symlink, and a build outside every install dir (unpinnable).
+func TestStableHookExecutablePath_PinsOnlyKnownInstallDirs(t *testing.T) {
 	root := realPath(t, t.TempDir())
 	keg, link := cellarFixture(t, root, "1.0.0")
+	installDirs := []string{filepath.Dir(link)}
 
-	// macOS: os.Executable() is the invoked symlink. It is stable: keep it.
-	if got, err := stableHookExecutablePath(link, ""); err != nil || got != link {
-		t.Fatalf("invoked symlink must be pinned as-is: got %q err=%v", got, err)
+	// macOS: os.Executable() is the invoked symlink in an install dir: keep it.
+	if got, err := stableHookExecutablePath(link, installDirs); err != nil || got != link {
+		t.Fatalf("invoked install symlink must be pinned as-is: got %q err=%v", got, err)
 	}
-	// Linux: os.Executable() is the resolved keg. A PATH entry that resolves
-	// to the same file is preferred over the keg.
-	if got, err := stableHookExecutablePath(keg, filepath.Dir(link)); err != nil || got != link {
-		t.Fatalf("PATH symlink to the running keg must be pinned instead of the keg: got %q err=%v", got, err)
+	// Linux: os.Executable() is the resolved keg. The install-dir symlink that
+	// resolves to the same file is pinned instead of the keg.
+	if got, err := stableHookExecutablePath(keg, installDirs); err != nil || got != link {
+		t.Fatalf("install symlink to the running keg must be pinned instead of the keg: got %q err=%v", got, err)
 	}
-	// ~/.local/bin style: a second symlink elsewhere on PATH also qualifies.
+	// ~/.local/bin style: a second symlink in another install dir qualifies.
 	local := filepath.Join(root, "home", ".local", "bin", "agent-deck")
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 		t.Fatal(err)
@@ -81,10 +86,12 @@ func TestStableHookExecutablePath_NeverPinsCellarKeg(t *testing.T) {
 	if err := os.Symlink(link, local); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := stableHookExecutablePath(keg, filepath.Dir(local)); got != local {
+	if got, _ := stableHookExecutablePath(keg, []string{filepath.Dir(local)}); got != local {
 		t.Fatalf("~/.local/bin symlink must be pinned: got %q", got)
 	}
-	// A PATH entry that resolves to a DIFFERENT file is never chosen.
+	// An install dir holding a DIFFERENT file is never chosen, and with no
+	// install-dir path resolving to the binary it is unpinnable: "" and no
+	// error, never the keg or the invoked path.
 	otherDir := filepath.Join(root, "other")
 	if err := os.MkdirAll(otherDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -92,11 +99,32 @@ func TestStableHookExecutablePath_NeverPinsCellarKeg(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(otherDir, "agent-deck"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := stableHookExecutablePath(keg, otherDir); got != keg {
-		t.Fatalf("with no stable path resolving to the binary the keg itself is the fallback: got %q", got)
+	if got, err := stableHookExecutablePath(keg, []string{otherDir}); err != nil || got != "" {
+		t.Fatalf("a binary outside every install dir is unpinnable: got %q err=%v", got, err)
 	}
-	if !isVersionedInstallPath(keg) || isVersionedInstallPath(link) {
-		t.Fatalf("Cellar detection: keg=%v link=%v", isVersionedInstallPath(keg), isVersionedInstallPath(link))
+	// A dev build invoked by its own path (a repo's out/ dir, /tmp) is
+	// unpinnable even though the invoked path resolves to itself.
+	dev := filepath.Join(root, "repo", "out", "agent-deck")
+	if err := os.MkdirAll(filepath.Dir(dev), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dev, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := stableHookExecutablePath(dev, installDirs); err != nil || got != "" {
+		t.Fatalf("dev build must be unpinnable: got %q err=%v", got, err)
+	}
+	// A symlink in an install dir pointing at the dev build DOES pin (the
+	// operator installed it there on purpose).
+	devLink := filepath.Join(root, "bin", "agent-deck-dev")
+	if err := os.Symlink(dev, devLink); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := stableHookExecutablePath(devLink, installDirs); got != devLink {
+		t.Fatalf("install-dir symlink to a dev build must pin the symlink: got %q", got)
+	}
+	if !inInstallDir(link, installDirs) || inInstallDir(dev, installDirs) || inInstallDir(filepath.Join(root, "bin", "sub", "agent-deck"), installDirs) {
+		t.Fatal("inInstallDir must match direct children of an install dir only")
 	}
 }
 

@@ -1,12 +1,12 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
@@ -23,52 +23,87 @@ const agentDeckHookCommand = "agent-deck hook-handler"
 const hookHandlerSubcommand = "hook-handler"
 
 // hookExecutablePath returns the absolute, STABLE path of the running
-// agent-deck binary. Messaging audit P1-1: the hook command used to be the
-// bare `agent-deck hook-handler`, so each Claude session ran whatever
-// `agent-deck` came first on ITS PATH — on the maintainer's machine a stale
-// /usr/local/bin symlink eight releases behind the daemon. Installing an
-// absolute path pins the hook to the binary that installed it.
+// agent-deck binary, or "" when the binary is unpinnable. Messaging audit
+// P1-1: the hook command used to be the bare `agent-deck hook-handler`, so
+// each Claude session ran whatever `agent-deck` came first on ITS PATH — on
+// the maintainer's machine a stale /usr/local/bin symlink eight releases
+// behind the daemon. Installing an absolute path pins the hook to the binary
+// that installed it.
 //
-// Review round 2 (P1-A): the pinned path must survive a package upgrade. The
-// first version pinned the symlink-RESOLVED file, which for a Homebrew
-// install is /opt/homebrew/Cellar/agent-deck/<version>/bin/agent-deck, a
-// directory the upgrade deletes, leaving every hook entry dangling. The path
-// pinned now is the symlink the operator invokes (/opt/homebrew/bin/agent-deck,
-// ~/.local/bin/agent-deck) whenever it resolves to the running binary, and
-// never a versioned Cellar directory; see stableHookExecutablePath. Test seam.
+// Review round 2 (P1-A): the pinned path must survive a package upgrade, so
+// a versioned Homebrew Cellar keg is never pinned; the symlink the operator
+// invokes (/opt/homebrew/bin/agent-deck, ~/.local/bin/agent-deck) is.
+//
+// Review round 3 (finding 2): only a path inside a known install directory
+// (hookInstallDirs) is pinned. A binary anywhere else (a dev build under
+// /tmp or a repo's out/ dir) is unpinnable: pinning it turned a `hooks
+// status` or TUI start from such a build into a fleet-wide hook outage the
+// moment the build directory was removed. For an unpinnable binary the
+// install keeps whatever program the entries already name (the bare command
+// on a fresh install) and the heal never writes; see
+// stableHookExecutablePath. Test seam.
 var hookExecutablePath = func() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return stableHookExecutablePath(exe, os.Getenv("PATH"))
+	return stableHookExecutablePath(exe, hookInstallDirs())
+}
+
+// unpinnableHookExecutableReason is what the heal and `hooks status` report
+// when the running binary is not in a known install directory.
+const unpinnableHookExecutableReason = "unpinnable dev build: hooks keep the bare command"
+
+// hookInstallDirs lists the directories a hook entry may pin a binary in:
+// the package-manager and user-local bin directories an install lands in
+// and an upgrade replaces in place.
+func hookInstallDirs() []string {
+	dirs := []string{
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/home/linuxbrew/.linuxbrew/bin",
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	return dirs
 }
 
 // stableHookExecutablePath picks the path a hook entry should pin for the
 // running executable exe: the first of (exe as invoked, then the binary's
-// name in each PATH directory) that resolves to the same file as exe and does
-// not live in a versioned install directory. When nothing stable resolves to
-// the binary, the resolved file itself is returned.
-func stableHookExecutablePath(exe, pathEnv string) (string, error) {
+// name in each install directory) that lives directly in one of installDirs
+// and resolves to the same file as exe. It returns "" when no such path
+// exists: the binary is unpinnable and the entries keep their program.
+func stableHookExecutablePath(exe string, installDirs []string) (string, error) {
 	real, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		return "", err
 	}
 	real = filepath.Clean(real)
 	candidates := []string{filepath.Clean(exe)}
-	for _, dir := range filepath.SplitList(pathEnv) {
+	for _, dir := range installDirs {
 		candidates = append(candidates, filepath.Join(dir, filepath.Base(real)))
 	}
 	for _, candidate := range candidates {
-		// A relative candidate (empty or relative PATH entry) is never stable.
-		if !filepath.IsAbs(candidate) || isVersionedInstallPath(candidate) {
-			continue
-		}
-		if resolvesToFile(candidate, real) {
+		if filepath.IsAbs(candidate) && inInstallDir(candidate, installDirs) && resolvesToFile(candidate, real) {
 			return candidate, nil
 		}
 	}
-	return real, nil
+	return "", nil
+}
+
+// inInstallDir reports whether path sits directly inside one of dirs
+// (symlinks in the directory part are not followed: the pinned string must
+// be the stable one).
+func inInstallDir(path string, dirs []string) bool {
+	parent := filepath.Dir(path)
+	for _, dir := range dirs {
+		if dir != "" && parent == filepath.Clean(dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvesToFile reports whether path, symlinks followed, is the file real.
@@ -77,21 +112,41 @@ func resolvesToFile(path, real string) bool {
 	return err == nil && filepath.Clean(resolved) == real
 }
 
-// isVersionedInstallPath reports whether path sits inside a per-version
-// install directory that a package upgrade replaces (a Homebrew Cellar keg).
-func isVersionedInstallPath(path string) bool {
-	return slices.Contains(strings.Split(filepath.ToSlash(path), "/"), "Cellar")
+// hookHandlerCommand returns the command a fresh install writes: the stable
+// executable path plus the hook-handler subcommand, or the legacy bare form
+// when the executable is unpinnable (so a hook is always installed).
+func hookHandlerCommand() string {
+	return hookHandlerCommandFor("")
 }
 
-// hookHandlerCommand returns the command the install writes: the absolute
-// executable path plus the hook-handler subcommand, or the legacy bare form
-// when the executable cannot be resolved (so a hook is always installed).
-func hookHandlerCommand() string {
-	exe, err := hookExecutablePath()
-	if err != nil || exe == "" {
-		return agentDeckHookCommand
+// hookHandlerCommandFor returns the command the install writes in place of
+// the agent-deck entry existing (empty when there is none). A pinnable
+// binary always pins itself. An unpinnable one (review round 3, finding 2)
+// keeps the program the entry already names while it still exists, and
+// falls back to the bare form otherwise, so a dev build never writes its
+// own path and never pins a stale one either.
+func hookHandlerCommandFor(existing string) string {
+	if exe, err := hookExecutablePath(); err == nil && exe != "" {
+		return shellescape.Quote(exe) + " " + hookHandlerSubcommand
 	}
-	return shellescape.Quote(exe) + " " + hookHandlerSubcommand
+	if program := hookCommandProgram(existing); program != "" && program != "agent-deck" && !hookCommandProgramMissing(existing) {
+		return shellescape.Quote(program) + " " + hookHandlerSubcommand
+	}
+	return agentDeckHookCommand
+}
+
+// hookCommandProgram returns the program word of a hook command, leading
+// VAR=value assignments stripped, "" when the command cannot be split.
+func hookCommandProgram(command string) string {
+	words, ok := shellwords.Split(command)
+	if !ok {
+		return ""
+	}
+	words = stripLeadingEnvAssignments(words)
+	if len(words) == 0 {
+		return ""
+	}
+	return words[0]
 }
 
 // isAgentDeckHookCommand reports whether a settings.json hook command is one
@@ -135,7 +190,9 @@ func isEnvAssignmentWord(word string) bool {
 	return strings.Contains(word, "=") && !strings.ContainsRune(word, os.PathSeparator)
 }
 
-// claudeHookEntry represents a single hook entry in Claude Code settings.
+// claudeHookEntry is the read-only view of a hook entry used by the install
+// checks. The rewrite itself goes through jsonObject (claude_hooks_json.go)
+// so fields this struct does not know are never dropped.
 type claudeHookEntry struct {
 	Type    string `json:"type"`
 	Command string `json:"command"`
@@ -167,21 +224,27 @@ type claudeHookEventConfig struct {
 	Env string
 }
 
-// command is the exact command string the install writes for this event.
-func (cfg claudeHookEventConfig) command() string {
+// commandFor is the exact command string the install writes for this event
+// in place of the agent-deck entry existing ("" for a fresh install; see
+// hookHandlerCommandFor).
+func (cfg claudeHookEventConfig) commandFor(existing string) string {
 	if cfg.Env != "" {
-		return cfg.Env + " " + hookHandlerCommand()
+		return cfg.Env + " " + hookHandlerCommandFor(existing)
 	}
-	return hookHandlerCommand()
+	return hookHandlerCommandFor(existing)
 }
 
-// agentDeckHook returns the standard agent-deck hook entry for an event.
-func agentDeckHook(cfg claudeHookEventConfig) claudeHookEntry {
-	return claudeHookEntry{
-		Type:    "command",
-		Command: cfg.command(),
-		Async:   cfg.Async,
+// agentDeckHookObject returns the agent-deck hook entry for an event, as
+// the object the install writes, replacing the entry existing ("" when new).
+func agentDeckHookObject(cfg claudeHookEventConfig, existing string) jsonObject {
+	obj := jsonObject{
+		{Key: "type", Value: mustMarshal("command")},
+		{Key: "command", Value: mustMarshal(cfg.commandFor(existing))},
 	}
+	if cfg.Async {
+		obj.set("async", mustMarshal(true))
+	}
+	return obj
 }
 
 // hookEventConfigs defines which Claude Code events we subscribe to and their matcher patterns.
@@ -212,59 +275,45 @@ var hookEventConfigs = []claudeHookEventConfig{
 }
 
 // InjectClaudeHooks injects agent-deck hook entries into Claude Code's settings.json.
-// Uses read-preserve-modify-write pattern to preserve all existing settings and user hooks.
+// Read-preserve-modify-write through an order-preserving object: every key,
+// user hook and unknown field round-trips untouched, only the agent-deck
+// entries are written, and the file is left alone when nothing would change.
 // Returns true if hooks were newly installed, false if already present.
 func InjectClaudeHooks(configDir string) (bool, error) {
 	settingsPath := filepath.Join(configDir, "settings.json")
-
-	// Read existing settings (or start fresh)
-	var rawSettings map[string]json.RawMessage
-	data, err := os.ReadFile(settingsPath)
+	root, data, err := readSettingsObject(settingsPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return false, fmt.Errorf("read settings.json: %w", err)
-		}
-		rawSettings = make(map[string]json.RawMessage)
-	} else {
-		if err := json.Unmarshal(data, &rawSettings); err != nil {
-			return false, fmt.Errorf("parse settings.json: %w", err)
-		}
+		return false, err
 	}
-
-	// Parse existing hooks section
-	var existingHooks map[string]json.RawMessage
-	if raw, ok := rawSettings["hooks"]; ok {
-		if err := json.Unmarshal(raw, &existingHooks); err != nil {
-			// hooks key exists but isn't a valid object; start fresh for hooks
-			existingHooks = make(map[string]json.RawMessage)
-		}
-	} else {
-		existingHooks = make(map[string]json.RawMessage)
+	hooksObj, err := hooksSectionObject(root)
+	if err != nil {
+		return false, err
 	}
 
 	// Check if already installed (all events present with our hook command
 	// AND pointing at this binary). A legacy bare entry, or an absolute entry
 	// for a different binary, counts as drift and is rewritten in place.
-	if hooksInstalledWithCommand(existingHooks, true) {
+	if hooksInstalledWithCommand(hooksObj.asMap(), true) {
 		return false, nil
 	}
 
 	// Inject our hook entries for each event
 	for _, cfg := range hookEventConfigs {
-		existingHooks[cfg.Event] = mergeHookEvent(existingHooks[cfg.Event], cfg)
+		existing, _ := hooksObj.get(cfg.Event)
+		merged, err := mergeHookEvent(existing, cfg)
+		if err != nil {
+			return false, fmt.Errorf("settings.json hooks.%s: %w", cfg.Event, err)
+		}
+		hooksObj.set(cfg.Event, merged)
 	}
+	root.set("hooks", mustMarshal(hooksObj))
 
-	// Marshal hooks back into raw settings
-	hooksRaw, err := json.Marshal(existingHooks)
-	if err != nil {
-		return false, fmt.Errorf("marshal hooks: %w", err)
-	}
-	rawSettings["hooks"] = hooksRaw
-
-	// Atomic write
-	finalData, err := json.MarshalIndent(rawSettings, "", "  ")
+	finalData, err := indentSettings(root)
 	if err != nil {
 		return false, fmt.Errorf("marshal settings: %w", err)
+	}
+	if bytes.Equal(finalData, data) {
+		return false, nil
 	}
 
 	// Ensure config directory exists
@@ -280,66 +329,86 @@ func InjectClaudeHooks(configDir string) (bool, error) {
 	return true, nil
 }
 
+// readSettingsObject reads settingsPath as an order-preserving object and
+// returns it with the raw bytes read. A missing file is an empty object with
+// nil data; malformed JSON is an error (nothing is ever written over it).
+func readSettingsObject(settingsPath string) (jsonObject, []byte, error) {
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return jsonObject{}, nil, nil
+		}
+		return nil, nil, fmt.Errorf("read settings.json: %w", err)
+	}
+	var root jsonObject
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, nil, fmt.Errorf("parse settings.json: %w", err)
+	}
+	return root, data, nil
+}
+
+// hooksSectionObject returns root's "hooks" object (empty when absent); a
+// "hooks" value that is not an object is an error rather than overwritten.
+func hooksSectionObject(root jsonObject) (jsonObject, error) {
+	hooksObj := jsonObject{}
+	raw, ok := root.get("hooks")
+	if !ok {
+		return hooksObj, nil
+	}
+	if err := json.Unmarshal(raw, &hooksObj); err != nil {
+		return nil, fmt.Errorf("parse settings.json hooks: %w", err)
+	}
+	return hooksObj, nil
+}
+
 // RemoveClaudeHooks removes agent-deck hook entries from Claude Code's settings.json.
 // Returns true if hooks were removed, false if none found.
 func RemoveClaudeHooks(configDir string) (bool, error) {
 	settingsPath := filepath.Join(configDir, "settings.json")
-
-	data, err := os.ReadFile(settingsPath)
+	root, data, err := readSettingsObject(settingsPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("read settings.json: %w", err)
+		return false, err
 	}
-
-	var rawSettings map[string]json.RawMessage
-	if err := json.Unmarshal(data, &rawSettings); err != nil {
-		return false, fmt.Errorf("parse settings.json: %w", err)
-	}
-
-	hooksRaw, ok := rawSettings["hooks"]
-	if !ok {
+	if data == nil {
 		return false, nil
 	}
-
-	var existingHooks map[string]json.RawMessage
-	if err := json.Unmarshal(hooksRaw, &existingHooks); err != nil {
-		return false, nil
+	hooksObj, err := hooksSectionObject(root)
+	if err != nil {
+		return false, err
 	}
 
 	removed := false
 	for _, cfg := range hookEventConfigs {
-		if raw, ok := existingHooks[cfg.Event]; ok {
-			cleaned, didRemove := removeAgentDeckFromEvent(raw)
-			if didRemove {
-				removed = true
-				if cleaned == nil {
-					delete(existingHooks, cfg.Event)
-				} else {
-					existingHooks[cfg.Event] = cleaned
-				}
-			}
+		raw, ok := hooksObj.get(cfg.Event)
+		if !ok {
+			continue
+		}
+		cleaned, didRemove := removeAgentDeckFromEvent(raw)
+		if !didRemove {
+			continue
+		}
+		removed = true
+		if cleaned == nil {
+			hooksObj.del(cfg.Event)
+		} else {
+			hooksObj.set(cfg.Event, cleaned)
 		}
 	}
-
 	if !removed {
 		return false, nil
 	}
 
 	// If hooks map is empty, remove the key entirely
-	if len(existingHooks) == 0 {
-		delete(rawSettings, "hooks")
+	if len(hooksObj) == 0 {
+		root.del("hooks")
 	} else {
-		hooksData, _ := json.Marshal(existingHooks)
-		rawSettings["hooks"] = hooksData
+		root.set("hooks", mustMarshal(hooksObj))
 	}
 
-	finalData, err := json.MarshalIndent(rawSettings, "", "  ")
+	finalData, err := indentSettings(root)
 	if err != nil {
 		return false, fmt.Errorf("marshal settings: %w", err)
 	}
-
 	if err := atomicfile.WriteFile(settingsPath, finalData, 0644); err != nil {
 		return false, fmt.Errorf("write settings.json: %w", err)
 	}
@@ -348,30 +417,53 @@ func RemoveClaudeHooks(configDir string) (bool, error) {
 	return true, nil
 }
 
-// CheckClaudeHooksInstalled checks if agent-deck hooks are present in settings.json.
+// CheckClaudeHooksInstalled checks if agent-deck hooks are present in
+// settings.json with the current config (no drift).
 func CheckClaudeHooksInstalled(configDir string) bool {
-	settingsPath := filepath.Join(configDir, "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
+	hooks, err := readClaudeHooksSection(configDir)
+	return err == nil && hooksAlreadyInstalled(hooks)
+}
+
+// CheckClaudeHooksPresent reports whether every event carries an agent-deck
+// entry in ANY recognised form (bare, pinned, marker-less, dangling, async
+// drift). Review round 3 (finding 4): an install made by `hooks install` and
+// never through the TUI is consent all the same, so the TUI's startup check
+// uses this to decide whether to PROMPT (drift is repaired silently, never
+// re-asked); CheckClaudeHooksInstalled says whether a repair is due.
+func CheckClaudeHooksPresent(configDir string) bool {
+	hooks, err := readClaudeHooksSection(configDir)
+	return err == nil && hooksPresent(hooks)
+}
+
+// hooksPresent is CheckClaudeHooksPresent on a decoded hooks section.
+func hooksPresent(hooks map[string]json.RawMessage) bool {
+	for _, cfg := range hookEventConfigs {
+		raw, ok := hooks[cfg.Event]
+		if !ok || !eventHasAgentDeckHook(raw, cfg.Matcher) {
+			return false
+		}
+	}
+	return true
+}
+
+// eventHasAgentDeckHook reports whether the event's matcher block matcher
+// holds an agent-deck entry in any form.
+func eventHasAgentDeckHook(raw json.RawMessage, matcher string) bool {
+	var matchers []claudeHookMatcher
+	if err := json.Unmarshal(raw, &matchers); err != nil {
 		return false
 	}
-
-	var rawSettings map[string]json.RawMessage
-	if err := json.Unmarshal(data, &rawSettings); err != nil {
-		return false
+	for _, m := range matchers {
+		if m.Matcher != matcher {
+			continue
+		}
+		for _, h := range m.Hooks {
+			if isAgentDeckHookCommand(h.Command) {
+				return true
+			}
+		}
 	}
-
-	hooksRaw, ok := rawSettings["hooks"]
-	if !ok {
-		return false
-	}
-
-	var existingHooks map[string]json.RawMessage
-	if err := json.Unmarshal(hooksRaw, &existingHooks); err != nil {
-		return false
-	}
-
-	return hooksAlreadyInstalled(existingHooks)
+	return false
 }
 
 // hooksAlreadyInstalled checks if all required agent-deck hooks are present
@@ -426,18 +518,15 @@ func distinctAgentDeckHookCommands(hooks map[string]json.RawMessage) []string {
 
 // hooksInstalledWithCommand is hooksAlreadyInstalled with the command pinned:
 // when pinned, every agent-deck entry must equal the command the install
-// writes for that event now (this binary's path plus any Env marker).
+// would write in its place now (this binary's path, or for an unpinnable
+// binary the entry's own program, plus any Env marker).
 func hooksInstalledWithCommand(hooks map[string]json.RawMessage, pinned bool) bool {
 	for _, cfg := range hookEventConfigs {
 		raw, ok := hooks[cfg.Event]
 		if !ok {
 			return false
 		}
-		expected := ""
-		if pinned {
-			expected = cfg.command()
-		}
-		if !eventHasAgentDeckHookMatchingConfig(raw, cfg, expected) {
+		if !eventHasAgentDeckHookMatchingConfig(raw, cfg, pinned) {
 			return false
 		}
 	}
@@ -448,8 +537,8 @@ func hooksInstalledWithCommand(hooks map[string]json.RawMessage, pinned bool) bo
 // the agent-deck hook entry must live under a matcher block whose Matcher
 // field equals cfg.Matcher, its Async flag must match, its program must still
 // exist when absolute, it must carry cfg.Env when the row has one, and — when
-// expectedCommand is non-empty — its command must equal it exactly.
-func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, cfg claudeHookEventConfig, expectedCommand string) bool {
+// pinned — its command must equal what the install would write in its place.
+func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, cfg claudeHookEventConfig, pinned bool) bool {
 	var matchers []claudeHookMatcher
 	if err := json.Unmarshal(raw, &matchers); err != nil {
 		return false
@@ -462,7 +551,7 @@ func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, cfg claudeHookEven
 			if !isAgentDeckHookCommand(h.Command) {
 				continue
 			}
-			if expectedCommand != "" && h.Command != expectedCommand {
+			if pinned && h.Command != cfg.commandFor(h.Command) {
 				return false
 			}
 			if hookCommandProgramMissing(h.Command) || !hookCommandHasEnv(h.Command, cfg.Env) {
@@ -499,98 +588,111 @@ func hookCommandHasEnv(command, env string) bool {
 // that no longer exists on disk (a dangling pin). A bare command is resolved
 // through PATH at hook time and is never reported missing here.
 func hookCommandProgramMissing(command string) bool {
-	words, ok := shellwords.Split(command)
-	if !ok {
+	program := hookCommandProgram(command)
+	if !filepath.IsAbs(program) {
 		return false
 	}
-	words = stripLeadingEnvAssignments(words)
-	if len(words) == 0 || !filepath.IsAbs(words[0]) {
-		return false
-	}
-	_, err := os.Stat(words[0])
+	_, err := os.Stat(program)
 	return err != nil
 }
 
-// mergeHookEvent adds agent-deck's hook to an existing event's matcher array.
-// Preserves all existing matchers and hooks.
-func mergeHookEvent(existing json.RawMessage, cfg claudeHookEventConfig) json.RawMessage {
-	var matchers []claudeHookMatcher
-
+// mergeHookEvent adds agent-deck's hook to an existing event's matcher array,
+// or updates the one already there in place. Every other matcher and hook
+// object passes through verbatim (review round 3, finding 1); an event value
+// that is not an array of matcher objects is an error.
+func mergeHookEvent(existing json.RawMessage, cfg claudeHookEventConfig) (json.RawMessage, error) {
+	var matchers []jsonObject
 	if existing != nil {
 		if err := json.Unmarshal(existing, &matchers); err != nil {
-			matchers = nil
+			return nil, err
 		}
 	}
 
-	// Check if we already have a matcher entry with our hook
 	for i, m := range matchers {
-		if m.Matcher == cfg.Matcher {
-			// Update our existing entry to the current config (Async/Type),
-			// or append if it is missing. In-place update covers the
-			// binary-upgrade case where the hookEventConfigs table changes
-			// (e.g., flipping Async from true to false) and the persisted
-			// settings.json must drift to follow.
-			for j, h := range m.Hooks {
-				if isAgentDeckHookCommand(h.Command) {
-					matchers[i].Hooks[j] = agentDeckHook(cfg)
-					result, _ := json.Marshal(matchers)
-					return result
-				}
-			}
-			// Append our hook to existing matcher
-			matchers[i].Hooks = append(matchers[i].Hooks, agentDeckHook(cfg))
-			result, _ := json.Marshal(matchers)
-			return result
+		if m.getString("matcher") != cfg.Matcher {
+			continue
 		}
+		var hooks []jsonObject
+		if raw, ok := m.get("hooks"); ok {
+			if err := json.Unmarshal(raw, &hooks); err != nil {
+				return nil, err
+			}
+		}
+		// Update our existing entry to the current config (command/async),
+		// or append if it is missing. In-place update covers the
+		// binary-upgrade case where the hookEventConfigs table changes
+		// (e.g., flipping Async from true to false) and the persisted
+		// settings.json must drift to follow.
+		replaced := false
+		for j, h := range hooks {
+			if command := h.getString("command"); isAgentDeckHookCommand(command) {
+				hooks[j] = agentDeckHookObject(cfg, command)
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			hooks = append(hooks, agentDeckHookObject(cfg, ""))
+		}
+		m.set("hooks", mustMarshal(hooks))
+		matchers[i] = m
+		return mustMarshal(matchers), nil
 	}
 
 	// No matching matcher found; add a new one
-	newMatcher := claudeHookMatcher{
-		Matcher: cfg.Matcher,
-		Hooks:   []claudeHookEntry{agentDeckHook(cfg)},
+	newMatcher := jsonObject{}
+	if cfg.Matcher != "" {
+		newMatcher.set("matcher", mustMarshal(cfg.Matcher))
 	}
+	newMatcher.set("hooks", mustMarshal([]jsonObject{agentDeckHookObject(cfg, "")}))
 	matchers = append(matchers, newMatcher)
-	result, _ := json.Marshal(matchers)
-	return result
+	return mustMarshal(matchers), nil
 }
 
-// removeAgentDeckFromEvent removes agent-deck hook entries from an event's matcher array.
-// Returns cleaned JSON and whether any removal happened. Returns nil JSON if the array is empty.
+// removeAgentDeckFromEvent removes agent-deck hook entries from an event's
+// matcher array. Returns cleaned JSON and whether any removal happened; a
+// matcher left with no hooks by the removal is dropped, every other matcher
+// and hook passes through verbatim. Returns nil JSON if the array is empty.
 func removeAgentDeckFromEvent(raw json.RawMessage) (json.RawMessage, bool) {
-	var matchers []claudeHookMatcher
+	var matchers []jsonObject
 	if err := json.Unmarshal(raw, &matchers); err != nil {
 		return raw, false
 	}
 
 	removed := false
-	var cleaned []claudeHookMatcher
-
+	var cleaned []jsonObject
 	for _, m := range matchers {
-		var hooks []claudeHookEntry
-		for _, h := range m.Hooks {
-			if isAgentDeckHookCommand(h.Command) {
+		var hooks []jsonObject
+		if hooksRaw, ok := m.get("hooks"); ok {
+			if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
+				cleaned = append(cleaned, m)
+				continue
+			}
+		}
+		var kept []jsonObject
+		for _, h := range hooks {
+			if isAgentDeckHookCommand(h.getString("command")) {
 				removed = true
 				continue
 			}
-			hooks = append(hooks, h)
+			kept = append(kept, h)
 		}
-		if len(hooks) > 0 {
-			m.Hooks = hooks
-			cleaned = append(cleaned, m)
-		} else if m.Matcher != "" && len(m.Hooks) == 0 {
-			// Matcher had only our hooks; drop it entirely
-			removed = true
+		if len(kept) == len(hooks) {
+			cleaned = append(cleaned, m) // untouched
+			continue
 		}
+		if len(kept) == 0 {
+			continue // matcher had only our hooks; drop it entirely
+		}
+		m.set("hooks", mustMarshal(kept))
+		cleaned = append(cleaned, m)
 	}
 
 	if !removed {
 		return raw, false
 	}
-
 	if len(cleaned) == 0 {
 		return nil, true
 	}
-
-	result, _ := json.Marshal(cleaned)
-	return result, true
+	return mustMarshal(cleaned), true
 }

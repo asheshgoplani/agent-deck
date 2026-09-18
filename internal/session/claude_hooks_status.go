@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,12 +48,16 @@ type ClaudeHooksStatusReport struct {
 	// Installed is true only when every event carries our hook with the
 	// current config AND the command is this binary's absolute path.
 	Installed bool `json:"installed"`
-	// Present is the weaker check: our hook is installed in some recognised
-	// form (possibly bare or for another binary).
+	// Present is the weaker check: every event carries our hook in some
+	// recognised form (bare, for another binary, marker-less, dangling).
 	Present bool `json:"present"`
 	// Executable is the stable path the install pins for this process ("" if
-	// unknown); see hookExecutablePath.
+	// unknown or unpinnable); see hookExecutablePath.
 	Executable string `json:"executable,omitempty"`
+	// Unpinnable is set when this binary is not in a known install directory
+	// (a dev build): the install keeps the entries' program and the heal
+	// never writes from it.
+	Unpinnable string `json:"unpinnable,omitempty"`
 	// Version is this process's version, as passed by the caller.
 	Version string `json:"version"`
 	// Binaries lists each distinct hook command found, in first-seen order.
@@ -104,9 +109,15 @@ func ClaudeHooksStatus(configDir, currentVersion string) ClaudeHooksStatusReport
 	if exe, err := hookExecutablePath(); err == nil {
 		report.Executable = exe
 	}
+	if report.Executable == "" {
+		report.Unpinnable = unpinnableHookExecutableReason
+		if exe, err := os.Executable(); err == nil {
+			report.Unpinnable += " (" + exe + ")"
+		}
+	}
 
-	hooks := readClaudeHooksSection(configDir)
-	report.Present = hooksAlreadyInstalled(hooks)
+	hooks, _ := readClaudeHooksSection(configDir)
+	report.Present = hooksPresent(hooks)
 	report.Installed = hooksInstalledWithCommand(hooks, true)
 
 	for _, command := range distinctAgentDeckHookCommands(hooks) {
@@ -115,18 +126,24 @@ func ClaudeHooksStatus(configDir, currentVersion string) ClaudeHooksStatusReport
 	return report
 }
 
-func readClaudeHooksSection(configDir string) map[string]json.RawMessage {
+// readClaudeHooksSection returns the hooks section of configDir's
+// settings.json (nil when the file is absent) or the parse error of a
+// malformed file, which callers must not write over.
+func readClaudeHooksSection(configDir string) (map[string]json.RawMessage, error) {
 	data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read settings.json: %w", err)
 	}
 	var raw struct {
 		Hooks map[string]json.RawMessage `json:"hooks"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil
+		return nil, fmt.Errorf("parse settings.json: %w", err)
 	}
-	return raw.Hooks
+	return raw.Hooks, nil
 }
 
 func resolveHookBinary(command, executable, currentVersion string) ClaudeHookBinaryStatus {
@@ -169,4 +186,51 @@ func resolveHookBinary(command, executable, currentVersion string) ClaudeHookBin
 	}
 	st.VersionMismatch = st.Version != "" && currentVersion != "" && st.Version != currentVersion
 	return st
+}
+
+// StopHookForm is how the agent-deck Stop entry under a config dir is
+// installed, as read at hook time.
+type StopHookForm int
+
+const (
+	// StopHookFormUnknown: no settings.json, no agent-deck Stop entry, or an
+	// unreadable file. The handler falls back to the command-line marker.
+	StopHookFormUnknown StopHookForm = iota
+	// StopHookFormSync: the entry runs synchronously, so Claude Code reads
+	// the {decision:"block"} the drain answers with.
+	StopHookFormSync
+	// StopHookFormAsync: the entry is async; Claude ignores its stdout, so a
+	// drain would consume the inbox for nothing (messaging audit P2-1).
+	StopHookFormAsync
+)
+
+// StopHookInstallForm reports the form of the agent-deck Stop entry in
+// configDir's settings.json (review round 3, finding 3: the handler checks
+// the installed form at drain time instead of trusting the heal to have
+// flipped it).
+func StopHookInstallForm(configDir string) StopHookForm {
+	hooks, err := readClaudeHooksSection(configDir)
+	if err != nil {
+		return StopHookFormUnknown
+	}
+	raw, ok := hooks["Stop"]
+	if !ok {
+		return StopHookFormUnknown
+	}
+	var matchers []claudeHookMatcher
+	if json.Unmarshal(raw, &matchers) != nil {
+		return StopHookFormUnknown
+	}
+	for _, m := range matchers {
+		for _, h := range m.Hooks {
+			if !isAgentDeckHookCommand(h.Command) {
+				continue
+			}
+			if h.Async {
+				return StopHookFormAsync
+			}
+			return StopHookFormSync
+		}
+	}
+	return StopHookFormUnknown
 }
