@@ -1,0 +1,84 @@
+// RED-SIDE OVERLAY for scripts/runtime-health/performance.sh. Not compiled
+// in the real build (the .txt suffix keeps it out of `go build ./...`).
+//
+// This is the original-main Codex ownership algorithm behind the current
+// API: every exclusion lookup enumerates all peer tmux sessions and reads
+// each one's CODEX_SESSION_ID, and nothing is cached or shared across a
+// status pass. With N active Codex sessions a sweep costs O(N^2) tmux
+// subprocesses, which is what TestPerf_RuntimeHealthCodex must reject.
+//
+// Keep the exported surface identical to codex_exclusion_cache.go:
+// StatusUpdatePass (UpdateStatus, UpdateStatusOnly, codexOwnership),
+// codexBootstrapMu, Instance.codexExclusions, Instance.recordCodexOwnership.
+package session
+
+import (
+	"sync"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
+)
+
+// Serialize fallback selection and claim publication, not authoritative probes.
+var codexBootstrapMu sync.Mutex
+
+// StatusUpdatePass carries no shared evidence on the red side.
+type StatusUpdatePass struct{}
+
+// UpdateStatus refreshes one instance.
+func (p *StatusUpdatePass) UpdateStatus(i *Instance) error {
+	return i.updateStatus(p, true)
+}
+
+// UpdateStatusOnly refreshes status without discovering native tool session IDs.
+func (p *StatusUpdatePass) UpdateStatusOnly(i *Instance) error {
+	return i.updateStatus(p, false)
+}
+
+// codexOwnership enumerates the socket's sessions on every call.
+func (p *StatusUpdatePass) codexOwnership(socket string) map[string]string {
+	return enumerateCodexOwnership(socket)
+}
+
+func enumerateCodexOwnership(socket string) map[string]string {
+	names, err := tmux.ListAgentDeckSessionsOnSocket(socket)
+	if err != nil {
+		return nil
+	}
+	bySession := make(map[string]string, len(names))
+	for _, name := range names {
+		peer := &tmux.Session{Name: name, SocketName: socket}
+		id, err := peer.ReadEnvironment("CODEX_SESSION_ID")
+		if err != nil {
+			return nil
+		}
+		if id != "" {
+			bySession[name] = id
+		}
+	}
+	return bySession
+}
+
+// codexExclusions is the original per-instance enumeration: one
+// list-sessions plus one show-environment per peer, every time it is asked.
+func (i *Instance) codexExclusions(p *StatusUpdatePass) map[string]bool {
+	socket := tmux.DefaultSocketName()
+	ownName := ""
+	if i.tmuxSession != nil {
+		socket = i.tmuxSession.SocketName
+		ownName = i.tmuxSession.Name
+	}
+	bySession := enumerateCodexOwnership(socket)
+	if bySession == nil {
+		return nil
+	}
+	exclude := make(map[string]bool, len(bySession))
+	for name, id := range bySession {
+		if name != ownName {
+			exclude[id] = true
+		}
+	}
+	return exclude
+}
+
+// recordCodexOwnership publishes nothing: there is no cache to update.
+func (i *Instance) recordCodexOwnership(id string) {}
