@@ -23,6 +23,10 @@ on:
       - 'internal/session/userconfig.go'
       - 'scripts/reap-stale-tmux.sh'
       - 'tests/ci/reap-stale-tmux.test.sh'
+      - '.github/workflows/structure-advisory.yml'
+      - 'tests/ci/structure-advisory-workflow.test.sh'
+      - '.github/workflows/dependabot-automerge.yml'
+      - 'tests/ci/dependabot-automerge-workflow.test.sh'
       - '.github/workflows/eval-smoke.yml'
       - 'go.mod'
       - 'go.sum'
@@ -102,3 +106,29 @@ jobs:
 
       - name: Run reaper DRY_RUN smoke test
         run: bash tests/ci/reap-stale-tmux.test.sh
+
+  # Static lint over the structure-advisory workflow's review-hold fixes
+  # (#2148): plain bash, no Go, no live GitHub calls.
+  structure-advisory-workflow-lint:
+    name: structure-advisory.yml static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run structure-advisory workflow static checks
+        run: bash tests/ci/structure-advisory-workflow.test.sh
+
+  # Static lint over the Dependabot auto-merge workflow (#2131): plain bash,
+  # no Go, no live GitHub calls.
+  dependabot-automerge-workflow-lint:
+    name: dependabot-automerge.yml static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run dependabot-automerge workflow static checks
+        run: bash tests/ci/dependabot-automerge-workflow.test.sh
