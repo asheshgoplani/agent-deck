@@ -126,7 +126,7 @@ var whoCommand = func(ctx context.Context) ([]byte, error) {
 // speaks. GNU `who` prints ISO dates whatever the locale; C costs it nothing.
 func newWhoCommand(ctx context.Context) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "who")
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = append(os.Environ(), "LC_ALL=C") //nolint:forbidigo // `who` is a read-only probe, not an agent child
 	return cmd
 }
 

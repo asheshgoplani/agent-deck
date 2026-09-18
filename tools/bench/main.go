@@ -428,6 +428,7 @@ host = "bench-auth"
 		uiout := filepath.Join(root, fmt.Sprintf("ui-%d.json", sample))
 		c := exec.Command(harness, "-test.run", "^TestPerfFleetUIHarness$", "-test.timeout", "10m")
 		bindChildLifetime(c)
+		//nolint:forbidigo // bench harness child, not an agent
 		c.Env = append(os.Environ(), "AGENTDECK_BENCH_UI=1", "AGENTDECK_BENCH_UI_OUTPUT="+uiout, "AGENTDECK_BENCH_RUNS=1", "AGENTDECK_BENCH_SIZE="+strconv.Itoa(size))
 		c.Stdout = os.Stderr
 		c.Stderr = os.Stderr
