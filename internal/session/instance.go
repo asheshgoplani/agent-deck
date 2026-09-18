@@ -7493,10 +7493,12 @@ func (i *Instance) GetLastResponseBestEffortChecked(peers []*Instance) (*Respons
 // over hard errors.
 //
 // Behavior for Claude:
-// 1. Try structured JSONL read via stored ClaudeSessionID.
-// 2. Refresh ID from tmux env and retry.
-// 3. Fallback to terminal parsing.
-// 4. If still unavailable, return an empty response (no error).
+//  1. Try structured JSONL read via stored ClaudeSessionID.
+//  2. Refresh ID from tmux env and retry.
+//  3. If the currently bound ID already has a local transcript file, scan for a
+//     /clear rollover. A missing file is not ownership of a neighboring JSONL.
+//  4. Fallback to terminal parsing.
+//  5. If still unavailable, return an empty response (no error).
 //
 // Behavior for Gemini (mirrors Claude):
 // 1. Try structured JSON read via stored GeminiSessionID.
@@ -7527,19 +7529,26 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		// compaction it points at a stale, empty transcript. Find the newest
 		// transcript on disk that carries a real assistant reply. Mirrors the
 		// Gemini syncGeminiSessionFromDisk fallback below.
-		if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
-			// #1815: this is an mtime-based disk scan — the same evidence
-			// class as the restart discovery prelude, and in a shared working
-			// directory the newest transcript can belong to another session.
-			// Good enough to READ a last response from; never ownership. Mark
-			// it unverified so it cannot authorize a later `--resume`, and do
-			// NOT write it into this pane's CLAUDE_SESSION_ID: that would
-			// launder a scanned id into a "bound from my own tmux env" one on
-			// the next status poll, which is exactly the resume this guard
-			// exists to prevent.
-			i.adoptDiscoveredClaudeSessionID(id)
-			i.ClaudeDetectedAt = time.Now()
-			return recovered, nil
+		//
+		// Issue #2299: only do that when this instance already owns a local
+		// transcript at the currently bound ClaudeSessionID. An empty ID or a
+		// missing <id>.jsonl is not evidence that the newest file in the
+		// shared project directory belongs here.
+		if i.GetJSONLPath() != "" {
+			if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
+				// #1815: this is an mtime-based disk scan — the same evidence
+				// class as the restart discovery prelude, and in a shared working
+				// directory the newest transcript can belong to another session.
+				// Good enough to READ a last response from; never ownership. Mark
+				// it unverified so it cannot authorize a later `--resume`, and do
+				// NOT write it into this pane's CLAUDE_SESSION_ID: that would
+				// launder a scanned id into a "bound from my own tmux env" one on
+				// the next status poll, which is exactly the resume this guard
+				// exists to prevent.
+				i.adoptDiscoveredClaudeSessionID(id)
+				i.ClaudeDetectedAt = time.Now()
+				return recovered, nil
+			}
 		}
 	}
 
