@@ -868,8 +868,11 @@ Claude  updated 2m ago
 `agent-deck usage --json` prints the same report for scripting.
 
 **Claude** is read from the documented `rate_limits` block in the JSON Claude
-Code pipes to a `statusLine` command. Wire the ingester into
-`~/.claude/settings.json`:
+Code pipes to a `statusLine` command. `agent-deck hooks install` wires the
+ingester into every configured account slot's `settings.json` for you
+(wrapping an existing `statusLine` command, byte-for-byte, or installing the
+plain ingester when there is none); `agent-deck hooks status` reports the feed
+per slot. To wire it by hand in `~/.claude/settings.json`:
 
 ```json
 {"statusLine": {"type": "command", "command": "agent-deck usage ingest claude"}}
@@ -885,6 +888,20 @@ passed through and your command's output and exit status are forwarded verbatim:
 
 Only `rate_limits` is kept. The transcript path, cwd, prompt and model in that
 payload are never stored or printed.
+
+The wrapper never fails closed: whatever goes wrong on agent-deck's side
+(reading or parsing the payload, opening or writing the cache) is a warning on
+stderr, and your command still runs with the same bytes on stdin, its output
+and exit status forwarded. Your command does not see the `-p <slot>` the
+wrapper was given: `AGENTDECK_PROFILE` reaches it exactly as your shell set it.
+`hooks install` wires the ingester through the same absolute binary path the
+hooks pin, so a status line keeps working across `PATH` changes; if that binary
+is moved or removed, Claude Code shows a blank status line until
+`agent-deck hooks install` re-pins it (the notify daemon does so on start) or
+`agent-deck hooks uninstall` restores your original `statusLine`. A slot whose
+config dir does not exist, or whose profile name the cache cannot use as a
+directory (`[A-Za-z0-9_-]`, so `team.a` is refused), is skipped and reported
+by `hooks status` as `cannot wire (...)`; nothing is created for it.
 
 `agent-deck usage` itself makes no network request: it reads the cache the
 ingester wrote.

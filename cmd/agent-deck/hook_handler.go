@@ -15,6 +15,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/quota"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -642,6 +643,108 @@ func handleHooksInstall() {
 	for _, b := range report.Binaries {
 		fmt.Printf("Hook command: %s\n", b.Command)
 	}
+	installUsageFeeds(os.Stdout)
+}
+
+// installUsageFeeds wires the "accounts" usage feed for every configured
+// Claude account slot (session.InstallUsageFeeds) and prints the resulting
+// statusLine command per slot, so the operator sees exactly what now runs.
+func installUsageFeeds(w io.Writer) {
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil {
+		fmt.Fprintf(w, "Usage feed: skipped (config: %v)\n", err)
+		return
+	}
+	results := session.InstallUsageFeeds(config)
+	if len(results) == 0 {
+		fmt.Fprintln(w, "Usage feed: no Claude account slots configured ([profiles.<name>.claude] config_dir)")
+		return
+	}
+	fmt.Fprintln(w, "Usage feed:")
+	width := usageFeedSlotWidth(results)
+	for _, r := range results {
+		switch {
+		case r.Err != nil:
+			fmt.Fprintf(w, "  %-*s  error: %v\n", width, r.Slot, r.Err)
+		case r.Feed.Blocked != "":
+			fmt.Fprintf(w, "  %-*s  skipped: %s\n", width, r.Slot, r.Feed.Blocked)
+		case r.Changed:
+			fmt.Fprintf(w, "  %-*s  wired: %s\n", width, r.Slot, r.Feed.Command)
+		default:
+			fmt.Fprintf(w, "  %-*s  already wired: %s\n", width, r.Slot, r.Feed.Command)
+		}
+	}
+}
+
+func usageFeedSlotWidth(results []session.UsageFeedResult) int {
+	width := 0
+	for _, r := range results {
+		width = max(width, len(r.Slot))
+	}
+	return width
+}
+
+// usageCacheAge is what hooks status knows about a slot's quota file.
+type usageCacheAge struct {
+	Exists bool
+	Age    time.Duration
+}
+
+// usageCacheAges stats every slot's claude quota file.
+func usageCacheAges(feeds []session.UsageFeed, now time.Time) map[string]usageCacheAge {
+	ages := make(map[string]usageCacheAge, len(feeds))
+	for _, f := range feeds {
+		store, err := quota.NewStore(f.Slot)
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(store.Dir(), quota.ProviderClaude+".json")); err == nil {
+			ages[f.Slot] = usageCacheAge{Exists: true, Age: now.Sub(fi.ModTime())}
+		}
+	}
+	return ages
+}
+
+// printUsageFeedStatus renders the per-slot usage feed section of `hooks
+// status`: whether the slot's statusLine runs the ingester (and what it
+// wraps), and how old the slot's cached quota file is.
+func printUsageFeedStatus(w io.Writer, feeds []session.UsageFeed, ages map[string]usageCacheAge, now time.Time) {
+	if len(feeds) == 0 {
+		fmt.Fprintln(w, "Usage feed: no Claude account slots configured ([profiles.<name>.claude] config_dir)")
+		return
+	}
+	fmt.Fprintln(w, "Usage feed:")
+	width := 0
+	for _, f := range feeds {
+		width = max(width, len(f.Slot))
+	}
+	unwired := 0
+	for _, f := range feeds {
+		var wiring string
+		switch {
+		case f.Blocked != "":
+			// Not wired and hooks install would not change that.
+			wiring = "cannot wire (" + f.Blocked + ")"
+		case f.Wired && f.Inner != "":
+			wiring = "wired (wraps " + f.Inner + ")"
+		case f.Wired:
+			wiring = "wired"
+		case f.Command != "":
+			wiring = "not wired (statusLine: " + f.Command + ")"
+			unwired++
+		default:
+			wiring = "not wired (no statusLine)"
+			unwired++
+		}
+		cache := "no cache"
+		if age, ok := ages[f.Slot]; ok && age.Exists {
+			cache = "cache " + shortDuration(age.Age) + " old"
+		}
+		fmt.Fprintf(w, "  %-*s  %s · %s\n", width, f.Slot, wiring, cache)
+	}
+	if unwired > 0 {
+		fmt.Fprintln(w, "Run 'agent-deck hooks install' to wire the usage feed (the accounts field reads it).")
+	}
 }
 
 func handleHooksUninstall() {
@@ -656,6 +759,16 @@ func handleHooksUninstall() {
 	} else {
 		fmt.Println("No agent-deck hooks found to remove.")
 	}
+	if config, err := session.LoadUserConfig(); err == nil && config != nil {
+		for _, r := range session.RemoveUsageFeeds(config) {
+			switch {
+			case r.Err != nil:
+				fmt.Printf("Usage feed %s: error: %v\n", r.Slot, r.Err)
+			case r.Changed:
+				fmt.Printf("Usage feed %s: statusLine restored.\n", r.Slot)
+			}
+		}
+	}
 }
 
 func handleHooksStatus() {
@@ -667,6 +780,11 @@ func handleHooksStatus() {
 	// settings.json; the self-heal runs at daemon start and on an explicit
 	// `hooks install`, and only from a binary in a known install directory.
 	printClaudeHooksStatus(os.Stdout, session.ClaudeHooksStatus(configDir, Version))
+	if config, err := session.LoadUserConfig(); err == nil && config != nil {
+		feeds := session.UsageFeedStatuses(config)
+		now := time.Now()
+		printUsageFeedStatus(os.Stdout, feeds, usageCacheAges(feeds, now), now)
+	}
 
 	// Show hook status files
 	hooksDir := getHooksDir()

@@ -210,12 +210,24 @@ func parseAgentDeckVersion(s string) string {
 // Claude config dir when hooks are enabled. Best-effort: a failure is logged
 // and the daemon still runs.
 func healClaudeHooksAtDaemonStart() {
-	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.Claude.GetHooksEnabled() {
+	cfg, _ := session.LoadUserConfig()
+	if cfg != nil && !cfg.Claude.GetHooksEnabled() {
 		return
 	}
 	configDir := getClaudeConfigDirForHooks()
 	res, err := session.HealClaudeHooks(configDir, Version)
 	log := logging.ForComponent(logging.CompNotif)
+	// The accounts usage feed exists by construction: every configured slot's
+	// statusLine is wrapped with the ingester here too, so a remote whose
+	// binary was just updated starts feeding without an operator visit.
+	for _, r := range session.HealUsageFeeds(cfg) {
+		switch {
+		case r.Err != nil:
+			log.Warn("claude_usage_feed_heal_failed", "slot", r.Slot, "error", r.Err.Error())
+		case r.Changed:
+			log.Info("claude_usage_feed_wired", "slot", r.Slot, "command", r.Feed.Command)
+		}
+	}
 	switch {
 	case err != nil:
 		log.Warn("claude_hooks_heal_failed", "config_dir", configDir, "error", err.Error())

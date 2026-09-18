@@ -62,11 +62,24 @@ func NewStore(profile string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving cache dir: %w", err)
 	}
-	cleanProfile := strings.TrimSpace(profile)
-	if cleanProfile == "" || !validProviderID(cleanProfile) {
-		return nil, fmt.Errorf("unusable profile name %q for quota cache", profile)
+	if err := CheckProfileName(profile); err != nil {
+		return nil, err
 	}
-	return &Store{dir: filepath.Join(cacheDir, "quota", cleanProfile), StaleAfter: DefaultStaleAfter}, nil
+	return &Store{dir: filepath.Join(cacheDir, "quota", strings.TrimSpace(profile)), StaleAfter: DefaultStaleAfter}, nil
+}
+
+// CheckProfileName reports why profile cannot name a quota cache directory
+// (nil when it can). The name becomes one path component under the cache
+// dir, so it is held to the same rule as a provider id: 1 to 64 characters
+// of [A-Za-z0-9_-]. agent-deck profile names allow more (a dot, say), so a
+// caller wiring the feed for a slot checks here first rather than wiring a
+// slot the ingester could never store.
+func CheckProfileName(profile string) error {
+	clean := strings.TrimSpace(profile)
+	if clean == "" || !validProviderID(clean) {
+		return fmt.Errorf("unusable profile name %q for quota cache: use A-Z a-z 0-9 _ - only", profile)
+	}
+	return nil
 }
 
 // Dir is the directory holding this profile's provider files.

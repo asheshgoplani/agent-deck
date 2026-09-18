@@ -8,7 +8,19 @@
     agent-deck v1.16.10 · same as here                                
     Sessions  1 running · 1 waiting · 1 idle · 1 stopped · 1 error    
     Harnesses  claude:2 · codex:2 · pi:1                              
-    stats unknown (remote does not report stats)                      
+    accounts  12 slots · 5h lowest 11% · 3 stale · 3 unknown          
+      alice-team-a    5h 90%  7d 40%  6 min ago                       
+      bob-team-b      5h 62%  7d 44%  10 min ago                      
+      erin-team-a     5h 39%  7d 21%  stale, 2 h ago                  
+      carol-team-a    5h 35%  7d 17%  stale, 2 h ago                  
+      dave-team-b     5h 34%  7d 48%  14 min ago                      
+      alice-personal  5h 31%  7d 13%  stale, 2 h ago                  
+      frank-personal  5h 19%  7d 49%  17 min ago                      
+      dave-team-a     5h 15%  7d 53%  13 min ago                      
+      bob-team-a      5h 11%  7d 57%  9 min ago                       
+      alice-team-b    —       —       no feed                         
+      carol-team-b    —       —       no feed                         
+      erin-team-b     —       —       no feed                         
                                                                       
              • Press Enter on a session to attach via SSH             
                                                                       

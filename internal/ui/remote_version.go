@@ -343,8 +343,9 @@ func accountUsageAgeLabel(d time.Duration) string {
 // renderAccountUsageEntry renders one account slot's clause for the
 // "accounts" field: "personal 5h 8% · 7d 24% (3 min ago)" when usage is
 // known and fresh, "personal 5h 8% (stale, 2 h ago)" when older than
-// session.AccountUsageStaleAfter, or "<name> usage unknown" when the slot has
-// no usage file at all (never a guessed percentage).
+// session.AccountUsageStaleAfter, or "<name> no feed" / "no data yet" /
+// "unreadable" (accountUsageUnknownLabel) when the slot has no usable
+// reading (never a guessed percentage).
 func renderAccountUsageEntry(u session.AccountUsage, now time.Time) string {
 	var windows []string
 	if u.FiveHour.Known {
@@ -354,16 +355,9 @@ func renderAccountUsageEntry(u session.AccountUsage, now time.Time) string {
 		windows = append(windows, fmt.Sprintf("7d %.0f%%", u.SevenDay.Percent))
 	}
 	if !u.Known || len(windows) == 0 {
-		return u.Name + " usage unknown"
+		return u.Name + " " + accountUsageUnknownLabel(u)
 	}
-	age := "unknown"
-	if u.HasUpdatedAt {
-		age = accountUsageAgeLabel(now.Sub(u.UpdatedAt))
-	}
-	if session.AccountUsageStale(u.HasUpdatedAt, u.UpdatedAt, now) {
-		return fmt.Sprintf("%s %s (stale, %s)", u.Name, strings.Join(windows, " · "), age)
-	}
-	return fmt.Sprintf("%s %s (%s)", u.Name, strings.Join(windows, " · "), age)
+	return fmt.Sprintf("%s %s (%s)", u.Name, strings.Join(windows, " · "), accountUsageAgeClause(u, now))
 }
 
 // renderAccountsPreviewLine renders the full "accounts" field line: "accounts
@@ -509,21 +503,45 @@ var hostStatsFieldSet = map[string]bool{
 // load/memory/disk entries collapse into one combined line — the historical
 // shape — so the default field order renders byte-identical to before this
 // config block existed.
-func remotePreviewFieldLines(versionState session.RemoteVersionState, controller string, sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool, fields []string, now time.Time) []string {
+//
+// Every line is fitted to layout: a single-line field wraps at layout.width
+// and every field, wrapped line or list (accounts, ssh), caps itself to
+// the rows left so the body never exceeds layout.rows, each remaining field
+// keeping at least its one line. A zero layout applies no limit (tests of
+// the raw text).
+func remotePreviewFieldLines(versionState session.RemoteVersionState, controller string, sessions []session.RemoteSessionInfo, result remoteHostStatsResult, hasResult bool, fields []string, now time.Time, layout previewLayout) []string {
 	statsKnown := hasResult && result.Stats.Ok
 	consumed := make(map[int]bool, len(fields))
 	var lines []string
+	// fieldLayout is the room field i may take: the rows left after what is
+	// already rendered, minus one line for every field still to come, so a
+	// long list or a wrapped line never starves the fields below it.
+	fieldLayout := func(i int) previewLayout {
+		if layout.rows <= 0 {
+			return layout
+		}
+		pending := 0
+		for j := i + 1; j < len(fields); j++ {
+			if !consumed[j] {
+				pending++
+			}
+		}
+		return previewLayout{width: layout.width, rows: max(1, layout.rows-len(lines)-pending)}
+	}
 	for i, f := range fields {
 		if consumed[i] {
 			continue
 		}
+		single := func(line string) {
+			lines = append(lines, fitPreviewLine(line, fieldLayout(i))...)
+		}
 		switch f {
 		case session.PreviewFieldVersion:
-			lines = append(lines, remoteVersionPreviewLine(versionState, controller))
+			single(remoteVersionPreviewLine(versionState, controller))
 		case session.PreviewFieldSessionsByStatus:
-			lines = append(lines, remoteSessionStatusLine(sessions))
+			single(remoteSessionStatusLine(sessions))
 		case session.PreviewFieldHarnesses:
-			lines = append(lines, remoteHarnessLine(sessions))
+			single(remoteHarnessLine(sessions))
 		case session.PreviewFieldLoad, session.PreviewFieldMemory, session.PreviewFieldDisk:
 			group := []string{f}
 			consumed[i] = true
@@ -532,22 +550,28 @@ func remotePreviewFieldLines(versionState session.RemoteVersionState, controller
 				consumed[j] = true
 			}
 			if !statsKnown {
-				lines = append(lines, remoteStatsUnknownLine(versionState, controller))
+				single(remoteStatsUnknownLine(versionState, controller))
 			} else {
-				lines = append(lines, remoteHostLoadLineFiltered(result.Stats, group, versionState, controller))
+				single(remoteHostLoadLineFiltered(result.Stats, group, versionState, controller))
 			}
 		case session.PreviewFieldLastPoll:
 			if statsKnown {
-				lines = append(lines, fmt.Sprintf("Last poll %s · %s", formatPollLatency(result.Latency), remoteStatsPolledLabel(result.FetchedAt)))
+				single(fmt.Sprintf("Last poll %s · %s", formatPollLatency(result.Latency), remoteStatsPolledLabel(result.FetchedAt)))
 			}
 		case session.PreviewFieldAccounts:
 			switch {
 			case !statsKnown:
-				lines = append(lines, "stats unknown (remote runs an older agent-deck)")
+				single(remoteStatsUnknownLine(versionState, controller))
 			case !result.Stats.AccountsAvailable:
-				lines = append(lines, "accounts unknown (remote does not report accounts)")
+				single("accounts unknown (remote does not report accounts)")
 			default:
-				lines = append(lines, renderAccountsPreviewLine(result.Stats.Accounts, now))
+				lines = append(lines, renderAccountsPreviewBlock(result.Stats.Accounts, now, fieldLayout(i))...)
+			}
+		case session.PreviewFieldSSH:
+			if !statsKnown || !result.Stats.SSHAvailable {
+				single(remoteSSHUnknownLine(result, hasResult, versionState, controller))
+			} else {
+				lines = append(lines, renderSSHPreviewBlock(result.Stats.SSHSessions, now, fieldLayout(i))...)
 			}
 		}
 	}

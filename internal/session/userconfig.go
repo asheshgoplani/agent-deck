@@ -533,6 +533,11 @@ const (
 	// `accounts --json` lists) with their live 5h/7d usage limits, read from
 	// each slot's on-disk quota cache. See AccountUsage/CollectAccountUsage.
 	PreviewFieldAccounts = "accounts"
+	// PreviewFieldSSH is opt-in only: who is connected to the host over SSH
+	// right now (per user: count, since, from), gathered by the host's own
+	// `system stats` via `who`. A remote that does not send it renders
+	// "ssh unknown", never a guess.
+	PreviewFieldSSH = "ssh"
 )
 
 // validPreviewFields is the full set of field names either block accepts.
@@ -547,6 +552,7 @@ var validPreviewFields = map[string]bool{
 	PreviewFieldDisk:             true,
 	PreviewFieldLastPoll:         true,
 	PreviewFieldAccounts:         true,
+	PreviewFieldSSH:              true,
 }
 
 // DefaultRemotePreviewFields is the remote preview panel's field order when
@@ -581,7 +587,7 @@ var DefaultHeaderFields = []string{
 type RemotePreviewSettings struct {
 	// Fields lists which pieces of information the panel shows, in render
 	// order. Valid names: version, sessions_by_status, harnesses, load,
-	// memory, disk, last_poll, accounts. Unset/empty uses
+	// memory, disk, last_poll, accounts, ssh. Unset/empty uses
 	// DefaultRemotePreviewFields. Unknown names are reported once at startup
 	// and dropped.
 	Fields []string `toml:"fields,omitempty"`

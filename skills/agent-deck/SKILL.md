@@ -862,7 +862,7 @@ agent-deck remote update dev --from-build /path/to/local/dist   # push a verifie
 - `health` reports against fixed budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`); use `--since` to widen the history window when a regression is intermittent.
 - `inbox dead-letter list|show` is diagnostic-only in this release — there is no `retry` or `purge` subcommand (both are explicitly rejected). Recovering a dead-lettered record means fixing the underlying routing issue and re-draining, not resubmitting the record itself.
 - `remote update --from-build <dir>` is for shipping a verified local three-platform build (darwin/arm64, linux/amd64, linux/arm64) to a remote before it's published as a release — same checksum/version verification and downgrade guard as a normal `remote update`.
-- `[ui.remote_preview]`/`[ui.header]` share one field vocabulary: `version`, `sessions_by_status`, `harnesses`, `load`, `memory`, `disk`, `last_poll`, and the opt-in `accounts` (named Claude account slots with live 5h/7d usage, read from each slot's local quota cache — see [Configuration](#configuration)/config-reference.md).
+- `[ui.remote_preview]`/`[ui.header]` share one field vocabulary: `version`, `sessions_by_status`, `harnesses`, `load`, `memory`, `disk`, `last_poll`, and the opt-in `accounts` (named Claude account slots with live 5h/7d usage, one aligned row per slot in the preview, read from each slot's local quota cache — `agent-deck hooks install` wires the feed) and `ssh` (who is connected to the host over SSH right now, per user) — see [Configuration](#configuration)/config-reference.md.
 
 ## Configuration
 

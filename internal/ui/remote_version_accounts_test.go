@@ -96,15 +96,16 @@ func TestRemotePreviewFieldLines_AccountsBackwardCompat(t *testing.T) {
 	fields := []string{session.PreviewFieldAccounts}
 
 	t.Run("remote unreachable", func(t *testing.T) {
-		lines := remotePreviewFieldLines(session.RemoteVersionState{}, "1.16.10", nil, remoteHostStatsResult{}, false, fields, now)
-		if len(lines) != 1 || lines[0] != "stats unknown (remote runs an older agent-deck)" {
+		lines := remotePreviewFieldLines(session.RemoteVersionState{}, "1.16.10", nil, remoteHostStatsResult{}, false, fields, now, previewLayout{})
+		// Same-release remote with no stats: never blamed on age (E1).
+		if len(lines) != 1 || lines[0] != "stats unknown (remote does not report stats)" {
 			t.Fatalf("lines = %v", lines)
 		}
 	})
 
 	t.Run("stats ok but no accounts key (older agent-deck)", func(t *testing.T) {
 		result := remoteHostStatsResult{Stats: session.RemoteHostStats{Ok: true}}
-		lines := remotePreviewFieldLines(session.RemoteVersionState{}, "1.16.10", nil, result, true, fields, now)
+		lines := remotePreviewFieldLines(session.RemoteVersionState{}, "1.16.10", nil, result, true, fields, now, previewLayout{})
 		if len(lines) != 1 || lines[0] != "accounts unknown (remote does not report accounts)" {
 			t.Fatalf("lines = %v", lines)
 		}
@@ -115,9 +116,11 @@ func TestRemotePreviewFieldLines_AccountsBackwardCompat(t *testing.T) {
 			Ok: true, AccountsAvailable: true,
 			Accounts: []session.AccountUsage{{Name: "personal", Known: false}},
 		}}
-		lines := remotePreviewFieldLines(session.RemoteVersionState{}, "1.16.10", nil, result, true, fields, now)
-		if len(lines) != 1 || lines[0] != "accounts  personal usage unknown" {
-			t.Fatalf("lines = %v", lines)
+		lines := remotePreviewFieldLines(session.RemoteVersionState{}, "1.16.10", nil, result, true, fields, now, previewLayout{})
+		// A remote that reports the slot but predates UnknownReason still
+		// reads "usage unknown" — never a guessed reason.
+		if len(lines) != 2 || lines[0] != "accounts  1 slot · 1 unknown" || lines[1] != "  personal  —  —  usage unknown" {
+			t.Fatalf("lines = %q", lines)
 		}
 	})
 }

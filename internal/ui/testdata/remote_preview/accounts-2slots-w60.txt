@@ -1,0 +1,18 @@
+                                                            
+                                                            
+                             ⬡                              
+                                                            
+                        Remote: lab                         
+            Host: alice@lab.example — 5 sessions            
+                                                            
+    agent-deck v1.16.10 · same as here                      
+    Sessions  1 running · 1 waiting · 1 idle · 1 stopped    
+      · 1 error                                             
+    Harnesses  claude:2 · codex:2 · pi:1                    
+    accounts  2 slots · 5h lowest 31% · 1 stale             
+      alice-team-a    5h 90%  7d 40%  6 min ago             
+      alice-personal  5h 31%  7d 13%  stale, 2 h ago        
+                                                            
+        • Press Enter on a session to attach via SSH        
+                                                            
+                                                            

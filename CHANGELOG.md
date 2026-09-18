@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The remote preview's stats block no longer shifts and cuts itself when one field is wider than the pane: the block was centred against its own longest line (a 7-slot `accounts` line) and then truncated from the right, pushing Host/Sessions/Harnesses off the edge. Body lines now render as one left-aligned block that fits the pane; a long line wraps at its `·` clauses and a list caps itself with `+N more`, so no field can widen the block or hide another.
+- The `accounts` field's usage was "unknown" on every host because nothing wrote the quota cache: no account slot's Claude `statusLine` ran `agent-deck usage ingest claude`. `agent-deck hooks install` (and the notify daemon's start-up heal) now wraps every configured slot's `statusLine` as `<agent-deck> -p <slot> usage ingest claude -- <existing command>` (verbatim pass-through, never double-wrapped, pinned to the same absolute binary as the hooks) or installs the plain ingester when there is none; `hooks uninstall` restores the original command (and only removes what install wrote: a `statusLine` object install merely added a command to comes back as it was). `hooks status` reports the feed per slot (wired / not wired / cannot wire / cache age). The wrapper never fails closed: a cache it cannot open (an unusable slot name, no `$HOME`) is a stderr warning and the wrapped command still runs with its bytes and exit status forwarded; the wrapped command sees `AGENTDECK_PROFILE` as inherited, not the wrapper's `-p`. A slot whose config dir does not exist, or whose name the quota cache cannot store (`team.a`), is skipped and reported rather than wired or created. An unknown slot now names the reason — `no feed`, `no data yet`, `unreadable` — instead of "usage unknown".
+- The `ssh` field's `who` runs under `LC_ALL=C`: macOS `who` prints the login time in the caller's locale, which an SSH client forwards by default, so a German or French controller polling a Mac read `ssh  unknown` forever.
+
+### Added
+
+- The `accounts` preview field scales: a summary line (`accounts  7 slots · 5h lowest 8% · 1 stale · 2 unknown`) followed by one aligned row per slot (name, 5h, 7d, age or reason), most-loaded first, capped to the pane height.
+- Opt-in `ssh` field for `[ui.remote_preview].fields` and `[ui.header].fields`: who is connected to the host over SSH right now, per user (`ssh  carol ×2 since 09:10 · alice ×3 since 08:54`), gathered by the host's own `system stats --json` (new `ssh_sessions` list from `who`; Linux and macOS, no root) and shown as `ssh  unknown (remote older than 1.16.11)` when the remote does not send it. The default field lists are unchanged.
+
 ## [1.16.11] - 2026-09-25
 
 ### Added
