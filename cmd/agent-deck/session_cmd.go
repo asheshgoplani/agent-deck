@@ -102,6 +102,8 @@ func handleSession(profile string, args []string) {
 		handleSessionChildren(profile, args[1:])
 	case "ownership":
 		handleSessionOwnership(profile, args[1:])
+	case "window":
+		handleSessionWindow(profile, args[1:])
 	case "search":
 		handleSessionSearch(profile, args[1:])
 	case "metrics":
@@ -147,6 +149,7 @@ func printSessionHelp() {
 	fmt.Println("  context [id]            Show what is loaded into the agent's context, ranked by cost")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
 	fmt.Println("  ownership <cmd> <id>    Inspect/reconcile the processes a session owns (#1873)")
+	fmt.Println("  window close <id> <window-index>  Kill one tmux window in a session (CLI parity for the TUI's window-row 'd')")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  metrics <id>|--all      Per-session eval numbers from the local event journal (--json, --since)")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
