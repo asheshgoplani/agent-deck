@@ -89,6 +89,57 @@ func TestConfigShowEffective(t *testing.T) {
 		}
 	})
 
+	t.Run("dir-local path_template escaping the workspace is rejected and shown", func(t *testing.T) {
+		escapeDir := filepath.Join(main, ".agent-deck")
+		if err := os.MkdirAll(escapeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(escapeDir, "config.toml"),
+			[]byte("[worktree]\npath_template = \"~/Library/LaunchAgents/{branch}\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(escapeDir)
+
+		out, err := runHelper(t, "show", "--effective", main)
+		if err != nil {
+			t.Fatalf("config show --effective failed: %v\noutput:\n%s", err, out)
+		}
+		if !strings.Contains(out, "rejected") || !strings.Contains(out, "home-relative") {
+			t.Errorf("text output %q does not show the rejection reason", out)
+		}
+		// The outer workspace-parent file's sibling default_location still
+		// wins the display (path_template falls back to "default" since no
+		// outer file set it).
+		if !strings.Contains(out, "sibling") {
+			t.Errorf("text output %q lost the unaffected default_location value", out)
+		}
+
+		jsonOut, err := runHelper(t, "show", "--effective", "--json", main)
+		if err != nil {
+			t.Fatalf("config show --effective --json failed: %v\noutput:\n%s", err, jsonOut)
+		}
+		var decoded struct {
+			Worktree   map[string]string   `json:"worktree"`
+			Sources    map[string]string   `json:"sources"`
+			Rejections map[string][]string `json:"rejections"`
+		}
+		if err := json.Unmarshal([]byte(jsonOut), &decoded); err != nil {
+			t.Fatalf("json.Unmarshal(%q): %v", jsonOut, err)
+		}
+		if decoded.Worktree["path_template"] != "" {
+			t.Errorf("worktree.path_template = %q, want empty (rejected value must not be assigned)", decoded.Worktree["path_template"])
+		}
+		if decoded.Sources["path_template"] != "default" {
+			t.Errorf("sources.path_template = %q, want fallback to default", decoded.Sources["path_template"])
+		}
+		if len(decoded.Rejections["path_template"]) != 1 {
+			t.Fatalf("rejections.path_template = %v, want exactly one rejection", decoded.Rejections["path_template"])
+		}
+		if !strings.Contains(decoded.Rejections["path_template"][0], "home-relative") {
+			t.Errorf("rejection %q does not mention home-relative", decoded.Rejections["path_template"][0])
+		}
+	})
+
 	t.Run("unknown key in dir-local config is refused", func(t *testing.T) {
 		badDir := filepath.Join(main, ".agent-deck")
 		if err := os.MkdirAll(badDir, 0o755); err != nil {

@@ -163,7 +163,7 @@ func TestResolveWorktreeSettingsForDir_Precedence(t *testing.T) {
 	outerPath := writeDirLocalConfig(t, workspace,
 		"[worktree]\ndefault_location = \"subdirectory\"\npath_template = \"{repo-root}/../wt-{branch}\"\n")
 
-	settings, sources, err := ResolveWorktreeSettingsForDir(target)
+	settings, sources, _, err := ResolveWorktreeSettingsForDir(target)
 	if err != nil {
 		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestResolveWorktreeSettingsForDir_Precedence(t *testing.T) {
 	// still applies (inner does not set path_template).
 	innerPath := writeDirLocalConfig(t, target, "[worktree]\ndefault_location = \"sibling\"\n")
 
-	settings, sources, err = ResolveWorktreeSettingsForDir(target)
+	settings, sources, _, err = ResolveWorktreeSettingsForDir(target)
 	if err != nil {
 		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestResolveWorktreeSettingsForDir_EmptyTemplateClearsInherited(t *testing.T
 	writeDirLocalConfig(t, workspace, "[worktree]\npath_template = \"{repo-root}/../wt-{branch}\"\n")
 	innerPath := writeDirLocalConfig(t, target, "[worktree]\npath_template = \"\"\n")
 
-	settings, sources, err := ResolveWorktreeSettingsForDir(target)
+	settings, sources, _, err := ResolveWorktreeSettingsForDir(target)
 	if err != nil {
 		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestResolveWorktreeSettingsForDir_UnknownTopLevelSection(t *testing.T) {
 	}
 	writeDirLocalConfig(t, target, "[tool]\nfoo = \"bar\"\n")
 
-	_, _, err := ResolveWorktreeSettingsForDir(target)
+	_, _, _, err := ResolveWorktreeSettingsForDir(target)
 	if err == nil {
 		t.Fatal("expected an error for an unknown top-level section, got nil")
 	}
@@ -253,7 +253,7 @@ func TestResolveWorktreeSettingsForDir_UnknownWorktreeKey(t *testing.T) {
 	}
 	path := writeDirLocalConfig(t, target, "[worktree]\nauto_cleanup = false\n")
 
-	_, _, err := ResolveWorktreeSettingsForDir(target)
+	_, _, _, err := ResolveWorktreeSettingsForDir(target)
 	if err == nil {
 		t.Fatal("expected an error for auto_cleanup (excluded key), got nil")
 	}
@@ -278,7 +278,7 @@ func TestResolveWorktreeSettingsForDir_OutsideAnyDirLocalConfig(t *testing.T) {
 	}
 	writeDirLocalConfig(t, workspace, "[worktree]\ndefault_location = \"sibling\"\n")
 
-	settings, sources, err := ResolveWorktreeSettingsForDir(other)
+	settings, sources, _, err := ResolveWorktreeSettingsForDir(other)
 	if err != nil {
 		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
 	}
@@ -300,5 +300,208 @@ func TestGetWorktreeSettingsForDir_PropagatesError(t *testing.T) {
 
 	if _, err := GetWorktreeSettingsForDir(target); err == nil {
 		t.Fatal("expected an error for run_repo_scripts (excluded key), got nil")
+	}
+}
+
+// --- P1 follow-up: dir-local default_location/path_template validation ---
+// (#2093 review; a dir-local .agent-deck/config.toml may come from an
+// untrusted checkout, so these two keys are bound to the workspace directory
+// they were discovered from before being trusted; see
+// validateDirLocalWorktreeValue in dirlocalconfig.go.)
+
+// setupDirLocalWorkspace creates the layout these tests share inside an
+// isolated HOME: a workspace directory with one checkout ("main") in it.
+func setupDirLocalWorkspace(t *testing.T) (home, workspace, target string) {
+	t.Helper()
+	home = setupDirLocalHome(t)
+	workspace = filepath.Join(home, "projects", "example")
+	target = filepath.Join(workspace, "main")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return home, workspace, target
+}
+
+// requireOneRejection asserts that exactly one rejection was recorded for key
+// and that its reason mentions want.
+func requireOneRejection(t *testing.T, rejections map[string][]string, key, want string) {
+	t.Helper()
+	got := rejections[key]
+	if len(got) != 1 {
+		t.Fatalf("rejections[%s] = %v, want exactly one rejection", key, got)
+	}
+	if !strings.Contains(got[0], want) {
+		t.Errorf("rejection reason %q does not mention %q", got[0], want)
+	}
+}
+
+func TestResolveWorktreeSettingsForDir_RejectsHomeRelativeTemplate(t *testing.T) {
+	_, _, target := setupDirLocalWorkspace(t)
+	writeDirLocalConfig(t, target, "[worktree]\npath_template = \"~/Library/LaunchAgents/{branch}\"\n")
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.Template() != "" {
+		t.Errorf("Template() = %q, want empty (rejected value must not be assigned)", settings.Template())
+	}
+	if sources[WorktreeKeyPathTemplate] != sourceDefault {
+		t.Errorf("sources[path_template] = %q, want fallback to %q", sources[WorktreeKeyPathTemplate], sourceDefault)
+	}
+	requireOneRejection(t, rejections, WorktreeKeyPathTemplate, "home-relative")
+}
+
+func TestResolveWorktreeSettingsForDir_RejectsHomeRelativeDefaultLocation(t *testing.T) {
+	_, _, target := setupDirLocalWorkspace(t)
+	writeDirLocalConfig(t, target, "[worktree]\ndefault_location = \"~/.ssh\"\n")
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.DefaultLocation != "subdirectory" {
+		t.Errorf("DefaultLocation = %q, want built-in default (rejected value must not be assigned)", settings.DefaultLocation)
+	}
+	if sources[WorktreeKeyDefaultLocation] != sourceDefault {
+		t.Errorf("sources[default_location] = %q, want fallback to %q", sources[WorktreeKeyDefaultLocation], sourceDefault)
+	}
+	requireOneRejection(t, rejections, WorktreeKeyDefaultLocation, "home-relative")
+}
+
+func TestResolveWorktreeSettingsForDir_RejectsDotDotSegmentInDefaultLocation(t *testing.T) {
+	_, _, target := setupDirLocalWorkspace(t)
+	writeDirLocalConfig(t, target, "[worktree]\ndefault_location = \"../../x\"\n")
+
+	settings, _, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.DefaultLocation != "subdirectory" {
+		t.Errorf("DefaultLocation = %q, want built-in default", settings.DefaultLocation)
+	}
+	requireOneRejection(t, rejections, WorktreeKeyDefaultLocation, "'..' path segment")
+}
+
+func TestResolveWorktreeSettingsForDir_RejectsAbsolutePaths(t *testing.T) {
+	_, _, target := setupDirLocalWorkspace(t)
+	writeDirLocalConfig(t, target, "[worktree]\ndefault_location = \"/tmp/x\"\npath_template = \"/tmp/x\"\n")
+
+	settings, _, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.DefaultLocation != "subdirectory" {
+		t.Errorf("DefaultLocation = %q, want built-in default", settings.DefaultLocation)
+	}
+	if settings.Template() != "" {
+		t.Errorf("Template() = %q, want empty", settings.Template())
+	}
+	for _, key := range []string{WorktreeKeyDefaultLocation, WorktreeKeyPathTemplate} {
+		requireOneRejection(t, rejections, key, "absolute path")
+	}
+}
+
+// TestResolveWorktreeSettingsForDir_TemplateEscapeVsSiblingCase proves the
+// resolved-path bound check does real containment work, not blanket ".."
+// string matching: a *small* relative ".." template that stays within the
+// workspace boundary (the legitimate sibling-worktree case from #2093's own
+// example) must be ACCEPTED, while a template with enough "../.." to escape
+// the boundary must be REJECTED.
+func TestResolveWorktreeSettingsForDir_TemplateEscapeVsSiblingCase(t *testing.T) {
+	_, workspace, target := setupDirLocalWorkspace(t)
+
+	t.Run("accepted sibling case", func(t *testing.T) {
+		writeDirLocalConfig(t, workspace, "[worktree]\npath_template = \"{repo-root}/../wt-{branch}\"\n")
+		settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+		if err != nil {
+			t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+		}
+		if settings.Template() != "{repo-root}/../wt-{branch}" {
+			t.Errorf("Template() = %q, want the sibling template (must stay accepted)", settings.Template())
+		}
+		if len(rejections[WorktreeKeyPathTemplate]) != 0 {
+			t.Errorf("rejections[path_template] = %v, want none for the in-boundary sibling case", rejections[WorktreeKeyPathTemplate])
+		}
+		if sources[WorktreeKeyPathTemplate] == sourceDefault {
+			t.Errorf("sources[path_template] = %q, want the dir-local file", sources[WorktreeKeyPathTemplate])
+		}
+	})
+
+	t.Run("rejected escape case", func(t *testing.T) {
+		// Escapes past the workspace boundary (projects/example's parent and
+		// beyond), unlike the sibling case above which stays within it.
+		writeDirLocalConfig(t, workspace, "[worktree]\npath_template = \"{repo-root}/../../../../../escaped-{branch}\"\n")
+		settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+		if err != nil {
+			t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+		}
+		if settings.Template() != "" {
+			t.Errorf("Template() = %q, want empty (escape must be rejected)", settings.Template())
+		}
+		if sources[WorktreeKeyPathTemplate] != sourceDefault {
+			t.Errorf("sources[path_template] = %q, want fallback to %q", sources[WorktreeKeyPathTemplate], sourceDefault)
+		}
+		requireOneRejection(t, rejections, WorktreeKeyPathTemplate, "resolves outside workspace boundary")
+	})
+}
+
+func TestResolveWorktreeSettingsForDir_RejectsSymlinkEscape(t *testing.T) {
+	home, workspace, target := setupDirLocalWorkspace(t)
+	outsideDir := filepath.Join(home, "outside-workspace")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink inside the workspace pointing outside it. The raw candidate
+	// path (before symlink resolution) looks like it stays within the
+	// workspace; only resolving the symlink reveals the escape.
+	escapeLink := filepath.Join(workspace, "escape-link")
+	if err := os.Symlink(outsideDir, escapeLink); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+
+	writeDirLocalConfig(t, workspace, "[worktree]\npath_template = \"{repo-root}/../escape-link/pwned-{branch}\"\n")
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.Template() != "" {
+		t.Errorf("Template() = %q, want empty (symlink escape must be rejected)", settings.Template())
+	}
+	if sources[WorktreeKeyPathTemplate] != sourceDefault {
+		t.Errorf("sources[path_template] = %q, want fallback to %q", sources[WorktreeKeyPathTemplate], sourceDefault)
+	}
+	requireOneRejection(t, rejections, WorktreeKeyPathTemplate, "resolves outside workspace boundary")
+}
+
+func TestResolveWorktreeSettingsForDir_GlobalConfigTrustedUnchanged(t *testing.T) {
+	_, _, target := setupDirLocalWorkspace(t)
+
+	template := "~/Library/LaunchAgents/{branch}"
+	globalCfg := &UserConfig{Worktree: WorktreeSettings{
+		DefaultLocation: "~/.ssh",
+		PathTemplate:    &template,
+	}}
+	if err := SaveUserConfig(globalCfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings, sources, rejections, err := ResolveWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("ResolveWorktreeSettingsForDir: %v", err)
+	}
+	if settings.DefaultLocation != "~/.ssh" {
+		t.Errorf("DefaultLocation = %q, want the global value unchanged (global config stays fully trusted)", settings.DefaultLocation)
+	}
+	if settings.Template() != template {
+		t.Errorf("Template() = %q, want the global value unchanged", settings.Template())
+	}
+	if sources[WorktreeKeyDefaultLocation] != sourceGlobal || sources[WorktreeKeyPathTemplate] != sourceGlobal {
+		t.Errorf("sources = %+v, want both keys attributed to global", sources)
+	}
+	if len(rejections[WorktreeKeyDefaultLocation]) != 0 || len(rejections[WorktreeKeyPathTemplate]) != 0 {
+		t.Errorf("rejections = %+v, want none (global config is not validated)", rejections)
 	}
 }

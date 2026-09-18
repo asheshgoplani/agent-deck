@@ -480,6 +480,34 @@ checkout you don't fully trust. **Any other key or section is refused** with
 an error naming the file and the bad key, rather than being silently
 ignored — a typo never silently downgrades behavior.
 
+**Untrusted `default_location`/`path_template` are bounded, not just
+allowlisted.** Because these two keys are used to build a filesystem path
+(unlike `sparse_checkout`, which is just an on/off toggle), a dir-local value
+is also validated before it is trusted:
+
+- An absolute path, or a `~`-relative path, is refused.
+- For `default_location` (used verbatim, never templated), a literal `..`
+  path segment is refused.
+- Either key is refused if it would resolve — after expanding `~`,
+  `{repo-root}`, and other template variables, and resolving symlinks — to a
+  path outside the **workspace boundary**: the directory containing the
+  *outermost* discovered dir-local config file for the target directory (in
+  the example above, `~/projects/example`). This is what still allows the
+  workspace-parent case's `path_template = "{repo-root}/../wt-{branch}"`
+  (a legitimate `..` that stays inside `~/projects/example`) while refusing
+  one that escapes it, e.g. `"{repo-root}/../../../../etc/{branch}"` or a
+  symlink planted inside the workspace that points outside it.
+
+A refused value is **not** a hard failure of the whole file (unlike an
+unknown key, which is): it is simply not applied, and the setting falls back
+to whatever it would otherwise be — an outer dir-local file's value, then
+global config, then the built-in default. `agent-deck config show
+--effective` shows the rejection reason and what it fell back to (see below).
+**Global config and an explicit `--location`/template CLI flag are never
+subject to this check** — the same value that would be refused from a
+dir-local file (e.g. `default_location = "~/.ssh"`) is honored unchanged when
+set globally or on the command line, since those are trusted input.
+
 **Discovery.** Resolution starts from the session's *target directory* (not
 necessarily the current working directory) and walks upward through every
 ancestor, checking each for `.agent-deck/config.toml`. The walk stops once it
@@ -515,6 +543,14 @@ Effective [worktree] settings for /Users/you/projects/example/feature-one:
 Add `--json` for machine-readable output. Source is one of `default`
 (built-in), `global` (`~/.agent-deck/config.toml`), or the path of the
 winning directory-local file.
+
+If a directory-local `default_location`/`path_template` was refused (see
+above), both the text and `--json` output show it and the fallback source:
+
+```
+  path_template     = ""                                  (source: default)
+      rejected: /Users/you/projects/example/feature-one/.agent-deck/config.toml: path_template "~/Library/LaunchAgents/{branch}" rejected (home-relative (~) path not allowed); falling back to default value
+```
 
 ## [fork] Section
 

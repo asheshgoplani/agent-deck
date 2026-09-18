@@ -42,6 +42,14 @@ func printConfigHelp() {
 	fmt.Println("directory or an ancestor (up to and including $HOME) can override default_location,")
 	fmt.Println("path_template, and sparse_checkout. Nearer files win; unknown keys are refused.")
 	fmt.Println()
+	fmt.Println("A dir-local file may come from a checkout you don't fully trust, so its")
+	fmt.Println("default_location/path_template values are bounded: an absolute path, a \"~\"-relative")
+	fmt.Println("path, or one that resolves outside the directory containing the outermost dir-local")
+	fmt.Println("config file for the target path is refused and falls back to the next source (an")
+	fmt.Println("outer dir-local file, then global config, then the built-in default). Global config")
+	fmt.Println("and --location/--template flags are unaffected and remain fully trusted. A refused")
+	fmt.Println("value and its fallback are shown by `config show --effective`.")
+	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck config show --effective")
 	fmt.Println("  agent-deck config show --effective ~/projects/example/feature-one")
@@ -53,6 +61,11 @@ type configEffectiveWorktreeJSON struct {
 	Path     string            `json:"path"`
 	Worktree map[string]string `json:"worktree"`
 	Sources  map[string]string `json:"sources"`
+	// Rejections lists, per key, any dir-local default_location/path_template
+	// value that was refused (untrusted value outside the workspace boundary,
+	// absolute, "~"-relative, or containing a literal ".." segment) and what
+	// it fell back to. A key with no rejections is omitted.
+	Rejections map[string][]string `json:"rejections,omitempty"`
 }
 
 func handleConfigShow(_ string, args []string) {
@@ -78,7 +91,7 @@ func handleConfigShow(_ string, args []string) {
 		os.Exit(1)
 	}
 
-	settings, sources, err := session.ResolveWorktreeSettingsForDir(absDir)
+	settings, sources, rejections, err := session.ResolveWorktreeSettingsForDir(absDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -98,7 +111,7 @@ func handleConfigShow(_ string, args []string) {
 	}
 
 	if *jsonOutput {
-		out := configEffectiveWorktreeJSON{Path: absDir, Worktree: worktree, Sources: sources}
+		out := configEffectiveWorktreeJSON{Path: absDir, Worktree: worktree, Sources: sources, Rejections: rejections}
 		b, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to encode JSON: %v\n", err)
@@ -115,5 +128,8 @@ func handleConfigShow(_ string, args []string) {
 			value = `""`
 		}
 		fmt.Printf("  %-17s = %-24s (source: %s)\n", k, value, sources[k])
+		for _, reason := range rejections[k] {
+			fmt.Printf("      rejected: %s\n", reason)
+		}
 	}
 }

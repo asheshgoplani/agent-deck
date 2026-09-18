@@ -10,6 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/git"
 )
 
 // Directory-local configuration overrides (#2093).
@@ -26,6 +27,19 @@ import (
 // three declarative keys. Any other key or section is refused with an error
 // naming the file and the offending key(s) (fail closed) rather than
 // silently ignored.
+//
+// default_location and path_template get a second layer of scrutiny (P1
+// review follow-up, #2093): unlike sparse_checkout, both are used to build a
+// filesystem path that GenerateWorktreePath/resolveTemplate will write a
+// worktree to, with no containment check of their own (see
+// internal/git/git.go and internal/git/template.go). So a dir-local value for
+// either key is bounded to the "workspace boundary" — the directory
+// containing the OUTERMOST discovered dir-local config file for the target
+// directory — which still allows the legitimate "workspace-parent"
+// sibling-worktree case (e.g. path_template = "{repo-root}/../wt-{branch}"
+// set in a file that sits ABOVE the repo root) that the boundary is drawn
+// around. Global config and explicit CLI flags are unaffected and remain
+// fully trusted, as before. See validateDirLocalWorktreeValue.
 
 // dirLocalWorktreeConfig is the allowlisted [worktree] surface for dir-local
 // config files. Pointer fields distinguish "not set" from "explicitly
@@ -177,12 +191,16 @@ const (
 // config, and any directory-local .agent-deck/config.toml files discovered
 // by walking up from targetDir (outermost to innermost; see
 // DiscoverDirLocalConfigPaths), and reports which file supplied each of the
-// three dir-local-eligible [worktree] keys.
+// three dir-local-eligible [worktree] keys, plus a human-readable rejection
+// description for each dir-local default_location/path_template value that
+// failed the boundary check in validateDirLocalWorktreeValue (keyed by
+// WorktreeKeyDefaultLocation/WorktreeKeyPathTemplate; a key with no
+// rejections is absent from the map, never present with an empty slice).
 //
 // Precedence, lowest to highest: built-in defaults < global config < outer
 // dir-local file < inner dir-local file. Explicit CLI/session overrides are
 // the caller's responsibility to apply on top of the returned settings.
-func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[string]string, error) {
+func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[string]string, map[string][]string, error) {
 	settings := GetWorktreeSettings()
 
 	sources := map[string]string{
@@ -190,6 +208,7 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 		WorktreeKeyPathTemplate:    sourceDefault,
 		WorktreeKeySparseCheckout:  sourceDefault,
 	}
+	rejections := map[string][]string{}
 
 	// Consult the RAW global config (pre-default-application) so "default"
 	// vs. "global" is reported correctly.
@@ -207,25 +226,54 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 
 	paths, err := DiscoverDirLocalConfigPaths(targetDir)
 	if err != nil {
-		return settings, sources, err
+		return settings, sources, rejections, err
+	}
+
+	// The workspace boundary that untrusted dir-local default_location/
+	// path_template values must resolve within: the directory containing the
+	// OUTERMOST discovered dir-local config file (paths is outermost-first).
+	// Computed once so every file in the chain is bounded against the same
+	// workspace root, not just its own parent directory.
+	var boundary string
+	if len(paths) > 0 {
+		// paths[0] is "<workspace>/.agent-deck/config.toml"; the two Dir
+		// calls strip the file name and the ".agent-deck" directory.
+		boundary = resolveSymlinks(filepath.Dir(filepath.Dir(paths[0])))
+	}
+
+	// accept reports whether an untrusted dir-local value for key, read from
+	// path, may be applied. On acceptance it credits path as the key's new
+	// source; on rejection it records the reason and the source the key falls
+	// back to (which is still the pre-existing, lower-precedence one).
+	accept := func(key, raw, path string) bool {
+		reason := validateDirLocalWorktreeValue(key, raw, targetDir, boundary)
+		if reason != "" {
+			rejections[key] = append(rejections[key], fmt.Sprintf(
+				"%s: %s %q rejected (%s); falling back to %s value",
+				path, key, raw, reason, sources[key]))
+			return false
+		}
+		sources[key] = path
+		return true
 	}
 
 	for _, path := range paths {
 		local, err := loadDirLocalConfig(path)
 		if err != nil {
-			return settings, sources, err
+			return settings, sources, rejections, err
 		}
 
 		if local.Worktree.DefaultLocation != nil {
-			settings.DefaultLocation = *local.Worktree.DefaultLocation
-			sources[WorktreeKeyDefaultLocation] = path
+			if raw := *local.Worktree.DefaultLocation; accept(WorktreeKeyDefaultLocation, raw, path) {
+				settings.DefaultLocation = raw
+			}
 		}
 		if local.Worktree.PathTemplate != nil {
-			// Copy the pointer's pointee so callers mutating settings.PathTemplate
-			// never alias back into the decoded dir-local struct.
-			v := *local.Worktree.PathTemplate
-			settings.PathTemplate = &v
-			sources[WorktreeKeyPathTemplate] = path
+			// raw is a fresh variable per iteration, so taking its address
+			// never aliases back into the decoded dir-local struct.
+			if raw := *local.Worktree.PathTemplate; accept(WorktreeKeyPathTemplate, raw, path) {
+				settings.PathTemplate = &raw
+			}
 		}
 		if local.Worktree.SparseCheckout != nil {
 			settings.SparseCheckout = *local.Worktree.SparseCheckout
@@ -233,7 +281,104 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 		}
 	}
 
-	return settings, sources, nil
+	return settings, sources, rejections, nil
+}
+
+// resolveSymlinksBestEffort resolves symlinks for path even when path itself
+// does not exist yet — the common case for a candidate worktree path, which
+// by definition is usually a directory that has not been created. Unlike
+// resolveSymlinks (which calls filepath.EvalSymlinks on the whole path and
+// gives up unchanged the moment ANY component, including a not-yet-created
+// leaf, is missing), this walks up to the longest existing ancestor,
+// resolves THAT with resolveSymlinks, and rejoins the missing suffix
+// literally. This is what makes a symlink planted inside the workspace (e.g.
+// a dir-local file's sibling symlink pointing outside it) catchable even
+// though the final worktree path it leads to has never been created.
+func resolveSymlinksBestEffort(path string) string {
+	dir := path
+	var missing []string
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			resolved := resolveSymlinks(dir)
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path // no existing ancestor found at all; nothing to resolve
+		}
+		missing = append(missing, filepath.Base(dir))
+		dir = parent
+	}
+}
+
+// validateDirLocalWorktreeValue checks a dir-local-sourced default_location
+// or path_template value before it is allowed into WorktreeSettings, and
+// returns a non-empty rejection reason if it must be refused. It returns ""
+// for a value that passes (global config and CLI flags never call this — they
+// remain fully trusted).
+//
+// Two layers, per the P1 review follow-up (#2093):
+//  1. Raw-string checks, before any template/variable expansion: reject an
+//     absolute path, a "~"-prefixed path, and (default_location only, since
+//     it is used verbatim and never templated) a literal ".." path segment.
+//     path_template is exempt from the literal ".." check because the
+//     legitimate workspace-parent case ("{repo-root}/../wt-{branch}") relies
+//     on one; its escapes are instead caught by the resolved-path check below.
+//  2. A resolved-path bound check, simulating resolution with targetDir as
+//     the repo root (see the call sites this mirrors: every real caller
+//     passes the SAME directory to GetWorktreeSettingsForDir/
+//     ResolveWorktreeSettingsForDir and to WorktreePath/GenerateWorktreePath
+//     as RepoDir). This catches template ".." escapes, symlink escapes, and
+//     anything the raw check misses.
+func validateDirLocalWorktreeValue(key, raw, targetDir, boundary string) string {
+	if filepath.IsAbs(raw) {
+		return "absolute path not allowed"
+	}
+	if strings.HasPrefix(raw, "~") {
+		return "home-relative (~) path not allowed"
+	}
+	if key == WorktreeKeyDefaultLocation && slices.Contains(strings.Split(raw, "/"), "..") {
+		return "'..' path segment not allowed"
+	}
+
+	if boundary == "" {
+		// No dir-local file was discovered at all, so there is nothing to
+		// bound against; unreachable in practice (validateDirLocalWorktreeValue
+		// is only called once a dir-local file supplied raw), but fail safe.
+		return "no workspace boundary available"
+	}
+
+	var candidate string
+	switch key {
+	case WorktreeKeyDefaultLocation:
+		// GenerateWorktreePath only treats default_location as a custom path
+		// (leaving targetDir's vicinity) when it contains "/" or starts with
+		// "~"; "sibling"/"subdirectory"/"" never escape targetDir, so skip
+		// the bound check for those — they're inherently safe.
+		if !strings.Contains(raw, "/") && !strings.HasPrefix(raw, "~") {
+			return ""
+		}
+		candidate = git.GenerateWorktreePath(targetDir, "boundary-check", raw)
+	case WorktreeKeyPathTemplate:
+		candidate = git.WorktreePath(git.WorktreePathOptions{
+			Branch:    "boundary-check",
+			RepoDir:   targetDir,
+			SessionID: "boundary-check",
+			Template:  raw,
+		})
+	default:
+		// Only the two keys above are validated; nothing else reaches here.
+		return ""
+	}
+
+	resolvedCandidate := resolveSymlinksBestEffort(candidate)
+	if !isWithinDir(boundary, resolvedCandidate) {
+		return fmt.Sprintf("resolves outside workspace boundary %s: %s", boundary, resolvedCandidate)
+	}
+	return ""
 }
 
 // GetWorktreeSettingsForDir returns the merged worktree settings (built-in
@@ -245,7 +390,13 @@ func ResolveWorktreeSettingsForDir(targetDir string) (WorktreeSettings, map[stri
 // creating a new session/worktree should treat a non-nil error as fatal to
 // the operation (fail closed) and surface it to the user, rather than
 // falling back to global/default settings.
+//
+// A rejected default_location/path_template value (see
+// validateDirLocalWorktreeValue) is NOT an error here: unlike an unknown key,
+// it falls back silently to the next-highest-precedence source. Callers that
+// need to surface rejections to the user (e.g. `agent-deck config show
+// --effective`) should call ResolveWorktreeSettingsForDir directly.
 func GetWorktreeSettingsForDir(targetDir string) (WorktreeSettings, error) {
-	settings, _, err := ResolveWorktreeSettingsForDir(targetDir)
+	settings, _, _, err := ResolveWorktreeSettingsForDir(targetDir)
 	return settings, err
 }
