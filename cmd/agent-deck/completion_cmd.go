@@ -258,6 +258,7 @@ var completionTree = []completionNode{
 	{name: "hermes-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "cursor-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "tmux-hooks", subs: []string{"install", "uninstall", "status"}},
+	{name: "pi-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "deepseek", subs: []string{"status", "profiles", "sessions"}},
 }
 

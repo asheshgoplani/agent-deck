@@ -6287,15 +6287,7 @@ func (h *Home) backgroundStatusUpdate() {
 	}
 
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
-	if h.hookWatcher != nil {
-		for _, inst := range instances {
-			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "hermes" || inst.Tool == "cursor" {
-				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
-					inst.UpdateHookStatus(hs)
-				}
-			}
-		}
-	}
+	h.feedHookStatuses(instances)
 
 	// Reconcile OpenCode SSE connections and feed derived statuses to
 	// instances (enables the SSE fast path in UpdateStatus, issue #1614).
@@ -6596,6 +6588,25 @@ func (h *Home) backgroundStatusUpdate() {
 			slog.Int("sessions", len(instances)))
 	}
 	h.lastFullStatusSweep.Store(time.Now().UnixNano())
+}
+
+// feedHookStatuses pushes the watcher's latest sample into every instance
+// whose tool is hook-driven, enabling the hook fast path in
+// Instance.UpdateStatus. The gate is session.HookStatusTool, the single
+// registry: #2222 was a hand-written allowlist here that missed pi, so a pi
+// instance's hookStatus was set once at cold load and never refreshed.
+func (h *Home) feedHookStatuses(instances []*session.Instance) {
+	if h.hookWatcher == nil {
+		return
+	}
+	for _, inst := range instances {
+		if !session.HookStatusTool(inst.Tool) {
+			continue
+		}
+		if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
+			inst.UpdateHookStatus(hs)
+		}
+	}
 }
 
 // syncNotificationsBackground updates the tmux notification bar directly

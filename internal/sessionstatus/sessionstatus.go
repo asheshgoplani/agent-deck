@@ -86,14 +86,10 @@ type Decision struct {
 }
 
 // IsHookEmittingTool returns true for tools that emit lifecycle hook files.
-// Mirrors the gate at internal/session/instance.go:2854 + 2873.
-// Hermes uses the same shell hook model as Claude Code and Gemini; hooks are
-// injected via `agent-deck hermes-hooks install` into ~/.hermes/config.yaml.
+// Delegates to session.HookStatusTool, the single registry of hook-driven
+// tools (#2222 was a hand-written copy of this predicate missing pi).
 func IsHookEmittingTool(tool string) bool {
-	if session.IsClaudeCompatible(tool) {
-		return true
-	}
-	return tool == "codex" || tool == "gemini" || tool == "hermes" || tool == "cursor"
+	return session.HookStatusTool(tool)
 }
 
 // freshnessFor returns the freshness window for a (tool, hookStatus) pair.

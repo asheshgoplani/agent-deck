@@ -205,6 +205,7 @@ func TestEveryRegisteredCommandFamilyBareHelpIsReadOnly(t *testing.T) {
 		{"mcp", "Usage: agent-deck mcp"},
 		{"oc", "Usage: agent-deck openclaw"},
 		{"openclaw", "Usage: agent-deck openclaw"},
+		{"pi-hooks", "Usage: agent-deck pi-hooks"},
 		{"plugin", "Usage: agent-deck plugin"},
 		{"remote", "Usage: agent-deck remote"},
 		{"session", "Usage: agent-deck session"},

@@ -1017,6 +1017,15 @@ agent-deck tmux-hooks uninstall   # remove, only if the slot holds agent-deck's 
 ```
 
 The window policy hook (`after-new-window[2259]`, see the config reference under `[tmux.options]`) lives on the tmux server named by `[tmux].socket_name` (else the default server) and persists after agent-deck exits. `uninstall` never touches a foreign entry at that index.
+## pi Hook Commands
+
+```bash
+agent-deck pi-hooks install
+agent-deck pi-hooks status
+agent-deck pi-hooks uninstall
+```
+
+pi turn-level status uses an agent-deck extension installed into pi's global extension directory (`~/.pi/agent/extensions/agent-deck.ts`, or under `PI_CODING_AGENT_DIR` when set). It forwards `session_start`, `turn_start`, `turn_end` and `session_shutdown`; restart running pi sessions after installing. `status` reports `INSTALLED`, `OUTDATED` (reinstall to upgrade), `FOREIGN` (a file agent-deck did not write is in the way) or `NOT INSTALLED`. Without it, pi status falls back to pane detection.
 
 ## DeepSeek Commands
 

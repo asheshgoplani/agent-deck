@@ -5976,6 +5976,9 @@ func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, p
 	return derived, false, false
 }
 
+// shouldDebounceTmuxFlipForTool is deliberately narrower than HookStatusTool:
+// pi has hooks (#2222) but is excluded here on purpose, like shell and "".
+// The call site in updateStatus explains why.
 func shouldDebounceTmuxFlipForTool(tool string) bool {
 	return tool == "" || IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
 		tool == "gemini" || tool == "hermes" || tool == "cursor"
@@ -6130,15 +6133,6 @@ func (i *Instance) applyTerminatedPaneStatus() {
 	}
 }
 
-// hookEmittingTool reports whether tool is one of the CLIs that publish
-// lifecycle hook events (see the HOOK FAST PATH condition in UpdateStatus,
-// which this mirrors) — the only tools for which a recorded hookStatus is
-// meaningful evidence for classifyTerminatedPane.
-func hookEmittingTool(tool string) bool {
-	return IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
-		tool == "gemini" || tool == "hermes" || tool == "cursor"
-}
-
 // classifyTerminatedPane is the pure decision behind terminatedPaneStatus,
 // split out so the clean-exit-vs-crash rule can be exercised without a live
 // tmux server. See terminatedPaneStatus for the full rationale.
@@ -6173,7 +6167,9 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string, hookSt
 	if tool == "opencode" {
 		return StatusStopped, SubstateNone
 	}
-	if hookEmittingTool(tool) {
+	// Only a hook-emitting tool records a hookStatus that means anything here:
+	// it is the turn-end-edge evidence the doc comment above describes.
+	if HookStatusTool(tool) {
 		switch hookStatus {
 		case "waiting", "idle":
 			return StatusStopped, SubstateNone
@@ -6283,7 +6279,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && HookStatusTool(i.Tool) {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -6306,8 +6302,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") &&
-		i.hookStatus != "" &&
+	if HookStatusTool(i.Tool) && i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		i.hookLagFlipped = false
 		if i.hookStatus != "running" {
@@ -6587,11 +6582,15 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// transient error, then recover; one confirming sample prevents a false
 	// completion/error to the conductor. A genuinely dead pane (tmux "inactive")
 	// and a "dead" hook are NOT debounced — those are real terminal signals.
-	// Skip debounce for tools without hooks (pi, shell): their tmux status is
-	// the ground truth and there's no hook fast-path to race against. For every
-	// tool the hold also needs a running verdict THIS process made (livePrevStatus
-	// is "" on a fresh load, see statusSampledLive): a one-pass process cannot
-	// take the confirming sample, so holding there is a guess it never checks.
+	// Skip debounce for shell and pi: shell has no hooks at all, and while pi
+	// now has hooks (#2222) it is still CLI-single-sample in practice (no
+	// long-lived watcher process keeps polling it between invocations), so
+	// its tmux status is the ground truth with no hook fast-path to race
+	// against. For every tool the hold also needs a running verdict THIS
+	// process made (livePrevStatus is "" on a fresh load, see
+	// statusSampledLive): a one-pass process (e.g. `agent-deck list --json`)
+	// cannot take the confirming sample, so holding there is a guess it never
+	// checks.
 	bypassWaitingDebounce := i.shouldBypassCodexWaitingDebounce(i.Status)
 	if shouldDebounceTmuxFlipForTool(i.Tool) && !bypassWaitingDebounce {
 		if apply, nextPending, held := debounceFlipFromRunning(livePrevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {

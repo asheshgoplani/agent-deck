@@ -154,6 +154,18 @@ func mapEventToStatus(event string) string {
 		return "waiting"
 	case "onsessionfinalize":
 		return "dead" // Hermes process exit / session reset — the real session end
+	case "turnstart":
+		return "running" // pi: a turn began (one LLM response + its tool calls)
+	case "turnend":
+		return "waiting" // pi: the turn finished, back at the prompt
+	case "sessionshutdown":
+		// pi fires session_shutdown before a session runtime is torn down —
+		// process exit as well as the /new, /resume and fork replacements. It
+		// is the real session end, the pi analogue of Hermes'
+		// on_session_finalize, so it maps to dead rather than waiting; a
+		// replacement flow immediately emits session_start again, which
+		// restores waiting.
+		return "dead"
 	case "preapirequest", "postapirequest":
 		// Per-API-call heartbeat within a turn: refreshes "running" so a
 		// long multi-step turn doesn't outlive the hook freshness window
