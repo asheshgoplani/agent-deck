@@ -307,7 +307,7 @@ func handleHookHandler() {
 	// SYNCHRONOUSLY. The install flips the conductor's Stop hook to sync — see
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
-	if isStopHookEvent(payload.HookEventName) && stopHookDrainEnabled() {
+	if isStopHookEvent(payload.HookEventName) && stopHookDrainEnabled(getClaudeConfigDirForHooks()) {
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
@@ -317,17 +317,26 @@ func handleHookHandler() {
 }
 
 // stopHookDrainEnabled reports whether this Stop hook may drain the parent's
-// inbox (messaging audit P2-1, review round 2 P1-B). The sync install exports
-// session.StopHookSyncMarkerEnv=1 into the hook command, but every install
-// made before the marker existed is ALSO synchronous (Stop has been sync since
-// issue #1225), so an absent marker must not switch the drain off: that
-// silently disabled the delivery leg on every existing machine. Only an
-// explicit non-empty marker with a value other than "1" (an async-installed
-// entry that opts out) disables the drain; the heal path rewrites a marker-less entry
-// with the marker on the daemon's next start.
-func stopHookDrainEnabled() bool {
-	v := os.Getenv(session.StopHookSyncMarkerEnv)
-	return v == "" || v == "1"
+// inbox (messaging audit P2-1, review round 2 P1-B, review round 3 finding
+// 3). Claude Code only reads the {decision:"block"} answer from a SYNCHRONOUS
+// hook, so an async-installed entry must never drain: it would consume the
+// inbox into an answer nobody reads. The rule is enforced here, at drain
+// time, from two sources:
+//   - the installed form of the agent-deck Stop entry in this config dir's
+//     settings.json: async → no drain (the heal flips it to sync on the
+//     daemon's next start, but the handler does not wait for that);
+//   - the command-line marker session.StopHookSyncMarkerEnv: an explicit
+//     value other than "1" (an async-installed opt-out) disables the drain.
+//
+// An absent marker keeps draining: every install made before the marker
+// existed is synchronous too (Stop has been sync since issue #1225), and
+// switching the drain off on it silently disabled the delivery leg on every
+// existing machine. When the entry cannot be read the marker decides.
+func stopHookDrainEnabled(configDir string) bool {
+	if v := os.Getenv(session.StopHookSyncMarkerEnv); v != "" && v != "1" {
+		return false
+	}
+	return session.StopHookInstallForm(configDir) != session.StopHookFormAsync
 }
 
 // parentIsDSP reports whether the parent process (typically the claude binary)
