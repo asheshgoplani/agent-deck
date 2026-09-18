@@ -116,7 +116,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
-| `agent-deck session output <name>` | Get last response |
+| `agent-deck session output <name>` | Get bounded, ANSI-clean last response (JSON/quiet/copy preserve full source) |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi conversation |
@@ -181,7 +181,7 @@ silently uses the default profile and the target is "not found".
 | Channel | Direction | Command | Guarantee |
 |---|---|---|---|
 | **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane (or, opt-in, Claude's own messaging socket). `--json` carries a stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) — read that, not the 11-value `delivery` diagnostic (`submitted`, `queued`, `delivered`, `unverified`, `queued_socket`, `line_too_long`, `menu_open`, `pane_gone`, `typed_not_submitted`, `no_evidence`, `send_failed`, `composer_blocked`, `socket_write_failed`). NOT durable: if the send fails or the sender dies, the message is gone. |
-| **output** | read a session's last reply | `session output <id> -q` | Read-only transcript snapshot; non-consuming; `--pane` returns raw tmux capture instead. |
+| **output** | read a session's last reply | `session output <id> -q` | Read-only transcript snapshot; non-consuming; `--pane` returns the tmux pane capture instead. Default text is ANSI-stripped and capped at `--max-tokens` (default 25000) with the full output kept on disk; `--json`/`-q`/`--copy` carry the full source. |
 | **children** | parent reads its child fleet | `session children --json`, `--follow [--until-done]` | Read-only; merges live status with the completion ledger; explicitly does NOT clear the inbox. |
 | **inbox drain** | child completions → parent | `inbox drain self --json` | THE durable channel: fsync'd append + WAL, at-least-once delivery with exactly-once effects (turn-fingerprint dedup), survives crashes and restarts. Last-wins PER CHILD: intermediate events are dropped by design. Single-profile only. Draining consumes. |
 | **transition events** | daemon → parent's inbox | automatic (requires `parent_session_id`) | Only `running → waiting/error/idle` edges fire; deduped (90s + 2h windows); sessions with no parent link are WARN-logged once and DROPPED. |
@@ -199,7 +199,7 @@ agent-deck -p <profile> session send <id> "done ping" --defer-if-busy --defer-ti
 git diff | agent-deck -p <profile> session send <id> --message-file -    # long/multiline payload safely from stdin
 agent-deck -p <profile> session send <id> "draft text" --draft           # type without submitting
 agent-deck -p <profile> session output <id> -q                           # read last response (raw text)
-agent-deck -p <profile> session output <id> --pane                       # raw pane capture (fallback when transcript read refuses)
+agent-deck -p <profile> session output <id> --pane                       # pane capture, ANSI stripped + capped (fallback when transcript read refuses)
 agent-deck -p <profile> session children --json                          # child fleet snapshot + parent id
 agent-deck -p <profile> session children --follow --until-done           # JSONL event stream, exits when all children terminal
 agent-deck -p <profile> inbox drain self --json                          # FIRST step of every heartbeat; consumes exactly-once

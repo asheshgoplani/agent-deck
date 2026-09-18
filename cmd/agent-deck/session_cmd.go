@@ -5974,12 +5974,12 @@ func handleSessionOutput(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	copyFlag := fs.Bool("copy", false, "Copy output to system clipboard")
-	// #1101: --pane returns the raw tmux capture-pane content (with ANSI escapes
-	// and the tool's full UI chrome) instead of the parsed transcript "last
+	// #1101: --pane returns tmux capture-pane content instead of the parsed transcript "last
 	// response". The local TUI preview uses capture-pane; remote sessions
 	// fetched via SSH need this same content to render claude-formatted output.
-	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (full UI with ANSI)")
+	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (ANSI stripped in default text mode)")
 	primaryPane := fs.Bool("primary", false, "With --pane, capture the managed first window")
+	maxTokens := fs.Int("max-tokens", defaultOutputMaxTokens, "Maximum default text-output budget in approximate tokens (head+tail; full text retained on disk)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -5988,14 +5988,25 @@ func handleSessionOutput(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Printf("Output budget: default text output (also with --pane) strips ANSI escapes and is capped at\n"+
+			"--max-tokens (default %d, about %d bytes per token). Longer output keeps its beginning and end\n"+
+			"around an explicit \"output omitted\" seam and ends with the path of the full output retained on\n"+
+			"disk. --json, -q/--quiet and --copy always carry the complete, unstripped source.\n",
+			defaultOutputMaxTokens, outputBytesPerToken)
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
+	if *maxTokens <= 0 {
+		fmt.Fprintln(os.Stderr, "Error: --max-tokens must be greater than zero")
+		os.Exit(1)
+	}
 
 	identifier := fs.Arg(0)
 	quietMode := *quiet || *quietShort
+	boundAgentOutput := shouldBoundAgentOutput(*jsonOutput, quietMode, *copyFlag)
 	out := NewCLIOutput(*jsonOutput, quietMode)
 	if *primaryPane && !*paneFlag {
 		out.Error("--primary requires --pane", ErrCodeInvalidOperation)
@@ -6003,11 +6014,14 @@ func handleSessionOutput(profile string, args []string) {
 	}
 
 	// Load sessions
-	_, instances, _, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
 	}
+	// The read log names the effective profile so an empty -p (env or
+	// default profile) does not record as "".
+	profile = storage.Profile()
 
 	// Resolve session (allow current session detection)
 	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
@@ -6048,19 +6062,20 @@ func handleSessionOutput(profile string, args []string) {
 			out.Error(fmt.Sprintf("failed to capture pane: %v", paneErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		emitted := boundSessionOutputOrExit(out, profile, inst.ID, "pane", paneContent, *maxTokens, boundAgentOutput)
 		jsonData := map[string]interface{}{
 			"success":       true,
 			"session_id":    inst.ID,
 			"session_title": inst.Title,
 			"tool":          inst.Tool,
 			"role":          "pane",
-			"content":       paneContent,
+			"content":       emitted,
 		}
 		if quietMode {
-			fmt.Println(paneContent)
+			fmt.Println(emitted)
 			return
 		}
-		out.Print(paneContent, jsonData)
+		out.Print(emitted, jsonData)
 		return
 	}
 
@@ -6075,6 +6090,7 @@ func handleSessionOutput(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	bounded := boundSessionOutputOrExit(out, profile, inst.ID, "response", response.Content, *maxTokens, boundAgentOutput)
 
 	// Copy to clipboard mode
 	if *copyFlag {
@@ -6098,6 +6114,7 @@ func handleSessionOutput(profile string, args []string) {
 		)
 		return
 	}
+	response.Content = bounded
 
 	// Quiet mode: just print raw content
 	if quietMode {
