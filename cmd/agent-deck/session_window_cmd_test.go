@@ -155,10 +155,11 @@ func TestCloseSessionWindow_UnknownWindowIsNotFound(t *testing.T) {
 }
 
 // TestSessionWindowPayload pins the --json shape of `session window close`:
-// {"session","window_id","window_index","window_name","closed"}.
+// {"session","window_id","window_index","window_name","closed"} on success,
+// with no "reason" key.
 func TestSessionWindowPayload(t *testing.T) {
 	inst := &session.Instance{ID: "sess-1", Title: "cli-wc"}
-	raw, err := json.Marshal(sessionWindowPayload(inst, tmux.WindowInfo{Index: 1, ID: "@7", Name: "shell"}, true))
+	raw, err := json.Marshal(sessionWindowPayload(inst, tmux.WindowInfo{Index: 1, ID: "@7", Name: "shell"}, true, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +173,36 @@ func TestSessionWindowPayload(t *testing.T) {
 		"window_index": float64(1),
 		"window_name":  "shell",
 		"closed":       true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("payload keys = %v, want exactly %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("payload[%q] = %v, want %v", k, got[k], v)
+		}
+	}
+}
+
+// TestSessionWindowPayload_RefusalIncludesReason pins the --json shape of a
+// refused close: closed:false plus a "reason" key naming why.
+func TestSessionWindowPayload_RefusalIncludesReason(t *testing.T) {
+	inst := &session.Instance{ID: "sess-1", Title: "cli-wc"}
+	raw, err := json.Marshal(sessionWindowPayload(inst, tmux.WindowInfo{Index: 1, ID: "@7", Name: "shell"}, false, "last_window"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{
+		"session":      "sess-1",
+		"window_id":    "@7",
+		"window_index": float64(1),
+		"window_name":  "shell",
+		"closed":       false,
+		"reason":       "last_window",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("payload keys = %v, want exactly %v", got, want)

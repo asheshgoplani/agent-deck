@@ -103,17 +103,19 @@ func handleSessionWindowClose(profile string, args []string) {
 		switch {
 		case errors.Is(err, errSessionWindowConfirmRequired):
 			out.ErrorWithData(fmt.Sprintf("would close %s in session %s; pass --yes to close it", label, inst.Title),
-				ErrCodeInvalidOperation, sessionWindowPayload(inst, win, false))
+				ErrCodeInvalidOperation, sessionWindowPayload(inst, win, false, "confirm_required"))
 		case errors.Is(err, tmux.ErrLastWindow):
-			out.Error(fmt.Sprintf("not killing %s: it is the session's last window", label), ErrCodeInvalidOperation)
+			out.ErrorWithData(fmt.Sprintf("not killing %s: it is the session's last window", label),
+				ErrCodeInvalidOperation, sessionWindowPayload(inst, win, false, "last_window"))
 		case errors.Is(err, tmux.ErrWindowChanged):
-			out.Error(fmt.Sprintf("not killing %s: it changed since it was looked up, refusing", label), ErrCodeInvalidOperation)
+			out.ErrorWithData(fmt.Sprintf("not killing %s: it changed since it was looked up, refusing", label),
+				ErrCodeInvalidOperation, sessionWindowPayload(inst, win, false, "window_changed"))
 		default:
 			out.Error(fmt.Sprintf("kill %s: %v", label, err), ErrCodeInvalidOperation)
 		}
 		os.Exit(1)
 	}
-	out.Success(fmt.Sprintf("closed %s in session %s", describeSessionWindow(win), inst.Title), sessionWindowPayload(inst, win, true))
+	out.Success(fmt.Sprintf("closed %s in session %s", describeSessionWindow(win), inst.Title), sessionWindowPayload(inst, win, true, ""))
 }
 
 func describeSessionWindow(win tmux.WindowInfo) string {
@@ -122,14 +124,21 @@ func describeSessionWindow(win tmux.WindowInfo) string {
 
 // sessionWindowPayload is the --json shape of `session window close`: the
 // window it acted on (or would act on), named by every handle a caller has.
-func sessionWindowPayload(inst *session.Instance, win tmux.WindowInfo, closed bool) map[string]interface{} {
-	return map[string]interface{}{
+// reason is omitted on success (closed true) and names why a refusal path
+// left the window alone otherwise (e.g. "last_window", "window_changed",
+// "confirm_required").
+func sessionWindowPayload(inst *session.Instance, win tmux.WindowInfo, closed bool, reason string) map[string]interface{} {
+	payload := map[string]interface{}{
 		"session":      inst.ID,
 		"window_id":    win.ID,
 		"window_index": win.Index,
 		"window_name":  win.Name,
 		"closed":       closed,
 	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	return payload
 }
 
 // resolveSessionWindow looks up one live window of inst's tmux session from
