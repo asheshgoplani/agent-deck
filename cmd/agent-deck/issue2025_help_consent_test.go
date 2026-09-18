@@ -209,6 +209,7 @@ func TestEveryRegisteredCommandFamilyBareHelpIsReadOnly(t *testing.T) {
 		{"remote", "Usage: agent-deck remote"},
 		{"session", "Usage: agent-deck session"},
 		{"skill", "Usage: agent-deck skill"},
+		{"tmux-hooks", "Usage: agent-deck tmux-hooks"},
 		{"watcher", "Usage: agent-deck watcher"},
 		{"worktree", "Usage: agent-deck worktree"},
 		{"wt", "Usage: agent-deck worktree"},

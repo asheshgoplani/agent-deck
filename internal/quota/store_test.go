@@ -19,7 +19,8 @@ import (
 const secondProviderID = "other"
 
 // sentinelToken is a value that would only ever reach the cache by mistake. The
-// cache holds percentages and reset times, never a credential.
+// cache holds percentages and reset times, never a credential; the Z.ai tests
+// check every error path in this package against the same constant.
 const sentinelToken = "SENTINEL-QUOTA-TOKEN-do-not-leak"
 
 // newTestStore points the store at a per-test XDG cache root so nothing leaks

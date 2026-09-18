@@ -858,8 +858,8 @@ Setting a key here does more than add an option: for the keys agent-deck sets it
 | `extended-keys` | `on` | Forwards Shift+Enter and other modified keys to the agent (tmux 3.2+). A deliberate `set -s extended-keys off` in your tmux config needs this opt-out to survive. |
 | `extended-keys-format` | `csi-u` | Delivers modified keys as `ESC[13;2u` (the kitty form Claude Code reads) rather than xterm's `ESC[27;2;13~`, which Claude Code ignores. |
 | `terminal-features` | `*:hyperlinks:extkeys` | OSC 8 hyperlink tracking plus extended key reporting. Server-wide — see the note below. |
-| `window-size` | `largest` | Keeps a window sized to the biggest attached client, so a web `tmux -C` client and a native terminal client can share a session without void cells or clipping. |
-| `aggressive-resize` | `on` | Only resizes windows that are actively viewed, avoiding cross-window resize storms. |
+| `window-size` | `smallest` | Keeps the whole pane visible in every attached client, so a web `tmux -C` client and a native terminal client can share a session without clipping. Accepted values: `largest`, `smallest`, `manual`, `latest`. |
+| `aggressive-resize` | `on` | Only resizes windows that are actively viewed, avoiding cross-window resize storms. Accepted values: `on`, `off`, `yes`, `no`, `1`, `0`. |
 | `window-style`, `window-active-style` | theme value | Prevents color issues in some terminals. `window_style_override` above is the friendlier way to set these. |
 | `remain-on-exit` | `on` for sandbox and one-shot sessions only | Keeps a dead pane readable instead of tearing it down with the answer still in it. Not set for ordinary sessions. |
 
@@ -873,6 +873,8 @@ tmux set -su terminal-features                   # reset to tmux's built-in defa
 ```
 
 Add `-L <socket_name>` to both when `socket_name` is set. See [troubleshooting](troubleshooting.md) for the full symptom list.
+
+**`window-size` and `aggressive-resize` reach every window through a server hook.** Both are window options, so agent-deck sets them on the initial window at session start and on windows it opens itself, and installs one `after-new-window` hook in the reserved slot `after-new-window[2259]` of the tmux server's global hook array for windows opened any other way (`prefix c`, an agent's own `tmux new-window`). The hook reads the session's `@agentdeck_window_size` / `@agentdeck_aggressive_resize` options, which carry your `[tmux.options]` value or the default above, and leaves sessions agent-deck did not start alone. Like `terminal-features`, the hook is server state: it persists after agent-deck exits or is uninstalled, a foreign entry at that index is never overwritten, and it needs tmux 3.0 or newer (hooks became array options there; older servers get only the initial and agent-deck-opened windows). Only values from the accepted lists above are published to the hook; anything else is logged and skipped, so a typo cannot make `new-window` fail. Remove it with `agent-deck tmux-hooks uninstall`, which touches the slot only when it holds agent-deck's hook; `agent-deck tmux-hooks status` shows what is there.
 
 ## Skills Registry (Outside config.toml)
 
