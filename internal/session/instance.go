@@ -1697,9 +1697,14 @@ func resolvedProcessProfile() string {
 // file is written by the agent-deck that spawns the pane, so on a remote it
 // is the remote's own. A shell session running a custom command keeps its
 // pre-existing account export only: the command already owns the pane's
-// input, and its environment comes from its own command line.
+// input, and its environment comes from its own command line. A wrapper
+// (`--wrapper`, or the tool's) owns the pane the same way and already
+// carries the account export inside its `bash -c` (prepareCommand), so
+// nothing is typed at all: the line, or its Enter, would land in whatever
+// the wrapper runs (TestNativeSSHAttachLifecycle saw a receipt for an empty
+// line before it had sent anything).
 func (i *Instance) ensureInteractiveShellEnv() {
-	if i.Tool != "shell" || i.tmuxSession == nil || i.tmuxSession.RunCommandAsInitialProcess {
+	if i.Tool != "shell" || i.tmuxSession == nil || i.tmuxSession.RunCommandAsInitialProcess || i.hasEffectiveWrapper() {
 		return
 	}
 	plainShell := strings.TrimSpace(i.Command) == ""
