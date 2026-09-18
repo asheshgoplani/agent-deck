@@ -106,6 +106,7 @@ func TestRemoteCommandParity(t *testing.T) {
 		{"session", "fork", "missing", "--json"},
 		{"worktree", "info", "missing", "--json"}, {"mcp", "list", "--json"}, {"mcp", "attach", "missing", "none", "--json"},
 		{"skill", "list", "--json"}, {"skill", "attach", "missing", "none"},
+		{"skill", "detach", "missing", "none"}, {"skill", "attached", "missing", "--json"},
 		{"group", "list", "--json"}, {"group", "reorder", "missing", "--up", "--json"},
 	} {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
@@ -497,6 +498,31 @@ func TestRemoteCommandArgsSessionSwitchVerbs(t *testing.T) {
 	for _, args := range reject {
 		if _, err := remoteCommandArgs(args); err == nil {
 			t.Fatalf("remoteCommandArgs(%v) must be refused", args)
+		}
+	}
+}
+
+// The skill lifecycle runs on the remote host: `skill attach` was already
+// forwarded, but `skill detach` and `skill attached` were refused as
+// "unsupported remote command" (rc.5 parity walk, g14), leaving no way to undo
+// an attach over `remote <name>`. `session remove` stays refused: it is
+// tracked as its own issue.
+func TestRemoteCommandArgsSkillLifecycle(t *testing.T) {
+	for _, args := range [][]string{
+		{"skill", "attach", "id", "session-share", "--source", "pool"},
+		{"skill", "detach", "id", "session-share", "--source", "pool"},
+		{"skill", "detach", "id", "session-share", "--restart", "--json"},
+		{"skill", "attached", "id"},
+		{"skill", "attached", "id", "--json"},
+	} {
+		got, err := remoteCommandArgs(args)
+		if err != nil || !reflect.DeepEqual(got, args) {
+			t.Fatalf("remoteCommandArgs(%v) = %v, %v; want the args unchanged", args, got, err)
+		}
+	}
+	for _, args := range [][]string{{"skill", "source", "add", "x"}, {"skill"}, {"session", "remove", "id"}} {
+		if _, err := remoteCommandArgs(args); err == nil {
+			t.Fatalf("remoteCommandArgs(%v) must stay unsupported", args)
 		}
 	}
 }

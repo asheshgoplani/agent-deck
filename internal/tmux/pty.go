@@ -606,6 +606,12 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	// Initial resize
 	sigwinch <- syscall.SIGWINCH
 
+	// tmux shows a broken ~/.tmux.conf to the first client that attaches by
+	// parking the pane in view-mode; agent-deck's detached servers make this
+	// attach that client (g14 rc.5 parity walk). Cancel the view so the agent
+	// pane is live and receives keys. See DismissConfigErrorView.
+	go s.DismissConfigErrorView(ctx, configErrorViewWindow)
+
 	// Channel to signal detach
 	detachCh := make(chan struct{})
 

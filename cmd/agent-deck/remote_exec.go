@@ -46,11 +46,20 @@ func remoteCommandArgs(args []string) ([]string, error) {
 					return append([]string(nil), args...), nil
 				}
 			}
-		case "mcp", "skill":
+		case "mcp":
 			// list is read-only: the TUI's remote new-session dialog offers
 			// the server's MCP names from it (mcp list --quiet, names only).
 			if len(args) > 1 && (args[1] == "attach" || args[1] == "list") {
 				return append([]string(nil), args...), nil
+			}
+		case "skill":
+			// The whole per-session lifecycle: attach needs detach to undo
+			// it, and attached is the read-only view of the same state.
+			if len(args) > 1 {
+				switch args[1] {
+				case "list", "attached", "attach", "detach":
+					return append([]string(nil), args...), nil
+				}
 			}
 		case "group":
 			if len(args) > 1 {
