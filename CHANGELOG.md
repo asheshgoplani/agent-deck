@@ -68,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-deck notify-daemon`, `remote add`, and `creds-refresh` no longer mutate state on a bare trailing `--help`/`-h` (closes #2025).
+- The context bar no longer presents a window inferred from the model id as a fact, and never reads above 100%. A percentage from the model-id table is marked `≈` and "inferred" (`session context --json` carries `window.inferred`); a reading above the window is shown as over-limit with the disproved figure named, and the window is reported unknown from then on, because a turn the transcript held is a lower bound the id cannot argue with. The conductor's proactive `/clear` now fails closed: it arms only on an established window (`AGENTDECK_CONTEXT_WINDOW`, or a size the harness reported), never on an inferred, unknown or disproved one, and logs why once per session. Unrecognised model ids get no 200k default any more. Deriving the window purely from observed usage is a follow-up (#2026).
 - `fix(tmux)`: bound stalled startup handover — a pane stuck mid-handoff no longer holds the startup-timeout watcher past its own generation (#2052).
 - Codex turn dedup now uses persisted hook generation/sequence instead of collapsing to running→waiting, so back-to-back Codex completions aren't merged into one notification (@benbergg, #2057).
 - Open Shell Here windows now inherit the session's configured tmux sizing policy (window-size/aggressive-resize) instead of tmux's global latest/off defaults (#2120).

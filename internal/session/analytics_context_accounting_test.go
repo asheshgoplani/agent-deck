@@ -278,17 +278,3 @@ func TestParseSessionJSONL_EmptyFile(t *testing.T) {
 		t.Errorf("gaps=%d turns=%d, want 0/0", analytics.ParseGaps, analytics.TotalTurns)
 	}
 }
-
-// TestContextWindowForModel_ExportedMatchesInternal keeps the exported wrapper
-// honest so other packages resolve windows from this one table.
-func TestContextWindowForModel_ExportedMatchesInternal(t *testing.T) {
-	for _, model := range []string{
-		"claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6",
-		"claude-opus-4-20250514", "claude-3-5-sonnet", "MiniMax-M2.5-highspeed",
-		"totally-unknown-model", "",
-	} {
-		if got, want := ContextWindowForModel(model), contextWindowForModel(model); got != want {
-			t.Errorf("ContextWindowForModel(%q) = %d, want %d", model, got, want)
-		}
-	}
-}

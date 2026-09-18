@@ -170,12 +170,29 @@ func (w WindowInfo) Known() bool { return w.Tokens > 0 && w.Source != WindowUnkn
 // with the same confidence as one computed from a window the harness reported.
 func (w WindowInfo) Assumed() bool { return w.Known() && w.Source == WindowModelFamily }
 
+// Inferred reports whether the size was read off the model identifier rather
+// than observed or configured.
+//
+// It is broader than [WindowInfo.Assumed]: an exact prefix-table row is still
+// an inference, because the identifier does not carry the window and one id
+// has been seen on sessions with different windows (issue #2026). A consumer
+// that acts destructively on the percentage — an automatic /clear — must treat
+// an inferred window as not knowable and stay disarmed; a consumer that only
+// displays it must say the figure is inferred.
+func (w WindowInfo) Inferred() bool {
+	return w.Known() && (w.Source == WindowModelDefault || w.Source == WindowModelFamily)
+}
+
 // windowInfoJSON is the wire form. Tokens is a pointer so an unknown window
 // emits null rather than 0.
 type windowInfoJSON struct {
 	Tokens *int         `json:"tokens"`
 	Source WindowSource `json:"source"`
-	Detail string       `json:"detail,omitempty"`
+	// Inferred is published so a consumer does not have to know which source
+	// names are guesses: true means the size came from the model id, not
+	// from anything the harness reported or the user configured.
+	Inferred bool   `json:"inferred,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // MarshalJSON emits an unknown window's size as null.
@@ -186,7 +203,7 @@ type windowInfoJSON struct {
 // crash, from a document whose whole promise is that an unknown is never
 // dressed up as a number. null cannot be misread that way.
 func (w WindowInfo) MarshalJSON() ([]byte, error) {
-	out := windowInfoJSON{Source: w.Source, Detail: w.Detail}
+	out := windowInfoJSON{Source: w.Source, Inferred: w.Inferred(), Detail: w.Detail}
 	if w.Known() {
 		tokens := w.Tokens
 		out.Tokens = &tokens
@@ -211,11 +228,60 @@ func (w *WindowInfo) UnmarshalJSON(b []byte) error {
 }
 
 // Percent returns used/window as a percentage and whether it is meaningful.
+//
+// A reading above 100% is never returned as a number. Nothing can hold more
+// than its window, so used > window is proof that the window is wrong, and the
+// honest answer is "no percentage" rather than a clamped 100% that looks like
+// a full context. [WindowInfo.Occupancy] carries the same reading with the
+// over-limit fact kept separate for surfaces that want to name it.
 func (w WindowInfo) Percent(used int) (float64, bool) {
-	if !w.Known() {
+	occ := w.Occupancy(used)
+	if !occ.Known {
 		return 0, false
 	}
-	return float64(used) / float64(w.Tokens) * 100, true
+	return occ.Percent, true
+}
+
+// Occupancy is one usage reading against a window, with the trust of both
+// attached so no surface can print the number without its qualifier.
+//
+// It is the one shape every consumer of a context percentage reads, whether it
+// draws a bar or arms an automatic /clear. Known is false for an unknown window
+// AND for a reading that exceeds it: a percentage above 100 is a computed
+// impossibility, and the only thing it proves is that the denominator was a
+// guess. Percent is therefore always within 0..100 and is 0 whenever Known is
+// false; OverLimit says which of the two unknowns this is.
+type Occupancy struct {
+	// Used is the numerator, in tokens.
+	Used int `json:"used"`
+	// Window is the denominator and its provenance. It is kept even when the
+	// reading is over the limit, because that is the figure the surface has
+	// to name as wrong.
+	Window WindowInfo `json:"window"`
+	// Percent is Used as a share of Window, 0..100, or 0 when not Known.
+	Percent float64 `json:"percent"`
+	// Known is true only when the window exists and Used fits inside it.
+	Known bool `json:"known"`
+	// Inferred mirrors [WindowInfo.Inferred] for the window this reading used.
+	Inferred bool `json:"inferred"`
+	// OverLimit is true when Used exceeds the window: the window is wrong, by
+	// at least Used-Window.Tokens tokens, and the reading is not a percentage.
+	OverLimit bool `json:"over_limit"`
+}
+
+// Occupancy computes the reading of used tokens against this window.
+func (w WindowInfo) Occupancy(used int) Occupancy {
+	occ := Occupancy{Used: used, Window: w, Inferred: w.Inferred()}
+	if !w.Known() {
+		return occ
+	}
+	if used > w.Tokens {
+		occ.OverLimit = true
+		return occ
+	}
+	occ.Known = true
+	occ.Percent = float64(used) / float64(w.Tokens) * 100
+	return occ
 }
 
 // Anchor is a provider-measured total for the fixed prefix — the one number in

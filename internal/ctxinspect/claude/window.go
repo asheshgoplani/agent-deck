@@ -22,12 +22,12 @@ const contextWindowEnv = ctxtext.WindowEnvVar
 // modelWindows maps model-identifier prefixes to context-window sizes,
 // most-specific first.
 //
-// The table mirrors the one agent-deck already ships in internal/session, which
-// is the project's maintained record of these sizes. What differs is the failure
-// mode: this lookup returns "unknown" for a family it does not recognise, where
-// the existing one returns 200,000 for anything. A denominator invented for an
-// unrecognised model turns an honest numerator into a misleading percentage, and
-// a missing gauge is better than a wrong one.
+// This is the project's one record of these sizes: internal/session resolves
+// the analytics bar's window through [ResolveWindow] too, so a model taught
+// here is taught everywhere. The lookup returns "unknown" for a family it does
+// not recognise rather than a global default. A denominator invented for an
+// unrecognised model turns an honest numerator into a misleading percentage,
+// and a missing gauge is better than a wrong one.
 //
 // Detail carries provenance, never advice. The remedy — "set
 // AGENTDECK_CONTEXT_WINDOW" — is owned by [ctxtext] and printed by every
@@ -71,6 +71,11 @@ var modelWindows = []struct {
 	{prefix: "claude-haiku-4", size: 200000, family: true},
 	{prefix: "claude-3-5", size: 200000, family: true},
 	{prefix: "claude-3-opus", size: 200000, family: true},
+	// MiniMax models, reached through the Claude-compatible harness. Ids are
+	// matched lower-cased, so the rows are spelled that way.
+	{prefix: "minimax-m3", size: 1000000},
+	{prefix: "minimax-m2.7", size: 204800},
+	{prefix: "minimax-m2.5", size: 204000},
 }
 
 // minorVersion reports the minor-version number an identifier adds to a family

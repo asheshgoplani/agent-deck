@@ -7,6 +7,7 @@
   "window": {
     "tokens": 1000000,
     "source": "model-default",
+    "inferred": true,
     "detail": "model prefix \"claude-opus-4-7\""
   },
   "basis": "observed",

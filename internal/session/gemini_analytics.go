@@ -1,8 +1,12 @@
 package session
 
 import (
+	"fmt"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect"
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/ctxtext"
 )
 
 // GeminiSessionAnalytics holds metrics for a Gemini session
@@ -87,17 +91,42 @@ func GeminiContextWindowForModel(model string) int {
 	return geminiDefaultContextWindow
 }
 
-// ContextPercent returns the percentage of the context window in use.
-// modelLimit is the model's context window size; if 0 it is resolved from the
-// Model field rather than assuming a single hardcoded window for every model.
-func (a *GeminiSessionAnalytics) ContextPercent(modelLimit int) float64 {
-	if modelLimit == 0 {
-		modelLimit = GeminiContextWindowForModel(a.Model)
+// tableWindow is the window the Gemini model table gives for this session's
+// model, marked model-default because it is an inference from the id.
+func (a *GeminiSessionAnalytics) tableWindow() ctxinspect.WindowInfo {
+	return ctxinspect.WindowInfo{
+		Tokens: GeminiContextWindowForModel(a.Model),
+		Source: ctxinspect.WindowModelDefault,
+		Detail: fmt.Sprintf("gemini model table for %q", a.Model),
 	}
-	if modelLimit <= 0 {
-		return 0
+}
+
+// ContextWindow resolves the window from the Gemini model table. A current
+// prompt larger than the table figure disproves it and the window becomes
+// unknown (issue #2026), the same rule the Claude bar applies.
+func (a *GeminiSessionAnalytics) ContextWindow() ctxinspect.WindowInfo {
+	if a == nil {
+		return ctxinspect.WindowInfo{Source: ctxinspect.WindowUnknown}
 	}
-	return float64(a.CurrentContextTokens) / float64(modelLimit) * 100
+	w := a.tableWindow()
+	if a.CurrentContextTokens > w.Tokens {
+		return ctxinspect.WindowInfo{
+			Source: ctxinspect.WindowUnknown,
+			Detail: fmt.Sprintf("the current turn holds %s tokens, more than the %s window the model table gives for %q, so that figure is wrong and the real window is unknown",
+				ctxtext.TokenAmount(a.CurrentContextTokens), ctxtext.TokenAmount(w.Tokens), a.Model),
+		}
+	}
+	return w
+}
+
+// ContextUsage is the Gemini context bar's reading with its trust attached;
+// see [SessionAnalytics.ContextUsage]. It reads against the table window so an
+// over-limit prompt is reported as such, with the disproved figure kept.
+func (a *GeminiSessionAnalytics) ContextUsage() ctxinspect.Occupancy {
+	if a == nil {
+		return ctxinspect.Occupancy{}
+	}
+	return a.tableWindow().Occupancy(a.CurrentContextTokens)
 }
 
 // GeminiModelPricing holds pricing per million tokens

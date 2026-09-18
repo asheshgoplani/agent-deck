@@ -128,7 +128,7 @@ func yesAnswer(s string) bool { return s == "y" || s == "yes" }
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
 	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude or codex)")
-	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up")
+	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up (the /clear only arms on an established context window: AGENTDECK_CONTEXT_WINDOW or a harness-reported size)")
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
@@ -167,6 +167,8 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("        Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 		fmt.Println("  -no-clear-on-compact")
 		fmt.Println("        Claude-only: allow normal compaction instead of /clear when context fills up")
+		fmt.Println("        The /clear only arms on an established context window (AGENTDECK_CONTEXT_WINDOW")
+		fmt.Println("        or a harness-reported size); a window inferred from the model id leaves it off.")
 		fmt.Println()
 		fmt.Println("Conductor-specific files:")
 		fmt.Println("  -instructions-md string")

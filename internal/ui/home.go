@@ -480,6 +480,9 @@ type Home struct {
 
 	// Context-% based /clear for conductor sessions with clear_on_compact
 	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
+	// clearOnCompactDisarmed holds the last logged disarm reason per instance,
+	// so the fail-closed gate says why once rather than every tick.
+	clearOnCompactDisarmed map[string]string
 
 	// File watcher for external changes (auto-reload)
 	storageWatcher      *StorageWatcher
@@ -6331,25 +6334,30 @@ func (h *Home) backgroundStatusUpdate() {
 				continue
 			}
 		}
-		// Check cached analytics for context usage
+		// Check cached analytics for context usage. The gate fails closed on
+		// a window that is inferred, unknown or disproved (issue #2026); the
+		// reason is logged once per session so a disarmed trigger is visible.
 		cached := h.getAnalyticsForSession(inst)
 		if cached == nil {
 			continue
 		}
-		if cached.ContextPercent(0) >= clearOnCompactThreshold {
-			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-				h.clearOnCompactSent[inst.ID] = time.Now()
-				conductorName := strings.TrimPrefix(inst.Title, "conductor-")
-				safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
-					time.Sleep(500 * time.Millisecond)
-					msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
-					if err := clearConductorAndHeartbeat(func(body string) error {
-						return deliverToConductorPane(tmuxSess, body)
-					}, msg, 3*time.Second); err != nil {
-						uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
-					}
-				})
-			}
+		due, reason := clearOnCompactDue(cached)
+		if !due {
+			h.noteClearOnCompactDisarmed(inst.ID, reason)
+			continue
+		}
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			h.clearOnCompactSent[inst.ID] = time.Now()
+			conductorName := strings.TrimPrefix(inst.Title, "conductor-")
+			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
+				time.Sleep(500 * time.Millisecond)
+				msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
+				if err := clearConductorAndHeartbeat(func(body string) error {
+					return deliverToConductorPane(tmuxSess, body)
+				}, msg, 3*time.Second); err != nil {
+					uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
+				}
+			})
 		}
 	}
 

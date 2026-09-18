@@ -262,6 +262,12 @@ Backward compat: sessions in the `conductor` group with NO matching `[conductors
 
 Closes [issue #602](https://github.com/asheshgoplani/agent-deck/issues/602).
 
+#### Context window and the proactive `/clear`
+
+The session analytics context bar divides the current prompt size by the model's context window. A model id does not carry its window, so a size read off the model-id table is shown as `≈49.5% (window inferred from model id)`, a reading larger than that table figure is shown as over-limit with the figure named (the window is then unknown, not 100% full), and an id the table has never seen shows `window unknown`. Set `AGENTDECK_CONTEXT_WINDOW=<tokens>` in the deck's environment to supply the real size; it renders plain, with no `≈`.
+
+A conductor's proactive `/clear` (`clear_on_compact`) only arms on an established window — that variable, or a size the harness reported. On an inferred, unknown or disproved window it stays off and the conductor falls back to Claude's own compaction; the reason is logged once per session as `conductor_clear_on_compact_disarmed`. See [issue #2026](https://github.com/asheshgoplani/agent-deck/issues/2026).
+
 #### Switch a session's account on the fly
 
 For a new one-shot session, use `agent-deck launch . -c claude --account <name>`.

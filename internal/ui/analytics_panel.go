@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect"
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/ctxtext"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -164,58 +166,11 @@ func (p *AnalyticsPanel) renderGeminiView() string {
 	return b.String()
 }
 
-// renderGeminiContextBar renders a visual bar for Gemini context usage
+// renderGeminiContextBar renders the context bar for a Gemini session. The
+// window is resolved from the session's own model ID; hardcoding 1M was wrong
+// for every model with a different window (e.g. gemini-1.5-pro is 2M).
 func (p *AnalyticsPanel) renderGeminiContextBar() string {
-	labelStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
-
-	// Resolve the window from the session's own model ID. Hardcoding 1M was
-	// wrong for every model with a different window (e.g. gemini-1.5-pro is 2M),
-	// and silently wrong whenever the model changed.
-	percent := p.geminiAnalytics.ContextPercent(0)
-	if percent > 100 {
-		percent = 100
-	}
-
-	// Choose color based on usage
-	var barColor lipgloss.Color
-	switch {
-	case percent < 60:
-		barColor = ColorGreen
-	case percent < 80:
-		barColor = ColorYellow
-	default:
-		barColor = ColorRed
-	}
-
-	barStyle := lipgloss.NewStyle().Foreground(barColor)
-
-	// Calculate bar width
-	maxBarWidth := 30
-	if p.width > 0 && p.width < 50 {
-		maxBarWidth = p.width - 20
-		if maxBarWidth < 10 {
-			maxBarWidth = 10
-		}
-	}
-
-	filledWidth := int(percent / 100 * float64(maxBarWidth))
-	if filledWidth > maxBarWidth {
-		filledWidth = maxBarWidth
-	}
-	emptyWidth := maxBarWidth - filledWidth
-
-	bar := barStyle.Render(strings.Repeat("█", filledWidth)) +
-		dimStyle.Render(strings.Repeat("░", emptyWidth))
-
-	percentStr := fmt.Sprintf("%.1f%%", percent)
-	percentStyle := lipgloss.NewStyle().Foreground(barColor).Bold(true)
-
-	return fmt.Sprintf("%s [%s] %s",
-		labelStyle.Render("Context"),
-		bar,
-		percentStyle.Render(percentStr),
-	)
+	return p.renderOccupancyBar(p.geminiAnalytics.ContextUsage())
 }
 
 // renderGeminiTokens renders the token breakdown for Gemini
@@ -381,17 +336,52 @@ func (p *AnalyticsPanel) renderParseGapWarning() string {
 	))
 }
 
-// renderContextBar renders a visual bar showing context window usage
+// renderContextBar renders the context bar for a Claude-compatible session.
 func (p *AnalyticsPanel) renderContextBar() string {
+	return p.renderOccupancyBar(p.analytics.ContextUsage())
+}
+
+// renderOccupancyBar draws one context reading with its trust attached.
+//
+// Three shapes, because the denominator has three states (issue #2026):
+//
+//   - established window: a filled bar and a plain percentage;
+//   - inferred window (model-id table): the same bar, the percentage marked
+//     "≈" and the word "inferred", so a figure the deck guessed never looks
+//     like one it measured;
+//   - unknown or disproved window: an indeterminate bar and no percentage.
+//     A reading over 100% is not clamped to a full bar — a full bar says
+//     "compact now", and what the reading actually proves is that the window
+//     is wrong. It names the usage and the figure it exceeded; a window that
+//     could not be resolved names the remedy instead.
+func (p *AnalyticsPanel) renderOccupancyBar(u ctxinspect.Occupancy) string {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+	label := labelStyle.Render("Context")
 
-	percent := p.analytics.ContextPercent(0) // 0 => resolve the window from the model ID
-	if percent > 100 {
-		percent = 100
+	// Bar width (max 30 chars for the bar itself)
+	maxBarWidth := 30
+	if p.width > 0 && p.width < 50 {
+		maxBarWidth = p.width - 20
+		if maxBarWidth < 10 {
+			maxBarWidth = 10
+		}
 	}
 
-	// Choose color based on usage
+	if !u.Known {
+		bar := dimStyle.Render(strings.Repeat("·", maxBarWidth))
+		var note string
+		if u.OverLimit {
+			note = lipgloss.NewStyle().Foreground(ColorRed).Bold(true).Render(
+				fmt.Sprintf("%s over the %s window (%s) — window unknown",
+					ctxtext.TokenAmount(u.Used), ctxtext.TokenAmount(u.Window.Tokens), u.Window.Source))
+		} else {
+			note = dimStyle.Render("window unknown — " + ctxtext.WindowRemedy())
+		}
+		return fmt.Sprintf("%s [%s] %s", label, bar, note)
+	}
+
+	percent := u.Percent
 	var barColor lipgloss.Color
 	switch {
 	case percent < 60:
@@ -401,35 +391,23 @@ func (p *AnalyticsPanel) renderContextBar() string {
 	default:
 		barColor = ColorRed
 	}
-
 	barStyle := lipgloss.NewStyle().Foreground(barColor)
-
-	// Calculate bar width (max 30 chars for the bar itself)
-	maxBarWidth := 30
-	if p.width > 0 && p.width < 50 {
-		maxBarWidth = p.width - 20
-		if maxBarWidth < 10 {
-			maxBarWidth = 10
-		}
-	}
 
 	filledWidth := int(percent / 100 * float64(maxBarWidth))
 	if filledWidth > maxBarWidth {
 		filledWidth = maxBarWidth
 	}
-	emptyWidth := maxBarWidth - filledWidth
-
 	bar := barStyle.Render(strings.Repeat("█", filledWidth)) +
-		dimStyle.Render(strings.Repeat("░", emptyWidth))
+		dimStyle.Render(strings.Repeat("░", maxBarWidth-filledWidth))
 
 	percentStr := fmt.Sprintf("%.1f%%", percent)
+	suffix := ""
+	if u.Inferred {
+		percentStr = "≈" + percentStr
+		suffix = " " + dimStyle.Render("(window inferred from model id)")
+	}
 	percentStyle := lipgloss.NewStyle().Foreground(barColor).Bold(true)
-
-	return fmt.Sprintf("%s [%s] %s",
-		labelStyle.Render("Context"),
-		bar,
-		percentStyle.Render(percentStr),
-	)
+	return fmt.Sprintf("%s [%s] %s%s", label, bar, percentStyle.Render(percentStr), suffix)
 }
 
 // renderTokens renders the token breakdown section
