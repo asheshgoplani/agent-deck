@@ -19,3 +19,12 @@
 - [x] P3 nudge subprocess timeout covers the send lock wait (constants tied); test
 - [x] go build/vet host; Docker suite; code-simplifier; live `hooks status` read-only (on a copy of settings.json)
 - [x] RESULTS.md, PR-BODY.md, commits with Claude-Session trailer
+
+## Round 3 (review HOLD b18124b1)
+
+- [x] F1 lossless heal: order-preserving JSON round trip, only agent-deck entries touched, atomic write, one-time `settings.json.bak-agentdeck-<ts>`, no write when unchanged, malformed JSON → error, no write; tests (user hooks + timeout + prompt hooks + custom matchers survive; idempotent; malformed)
+- [x] F2 pin only stable install paths (/opt/homebrew/bin, /usr/local/bin, ~/.local/bin, ...); dev build → "unpinnable dev build: hooks keep the bare command", never written; `hooks status` read-only; older binary never heals a newer pin; tests per path class
+- [x] F3 handler enforces "async install never drains" at drain time (settings.json Stop entry form + marker); test
+- [x] F4 CLI-installed (drifted but present) entries count as installed for the TUI prompt; drift repaired silently, no prompt; test
+- [x] go build/vet host; Docker suite; code-simplifier; live `hooks status` mtime proof
+- [x] RESULTS.md, PR-BODY.md (sanitized), commits with Claude-Session trailer
