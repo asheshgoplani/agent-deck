@@ -235,29 +235,42 @@ terminal-features = "*:hyperlinks:extkeys"
 
 ### One tmux Window Stuck at 80x24 While Its Siblings Are Full Width
 
-`window-size` is a tmux **window** option. Agent Deck applies `largest` and
-`aggressive-resize on` to the initial session window and windows created by
-**Open Shell Here** in window mode. Explicit `[tmux.options]` values replace
-those defaults. For a new shell window, a local option installed by your
-`after-new-window` hook takes precedence.
+`window-size` and `aggressive-resize` are tmux **window** options. Agent Deck
+applies `window-size smallest` and `aggressive-resize on` to every window of a
+Deck session: the initial window at session start, windows created by **Open
+Shell Here** in window mode, and, since v1.16.11, windows opened any other way
+inside the session (`prefix c`, an agent's own `tmux new-window`, a control
+client). Explicit `[tmux.options]` values replace those defaults everywhere.
 
-Windows created outside that Deck action, including `prefix c` or an agent's
-own `tmux new-window`, still inherit tmux's global window defaults. If that
-default is `latest`, windows with different active clients can have different
-sizes. This policy difference does not by itself establish that a size-less
-control client caused a collapse to 80x24; capture window dimensions and client
-flags when diagnosing that symptom.
+Windows opened by hand get the policy from one `after-new-window` hook that
+Deck keeps in a reserved slot (`after-new-window[2259]`) of the server's
+global hook array. Your own global `after-new-window` hook keeps running in
+Deck sessions, and a `window-size` or `aggressive-resize` value it installs
+takes precedence over Deck's (Deck applies its values with `set-option -o`).
+Sessions Deck did not start are not touched. `tmux show-hooks -g` shows both
+entries; `set-hook -g after-new-window ...` without `-a` replaces the whole
+array, including Deck's slot, until the next Deck session starts.
 
-To choose `largest` for all newly created windows, including native tmux
-windows, set your own global default:
+Note the window in a session created before v1.16.11 keeps whatever it had:
+the hook only reaches windows created after the session started on the new
+binary. If a hand-opened window in such a session is stuck, fix it in place
+with `tmux set-option -w -t <session>:<window> window-size smallest`, or
+restart the session.
 
-```conf
-# ~/.tmux.conf
-set -wg window-size largest
+A size policy difference does not by itself establish that a size-less control
+client caused a collapse to 80x24; capture window dimensions and client flags
+when diagnosing that symptom.
+
+To choose a different policy for all windows, including native tmux windows,
+set it in config.toml:
+
+```toml
+[tmux.options]
+window-size = "largest"
 ```
 
-or fix one window in place with
-`tmux set-option -w -t <session>:<window> window-size largest`.
+or set your own global default in `~/.tmux.conf` (`set -wg window-size
+largest`) for sessions Deck does not manage.
 
 ## Debugging
 

@@ -2723,20 +2723,16 @@ func (s *Session) Start(command string) error {
 	}
 	if _, ok := s.OptionOverrides["aggressive-resize"]; !ok {
 		startArgs = append(startArgs, ";", "set-window-option", "-t", s.Name, "aggressive-resize", "on")
-		// #2259: aggressive-resize is a per-window option, so the line above
-		// only reaches the window that exists at Start() time. NewShellWindow
-		// re-applies it for windows Deck itself opens (#2186), but a window a
-		// user opens by hand (tmux's own `c` binding) never goes through that
-		// path and would keep the window's option-table default (off)
-		// forever — tmux has no way to retarget a window option once the
-		// window already exists. A session-scoped after-new-window hook does
-		// reach it: tmux runs session hooks with the newly created window as
-		// the implicit target, before any client can render it, so this
-		// closes the gap for hand-opened windows too. Re-set (not appended)
-		// on every Start() so repeated starts on the same session don't pile
-		// up duplicate hook entries.
-		startArgs = append(startArgs, ";", "set-hook", "-t", s.Name, "after-new-window", "set-window-option aggressive-resize on")
 	}
+	// #2259: both are per-window options, so the lines above only reach the
+	// window that exists at Start() time and NewShellWindow re-applies them
+	// for windows Deck itself opens (#2186). A window a user opens by hand
+	// (tmux's own `c` binding) goes through neither path, and tmux has no way
+	// to retarget a window option once the window exists. Publish the
+	// effective policy on the session and let a server-wide after-new-window
+	// hook apply it to every later window (see windowPolicyHookArgs).
+	startArgs = append(startArgs, s.windowPolicyOptionArgs()...)
+	startArgs = append(startArgs, windowPolicyHookArgs()...)
 	_ = commandRun(s.tmuxCmd(startArgs...))
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
@@ -6601,19 +6597,13 @@ func (s *Session) NewShellWindow(workdir string) error {
 	// may print more output or select another window. Configure that exact ID.
 	windowID, _, _ := strings.Cut(string(out), "\n")
 	args = nil
-	for _, option := range []struct{ key, value string }{
-		{"window-size", "smallest"},
-		{"aggressive-resize", "on"},
-	} {
-		if value, ok := s.OptionOverrides[option.key]; ok {
-			option.value = value
-		}
+	for _, option := range windowPolicyOptions {
 		if len(args) > 0 {
 			args = append(args, ";")
 		}
 		// Like Start, apply Deck's defaults/configuration, but preserve any
 		// local option a user's after-new-window hook explicitly installed.
-		args = append(args, "set-window-option", "-oq", "-t", windowID, option.key, option.value)
+		args = append(args, "set-window-option", "-oq", "-t", windowID, option.key, s.windowPolicyValue(option.key, option.defaultValue))
 	}
 	// Creation succeeded. As in Start, option configuration is best effort;
 	// an invalid override must not report failure and invite a duplicate tab.
