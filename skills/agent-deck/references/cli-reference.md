@@ -333,6 +333,26 @@ The JSON form is the machine-readable identity a session fetches from inside: `t
 2. Parse from `CLAUDE_CONFIG_DIR` (`~/.claude-team` -> `work`)
 3. Config default or `default`
 
+### session recent
+
+```bash
+agent-deck session recent [--json] [--limit N]
+```
+
+CLI parity for the TUI's alternate-session toggle (`` ` ``) and MRU walk
+(`Alt+←`/`Alt+→`, #2058): lists sessions most-recently-used first, backed by
+the same persisted `last_accessed` column. Sessions that have never been
+attached are omitted — there's nothing to rank them by. `--limit 0` removes
+the cap (default 20).
+
+```bash
+agent-deck session recent
+# 2026-08-23 07:21:34  FP-Agent-Desk                  a1b2c3d4
+# 2026-08-23 07:20:19  Gog-Secure                      e5f6a7b8
+
+agent-deck session recent --json --limit 5
+```
+
 ### session set
 
 ```bash

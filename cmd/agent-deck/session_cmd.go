@@ -61,6 +61,8 @@ func handleSession(profile string, args []string) {
 		handleSessionAttach(profile, args[1:])
 	case "focus":
 		handleSessionFocus(profile, args[1:])
+	case "recent":
+		handleSessionRecent(profile, args[1:])
 	case "show":
 		handleSessionShow(profile, args[1:])
 	case "current":
@@ -135,6 +137,7 @@ func printSessionHelp() {
 	fmt.Println("  switch-preview <id>     Preview switch capability, fidelity and refusals (read-only, no mutation)")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
+	fmt.Println("  recent [--limit N]      List sessions most-recently-used first (same last_accessed the TUI's alternate/MRU keys use)")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
@@ -183,6 +186,8 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session context my-project --json         # Full report with provenance")
 	fmt.Println("  agent-deck session archive my-project                # Stop and hide the session")
 	fmt.Println("  agent-deck session unarchive my-project              # Restore an archived session")
+	fmt.Println("  agent-deck session recent                            # Most-recently-used sessions first")
+	fmt.Println("  agent-deck session recent --json --limit 5           # Same, machine-readable, top 5")
 	fmt.Println()
 	fmt.Println("Set command fields:")
 	fmt.Println("  title              Session title")

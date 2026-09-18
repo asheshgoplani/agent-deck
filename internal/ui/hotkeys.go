@@ -83,6 +83,17 @@ const (
 	// suggested Ctrl+S collides with Claude Code (stash prompt) and XOFF
 	// flow-control. Users opt in by binding [hotkeys].switch_session.
 	hotkeySwitchSession = "switch_session" // canonical "ctrl+s" (opt-in)
+	// hotkeyAltSession is the vim-style alternate-session toggle (#2058): one
+	// key that swaps between the current session and the one you were on
+	// immediately before, the way Ctrl+^ swaps vim's alternate buffer. Backed
+	// by MRUHistory.Alternate (internal/session/mru.go).
+	hotkeyAltSession = "alt_session"
+	// hotkeyMRUBack / hotkeyMRUForward walk back/forward through recently
+	// visited sessions (#2058), MRU-ordered via the persisted last_accessed
+	// column (MRUHistory.WalkBack/WalkForward). A burst of either key holds
+	// the walk order stable rather than reshuffling after each hop.
+	hotkeyMRUBack    = "mru_back"
+	hotkeyMRUForward = "mru_forward"
 	// Scrollback pager. While attached to a session from the deck (Enter), the
 	// deck owns the viewport so tmux's own copy-mode/scrollback is unreachable
 	// (#1491). This trigger, intercepted in the attach loop, opens an in-view
@@ -148,6 +159,9 @@ var hotkeyActionOrder = []string{
 	hotkeyDeadLetters,
 	hotkeyAgentsPanel,
 	hotkeySwitchSession,
+	hotkeyAltSession,
+	hotkeyMRUBack,
+	hotkeyMRUForward,
 }
 
 var defaultHotkeyBindings = map[string]string{
@@ -201,6 +215,9 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyDeadLetters:      "alt+d",
 	hotkeyAgentsPanel:      "alt+a",
 	hotkeySwitchSession:    "ctrl+s",
+	hotkeyAltSession:       "`",
+	hotkeyMRUBack:          "alt+left",
+	hotkeyMRUForward:       "alt+right",
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{

@@ -26,6 +26,8 @@ Reconciled against the in-app help overlay (`?`), which is the source of truth
 | `Space` | Jump mode |
 | `Enter` | Attach to session OR toggle group |
 | `Shift+Enter` | Open session in new iTerm window (macOS) |
+| `` ` `` | Alternate-session toggle: swap with the previous session, vim `Ctrl-^` style (**rebindable** as `alt_session`) |
+| `Alt+←` / `Alt+→` | Walk back / forward through recently used sessions, MRU-ordered via `last_accessed` (**rebindable** as `mru_back` / `mru_forward`) |
 
 ### Group Navigation
 
