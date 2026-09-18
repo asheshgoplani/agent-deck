@@ -832,7 +832,7 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 ### remote drain
 
 ```bash
-agent-deck remote drain <name|user@host> [--into <session-id>] [--json]
+agent-deck remote drain <remote-name> [--into <session-id>] [--json]
 ```
 
 Pulls the completion and transition records a remote agent-deck instance holds and writes them into **this** machine's inbox, so a conductor that launched workers on another host learns they finished without tmux-scraping or file polling (issue #1948).

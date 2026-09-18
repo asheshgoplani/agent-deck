@@ -45,6 +45,27 @@ func TestReportBudgetsUnknownAndPartial(t *testing.T) {
 		}
 	}
 }
+func TestOlderRecordsWithoutBinaryVersionStillLoad(t *testing.T) {
+	d := t.TempDir()
+	now := time.Now().UTC()
+	p := filepath.Join(d, "tui-1-test.jsonl")
+	// Simulates a record written before binary_version existed: the field is
+	// simply absent from the JSON line, not present-and-empty.
+	line := fmt.Sprintf(`{"version":1,"timestamp":%q,"role":"tui","pid":1,"started_at":%q}`, now.Format(time.RFC3339Nano), now.Add(-time.Hour).Format(time.RFC3339Nano))
+	if err := os.WriteFile(p, []byte(line+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Report(d, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Processes) != 1 {
+		t.Fatalf("older record without binary_version was dropped: %+v", report)
+	}
+	if report.Processes[0].Latest.BinaryVersion != "" {
+		t.Fatalf("unexpected binary version on older record: %+v", report.Processes[0].Latest)
+	}
+}
 func TestRetentionRotationAndIsolation(t *testing.T) {
 	d := t.TempDir()
 	old := filepath.Join(d, "tui-1-old.jsonl")
@@ -70,7 +91,7 @@ func TestRetentionRotationAndIsolation(t *testing.T) {
 }
 func TestSamplerAndPositiveSince(t *testing.T) {
 	d := t.TempDir()
-	stop := Start(d, "tui", t.TempDir())
+	stop := Start(d, "tui", t.TempDir(), "1.16.11-test")
 	if !Enabled() {
 		t.Fatal("sampler not enabled")
 	}
@@ -90,6 +111,9 @@ func TestSamplerAndPositiveSince(t *testing.T) {
 		t.Fatal("missing runtime count")
 	}
 	latest := r.Processes[0].Latest
+	if latest.BinaryVersion != "1.16.11-test" {
+		t.Fatalf("binary version not recorded: %+v", latest)
+	}
 	if latest.OpenFDs == nil || *latest.OpenFDs <= 0 || latest.CPUPercent == nil || *latest.CPUPercent < 0 {
 		t.Fatalf("missing native process observations: %+v", latest)
 	}
@@ -193,7 +217,7 @@ func TestSamplerConsumesIntervalObservations(t *testing.T) {
 	RecordStatusPass(time.Millisecond, 1, 1)
 	RecordDBQuery(time.Millisecond)
 	RecordRemote("test", time.Millisecond, "ok")
-	stop := Start(d, "tui", t.TempDir())
+	stop := Start(d, "tui", t.TempDir(), "1.16.11-test")
 	stop()
 	r, err := Report(d, time.Hour)
 	if err != nil {

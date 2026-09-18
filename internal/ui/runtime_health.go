@@ -7,21 +7,25 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The status worker queues a warning; only the UI goroutine mutates footer state.
+// The status worker queues its latest verdict (possibly "" to signal recovery);
+// only the UI goroutine mutates footer state.
 func (h *Home) queueHealthWarning(elapsed time.Duration, sessions int, calls int64) {
 	warning := health.BudgetWarning(elapsed, sessions, calls)
-	if warning != "" && h.healthWarningQueued.CompareAndSwap(false, true) {
-		h.healthWarningPending.Store(&warning)
-	}
+	h.healthWarningPending.Store(&warning)
 }
 
 func (h *Home) consumeHealthWarning() {
-	if warning := health.CurrentWarning(); warning != "" && h.healthWarningQueued.CompareAndSwap(false, true) {
-		h.healthWarningPending.Store(&warning)
-	}
 	if warning := h.healthWarningPending.Swap(nil); warning != nil {
 		h.healthWarningText = *warning
-		h.healthWarningAt = time.Now()
+		if *warning != "" {
+			h.healthWarningAt = time.Now()
+		}
+	}
+	if h.healthWarningText == "" {
+		if warning := health.CurrentWarning(); warning != "" {
+			h.healthWarningText = warning
+			h.healthWarningAt = time.Now()
+		}
 	}
 }
 

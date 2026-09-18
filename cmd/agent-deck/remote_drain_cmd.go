@@ -135,7 +135,7 @@ type remoteDrainResult struct {
 }
 
 func printRemoteDrainUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: agent-deck remote drain <remote-name|user@host> [--into <session-id>] [--json]")
+	fmt.Fprintln(w, "Usage: agent-deck remote drain <remote-name> [--into <session-id>] [--json]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Pull completion and transition records from a remote agent-deck instance")
 	fmt.Fprintln(w, "into this machine's inbox. The remote is read-only: nothing there is")

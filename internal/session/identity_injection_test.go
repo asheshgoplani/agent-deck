@@ -627,6 +627,66 @@ func TestBuildIdentityPrompt_CollapsesControlCharactersInFields(t *testing.T) {
 	}
 }
 
+// FIX 4: the identity block must point agents at pool skills and say where
+// this session actually runs.
+func TestBuildIdentityPrompt_HostAndSkillsSection(t *testing.T) {
+	identityTestEnv(t)
+	inst := identityTestInstance("claude")
+	got := inst.BuildIdentityPrompt()
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "- host: "+hostname+"\n") {
+		t.Errorf("missing local hostname line:\n%s", got)
+	}
+
+	wantSection := "\n## Skills\nPool skills exist for many tasks. List: `agent-deck skill list`; attach to this session: `agent-deck skill attach <session id> <skill>` (then restart); attached now: none.\n"
+	if !strings.Contains(got, wantSection) {
+		t.Errorf("skills section mismatch:\nwant substring %q\ngot:\n%s", wantSection, got)
+	}
+	if lines := strings.Count(wantSection, "\n") - 1; lines > 6 { // -1: leading blank line is a separator, not section content
+		t.Fatalf("test bug: section itself exceeds the 6-line budget (%d)", lines)
+	}
+}
+
+func TestBuildIdentityPrompt_SkillsSectionListsAttachedSkills(t *testing.T) {
+	identityTestEnv(t)
+	inst := identityTestInstance("claude")
+	if err := os.MkdirAll(inst.ProjectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{
+		{ID: "b", Name: "systematic-debugging", Source: "pool"},
+		{ID: "a", Name: "brainstorming", Source: "pool"},
+	}}
+	if err := SaveProjectSkillsManifest(inst.ProjectPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	got := inst.BuildIdentityPrompt()
+	if !strings.Contains(got, "attached now: brainstorming, systematic-debugging.\n") {
+		t.Errorf("attached skills not listed:\n%s", got)
+	}
+}
+
+func TestBuildIdentityPrompt_HostLabelIsRemoteNameForSSHSession(t *testing.T) {
+	home := identityTestEnv(t)
+	configPath := filepath.Join(home, ".config", "agent-deck", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("[remotes.lab]\nhost = 'worker@lab-box'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst := identityTestInstance("claude")
+	inst.SSHHost = "worker@lab-box"
+	got := inst.BuildIdentityPrompt()
+	if !strings.Contains(got, "- host: lab\n") {
+		t.Errorf("SSH session should resolve host to the configured remote's name:\n%s", got)
+	}
+}
+
 // #2237: a session switched to another harness is a NEW instance in a NEW
 // harness and must carry ITS identity (not the source's) through the target
 // harness's native flag, while the immutable plan stays untouched.

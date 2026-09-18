@@ -15,7 +15,7 @@ func TestCurrentMainHelpPreservesSelectedDetailsAndState(t *testing.T) {
 		want []string
 	}{
 		{"remote-drain", []string{"remote", "drain"}, []string{
-			"Usage: agent-deck remote drain <remote-name|user@host>",
+			"Usage: agent-deck remote drain <remote-name>",
 			"--into <session-id>", "--json", "into this machine's inbox", "remote is read-only",
 		}},
 		{"inbox-root", []string{"inbox"}, []string{

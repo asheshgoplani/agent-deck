@@ -142,6 +142,7 @@ func (i *Instance) BuildIdentityPrompt() string {
 	fmt.Fprintf(&b, "- tool: %s\n", val(i.Tool))
 	fmt.Fprintf(&b, "- group: %s\n", val(i.GroupPath))
 	fmt.Fprintf(&b, "- profile: %s\n", profile)
+	fmt.Fprintf(&b, "- host: %s\n", val(i.hostLabel()))
 	fmt.Fprintf(&b, "- account: %s\n", val(i.Account))
 	fmt.Fprintf(&b, "- parent session id: %s\n", parent)
 	fmt.Fprintf(&b, "- project path: %s\n", val(i.ProjectPath))
@@ -156,6 +157,8 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("- `agent-deck session children --json` — live status and asserted completions of your children\n")
 	fmt.Fprintf(&b, "- `agent-deck inbox drain --json %s` — completion events your children queued for you\n", val(i.ID))
 	b.WriteString("- `agent-deck list --json` — every session in this profile\n")
+	b.WriteString("\n## Skills\n")
+	fmt.Fprintf(&b, "Pool skills exist for many tasks. List: `agent-deck skill list`; attach to this session: `agent-deck skill attach <session id> <skill>` (then restart); attached now: %s.\n", attachedSkillNames(i.ProjectPath))
 	b.WriteString("\n## Completion sentinel\n")
 	b.WriteString("When a task you were given by a parent is fully done, end your final message with exactly one line:\n")
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
@@ -163,6 +166,41 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\nThis block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n")
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
+}
+
+// hostLabel identifies where this session actually runs: the configured
+// remote's name for an SSH session, or the local machine's hostname.
+func (i *Instance) hostLabel() string {
+	if i.IsSSH() {
+		if cfg, _ := LoadUserConfig(); cfg != nil {
+			for name, rc := range cfg.Remotes {
+				if rc.Host == i.SSHHost {
+					return name
+				}
+			}
+		}
+		return i.SSHHost
+	}
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// attachedSkillNames lists the project's currently-attached pool skills (from
+// skills.toml), or "none". Never errors: a missing/unreadable manifest reads
+// the same as no skills attached.
+func attachedSkillNames(projectPath string) string {
+	skills, err := GetAttachedProjectSkills(projectPath)
+	if err != nil || len(skills) == 0 {
+		return "none"
+	}
+	names := make([]string, len(skills))
+	for i, s := range skills {
+		names[i] = s.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 // identityOneLine replaces every control character (newline, tab, escape,
