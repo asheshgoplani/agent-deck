@@ -35,17 +35,26 @@ const doneScanTailLines = 25
 
 // ValidateTranscriptPath cleans a Claude Code transcript path and applies the
 // same traversal / containment guards as the hook cost path: no "..", and the
-// path must live under ~/.claude (where Claude Code keeps transcripts). Both
+// path must live under one of the transcript roots (transcriptRoots). Both
 // the hook handler (payload-supplied path) and the daemon (path re-read from
 // a hook status file) gate on this before opening the file.
 //
-// Containment is fail-closed and boundary-aware. A raw HasPrefix against
-// ~/.claude wrongly accepts sibling directories (e.g. ~/.claude-spoof/x.jsonl,
-// whose string prefix matches but which lives outside the transcript root), so
-// the path must equal the root exactly OR begin with root + path separator. If
-// the home directory cannot be resolved we cannot establish the containment
-// root, so we REJECT rather than fall through (a missing root must never
-// disable containment for a payload-supplied path).
+// Messaging audit P1-2: the only root used to be ~/.claude, but every
+// agent-deck-launched Claude runs with CLAUDE_CONFIG_DIR pointing at a
+// worker-scratch home or a named account slot and reports transcript_path
+// under THAT directory, so the sentinel scan was skipped for every worker and
+// no [DONE] ever became a finished event. The roots now also include
+// $CLAUDE_CONFIG_DIR, every configured account slot, the global
+// [claude].config_dir and the worker-scratch root.
+//
+// Containment is fail-closed and boundary-aware, in two stages. Lexically the
+// path must equal a root or begin with root + separator (a raw HasPrefix would
+// accept ~/.claude-spoof/x.jsonl). Then both the path (resolved on its deepest
+// existing ancestor, so a symlinked parent with a not-yet-flushed leaf still
+// resolves) and the roots are symlink-resolved and the REAL location must
+// again sit under a real root: a symlink under a root that points outside
+// every root is rejected. If no root can be established (home unresolvable)
+// the path is rejected rather than falling through.
 func ValidateTranscriptPath(path string) (string, bool) {
 	if strings.TrimSpace(path) == "" {
 		return "", false
@@ -54,15 +63,67 @@ func ValidateTranscriptPath(path string) (string, bool) {
 	if strings.Contains(cleanPath, "..") {
 		return "", false
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	roots := transcriptRoots()
+	if len(roots) == 0 {
 		return "", false
 	}
-	root := filepath.Join(home, ".claude")
-	if cleanPath != root && !strings.HasPrefix(cleanPath, root+string(os.PathSeparator)) {
+	if !containedUnderAny(cleanPath, roots) {
+		return "", false
+	}
+	realRoots := make([]string, 0, len(roots))
+	for _, r := range roots {
+		realRoots = append(realRoots, resolveCanonical(r))
+	}
+	if !containedUnderAny(resolveProbeTarget(cleanPath), realRoots) {
 		return "", false
 	}
 	return cleanPath, true
+}
+
+// transcriptRoots returns the absolute, cleaned directories a Claude Code
+// transcript may legitimately live under: ~/.claude, $CLAUDE_CONFIG_DIR (the
+// hook handler inherits it from the session), every [profiles.<name>.claude]
+// config_dir account slot, the global [claude].config_dir, every
+// [conductors.<name>.claude] and [groups."<path>".claude] config_dir (the
+// same dirs resolveClaudeConfigDir can launch a session under; review round
+// 2, P2-C), and the worker-scratch root (whose per-session homes symlink
+// `projects` back into the owning config dir). Empty when the home directory
+// cannot be resolved.
+func transcriptRoots() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var roots []string
+	add := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		dir = filepath.Clean(ExpandPath(dir))
+		if !filepath.IsAbs(dir) || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		roots = append(roots, dir)
+	}
+	add(filepath.Join(home, ".claude"))
+	add(os.Getenv("CLAUDE_CONFIG_DIR"))
+	if cfg, _ := LoadUserConfig(); cfg != nil {
+		for _, name := range ConfiguredAccountNames(cfg) {
+			add(cfg.GetProfileClaudeConfigDir(name))
+		}
+		add(cfg.Claude.ConfigDir)
+		for _, c := range cfg.Conductors {
+			add(c.Claude.ConfigDir)
+		}
+		for _, g := range cfg.Groups {
+			add(g.Claude.ConfigDir)
+		}
+	}
+	add(workerScratchDirRoot())
+	return roots
 }
 
 // ScanTranscriptTailForDone scans the transcript tail for a completion

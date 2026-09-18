@@ -291,16 +291,16 @@ func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRec
 // longer acked when it merely reached a volatile in-process retry queue; it is
 // acked only once provably committed to the durable inbox.
 func (n *TransitionNotifier) DeliverCompletion(rec CompletionRecord) bool {
-	committed, _ := n.deliverCompletion(rec)
+	committed, _, _ := n.deliverCompletion(rec)
 	return committed
 }
 
 // deliverCompletion also reports whether the completion was copied to the
 // discovery-only _unowned ledger. A parked copy is durable, but is not delivery
 // to the parent and therefore must never authorize acknowledging rec.
-func (n *TransitionNotifier) deliverCompletion(rec CompletionRecord) (committed, parked bool) {
+func (n *TransitionNotifier) deliverCompletion(rec CompletionRecord) (committed, parked bool, reason string) {
 	if strings.TrimSpace(rec.Status) == "" {
-		return false, false // still running; nothing to deliver
+		return false, false, "" // still running; nothing to deliver
 	}
 	event := TransitionNotificationEvent{
 		ChildSessionID: strings.TrimSpace(rec.ChildID),
@@ -312,7 +312,7 @@ func (n *TransitionNotifier) deliverCompletion(rec CompletionRecord) (committed,
 		Timestamp:      time.Now(),
 	}
 	if event.ChildSessionID == "" || event.Profile == "" {
-		return false, false
+		return false, false, ""
 	}
 	// Conductor self-suppression is applied DOWNSTREAM in resolveParentIDForInbox
 	// (keyed on the child's real ParentSessionID): a top-level/self conductor
@@ -320,12 +320,13 @@ func (n *TransitionNotifier) deliverCompletion(rec CompletionRecord) (committed,
 	// real parent is a legitimate completion and MUST be delivered. The removed
 	// title-only pre-filter here silently dropped that legitimate parented case.
 	// The replay path (ReplayUnackedCompletions) handles the not-committed case
-	// via the bounded dead-letter sink, so the terminal reason is discarded here.
-	committed, _, reason := n.commitEventToInbox(event)
+	// via the bounded dead-letter sink; it needs the terminal reason only to
+	// tell a removed child (log-only, ack) from a retryable miss.
+	committed, _, reason = n.commitEventToInbox(event)
 	if committed && isUnownedReason(reason) {
-		return false, true
+		return false, true, reason
 	}
-	return committed, false
+	return committed, false, reason
 }
 
 // ShouldRecycleForVersion reports whether a long-lived daemon should exit so

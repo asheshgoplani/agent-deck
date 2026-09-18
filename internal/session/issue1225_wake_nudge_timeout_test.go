@@ -34,6 +34,16 @@ func TestIssue1225_WakeNudgeSendHasTimeout(t *testing.T) {
 	if remaining <= 0 || remaining > wakeNudgeSendTimeout+time.Second {
 		t.Fatalf("deadline = %v from now, want within (0, %v]", remaining, wakeNudgeSendTimeout)
 	}
+	// Review round 2 (P3): the nudge may queue behind another sender for the
+	// full per-target lock wait; the deadline must outlive that wait plus the
+	// send itself, or the subprocess is killed while still waiting on the
+	// lock and the wake is silently lost.
+	if remaining <= SendTargetLockWait {
+		t.Fatalf("deadline = %v from now, must exceed the send lock wait %v", remaining, SendTargetLockWait)
+	}
+	if wakeNudgeSendTimeout < SendTargetLockWait+wakeNudgeDeliveryBudget {
+		t.Fatalf("wakeNudgeSendTimeout = %v, want >= lock wait %v + delivery budget %v", wakeNudgeSendTimeout, SendTargetLockWait, wakeNudgeDeliveryBudget)
+	}
 }
 
 // The resolved command line is the expected `[-p profile] session send <ref>

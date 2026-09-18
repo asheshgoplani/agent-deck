@@ -210,6 +210,11 @@ func TestMain(m *testing.M) {
 	if payload := os.Getenv(ownershipChildEnv); payload != "" {
 		os.Exit(runOwnershipReceiptChild(payload))
 	}
+	// Messaging audit P1-3 cross-process inbox flock tests: same reasoning,
+	// the producer/holder child must share the parent's inbox directory.
+	if mode := os.Getenv(inboxFlockHelperEnv); mode != "" {
+		os.Exit(runInboxFlockHelper(mode))
+	}
 	os.Exit(runTestMain(m))
 }
 

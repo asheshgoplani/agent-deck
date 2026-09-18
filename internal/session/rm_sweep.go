@@ -84,25 +84,30 @@ func sweepParentSideArtifacts(parentID string) {
 }
 
 // sweepInboxFilesForChild rewrites every inbox file dropping the child's lines,
-// holding inboxWriteMu for the duration. Split out so the broader outbox-artifact
-// cleanup in SweepInboxesForChildSession runs without the inbox lock held.
+// taking each file's flock and inboxWriteMu in turn. Split out so the broader
+// outbox-artifact cleanup in SweepInboxesForChildSession runs without the
+// inbox lock held.
 func sweepInboxFilesForChild(dir string, entries []os.DirEntry, childSessionID string) (int, error) {
-	inboxWriteMu.Lock()
-	defer inboxWriteMu.Unlock()
-
 	totalDropped := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
-		dropped, err := sweepOneInboxLocked(path, childSessionID)
+		dropped, err := sweepOneInboxFileForChild(filepath.Join(dir, e.Name()), childSessionID)
 		if err != nil {
 			return totalDropped, err
 		}
 		totalDropped += dropped
 	}
 	return totalDropped, nil
+}
+
+// sweepOneInboxFileForChild rewrites one inbox file under its flock (messaging
+// audit P1-3: every inbox rewrite takes the producers' lock).
+func sweepOneInboxFileForChild(path, childSessionID string) (int, error) {
+	return withInboxFileLocked(path, func() (int, error) {
+		return sweepOneInboxLocked(path, childSessionID)
+	})
 }
 
 // sweepOneInboxLocked rewrites one inbox file without lines whose

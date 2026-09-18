@@ -7,8 +7,9 @@ import (
 )
 
 // UnownedInboxID is the durable ledger for events with no resolvable parent on
-// this host. It uses the inbox store and therefore inherits fsync, dedup, and
-// TTL sweeping.
+// this host. It uses the inbox store and therefore inherits fsync and dedup;
+// it is excluded from the TTL sweep (messaging audit P3-1) because nothing
+// consumes or acks it, so expiry there would be silent loss.
 const UnownedInboxID = "_unowned"
 
 func isUnownedReason(reason string) bool {

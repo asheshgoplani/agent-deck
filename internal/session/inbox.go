@@ -194,7 +194,14 @@ func WriteInboxEventIfNew(parentSessionID string, event TransitionNotificationEv
 		return false, fmt.Errorf("lock inbox append: %w", err)
 	}
 	defer fileLock.Release()
+	return writeInboxEventIfNewFlocked(parentSessionID, event)
+}
 
+// writeInboxEventIfNewFlocked is WriteInboxEventIfNew for a caller that
+// already holds the inbox flock (lock order step 1); it takes inboxWriteMu
+// itself.
+func writeInboxEventIfNewFlocked(parentSessionID string, event TransitionNotificationEvent) (bool, error) {
+	path := InboxPathFor(parentSessionID)
 	fp := EventFingerprint(event)
 
 	inboxWriteMu.Lock()
@@ -415,6 +422,11 @@ func SweepInboxByTuple(parentSessionID, childSessionID, fromStatus, toStatus str
 
 	path := InboxPathFor(parentSessionID)
 
+	fileLock, err := acquireInboxLock(parentSessionID)
+	if err != nil {
+		return 0, err
+	}
+	defer fileLock.Release()
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
@@ -450,16 +462,32 @@ func SweepInboxByTTL(maxAge time.Duration) (int, error) {
 
 	cutoff := time.Now().Add(-maxAge)
 
-	inboxWriteMu.Lock()
-	defer inboxWriteMu.Unlock()
-
 	totalDropped := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
-		dropped, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
+		// Messaging audit P3-1: _unowned has no consumer and no ack path, so
+		// a TTL expiry there is silent loss of the only copy. Leave it to the
+		// operator until `inbox dead-letter ack|replay` exists.
+		if e.Name() == sanitizeInboxName(UnownedInboxID)+".jsonl" {
+			continue
+		}
+		dropped, err := sweepOneInboxByTTL(filepath.Join(dir, e.Name()), cutoff)
+		if err != nil {
+			return totalDropped, err
+		}
+		totalDropped += dropped
+	}
+	return totalDropped, nil
+}
+
+// sweepOneInboxByTTL rewrites one inbox file under its own flock (messaging
+// audit P1-3: the sweep is a rewrite like any producer's, and the daemon runs
+// it in a different process from the consumer).
+func sweepOneInboxByTTL(path string, cutoff time.Time) (int, error) {
+	return withInboxFileLocked(path, func() (int, error) {
+		return rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
 			// Drop entries whose timestamp is older than the cutoff.
 			// Entries with a zero timestamp (e.g. legacy or test data
 			// without a stable clock) are conservatively kept.
@@ -468,12 +496,21 @@ func SweepInboxByTTL(maxAge time.Duration) (int, error) {
 			}
 			return ev.Timestamp.Before(cutoff)
 		})
-		if err != nil {
-			return totalDropped, err
-		}
-		totalDropped += dropped
+	})
+}
+
+// withInboxFileLocked runs rewrite with the inbox file's flock (bounded wait)
+// and inboxWriteMu held, lock order 1 then 3, for sweeps that walk the inbox
+// directory by file rather than by parent id.
+func withInboxFileLocked(path string, rewrite func() (int, error)) (int, error) {
+	fileLock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
+	if err != nil {
+		return 0, fmt.Errorf("lock inbox %s: %w", filepath.Base(path), err)
 	}
-	return totalDropped, nil
+	defer fileLock.Release()
+	inboxWriteMu.Lock()
+	defer inboxWriteMu.Unlock()
+	return rewrite()
 }
 
 // rewriteInboxLocked streams one inbox file and writes out every line
@@ -568,8 +605,8 @@ func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent
 //
 // This is the LEGACY raw at-most-once path (exposed as `agent-deck inbox <id>`
 // for ad-hoc inspection). The read+remove pair IS atomic against concurrent
-// WriteInboxEvent/CommitToInbox — inboxWriteMu is held across Open→Remove, so a
-// producer cannot interleave a write between them. What it does NOT provide is
+// WriteInboxEvent/CommitToInbox — the inbox flock and inboxWriteMu are held
+// across Open→Remove, so a producer cannot interleave a write between them. What it does NOT provide is
 // crash durability: a process death after the file is removed but before the
 // caller acts loses the records. For the guaranteed at-least-once-with-dedup
 // contract use DrainInboxForParent / DrainForStopHook (inbox_consumer.go), which
@@ -580,6 +617,11 @@ func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent
 	}
 	path := InboxPathFor(parentSessionID)
 
+	fileLock, err := acquireInboxLock(parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer fileLock.Release()
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 

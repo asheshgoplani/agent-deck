@@ -1817,6 +1817,41 @@ func shouldPromptHermesHooks(installed bool, decision string) bool {
 	return !installed && decision == ""
 }
 
+// claudeHooksStartup is what the TUI does about Claude hooks at startup.
+type claudeHooksStartup struct {
+	prompt    bool // ask the user to install
+	reinstall bool // silently (re)install / repair drift
+	watch     bool // start the hook status watcher
+}
+
+// claudeHooksStartupDecision is the pure gate behind the Claude hooks
+// startup prompt. present: every event carries an agent-deck entry in some
+// form; installed: with the current config too (no drift); prompted: the
+// recorded answer ("", "accepted", "declined").
+//
+// Review round 3 (finding 4): an install made with `agent-deck hooks
+// install` and never through the TUI has no recorded answer, and after an
+// upgrade its entries drift (marker-less Stop row). That used to read as
+// "not installed, never asked" and re-prompted a user who had already
+// installed. Presence is consent: a present-but-drifted install is repaired
+// silently and never prompted; only an ABSENT install with no answer asks.
+func claudeHooksStartupDecision(present, installed bool, prompted string) claudeHooksStartup {
+	switch {
+	case installed:
+		return claudeHooksStartup{watch: true}
+	case present:
+		return claudeHooksStartup{reinstall: true, watch: true}
+	case prompted == "accepted":
+		// User previously accepted but hooks got removed: re-install silently.
+		return claudeHooksStartup{reinstall: true, watch: true}
+	case prompted != "":
+		// "declined": user doesn't want hooks, skip.
+		return claudeHooksStartup{}
+	default:
+		return claudeHooksStartup{prompt: true}
+	}
+}
+
 // NewHomeWithProfileAndMode creates a new Home with the specified profile.
 // All instances manage the notification bar equally via shared SQLite state.
 func NewHomeWithProfileAndMode(profile string) *Home {
@@ -2130,10 +2165,27 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	hooksEnabled := userConfig == nil || userConfig.Claude.GetHooksEnabled()
 	if homeBackgroundWorkersEnabled && hooksEnabled {
 		configDir := session.GetClaudeConfigDir()
-		alreadyInstalled := session.CheckClaudeHooksInstalled(configDir)
-
-		if alreadyInstalled {
-			// Hooks already present: start watcher, no prompt needed
+		prompted := ""
+		if db := statedb.GetGlobal(); db != nil {
+			prompted, _ = db.GetMeta("hooks_prompted")
+		}
+		decision := claudeHooksStartupDecision(
+			session.CheckClaudeHooksPresent(configDir),
+			session.CheckClaudeHooksInstalled(configDir),
+			prompted,
+		)
+		if decision.reinstall {
+			// Hooks are present but drifted (a marker-less or dangling entry
+			// after an upgrade), or the user accepted once and they were
+			// removed: repair silently. A build outside the install dirs
+			// keeps the pinned program (finding 2), so this never re-pins.
+			if _, err := session.InjectClaudeHooks(configDir); err != nil {
+				uiLog.Warn("hook_reinstall_failed", slog.String("error", err.Error()))
+			} else {
+				uiLog.Info("claude_hooks_reinstalled", slog.String("config_dir", configDir))
+			}
+		}
+		if decision.watch {
 			hookWatcher, err := session.NewStatusFileWatcher(nil)
 			if err != nil {
 				uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
@@ -2141,33 +2193,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 				h.hookWatcher = hookWatcher
 				go hookWatcher.Start()
 			}
-		} else {
-			// Hooks not installed: check if user was already prompted
-			prompted := false
-			if db := statedb.GetGlobal(); db != nil {
-				if val, err := db.GetMeta("hooks_prompted"); err == nil && val != "" {
-					prompted = true
-					if val == "accepted" {
-						// User previously accepted but hooks got removed: re-install silently
-						if _, err := session.InjectClaudeHooks(configDir); err != nil {
-							uiLog.Warn("hook_reinstall_failed", slog.String("error", err.Error()))
-						} else {
-							uiLog.Info("claude_hooks_reinstalled", slog.String("config_dir", configDir))
-						}
-						hookWatcher, err := session.NewStatusFileWatcher(nil)
-						if err != nil {
-							uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
-						} else {
-							h.hookWatcher = hookWatcher
-							go hookWatcher.Start()
-						}
-					}
-					// val == "declined": user doesn't want hooks, skip
-				}
-			}
-			if !prompted {
-				h.pendingHooksPrompt = true
-			}
+		}
+		if decision.prompt {
+			h.pendingHooksPrompt = true
 		}
 	}
 

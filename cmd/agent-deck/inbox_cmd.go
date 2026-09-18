@@ -292,8 +292,9 @@ func runInboxDeadLetterPurge(stdout io.Writer, args []string) error {
 func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) error {
 	fs := flag.NewFlagSet("inbox drain", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the drained events as a JSON array")
+	strict := fs.Bool("strict", false, "exit 4 when any dead-lettered or _unowned record exists")
 	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox drain [--json] [<session-id>|self]")
+		fmt.Fprintln(stdout, "Usage: agent-deck inbox drain [--json] [--strict] [<session-id>|self]")
 		fmt.Fprintln(stdout, "With no id (or 'self'), drains the caller's own session.")
 		fmt.Fprintln(stdout, "Full session IDs resolve across all profiles; titles and shortened IDs")
 		fmt.Fprintln(stdout, "resolve only within the effective profile.")
@@ -329,15 +330,22 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 		printInboxEvents(stdout, events)
 	}
 
-	deadLetters, err := session.CountDeadLetterRecords()
+	// Messaging audit P1-4 (#2101): a dead letter is parked, not pending
+	// delivery, and nothing can ack it yet, so it must not turn every
+	// heartbeat drain into a failure. Print the per-store counts; exit 4 only
+	// when the caller asked for it with --strict.
+	counts, err := session.CountDeadLetterStores()
 	if err != nil {
 		return fmt.Errorf("count dead letters: %w", err)
 	}
-	if deadLetters > 0 {
+	if total := counts.Total(); total > 0 {
 		if !*asJSON {
-			fmt.Fprintf(stdout, "WARNING: %d dead-lettered event(s) require attention.\n", deadLetters)
+			fmt.Fprintf(stdout, "WARNING: %d dead-lettered event(s) require attention (dead-letter: %d, _unowned: %d); see 'agent-deck inbox dead-letter list'.\n",
+				total, counts.DeadLetter, counts.Unowned)
 		}
-		return &deadLettersPendingError{count: deadLetters}
+		if *strict {
+			return &deadLettersPendingError{count: total}
+		}
 	}
 	return nil
 }

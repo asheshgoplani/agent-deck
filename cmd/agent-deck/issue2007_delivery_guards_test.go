@@ -37,7 +37,7 @@ func TestIssue1877_InboxDrainReportsDeadLettersAndIsNonZero(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runInbox(&out, []string{"drain", "parent-1877"})
+	err := runInbox(&out, []string{"drain", "--strict", "parent-1877"})
 	var pending *deadLettersPendingError
 	if !errors.As(err, &pending) || inboxExitCode(err) == 0 {
 		t.Fatalf("dead letters must make drain non-clean: err=%v", err)
@@ -58,7 +58,7 @@ func TestIssue1877_CorruptNonEmptyDeadLetterIsNotReportedClean(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runInbox(&out, []string{"drain", "parent-corrupt-1877"})
+	err := runInbox(&out, []string{"drain", "--strict", "parent-corrupt-1877"})
 	var pending *deadLettersPendingError
 	if !errors.As(err, &pending) || pending.count != 1 || inboxExitCode(err) != 4 {
 		t.Fatalf("non-empty corrupt dead-letter must be loud: output=%q err=%v", out.String(), err)
@@ -77,7 +77,7 @@ func TestIssue2007_InboxDrainCountsUnownedDiscoveryEntries(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runInbox(&out, []string{"drain", "parent-2007"})
+	err := runInbox(&out, []string{"drain", "--strict", "parent-2007"})
 	var pending *deadLettersPendingError
 	if !errors.As(err, &pending) || pending.count != 1 || inboxExitCode(err) != 4 {
 		t.Fatalf("unowned discovery must keep drain non-clean: output=%q err=%v", out.String(), err)

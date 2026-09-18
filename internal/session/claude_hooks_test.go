@@ -58,8 +58,8 @@ func TestInjectClaudeHooks_Fresh(t *testing.T) {
 	if len(matchers[0].Hooks) == 0 {
 		t.Fatal("SessionStart matcher has no hooks")
 	}
-	if matchers[0].Hooks[0].Command != agentDeckHookCommand {
-		t.Errorf("Hook command = %q, want %q", matchers[0].Hooks[0].Command, agentDeckHookCommand)
+	if matchers[0].Hooks[0].Command != hookHandlerCommand() {
+		t.Errorf("Hook command = %q, want %q", matchers[0].Hooks[0].Command, hookHandlerCommand())
 	}
 	if !matchers[0].Hooks[0].Async {
 		t.Error("Hook should be async")
@@ -105,8 +105,8 @@ func TestStopHookIsSynchronousForActivation(t *testing.T) {
 	if hook.Async {
 		t.Error("Stop hook must be synchronous (Async should be false) so Claude Code reads the busy-parent {decision:\"block\"} — see issue #1225/#1226 activation")
 	}
-	if hook.Command != agentDeckHookCommand {
-		t.Errorf("Stop hook command = %q, want %q", hook.Command, agentDeckHookCommand)
+	if want := StopHookSyncMarkerEnv + "=1 " + hookHandlerCommand(); hook.Command != want {
+		t.Errorf("Stop hook command = %q, want %q", hook.Command, want)
 	}
 }
 
@@ -144,8 +144,8 @@ func TestPreCompactHookIsSynchronous(t *testing.T) {
 	if hook.Async {
 		t.Error("PreCompact hook must be synchronous (Async should be false)")
 	}
-	if hook.Command != agentDeckHookCommand {
-		t.Errorf("PreCompact hook command = %q, want %q", hook.Command, agentDeckHookCommand)
+	if hook.Command != hookHandlerCommand() {
+		t.Errorf("PreCompact hook command = %q, want %q", hook.Command, hookHandlerCommand())
 	}
 }
 
@@ -187,8 +187,8 @@ func TestPermissionRequestHookIsSynchronous(t *testing.T) {
 	if hook.Async {
 		t.Error("PermissionRequest hook must be synchronous (Async should be false) so Claude Code consults the hook's stdout decision")
 	}
-	if hook.Command != agentDeckHookCommand {
-		t.Errorf("PermissionRequest hook command = %q, want %q", hook.Command, agentDeckHookCommand)
+	if hook.Command != hookHandlerCommand() {
+		t.Errorf("PermissionRequest hook command = %q, want %q", hook.Command, hookHandlerCommand())
 	}
 }
 
@@ -248,7 +248,7 @@ func TestInjectClaudeHooks_PreservesExisting(t *testing.T) {
 			if h.Command == "my-custom-hook" {
 				foundCustom = true
 			}
-			if h.Command == agentDeckHookCommand {
+			if isAgentDeckHookCommand(h.Command) {
 				foundAgentDeck = true
 			}
 		}
@@ -306,7 +306,7 @@ func TestInjectClaudeHooks_Idempotent(t *testing.T) {
 	hookCount := 0
 	for _, m := range matchers {
 		for _, h := range m.Hooks {
-			if h.Command == agentDeckHookCommand {
+			if isAgentDeckHookCommand(h.Command) {
 				hookCount++
 			}
 		}
@@ -391,7 +391,7 @@ func TestRemoveClaudeHooks_PreservesUserHooks(t *testing.T) {
 			if h.Command == "my-custom-hook" {
 				foundCustom = true
 			}
-			if h.Command == agentDeckHookCommand {
+			if isAgentDeckHookCommand(h.Command) {
 				foundAgentDeck = true
 			}
 		}
@@ -561,7 +561,7 @@ func TestInjectClaudeHooks_UpdatesStaleAsync(t *testing.T) {
 	if postPR[0].Hooks[0].Async {
 		t.Errorf("Post-reinstall PermissionRequest still has Async=true; expected false")
 	}
-	if postPR[0].Hooks[0].Command != agentDeckHookCommand {
-		t.Errorf("Post-reinstall command = %q, want %q", postPR[0].Hooks[0].Command, agentDeckHookCommand)
+	if postPR[0].Hooks[0].Command != hookHandlerCommand() {
+		t.Errorf("Post-reinstall command = %q, want %q", postPR[0].Hooks[0].Command, hookHandlerCommand())
 	}
 }
