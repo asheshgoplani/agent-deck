@@ -42,11 +42,21 @@ func handleDoctor(args []string) {
 		runtimeHealth.Flags = append(runtimeHealth.Flags, "runtime health unknown: "+strconv.QuoteToASCII(err.Error()))
 	}
 	slots := session.DiagnoseClaudeAccountDirectories(config)
+	// Codex notify hook for this host's default CODEX_HOME: without it every
+	// codex session made here is content detection only.
+	codexConfig := getCodexConfigPath()
+	codexHooks := codexHooksStateForConfig(codexConfig)
 	if *jsonOutput {
 		report := struct {
 			AccountSlots []session.AccountDirectoryDiagnostic `json:"account_slots"`
 			Health       health.Summary                       `json:"health"`
-		}{slots, runtimeHealth}
+			CodexHooks   struct {
+				State  string `json:"state"`
+				Config string `json:"config"`
+			} `json:"codex_hooks"`
+		}{AccountSlots: slots, Health: runtimeHealth}
+		report.CodexHooks.State = codexHooks
+		report.CodexHooks.Config = codexConfig
 		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encode diagnostics: %v\n", err)
 			os.Exit(1)
@@ -54,6 +64,7 @@ func handleDoctor(args []string) {
 		return
 	}
 	fmt.Print(health.Format(runtimeHealth))
+	fmt.Printf("Codex notify %s\n", codexHooksLine(codexHooks, codexConfig))
 	fmt.Println("Named Claude account directories:")
 	if len(slots) == 0 {
 		fmt.Println("No named Claude account slots configured.")

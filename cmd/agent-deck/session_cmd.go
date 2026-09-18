@@ -1872,6 +1872,15 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 	addCodexMetadataJSON(jsonData, inst)
+	// Say when a codex session's light is content detection only (no notify
+	// hook in its CODEX_HOME); unknown for a remote session.
+	codexHooksState, codexHooksConfig := codexHooksStateForInstance(inst)
+	if codexHooksState != "" {
+		jsonData["codex_hooks"] = codexHooksState
+		if codexHooksConfig != "" {
+			jsonData["codex_hooks_config"] = codexHooksConfig
+		}
+	}
 
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
 		jsonData["tmux_session"] = tmuxSession.Name
@@ -1970,6 +1979,10 @@ func handleSessionShow(profile string, args []string) {
 				sb.WriteString("         (auto-channel-link disabled — RFC §4.7)\n")
 			}
 		}
+	}
+
+	if codexHooksState != "" {
+		sb.WriteString(fmt.Sprintf("Codex:   %s\n", codexHooksLine(codexHooksState, codexHooksConfig)))
 	}
 
 	if inst.NoTransitionNotify {
