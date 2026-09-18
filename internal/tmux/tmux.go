@@ -2723,6 +2723,19 @@ func (s *Session) Start(command string) error {
 	}
 	if _, ok := s.OptionOverrides["aggressive-resize"]; !ok {
 		startArgs = append(startArgs, ";", "set-window-option", "-t", s.Name, "aggressive-resize", "on")
+		// #2259: aggressive-resize is a per-window option, so the line above
+		// only reaches the window that exists at Start() time. NewShellWindow
+		// re-applies it for windows Deck itself opens (#2186), but a window a
+		// user opens by hand (tmux's own `c` binding) never goes through that
+		// path and would keep the window's option-table default (off)
+		// forever — tmux has no way to retarget a window option once the
+		// window already exists. A session-scoped after-new-window hook does
+		// reach it: tmux runs session hooks with the newly created window as
+		// the implicit target, before any client can render it, so this
+		// closes the gap for hand-opened windows too. Re-set (not appended)
+		// on every Start() so repeated starts on the same session don't pile
+		// up duplicate hook entries.
+		startArgs = append(startArgs, ";", "set-hook", "-t", s.Name, "after-new-window", "set-window-option aggressive-resize on")
 	}
 	_ = commandRun(s.tmuxCmd(startArgs...))
 
