@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -55,8 +56,8 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox export [--json]")
-	fmt.Fprintln(w, "       agent-deck inbox dead-letter list|show [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
+	fmt.Fprintln(w, "       agent-deck inbox dead-letter <list|show|retry|purge>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Drain pending completion events from the parent's durable outbox.")
 	fmt.Fprintln(w, "The `drain` form (issue #1225) preserves distinct turns per child and")
@@ -68,6 +69,8 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "The `writer-status` form reports whether a notify-daemon is")
 	fmt.Fprintln(w, "actually recording transitions here — without it, an empty export")
 	fmt.Fprintln(w, "cannot be told apart from a host where nothing has been watching.")
+	fmt.Fprintln(w, "The `dead-letter` family safely inspects, retries, or purges terminal")
+	fmt.Fprintln(w, "delivery failures; run `agent-deck inbox dead-letter help` for details.")
 }
 
 func printInboxExportUsage(w io.Writer) {
@@ -209,6 +212,78 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 		return fmt.Errorf("read inbox: %w", err)
 	}
 	printInboxEvents(stdout, events)
+	return nil
+}
+
+// runInboxDeadLetterRetry and runInboxDeadLetterPurge are the #2062 management
+// subcommands; runInboxDeadLetter in inbox_deadletter_cmd.go dispatches to them.
+func runInboxDeadLetterRetry(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("inbox dead-letter retry", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "output JSON")
+	fs.SetOutput(stdout)
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: agent-deck inbox dead-letter retry [--json] <record-id>")
+	}
+	id := fs.Arg(0)
+	target, err := session.RetryDeadLetter(id)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return json.NewEncoder(stdout).Encode([]session.DeadLetterActionOutcome{
+			{ID: id, Action: "retry", Outcome: "delivered", Reason: "delivered to inbox " + target},
+		})
+	}
+	fmt.Fprintf(stdout, "Delivered dead-letter record %s to inbox %s.\n", id, target)
+	return nil
+}
+
+func runInboxDeadLetterPurge(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("inbox dead-letter purge", flag.ContinueOnError)
+	olderThan := fs.Duration("older-than", 0, "purge records older than this duration")
+	yes := fs.Bool("yes", false, "confirm an unbounded purge")
+	asJSON := fs.Bool("json", false, "output JSON")
+	fs.SetOutput(stdout)
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("inbox dead-letter purge accepts no arguments")
+	}
+	if *olderThan < 0 {
+		return fmt.Errorf("--older-than must be a positive duration")
+	}
+	var results []session.DeadLetterActionOutcome
+	var err error
+	if *olderThan > 0 {
+		results, err = session.PurgeDeadLettersOlderThan(time.Now().Add(-*olderThan))
+	} else if *yes {
+		results, err = session.PurgeAllDeadLetters()
+	} else {
+		return fmt.Errorf("refusing unbounded purge: pass --yes or a positive --older-than duration")
+	}
+	if err != nil {
+		return fmt.Errorf("purge dead letters: %w", err)
+	}
+	if *asJSON {
+		if results == nil {
+			results = []session.DeadLetterActionOutcome{}
+		}
+		return json.NewEncoder(stdout).Encode(results)
+	}
+	removed, skipped := 0, 0
+	for _, r := range results {
+		switch r.Outcome {
+		case "removed":
+			removed++
+		case "skipped":
+			skipped++
+		}
+	}
+	fmt.Fprintf(stdout, "Purged %d dead-letter record(s); skipped %d _unowned record(s) (%s).\n", removed, skipped, session.UnownedPurgeSkipReason)
 	return nil
 }
 

@@ -1,0 +1,63 @@
+=== Alt+D dead-letter panel: list ===
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │                                                                                              │  
+  │  Dead-letter events                                                                          │  
+  │  Bounded metadata only — prompt and output content are never shown.                          │  
+  │                                                                                              │  
+  │  > e1bb17ba37777e87 orphan          10m0s     build-worker                                   │  
+  │    0ec12444404ce440 parent_removed  1h30m0s   checkout-worker                                │  
+  │                                                                                              │  
+  │  j/k navigate  enter show  r retry  d purge  esc close                                       │  
+  │                                                                                              │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+
+=== Alt+D dead-letter panel: show detail (Enter) ===
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │                                                                                              │  
+  │  Dead-letter events                                                                          │  
+  │  Bounded metadata only — prompt and output content are never shown.                          │  
+  │                                                                                              │  
+  │  ID: e1bb17ba37777e87                                                                        │  
+  │  Store: dead-letter                                                                          │  
+  │  Child: build-worker                                                                         │  
+  │  Title: worker                                                                               │  
+  │  Target: missing-parent                                                                      │  
+  │  Profile: default                                                                            │  
+  │  Reason: orphan                                                                              │  
+  │  Age: 600s                                                                                   │  
+  │  Attempts: 3                                                                                 │  
+  │  Payload: transition metadata unavailable                                                    │  
+  │                                                                                              │  
+  │  j/k navigate  enter show  r retry  d purge  esc close                                       │  
+  │                                                                                              │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    

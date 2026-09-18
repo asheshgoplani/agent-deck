@@ -12,22 +12,42 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 )
 
-// DeadLetterRecord describes one physical nonblank record. Ref identifies its
-// exact source snapshot and offset; an append or rewrite invalidates old refs.
+// DeadLetterRecord describes one physical dead-letter record, serving both the
+// read-only inspection surface (list/show, #2111) and the management surface
+// (retry/purge/TUI, #2062/#2230). The two surfaces need different identifiers:
+//
+//   - Ref (inspection): identifies an exact source snapshot and byte offset, so
+//     an append or rewrite invalidates old refs. Deliberately brittle:
+//     inspection never acts on a record, so refusing a stale ref is safe.
+//   - ID (management): a content hash of the record's raw bytes
+//     (deadLetterRecordID), stable across unrelated file mutations elsewhere
+//     in the same store. Retry/purge need this stability because removing one
+//     record must not invalidate every other record's identifier.
+//
 // Raw is retained separately so malformed bytes and unknown fields remain
 // available to inspection without routing, consuming or repairing anything.
 type DeadLetterRecord struct {
-	Ref            string `json:"ref"`
-	Store          string `json:"store"`
-	Source         string `json:"source"`
-	Offset         int    `json:"offset"`
-	ChildSessionID string `json:"child_session_id,omitempty"`
-	Profile        string `json:"profile,omitempty"`
-	Problem        string `json:"problem,omitempty"`
-	Raw            []byte `json:"-"`
+	Ref             string    `json:"ref,omitempty"`
+	ID              string    `json:"id,omitempty"`
+	Store           string    `json:"store"`
+	Source          string    `json:"source,omitempty"`
+	Offset          int       `json:"offset,omitempty"`
+	ChildSessionID  string    `json:"child_session_id,omitempty"`
+	ChildTitle      string    `json:"child_title,omitempty"`
+	TargetSessionID string    `json:"target_session_id,omitempty"`
+	Profile         string    `json:"profile,omitempty"`
+	Problem         string    `json:"problem,omitempty"`
+	Reason          string    `json:"reason,omitempty"`
+	Timestamp       time.Time `json:"timestamp,omitempty"`
+	AgeSeconds      int64     `json:"age_seconds,omitempty"`
+	Attempts        int       `json:"attempts,omitempty"`
+	PayloadSummary  string    `json:"payload_summary,omitempty"`
+	Corrupt         bool      `json:"corrupt,omitempty"`
+	Raw             []byte    `json:"-"`
 }
 
 const (
@@ -103,7 +123,22 @@ func InspectDeadLetters(store string) (result []DeadLetterRecord, retErr error) 
 					return fmt.Errorf("inspection exceeds %d records", maxDeadLetterInspectionRecords)
 				}
 				digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%x\x00%d", kind, name, generation, offset)))
-				rec := DeadLetterRecord{Ref: hex.EncodeToString(digest[:]), Store: kind, Source: name, Offset: offset, Raw: append([]byte(nil), line...)}
+				// ID mirrors deadLetterRecordID's input exactly (bufio.Scanner's
+				// ScanLines strips a trailing "\n" and then one trailing "\r"),
+				// so a record's ID here is the same one retry/purge (which read
+				// through that scanner) will accept — the whole point of a
+				// content-hash identifier is that it does not depend on this
+				// read's own offsets, unlike Ref.
+				trimmed := bytes.TrimSuffix(line, []byte("\n"))
+				trimmed = bytes.TrimSuffix(trimmed, []byte("\r"))
+				rec := DeadLetterRecord{
+					Ref:    hex.EncodeToString(digest[:]),
+					ID:     deadLetterRecordID(kind, trimmed),
+					Store:  kind,
+					Source: name,
+					Offset: offset,
+					Raw:    append([]byte(nil), line...),
+				}
 				var event *TransitionNotificationEvent
 				switch {
 				case !utf8.Valid(line):

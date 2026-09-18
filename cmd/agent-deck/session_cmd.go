@@ -4439,6 +4439,14 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	}
 
 	tun.retry.tool = tool
+	// #2148 item 4b: give `session send` the same #2079 truncation guard the
+	// launch/instance path already has. A single-line message (or a
+	// non-Claude target, since claudeLike gates this) never collapses behind
+	// a paste marker, so expectedPasteBreaks stays 0 and the send is
+	// unchecked, matching pre-existing behavior exactly.
+	if claudeLike {
+		tun.retry.expectedPasteBreaks = send.ExpectedPasteMarkerLineBreaks(message)
+	}
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
 	if delivery == deliveryDelivered {
@@ -4553,6 +4561,7 @@ func awaitComposerReadyBestEffort(target sendRetryTarget, maxWait, pollInterval 
 
 type sendRetryTarget interface {
 	SendKeysAndEnter(string) error
+	SendKeysAndEnterChecked(keys string, capture func() (string, error), check tmux.PostPasteCheck) error
 	GetStatus() (string, error)
 	SendEnter() error
 	SendCtrlC() error
@@ -4565,6 +4574,16 @@ type sendRetryOptions struct {
 	checkDelay     time.Duration
 	maxFullResends int // Legacy option; full-body interrupt/resend recovery is disabled.
 	tool           string
+
+	// expectedPasteBreaks, when > 0, is send.ExpectedPasteMarkerLineBreaks
+	// for this message: the number of hard line breaks Claude's composer
+	// declares in its "[Pasted text #N +M lines]" marker for an intact
+	// delivery. When set, the initial send withholds Enter unless the
+	// declared count meets it (issue #2079's guard, previously wired only
+	// into the launch/instance send path, not `session send`; #2148 item 4).
+	// Zero (the default) sends unchecked, matching pre-#2148 behavior for
+	// every non-Claude target and every single-line message.
+	expectedPasteBreaks int
 
 	// verifyDelivery, when true, requires the verification loop to observe at
 	// least one positive signal that the message reached the inner agent (an
@@ -4644,6 +4663,23 @@ func composerPasteFree(target sendRetryTarget) bool {
 	return !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
 }
 
+// sendInitialKeysChecked sends message and presses Enter, routing the submit
+// through send.PasteTruncationCheck when expectedBreaks > 0 so a paste cut
+// short in transit withholds Enter instead of submitting a fragment (issue
+// #2079). expectedBreaks == 0 (a single-line message, or a non-Claude target
+// that never populates sendRetryOptions.expectedPasteBreaks) sends
+// unchecked, identical to plain SendKeysAndEnter.
+//
+// This gives `session send` and its `--message-file` form the same guard
+// Instance.sendMessageWhenReady has always applied on the launch path
+// (#2148 item 4b); before this they had no truncation guard of their own.
+func sendInitialKeysChecked(target sendRetryTarget, message string, expectedBreaks int) error {
+	if expectedBreaks <= 0 {
+		return target.SendKeysAndEnter(message)
+	}
+	return target.SendKeysAndEnterChecked(message, target.CapturePaneFresh, send.PasteTruncationCheck(expectedBreaks))
+}
+
 // sendWithRetryTarget sends the message and runs the bounded submit
 // verification loop. It returns a delivery status (one of the delivery*
 // constants) alongside the error so callers can expose a machine-checkable
@@ -4685,7 +4721,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// is the target taking this message up (submitted).
 	hookBusyBeforeSend := opts.hookBusyNow()
 
-	if err := target.SendKeysAndEnter(message); err != nil {
+	if err := sendInitialKeysChecked(target, message, opts.expectedPasteBreaks); err != nil {
 		// A refused over-long line is a distinct, actionable outcome: the
 		// transport typed nothing, so the composer is untouched and the
 		// caller must not retry the same body against the same pane

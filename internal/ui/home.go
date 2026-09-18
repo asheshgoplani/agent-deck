@@ -293,6 +293,7 @@ type Home struct {
 	feedbackSender       *feedback.Sender      // Sender constructed once in NewHome (Phase 3, per D-05)
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	agentsPanel          *AgentsPanel          // Agents tab: adopted agents, grouped by machine
+	deadLetterPanel      *DeadLetterPanel      // Inspect, retry, and explicitly purge delivery failures
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -1887,6 +1888,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		feedbackSender:            feedback.NewSender(),
 		watcherPanel:              NewWatcherPanel(),
 		agentsPanel:               NewAgentsPanel(),
+		deadLetterPanel:           NewDeadLetterPanel(),
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
@@ -7070,6 +7072,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.settingsPanel.SetSize(msg.Width, msg.Height)
 		h.watcherPanel.SetSize(msg.Width, msg.Height)
 		h.agentsPanel.SetSize(msg.Width, msg.Height)
+		if h.deadLetterPanel != nil {
+			h.deadLetterPanel.SetSize(msg.Width, msg.Height)
+		}
 		if h.toolVisibilityPanel != nil {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
 		}
@@ -9629,7 +9634,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, cmd
 		}
 
-		// Handle watcher panel (before settings panel)
+		// Handle delivery and watcher panels (before settings panel)
+		if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.deadLetterPanel, cmd = h.deadLetterPanel.Update(msg)
+			return h, cmd
+		}
 		if h.agentsPanel.IsVisible() {
 			var cmd tea.Cmd
 			h.agentsPanel, cmd = h.agentsPanel.Update(msg)
@@ -10626,6 +10636,7 @@ func (h *Home) hasModalVisible() bool {
 		(h.toolVisibilityPanel != nil && h.toolVisibilityPanel.IsVisible()) ||
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay
+		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -11836,6 +11847,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.refreshWatcherPanel()
 		h.watcherPanel.Show()
 		h.watcherPanel.SetSize(h.width, h.height)
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeyDeadLetters]:
+		// Dead-letter management is always available; an empty panel states that
+		// the warning is clear instead of making the shortcut mysteriously inert.
+		if h.deadLetterPanel == nil {
+			h.deadLetterPanel = NewDeadLetterPanel()
+		}
+		h.deadLetterPanel.Show()
+		h.deadLetterPanel.SetSize(h.width, h.height)
 		return h, nil
 
 	case defaultHotkeyBindings[hotkeyAgentsPanel]:
@@ -18138,7 +18159,10 @@ func (h *Home) renderFrame() string {
 		return h.setupWizard.View()
 	}
 
-	// Watcher panel is modal (before settings panel)
+	// Delivery and watcher panels are modal (before settings panel)
+	if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
+		return h.deadLetterPanel.View()
+	}
 	if h.agentsPanel.IsVisible() {
 		return h.agentsPanel.View()
 	}

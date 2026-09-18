@@ -15,6 +15,7 @@ Complete reference for all agent-deck CLI commands.
 - [Skill Commands](#skill-commands)
 - [Group Commands](#group-commands)
 - [Profile Commands](#profile-commands)
+- [Inbox Commands](#inbox-commands)
 - [Remote Commands](#remote-commands)
 - [Health Command](#health-command)
 - [Inbox Commands](#inbox-commands)
@@ -777,6 +778,50 @@ agent-deck conductor list [--profile <name>]
 - Heartbeat sends use non-blocking `session send --no-wait -q` to avoid timeout churn when sessions are busy.
 - Bridge daemon is installed only when Telegram and/or Slack is configured in `[conductor]`.
 - Transition notifier daemon (`agent-deck notify-daemon`) is installed by setup and sends event nudges on `running -> waiting|error|idle` transitions (parent first, then conductor fallback).
+
+## Inbox Commands
+
+### dead-letter - Inspect and resolve terminal delivery failures
+
+```bash
+agent-deck inbox dead-letter list [--json]
+agent-deck inbox dead-letter show [--json] <record-id>
+agent-deck inbox dead-letter retry [--json] <record-id>
+agent-deck inbox dead-letter purge [--json] --older-than <duration>
+agent-deck inbox dead-letter purge [--json] --yes
+```
+
+`list` and `show` (#2111) are read-only forensic inspection of every physical
+record, including malformed and undecodable ones: they intentionally do
+include the raw on-disk bytes (base64 in `--json`) so a broken record can be
+diagnosed without routing or repairing it. They never consume or mutate a
+store, and each record's `ref` identifies an exact source snapshot and byte
+offset — any append or rewrite to that source invalidates old refs, so a
+stale `show <ref>` is refused rather than silently pointing at the wrong
+record. `list`/`show` output also includes each record's `id`: a content hash
+that stays stable across unrelated changes elsewhere in the same store, and
+is what `retry`/`purge` (#2062) actually key off (accepting a unique prefix).
+
+`retry` re-resolves the child's current parent and commits the event to that
+parent's durable inbox before removing exactly the delivered dead-letter record.
+If the child or parent no longer exists, or the target remains undeliverable,
+the command exits non-zero and retains the record. `retry` may act on an
+`_unowned` record (it is redelivered like any other).
+
+An unbounded purge requires `--yes`. `--older-than` is the non-interactive,
+bounded alternative; corrupt or undated records are never selected by an age
+bound. Unlike `retry`, `purge` never removes a record from the `_unowned`
+discovery ledger — that ledger has no ack path, so only the TTL sweep
+(`SweepInboxByTTL`, the same 7-day-default horizon `inbox` events use) may
+reclaim one; purging otherwise would erase the only evidence a remote
+session had stalled. `purge`'s human-readable summary reports how many
+`_unowned` records were skipped; the count still shows up in `inbox drain`'s
+pending total until the TTL sweep clears it.
+
+`retry` and `purge` both accept `--json`, printing a JSON array of
+`{"id", "action", "outcome", "reason"}` objects — one entry per record
+retry/purge actually considered, including any `_unowned` record purge
+skipped (`outcome: "skipped"`) — instead of the human-readable summary line.
 
 ## Remote Commands
 

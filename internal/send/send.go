@@ -84,10 +84,17 @@ func PasteMarkerLineCounts(content string) []int {
 // transport normalizes them before pasting (see sendKeysChunkedToTarget).
 // Soft wrapping in the pane is not a line break and never enters the count.
 //
-// Trailing line breaks are excluded, so the result is the floor of what the
-// composer can declare whether or not it trims a trailing newline off the
-// paste: a marker declaring at least this many breaks proves every hard line
-// of the message arrived; fewer proves the paste was cut short.
+// This counts every hard break in the normalized text, including a trailing
+// one, matching Claude's own documented formula
+// `(text.match(/\r\n|\r|\n/g) || []).length` literally rather than assuming
+// it (or some upstream paste handler) trims a trailing break before
+// counting. An earlier version excluded trailing breaks as a defensive
+// "floor" against that unverified assumption, but a floor is ambiguous by
+// construction: a message ending in "\n" and a paste truncated to exactly
+// one line short of it can both land on the same floored expectation, so a
+// lost last line goes undetected (rc.4 P2-1). Counting literally removes
+// that ambiguity — a truncation that drops the message's own trailing break
+// is now indistinguishable from any other dropped line, and is caught.
 //
 // Returns 0 for a message with no hard line break: such a paste, if long
 // enough to collapse at all, renders as a bare "[Pasted text #N]" with no
@@ -99,7 +106,7 @@ func ExpectedPasteMarkerLineBreaks(message string) int {
 		normalized = strings.ReplaceAll(normalized, "\r\n", "\n")
 		normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	}
-	return strings.Count(strings.TrimRight(normalized, "\n"), "\n")
+	return strings.Count(normalized, "\n")
 }
 
 // PasteMarkerVerdict is CheckPasteMarker's classification of the paste
@@ -153,6 +160,39 @@ func CheckPasteMarker(content string, expectedBreaks int) (verdict PasteMarkerVe
 		return PasteMarkerTruncated, declared
 	}
 	return PasteMarkerIntact, declared
+}
+
+// PasteTruncationCheck builds the pre-Enter guard both send paths use
+// (Instance.sendMessageWhenReady on the launch path, sendInitialKeysChecked
+// behind `session send`): it reads the composer's newest paste marker and
+// reports ok=false — withholding Enter — only when the marker proves a
+// fragment, not the whole prompt, landed (issue #2079).
+//
+// The returned function has tmux.PostPasteCheck's shape and is assignable to
+// it; the type is spelled structurally here so this package keeps no
+// dependency on internal/tmux.
+//
+// Three outcomes, only one of which refuses:
+//   - capture failed: unknown, not unsafe. Proceed, exactly as the pre-#2079
+//     bare Enter did, rather than blocking delivery on a pane-read glitch.
+//   - no marker, or an intact one: either the composer has not repainted yet
+//     (benign render lag, which the callers' verify loops still catch) or the
+//     pane never frames pastes at all. Proceed.
+//   - truncated: refuse, with an error naming the declared and expected
+//     break counts.
+func PasteTruncationCheck(expectedBreaks int) func(pane string, captureErr error) (bool, error) {
+	return func(pane string, captureErr error) (bool, error) {
+		if captureErr != nil {
+			return true, nil
+		}
+		verdict, declared := CheckPasteMarker(pane, expectedBreaks)
+		if verdict == PasteMarkerTruncated {
+			return false, fmt.Errorf(
+				"prompt truncated in transit: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
+				declared, declared, expectedBreaks)
+		}
+		return true, nil
+	}
 }
 
 // firstNonEmptyLine returns the first physical line of s that is non-empty

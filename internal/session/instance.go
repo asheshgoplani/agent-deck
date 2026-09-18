@@ -5735,25 +5735,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// launch regression). send.CheckPasteMarker owns that comparison.
 	var sendErr error
 	if expectedBreaks := send.ExpectedPasteMarkerLineBreaks(message); expectedBreaks > 0 && UsesClaudeDeliveryVerify(i.Tool) {
-		sendErr = i.tmuxSession.SendKeysAndEnterChecked(message, i.tmuxSession.CapturePaneFresh, func(pane string, capErr error) (bool, error) {
-			if capErr != nil {
-				// Capture failure is unknown, not unsafe — the pre-#2079
-				// behavior (bare Enter, no check at all) proceeds rather than
-				// blocking delivery on an unrelated pane-read glitch.
-				return true, nil
-			}
-			verdict, declared := send.CheckPasteMarker(pane, expectedBreaks)
-			if verdict == send.PasteMarkerTruncated {
-				return false, fmt.Errorf(
-					"prompt truncated in transit: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
-					declared, declared, expectedBreaks)
-			}
-			// Intact, or no marker rendered yet: either the composer hasn't
-			// repainted (benign render lag — the 300ms verify loop below
-			// still catches an unsent prompt) or this pane never frames
-			// pastes at all. Best effort, unchanged from pre-#2079.
-			return true, nil
-		})
+		sendErr = i.tmuxSession.SendKeysAndEnterChecked(message, i.tmuxSession.CapturePaneFresh, send.PasteTruncationCheck(expectedBreaks))
 	} else {
 		sendErr = i.tmuxSession.SendKeysAndEnter(message)
 	}
