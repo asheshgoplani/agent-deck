@@ -269,10 +269,12 @@ func initColorProfile() {
 
 // inheritedProfileEnv is AGENTDECK_PROFILE as this process inherited it,
 // before -p/--profile overwrote it (inheritedProfileEnvSet false: it was
-// unset). See inheritedEnviron.
+// unset). profileEnvOverridden records that -p actually overwrote it; the
+// bare form (no -p) leaves the environment alone. See inheritedEnviron.
 var (
 	inheritedProfileEnv    string
 	inheritedProfileEnvSet bool
+	profileEnvOverridden   bool
 )
 
 // applyProfileFlag propagates an explicit -p/--profile selection so config
@@ -285,14 +287,19 @@ func applyProfileFlag(profile string) {
 		return
 	}
 	inheritedProfileEnv, inheritedProfileEnvSet = os.LookupEnv("AGENTDECK_PROFILE")
+	profileEnvOverridden = true
 	_ = os.Setenv("AGENTDECK_PROFILE", profile)
 }
 
 // inheritedEnviron is os.Environ with AGENTDECK_PROFILE as it was inherited:
 // the -p flag selects a profile for THIS process, not for a command it runs
 // on the user's behalf. A statusLine script that itself calls agent-deck
-// keeps resolving the profile it always did.
+// keeps resolving the profile it always did. Without -p nothing was
+// overridden and the environment is passed through untouched.
 func inheritedEnviron() []string {
+	if !profileEnvOverridden {
+		return os.Environ()
+	}
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "AGENTDECK_PROFILE=") {

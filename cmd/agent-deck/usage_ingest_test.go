@@ -145,4 +145,17 @@ func TestUsageIngest_WrappedCommandEnv(t *testing.T) {
 	if stdout != "P=inherited\n" || code != 0 {
 		t.Errorf("inherited value: stdout %q code %d stderr %q", stdout, code, stderr)
 	}
+
+	// Bare form (no -p): nothing was overridden, so the wrapped command sees
+	// AGENTDECK_PROFILE exactly as the shell set it (README: "reaches it
+	// exactly as your shell set it").
+	bare := []string{"usage", "ingest", "claude", "--", "sh", "-c", `echo "P=${AGENTDECK_PROFILE-unset}"`}
+	stdout, stderr, code = runUsageIngest(t, usageIngestHome(t), usageIngestPayload, bare...)
+	if stdout != "P=unset\n" || code != 0 {
+		t.Errorf("bare, inherited unset: stdout %q code %d stderr %q", stdout, code, stderr)
+	}
+	stdout, stderr, code = runUsageIngest(t, append(usageIngestHome(t), usageIngestInheritedProfileEnv+"=inherited"), usageIngestPayload, bare...)
+	if stdout != "P=inherited\n" || code != 0 {
+		t.Errorf("bare, inherited value: stdout %q code %d stderr %q", stdout, code, stderr)
+	}
 }
