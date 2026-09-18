@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ const (
 	ConductorAgentClaude = "claude"
 	ConductorAgentCodex  = "codex"
 	ConductorAgentHermes = "hermes"
+	ConductorAgentPi     = "pi"
 
 	ConductorSessionTitlePrefix     = "conductor-"
 	ConductorHeartbeatMessagePrefix = "Heartbeat:"
@@ -61,6 +64,13 @@ var conductorAgentSpecs = map[string]ConductorAgentSpec{
 		DefaultCommand:         "hermes",
 		InstructionsFileName:   "HERMES.md",
 		SupportsClearOnCompact: true,
+	},
+	ConductorAgentPi: {
+		Agent:                  ConductorAgentPi,
+		DisplayName:            "Pi",
+		DefaultCommand:         "pi",
+		InstructionsFileName:   "AGENTS.md",
+		SupportsClearOnCompact: false,
 	},
 }
 
@@ -441,7 +451,8 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 	normalized := normalizeConductorAgent(agent)
 	spec, ok := conductorAgentSpecs[normalized]
 	if !ok {
-		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s, %s, %s)", agent, ConductorAgentClaude, ConductorAgentCodex, ConductorAgentHermes)
+		supported := slices.Sorted(maps.Keys(conductorAgentSpecs))
+		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s)", agent, strings.Join(supported, ", "))
 	}
 	return spec, nil
 }
@@ -812,6 +823,33 @@ func renderConductorInstructionsTemplate(baseTemplate, name, profile string, spe
 	return content
 }
 
+// conductorPerNameTemplateFor returns the per-conductor instructions template
+// for agent. Hermes gets its own template; every other agent (claude, codex,
+// pi, ...) shares the generic one, which substitutes {AGENT}/{AGENT_DISPLAY}/
+// {INSTRUCTIONS_FILE} per the caller's spec.
+func conductorPerNameTemplateFor(agent string) string {
+	if agent == ConductorAgentHermes {
+		return conductorPerNameHermesMDTemplate
+	}
+	return conductorPerNameClaudeMDTemplate
+}
+
+// previousConductorAgentSpec reports the spec of the agent a conductor is
+// being switched away from, but only when that agent writes the same
+// instructions file as the incoming spec (codex and pi both use AGENTS.md).
+// Those are the cases where the incoming setup must replace the previous
+// agent's generated content instead of leaving it stale.
+func previousConductorAgentSpec(existing *ConductorMeta, spec ConductorAgentSpec) (ConductorAgentSpec, bool) {
+	if existing == nil {
+		return ConductorAgentSpec{}, false
+	}
+	previousSpec, ok := conductorAgentSpecs[normalizeConductorAgent(existing.Agent)]
+	if !ok || previousSpec.Agent == spec.Agent || previousSpec.InstructionsFileName != spec.InstructionsFileName {
+		return ConductorAgentSpec{}, false
+	}
+	return previousSpec, true
+}
+
 func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
 	spec, _ := GetConductorAgentSpec(ConductorAgentClaude)
 	return renderConductorInstructionsTemplate(baseTemplate, name, profile, spec)
@@ -910,20 +948,33 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		// No custom path - write the default template only if absent. An existing
 		// symlink keeps the user's customization; an existing regular file may
 		// carry in-place edits, so re-running setup must not clobber it.
-		var perNameTemplate string
-		if spec.Agent == ConductorAgentHermes {
-			perNameTemplate = conductorPerNameHermesMDTemplate
-		} else {
-			perNameTemplate = conductorPerNameClaudeMDTemplate
-		}
+		perNameTemplate := conductorPerNameTemplateFor(spec.Agent)
 		content := renderConductorInstructionsTemplate(perNameTemplate, name, profile, spec)
-		oldContent := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(perNameTemplate), name, profile, spec)
-		if err := writeGeneratedFileOrMigrate(targetPath, oldContent, content, 0o644); err != nil {
-			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
+
+		// Generated content this setup run may replace in place: this agent's
+		// own previous template format, plus — when the conductor is switching
+		// between two agents that share an instructions filename (codex and pi
+		// both read AGENTS.md) — the sibling agent's current content, which
+		// would otherwise be stranded under the new agent's name. Anything
+		// else (hand edits, symlinks) is left untouched.
+		replaceable := []string{
+			renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(perNameTemplate), name, profile, spec),
+		}
+		if previousSpec, ok := previousConductorAgentSpec(existing, spec); ok {
+			replaceable = append(replaceable, renderConductorInstructionsTemplate(conductorPerNameTemplateFor(previousSpec.Agent), name, profile, previousSpec))
+		}
+		for _, previous := range replaceable {
+			if err := writeGeneratedFileOrMigrate(targetPath, previous, content, 0o644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
+			}
 		}
 	}
-	for otherAgent, otherSpec := range conductorAgentSpecs {
-		if otherAgent == spec.Agent {
+	// Drop instructions files left behind by other agents. Keying off the
+	// filename rather than the agent name matters because agents can share one
+	// (codex and pi both read AGENTS.md): removing by agent would delete the
+	// file this run just wrote.
+	for _, otherSpec := range conductorAgentSpecs {
+		if otherSpec.InstructionsFileName == spec.InstructionsFileName {
 			continue
 		}
 		stalePath := filepath.Join(dir, otherSpec.InstructionsFileName)

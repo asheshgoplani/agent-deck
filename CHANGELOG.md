@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `pi` as a supported conductor agent runtime (`conductor setup <name> --agent pi`): AGENTS.md instructions, no clear-on-compact (pi has no auto-compaction to block), and identity injection via pi's own `--append-system-prompt`. Registry-driven — heartbeat, bridge send/read, and `conductor list` already work tool-agnostically (closes #2297).
+
 ## [1.16.11] - 2026-09-25
 
 ### Added

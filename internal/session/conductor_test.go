@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1043,6 +1044,92 @@ func TestSetupConductorWithAgent_Codex(t *testing.T) {
 	}
 	if meta.GetClearOnCompact() {
 		t.Fatal("codex conductor should not enable clear_on_compact")
+	}
+}
+
+func TestSetupConductorWithAgent_Pi(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "test-pi"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentPi, true, true, "pi conductor", "", "", "", nil, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	agentsPath := filepath.Join(dir, "AGENTS.md")
+	content, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("failed to read AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(content), "Pi") {
+		t.Fatal("AGENTS.md should mention Pi")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatal("CLAUDE.md should not be created for Pi conductor")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "HERMES.md")); !os.IsNotExist(err) {
+		t.Fatal("HERMES.md should not be created for Pi conductor")
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.Agent != ConductorAgentPi {
+		t.Fatalf("agent = %q, want %q", meta.Agent, ConductorAgentPi)
+	}
+	if meta.GetClearOnCompact() {
+		t.Fatal("pi conductor should not enable clear_on_compact")
+	}
+}
+
+// pi and codex both read AGENTS.md (#2297): setting up a pi conductor for a
+// name previously set up as codex must not delete the file it just wrote
+// (the stale-instructions cleanup loop keys off filename collisions, not
+// just agent identity).
+func TestSetupConductorWithAgent_CodexToPiSharesAgentsFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "codex-then-pi"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentCodex, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("failed to create initial Codex conductor: %v", err)
+	}
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentPi, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("failed to switch conductor to Pi: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	content, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("AGENTS.md should still exist after switching Codex conductor to Pi: %v", err)
+	}
+	if !strings.Contains(string(content), "Pi") {
+		t.Fatal("AGENTS.md should have been rewritten with Pi's content")
+	}
+}
+
+// ListConductors (the data source for `conductor list`) must surface a Pi
+// conductor's agent like any other registry-driven runtime.
+func TestListConductors_IncludesPiRuntime(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := SetupConductorWithAgent("pi-fleet", "default", ConductorAgentPi, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("SetupConductorWithAgent: %v", err)
+	}
+
+	conductors, err := ListConductors()
+	if err != nil {
+		t.Fatalf("ListConductors: %v", err)
+	}
+	index := slices.IndexFunc(conductors, func(c ConductorMeta) bool { return c.Name == "pi-fleet" })
+	if index < 0 {
+		t.Fatal("pi-fleet conductor not found in ListConductors output")
+	}
+	if agent := conductors[index].GetAgent(); agent != ConductorAgentPi {
+		t.Fatalf("agent = %q, want %q", agent, ConductorAgentPi)
 	}
 }
 
