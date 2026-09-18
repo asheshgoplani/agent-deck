@@ -5945,6 +5945,9 @@ func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, p
 	return derived, false, false
 }
 
+// shouldDebounceTmuxFlipForTool is deliberately narrower than HookStatusTool:
+// pi has hooks (#2222) but is excluded here on purpose, like shell and "".
+// The call site in updateStatus explains why.
 func shouldDebounceTmuxFlipForTool(tool string) bool {
 	return tool == "" || IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
 		tool == "gemini" || tool == "hermes" || tool == "cursor"
@@ -6534,11 +6537,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// transient error, then recover; one confirming sample prevents a false
 	// completion/error to the conductor. A genuinely dead pane (tmux "inactive")
 	// and a "dead" hook are NOT debounced — those are real terminal signals.
-	// Skip debounce for tools without hooks (pi, shell): their tmux status is
-	// the ground truth and there's no hook fast-path to race against. Without
-	// this skip, each fresh CLI invocation (e.g. `agent-deck list --json`) sees
-	// tmuxFlipFromRunningPending = false and holds the status at running on the
-	// first sample, then exits before the second confirming sample can fire.
+	// Skip debounce for shell and pi: shell has no hooks at all, and while pi
+	// now has hooks (#2222) it is still CLI-single-sample in practice (no
+	// long-lived watcher process keeps polling it between invocations), so the
+	// same argument applies. Without this skip, each fresh CLI invocation
+	// (e.g. `agent-deck list --json`) sees tmuxFlipFromRunningPending = false
+	// and holds the status at running on the first sample, then exits before
+	// the second confirming sample can fire.
 	bypassWaitingDebounce := i.shouldBypassCodexWaitingDebounce(i.Status)
 	if shouldDebounceTmuxFlipForTool(i.Tool) && !bypassWaitingDebounce {
 		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {

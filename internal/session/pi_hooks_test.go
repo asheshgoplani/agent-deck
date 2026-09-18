@@ -30,7 +30,7 @@ func TestPiExtensionsDir_HonorsPiConfigDirOverride(t *testing.T) {
 func TestPiHookExtensionSource_IsWellFormed(t *testing.T) {
 	src := PiHookExtensionSource()
 
-	if !strings.Contains(src, "AGENTDECK PI HOOK EXTENSION v1") {
+	if !strings.Contains(src, "AGENTDECK PI HOOK EXTENSION v2") {
 		t.Error("extension source is missing the version marker the installer parses")
 	}
 	for _, event := range []string{"session_start", "turn_start", "turn_end", "session_shutdown"} {
