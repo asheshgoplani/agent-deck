@@ -59,7 +59,7 @@ agent_deck_path = "/usr/local/bin/agent-deck"
 
 func renderRemoteHeader(home *Home) string {
 	var b strings.Builder
-	home.renderRemoteGroupItem(&b, home.flatItems[0], false)
+	home.renderRemoteGroupItem(&b, home.flatItems[0], false, 0)
 	return b.String()
 }
 

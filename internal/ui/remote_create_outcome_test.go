@@ -43,7 +43,7 @@ agent_deck_path = "/home/alice/.local/bin/agent-deck"
 func renderRemoteCreateFrame(t *testing.T, h *Home) string {
 	t.Helper()
 	var frame strings.Builder
-	h.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, Path: "remotes/lab", RemoteName: "lab"}, false)
+	h.renderRemoteGroupItem(&frame, session.Item{Type: session.ItemTypeRemoteGroup, Path: "remotes/lab", RemoteName: "lab"}, false, 0)
 	h.remoteSessionsMu.RLock()
 	rows := append([]session.RemoteSessionInfo(nil), h.remoteSessions["lab"]...)
 	h.remoteSessionsMu.RUnlock()

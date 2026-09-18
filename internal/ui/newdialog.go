@@ -325,6 +325,15 @@ func viewportDialogContent(content string, width, height, focusLogicalLine int) 
 		showDown = end < bodyEnd
 	}
 
+	// A label rendered on its own line (e.g. the Account: pill row) can land
+	// exactly on the cutoff, showing the label with none of its values and
+	// no hint that it's mid-field rather than genuinely empty. Drop that
+	// trailing bare label so the cut falls between whole fields.
+	if end > start && end < bodyEnd && isBareFieldLabel(lines[end-1]) {
+		end--
+		showDown = end < bodyEnd
+	}
+
 	dim := lipgloss.NewStyle().Foreground(ColorComment)
 	visible := append([]string(nil), lines[:headerEnd]...)
 	if showUp {
@@ -336,6 +345,24 @@ func viewportDialogContent(content string, width, height, focusLogicalLine int) 
 	}
 	visible = append(visible, footer...)
 	return strings.Join(visible, "\n")
+}
+
+// isBareFieldLabel reports whether a rendered dialog row is nothing but a
+// field label — plain words ending in ":" with no value after it, e.g.
+// "Account:" or "▶ Account:".
+func isBareFieldLabel(line string) bool {
+	label := strings.TrimSpace(stripAnsi(line))
+	label = strings.TrimSpace(strings.TrimPrefix(label, "▶ "))
+	words, ok := strings.CutSuffix(label, ":")
+	if !ok || words == "" {
+		return false
+	}
+	for _, r := range words {
+		if r != ' ' && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
@@ -651,6 +678,16 @@ func (d *NewDialog) SetDefaultTool(tool string) {
 // GetSelectedGroup returns the parent group path
 func (d *NewDialog) GetSelectedGroup() string {
 	return d.parentGroupPath
+}
+
+// SetParentGroupOverride sets the dialog's displayed and forwarded parent
+// group directly, bypassing ShowInGroup's coercion of an empty group path to
+// the local "my-sessions" default. Used for a remote's true top level, which
+// has no group at all: an empty path means no -g flag reaches the remote's
+// own add command (see ssh.go).
+func (d *NewDialog) SetParentGroupOverride(path, name string) {
+	d.parentGroupPath = path
+	d.parentGroupName = name
 }
 
 func (d *NewDialog) effectiveDialogWidth() int {
@@ -2818,7 +2855,10 @@ func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarg
 
 		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
 	}
-	content.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, cmdButtons...))
+	// Joined with a literal space, not butted together: word-aware wrapping
+	// can only break at an actual space, so without one a tool name
+	// straddling the wrap point (e.g. "copilot") gets split mid-word.
+	content.WriteString(strings.Join(cmdButtons, " "))
 	content.WriteString("\n")
 
 	// show_only_installed_tools empty-fallback hint (issue #1259).

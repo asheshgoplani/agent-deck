@@ -11,7 +11,7 @@
     │                                                                                                              │    
     │    New Session (remote: old-host)                                                                            │    
     │                                                                                                              │    
-    │      in group: My Sessions                                                                                   │    
+    │      in group: old-host                                                                                      │    
     │                                                                                                              │    
     │      Remote runs an older agent-deck; options are not verified on the remote (model, account, MCP and        │    
     │    worktree options hidden).                                                                                 │    
@@ -20,9 +20,8 @@
     │      > legacy-session                                                                                        │    
     │                                                                                                              │    
     │      Command:                                                                                                │    
-    │                                                                                                              │    
-    │      shell    claude    gemini    opencode    codex    pi    copilot    crush    muse    cursor agent        │    
-    │    hermes    deepseek                                                                                        │    
+    │        shell     claude     gemini     opencode     codex     pi     copilot     crush     muse              │    
+    │      cursor agent     hermes     deepseek                                                                    │    
     │                                                                                                              │    
     │        Custom:                                                                                               │    
     │        > gemini                                                                                              │    
@@ -40,6 +39,7 @@
     │                                                                                                              │    
     │                                                                                                              │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯    
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -778,6 +778,11 @@ func (d *EditSessionDialog) View() string {
 // renderLabelPills renders a row of plain-text pills (no tool icons) for
 // fields whose options are simple labels, e.g. the pin position. Visual
 // styling matches renderToolPills so the two pill kinds read identically.
+//
+// Pills are joined with a literal space, not butted together: the dialog box
+// wraps this row with lipgloss's word-aware wrapping, which can only break at
+// an actual space. Without one, a too-narrow row wraps mid-label or renders
+// nothing at all.
 func renderLabelPills(labels []string, cursor int) string {
 	if len(labels) == 0 {
 		return ""
@@ -792,11 +797,12 @@ func renderLabelPills(labels []string, cursor int) string {
 			buttons[i] = idle.Render(label)
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Left, buttons...)
+	return strings.Join(buttons, " ")
 }
 
 // renderToolPills mirrors newdialog's command pills (selected =
 // ColorAccent background) so the new/edit pair feels visually identical.
+// See renderLabelPills for why pills are joined with a literal space.
 func renderToolPills(presets []string, cursor int) string {
 	if len(presets) == 0 {
 		return ""
@@ -820,5 +826,5 @@ func renderToolPills(presets []string, cursor int) string {
 			buttons[i] = idle.Render(name)
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Left, buttons...)
+	return strings.Join(buttons, " ")
 }

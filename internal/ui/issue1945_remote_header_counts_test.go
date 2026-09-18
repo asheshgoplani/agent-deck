@@ -72,7 +72,7 @@ func TestRemoteHeaderCountsFollowArchiveView(t *testing.T) {
 
 	render := func(item session.Item) string {
 		var b strings.Builder
-		home.renderRemoteGroupItem(&b, item, false)
+		home.renderRemoteGroupItem(&b, item, false, 0)
 		return b.String()
 	}
 

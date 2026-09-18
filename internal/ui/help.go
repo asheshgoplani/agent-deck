@@ -19,9 +19,20 @@ func wrapWithHangingIndent(text string, width int, indent string) string {
 	if text == "" || width <= 0 {
 		return text
 	}
+	lines := wrapLines(text, width)
+	for i := 1; i < len(lines); i++ {
+		lines[i] = indent + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// wrapLines wraps text at word boundaries and returns each visual row as its
+// own slice element, so callers that build a scrollable []string of real
+// screen rows count and align wrapped content correctly.
+func wrapLines(text string, width int) []string {
 	words := strings.Fields(text)
-	if len(words) == 0 {
-		return text
+	if width <= 0 || len(words) == 0 {
+		return []string{text}
 	}
 	var lines []string
 	current := words[0]
@@ -33,14 +44,36 @@ func wrapWithHangingIndent(text string, width int, indent string) string {
 		lines = append(lines, current)
 		current = w
 	}
-	lines = append(lines, current)
-	if len(lines) == 1 {
-		return lines[0]
+	return append(lines, current)
+}
+
+// renderHelpRow renders one key/description help entry as a set of fully
+// styled, individually countable screen rows.
+//
+// The two columns are wrapped independently and then paired row by row, so a
+// three-alternative key label (e.g. "+ / K / Shift+↑") wraps into an aligned
+// column instead of being hard wrapped by keyStyle's fixed Width(). The
+// literal " " between the columns guarantees a separator even when the key
+// label exactly fills keyWidth (e.g. "--group <name>").
+func renderHelpRow(key, desc string, keyWidth, descWidth int, keyStyle, descStyle lipgloss.Style) []string {
+	keyLines := wrapLines(key, keyWidth)
+	descLines := wrapLines(desc, descWidth)
+
+	rowCount := max(len(keyLines), len(descLines))
+	rows := make([]string, 0, rowCount)
+	for i := 0; i < rowCount; i++ {
+		k := ""
+		if i < len(keyLines) {
+			k = keyLines[i]
+		}
+		if i >= len(descLines) || descLines[i] == "" {
+			// No description cell: don't leave the column gap dangling.
+			rows = append(rows, strings.TrimRight("  "+keyStyle.Render(k), " "))
+			continue
+		}
+		rows = append(rows, "  "+keyStyle.Render(k)+" "+descStyle.Render(descLines[i]))
 	}
-	for i := 1; i < len(lines); i++ {
-		lines[i] = indent + lines[i]
-	}
-	return strings.Join(lines, "\n")
+	return rows
 }
 
 // HelpOverlay shows keyboard shortcuts in a modal
@@ -251,7 +284,7 @@ func (h *HelpOverlay) View() string {
 		{"PgUp / PgDn", "Half page up/down"},
 		{"Ctrl+f/b", "Full page up/down"},
 		{"Home / End", "Jump to first / last item"},
-		{"gg / G", "Jump to top / global search"},
+		{"G", "Global search"},
 		{"h / Left", "Collapse / parent"},
 		{"l / Right", "Expand / toggle"},
 		{"1-9", "Jump to root group"},
@@ -462,14 +495,12 @@ func (h *HelpOverlay) View() string {
 		keyWidth = 10 // Compact key column for small screens
 	}
 	// Description column budget: dialogWidth minus border (2) + padding (4)
-	// + leading "  " (2) + key column. Hanging indent for wrapped lines is
-	// the same width as the leading spaces + key column so continuations sit
-	// aligned under the description column.
-	descWidth := dialogWidth - 2 - 4 - 2 - keyWidth
+	// + leading "  " (2) + key column + the 1-space key/description gap
+	// renderHelpRow always emits.
+	descWidth := dialogWidth - 2 - 4 - 2 - keyWidth - 1
 	if descWidth < 10 {
 		descWidth = 10
 	}
-	hangingIndent := strings.Repeat(" ", 2+keyWidth)
 
 	keyStyle := lipgloss.NewStyle().
 		Foreground(ColorPurple).
@@ -498,9 +529,7 @@ func (h *HelpOverlay) View() string {
 	for i, section := range sections {
 		lines = append(lines, sectionStyle.Render(section.title))
 		for _, item := range section.items {
-			wrapped := wrapWithHangingIndent(item[1], descWidth, hangingIndent)
-			line := "  " + keyStyle.Render(item[0]) + descStyle.Render(wrapped)
-			lines = append(lines, line)
+			lines = append(lines, renderHelpRow(item[0], item[1], keyWidth, descWidth, keyStyle, descStyle)...)
 		}
 		if i < len(sections)-1 {
 			lines = append(lines, "")
@@ -528,8 +557,19 @@ func (h *HelpOverlay) View() string {
 	// Check if scrolling is needed
 	needsScroll := totalLines > availableHeight
 
+	// When scrolling, reserve one line each for the top and bottom indicator
+	// slots unconditionally — even on a page where one stays blank — so the
+	// clamp below and the render below share one content budget. Reserving
+	// them only when shown made maxScroll larger than any page could
+	// actually render, so the last page was unreachable and "▼ more below"
+	// stayed lit forever.
+	contentHeight := availableHeight
+	if needsScroll {
+		contentHeight = max(availableHeight-2, 1)
+	}
+
 	// Clamp scroll offset
-	maxScroll := totalLines - availableHeight
+	maxScroll := totalLines - contentHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -540,52 +580,27 @@ func (h *HelpOverlay) View() string {
 		h.scrollOffset = 0
 	}
 
-	// Build visible content
-	var content strings.Builder
-
+	// Build visible content as discrete rows, then join once — no ad hoc
+	// newline bookkeeping that could leave a stray blank line before the
+	// footer.
+	visibleRows := lines
 	if needsScroll {
-		// Show scroll indicator at top if not at beginning
+		// The top indicator always occupies a row, blank when at the top, so
+		// the content budget stays fixed across every scroll position.
+		topIndicator := ""
 		if h.scrollOffset > 0 {
-			content.WriteString(scrollIndicatorStyle.Render("▲ more above"))
-			content.WriteString("\n")
-			availableHeight-- // Account for indicator line
+			topIndicator = scrollIndicatorStyle.Render("▲ more above")
 		}
+		endIdx := min(h.scrollOffset+contentHeight, totalLines)
 
-		// Determine end index
-		endIdx := h.scrollOffset + availableHeight
-		if h.scrollOffset > 0 {
-			// Leave room for bottom indicator if needed
-			if endIdx < totalLines {
-				availableHeight--
-				endIdx = h.scrollOffset + availableHeight
-			}
-		}
-		if endIdx > totalLines {
-			endIdx = totalLines
-		}
-
-		// Render visible lines
-		for i := h.scrollOffset; i < endIdx; i++ {
-			content.WriteString(lines[i])
-			if i < endIdx-1 {
-				content.WriteString("\n")
-			}
-		}
-
-		// Show scroll indicator at bottom if more content below
+		visibleRows = append([]string{topIndicator}, lines[h.scrollOffset:endIdx]...)
 		if endIdx < totalLines {
-			content.WriteString("\n")
-			content.WriteString(scrollIndicatorStyle.Render("▼ more below"))
-		}
-	} else {
-		// No scrolling needed, render all lines
-		for i, line := range lines {
-			content.WriteString(line)
-			if i < len(lines)-1 {
-				content.WriteString("\n")
-			}
+			visibleRows = append(visibleRows, scrollIndicatorStyle.Render("▼ more below"))
 		}
 	}
+
+	var content strings.Builder
+	content.WriteString(strings.Join(visibleRows, "\n"))
 
 	// Footer with appropriate hint
 	content.WriteString("\n\n")
