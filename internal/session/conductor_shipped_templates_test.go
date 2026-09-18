@@ -45,14 +45,17 @@ func loadShippedConductorTemplates(t *testing.T) []shippedConductorTemplate {
 }
 
 // TestShippedConductorTemplatesAreRecognizedAsGenerated proves, against the
-// templates that actually shipped (v1.15.0, v1.16.5, v1.16.8, v1.16.10),
-// that a conductor left on any released instructions file is recognised as
-// generated and migrated in place, while a hand-written file is left alone.
+// templates that actually shipped (v1.15.0, v1.16.5, v1.16.8, v1.16.10 for
+// generation 0; v1.10.9, v1.10.10, v1.10.11 for generation 1; v1.11.0 as the
+// generation-0 boundary), that a conductor left on any released instructions
+// file is recognised as generated and migrated in place through the full
+// conductorInstructionsGenerations list, while a hand-written file is left
+// alone.
 //
-// Every shipped tag carries the same template blob, so "two or more releases
-// behind" is the same single prior generation that
-// previousConductorInstructionsTemplate reconstructs; there is no older one
-// to recognise.
+// Fixture rows span exactly 2 distinct blobs: v1.11.0-v1.16.10 share one
+// (the immediately previous generation), v1.10.9-v1.10.11 share the other
+// (one generation further back, predating #1814's substate-guidance row).
+// v1.9.73 and v1.9.70 are intentionally not covered; see the tsv header.
 func TestShippedConductorTemplatesAreRecognizedAsGenerated(t *testing.T) {
 	rows := loadShippedConductorTemplates(t)
 
@@ -62,10 +65,10 @@ func TestShippedConductorTemplatesAreRecognizedAsGenerated(t *testing.T) {
 		blobs[r.blob] = true
 		tags[r.tag] = true
 	}
-	if len(blobs) != 1 {
-		t.Fatalf("shipped templates span %d distinct blobs %v; previousConductorInstructionsTemplate reconstructs exactly one generation, add another for each extra blob", len(blobs), blobs)
+	if len(blobs) != 2 {
+		t.Fatalf("shipped templates span %d distinct blobs %v; conductorInstructionsGenerations reconstructs exactly 2 prior generations, update the fixture and the generation count together", len(blobs), blobs)
 	}
-	for _, tag := range []string{"v1.15.0", "v1.16.5", "v1.16.8", "v1.16.10"} {
+	for _, tag := range []string{"v1.15.0", "v1.16.5", "v1.16.8", "v1.16.10", "v1.11.0", "v1.10.9", "v1.10.10", "v1.10.11"} {
 		if !tags[tag] {
 			t.Fatalf("fixture is missing shipped tag %s", tag)
 		}
@@ -85,18 +88,25 @@ func TestShippedConductorTemplatesAreRecognizedAsGenerated(t *testing.T) {
 					template = conductorPerNameHermesMDTemplate
 				}
 			}
-			shipped := renderConductorInstructionsTemplate(previousConductorInstructionsTemplate(template), name, DefaultProfile, spec)
-			if got := fmtHash(shipped); got != r.sha256 {
-				t.Fatalf("reconstructed prior template hash %s != what %s shipped (%s): a conductor from that release would not be migrated", got, r.tag, r.sha256)
-			}
 			current := renderConductorInstructionsTemplate(template, name, DefaultProfile, spec)
+
+			oldGenerations := renderConductorInstructionsGenerations(template, name, DefaultProfile, spec)
+			var shipped string
+			for _, rendered := range oldGenerations {
+				if fmtHash(rendered) == r.sha256 {
+					shipped = rendered
+				}
+			}
+			if shipped == "" {
+				t.Fatalf("no reconstructed generation matches what %s shipped (%s): a conductor from that release would not be migrated", r.tag, r.sha256)
+			}
 
 			dir := t.TempDir()
 			generated := filepath.Join(dir, spec.InstructionsFileName)
 			if err := os.WriteFile(generated, []byte(shipped), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeGeneratedFileOrMigrate(generated, shipped, current, 0o644); err != nil {
+			if err := writeGeneratedFileOrMigrate(generated, oldGenerations, current, 0o644); err != nil {
 				t.Fatal(err)
 			}
 			got, err := os.ReadFile(generated)
@@ -112,7 +122,7 @@ func TestShippedConductorTemplatesAreRecognizedAsGenerated(t *testing.T) {
 			if err := os.WriteFile(handWritten, []byte(custom), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeGeneratedFileOrMigrate(handWritten, shipped, current, 0o644); err != nil {
+			if err := writeGeneratedFileOrMigrate(handWritten, oldGenerations, current, 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if got, _ := os.ReadFile(handWritten); string(got) != custom {

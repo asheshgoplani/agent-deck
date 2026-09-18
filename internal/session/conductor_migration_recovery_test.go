@@ -34,7 +34,7 @@ func TestMigrationPreservesBothConcurrentEdits(t *testing.T) {
 				return nil
 			}
 			t.Cleanup(func() { exchangeGeneratedFiles = original })
-			err := writeGeneratedFileOrMigrate(path, "old", "new", 0600)
+			err := writeGeneratedFileOrMigrate(path, []string{"old"}, "new", 0600)
 			if err == nil || !strings.Contains(err.Error(), recovery) {
 				t.Fatalf("expected actionable publication conflict: %v", err)
 			}
@@ -71,7 +71,7 @@ func TestMigrationRetainsOpenEditorInode(t *testing.T) {
 	var recovery string
 	exchangeGeneratedFiles = func(from, to string) error { recovery = from; return exchangeGeneratedFile(from, to) }
 	t.Cleanup(func() { exchangeGeneratedFiles = original })
-	if err := writeGeneratedFileOrMigrate(path, "old", "new", 0600); err != nil {
+	if err := writeGeneratedFileOrMigrate(path, []string{"old"}, "new", 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := editor.Truncate(0); err != nil {
@@ -128,7 +128,7 @@ func TestMigrationDefaultRerunPreservesCustomSymlinks(t *testing.T) {
 	if err := os.Symlink("missing", dangling); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeGeneratedFileOrMigrate(dangling, "old", "new", 0600); err != nil {
+	if err := writeGeneratedFileOrMigrate(dangling, []string{"old"}, "new", 0600); err != nil {
 		t.Fatalf("dangling user symlink must be preserved: %v", err)
 	}
 }
