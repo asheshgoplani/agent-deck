@@ -9,7 +9,7 @@ import (
 
 func TestNoOperandHelpPreservesExistingFiles(t *testing.T) {
 	var commands [][]string
-	for _, family := range []string{"hooks", "codex-hooks", "cursor-hooks", "gemini-hooks", "hermes-hooks"} {
+	for _, family := range []string{"hooks", "codex-hooks", "cursor-hooks", "gemini-hooks", "hermes-hooks", "pi-hooks"} {
 		for _, action := range []string{"install", "uninstall", "status"} {
 			for _, help := range []string{"help", "--help", "-h"} {
 				commands = append(commands, []string{family, action, help})

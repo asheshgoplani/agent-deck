@@ -772,6 +772,7 @@ Agent Deck works with any terminal-based AI tool:
 | **Muse Code** (`muse`) | Status detection, organization, launch, resume |
 | **Cursor** (terminal) | Status detection, organization |
 | **Hermes Agent** | Organization, launch |
+| **pi** (`pi-coding-agent`) | Status detection (hook-driven), organization, launch, resume, fork |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
@@ -783,6 +784,15 @@ agent-deck codex-hooks status
 ```
 
 If you set `CODEX_HOME`, use the same environment here and when launching Codex. Without the hook, turn-level running/waiting status cannot converge reliably.
+
+pi status detection works the same way, through a small agent-deck extension in pi's global extension directory:
+
+```bash
+agent-deck pi-hooks install
+agent-deck pi-hooks status
+```
+
+Restart running pi sessions after installing. Without the extension a pi session's status is read from the pane, which is slower and occasionally wrong; with it, agent-deck uses pi's own turn events and falls back to the pane only when no recent event is available. `PI_CODING_AGENT_DIR` is honored if you set it.
 
 DeepSeek Harness is the `dsh` binary from [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/deepseek-harness)
 (`npm install -g @deepseek-ai/dsh`). It boots *profiles*: `web` (a browser UI served

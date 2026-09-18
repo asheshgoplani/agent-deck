@@ -100,7 +100,7 @@ func recordCLITelemetry(subcommand string, rest []string) {
 		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
 		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
 		"remote", "worktree", "wt", "costs", "usage", "web", "uninstall", "migrate-paths", "hooks",
-		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "deepseek", "feedback", "creds-refresh":
+		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "pi-hooks", "deepseek", "feedback", "creds-refresh":
 	default:
 		return
 	}
@@ -495,6 +495,9 @@ func main() {
 			return
 		case "cursor-hooks":
 			handleCursorHooks(args[1:])
+			return
+		case "pi-hooks":
+			handlePiHooks(args[1:])
 			return
 		case "deepseek":
 			handleDeepSeek(args[1:])
@@ -1326,7 +1329,7 @@ var commandRegistry = map[string]bool{
 	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
-	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
+	"hermes-hooks": true, "cursor-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
@@ -4157,6 +4160,7 @@ func printHelp() {
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
 	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
+	fmt.Println("  pi-hooks         Manage pi (pi-coding-agent) hook integration")
 	fmt.Println("  deepseek         Inspect the DeepSeek Harness (dsh) integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
@@ -4216,6 +4220,9 @@ func printHelp() {
 	fmt.Println("  cursor-hooks install      Install Cursor hooks")
 	fmt.Println("  cursor-hooks uninstall    Remove Cursor hooks")
 	fmt.Println("  cursor-hooks status       Show Cursor hooks install status")
+	fmt.Println("  pi-hooks install          Install or upgrade the pi extension")
+	fmt.Println("  pi-hooks uninstall        Remove the pi extension")
+	fmt.Println("  pi-hooks status           Show pi extension install status")
 	fmt.Println("  deepseek status           Show resolved dsh binary, DSH_HOME, profile")
 	fmt.Println("  deepseek profiles         List profiles under $DSH_HOME/profiles")
 	fmt.Println("  deepseek sessions [path]  List dsh sessions recorded for a workspace")

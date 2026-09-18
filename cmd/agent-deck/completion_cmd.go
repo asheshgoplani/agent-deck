@@ -256,6 +256,7 @@ var completionTree = []completionNode{
 	{name: "gemini-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "hermes-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "cursor-hooks", subs: []string{"install", "uninstall", "status"}},
+	{name: "pi-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "deepseek", subs: []string{"status", "profiles", "sessions"}},
 }
 

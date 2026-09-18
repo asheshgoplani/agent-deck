@@ -6099,15 +6099,6 @@ func (i *Instance) applyTerminatedPaneStatus() {
 	}
 }
 
-// hookEmittingTool reports whether tool is one of the CLIs that publish
-// lifecycle hook events (see the HOOK FAST PATH condition in UpdateStatus,
-// which this mirrors) — the only tools for which a recorded hookStatus is
-// meaningful evidence for classifyTerminatedPane.
-func hookEmittingTool(tool string) bool {
-	return IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
-		tool == "gemini" || tool == "hermes" || tool == "cursor"
-}
-
 // classifyTerminatedPane is the pure decision behind terminatedPaneStatus,
 // split out so the clean-exit-vs-crash rule can be exercised without a live
 // tmux server. See terminatedPaneStatus for the full rationale.
@@ -6142,7 +6133,9 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string, hookSt
 	if tool == "opencode" {
 		return StatusStopped, SubstateNone
 	}
-	if hookEmittingTool(tool) {
+	// Only a hook-emitting tool records a hookStatus that means anything here:
+	// it is the turn-end-edge evidence the doc comment above describes.
+	if HookStatusTool(tool) {
 		switch hookStatus {
 		case "waiting", "idle":
 			return StatusStopped, SubstateNone
@@ -6252,7 +6245,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && HookStatusTool(i.Tool) {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -6275,8 +6268,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") &&
-		i.hookStatus != "" &&
+	if HookStatusTool(i.Tool) && i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		i.hookLagFlipped = false
 		if i.hookStatus != "running" {

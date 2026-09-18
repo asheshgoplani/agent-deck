@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- pi (`pi-coding-agent`) sessions now get event-driven status like claude/codex/gemini/hermes/cursor do, instead of status guessed from the pane. `agent-deck pi-hooks install` writes a small agent-deck extension into pi's global extension directory; it forwards pi's `session_start`, `turn_start`, `turn_end` and `session_shutdown` events, and agent-deck prefers that signal whenever it is fresh, falling back to pane detection when it is not. `pi-hooks status` and `pi-hooks uninstall` round it out (#2222).
+
 ## [1.16.11] - 2026-09-25
 
 ### Added

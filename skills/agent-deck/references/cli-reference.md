@@ -988,6 +988,16 @@ agent-deck codex-hooks uninstall
 
 Codex turn-level status uses its notify hook. Install it once per Codex home; if `CODEX_HOME` is set, use the same environment for installation and Codex sessions.
 
+## pi Hook Commands
+
+```bash
+agent-deck pi-hooks install
+agent-deck pi-hooks status
+agent-deck pi-hooks uninstall
+```
+
+pi turn-level status uses an agent-deck extension installed into pi's global extension directory (`~/.pi/agent/extensions/agent-deck.ts`, or under `PI_CODING_AGENT_DIR` when set). It forwards `session_start`, `turn_start`, `turn_end` and `session_shutdown`; restart running pi sessions after installing. `status` reports `INSTALLED`, `OUTDATED` (reinstall to upgrade), `FOREIGN` (a file agent-deck did not write is in the way) or `NOT INSTALLED`. Without it, pi status falls back to pane detection.
+
 ## DeepSeek Commands
 
 Inspect the DeepSeek Harness (`dsh`) integration. Read-only; every subcommand takes `--json`.
