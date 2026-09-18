@@ -235,11 +235,17 @@ terminal-features = "*:hyperlinks:extkeys"
 
 ### One tmux Window Stuck at 80x24 While Its Siblings Are Full Width
 
-`window-size` is a tmux **window** option. Agent Deck applies `largest` and
-`aggressive-resize on` to the initial session window and windows created by
-**Open Shell Here** in window mode. Explicit `[tmux.options]` values replace
-those defaults. For a new shell window, a local option installed by your
-`after-new-window` hook takes precedence.
+`window-size` is a tmux **window** option. Agent Deck applies `latest`
+(`largest` on a tmux without it) and `aggressive-resize on` to every window of
+a session at creation and again before each attach, including windows created
+by **Open Shell Here** in window mode. Explicit `[tmux.options]` values replace
+those defaults on every path. For a new shell window, a local option installed
+by your `after-new-window` hook takes precedence.
+
+With two people on one session under `latest`, the terminal that is not being
+used shows the other person's size (clipped if it is smaller, the pane in the
+top-left corner with dots around it if it is larger) until you type or resize;
+that is tmux's one-size-per-window rule, not a stuck window.
 
 Windows created outside that Deck action, including `prefix c` or an agent's
 own `tmux new-window`, still inherit tmux's global window defaults. If that

@@ -1125,9 +1125,10 @@ func (h *Home) openInNewWindow(req terminal.AttachRequest, sessionExists bool) e
 	}
 	if req.Remote == nil {
 		// The new window is one more viewer of a possibly shared session
-		// (internal/tmux sharedview.go); a remote one gets this from its
-		// own `session attach`.
-		tmux.ApplySharedViewSize(req.SocketName, req.Name, nil)
+		// (internal/tmux sharedview.go), with the user's [tmux.options]
+		// honoured as on every other attach path; a remote one gets this
+		// from its own `session attach`.
+		tmux.ApplySharedViewSize(req.SocketName, req.Name, session.SharedViewOverrides())
 	}
 	return terminal.OpenSessionInNewWindow(req)
 }

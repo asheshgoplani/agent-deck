@@ -2,9 +2,11 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/user"
 	"sort"
 	"strconv"
@@ -36,11 +38,17 @@ type Viewer struct {
 const viewerFormat = "#{session_name}\t#{client_name}\t#{client_tty}\t#{client_width}x#{client_height}\t#{client_activity}\t#{client_user}\t#{client_control_mode}"
 
 // ListViewers returns the people attached to sessionName on socketName, most
-// recently active first. An error means tmux could not be asked (server
-// gone, timeout); an empty list means nobody is attached.
+// recently active first. An error means tmux could not be asked (timeout,
+// broken server); an empty list means nobody is attached, which is also the
+// answer for a session or server that does not exist: nobody can be viewing
+// a stopped session, and every caller (CLI, listing, cache) must agree on
+// that.
 func ListViewers(ctx context.Context, socketName, sessionName string) ([]Viewer, error) {
 	out, err := commandOutput(tmuxExecContext(ctx, socketName, "list-clients", "-t", sessionName, "-F", viewerFormat))
 	if err != nil {
+		if viewersListingIsEmpty(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return parseViewers(string(out), ttyOwner)[sessionName], nil
@@ -49,14 +57,36 @@ func ListViewers(ctx context.Context, socketName, sessionName string) ([]Viewer,
 // ListAllViewers returns the viewers of every session on socketName, keyed
 // by session name; sessions nobody is attached to have no key. One
 // subprocess for the whole server, which is what listings and the TUI's
-// row badges want. A socket with no server is an error (unknown): every
-// session on it is stopped, and a stopped session has no viewers to report.
+// row badges want. A socket with no server answers an empty map, not an
+// error: every session on it is stopped.
 func ListAllViewers(ctx context.Context, socketName string) (map[string][]Viewer, error) {
 	out, err := commandOutput(tmuxExecContext(ctx, socketName, "list-clients", "-F", viewerFormat))
 	if err != nil {
+		if viewersListingIsEmpty(err) {
+			return map[string][]Viewer{}, nil
+		}
 		return nil, err
 	}
 	return parseViewers(string(out), ttyOwner), nil
+}
+
+// viewersListingIsEmpty tells a list-clients failure that is tmux's own
+// "there is nothing here" from one where tmux could not be asked (timeout,
+// permission, protocol mismatch, lost server). tmux's client prints
+// "error connecting to <socket> (No such file or directory)" when the
+// socket file does not exist, "no server running on <socket>" when the file
+// is there but nothing listens (client.c), and "can't find session: <name>"
+// for a live server without that session (cmd-find.c); all three mean no
+// client can be attached.
+func viewersListingIsEmpty(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	stderr := string(exitErr.Stderr)
+	return strings.Contains(stderr, "no server running") ||
+		strings.Contains(stderr, "can't find session") ||
+		(strings.Contains(stderr, "error connecting to") && strings.Contains(stderr, "No such file or directory"))
 }
 
 // parseViewers decodes list-clients output into viewers by session name,
@@ -195,7 +225,7 @@ func (s *Session) announceOtherViewers(ctx context.Context, others []Viewer, win
 		viewers, err := ListViewers(ctx, s.SocketName, s.Name)
 		if err == nil {
 			if newcomer, ok := firstUnknownViewer(viewers, known); ok {
-				s.showViewerNotice(ctx, newcomer, "also viewing: "+FormatViewers(others))
+				s.showViewerNotice(ctx, newcomer, viewerNoticeText(others))
 				return
 			}
 		}
@@ -208,6 +238,15 @@ func (s *Session) announceOtherViewers(ctx context.Context, others []Viewer, win
 		case <-time.After(configErrorViewPoll):
 		}
 	}
+}
+
+// viewerNoticeText is the "also viewing" status-line message. It says what
+// the size policy means for the new client: with window-size=latest the
+// window follows the client that last attached or typed, so an idle
+// terminal of a different size sees the other person's size (clipped, or
+// the pane in the top-left corner with dots around it) until it types.
+func viewerNoticeText(others []Viewer) string {
+	return "also viewing: " + FormatViewers(others) + "; the window follows whoever types"
 }
 
 // firstUnknownViewer picks the first viewer whose name is not in known.
@@ -224,9 +263,9 @@ func firstUnknownViewer(viewers []Viewer, known map[string]bool) (Viewer, bool) 
 // viewerNoticeDelay.
 func (s *Session) showViewerNotice(ctx context.Context, v Viewer, msg string) {
 	delay := strconv.Itoa(int(viewerNoticeDelay / time.Millisecond))
-	if err := s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, "-d", delay, msg).Run(); err != nil {
+	if err := commandRun(s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, "-d", delay, msg)); err != nil {
 		// tmux < 3.2 has no -d; show it for the default display-time.
-		_ = s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, msg).Run()
+		_ = commandRun(s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, msg))
 	}
 	statusLog.Debug("shared_view_notice", slog.String("session", s.Name),
 		slog.String("client", v.Name), slog.String("message", msg))

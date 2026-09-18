@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -4660,6 +4661,16 @@ func GetTmuxSettings() TmuxSettings {
 		return TmuxSettings{}
 	}
 	return config.Tmux
+}
+
+// SharedViewOverrides is the user's [tmux.options] map for the attach paths
+// that have no Instance at hand (the web bridge, the embedded terminal,
+// Shift+Enter): tmux.ApplySharedViewSize honours the same window-size and
+// aggressive-resize overrides there that Session.Start and AttachWithOptions
+// take from Instance.buildTmuxOptionOverrides, so a user who opted into
+// `window-size = "smallest"` keeps it on every attach.
+func SharedViewOverrides() map[string]string {
+	return maps.Clone(GetTmuxSettings().Options)
 }
 
 // TerminalSettings controls outer-terminal chrome agent-deck writes directly

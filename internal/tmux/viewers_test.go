@@ -4,8 +4,12 @@ package tmux
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,15 +106,14 @@ func TestViewersCached_ColdIsUnknownThenWarm(t *testing.T) {
 	assert.Empty(t, other)
 }
 
-func TestViewersCached_ListingErrorKeepsLastKnown(t *testing.T) {
+func TestViewersCached_ListingErrorIsUnknownUntilRetry(t *testing.T) {
 	ResetViewersCacheForTest()
 	t.Cleanup(ResetViewersCacheForTest)
 
-	calls := 0
+	var calls atomic.Int32
 	orig := listAllViewersOnSocket
 	listAllViewersOnSocket = func(socketName string) (map[string][]Viewer, error) {
-		calls++
-		if calls == 1 {
+		if calls.Add(1) == 1 {
 			return map[string][]Viewer{"agentdeck_x": {{Name: "/dev/pts/1"}}}, nil
 		}
 		return nil, assert.AnError
@@ -120,17 +123,145 @@ func TestViewersCached_ListingErrorKeepsLastKnown(t *testing.T) {
 	ViewersCached("sock", "agentdeck_x")
 	require.Eventually(t, func() bool { _, known := ViewersCached("sock", "agentdeck_x"); return known }, 2*time.Second, 10*time.Millisecond)
 
-	// Force a stale entry and a failing refresh.
-	viewersCacheMu.Lock()
-	viewersCache["sock"].refreshedAt = time.Now().Add(-time.Minute)
-	viewersCacheMu.Unlock()
+	// Force a due entry and a failing refresh.
+	expireViewersCacheForTest("sock")
 	ViewersCached("sock", "agentdeck_x")
-	require.Eventually(t, func() bool { return calls >= 2 }, 2*time.Second, 10*time.Millisecond)
-	time.Sleep(20 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		_, known := ViewersCached("sock", "agentdeck_x")
+		return calls.Load() >= 2 && !known
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, int32(2), calls.Load())
 
 	viewers, known := ViewersCached("sock", "agentdeck_x")
-	assert.True(t, known)
-	assert.Len(t, viewers, 1, "a failed refresh keeps the last listing rather than flapping to nobody")
+	assert.False(t, known, "a failed refresh is 'unknown', never a stale answer and never 'nobody'")
+	assert.Nil(t, viewers)
+}
+
+// TestViewersCached_DeadSocketIsRateLimited is the render loop on a socket
+// whose server is down: 100 reads inside one TTL start one listing, and a
+// repeated failure backs off rather than retrying every TTL.
+func TestViewersCached_DeadSocketIsRateLimited(t *testing.T) {
+	ResetViewersCacheForTest()
+	t.Cleanup(ResetViewersCacheForTest)
+
+	var calls atomic.Int32
+	orig := listAllViewersOnSocket
+	listAllViewersOnSocket = func(socketName string) (map[string][]Viewer, error) {
+		calls.Add(1)
+		return nil, errors.New("no server running on /tmp/tmux-501/dead")
+	}
+	t.Cleanup(func() { listAllViewersOnSocket = orig })
+
+	for i := 0; i < 100; i++ {
+		_, known := ViewersCached("dead", "agentdeck_x")
+		assert.False(t, known)
+		time.Sleep(4 * time.Millisecond) // 100 renders in ~400 ms, well inside one TTL
+	}
+	assert.Equal(t, int32(1), calls.Load(), "one listing per socket per TTL, even when it fails")
+
+	viewersCacheMu.Lock()
+	entry := viewersCache["dead"]
+	firstDelay := entry.nextRefresh.Sub(entry.refreshedAt)
+	viewersCacheMu.Unlock()
+	assert.Equal(t, viewersCacheTTL, firstDelay, "the first failure is retried after one TTL")
+
+	// The next failure doubles the wait; the one after doubles it again, up
+	// to the cap.
+	want := viewersCacheTTL
+	for _, n := range []int32{2, 3, 4, 5, 6} {
+		expireViewersCacheForTest("dead")
+		ViewersCached("dead", "agentdeck_x")
+		require.Eventually(t, func() bool { return calls.Load() == n }, 2*time.Second, 5*time.Millisecond)
+		want = min(want*2, viewersCacheMaxBackoff)
+		viewersCacheMu.Lock()
+		got := entry.nextRefresh.Sub(entry.refreshedAt)
+		viewersCacheMu.Unlock()
+		assert.Equal(t, want, got, "failure %d", n)
+	}
+
+	// A listing that lands resets the backoff and warms the entry.
+	listAllViewersOnSocket = func(socketName string) (map[string][]Viewer, error) {
+		calls.Add(1)
+		return map[string][]Viewer{}, nil
+	}
+	expireViewersCacheForTest("dead")
+	ViewersCached("dead", "agentdeck_x")
+	require.Eventually(t, func() bool { _, known := ViewersCached("dead", "agentdeck_x"); return known }, 2*time.Second, 5*time.Millisecond)
+	viewersCacheMu.Lock()
+	got := entry.nextRefresh.Sub(entry.refreshedAt)
+	viewersCacheMu.Unlock()
+	assert.Equal(t, viewersCacheTTL, got, "success resets the backoff")
+}
+
+// TestViewersCached_OneListingInFlightPerSocket: readers arriving while a
+// listing is still running never start a second one.
+func TestViewersCached_OneListingInFlightPerSocket(t *testing.T) {
+	ResetViewersCacheForTest()
+	t.Cleanup(ResetViewersCacheForTest)
+
+	var calls atomic.Int32
+	release := make(chan struct{})
+	orig := listAllViewersOnSocket
+	listAllViewersOnSocket = func(socketName string) (map[string][]Viewer, error) {
+		calls.Add(1)
+		<-release
+		return nil, assert.AnError
+	}
+	t.Cleanup(func() { listAllViewersOnSocket = orig })
+
+	for i := 0; i < 50; i++ {
+		ViewersCached("slow", "agentdeck_x")
+	}
+	require.Eventually(t, func() bool { return calls.Load() == 1 }, 2*time.Second, time.Millisecond)
+	expireViewersCacheForTest("slow") // due again, but still in flight
+	for i := 0; i < 50; i++ {
+		ViewersCached("slow", "agentdeck_x")
+	}
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, int32(1), calls.Load())
+	close(release)
+	require.Eventually(t, func() bool {
+		viewersCacheMu.Lock()
+		defer viewersCacheMu.Unlock()
+		return !viewersCache["slow"].refreshing
+	}, 2*time.Second, 5*time.Millisecond)
+}
+
+func TestViewersListingIsEmpty(t *testing.T) {
+	t.Parallel()
+	exit := func(stderr string) error {
+		return &exec.ExitError{ProcessState: &os.ProcessState{}, Stderr: []byte(stderr + "\n")}
+	}
+	assert.True(t, viewersListingIsEmpty(exit("no server running on /tmp/tmux-501/dead")))
+	assert.True(t, viewersListingIsEmpty(exit("error connecting to /tmp/tmux-501/dead (No such file or directory)")))
+	assert.True(t, viewersListingIsEmpty(exit("can't find session: agentdeck_gone")))
+	assert.False(t, viewersListingIsEmpty(exit("error connecting to /tmp/tmux-0/default (Permission denied)")))
+	assert.False(t, viewersListingIsEmpty(exit("lost server")))
+	assert.False(t, viewersListingIsEmpty(exit("protocol version mismatch (client 8, server 7)")))
+	assert.False(t, viewersListingIsEmpty(context.DeadlineExceeded))
+	assert.False(t, viewersListingIsEmpty(errors.New("no server running")), "only tmux's own exit carries the verdict")
+}
+
+// TestListViewers_NothingThereIsNobody: a socket with no server and a
+// session that does not exist both answer "nobody", not "unknown", so
+// `session viewers`, `list --json` and the badge agree on a stopped session.
+func TestListViewers_NothingThereIsNobody(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	ctx := context.Background()
+
+	dead := fmt.Sprintf("agentdeck-viewers-dead-%d", os.Getpid())
+	viewers, err := ListViewers(ctx, dead, "agentdeck_stopped")
+	require.NoError(t, err, "no server on the socket: tmux answered, nobody is there")
+	assert.Empty(t, viewers)
+	all, err := ListAllViewers(ctx, dead)
+	require.NoError(t, err)
+	assert.NotNil(t, all)
+	assert.Empty(t, all)
+
+	s := newSharedViewSession(t, "alive")
+	viewers, err = ListViewers(ctx, s.SocketName, "agentdeck_no_such_session")
+	require.NoError(t, err, "a live server without that session: nobody")
+	assert.Empty(t, viewers)
 }
 
 // TestListViewers_Integration lists two pty clients of different sizes and
@@ -199,5 +330,26 @@ func TestAnnounceOtherViewers_Integration(t *testing.T) {
 	log := string(out)
 	assert.Contains(t, log, newcomer.Name+" message: also viewing: "+others[0].DisplayName()+" (120x40, ",
 		"the notice names the earlier viewer and goes to the new client only")
+	assert.Contains(t, log, "; the window follows whoever types", "the notice says what the size policy does")
 	assert.NotContains(t, log, others[0].Name+" message: also viewing")
+}
+
+// TestViewerNotice_CountsAsSubprocess: the notice and the post-attach fit
+// diagnostic spawn tmux through the counted runners, so `health --json`
+// tmux_calls sees them like every other call.
+func TestViewerNotice_CountsAsSubprocess(t *testing.T) {
+	s := newSharedViewSession(t, "counted")
+	attachSharedViewClient(t, s.SocketName, s.Name, 120, 40)
+	waitWindowSize(t, s, "120x39")
+	viewers, err := ListViewers(context.Background(), s.SocketName, s.Name)
+	require.NoError(t, err)
+	require.Len(t, viewers, 1)
+
+	before := SubprocessStarts()
+	s.showViewerNotice(context.Background(), viewers[0], "counted")
+	assert.Equal(t, before+1, SubprocessStarts(), "showViewerNotice is one counted tmux spawn")
+
+	before = SubprocessStarts()
+	s.logSharedViewFit(context.Background(), 200, 60)
+	assert.GreaterOrEqual(t, SubprocessStarts(), before+1, "logSharedViewFit's display-message is counted")
 }

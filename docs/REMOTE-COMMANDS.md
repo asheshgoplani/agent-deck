@@ -16,6 +16,7 @@ Run the same command through `remote lab`. Output, JSON fields, diagnostics and 
 | `list --json` | `remote lab list --json` |
 | `status --json` | `remote lab status --json` |
 | `session show task --json` | `remote lab show task --json` |
+| `session viewers task --json` | `remote lab session viewers task --json` |
 | `session output task` | `remote lab output task` |
 | `session send task --message-file prompt.md` | `remote lab send task --message-file prompt.md` |
 | `add /srv/project --account alice` | `remote lab add /srv/project --account alice` |

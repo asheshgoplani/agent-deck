@@ -14,6 +14,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	deckterminal "github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/charmbracelet/x/vt"
@@ -173,9 +174,10 @@ func startEmbeddedTerminalWithClipboard(
 	size = clampEmbeddedTerminalSize(size)
 	if req.Remote == nil {
 		// One more viewer of a possibly shared local session: size the
-		// window to whoever is using it (internal/tmux sharedview.go). A
-		// remote session gets the same from its own `session attach`.
-		tmux.ApplySharedViewSize(req.SocketName, req.Name, nil)
+		// window to whoever is using it (internal/tmux sharedview.go), with
+		// the user's [tmux.options] honoured as on every other attach path.
+		// A remote session gets the same from its own `session attach`.
+		tmux.ApplySharedViewSize(req.SocketName, req.Name, session.SharedViewOverrides())
 	}
 
 	ctx, cancel := context.WithCancel(parent)

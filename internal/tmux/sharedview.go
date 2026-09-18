@@ -185,8 +185,8 @@ func (s *Session) logSharedViewFit(ctx context.Context, cols, rows int) {
 	if cols <= 0 || rows <= 0 {
 		return
 	}
-	out, err := s.tmuxCmdContext(ctx, "display-message", "-p", "-t", s.Name,
-		"#{window_width}x#{window_height}\t#{window-size}").Output()
+	out, err := commandOutput(s.tmuxCmdContext(ctx, "display-message", "-p", "-t", s.Name,
+		"#{window_width}x#{window_height}\t#{window-size}"))
 	if err != nil {
 		return
 	}

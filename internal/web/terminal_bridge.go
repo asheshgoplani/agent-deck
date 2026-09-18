@@ -15,6 +15,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
@@ -82,8 +83,9 @@ func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsC
 	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
 
 	// The web client is one more viewer of a possibly shared session: size
-	// the window to whoever is using it (internal/tmux sharedview.go).
-	tmux.ApplySharedViewSize(tmuxSocketName, tmuxSession, nil)
+	// the window to whoever is using it (internal/tmux sharedview.go), with
+	// the user's [tmux.options] honoured as on every other attach path.
+	tmux.ApplySharedViewSize(tmuxSocketName, tmuxSession, session.SharedViewOverrides())
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
