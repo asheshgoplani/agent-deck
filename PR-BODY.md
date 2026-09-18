@@ -1,80 +1,110 @@
-## Summary
+# Fix gaps left by the rc.3 re-verification, plus rc.4 paste-truncation follow-ups
 
-Round 3 clears the two review findings from the round-2 review, so this
-carry is fully green and internally consistent:
+Refs #2214, #2062, #2230, #2148, #2149.
 
-- Fixed two tests that were previously disclosed-red rather than actually
-  fixed:
-  - `TestValidateRejectsAvailableItemsThatClaimACost`: reworded the
-    validator's rejection message so it names both the breach (a positive
-    cost) and the allowed values (a certain zero or an explicit unknown),
-    matching what both tests that pin this contract expect. The rejection
-    logic itself was already correct.
-  - `TestInspectReportsALowMatchRateRatherThanGuessing`: the Codex adapter
-    already computed a per-file "this file no longer matches the injected
-    block" caveat, but only attached it to the item, never to the report.
-    A separate, newly-added generic "read from disk as of now" caveat was
-    the only one visible at the report level, so a drifted file's own name
-    never showed up where the report's caveats are listed. Now both the
-    generic and the per-file caveat are recorded on the report.
-- Completed the self-check → reconciliation rename: the pager's
-  always-visible footer still said `self-check:` while the Verify tab and
-  the CLI overview already said `reconciliation:`. Renamed the footer
-  label, updated the glossary to match, and added a test that pins the
-  footer's text so this can't silently drift again.
+## #2214 — shell-tool sessions still hit ErrPaneCwdDeleted on a poisoned tmux server
 
-No behavior change beyond wording/labels and where an existing caveat gets
-recorded; no fixtures needed changes.
+rc.3's fix for #2214 covers sessions whose tool launches as the pane's initial
+process (claude/codex/etc: `RunCommandAsInitialProcess=true`). It does not
+cover sessions whose tool resolves to the generic "shell" launcher
+(`RunCommandAsInitialProcess=false`): the pane opens as a bare interactive
+shell first, and `verifyPaneWorkDirUnlessPlaceholder` ran immediately after
+that bare pane was created — before the deferred `SendKeysAndEnter(cwdAssert
+Command(...))` fallback ever sent the cd-assert — so it inspected the
+still-poisoned pane and rejected the session with `ErrPaneCwdDeleted`, even
+though the pending cd-assert would have recovered it exactly like the
+initial-process path does.
+
+Fix: defer the guard for that path until after the cd-assert command has
+actually been sent.
+
+Adds `TestStart_SurvivesExternallyPoisonedServer_ShellTool` (failing before
+the change, passing after).
+
+## #2062 — no CLI/TUI surface to retry or clear dead-letter records
+
+`inbox dead-letter retry`/`purge` and the `Alt+D` TUI panel (PR #2230, by
+**@nandanadileep**) were merged into local integration on 2026-09-17 and
+reverted 22 seconds later, because the PR redeclared `DeadLetterRecord` with
+a shape incompatible with the one #2111's read-only `list`/`show` inspection
+had already introduced — `go build` failed with "redeclared in this block".
+The revert dropped retry, purge and the TUI panel entirely, leaving only
+`list`/`show` in rc.3, which #2062 itself says is insufficient.
+
+Fix: reconcile the two `DeadLetterRecord` shapes into one type instead of
+picking a side. It keeps #2111's `Ref` (an exact source snapshot + byte
+offset — `list`/`show` never act on a record, so refusing a stale ref is
+safe) and adds #2230's `ID` (a content hash, stable across unrelated store
+mutations — what `retry`/`purge` key off, since removing one record must not
+invalidate every other record's identifier). `list`/`show` output now
+includes each record's `id` too, so a record found via `list` can be acted
+on via `retry`/`purge`.
+
+Reapplies PR #2230's `dead_letter_management.go`, `dead_letter_panel.go`
+(`Alt+D` TUI) and its own follow-up fix (hashing raw scanner bytes for
+retry/purge matching) unmodified in logic. `inbox dead-letter help` now
+lists all four subcommands.
+
+New/updated tests: retry on a missing target fails honestly and keeps the
+record; retry on a deliverable record succeeds, removes only that record,
+and is idempotent; purge refuses without `--older-than`/`--yes` and deletes
+only matching records; a TUI test for the `Alt+D` panel (list/show/retry/
+confirmed purge).
+
+## #2148 — apply the maintainer's review-hold revisions to the structure advisory workflow
+
+PR #2149's workflow landed in rc.3 exactly as the pre-review draft the
+maintainer put a review hold on (2026-09-06). None of the three requested
+corrections were applied:
+
+1. `github.event.pull_request.base.sha` is the base branch's current tip, not
+   the PR's actual merge base — an unrelated main-branch commit landed after
+   the PR branched would get attributed to the PR's own structural delta.
+   Now computes the real common ancestor via `git merge-base`.
+2. The summary step read each whole log file into memory before truncating
+   to the displayed tail, with no bound and no validation that the values
+   being subtracted were numeric. Now bounds the read itself (seeks from the
+   end) and skips (rather than crashing or silently misformatting) a
+   non-numeric value.
+3. Checkout steps kept push credentials they never use, and the sentrux
+   binary download had no integrity check beyond a pinned version tag. Added
+   `persist-credentials: false` to every checkout and a pinned sha256
+   checksum on the binary download.
+
+Adds `tests/ci/structure-advisory-workflow.test.sh` (failing against the
+pre-revision workflow, passing after).
+
+The issue's second half — an `[mcps.sentrux]` config entry so worker
+sessions can query the structural delta before opening a PR — is untouched
+by PR #2149 and stays open; #2148 should get a milestone note, not a close.
+
+## Paste-truncation follow-ups (conductor addendum, from the launch-truncation fix's review)
+
+Merges `fix/launch-truncation` (rc.3 P1: compare Claude's collapsed
+`[Pasted text #N +M lines]` marker against hard line breaks, not a physical
+line count) as this branch's prerequisite, then applies two follow-up
+findings from that fix's review:
+
+- **Tail-loss detection gap.** `ExpectedPasteMarkerLineBreaks` excluded a
+  message's trailing hard break as a defensive "floor". A floor is
+  ambiguous by construction: a message ending in `\n` and a paste truncated
+  exactly one line short of it could land on the same floored expectation,
+  so a lost last line went undetected. Now counts every hard break
+  literally, including a trailing one, matching Claude's own documented
+  formula.
+- **`session send` had no truncation guard.** Only the launch/instance send
+  path checked the paste marker before pressing Enter; `session send`
+  (including `--message-file`, which most commonly carries a multi-line
+  body) did not. Wired the same guard into `executeSend` for Claude-
+  compatible targets; single-line messages and non-Claude targets are
+  unaffected. A follow-up simplification pass extracted the identical
+  pre-Enter check into `send.PasteTruncationCheck`, shared by both send
+  paths.
 
 ## Test plan
 
-- [x] `go build ./...` — clean
-- [x] `go vet ./...` — clean
-- [x] `go test ./internal/ctxinspect/... ./internal/ui/... ./cmd/agent-deck/...`
-      in the sandboxed test container — all packages pass except the
-      known sandbox-only uid-1000/no-SSH-user tests (`TestRemote*Parity`,
-      `TestHealthRemoteExecJSONParity`), which fail for the same reason on
-      main and are unrelated to this change.
-- [x] Read-only real-session check: `agent-deck session context <id>`
-      output is unchanged between this branch and the prior commit — the
-      footer label only renders in the interactive TUI, not the CLI
-      command used for this check.
-
----
-
-Issue #2079 names two call sites where a truncated `launch --message-file`
-paste can read as a clean delivery: `sendMessageWhenReady`
-(`internal/session/instance.go`) and the `launch --no-wait` post-send
-verifier, `pollPromptConsumed` (`cmd/agent-deck/launch_verify_prompt.go`).
-Round 1 of this branch fixed only the first. This round covers the second.
-
-- Claude's composer collapses a framed multi-line paste behind a
-  `[Pasted text #N +M lines]` marker whether the paste arrived whole or was
-  cut short. `pollPromptConsumed` now checks the declared `M` against the
-  message's real line count once the composer looks consumed, the same
-  primitives (`send.ExpectedPasteMarkerLines`, `send.PasteMarkerLineCounts`)
-  round 1 added for the first call site.
-- A marker declaring fewer lines than the message is reported as
-  `"prompt truncated in transit"` instead of success, and the one retry is
-  skipped (retyping onto an already-submitted fragment risks a duplicate
-  submission).
-- A consumed-looking composer with no marker at all, for a message that
-  expects one, is reported as unknown — never as success.
-- A marker that declares at least as many lines as the message (or a
-  single-line message, which never collapses behind a marker) is unchanged:
-  a silent success.
-
-## Test plan
-
-- [x] New failing-first test file
-      `cmd/agent-deck/issue2079_launch_verify_prompt_test.go`, using the
-      existing `mockSendRetryTarget` fake.
-- [x] Revert-proof in `golang:1.25`: production check disabled → both new
-      tests fail with the expected messages; check restored → all pass
-      alongside the full pre-existing `TestVerifyPromptConsumedAfterLaunch_*`
-      suite.
-- [x] `go build ./...` and `go vet ./...`: PASS (host).
-- [x] `go test ./cmd/agent-deck/...` and `./internal/send/...`: PASS
-      (`golang:1.25`).
-
-See `RESULTS.md` for full details and caveats.
+- [x] `go build ./...`
+- [x] `go vet ./...`
+- [x] `go test ./internal/tmux/... ./internal/session/... ./internal/ui/... ./cmd/agent-deck/...` (Docker, `agentdeck-gotest:1.25-tmux`) — clean except the pre-declared known-pre-existing failures (the 5 root-permission tests, `TestKill_LiveSessionThenSecondKillBothSucceed`)
+- [x] `bash tests/ci/structure-advisory-workflow.test.sh`
+- [x] Alt+D TUI panel captured on screen (golden frame)
