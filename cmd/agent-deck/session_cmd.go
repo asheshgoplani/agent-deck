@@ -1172,8 +1172,14 @@ func handleSessionFork(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		// Apply configured branch prefix before validation/existence checks
-		wtSettings := session.GetWorktreeSettings()
+		// Apply configured branch prefix before validation/existence checks.
+		// Resolved for repoRoot so directory-local .agent-deck/config.toml
+		// overrides (#2093) apply before the worktree path is calculated.
+		wtSettings, err := session.GetWorktreeSettingsForDir(repoRoot)
+		if err != nil {
+			out.Error(fmt.Sprintf("invalid directory-local config: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
 		// Destination gate (BUG-01/08). With-state forks create a NEW branch

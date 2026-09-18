@@ -388,8 +388,14 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		worktreeType = string(backend.Type())
 		repoRoot := backend.RepoDir()
 
-		// Apply configured branch prefix before validation/existence checks
-		wtSettings := session.GetWorktreeSettings()
+		// Apply configured branch prefix before validation/existence checks.
+		// Resolved for repoRoot so directory-local .agent-deck/config.toml
+		// overrides (#2093) apply before the worktree path is calculated.
+		wtSettings, err := session.GetWorktreeSettingsForDir(repoRoot)
+		if err != nil {
+			out.Error(fmt.Sprintf("invalid directory-local config: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
 		if err := git.ValidateBranchName(wtBranch); err != nil {
@@ -403,16 +409,13 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 			os.Exit(1)
 		}
 
-		location := wtSettings.DefaultLocation
-		if *worktreeLocation != "" {
-			location = *worktreeLocation
-		}
+		location, template := worktreeLocationAndTemplate(wtSettings, *worktreeLocation)
 
 		worktreePath = backend.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  location,
 			SessionID: git.GeneratePathID(),
-			Template:  wtSettings.Template(),
+			Template:  template,
 		})
 
 		// Check for an existing worktree for this branch before creating a new one

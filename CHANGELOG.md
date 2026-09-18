@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Harness context-level controls (`none`/`primer`/`full`) with global < group < session precedence (`[launch].context_level`, `[groups."<path>"].context_level`, `session set <id> context-level`), on top of the rc.6 identity injection. `agent-deck session primer [id] [--json]` inspects the resolved level, its source, and the exact primer/identity text a session receives (#2260).
+### Added
+
+- Directory-local `.agent-deck/config.toml` overrides for `[worktree]` settings (`default_location`, `path_template`, `sparse_checkout`): a file placed in a repo, or in a workspace-parent folder that holds sibling worktree checkouts, is discovered by walking up from the session's target directory (to `$HOME` or the filesystem root) and merged over the global config, nearest file wins per key. An explicit `--location` flag still overrides an inherited `path_template`. Unknown keys/sections in a dir-local file are refused with a clear error (fail closed). New `agent-deck config show --effective [path] [--json]` prints the merged settings and which file supplied each one (#2093).
 
 ## [1.16.11] - 2026-09-25
 
