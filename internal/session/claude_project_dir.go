@@ -24,37 +24,41 @@ func SlugifyClaudeProjectPath(projectPath string) string {
 	return slug
 }
 
-// MigrateClaudeProjectDir moves <configDir>/projects/<oldSlug>/ to
-// <configDir>/projects/<newSlug>/ so `claude --resume` in the new project
-// location picks up the prior conversation history. configDir is the session's
-// resolved Claude config dir (GetClaudeConfigDirForInstance), which is
-// ~/.claude only when no per-account or per-group override applies (#2086).
+// MigrateClaudeProjectDir moves <srcConfigDir>/projects/<oldSlug>/ to
+// <dstConfigDir>/projects/<newSlug>/ so `claude --resume` in the new project
+// location picks up the prior conversation history. srcConfigDir/dstConfigDir
+// are the session's resolved Claude config dir before/after the move
+// (GetClaudeConfigDirForInstance / GetClaudeConfigDirForInstanceInGroup),
+// which differ whenever the move crosses a per-account or per-group
+// config_dir boundary — e.g. `session move --group <target>` retargeting to
+// a group with its own [groups."<target>".claude].config_dir (#2086,
+// cross-config-dir follow-up). Pass the same value for both for a same-dir
+// move (the common case).
 //
-//   - No-op when the source dir doesn't exist (fresh sessions have nothing).
+//   - No-op when source and destination fully coincide (same config dir,
+//     same slug), or when the source dir doesn't exist (fresh sessions have
+//     nothing to migrate).
 //   - If copy=true, the source is preserved and the destination gets a
 //     recursive copy — useful when other sessions still reference oldPath.
 //   - If copy=false (default), rename is attempted; falls back to copy+remove
-//     across filesystems.
+//     across filesystems/config dirs.
 //   - Errors when the destination already exists to avoid silent overwrite.
 //
 // Returns how many files were migrated so callers can report a real count
 // instead of claiming success over an empty migration.
-func MigrateClaudeProjectDir(configDir, oldProjectPath, newProjectPath string, copy bool) (int, error) {
-	if configDir == "" || oldProjectPath == "" || newProjectPath == "" {
+func MigrateClaudeProjectDir(srcConfigDir, dstConfigDir, oldProjectPath, newProjectPath string, copy bool) (int, error) {
+	if srcConfigDir == "" || dstConfigDir == "" || oldProjectPath == "" || newProjectPath == "" {
 		return 0, fmt.Errorf("migrate claude project dir: config dir/old/new path required")
-	}
-	if oldProjectPath == newProjectPath {
-		return 0, nil
 	}
 	oldSlug := SlugifyClaudeProjectPath(oldProjectPath)
 	newSlug := SlugifyClaudeProjectPath(newProjectPath)
-	if oldSlug == newSlug {
+	if srcConfigDir == dstConfigDir && oldSlug == newSlug {
 		return 0, nil
 	}
 
-	projectsDir := filepath.Join(configDir, "projects")
-	srcDir := filepath.Join(projectsDir, oldSlug)
-	dstDir := filepath.Join(projectsDir, newSlug)
+	dstProjectsDir := filepath.Join(dstConfigDir, "projects")
+	srcDir := filepath.Join(srcConfigDir, "projects", oldSlug)
+	dstDir := filepath.Join(dstProjectsDir, newSlug)
 
 	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
 		return 0, nil
@@ -68,15 +72,15 @@ func MigrateClaudeProjectDir(configDir, oldProjectPath, newProjectPath string, c
 		return 0, fmt.Errorf("migrate claude project dir: count source files: %w", err)
 	}
 
-	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+	if err := os.MkdirAll(dstProjectsDir, 0o755); err != nil {
 		return 0, fmt.Errorf("migrate claude project dir: mkdir projects root: %w", err)
 	}
 
 	if !copy {
 		if err := os.Rename(srcDir, dstDir); err == nil {
-			return count, nil
+			return verifyMigratedCount(dstDir, count)
 		}
-		// Fall through to copy+remove for cross-filesystem case.
+		// Fall through to copy+remove for cross-filesystem/cross-config-dir case.
 	}
 
 	if err := copyDirRecursive(srcDir, dstDir); err != nil {
@@ -87,7 +91,24 @@ func MigrateClaudeProjectDir(configDir, oldProjectPath, newProjectPath string, c
 			return 0, fmt.Errorf("migrate claude project dir: remove source after copy: %w", err)
 		}
 	}
-	return count, nil
+	return verifyMigratedCount(dstDir, count)
+}
+
+// verifyMigratedCount re-counts the files that actually landed at dstDir and
+// refuses to report success unless they match what was counted at the source
+// before the move. A caller must never claim history was migrated when the
+// destination doesn't hold it — that silence is how #2086 went unnoticed, and
+// a cross-config-dir move adds a new way for a rename/copy to land partially
+// or in the wrong place.
+func verifyMigratedCount(dstDir string, wantCount int) (int, error) {
+	gotCount, err := countRegularFiles(dstDir)
+	if err != nil {
+		return 0, fmt.Errorf("migrate claude project dir: verify destination: %w", err)
+	}
+	if gotCount != wantCount {
+		return 0, fmt.Errorf("migrate claude project dir: verification failed: %d file(s) at source, %d found at destination %s", wantCount, gotCount, dstDir)
+	}
+	return gotCount, nil
 }
 
 // countRegularFiles counts non-directory entries under dir, recursively.
