@@ -89,7 +89,7 @@ func TestCodexHooksLine(t *testing.T) {
 		codexHooksUnknown:      "hooks unknown",
 	}
 	for state, want := range cases {
-		if got := codexHooksLine(state, "/x/config.toml"); got[:len(want)] != want {
+		if got := codexHooksLine(state, "/x/config.toml"); !strings.HasPrefix(got, want) {
 			t.Fatalf("codexHooksLine(%q) = %q, want prefix %q", state, got, want)
 		}
 	}

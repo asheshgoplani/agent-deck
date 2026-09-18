@@ -110,7 +110,6 @@ func TestCodexNoHooks_InProcessHoldStillConfirmsOnSecondSample(t *testing.T) {
 	inst, cleanup := startCodexPaneInstance(t, "hold", codexIdleFrame)
 	defer cleanup()
 
-	inst.Status = StatusWaiting
 	inst.mu.Lock()
 	inst.statusSampledLive = true // this process settled a verdict already
 	inst.Status = StatusRunning   // ...and it was running
