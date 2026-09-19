@@ -131,6 +131,11 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	})
 	noChannelLink := fs.Bool("no-channel-link", false, "Disable auto-link between --plugin entries with emits_channel=true and --channel")
 
+	// Recall phase 1: creation-time hints (docs/recall.md). The fan-out path
+	// also derives `parent` and `purpose` (first line of the message) so every
+	// fleet child carries what it was for without anyone typing a flag.
+	creationHints := registerCreationHintFlags(fs)
+
 	// Extra claude CLI tokens - repeatable; mirrors handleAdd's --extra-arg.
 	// Each invocation contributes one already-tokenised arg; feeds
 	// Instance.ExtraArgs which buildClaudeExtraFlags shellescapes and appends.
@@ -754,6 +759,12 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// attach below must not hold the lock for other registrations.
 	releaseLaunchRegistration()
 
+	autoHints := map[string]string{hintKeyPurpose: firstLineClipped(initialMessage, derivedPurposeLimit)}
+	if parentInstance != nil {
+		autoHints[hintKeyParent] = parentInstance.ID
+	}
+	sessionHints, sessionTags := applyCreationHints(storage, newInstance, creationHints, autoHints)
+
 	// Keep validation and writing inside the compensated post-insert step.
 	if err := creationRollback.run("configure MCPs", func() error {
 		if len(mcpFlags) == 0 {
@@ -977,6 +988,12 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	}
 	if parentInstance != nil {
 		jsonData["parent_id"] = parentInstance.ID
+	}
+	if len(sessionHints) > 0 {
+		jsonData["hints"] = sessionHints
+	}
+	if len(sessionTags) > 0 {
+		jsonData["tags"] = sessionTags
 	}
 	if worktreePath != "" {
 		jsonData["worktree_path"] = worktreePath

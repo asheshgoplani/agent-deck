@@ -30,7 +30,7 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		case "session":
 			if len(args) > 1 {
 				switch args[1] {
-				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers":
+				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers", "annotate":
 					return append([]string(nil), args...), nil
 				case "switch", "switch-preview", "switch-account":
 					if err := validateRemoteSwitchArgs(args[1], args[2:]); err != nil {
