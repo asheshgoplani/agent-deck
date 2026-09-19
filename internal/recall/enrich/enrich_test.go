@@ -202,3 +202,70 @@ func TestDrain_GateBudgetLimitAndLLMRefused(t *testing.T) {
 type gateFunc func() error
 
 func (g gateFunc) Check() error { return g() }
+
+// TestDrain_RequeuesStaleAndUnclassifiedSessions is the defect the round-2
+// review found: an artifact with input_rev < derived_rev and a done queue
+// row (a pass cut between the derived_rev bump and the card projection)
+// was never drained again, so `recall enrich` answered "0 pending" while
+// every tier printed the stale marker telling the user to run it. A drain
+// now queues such sessions itself, and a session with no artifact at all
+// (indexed before the classifiers existed), never one that is a card
+// pulled from another machine.
+func TestDrain_RequeuesStaleAndUnclassifiedSessions(t *testing.T) {
+	st := openStore(t)
+	stale := seedSession(t, st, "stale", "", false, nil, map[classify.Class]int{classify.Prompt: 1})
+	if err := Enqueue(st.W, stale); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, Options{})
+	if res, err := d.Drain(context.Background()); err != nil || res.Written != 3 {
+		t.Fatalf("first drain: %+v %v", res, err)
+	}
+	// The content moves without anything queueing the session: exactly
+	// the state a cancel between the two ingest transactions used to leave.
+	if _, err := st.W.Exec(`UPDATE session SET derived_rev=derived_rev+1, interrupts=3 WHERE sess_id=?`, stale); err != nil {
+		t.Fatal(err)
+	}
+	never := seedSession(t, st, "never-classified", "", false, nil, map[classify.Class]int{classify.Prompt: 1})
+	if _, err := st.W.Exec(`INSERT INTO host(host_uid, alias, is_local) VALUES ('ffff', 'lab', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.W.Exec(`INSERT INTO session(host_uid, harness, profile, native_id, digest_only, derived_rev) VALUES ('ffff','codex','','remote-1',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.Drain(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Requeued != 6 || res.Pending != 6 || res.Written != 6 || res.Deferred != 0 {
+		t.Fatalf("drain over a stale and an unclassified session: %+v", res)
+	}
+	var rev int64
+	var body string
+	if err := st.R.QueryRow(`SELECT input_rev, body FROM artifact WHERE sess_id=? AND kind=?`, stale, KindOutcome).Scan(&rev, &body); err != nil {
+		t.Fatal(err)
+	}
+	if rev != 4 || !strings.Contains(body, "abandoned? (3 interrupts)") {
+		t.Fatalf("the stale artifact must be re-derived from the new rows: input_rev %d %q", rev, body)
+	}
+	var n int
+	if err := st.R.QueryRow(`SELECT count(*) FROM artifact WHERE sess_id=?`, never).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("unclassified session: %d artifacts %v", n, err)
+	}
+	if err := st.R.QueryRow(`SELECT count(*) FROM enrich_queue q JOIN session s ON s.sess_id=q.sess_id WHERE s.digest_only=1`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a pulled card must never be queued: %d %v", n, err)
+	}
+	// Fresh everywhere: the next drain finds nothing to requeue.
+	if res, err = d.Drain(context.Background()); err != nil || res.Requeued != 0 || res.Pending != 0 {
+		t.Fatalf("third drain: %+v %v", res, err)
+	}
+}
+
+func TestInputHint_KeepsSpacesInValues(t *testing.T) {
+	in := &Input{Hints: "purpose=conductor ops outcome=partially worked ticket=SB-1 empty="}
+	for key, want := range map[string]string{"purpose": "conductor ops", "outcome": "partially worked", "ticket": "SB-1", "empty": "", "missing": ""} {
+		if got := in.Hint(key); got != want {
+			t.Errorf("Hint(%q) = %q want %q", key, got, want)
+		}
+	}
+}

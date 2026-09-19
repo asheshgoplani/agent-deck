@@ -60,6 +60,13 @@ the brief tier.`)
 		os.Exit(2)
 	}
 	env := openRecallEnv(profile, out)
+	if target != "" && !env.cfg.Recall.GetRemoteCards() {
+		if err := refuseRemoteIntoTarget(profile, target); err != nil {
+			env.close()
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+	}
 	res, err := query.New(env.st, env.stateDB).Context(context.Background(), fs.Arg(0), *tier, *budget)
 	env.close()
 	if err != nil {
@@ -94,6 +101,24 @@ the brief tier.`)
 	handleSessionSend(profile, sendArgs)
 }
 
+// refuseRemoteIntoTarget keeps a local conversation on this machine: an
+// --ssh target would receive the rendered text over SSH as keystrokes
+// (session send's tmux path), which is exactly the boundary [recall]
+// remote_cards guards for card sync. The caller checks the setting; here
+// an --ssh target is refused with the setting named. A target that does
+// not resolve is left to session send, which reports it.
+func refuseRemoteIntoTarget(profile, target string) error {
+	_, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		return nil
+	}
+	inst, _, _ := ResolveSession(target, instances)
+	if inst == nil || !inst.IsSSH() {
+		return nil
+	}
+	return fmt.Errorf("--into %s: session '%s' runs on %s and the recalled conversation would cross SSH; set [recall] remote_cards = true in config.toml to allow it (docs/recall.md \"Remote\")", target, inst.Title, inst.SSHHost)
+}
+
 // resolveIntoTarget turns --into into a session reference: "" for print,
 // AGENTDECK_INSTANCE_ID for current, else the value itself.
 func resolveIntoTarget(into string) (string, error) {
@@ -125,7 +150,8 @@ Drain the enrichment queue: run the rules classifiers ("where did we lose
 time", session kind, outcome) over the indexed rows of every session whose
 content or hints changed, and write the derived artifacts recall show and
 recall context print. Same load gate as the sweep. The sweep already drains
-the cheap class within its budget; this runs the rest, or reruns after a
+the cheap class within its budget; this runs the rest, picks up every
+session whose artifacts read [stale] or that has none, or reruns after a
 rules change.`)
 		fs.PrintDefaults()
 	}
@@ -177,6 +203,9 @@ rules change.`)
 	}
 	fmt.Printf("enrich done: %d pending, %d processed, %d artifact(s) written, %d failed, %d left for the next run, %.1fs\n",
 		res.Pending, res.Processed, res.Written, res.Failed, res.Deferred, float64(res.ElapsedMS)/1000)
+	if res.Requeued > 0 {
+		fmt.Printf("  %d row(s) were queued first for sessions whose artifacts were stale or missing\n", res.Requeued)
+	}
 	if retried > 0 {
 		fmt.Printf("  %d failed row(s) were put back in the queue first\n", retried)
 	}

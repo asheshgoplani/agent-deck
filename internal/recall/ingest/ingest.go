@@ -1026,6 +1026,12 @@ func (s *sink) commit(parsedTo int64) error {
 			s.sessID); err != nil {
 			return fmt.Errorf("recall: update session: %w", err)
 		}
+		// derived_rev moved, so the artifacts are stale from this commit
+		// on: queue the classifiers in the same transaction, never in a
+		// later one a cancel could skip.
+		if err := enrich.Enqueue(s.tx, s.sessID); err != nil {
+			return err
+		}
 		s.sess = sessionAgg{}
 		if _, err := s.tx.Exec(`UPDATE source SET parsed_to=?, sess_id=? WHERE src_id=?`, parsedTo, s.sessID, s.row.srcID); err != nil {
 			return err
@@ -1364,15 +1370,17 @@ func (in *Ingester) projectCard(tx *sql.Tx, sessID int64) error {
 		sessID, title, hints, tags, preview); err != nil {
 		return err
 	}
-	// Every content change and every hint change reaches here, so this is
-	// the one place the cheap classifiers are (re)queued.
+	// A hint change reaches here without a derived_rev bump (the sink's
+	// commit queues content changes), so the classifiers are queued again.
 	return enrich.Enqueue(tx, sessID)
 }
 
-// RefreshCards reprojects every card (hints changed in state.db, or a
-// rebuild): cheap, about 75 us per card.
+// RefreshCards reprojects every local card (hints changed in state.db, or
+// a rebuild): cheap, about 75 us per card. A card pulled from another
+// machine (digest_only=1) is left as imported: it has no messages here to
+// project a preview from and nothing for the classifiers to read.
 func (in *Ingester) RefreshCards() (int, error) {
-	rows, err := in.st.W.Query(`SELECT sess_id FROM session`)
+	rows, err := in.st.W.Query(`SELECT sess_id FROM session WHERE digest_only=0`)
 	if err != nil {
 		return 0, err
 	}

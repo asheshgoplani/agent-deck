@@ -81,6 +81,9 @@ type Options struct {
 
 // Result summarises one drain.
 type Result struct {
+	// Requeued is how many queue rows RequeueStale found for sessions
+	// whose artifacts were stale or missing when the pass began.
+	Requeued  int   `json:"requeued"`
 	Pending   int   `json:"pending"`
 	Processed int   `json:"processed"`
 	Written   int   `json:"written"`
@@ -111,20 +114,49 @@ type Execer interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-// Enqueue marks every cheap kind of sessID pending. Called after every
-// content change (the ingest bumps derived_rev) and after every card
-// re-projection (hints changed), so a stale artifact is always queued for
-// the next drain. A done row goes back to pending; a failed row keeps its
-// attempt count so a classifier bug cannot spin.
+// Enqueue marks every cheap kind of sessID pending. Called in the
+// transaction that bumps derived_rev (the ingest's per-source commit) and
+// after every card re-projection (hints changed), so a stale artifact is
+// queued the moment it turns stale. A done row goes back to pending; a
+// failed row keeps its attempt count so a classifier bug cannot spin.
 func Enqueue(db Execer, sessID int64) error {
 	for _, kind := range CheapKinds {
-		if _, err := db.Exec(`INSERT INTO enrich_queue(sess_id, kind, cost_class, state) VALUES (?, ?, ?, ?)
-			ON CONFLICT(sess_id, kind) DO UPDATE SET state=?, not_before=0 WHERE state<>?`,
+		if _, err := db.Exec(`INSERT INTO enrich_queue(sess_id, kind, cost_class, state) VALUES (?, ?, ?, ?)`+enqueueOnConflict,
 			sessID, kind, CostCheap, StatePending, StatePending, StateFailed); err != nil {
 			return fmt.Errorf("recall: enqueue %s: %w", kind, err)
 		}
 	}
 	return nil
+}
+
+// enqueueOnConflict is Enqueue's upsert tail: a done row goes back to
+// pending, a pending row is left alone, a failed row stays parked.
+const enqueueOnConflict = ` ON CONFLICT(sess_id, kind) DO UPDATE SET state=?, not_before=0 WHERE state<>?`
+
+// RequeueStale queues every local session whose artifacts no longer match
+// its content (input_rev < derived_rev) or that has no artifact of a cheap
+// kind at all (indexed by a binary before the classifiers existed). It is
+// the drain's safety net for whatever Enqueue did not reach: a pass cut
+// between the derived_rev bump and the card projection, or a database
+// written by an older agent-deck. Sessions that are cards pulled from
+// another machine (digest_only=1) have no rows to classify and are never
+// queued. It returns how many queue rows it inserted or touched.
+func RequeueStale(db Execer) (int, error) {
+	n := 0
+	for _, kind := range CheapKinds {
+		res, err := db.Exec(`INSERT INTO enrich_queue(sess_id, kind, cost_class, state)
+			SELECT s.sess_id, ?, ?, ? FROM session s
+			LEFT JOIN artifact a ON a.sess_id=s.sess_id AND a.kind=? AND a.producer=?
+			WHERE s.digest_only=0 AND (a.art_id IS NULL OR a.input_rev < s.derived_rev)`+enqueueOnConflict,
+			kind, CostCheap, StatePending, kind, Producer, StatePending, StateFailed)
+		if err != nil {
+			return n, fmt.Errorf("recall: requeue stale %s: %w", kind, err)
+		}
+		if c, err := res.RowsAffected(); err == nil {
+			n += int(c)
+		}
+	}
+	return n, nil
 }
 
 // ErrLLMNotAutomatic is returned for a drain of the llm cost class.
@@ -139,6 +171,16 @@ func (d *Drainer) Drain(ctx context.Context) (res Result, err error) {
 	}
 	if d.opts.Gate != nil {
 		if err := d.opts.Gate.Check(); err != nil {
+			return res, err
+		}
+	}
+	if d.opts.CostClass == CostCheap {
+		// Anything stale that Enqueue missed is picked up here, so the
+		// marker's advice ("run 'agent-deck recall enrich'") always holds.
+		// The pass stays bounded: the requeue is one statement per kind
+		// and the rows it opens are subject to the limit and the budget
+		// like any other.
+		if res.Requeued, err = RequeueStale(d.st.W); err != nil {
 			return res, err
 		}
 	}
@@ -324,14 +366,31 @@ type Call struct {
 	DurationMS int64
 }
 
-// Hint returns the value of key in the projected hints, or "".
+// Hint returns the value of key in the projected hints, or "". The
+// projection is "k=v k=v" (the card's ranking feed), so a value keeps its
+// spaces: a token without "=" continues the value before it
+// ("outcome=partially worked ticket=SB-1" reads outcome as "partially
+// worked"). A later word that itself contains "=" starts a new pair; that
+// is the projection's limit, not this parser's.
 func (in *Input) Hint(key string) string {
-	for _, kv := range strings.Fields(in.Hints) {
-		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
-			return v
+	var value []string
+	found := false
+	for _, tok := range strings.Fields(in.Hints) {
+		if k, v, ok := strings.Cut(tok, "="); ok && k != "" {
+			if found {
+				break
+			}
+			if k == key {
+				found = true
+				value = append(value, v)
+			}
+			continue
+		}
+		if found {
+			value = append(value, tok)
 		}
 	}
-	return ""
+	return strings.Join(value, " ")
 }
 
 type querier interface {
