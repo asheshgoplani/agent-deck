@@ -12,10 +12,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/procowner"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
@@ -230,12 +230,13 @@ func liveSweep(m *remoteSweepMarker) (RemoteSweep, bool) {
 	return RemoteSweep{PID: m.PID, StartedAt: m.StartedAt, Remotes: append([]string(nil), m.Remotes...)}, true
 }
 
-// sweepProcessAlive reports whether a process with pid exists (signal 0; EPERM
-// still means it exists).
-func sweepProcessAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
-}
+// sweepProcessAlive reports whether the marker's process can still finish
+// the sweep. It is procowner.Alive, not a bare kill(pid, 0): a sweep child
+// that died under its re-exec'd parent stays a zombie until something waits
+// for it, and a zombie answers the signal (v1.16.11 rollout: four remotes
+// were "being updated by" a defunct pid). A seam so tests can script the
+// state.
+var sweepProcessAlive = procowner.Alive
 
 var remoteVersionCacheMu sync.Mutex
 

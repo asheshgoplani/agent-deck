@@ -3,6 +3,7 @@ package update
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -236,4 +237,49 @@ func TestAcquireUpdateLock(t *testing.T) {
 	content, _ := os.ReadFile(lockPath)
 	assert.False(t, strings.HasPrefix(string(content), "1 old"), "stale lock was replaced")
 	release2()
+}
+
+// v1.16.11 rollout: the TUI re-exec'd itself mid-update and its update child
+// died unreaped; the lock it wrote named a zombie pid, so a manual
+// `update --unattended` said "already running" for the whole stale window.
+// A lock whose holder cannot run is taken over at once; a live holder still
+// wins until the mtime rule expires it.
+func TestAcquireUpdateLock_DeadOrZombieHolderIsTakenOver(t *testing.T) {
+	const zombie, running = 95172, 95173
+	prev := updateLockHolderAlive
+	updateLockHolderAlive = func(pid int) bool { return pid == running }
+	t.Cleanup(func() { updateLockHolderAlive = prev })
+
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, UpdateLockFileName)
+	write := func(content string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(lockPath, []byte(content), 0o644))
+	}
+
+	write("95172 2026-09-19T10:02:54Z\n")
+	release, busy, err := AcquireUpdateLock(dir, UpdateLockStaleAfter)
+	require.NoError(t, err)
+	assert.False(t, busy, "a fresh lock held by a zombie is abandoned")
+	require.NotNil(t, release)
+	content, _ := os.ReadFile(lockPath)
+	assert.True(t, strings.HasPrefix(string(content), strconv.Itoa(os.Getpid())+" "), "lock now names this process: %q", content)
+	release()
+
+	write("95173 2026-09-19T10:02:54Z\n")
+	_, busy, err = AcquireUpdateLock(dir, UpdateLockStaleAfter)
+	require.NoError(t, err)
+	assert.True(t, busy, "a fresh lock held by a running process is honoured")
+
+	// A lock without a pid (older writer) keeps the mtime rule only.
+	write("garbage\n")
+	_, busy, err = AcquireUpdateLock(dir, UpdateLockStaleAfter)
+	require.NoError(t, err)
+	assert.True(t, busy, "no pid to check: a fresh lock stays busy")
+	old := time.Now().Add(-UpdateLockStaleAfter - time.Minute)
+	require.NoError(t, os.Chtimes(lockPath, old, old))
+	release3, busy, err := AcquireUpdateLock(dir, UpdateLockStaleAfter)
+	require.NoError(t, err)
+	assert.False(t, busy, "no pid to check: the stale rule still applies")
+	release3()
 }

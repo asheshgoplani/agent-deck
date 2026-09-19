@@ -80,7 +80,26 @@ type Reviver struct {
 	// because its agent cannot authenticate (see auth_hold.go). nil disables the
 	// check — legacy behavior for unit tests that construct Reviver{} directly.
 	AuthHeld func(*Instance) (bool, string)
+	// ConfirmAfter makes a pipe-dead verdict a two-sample one: an instance
+	// whose tmux server is up and whose stored status is not error, but whose
+	// pipe read dead, is read again after this delay and acted on only if the
+	// pipe is still dead. One wait per sweep, not per instance. Zero disables
+	// (legacy single-sample behaviour, relied on by unit tests).
+	//
+	// The reading it guards against is a real one but not evidence of a dead
+	// session: the TUI attaches its control pipes shortly after boot, so a
+	// sweep that samples during a start or an in-place restart sees every
+	// pipe dead and "respawns" live sessions (the v1.16.11 rollout respawned
+	// the maintainer's live session twice right after tui_restarted).
+	ConfirmAfter time.Duration
+	// sleep is time.Sleep unless a test replaces it.
+	sleep func(time.Duration)
 }
+
+// DefaultReviveConfirmAfter is NewReviver's ConfirmAfter: long enough for
+// the TUI's pipe reconciler (500ms interval) to have attached the pipes it
+// wants after a boot, short enough not to matter for a real revive.
+const DefaultReviveConfirmAfter = 3 * time.Second
 
 // NewReviver returns a Reviver wired to real tmux + PipeManager primitives.
 // Defaults: 500ms stagger between revives to avoid thundering herd on Claude
@@ -97,8 +116,9 @@ func NewReviver() *Reviver {
 		// accumulate. The breaker must outlive the Reviver to detect a
 		// storm across sweeps. CLI one-shots run in a short-lived process,
 		// so their global breaker starts empty and always probes.
-		Breaker:  globalReviveBreaker,
-		AuthHeld: defaultBootAuthHeld,
+		Breaker:      globalReviveBreaker,
+		AuthHeld:     defaultBootAuthHeld,
+		ConfirmAfter: DefaultReviveConfirmAfter,
 	}
 }
 
@@ -189,28 +209,80 @@ func (r *Reviver) ReviveAll(instances []*Instance) []ReviveOutcome {
 	if r.Breaker != nil {
 		r.Breaker.Prune()
 	}
-	outcomes := make([]ReviveOutcome, 0, len(instances))
-	firstRevive := true
+	live := make([]*Instance, 0, len(instances))
 	for _, inst := range instances {
-		if inst == nil {
-			continue
+		if inst != nil {
+			live = append(live, inst)
 		}
-		outcomes = append(outcomes, r.reviveOneInternal(inst, &firstRevive))
+	}
+	classes := make([]RevivalClass, len(live))
+	for i, inst := range live {
+		classes[i] = r.Classify(inst)
+	}
+	r.confirmPipeDead(live, classes)
+	outcomes := make([]ReviveOutcome, 0, len(live))
+	firstRevive := true
+	for i, inst := range live {
+		outcomes = append(outcomes, r.reviveOneInternal(inst, classes[i], &firstRevive))
 	}
 	return outcomes
 }
 
 // ReviveOne runs a single-instance revive cycle. Used by the CLI --name flag.
 func (r *Reviver) ReviveOne(inst *Instance) ReviveOutcome {
+	classes := []RevivalClass{r.Classify(inst)}
+	r.confirmPipeDead([]*Instance{inst}, classes)
 	first := true
-	return r.reviveOneInternal(inst, &first)
+	return r.reviveOneInternal(inst, classes[0], &first)
 }
 
-// reviveOneInternal does the actual classify + action + stagger dance.
-// firstRevive is a pointer so the caller can reset it across a batch: the
-// first actual revive runs immediately; subsequent ones sleep Stagger first.
-func (r *Reviver) reviveOneInternal(inst *Instance, firstRevive *bool) ReviveOutcome {
-	class := r.Classify(inst)
+// pipeDeadOnly reports whether class rests on the pipe reading alone: the
+// server is up and the stored status did not already decide the verdict.
+func pipeDeadOnly(inst *Instance, class RevivalClass) bool {
+	return class == ClassErrored && inst.Status != StatusError
+}
+
+// confirmPipeDead re-reads the pipe of every pipe-dead-only instance once,
+// ConfirmAfter later, and downgrades to ClassAlive those whose pipe is up
+// by then. A single wait covers the whole batch.
+func (r *Reviver) confirmPipeDead(instances []*Instance, classes []RevivalClass) {
+	if r.ConfirmAfter <= 0 || r.PipeAlive == nil {
+		return
+	}
+	var pending []int
+	for i, inst := range instances {
+		if pipeDeadOnly(inst, classes[i]) {
+			pending = append(pending, i)
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+	sleep := r.sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	sleep(r.ConfirmAfter)
+	for _, i := range pending {
+		inst := instances[i]
+		if !r.PipeAlive(instanceTmuxName(inst)) {
+			continue
+		}
+		classes[i] = ClassAlive
+		if r.Log != nil {
+			r.Log.Info("reviver_pipe_dead_transient",
+				slog.String("title", inst.Title),
+				slog.String("instance_id", inst.ID),
+				slog.Duration("confirm_after", r.ConfirmAfter))
+		}
+	}
+}
+
+// reviveOneInternal does the breaker + action + stagger dance for an
+// already classified instance. firstRevive is a pointer so the caller can
+// reset it across a batch: the first actual revive runs immediately;
+// subsequent ones sleep Stagger first.
+func (r *Reviver) reviveOneInternal(inst *Instance, class RevivalClass, firstRevive *bool) ReviveOutcome {
 	out := ReviveOutcome{
 		InstanceID: inst.ID,
 		Title:      inst.Title,

@@ -3,10 +3,17 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
+	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/ui"
 )
+
+var reviveCmdLog = logging.ForComponent(logging.CompSession)
 
 // ReviveSummary tallies outcomes from a reviver sweep. Format() produces the
 // single-line human-readable summary emitted by the CLI.
@@ -143,6 +150,9 @@ func handleSessionRevive(profile string, args []string) {
 	}
 
 	rev := session.NewReviver()
+	// A one-shot process never attaches a control pipe, so a second pipe
+	// reading could only repeat the first: decide on one and do not wait.
+	rev.ConfirmAfter = 0
 
 	var target []*session.Instance
 	if *all {
@@ -180,7 +190,14 @@ func handleSessionRevive(profile string, args []string) {
 // reviveOnStartup is the non-blocking startup hook. Called once from main()
 // before TUI boot. Silently logs failures; never surfaces errors to the user
 // — this is a best-effort recovery, not a gate.
-func reviveOnStartup(profile string) {
+//
+// delay is startupReviveDelay, read by the caller before the TUI consumes
+// the restart hand-off from the environment.
+func reviveOnStartup(profile string, delay time.Duration) {
+	if delay > 0 {
+		reviveCmdLog.Info("reviver_paused_after_restart", slog.Duration("delay", delay))
+		time.Sleep(delay)
+	}
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		return
@@ -190,4 +207,23 @@ func reviveOnStartup(profile string) {
 	// Note: we intentionally do NOT save storage here — the reviver is fire-
 	// and-forget on startup. The next TUI tick or CLI command will persist
 	// status mutations through the normal save path.
+}
+
+// reviverRestartGrace is how long the startup sweep waits in a process that
+// was re-exec'd by its predecessor (auto_restart or the restart key). The
+// old image closed its control pipes on the way out and the new one
+// attaches them shortly after its first session load; a sweep sampled in
+// between reads every pipe dead and respawns live sessions (v1.16.11
+// rollout). The pause is long enough for that reconcile and for the
+// pre-restart breaker state, lost with the old image, not to matter.
+const reviverRestartGrace = 15 * time.Second
+
+// startupReviveDelay returns how long the startup reviver should wait
+// before its first sweep: reviverRestartGrace when this process was
+// re-exec'd in place (ui.RestartedFromEnv is set), zero otherwise.
+func startupReviveDelay(getenv func(string) string) time.Duration {
+	if strings.TrimSpace(getenv(ui.RestartedFromEnv)) == "" {
+		return 0
+	}
+	return reviverRestartGrace
 }
