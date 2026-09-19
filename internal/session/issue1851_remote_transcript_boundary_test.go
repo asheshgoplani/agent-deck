@@ -1,11 +1,14 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall"
 )
 
 // Regression tests for https://github.com/asheshgoplani/agent-deck/issues/1851.
@@ -359,5 +362,140 @@ func TestHandoffAndMigration_RemoteRefuses(t *testing.T) {
 	// no-op for both; the point is that the remote never reaches the scan.
 	if restored, err := RestoreOrphanedConversationBackup(remote, GetClaudeConfigDir()); err != nil || restored != "" {
 		t.Errorf("RestoreOrphanedConversationBackup restored %q for a remote session (err=%v)", restored, err)
+	}
+}
+
+// --- The whole list, as one table -------------------------------------------
+
+// TestRemoteTranscriptBoundary_EveryEntryPointRefuses is the enumeration in
+// remote_transcript_boundary.go as a test: every door, in package order,
+// refuses the remote instance AND still serves the local one, so a guard
+// that simply broke a feature fails here too. Doors 15 and 16 live outside
+// this package and are exercised by their own packages' tests
+// (sessionhost funnels through door 4; streamSessionSend in cmd/agent-deck).
+// The recall doors (17, 18) need [recall] enabled and a transcript under a
+// recall root, which the fixture's HOME/.claude is.
+func TestRemoteTranscriptBoundary_EveryEntryPointRefuses(t *testing.T) {
+	local, remote, sessionID, _ := remoteBoundaryFixture(t)
+	home := os.Getenv("HOME")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	enabled := true
+	cfg := &UserConfig{}
+	cfg.Recall.Enabled = &enabled
+	withConfig(t, cfg)
+	remote.ClaudeSessionID = sessionID
+	remote.ClaudeDetectedAt = time.Now()
+	queuePath, err := recall.QueuePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type door struct {
+		name   string
+		remote func() (string, bool) // what the remote resolved, and whether it did
+		local  func() bool           // the local lookup still works
+	}
+	doors := []door{
+		{"1 ensureClaudeSessionIDFromDisk", func() (string, bool) {
+			remote.ClaudeSessionID = ""
+			remote.ensureClaudeSessionIDFromDisk()
+			id := remote.ClaudeSessionID
+			remote.ClaudeSessionID = sessionID
+			return id, id != ""
+		}, func() bool { return true }},
+		{"2 ensureClaudeSessionIDFromDiskForRestart", func() (string, bool) {
+			remote.ClaudeSessionID = ""
+			remote.ensureClaudeSessionIDFromDiskForRestart()
+			id := remote.ClaudeSessionID
+			remote.ClaudeSessionID = sessionID
+			return id, id != ""
+		}, func() bool {
+			local.ClaudeSessionID = ""
+			local.ensureClaudeSessionIDFromDiskForRestart()
+			return local.ClaudeSessionID == sessionID
+		}},
+		{"3 findLatestClaudeTranscriptOnDisk", func() (string, bool) {
+			id, resp := remote.findLatestClaudeTranscriptOnDisk()
+			return id, id != "" || resp != nil
+		}, func() bool { id, resp := local.findLatestClaudeTranscriptOnDisk(); return id != "" && resp != nil }},
+		{"4 GetJSONLPath", func() (string, bool) { p := remote.GetJSONLPath(); return p, p != "" },
+			func() bool { return local.GetJSONLPath() != "" }},
+		{"5 getClaudeLastResponse", func() (string, bool) {
+			resp, err := remote.getClaudeLastResponse()
+			return fmt.Sprint(resp), err == nil
+		}, func() bool { _, err := local.getClaudeLastResponse(); return err == nil }},
+		{"6 sessionHasConversationData", func() (string, bool) { ok := sessionHasConversationData(remote, sessionID); return fmt.Sprint(ok), ok },
+			func() bool { return sessionHasConversationData(local, sessionID) }},
+		{"7 sessionConversationByteSize", func() (string, bool) {
+			n := sessionConversationByteSize(remote, sessionID)
+			return fmt.Sprint(n), n > 0
+		},
+			func() bool { return sessionConversationByteSize(local, sessionID) > 0 }},
+		{"8 sessionConversationMtime", func() (string, bool) {
+			m := sessionConversationMtime(remote, sessionID)
+			return fmt.Sprint(m), !m.IsZero()
+		},
+			func() bool { return !sessionConversationMtime(local, sessionID).IsZero() }},
+		{"9 findSessionFileInAllProjects", func() (string, bool) { p := findSessionFileInAllProjects(remote, sessionID); return p, p != "" },
+			func() bool { return findSessionFileInAllProjects(local, sessionID) != "" }},
+		{"10 claudeTranscriptPathIn", func() (string, bool) { p := ClaudeTranscriptPathForInstance(remote); return p, p != "" },
+			func() bool { return ClaudeTranscriptPathForInstance(local) != "" }},
+		{"11 BuildClaudeToCodexHandoffPrompt", func() (string, bool) {
+			prompt, _, err := BuildClaudeToCodexHandoffPrompt(remote, 1000)
+			return prompt, err == nil
+		}, func() bool {
+			prompt, _, err := BuildClaudeToCodexHandoffPrompt(local, 1000)
+			return err == nil && strings.Contains(prompt, localReplyText)
+		}},
+		{"12 LocateConversationConfigDir", func() (string, bool) {
+			dir, _, _ := LocateConversationConfigDir(cfg, remote, GetClaudeConfigDir())
+			return dir, dir != ""
+		}, func() bool {
+			dir, _, _ := LocateConversationConfigDir(cfg, local, GetClaudeConfigDir())
+			return dir != ""
+		}},
+		{"13 MigrateConversationFrom", func() (string, bool) {
+			moved, _ := MigrateConversationFrom(remote, GetClaudeConfigDir(), t.TempDir())
+			return moved, moved != ""
+		}, func() bool { return true }},
+		{"14 RestoreOrphanedConversationBackup", func() (string, bool) {
+			restored, _ := RestoreOrphanedConversationBackup(remote, GetClaudeConfigDir())
+			return restored, restored != ""
+		}, func() bool { return true }},
+		{"17 RecallNotifyInstance", func() (string, bool) {
+			ok := RecallNotifyInstance(remote, "stop")
+			return fmt.Sprint(ok), ok || recall.QueueLen(queuePath) > 0
+		}, func() bool { return RecallNotifyInstance(local, "stop") && recall.QueueLen(queuePath) == 1 }},
+		{"18 recallNotifyBatch", func() (string, bool) {
+			before := recall.QueueLen(queuePath)
+			recallNotifyBatch([]recallNotifyReq{{inst: remote, event: "worker_done"}})
+			return fmt.Sprint(recall.QueueLen(queuePath)), recall.QueueLen(queuePath) != before
+		}, func() bool {
+			before := recall.QueueLen(queuePath)
+			recallNotifyBatch([]recallNotifyReq{{inst: local, event: "worker_done"}})
+			return recall.QueueLen(queuePath) == before+1
+		}},
+	}
+	for _, d := range doors {
+		got, resolved := d.remote()
+		if resolved {
+			t.Errorf("door %s resolved a LOCAL transcript for a remote session: %q", d.name, got)
+		}
+		if !d.local() {
+			t.Errorf("door %s no longer serves a local session", d.name)
+		}
+	}
+	// The list in the doc and this table agree on the numbering: every
+	// door named in remote_transcript_boundary.go has a row here or a
+	// stated home in another package.
+	doc, err := os.ReadFile("remote_transcript_boundary.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{" 1.", " 2.", " 3.", " 4.", " 5.", " 6.", " 7.", " 8.", " 9.", "10.", "11.", "12.", "13.", "14.", "15.", "16.", "17.", "18."} {
+		if !strings.Contains(string(doc), "// "+strings.TrimSpace(n)+" ") && !strings.Contains(string(doc), "//"+n+" ") {
+			t.Errorf("remote_transcript_boundary.go lost door %s", strings.TrimSpace(n))
+		}
 	}
 }
