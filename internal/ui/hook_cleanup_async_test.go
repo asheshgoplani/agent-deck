@@ -104,6 +104,9 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 				// differently; it must reach the undo assertion below, so the
 				// frame is pinned by the two cases that stop here.
 				frame := stripAnsi(h.View())
+				if os.Getenv("UPDATE_GOLDEN") == "1" {
+					require.NoError(t, os.WriteFile("testdata/hook_cleanup_search.txt", []byte(frame), 0644))
+				}
 				golden, err := os.ReadFile("testdata/hook_cleanup_search.txt")
 				require.NoError(t, err)
 				require.Equal(t, string(golden), frame, "search frame while deletion cleanup is blocked")

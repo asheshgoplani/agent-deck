@@ -21,7 +21,7 @@
     │                                                                                                              │    
     │      Command:                                                                                                │    
     │        shell     claude     gemini     opencode     codex     pi     copilot     crush     muse              │    
-    │      cursor agent     hermes     deepseek     omp                                                            │    
+    │        cursor agent     hermes     deepseek     omp                                                          │    
     │                                                                                                              │    
     │        Custom:                                                                                               │    
     │        > gemini                                                                                              │    
