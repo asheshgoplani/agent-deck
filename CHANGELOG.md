@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.13] - 2026-09-19
+
+### Added
+
+- Recall (behind `[recall] enabled = false`): a local index of every session's conversation across Claude Code, Codex, Pi, Gemini, OpenCode and Hermes. New commands `recall backfill|sweep|status|sessions|search|show|open|gc|rebuild`; new sessions land automatically through the stop hook, and `G` opens Recall search in the deck. The agent-deck skill gained a Recall section. Measured: 3.4 GB of transcripts indexed in under 40s into ~125 MB, with searches under 100ms; see the PR bodies for details (#2314, #2318).
+
 ### Fixed
 
-- The launchd hygiene after an install never boots out the service the updater itself runs inside (the headless web daemon's own updater took `com.agentdeck.web` down with it on 2026-09-19 and left it unloaded); that agent is deferred to `<cache>/launchd-rebootstrap-pending.json` and re-registered by the next update run outside it (timer, TUI). Bootstrap retries back off from 500ms to 8s, an agent that is registered but not running (or whose `launchctl print` fails right after the bootstrap) is re-bootstrapped from its plist once with the exact `launchctl` lines at WARN, and a second miss fails the run (exit 1). An agent that was booted out and never came back is remembered in the same marker (label, reason, since when, attempts, last error) so every later update run retries it (the timer and the TUI's hourly run, the web daemon's own check, and `agent-deck update`, also when nothing is installed because `auto_install` is off or a release is still publishing); `agent-deck update --check` lists these agents and `--json` reports them as `pending_launch_agents`.
-- Every unattended update run also writes `<cache>/update.log` (append-only, never rotated by rename), each line tagged with trigger, pid, ppid, launchd service and binary version, so the audit trail survives the shared `debug.log` being rotated by another agent-deck process.
-- The startup remote sweep is throttled per controller version: a controller that restarted into a newer release sweeps at once instead of waiting out `check_interval_hours` for a sweep its install never ran; every skipped or deferred unattended sweep logs its reason.
-- Control-pipe connects are budgeted per session: after a failure the next attempt waits 2s, doubling to a minute, and one `pipe_connect_suppressed` line a minute replaces the per-attempt storm (about a thousand lines a minute for one session).
-- A TUI that has had a newer build on disk for two hours without restarting logs `tui_restart_overdue` with the blocking reason (once an hour), shows that reason in the banner, and reports it through a heartbeat (`<cache>/tui/<pid>.json`) that `agent-deck update --check --json` lists as `running_tuis` (pid, version, outdated, ticking, restart_state, block_reason); `update --check` prints the outdated ones. A failed version probe of the new file now logs at WARN.
+- The self-update no longer boots out its own launchd service: the headless web daemon's own updater used to take `com.agentdeck.web` down with it and leave it unloaded, so that agent is now deferred and re-registered by the next update run outside it (timer, TUI), with bounded bootstrap retries and a second-miss failure. Every unattended update run also keeps an append-only update audit log. The startup remote sweep is throttled per controller version and reports the reason for every skipped or deferred sweep. Control-pipe reconnects are budgeted per session instead of storming. A TUI that has had a newer build on disk for two hours without restarting reports it through a heartbeat that `agent-deck update --check` surfaces (#2312).
+- Width-aware footers and dialog wraps at 80/120 columns (#2313).
+- The Go telemetry `TempDir` test race (#2315).
 
 ## [1.16.12] - 2026-09-19
 
