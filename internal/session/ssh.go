@@ -1842,6 +1842,13 @@ func remoteVerbReadOnly(args []string) bool {
 		return second == "export" || second == "writer-status"
 	case "session":
 		return second == "show" || second == "output" || second == "pane"
+	case "recall":
+		// Every forwarded recall verb reads the remote's index; export is
+		// a read too (the write happens on the puller).
+		switch second {
+		case "search", "sessions", "show", "context", "export", "status":
+			return true
+		}
 	}
 	return false
 }

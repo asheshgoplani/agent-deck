@@ -63,7 +63,7 @@ func TestRecall_OffByDefaultAndHelp(t *testing.T) {
 	if stdout, _, code := runAgentDeck(t, home, "session", "annotate", "s1", "--json"); code != 0 || !strings.Contains(stdout, "SB-1") {
 		t.Fatalf("annotate with recall off: exit %d %s", code, stdout)
 	}
-	for _, sub := range []string{"search", "sessions", "show", "open", "status", "backfill", "sweep", "gc", "rebuild"} {
+	for _, sub := range []string{"search", "sessions", "show", "open", "status", "backfill", "sweep", "gc", "rebuild", "context", "enrich", "export", "import", "pull", "mcp"} {
 		stdout, stderr, code := runAgentDeck(t, home, "recall", sub, "--help")
 		if code != 0 || !strings.Contains(stdout+stderr, "Usage: agent-deck recall "+sub) {
 			t.Fatalf("recall %s --help: exit %d\n%s%s", sub, code, stdout, stderr)
