@@ -54,11 +54,18 @@ type updateCheckJSON struct {
 	// it has not restarted. Empty when no TUI reports.
 	OnDisk      string             `json:"on_disk,omitempty"`
 	RunningTUIs []update.TUIReport `json:"running_tuis"`
+	// PendingLaunchAgents lists the launch agents no run has managed to
+	// re-register yet (deferred by a run inside them, or booted out and
+	// never accepted back), with the attempts so far. Empty when none.
+	PendingLaunchAgents []update.PendingAgent `json:"pending_launch_agents"`
 }
 
-func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus, onDisk string, tuis []update.TUIReport) updateCheckJSON {
+func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus, onDisk string, tuis []update.TUIReport, pending []update.PendingAgent) updateCheckJSON {
 	if tuis == nil {
 		tuis = []update.TUIReport{}
+	}
+	if pending == nil {
+		pending = []update.PendingAgent{}
 	}
 	return updateCheckJSON{
 		Current:     info.CurrentVersion,
@@ -70,6 +77,8 @@ func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettin
 		Timer:       timer,
 		OnDisk:      onDisk,
 		RunningTUIs: tuis,
+
+		PendingLaunchAgents: pending,
 	}
 }
 
@@ -126,10 +135,11 @@ type unattendedDeps struct {
 	install        func(latest string) error
 	updateBridge   func() error
 	hygiene        func() error
-	// drainPending re-registers launch agents an earlier run deferred
-	// because it ran inside them (update.DrainPendingRebootstrap); it runs
-	// when there is nothing to install, since an install's own hygiene
-	// covers every agent anyway.
+	// drainPending re-registers launch agents an earlier run left pending
+	// (update.DrainPendingRebootstrap: deferred because it ran inside
+	// them, or booted out and never accepted back); it runs whenever the
+	// run does not install, since an install's own hygiene covers every
+	// agent anyway.
 	drainPending func() error
 	// sweepRemotes pushes the new version to older remotes when
 	// [updates] auto_update_remotes is on (#2166); it never prompts and
@@ -153,27 +163,33 @@ func runUnattendedUpdate(d unattendedDeps) int {
 		log.Error("unattended_check_failed", slog.String("err", err.Error()))
 		return exitUpdateFailed
 	}
+	// Whatever stops the install, the pending launch agents are retried:
+	// a launch agent left unloaded must not wait for the next release.
+	drain := func() int {
+		if d.drainPending == nil {
+			return exitUpdateOK
+		}
+		if err := d.drainPending(); err != nil {
+			fmt.Fprintf(d.out, "Launch agent still not re-registered: %v\n", err)
+			log.Error("unattended_pending_drain_failed", slog.String("err", err.Error()))
+			return exitUpdateFailed
+		}
+		return exitUpdateOK
+	}
 	if info.PublishingVersion != "" {
 		fmt.Fprintf(d.out, "v%s is still publishing (no binary for this platform yet); nothing installed\n", info.PublishingVersion)
 		log.Info("unattended_skipped", slog.String("reason", "publishing"), slog.String("publishing", info.PublishingVersion))
-		return exitUpdateOK
+		return drain()
 	}
 	if !info.Available {
 		fmt.Fprintf(d.out, "v%s is current; nothing to do\n", d.version)
 		log.Info("unattended_skipped", slog.String("reason", "current"))
-		if d.drainPending != nil {
-			if err := d.drainPending(); err != nil {
-				fmt.Fprintf(d.out, "Launch agent still not re-registered: %v\n", err)
-				log.Error("unattended_pending_drain_failed", slog.String("err", err.Error()))
-				return exitUpdateFailed
-			}
-		}
-		return exitUpdateOK
+		return drain()
 	}
 	if !d.autoInstall {
 		fmt.Fprintf(d.out, "v%s available but auto_install is off in config.toml, nothing installed (run `agent-deck update` to install by hand)\n", info.LatestVersion)
 		log.Info("unattended_skipped", slog.String("reason", "auto_install_off"), slog.String("latest", info.LatestVersion))
-		return exitUpdateOK
+		return drain()
 	}
 
 	execPath, upgradeCmd, managed, err := d.detectHomebrew()
@@ -276,12 +292,13 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 }
 
 // drainPendingLaunchAgents re-registers the launch agents a previous run
-// left in the pending marker (it ran inside them). No marker: no-op.
+// left in the pending marker (it ran inside them, or booted them out and
+// launchd never accepted them back). No marker: no-op.
 func drainPendingLaunchAgents(log *slog.Logger) error {
 	if runtime.GOOS != "darwin" || !update.HasPendingRebootstrap() {
 		return nil
 	}
-	fmt.Println("Re-registering launchd agents a previous update deferred...")
+	fmt.Println("Re-registering launchd agents a previous update left pending...")
 	res, err := update.DrainPendingRebootstrap(update.RebootstrapOptions{Logger: log})
 	if err != nil {
 		return err
@@ -465,6 +482,20 @@ func runTimerCommandWith(cfg update.TimerConfig, r update.Runner, action string,
 // notify daemon, hence the shared setup.
 func initUpdateCommandLogging() func() {
 	return initDaemonLogging()
+}
+
+// printPendingLaunchAgents lists the launch agents still waiting to be
+// re-registered, one line each, for `update --check`.
+func printPendingLaunchAgents() {
+	pending := update.ListPendingRebootstrap()
+	if len(pending) == 0 {
+		return
+	}
+	lines := make([]string, 0, len(pending))
+	for _, p := range pending {
+		lines = append(lines, "  "+update.DescribePendingAgent(p))
+	}
+	fmt.Printf("\nLaunch agents still waiting to be re-registered with launchd:\n%s\n", strings.Join(lines, "\n"))
 }
 
 // printOutdatedTUIs lists the TUIs still running an image older than the

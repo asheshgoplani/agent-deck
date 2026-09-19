@@ -21,10 +21,56 @@ const launchdServiceEnv = "XPC_SERVICE_NAME"
 // a run could not re-register because it ran inside them.
 const PendingRebootstrapFileName = "launchd-rebootstrap-pending.json"
 
-// pendingRebootstrap is the on-disk shape of the marker.
+// Reasons a launch agent is pending.
+const (
+	// PendingReasonInsideService: the run that should have re-registered
+	// the agent ran inside it and deferred it (nothing attempted).
+	PendingReasonInsideService = "inside service"
+	// PendingReasonBootstrapFailed: the agent was booted out but did not
+	// come back (bootstrap never accepted, or not verified running); it is
+	// unloaded until a run gets it back.
+	PendingReasonBootstrapFailed = "bootstrap failed"
+)
+
+// PendingAgent is one launch agent a run left for a later one: which
+// service, why, since when, and how the retries went.
+type PendingAgent struct {
+	Label  string `json:"label"`
+	Reason string `json:"reason,omitempty"`
+	// Since is when the agent first became pending; a retry keeps it.
+	Since time.Time `json:"since"`
+	// Attempts counts the runs that tried to re-register it and failed.
+	Attempts  int    `json:"attempts,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+// pendingRebootstrap is the on-disk shape of the marker. Labels is what
+// releases before the per-agent record read (and wrote): it always lists
+// every agent in Agents, and an agent only in Labels (older writer) reads
+// as pending since UpdatedAt with no reason.
 type pendingRebootstrap struct {
-	Labels    []string  `json:"labels"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Labels    []string       `json:"labels"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Agents    []PendingAgent `json:"agents,omitempty"`
+}
+
+// agents merges Labels and Agents into one sorted list.
+func (m pendingRebootstrap) agents() []PendingAgent {
+	byLabel := map[string]PendingAgent{}
+	for _, a := range m.Agents {
+		byLabel[a.Label] = a
+	}
+	for _, l := range m.Labels {
+		if _, ok := byLabel[l]; !ok {
+			byLabel[l] = PendingAgent{Label: l, Since: m.UpdatedAt}
+		}
+	}
+	out := make([]PendingAgent, 0, len(byLabel))
+	for _, a := range byLabel {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	return out
 }
 
 // insideLaunchdService reports whether this process runs inside the launchd
@@ -33,77 +79,159 @@ func insideLaunchdService(service, label string) bool {
 	return service != "" && service == label
 }
 
-// PendingRebootstrap returns the labels the marker at path holds, sorted;
-// none when the file does not exist.
-func PendingRebootstrap(path string) ([]string, error) {
+// readPendingRebootstrap reads the marker at path; an absent file is an
+// empty marker.
+func readPendingRebootstrap(path string) (pendingRebootstrap, error) {
+	var m pendingRebootstrap
 	if path == "" {
-		return nil, nil
+		return m, nil
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return m, nil
 	}
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return m, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return m, nil
+}
+
+// PendingRebootstrapAgents returns every agent the marker at path holds,
+// sorted by label; none when the file does not exist.
+func PendingRebootstrapAgents(path string) ([]PendingAgent, error) {
+	m, err := readPendingRebootstrap(path)
 	if err != nil {
 		return nil, err
 	}
-	var m pendingRebootstrap
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	return m.agents(), nil
+}
+
+// PendingRebootstrap returns the labels the marker at path holds, sorted;
+// none when the file does not exist.
+func PendingRebootstrap(path string) ([]string, error) {
+	agents, err := PendingRebootstrapAgents(path)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(m.Labels)
-	return m.Labels, nil
+	labels := make([]string, 0, len(agents))
+	for _, a := range agents {
+		labels = append(labels, a.Label)
+	}
+	return labels, nil
+}
+
+// defaultPendingPath is the marker in the cache dir ("" when the cache dir
+// cannot be resolved: then nothing is ever recorded or drained).
+func defaultPendingPath() string {
+	dir, err := getCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, PendingRebootstrapFileName)
+}
+
+// ListPendingRebootstrap returns the agents the default marker holds; an
+// unreadable marker reads as none (the callers report, never fail, on it).
+func ListPendingRebootstrap() []PendingAgent {
+	agents, err := PendingRebootstrapAgents(defaultPendingPath())
+	if err != nil {
+		return nil
+	}
+	return agents
 }
 
 // HasPendingRebootstrap reports whether the default marker names any agent.
 func HasPendingRebootstrap() bool {
-	dir, err := getCacheDir()
-	if err != nil {
-		return false
-	}
-	labels, err := PendingRebootstrap(filepath.Join(dir, PendingRebootstrapFileName))
-	return err == nil && len(labels) > 0
+	return len(ListPendingRebootstrap()) > 0
 }
 
-func addPendingRebootstrap(path, label string) error {
-	return writePendingRebootstrap(path, func(labels []string) []string {
-		for _, l := range labels {
-			if l == label {
-				return labels
-			}
+// DescribePendingAgent is the one-line human form of a pending agent.
+func DescribePendingAgent(p PendingAgent) string {
+	since := p.Since.Local().Format("15:04")
+	switch p.Reason {
+	case PendingReasonBootstrapFailed:
+		s := fmt.Sprintf("%s: bootstrap failed %d times since %s", p.Label, p.Attempts, since)
+		if p.Attempts == 1 {
+			s = fmt.Sprintf("%s: bootstrap failed once since %s", p.Label, since)
 		}
-		return append(labels, label)
+		if p.LastError != "" {
+			s += " (last: " + p.LastError + ")"
+		}
+		return s + "; every update run retries it"
+	case PendingReasonInsideService:
+		return fmt.Sprintf("%s: deferred since %s, the updater ran inside it; the next update run outside it re-registers it", p.Label, since)
+	}
+	return fmt.Sprintf("%s: pending since %s", p.Label, since)
+}
+
+// addPendingRebootstrap records label as deferred because the run is
+// inside it; an agent already pending keeps its record.
+func addPendingRebootstrap(path, label string, now time.Time) error {
+	return editPendingRebootstrap(path, label, func(p *PendingAgent, found bool) bool {
+		if !found {
+			*p = PendingAgent{Label: label, Reason: PendingReasonInsideService, Since: now}
+		}
+		return true
+	})
+}
+
+// notePendingFailure records that a run booted label out and could not
+// get it back: first failure stamps since, every one counts an attempt
+// and keeps the last error.
+func notePendingFailure(path, label string, cause error, now time.Time) error {
+	return editPendingRebootstrap(path, label, func(p *PendingAgent, found bool) bool {
+		if !found || p.Reason != PendingReasonBootstrapFailed {
+			*p = PendingAgent{Label: label, Reason: PendingReasonBootstrapFailed, Since: now}
+		}
+		p.Attempts++
+		p.LastError = firstLine(cause.Error())
+		return true
 	})
 }
 
 func removePendingRebootstrap(path, label string) error {
-	return writePendingRebootstrap(path, func(labels []string) []string {
-		out := labels[:0]
-		for _, l := range labels {
-			if l != label {
-				out = append(out, l)
-			}
-		}
-		return out
-	})
+	return editPendingRebootstrap(path, label, func(*PendingAgent, bool) bool { return false })
 }
 
-func writePendingRebootstrap(path string, edit func([]string) []string) error {
+// editPendingRebootstrap rewrites the marker with label's record passed
+// through edit (found says whether it was there; edit returns whether to
+// keep it). An empty marker is removed.
+func editPendingRebootstrap(path, label string, edit func(p *PendingAgent, found bool) (keep bool)) error {
 	if path == "" {
 		return errors.New("pending marker path unknown")
 	}
-	labels, err := PendingRebootstrap(path)
+	m, err := readPendingRebootstrap(path)
 	if err != nil {
 		return err
 	}
-	labels = edit(labels)
-	if len(labels) == 0 {
+	var agents []PendingAgent
+	var rec PendingAgent
+	found := false
+	for _, a := range m.agents() {
+		if a.Label == label {
+			rec, found = a, true
+			continue
+		}
+		agents = append(agents, a)
+	}
+	if edit(&rec, found) {
+		agents = append(agents, rec)
+	}
+	if len(agents) == 0 {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
-	sort.Strings(labels)
-	data, err := json.MarshalIndent(pendingRebootstrap{Labels: labels, UpdatedAt: time.Now()}, "", "  ")
+	sort.Slice(agents, func(i, j int) bool { return agents[i].Label < agents[j].Label })
+	labels := make([]string, 0, len(agents))
+	for _, a := range agents {
+		labels = append(labels, a.Label)
+	}
+	data, err := json.MarshalIndent(pendingRebootstrap{Labels: labels, UpdatedAt: time.Now(), Agents: agents}, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -32,6 +32,7 @@ func TestBuildUpdateCheckJSON(t *testing.T) {
 		update.TimerStatus{Installed: true, Kind: "launchd", Path: "/x/com.agentdeck.autoupdate.plist", Active: true},
 		"1.16.5",
 		[]update.TUIReport{{PID: 94928, Version: "1.16.4", Outdated: true, Ticking: true, RestartState: "overdue", BlockReason: "close the open dialog first"}},
+		[]update.PendingAgent{{Label: "com.agentdeck.web", Reason: update.PendingReasonBootstrapFailed, Since: time.Date(2026, 9, 19, 9, 0, 0, 0, time.UTC), Attempts: 3, LastError: "Input/output error"}},
 	)
 	var buf bytes.Buffer
 	require.NoError(t, printUpdateCheckJSON(&buf, doc))
@@ -57,11 +58,20 @@ func TestBuildUpdateCheckJSON(t *testing.T) {
 	assert.Equal(t, true, tui["outdated"])
 	assert.Equal(t, "overdue", tui["restart_state"])
 	assert.Equal(t, "close the open dialog first", tui["block_reason"])
+	pending := got["pending_launch_agents"].([]any)
+	require.Len(t, pending, 1)
+	p := pending[0].(map[string]any)
+	assert.Equal(t, "com.agentdeck.web", p["label"])
+	assert.Equal(t, "bootstrap failed", p["reason"])
+	assert.Equal(t, "2026-09-19T09:00:00Z", p["since"])
+	assert.Equal(t, float64(3), p["attempts"])
+	assert.Equal(t, "Input/output error", p["last_error"])
 
-	// No TUI reporting: an empty list, never null.
+	// No TUI reporting, nothing pending: empty lists, never null.
 	buf.Reset()
-	require.NoError(t, printUpdateCheckJSON(&buf, buildUpdateCheckJSON(&update.UpdateInfo{}, session.UpdateSettings{}, update.TimerStatus{}, "", nil)))
+	require.NoError(t, printUpdateCheckJSON(&buf, buildUpdateCheckJSON(&update.UpdateInfo{}, session.UpdateSettings{}, update.TimerStatus{}, "", nil, nil)))
 	assert.Contains(t, buf.String(), `"running_tuis": []`)
+	assert.Contains(t, buf.String(), `"pending_launch_agents": []`)
 }
 
 // unattendedHarness records which collaborators ran.
@@ -122,8 +132,24 @@ func TestRunUnattendedUpdate_NothingToDo(t *testing.T) {
 
 	h = newUnattendedHarness(t, &update.UpdateInfo{CurrentVersion: "1.16.5", LatestVersion: "1.16.5", PublishingVersion: "1.17.0"})
 	assert.Equal(t, exitUpdateOK, runUnattendedUpdate(h.deps))
-	assert.Equal(t, []string{"check"}, h.calls)
+	assert.Equal(t, []string{"check", "drain"}, h.calls, "a release still publishing does not hold back the drain")
 	assert.Contains(t, h.out.String(), "v1.17.0 is still publishing")
+}
+
+// The drain is independent of installing: a run that stops before the
+// install (auto_install off, release still publishing) still retries the
+// pending launch agents, and its failure is still the run's.
+func TestRunUnattendedUpdate_DrainsWhenNotInstalling(t *testing.T) {
+	h := newUnattendedHarness(t, availableInfo())
+	h.deps.autoInstall = false
+	assert.Equal(t, exitUpdateOK, runUnattendedUpdate(h.deps))
+	assert.Equal(t, []string{"check", "drain"}, h.calls)
+
+	h = newUnattendedHarness(t, availableInfo())
+	h.deps.autoInstall = false
+	h.deps.drainPending = func() error { return errors.New("com.agentdeck.web did not come back") }
+	assert.Equal(t, exitUpdateFailed, runUnattendedUpdate(h.deps))
+	assert.Contains(t, h.out.String(), "com.agentdeck.web did not come back")
 }
 
 // A pending launch agent that still cannot be re-registered is a loud
@@ -141,7 +167,7 @@ func TestRunUnattendedUpdate_HonoursAutoInstallOff(t *testing.T) {
 	h := newUnattendedHarness(t, availableInfo())
 	h.deps.autoInstall = false
 	assert.Equal(t, exitUpdateOK, runUnattendedUpdate(h.deps))
-	assert.Equal(t, []string{"check"}, h.calls)
+	assert.Equal(t, []string{"check", "drain"}, h.calls, "no install, but the pending launch agents are still retried")
 	assert.Contains(t, h.out.String(), "auto_install is off in config.toml, nothing installed")
 }
 

@@ -3819,7 +3819,7 @@ func handleProfileSetDefault(out *CLIOutput, name string) {
 func handleUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
-	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer)")
+	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents)")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
 	unattended := fs.Bool("unattended", false, "Install without prompts (no changelog, no stdin); honours [updates] auto_install; exit 2 on Homebrew installs")
 	trigger := fs.String("trigger", "", "Who started this run, for the debug log: tui, timer or manual (default: $AGENTDECK_UPDATE_TRIGGER or manual)")
@@ -3839,7 +3839,7 @@ func handleUpdate(args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck update                     # Check and install latest if available")
 		fmt.Println("  agent-deck update --check             # Only check, don't install")
-		fmt.Println("  agent-deck update --check --json      # Machine-readable check incl. timer state and running TUIs")
+		fmt.Println("  agent-deck update --check --json      # Machine-readable check incl. timer state, running TUIs, pending launch agents")
 		fmt.Println("  agent-deck update --version 1.7.3     # Install a specific version (may downgrade)")
 		fmt.Println("  agent-deck update --unattended        # No prompts; what the timer and the TUI run")
 		fmt.Println("  agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)")
@@ -3900,7 +3900,7 @@ func handleUpdate(args []string) {
 			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
 		}
 		onDisk := onDiskVersion()
-		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk))); err != nil {
+		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), update.ListPendingRebootstrap())); err != nil {
 			exit(1)
 		}
 		exit(0)
@@ -3930,6 +3930,14 @@ func handleUpdate(args []string) {
 		fmt.Println("✓ You're running the latest version!")
 		if *checkOnly {
 			printOutdatedTUIs(onDiskVersion())
+			printPendingLaunchAgents()
+			return
+		}
+		// Nothing to install, but a launch agent an earlier run left
+		// pending is retried here too, loudly when it still fails.
+		if err := drainPendingLaunchAgents(updateCLILog); err != nil {
+			fmt.Printf("\nLaunch agent still not re-registered: %v\n", err)
+			os.Exit(1)
 		}
 		return
 	}
@@ -3958,6 +3966,7 @@ func handleUpdate(args []string) {
 			fmt.Println("\nRun 'agent-deck update' to install.")
 		}
 		printOutdatedTUIs(onDiskVersion())
+		printPendingLaunchAgents()
 		return
 	}
 

@@ -172,7 +172,7 @@ func TestRebootstrapLaunchAgents_DefersOwnService(t *testing.T) {
 func TestDrainPendingRebootstrap_SkipsOwnService(t *testing.T) {
 	exe, agents, _ := writeWebAgent(t)
 	pending := filepath.Join(t.TempDir(), "pending.json")
-	require.NoError(t, addPendingRebootstrap(pending, "com.agentdeck.web"))
+	require.NoError(t, addPendingRebootstrap(pending, "com.agentdeck.web", time.Now()))
 	r := newFakeRunner()
 	res, err := DrainPendingRebootstrap(RebootstrapOptions{
 		GOOS: "darwin", ExePath: exe, LaunchAgentsDir: agents, UID: 501,

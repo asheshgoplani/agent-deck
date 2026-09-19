@@ -67,6 +67,7 @@ func newFakeInstaller(t *testing.T, info *UpdateInfo) *fakeInstaller {
 			f.installs = append(f.installs, exe+" "+trigger)
 			return "ok", f.instErr
 		},
+		Pending: func() bool { return false },
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ticks:   f.tick,
 		handled: make(chan struct{}),
@@ -198,4 +199,40 @@ func TestTailBuffer(t *testing.T) {
 	if got := tb.String(); got != "efghijkl" {
 		t.Fatalf("tail = %q, want the last 8 bytes", got)
 	}
+}
+
+// TestInstaller_DrainsPendingLaunchAgentsWhenCurrent pins the daemon's
+// retry of a pending launch agent (a bootstrap that failed after bootout,
+// or an agent deferred by a run inside it): with nothing to install and
+// the marker set, a tick runs the unattended updater (which drains what it
+// can from inside the daemon's own service), once per InstallRetryAfter.
+func TestInstaller_DrainsPendingLaunchAgentsWhenCurrent(t *testing.T) {
+	f := newFakeInstaller(t, &UpdateInfo{Available: false, CurrentVersion: "1.16.7", LatestVersion: "1.16.7"})
+	pending := true
+	f.inst.Pending = func() bool { f.mu.Lock(); defer f.mu.Unlock(); return pending }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go f.inst.Run(ctx)
+
+	now := time.Date(2026, 9, 19, 17, 0, 0, 0, time.UTC)
+	f.step(t, now)
+	if _, installs := f.counts(); len(installs) != 1 || installs[0] != "/bin/agent-deck web" {
+		t.Fatalf("pending agent: installs=%v, want one unattended run", installs)
+	}
+	f.step(t, now.Add(RecheckInterval))
+	if _, installs := f.counts(); len(installs) != 1 {
+		t.Fatalf("inside the retry window: installs=%v", installs)
+	}
+	f.step(t, now.Add(InstallRetryAfter))
+	if _, installs := f.counts(); len(installs) != 2 {
+		t.Fatalf("after the retry window: installs=%v, want a second run", installs)
+	}
+	f.mu.Lock()
+	pending = false
+	f.mu.Unlock()
+	f.step(t, now.Add(2*InstallRetryAfter))
+	if _, installs := f.counts(); len(installs) != 2 {
+		t.Fatalf("marker cleared: installs=%v, want no further run", installs)
+	}
+	cancel()
 }

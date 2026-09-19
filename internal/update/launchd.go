@@ -110,9 +110,7 @@ func (o *RebootstrapOptions) fill() error {
 		o.ServiceLabel = os.Getenv(launchdServiceEnv)
 	}
 	if o.PendingPath == "" {
-		if dir, err := getCacheDir(); err == nil {
-			o.PendingPath = filepath.Join(dir, PendingRebootstrapFileName)
-		}
+		o.PendingPath = defaultPendingPath()
 	}
 	if o.ExePath == "" {
 		exe, err := os.Executable()
@@ -258,7 +256,7 @@ func deferOwnService(opts RebootstrapOptions, agent LaunchAgent) {
 		slog.String("service", opts.ServiceLabel),
 		slog.String("repair", strings.Join(repair, "; ")),
 	}
-	if err := addPendingRebootstrap(opts.PendingPath, agent.Label); err != nil {
+	if err := addPendingRebootstrap(opts.PendingPath, agent.Label, opts.now()); err != nil {
 		attrs = append(attrs, slog.String("pending_err", err.Error()))
 	} else {
 		attrs = append(attrs, slog.String("pending", opts.PendingPath))
@@ -288,13 +286,25 @@ const (
 )
 
 // rebootstrapOne runs bootout, bootstrap and verify for a single agent. An
-// agent that is registered but not running after the verify window is
+// agent that is registered but not running after the verify window, or
+// whose `launchctl print` fails right after the bootstrap, is
 // re-bootstrapped from its plist once more (bootout, bootstrap, verify),
 // with the exact commands at WARN; a second miss is the error the caller
-// exits 1 on, never a silent return.
+// exits 1 on, never a silent return. Every failure after a bootout that
+// succeeded leaves the agent unloaded, so it is recorded in the pending
+// marker (with the attempt count and the cause) for the next run to retry
+// (2026-09-19 review of #2312: a hard bootstrap failure was forgotten and
+// the service stayed down until a human ran the repair lines).
 func rebootstrapOne(opts RebootstrapOptions, agent LaunchAgent) error {
 	repair := repairCommands(opts.UID, agent)
-	fail := func(cause error) error {
+	fail := func(cause error, bootedOut bool) error {
+		if bootedOut {
+			if perr := notePendingFailure(opts.PendingPath, agent.Label, cause, opts.now()); perr != nil {
+				opts.Logger.Warn("launchagent_pending_record_failed", slog.String("label", agent.Label), slog.String("err", perr.Error()))
+			} else {
+				opts.Logger.Warn("launchagent_pending_retry", slog.String("label", agent.Label), slog.String("pending", opts.PendingPath), slog.String("cause", cause.Error()))
+			}
+		}
 		return &AgentRestartError{Label: agent.Label, Cause: cause, Repair: repair}
 	}
 	var lastErr error
@@ -307,22 +317,24 @@ func rebootstrapOne(opts RebootstrapOptions, agent LaunchAgent) error {
 				slog.String("plist", agent.Path),
 				slog.String("repair", strings.Join(repair, "; ")))
 		}
-		hard, err := rebootstrapRound(opts, agent)
+		hard, bootedOut, err := rebootstrapRound(opts, agent)
 		if err == nil {
 			return nil
 		}
 		if hard {
-			return fail(err)
+			return fail(err, bootedOut)
 		}
 		lastErr = err
 	}
-	return fail(lastErr)
+	return fail(lastErr, true)
 }
 
 // rebootstrapRound is one bootout + bootstrap + verify. hard reports a
 // failure no further round can fix (bootout refused, bootstrap never
-// accepted, print failing); a soft failure is "registered but not running".
-func rebootstrapRound(opts RebootstrapOptions, agent LaunchAgent) (hard bool, err error) {
+// accepted); a soft failure is "registered but not running" or a print
+// that fails right after the bootstrap. bootedOut says whether the old
+// instance is gone (so a failure leaves the agent unloaded).
+func rebootstrapRound(opts RebootstrapOptions, agent LaunchAgent) (hard, bootedOut bool, err error) {
 	log := opts.Logger
 	domain := launchctlDomain(opts.UID)
 	target := launchctlTarget(opts.UID, agent.Label)
@@ -338,7 +350,7 @@ func rebootstrapRound(opts RebootstrapOptions, agent LaunchAgent) (hard bool, er
 		log.Info("launchagent_bootout_not_loaded", slog.String("label", agent.Label), slog.String("out", strings.TrimSpace(out)))
 	default:
 		log.Error("launchagent_bootout_failed", slog.String("label", agent.Label), slog.Int("exit", exitCode(err)), slog.String("out", strings.TrimSpace(out)))
-		return true, fmt.Errorf("`%s` failed (%v): %s", ShellQuote(bootout), err, firstLine(out))
+		return true, false, fmt.Errorf("`%s` failed (%v): %s", ShellQuote(bootout), err, firstLine(out))
 	}
 
 	var lastErr error
@@ -359,24 +371,24 @@ func rebootstrapRound(opts RebootstrapOptions, agent LaunchAgent) (hard bool, er
 	}
 	if lastErr != nil {
 		log.Error("launchagent_bootstrap_failed", slog.String("label", agent.Label), slog.String("err", lastErr.Error()))
-		return true, lastErr
+		return true, true, lastErr
 	}
 	log.Info("launchagent_bootstrap", slog.String("label", agent.Label), slog.String("cmd", ShellQuote(bootstrap)))
 
 	out, err = opts.Runner.Run(printCmd...)
 	if err != nil {
 		log.Error("launchagent_verify_failed", slog.String("label", agent.Label), slog.String("out", strings.TrimSpace(out)))
-		return true, fmt.Errorf("`%s` failed after bootstrap (%v): %s", ShellQuote(printCmd), err, firstLine(out))
+		return false, true, fmt.Errorf("`%s` failed after bootstrap (%v): %s", ShellQuote(printCmd), err, firstLine(out))
 	}
 	if !(agent.KeepAlive || agent.RunAtLoad) {
 		log.Info("launchagent_verified", slog.String("label", agent.Label), slog.String("state", "registered"))
-		return false, nil
+		return false, true, nil
 	}
 	deadline := opts.now().Add(opts.VerifyTimeout)
 	for {
 		if launchctlState(out) == "running" {
 			log.Info("launchagent_verified", slog.String("label", agent.Label), slog.String("state", "running"))
-			return false, nil
+			return false, true, nil
 		}
 		if !opts.now().Before(deadline) {
 			break
@@ -384,12 +396,13 @@ func rebootstrapRound(opts RebootstrapOptions, agent LaunchAgent) (hard bool, er
 		opts.Sleep(500 * time.Millisecond)
 		out, err = opts.Runner.Run(printCmd...)
 		if err != nil {
-			return true, fmt.Errorf("`%s` failed while waiting for it to start (%v): %s", ShellQuote(printCmd), err, firstLine(out))
+			log.Error("launchagent_verify_failed", slog.String("label", agent.Label), slog.String("out", strings.TrimSpace(out)))
+			return false, true, fmt.Errorf("`%s` failed while waiting for it to start (%v): %s", ShellQuote(printCmd), err, firstLine(out))
 		}
 	}
 	state := launchctlState(out)
 	log.Error("launchagent_not_running", slog.String("label", agent.Label), slog.String("state", state))
-	return false, fmt.Errorf("not running after %s (state = %s); check its log for EX_CONFIG", opts.VerifyTimeout, state)
+	return false, true, fmt.Errorf("not running after %s (state = %s); check its log for EX_CONFIG", opts.VerifyTimeout, state)
 }
 
 // launchctlNotLoaded reports whether a bootout failure just means the service
