@@ -91,9 +91,15 @@ type Hit struct {
 	// stored card and bodies, and cannot be reopened from disk.
 	Missing bool `json:"missing,omitempty"`
 	// Verified is set by --phrase: the literal phrase occurs in a body
-	// (true), or every matching body was read without it (false). It stays
-	// nil when the scan limit ran out before this hit's bodies were reached.
+	// (true), or every matching body was read whole without it (false). It
+	// stays nil when the scan limit ran out before this hit's bodies were
+	// reached, or when a body that could refute the phrase is clipped.
 	Verified *bool `json:"verified,omitempty"`
+	// Clipped means a nil Verified is because a matching body is stored
+	// clipped (text_tier=clipped, 8 KiB) or could not be decompressed: the
+	// phrase may sit in the part that is not stored, so it is unknown, not
+	// absent.
+	Clipped bool `json:"clipped,omitempty"`
 	// PhraseChecked is set on every hit of a --phrase search, so a nil
 	// Verified reads as "not reached", not "not asked".
 	PhraseChecked bool `json:"phrase_checked,omitempty"`
@@ -277,10 +283,12 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 // first, decompressing at most PhraseScan bodies in all. The scan follows
 // the hits (the same filtered candidate set the ranking used), never an
 // unfiltered window of the oldest rowids. A hit is verified once one body
-// carries the phrase, NOT found once every matching body was read without
-// it, and left unverified (nil) when the budget ran out before its bodies
-// were reached: unknown is reported as unknown. Scanned and VerifiedCount
-// say what was checked.
+// carries the phrase, NOT found once every matching body was read whole
+// without it, and left unverified (nil) when the budget ran out before its
+// bodies were reached or when a matching body is stored clipped (the
+// phrase may sit past the clip; msg_fts is detail=none and cannot say, and
+// the source file is not reopened at query time): unknown is reported as
+// unknown. Scanned and VerifiedCount say what was checked.
 func (s *Searcher) verifyPhrase(ctx context.Context, conn *sql.Conn, res *SearchResult, o SearchOptions) error {
 	scan := o.PhraseScan
 	if scan <= 0 {
@@ -296,17 +304,21 @@ func (s *Searcher) verifyPhrase(ctx context.Context, conn *sql.Conn, res *Search
 		if res.Scanned >= scan {
 			break // out of budget: the rest stay unverified
 		}
-		found, complete, scanned, err := s.phraseInSession(ctx, conn, match, phrase, roleSQL, res.Hits[i].SessID, scan-res.Scanned)
-		res.Scanned += scanned
+		r, err := s.phraseInSession(ctx, conn, match, phrase, roleSQL, res.Hits[i].SessID, scan-res.Scanned)
+		res.Scanned += r.scanned
 		if err != nil {
 			return err
 		}
 		switch {
-		case found:
+		case r.found:
 			v := true
 			res.Hits[i].Verified = &v
 			res.VerifiedCount++
-		case complete:
+		case !r.complete:
+			// budget ran out inside this session: stays unverified
+		case r.clipped:
+			res.Hits[i].Clipped = true
+		default:
 			v := false
 			res.Hits[i].Verified = &v
 		}
@@ -314,34 +326,51 @@ func (s *Searcher) verifyPhrase(ctx context.Context, conn *sql.Conn, res *Search
 	return nil
 }
 
+// phraseScan is what phraseInSession learned about one session: found
+// once a body carries the phrase; complete once every matching body was
+// reached (false when the budget ran out first); clipped when a body that
+// did not carry the phrase is shorter than its message (nchars) or would
+// not decompress, so absence is not proven; scanned counts the bodies
+// decompressed.
+type phraseScan struct {
+	found, complete, clipped bool
+	scanned                  int
+}
+
 // phraseInSession reads up to limit matching bodies of one session, newest
-// first, and reports whether one carries the phrase, whether every
-// matching body was read, and how many bodies it decompressed.
-func (s *Searcher) phraseInSession(ctx context.Context, conn *sql.Conn, match, phrase, roleSQL string, sessID int64, limit int) (found, complete bool, scanned int, err error) {
-	rows, err := conn.QueryContext(ctx, `SELECT m.body FROM msg_fts f JOIN msg m ON m.msg_id=f.rowid
+// first. A clipped body can confirm the phrase but never refute it.
+func (s *Searcher) phraseInSession(ctx context.Context, conn *sql.Conn, match, phrase, roleSQL string, sessID int64, limit int) (r phraseScan, err error) {
+	rows, err := conn.QueryContext(ctx, `SELECT m.body, m.nchars FROM msg_fts f JOIN msg m ON m.msg_id=f.rowid
 		WHERE msg_fts MATCH ? AND m.sess_id=?`+roleSQL+` ORDER BY f.rowid DESC LIMIT ?`, match, sessID, limit+1)
 	if err != nil {
-		return false, false, 0, err
+		return r, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		if scanned == limit {
-			return false, false, scanned, rows.Err() // more bodies than budget: unknown
+		if r.scanned == limit {
+			return r, rows.Err() // more bodies than budget: unknown
 		}
 		var body []byte
-		if err := rows.Scan(&body); err != nil {
-			return false, false, scanned, err
+		var nchars int
+		if err := rows.Scan(&body, &nchars); err != nil {
+			return r, err
 		}
-		scanned++
+		r.scanned++
 		text, err := recall.DecompressBody(body)
 		if err != nil {
+			r.clipped = true
 			continue
 		}
 		if strings.Contains(strings.ToLower(string(text)), phrase) {
-			return true, true, scanned, rows.Close()
+			r.found, r.complete = true, true
+			return r, rows.Close()
+		}
+		if len(text) < nchars {
+			r.clipped = true
 		}
 	}
-	return false, true, scanned, rows.Err()
+	r.complete = true
+	return r, rows.Err()
 }
 
 // roleClause is the body-hit role restriction as a WHERE clause fragment on

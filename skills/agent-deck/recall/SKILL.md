@@ -83,8 +83,9 @@ agent-deck recall sweep [--full] | gc | rebuild
   prefix, or an agent-deck session id.
 - Search ranks sessions: a title, hint or tag hit always beats any number of
   body mentions. Terms are AND-ed; `SB-412` and `handle_sess` stay whole;
-  `--phrase` verifies the literal phrase and says how many candidates it
-  checked. Filters (`--profile`, `--since`, `--project`, `--session`,
+  `--phrase` verifies the literal phrase in the hits' bodies and says how
+  many bodies it read; a hit whose matching body is clipped (8 KiB tier)
+  is `unverified (clipped body)`, never `NOT found`. Filters (`--profile`, `--since`, `--project`, `--session`,
   `--role`) narrow the body candidates before the 5,000-message ceiling
   (newest first), so a filtered search on a common term is complete. The
   output (and `index` in `--json`) says when the bounded pre-search sweep

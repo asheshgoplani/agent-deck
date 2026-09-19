@@ -532,3 +532,70 @@ func TestSearch_PhraseVerifiesRankedHitsBeyondTheScanCeiling(t *testing.T) {
 		t.Fatalf("scan budget 10: verified %d unverified %d scanned %d", verified, unverified, res.Scanned)
 	}
 }
+
+// A message longer than the 8 KiB clip whose phrase sits past the clip:
+// the stored body cannot refute the phrase, so the clipped tier must leave
+// the hit unverified (never NOT found) and the full tier verifies it.
+func TestSearch_PhraseBeyondTheClipIsUnverifiedNotAbsent(t *testing.T) {
+	// The first 8 KiB carry every word of the phrase, the phrase itself
+	// only after the clip.
+	filler := strings.Repeat("deploy is fine and the app is fine. ", 300) // > 8 KiB
+	if len(filler) <= 8*1024 {
+		t.Fatalf("filler %d bytes does not exceed the clip", len(filler))
+	}
+	beyond := filler + " Then: deploy the app now."
+	// A sibling whose clipped prefix carries the phrase stays verified.
+	prefix := "deploy the app first. " + filler
+	for _, tier := range []string{"clipped", "full"} {
+		t.Run(tier, func(t *testing.T) {
+			base := t.TempDir()
+			dir := filepath.Join(base, "claude")
+			writeSession(t, dir, sessA, "/Users/x/app", "", "hello", beyond)
+			writeSession(t, dir, sessB, "/Users/x/app", "", "hello", prefix)
+			writeSession(t, dir, sessC, "/Users/x/app", "", "hello", "deploy first, then the app today")
+			st, err := store.Open(filepath.Join(base, "data", "recall.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(st.Close)
+			roots := []reader.Root{{Harness: "claude", Profile: "personal", Dir: dir}}
+			if _, err := ingest.New(st, ingest.Options{Roots: roots, TextTier: tier}).Sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			res, err := New(st, "").Search(context.Background(), SearchOptions{Query: "deploy the app", Phrase: true, Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Hits) != 3 {
+				t.Fatalf("%d hits, want 3", len(res.Hits))
+			}
+			byID := map[string]Hit{}
+			for _, h := range res.Hits {
+				byID[h.NativeID] = h
+			}
+			a, b, c := byID[sessA], byID[sessB], byID[sessC]
+			if b.Verified == nil || !*b.Verified || b.Clipped {
+				t.Fatalf("phrase inside the clipped prefix not verified: %+v", b)
+			}
+			if c.Verified == nil || *c.Verified || c.Clipped {
+				t.Fatalf("short body without the phrase not NOT found: %+v", c)
+			}
+			switch tier {
+			case "full":
+				if a.Verified == nil || !*a.Verified || a.Clipped {
+					t.Fatalf("full tier: phrase past 8 KiB not verified: %+v", a)
+				}
+			default:
+				if a.Verified != nil {
+					t.Fatalf("clipped tier: phrase past the clip reported as a certainty (%v): %+v", *a.Verified, a)
+				}
+				if !a.Clipped || !a.PhraseChecked {
+					t.Fatalf("clipped tier: hit not marked clipped: %+v", a)
+				}
+			}
+			if res.VerifiedCount != map[string]int{"clipped": 1, "full": 2}[tier] {
+				t.Fatalf("%s: verified %d", tier, res.VerifiedCount)
+			}
+		})
+	}
+}

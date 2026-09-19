@@ -228,10 +228,16 @@ every matching session of that profile, and the output says when the
 ceiling was hit. `--phrase` checks the literal phrase (the query's words,
 without `AND`/`OR`/`NOT` or `title:` prefixes) in the ranked hits' own
 matching bodies, hit by hit and newest message first, decompressing up to
-`--phrase-scan-limit` bodies in all; a hit is `phrase verified` or `phrase
-NOT found` only after its bodies were read, and `phrase unverified (scan
-limit)` when the limit ran out before it was reached. The output prints
-how many sessions it verified over how many bodies.
+`--phrase-scan-limit` bodies in all; a hit is `phrase verified` once one
+body carries the phrase, `phrase NOT found` only after every matching body
+was read whole without it, `phrase unverified (clipped body)` when a
+matching body is stored clipped (`text_tier = "clipped"`, 8 KiB) and the
+phrase is not in the stored part (it may sit past the clip; the body index
+cannot say and the source file is not reopened at query time, so the
+answer is unknown, not absent; `text_tier = "full"` removes the case), and
+`phrase unverified (scan limit)` when the limit ran out before it was
+reached. The output prints how many sessions it verified over how many
+bodies.
 `--hint` and `--tag` join the active profile's `state.db` live, so an
 annotation typed a second ago filters immediately. Before every
 search a bounded sweep runs: 150 ms and 32 MB, after which the search

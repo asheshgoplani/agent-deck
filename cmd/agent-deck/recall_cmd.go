@@ -548,8 +548,8 @@ func handleRecallSearch(profile string, args []string) {
 	fs := newRecallFlagSet("recall search")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	role := fs.String("role", "", "Only body hits in user or assistant messages")
-	phrase := fs.Bool("phrase", false, "Verify the literal phrase in message bodies (reports how many candidates were checked)")
-	phraseScan := fs.Int("phrase-scan-limit", query.DefaultPhraseScan, "Candidates to verify with --phrase")
+	phrase := fs.Bool("phrase", false, "Verify the literal phrase in the ranked hits' message bodies (reports how many bodies were read)")
+	phraseScan := fs.Int("phrase-scan-limit", query.DefaultPhraseScan, "Bodies to decompress in all with --phrase")
 	limit := fs.Int("limit", query.DefaultLimit, "Sessions to return")
 	noSweep := fs.Bool("no-sweep", false, "Skip the bounded index refresh before searching")
 	filters := registerRecallFilters(fs)
@@ -613,7 +613,7 @@ func printRecallSearch(res query.SearchResult, note recallIndexNote) {
 		details[0] += fmt.Sprintf(" (capped at %d; narrow the query or add filters)", query.CandidateCeiling)
 	}
 	if res.Scanned > 0 || res.VerifiedCount > 0 {
-		details = append(details, fmt.Sprintf("phrase verified in %d session(s) over %d candidate(s)", res.VerifiedCount, res.Scanned))
+		details = append(details, fmt.Sprintf("phrase verified in %d session(s) over %d body(ies)", res.VerifiedCount, res.Scanned))
 	}
 	details = append(details, fmt.Sprintf("%d ms", res.ElapsedMS))
 	fmt.Printf("%s: %s\n", head, strings.Join(details, ", "))
@@ -642,6 +642,8 @@ func formatRecallHit(h query.Hit) string {
 		} else {
 			marks = append(marks, "phrase NOT found")
 		}
+	} else if h.Clipped {
+		marks = append(marks, "phrase unverified (clipped body)")
 	} else if h.PhraseChecked {
 		marks = append(marks, "phrase unverified (scan limit)")
 	}
