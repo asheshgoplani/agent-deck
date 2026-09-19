@@ -205,9 +205,11 @@ func (gs *GlobalSearch) WantsSwitchToLocal() bool {
 	return false
 }
 
-// Hide hides the overlay.
+// Hide hides the overlay and ends the catch-up chain: a tick that
+// outlives the overlay finds sweeping false and runs nothing.
 func (gs *GlobalSearch) Hide() {
 	gs.visible = false
+	gs.sweeping = false
 	gs.input.Blur()
 }
 

@@ -366,3 +366,89 @@ func TestGlobalSearchGolden(t *testing.T) {
 		assertOverlayGolden(t, gs, fmt.Sprintf("recall_search_results_%d.golden", w))
 	}
 }
+
+// stepHome runs a tea.Cmd chain through Home.Update the way bubbletea
+// delivers it, until it yields nothing (fastCatchUp keeps the tick short).
+func stepHome(t *testing.T, h *Home, cmd tea.Cmd) *Home {
+	t.Helper()
+	for cmd != nil {
+		msg := cmd()
+		cmd = nil
+		switch m := msg.(type) {
+		case nil:
+		case tea.BatchMsg:
+			for _, c := range m {
+				h = stepHome(t, h, c)
+			}
+		default:
+			var model tea.Model
+			model, cmd = h.Update(m)
+			h = model.(*Home)
+		}
+	}
+	return h
+}
+
+// TestHome_CatchUpTickAdvancesTheIndexWithOverlayOpen: the paced tick
+// travels through Home.Update (as in the real TUI, where Home owns the
+// message loop) and reaches the overlay, so the gated passes run and the
+// header count advances while G is on screen; the frame is pinned.
+func TestHome_CatchUpTickAdvancesTheIndexWithOverlayOpen(t *testing.T) {
+	fastCatchUp(t)
+	home := NewHome()
+	home.width, home.height = 120, 24
+	home.initialLoading = false
+	src := newStubRecall()
+	src.status = query.Status{Sessions: 1, Messages: 16, LastSweep: 0}
+	// The first (ungated) pass reports a backlog; the next gated pass
+	// finishes it. Each pass grows the index the status line reports.
+	src.refresh = []ingest.Result{{Deferred: 1305, DeferredBytes: 2560 << 20}, {Parsed: 3}}
+	home.recallSource = src
+	home.globalSearch.SetSource(src)
+
+	model, cmd := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	h := model.(*Home)
+	if !h.globalSearch.IsVisible() {
+		t.Fatal("overlay not open")
+	}
+	// Deliver the opening status and the first refresh only (the tick is
+	// scheduled but not yet fired): behind, count 1/16.
+	msgs := cmd().(tea.BatchMsg)
+	for _, c := range msgs {
+		model, _ = h.Update(c())
+		h = model.(*Home)
+	}
+	before := stripAnsi(h.View())
+	if !strings.Contains(before, "Recall (1 sessions, 16 messages)") || !strings.Contains(before, "catching up in the background") {
+		t.Fatalf("before the tick:\n%s", before)
+	}
+	// The tick fires and arrives at Home: one gated pass, its status re-read.
+	src.status = query.Status{Sessions: 2, Messages: 48, LastSweep: 0}
+	model, cmd = h.Update(recallCatchUpMsg{})
+	h = model.(*Home)
+	if cmd == nil {
+		t.Fatalf("Home dropped recallCatchUpMsg (overlay visible=%v sweeping=%v)", h.globalSearch.IsVisible(), h.globalSearch.sweeping)
+	}
+	h = stepHome(t, h, cmd)
+	if got := src.refreshes; len(got) != 2 || got[0] || !got[1] {
+		t.Fatalf("refreshes (gated flags) = %v, want [false true]", got)
+	}
+	after := stripAnsi(h.View())
+	if !strings.Contains(after, "Recall (2 sessions, 48 messages)") || !h.globalSearch.IsVisible() {
+		t.Fatalf("after the tick (overlay visible=%v):\n%s", h.globalSearch.IsVisible(), after)
+	}
+	assertFrameGolden(t, "recall_catchup_home_120.golden", after)
+
+	// Esc ends the chain: a tick that outlives the overlay runs nothing.
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	h = model.(*Home)
+	if h.globalSearch.IsVisible() || h.globalSearch.sweeping {
+		t.Fatalf("after Esc: visible=%v sweeping=%v", h.globalSearch.IsVisible(), h.globalSearch.sweeping)
+	}
+	if _, cmd := h.Update(recallCatchUpMsg{}); cmd != nil {
+		t.Fatal("a tick after Esc must not schedule a pass")
+	}
+	if len(src.refreshes) != 2 {
+		t.Fatalf("refreshes after Esc = %v", src.refreshes)
+	}
+}

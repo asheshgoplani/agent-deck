@@ -455,9 +455,15 @@ then "index swept 3m ago"); while anything was deferred the overlay keeps
 running bounded passes, one second apart and through the busy/load gate,
 so the catch-up never holds a core or competes with a running agent. The
 overlay is the terminal width less a margin, capped at 160 columns, and
-fits 80. With `[recall] enabled = false`, `G` falls back to the local
-title search and the footer says so. Frames at 200, 140, 120 and 80
-columns: `internal/ui/testdata/recall_search_*.golden`.
+fits 80. The catch-up tick is routed by the TUI's message loop whatever
+overlay is on top, and closing the overlay ends the chain. With
+`[recall] enabled = false`, `G` falls back to the local title search and
+a notice inside that overlay says so for as long as it is open ("Recall
+is off ([recall] enabled = false in config.toml); showing the local title
+search instead"); when the index failed to open, the notice quotes the
+error instead ("Recall index unavailable: ..."). Frames at 200, 140, 120
+and 80 columns: `internal/ui/testdata/recall_search_*.golden`,
+`recall_catchup_home_120.golden`, `local_search_recall_off_*.golden`.
 
 ### Config
 

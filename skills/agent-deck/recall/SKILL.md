@@ -151,7 +151,8 @@ Enter = `recall open`. It never parses on a keypress; a bounded sweep
 refreshes the index after the overlay opens and a staleness line says
 what it deferred, with catch-up passes one second apart through the load
 gate. With `[recall] enabled = false` the key falls back to the local
-title search and the footer says so.
+title search and a notice inside that overlay says so (or quotes the
+open error when the index could not be opened).
 
 ### Remote
 

@@ -273,6 +273,7 @@ type Home struct {
 	search               *Search
 	globalSearch         *GlobalSearch // Recall search over recall.db (the G key)
 	recallSource         RecallSource  // the index behind it (nil when [recall] enabled = false)
+	recallOff            string        // why the index is not open ("" when it is); G shows it in the local search
 	newDialog            *NewDialog
 	pendingRemoteName    string                // #1353: remote target for the open new-session dialog ("" = local)
 	groupDialog          *GroupDialog          // For creating/renaming groups
@@ -2169,9 +2170,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.globalSearch = NewGlobalSearch()
 	if src, err := openRecallIndex(actualProfile); err != nil {
 		uiLog.Warn("recall_index_open_failed", slog.String("error", err.Error()))
+		h.recallOff = "Recall index unavailable: " + err.Error()
 	} else if src != nil {
 		h.recallSource = src
 		h.globalSearch.SetSource(src)
+	} else {
+		h.recallOff = recallOffNotice
 	}
 
 	// Initialize MCP socket pool if enabled
@@ -9704,14 +9708,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, tea.Batch(cmds...)
 
-	case globalSearchDebounceMsg, globalSearchResultsMsg, recallPreviewMsg, recallRefreshMsg, recallStatusMsg:
-		// Route async Recall search messages to the overlay
-		if h.globalSearch.IsVisible() {
-			var cmd tea.Cmd
-			h.globalSearch, cmd = h.globalSearch.Update(msg)
-			return h, cmd
-		}
-		return h, nil
+	case globalSearchDebounceMsg, globalSearchResultsMsg, recallPreviewMsg, recallRefreshMsg, recallStatusMsg, recallCatchUpMsg:
+		// Route async Recall messages to the overlay whatever is on top: the
+		// catch-up tick must reach it while it is open, and once it is hidden
+		// the overlay drops them itself (Hide ends the catch-up chain).
+		var cmd tea.Cmd
+		h.globalSearch, cmd = h.globalSearch.Update(msg)
+		return h, cmd
 
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
@@ -10018,15 +10021,20 @@ func (h *Home) handleGlobalSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-// errRecallOff is the footer notice when G falls back to the local title
-// search because the index is not open.
-var errRecallOff = errors.New("Recall is off ([recall] enabled = false in config.toml); showing the local title search instead")
+// recallOffNotice is what G says when the index is not open because
+// [recall] is disabled (an open error is quoted instead, see NewHome).
+const recallOffNotice = "Recall is off ([recall] enabled = false in config.toml)"
 
 // openGlobalSearch opens the Recall overlay when the index is available;
-// otherwise the local title search, with a footer line saying why.
+// otherwise the local title search, with a line inside it saying why
+// (the footer is hidden behind the overlay for as long as it is open).
 func (h *Home) openGlobalSearch() tea.Cmd {
 	if !h.globalSearch.HasSource() {
-		h.setError(errRecallOff)
+		notice := h.recallOff
+		if notice == "" {
+			notice = recallOffNotice
+		}
+		h.search.SetNotice(notice + "; showing the local title search instead")
 		h.search.Show()
 		return nil
 	}
