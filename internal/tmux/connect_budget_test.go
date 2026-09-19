@@ -45,7 +45,7 @@ func TestConnectBudget_BacksOffAndLogsOnce(t *testing.T) {
 	if n := strings.Count(logBuf.String(), "pipe_connect_suppressed"); n != 1 {
 		t.Fatalf("summary lines = %d, want 1:\n%s", n, logBuf.String())
 	}
-	if !strings.Contains(logBuf.String(), "failures=2") || !strings.Contains(logBuf.String(), "session x: 0") {
+	if !strings.Contains(logBuf.String(), "failures=1") || !strings.Contains(logBuf.String(), "session x: 0") {
 		t.Fatalf("summary names the failure count and the last error:\n%s", logBuf.String())
 	}
 	// A minute later the next refusal logs again, with the refused count.

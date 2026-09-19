@@ -3839,7 +3839,7 @@ func handleUpdate(args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck update                     # Check and install latest if available")
 		fmt.Println("  agent-deck update --check             # Only check, don't install")
-		fmt.Println("  agent-deck update --check --json      # Machine-readable check incl. timer state")
+		fmt.Println("  agent-deck update --check --json      # Machine-readable check incl. timer state and running TUIs")
 		fmt.Println("  agent-deck update --version 1.7.3     # Install a specific version (may downgrade)")
 		fmt.Println("  agent-deck update --unattended        # No prompts; what the timer and the TUI run")
 		fmt.Println("  agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)")
@@ -3899,7 +3899,8 @@ func handleUpdate(args []string) {
 		if cfg, err := update.DefaultTimerConfig(); err == nil {
 			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
 		}
-		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer)); err != nil {
+		onDisk := onDiskVersion()
+		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk))); err != nil {
 			exit(1)
 		}
 		exit(0)
@@ -3927,6 +3928,9 @@ func handleUpdate(args []string) {
 
 	if !info.Available {
 		fmt.Println("✓ You're running the latest version!")
+		if *checkOnly {
+			printOutdatedTUIs(onDiskVersion())
+		}
 		return
 	}
 
@@ -3953,6 +3957,7 @@ func handleUpdate(args []string) {
 		} else {
 			fmt.Println("\nRun 'agent-deck update' to install.")
 		}
+		printOutdatedTUIs(onDiskVersion())
 		return
 	}
 

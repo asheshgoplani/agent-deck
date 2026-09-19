@@ -30,6 +30,8 @@ func TestBuildUpdateCheckJSON(t *testing.T) {
 		&update.UpdateInfo{CurrentVersion: "1.16.5", LatestVersion: "1.17.0", Available: true, PublishingVersion: "1.17.1"},
 		session.UpdateSettings{AutoInstall: &off},
 		update.TimerStatus{Installed: true, Kind: "launchd", Path: "/x/com.agentdeck.autoupdate.plist", Active: true},
+		"1.16.5",
+		[]update.TUIReport{{PID: 94928, Version: "1.16.4", Outdated: true, Ticking: true, RestartState: "overdue", BlockReason: "close the open dialog first"}},
 	)
 	var buf bytes.Buffer
 	require.NoError(t, printUpdateCheckJSON(&buf, doc))
@@ -46,6 +48,20 @@ func TestBuildUpdateCheckJSON(t *testing.T) {
 	assert.Equal(t, true, timer["installed"])
 	assert.Equal(t, "launchd", timer["kind"])
 	assert.Equal(t, "/x/com.agentdeck.autoupdate.plist", timer["path"])
+	assert.Equal(t, "1.16.5", got["on_disk"])
+	tuis := got["running_tuis"].([]any)
+	require.Len(t, tuis, 1)
+	tui := tuis[0].(map[string]any)
+	assert.Equal(t, float64(94928), tui["pid"])
+	assert.Equal(t, "1.16.4", tui["version"])
+	assert.Equal(t, true, tui["outdated"])
+	assert.Equal(t, "overdue", tui["restart_state"])
+	assert.Equal(t, "close the open dialog first", tui["block_reason"])
+
+	// No TUI reporting: an empty list, never null.
+	buf.Reset()
+	require.NoError(t, printUpdateCheckJSON(&buf, buildUpdateCheckJSON(&update.UpdateInfo{}, session.UpdateSettings{}, update.TimerStatus{}, "", nil)))
+	assert.Contains(t, buf.String(), `"running_tuis": []`)
 }
 
 // unattendedHarness records which collaborators ran.

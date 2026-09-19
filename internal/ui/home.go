@@ -523,6 +523,20 @@ type Home struct {
 	// tried, so a failure is not retried every check.
 	autoInstallInFlight string
 	autoInstallAttempts map[string]time.Time
+	// restartWaitReason is why the last tick did not restart into the
+	// newer build ("" when it could); restartOverdueReason is the same
+	// once the wait passed restartOverdueAfter (banner + heartbeat), and
+	// restartOverdueLoggedAt rate-limits tui_restart_overdue.
+	restartWaitReason      string
+	restartOverdueReason   string
+	restartOverdueLoggedAt time.Time
+	// autoRestartHoldReason is why the auto path is holding off (a target
+	// that failed its dry run) until autoRestartHoldUntil.
+	autoRestartHoldReason string
+	// heartbeatDir is the cache dir the TUI heartbeat is written under
+	// ("" disables it); heartbeatWrittenAt is the last write.
+	heartbeatDir       string
+	heartbeatWrittenAt time.Time
 	// binaryOrphanReason is set while the executable this process started
 	// from is gone or in the Trash: the deck cannot update or restart
 	// itself then, says so in the banner, and both auto paths stay off.
@@ -3991,6 +4005,11 @@ func (h *Home) Init() tea.Cmd {
 	}
 	h.homebrewManaged = detectHomebrewManaged()
 	h.applyAutoUpdateSuppression()
+	if h.autoUpdateSuppressedReason == "" {
+		if dir, err := agentpaths.CacheDir(); err == nil {
+			h.heartbeatDir = dir
+		}
+	}
 
 	cmds := []tea.Cmd{
 		h.sessionLoadCmd(nil, true),
@@ -8295,7 +8314,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.binaryWatch != nil {
 			h.binaryWatch.recordProbe(msg.fingerprint, msg.version, msg.err)
 			if msg.err != nil {
-				uiLog.Debug("binary_version_probe_failed", slog.String("error", msg.err.Error()))
+				// Warn, not Debug: a probe that keeps failing is why a
+				// newer build on disk is never noticed, and the default
+				// log must show it.
+				uiLog.Warn("binary_version_probe_failed", slog.String("error", msg.err.Error()), slog.Int("failures", h.binaryWatch.failures))
 			} else if v := h.binaryWatch.installedVersion; v != "" {
 				uiLog.Info("update_installed_on_disk", slog.String("running", Version), slog.String("installed", v))
 			}
@@ -9673,6 +9695,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		binaryProbeCmd := h.pollBinaryChange()
 		// auto_restart: hand over to an installed newer build once idle.
 		autoRestartCmd := h.maybeAutoRestart()
+		// Tell the fleet watch what this TUI runs and why it has not
+		// restarted (update --check --json).
+		h.maybeWriteHeartbeat(now)
 
 		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd, h.syncRemotePaneWatch(), updateCheckCmd, binaryProbeCmd, autoRestartCmd}
 		if h.fullRepaint {
@@ -13336,6 +13361,7 @@ func (h *Home) performQuit(shutdownPool bool) tea.Cmd {
 // This is called via quitMsg after the splash screen has had time to render
 func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 	return func() tea.Msg {
+		h.removeHeartbeat()
 		// Stop system stats collector
 		if h.sshCollector != nil {
 			h.sshCollector.Stop()

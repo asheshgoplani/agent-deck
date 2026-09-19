@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
@@ -40,6 +41,10 @@ type binaryWatch struct {
 	// installedVersion is the replacement version found on disk, or "" while the
 	// file still matches the running build (or was replaced by an older one).
 	installedVersion string
+	// installedSince is when a newer build was first seen on disk; it
+	// survives a later, even newer, build (the wait for a restart started
+	// then) and clears with installedVersion.
+	installedSince time.Time
 }
 
 // newBinaryWatch starts a watch that treats initial as the running build, so
@@ -92,8 +97,12 @@ func (w *binaryWatch) recordProbe(fp binaryFingerprint, version string, err erro
 	w.failures = 0
 	if update.InstalledVersionNeedsRestart(version, w.runningVersion) {
 		w.installedVersion = version
+		if w.installedSince.IsZero() {
+			w.installedSince = time.Now()
+		}
 	} else {
 		w.installedVersion = ""
+		w.installedSince = time.Time{}
 	}
 }
 

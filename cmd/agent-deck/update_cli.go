@@ -9,8 +9,10 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/procowner"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
@@ -46,9 +48,18 @@ type updateCheckJSON struct {
 	AutoInstall bool               `json:"auto_install"`
 	AutoRestart bool               `json:"auto_restart"`
 	Timer       update.TimerStatus `json:"timer"`
+	// OnDisk is the version of the binary at this executable's path (what
+	// a TUI restarts into); RunningTUIs lists every TUI with a heartbeat,
+	// outdated when it runs something older than OnDisk, with the reason
+	// it has not restarted. Empty when no TUI reports.
+	OnDisk      string             `json:"on_disk,omitempty"`
+	RunningTUIs []update.TUIReport `json:"running_tuis"`
 }
 
-func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus) updateCheckJSON {
+func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus, onDisk string, tuis []update.TUIReport) updateCheckJSON {
+	if tuis == nil {
+		tuis = []update.TUIReport{}
+	}
 	return updateCheckJSON{
 		Current:     info.CurrentVersion,
 		Latest:      info.LatestVersion,
@@ -57,7 +68,38 @@ func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettin
 		AutoInstall: settings.GetAutoInstall(),
 		AutoRestart: settings.GetAutoRestart(),
 		Timer:       timer,
+		OnDisk:      onDisk,
+		RunningTUIs: tuis,
 	}
+}
+
+// runningTUIReports reads the TUI heartbeats in the cache dir and reports
+// them against onDisk. Any failure yields an empty list: the check must
+// never fail because of a heartbeat file.
+func runningTUIReports(onDisk string) []update.TUIReport {
+	dir, err := ensureEffectiveCacheDir()
+	if err != nil {
+		return nil
+	}
+	hbs, err := update.ListTUIHeartbeats(dir, procowner.Alive)
+	if err != nil {
+		return nil
+	}
+	return update.ReportTUIs(hbs, onDisk, time.Now())
+}
+
+// onDiskVersion probes the binary at this executable's path: after an
+// in-place install the file is newer than the running process.
+func onDiskVersion() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return Version
+	}
+	v, err := update.ProbeBinaryVersion(exe)
+	if err != nil || v == "" {
+		return Version
+	}
+	return v
 }
 
 func printUpdateCheckJSON(w io.Writer, doc updateCheckJSON) error {
@@ -422,4 +464,19 @@ func runTimerCommandWith(cfg update.TimerConfig, r update.Runner, action string,
 // notify daemon, hence the shared setup.
 func initUpdateCommandLogging() func() {
 	return initDaemonLogging()
+}
+
+// printOutdatedTUIs lists the TUIs still running an image older than the
+// binary on disk, one line each, for `update --check`.
+func printOutdatedTUIs(onDisk string) {
+	var lines []string
+	for _, r := range runningTUIReports(onDisk) {
+		if r.Outdated {
+			lines = append(lines, "  "+update.DescribeTUIReport(r))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Printf("\nTUIs still running an older image than v%s on disk:\n%s\n", onDisk, strings.Join(lines, "\n"))
 }

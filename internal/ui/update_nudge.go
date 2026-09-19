@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,10 +54,14 @@ func (h *Home) renderUpdateBannerText() string {
 		return text + ": this one cannot update or restart itself, " + h.binaryOrphanReason + " "
 	}
 	if v := h.installedUpdateVersion(); v != "" {
-		if h.autoRestartEnabled() {
-			return fmt.Sprintf(" ⬆ v%s installed, restarting when idle (%s now) ", v, h.restartDeckKeyLabel())
+		if !h.autoRestartEnabled() {
+			return fmt.Sprintf(" ⬆ v%s installed, press %s to restart agent-deck ", v, h.restartDeckKeyLabel())
 		}
-		return fmt.Sprintf(" ⬆ v%s installed, press %s to restart agent-deck ", v, h.restartDeckKeyLabel())
+		if h.restartOverdueReason != "" {
+			return fmt.Sprintf(" ⚠ v%s installed %s ago, restart overdue: %s (%s to restart now) ",
+				v, time.Since(h.installedUpdateSince()).Round(time.Hour), h.restartOverdueReason, h.restartDeckKeyLabel())
+		}
+		return fmt.Sprintf(" ⬆ v%s installed, restarting when idle (%s now) ", v, h.restartDeckKeyLabel())
 	}
 	return h.renderUpdateNudgeText()
 }
