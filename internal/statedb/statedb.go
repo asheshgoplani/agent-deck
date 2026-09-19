@@ -1482,10 +1482,12 @@ func (s *StateDB) writeHarnessSessionBinding(id, sessionID, harness string, dete
 			`UPDATE instances
 			   SET tool_data = json_set(
 			         COALESCE(tool_data, '{}'),
-			         '$.`+harness+`_session_id', ?,
-			         '$.`+harness+`_detected_at', ?)
+			         ?, ?,
+			         ?, ?)
 			 WHERE id = ?`,
-			sessionID, detectedAt.Unix(), id,
+			"$."+harness+"_session_id", sessionID,
+			"$."+harness+"_detected_at", detectedAt.Unix(),
+			id,
 		); err != nil {
 			return err
 		}

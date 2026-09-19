@@ -12,7 +12,7 @@ package recall
 // FTSTokenizer is shared by every FTS5 table: unicode61 with diacritics
 // folded and '_', '-', '.' kept inside tokens so identifiers such as
 // handle_sess, agent-deck and state.db survive as one term.
-const FTSTokenizer = `tokenize="unicode61 remove_diacritics 2 tokenchars '_-.'"`
+const FTSTokenizer = `tokenize="unicode61 remove_diacritics 2 tokenchars '_-.'"` //nolint:gosec // G101: FTS5 tokenizer DDL option, not a credential — the constant name matching gosec's "token" heuristic is coincidental
 
 // MsgFTSDDL is the message body index: contentless (bodies live compressed
 // in msg.body), with per-rowid delete so a vanished source can be reclaimed,
