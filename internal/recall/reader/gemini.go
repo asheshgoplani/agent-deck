@@ -18,9 +18,12 @@ import (
 // walks the top-level object and the messages array with Token()/More(),
 // so one message is resident at a time and InputOffset() gives each
 // message's real byte span. The worst case on the design machine is a
-// 31,636,072 B file whose largest message is 10.5 MB; a message above
-// MaxLineBytes is skipped and counted like an over-long JSONL line, which
-// bounds the resident set at about 2x MaxLineBytes.
+// 31,636,072 B file whose largest message is 10.5 MB of inline video in
+// displayContent beside a 38-character prompt: a message object is read
+// field by field, each field under MaxLineBytes, so the fields the index
+// wants (content, toolCalls, ...) survive an oversize sibling and only a
+// field above the cap is dropped and counted like an over-long JSONL line.
+// That bounds the resident set at about 2x MaxLineBytes.
 type Gemini struct{}
 
 // HarnessGemini is the harness name stored on every Gemini row.
@@ -129,6 +132,9 @@ func (Gemini) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, 
 		}
 	}
 	st.finish()
+	if st.err != nil {
+		return 0, st.err
+	}
 	return src.Size, nil
 }
 
@@ -164,6 +170,11 @@ func (st *geminiState) finish() {
 	}
 }
 
+// geminiMessageKeys are the message fields the reader decodes; every
+// other field (displayContent with inline media, thoughts, ...) is
+// consumed and dropped without being kept.
+var geminiMessageKeys = map[string]bool{"id": true, "timestamp": true, "type": true, "content": true, "model": true, "tokens": true, "toolCalls": true}
+
 // messages walks the messages array one element at a time.
 func (st *geminiState) messages(ctx context.Context, sc *jsonScanner, b *Budget) error {
 	if err := sc.expect('['); err != nil {
@@ -178,6 +189,9 @@ func (st *geminiState) messages(ctx context.Context, sc *jsonScanner, b *Budget)
 				return ErrBudget
 			}
 		}
+		if st.err != nil {
+			return st.err // the sink stopped the pass: do not scan the rest
+		}
 		next, err := sc.skipWS()
 		if err != nil {
 			return err
@@ -186,16 +200,24 @@ func (st *geminiState) messages(ctx context.Context, sc *jsonScanner, b *Budget)
 			_, err := sc.readByte()
 			return err
 		}
-		raw, start, n, tooLong, err := sc.value(MaxLineBytes)
+		var raw []byte
+		var start, n int64
+		var tooLong, clipped bool
+		if next == '{' {
+			raw, start, n, tooLong, clipped, err = st.messageObject(sc)
+		} else {
+			raw, start, n, tooLong, err = sc.value(MaxLineBytes)
+		}
 		if err != nil {
 			return err
 		}
 		if !b.Consume(n) {
 			return ErrBudget
 		}
-		if tooLong {
+		if tooLong || clipped {
 			st.sink.Count(CountLineTooLong, 1)
-		} else {
+		}
+		if !tooLong {
 			st.message(raw, start, n)
 		}
 		if d, err := sc.delim(',', ']'); err != nil {
@@ -204,6 +226,76 @@ func (st *geminiState) messages(ctx context.Context, sc *jsonScanner, b *Budget)
 			return nil
 		}
 	}
+}
+
+// messageObject reads one message object field by field and rebuilds a
+// document holding only geminiMessageKeys, each under MaxLineBytes. A
+// wanted field over the cap is dropped (clipped); the message is tooLong
+// only when no wanted field survived. Fields the reader never reads are
+// consumed without being kept, whatever their size.
+func (st *geminiState) messageObject(sc *jsonScanner) (raw []byte, start, n int64, tooLong, clipped bool, err error) {
+	if _, err = sc.skipWS(); err != nil {
+		return nil, 0, 0, false, false, err
+	}
+	start = sc.off
+	fail := func(err error) ([]byte, int64, int64, bool, bool, error) {
+		return nil, start, sc.off - start, false, false, err
+	}
+	if err = sc.expect('{'); err != nil {
+		return fail(err)
+	}
+	out := []byte{'{'}
+	for {
+		next, err := sc.skipWS()
+		if err != nil {
+			return fail(err)
+		}
+		if next == '}' {
+			if _, err := sc.readByte(); err != nil {
+				return fail(err)
+			}
+			break
+		}
+		rawKey, _, _, keyTooLong, err := sc.value(1 << 10)
+		if err != nil {
+			return fail(err)
+		}
+		var key string
+		if keyTooLong || json.Unmarshal(rawKey, &key) != nil {
+			return fail(errJSONShape)
+		}
+		if err := sc.expect(':'); err != nil {
+			return fail(err)
+		}
+		wanted := geminiMessageKeys[key]
+		limit := 0 // consumed, never kept
+		if wanted {
+			limit = MaxLineBytes
+		}
+		val, _, _, valTooLong, err := sc.value(limit)
+		if err != nil {
+			return fail(err)
+		}
+		switch {
+		case !wanted:
+		case valTooLong:
+			clipped = true
+		default:
+			if len(out) > 1 {
+				out = append(out, ',')
+			}
+			out = append(out, rawKey...)
+			out = append(out, ':')
+			out = append(out, val...)
+		}
+		if d, err := sc.delim(',', '}'); err != nil {
+			return fail(err)
+		} else if d == '}' {
+			break
+		}
+	}
+	out = append(out, '}')
+	return out, start, sc.off - start, clipped && len(out) == 2, clipped, nil
 }
 
 func (st *geminiState) message(raw json.RawMessage, off, n int64) {
@@ -233,19 +325,19 @@ func (st *geminiState) message(raw json.RawMessage, off, n int64) {
 		msg.Role = recall.RoleAssistant
 		st.setModel(m.Model)
 		if m.Tokens.Input+m.Tokens.Output > 0 {
-			_ = st.sink.Usage(Usage{UUID: m.ID, TS: ts, Model: m.Model, In: m.Tokens.Input, Out: m.Tokens.Output, CacheR: m.Tokens.Cached})
+			st.fail(st.sink.Usage(Usage{UUID: m.ID, TS: ts, Model: m.Model, In: m.Tokens.Input, Out: m.Tokens.Output, CacheR: m.Tokens.Cached}))
 		}
 		for _, tc := range m.ToolCalls {
 			msg.ToolNames = append(msg.ToolNames, tc.Name)
 			digest, touches := digestArgs(tc.Name, geminiArgs(tc.Args))
 			pc := pendingCall{name: tc.Name, ts: ts, digest: digest, touches: touches}
-			_ = st.sink.ToolCall(pc.call(parseTS(tc.Timestamp), tc.Status == "error"))
+			st.fail(st.sink.ToolCall(pc.call(parseTS(tc.Timestamp), tc.Status == "error")))
 		}
 	}
 	if strings.TrimSpace(msg.Text) == "" {
 		return
 	}
-	_ = st.sink.Msg(msg)
+	st.fail(st.sink.Msg(msg))
 }
 
 // geminiText decodes content: a string, or a list of {text} parts.

@@ -230,6 +230,147 @@ func appendHermesMessage(t *testing.T, dbPath, sessID, role, content string, ts 
 }
 
 // TestSweepFiles_IndexesOneFileAndRefusesOutsiders: the Stop hook path.
+// TestSweep_CodexTailBeyondALaggingCursorIsIndexedNextSweep pins the
+// phase-3 review's finding 2: a pass that stops at Codex's projection
+// cursor below the file size must leave the source re-examinable, so the
+// tail is indexed once Codex commits it even when the rollout is never
+// written again (the last turn of a thread).
+func TestSweep_CodexTailBeyondALaggingCursorIsIndexedNextSweep(t *testing.T) {
+	base := t.TempDir()
+	codex := filepath.Join(base, ".codex")
+	lines := strings.SplitAfter(testcorpus.CodexShapes, "\n")
+	cursor := int64(len(strings.Join(lines[:6], "")))
+	size := int64(len(testcorpus.CodexShapes))
+	if _, err := testcorpus.CodexHome(codex, cursor); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(base, "data", "recall.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	f := &harnessFixture{t: t, st: st, base: base, codex: codex}
+	roots := []reader.Root{{Harness: reader.HarnessCodex, Profile: "personal", Dir: codex}}
+	hits := func(term string) int64 {
+		return f.count(`SELECT count(*) FROM msg_fts WHERE msg_fts MATCH ?`, term)
+	}
+
+	res := f.sweep(Options{Roots: roots})
+	if res.Parsed != 1 || res.Deferred != 0 || res.Messages != 2 {
+		t.Fatalf("sweep 1: %+v", res)
+	}
+	var parsedTo, ledgerSize, state int64
+	if err := st.R.QueryRow(`SELECT parsed_to, size, state FROM source`).Scan(&parsedTo, &ledgerSize, &state); err != nil {
+		t.Fatal(err)
+	}
+	if parsedTo != cursor || state != recall.SourceOK {
+		t.Fatalf("after sweep 1: parsed_to %d want %d, state %d", parsedTo, cursor, state)
+	}
+	if ledgerSize != cursor {
+		t.Fatalf("the ledger must record the size it parsed to (%d), not the file's (%d), or the tail is orphaned", cursor, ledgerSize)
+	}
+	if hits("regression") != 0 {
+		t.Fatal("the tail past the cursor must not be indexed yet")
+	}
+
+	// Codex commits the rest of the thread; the rollout itself is untouched.
+	if err := testcorpus.SetCodexCursor(codex, size); err != nil {
+		t.Fatal(err)
+	}
+	res = f.sweep(Options{Roots: roots})
+	if res.Unchanged != 0 || res.Parsed != 1 || res.Messages != 3 {
+		t.Fatalf("sweep 2 must re-examine the source and index the tail: %+v", res)
+	}
+	if err := st.R.QueryRow(`SELECT parsed_to, size FROM source`).Scan(&parsedTo, &ledgerSize); err != nil {
+		t.Fatal(err)
+	}
+	if parsedTo != size || ledgerSize != size {
+		t.Fatalf("after sweep 2: parsed_to %d size %d want %d", parsedTo, ledgerSize, size)
+	}
+	if hits("regression") != 1 || f.count(`SELECT count(*) FROM msg`) != 5 {
+		t.Fatalf("tail not indexed: regression hits %d, msgs %d", hits("regression"), f.count(`SELECT count(*) FROM msg`))
+	}
+	// Fully parsed and unchanged: steady state.
+	if res = f.sweep(Options{Roots: roots}); res.Unchanged != 1 || res.Parsed != 0 {
+		t.Fatalf("sweep 3: %+v", res)
+	}
+}
+
+// TestSweep_CodexEmptyCompactionSupersedesWithoutARow: the ingest side of
+// finding 7. An empty compaction marks the earlier messages superseded and
+// writes the compacted_into edge, but inserts no zero-character row; a
+// compaction-only rollout leaves no session behind.
+func TestSweep_CodexEmptyCompactionSupersedesWithoutARow(t *testing.T) {
+	base := t.TempDir()
+	codex := filepath.Join(base, ".codex")
+	rollout, err := testcorpus.CodexHome(codex, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEmpty := strings.Replace(testcorpus.CodexShapes, `"message":"Summary so far: the auth test flakes on clock skew."`, `"message":""`, 1)
+	if err := os.WriteFile(rollout, []byte(withEmpty), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A second rollout of another thread holding only its header and a
+	// compaction.
+	var only strings.Builder
+	for _, l := range strings.SplitAfter(withEmpty, "\n") {
+		if strings.Contains(l, `"type":"session_meta"`) || strings.Contains(l, `"type":"compacted"`) {
+			only.WriteString(strings.ReplaceAll(l, testcorpus.CodexThread, "0199aaaa-0000-7000-8000-000000000002"))
+		}
+	}
+	compactOnly := filepath.Join(filepath.Dir(rollout), "rollout-2026-09-19T14-00-00-0199aaaa-0000-7000-8000-000000000002.jsonl")
+	if err := os.WriteFile(compactOnly, []byte(only.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(base, "data", "recall.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	f := &harnessFixture{t: t, st: st, base: base, codex: codex}
+	res := f.sweep(Options{Roots: []reader.Root{{Harness: reader.HarnessCodex, Profile: "personal", Dir: codex}}})
+	if res.Parsed != 2 || res.Errors != 0 {
+		t.Fatalf("sweep: %+v", res)
+	}
+	if n := f.count(`SELECT count(*) FROM session`); n != 1 {
+		t.Fatalf("sessions = %d: the compaction-only rollout must not add one", n)
+	}
+	if n := f.count(`SELECT count(*) FROM msg WHERE nchars=0`); n != 0 {
+		t.Fatalf("%d empty rows stored for the compaction", n)
+	}
+	if n := f.count(`SELECT count(*) FROM msg`); n != 4 {
+		t.Fatalf("msgs = %d want 4 (the fixture's five less the empty summary)", n)
+	}
+	if n := f.count(`SELECT count(*) FROM msg WHERE superseded=1`); n != 3 {
+		t.Fatalf("superseded = %d want the three messages before the compaction", n)
+	}
+	if n := f.count(`SELECT count(*) FROM conv_edge WHERE kind='compacted_into'`); n != 1 {
+		t.Fatalf("compacted_into edges = %d", n)
+	}
+	if n := f.count(`SELECT compacts FROM session`); n != 1 {
+		t.Fatalf("compacts = %d", n)
+	}
+
+	// An index written by the earlier reader holds empty rows: the next
+	// sweep removes them once and leaves every other row alone.
+	sessID := f.count(`SELECT sess_id FROM session`)
+	if _, err := st.W.Exec(`INSERT INTO msg(sess_id, src_id, seq, role, class, ts, rec_off, rec_len, nchars, tool_name, is_error, is_interrupt, body, superseded)
+		VALUES (?, 1, 99, 1, 9, 0, 0, 0, 0, '', 0, 0, X'', 1)`, sessID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.W.Exec(`DELETE FROM meta WHERE k='mig_empty_compact'`); err != nil {
+		t.Fatal(err)
+	}
+	f.sweep(Options{Roots: []reader.Root{{Harness: reader.HarnessCodex, Profile: "personal", Dir: codex}}})
+	if n := f.count(`SELECT count(*) FROM msg WHERE nchars=0`); n != 0 {
+		t.Fatalf("migration left %d empty rows", n)
+	}
+	if n := f.count(`SELECT count(*) FROM msg`); n != 4 {
+		t.Fatalf("migration touched other rows: %d", n)
+	}
+}
+
 func TestSweepFiles_IndexesOneFileAndRefusesOutsiders(t *testing.T) {
 	f := newHarnessFixture(t)
 	in := New(f.st, Options{Roots: f.roots()})

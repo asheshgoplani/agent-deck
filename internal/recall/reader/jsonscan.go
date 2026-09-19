@@ -62,14 +62,18 @@ func (s *jsonScanner) expect(want byte) error {
 }
 
 // value consumes one JSON value and returns its bytes when it is at most
-// limit bytes long; longer values are consumed but not kept (tooLong).
-// start is the value's byte offset in the document and n its length.
+// limit bytes long; longer values are consumed but not kept (tooLong). A
+// limit of 0 keeps nothing: the value is skipped structurally. start is
+// the value's byte offset in the document and n its length.
 func (s *jsonScanner) value(limit int) (raw []byte, start, n int64, tooLong bool, err error) {
 	if _, err = s.skipWS(); err != nil {
 		return nil, 0, 0, false, err
 	}
 	start = s.off
-	buf := make([]byte, 0, 512)
+	var buf []byte
+	if limit > 0 {
+		buf = make([]byte, 0, min(limit, 512))
+	}
 	keep := func(b byte) {
 		if tooLong {
 			return
@@ -120,7 +124,9 @@ func (s *jsonScanner) value(limit int) (raw []byte, start, n int64, tooLong bool
 			if depth == 0 {
 				// A scalar ends at the comma, which belongs to the parent.
 				s.off--
-				buf = buf[:len(buf)-1]
+				if len(buf) > 0 {
+					buf = buf[:len(buf)-1]
+				}
 				return buf, start, s.off - start, tooLong, s.br.UnreadByte()
 			}
 		default:

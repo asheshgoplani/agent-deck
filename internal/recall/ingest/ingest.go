@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,11 +20,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/classify"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/recall/store"
 )
+
+// ingestLog carries the one line a failed or quarantined source pass
+// leaves in the log; Result.Errors and Result.Quarantined count them.
+var ingestLog = logging.ForComponent(logging.CompRecall)
 
 // Defaults for the interactive budget (the sweep that runs before a search)
 // and the batch transaction bound.
@@ -73,6 +79,10 @@ type Ref struct {
 // metaLastSweep is the meta key holding the start time of the last
 // completed sweep (unix seconds).
 const metaLastSweep = "last_sweep"
+
+// metaMigEmptyCompact marks an index whose zero-character compaction rows
+// (written before the Codex reader stopped storing them) were removed.
+const metaMigEmptyCompact = "mig_empty_compact"
 
 // UsageSink receives the usage records of a source whose conversation is
 // bound to a deck session, so cost events are written from the same pass
@@ -200,6 +210,9 @@ func (in *Ingester) Sweep(ctx context.Context) (Result, error) {
 	start := in.opts.Now()
 	var res Result
 	if err := in.opts.Gate.Check(); err != nil {
+		return res, err
+	}
+	if err := in.migrateEmptyCompactRows(); err != nil {
 		return res, err
 	}
 	ledger, byKey, byPath, err := in.loadLedger()
@@ -368,6 +381,33 @@ func (in *Ingester) hasReader(rd reader.Reader) bool {
 	return false
 }
 
+// migrateEmptyCompactRows drops, once per index, the zero-character
+// compact_summary rows an earlier reader stored for Codex compactions
+// (the edge and the superseded flags they left stand). A rebuilt index
+// never has them; an existing one is cleaned on its next sweep.
+func (in *Ingester) migrateEmptyCompactRows() error {
+	var v string
+	if err := in.st.W.QueryRow(`SELECT v FROM meta WHERE k=?`, metaMigEmptyCompact).Scan(&v); err == nil {
+		return nil
+	}
+	tx, err := in.st.W.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	where := `class=? AND nchars=0`
+	if _, err := tx.Exec(`DELETE FROM msg_fts WHERE rowid IN (SELECT msg_id FROM msg WHERE `+where+`)`, int(classify.CompactSummary)); err != nil {
+		return fmt.Errorf("recall: migrate empty compactions (fts): %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM msg WHERE `+where, int(classify.CompactSummary)); err != nil {
+		return fmt.Errorf("recall: migrate empty compactions: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO meta(k, v) VALUES (?, '1') ON CONFLICT(k) DO NOTHING`, metaMigEmptyCompact); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // touchAnnotated adds the sessions whose state.db rows changed since the
 // last sweep, so an annotation reaches the card without a transcript
 // change. One second of slack covers the second-granular timestamps.
@@ -458,8 +498,11 @@ func (in *Ingester) recordOutcome(res *Result, c candidate, out sourceOutcome, e
 		}
 	case errors.Is(err, errQuarantined):
 		res.Quarantined++
+		ingestLog.Info("recall_source_quarantined", slog.String("path", c.ref.Path), slog.String("harness", c.ref.Harness))
 	case err != nil:
 		res.Errors++
+		ingestLog.Warn("recall_source_failed", slog.String("path", c.ref.Path), slog.String("harness", c.ref.Harness),
+			slog.Int64("parsed_to", out.parsedTo), slog.String("error", err.Error()))
 	default:
 		res.Parsed++
 	}
@@ -626,7 +669,16 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 	if errors.Is(rerr, reader.ErrBudget) {
 		state = recall.SourcePartial
 	}
-	if err := in.finishSource(row, ref, parsedTo, prefix, state, "", kind); err != nil {
+	ledgered := ref
+	if state == recall.SourceOK && kind == reader.CursorBytes && parsedTo < ref.Size {
+		// The reader stopped short of the end on its own: a torn trailing
+		// line, or bytes the harness has not committed yet (Codex's
+		// projection cursor). The ledger records the size it parsed to,
+		// not the file's, so changed() re-examines the tail next sweep
+		// even when the file is never written again.
+		ledgered.Size = parsedTo
+	}
+	if err := in.finishSource(row, ledgered, parsedTo, prefix, state, "", kind); err != nil {
 		return out, err
 	}
 	if sink.sessID != 0 {
@@ -1119,6 +1171,17 @@ func (s *sink) Msg(m reader.Msg) error {
 	}
 	if s.sessID == 0 {
 		return nil // no session yet (a title record before any message)
+	}
+	if m.IsCompact && strings.TrimSpace(m.Text) == "" {
+		// A compaction with no readable summary (every real Codex one):
+		// the history before it is superseded and the edge recorded, but
+		// no empty row stands in for the summary.
+		if m.SupersedesPrior {
+			if err := s.supersede(); err != nil {
+				return fmt.Errorf("recall: supersede: %w", err)
+			}
+		}
+		return nil
 	}
 	cls := classify.Message(m.Text, classify.Signals{
 		Assistant: m.Role == recall.RoleAssistant, ToolResult: m.IsToolResult, IsError: m.IsError,

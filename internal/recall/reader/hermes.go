@@ -212,7 +212,9 @@ func (Hermes) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, 
 	var in, out, cr, cw int64
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(cache_read_tokens,0), COALESCE(cache_write_tokens,0) FROM sessions WHERE id=?`, id).
 		Scan(&in, &out, &cr, &cw); err == nil && from == 0 && in+out > 0 {
-		_ = sink.Usage(Usage{UUID: "hermes-session-" + id, TS: unixFloat(startedAt), Model: s.model.String, In: in, Out: out, CacheR: cr, CacheW: cw})
+		if err := sink.Usage(Usage{UUID: "hermes-session-" + id, TS: unixFloat(startedAt), Model: s.model.String, In: in, Out: out, CacheR: cr, CacheW: cw}); err != nil {
+			return last, err
+		}
 	}
 	return last, nil
 }

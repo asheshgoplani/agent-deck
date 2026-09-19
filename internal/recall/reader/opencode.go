@@ -188,8 +188,10 @@ func (OpenCode) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink
 				sink.Session(Session{Model: id})
 			}
 			if m.Tokens.Input+m.Tokens.Output > 0 {
-				_ = sink.Usage(Usage{UUID: m.ID, TS: time.UnixMilli(m.Time.Created), Model: model, In: m.Tokens.Input, Out: m.Tokens.Output,
-					CacheR: m.Tokens.Cache.Read, CacheW: m.Tokens.Cache.Write})
+				if err := sink.Usage(Usage{UUID: m.ID, TS: time.UnixMilli(m.Time.Created), Model: model, In: m.Tokens.Input, Out: m.Tokens.Output,
+					CacheR: m.Tokens.Cache.Read, CacheW: m.Tokens.Cache.Write}); err != nil {
+					return 0, err
+				}
 			}
 		default:
 			continue

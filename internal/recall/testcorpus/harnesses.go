@@ -67,6 +67,13 @@ func CodexHome(dir string, cursor int64) (string, error) {
 		fmt.Sprintf(`INSERT INTO thread_history_projection_state VALUES ('%s', %d, 0)`, CodexThread, cursor))
 }
 
+// SetCodexCursor moves the thread's projection cursor (Codex committing
+// more of the rollout) without touching the rollout file itself.
+func SetCodexCursor(dir string, cursor int64) error {
+	return execSQL(filepath.Join(dir, "thread_history_1.sqlite"),
+		fmt.Sprintf(`UPDATE thread_history_projection_state SET next_rollout_byte_offset=%d WHERE thread_id='%s'`, cursor, CodexThread))
+}
+
 // PiID is the session id of PiShapes.
 const PiID = "01a030d2-a0d3-7790-a9af-3c633c68f25a"
 

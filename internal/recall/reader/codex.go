@@ -81,7 +81,7 @@ func codexNativeID(path string) string {
 // Ingest tails src from byte offset from, bounded by Codex's own cursor
 // when it applies (see the type comment).
 func (Codex) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, b *Budget) (int64, error) {
-	st := &codexState{newEmitter(src, sink)}
+	st := &codexState{emitter: newEmitter(src, sink)}
 	return st.scan(ctx, from, codexProjectionStop(src), b, st.line)
 }
 
@@ -231,14 +231,41 @@ type codexCompacted struct {
 	Message string `json:"message"`
 }
 
-type codexState struct{ emitter }
+type codexState struct {
+	emitter
+	// pending is what session_meta and turn_context said about the
+	// thread; it is emitted with the first conversation record, so a
+	// rollout without one (a compaction-only file, an aborted start) gets
+	// no session row.
+	pending Session
+}
+
+// meta records the thread's identity for the session record to come. The
+// first record that knows a field wins: a forked or subagent rollout
+// carries a second session_meta (the parent's, replayed from its history)
+// that must not rename the thread.
+func (st *codexState) meta(native, cwd, version, branch string) {
+	if st.pending.NativeID == "" {
+		st.pending.NativeID = native
+	}
+	if st.pending.CWD == "" {
+		st.pending.CWD = cwd
+	}
+	if st.pending.Version == "" {
+		st.pending.Version = version
+	}
+	if st.pending.Branch == "" {
+		st.pending.Branch = branch
+	}
+}
 
 // session emits the Session record once, with the best-effort title.
-func (st *codexState) session(native, cwd, version, branch string) {
+func (st *codexState) session() {
 	if st.sessionSent {
 		return
 	}
-	s := Session{NativeID: firstNonEmpty(native, st.src.NativeID), CWD: cwd, Version: version, Branch: branch}
+	s := st.pending
+	s.NativeID = firstNonEmpty(s.NativeID, st.src.NativeID)
 	if title := codexTitle(st.src.Aux, s.NativeID); title != "" {
 		s.Title, s.TitleSrc = title, "thread_name"
 	}
@@ -256,11 +283,11 @@ func (st *codexState) line(line []byte, off, n int64) {
 	case "session_meta":
 		var meta codexSessionMeta
 		_ = json.Unmarshal(rec.Payload, &meta)
-		st.session(firstNonEmpty(meta.ID, meta.SessionID), meta.CWD, meta.CLIVersion, meta.Git.Branch)
+		st.meta(firstNonEmpty(meta.ID, meta.SessionID), meta.CWD, meta.CLIVersion, meta.Git.Branch)
 	case "turn_context":
 		var tc codexTurnContext
 		_ = json.Unmarshal(rec.Payload, &tc)
-		st.session("", tc.CWD, "", "")
+		st.meta("", tc.CWD, "", "")
 		st.setModel(tc.Model)
 	case "response_item":
 		st.responseItem(rec.Payload, ts, off, n)
@@ -268,6 +295,7 @@ func (st *codexState) line(line []byte, off, n int64) {
 		var u codexUsageRecord
 		_ = json.Unmarshal(rec.Payload, &u)
 		if u.Usage.InputTokens+u.Usage.OutputTokens > 0 {
+			st.session()
 			// The response id keys cost-event dedup across reparses.
 			st.fail(st.sink.Usage(Usage{UUID: firstNonEmpty(u.ResponseID, u.TurnID+"@"+rec.Timestamp), TS: ts, Model: st.model,
 				In: u.Usage.InputTokens, Out: u.Usage.OutputTokens, CacheR: u.Usage.CachedInputTokens, CacheW: u.Usage.CacheWriteTokens}))
@@ -281,11 +309,18 @@ func (st *codexState) line(line []byte, off, n int64) {
 	case "compacted":
 		// The summary replaces the history before it; replacement_history
 		// repeats records already indexed from their own lines and is
-		// never re-emitted.
+		// never re-emitted. On real files the summary text is empty (the
+		// summary itself is the encrypted compaction item), so the record
+		// counts and supersedes but is stored only when it has text; a
+		// rollout holding nothing but compactions gets no session row.
 		var c codexCompacted
 		_ = json.Unmarshal(rec.Payload, &c)
-		st.session("", "", "", "")
 		st.sink.Count(CountCompact, 1)
+		if strings.TrimSpace(c.Message) != "" {
+			st.session()
+		} else {
+			st.sink.Session(Session{}) // a resumed source: reopen its session for the edge
+		}
 		st.fail(st.sink.Msg(Msg{Role: recall.RoleUser, TS: unixOrZero(ts), RecOff: off, RecLen: n,
 			Text: c.Message, IsCompact: true, SupersedesPrior: true}))
 	case "world_state", "inter_agent_communication_metadata", "realtime_item":
@@ -322,7 +357,7 @@ func (st *codexState) responseItem(payload json.RawMessage, ts time.Time, off, n
 		if strings.TrimSpace(text) == "" {
 			return
 		}
-		st.session("", "", "", "")
+		st.session()
 		m := Msg{Role: role, TS: unixOrZero(ts), RecOff: off, RecLen: n, Text: text}
 		if role == recall.RoleUser {
 			m.IsMeta = codexInjectedText(text)
@@ -330,6 +365,7 @@ func (st *codexState) responseItem(payload json.RawMessage, ts time.Time, off, n
 		}
 		st.fail(st.sink.Msg(m))
 	case "function_call", "custom_tool_call", "local_shell_call":
+		st.session()
 		name := it.Name
 		args := firstNonEmpty(it.Arguments, it.Input)
 		if it.Type == "local_shell_call" {

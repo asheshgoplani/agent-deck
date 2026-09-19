@@ -3,6 +3,7 @@ package reader
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,9 @@ import (
 )
 
 const geminiShapes = testcorpus.GeminiShapes
+
+// errSinkRefused stands in for a fatal store error in the sink.
+var errSinkRefused = errors.New("sink refused")
 
 func TestGeminiIngest_StreamsTheDocument(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "tmp", "1ac57b4f", "chats")
@@ -78,10 +82,12 @@ func TestGeminiIngest_StreamsTheDocument(t *testing.T) {
 }
 
 // TestGeminiIngest_LargeFileUnderRSSCap streams a 32 MB document shaped
-// like the largest one on the design machine (31,636,072 B, five
-// messages, one of 10.5 MB): the resident set may grow by at most
-// geminiRSSCapBytes, the over-long message is skipped and counted, and
-// the others are indexed.
+// like the largest one on the design machine (31,636,072 B, six
+// messages, one of 10.5 MB of text and one whose 10 MB displayContent
+// sits beside a 24-character prompt): the resident set may grow by at
+// most geminiRSSCapBytes, a message whose text is itself over the cap is
+// skipped and counted, and a message with an oversize sibling field keeps
+// its text (the phase-3 review's finding 8).
 const geminiRSSCapBytes = 16 << 20
 
 func TestGeminiIngest_LargeFileUnderRSSCap(t *testing.T) {
@@ -106,9 +112,16 @@ func TestGeminiIngest_LargeFileUnderRSSCap(t *testing.T) {
 	f.WriteString(",")
 	msg("u2", "user", 8)
 	f.WriteString(",")
-	msg("g2", "gemini", 19*1024) // ~20 MB more so the file lands near 32 MB
+	msg("g2", "gemini", 9*1024) // ~10 MB more
 	f.WriteString(",")
 	msg("u3", "user", 2)
+	f.WriteString(",")
+	// The real shape of the 31.6 MB file: a short prompt beside inline video.
+	f.WriteString(`{"id":"u4","timestamp":"2026-03-06T10:46:00.000Z","type":"user","content":"System: Please continue.","displayContent":[{"inlineData":{"mimeType":"video/mp4","data":"`)
+	for w := 0; w < 10*1024; w++ {
+		f.WriteString(chunk)
+	}
+	f.WriteString(`"}}]}`)
 	f.WriteString(`],"summary":"videos"}`)
 	f.Close()
 	info, _ := os.Stat(path)
@@ -131,8 +144,40 @@ func TestGeminiIngest_LargeFileUnderRSSCap(t *testing.T) {
 		t.Fatalf("heap grew by %d B (sys %d) over a %d B file; cap %d", growth, peak, info.Size(), geminiRSSCapBytes)
 	}
 	t.Logf("file %d B: heap growth %d B, heap sys growth %d B", info.Size(), growth, int64(after.HeapSys)-int64(before.HeapSys))
-	if len(rec.msgs) != 3 || rec.counts[CountLineTooLong] != 2 {
-		t.Fatalf("msgs %d (want 3), too-long %d (want 2)", len(rec.msgs), rec.counts[CountLineTooLong])
+	if len(rec.msgs) != 4 || rec.counts[CountLineTooLong] != 2 {
+		t.Fatalf("msgs %d (want 4), too-long %d (want 2)", len(rec.msgs), rec.counts[CountLineTooLong])
+	}
+	last := rec.msgs[3]
+	if last.UUID != "u4" || last.Text != "System: Please continue." {
+		t.Fatalf("the prompt beside the oversize displayContent was lost: %+v", last)
+	}
+	// The span still covers the whole message object on disk.
+	data := make([]byte, 40)
+	fh, _ := os.Open(path)
+	defer fh.Close()
+	if _, err := fh.ReadAt(data, last.RecOff); err != nil || !strings.HasPrefix(string(data), `{"id":"u4"`) {
+		t.Fatalf("span %d+%d: %v %q", last.RecOff, last.RecLen, err, data)
+	}
+}
+
+// TestGeminiIngest_SinkErrorStopsThePass: a sink that refuses (a fatal
+// store error, a quarantine) ends the pass at that message instead of the
+// reader scanning the rest of the document for nothing (finding 9).
+func TestGeminiIngest_SinkErrorStopsThePass(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session-2026-01-19T12-18-196a60d9.json")
+	if err := os.WriteFile(path, []byte(geminiShapes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := newRecorder()
+	rec.failMsg = errSinkRefused
+	ref := SourceRef{Harness: HarnessGemini, Path: path, Size: int64(len(geminiShapes)), NativeID: "x"}
+	_, err := (Gemini{}).Ingest(context.Background(), ref, 0, rec, nil)
+	if err == nil || !strings.Contains(err.Error(), errSinkRefused.Error()) {
+		t.Fatalf("the sink's error must end the pass: %v", err)
+	}
+	if rec.counts[CountUnknownType] != 0 {
+		t.Fatalf("the reader kept scanning after the sink refused: counts %+v", rec.counts)
 	}
 }
 

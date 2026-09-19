@@ -170,6 +170,73 @@ func TestCodexIngest_ProjectionCursorBoundsThePass(t *testing.T) {
 	})
 }
 
+// TestCodexIngest_EmptyCompactionHasNoRowAndNoSession pins the phase-3
+// review's finding 7: on real rollouts every compacted record carries an
+// empty message, so it counts and supersedes but is never stored as an
+// empty compact_summary, and a rollout holding only session_meta and
+// compactions (Codex writes one when a thread resumes after compaction)
+// produces no session at all.
+func TestCodexIngest_EmptyCompactionHasNoRowAndNoSession(t *testing.T) {
+	const emptySummary = `"message":""`
+	withEmpty := strings.Replace(codexShapes, `"message":"Summary so far: the auth test flakes on clock skew."`, emptySummary, 1)
+	if withEmpty == codexShapes {
+		t.Fatal("fixture drift: the compaction summary text moved")
+	}
+	t.Run("full rollout", func(t *testing.T) {
+		home, rollout := codexHome(t, -1)
+		if err := os.WriteFile(rollout, []byte(withEmpty), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rec := newRecorder()
+		if _, err := (Codex{}).Ingest(context.Background(), codexRef(home, rollout), 0, rec, nil); err != nil {
+			t.Fatal(err)
+		}
+		if rec.counts[CountCompact] != 1 {
+			t.Fatalf("compact count %d", rec.counts[CountCompact])
+		}
+		var compacts, empty int
+		for _, m := range rec.msgs {
+			if m.IsCompact {
+				compacts++
+			}
+			if strings.TrimSpace(m.Text) == "" {
+				empty++
+			}
+		}
+		// The reader still hands the superseding record to the sink (which
+		// records the edge and stores nothing); no other message is empty.
+		if compacts != 1 || empty != 1 || len(rec.msgs) != 5 {
+			t.Fatalf("msgs: compacts %d empty %d total %d", compacts, empty, len(rec.msgs))
+		}
+	})
+	t.Run("compaction-only rollout", func(t *testing.T) {
+		lines := strings.SplitAfter(withEmpty, "\n")
+		var only strings.Builder
+		for _, l := range lines {
+			if strings.Contains(l, `"type":"session_meta"`) || strings.Contains(l, `"type":"turn_context"`) || strings.Contains(l, `"type":"compacted"`) {
+				only.WriteString(l)
+			}
+		}
+		home, rollout := codexHome(t, -1)
+		if err := os.WriteFile(rollout, []byte(only.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rec := newRecorder()
+		to, err := (Codex{}).Ingest(context.Background(), codexRef(home, rollout), 0, rec, nil)
+		if err != nil || to != int64(only.Len()) {
+			t.Fatalf("to %d err %v", to, err)
+		}
+		for _, s := range rec.sessions {
+			if s.NativeID != "" {
+				t.Fatalf("a compaction-only rollout must not open a session: %+v", rec.sessions)
+			}
+		}
+		if len(rec.msgs) != 1 || rec.msgs[0].Text != "" || rec.counts[CountCompact] != 1 {
+			t.Fatalf("msgs %+v counts %+v", rec.msgs, rec.counts)
+		}
+	})
+}
+
 func TestCodexDiscover_SessionsAndArchived(t *testing.T) {
 	home, rollout := codexHome(t, -1)
 	arch := filepath.Join(home, "archived_sessions")
