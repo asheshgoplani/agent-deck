@@ -360,7 +360,58 @@ func hotkeyAliases(key string) []string {
 		add(unshiftedAlias)
 	}
 
+	// Layout aliases are derived from every ASCII alias collected above, so a
+	// binding written as "shift+u" picks up the layout twin of its "U" form
+	// too. Iterate a snapshot: add appends to the same slice.
+	for _, alias := range append([]string(nil), aliases...) {
+		if layoutAlias := layoutAliasFor(alias); layoutAlias != "" {
+			add(layoutAlias)
+		}
+	}
+
 	return aliases
+}
+
+// jcukenLetters maps each QWERTY letter key to the letter the same physical
+// key produces on the Russian ЙЦУКЕН layout (identical on macOS and Windows
+// for the 26 letter keys; the punctuation keys differ between the two and are
+// deliberately left out).
+var jcukenLetters = map[rune]rune{
+	'q': 'й', 'w': 'ц', 'e': 'у', 'r': 'к', 't': 'е', 'y': 'н',
+	'u': 'г', 'i': 'ш', 'o': 'щ', 'p': 'з', 'a': 'ф', 's': 'ы',
+	'd': 'в', 'f': 'а', 'g': 'п', 'h': 'р', 'j': 'о', 'k': 'л',
+	'l': 'д', 'z': 'я', 'x': 'ч', 'c': 'с', 'v': 'м', 'b': 'и',
+	'n': 'т', 'm': 'ь',
+}
+
+// layoutAliasFor returns the character a single-key binding produces under a
+// non-Latin keyboard layout, or "" when there is none.
+//
+// The overview dispatches on the rune the terminal delivers, and a terminal
+// never reports which layout produced it. So with a non-Latin layout selected
+// every letter hotkey is simply dead: pressing the "n" key sends "т", nothing
+// matches, and the deck ignores it. That is a real cost for anyone who writes
+// prompts in a non-Latin script, because the deck is the screen you come back
+// to between prompts, and every visit needs a layout switch first.
+//
+// Registering the twin as an alias fixes it in the one place that knows it is
+// the overview talking: "т" and "n" both reach new_session, while the attached
+// pane keeps receiving raw bytes exactly as before. Russian ЙЦУКЕН is the
+// first layout covered; the same table shape takes any other.
+func layoutAliasFor(key string) string {
+	runes := []rune(key)
+	if len(runes) != 1 {
+		return ""
+	}
+
+	twin, ok := jcukenLetters[unicode.ToLower(runes[0])]
+	if !ok {
+		return ""
+	}
+	if unicode.IsUpper(runes[0]) {
+		return string(unicode.ToUpper(twin))
+	}
+	return string(twin)
 }
 
 func shiftedAliasFor(key string) string {
