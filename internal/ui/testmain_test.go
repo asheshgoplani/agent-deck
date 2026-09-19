@@ -24,6 +24,18 @@ func TestMain(m *testing.M) {
 // the isolated TMUX_TMPDIR and HOME temp dirs are removed (2026-06-07
 // pty-exhaustion incident class).
 func runTestMain(m *testing.M) int {
+	// Disable Go toolchain telemetry for every `go` invocation this test
+	// binary makes (build caches probe, `go build` of the CLI under a
+	// TempDir HOME). The telemetry writer forks a detached child that
+	// writes to $HOME/.config/go/telemetry/local asynchronously; when HOME
+	// is a t.TempDir(), that child can still be writing when the test ends,
+	// racing t.TempDir()'s RemoveAll cleanup ("directory not empty"). Set
+	// via os.Setenv (not t.Setenv) so it lands in os.Environ() before
+	// resolveWatcherBuildCaches runs below and is inherited by every
+	// exec.Command("go", ...) built from os.Environ() for the life of this
+	// binary, including watcherBuildEnvironment's builds.
+	os.Setenv("GOTELEMETRY", "off")
+
 	// Attach-helper mode for the fake SSH endpoint in
 	// embedded_remote_leading_output_test.go: the binary stands in for the
 	// remote `agent-deck session attach` inside the embedded PTY. Must run
