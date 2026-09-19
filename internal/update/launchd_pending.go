@@ -136,22 +136,13 @@ func DrainPendingRebootstrap(opts RebootstrapOptions) (RebootstrapResult, error)
 			res.Deferred = append(res.Deferred, label)
 			continue
 		}
-		path := filepath.Join(opts.LaunchAgentsDir, label+".plist")
-		data, err := os.ReadFile(path)
+		agent, err := loadPendingAgent(opts.LaunchAgentsDir, label)
 		if err != nil {
-			res.Skipped[label] = "plist unreadable: " + err.Error()
+			res.Skipped[label] = err.Error()
 			opts.Logger.Warn("launchagent_pending_dropped", slog.String("label", label), slog.String("err", err.Error()))
 			_ = removePendingRebootstrap(opts.PendingPath, label)
 			continue
 		}
-		agent, err := ParseLaunchAgentPlist(data)
-		if err != nil {
-			res.Skipped[label] = "plist unparsable: " + err.Error()
-			opts.Logger.Warn("launchagent_pending_dropped", slog.String("label", label), slog.String("err", err.Error()))
-			_ = removePendingRebootstrap(opts.PendingPath, label)
-			continue
-		}
-		agent.Path = path
 		if err := rebootstrapOne(opts, agent); err != nil {
 			fmt.Fprintf(opts.Out, "  ✗ %s: %v\n", agent.Label, err)
 			return res, err
@@ -163,4 +154,19 @@ func DrainPendingRebootstrap(opts RebootstrapOptions) (RebootstrapResult, error)
 		}
 	}
 	return res, nil
+}
+
+// loadPendingAgent reads and parses <dir>/<label>.plist.
+func loadPendingAgent(dir, label string) (LaunchAgent, error) {
+	path := filepath.Join(dir, label+".plist")
+	data, err := os.ReadFile(path) // #nosec G304 -- label comes from our own marker file
+	if err != nil {
+		return LaunchAgent{}, fmt.Errorf("plist unreadable: %w", err)
+	}
+	agent, err := ParseLaunchAgentPlist(data)
+	if err != nil {
+		return LaunchAgent{}, fmt.Errorf("plist unparsable: %w", err)
+	}
+	agent.Path = path
+	return agent, nil
 }

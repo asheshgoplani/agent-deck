@@ -302,16 +302,16 @@ func sweepRemotesUnattended(latest string, log *slog.Logger) {
 	config, err := session.LoadUserConfig()
 	sweep, running := session.RemoteSweepInProgress()
 	d := unattendedSweepDecision(config, err, session.GetUpdateSettings(), sweep, running)
-	if d.reason != "" {
-		if d.deferred {
-			fmt.Printf("remote sweep deferred: %s\n", d.reason)
-			log.Info("unattended_remote_sweep_deferred", slog.String("reason", d.reason), slog.Int("remotes", d.remotes), slog.Int("sweep_pid", sweep.PID))
-		} else {
-			if d.remotes > 0 {
-				fmt.Printf("remote sweep skipped: %s\n", d.reason)
-			}
-			log.Info("unattended_remote_sweep_skipped", slog.String("reason", d.reason), slog.Int("remotes", d.remotes))
+	switch {
+	case d.deferred:
+		fmt.Printf("remote sweep deferred: %s\n", d.reason)
+		log.Info("unattended_remote_sweep_deferred", slog.String("reason", d.reason), slog.Int("remotes", d.remotes), slog.Int("sweep_pid", sweep.PID))
+		return
+	case d.reason != "":
+		if d.remotes > 0 {
+			fmt.Printf("remote sweep skipped: %s\n", d.reason)
 		}
+		log.Info("unattended_remote_sweep_skipped", slog.String("reason", d.reason), slog.Int("remotes", d.remotes))
 		return
 	}
 	fmt.Printf("auto_update_remotes is on: updating %d remote(s) to v%s\n", d.remotes, latest)
@@ -334,20 +334,21 @@ type sweepDecision struct {
 
 // unattendedSweepDecision is the pure decision behind sweepRemotesUnattended.
 func unattendedSweepDecision(config *session.UserConfig, loadErr error, settings session.UpdateSettings, sweep session.RemoteSweep, running bool) sweepDecision {
-	switch {
-	case loadErr != nil:
+	if loadErr != nil {
 		return sweepDecision{reason: "config unreadable: " + loadErr.Error()}
-	case config == nil || len(config.Remotes) == 0:
+	}
+	if config == nil || len(config.Remotes) == 0 {
 		return sweepDecision{reason: "no remotes configured"}
 	}
-	n := len(config.Remotes)
+	d := sweepDecision{remotes: len(config.Remotes)}
 	switch {
 	case !settings.GetAutoUpdateRemotes():
-		return sweepDecision{reason: "auto_update_remotes is off (run `agent-deck remote update --all` to update them)", remotes: n}
+		d.reason = "auto_update_remotes is off (run `agent-deck remote update --all` to update them)"
 	case running:
-		return sweepDecision{reason: fmt.Sprintf("a sweep from pid %d (started %s) is still running; the next start of a newer controller sweeps again", sweep.PID, sweep.StartedAt.Format("15:04:05")), deferred: true, remotes: n}
+		d.reason = fmt.Sprintf("a sweep from pid %d (started %s) is still running; the next start of a newer controller sweeps again", sweep.PID, sweep.StartedAt.Format("15:04:05"))
+		d.deferred = true
 	}
-	return sweepDecision{remotes: n}
+	return d
 }
 
 // rebootstrapLaunchAgentsAfterInstall is the post-install hygiene shared by

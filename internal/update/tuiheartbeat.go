@@ -65,7 +65,7 @@ type TUIReport struct {
 	Ticking      bool   `json:"ticking"`
 	RestartState string `json:"restart_state,omitempty"`
 	BlockReason  string `json:"block_reason,omitempty"`
-	// Since is how long the newer version has been on disk, in seconds.
+	// OutdatedForSeconds is how long the newer version has been on disk.
 	OutdatedForSeconds int64  `json:"outdated_for_seconds,omitempty"`
 	StartedAt          string `json:"started_at"`
 	UpdatedAt          string `json:"updated_at"`
