@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -413,4 +414,45 @@ func handleSessionAnnotate(profile string, args []string) {
 		fmt.Fprintf(&human, "  link:      %s %s%s\n", l.Harness, l.NativeID, mark)
 	}
 	out.Print(human.String(), data)
+}
+
+// remoteVersionUnknown is the remote_version reported when the older remote
+// answered `session annotate` but its `version` probe failed.
+const remoteVersionUnknown = "unknown"
+
+// remoteAnnotateUnsupported reports whether an older remote answered
+// `session annotate` with its "unknown session command" line, the same
+// detection remoteMetricsUnsupported and remotePrimerUnsupported use. Any
+// other failure passes through as the remote printed it.
+func remoteAnnotateUnsupported(args []string, code int, stderr string) bool {
+	return code != 0 && isSessionAnnotateArgs(args) && strings.Contains(stderr, "unknown session command: annotate")
+}
+
+func isSessionAnnotateArgs(args []string) bool {
+	return len(args) > 1 && args[0] == "session" && args[1] == "annotate"
+}
+
+// remoteAnnotateUnsupportedMessage is the one clear line for an older remote
+// (docs/recall.md "Remote"): which remote, which version it runs, and the
+// command that fixes it. An empty version reads as unknown.
+func remoteAnnotateUnsupportedMessage(remote, remoteVersion string) string {
+	runs := "v" + remoteVersion
+	if remoteVersion == "" {
+		runs = "an unknown agent-deck version"
+	}
+	return fmt.Sprintf("remote %q runs %s without session annotate; update it with 'agent-deck remote update %s'", remote, runs, remote)
+}
+
+// remoteAnnotateUnsupportedJSON is the --json shape of the same failure.
+func remoteAnnotateUnsupportedJSON(remote, remoteVersion string) []byte {
+	msg := remoteAnnotateUnsupportedMessage(remote, remoteVersion)
+	if remoteVersion == "" {
+		remoteVersion = remoteVersionUnknown
+	}
+	out, _ := json.Marshal(struct {
+		Error         string `json:"error"`
+		Remote        string `json:"remote"`
+		RemoteVersion string `json:"remote_version"`
+	}{msg, remote, remoteVersion})
+	return append(out, '\n')
 }
