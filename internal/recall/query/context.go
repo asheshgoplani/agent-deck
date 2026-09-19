@@ -29,6 +29,19 @@ const DefaultContextBudget = 4000
 // unit); four is the usual estimate for English prose and code.
 const charsPerToken = 4
 
+// maxBriefFiles caps the "Files touched" list of the brief.
+const maxBriefFiles = 12
+
+// excerptTurnShare is the share of the budget the excerpt tier keeps for
+// the turns: the brief (card, artifacts, files) is cut to the rest, so a
+// small --budget still yields a readable tail of the conversation and
+// not a long file list followed by one truncated turn.
+const excerptTurnShare = 0.5
+
+// excerptFrameChars is what the excerpt's own frame lines and the closing
+// note cost, kept out of the turn budget.
+const excerptFrameChars = 200
+
 // excerptMaxMessages bounds how many message rows the excerpt reads before
 // the character budget trims them: a 100 MB conductor transcript is never
 // decompressed whole for a 4,000-token excerpt.
@@ -39,7 +52,18 @@ var ErrTier = errors.New("recall: --tier must be card, brief or excerpt")
 
 // ErrDigestOnly means the session is a card pulled from another machine:
 // there are no bodies here, so the excerpt tier cannot be rendered.
-var ErrDigestOnly = errors.New("recall: this conversation is a card pulled from another machine; its messages are not here (tier stops at brief; run 'agent-deck remote <host> recall show <id>')")
+var ErrDigestOnly = errors.New("recall: this conversation is a card pulled from another machine; its messages are not here (tier stops at brief)")
+
+// digestOnlyError wraps ErrDigestOnly with the way to read the messages:
+// the alias the card was imported under, so the line can be run as is.
+func (s *Searcher) digestOnlyError(ctx context.Context, sess SessionRow) error {
+	alias := "<host>"
+	var a string
+	if err := s.st.R.QueryRowContext(ctx, `SELECT alias FROM host WHERE host_uid=?`, sess.HostUID).Scan(&a); err == nil && a != "" {
+		alias = a
+	}
+	return fmt.Errorf("%w; run 'agent-deck remote %s recall show %s'", ErrDigestOnly, alias, sess.NativeID)
+}
 
 // ContextResult is what `recall context` prints or delivers.
 type ContextResult struct {
@@ -82,23 +106,30 @@ func (s *Searcher) Context(ctx context.Context, ref, tier string, budgetTokens i
 	}
 	var b strings.Builder
 	writeCard(&b, sess, ref)
+	total := budgetTokens * charsPerToken
 	if tier != TierCard {
 		if res.Files, err = s.touchedFiles(ctx, sess.SessID); err != nil {
 			return res, err
 		}
-		writeBrief(&b, res.Artifacts, res.Files)
+		// The brief fits the budget; in the excerpt tier it fits what
+		// the budget leaves once the turns have their share.
+		briefCap := total
+		if tier == TierExcerpt {
+			briefCap = total - int(float64(total)*excerptTurnShare) - excerptFrameChars
+		}
+		writeBrief(&b, res.Artifacts, res.Files, briefCap)
 	}
 	if tier == TierExcerpt {
 		if sess.DigestOnly {
-			return res, ErrDigestOnly
+			return res, s.digestOnlyError(ctx, sess)
 		}
 		turns, err := s.excerptTurns(ctx, sess.SessID)
 		if err != nil {
 			return res, err
 		}
-		left := budgetTokens*charsPerToken - b.Len() - 200
-		if left < 200 {
-			left = 200
+		left := total - b.Len() - excerptFrameChars
+		if left < excerptFrameChars {
+			left = excerptFrameChars
 		}
 		kept, truncated := recall.TailByChars(turns, left)
 		res.Included, res.Truncated = len(kept), truncated || len(turns) < res.Messages
@@ -159,7 +190,11 @@ func writeCard(b *strings.Builder, sess SessionRow, ref string) {
 	}
 }
 
-func writeBrief(b *strings.Builder, arts []Artifact, files []string) {
+// writeBrief appends the derived artifacts and the touched files. The
+// artifacts always fit (they are the point of the tier); the file list
+// stops at maxBriefFiles entries or when the brief would pass maxChars,
+// whichever comes first, and says how many it left out.
+func writeBrief(b *strings.Builder, arts []Artifact, files []string, maxChars int) {
 	if len(arts) > 0 {
 		b.WriteString("Derived:\n")
 		for _, a := range arts {
@@ -168,15 +203,18 @@ func writeBrief(b *strings.Builder, arts []Artifact, files []string) {
 	} else {
 		b.WriteString("Derived: nothing yet (run 'agent-deck recall enrich')\n")
 	}
-	if len(files) > 0 {
-		b.WriteString("Files touched:\n")
-		for i, f := range files {
-			if i == 12 {
-				fmt.Fprintf(b, "- … %d more\n", len(files)-i)
-				break
-			}
-			b.WriteString("- " + f + "\n")
+	if len(files) == 0 {
+		return
+	}
+	b.WriteString("Files touched:\n")
+	const more = "- … %d more\n"
+	for i, f := range files {
+		line := "- " + f + "\n"
+		if i == maxBriefFiles || b.Len()+len(line)+len(more) > maxChars {
+			fmt.Fprintf(b, more, len(files)-i)
+			return
 		}
+		b.WriteString(line)
 	}
 }
 
