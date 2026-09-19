@@ -1750,6 +1750,10 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	})
 	noChannelLink := fs.Bool("no-channel-link", false, "Disable auto-link between --plugin entries with emits_channel=true and --channel (RFC §4.7)")
 
+	// Recall phase 1: creation-time hints (docs/recall.md). Written to
+	// state.db right after the session row exists.
+	creationHints := registerCreationHintFlags(fs)
+
 	// Extra claude CLI tokens - repeatable; each invocation is one already-
 	// tokenised arg (e.g. --extra-arg --agent --extra-arg reviewer).
 	// Persisted on Instance.ExtraArgs (plaintext — do NOT pass secrets) and
@@ -2528,6 +2532,12 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	// is per-session setup that no other registration can race with.
 	releaseRegistration()
 
+	autoHints := map[string]string{}
+	if parentInstance != nil {
+		autoHints[hintKeyParent] = parentInstance.ID
+	}
+	sessionHints, sessionTags := applyCreationHints(storage, newInstance, creationHints, autoHints)
+
 	// Attach MCPs if specified
 	if len(mcpFlags) > 0 {
 		// Validate MCPs exist in config.toml
@@ -2662,6 +2672,12 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	if parentInstance != nil {
 		jsonData["parent_id"] = parentInstance.ID
 		jsonData["parent_title"] = parentInstance.Title
+	}
+	if len(sessionHints) > 0 {
+		jsonData["hints"] = sessionHints
+	}
+	if len(sessionTags) > 0 {
+		jsonData["tags"] = sessionTags
 	}
 	if worktreePath != "" {
 		jsonData["worktree_path"] = worktreePath

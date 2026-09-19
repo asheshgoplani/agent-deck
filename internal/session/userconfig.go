@@ -199,6 +199,9 @@ type UserConfig struct {
 	// GlobalSearch defines global conversation search settings
 	GlobalSearch GlobalSearchSettings `toml:"global_search,omitempty"`
 
+	// Recall defines the cross-harness conversation store settings (docs/recall.md)
+	Recall RecallSettings `toml:"recall,omitempty"`
+
 	// Logs defines session log management settings
 	Logs LogSettings `toml:"logs,omitempty"`
 
@@ -2824,6 +2827,22 @@ func (g GlobalSearchSettings) GetEnabled() bool {
 		return true
 	}
 	return *g.Enabled
+}
+
+// RecallSettings configures Recall, the cross-harness conversation store
+// (docs/recall.md). Phase 1 ships only the durable hint layer (`--hint`,
+// `session annotate`), which lives in state.db and does not depend on this
+// switch; `enabled` reserves the section and gates the recall.db index that
+// later phases build. Default off.
+type RecallSettings struct {
+	// Enabled turns the recall.db transcript index on (default: false).
+	// Hints and annotations work regardless of this value.
+	Enabled *bool `toml:"enabled,omitempty"`
+}
+
+// GetEnabled reports whether the recall index is switched on (default false).
+func (r RecallSettings) GetEnabled() bool {
+	return r.Enabled != nil && *r.Enabled
 }
 
 // ToolDef defines a custom AI tool

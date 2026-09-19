@@ -114,6 +114,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSearch(profile, args[1:])
 	case "metrics":
 		handleSessionMetrics(profile, args[1:])
+	case "annotate":
+		handleSessionAnnotate(profile, args[1:])
 	case "help", "--help", "-h":
 		printSessionHelp()
 	default:
@@ -161,6 +163,7 @@ func printSessionHelp() {
 	fmt.Println("  window close <id> <window> --yes  Kill one tmux window in a session (CLI parity for the TUI's window-row 'd')")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  metrics <id>|--all      Per-session eval numbers from the local event journal (--json, --since)")
+	fmt.Println("  annotate <id>|--self    Record durable hints/tags (purpose, ticket, why, decision, outcome) for recall")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
 	fmt.Println("  update <id> --no-parent          Alias for unset-parent <id>")
@@ -197,6 +200,8 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session unarchive my-project              # Restore an archived session")
 	fmt.Println("  agent-deck session recent                            # Most-recently-used sessions first")
 	fmt.Println("  agent-deck session recent --json --limit 5           # Same, machine-readable, top 5")
+	fmt.Println("  agent-deck session annotate auth-fix --ticket SB-412 --tag auth  # Durable hints for recall")
+	fmt.Println("  agent-deck session annotate --self --outcome worked  # An agent annotating its own session")
 	fmt.Println()
 	fmt.Println("Set command fields:")
 	fmt.Println("  title              Session title")

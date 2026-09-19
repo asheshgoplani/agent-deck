@@ -55,6 +55,9 @@ agent-deck add [path] [options]
 | `--attach` | Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with `--ssh`/`--json`) |
 | `--ssh <user@host>` | Run the session over SSH; this is a destination, not a registered remote name |
 | `--remote-path <absolute-path>` | Working directory on the SSH host; an absolute positional path with `--ssh` is equivalent |
+| `--hint key=value` | Durable recall hint (repeatable; single-valued per key, see `session annotate`) |
+| `--tag <tag>` | Recall tag (repeatable) |
+| `--ticket <id>` / `--why <text>` | Shorthands for `--hint ticket=` / `--hint why=` |
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -95,6 +98,7 @@ Notes:
 - `--account <name>` selects a named slot from `[profiles.<name>.claude].config_dir` for this session, matching `add --account`.
 - `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh`; other tools refuse the flag. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--account` requires an explicit name. If the next token is another launch flag, launch stops with an error before resolving a fallback account or creating a session; use `--account=<name>` when a name intentionally begins with a dash.
+- `--hint/--tag/--ticket/--why` (also on `add`): durable recall hints written to state.db at creation (`docs/recall.md`). `launch` additionally derives `purpose` from the first line of `-m` and both commands derive `parent` for a child; an explicit `--hint purpose=` wins. Echoed in `--json` as `hints` and `tags`.
 - `--no-identity` (also on `add`): skip the harness identity injection for this session only. By default every spawn tells the model it runs inside agent-deck, its session metadata and how to use the CLI (`[launch] inject_identity` in config-reference.md, `documentation/HARNESS_IDENTITY.md`). Persisted, so restarts honour it.
 
 ### accounts - List named account slots
@@ -548,6 +552,23 @@ Per-session numbers for evals, derived on demand from the profile's local sessio
 Unknown values are `null`, never `0`. `--all` returns a JSON array for every session with events in the window. Over `remote exec`, an older remote without the command answers with one line saying so (exit 2).
 
 **How to read these numbers.** Turn duration is measured at the daemon's poll cadence (1–3 s), so treat it as coarse: compare medians across many turns, not single values. A rising `unconfirmed_rate` means sends are landing without a visible accept signal (a busy composer, a tool without hooks), a rising `waiting_ms` means the session is blocked on a human, restarts and dead letters are the "something broke" counters. An eval compares two builds on the same window: `agent-deck health --json` gives the profile roll-up (turns/day, median turn, unconfirmed send rate, restarts/day, sessions with dead letters).
+
+### session annotate
+
+```bash
+agent-deck session annotate <id|title> [--hint k=v] [--set-hint k=v] [--unset k] [--tag t] [--remove-tag t]
+    [--ticket id] [--why text] [--decision text] [--outcome worked|failed|...] [--note-stdin] [--json]
+agent-deck session annotate --self [...]          # the calling session (AGENTDECK_INSTANCE_ID)
+agent-deck remote exec <name> session annotate <id> --outcome worked
+```
+
+Records durable intent about a session for recall (`docs/recall.md`): hints are single-valued per key (setting a key again replaces it), tags are a set. With no edit flags it prints the current hints, tags and harness links. `--note-stdin` stores stdin as the `note` hint (8 KiB cap). Exit 2 when the session is unknown. `--json` returns `hints`, `tags`, `links` and the applied `changes`.
+
+```bash
+agent-deck session annotate auth-fix --decision "root cause was clock skew" --outcome worked --tag clock-skew
+agent-deck session annotate auth-fix --set-hint ticket=SB-413 --remove-tag flaky --unset why
+agent-deck session annotate --self --note-stdin < summary.md
+```
 
 ### session set-parent / unset-parent
 

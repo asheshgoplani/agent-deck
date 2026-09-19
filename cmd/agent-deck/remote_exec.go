@@ -30,7 +30,7 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		case "session":
 			if len(args) > 1 {
 				switch args[1] {
-				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers":
+				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers", "annotate":
 					return append([]string(nil), args...), nil
 				case "switch", "switch-preview", "switch-account":
 					if err := validateRemoteSwitchArgs(args[1], args[2:]); err != nil {
@@ -228,6 +228,17 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	return forwarded, input, closeInput, nil
 }
 
+// wantsJSON reports whether a forwarded command asked for --json, so a
+// controller-side diagnostic can answer in the same shape.
+func wantsJSON(args []string) bool {
+	for _, arg := range args {
+		if arg == "--json" || arg == "-json" || arg == "--json=true" {
+			return true
+		}
+	}
+	return false
+}
+
 func handleRemoteExec(name string, args []string) {
 	code, err := runRemoteExec(name, args)
 	if err != nil {
@@ -267,27 +278,46 @@ func runRemoteExec(name string, args []string) (int, error) {
 		}
 		return 0, nil
 	}
-	// session metrics and session primer capture stderr so an older remote's
-	// "unknown session command" (plus its help text) reads as one clear line
-	// instead of raw remote output.
+	// session metrics, primer and annotate capture stderr so an older
+	// remote's "unknown session command" (plus its help text) reads as one
+	// clear line instead of raw remote output. annotate also buffers stdout:
+	// the older remote prints its session usage there, which must not reach
+	// a --json caller.
+	var stdout io.Writer = os.Stdout
 	var stderr io.Writer = os.Stderr
-	var captured bytes.Buffer
-	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) {
-		stderr = &captured
+	var capturedOut, capturedErr bytes.Buffer
+	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) || isSessionAnnotateArgs(args) {
+		stderr = &capturedErr
 	}
-	err = runner.RunIO(context.Background(), input, os.Stdout, stderr, args...)
+	if isSessionAnnotateArgs(args) {
+		stdout = &capturedOut
+	}
+	err = runner.RunIO(context.Background(), input, stdout, stderr, args...)
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
-		if msg, ok := remoteMetricsUnsupported(name, args, exitErr.ExitCode(), captured.String()); ok {
+	remoteFailed := errors.As(err, &exitErr) && exitErr.ExitCode() > 0
+	if remoteFailed {
+		if msg, ok := remoteMetricsUnsupported(name, args, exitErr.ExitCode(), capturedErr.String()); ok {
 			return 2, errors.New(msg)
 		}
-		if msg, ok := remotePrimerUnsupported(name, args, exitErr.ExitCode(), captured.String()); ok {
+		if msg, ok := remotePrimerUnsupported(name, args, exitErr.ExitCode(), capturedErr.String()); ok {
 			return 2, errors.New(msg)
 		}
-		_, _ = os.Stderr.Write(captured.Bytes())
+		if remoteAnnotateUnsupported(args, exitErr.ExitCode(), capturedErr.String()) {
+			// Only now is the extra round trip worth it: name the version the
+			// remote actually runs so the update hint is concrete.
+			remoteVersion, _ := runner.CheckBinary(context.Background())
+			if wantsJSON(args) {
+				_, _ = os.Stdout.Write(remoteAnnotateUnsupportedJSON(name, remoteVersion))
+				return 1, nil
+			}
+			return 1, errors.New(remoteAnnotateUnsupportedMessage(name, remoteVersion))
+		}
+	}
+	_, _ = os.Stdout.Write(capturedOut.Bytes())
+	_, _ = os.Stderr.Write(capturedErr.Bytes())
+	if remoteFailed {
 		return exitErr.ExitCode(), nil // SSH already forwarded the diagnostic.
 	}
-	_, _ = os.Stderr.Write(captured.Bytes())
 	if err != nil {
 		return 1, err
 	}

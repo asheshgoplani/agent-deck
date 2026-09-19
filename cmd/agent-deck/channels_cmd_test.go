@@ -68,6 +68,17 @@ func runAgentDeck(
 	args ...string,
 ) (stdout, stderr string, exitCode int) {
 	t.Helper()
+	return runAgentDeckStdin(t, home, "", args...)
+}
+
+// runAgentDeckStdin is runAgentDeck with a stdin body (e.g. for --note-stdin).
+func runAgentDeckStdin(
+	t *testing.T,
+	home string,
+	stdin string,
+	args ...string,
+) (stdout, stderr string, exitCode int) {
+	t.Helper()
 
 	bin := channelsCLIBinary(t)
 	cmd := exec.Command(bin, args...)
@@ -118,6 +129,7 @@ func runAgentDeck(
 	cmd.Env = env
 
 	var outBuf, errBuf strings.Builder
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 

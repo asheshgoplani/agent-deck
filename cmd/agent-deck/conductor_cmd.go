@@ -16,6 +16,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // envVarFlags implements flag.Value for repeatable -env KEY=VALUE flags
@@ -598,6 +599,14 @@ func handleConductorSetup(profile string, args []string) {
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving session for %s: %v\n", resolvedProfile, err)
 		os.Exit(1)
+	}
+	// Recall phase 1: a conductor session carries its purpose as a durable
+	// hint from the start (docs/recall.md), so the hint corpus does not
+	// depend on anyone typing --hint on the high-volume creation path.
+	if db := storage.GetDB(); db != nil && !existed {
+		if err := db.SetSessionHint(statedb.HintScopeInstance, sessionID, hintKeyPurpose, "conductor "+name, statedb.HintSourceConductor, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: recall hint: %v\n", err)
+		}
 	}
 
 	// Step 6: Install heartbeat timer (if heartbeat enabled and interval > 0)

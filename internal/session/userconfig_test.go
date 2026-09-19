@@ -2317,6 +2317,7 @@ func TestSaveUserConfig_OmitsZeroValueFields(t *testing.T) {
 		"[crush]",
 		"[hermes]",
 		"[global_search]",
+		"[recall]",
 		"[logs]",
 		"[mcp_pool]",
 		"[conductor]",
