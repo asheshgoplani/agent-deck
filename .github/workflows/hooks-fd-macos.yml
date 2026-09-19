@@ -57,8 +57,9 @@ jobs:
           done
           test "$(git -C async-baseline rev-parse HEAD)" = "$ASYNC_REVISION"
           git -C async-baseline diff --exit-code
+          # Only the test file: its undo case never reads the search golden,
+          # so the pinned revision's own overlay rendering cannot mask the red.
           cp head/internal/ui/hook_cleanup_async_test.go async-baseline/internal/ui/
-          cp head/internal/ui/testdata/hook_cleanup_search.txt async-baseline/internal/ui/testdata/
           # The containers run with --network none, so the image must hold the
           # module graph of EVERY checkout it tests. The pinned baselines keep
           # their own go.mod/go.sum (older dependency versions than head), and
