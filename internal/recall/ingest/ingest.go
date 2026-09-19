@@ -286,9 +286,11 @@ func (in *Ingester) prioritizeQueued(res *Result, cands []candidate) {
 			rank[filepath.Clean(e.Path)] = i + 1
 		}
 	}
+	// Queued files first, in queue order (newest first); the rest keep the
+	// walk's order.
 	sort.SliceStable(cands, func(i, j int) bool {
 		ri, rj := rank[cands[i].ref.Path], rank[cands[j].ref.Path]
-		if (ri == 0) != (rj == 0) {
+		if ri == 0 || rj == 0 {
 			return ri != 0
 		}
 		return ri < rj

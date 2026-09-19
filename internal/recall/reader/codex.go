@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -48,68 +47,42 @@ var codexRolloutRE = regexp.MustCompile(`^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0
 
 func (Codex) Harness() string { return HarnessCodex }
 
+// codexLayout: <home>/{sessions,archived_sessions}/**/rollout-*.jsonl; the
+// resolved home rides along as Aux for the projection database and the
+// title index.
+var codexLayout = layout{
+	harness: HarnessCodex,
+	subdirs: []string{"sessions", "archived_sessions"},
+	keep:    isCodexRollout,
+	ident: func(ref *SourceRef, home string) bool {
+		ref.NativeID = codexNativeID(ref.Path)
+		ref.Aux = home
+		return true
+	},
+}
+
 // Discover walks sessions/ and archived_sessions/ under every Codex home.
 func (Codex) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
-	seenRoot := map[string]bool{}
-	seen := dedup{}
-	for _, r := range roots {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		home, err := fsEvalSymlinks(r.Dir)
-		if err != nil || seenRoot[home] {
-			continue
-		}
-		seenRoot[home] = true
-		for _, sub := range []string{"sessions", "archived_sessions"} {
-			err := walkFiles(ctx, filepath.Join(home, sub), nil, isCodexRollout, func(path string, info os.FileInfo) error {
-				ref := fileRef(HarnessCodex, r, path, info)
-				if seen.seen(ref.Dev, ref.Ino) {
-					return nil
-				}
-				ref.NativeID = codexRolloutRE.FindStringSubmatch(filepath.Base(path))[1]
-				ref.Aux = home
-				return emit(ref)
-			})
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return codexLayout.discover(ctx, roots, emit)
+}
+
+// Locate builds the SourceRef of one rollout under a Codex home.
+func (Codex) Locate(path string, roots []Root) (SourceRef, bool) {
+	return codexLayout.locate(path, roots)
 }
 
 func isCodexRollout(name string) bool { return codexRolloutRE.MatchString(name) }
 
-// Locate builds the SourceRef of one rollout under a Codex home.
-func (Codex) Locate(path string, roots []Root) (SourceRef, bool) {
-	if !isCodexRollout(filepath.Base(path)) {
-		return SourceRef{}, false
-	}
-	for _, sub := range []string{"sessions", "archived_sessions"} {
-		if real, info, r, ok := locateUnder(path, sub, roots); ok {
-			ref := fileRef(HarnessCodex, r, real, info)
-			ref.NativeID = codexRolloutRE.FindStringSubmatch(filepath.Base(real))[1]
-			if home, err := fsEvalSymlinks(r.Dir); err == nil {
-				ref.Aux = home
-			}
-			return ref, true
-		}
-	}
-	return SourceRef{}, false
+// codexNativeID is the thread uuid in a rollout filename.
+func codexNativeID(path string) string {
+	return codexRolloutRE.FindStringSubmatch(filepath.Base(path))[1]
 }
 
 // Ingest tails src from byte offset from, bounded by Codex's own cursor
 // when it applies (see the type comment).
 func (Codex) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, b *Budget) (int64, error) {
-	stop := codexProjectionStop(src)
-	st := &codexState{src: src, sink: sink, pending: map[string]pendingCall{}}
-	off, err := scanJSONL(ctx, src.Path, from, stop, sink, b, func(line []byte, off, n int64) error {
-		st.line(line, off, n)
-		return st.err
-	})
-	st.flush()
-	return off, err
+	st := &codexState{newEmitter(src, sink)}
+	return st.scan(ctx, from, codexProjectionStop(src), b, st.line)
 }
 
 // codexProjectionStop returns the byte offset a pass over src may not
@@ -258,35 +231,18 @@ type codexCompacted struct {
 	Message string `json:"message"`
 }
 
-type codexState struct {
-	src         SourceRef
-	sink        Sink
-	pending     map[string]pendingCall
-	sessionSent bool
-	model       string
-	err         error
-}
-
-func (st *codexState) fail(err error) {
-	if err != nil && st.err == nil {
-		st.err = err
-	}
-}
+type codexState struct{ emitter }
 
 // session emits the Session record once, with the best-effort title.
 func (st *codexState) session(native, cwd, version, branch string) {
 	if st.sessionSent {
 		return
 	}
-	st.sessionSent = true
-	if native == "" {
-		native = st.src.NativeID
-	}
-	s := Session{NativeID: native, CWD: cwd, Version: version, Branch: branch}
-	if title := codexTitle(st.src.Aux, native); title != "" {
+	s := Session{NativeID: firstNonEmpty(native, st.src.NativeID), CWD: cwd, Version: version, Branch: branch}
+	if title := codexTitle(st.src.Aux, s.NativeID); title != "" {
 		s.Title, s.TitleSrc = title, "thread_name"
 	}
-	st.sink.Session(s)
+	st.emitter.session(s)
 }
 
 func (st *codexState) line(line []byte, off, n int64) {
@@ -305,10 +261,7 @@ func (st *codexState) line(line []byte, off, n int64) {
 		var tc codexTurnContext
 		_ = json.Unmarshal(rec.Payload, &tc)
 		st.session("", tc.CWD, "", "")
-		if tc.Model != "" && tc.Model != st.model {
-			st.model = tc.Model
-			st.sink.Session(Session{Model: tc.Model})
-		}
+		st.setModel(tc.Model)
 	case "response_item":
 		st.responseItem(rec.Payload, ts, off, n)
 	case "token_usage_record":
@@ -361,11 +314,8 @@ func (st *codexState) responseItem(payload json.RawMessage, ts time.Time, off, n
 		}
 		var sb strings.Builder
 		for _, c := range it.Content {
-			if (c.Type == "input_text" || c.Type == "output_text") && c.Text != "" {
-				if sb.Len() > 0 {
-					sb.WriteByte('\n')
-				}
-				sb.WriteString(c.Text)
+			if c.Type == "input_text" || c.Type == "output_text" {
+				joinText(&sb, c.Text)
 			}
 		}
 		text := sb.String()
@@ -386,20 +336,9 @@ func (st *codexState) responseItem(payload json.RawMessage, ts time.Time, off, n
 			name = firstNonEmpty(name, "shell")
 			args = strings.Join(it.Action.Command, " ")
 		}
-		pc := pendingCall{name: name, ts: ts, digest: clipRunes(strings.TrimSpace(args), ArgDigestChars)}
-		if it.CallID != "" {
-			st.pending[it.CallID] = pc
-		} else {
-			st.emitCall(pc, ts, false)
-		}
+		st.openCall(it.CallID, pendingCall{name: name, ts: ts, digest: clipRunes(strings.TrimSpace(args), ArgDigestChars)})
 	case "function_call_output", "custom_tool_call_output":
-		isErr := codexOutputIsError(it.Output)
-		if pc, ok := st.pending[it.CallID]; ok {
-			delete(st.pending, it.CallID)
-			st.emitCall(pc, ts, isErr)
-		} else {
-			st.emitCall(pendingCall{ts: ts}, ts, isErr)
-		}
+		st.closeCall(it.CallID, pendingCall{ts: ts}, ts, codexOutputIsError(it.Output))
 	}
 }
 
@@ -442,20 +381,3 @@ func codexErrorText(s string) bool {
 	return strings.HasPrefix(t, "Error:") || strings.HasPrefix(t, "error:") || strings.HasPrefix(t, "failed:") ||
 		strings.Contains(t, "\nExit code: ") && !strings.Contains(t, "\nExit code: 0")
 }
-
-func (st *codexState) emitCall(pc pendingCall, resultTS time.Time, isError bool) {
-	tc := ToolCall{Name: pc.name, TS: unixOrZero(pc.ts), IsError: isError, ArgDigest: pc.digest}
-	if !pc.ts.IsZero() && !resultTS.IsZero() && resultTS.After(pc.ts) {
-		tc.DurationMS = resultTS.Sub(pc.ts).Milliseconds()
-	}
-	st.fail(st.sink.ToolCall(tc))
-}
-
-func (st *codexState) flush() {
-	for id, pc := range st.pending {
-		delete(st.pending, id)
-		st.emitCall(pc, time.Time{}, false)
-	}
-}
-
-var errNoCodexHome = errors.New("recall: codex home not set")

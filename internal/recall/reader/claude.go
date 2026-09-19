@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,41 +35,30 @@ func (Claude) Harness() string { return HarnessClaude }
 // skipDirs are never descended into.
 var skipDirs = map[string]bool{"tool-results": true, "workflows": true}
 
-// Discover walks each root's projects/ tree once. Roots whose projects dir
-// resolves to one already walked (the worker-scratch symlinks) are skipped
-// at the directory level, and files are deduplicated by (dev, ino), so a
-// transcript reachable through many paths is one source.
-func (Claude) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
-	seenRoot := map[string]bool{}
-	seenFile := dedup{}
-	for _, r := range roots {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		real, err := fsEvalSymlinks(filepath.Join(r.Dir, "projects"))
-		if err != nil {
-			continue // no projects dir: nothing to index
-		}
-		if seenRoot[real] {
-			continue
-		}
-		seenRoot[real] = true
-		if err := walkClaudeProjects(ctx, real, r, seenFile, emit); err != nil {
-			return err
-		}
-	}
-	return nil
+// claudeLayout: <cfgdir>/projects/**/*.jsonl, deduplicated at the projects
+// level (the worker-scratch symlinks) so a tree reachable through many
+// roots is walked once.
+var claudeLayout = layout{
+	harness: HarnessClaude,
+	base:    "projects",
+	skip:    skipDirs,
+	keep:    isJSONL,
+	ident: func(ref *SourceRef, _ string) bool {
+		claudeIdentity(ref)
+		return true
+	},
 }
 
-func walkClaudeProjects(ctx context.Context, dir string, r Root, seen dedup, emit func(SourceRef) error) error {
-	return walkFiles(ctx, dir, skipDirs, isJSONL, func(path string, info os.FileInfo) error {
-		ref := fileRef(HarnessClaude, r, path, info)
-		if seen.seen(ref.Dev, ref.Ino) {
-			return nil
-		}
-		claudeIdentity(&ref)
-		return emit(ref)
-	})
+// Discover walks each root's projects/ tree once.
+func (Claude) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
+	return claudeLayout.discover(ctx, roots, emit)
+}
+
+// Locate builds the SourceRef of one transcript under a root's projects/
+// tree (the Stop hook's path). tool-results/ and workflows/ are not
+// transcripts.
+func (Claude) Locate(path string, roots []Root) (SourceRef, bool) {
+	return claudeLayout.locate(path, roots)
 }
 
 // claudeIdentity derives the native id from the path: the file's uuid,
@@ -86,49 +73,6 @@ func claudeIdentity(ref *SourceRef) {
 }
 
 func isJSONL(name string) bool { return filepath.Ext(name) == ".jsonl" }
-
-// Locate builds the SourceRef of one transcript under a root's projects/
-// tree (the Stop hook's path), with the same sidechain detection as the
-// walk. tool-results/ and workflows/ are not transcripts.
-func (Claude) Locate(path string, roots []Root) (SourceRef, bool) {
-	if !isJSONL(path) {
-		return SourceRef{}, false
-	}
-	real, info, r, ok := locateUnder(path, "projects", roots)
-	if !ok {
-		return SourceRef{}, false
-	}
-	for _, seg := range strings.Split(filepath.Dir(real), string(os.PathSeparator)) {
-		if skipDirs[seg] {
-			return SourceRef{}, false
-		}
-	}
-	ref := fileRef(HarnessClaude, r, real, info)
-	claudeIdentity(&ref)
-	return ref, true
-}
-
-// regularFile resolves a directory entry to the regular file behind it (one
-// lstat, plus a symlink resolution and stat when the entry is a link). ok is
-// false for anything that is not a regular file.
-func regularFile(d fs.DirEntry, path string) (string, fs.FileInfo, bool) {
-	if d.Type()&fs.ModeSymlink == 0 {
-		info, err := entryInfo(d)
-		if err != nil || !info.Mode().IsRegular() {
-			return "", nil, false
-		}
-		return path, info, true
-	}
-	resolved, err := fsEvalSymlinks(path)
-	if err != nil {
-		return "", nil, false
-	}
-	info, err := fsStat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", nil, false
-	}
-	return resolved, info, true
-}
 
 // noiseTypes never carry conversation text and are roughly 41% of bytes;
 // they are skipped on the raw line before any decode.
@@ -234,35 +178,20 @@ type toolArgs struct {
 	Skill        string `json:"skill"`
 }
 
-type pendingCall struct {
-	name    string
-	ts      time.Time
-	digest  string
-	touches []FileTouch
-}
+var interruptedTrue = []byte(`"interrupted":true`)
 
 // Ingest streams src from byte offset from. It stops at a torn trailing
 // line (the cursor never covers it), skips over-long lines whole, decodes
 // only the record types that carry text or structure, and never holds more
 // than one record in memory.
 func (Claude) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, b *Budget) (int64, error) {
-	st := &claudeState{src: src, sink: sink, pending: map[string]pendingCall{}}
-	off, err := scanJSONL(ctx, src.Path, from, 0, sink, b, func(line []byte, off, n int64) error {
-		st.line(line, off, n)
-		return st.err // the sink refused (quarantine): the cursor stays put
-	})
-	st.flush()
-	return off, err
+	st := &claudeState{emitter: newEmitter(src, sink)}
+	return st.scan(ctx, from, 0, b, st.line)
 }
 
 type claudeState struct {
-	src         SourceRef
-	sink        Sink
-	pending     map[string]pendingCall
-	sessionSent bool
-	titleSent   bool
-	model       string
-	err         error // first sink error; stops the pass
+	emitter
+	titleSent bool
 }
 
 func (st *claudeState) line(line []byte, off, n int64) {
@@ -309,14 +238,11 @@ func (st *claudeState) title(title, src string) {
 }
 
 func (st *claudeState) message(rec *claudeRecord, off, n int64) {
-	if !st.sessionSent {
-		st.sessionSent = true
-		native := st.src.NativeID
-		if !st.src.IsSidechain && rec.SessionID != "" {
-			native = rec.SessionID
-		}
-		st.sink.Session(Session{NativeID: native, CWD: rec.CWD, Branch: rec.GitBranch, Version: rec.Version})
+	native := ""
+	if !st.src.IsSidechain {
+		native = rec.SessionID
 	}
+	st.session(Session{NativeID: native, CWD: rec.CWD, Branch: rec.GitBranch, Version: rec.Version})
 	ts := parseTS(rec.Timestamp)
 	m := Msg{
 		TS:        unixOrZero(ts),
@@ -328,10 +254,7 @@ func (st *claudeState) message(rec *claudeRecord, off, n int64) {
 	}
 	if rec.Type == "assistant" {
 		m.Role = recall.RoleAssistant
-		if rec.Message.Model != "" && rec.Message.Model != st.model {
-			st.model = rec.Message.Model
-			st.sink.Session(Session{Model: st.model})
-		}
+		st.setModel(rec.Message.Model)
 		u := rec.Message.Usage
 		if u.InputTokens+u.OutputTokens > 0 {
 			st.fail(st.sink.Usage(Usage{UUID: rec.UUID, TS: ts, Model: rec.Message.Model,
@@ -348,12 +271,6 @@ func (st *claudeState) message(rec *claudeRecord, off, n int64) {
 		return
 	}
 	st.fail(st.sink.Msg(m))
-}
-
-func (st *claudeState) fail(err error) {
-	if err != nil && st.err == nil {
-		st.err = err
-	}
 }
 
 // content decodes a message body: a plain string or an array of typed
@@ -381,56 +298,24 @@ func (st *claudeState) content(raw json.RawMessage, ts time.Time, m *Msg) string
 		blk := &blocks[i]
 		switch blk.Type {
 		case "text":
-			if blk.Text == "" {
-				continue
-			}
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(blk.Text)
-			if classify.IsInterrupt(blk.Text) {
+			joinText(&sb, blk.Text)
+			if blk.Text != "" && classify.IsInterrupt(blk.Text) {
 				m.IsInterrupt = true
 			}
 		case "tool_use":
 			m.ToolNames = append(m.ToolNames, blk.Name)
 			pc := pendingCall{name: blk.Name, ts: ts}
 			pc.digest, pc.touches = digestArgs(blk.Name, blk.Input)
-			if blk.ID != "" {
-				st.pending[blk.ID] = pc
-			} else {
-				st.emitCall(pc, ts, false)
-			}
+			st.openCall(blk.ID, pc)
 		case "tool_result":
 			m.IsToolResult = true
 			if blk.IsError {
 				m.IsError = true
 			}
-			if pc, ok := st.pending[blk.ToolUseID]; ok {
-				delete(st.pending, blk.ToolUseID)
-				st.emitCall(pc, ts, blk.IsError)
-			} else {
-				st.emitCall(pendingCall{name: "", ts: ts}, ts, blk.IsError)
-			}
+			st.closeCall(blk.ToolUseID, pendingCall{ts: ts}, ts, blk.IsError)
 		}
 	}
 	return sb.String()
-}
-
-func (st *claudeState) emitCall(pc pendingCall, resultTS time.Time, isError bool) {
-	tc := ToolCall{Name: pc.name, TS: unixOrZero(pc.ts), IsError: isError, ArgDigest: pc.digest, Touches: pc.touches}
-	if !pc.ts.IsZero() && !resultTS.IsZero() && resultTS.After(pc.ts) {
-		tc.DurationMS = resultTS.Sub(pc.ts).Milliseconds()
-	}
-	st.fail(st.sink.ToolCall(tc))
-}
-
-// flush emits calls whose result never arrived in this pass (the result
-// may land in the next append; it is then an unmatched result).
-func (st *claudeState) flush() {
-	for id, pc := range st.pending {
-		delete(st.pending, id)
-		st.emitCall(pc, time.Time{}, false)
-	}
 }
 
 // digestArgs picks the one argument that identifies a call (the command,
@@ -460,15 +345,6 @@ func digestArgs(name string, input json.RawMessage) (string, []FileTouch) {
 	return clipRunes(digest, ArgDigestChars), touches
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func joinNonEmpty(a, b string) string {
 	switch {
 	case a != "" && b != "":
@@ -493,26 +369,6 @@ func clipRunes(s string, n int) string {
 		i++
 	}
 	return s
-}
-
-// unixOrZero is t.Unix(), with 0 (not the year-one epoch) for a missing
-// timestamp.
-func unixOrZero(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.Unix()
-}
-
-func parseTS(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
 }
 
 // usageSink keeps only Usage events.
@@ -548,13 +404,4 @@ func ScanClaudeUsage(ctx context.Context, path string) ([]Usage, error) {
 		}
 	}
 	return sink.out, nil
-}
-
-// unixFloat converts a float seconds timestamp (Hermes) to time.Time.
-func unixFloat(ts float64) time.Time {
-	if ts <= 0 {
-		return time.Time{}
-	}
-	sec := int64(ts)
-	return time.Unix(sec, int64((ts-float64(sec))*1e9))
 }

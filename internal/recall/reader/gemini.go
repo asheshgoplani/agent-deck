@@ -1,9 +1,9 @@
 package reader
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -31,35 +31,23 @@ func (Gemini) Harness() string { return HarnessGemini }
 // Cursor: rewritten wholesale, reparsed whole.
 func (Gemini) Cursor() CursorKind { return CursorNone }
 
+// geminiLayout: <home>/tmp/<projectHash>/chats/session-*.json.
+var geminiLayout = layout{
+	harness: HarnessGemini,
+	subdirs: []string{"tmp"},
+	keep:    isGeminiChat,
+	ident: func(ref *SourceRef, _ string) bool {
+		if filepath.Base(filepath.Dir(ref.Path)) != "chats" {
+			return false
+		}
+		ref.NativeID = strings.TrimSuffix(filepath.Base(ref.Path), ".json")
+		return true
+	},
+}
+
 // Discover walks tmp/<hash>/chats/ under every Gemini home.
 func (Gemini) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
-	seenRoot := map[string]bool{}
-	seen := dedup{}
-	for _, r := range roots {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		home, err := fsEvalSymlinks(r.Dir)
-		if err != nil || seenRoot[home] {
-			continue
-		}
-		seenRoot[home] = true
-		err = walkFiles(ctx, filepath.Join(home, "tmp"), nil, isGeminiChat, func(path string, info os.FileInfo) error {
-			if filepath.Base(filepath.Dir(path)) != "chats" {
-				return nil
-			}
-			ref := fileRef(HarnessGemini, r, path, info)
-			if seen.seen(ref.Dev, ref.Ino) {
-				return nil
-			}
-			ref.NativeID = strings.TrimSuffix(filepath.Base(path), ".json")
-			return emit(ref)
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return geminiLayout.discover(ctx, roots, emit)
 }
 
 func isGeminiChat(name string) bool {
@@ -94,7 +82,7 @@ func (Gemini) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, 
 	}
 	defer f.Close()
 	sc := newJSONScanner(f)
-	st := &geminiState{src: src, sink: sink}
+	st := &geminiState{emitter: newEmitter(src, sink)}
 	if err := sc.expect('{'); err != nil {
 		return 0, err
 	}
@@ -145,38 +133,25 @@ func (Gemini) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, 
 }
 
 type geminiState struct {
-	src         SourceRef
-	sink        Sink
-	sessionSent bool
-	model       string
-	title       string
-	started     int64
-	ended       int64
+	emitter
+	title string
 }
 
+// session emits the Session record once. Gemini records only a hash of
+// the working directory; the cwd column stays empty and project filters
+// cannot match a Gemini session.
 func (st *geminiState) session(native string) {
-	if st.sessionSent {
-		return
-	}
-	st.sessionSent = true
-	if native == "" {
-		native = st.src.NativeID
-	}
-	// Gemini records only a hash of the working directory; the cwd column
-	// stays empty and project filters cannot match a Gemini session.
-	st.sink.Session(Session{NativeID: native})
+	st.emitter.session(Session{NativeID: native})
 }
 
+// top keeps the top-level keys that matter; startTime and lastUpdated
+// add nothing the messages' own timestamps do not.
 func (st *geminiState) top(key, v string) {
 	switch key {
 	case "sessionId":
 		st.session(v)
 	case "summary":
 		st.title = v
-	case "startTime":
-		st.started = unixOrZero(parseTS(v))
-	case "lastUpdated":
-		st.ended = unixOrZero(parseTS(v))
 	}
 }
 
@@ -255,21 +230,15 @@ func (st *geminiState) message(raw json.RawMessage, off, n int64) {
 	msg := Msg{Role: recall.RoleUser, TS: unixOrZero(ts), RecOff: off, RecLen: n, UUID: m.ID, Text: geminiText(m.Content)}
 	if m.Type == "gemini" {
 		msg.Role = recall.RoleAssistant
-		if m.Model != "" && m.Model != st.model {
-			st.model = m.Model
-			st.sink.Session(Session{Model: m.Model})
-		}
+		st.setModel(m.Model)
 		if m.Tokens.Input+m.Tokens.Output > 0 {
 			_ = st.sink.Usage(Usage{UUID: m.ID, TS: ts, Model: m.Model, In: m.Tokens.Input, Out: m.Tokens.Output, CacheR: m.Tokens.Cached})
 		}
 		for _, tc := range m.ToolCalls {
 			msg.ToolNames = append(msg.ToolNames, tc.Name)
 			digest, touches := digestArgs(tc.Name, geminiArgs(tc.Args))
-			call := ToolCall{Name: tc.Name, TS: unixOrZero(ts), IsError: tc.Status == "error", ArgDigest: digest, Touches: touches}
-			if end := parseTS(tc.Timestamp); !end.IsZero() && !ts.IsZero() && end.After(ts) {
-				call.DurationMS = end.Sub(ts).Milliseconds()
-			}
-			_ = st.sink.ToolCall(call)
+			pc := pendingCall{name: tc.Name, ts: ts, digest: digest, touches: touches}
+			_ = st.sink.ToolCall(pc.call(parseTS(tc.Timestamp), tc.Status == "error"))
 		}
 	}
 	if strings.TrimSpace(msg.Text) == "" {
@@ -280,7 +249,7 @@ func (st *geminiState) message(raw json.RawMessage, off, n int64) {
 
 // geminiText decodes content: a string, or a list of {text} parts.
 func geminiText(raw json.RawMessage) string {
-	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
 		return ""
 	}
@@ -299,13 +268,7 @@ func geminiText(raw json.RawMessage) string {
 	}
 	var sb strings.Builder
 	for _, p := range parts {
-		if p.Text == "" {
-			continue
-		}
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(p.Text)
+		joinText(&sb, p.Text)
 	}
 	return sb.String()
 }
@@ -313,7 +276,7 @@ func geminiText(raw json.RawMessage) string {
 // geminiArgs normalises toolCalls[].args, which is a JSON object in most
 // files and a Python-repr string in some, into JSON for digestArgs.
 func geminiArgs(raw json.RawMessage) json.RawMessage {
-	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || raw[0] != '"' {
 		return raw
 	}

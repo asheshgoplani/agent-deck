@@ -31,39 +31,27 @@ func (OpenCode) Harness() string { return HarnessOpenCode }
 // Cursor: a session tree, reparsed whole.
 func (OpenCode) Cursor() CursorKind { return CursorNone }
 
+// opencodeLayout: <storage>/session/<projectID>/<ses_id>.json, each sized
+// with its message and part files; the resolved storage dir rides along
+// as Aux.
+var opencodeLayout = layout{
+	harness: HarnessOpenCode,
+	subdirs: []string{"session"},
+	keep:    isJSON,
+	ident: func(ref *SourceRef, storage string) bool {
+		ref.NativeID = strings.TrimSuffix(filepath.Base(ref.Path), ".json")
+		ref.Aux = storage
+		size, mtime := opencodeTreeStat(storage, ref.NativeID)
+		ref.Size += size
+		ref.MtimeNS = max(ref.MtimeNS, mtime)
+		return true
+	},
+}
+
 // Discover lists every session json under storage/session and sizes its
 // message and part files.
 func (OpenCode) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
-	seenRoot := map[string]bool{}
-	seen := dedup{}
-	for _, r := range roots {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		storage, err := fsEvalSymlinks(r.Dir)
-		if err != nil || seenRoot[storage] {
-			continue
-		}
-		seenRoot[storage] = true
-		err = walkFiles(ctx, filepath.Join(storage, "session"), nil, isJSON, func(path string, info os.FileInfo) error {
-			ref := fileRef(HarnessOpenCode, r, path, info)
-			if seen.seen(ref.Dev, ref.Ino) {
-				return nil
-			}
-			ref.NativeID = strings.TrimSuffix(filepath.Base(path), ".json")
-			ref.Aux = storage
-			size, mtime := opencodeTreeStat(storage, ref.NativeID)
-			ref.Size += size
-			if mtime > ref.MtimeNS {
-				ref.MtimeNS = mtime
-			}
-			return emit(ref)
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return opencodeLayout.discover(ctx, roots, emit)
 }
 
 func isJSON(name string) bool { return filepath.Ext(name) == ".json" }
@@ -72,9 +60,7 @@ func isJSON(name string) bool { return filepath.Ext(name) == ".json" }
 func opencodeTreeStat(storage, sessID string) (size, mtimeNS int64) {
 	add := func(info os.FileInfo) {
 		size += info.Size()
-		if m := info.ModTime().UnixNano(); m > mtimeNS {
-			mtimeNS = m
-		}
+		mtimeNS = max(mtimeNS, info.ModTime().UnixNano())
 	}
 	msgs, _ := fsReadDir(filepath.Join(storage, "message", sessID))
 	for _, d := range msgs {
@@ -248,13 +234,7 @@ func opencodeParts(storage, msgID string, ts int64, msg *Msg, sink Sink, b *Budg
 		}
 		switch p.Type {
 		case "text":
-			if p.Text == "" {
-				continue
-			}
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(p.Text)
+			joinText(&sb, p.Text)
 		case "tool":
 			msg.ToolNames = append(msg.ToolNames, p.Tool)
 			digest, touches := digestArgs(p.Tool, p.State.Input)

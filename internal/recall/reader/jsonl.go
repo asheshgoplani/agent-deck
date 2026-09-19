@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // lineFunc receives one complete JSONL record (without its newline) at byte
@@ -141,6 +143,28 @@ func walkFiles(ctx context.Context, dir string, skip map[string]bool, keep func(
 	return nil
 }
 
+// regularFile resolves a directory entry to the regular file behind it (one
+// lstat, plus a symlink resolution and stat when the entry is a link). ok is
+// false for anything that is not a regular file.
+func regularFile(d fs.DirEntry, path string) (string, fs.FileInfo, bool) {
+	if d.Type()&fs.ModeSymlink == 0 {
+		info, err := entryInfo(d)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", nil, false
+		}
+		return path, info, true
+	}
+	resolved, err := fsEvalSymlinks(path)
+	if err != nil {
+		return "", nil, false
+	}
+	info, err := fsStat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", nil, false
+	}
+	return resolved, info, true
+}
+
 // fileRef builds the common part of a SourceRef for a regular file.
 func fileRef(harness string, r Root, path string, info os.FileInfo) SourceRef {
 	dev, ino := FileIdentity(info)
@@ -226,4 +250,245 @@ func locateUnder(path, subdir string, roots []Root) (string, os.FileInfo, Root, 
 		}
 	}
 	return "", nil, Root{}, false
+}
+
+// layout describes where a file-per-conversation harness keeps its
+// transcripts under one root, so Discover and Locate are shared: base is
+// the subdir of the root that is symlink-resolved and deduplicated once
+// ("" for the root itself; Claude's "projects", which the worker-scratch
+// homes link back to one config dir, so a tree reached through many roots
+// is walked once), subdirs are the trees under base to walk (none: base
+// itself), skip names directories never descended into, keep filters file
+// names, and ident fills in the harness-specific fields of a SourceRef
+// from its path and the resolved base (false: not a transcript after all).
+type layout struct {
+	harness string
+	base    string
+	subdirs []string
+	skip    map[string]bool
+	keep    func(name string) bool
+	ident   func(ref *SourceRef, base string) bool
+}
+
+// discover walks every root once and emits each transcript once, files
+// deduplicated by (dev, ino).
+func (l layout) discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
+	seenBase := map[string]bool{}
+	seenFile := dedup{}
+	subdirs := l.subdirs
+	if len(subdirs) == 0 {
+		subdirs = []string{""}
+	}
+	for _, r := range roots {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		base, err := fsEvalSymlinks(filepath.Join(r.Dir, l.base))
+		if err != nil || seenBase[base] {
+			continue // nothing to index, or a tree already walked
+		}
+		seenBase[base] = true
+		for _, sub := range subdirs {
+			err := walkFiles(ctx, filepath.Join(base, sub), l.skip, l.keep, func(path string, info os.FileInfo) error {
+				ref := fileRef(l.harness, r, path, info)
+				if seenFile.seen(ref.Dev, ref.Ino) || !l.ident(&ref, base) {
+					return nil
+				}
+				return emit(ref)
+			})
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// locate builds the SourceRef of one transcript under a root (the Stop
+// hook's path) with the same identity rules as the walk.
+func (l layout) locate(path string, roots []Root) (SourceRef, bool) {
+	if !l.keep(filepath.Base(path)) {
+		return SourceRef{}, false
+	}
+	subdirs := l.subdirs
+	if len(subdirs) == 0 {
+		subdirs = []string{""}
+	}
+	for _, sub := range subdirs {
+		real, info, r, ok := locateUnder(path, filepath.Join(l.base, sub), roots)
+		if !ok {
+			continue
+		}
+		for _, seg := range strings.Split(filepath.Dir(real), string(os.PathSeparator)) {
+			if l.skip[seg] {
+				return SourceRef{}, false
+			}
+		}
+		ref := fileRef(l.harness, r, real, info)
+		base, _ := fsEvalSymlinks(filepath.Join(r.Dir, l.base))
+		if !l.ident(&ref, base) {
+			return SourceRef{}, false
+		}
+		return ref, true
+	}
+	return SourceRef{}, false
+}
+
+// emitter is the state every reader's pass shares: the source, the sink,
+// the tool calls awaiting their result, the model last announced and the
+// first sink error, which ends the pass (the sink refused, for instance a
+// quarantine, and the cursor stays put).
+type emitter struct {
+	src         SourceRef
+	sink        Sink
+	pending     map[string]pendingCall
+	sessionSent bool
+	model       string
+	err         error
+}
+
+func newEmitter(src SourceRef, sink Sink) emitter {
+	return emitter{src: src, sink: sink, pending: map[string]pendingCall{}}
+}
+
+// fail keeps the first sink error.
+func (e *emitter) fail(err error) {
+	if err != nil && e.err == nil {
+		e.err = err
+	}
+}
+
+// scan runs one JSONL pass over the source (see scanJSONL), handing each
+// record to line, and flushes the unmatched calls at the end.
+func (e *emitter) scan(ctx context.Context, from, stop int64, b *Budget, line func(line []byte, off, n int64)) (int64, error) {
+	off, err := scanJSONL(ctx, e.src.Path, from, stop, e.sink, b, func(l []byte, off, n int64) error {
+		line(l, off, n)
+		return e.err
+	})
+	e.flush()
+	return off, err
+}
+
+// session emits the Session record once per pass, with the source's
+// native id when s names none; later calls are dropped, so the first
+// record that knows the conversation wins.
+func (e *emitter) session(s Session) {
+	if e.sessionSent {
+		return
+	}
+	e.sessionSent = true
+	if s.NativeID == "" {
+		s.NativeID = e.src.NativeID
+	}
+	e.sink.Session(s)
+}
+
+// setModel announces a model change once per distinct model.
+func (e *emitter) setModel(model string) {
+	if model == "" || model == e.model {
+		return
+	}
+	e.model = model
+	e.sink.Session(Session{Model: model})
+}
+
+// openCall records a call awaiting its result; a call without an id is
+// emitted at once, unjoined.
+func (e *emitter) openCall(id string, pc pendingCall) {
+	if id == "" {
+		e.emitCall(pc, pc.ts, false)
+		return
+	}
+	e.pending[id] = pc
+}
+
+// closeCall joins a result to its pending call and emits it; a result
+// whose call was never seen in this pass is emitted as orphan.
+func (e *emitter) closeCall(id string, orphan pendingCall, resultTS time.Time, isError bool) {
+	pc, ok := e.pending[id]
+	if ok {
+		delete(e.pending, id)
+	} else {
+		pc = orphan
+	}
+	e.emitCall(pc, resultTS, isError)
+}
+
+func (e *emitter) emitCall(pc pendingCall, resultTS time.Time, isError bool) {
+	e.fail(e.sink.ToolCall(pc.call(resultTS, isError)))
+}
+
+// flush emits calls whose result never arrived in this pass (the result
+// may land in the next append; it is then an unmatched result).
+func (e *emitter) flush() {
+	for id, pc := range e.pending {
+		delete(e.pending, id)
+		e.emitCall(pc, time.Time{}, false)
+	}
+}
+
+// pendingCall is a tool_use waiting for its tool_result.
+type pendingCall struct {
+	name    string
+	ts      time.Time
+	digest  string
+	touches []FileTouch
+}
+
+// call is the ToolCall for a result seen at resultTS (zero: none).
+func (pc pendingCall) call(resultTS time.Time, isError bool) ToolCall {
+	tc := ToolCall{Name: pc.name, TS: unixOrZero(pc.ts), IsError: isError, ArgDigest: pc.digest, Touches: pc.touches}
+	if !pc.ts.IsZero() && !resultTS.IsZero() && resultTS.After(pc.ts) {
+		tc.DurationMS = resultTS.Sub(pc.ts).Milliseconds()
+	}
+	return tc
+}
+
+// joinText appends one text block to a body, newline-separated.
+func joinText(sb *strings.Builder, text string) {
+	if text == "" {
+		return
+	}
+	if sb.Len() > 0 {
+		sb.WriteByte('\n')
+	}
+	sb.WriteString(text)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func parseTS(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// unixOrZero is t.Unix(), with 0 (not the year-one epoch) for a missing
+// timestamp.
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// unixFloat converts a float seconds timestamp (Hermes) to time.Time.
+func unixFloat(ts float64) time.Time {
+	if ts <= 0 {
+		return time.Time{}
+	}
+	sec := int64(ts)
+	return time.Unix(sec, int64((ts-float64(sec))*1e9))
 }

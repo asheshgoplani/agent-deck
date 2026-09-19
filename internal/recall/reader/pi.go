@@ -1,9 +1,9 @@
 package reader
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,52 +28,29 @@ var piSessionRE = regexp.MustCompile(`^.*_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[
 
 func (Pi) Harness() string { return HarnessPi }
 
-// Discover walks agent/sessions and agent-deck under every pi home.
-func (Pi) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
-	seenRoot := map[string]bool{}
-	seen := dedup{}
-	for _, r := range roots {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		home, err := fsEvalSymlinks(r.Dir)
-		if err != nil || seenRoot[home] {
-			continue
-		}
-		seenRoot[home] = true
-		for _, sub := range []string{filepath.Join("agent", "sessions"), "agent-deck"} {
-			err := walkFiles(ctx, filepath.Join(home, sub), nil, isPiSession, func(path string, info os.FileInfo) error {
-				ref := fileRef(HarnessPi, r, path, info)
-				if seen.seen(ref.Dev, ref.Ino) {
-					return nil
-				}
-				ref.NativeID = piNativeID(path)
-				return emit(ref)
-			})
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+// piLayout: <home>/agent/sessions/**/<ts>_<uuid>.jsonl and
+// <home>/agent-deck/**/<ts>_<uuid>.jsonl.
+var piLayout = layout{
+	harness: HarnessPi,
+	subdirs: []string{filepath.Join("agent", "sessions"), "agent-deck"},
+	keep:    isPiSession,
+	ident: func(ref *SourceRef, _ string) bool {
+		ref.NativeID = piNativeID(ref.Path)
+		return true
+	},
 }
 
-func isPiSession(name string) bool { return piSessionRE.MatchString(name) }
+// Discover walks agent/sessions and agent-deck under every pi home.
+func (Pi) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
+	return piLayout.discover(ctx, roots, emit)
+}
 
 // Locate builds the SourceRef of one pi session file under a pi home.
 func (Pi) Locate(path string, roots []Root) (SourceRef, bool) {
-	if !isPiSession(filepath.Base(path)) {
-		return SourceRef{}, false
-	}
-	for _, sub := range []string{filepath.Join("agent", "sessions"), "agent-deck"} {
-		if real, info, r, ok := locateUnder(path, sub, roots); ok {
-			ref := fileRef(HarnessPi, r, real, info)
-			ref.NativeID = piNativeID(real)
-			return ref, true
-		}
-	}
-	return SourceRef{}, false
+	return piLayout.locate(path, roots)
 }
+
+func isPiSession(name string) bool { return piSessionRE.MatchString(name) }
 
 // piNativeID is the uuid in a pi session filename, or the bare filename.
 func piNativeID(path string) string {
@@ -86,13 +63,8 @@ func piNativeID(path string) string {
 
 // Ingest tails src from byte offset from.
 func (Pi) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, b *Budget) (int64, error) {
-	st := &piState{src: src, sink: sink, pending: map[string]pendingCall{}}
-	off, err := scanJSONL(ctx, src.Path, from, 0, sink, b, func(line []byte, off, n int64) error {
-		st.line(line, off, n)
-		return st.err
-	})
-	st.flush()
-	return off, err
+	st := &piState{newEmitter(src, sink)}
+	return st.scan(ctx, from, 0, b, st.line)
 }
 
 type piRecord struct {
@@ -132,31 +104,7 @@ type piBlock struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-type piState struct {
-	src         SourceRef
-	sink        Sink
-	pending     map[string]pendingCall
-	sessionSent bool
-	model       string
-	err         error
-}
-
-func (st *piState) fail(err error) {
-	if err != nil && st.err == nil {
-		st.err = err
-	}
-}
-
-func (st *piState) session(native, cwd, forkOf string) {
-	if st.sessionSent {
-		return
-	}
-	st.sessionSent = true
-	if native == "" {
-		native = st.src.NativeID
-	}
-	st.sink.Session(Session{NativeID: native, CWD: cwd, ForkOf: forkOf})
-}
+type piState struct{ emitter }
 
 func (st *piState) line(line []byte, off, n int64) {
 	var rec piRecord
@@ -171,12 +119,9 @@ func (st *piState) line(line []byte, off, n int64) {
 		if rec.ParentSession != "" {
 			forkOf = piNativeID(rec.ParentSession)
 		}
-		st.session(rec.ID, rec.CWD, forkOf)
+		st.session(Session{NativeID: rec.ID, CWD: rec.CWD, ForkOf: forkOf})
 	case "model_change":
-		if rec.ModelID != "" && rec.ModelID != st.model {
-			st.model = rec.ModelID
-			st.sink.Session(Session{Model: rec.ModelID})
-		}
+		st.setModel(rec.ModelID)
 	case "session_info":
 		if rec.Name != "" {
 			st.sink.Session(Session{Title: rec.Name, TitleSrc: "session_info"})
@@ -184,7 +129,7 @@ func (st *piState) line(line []byte, off, n int64) {
 	case "compaction":
 		st.sink.Count(CountCompact, 1)
 		if strings.TrimSpace(rec.Summary) != "" {
-			st.session("", "", "")
+			st.session(Session{})
 			st.fail(st.sink.Msg(Msg{Role: recall.RoleUser, TS: unixOrZero(ts), RecOff: off, RecLen: n, Text: rec.Summary, IsCompact: true}))
 		}
 	case "message":
@@ -200,26 +145,18 @@ func (st *piState) message(rec *piRecord, ts time.Time, off, n int64) {
 	m := rec.Message
 	switch m.Role {
 	case "toolResult":
-		st.session("", "", "")
-		if pc, ok := st.pending[m.CallID]; ok {
-			delete(st.pending, m.CallID)
-			st.emitCall(pc, ts, m.IsError)
-		} else {
-			st.emitCall(pendingCall{name: m.ToolName, ts: ts}, ts, m.IsError)
-		}
+		st.session(Session{})
+		st.closeCall(m.CallID, pendingCall{name: m.ToolName, ts: ts}, ts, m.IsError)
 		return
 	case "user", "assistant":
 	default:
 		return
 	}
-	st.session("", "", "")
+	st.session(Session{})
 	msg := Msg{TS: unixOrZero(ts), RecOff: off, RecLen: n}
 	if m.Role == "assistant" {
 		msg.Role = recall.RoleAssistant
-		if m.Model != "" && m.Model != st.model {
-			st.model = m.Model
-			st.sink.Session(Session{Model: m.Model})
-		}
+		st.setModel(m.Model)
 		if m.Usage.Input+m.Usage.Output > 0 {
 			st.fail(st.sink.Usage(Usage{UUID: firstNonEmpty(m.RespID, rec.ID), TS: ts, Model: firstNonEmpty(m.Model, st.model),
 				In: m.Usage.Input, Out: m.Usage.Output, CacheR: m.Usage.CacheRead, CacheW: m.Usage.CacheWrite}))
@@ -239,7 +176,7 @@ func (st *piState) message(rec *piRecord, ts time.Time, off, n int64) {
 
 // content joins text blocks; toolCall blocks open pending calls.
 func (st *piState) content(raw json.RawMessage, ts time.Time, m *Msg) string {
-	raw = trimSpaceJSON(raw)
+	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
 		return ""
 	}
@@ -259,42 +196,13 @@ func (st *piState) content(raw json.RawMessage, ts time.Time, m *Msg) string {
 		blk := &blocks[i]
 		switch blk.Type {
 		case "text":
-			if blk.Text == "" {
-				continue
-			}
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(blk.Text)
+			joinText(&sb, blk.Text)
 		case "toolCall":
 			m.ToolNames = append(m.ToolNames, blk.Name)
 			pc := pendingCall{name: blk.Name, ts: ts}
 			pc.digest, pc.touches = digestArgs(blk.Name, blk.Arguments)
-			if blk.ID != "" {
-				st.pending[blk.ID] = pc
-			} else {
-				st.emitCall(pc, ts, false)
-			}
+			st.openCall(blk.ID, pc)
 		}
 	}
 	return sb.String()
-}
-
-func (st *piState) emitCall(pc pendingCall, resultTS time.Time, isError bool) {
-	tc := ToolCall{Name: pc.name, TS: unixOrZero(pc.ts), IsError: isError, ArgDigest: pc.digest, Touches: pc.touches}
-	if !pc.ts.IsZero() && !resultTS.IsZero() && resultTS.After(pc.ts) {
-		tc.DurationMS = resultTS.Sub(pc.ts).Milliseconds()
-	}
-	st.fail(st.sink.ToolCall(tc))
-}
-
-func (st *piState) flush() {
-	for id, pc := range st.pending {
-		delete(st.pending, id)
-		st.emitCall(pc, time.Time{}, false)
-	}
-}
-
-func trimSpaceJSON(raw json.RawMessage) json.RawMessage {
-	return json.RawMessage(strings.TrimSpace(string(raw)))
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/recall/ingest"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
+	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -272,7 +273,7 @@ func (gs *GlobalSearch) Update(msg tea.Msg) (*GlobalSearch, tea.Cmd) {
 		case msg.err != nil:
 			gs.refresh = "index refresh failed: " + msg.err.Error()
 		case msg.res.Deferred > 0:
-			gs.refresh = fmt.Sprintf("index behind by %d source(s) / %s; catching up in the background", msg.res.Deferred, humanBytesUI(msg.res.DeferredBytes))
+			gs.refresh = fmt.Sprintf("index behind by %d source(s) / %s; catching up in the background", msg.res.Deferred, humanBytes(msg.res.DeferredBytes))
 			// Continue in bounded passes, through the gate, while the
 			// overlay is open.
 			gs.sweeping = true
@@ -393,12 +394,7 @@ func (gs *GlobalSearch) applySearchResults(res query.SearchResult) {
 			Title: h.Title, Snippet: h.Snippet, CWD: h.CWD, BodyHits: h.BodyHits, CardHit: h.CardHit,
 			Missing: h.Missing, Sidechain: h.Sidechain,
 		}
-		if ts := h.EndedAt; ts == 0 {
-			ts = h.StartedAt
-			r.EndedAt = unixOrZeroTime(ts)
-		} else {
-			r.EndedAt = unixOrZeroTime(ts)
-		}
+		r.EndedAt = unixOrZeroTime(firstNonZero(h.EndedAt, h.StartedAt))
 		gs.results = append(gs.results, r)
 	}
 	gs.candidates, gs.ceilingHit = res.Candidates, res.CeilingHit
@@ -406,11 +402,20 @@ func (gs *GlobalSearch) applySearchResults(res query.SearchResult) {
 	gs.previewScroll = 0
 }
 
+// unixOrZeroTime is time.Unix(ts, 0), with the zero time (not 1970) for a
+// missing timestamp.
 func unixOrZeroTime(ts int64) time.Time {
 	if ts == 0 {
 		return time.Time{}
 	}
 	return time.Unix(ts, 0)
+}
+
+func firstNonZero(a, b int64) int64 {
+	if a != 0 {
+		return a
+	}
+	return b
 }
 
 // MarkInAgentDeck marks results whose conversation a registered session
@@ -428,7 +433,7 @@ func (gs *GlobalSearch) MarkInAgentDeck(instances []*session.Instance) {
 	for _, r := range gs.results {
 		if inst := byID[r.DeckID]; inst != nil {
 			r.InAgentDeck, r.InstanceID = true, inst.ID
-		} else if inst := byClaude[r.SessionID]; inst != nil && r.Harness == "claude" {
+		} else if inst := byClaude[r.SessionID]; inst != nil && r.Harness == reader.HarnessClaude {
 			r.InAgentDeck, r.InstanceID = true, inst.ID
 		}
 	}
@@ -465,7 +470,7 @@ func (gs *GlobalSearch) View() string {
 		}
 		left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(summary) + "\n")
 		for i, r := range gs.results {
-			title := clipCells(firstNonEmptyUI(r.Title, r.Snippet, r.SessionID), max(leftWidth-14, 20))
+			title := clipCells(firstNonEmpty(r.Title, r.Snippet, r.SessionID), max(leftWidth-14, 20))
 			prefix := "  "
 			if r.InAgentDeck {
 				prefix = "• "
@@ -483,12 +488,12 @@ func (gs *GlobalSearch) View() string {
 
 	var right strings.Builder
 	if sel := gs.Selected(); sel != nil {
-		right.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render("📄 "+firstNonEmptyUI(sel.Title, "(untitled)")) + "\n")
+		right.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render("📄 "+firstNonEmpty(sel.Title, "(untitled)")) + "\n")
 		meta := sel.Harness
 		if sel.Profile != "" {
 			meta += "/" + sel.Profile
 		}
-		meta += "  " + shortNativeUI(sel.SessionID)
+		meta += "  " + shortNative(sel.SessionID)
 		if sel.DeckID != "" {
 			meta += "  deck:" + sel.DeckID
 		}
@@ -577,9 +582,9 @@ func (gs *GlobalSearch) previewLines(sel *GlobalSearchResult, width int) []strin
 	}
 	s := d.Session
 	lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render(
-		fmt.Sprintf("%d turns • %d tool calls • %d errors • model %s", s.Turns, s.ToolCalls, s.Errors, firstNonEmptyUI(s.Model, "-"))))
+		fmt.Sprintf("%d turns • %d tool calls • %d errors • model %s", s.Turns, s.ToolCalls, s.Errors, firstNonEmpty(s.Model, "-"))))
 	if s.Hints != "" || s.Tags != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render("hints: "+firstNonEmptyUI(s.Hints, "-")+"  tags: "+firstNonEmptyUI(s.Tags, "-")))
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render("hints: "+firstNonEmpty(s.Hints, "-")+"  tags: "+firstNonEmpty(s.Tags, "-")))
 	}
 	lines = append(lines, "")
 	for _, m := range d.Messages {
@@ -592,7 +597,7 @@ func (gs *GlobalSearch) previewLines(sel *GlobalSearchResult, width int) []strin
 			if i == 0 {
 				lines = append(lines, lipgloss.NewStyle().Foreground(color).Render(prefix)+gs.highlightMatches(w, gs.query))
 			} else {
-				lines = append(lines, strings.Repeat(" ", 3)+gs.highlightMatches(w, gs.query))
+				lines = append(lines, "   "+gs.highlightMatches(w, gs.query))
 			}
 		}
 	}
@@ -665,7 +670,7 @@ func highlightTerm(text, term string) string {
 	}
 }
 
-func firstNonEmptyUI(vals ...string) string {
+func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
 			return v
@@ -689,14 +694,15 @@ func clipLeft(s string, n int) string {
 	return "..." + s[len(s)-(n-3):]
 }
 
-func shortNativeUI(id string) string {
+// shortNative is the conversation id as the preview shows it.
+func shortNative(id string) string {
 	if len(id) > 12 {
 		return id[:12]
 	}
 	return id
 }
 
-func humanBytesUI(n int64) string {
+func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<30:
 		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))

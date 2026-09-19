@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall"
 )
@@ -189,11 +190,8 @@ func (Hermes) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, 
 				pc = pendingCall{name: tool, ts: unixFloat(ts)}
 			}
 			delete(pending, callID)
-			tc := ToolCall{Name: pc.name, TS: unixOrZero(pc.ts), ArgDigest: pc.digest, IsError: strings.HasPrefix(strings.TrimSpace(content), "Error")}
-			if end := unixFloat(ts); end.After(pc.ts) && !pc.ts.IsZero() {
-				tc.DurationMS = end.Sub(pc.ts).Milliseconds()
-			}
-			if err := sink.ToolCall(tc); err != nil {
+			isErr := strings.HasPrefix(strings.TrimSpace(content), "Error")
+			if err := sink.ToolCall(pc.call(unixFloat(ts), isErr)); err != nil {
 				return last, err
 			}
 		}
@@ -206,7 +204,7 @@ func (Hermes) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, 
 		return last, err
 	}
 	for _, pc := range pending {
-		if err := sink.ToolCall(ToolCall{Name: pc.name, TS: unixOrZero(pc.ts), ArgDigest: pc.digest}); err != nil {
+		if err := sink.ToolCall(pc.call(time.Time{}, false)); err != nil {
 			return last, err
 		}
 	}

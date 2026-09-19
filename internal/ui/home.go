@@ -41,6 +41,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -10036,7 +10037,7 @@ func (h *Home) openGlobalSearch() tea.Cmd {
 func (h *Home) handleGlobalSearchSelection(result *GlobalSearchResult) tea.Cmd {
 	h.instancesMu.RLock()
 	for _, inst := range h.instances {
-		if (result.DeckID != "" && inst.ID == result.DeckID) || (result.Harness == "claude" && inst.ClaudeSessionID == result.SessionID) {
+		if (result.DeckID != "" && inst.ID == result.DeckID) || (result.Harness == reader.HarnessClaude && inst.ClaudeSessionID == result.SessionID) {
 			h.instancesMu.RUnlock()
 			h.jumpToSession(inst)
 			return nil
@@ -10047,7 +10048,7 @@ func (h *Home) handleGlobalSearchSelection(result *GlobalSearchResult) tea.Cmd {
 	case result.Sidechain:
 		h.setError(fmt.Errorf("a subagent transcript cannot be resumed; open its parent session (agent-deck recall show #%d)", result.SessID))
 		return nil
-	case result.Harness != "claude":
+	case result.Harness != reader.HarnessClaude:
 		h.setError(fmt.Errorf("%s conversations are searchable but not resumable yet: agent-deck recall show #%d", result.Harness, result.SessID))
 		return nil
 	case result.Missing:
