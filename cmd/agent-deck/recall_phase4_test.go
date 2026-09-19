@@ -464,8 +464,9 @@ func TestRecallContext_PrintsAndIntoCurrentNeedsASession(t *testing.T) {
 	if _, stderr, code := runAgentDeck(t, home, "recall", "context", sess, "--into", "current"); code != 2 || !strings.Contains(stderr, "AGENTDECK_INSTANCE_ID") {
 		t.Fatalf("--into current outside a session: %d %s", code, stderr)
 	}
-	if _, stderr, code := runAgentDeck(t, home, "recall", "context", sess, "--into", "x", "--json"); code != 2 || !strings.Contains(stderr, "cannot be combined") {
-		t.Fatalf("--into with --json: %d %s", code, stderr)
+	// Under --json the refusal is the JSON error object on stdout.
+	if stdout, stderr, code := runAgentDeck(t, home, "recall", "context", sess, "--into", "x", "--json"); code != 2 || !strings.Contains(stdout, "cannot be combined") {
+		t.Fatalf("--into with --json: %d %s %s", code, stdout, stderr)
 	}
 	if _, stderr, code := runAgentDeck(t, home, "recall", "context", "no-such", "--tier", "brief"); code != 2 || !strings.Contains(stderr, "no such session") {
 		t.Fatalf("unknown: %d %s", code, stderr)
