@@ -58,8 +58,9 @@ func (h *Home) renderUpdateBannerText() string {
 			return fmt.Sprintf(" ⬆ v%s installed, press %s to restart agent-deck ", v, h.restartDeckKeyLabel())
 		}
 		if h.restartOverdueReason != "" {
-			return fmt.Sprintf(" ⚠ v%s installed %s ago, restart overdue: %s (%s to restart now) ",
-				v, time.Since(h.installedUpdateSince()).Round(time.Hour), h.restartOverdueReason, h.restartDeckKeyLabel())
+			hours := int(time.Since(h.installedUpdateSince()).Round(time.Hour).Hours())
+			return fmt.Sprintf(" ⚠ v%s installed %dh ago, restart overdue: %s (%s to restart now) ",
+				v, hours, h.restartOverdueReason, h.restartDeckKeyLabel())
 		}
 		return fmt.Sprintf(" ⬆ v%s installed, restarting when idle (%s now) ", v, h.restartDeckKeyLabel())
 	}
