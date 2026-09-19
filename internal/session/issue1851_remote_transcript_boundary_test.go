@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -493,9 +495,10 @@ func TestRemoteTranscriptBoundary_EveryEntryPointRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []string{" 1.", " 2.", " 3.", " 4.", " 5.", " 6.", " 7.", " 8.", " 9.", "10.", "11.", "12.", "13.", "14.", "15.", "16.", "17.", "18."} {
-		if !strings.Contains(string(doc), "// "+strings.TrimSpace(n)+" ") && !strings.Contains(string(doc), "//"+n+" ") {
-			t.Errorf("remote_transcript_boundary.go lost door %s", strings.TrimSpace(n))
+	// The doc is a gofmt-aligned list: "//  1. name" through "// 18. name".
+	for n := 1; n <= 18; n++ {
+		if !regexp.MustCompile(`(?m)^//\s+` + strconv.Itoa(n) + `\. \S`).Match(doc) {
+			t.Errorf("remote_transcript_boundary.go lost door %d", n)
 		}
 	}
 }

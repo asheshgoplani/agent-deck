@@ -44,10 +44,11 @@ package session
 // Outside package session:
 //
 // 15. internal/ctxinspect/sessionhost.BuildRequest — resolves the transcript
-//     through GetJSONLPathChecked, so it is door 4 seen from the context
-//     inspector; it is listed so a future direct resolution there is noticed.
-//     (The recall design notes said this door did not exist; it does, and it
-//     is gated by construction through door 4.)
+//     through GetJSONLPathChecked (door 4) and then, when that finds nothing,
+//     directly against per-instance config dirs, so it is gated itself before
+//     any lookup (TestBuildRequestNeverResolvesARemoteSessionsTranscriptLocally
+//     in its own package). The recall design notes said this door did not
+//     exist; it does.
 // 16. cmd/agent-deck streamSessionSend — polls for a local transcript that can
 //     never appear
 //

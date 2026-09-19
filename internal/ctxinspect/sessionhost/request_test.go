@@ -308,3 +308,44 @@ func TestBuildRequestWarnsWhenTheConfigDirIsOnlyInferred(t *testing.T) {
 		t.Fatalf("warnings %v do not say the config dir was inferred rather than observed", warnings)
 	}
 }
+
+// An --ssh session's conversation lives on the remote host and its
+// ProjectPath is a local placeholder: resolving against it does not miss,
+// it finds a LOCAL session's transcript (#1851). BuildRequest is door 15 of
+// internal/session/remote_transcript_boundary.go and must refuse before
+// any lookup, even when a matching local transcript exists.
+func TestBuildRequestNeverResolvesARemoteSessionsTranscriptLocally(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	projectPath := t.TempDir()
+	sessionID := "11111111-2222-3333-4444-555555555555"
+	dir := filepath.Join(configDir, "projects", session.ConvertToClaudeDirName(projectPath))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, sessionID+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	inst := &session.Instance{
+		ID:              "abc123def456",
+		Title:           "remote",
+		Tool:            "claude",
+		ProjectPath:     projectPath,
+		ClaudeSessionID: sessionID,
+		SSHHost:         "alice@host-a",
+	}
+	req, warnings, err := BuildRequest(inst, nil, RequestOptions{})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if req.TranscriptPath != "" {
+		t.Fatalf("a remote session resolved a LOCAL transcript: %q", req.TranscriptPath)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "host-a") || !strings.Contains(warnings[0], "projected") {
+		t.Fatalf("warnings = %v, want one naming the remote host", warnings)
+	}
+	if req.SessionID != sessionID || req.Tool != "claude" {
+		t.Fatalf("the identity must still be carried: %+v", req)
+	}
+}

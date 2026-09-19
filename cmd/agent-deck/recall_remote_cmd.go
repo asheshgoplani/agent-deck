@@ -75,7 +75,11 @@ func validateRemoteRecallArgs(args []string) error {
 			continue
 		}
 		if !inline {
-			if i+1 >= len(rest) || strings.HasPrefix(rest[i+1], "-") {
+			// The value is the next argument, which must exist and must
+			// not itself be an option (the shape validateRemoteSwitchArgs
+			// uses, which gosec's slice-bounds pass can follow).
+			after := rest[i+1:]
+			if len(after) == 0 || strings.HasPrefix(after[0], "-") {
 				return fmt.Errorf("option --%s needs a value", name)
 			}
 			i++
