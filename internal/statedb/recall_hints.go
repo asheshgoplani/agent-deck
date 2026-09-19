@@ -2,6 +2,7 @@ package statedb
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -377,6 +378,52 @@ func (s *StateDB) ListSessionLinks(sessionID string) ([]SessionLink, error) {
 		}
 		l.Authoritative = auth != 0
 		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// AuthoritativeLinkOwner returns the instance an authoritative link binds
+// to a harness conversation id ("" when none). The recall index binds
+// session.deck_id only through this, never by working directory.
+func (s *StateDB) AuthoritativeLinkOwner(harness, nativeID string) (string, error) {
+	var id string
+	err := s.db.QueryRow(`SELECT session_id FROM session_links WHERE harness = ? AND native_id = ? AND authoritative = 1
+		ORDER BY last_seen DESC LIMIT 1`, harness, nativeID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// HarnessRef names one harness conversation.
+type HarnessRef struct {
+	Harness  string
+	NativeID string
+}
+
+// RecallChangedRefs returns the harness conversations whose hints, tags or
+// authoritative link were written at or after since (unix seconds): the
+// recall sweep re-projects exactly those cards instead of all of them.
+func (s *StateDB) RecallChangedRefs(since int64) ([]HarnessRef, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT l.harness, l.native_id FROM session_links l
+		 WHERE l.authoritative = 1 AND (l.last_seen >= ?
+		    OR EXISTS (SELECT 1 FROM session_hints h WHERE h.scope_kind = ? AND h.scope_id = l.session_id AND h.created_at >= ?)
+		    OR EXISTS (SELECT 1 FROM session_tags t WHERE t.scope_kind = ? AND t.scope_id = l.session_id AND (t.created_at >= ? OR t.deleted_at >= ?)))
+		UNION
+		SELECT DISTINCT h.harness, h.scope_id FROM session_hints h WHERE h.scope_kind = ? AND h.created_at >= ?`,
+		since, HintScopeInstance, since, HintScopeInstance, since, since, HintScopeHarnessSession, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HarnessRef
+	for rows.Next() {
+		var r HarnessRef
+		if err := rows.Scan(&r.Harness, &r.NativeID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

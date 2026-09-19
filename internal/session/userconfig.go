@@ -2838,11 +2838,62 @@ type RecallSettings struct {
 	// Enabled turns the recall.db transcript index on (default: false).
 	// Hints and annotations work regardless of this value.
 	Enabled *bool `toml:"enabled,omitempty"`
+	// MaxLoadAvg refuses a backfill or sweep while the one-minute load
+	// average is above it (default 4.0; 0 disables the check).
+	MaxLoadAvg *float64 `toml:"max_loadavg,omitempty"`
+	// TextTier is the stored body per message: "clipped" (default, 8 KiB)
+	// or "full".
+	TextTier string `toml:"text_tier,omitempty"`
+	// KeepMissingDays is how long the ledger row and tombstone of a
+	// vanished transcript survive before `recall gc` drops them (default 30).
+	KeepMissingDays *int `toml:"keep_missing_days,omitempty"`
+	// PerSourceMB caps how much of one transcript a single sweep parses;
+	// the rest continues next sweep (default 64; 0 = unlimited).
+	PerSourceMB *int `toml:"per_source_mb,omitempty"`
 }
+
+// Recall defaults.
+const (
+	DefaultRecallMaxLoadAvg      = 4.0
+	DefaultRecallKeepMissingDays = 30
+	DefaultRecallPerSourceMB     = 64
+)
 
 // GetEnabled reports whether the recall index is switched on (default false).
 func (r RecallSettings) GetEnabled() bool {
 	return r.Enabled != nil && *r.Enabled
+}
+
+// GetMaxLoadAvg returns the load gate threshold (default 4.0).
+func (r RecallSettings) GetMaxLoadAvg() float64 {
+	if r.MaxLoadAvg == nil {
+		return DefaultRecallMaxLoadAvg
+	}
+	return *r.MaxLoadAvg
+}
+
+// GetTextTier returns "clipped" unless "full" is configured.
+func (r RecallSettings) GetTextTier() string {
+	if strings.EqualFold(strings.TrimSpace(r.TextTier), "full") {
+		return "full"
+	}
+	return "clipped"
+}
+
+// GetKeepMissingDays returns the tombstone retention (default 30).
+func (r RecallSettings) GetKeepMissingDays() int {
+	if r.KeepMissingDays == nil || *r.KeepMissingDays < 0 {
+		return DefaultRecallKeepMissingDays
+	}
+	return *r.KeepMissingDays
+}
+
+// GetPerSourceMB returns the per-sweep per-source cap (default 64).
+func (r RecallSettings) GetPerSourceMB() int {
+	if r.PerSourceMB == nil || *r.PerSourceMB < 0 {
+		return DefaultRecallPerSourceMB
+	}
+	return *r.PerSourceMB
 }
 
 // ToolDef defines a custom AI tool
