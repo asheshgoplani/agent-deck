@@ -1,13 +1,11 @@
 package reader
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -45,7 +43,7 @@ var skipDirs = map[string]bool{"tool-results": true, "workflows": true}
 // transcript reachable through many paths is one source.
 func (Claude) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
 	seenRoot := map[string]bool{}
-	seenFile := map[[2]uint64]bool{}
+	seenFile := dedup{}
 	for _, r := range roots {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -65,60 +63,49 @@ func (Claude) Discover(ctx context.Context, roots []Root, emit func(SourceRef) e
 	return nil
 }
 
-func walkClaudeProjects(ctx context.Context, dir string, r Root, seen map[[2]uint64]bool, emit func(SourceRef) error) error {
-	entries, err := fsReadDir(dir)
-	if err != nil {
-		return nil // vanished or unreadable: skip, the next sweep sees it
-	}
-	for _, d := range entries {
-		if err := ctx.Err(); err != nil {
-			return err
+func walkClaudeProjects(ctx context.Context, dir string, r Root, seen dedup, emit func(SourceRef) error) error {
+	return walkFiles(ctx, dir, skipDirs, isJSONL, func(path string, info os.FileInfo) error {
+		ref := fileRef(HarnessClaude, r, path, info)
+		if seen.seen(ref.Dev, ref.Ino) {
+			return nil
 		}
-		name := d.Name()
-		path := filepath.Join(dir, name)
-		switch {
-		case d.IsDir():
-			if skipDirs[name] {
-				continue
-			}
-			if err := walkClaudeProjects(ctx, path, r, seen, emit); err != nil {
-				return err
-			}
-		case filepath.Ext(name) == ".jsonl":
-			path, info, ok := regularFile(d, path)
-			if !ok {
-				continue
-			}
-			dev, ino := FileIdentity(info)
-			key := [2]uint64{dev, ino}
-			if ino != 0 {
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-			}
-			ref := SourceRef{
-				Harness:       HarnessClaude,
-				Profile:       r.Profile,
-				Path:          path,
-				Dev:           dev,
-				Ino:           ino,
-				Size:          info.Size(),
-				MtimeNS:       info.ModTime().UnixNano(),
-				RetentionDays: r.RetentionDays,
-				NativeID:      strings.TrimSuffix(name, ".jsonl"),
-			}
-			if filepath.Base(dir) == "subagents" {
-				ref.IsSidechain = true
-				ref.ParentNativeID = filepath.Base(filepath.Dir(dir))
-				ref.NativeID = ref.ParentNativeID + "/" + ref.NativeID
-			}
-			if err := emit(ref); err != nil {
-				return err
-			}
+		claudeIdentity(&ref)
+		return emit(ref)
+	})
+}
+
+// claudeIdentity derives the native id from the path: the file's uuid,
+// prefixed by the parent session's for a subagents/ transcript.
+func claudeIdentity(ref *SourceRef) {
+	ref.NativeID = strings.TrimSuffix(filepath.Base(ref.Path), ".jsonl")
+	if parent := filepath.Dir(ref.Path); filepath.Base(parent) == "subagents" {
+		ref.IsSidechain = true
+		ref.ParentNativeID = filepath.Base(filepath.Dir(parent))
+		ref.NativeID = ref.ParentNativeID + "/" + ref.NativeID
+	}
+}
+
+func isJSONL(name string) bool { return filepath.Ext(name) == ".jsonl" }
+
+// Locate builds the SourceRef of one transcript under a root's projects/
+// tree (the Stop hook's path), with the same sidechain detection as the
+// walk. tool-results/ and workflows/ are not transcripts.
+func (Claude) Locate(path string, roots []Root) (SourceRef, bool) {
+	if !isJSONL(path) {
+		return SourceRef{}, false
+	}
+	real, info, r, ok := locateUnder(path, "projects", roots)
+	if !ok {
+		return SourceRef{}, false
+	}
+	for _, seg := range strings.Split(filepath.Dir(real), string(os.PathSeparator)) {
+		if skipDirs[seg] {
+			return SourceRef{}, false
 		}
 	}
-	return nil
+	ref := fileRef(HarnessClaude, r, real, info)
+	claudeIdentity(&ref)
+	return ref, true
 }
 
 // regularFile resolves a directory entry to the regular file behind it (one
@@ -259,89 +246,13 @@ type pendingCall struct {
 // only the record types that carry text or structure, and never holds more
 // than one record in memory.
 func (Claude) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, b *Budget) (int64, error) {
-	f, err := fsOpen(src.Path)
-	if err != nil {
-		return from, err
-	}
-	defer f.Close()
-	if from > 0 {
-		if _, err := f.Seek(from, io.SeekStart); err != nil {
-			return from, err
-		}
-	}
-	br := bufio.NewReaderSize(f, 256<<10)
 	st := &claudeState{src: src, sink: sink, pending: map[string]pendingCall{}}
-	off := from
-	var scratch []byte
-	for lines := 0; ; lines++ {
-		if lines&63 == 0 {
-			if err := ctx.Err(); err != nil {
-				return off, err
-			}
-			if b.Expired() {
-				return off, ErrBudget
-			}
-		}
-		line, n, complete, tooLong, err := readLine(br, &scratch)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return off, err
-		}
-		if !complete {
-			break // torn trailing line: left for the next sweep
-		}
-		if tooLong {
-			sink.Count(CountLineTooLong, 1)
-		} else {
-			st.line(line, off, int64(n))
-			if st.err != nil {
-				return off, st.err // the sink refused (quarantine): the cursor stays put
-			}
-		}
-		off += int64(n)
-		if !b.Consume(int64(n)) {
-			st.flush()
-			return off, ErrBudget
-		}
-	}
+	off, err := scanJSONL(ctx, src.Path, from, 0, sink, b, func(line []byte, off, n int64) error {
+		st.line(line, off, n)
+		return st.err // the sink refused (quarantine): the cursor stays put
+	})
 	st.flush()
-	return off, nil
-}
-
-// readLine returns the next newline-terminated line. complete is false at a
-// torn tail (no trailing newline); tooLong lines are consumed but not
-// returned. n is the number of bytes consumed either way.
-func readLine(br *bufio.Reader, scratch *[]byte) (line []byte, n int, complete, tooLong bool, err error) {
-	*scratch = (*scratch)[:0]
-	for {
-		chunk, err := br.ReadSlice('\n')
-		n += len(chunk)
-		switch {
-		case err == nil:
-			if tooLong || len(*scratch)+len(chunk) > MaxLineBytes {
-				return nil, n, true, true, nil
-			}
-			if len(*scratch) == 0 {
-				return chunk, n, true, false, nil
-			}
-			*scratch = append(*scratch, chunk...)
-			return *scratch, n, true, false, nil
-		case errors.Is(err, bufio.ErrBufferFull):
-			if !tooLong {
-				if len(*scratch)+len(chunk) > MaxLineBytes {
-					tooLong = true
-					*scratch = (*scratch)[:0]
-				} else {
-					*scratch = append(*scratch, chunk...)
-				}
-			}
-		case errors.Is(err, io.EOF):
-			// Torn tail: bytes without a newline stay unconsumed for the
-			// cursor's purposes; the next sweep re-reads them.
-			return nil, 0, false, tooLong, io.EOF
-		default:
-			return nil, n, false, tooLong, err
-		}
-	}
+	return off, err
 }
 
 type claudeState struct {
@@ -637,4 +548,13 @@ func ScanClaudeUsage(ctx context.Context, path string) ([]Usage, error) {
 		}
 	}
 	return sink.out, nil
+}
+
+// unixFloat converts a float seconds timestamp (Hermes) to time.Time.
+func unixFloat(ts float64) time.Time {
+	if ts <= 0 {
+		return time.Time{}
+	}
+	sec := int64(ts)
+	return time.Unix(sec, int64((ts-float64(sec))*1e9))
 }
