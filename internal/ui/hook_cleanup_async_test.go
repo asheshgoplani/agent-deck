@@ -98,10 +98,16 @@ func TestHookCleanupDeletionKeepsUIResponsive(t *testing.T) {
 			require.Equal(t, 110, h.width)
 			h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 			require.True(t, h.search.IsVisible(), "search input must work while cleanup is blocked")
-			frame := stripAnsi(h.View())
-			golden, err := os.ReadFile("testdata/hook_cleanup_search.txt")
-			require.NoError(t, err)
-			require.Equal(t, string(golden), frame, "search frame while deletion cleanup is blocked")
+			if !tc.undo {
+				// The undo case is also run against a pinned pre-fix revision
+				// (hooks-fd-macos.yml) whose search overlay renders
+				// differently; it must reach the undo assertion below, so the
+				// frame is pinned by the two cases that stop here.
+				frame := stripAnsi(h.View())
+				golden, err := os.ReadFile("testdata/hook_cleanup_search.txt")
+				require.NoError(t, err)
+				require.Equal(t, string(golden), frame, "search frame while deletion cleanup is blocked")
+			}
 			require.FileExists(t, artifact)
 			var undoResult chan tea.Msg
 			if tc.undo {

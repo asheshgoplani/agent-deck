@@ -4,6 +4,11 @@
 #   1. Absolute thresholds (`.lighthouserc.json` ci.assert.assertions) — coarse
 #      upper bound. Hard gates: total-byte-weight, resource-summary:script:size,
 #      cumulative-layout-shift. Soft warnings: FCP, LCP, TBT, Speed Index.
+#      Recalibration log (keep ~5% headroom over the measured main value):
+#        #1666  349580 -> 368000  main at ~350.6KB (terminal keymap, SSE status)
+#        v1.16.11  368000 -> 387000  main 362978 -> 368687 B (+1.6%): group
+#               selection + stats panel, pane registry, iOS viewport insets,
+#               SSE outage recovery; spread over 25 web commits, no single asset.
 #   2. Delta gate (`tests/lighthouse/compare-deltas.mjs`) — block any single PR
 #      that grows `total-byte-weight` or `script:size` by more than
 #      MAX_*_DELTA_PCT (default 5%) vs the base ref. This is the answer to the
