@@ -69,8 +69,21 @@ func (m pendingRebootstrap) agents() []PendingAgent {
 	for _, a := range byLabel {
 		out = append(out, a)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	sortPendingAgents(out)
 	return out
+}
+
+func sortPendingAgents(agents []PendingAgent) {
+	sort.Slice(agents, func(i, j int) bool { return agents[i].Label < agents[j].Label })
+}
+
+// pendingLabels is the label of every agent, in order.
+func pendingLabels(agents []PendingAgent) []string {
+	labels := make([]string, 0, len(agents))
+	for _, a := range agents {
+		labels = append(labels, a.Label)
+	}
+	return labels
 }
 
 // insideLaunchdService reports whether this process runs inside the launchd
@@ -116,11 +129,7 @@ func PendingRebootstrap(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	labels := make([]string, 0, len(agents))
-	for _, a := range agents {
-		labels = append(labels, a.Label)
-	}
-	return labels, nil
+	return pendingLabels(agents), nil
 }
 
 // defaultPendingPath is the marker in the cache dir ("" when the cache dir
@@ -153,10 +162,11 @@ func DescribePendingAgent(p PendingAgent) string {
 	since := p.Since.Local().Format("15:04")
 	switch p.Reason {
 	case PendingReasonBootstrapFailed:
-		s := fmt.Sprintf("%s: bootstrap failed %d times since %s", p.Label, p.Attempts, since)
+		times := fmt.Sprintf("%d times", p.Attempts)
 		if p.Attempts == 1 {
-			s = fmt.Sprintf("%s: bootstrap failed once since %s", p.Label, since)
+			times = "once"
 		}
+		s := fmt.Sprintf("%s: bootstrap failed %s since %s", p.Label, times, since)
 		if p.LastError != "" {
 			s += " (last: " + p.LastError + ")"
 		}
@@ -226,12 +236,8 @@ func editPendingRebootstrap(path, label string, edit func(p *PendingAgent, found
 		}
 		return nil
 	}
-	sort.Slice(agents, func(i, j int) bool { return agents[i].Label < agents[j].Label })
-	labels := make([]string, 0, len(agents))
-	for _, a := range agents {
-		labels = append(labels, a.Label)
-	}
-	data, err := json.MarshalIndent(pendingRebootstrap{Labels: labels, UpdatedAt: time.Now(), Agents: agents}, "", "  ")
+	sortPendingAgents(agents)
+	data, err := json.MarshalIndent(pendingRebootstrap{Labels: pendingLabels(agents), UpdatedAt: time.Now(), Agents: agents}, "", "  ")
 	if err != nil {
 		return err
 	}

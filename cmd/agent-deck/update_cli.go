@@ -68,16 +68,15 @@ func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettin
 		pending = []update.PendingAgent{}
 	}
 	return updateCheckJSON{
-		Current:     info.CurrentVersion,
-		Latest:      info.LatestVersion,
-		Available:   info.Available,
-		Publishing:  info.PublishingVersion,
-		AutoInstall: settings.GetAutoInstall(),
-		AutoRestart: settings.GetAutoRestart(),
-		Timer:       timer,
-		OnDisk:      onDisk,
-		RunningTUIs: tuis,
-
+		Current:             info.CurrentVersion,
+		Latest:              info.LatestVersion,
+		Available:           info.Available,
+		Publishing:          info.PublishingVersion,
+		AutoInstall:         settings.GetAutoInstall(),
+		AutoRestart:         settings.GetAutoRestart(),
+		Timer:               timer,
+		OnDisk:              onDisk,
+		RunningTUIs:         tuis,
 		PendingLaunchAgents: pending,
 	}
 }
