@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Letter hotkeys in the overview now also fire on their Russian ЙЦУКЕН twin (`т` for `n`, `А` for `F`, `Г` for `Shift+u`), so the deck keeps working with a non-Latin keyboard layout selected. Twins follow rebinds, an explicit `[hotkeys]` value always wins over a derived twin, fixed navigation keys stay Latin only, and attached panes still receive raw bytes (@na-bal, #2307, closes #2306).
+
 ## [1.16.11] - 2026-09-18
 
 ### Added

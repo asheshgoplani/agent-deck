@@ -300,9 +300,18 @@ func resolveHotkeys(overrides map[string]string) map[string]string {
 	return bindings
 }
 
+// buildHotkeyLookup resolves in two passes so a key the user wrote into
+// [hotkeys] always belongs to that action. Pass one registers every action's
+// bound key with its shift/unshift spellings; pass two adds the layout twins,
+// but only onto keys nobody has claimed. A derived twin therefore never
+// shadows an explicit binding and never blocks a canonical key: quick_fork =
+// "т" keeps "т" even though it is also the ЙЦУКЕН twin of new_session's "n".
 func buildHotkeyLookup(bindings map[string]string) (map[string]string, map[string]bool) {
 	keyToCanonical := make(map[string]string, len(bindings))
 	blockedCanonical := make(map[string]bool)
+
+	// Actions that ended up with a binding, in hotkeyActionOrder, for pass two.
+	var active []string
 
 	for _, action := range hotkeyActionOrder {
 		canonical := defaultHotkeyBindings[action]
@@ -319,7 +328,17 @@ func buildHotkeyLookup(bindings map[string]string) (map[string]string, map[strin
 				blockedCanonical[trigger] = true
 			}
 		}
-		for _, alias := range hotkeyAliases(bound) {
+		for _, alias := range explicitHotkeyAliases(bound) {
+			if _, exists := keyToCanonical[alias]; !exists {
+				keyToCanonical[alias] = canonical
+			}
+		}
+		active = append(active, action)
+	}
+
+	for _, action := range active {
+		canonical := defaultHotkeyBindings[action]
+		for _, alias := range layoutHotkeyAliases(bindings[action]) {
 			if _, exists := keyToCanonical[alias]; !exists {
 				keyToCanonical[alias] = canonical
 			}
@@ -336,7 +355,17 @@ func defaultTriggersForAction(action string) []string {
 	return hotkeyAliases(defaultHotkeyBindings[action])
 }
 
+// hotkeyAliases lists every spelling that reaches a binding: the explicit
+// shift/unshift forms first, then the layout twins derived from them. Callers
+// that need the two tiers apart (buildHotkeyLookup) use the halves directly.
 func hotkeyAliases(key string) []string {
+	return append(explicitHotkeyAliases(key), layoutHotkeyAliases(key)...)
+}
+
+// explicitHotkeyAliases returns the binding itself plus its shifted and
+// unshifted spellings ("F" <-> "shift+f", "!" <-> "shift+1"). These are the
+// forms a user could have written, so they take part in first-wins resolution.
+func explicitHotkeyAliases(key string) []string {
 	trimmed := strings.TrimSpace(key)
 	if trimmed == "" {
 		return nil
@@ -360,16 +389,29 @@ func hotkeyAliases(key string) []string {
 		add(unshiftedAlias)
 	}
 
-	// Layout aliases are derived from every ASCII alias collected above, so a
-	// binding written as "shift+u" picks up the layout twin of its "U" form
-	// too. Iterate a snapshot: add appends to the same slice.
-	for _, alias := range append([]string(nil), aliases...) {
-		if layoutAlias := layoutAliasFor(alias); layoutAlias != "" {
-			add(layoutAlias)
-		}
-	}
-
 	return aliases
+}
+
+// layoutHotkeyAliases returns the layout twins of a binding's explicit
+// spellings, so "shift+u" picks up the twin of its "U" form too. Twins are
+// derived, never written by the user, so they are registered only after every
+// explicit binding has claimed its key.
+func layoutHotkeyAliases(key string) []string {
+	explicit := explicitHotkeyAliases(key)
+	var twins []string
+	seen := make(map[string]bool, len(explicit))
+	for _, alias := range explicit {
+		seen[alias] = true
+	}
+	for _, alias := range explicit {
+		twin := layoutAliasFor(alias)
+		if twin == "" || seen[twin] {
+			continue
+		}
+		seen[twin] = true
+		twins = append(twins, twin)
+	}
+	return twins
 }
 
 // jcukenLetters maps each QWERTY letter key to the letter the same physical

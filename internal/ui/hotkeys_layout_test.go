@@ -109,3 +109,42 @@ func TestLayoutAliasForIgnoresChords(t *testing.T) {
 		}
 	}
 }
+
+// TestExplicitCyrillicBindingBeatsDerivedTwin pins precedence: a key the user
+// wrote into [hotkeys] belongs to that action, even when it is the layout twin
+// of an earlier action's default. Before the two-pass lookup new_session's
+// derived "т" claimed the key first, quick_fork's canonical "f" was blocked by
+// the remap, and quick_fork was unreachable with no warning.
+func TestExplicitCyrillicBindingBeatsDerivedTwin(t *testing.T) {
+	h := NewHome()
+	h.setHotkeys(resolveHotkeys(map[string]string{hotkeyQuickFork: "т"}))
+
+	if got := h.normalizeMainKey("т"); got != "f" {
+		t.Errorf("quick_fork bound to %q resolved to %q, want %q (derived new_session twin shadows the explicit binding)", "т", got, "f")
+	}
+	if got := h.normalizeMainKey("f"); got != "" {
+		t.Errorf("remapped quick_fork left its canonical key %q live (resolved to %q)", "f", got)
+	}
+	if got := h.normalizeMainKey("n"); got != "n" {
+		t.Errorf("new_session's canonical key %q resolved to %q, want %q", "n", got, "n")
+	}
+}
+
+// TestExplicitBindingOnEarlierActionBeatsLaterTwin is the reverse order: the
+// explicit binding sits on an action that comes before the twin's owner in
+// hotkeyActionOrder. The later action's derived twin must yield, and its
+// canonical key must keep working because a derived twin never blocks one.
+func TestExplicitBindingOnEarlierActionBeatsLaterTwin(t *testing.T) {
+	h := NewHome()
+	h.setHotkeys(resolveHotkeys(map[string]string{hotkeyNewSession: "а"}))
+
+	if got := h.normalizeMainKey("а"); got != "n" {
+		t.Errorf("new_session bound to %q resolved to %q, want %q", "а", got, "n")
+	}
+	if got := h.normalizeMainKey("f"); got != "f" {
+		t.Errorf("quick_fork's canonical key %q resolved to %q, want %q", "f", got, "f")
+	}
+	if got := h.normalizeMainKey("n"); got != "" {
+		t.Errorf("remapped new_session left its canonical key %q live (resolved to %q)", "n", got)
+	}
+}

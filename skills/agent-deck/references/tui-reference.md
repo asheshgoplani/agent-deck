@@ -8,6 +8,16 @@ Reconciled against the in-app help overlay (`?`), which is the source of truth
 (`internal/ui/help.go`). Keys marked **rebindable** can be remapped under
 `[hotkeys]` in `config.toml`; the rest are fixed.
 
+Letter hotkeys also fire on the key's Russian ЙЦУКЕН twin, so the overview
+keeps working with a non-Latin layout selected: `т` opens New Session like
+`n`, `А` forks like `F`, `Г` unarchives like `Shift+u`. Twins are derived from
+the resolved bindings (rebinding an action moves its twin with it), only the
+Russian layout is covered for now, and an explicit `[hotkeys]` value always
+wins over a derived twin (`quick_fork = "т"` keeps `т` for quick_fork). The
+fixed navigation keys (`j`/`k`/`h`/`l`/`G`, jump-mode hints) stay Latin only,
+and in jump mode a Cyrillic letter falls through to its twin's action. Attached
+panes are untouched: they receive the raw bytes exactly as typed.
+
 ### Navigation
 
 | Key | Action |
