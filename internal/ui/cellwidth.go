@@ -131,6 +131,50 @@ func keycapCount(s string) int {
 	return n
 }
 
+// wrapIndented word-wraps pre-rendered pieces (already styled; joined by sep
+// when they share a line) into rows of at most width cells, prefixing every
+// row — including the first — with indent. Unlike lipgloss's Width-based
+// wrap, which reflows one logical line of plain text and has no notion of
+// "this line's indent" to carry forward, this wraps whole pieces (never
+// splitting one) and applies indent to each resulting row, so a continuation
+// line lands under the first line instead of flush against the left edge.
+// A piece wider than the available space still gets its own row rather than
+// being dropped or split.
+func wrapIndented(pieces []string, sep, indent string, width int) string {
+	// When the indent alone eats the whole width, fall back to the raw width
+	// (and at minimum one cell) rather than a non-positive budget.
+	avail := width - cellWidth(indent)
+	if avail < 1 {
+		avail = max(width, 1)
+	}
+	sepWidth := cellWidth(sep)
+
+	var lines []string
+	var cur []string
+	curWidth := 0
+	flush := func() {
+		lines = append(lines, indent+strings.Join(cur, sep))
+		cur = nil
+		curWidth = 0
+	}
+	for _, p := range pieces {
+		pieceWidth := cellWidth(p)
+		if len(cur) > 0 {
+			if curWidth+sepWidth+pieceWidth > avail {
+				flush()
+			} else {
+				curWidth += sepWidth
+			}
+		}
+		cur = append(cur, p)
+		curWidth += pieceWidth
+	}
+	if len(cur) > 0 {
+		flush()
+	}
+	return strings.Join(lines, "\n")
+}
+
 // Chrome of the shared dialog box (DialogBoxStyle: RoundedBorder + Padding(1,2)).
 const (
 	// dialogBorderWidth is the rounded border's horizontal cost — 1 cell each

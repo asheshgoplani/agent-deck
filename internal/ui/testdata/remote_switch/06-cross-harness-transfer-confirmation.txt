@@ -28,7 +28,7 @@
                                   │                                                  │
                                   │                                                  │
                                   │      Transfer      ▸ Cancel                      │
-                                  │  y transfer · n cancel · ←/→ navigate · Enter    │
-                                  │  select · Esc                                    │
+                                  │  y transfer · n cancel · ←/→ navigate ·          │
+                                  │  Enter select · Esc                              │
                                   │                                                  │
                                   ╰──────────────────────────────────────────────────╯

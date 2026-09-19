@@ -12,7 +12,7 @@
        │                                                                                    │       
        │      Command:                                                                      │       
        │        shell     claude     gemini     opencode     codex     pi     copilot       │       
-       │      crush     muse     cursor agent     hermes     deepseek     omp               │       
+       │        crush     muse     cursor agent     hermes     deepseek     omp             │       
        │                                                                                    │       
        │      Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       

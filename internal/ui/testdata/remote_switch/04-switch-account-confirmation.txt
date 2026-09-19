@@ -26,7 +26,7 @@
                                   │                                                  │
                                   │                                                  │
                                   │      Switch      ▸ Cancel                        │
-                                  │  y switch · n cancel · ←/→ navigate · Enter      │
-                                  │  select · Esc                                    │
+                                  │  y switch · n cancel · ←/→ navigate ·            │
+                                  │  Enter select · Esc                              │
                                   │                                                  │
                                   ╰──────────────────────────────────────────────────╯

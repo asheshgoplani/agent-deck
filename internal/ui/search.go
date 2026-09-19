@@ -244,7 +244,7 @@ func (s *Search) View() string {
 	// Keyboard shortcuts hint
 	keysHint := lipgloss.NewStyle().
 		Foreground(ColorComment).
-		Render("  [Enter] Select  [↑↓] Navigate  [Tab] Global  [Esc] Cancel")
+		Render(glueBracketHintGroups("  [Enter] Select  [↑↓] Navigate  [Tab] Global  [Esc] Cancel"))
 
 	// Combine everything
 	var content string
