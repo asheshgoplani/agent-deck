@@ -4,6 +4,9 @@
 package send
 
 import (
+	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +29,170 @@ func HasUnsentPastedPrompt(content string) bool {
 // now (the #1777 attribution gate) must not.
 func CountPasteMarkers(content string) int {
 	return strings.Count(strings.ToLower(content), "[pasted text")
+}
+
+// pasteMarkerLineCountRE matches Claude's (and codex's) "[Pasted text #N +M
+// lines]" collapse marker and captures M — the count the composer declares
+// for that paste. Case-insensitive to match CountPasteMarkers' lower-cased
+// scan. "\s*" around the count lets a marker that the pane soft-wrapped
+// across two rows ("+5" / "lines]") still parse.
+var pasteMarkerLineCountRE = regexp.MustCompile(`(?i)\[pasted text[^\]]*\+\s*(\d+)\s*lines?\]`)
+
+// PasteMarkerLineCounts returns the M declared by every "[Pasted text #N +M
+// lines]" marker in content, in order of appearance. Empty when no marker is
+// present, or a marker is present but its count could not be parsed. A bare
+// "[Pasted text #N]" (Claude's marker for a long paste with no line break)
+// carries no count and is not reported.
+//
+// This is issue #2079's detection primitive: the framed-paste transport
+// (tmux paste-buffer -p -r, see internal/tmux) is the only delivery path for
+// a multi-line prompt, and Claude's composer collapses whatever landed behind
+// this marker whether the paste arrived whole or was cut short by a
+// remounting composer swallowing the tail end of the write. A truncated paste
+// still produces a well-formed marker — just one declaring fewer line breaks
+// than the message actually has — so the declared count is the one signal
+// that distinguishes a genuine delivery from a partial one without needing
+// to read back the (now collapsed and unreadable) literal text.
+//
+// M is NOT a line count and NOT a display-row count. Claude Code prints the
+// number of hard line-break sequences in the pasted text (its formatter is
+// literally `(text.match(/\r\n|\r|\n/g) || []).length`, so a 6-line prompt is
+// "+5 lines"), and the pane width plays no part in it. Compare it only with
+// ExpectedPasteMarkerLineBreaks, never with a physical line count: the rc.3
+// launch regression was exactly that off-by-one, refusing every multi-line
+// launch prompt as "truncated".
+func PasteMarkerLineCounts(content string) []int {
+	matches := pasteMarkerLineCountRE.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	counts := make([]int, 0, len(matches))
+	for _, m := range matches {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		counts = append(counts, n)
+	}
+	return counts
+}
+
+// ExpectedPasteMarkerLineBreaks returns the M Claude's composer declares in
+// its "[Pasted text #N +M lines]" marker when message is delivered through
+// the framed-paste transport: the number of HARD line breaks in the text,
+// after CRLF and bare-CR breaks are normalized to LF exactly as the tmux
+// transport normalizes them before pasting (see sendKeysChunkedToTarget).
+// Soft wrapping in the pane is not a line break and never enters the count.
+//
+// This counts every hard break in the normalized text, including a trailing
+// one, matching Claude's own documented formula
+// `(text.match(/\r\n|\r|\n/g) || []).length` literally rather than assuming
+// it (or some upstream paste handler) trims a trailing break before
+// counting. An earlier version excluded trailing breaks as a defensive
+// "floor" against that unverified assumption, but a floor is ambiguous by
+// construction: a message ending in "\n" and a paste truncated to exactly
+// one line short of it can both land on the same floored expectation, so a
+// lost last line goes undetected (rc.4 P2-1). Counting literally removes
+// that ambiguity — a truncation that drops the message's own trailing break
+// is now indistinguishable from any other dropped line, and is caught.
+//
+// Returns 0 for a message with no hard line break: such a paste, if long
+// enough to collapse at all, renders as a bare "[Pasted text #N]" with no
+// count to compare, and a short one goes out as `send-keys -l` and never
+// collapses. Callers skip the check at 0.
+func ExpectedPasteMarkerLineBreaks(message string) int {
+	normalized := message
+	if strings.Contains(normalized, "\r") {
+		normalized = strings.ReplaceAll(normalized, "\r\n", "\n")
+		normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	}
+	return strings.Count(normalized, "\n")
+}
+
+// PasteMarkerVerdict is CheckPasteMarker's classification of the paste
+// marker(s) visible in a pane against the message that was pasted.
+type PasteMarkerVerdict int
+
+const (
+	// PasteMarkerAbsent: no counted marker is rendered (yet). Either the
+	// composer has not repainted, or this pane never frames pastes. Callers
+	// treat it as "unknown, not unsafe" and fall back to pre-#2079 behavior.
+	PasteMarkerAbsent PasteMarkerVerdict = iota
+	// PasteMarkerIntact: the newest marker declares at least as many hard
+	// line breaks as the message has — every line arrived.
+	PasteMarkerIntact
+	// PasteMarkerTruncated: the newest marker declares fewer hard line
+	// breaks than the message has — a fragment, not the whole prompt, is in
+	// the composer. Enter must be withheld / the delivery must be reported.
+	PasteMarkerTruncated
+)
+
+// String makes a verdict readable in log lines and test failures.
+func (v PasteMarkerVerdict) String() string {
+	switch v {
+	case PasteMarkerAbsent:
+		return "absent"
+	case PasteMarkerIntact:
+		return "intact"
+	case PasteMarkerTruncated:
+		return "truncated"
+	}
+	return fmt.Sprintf("PasteMarkerVerdict(%d)", int(v))
+}
+
+// CheckPasteMarker is the single #2079 discriminator shared by every send
+// site (sendMessageWhenReady's pre-Enter hook and launch --no-wait's
+// post-submit poller): it reads the newest "[Pasted text #N +M lines]" marker
+// in content and compares M against expectedBreaks (from
+// ExpectedPasteMarkerLineBreaks). The returned declared value is that M, or
+// -1 when no counted marker is visible.
+//
+// The newest marker wins because a transcript keeps every earlier paste's
+// collapsed marker on screen for good (#1855); only the most recent one can
+// describe this send.
+func CheckPasteMarker(content string, expectedBreaks int) (verdict PasteMarkerVerdict, declared int) {
+	counts := PasteMarkerLineCounts(content)
+	if len(counts) == 0 {
+		return PasteMarkerAbsent, -1
+	}
+	declared = counts[len(counts)-1]
+	if declared < expectedBreaks {
+		return PasteMarkerTruncated, declared
+	}
+	return PasteMarkerIntact, declared
+}
+
+// PasteTruncationCheck builds the pre-Enter guard both send paths use
+// (Instance.sendMessageWhenReady on the launch path, sendInitialKeysChecked
+// behind `session send`): it reads the composer's newest paste marker and
+// reports ok=false — withholding Enter — only when the marker proves a
+// fragment, not the whole prompt, landed (issue #2079).
+//
+// The returned function has tmux.PostPasteCheck's shape and is assignable to
+// it; the type is spelled structurally here so this package keeps no
+// dependency on internal/tmux.
+//
+// Three outcomes, only one of which refuses:
+//   - capture failed: unknown, not unsafe. Proceed, exactly as the pre-#2079
+//     bare Enter did, rather than blocking delivery on a pane-read glitch.
+//   - no marker, or an intact one: either the composer has not repainted yet
+//     (benign render lag, which the callers' verify loops still catch) or the
+//     pane never frames pastes at all. Proceed.
+//   - truncated: refuse, with an error naming the declared and expected
+//     break counts.
+func PasteTruncationCheck(expectedBreaks int) func(pane string, captureErr error) (bool, error) {
+	return func(pane string, captureErr error) (bool, error) {
+		if captureErr != nil {
+			return true, nil
+		}
+		verdict, declared := CheckPasteMarker(pane, expectedBreaks)
+		if verdict == PasteMarkerTruncated {
+			return false, fmt.Errorf(
+				"prompt truncated in transit: composer shows a paste with %d line breaks ([Pasted text +%d lines]) but the message has %d; refusing to submit a partial prompt",
+				declared, declared, expectedBreaks)
+		}
+		return true, nil
+	}
 }
 
 // firstNonEmptyLine returns the first physical line of s that is non-empty

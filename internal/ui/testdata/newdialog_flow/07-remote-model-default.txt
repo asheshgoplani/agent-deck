@@ -1,0 +1,50 @@
+                                                                                                    
+                                                                                                    
+                                                                                                    
+       ╭────────────────────────────────────────────────────────────────────────────────────╮       
+       │                                                                                    │       
+       │                                                                                    │       
+       │    New Session (remote: agentbox)                                                  │       
+       │                                                                                    │       
+       │      in group: agentbox                                                            │       
+       │                                                                                    │       
+       │      Name:                                                                         │       
+       │      > demo                                                                        │       
+       │                                                                                    │       
+       │      Command:                                                                      │       
+       │        shell     claude     codex     gemini     hermes     opencode               │       
+       │                                                                                    │       
+       │    ▶ Model ID:                                                                     │       
+       │      > tool default (↓ to browse)                                                  │       
+       │    ╭──────────────────────────────────────────╮                                    │       
+       │    │ ▶ ✎ Type custom model ID…                │                                    │       
+       │    │   claude-sonnet-5                        │                                    │       
+       │    │   claude-opus-5                          │                                    │       
+       │    │  ↑/↓ navigate │ Space select │ Esc back  │                                    │       
+       │    ╰──────────────────────────────────────────╯                                    │       
+       │                                                                                    │       
+       │      [ ] Create in worktree                                                        │       
+       │      [ ] Run in Docker sandbox                                                     │       
+       │                                                                                    │       
+       │      [ ] Multi-repo mode                                                           │       
+       │                                                                                    │       
+       │    ─ Claude Options ─                                                              │       
+       │      Session: (•) New  ( ) Continue  ( ) Resume                                    │       
+       │      [ ] Skip permissions                                                          │       
+       │      [ ] Auto mode                                                                 │       
+       │      [ ] Chrome mode                                                               │       
+       │      [ ] Teammate mode                                                             │       
+       │        Extra args: > e.g. --agent reviewer                                         │       
+       │        Start query: > initial prompt (not split on spaces)                         │       
+       │                                                                                    │       
+       │      [ Create session ]                                                            │       
+       │                                                                                    │       
+       │                                                                                    │       
+       │    Type an ID │ ↓/Space browse IDs │ Enter next │ ^S create │ Esc back             │       
+       │                                                                                    │       
+       │                                                                                    │       
+       ╰────────────────────────────────────────────────────────────────────────────────────╯       
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    

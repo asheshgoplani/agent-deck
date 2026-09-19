@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                             ╭────────────────────────────────────────────────────────────╮                             
+                             │                                                            │                             
+                             │                                                            │                             
+                             │    Edit Session on lab                                     │                             
+                             │                                                            │                             
+                             │      in group: work                                        │                             
+                             │      session: remote session                               │                             
+                             │      Current: claude/personal → NEW codex/codexwork        │                             
+                             │      source kept                                           │                             
+                             │                                                            │                             
+                             │      Title:                                                │                             
+                             │      > remote session                                      │                             
+                             │      Harness (choose destination first):                   │                             
+                             │        shell     claude     gemini     opencode            │                             
+                             │      codex     pi     copilot     crush     muse           │                             
+                             │      cursor agent     hermes     deepseek     omp          │                             
+                             │    ▶ Account for selected harness (configured; auth u…:    │                             
+                             │        inherit     codexwork                               │                             
+                             │                                                            │                             
+                             │      Slots and harnesses are lab's; the switch runs        │                             
+                             │    there.                                                  │                             
+                             │                                                            │                             
+                             │    ←/→ account │ Enter switch (asks first) │ Esc cancel    │                             
+                             │                                                            │                             
+                             │                                                            │                             
+                             ╰────────────────────────────────────────────────────────────╯                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

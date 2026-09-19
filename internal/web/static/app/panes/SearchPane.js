@@ -7,7 +7,7 @@
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
 import { menuModelSignal } from '../dataModel.js'
-import { selectedIdSignal } from '../state.js'
+import { selectSession } from '../state.js'
 import { activeTabSignal } from '../uiState.js'
 
 export function SearchPane() {
@@ -24,7 +24,7 @@ export function SearchPane() {
   }, [sessions, q])
 
   const onSelect = (id) => {
-    selectedIdSignal.value = id
+    selectSession(id)
     activeTabSignal.value = 'terminal'
   }
 

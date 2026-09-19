@@ -285,6 +285,10 @@ type StatusRow struct {
 	Status       string
 	Tool         string
 	Acknowledged bool
+	// HookLag is the persisted tool_data.hook_lag extra (nil when absent):
+	// the completed-turn samples a CLI pass recorded for a Claude session
+	// whose hook still says running (session/hook_lag.go).
+	HookLag json.RawMessage
 }
 
 // RecentSessionRow captures the config of a deleted session for quick re-creation.
@@ -362,7 +366,24 @@ func OpenReadOnly(dbPath string) (*StateDB, error) {
 	}
 	// immutable=1 prevents SQLite from creating/updating WAL/SHM sidecars and
 	// is required by the byte-zero-effect contract of callers using this API.
-	dsn := "file:" + dbPath + "?mode=ro&immutable=1&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	return openReadOnlyDatabase(dbPath, true)
+}
+
+// OpenReadOnlyLive reads the current WAL-backed database without initializing
+// schema, writing rows, changing journal mode or checkpointing. Unlike the
+// immutable evidence reader, SQLite may access WAL/SHM coordination files.
+func OpenReadOnlyLive(dbPath string) (*StateDB, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, err
+	}
+	return openReadOnlyDatabase(dbPath, false)
+}
+
+func openReadOnlyDatabase(dbPath string, immutable bool) (*StateDB, error) {
+	dsn := "file:" + dbPath + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	if immutable {
+		dsn += "&immutable=1"
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("statedb: open read-only: %w", err)
@@ -1560,9 +1581,15 @@ func (s *StateDB) WriteLastAccessed(id string, at time.Time) error {
 	})
 }
 
-// ReadAllStatuses returns status + acknowledged flag for every instance.
+// ReadAllStatuses returns status + acknowledged flag (+ the hook_lag extra)
+// for every instance. json_extract raises "malformed JSON" for a tool_data
+// value that is not JSON (an empty string, a partial write), which would
+// abort the whole query and silently blank every session's shared status;
+// the json_valid guard turns such a row into a NULL hook_lag instead.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
-	rows, err := s.db.Query("SELECT id, status, tool, acknowledged FROM instances")
+	rows, err := s.db.Query(`SELECT id, status, tool, acknowledged,
+		CASE WHEN json_valid(tool_data) THEN json_extract(tool_data, '$.hook_lag') ELSE NULL END
+		FROM instances`)
 	if err != nil {
 		return nil, err
 	}
@@ -1573,13 +1600,32 @@ func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 		var id string
 		var sr StatusRow
 		var ack int
-		if err := rows.Scan(&id, &sr.Status, &sr.Tool, &ack); err != nil {
+		var hookLag sql.NullString
+		if err := rows.Scan(&id, &sr.Status, &sr.Tool, &ack, &hookLag); err != nil {
 			return nil, err
 		}
 		sr.Acknowledged = ack != 0
+		if hookLag.Valid && hookLag.String != "" {
+			sr.HookLag = json.RawMessage(hookLag.String)
+		}
 		result[id] = sr
 	}
 	return result, rows.Err()
+}
+
+// WriteToolDataExtra atomically sets one tool_data extras-zone key to the
+// given JSON value (a targeted UPDATE like WriteLastActivityAt, so a read
+// path can publish a small observation without a full row save).
+func (s *StateDB) WriteToolDataExtra(id, key string, value json.RawMessage) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(COALESCE(tool_data, '{}'), '$.' || ?, json(?))
+			 WHERE id = ?`,
+			key, string(value), id,
+		)
+		return err
+	})
 }
 
 // touchWithRetry stamps metadata.last_modified, retrying on SQLITE_BUSY.
@@ -1594,6 +1640,22 @@ func (s *StateDB) touchWithRetry() error {
 
 // SetAcknowledged sets or clears the acknowledged flag for an instance.
 func (s *StateDB) SetAcknowledged(id string, ack bool) error {
+	_, err := s.SetAcknowledgedStamped(id, ack)
+	return err
+}
+
+// SetAcknowledgedStamped is SetAcknowledged for a caller that is also a reader
+// of this database: it returns the WriteStamps identifying the last_modified
+// bump this write produced.
+//
+// The TUI decides whether to save by comparing last_modified against the value
+// it captured when it last loaded. This write moves last_modified, so a TUI
+// that cannot recognise its own bump reads it as another process's change and
+// abandons the save that would have persisted the status change accompanying
+// it — then reloads, which rebuilds the session's acknowledged state from the
+// STALE stored status. Same self-inflicted false positive WriteRestartOutcome's
+// stamps exist to prevent (#1868).
+func (s *StateDB) SetAcknowledgedStamped(id string, ack bool) (WriteStamps, error) {
 	v := 0
 	if ack {
 		v = 1
@@ -1602,9 +1664,9 @@ func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 		_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
 		return err
 	}); err != nil {
-		return err
+		return WriteStamps{}, err
 	}
-	return s.touchWithRetry()
+	return s.touchStamp()
 }
 
 // SetArchived sets or clears the archive timestamp for a single instance via a

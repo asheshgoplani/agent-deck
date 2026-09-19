@@ -280,6 +280,16 @@ func TestEditSessionDialogCommitRoutesAccountThroughSwitch(t *testing.T) {
 	home.instancesMu.Unlock()
 	home.groupTree = session.NewGroupTree(home.instances)
 	home.rebuildFlatItems()
+	// The switch now persists its own account mutation atomically with the
+	// transcript install (instead of relying solely on a later, skippable
+	// caller-side commit), so the storage row must exist beforehand exactly
+	// like it would for any real, already-saved session.
+	if home.storage == nil {
+		t.Fatal("test setup requires a real storage instance")
+	}
+	if err := home.storage.Save([]*session.Instance{inst}); err != nil {
+		t.Fatalf("seed storage: %v", err)
+	}
 
 	home.editSessionDialog.SetSize(home.width, home.height)
 	home.editSessionDialog.Show(inst)
@@ -415,6 +425,13 @@ func TestEditSessionDialogKeepsUnconfiguredAccountPill(t *testing.T) {
 // untouched and show the explicit loss confirmation before any lifecycle work.
 func TestEditSessionDialogRefusesAccountSwitchWithToolChange(t *testing.T) {
 	cfg := withAccountsConfig(t, "work", "personal")
+	// A cross-harness preview refuses when the target CLI is not on PATH;
+	// this test is about the loss confirmation, so give it a stub codex.
+	fakeBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeBin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	work := cfg.Profiles["work"]
 	work.Codex = session.ProfileCodexSettings{ConfigDir: filepath.Join(t.TempDir(), "codex-work")}
 	cfg.Profiles["work"] = work

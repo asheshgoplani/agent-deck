@@ -1,0 +1,4 @@
+  ▾ remotes/dev (1) ● 1 · network 42ms · poll 13570ms
+    └─ ● Remote work claude
+▶ ▾ remotes/dev (1) ● 1 · network 42ms · poll 13570ms (R retry)
+▶   └─ ● Remote work claude

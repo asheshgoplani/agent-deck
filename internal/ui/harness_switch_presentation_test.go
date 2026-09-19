@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -283,5 +284,46 @@ func TestAccountSwitchFailureUsesFailureNotice(t *testing.T) {
 	})
 	if !h.confirmDialog.IsVisible() || h.confirmDialog.noticeTitle != "Account switch failed" {
 		t.Fatalf("failure result notice = visible:%t title:%q, want Account switch failed", h.confirmDialog.IsVisible(), h.confirmDialog.noticeTitle)
+	}
+}
+
+// A refused switch because the destination is not provably stale (newer, or
+// genuinely divergent) must never be an acknowledge-only dead end: it offers
+// the explicit "Archive & Switch" retry instead of a plain failure notice.
+func TestAccountSwitchDivergentDestinationOffersArchiveAction(t *testing.T) {
+	h := NewHome()
+	source := session.NewInstanceWithTool("source", t.TempDir(), "claude")
+	source.Account = "personal"
+	h.instancesMu.Lock()
+	h.instances = []*session.Instance{source}
+	h.instanceByID[source.ID] = source
+	h.switchGenerations[source.ID] = 1
+	h.instancesMu.Unlock()
+
+	_, _ = h.Update(accountSwitchedMsg{
+		sessionID: source.ID, generation: 1,
+		sourceTool: source.Tool, sourceAccount: source.Account,
+		sourceProject: source.ProjectPath, sourceTitle: source.Title, sourceGroup: source.GroupPath,
+		sourceCommand: source.Command, sourceStatus: source.Status,
+		sourceClaudeID: source.ClaudeSessionID, sourceCodexID: source.CodexSessionID, sourceCWD: source.EffectiveWorkingDir(),
+		targetHarness: "claude", account: "seminno",
+		destinationDivergent: true,
+		err:                  fmt.Errorf("%w; preserving both files and refusing overwrite: /path/to.jsonl", session.ErrSwitchDestinationDivergent),
+	})
+
+	if !h.confirmDialog.IsVisible() || h.confirmDialog.GetConfirmType() != ConfirmArchiveDestinationSwitch {
+		t.Fatalf("divergent destination refusal did not offer the archive action: visible=%t type=%v", h.confirmDialog.IsVisible(), h.confirmDialog.GetConfirmType())
+	}
+	if h.confirmDialog.TargetHarness() != "claude" || h.confirmDialog.TargetAccount() != "seminno" {
+		t.Fatalf("archive action lost the retry target: harness=%q account=%q", h.confirmDialog.TargetHarness(), h.confirmDialog.TargetAccount())
+	}
+
+	// Golden frame: the rendered dialog must name both the risk and the
+	// specific recovery action, never leaving the user with only "failed".
+	frame := h.confirmDialog.View()
+	for _, want := range []string{"Archive Destination Copy?", "Archive & Switch", "pre-switch-", "never deleted", "Cancel"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("archive-destination dialog frame missing %q:\n%s", want, frame)
+		}
 	}
 }

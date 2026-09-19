@@ -1,17 +1,37 @@
 package session
 
 import (
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect"
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/ctxtext"
 )
 
 // GeminiSessionAnalytics holds metrics for a Gemini session
 type GeminiSessionAnalytics struct {
-	// Token usage
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	// Token usage. Gemini CLI records six counters per message
+	// ("input", "output", "cached", "thoughts", "tool", "total"); all six are
+	// kept because dropping thoughts/tool understates the session and dropping
+	// cached hides how much of the prompt was served from cache.
+	InputTokens    int `json:"input_tokens"`
+	OutputTokens   int `json:"output_tokens"`
+	CachedTokens   int `json:"cached_tokens"`   // subset of InputTokens served from cache
+	ThoughtsTokens int `json:"thoughts_tokens"` // reasoning tokens
+	ToolTokens     int `json:"tool_tokens"`
 
-	// Current context size (last turn's input + cache read tokens)
+	// ReportedTotalTokens is the sum of the per-message "total" fields, i.e. the
+	// harness's own accounting. Preferred over any sum computed here.
+	ReportedTotalTokens int `json:"reported_total_tokens"`
+
+	// Current context size: the last turn's input tokens, which for Gemini
+	// already include the cached portion and the full prior history.
 	CurrentContextTokens int `json:"current_context_tokens"`
+
+	// CurrentContextCachedTokens is how much of CurrentContextTokens was served
+	// from cache on that same turn.
+	CurrentContextCachedTokens int `json:"current_context_cached_tokens"`
 
 	// Session metrics
 	TotalTurns int           `json:"total_turns"`
@@ -29,9 +49,84 @@ type GeminiSessionAnalytics struct {
 	LastFileModTime time.Time `json:"-"`
 }
 
-// TotalTokens returns the sum of input and output tokens
+// TotalTokens returns the session's total token count. Gemini reports a "total"
+// per message (input + output + thoughts + tool), so prefer that measured value
+// and only fall back to summing the parts when the session file carried none
+// (older Gemini CLI writes, or a file with no gemini-typed messages).
+// CachedTokens is deliberately excluded: it is a subset of InputTokens.
 func (a *GeminiSessionAnalytics) TotalTokens() int {
-	return a.InputTokens + a.OutputTokens
+	if a.ReportedTotalTokens > 0 {
+		return a.ReportedTotalTokens
+	}
+	return a.InputTokens + a.OutputTokens + a.ThoughtsTokens + a.ToolTokens
+}
+
+// geminiModelContextWindowPrefixes maps Gemini model ID prefixes to context
+// window sizes. Ordered most-specific first, matching the Claude table in
+// analytics.go, so "gemini-1.5-pro" resolves before any "gemini-1.5" entry.
+var geminiModelContextWindowPrefixes = []struct {
+	prefix string
+	size   int
+}{
+	{"gemini-1.5-pro", 2000000},
+	{"gemini-1.5-flash", 1000000},
+	{"gemini-2.0-flash", 1000000},
+	{"gemini-2.5-flash", 1000000},
+	{"gemini-2.5-pro", 1000000},
+	{"gemini-3", 1000000},
+}
+
+// geminiDefaultContextWindow is used when the model ID is empty or unrecognised.
+const geminiDefaultContextWindow = 1000000
+
+// GeminiContextWindowForModel returns the context window size for a Gemini model
+// ID. Returns on the first prefix match; falls back to
+// geminiDefaultContextWindow for unknown or empty model IDs.
+func GeminiContextWindowForModel(model string) int {
+	for _, entry := range geminiModelContextWindowPrefixes {
+		if strings.HasPrefix(model, entry.prefix) {
+			return entry.size
+		}
+	}
+	return geminiDefaultContextWindow
+}
+
+// tableWindow is the window the Gemini model table gives for this session's
+// model, marked model-default because it is an inference from the id.
+func (a *GeminiSessionAnalytics) tableWindow() ctxinspect.WindowInfo {
+	return ctxinspect.WindowInfo{
+		Tokens: GeminiContextWindowForModel(a.Model),
+		Source: ctxinspect.WindowModelDefault,
+		Detail: fmt.Sprintf("gemini model table for %q", a.Model),
+	}
+}
+
+// ContextWindow resolves the window from the Gemini model table. A current
+// prompt larger than the table figure disproves it and the window becomes
+// unknown (issue #2026), the same rule the Claude bar applies.
+func (a *GeminiSessionAnalytics) ContextWindow() ctxinspect.WindowInfo {
+	if a == nil {
+		return ctxinspect.WindowInfo{Source: ctxinspect.WindowUnknown}
+	}
+	w := a.tableWindow()
+	if a.CurrentContextTokens > w.Tokens {
+		return ctxinspect.WindowInfo{
+			Source: ctxinspect.WindowUnknown,
+			Detail: fmt.Sprintf("the current turn holds %s tokens, more than the %s window the model table gives for %q, so that figure is wrong and the real window is unknown",
+				ctxtext.TokenAmount(a.CurrentContextTokens), ctxtext.TokenAmount(w.Tokens), a.Model),
+		}
+	}
+	return w
+}
+
+// ContextUsage is the Gemini context bar's reading with its trust attached;
+// see [SessionAnalytics.ContextUsage]. It reads against the table window so an
+// over-limit prompt is reported as such, with the disproved figure kept.
+func (a *GeminiSessionAnalytics) ContextUsage() ctxinspect.Occupancy {
+	if a == nil {
+		return ctxinspect.Occupancy{}
+	}
+	return a.tableWindow().Occupancy(a.CurrentContextTokens)
 }
 
 // GeminiModelPricing holds pricing per million tokens

@@ -1,8 +1,11 @@
 package multiclienttmux_test
 
 import (
+	"math"
 	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/testutil/multiclienttmux"
 )
@@ -36,26 +39,76 @@ func TestNew_BootsIsolatedServer(t *testing.T) {
 	}
 }
 
-func TestAggregateSize_ReportsLargestClient(t *testing.T) {
+func requireWindowSize(t *testing.T, h *multiclienttmux.Harness, wantWidth, wantHeight int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		width, height, err := h.WindowSize()
+		if err == nil && width == wantWidth && height == wantHeight {
+			return
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("WindowSize: %v", err)
+			}
+			t.Fatalf("WindowSize=%dx%d; want %dx%d", width, height, wantWidth, wantHeight)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestAggregateSize_FollowsTheActiveClient(t *testing.T) {
 	skipIfNoTmux(t)
 
 	h := multiclienttmux.New(t, "agg")
 
-	// Spawn two clients of different sizes; aggregate-size = largest.
+	if err := h.AddClient(100, 62); err != nil {
+		t.Fatalf("AddClient 100x62: %v", err)
+	}
+	if err := h.AddClient(189, 62); err != nil {
+		t.Fatalf("AddClient 189x62: %v", err)
+	}
+	// The client that attached last sees the whole window at its own size;
+	// neither `smallest` (boxes it at 100x61 with dots) nor `largest`.
+	requireWindowSize(t, h, 189, 61)
+
+	// Simulate a font-size change making the narrow client taller. Neither
+	// client now dominates both axes; with a one-row status line, their usable
+	// sizes are 88x70 and 189x61. The resize makes that client the active
+	// viewer and the window follows it: never a synthetic 189x70 nobody can
+	// show completely.
+	if err := h.ResizeClient(0, 88, 71); err != nil {
+		t.Fatalf("ResizeClient 88x71: %v", err)
+	}
+	requireWindowSize(t, h, 88, 70)
+}
+
+func TestResizeClient_RejectsInvalidDimensions(t *testing.T) {
+	skipIfNoTmux(t)
+
+	h := multiclienttmux.New(t, "invalid-resize")
 	if err := h.AddClient(80, 24); err != nil {
 		t.Fatalf("AddClient 80x24: %v", err)
 	}
-	if err := h.AddClient(120, 40); err != nil {
-		t.Fatalf("AddClient 120x40: %v", err)
-	}
 
-	// With aggressive-resize=on, the window resizes to the largest client.
-	w, hgt, err := h.WindowSize()
-	if err != nil {
-		t.Fatalf("WindowSize: %v", err)
-	}
-	if w < 80 || hgt < 24 {
-		t.Fatalf("WindowSize=%dx%d; expected at least 80x24", w, hgt)
+	for _, tc := range []struct {
+		name string
+		cols int
+		rows int
+	}{
+		{name: "zero columns", cols: 0, rows: 24},
+		{name: "negative columns", cols: -1, rows: 24},
+		{name: "oversized columns", cols: math.MaxUint16 + 1, rows: 24},
+		{name: "zero rows", cols: 80, rows: 0},
+		{name: "negative rows", cols: 80, rows: -1},
+		{name: "oversized rows", cols: 80, rows: math.MaxUint16 + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := h.ResizeClient(0, tc.cols, tc.rows)
+			if err == nil || !strings.Contains(err.Error(), "dimensions out of range") {
+				t.Fatalf("ResizeClient(0, %d, %d) error = %v; want dimensions-out-of-range error", tc.cols, tc.rows, err)
+			}
+		})
 	}
 }
 

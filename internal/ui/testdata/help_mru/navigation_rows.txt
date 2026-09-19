@@ -1,0 +1,3 @@
+         │    `              Alternate session (swap with the previous one, vim-style)    │
+         │    alt+left       Walk back through recently used sessions                     │
+         │    alt+right      Walk forward through recently used sessions                  │

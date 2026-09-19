@@ -426,10 +426,10 @@ func emitScrollbackClear(w io.Writer) {
 // dimensions.
 //
 // #1167: tmux clients connect at their PTY's size, and a bare pty.Start creates
-// the attach client's PTY at tmux's 80x24 default — so window-size=largest pins
-// the window to 80 cols, ~half of a wide terminal, until an async SIGWINCH grows
-// it. Reading the controlling terminal's real size up front and starting the PTY
-// with it makes the client full-width from frame one.
+// the attach client's PTY at tmux's 80x24 default. That can size the window to
+// 80 cols, ~half of a wide terminal, until an async SIGWINCH grows it. Reading
+// the controlling terminal's real size up front and starting the PTY with it
+// makes the client full-width from frame one.
 //
 // The session's own birth size is the other half of this and is fixed
 // separately: see InitialWindowSize (#1694). Both are needed — this one keeps
@@ -525,6 +525,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	// and silently attached to the user's default server (#687 follow-up).
 	cmd := s.attachCmd(ctx)
 
+	// Shared attach: size the window to the client about to attach and
+	// remember who is already looking, so they can be announced to the new
+	// client once tmux registers it (sharedview.go, viewers.go).
+	others := s.prepareSharedAttach(ctx)
+
 	// Temporarily ignore SIGINT for the duration of the attach session.
 	// The global SIGINT handler in main.go calls os.Exit(0); suppressing
 	// delivery during attach prevents the race window between tea.Exec
@@ -605,6 +610,13 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	}()
 	// Initial resize
 	sigwinch <- syscall.SIGWINCH
+
+	// tmux shows a broken ~/.tmux.conf to the first client that attaches by
+	// parking the pane in view-mode; agent-deck's detached servers make this
+	// attach that client (g14 rc.5 parity walk). Cancel the view so the agent
+	// pane is live and receives keys. See DismissConfigErrorView.
+	go s.DismissConfigErrorView(ctx, configErrorViewWindow)
+	go s.finishSharedAttach(ctx, others, os.Stdin)
 
 	// Channel to signal detach
 	detachCh := make(chan struct{})
@@ -764,7 +776,7 @@ func (s *Session) AttachWindow(ctx context.Context, windowIndex int, detachByte 
 	// Select the target window before attaching. Routes through
 	// s.selectWindowCmd → s.tmuxCmd so isolation-configured sessions
 	// don't select a same-named window on the default server (#687).
-	if err := s.selectWindowCmd(windowIndex).Run(); err != nil {
+	if err := commandRun(s.selectWindowCmd(windowIndex)); err != nil {
 		target := fmt.Sprintf("%s:%d", s.Name, windowIndex)
 		return fmt.Errorf("failed to select window %s: %w", target, err)
 	}
@@ -777,7 +789,7 @@ func (s *Session) Resize(cols, rows int) error {
 	// Resize the tmux window. Routes through s.resizeCmd so isolation-
 	// configured sessions resize the real pane, not a default-server ghost
 	// (#687 follow-up).
-	if err := s.resizeCmd(cols, rows).Run(); err != nil {
+	if err := commandRun(s.resizeCmd(cols, rows)); err != nil {
 		return fmt.Errorf("failed to resize window: %w", err)
 	}
 	return nil
@@ -804,10 +816,13 @@ func (s *Session) AttachReadOnly(ctx context.Context) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	others := s.prepareSharedAttach(ctx)
+
 	// Start the attach command
-	if err := cmd.Start(); err != nil {
+	if err := commandStart(cmd); err != nil {
 		return fmt.Errorf("failed to attach to session: %w", err)
 	}
+	go s.finishSharedAttach(ctx, others, os.Stdin)
 
 	// Wait for command to finish
 	if err := cmd.Wait(); err != nil {
@@ -836,7 +851,7 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 	cmd.Stdout = w
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Start(); err != nil {
+	if err := commandStart(cmd); err != nil {
 		return fmt.Errorf("failed to start pipe-pane: %w", err)
 	}
 
@@ -855,7 +870,7 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 		// Stop pipe-pane - error is intentionally ignored since we're
 		// already returning ctx.Err() and cleanup failure is non-fatal.
 		// Socket-aware via s.pipePaneStopCmd (#687 follow-up).
-		_ = s.pipePaneStopCmd().Run()
+		_ = commandRun(s.pipePaneStopCmd())
 		// Wait for the goroutine to complete before returning
 		wg.Wait()
 		return ctx.Err()

@@ -431,6 +431,33 @@ func TestResolveSessionCommand_PlainClaudeUnaffected(t *testing.T) {
 	}
 }
 
+// TestResolveSessionCommand_ShellAliasIsPlainShell is walk defect #5's
+// regression test: `-c shell` is not a real tool id (MatchTool's builtins
+// never recognize the literal string "shell"), so before this fix it fell
+// to the generic-shell fallback with the raw text as a literal command —
+// `bash -c 'shell'`, which fails with "shell: command not found" and leaves
+// a bare interactive prompt behind. "shell" must instead behave exactly
+// like an empty --cmd: NewInstance's own default Tool and command.
+func TestResolveSessionCommand_ShellAliasIsPlainShell(t *testing.T) {
+	for _, raw := range []string{"shell", "Shell", "SHELL", " shell "} {
+		t.Run(raw, func(t *testing.T) {
+			tool, command, wrapper, note, isPassthrough, err := resolveSessionCommand(raw, "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tool != "" {
+				t.Errorf("tool = %q, want empty (same as omitting --cmd)", tool)
+			}
+			if command != "" {
+				t.Errorf("command = %q, want empty — never the literal, nonexistent \"shell\" command", command)
+			}
+			if wrapper != "" || note != "" || isPassthrough {
+				t.Errorf("wrapper=%q note=%q isPassthrough=%v, want all zero-valued", wrapper, note, isPassthrough)
+			}
+		})
+	}
+}
+
 // TestResolveSessionCommand_CustomToolSubcommand_UsesWrapperSuffix is
 // the regression test for the Codex bot P1 review finding on PR #1821: a
 // custom tool configured with a `command` override (e.g.

@@ -96,10 +96,77 @@ func TestRemoteVersionState_Outdated(t *testing.T) {
 		{"preview controller flags the previous release", RemoteVersionState{Version: "1.16.3", Found: true}, "1.16.4-switch-preview.abc1234", true},
 		{"remote on a pre-release of the controller's release is behind", RemoteVersionState{Version: "1.16.4-rc.1", Found: true}, "1.16.4", true},
 		{"unparseable remote version never flags", RemoteVersionState{Version: "development build", Found: true}, "1.16.4", false},
+		// Finding 4, 2026-09-18 live UI audit: `remote list --check --json`
+		// reported outdated:true next to version_state:"same" for four
+		// remotes on the identical "1.16.11-rc.6" build. Outdated must never
+		// disagree with Compare()'s same/older/newer verdict — these cases
+		// pin every same-rc-suffix, rc-vs-final and +local-metadata shape.
+		{"identical rc.N on both sides", RemoteVersionState{Version: "1.16.11-rc.6", Found: true}, "1.16.11-rc.6", false},
+		{"remote on rc.N, controller on the final release", RemoteVersionState{Version: "1.16.11-rc.6", Found: true}, "1.16.11", true},
+		{"remote on the final release, controller on rc.N", RemoteVersionState{Version: "1.16.11", Found: true}, "1.16.11-rc.6", false},
+		{"remote +local metadata at the same core version never flags", RemoteVersionState{Version: "1.16.10+local.20260915.abc", Found: true, InstalledFrom: "local-build"}, "1.16.10", false},
 	}
 	for _, tc := range cases {
 		if got := tc.state.Outdated(tc.controller); got != tc.want {
 			t.Errorf("%s: Outdated(%q) = %v, want %v", tc.name, tc.controller, got, tc.want)
+		}
+		// Outdated is defined purely by Compare's older/other split — assert
+		// the two never contradict each other (the exact bug shape).
+		compareOlder := tc.state.Compare(tc.controller) == RemoteVersionOlder
+		if got := tc.state.Outdated(tc.controller); got != compareOlder {
+			t.Errorf("%s: Outdated(%q) = %v disagrees with Compare()==older (%v)", tc.name, tc.controller, got, compareOlder)
+		}
+	}
+}
+
+// TestRemoteVersionState_Compare pins the same/older/newer/unknown states the
+// remote preview panel and `remote list --json` (version_state) both render
+// off of. Unlike Outdated, Compare does not special-case a dev/0.0.0
+// controller: it answers the plain compare question, not "should this flag
+// as drift".
+func TestRemoteVersionState_Compare(t *testing.T) {
+	cases := []struct {
+		name       string
+		state      RemoteVersionState
+		controller string
+		want       RemoteVersionCompare
+	}{
+		{"same", RemoteVersionState{Version: "1.16.10", Found: true}, "1.16.10", RemoteVersionSame},
+		{"older", RemoteVersionState{Version: "1.16.9", Found: true}, "1.16.10", RemoteVersionOlder},
+		{"newer", RemoteVersionState{Version: "1.16.11", Found: true}, "1.16.10", RemoteVersionNewer},
+		{"not found is unknown", RemoteVersionState{Found: false}, "1.16.10", RemoteVersionUnknown},
+		{"unparseable remote version is unknown", RemoteVersionState{Version: "development build", Found: true}, "1.16.10", RemoteVersionUnknown},
+		{"unparseable controller is unknown", RemoteVersionState{Version: "1.16.10", Found: true}, "dev", RemoteVersionUnknown},
+		// #2164/BACKGROUND: build metadata after "+" is stripped before
+		// comparing (splitPreRelease cuts on "+"), so a +local build on
+		// exactly the controller's release compares equal — same, not newer.
+		{"+local build on the controller's release is same", RemoteVersionState{Version: "1.16.10+local.abc123", Found: true}, "1.16.10", RemoteVersionSame},
+		// A +local build whose base version is genuinely ahead is still newer:
+		// only the build metadata is ignored, not the semver core.
+		{"+local build on a newer release is newer", RemoteVersionState{Version: "1.16.11+local.abc123", Found: true}, "1.16.10", RemoteVersionNewer},
+		{"v prefix", RemoteVersionState{Version: "v1.16.9", Found: true}, "v1.16.10", RemoteVersionOlder},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.state.Compare(tc.controller); got != tc.want {
+				t.Errorf("Compare(%q) = %s, want %s", tc.controller, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRemoteVersionCompare_String pins the version_state wire values (used
+// verbatim by `remote list --json` and the preview panel's label function).
+func TestRemoteVersionCompare_String(t *testing.T) {
+	cases := map[RemoteVersionCompare]string{
+		RemoteVersionSame:    "same",
+		RemoteVersionOlder:   "older",
+		RemoteVersionNewer:   "newer",
+		RemoteVersionUnknown: "unknown",
+	}
+	for compare, want := range cases {
+		if got := compare.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", compare, got, want)
 		}
 	}
 }

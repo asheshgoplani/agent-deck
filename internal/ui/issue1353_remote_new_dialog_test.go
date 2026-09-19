@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // Issue #1353: pressing `n` while the cursor is on a remote group/session used
@@ -86,10 +87,13 @@ func TestIssue1353_NOnRemoteSession_OpensDialog(t *testing.T) {
 // TestIssue1353_RemoteDialogDefaults: for a remote target the path field
 // defaults to "." (remote CWD) so a local filesystem path is never sent to the
 // remote. The dialog must NOT be seeded with the synthetic "remotes/<host>"
-// label: that path is a local UI bucket, not a user-defined remote group, and
-// handleNewDialogKey forwards the selected group unchanged to
-// CreateSessionWithOptions — so seeding it would create a bogus "remotes/<host>"
-// group on the remote. It defaults to the standard group instead.
+// label: that path is a local UI bucket, not a user-defined remote group.
+//
+// It also must NOT be seeded with the local "My Sessions" default bucket
+// (session.DefaultGroupPath): that used to be forwarded verbatim as
+// `-g my-sessions` to the remote's own add command, filing the new session
+// into an unrelated, empty subgroup instead of the remote's true root. The
+// correct default is no group at all.
 func TestIssue1353_RemoteDialogDefaults(t *testing.T) {
 	setXDGTestHome(t)
 	home := NewHome()
@@ -103,8 +107,17 @@ func TestIssue1353_RemoteDialogDefaults(t *testing.T) {
 	if path != "." {
 		t.Fatalf("remote dialog path default = %q, want %q (remote CWD)", path, ".")
 	}
-	if got := h.newDialog.GetSelectedGroup(); got != session.DefaultGroupPath {
-		t.Fatalf("remote dialog group = %q, want %q (no synthetic remotes/<host> group)", got, session.DefaultGroupPath)
+	if got := h.newDialog.GetSelectedGroup(); got != "" {
+		t.Fatalf("remote dialog group = %q, want \"\" (root: no group forwarded, not the local My Sessions bucket)", got)
+	}
+	// The catalog isn't loaded in this test, so a "capabilities are not
+	// loaded" message is expected; any other error is not.
+	opts, errMsg := h.newDialog.GetRemoteCreateOptions()
+	if errMsg != "" && !strings.Contains(errMsg, "capabilities are not loaded") {
+		t.Fatalf("unexpected GetRemoteCreateOptions error: %s", errMsg)
+	}
+	if opts.Group != "" {
+		t.Fatalf("remote create options Group = %q, want \"\" (no -g flag reaches the remote)", opts.Group)
 	}
 }
 
@@ -145,6 +158,7 @@ func TestIssue1353_SubmitRoutesToRemote(t *testing.T) {
 	home.cursor = 0
 
 	h := pressN(t, home)
+	h.newDialog.SetRemoteCreationCatalog(remoteDialogTestCatalog())
 	// Type a session name (focus starts on the Name field).
 	for _, r := range "my-remote-task" {
 		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -200,5 +214,28 @@ func TestIssue1353_LocalNUnaffected(t *testing.T) {
 	}
 	if h.pendingRemoteName != "" {
 		t.Fatalf("n on a local group must clear pendingRemoteName, got %q", h.pendingRemoteName)
+	}
+}
+
+// TestNewSessionFromRemoteRootShowsRemoteAsGroup: opening New Session from
+// the remote's own root row ("remotes/<host>" header, level 0) used to show
+// "in group: My Sessions" — an unrelated local bucket — instead of naming the
+// remote itself.
+func TestNewSessionFromRemoteRootShowsRemoteAsGroup(t *testing.T) {
+	setXDGTestHome(t)
+	home := NewHome()
+	home.width = 200
+	home.height = 50
+	home.flatItems = []session.Item{remoteGroupItem("agentbox")}
+	home.cursor = 0
+
+	h := pressN(t, home)
+	view := tmux.StripANSI(h.newDialog.View())
+
+	if strings.Contains(view, "in group: My Sessions") {
+		t.Errorf("dialog still shows the local 'My Sessions' bucket for a remote root row: %q", view)
+	}
+	if !strings.Contains(view, "in group: agentbox") {
+		t.Errorf("dialog should show the remote's own top level ('in group: agentbox'), got: %q", view)
 	}
 }

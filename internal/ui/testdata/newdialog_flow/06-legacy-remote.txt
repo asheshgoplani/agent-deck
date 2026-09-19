@@ -1,0 +1,50 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮    
+    │                                                                                                              │    
+    │                                                                                                              │    
+    │    New Session (remote: old-host)                                                                            │    
+    │                                                                                                              │    
+    │      in group: old-host                                                                                      │    
+    │                                                                                                              │    
+    │      Remote runs an older agent-deck; options are not verified on the remote (model, account, MCP and        │    
+    │    worktree options hidden).                                                                                 │    
+    │                                                                                                              │    
+    │    ▶ Name:                                                                                                   │    
+    │      > legacy-session                                                                                        │    
+    │                                                                                                              │    
+    │      Command:                                                                                                │    
+    │        shell     claude     gemini     opencode     codex     pi     copilot     crush     muse              │    
+    │      cursor agent     hermes     deepseek     omp                                                            │    
+    │                                                                                                              │    
+    │        Custom:                                                                                               │    
+    │        > gemini                                                                                              │    
+    │                                                                                                              │    
+    │      Path:                                                                                                   │    
+    │      > ~/project                                                                                             │    
+    │                                                                                                              │    
+    │      [ ] Create in worktree                                                                                  │    
+    │      [ ] Run in Docker sandbox                                                                               │    
+    │                                                                                                              │    
+    │      [ Create session ]                                                                                      │    
+    │                                                                                                              │    
+    │                                                                                                              │    
+    │    Tab next │ ↑↓ navigate │ Enter next │ ^S create │ Esc cancel                                              │    
+    │                                                                                                              │    
+    │                                                                                                              │    
+    ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

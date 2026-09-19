@@ -363,6 +363,17 @@ func ValidateBranchName(name string) error {
 // worktrees live as direct children of the bare dir (<repo>/<branch>), since
 // neither default makes sense when the project root *is* the bare repo. Custom
 // path templates still take precedence (see WorktreePath in template.go).
+//
+// SECURITY NOTE: like resolveTemplate in template.go, this function performs
+// no path containment check on the custom-path branch — a location containing
+// "/" or starting with "~" is joined into the result as-is. That is fine for a
+// location sourced from global config.toml or a CLI flag (trusted input), but
+// NOT safe for one taken directly from a directory-local .agent-deck/config.toml
+// (#2093), which may come from an untrusted git checkout. Those are bound
+// checked upstream in internal/session.ResolveWorktreeSettingsForDir before
+// ever being assigned into WorktreeSettings, so a rejected value never reaches
+// this function. This function stays containment-agnostic by design and must
+// not be treated as a second line of defense.
 func GenerateWorktreePath(repoDir, branchName, location string) string {
 	// Sanitize branch name for filesystem
 	sanitized := branchName

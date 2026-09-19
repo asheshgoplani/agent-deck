@@ -103,12 +103,18 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 // (issue #36326) — the exact failure the pull model was built to avoid — so a
 // busy conductor is left to drain at its own turn boundary.
 //
-// parent.Status is read directly (not re-probed): the conductor branch of
-// resolveParentNotificationTarget freshly UpdateStatus()'d this same instance
-// moments earlier on the commit path, so a second tmux round-trip would add cost
-// without adding freshness.
+// The status is re-probed here, under the daemon's probe budget, through the
+// same source the sync pass uses (hook-driven state first, pane fallback).
+// Review round 2 (P2-D): the liveness gate that used to UpdateStatus() the
+// parent on the commit path is gone, so without this probe the gate read the
+// registry row as last persisted: a stale `running` withheld the wake and the
+// completion waited for the next heartbeat. A probe that overruns the budget
+// counts as not idle (the record still drains on the parent's next turn).
 func parentIsNudgeableIdle(parent *Instance) bool {
 	if parent == nil || !isConductorSessionTitle(parent.Title) {
+		return false
+	}
+	if refreshStatusBounded(parent, statusProbeBudget) {
 		return false
 	}
 	switch parent.Status {
@@ -137,12 +143,21 @@ func sendWakeNudge(parent *Instance, profile string) error {
 	return nil
 }
 
-// wakeNudgeSendTimeout bounds the detached wake-nudge subprocess. --no-wait
-// already returns fast, so 5s is generous; the bound exists purely so a wedged
-// agent-deck binary (e.g. stuck on SQLite/tmux) is reaped instead of leaking the
-// dispatch goroutine indefinitely (PR #1230 audit). A timed-out send is harmless
-// like any dropped nudge — the record still drains on the next turn/heartbeat.
-const wakeNudgeSendTimeout = 5 * time.Second
+// wakeNudgeDeliveryBudget is the time the nudge subprocess gets for the send
+// itself once it holds the target's send lock: the --no-wait pipeline's
+// composer preflight, settle, guard hold, paste and verification add up to
+// well under this.
+const wakeNudgeDeliveryBudget = 15 * time.Second
+
+// wakeNudgeSendTimeout bounds the detached wake-nudge subprocess. The bound
+// exists so a wedged agent-deck binary (e.g. stuck on SQLite/tmux) is reaped
+// instead of leaking the dispatch goroutine indefinitely (PR #1230 audit). It
+// must cover the per-target send lock wait (review round 2, P3): the nudge
+// queues behind a heartbeat or sibling send holding the target, and a shorter
+// timeout killed it while it was still waiting on the flock, so the nudge was
+// silently dropped. A timed-out send is still harmless like any dropped nudge:
+// the record drains on the next turn/heartbeat.
+const wakeNudgeSendTimeout = SendTargetLockWait + wakeNudgeDeliveryBudget
 
 // wakeNudgeExec runs the resolved command under ctx. It is a package var so a
 // test can substitute a spy and assert the deadline/args without spawning a real

@@ -53,6 +53,20 @@ type MenuGroup struct {
 	Expanded     bool   `json:"expanded"`
 	Order        int    `json:"order"`
 	SessionCount int    `json:"sessionCount"`
+	// DefaultPath is the group's EXPLICITLY configured default_path — the
+	// folder new sessions in this group start in. Empty (and omitted) when
+	// the user has not configured one; the client then derives its own
+	// fallback from the group's newest session.
+	//
+	// Read straight off the field. BuildMenuSnapshot's tree comes from
+	// NewGroupTreeWithGroups, which already normalizes this through the
+	// CACHED resolver (internal/session/groups.go:386-388 ->
+	// updateGroupDefaultPath). Do NOT call ExplicitDefaultPathForGroup or
+	// DefaultPathForGroup here: they run the uncached resolveGroupDefaultPath
+	// (os.Stat + up to 3 git subprocesses, ~21ms per group) and this builder
+	// runs on every /api/menu request AND every SSE menu event. See the
+	// header comment at internal/session/groups.go:1711-1731.
+	DefaultPath string `json:"defaultPath,omitempty"`
 }
 
 // MenuSession contains metadata for a session item.
@@ -76,7 +90,11 @@ type MenuSession struct {
 	// explains WHY a session is in its coarse status so consumers like the
 	// Command Center can surface model-unavailable/401 distinctly instead of
 	// hiding them as plain "running". Empty when there is no refinement.
-	Substate        string `json:"substate,omitempty"`
+	Substate string `json:"substate,omitempty"`
+	// SubstateDetail is free text for the substate — today the codex
+	// usage-limit retry time ("try again at Oct 10th, 2026 8:03 AM"). Same
+	// omitempty contract as Substate.
+	SubstateDetail  string `json:"substateDetail,omitempty"`
 	GroupPath       string `json:"groupPath"`
 	ProjectPath     string `json:"projectPath"`
 	ParentSessionID string `json:"parentSessionId,omitempty"`
@@ -203,6 +221,12 @@ func (s *SessionDataService) Profile() string {
 	s.profileMu.Lock()
 	defer s.profileMu.Unlock()
 	return s.profile
+}
+
+// refreshesLiveState reports that snapshots include tmux-derived process state,
+// which can change without a persisted menu-data revision.
+func (s *SessionDataService) refreshesLiveState() bool {
+	return s != nil && s.refreshLiveState
 }
 
 // resolveAndOpenStorage opens storage for the raw profile this service was
@@ -335,6 +359,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		MCPSupported:       session.ToolSupportsMCPManager(inst.GetToolThreadSafe()),
 		Status:             inst.GetStatusThreadSafe(),
 		Substate:           string(inst.CachedSubstate()),
+		SubstateDetail:     inst.SubstateDetail(),
 		GroupPath:          inst.GroupPath,
 		ProjectPath:        inst.ProjectPath,
 		ParentSessionID:    inst.ParentSessionID,
@@ -471,6 +496,7 @@ func (s *SessionDataService) refreshStatuses(instances []*session.Instance) {
 		hooksByInstance = s.loadHookStatuses()
 	}
 
+	var statusPass session.StatusUpdatePass
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -494,6 +520,6 @@ func (s *SessionDataService) refreshStatuses(instances []*session.Instance) {
 		if inst.GetTmuxSession() == nil {
 			continue
 		}
-		_ = inst.UpdateStatus()
+		_ = statusPass.UpdateStatus(inst)
 	}
 }

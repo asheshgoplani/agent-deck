@@ -861,6 +861,10 @@ func (r *remoteAgentRequests) execute(ctx context.Context, f *remoteAgentFlight,
 		return
 	}
 	defer func() { <-r.sem }()
+	if ctx.Err() != nil {
+		f.stderr, f.code = "cancelled while queued", 1
+		return
+	}
 	f.stdout, f.stderr, f.code = r.exec(ctx, args)
 	f.stamp = remoteAgentStampNanos(r.stampPath)
 }
@@ -968,14 +972,20 @@ func remoteAgentArgsAllowed(args []string) bool {
 }
 
 // remoteAgentContentHash hashes what the TUI would see, ignoring the
-// last_activity timestamps that a status refresh rewrites on every listing.
+// last_activity timestamps that a status refresh rewrites on every listing
+// and a viewer's activity time, which moves with every keystroke in a shared
+// session (a viewer joining or leaving still counts as a change).
 func remoteAgentContentHash(listJSON, groupJSON string) string {
 	scrub := remoteAgentActivityField.ReplaceAllString(listJSON, "")
+	scrub = remoteAgentViewerActivityField.ReplaceAllString(scrub, "")
 	sum := sha256.Sum256([]byte(scrub + "\x00" + groupJSON))
 	return hex.EncodeToString(sum[:8])
 }
 
-var remoteAgentActivityField = regexp.MustCompile(`"last_activity_at":\s*"[^"]*",?`)
+var (
+	remoteAgentActivityField       = regexp.MustCompile(`"last_activity_at":\s*"[^"]*",?`)
+	remoteAgentViewerActivityField = regexp.MustCompile(`"activity":\s*"[^"]*",?`)
+)
 
 // remoteAgentStamp folds the mtime and size of the state DB, its WAL and
 // SHM into one comparable string.

@@ -18,6 +18,7 @@ Dependencies: pip3 install toml aiogram slack-bolt slack-sdk discord.py
 
 from __future__ import annotations
 
+import contextlib
 import asyncio
 import functools
 import json
@@ -27,6 +28,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -139,6 +141,15 @@ IMAGE_MARKER_RE = re.compile(r"\[IMAGE:(?P<path>[^\]]+)\]")
 
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
+
+# issue #1981 / #1999: the interactive-state guard skips a heartbeat while a
+# picker or unsent draft is on screen. Its evidence is a single tmux pane
+# capture, which can LIE — a stale glyph buffer (#1999) keeps showing composer
+# text that is no longer really there and never repaints, so the guard would
+# report "blocked" every cycle and silence the conductor forever. After this
+# many CONSECUTIVE gated skips the heartbeat is delivered anyway (with a warning),
+# so a stale buffer or a forgotten draft cannot starve heartbeats indefinitely.
+HEARTBEAT_SKIP_LIMIT = 3
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -411,6 +422,45 @@ def get_session_status(session: str, profile: str | None = None) -> str:
         return "unknown"
 
 
+
+# Hook-driven statuses that mean "mid-turn / interactive", mirroring the Go
+# send path's send.StatusIsBusy (internal/send/deferbusy.go) — the same
+# signal `session send --defer-if-busy` and the post-#2273 verification loop
+# already treat as authoritative. A fresh "running" hook status also covers
+# an OPEN AskUserQuestion picker: its PreToolUse event writes "running" and
+# nothing advances it to a Stop/PostToolUse event until the human answers, so
+# the picker window reads as busy here even though the derived "status"
+# field can still show "waiting" (issue #1981's original false-negative).
+_HOOK_INTERACTIVE_STATUSES = {"running", "starting"}
+
+
+def hook_driven_interactive(session: str, profile: str | None = None) -> tuple[bool, bool]:
+    """Hook-driven busy/interactive signal for one session: (interactive, known).
+
+    ``known`` is False whenever the signal cannot be trusted — the hook has
+    never fired for this session, its last sample is stale, or the CLI call
+    itself failed/parsed badly. Callers MUST treat known=False as "no
+    evidence either way", never as "not interactive": that distinction is the
+    whole point of gating on this instead of a raw pane-text guess (#2080
+    review of #1981/#2043's heartbeat guard).
+    """
+    try:
+        result = run_cli(
+            "session", "show", session, "--json", profile=profile, timeout=15
+        )
+        if result.returncode != 0:
+            return False, False
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return False, False
+    if not data.get("hook_status_fresh"):
+        return False, False
+    status = data.get("hook_status") or ""
+    if not status:
+        return False, False
+    return status in _HOOK_INTERACTIVE_STATUSES, True
+
+
 def get_session_output(session: str, profile: str | None = None) -> str:
     """Get the last response from a session.
 
@@ -418,35 +468,335 @@ def get_session_output(session: str, profile: str | None = None) -> str:
     assistant reply) instead of the raw pane capture (which includes the
     cosmetic frame / statusline at the top and can be mistaken for a reply).
     """
-    result = run_cli(
-        "session", "output", session, "--json", profile=profile, timeout=30
-    )
+    return get_session_output_state(session, profile=profile)[0]
+
+
+def get_session_output_state(
+    session: str, profile: str | None = None,
+) -> tuple[str, str]:
+    """Return response text and its exact Codex thread:turn identity."""
+    result = run_cli("session", "output", session, "--json", profile=profile, timeout=30)
     if result.returncode != 0:
-        return f"[Error getting output: {result.stderr.strip()}]"
+        return f"[Error getting output: {result.stderr.strip()}]", ""
     try:
         data = json.loads(result.stdout)
-        return (data.get("content") or "").strip()
+        return (
+            (data.get("content") or "").strip(),
+            data.get("codex_turn_generation") or "",
+        )
     except json.JSONDecodeError:
         # Fallback: stdout might be the legacy raw-text format.
-        return result.stdout.strip()
+        return result.stdout.strip(), ""
+
+
+def capture_pane(session: str, profile: str | None = None) -> str:
+    """Raw tmux pane capture for a session, via ``session output --pane``.
+
+    Unlike get_session_output (which returns the parsed "last response"), this
+    returns the live pane content WITH ANSI/SGR escapes preserved — the only
+    reliable way to see an open option-picker or the current composer contents.
+    Returns "" on any failure so callers fail OPEN (never block on an unknown
+    pane state).
+    """
+    result = run_cli(
+        "session", "output", session, "--pane", "--json", profile=profile, timeout=15
+    )
+    if result.returncode != 0:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+        return data.get("content") or ""
+    except json.JSONDecodeError:
+        # Legacy/quiet builds may print the raw pane directly.
+        return result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Interactive-state guard for automated sends (issue #1981)
+# ---------------------------------------------------------------------------
+#
+# A routine/heartbeat ``session send`` types text and presses Enter. When the
+# target Claude Code pane is mid-interaction, that Enter is destructive:
+#
+#   (a) an open AskUserQuestion option-picker resolves to its HIGHLIGHTED
+#       default — the model receives an answer the user never gave; and
+#   (b) a composer holding the user's half-typed input gets overwritten.
+#
+# Both states still report session status ``waiting`` (waiting fires on
+# AskUserQuestion / EnterPlanMode), so status alone cannot gate the send. The
+# helpers below inspect a raw pane capture and report whether an automated send
+# would clobber live interaction, so the caller can skip that cycle. Every
+# check fails OPEN: any capture/parse failure is treated as "safe to send".
+
+# Matches a full CSI escape sequence (used to strip ANSI for plain-text scans).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+# Matches only an SGR sequence and captures its parameters (for dim detection).
+_SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+
+# AskUserQuestion option-picker markers. The footer strings mirror the ones the
+# Go prompt detector already keys on ("Press Enter to select" / "Use arrow keys
+# to navigate"), so the two agree about what a picker looks like.
+_PICKER_OPTION_RE = re.compile(r"^\s*[❯>]?\s*(\d+)\.\s+(.+?)\s*$")
+_PICKER_TITLE_RE = re.compile(r"^\s*[☐☑☒◻◼▢]\s*(.+?)\s*$")
+_PICKER_FOOTER_RE = re.compile(r"enter to select|to navigate", re.I)
+_PICKER_FREETEXT_RE = re.compile(r"^type something\b", re.I)
+_PICKER_META_RES = (re.compile(r"^chat about this\b", re.I),)
+
+# Composer region markers: the hint line under the input box, and a box border
+# made of horizontal rules.
+_INPUT_FOOTER_RE = re.compile(r"⏵⏵|bypass permissions|esc to interrupt|shift\+tab", re.I)
+_BORDERISH = re.compile(r"^[│\s]*[─—-]{4,}")
+# How far above the picker footer to look for the option block. A live picker's
+# options sit directly above the footer; a numbered list that merely scrolled by
+# earlier in the transcript is well outside this window.
+_PICKER_WINDOW = 12
+
+
+def _pane_has_open_picker(pane_text: str) -> bool:
+    """True if an AskUserQuestion option-picker is currently open in the pane.
+
+    A live picker has, reading upward from the footer ("enter to select" /
+    "to navigate"): a CONTIGUOUS block of two or more real numbered answer
+    options immediately above it, and a checkbox-style title above that block.
+    Two guards stop ordinary transcript prose from matching (either would
+    otherwise starve heartbeats — issue #1981):
+
+      * an open picker REPLACES the composer, so if a composer input-footer
+        ("⏵⏵" / "bypass permissions" / "esc to interrupt") appears BELOW the
+        matched picker-footer line, that line is really prose sitting above a
+        normal composer, not a picker; and
+      * the option rows must be contiguous with the footer and within a small
+        window above it, so a numbered list elsewhere in the scrollback does not
+        count.
+
+    The "Type something" free-text row and meta rows ("Chat about this") are
+    tolerated inside the block but not counted as answer options.
+    """
+    lines = _ANSI_RE.sub("", pane_text).splitlines()
+    # The capture is up to 2000 lines of scrollback, so a picker resolved
+    # earlier in the transcript still has its footer in the buffer (with the
+    # composer that replaced it below). Only the LAST footer can be live — a
+    # picker occupies the bottom of the pane — so anchor on it rather than on
+    # the first match, which the composer-below guard would always reject
+    # (#2080 review). Scanning from the end also keeps this independent of the
+    # pane height, unlike a fixed tail window.
+    footer_idx = next(
+        (i for i in range(len(lines) - 1, -1, -1) if _PICKER_FOOTER_RE.search(lines[i])), None
+    )
+    if footer_idx is None:
+        return False
+    # A genuine picker occupies the input region — a composer footer below the
+    # match means we matched prose above an ordinary composer, not a picker.
+    if any(_INPUT_FOOTER_RE.search(ln) for ln in lines[footer_idx + 1:]):
+        return False
+    window_top = max(-1, footer_idx - 1 - _PICKER_WINDOW)
+    # Skip a box border / blank lines directly beneath the footer.
+    i = footer_idx - 1
+    while i > window_top and (not lines[i].strip() or _BORDERISH.match(lines[i])):
+        i -= 1
+    # Walk the contiguous option block, tolerating blank / free-text rows.
+    real = 0
+    top_opt = None
+    while i > window_top:
+        m = _PICKER_OPTION_RE.match(lines[i])
+        if m:
+            label = m.group(2).strip()
+            if not (_PICKER_FREETEXT_RE.match(label) or any(p.match(label) for p in _PICKER_META_RES)):
+                real += 1
+            top_opt = i
+            i -= 1
+            continue
+        body = lines[i].strip().lstrip("❯>").strip()
+        if not body or _PICKER_FREETEXT_RE.match(body):
+            i -= 1
+            continue
+        break
+    if real < 2 or top_opt is None:
+        return False
+    # A checkbox-style title must sit just above the option block (blanks allowed).
+    while i > window_top and not lines[i].strip():
+        i -= 1
+    return i > window_top and bool(_PICKER_TITLE_RE.match(lines[i]))
+
+
+def _post_prompt_is_ghost(raw_line: str) -> bool:
+    """True iff the composer body on this RAW (ansi-bearing) line has visible
+    text and ALL of it is DIM.
+
+    Claude Code renders a SUGGESTED (ghost) next prompt in the composer as
+    dim/faint text (SGR 2); a real user-typed draft is bright/default. A ghost
+    is clobberable (Claude offers one nearly every turn, so protecting them
+    would starve automated sends); a real draft is not. This errs toward False
+    (i.e. "not a ghost — protect it") the moment any visible char is non-dim,
+    so real user input is never mistaken for a ghost. SGR param "2" = faint-on;
+    "0"/"22"/empty = faint-off.
+    """
+    m = re.search(r"[❯>]", raw_line)
+    seg = raw_line[m.end():] if m else raw_line
+    dim = False
+    saw_visible = False
+    i = 0
+    n = len(seg)
+    while i < n:
+        if seg[i] == "\x1b":
+            sm = _SGR_RE.match(seg, i)
+            if sm:
+                params = sm.group(1)
+                for p in (params.split(";") if params else ["0"]):
+                    if p == "2":
+                        dim = True
+                    elif p in ("0", "22", ""):
+                        dim = False
+                i = sm.end()
+                continue
+            am = _ANSI_RE.match(seg, i)  # non-SGR CSI/escape → skip it
+            if am:
+                i = am.end()
+                continue
+        ch = seg[i]
+        if not ch.isspace() and ch not in ("│", "❯", ">"):
+            saw_visible = True
+            if not dim:
+                return False
+        i += 1
+    return saw_visible
+
+
+def _composer_has_unsent_draft(pane_text: str) -> bool:
+    """True if the live composer holds the user's unsent text (mid-typing) that
+    a routine send would clobber.
+
+    Walks up from the input footer to the ``❯`` prompt, stopping at the box
+    border; an empty prompt (``❯`` with nothing after it) is not a draft. A
+    Claude-suggested ghost draft (rendered dim, SGR 2) is NOT protected — only
+    real, non-dim user input counts (see _post_prompt_is_ghost).
+    """
+    raw_lines = pane_text.splitlines()
+    text = _ANSI_RE.sub("", pane_text)
+    lines = text.splitlines()  # index-aligned with raw_lines (SGR strip keeps line count)
+    fi = None
+    for i in range(len(lines) - 1, -1, -1):
+        if _INPUT_FOOTER_RE.search(lines[i]):
+            fi = i
+            break
+    if fi is None:
+        return False
+    bi = next((j for j in range(fi - 1, -1, -1) if _BORDERISH.match(lines[j])), None)
+    if bi is None:
+        return False
+    for j in range(bi - 1, max(-1, bi - 40), -1):
+        raw = lines[j].rstrip()
+        if _BORDERISH.match(raw):  # top border / titled bar → stop before the transcript
+            break
+        s = raw.strip().lstrip("│").strip()
+        starts = s[:1] in ("❯", ">")
+        body = s[1:].strip() if starts else s
+        if body:
+            rawline = raw_lines[j] if j < len(raw_lines) else ""
+            if _post_prompt_is_ghost(rawline):
+                # dim ghost suggestion — clobberable, not a real draft
+                if starts:
+                    break     # composer prompt line holds only a ghost → no real draft
+                continue      # a dim continuation line → keep scanning up
+            return True
+        if starts:  # reached an empty ❯ prompt → no draft
+            break
+    return False
+
+
+def _pane_blocks_automated_send(
+    pane_text: str, hook_known: bool = False, hook_interactive: bool = False
+) -> str | None:
+    """Reason string if an automated send into this pane would disrupt live
+    interaction, else None. Cheapest/most-authoritative check first.
+
+    Interactive/busy detection is now gated on the hook-driven signal
+    (``hook_driven_interactive``, #2080) whenever it is known: a fresh
+    "running"/"starting" hook status is the same evidence the Go send path
+    treats as authoritative (``--defer-if-busy``, the #2273 verification
+    loop), and it catches an open AskUserQuestion picker without guessing
+    from pane glyphs. Pane-text picker detection (``_pane_has_open_picker``)
+    is used ONLY as a fallback when the hook signal is unknown (hooks never
+    fired for this session, the last sample went stale, or the CLI read
+    failed) — that verdict is reported with an "unknown:" prefix, since it is
+    a heuristic guess rather than confirmed evidence.
+
+    The composer-unsent-draft check is orthogonal to turn state (a user can
+    be mid-typing while the hook genuinely reads idle) and always runs off
+    pane text regardless of hook_known.
+
+    Pure and total: an empty or unparseable capture, plus hook_known=False
+    with no picker match, yields None (send allowed) — callers fail OPEN.
+    """
+    if hook_known:
+        if hook_interactive:
+            return "hook-busy-interactive"
+    elif pane_text and _pane_has_open_picker(pane_text):
+        return "unknown:askuserquestion-picker-open"
+    if pane_text and _composer_has_unsent_draft(pane_text):
+        return "composer-holds-unsent-input"
+    return None
+
+
+def _heartbeat_skip_action(consecutive_skips: int, limit: int = HEARTBEAT_SKIP_LIMIT) -> str:
+    """Decide what a heartbeat should do given how many cycles the
+    interactive-state guard has blocked IN A ROW (counting the current one).
+
+    Returns ``"skip"`` to hold this cycle, or ``"override"`` to deliver anyway
+    despite the block. A real picker or draft rarely survives ``limit`` heartbeat
+    intervals; a stale pane buffer (#1999) would block forever, so at the limit
+    the heartbeat overrides the guard rather than starve (#1981/#1999).
+    """
+    return "override" if consecutive_skips >= limit else "skip"
 
 
 # Async callable type for reply notifications: (response_text: str) -> None
 ReplyCallback = Callable[[str], Coroutine[Any, Any, None]]
 
+_WAIT_SEND_QUEUE_REQUIRED = "queue_required"
+_LEGACY_REPLY_CLAIM = "legacy"
+_reply_owner_lock = threading.Lock()
+_wait_send_reservations: dict[tuple[str | None, str], str | None] = {}
 
-def _is_still_running_timeout(stderr: str) -> bool:
-    """True when a blocking `--wait` failed *only* because the turn outran the
-    timeout while the agent keeps working — the message WAS delivered.
 
-    The CLI reports this with stderr like:
-        "timeout waiting for completion: agent still running after 5m0s"
+def _cli_json(stdout: str) -> dict:
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
-    Distinguishing this benign case from a genuine send failure lets callers
-    deliver the reply asynchronously instead of reporting a false failure.
-    """
-    s = stderr.lower()
-    return "timeout waiting for completion" in s or "still running" in s
+
+def _accepted_turn_from_timeout(payload: dict) -> dict | None:
+    """Return a fail-closed late-reply owner from a structured CLI timeout."""
+    if (
+        payload.get("completion") != "timeout"
+        or payload.get("delivery") != "submitted"
+        or payload.get("submitted") is not True
+        or payload.get("accepted_turn_kind") != "codex_rollout"
+    ):
+        return None
+    receipt = payload.get("accepted_turn")
+    if not isinstance(receipt, dict):
+        return None
+    required = (
+        "receipt_id", "instance_id", "codex_session_id", "turn_generation", "accepted_at",
+    )
+    if any(not isinstance(receipt.get(key), str) or not receipt[key] for key in required):
+        return None
+    if not receipt["turn_generation"].startswith(receipt["codex_session_id"] + ":"):
+        return None
+    return receipt
+
+
+def _legacy_submitted_timeout(payload: dict) -> bool:
+    """Preserve async completion for tools without exact turn receipts."""
+    return (
+        payload.get("completion") == "timeout"
+        and payload.get("delivery") == "submitted"
+        and payload.get("submitted") is True
+        and payload.get("accepted_turn_kind") != "codex_rollout"
+    )
 
 
 def send_to_conductor(
@@ -457,14 +807,14 @@ def send_to_conductor(
     response_timeout: int = RESPONSE_TIMEOUT,
     reply_callback: ReplyCallback | None = None,
     force_queue: bool = False,
-) -> tuple[bool, str, bool]:
+    claim_late_reply: bool = False,
+) -> tuple[bool, str, dict | bool | str]:
     """Send a message to the conductor session.
 
-    Returns (success, response_text, still_running). When wait_for_reply=False,
-    response_text is "". still_running is True only on the wait path when the
-    blocking `--wait` timed out because the agent is still working (the message
-    was delivered and the reply should be awaited asynchronously); it is False
-    in every other case.
+    Returns (success, response_text, pending). An exact receipt means Codex
+    accepted a turn before completion timed out; True preserves the legacy
+    async signal for receipt-less tools; queue_required prevents concurrent
+    remote sends from creating an unowned turn.
 
     When wait_for_reply=False and the conductor is busy (running/active/starting),
     the message is queued in-memory and delivered automatically once the conductor
@@ -474,6 +824,9 @@ def send_to_conductor(
     force_queue=True skips the internal status check and enqueues immediately.
     Use this when the caller already knows the conductor is busy to avoid a
     redundant blocking subprocess call.
+
+    claim_late_reply reserves one in-memory owner across the blocking wait and,
+    on an accepted timeout, until the caller registers its reply watcher.
     """
     if not wait_for_reply:
         # force_queue: caller already confirmed conductor is busy — skip status check.
@@ -511,32 +864,60 @@ def send_to_conductor(
             return False, "", False
         return True, "", False
 
-    # wait_for_reply=True: single-call flow used by heartbeats and the idle
-    # user-message path. `--wait` blocks until the assistant's reply is flushed;
-    # we then re-fetch the clean reply via get_session_output (`session output
-    # --json` -> content), rather than parsing the raw `--wait` pane capture.
-    # This mirrors the deployed bridge's reply-capture (issue #926).
-    result = run_cli(
-        "session", "send", session, message,
-        "--wait", "--timeout", f"{response_timeout}s", "-q",
-        profile=profile,
-        timeout=max(response_timeout + 30, 60),
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        # The turn outran --timeout but the message was delivered and the agent
-        # is still working. Signal still_running so the caller can await the
-        # reply asynchronously rather than reporting a false failure.
-        if _is_still_running_timeout(stderr):
-            log.info(
-                "Conductor %s: --wait timed out but agent still running "
-                "(message delivered, reply pending): %s",
-                session, stderr,
-            )
-            return False, "", True
-        log.error("Failed to send to conductor: %s", stderr)
+    # Serialize accepted-turn ownership before launching the blocking command;
+    # a colliding remote arrival must queue instead of becoming an unowned turn.
+    key = (profile, session)
+    with _reply_owner_lock:
+        if key in _wait_send_reservations or key in _pending_reply_tasks:
+            return False, "", _WAIT_SEND_QUEUE_REQUIRED
+        _wait_send_reservations[key] = None
+
+    retain_reservation = False
+    try:
+        # `--wait --json` returns the accepted turn and its exact correlated
+        # response as one result; never issue a second output read here.
+        result = run_cli(
+            "session", "send", session, message,
+            "--wait", "--timeout", f"{response_timeout}s", "--json",
+            profile=profile,
+            timeout=max(response_timeout + 30, 60),
+        )
+        if result.returncode != 0:
+            payload = _cli_json(result.stdout)
+            receipt = _accepted_turn_from_timeout(payload)
+            if receipt is not None:
+                log.info(
+                    "Conductor %s: accepted turn %s outlasted --wait; reply pending",
+                    session, receipt["receipt_id"],
+                )
+                if claim_late_reply:
+                    with _reply_owner_lock:
+                        _wait_send_reservations[key] = receipt["receipt_id"]
+                    retain_reservation = True
+                return False, "", receipt
+            if _legacy_submitted_timeout(payload):
+                if claim_late_reply:
+                    with _reply_owner_lock:
+                        _wait_send_reservations[key] = _LEGACY_REPLY_CLAIM
+                    retain_reservation = True
+                return False, "", True
+            error = payload.get("error") or result.stderr.strip()
+            log.error("Failed to send to conductor: %s", error)
+            return False, "", False
+        payload = _cli_json(result.stdout)
+        content = payload.get("content")
+        if (
+            payload.get("success") is True
+            and payload.get("completion") == "complete"
+            and isinstance(content, str)
+        ):
+            return True, content.strip(), False
+        log.error("Conductor %s returned an invalid structured wait result", session)
         return False, "", False
-    return True, get_session_output(session, profile=profile), False
+    finally:
+        if not retain_reservation:
+            with _reply_owner_lock:
+                _wait_send_reservations.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +1029,10 @@ async def _drain_queue() -> None:
                 continue
 
             message, profile, reply_callback = items[0]
+            with _reply_owner_lock:
+                if ((profile, session) in _wait_send_reservations or
+                        (profile, session) in _pending_reply_tasks):
+                    continue
             loop = asyncio.get_running_loop()
             status = await loop.run_in_executor(
                 None,
@@ -736,8 +1121,8 @@ async def _drain_queue() -> None:
 # When the conductor is IDLE on arrival the handler delivers the message with a
 # blocking `session send --wait --timeout {RESPONSE_TIMEOUT}s`. If that single
 # turn outruns the timeout the message is already delivered and the agent keeps
-# working — only the synchronous reply is lost. send_to_conductor flags this
-# (still_running=True); the handler then registers a reply-only watcher here.
+# working — only the synchronous reply is lost. send_to_conductor returns the
+# CLI's accepted-turn receipt; the handler registers its reply owner here.
 #
 # Unlike _drain_queue this NEVER sends a message — the message is already
 # in-flight, so re-sending would double-process it. The watcher only polls
@@ -748,49 +1133,51 @@ async def _drain_queue() -> None:
 PENDING_REPLY_MAX_WAIT = 3600  # seconds
 PENDING_REPLY_POLL_INTERVAL = 5  # seconds
 
-# Keeps watcher tasks referenced so the event loop doesn't GC them mid-flight.
-_pending_reply_tasks: set[asyncio.Task] = set()
+# Keep one late-reply owner per session referenced until it finishes.
+_pending_reply_tasks: dict[tuple[str | None, str], asyncio.Task] = {}
 
 
 async def _watch_pending_reply(
     session: str,
     profile: str | None,
+    receipt: dict | None,
     reply_callback: ReplyCallback,
 ) -> None:
-    """Wait for an in-flight conductor turn to finish, then deliver its output.
+    """Deliver the accepted turn's output without re-sending its message.
 
-    Used when a blocking `--wait` send timed out because the agent is still
-    running (not a send failure). The message was already delivered, so this
-    does NOT re-send — it polls until the conductor leaves the busy state and
-    then fires reply_callback exactly once with the captured output.
-
-    Mirrors _drain_queue's polling/backoff but never sends a message. Caps the
-    total wait at PENDING_REPLY_MAX_WAIT and logs if it gives up.
+    Codex requires an exact rollout generation because status, timestamps, and
+    content are not ownership evidence. Receipt-less tools retain the previous
+    status-based watcher until they expose equivalent turn identity.
     """
     loop = asyncio.get_running_loop()
     max_polls = max(1, PENDING_REPLY_MAX_WAIT // PENDING_REPLY_POLL_INTERVAL)
     for _ in range(max_polls):
-        status = await loop.run_in_executor(
-            None, functools.partial(get_session_status, session, profile=profile),
+        if receipt is None:
+            status = await loop.run_in_executor(
+                None, functools.partial(get_session_status, session, profile=profile),
+            )
+            if status in ("running", "active", "starting", "unknown"):
+                await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
+                continue
+            output = await loop.run_in_executor(
+                None, functools.partial(get_session_output, session, profile=profile),
+            )
+            await _fire_callback(
+                reply_callback, output.strip() or "[No output from conductor.]",
+            )
+            return
+        output, generation = await loop.run_in_executor(
+            None, functools.partial(get_session_output_state, session, profile=profile),
         )
-        # Still working, or a transient CLI failure — keep waiting. This also
-        # naturally handles the race where the conductor finishes between the
-        # timeout and this first poll: a non-busy status falls straight through
-        # to fetching the output below.
-        if status in ("running", "active", "starting", "unknown"):
-            await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
-            continue
-        # The turn is no longer running (idle/waiting/error/...) — fetch whatever
-        # output is available and deliver it once.
-        output = await loop.run_in_executor(
-            None, functools.partial(get_session_output, session, profile=profile),
-        )
-        text = output.strip() or "[No output from conductor.]"
-        await _fire_callback(reply_callback, text)
-        log.info(
-            "Pending reply for %s delivered after in-flight turn finished", session,
-        )
-        return
+        if generation == receipt["turn_generation"]:
+            text = output.strip()
+            await _fire_callback(reply_callback, text or "[No output from conductor.]")
+            log.info(
+                "Pending reply %s for %s delivered after matching Codex completion",
+                receipt["receipt_id"], session,
+            )
+            return
+        await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
 
     log.warning(
         "Pending reply watcher for %s gave up after %ds — turn still running",
@@ -806,8 +1193,9 @@ async def _watch_pending_reply(
 def _register_pending_reply(
     session: str,
     profile: str | None,
+    receipt: dict | None,
     reply_callback: ReplyCallback,
-) -> None:
+) -> bool:
     """Schedule a reply-only watcher for an in-flight turn (no message re-send).
 
     Safe to call from a running-loop context; skips with a warning if there is
@@ -817,10 +1205,39 @@ def _register_pending_reply(
         loop = asyncio.get_running_loop()
     except RuntimeError:
         log.warning("No running event loop — cannot watch for pending reply on %s", session)
-        return
-    task = loop.create_task(_watch_pending_reply(session, profile, reply_callback))
-    _pending_reply_tasks.add(task)
-    task.add_done_callback(_pending_reply_tasks.discard)
+        return False
+    key = (profile, session)
+    claim_id = receipt.get("receipt_id") if receipt is not None else _LEGACY_REPLY_CLAIM
+    with _reply_owner_lock:
+        if key in _pending_reply_tasks:
+            return False
+        reservation = _wait_send_reservations.get(key)
+        if key in _wait_send_reservations and reservation != claim_id:
+            return False
+        task = loop.create_task(
+            _watch_pending_reply(session, profile, receipt, reply_callback)
+        )
+        _wait_send_reservations.pop(key, None)
+        _pending_reply_tasks[key] = task
+
+    def _release_owner(done: asyncio.Task) -> None:
+        with _reply_owner_lock:
+            if _pending_reply_tasks.get(key) is done:
+                _pending_reply_tasks.pop(key, None)
+
+    task.add_done_callback(_release_owner)
+    return True
+
+
+def _release_late_reply_claim(
+    session: str, profile: str | None, receipt: dict | None,
+) -> None:
+    """Release a retained send reservation when watcher setup fails."""
+    key = (profile, session)
+    claim_id = receipt.get("receipt_id") if receipt is not None else _LEGACY_REPLY_CLAIM
+    with _reply_owner_lock:
+        if _wait_send_reservations.get(key) == claim_id:
+            _wait_send_reservations.pop(key, None)
 
 
 def get_status_summary(profile: str | None = None) -> dict:
@@ -1735,6 +2152,7 @@ def create_telegram_bot(config: dict):
                 profile=target_profile,
                 wait_for_reply=True,
                 response_timeout=RESPONSE_TIMEOUT,
+                claim_late_reply=True,
             ),
         )
         if not ok:
@@ -1758,10 +2176,30 @@ def create_telegram_bot(config: dict):
                     for chunk in split_message(html):
                         await tg_bot.send_message(tg_chat_id, chunk, parse_mode="HTML")
 
-                _register_pending_reply(session_title, target_profile, _tg_late_reply)
-                await message.answer(
-                    f"{profile_tag}⏳ Still working — will reply here when done."
-                )
+                if still_running == _WAIT_SEND_QUEUE_REQUIRED:
+                    _enqueue_message(
+                        session_title, cleaned_msg, target_profile, _tg_late_reply,
+                    )
+                    await message.answer(
+                        f"{profile_tag}⏳ Conductor busy — message queued, will reply here when done."
+                    )
+                elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
+                    session_title, target_profile,
+                    still_running if isinstance(still_running, dict) else None,
+                    _tg_late_reply,
+                ):
+                    await message.answer(
+                        f"{profile_tag}⏳ Still working — will reply here when done."
+                    )
+                else:
+                    if still_running is True or isinstance(still_running, dict):
+                        _release_late_reply_claim(
+                            session_title, target_profile,
+                            still_running if isinstance(still_running, dict) else None,
+                        )
+                    await message.answer(
+                        f"[Accepted turn could not acquire a reply watcher [{target_profile}].]"
+                    )
                 return
             await message.answer(
                 f"[Failed to send message to conductor [{target_profile}].]"
@@ -2077,6 +2515,7 @@ def create_slack_app(config: dict):
                 send_to_conductor,
                 session_title, cleaned_msg, profile=profile,
                 wait_for_reply=True, response_timeout=RESPONSE_TIMEOUT,
+                claim_late_reply=True,
             ),
         )
         if not ok:
@@ -2099,12 +2538,25 @@ def create_slack_app(config: dict):
                         text = f"{header}{chunk}" if i == 0 else chunk
                         await _safe_say(say, text=text, thread_ts=thread_ts)
 
-                _register_pending_reply(session_title, profile, _slack_late_reply)
-                await _safe_say(
-                    say,
-                    text=f"{name_tag}\u23f3 Still working \u2014 will reply here when done.",
-                    thread_ts=thread_ts,
-                )
+                if still_running == _WAIT_SEND_QUEUE_REQUIRED:
+                    _enqueue_message(
+                        session_title, cleaned_msg, profile, _slack_late_reply,
+                    )
+                    notice = f"{name_tag}⏳ Conductor busy — message queued, will reply here when done."
+                elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
+                    session_title, profile,
+                    still_running if isinstance(still_running, dict) else None,
+                    _slack_late_reply,
+                ):
+                    notice = f"{name_tag}⏳ Still working — will reply here when done."
+                else:
+                    if still_running is True or isinstance(still_running, dict):
+                        _release_late_reply_claim(
+                            session_title, profile,
+                            still_running if isinstance(still_running, dict) else None,
+                        )
+                    notice = f"[Accepted turn could not acquire a reply watcher {target['name']}]."
+                await _safe_say(say, text=notice, thread_ts=thread_ts)
                 return
             await _safe_say(
                 say,
@@ -2660,7 +3112,16 @@ def create_discord_bot(config: dict):
             "Discord message -> [%s]: %s",
             target["name"], cleaned_msg[:100],
         )
-        async with message.channel.typing():
+        async def _best_effort_typing():
+            try:
+                async with message.channel.typing():
+                    while True:
+                        await asyncio.sleep(5)
+            except Exception as exc:
+                log.warning("Discord typing indicator failed; continuing message delivery: %s", exc)
+
+        typing_task = asyncio.create_task(_best_effort_typing())
+        try:
             loop = asyncio.get_event_loop()
             ok, response, still_running = await loop.run_in_executor(
                 None,
@@ -2670,8 +3131,13 @@ def create_discord_bot(config: dict):
                     profile=profile,
                     wait_for_reply=True,
                     response_timeout=RESPONSE_TIMEOUT,
+                    claim_late_reply=True,
                 ),
             )
+        finally:
+            typing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await typing_task
         if not ok:
             if still_running:
                 # The message WAS delivered; the single turn just outran the
@@ -2688,10 +3154,25 @@ def create_discord_bot(config: dict):
                         dc_channel, response_text, name_tag=dc_name_tag,
                     )
 
-                _register_pending_reply(session_title, profile, _dc_late_reply)
-                await message.channel.send(
-                    "⏳ Still working — will reply here when done.",
-                )
+                if still_running == _WAIT_SEND_QUEUE_REQUIRED:
+                    _enqueue_message(
+                        session_title, cleaned_msg, profile, _dc_late_reply,
+                    )
+                    notice = "⏳ Conductor busy — message queued, will reply here when done."
+                elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
+                    session_title, profile,
+                    still_running if isinstance(still_running, dict) else None,
+                    _dc_late_reply,
+                ):
+                    notice = "⏳ Still working — will reply here when done."
+                else:
+                    if still_running is True or isinstance(still_running, dict):
+                        _release_late_reply_claim(
+                            session_title, profile,
+                            still_running if isinstance(still_running, dict) else None,
+                        )
+                    notice = "[Accepted turn could not acquire a reply watcher.]"
+                await message.channel.send(notice)
                 return
             await message.channel.send(
                 f"[Failed to send message to conductor {target['name']}.]",
@@ -2763,6 +3244,11 @@ async def heartbeat_loop(
     # firing the same alert verbatim for 12+ hours.
     need_state_by_conductor: dict[str, dict] = {}
 
+    # issue #1981/#1999: consecutive interactive-state skips per conductor. Reset
+    # on any clear pane or successful send; once it reaches HEARTBEAT_SKIP_LIMIT we
+    # override the guard and deliver anyway (see the block below).
+    skip_count_by_conductor: dict[str, int] = {}
+
     log.info("Heartbeat loop started (global interval: %d minutes)", global_interval)
 
     while True:
@@ -2827,21 +3313,19 @@ async def heartbeat_loop(
                     parts.append(f"Waiting sessions: {', '.join(waiting_details)}.")
                 if error_details:
                     parts.append(f"Error sessions: {', '.join(error_details)}.")
-                # Append HEARTBEAT_RULES.md (per-conductor, per-profile, then global fallback)
-                rules_text = None
+                # Reference HEARTBEAT_RULES.md by path. Inlining the whole file
+                # on every tick bloats prompts and destabilizes the cache prefix.
+                rules_path_ref = None
                 for rules_path in [
                     CONDUCTOR_DIR / name / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / profile / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / "HEARTBEAT_RULES.md",
                 ]:
-                    if rules_path.exists():
-                        try:
-                            rules_text = rules_path.read_text().strip()
-                        except Exception as e:
-                            log.warning("Failed to read %s: %s", rules_path, e)
+                    if rules_path.is_file():
+                        rules_path_ref = rules_path.resolve()
                         break
-                if rules_text:
-                    parts.append(f"\n\n{rules_text}")
+                if rules_path_ref:
+                    parts.append(f"Read heartbeat rules from {rules_path_ref}.")
                 else:
                     parts.append("Check if any need auto-response or user attention.")
 
@@ -2891,6 +3375,72 @@ async def heartbeat_loop(
                     )
                     continue
 
+                # issue #1981 / #2080: a routine send types text + Enter. If the
+                # target is mid-interaction — an AskUserQuestion picker is open,
+                # or the composer holds the user's unsent draft — that Enter
+                # selects the picker default or clobbers the draft. Skip this
+                # cycle when either is true.
+                #
+                # #2080 review: interactive/busy detection is gated on the
+                # hook-driven signal (the same fresh "running"/"starting" status
+                # `--defer-if-busy` and the send verification loop already treat
+                # as authoritative) whenever it is known — it covers an open
+                # picker without guessing from pane glyphs. Raw pane-text picker
+                # detection now runs ONLY as a fallback when the hook signal is
+                # unknown. Fail OPEN throughout: any read/capture/parse failure
+                # leaves block_reason None so the send still goes out (heartbeats
+                # are never permanently blocked). Both calls run in the executor
+                # so the blocking CLI calls never freeze the event loop.
+                #
+                # NOTE this narrows but does NOT close the clobber window: the
+                # checks and the send are separate steps, so a user who starts
+                # typing (or a turn that starts) in the gap between them can
+                # still be clobbered. It is a best-effort guard, not a guarantee
+                # — see the bounded override below, which stops a persistently-
+                # blocking signal from starving heartbeats entirely (issue #1999).
+                try:
+                    hook_interactive, hook_known = await loop.run_in_executor(
+                        None,
+                        functools.partial(hook_driven_interactive, session_title, profile=profile),
+                    )
+                    pane_text = await loop.run_in_executor(
+                        None,
+                        functools.partial(capture_pane, session_title, profile=profile),
+                    )
+                    block_reason = _pane_blocks_automated_send(
+                        pane_text, hook_known=hook_known, hook_interactive=hook_interactive
+                    )
+                except Exception as e:  # noqa: BLE001 — fail-open: ANY capture/parse error must allow the send
+                    log.warning(
+                        "Heartbeat [%s]: interactive-state check failed (%s); allowing send",
+                        name, e,
+                    )
+                    block_reason = None
+                if block_reason:
+                    skips = skip_count_by_conductor.get(name, 0) + 1
+                    skip_count_by_conductor[name] = skips
+                    if _heartbeat_skip_action(skips) == "skip":
+                        log.info(
+                            "Heartbeat [%s]: skipping this cycle (%d/%d) — %s",
+                            name, skips, HEARTBEAT_SKIP_LIMIT, block_reason,
+                        )
+                        continue
+                    # Bounded skip: the guard has blocked HEARTBEAT_SKIP_LIMIT
+                    # cycles in a row. A real picker or draft rarely survives that
+                    # many heartbeat intervals; a stale pane buffer (#1999) would
+                    # survive forever. Deliver anyway so the conductor is never
+                    # silenced permanently, and reset the counter.
+                    log.warning(
+                        "Heartbeat [%s]: interactive-state guard blocked %d consecutive "
+                        "cycles (%s); overriding and delivering to prevent heartbeat "
+                        "starvation (guards against the #1999 stale-pane-buffer case)",
+                        name, skips, block_reason,
+                    )
+                    skip_count_by_conductor[name] = 0
+                    # fall through and deliver this cycle
+                else:
+                    skip_count_by_conductor[name] = 0  # pane read clear → reset
+
                 # Send heartbeat to conductor (wrapped in executor — blocks up to
                 # RESPONSE_TIMEOUT seconds and must not freeze the event loop)
                 ok, response, _ = await loop.run_in_executor(
@@ -2910,6 +3460,8 @@ async def heartbeat_loop(
                         name,
                     )
                     continue
+
+                skip_count_by_conductor[name] = 0  # delivered → reset skip counter
 
                 # Response is captured via get_session_output (see send_to_conductor).
                 log.info(

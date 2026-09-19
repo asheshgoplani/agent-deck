@@ -268,6 +268,24 @@ func TestIdentityInjection_PerHarnessCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("omp command carries --append-system-prompt file", func(t *testing.T) {
+		inst := identityTestInstance("omp")
+		file, _ := inst.IdentityFilePath()
+
+		args := inst.identityNativeArgs("omp", "")
+		if !reflect.DeepEqual(args, []string{"--append-system-prompt", file}) {
+			t.Errorf("omp native args = %v, want [--append-system-prompt %s]", args, file)
+		}
+
+		cmd := inst.buildOMPCommand("omp")
+		if !strings.HasSuffix(cmd, "--append-system-prompt "+file) {
+			t.Errorf("omp command missing identity flag:\n%s", cmd)
+		}
+		if !strings.Contains(cmd, "export "+IdentityFileEnv+"="+file) {
+			t.Errorf("omp command missing env export:\n%s", cmd)
+		}
+	})
+
 	t.Run("gemini command withholds include-directories until the root is trusted", func(t *testing.T) {
 		inst := identityTestInstance("gemini")
 		cmd := inst.buildGeminiCommand("gemini")
@@ -624,6 +642,66 @@ func TestBuildIdentityPrompt_CollapsesControlCharactersInFields(t *testing.T) {
 	}
 	if lines > 40 {
 		t.Errorf("block grew to %d lines with hostile fields", lines)
+	}
+}
+
+// FIX 4: the identity block must point agents at pool skills and say where
+// this session actually runs.
+func TestBuildIdentityPrompt_HostAndSkillsSection(t *testing.T) {
+	identityTestEnv(t)
+	inst := identityTestInstance("claude")
+	got := inst.BuildIdentityPrompt()
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "- host: "+hostname+"\n") {
+		t.Errorf("missing local hostname line:\n%s", got)
+	}
+
+	wantSection := "\n## Skills\nPool skills exist for many tasks. List: `agent-deck skill list`; attach to this session: `agent-deck skill attach <session id> <skill>` (then restart); attached now: none.\n"
+	if !strings.Contains(got, wantSection) {
+		t.Errorf("skills section mismatch:\nwant substring %q\ngot:\n%s", wantSection, got)
+	}
+	if lines := strings.Count(wantSection, "\n") - 1; lines > 6 { // -1: leading blank line is a separator, not section content
+		t.Fatalf("test bug: section itself exceeds the 6-line budget (%d)", lines)
+	}
+}
+
+func TestBuildIdentityPrompt_SkillsSectionListsAttachedSkills(t *testing.T) {
+	identityTestEnv(t)
+	inst := identityTestInstance("claude")
+	if err := os.MkdirAll(inst.ProjectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{
+		{ID: "b", Name: "systematic-debugging", Source: "pool"},
+		{ID: "a", Name: "brainstorming", Source: "pool"},
+	}}
+	if err := SaveProjectSkillsManifest(inst.ProjectPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	got := inst.BuildIdentityPrompt()
+	if !strings.Contains(got, "attached now: brainstorming, systematic-debugging.\n") {
+		t.Errorf("attached skills not listed:\n%s", got)
+	}
+}
+
+func TestBuildIdentityPrompt_HostLabelIsRemoteNameForSSHSession(t *testing.T) {
+	home := identityTestEnv(t)
+	configPath := filepath.Join(home, ".config", "agent-deck", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("[remotes.lab]\nhost = 'worker@lab-box'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst := identityTestInstance("claude")
+	inst.SSHHost = "worker@lab-box"
+	got := inst.BuildIdentityPrompt()
+	if !strings.Contains(got, "- host: lab\n") {
+		t.Errorf("SSH session should resolve host to the configured remote's name:\n%s", got)
 	}
 }
 

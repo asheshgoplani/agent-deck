@@ -1,6 +1,9 @@
 package session
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,31 +51,41 @@ func MigrateConversation(inst *Instance, targetConfigDir string) (string, error)
 // file in the project dir and updates inst.ClaudeSessionID accordingly; the
 // caller is responsible for persisting the instance.
 func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir string) (string, error) {
+	dst, _, err := MigrateConversationFromSized(inst, srcConfigDir, targetConfigDir)
+	return dst, err
+}
+
+// MigrateConversationFromSized is MigrateConversationFrom that also reports
+// the byte size of the conversation file as written into the target dir.
+// The copy strips history-suppression and bridge-session records (#2269),
+// so the written size can be smaller than the source; callers that verify
+// the target afterwards must compare against this value, not the source.
+func MigrateConversationFromSized(inst *Instance, srcConfigDir, targetConfigDir string) (string, int64, error) {
 	if inst == nil {
-		return "", fmt.Errorf("nil instance")
+		return "", 0, fmt.Errorf("nil instance")
 	}
 	if inst.Tool != "claude" {
-		return "", fmt.Errorf("conversation migration is only supported for claude sessions (tool: %s)", inst.Tool)
+		return "", 0, fmt.Errorf("conversation migration is only supported for claude sessions (tool: %s)", inst.Tool)
 	}
 	// #1851: the file this would move is located through the local placeholder
 	// ProjectPath, so for an --ssh session it belongs to a LOCAL session. Moving
 	// it takes a conversation away from the session that owns it.
 	if !inst.TranscriptIsResolvableLocally() {
-		return "", nil
+		return "", 0, nil
 	}
 	src := ExpandPath(strings.TrimSpace(srcConfigDir))
 	dst := ExpandPath(strings.TrimSpace(targetConfigDir))
 	if src == "" || dst == "" {
-		return "", fmt.Errorf("source and target config dirs must be non-empty")
+		return "", 0, fmt.Errorf("source and target config dirs must be non-empty")
 	}
 	if filepath.Clean(src) == filepath.Clean(dst) || resolveRealPath(src) == resolveRealPath(dst) {
-		return "", nil
+		return "", 0, nil
 	}
 
 	projDirName := ConvertToClaudeDirName(inst.ProjectPath)
 	srcProjDir, err := containedConversationPath(src, "projects", projDirName)
 	if err != nil {
-		return "", fmt.Errorf("source project dir: %w", err)
+		return "", 0, fmt.Errorf("source project dir: %w", err)
 	}
 
 	sid := inst.ClaudeSessionID
@@ -83,7 +96,7 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 		// outside the project dir, and it must not be silently replaced.
 		candidate, err := containedConversationPath(srcProjDir, sid+".jsonl")
 		if err != nil {
-			return "", fmt.Errorf("source conversation: %w", err)
+			return "", 0, fmt.Errorf("source conversation: %w", err)
 		}
 		if fileIsRegular(candidate) {
 			srcFile = candidate
@@ -94,7 +107,7 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 		// the newest conversation file in the project dir.
 		newestFile, newestID := newestConversationFile(srcProjDir)
 		if newestFile == "" {
-			return "", fmt.Errorf("%w under %s", ErrNoConversation, srcProjDir)
+			return "", 0, fmt.Errorf("%w under %s", ErrNoConversation, srcProjDir)
 		}
 		// #1815: "newest conversation in the project dir" is a guess, and it
 		// is a guess whether or not an older id was stored — the fallback is
@@ -110,38 +123,38 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 		// fallback exists for still works — but the id stays suspect until
 		// something vouches for it, so it cannot authorize a `--resume`.
 		if conversationCount(srcProjDir) > 1 {
-			return "", fmt.Errorf("%w: %s holds several conversations and %s has no resolvable id of its own, so the newest one cannot be attributed to it",
+			return "", 0, fmt.Errorf("%w: %s holds several conversations and %s has no resolvable id of its own, so the newest one cannot be attributed to it",
 				ErrAmbiguousConversation, srcProjDir, inst.Title)
 		}
 		srcFile, sid = newestFile, newestID
 		inst.adoptDiscoveredClaudeSessionID(newestID)
 	}
 	if _, err := conversationPathComponent(sid + ".jsonl"); err != nil {
-		return "", fmt.Errorf("source conversation: %w", err)
+		return "", 0, fmt.Errorf("source conversation: %w", err)
 	}
 
 	dstProjDir, err := containedConversationPath(dst, "projects", projDirName)
 	if err != nil {
-		return "", fmt.Errorf("target project dir: %w", err)
+		return "", 0, fmt.Errorf("target project dir: %w", err)
 	}
 	// Do not let a writable destination symlink redirect a migration into an
 	// unrelated tree. This check is intentionally destination-only: source
 	// accounts remain untouched, and configured source roots may legitimately be
 	// symlinked by operators.
 	if err := ensureNoSymlinkPath(dstProjDir); err != nil {
-		return "", fmt.Errorf("unsafe target project dir: %w", err)
+		return "", 0, fmt.Errorf("unsafe target project dir: %w", err)
 	}
 	if err := os.MkdirAll(dstProjDir, 0o700); err != nil {
-		return "", fmt.Errorf("create target project dir: %w", err)
+		return "", 0, fmt.Errorf("create target project dir: %w", err)
 	}
 	dstFile, err := containedConversationPath(dstProjDir, sid+".jsonl")
 	if err != nil {
-		return "", fmt.Errorf("target conversation: %w", err)
+		return "", 0, fmt.Errorf("target conversation: %w", err)
 	}
 	if info, err := os.Lstat(dstFile); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("refusing to overwrite symlink destination: %s", dstFile)
+		return "", 0, fmt.Errorf("refusing to overwrite symlink destination: %s", dstFile)
 	} else if err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("inspect target conversation: %w", err)
+		return "", 0, fmt.Errorf("inspect target conversation: %w", err)
 	}
 	bak := ""
 	if fileIsRegular(dstFile) {
@@ -158,17 +171,18 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 			}
 		}
 		if err := os.Rename(dstFile, bak); err != nil {
-			return "", fmt.Errorf("backup existing conversation: %w", err)
+			return "", 0, fmt.Errorf("backup existing conversation: %w", err)
 		}
 	}
-	if err := copyFileVerified(srcFile, dstFile); err != nil {
+	written, err := copyConversationStripped(srcFile, dstFile)
+	if err != nil {
 		if bak != "" {
 			_ = os.Remove(dstFile)
 			if restoreErr := os.Rename(bak, dstFile); restoreErr != nil {
-				return "", fmt.Errorf("%w (restore backup failed: %v)", err, restoreErr)
+				return "", 0, fmt.Errorf("%w (restore backup failed: %v)", err, restoreErr)
 			}
 		}
-		return "", err
+		return "", 0, err
 	}
 
 	// Migrate the companion subagent directory (#1571): subagent transcripts
@@ -179,18 +193,18 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 	// rerun is idempotent).
 	srcSubagentDir, err := containedConversationPath(srcProjDir, sid)
 	if err != nil {
-		return "", fmt.Errorf("source subagent dir: %w", err)
+		return "", 0, fmt.Errorf("source subagent dir: %w", err)
 	}
 	dstSubagentDir, err := containedConversationPath(dstProjDir, sid)
 	if err != nil {
-		return "", fmt.Errorf("target subagent dir: %w", err)
+		return "", 0, fmt.Errorf("target subagent dir: %w", err)
 	}
 	if info, err := os.Stat(srcSubagentDir); err == nil && info.IsDir() {
 		if err := copyDirVerified(srcSubagentDir, dstSubagentDir); err != nil {
-			return "", fmt.Errorf("copy subagent dir: %w", err)
+			return "", 0, fmt.Errorf("copy subagent dir: %w", err)
 		}
 	}
-	return dstFile, nil
+	return dstFile, written, nil
 }
 
 // copyDirVerified recursively copies the regular files under src into dst
@@ -342,6 +356,132 @@ func newestConversationBackup(projDir, sessionID string) (string, error) {
 		}
 	}
 	return newest, nil
+}
+
+// suppressedConversationRecordTypes lists the transcript record types that
+// are dropped when a conversation is copied between config dirs (#2269).
+// Claude Code writes a history-suppression record when a resume happens under
+// an account other than the one that owns the transcript, and then hides the
+// history on every later resume that sees it; a bridge-session record has the
+// same effect. Both describe the OLD account's view and are stale the moment
+// the file moves, so carrying them across poisons the resume in the new dir.
+var suppressedConversationRecordTypes = []string{"history-suppression", "bridge-session"}
+
+// isSuppressedConversationRecord reports whether one transcript line is a
+// record of a type in suppressedConversationRecordTypes.
+func isSuppressedConversationRecord(line []byte) bool {
+	if !bytes.Contains(line, []byte(`"type"`)) {
+		return false
+	}
+	var rec struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(line, &rec) != nil {
+		return false
+	}
+	for _, t := range suppressedConversationRecordTypes {
+		if rec.Type == t {
+			return true
+		}
+	}
+	return false
+}
+
+// copyConversationStripped copies a conversation jsonl from src to dst with
+// the same safety checks as copyFileVerified, dropping the records named in
+// suppressedConversationRecordTypes. Every other byte is copied verbatim; the
+// size check accounts for the dropped lines exactly. The copy is staged in a
+// sibling temp file and renamed into place only after it verifies, so a
+// failure never leaves a partial or mismatched file at dst - a file there
+// would be resumed by the next restart and shadow the real transcript.
+// Returns the bytes written.
+func copyConversationStripped(src, dst string) (int64, error) {
+	srcInfo, err := os.Lstat(src)
+	if err != nil {
+		return 0, fmt.Errorf("stat source: %w", err)
+	}
+	if !srcInfo.Mode().IsRegular() || srcInfo.Mode()&os.ModeSymlink != 0 {
+		return 0, fmt.Errorf("source is not a regular file: %s", src)
+	}
+	if err := ensureNoSymlinkPath(filepath.Dir(dst)); err != nil {
+		return 0, fmt.Errorf("unsafe target path: %w", err)
+	}
+	if dstInfo, statErr := os.Lstat(dst); statErr == nil {
+		if dstInfo.Mode()&os.ModeSymlink != 0 {
+			return 0, fmt.Errorf("refusing to follow symlink destination: %s", dst)
+		}
+		if !dstInfo.Mode().IsRegular() {
+			return 0, fmt.Errorf("destination is not a regular file: %s", dst)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return 0, fmt.Errorf("inspect target: %w", statErr)
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return 0, fmt.Errorf("open conversation: %w", err)
+	}
+	defer in.Close()
+
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return 0, fmt.Errorf("create staging file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return 0, fmt.Errorf("chmod staging file: %w", err)
+	}
+	written, dropped, copyErr := writeConversationStripped(tmp, in)
+	if closeErr := tmp.Close(); copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		cleanup()
+		return 0, fmt.Errorf("copy conversation: %w", copyErr)
+	}
+	if written+dropped != srcInfo.Size() {
+		cleanup()
+		return 0, fmt.Errorf("size mismatch after copy: wrote %d bytes and dropped %d, source has %d", written, dropped, srcInfo.Size())
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		cleanup()
+		return 0, fmt.Errorf("install conversation: %w", err)
+	}
+	return written, nil
+}
+
+// writeConversationStripped streams src into dst line by line, skipping the
+// suppressed record types. Returns bytes written and bytes dropped.
+func writeConversationStripped(dst io.Writer, src io.Reader) (written, dropped int64, err error) {
+	w := bufio.NewWriter(dst)
+	r := bufio.NewReaderSize(src, 64*1024)
+	for {
+		// ReadBytes keeps the trailing newline, so a kept line is written
+		// back byte-for-byte and the last (possibly unterminated) line is
+		// preserved as-is.
+		line, readErr := r.ReadBytes('\n')
+		if len(line) > 0 {
+			if isSuppressedConversationRecord(line) {
+				dropped += int64(len(line))
+			} else {
+				n, werr := w.Write(line)
+				written += int64(n)
+				if werr != nil {
+					return written, dropped, werr
+				}
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return written, dropped, readErr
+		}
+	}
+	return written, dropped, w.Flush()
 }
 
 // copyFileVerified copies src to dst (0600, matching Claude's conversation

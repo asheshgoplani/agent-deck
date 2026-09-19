@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
@@ -150,6 +151,16 @@ func TestCreateSessionTool_Crush(t *testing.T) {
 	tool, command := createSessionTool("crush")
 	if tool != "crush" || command != "crush" {
 		t.Fatalf("createSessionTool(\"crush\") = (%q, %q), want (\"crush\", \"crush\")", tool, command)
+	}
+}
+
+// TUI session creation must produce Tool="muse" rather than
+// Tool="shell" with Command="muse", matching the tmux/userconfig
+// wiring for the Muse Code CLI integration.
+func TestCreateSessionTool_Muse(t *testing.T) {
+	tool, command := createSessionTool("muse")
+	if tool != "muse" || command != "muse" {
+		t.Fatalf("createSessionTool(\"muse\") = (%q, %q), want (\"muse\", \"muse\")", tool, command)
 	}
 }
 
@@ -1599,10 +1610,10 @@ func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
 	// account-slot fetch for the selected remote, answered under test control.
 	capture := &remoteCreateCapture{}
 	home.remoteCreateSink = capture.sink
-	home.remoteAccountsFetcher = func(remoteName string) tea.Cmd {
+	home.remoteCreationCatalogFetcher = func(remoteName string) tea.Cmd {
 		capture.accountsFetchedFor = append(capture.accountsFetchedFor, remoteName)
 		return func() tea.Msg {
-			return remoteAccountsFetchedMsg{remoteName: remoteName, accounts: []string{"srv-alice"}}
+			return (remoteAccountsFetchedMsg{remoteName: remoteName, accounts: []string{"srv-alice"}}).catalogMessage()
 		}
 	}
 
@@ -1671,6 +1682,14 @@ func TestRemoteNewDialogCustomizationPreservesRemoteValues(t *testing.T) {
 
 	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	h := model.(*Home)
+	// Remote tool choices become available only after this opening receives
+	// the owning host's catalog. Never select from controller presets.
+	model, _ = h.Update(remoteCreationCatalogFetchedMsg{
+		remoteName: "myserver",
+		catalog:    remoteDialogTestCatalog(),
+		gen:        h.remoteAccountsGen,
+	})
+	h = model.(*Home)
 	h.newDialog.nameInput.SetValue("custom remote")
 	h.newDialog.pathInput.SetValue("~/custom-project")
 	h.newDialog.SetDefaultTool("codex")
@@ -2011,7 +2030,11 @@ func TestRenderHelpBarCompact(t *testing.T) {
 
 func TestRenderHelpBarCompactWithSession(t *testing.T) {
 	home := NewHome()
-	home.width = 85 // Compact mode (70-99)
+	// 99: top of Compact mode (70-99). The footer now separates every key
+	// chip from its label with a space and gives every global key a label,
+	// so the bar is wider at a given width and a lower-priority hint like
+	// Fork needs more room than the narrow end of this range affords.
+	home.width = 99
 	home.height = 30
 	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
@@ -2335,7 +2358,7 @@ func TestCuratedFooterAlwaysEndsWithSettingsThenHelp(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 
 	settingsKey := home.actionKey(hotkeySettings)
 	helpKey := home.actionKey(hotkeyHelp)
@@ -2362,7 +2385,7 @@ func TestCuratedFooterLiveSessionShowsAttach(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 	if !strings.Contains(result, "⏎ attach") {
 		t.Errorf("live session should advertise Enter attach\nGot: %q", result)
 	}
@@ -2483,7 +2506,7 @@ func TestCuratedFooterGroupShowsCollapseExpand(t *testing.T) {
 		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: true}},
 	}
 	home.cursor = 0
-	if result := home.renderHelpBar(); !strings.Contains(result, "Tab collapse") {
+	if result := tmux.StripANSI(home.renderHelpBar()); !strings.Contains(result, "Tab collapse") {
 		t.Errorf("expanded group should advertise Tab collapse\nGot: %q", result)
 	}
 
@@ -2491,7 +2514,7 @@ func TestCuratedFooterGroupShowsCollapseExpand(t *testing.T) {
 	home.flatItems = []session.Item{
 		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: false}},
 	}
-	if result := home.renderHelpBar(); !strings.Contains(result, "Tab expand") {
+	if result := tmux.StripANSI(home.renderHelpBar()); !strings.Contains(result, "Tab expand") {
 		t.Errorf("collapsed group should advertise Tab expand\nGot: %q", result)
 	}
 }
@@ -2530,7 +2553,7 @@ func TestCuratedFooterRemoteSessionShowsAttach(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 	if !strings.Contains(result, "⏎ attach") {
 		t.Errorf("curated footer for a remote session should advertise Enter attach\nGot: %q", result)
 	}
@@ -2578,7 +2601,7 @@ func TestCuratedFooterNarrowKeepsSettingsAndHelp(t *testing.T) {
 	}
 	home.cursor = 0
 
-	result := home.renderHelpBar()
+	result := tmux.StripANSI(home.renderHelpBar())
 	settingsKey := home.actionKey(hotkeySettings)
 	helpKey := home.actionKey(hotkeyHelp)
 	if !strings.Contains(result, settingsKey+" settings") {
@@ -4350,9 +4373,9 @@ func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
 
 // findAccountsFetched digs the account-slot fetch result out of a message
 // that may be a tea.BatchMsg (n batches the account fetch with the MCP fetch).
-func findAccountsFetched(msg tea.Msg) (remoteAccountsFetchedMsg, bool) {
+func findAccountsFetched(msg tea.Msg) (remoteCreationCatalogFetchedMsg, bool) {
 	switch m := msg.(type) {
-	case remoteAccountsFetchedMsg:
+	case remoteCreationCatalogFetchedMsg:
 		return m, true
 	case tea.BatchMsg:
 		for _, c := range m {
@@ -4364,5 +4387,5 @@ func findAccountsFetched(msg tea.Msg) (remoteAccountsFetchedMsg, bool) {
 			}
 		}
 	}
-	return remoteAccountsFetchedMsg{}, false
+	return remoteCreationCatalogFetchedMsg{}, false
 }

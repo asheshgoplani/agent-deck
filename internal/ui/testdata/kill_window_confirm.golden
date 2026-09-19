@@ -1,0 +1,21 @@
+
+
+
+              ╭──────────────────────────────────────────────────╮
+              │                                                  │
+              │  ⚠  Kill Window?                                 │
+              │                                                  │
+              │  This will kill tmux window 2 (@42):             │
+              │                                                  │
+              │    "agent"                                       │
+              │                                                  │
+              │  • Any processes in the window will be killed    │
+              │  • Other windows in the session are unaffected   │
+              │                                                  │
+              │                                                  │
+              │      Kill      ▸ Cancel                          │
+              │  y kill · n cancel · ←/→ navigate · Enter        │
+              │  select · Esc                                    │
+              │                                                  │
+              ╰──────────────────────────────────────────────────╯
+

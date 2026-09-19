@@ -164,7 +164,7 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 	// Decode modifier bitmask (modifier = 1 + bitmask)
 	bitmask := modifier - 1
 	shiftHeld := (bitmask & 0x01) != 0
-	// altHeld   := (bitmask & 0x02) != 0  // reserved for future use
+	altHeld := (bitmask & 0x02) != 0
 	ctrlHeld := (bitmask & 0x04) != 0
 
 	// Map well-known control codepoints to tea key types.
@@ -175,26 +175,26 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 			// relay it via a Private-Use-Area rune. home.go's
 			// normalizeMainKey rewrites this back to "shift+enter". See
 			// issue #1093.
-			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}}
+			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}, Alt: altHeld}
 			return &msg
 		}
-		msg := tea.KeyMsg{Type: tea.KeyEnter}
+		msg := tea.KeyMsg{Type: tea.KeyEnter, Alt: altHeld}
 		return &msg
 	case 9: // HT = Tab
 		if shiftHeld {
-			msg := tea.KeyMsg{Type: tea.KeyShiftTab}
+			msg := tea.KeyMsg{Type: tea.KeyShiftTab, Alt: altHeld}
 			return &msg
 		}
-		msg := tea.KeyMsg{Type: tea.KeyTab}
+		msg := tea.KeyMsg{Type: tea.KeyTab, Alt: altHeld}
 		return &msg
 	case 27: // ESC
-		msg := tea.KeyMsg{Type: tea.KeyEsc}
+		msg := tea.KeyMsg{Type: tea.KeyEsc, Alt: altHeld}
 		return &msg
 	case 127: // DEL = Backspace
-		msg := tea.KeyMsg{Type: tea.KeyBackspace}
+		msg := tea.KeyMsg{Type: tea.KeyBackspace, Alt: altHeld}
 		return &msg
 	case 32: // Space
-		msg := tea.KeyMsg{Type: tea.KeySpace}
+		msg := tea.KeyMsg{Type: tea.KeySpace, Alt: altHeld}
 		return &msg
 	}
 
@@ -202,7 +202,7 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 	if ctrlHeld && codepoint >= 97 && codepoint <= 122 {
 		// 'a'=97 -> ctrl sequence 1, 'b'=98 -> 2, …
 		ctrlRune := rune(codepoint - 96)
-		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ctrlRune}}
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ctrlRune}, Alt: altHeld}
 		return &msg
 	}
 
@@ -212,7 +212,7 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 		r = r - 'a' + 'A'
 	}
 
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: altHeld}
 	return &msg
 }
 
@@ -260,38 +260,39 @@ func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
 	// Reuse the same modifier logic as ParseCSIu
 	bitmask := modifier - 1
 	shiftHeld := (bitmask & 0x01) != 0
+	altHeld := (bitmask & 0x02) != 0
 	ctrlHeld := (bitmask & 0x04) != 0
 
 	switch codepoint {
 	case 13:
 		if shiftHeld {
 			// See ParseCSIu / shiftEnterMarker comment. Issue #1093.
-			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}}
+			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}, Alt: altHeld}
 			return &msg
 		}
-		msg := tea.KeyMsg{Type: tea.KeyEnter}
+		msg := tea.KeyMsg{Type: tea.KeyEnter, Alt: altHeld}
 		return &msg
 	case 9:
 		if shiftHeld {
-			msg := tea.KeyMsg{Type: tea.KeyShiftTab}
+			msg := tea.KeyMsg{Type: tea.KeyShiftTab, Alt: altHeld}
 			return &msg
 		}
-		msg := tea.KeyMsg{Type: tea.KeyTab}
+		msg := tea.KeyMsg{Type: tea.KeyTab, Alt: altHeld}
 		return &msg
 	case 27:
-		msg := tea.KeyMsg{Type: tea.KeyEsc}
+		msg := tea.KeyMsg{Type: tea.KeyEsc, Alt: altHeld}
 		return &msg
 	case 127:
-		msg := tea.KeyMsg{Type: tea.KeyBackspace}
+		msg := tea.KeyMsg{Type: tea.KeyBackspace, Alt: altHeld}
 		return &msg
 	case 32:
-		msg := tea.KeyMsg{Type: tea.KeySpace}
+		msg := tea.KeyMsg{Type: tea.KeySpace, Alt: altHeld}
 		return &msg
 	}
 
 	if ctrlHeld && codepoint >= 97 && codepoint <= 122 {
 		ctrlRune := rune(codepoint - 96)
-		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ctrlRune}}
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ctrlRune}, Alt: altHeld}
 		return &msg
 	}
 
@@ -300,7 +301,7 @@ func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
 		r = r - 'a' + 'A'
 	}
 
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: altHeld}
 	return &msg
 }
 
@@ -359,6 +360,14 @@ func (r *csiuFileReader) Read(p []byte) (int, error) {
 // interface (preserving Fd() for terminal raw-mode setup by Bubble Tea).
 // If r is any other io.Reader, a plain io.Reader is returned.
 func NewCSIuReader(r io.Reader) io.Reader {
+	inner := newCSIuReader(r)
+	if f, ok := r.(*os.File); ok {
+		return &csiuFileReader{File: f, inner: inner}
+	}
+	return inner
+}
+
+func newCSIuReader(r io.Reader) *csiuReader {
 	inner := &csiuReader{
 		src:   r,
 		inBuf: make([]byte, 0, 256),
@@ -368,7 +377,6 @@ func NewCSIuReader(r io.Reader) io.Reader {
 		inner.pollFn = func(timeout time.Duration) bool {
 			return pollFdReady(fd, timeout)
 		}
-		return &csiuFileReader{File: f, inner: inner}
 	}
 	return inner
 }
@@ -391,21 +399,7 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 		// Read new bytes from the source into the internal buffer.
 		tmp := make([]byte, len(p))
 		n, err := c.src.Read(tmp)
-		if n > 0 {
-			chunk := tmp[:n]
-			// Always run the reply filter. Escape-string families (DCS/OSC/
-			// APC/PM/SOS) are never keyboard input and can arrive outside
-			// any explicit quarantine window (e.g. iTerm2 XTVERSION reply on
-			// focus/resize — #731). `armed` stays tied to termreply.Active()
-			// so generic CSI pass-through works for keyboard input.
-			chunk = c.replyFilter.Consume(chunk, termreply.Active(), false)
-			c.inBuf = append(c.inBuf, chunk...)
-		}
-		if err == io.EOF {
-			c.inBuf = append(c.inBuf, c.replyFilter.Consume(nil, termreply.Active(), true)...)
-		}
-
-		processed := c.translate(err == io.EOF)
+		processed := c.consume(tmp[:n], err == io.EOF)
 		if len(processed) > 0 {
 			copied := copy(p, processed)
 			if copied < len(processed) {
@@ -432,6 +426,26 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 			// More bytes incoming — loop to bundle them with the ESC.
 		}
 	}
+}
+
+// consume applies dashboard-only terminal-reply filtering and extended-key
+// translation to bytes that have already been read. SessionInputRouter uses
+// this seam so it can choose between compatibility translation and exact PTY
+// forwarding only after observing the current input mode.
+func (c *csiuReader) consume(chunk []byte, final bool) []byte {
+	if len(chunk) > 0 {
+		// Always run the reply filter. Escape-string families (DCS/OSC/
+		// APC/PM/SOS) are never keyboard input and can arrive outside
+		// any explicit quarantine window (e.g. iTerm2 XTVERSION reply on
+		// focus/resize — #731). `armed` stays tied to termreply.Active()
+		// so generic CSI pass-through works for keyboard input.
+		chunk = c.replyFilter.Consume(chunk, termreply.Active(), false)
+		c.inBuf = append(c.inBuf, chunk...)
+	}
+	if final {
+		c.inBuf = append(c.inBuf, c.replyFilter.Consume(nil, termreply.Active(), true)...)
+	}
+	return c.translate(final)
 }
 
 // translate scans c.inBuf for CSI u / modifyOtherKeys sequences and replaces
@@ -523,6 +537,9 @@ func (c *csiuReader) translate(final bool) []byte {
 			// Check for modifyOtherKeys format: ESC[27;modifier;codepoint~
 			if c.inBuf[j] == '~' {
 				if msg := ParseModifyOtherKeys(seq); msg != nil {
+					if msg.Alt {
+						out = append(out, 0x1b)
+					}
 					switch msg.Type {
 					case tea.KeyEnter:
 						out = append(out, '\r')
@@ -563,6 +580,9 @@ func (c *csiuReader) translate(final bool) []byte {
 		}
 
 		// Translate to legacy bytes
+		if msg.Alt {
+			out = append(out, 0x1b)
+		}
 		switch msg.Type {
 		case tea.KeyEnter:
 			out = append(out, '\r')

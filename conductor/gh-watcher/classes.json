@@ -1,0 +1,32 @@
+{
+  "IssuesEvent":                   { "class": "paced",           "priority": 10 },
+  "IssueCommentEvent":             { "class": "paced",           "priority": 10 },
+  "PullRequestEvent":              { "class": "paced",           "priority": 10 },
+  "PullRequestReviewEvent":        { "class": "paced",           "priority": 10 },
+  "PullRequestReviewCommentEvent": { "class": "paced-coalesced", "priority": 10, "parent_key": "pr_review" },
+  "PullRequestReviewThreadEvent":  { "class": "paced-coalesced", "priority": 10, "parent_key": "pr_review" },
+  "DiscussionEvent":               { "class": "paced",           "priority": 10 },
+  "DiscussionCommentEvent":        { "class": "paced",           "priority": 10 },
+
+  "SecurityAdvisoryEvent":         { "class": "immediate",       "priority": 0  },
+  "MentionsEvent":                 { "class": "immediate",       "priority": 0  },
+
+  "ReleaseEvent":                  { "class": "suppressed" },
+  "PublicEvent":                   { "class": "suppressed" },
+  "WorkflowRunEvent":              { "class": "suppressed" },
+  "CheckRunEvent":                 { "class": "suppressed" },
+  "CheckSuiteEvent":               { "class": "suppressed" },
+  "StatusEvent":                   { "class": "suppressed" },
+  "PushEvent":                     { "class": "suppressed" },
+  "DeploymentEvent":               { "class": "suppressed" },
+  "DeploymentStatusEvent":         { "class": "suppressed" },
+  "CommitCommentEvent":            { "class": "suppressed" },
+  "MemberEvent":                   { "class": "suppressed" },
+  "CreateEvent":                   { "class": "suppressed" },
+  "DeleteEvent":                   { "class": "suppressed" },
+  "GollumEvent":                   { "class": "suppressed" },
+  "WatchEvent":                    { "class": "suppressed" },
+  "ForkEvent":                     { "class": "suppressed" },
+
+  "_default":                      { "class": "suppressed" }
+}

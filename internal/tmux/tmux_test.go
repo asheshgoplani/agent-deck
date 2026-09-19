@@ -638,6 +638,9 @@ func TestDetectToolFromCommand(t *testing.T) {
 		{name: "opencode", command: "open-code --continue", want: "opencode"},
 		{name: "codex", command: "codex --dangerously-bypass-approvals-and-sandbox", want: "codex"},
 		{name: "pi", command: "pi --model fast", want: "pi"},
+		{name: "omp", command: "omp --model sonnet", want: "omp"},
+		{name: "omp bare", command: "omp", want: "omp"},
+		{name: "omp no false match", command: "compass", want: ""},
 		{name: "cursor", command: "cursor agent", want: "cursor"},
 		{name: "standalone agent", command: "agent", want: "cursor"},
 		{name: "standalone agent flags", command: "agent --continue", want: "cursor"},
@@ -687,6 +690,24 @@ Yes, allow once`,
 			content: `Welcome to Pi CLI
 pi> `,
 			want: "pi",
+		},
+		{
+			name: "omp busy marker detects omp",
+			content: `╭──     Sonnet 5 · high   my-session   2.4%/1M  (sub) ────────────────────────╮
+╰─                                                                              ─╯
+ ⠋ Working… ⟨esc⟩`,
+			want: "omp",
+		},
+		{
+			name: "omp approval dialog detects omp",
+			content: ` Allow tool: bash
+ Command: echo hi
+
+  Approve
+   Deny
+
+ up/down navigate  enter select  esc cancel`,
+			want: "omp",
 		},
 	}
 
@@ -2498,28 +2519,28 @@ func TestSession_MouseMode_EnableMouseMode_Disabled_Integration(t *testing.T) {
 }
 
 // TestSession_MultiClientSizePolicy_Integration verifies that on session
-// creation agent-deck pins window-size=largest (session option) and
-// aggressive-resize=on (window option). This is the fix for the dots-in-
-// window symptom that arose when web's xterm.js control client and a native
-// `tmux attach` client had different geometries — see tmux issue #2594.
+// creation agent-deck installs window-size=latest and aggressive-resize=on
+// on the window (both are window options). The window follows the client
+// that most recently attached, typed or resized, so two people on one
+// session each see it full-size while using it (sharedview.go).
 func TestSession_MultiClientSizePolicy_Integration(t *testing.T) {
-	if os.Getenv("AGENTDECK_TEST_PROFILE") == "" {
-		t.Skip("Skipping tmux integration test - no test profile")
-	}
+	skipIfNoTmuxBinary(t)
 
 	s := NewSession("test-size-policy", t.TempDir())
 	s.InstanceID = "test-instance-size-policy"
+	s.SocketName = fmt.Sprintf("ad-size-policy-%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", s.SocketName, "kill-server").Run() })
 
 	err := s.Start("sleep 3600")
 	require.NoError(t, err)
 	defer func() { _ = s.Kill() }()
 
-	winSize, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "window-size").Output()
+	winSize, err := s.tmuxCmd("show-options", "-w", "-t", s.Name+":0", "-A", "-v", "window-size").Output()
 	require.NoError(t, err)
-	assert.Equal(t, "largest", strings.TrimSpace(string(winSize)),
-		"new sessions must pin window-size=largest so a smaller client cannot drag the window down (tmux #2594)")
+	assert.Equal(t, "latest", strings.TrimSpace(string(winSize)),
+		"new sessions must install window-size=latest so the window follows the client using it")
 
-	aggResize, err := exec.Command("tmux", "show-options", "-w", "-t", s.Name+":0", "-A", "-v", "aggressive-resize").Output()
+	aggResize, err := s.tmuxCmd("show-options", "-w", "-t", s.Name+":0", "-A", "-v", "aggressive-resize").Output()
 	require.NoError(t, err)
 	assert.Equal(t, "on", strings.TrimSpace(string(aggResize)),
 		"new sessions must enable aggressive-resize so windows only resize when actively viewed")
@@ -2714,11 +2735,11 @@ func TestSplitIntoChunks_SplitsAtNewlineBoundary(t *testing.T) {
 
 func TestParseWindowCacheFromListWindows(t *testing.T) {
 	// Simulate list-windows output with extended format (tmuxFieldSep-delimited,
-	// session_name | window_activity | window_index | window_name).
+	// session_name | window_activity | window_index | window_id | window_name).
 	lines := []string{
-		tmuxFmt("agentdeck_proj_abc12345", "1704067200", "0", "main"),
-		tmuxFmt("agentdeck_proj_abc12345", "1704067300", "1", "tests"),
-		tmuxFmt("agentdeck_other_def67890", "1704067100", "0", "bash"),
+		tmuxFmt("agentdeck_proj_abc12345", "1704067200", "0", "@3", "main"),
+		tmuxFmt("agentdeck_proj_abc12345", "1704067300", "1", "@7", "tests"),
+		tmuxFmt("agentdeck_other_def67890", "1704067100", "0", "@5", "bash"),
 	}
 
 	sessionCache, windowCache := parseListWindowsOutput(strings.Join(lines, "\n"))
@@ -2730,7 +2751,9 @@ func TestParseWindowCacheFromListWindows(t *testing.T) {
 	// Window cache: per-window entries
 	assert.Len(t, windowCache["agentdeck_proj_abc12345"], 2)
 	assert.Equal(t, "main", windowCache["agentdeck_proj_abc12345"][0].Name)
+	assert.Equal(t, "@3", windowCache["agentdeck_proj_abc12345"][0].ID)
 	assert.Equal(t, 1, windowCache["agentdeck_proj_abc12345"][1].Index)
+	assert.Equal(t, "@7", windowCache["agentdeck_proj_abc12345"][1].ID)
 	assert.Len(t, windowCache["agentdeck_other_def67890"], 1)
 }
 
@@ -3164,10 +3187,11 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 			require.Equal(t, "bash", args[len(args)-3],
 				"command must be exec'd under bash for fish/zsh/bash compatibility")
 			require.Equal(t, "-c", args[len(args)-2])
-			// The command token is passed VERBATIM — no shell-quote escaping,
-			// because it is a distinct argv element, not embedded in a string.
-			require.Equal(t, tc.cmd, args[len(args)-1],
-				"command token must be the original command verbatim; got: %s", args[len(args)-1])
+			// #2214: the command token is prefixed with a `cd -- workDir &&` so
+			// the pane's own process asserts its directory instead of trusting
+			// tmux's -c alone; the original command still follows verbatim.
+			require.Equal(t, cwdAssertCommand("/tmp/project", tc.cmd), args[len(args)-1],
+				"command token must be cd-asserted then the original command verbatim; got: %s", args[len(args)-1])
 		})
 	}
 }
@@ -3281,7 +3305,8 @@ func TestStartCommandSpec_DoesNotDoubleWrapBashC(t *testing.T) {
 	cmd := `bash -c 'stty susp undef; docker exec -it agent-deck-test bash -c '\''export COLORFGBG='\''\''\''15;0'\''\''\'' && opencode -s ses_abc'\'''`
 	_, args := s.startCommandSpec("/tmp", cmd)
 	require.NotEmpty(t, args)
-	require.Equal(t, cmd, args[len(args)-1])
+	// #2214: cd-asserted so the pane's process never depends on the server's cwd.
+	require.Equal(t, cwdAssertCommand("/tmp", cmd), args[len(args)-1])
 }
 
 func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
@@ -3297,7 +3322,8 @@ func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
 	// #1567/#1580: bash -c COMMAND as three trailing argv tokens.
 	require.Equal(t, "bash", args[len(args)-3])
 	require.Equal(t, "-c", args[len(args)-2])
-	require.Equal(t, cmd, args[len(args)-1])
+	// #2214: cd-asserted so the pane's process never depends on the server's cwd.
+	require.Equal(t, cwdAssertCommand("/tmp", cmd), args[len(args)-1])
 }
 
 func TestResolvedAgentDeckTheme_COLORFGBG(t *testing.T) {

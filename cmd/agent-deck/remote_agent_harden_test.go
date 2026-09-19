@@ -347,7 +347,7 @@ func TestRemoteAgent_CancelKillsRequest(t *testing.T) {
 }
 
 // Finding 4: at most MaxConcurrent subprocesses run at once; the rest wait
-// their turn, and a queued request that is cancelled never runs.
+// their turn.
 func TestRemoteAgent_ConcurrencyCap(t *testing.T) {
 	var running, peak atomic.Int32
 	var started atomic.Int32
@@ -369,37 +369,46 @@ func TestRemoteAgent_ConcurrencyCap(t *testing.T) {
 		return strings.Join(args, " "), "", 0
 	}
 	h := startAgent(t, remoteAgentConfig{Run: run, MaxConcurrent: 2})
-	for i := int64(1); i <= 5; i++ {
+	for i := int64(1); i <= 4; i++ {
 		h.send(remoteAgentRequest{ID: i, Args: []string{"rename", "s", strings.Repeat("x", int(i))}})
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := started.Load(); got != 2 {
 		t.Fatalf("only MaxConcurrent requests may run at once, got %d started", got)
 	}
-	h.send(remoteAgentRequest{ID: 5, Cancel: true})
-	// A successful pipe write only proves the agent reader received the line,
-	// not that its request loop processed it. Wait for a following ping ack,
-	// which is emitted only after the cancel has removed request 5, before
-	// freeing a semaphore slot for the queued requests.
-	h.send(remoteAgentRequest{ID: 6, Ping: true})
-	if r := h.next("cancel barrier"); r.ID != 6 || r.Code != 0 {
-		t.Fatalf("cancel barrier reply = %+v, want successful ping acknowledgement", r)
-	}
 	close(release)
 	ids := map[int64]bool{}
 	for i := 0; i < 4; i++ {
 		ids[h.next("reply").ID] = true
 	}
-	if ids[5] || len(ids) != 4 {
-		t.Fatalf("four queued requests must answer and the cancelled one must not, got %v", ids)
+	if len(ids) != 4 {
+		t.Fatalf("four queued requests must answer, got %v", ids)
 	}
 	if peak.Load() > 2 {
 		t.Fatalf("peak concurrency %d exceeds the cap of 2", peak.Load())
 	}
 	if started.Load() != 4 {
-		t.Fatalf("a request cancelled while queued must never start, got %d starts", started.Load())
+		t.Fatalf("every request must start, got %d starts", started.Load())
 	}
 	h.closeAndWait()
+}
+
+func TestRemoteAgent_QueuedCancellationNeverStarts(t *testing.T) {
+	for attempt := 0; attempt < 100; attempt++ {
+		var started atomic.Int32
+		requests := newRemoteAgentRequests(func(context.Context, []string) (string, string, int) {
+			started.Add(1)
+			return "", "", 0
+		}, 1, "")
+		requests.sem <- struct{}{}
+		flight := requests.start(context.Background(), remoteAgentRequest{ID: 1, Args: []string{"rename", "s", "t"}})
+		requests.cancel(1)
+		<-requests.sem
+		<-flight.done
+		if started.Load() != 0 {
+			t.Fatalf("cancelled queued request started on attempt %d", attempt)
+		}
+	}
 }
 
 // Finding 6: the agent pushes ping events, answers the peer's pings under

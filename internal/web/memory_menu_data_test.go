@@ -21,7 +21,10 @@ type revisionedMenuLoader struct {
 	snapshot          *MenuSnapshot
 	nextSnapshot      *MenuSnapshot
 	changeOnFirstLoad bool
+	hasLiveState      bool
 }
+
+func (r *revisionedMenuLoader) refreshesLiveState() bool { return r.hasLiveState }
 
 func (r *revisionedMenuLoader) MenuDataRevision() (int64, error) {
 	r.mu.Lock()
@@ -205,6 +208,37 @@ func TestMemoryMenuData_ConcurrentLoadsCoalesceRevisionCheck(t *testing.T) {
 	}
 	if loadCalls != 1 {
 		t.Fatalf("snapshot loads = %d, want 1", loadCalls)
+	}
+}
+
+func TestMemoryMenuData_RefreshesFallbackLiveStateWithoutStorageChange(t *testing.T) {
+	loader := &revisionedMenuLoader{
+		revision:     1,
+		hasLiveState: true,
+		snapshot: &MenuSnapshot{Items: []MenuItem{{
+			Type:    MenuItemTypeSession,
+			Session: &MenuSession{ID: "sess-1", Status: session.StatusWaiting},
+		}}},
+	}
+	store := NewMemoryMenuData(loader)
+	if _, err := store.LoadMenuSnapshot(); err != nil {
+		t.Fatalf("initial LoadMenuSnapshot() error = %v", err)
+	}
+
+	loader.nextSnapshot = &MenuSnapshot{Items: []MenuItem{{
+		Type:    MenuItemTypeSession,
+		Session: &MenuSession{ID: "sess-1", Status: session.StatusRunning},
+	}}}
+	store.mu.Lock()
+	store.lastRevisionCheck = time.Now().Add(-2 * memoryMenuRevisionCheckInterval)
+	store.mu.Unlock()
+
+	snapshot, err := store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("refreshed LoadMenuSnapshot() error = %v", err)
+	}
+	if got := snapshot.Items[0].Session.Status; got != session.StatusRunning {
+		t.Fatalf("live status = %q, want %q", got, session.StatusRunning)
 	}
 }
 

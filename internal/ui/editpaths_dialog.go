@@ -163,20 +163,16 @@ func (d *EditPathsDialog) Validate() string {
 	return ""
 }
 
+// filterPathSuggestions filters the corpus against the current input.
+// Matching is fuzzy (shared with NewDialog/GroupDialog); path-shaped queries
+// additionally pull live filesystem subdirectory completions.
 func (d *EditPathsDialog) filterPathSuggestions() {
 	input := strings.TrimSpace(d.pathInput.Value())
 	if input == "" {
 		d.pathSuggestions = d.allPathSuggestions
 		return
 	}
-	lower := strings.ToLower(input)
-	var filtered []string
-	for _, s := range d.allPathSuggestions {
-		if strings.Contains(strings.ToLower(s), lower) {
-			filtered = append(filtered, s)
-		}
-	}
-	d.pathSuggestions = filtered
+	d.pathSuggestions = filterPathSuggestions(d.allPathSuggestions, input)
 }
 
 func (d *EditPathsDialog) Update(msg tea.Msg) (*EditPathsDialog, tea.Cmd) {

@@ -242,7 +242,7 @@ func (pm *PipeManager) RefreshAllActivities() (map[string]int64, map[string][]Wi
 		// subprocess path). A control client negotiates UTF-8, so TAB would usually
 		// survive here, but the delimiter MUST still match what the parser splits on.
 		// tmux control mode requires the format string double-quoted.
-		output, err := pipe.SendCommand(`list-windows -a -F "` + tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}") + `"`)
+		output, err := pipe.SendCommand(`list-windows -a -F "` + tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_id}", "#{window_name}") + `"`)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -615,10 +615,10 @@ func SweepStaleControlClients(socketName string) {
 	// client has been looked at.
 	queryCtx, cancelQuery := context.WithTimeout(budget, staleControlSweepTimeout)
 	defer cancelQuery()
-	out, err := tmuxExecContext(queryCtx, socketName,
+	out, err := commandOutput(tmuxExecContext(queryCtx, socketName,
 		"list-clients",
 		"-F", "#{client_control_mode} #{client_pid}",
-	).Output()
+	))
 	if err != nil {
 		return // no server running, no clients attached, or the probe timed out
 	}
@@ -1271,7 +1271,7 @@ func isLiveTmuxClientOrServer(budget context.Context, pid int, cmdlineFields []s
 
 	ctx, cancel := context.WithTimeout(budget, tmuxLiveQueryTimeout)
 	defer cancel()
-	serverPIDOut, err := tmuxExecContext(ctx, socketName, "display-message", "-p", "#{pid}").Output()
+	serverPIDOut, err := commandOutput(tmuxExecContext(ctx, socketName, "display-message", "-p", "#{pid}"))
 	if err != nil {
 		markSocketUnreachable(querySocket)
 		return false, false
@@ -1286,7 +1286,7 @@ func isLiveTmuxClientOrServer(budget context.Context, pid int, cmdlineFields []s
 
 	ctx2, cancel2 := context.WithTimeout(budget, tmuxLiveQueryTimeout)
 	defer cancel2()
-	clientsOut, err := tmuxExecContext(ctx2, socketName, "list-clients", "-F", "#{client_pid}").Output()
+	clientsOut, err := commandOutput(tmuxExecContext(ctx2, socketName, "list-clients", "-F", "#{client_pid}"))
 	if err != nil {
 		markSocketUnreachable(querySocket)
 		return false, false
@@ -2122,7 +2122,7 @@ func softKillProcessGroup(pgid int, grace time.Duration, stillOurs func() bool) 
 func tmuxSessionExistsOnSocket(socketName, name string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	err := tmuxExecContext(ctx, socketName, "has-session", "-t", name).Run()
+	err := commandRun(tmuxExecContext(ctx, socketName, "has-session", "-t", name))
 	if ctx.Err() == context.DeadlineExceeded {
 		return true // probe timed out: indeterminate, assume the session still exists
 	}

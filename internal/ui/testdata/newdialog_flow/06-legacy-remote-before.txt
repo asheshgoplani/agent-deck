@@ -1,0 +1,50 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+               ╭────────────────────────────────────────────────────────────────────────────────────────╮               
+               │                                                                                        │               
+               │                                                                                        │               
+               │    New Session (remote: old-host)                                                      │               
+               │                                                                                        │               
+               │      in group: My Sessions                                                             │               
+               │                                                                                        │               
+               │      Remote runs an older agent-deck; extra options are hidden until it is updated.    │               
+               │                                                                                        │               
+               │    ▶ Name:                                                                             │               
+               │      > legacy-session                                                                  │               
+               │                                                                                        │               
+               │      Command:                                                                          │               
+               │        shell                                                                           │               
+               │                                                                                        │               
+               │        Custom:                                                                         │               
+               │        > gemini                                                                        │               
+               │                                                                                        │               
+               │      Path:                                                                             │               
+               │      > ~/project                                                                       │               
+               │                                                                                        │               
+               │      [ ] Create in worktree                                                            │               
+               │      [ ] Run in Docker sandbox                                                         │               
+               │                                                                                        │               
+               │      [ Create session ]                                                                │               
+               │                                                                                        │               
+               │                                                                                        │               
+               │    Tab next │ ↑↓ navigate │ Enter next │ ^S create │ Esc cancel                        │               
+               │                                                                                        │               
+               │                                                                                        │               
+               ╰────────────────────────────────────────────────────────────────────────────────────────╯               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

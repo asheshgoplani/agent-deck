@@ -32,6 +32,10 @@ func (i *Instance) LaunchModelID() string {
 		if opts := i.GetOpenCodeOptions(); opts != nil {
 			return strings.TrimSpace(opts.Model)
 		}
+	case i.Tool == "omp":
+		if opts := i.GetOMPOptions(); opts != nil {
+			return strings.TrimSpace(opts.Model)
+		}
 	case IsCodexCompatible(i.Tool):
 		if opts := i.GetCodexOptions(); opts != nil {
 			return strings.TrimSpace(opts.Model)

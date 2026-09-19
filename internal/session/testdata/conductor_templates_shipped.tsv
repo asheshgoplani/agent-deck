@@ -1,0 +1,66 @@
+# Shipped conductor instruction templates, rendered from
+# internal/session/conductor_templates.go at each release tag (template
+# constants evaluated from the tagged source, rendered with the renderer,
+# which is unchanged since before v1.9.60).
+#
+# Two prior generations shipped, both recognised by
+# conductorInstructionsGenerations:
+#   generation 0: v1.11.0-v1.16.10 (single blob aabca8af...)
+#   generation 1: v1.10.9-v1.10.11 (single blob f0435464...; per-name
+#     templates are byte-identical to generation 0 because #1814 only
+#     touched the shared template's error row/substate paragraph, so their
+#     hash matches generation 0 and is not repeated here)
+#
+# v1.9.73 and v1.9.70 are NOT covered: they shipped further template changes
+# (the Codex `session approve` docs in 85dba801, the local-first rewrite in
+# ca9e3f9e/#1474) that conductorInstructionsGenerations does not revert. A
+# conductor instructions file last written by one of those releases is
+# treated as user-edited and left alone; see finding 1 in
+# CLOSING-COMMENT-2051.md for the scope call.
+#
+# Extraction: `git show <tag>:internal/session/conductor_templates.go`,
+# diffed against the next generation to confirm the only change is the one
+# reverted by conductorInstructionsGenerations; hash independently confirmed
+# equal to `renderConductorInstructionsTemplate(gen, name, DefaultProfile, spec)`
+# for `gen := conductorInstructionsGenerations(template)[i]`.
+#
+# tag	template_blob	agent	kind	sha256(rendered; shared: name "", per-name: name upgrade-<agent>; profile default)
+v1.15.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	shared	54e1f64b3b9966b4ef0e5d07039a94321c0124f2113ab3809563903e6f8bf46c
+v1.15.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	per-name	d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2
+v1.15.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	shared	5236dd3425ecc8ec241878678c7bed6da0ed08c9a65b14705dbc6a450f7d988e
+v1.15.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	per-name	b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83
+v1.15.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	shared	570d5aa7368c2177f91ad30128fb598a73fadb0b0ab805e7c02b7d4ce381a240
+v1.15.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	per-name	664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b
+v1.16.5	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	shared	54e1f64b3b9966b4ef0e5d07039a94321c0124f2113ab3809563903e6f8bf46c
+v1.16.5	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	per-name	d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2
+v1.16.5	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	shared	5236dd3425ecc8ec241878678c7bed6da0ed08c9a65b14705dbc6a450f7d988e
+v1.16.5	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	per-name	b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83
+v1.16.5	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	shared	570d5aa7368c2177f91ad30128fb598a73fadb0b0ab805e7c02b7d4ce381a240
+v1.16.5	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	per-name	664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b
+v1.16.8	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	shared	54e1f64b3b9966b4ef0e5d07039a94321c0124f2113ab3809563903e6f8bf46c
+v1.16.8	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	per-name	d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2
+v1.16.8	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	shared	5236dd3425ecc8ec241878678c7bed6da0ed08c9a65b14705dbc6a450f7d988e
+v1.16.8	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	per-name	b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83
+v1.16.8	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	shared	570d5aa7368c2177f91ad30128fb598a73fadb0b0ab805e7c02b7d4ce381a240
+v1.16.8	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	per-name	664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b
+v1.16.10	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	shared	54e1f64b3b9966b4ef0e5d07039a94321c0124f2113ab3809563903e6f8bf46c
+v1.16.10	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	per-name	d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2
+v1.16.10	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	shared	5236dd3425ecc8ec241878678c7bed6da0ed08c9a65b14705dbc6a450f7d988e
+v1.16.10	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	per-name	b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83
+v1.16.10	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	shared	570d5aa7368c2177f91ad30128fb598a73fadb0b0ab805e7c02b7d4ce381a240
+v1.16.10	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	per-name	664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b
+v1.11.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	shared	54e1f64b3b9966b4ef0e5d07039a94321c0124f2113ab3809563903e6f8bf46c
+v1.11.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	claude	per-name	d32b4fa87cc009a0b9adc033b6242beaf4a3f69f9f6d229a4e8bdf7d340881e2
+v1.11.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	shared	5236dd3425ecc8ec241878678c7bed6da0ed08c9a65b14705dbc6a450f7d988e
+v1.11.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	codex	per-name	b41724c824f993f53173e1fa9b28a57fe230c8bd1f2b231a25118249fbbb7d83
+v1.11.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	shared	570d5aa7368c2177f91ad30128fb598a73fadb0b0ab805e7c02b7d4ce381a240
+v1.11.0	aabca8afd73010bcca8b2d3d3ce65526e988b194	hermes	per-name	664185cb9c657fa0164bb22d31db8862435874cd1da23c707a7a6ad8553a515b
+v1.10.9	f0435464827ceace23ff00a6202223e8a2fa0309	claude	shared	f85cfe2c9d26fe7a3472cbf74e60b056ba31e6fdbf708c4c7f1f5ace321624fa
+v1.10.9	f0435464827ceace23ff00a6202223e8a2fa0309	codex	shared	d39bf4a2ecd30365aa2dac21972d6f53f35da68a667ef5a209b352424a7bf1f7
+v1.10.9	f0435464827ceace23ff00a6202223e8a2fa0309	hermes	shared	09569410e1d581f0c387e45bf7d343123138b062d64688dd93642c99dc3ad981
+v1.10.10	f0435464827ceace23ff00a6202223e8a2fa0309	claude	shared	f85cfe2c9d26fe7a3472cbf74e60b056ba31e6fdbf708c4c7f1f5ace321624fa
+v1.10.10	f0435464827ceace23ff00a6202223e8a2fa0309	codex	shared	d39bf4a2ecd30365aa2dac21972d6f53f35da68a667ef5a209b352424a7bf1f7
+v1.10.10	f0435464827ceace23ff00a6202223e8a2fa0309	hermes	shared	09569410e1d581f0c387e45bf7d343123138b062d64688dd93642c99dc3ad981
+v1.10.11	f0435464827ceace23ff00a6202223e8a2fa0309	claude	shared	f85cfe2c9d26fe7a3472cbf74e60b056ba31e6fdbf708c4c7f1f5ace321624fa
+v1.10.11	f0435464827ceace23ff00a6202223e8a2fa0309	codex	shared	d39bf4a2ecd30365aa2dac21972d6f53f35da68a667ef5a209b352424a7bf1f7
+v1.10.11	f0435464827ceace23ff00a6202223e8a2fa0309	hermes	shared	09569410e1d581f0c387e45bf7d343123138b062d64688dd93642c99dc3ad981

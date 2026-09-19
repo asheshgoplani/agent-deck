@@ -1,0 +1,15 @@
+                                                                      
+                                                                      
+                                  ⬡                                   
+                                                                      
+                             Remote: lab                              
+                 Host: alice@lab.example — 5 sessions                 
+                                                                      
+    agent-deck v1.16.9 · older than here (update available)           
+    Sessions  1 running · 1 waiting · 1 idle · 1 stopped · 1 error    
+    Harnesses  claude:2 · codex:2 · pi:1                              
+    stats unknown (remote runs an older agent-deck)                   
+                                                                      
+             • Press Enter on a session to attach via SSH             
+                                                                      
+                                                                      

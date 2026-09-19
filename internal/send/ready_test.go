@@ -1,6 +1,7 @@
 package send
 
 import (
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -98,5 +99,130 @@ func TestWaitForAgentReady_RespectsTimeout(t *testing.T) {
 	}
 	if mock.calls.Load() == 0 {
 		t.Error("expected GetStatus to be polled")
+	}
+}
+
+// paneSequenceChecker replays a scripted series of pane captures, so a test can
+// model a TUI that is still painting rather than one frozen on one frame.
+type paneSequenceChecker struct {
+	status   string
+	panes    []string
+	captures atomic.Int64
+}
+
+func (p *paneSequenceChecker) GetStatus() (string, error) { return p.status, nil }
+
+func (p *paneSequenceChecker) CapturePaneFresh() (string, error) {
+	i := int(p.captures.Add(1)) - 1
+	if i >= len(p.panes) {
+		return p.panes[len(p.panes)-1], nil
+	}
+	return p.panes[i], nil
+}
+
+const claudeComposerPane = "❯ \n  ⏵⏵ bypass permissions on"
+
+// A composer that appears for one frame and is gone the next was a transient
+// paint, not a tool waiting for input. Accepting it is how a launch message
+// gets typed into a TUI that is still mounting and loses its leading bytes.
+func TestWaitForAgentReady_StartupPromptMustPersist(t *testing.T) {
+	mock := &paneSequenceChecker{
+		status: "starting",
+		panes: []string{
+			claudeComposerPane,
+			"Loading MCP servers...",
+			claudeComposerPane,
+			"Connecting...",
+			"Loading...",
+		},
+	}
+
+	err := WaitForAgentReady(mock, "claude", 1500*time.Millisecond,
+		PromptGates{ClaudeComposer: true})
+	if err == nil {
+		t.Fatal("a prompt that keeps disappearing must not count as ready")
+	}
+}
+
+// The bypass still fires - it just needs the prompt to still be there.
+func TestWaitForAgentReady_StartupPromptAcceptedOncePersistent(t *testing.T) {
+	mock := &paneSequenceChecker{status: "starting", panes: []string{claudeComposerPane}}
+
+	if err := WaitForAgentReady(mock, "claude", 5*time.Second,
+		PromptGates{ClaudeComposer: true}); err != nil {
+		t.Fatalf("a steady composer should be ready, got: %v", err)
+	}
+	if got := mock.captures.Load(); got < startupPromptConfirmations {
+		t.Fatalf("expected at least %d pane captures before ready, got %d",
+			startupPromptConfirmations, got)
+	}
+}
+
+// A TUI that paints, repaints, then settles is the normal case, not a failure:
+// once the prompt holds for the full run of confirmations it is accepted.
+func TestWaitForAgentReady_StartupPromptSettlesAfterRepaint(t *testing.T) {
+	mock := &paneSequenceChecker{
+		status: "starting",
+		panes: []string{
+			claudeComposerPane,
+			"Loading MCP servers...",
+			claudeComposerPane,
+			claudeComposerPane,
+			claudeComposerPane,
+		},
+	}
+
+	if err := WaitForAgentReady(mock, "claude", 5*time.Second,
+		PromptGates{ClaudeComposer: true}); err != nil {
+		t.Fatalf("a composer that settles should be ready, got: %v", err)
+	}
+}
+
+// statusScriptChecker replays a scripted series of GetStatus results - an empty
+// string means the call fails - alongside a pane that steadily shows the
+// composer. It models a poll that could not read the session, which is a
+// different thing from a poll that watched the prompt disappear.
+type statusScriptChecker struct {
+	statuses []string
+	statusIx atomic.Int64
+	pane     string
+}
+
+func (s *statusScriptChecker) GetStatus() (string, error) {
+	i := int(s.statusIx.Add(1)) - 1
+	if i >= len(s.statuses) || s.statuses[i] == "" {
+		return "", errors.New("status unavailable")
+	}
+	return s.statuses[i], nil
+}
+
+func (s *statusScriptChecker) CapturePaneFresh() (string, error) { return s.pane, nil }
+
+// An unreadable poll must not carry the confirmation count across it. Without
+// the reset, prompt / error / prompt / prompt reaches three sightings and the
+// bypass fires, even though nothing observed the pane during the gap.
+func TestWaitForAgentReady_StartupPromptCountResetsOnStatusError(t *testing.T) {
+	mock := &statusScriptChecker{
+		statuses: []string{"starting", "", "starting", "starting"},
+		pane:     claudeComposerPane,
+	}
+
+	if err := WaitForAgentReady(mock, "claude", 1500*time.Millisecond,
+		PromptGates{ClaudeComposer: true}); err == nil {
+		t.Fatal("an interrupted run of sightings must not satisfy the confirmation count")
+	}
+}
+
+// Leaving the startup window ends the run too: a session that goes back to
+// "starting" is starting again, not continuing the run we were counting.
+func TestWaitForAgentReady_StartupPromptCountResetsOnLeavingStartup(t *testing.T) {
+	mock := &statusScriptChecker{
+		statuses: []string{"starting", "active", "starting", "starting"},
+		pane:     claudeComposerPane,
+	}
+
+	if err := WaitForAgentReady(mock, "claude", 1500*time.Millisecond,
+		PromptGates{ClaudeComposer: true}); err == nil {
+		t.Fatal("a run broken by a non-starting status must not satisfy the confirmation count")
 	}
 }

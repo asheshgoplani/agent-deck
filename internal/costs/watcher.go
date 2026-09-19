@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/asheshgoplani/agent-deck/internal/fswatch"
 )
 
 // RawCostEvent is the JSON structure written by hook_handler.
@@ -26,7 +28,7 @@ type RawCostEvent struct {
 // CostEventWatcher watches a directory for new cost event JSON files.
 type CostEventWatcher struct {
 	dir     string
-	watcher *fsnotify.Watcher
+	watcher *fswatch.Watcher
 	eventCh chan RawCostEvent
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -38,7 +40,7 @@ func NewCostEventWatcher(dir string) (*CostEventWatcher, error) {
 		return nil, err
 	}
 
-	w, err := fsnotify.NewWatcher()
+	w, err := fswatch.NewWatcher()
 	if err != nil {
 		return nil, err
 	}

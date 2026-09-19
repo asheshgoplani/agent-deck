@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,9 @@ func TestSSHRunnerCreateSession_CleansOrphanOnStartFailure(t *testing.T) {
 	var calls [][]string
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			calls = append(calls, append([]string(nil), args...))
 			switch {
 			case len(args) > 0 && args[0] == "add":
@@ -140,6 +144,9 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 	var calls [][]string
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			calls = append(calls, append([]string(nil), args...))
 			switch {
 			case len(args) > 0 && args[0] == "add":
@@ -327,6 +334,9 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 	var calls [][]string
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			calls = append(calls, append([]string(nil), args...))
 			switch {
 			case len(args) > 0 && args[0] == "add":
@@ -370,6 +380,9 @@ func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
 func TestSSHRunnerCreateSessionWithOptions_QueuedStartIsNotAttachable(t *testing.T) {
 	runner := &SSHRunner{
 		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"add", "--capabilities", "--json"}) {
+				return json.Marshal(creationTestCatalog())
+			}
 			switch {
 			case len(args) > 0 && args[0] == "add":
 				return []byte(`{"id":"queued-abc","title":"queued-title"}`), nil
@@ -886,5 +899,27 @@ func TestSSHRunnerChannelArgs_AddServerAlive(t *testing.T) {
 		if !strings.Contains(args, opt) {
 			t.Fatalf("channel args must keep %s, got %q", opt, args)
 		}
+	}
+}
+
+// Review P2-8: the remote sessions feed carries `list --json`'s
+// substate_detail (the codex usage-limit retry time) so it reaches the
+// controller; an older remote that omits the key decodes to "".
+func TestParseRemoteSessions_SubstateDetail(t *testing.T) {
+	sessions, err := parseRemoteSessions([]byte(`[
+	  {"id":"a","status":"error","substate":"usage-limit","substate_detail":"try again at Oct 10th, 2026 8:03 AM"},
+	  {"id":"b","status":"waiting","substate":"idle-at-empty-prompt"}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(sessions))
+	}
+	if sessions[0].SubstateDetail != "try again at Oct 10th, 2026 8:03 AM" {
+		t.Fatalf("substate_detail = %q", sessions[0].SubstateDetail)
+	}
+	if sessions[1].SubstateDetail != "" {
+		t.Fatalf("missing key must decode to empty, got %q", sessions[1].SubstateDetail)
 	}
 }

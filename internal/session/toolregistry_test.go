@@ -8,8 +8,8 @@ import (
 // canonicalBuiltins is the canonical built-in set, in the precedence order that
 // Registry.Match() (and the legacy detectTool() switch) walk.
 var canonicalBuiltins = []string{
-	"claude", "opencode", "gemini", "codex", "pi",
-	"copilot", "crush", "cursor", "hermes", "deepseek", "aider", "shell",
+	"claude", "opencode", "gemini", "codex", "pi", "omp",
+	"copilot", "crush", "muse", "cursor", "hermes", "deepseek", "aider", "shell",
 }
 
 func TestRegistry_AllReturnsCanonicalBuiltins(t *testing.T) {
@@ -52,10 +52,22 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		{"pi uppercase", "Pi", "pi"},
 		{"pi no false match in epic", "epic", "shell"},
 		{"pi no false match in tapioca", "tapioca", "shell"},
+		// omp — whitespace-token match, NOT substring
+		{"omp bare", "omp", "omp"},
+		{"omp with flags", "omp --model sonnet", "omp"},
+		{"omp uppercase", "Omp", "omp"},
+		{"omp no false match in compass", "compass", "shell"},
+		{"omp no false match in accomplish", "accomplish", "shell"},
+		{"omp no false match in component", "component", "shell"},
 		// copilot
 		{"copilot with flags", "copilot --resume", "copilot"},
 		// crush
 		{"crush bare", "crush", "crush"},
+		// muse
+		{"muse bare", "muse", "muse"},
+		{"muse with trust flag", "muse --trust-workspace", "muse"},
+		{"muse no match echo", "echo muse", "shell"},
+		{"muse no match museum", "museum visit", "shell"},
 		// cursor
 		{"cursor agent subcommand", "cursor agent", "cursor"},
 		{"standalone agent binary", "agent", "cursor"},
@@ -222,5 +234,40 @@ func TestRegistry_MatchTokenByPath(t *testing.T) {
 				t.Errorf("Match(%q) = %q, want %q", tt.cmd, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRegistry_IconAndColor(t *testing.T) {
+	r := Init(map[string]ToolDef{
+		"mywrap":  {Command: "mywrap", Icon: "🧪", Color: "#ff00ff"},
+		"nostyle": {Command: "nostyle"},
+	})
+
+	if got := r.Icon("claude"); got != "🤖" {
+		t.Errorf("Icon(claude) = %q, want 🤖", got)
+	}
+	if got := r.Color("claude"); got != "orange" {
+		t.Errorf("Color(claude) = %q, want orange", got)
+	}
+	if got := r.Color("shell"); got != "" {
+		t.Errorf("Color(shell) = %q, want empty (no brand color)", got)
+	}
+	if got := r.Icon("mywrap"); got != "🧪" {
+		t.Errorf("Icon(mywrap) = %q, want 🧪", got)
+	}
+	if got := r.Color("mywrap"); got != "#ff00ff" {
+		t.Errorf("Color(mywrap) = %q, want #ff00ff", got)
+	}
+	if got := r.Icon("nostyle"); got != "" {
+		t.Errorf("Icon(nostyle) = %q, want empty", got)
+	}
+	if got := r.Color("nostyle"); got != "" {
+		t.Errorf("Color(nostyle) = %q, want empty", got)
+	}
+	if got := r.Icon("unknown"); got != "" {
+		t.Errorf("Icon(unknown) = %q, want empty", got)
+	}
+	if got := r.Color("unknown"); got != "" {
+		t.Errorf("Color(unknown) = %q, want empty", got)
 	}
 }

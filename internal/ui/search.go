@@ -198,8 +198,14 @@ func (s *Search) View() string {
 		Bold(true).
 		Render("🔍 Local Search (Agent Deck sessions)")
 
-	// Build search input box
-	searchBox := searchBoxStyle.Render(s.input.View())
+	// Build search input box at a fixed width. If the box's total width
+	// (border + padding) exceeds the overlay's content budget, lipgloss
+	// hard-wraps the border line and splits a corner glyph onto its own row.
+	overlayWidth := searchOverlayWidth(s.width)
+	innerWidth := overlayWidth - overlayStyle.GetHorizontalFrameSize() - searchBoxStyle.GetHorizontalFrameSize()
+	innerWidth = max(innerWidth, 10)
+	s.input.Width = innerWidth - lipgloss.Width(s.input.Prompt)
+	searchBox := searchBoxStyle.Width(innerWidth).Render(s.input.View())
 
 	// Build results list
 	var resultsStr strings.Builder
@@ -249,17 +255,19 @@ func (s *Search) View() string {
 	}
 
 	// Wrap in overlay box - responsive width
-	overlayWidth := 60
-	if s.width > 0 && s.width < overlayWidth+10 {
-		overlayWidth = s.width - 10
-		if overlayWidth < 30 {
-			overlayWidth = 30
-		}
-	}
 	overlay := overlayStyle.Width(overlayWidth).Render(content)
 
 	// Center in the screen
 	return centerInScreen(overlay, s.width, s.height)
+}
+
+// searchOverlayWidth returns the responsive overlay width for a screen width.
+func searchOverlayWidth(screenWidth int) int {
+	const preferred = 60
+	if screenWidth > 0 && screenWidth < preferred+10 {
+		return max(screenWidth-10, 30)
+	}
+	return preferred
 }
 
 // formatCount formats the result count

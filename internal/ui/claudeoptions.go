@@ -641,12 +641,18 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 
 	// Account slot (#924): which Claude login this session runs under.
 	// Hidden when no [profiles.<name>.claude].config_dir blocks exist.
+	//
+	// The pills render on their own line below the label, like the Command:
+	// tool row does, rather than trailing the label. Otherwise a narrow
+	// width wraps the label+pills row, and the dialog viewport's fixed line
+	// budget can cut it right at the wrap — leaving a bare "Account:" label
+	// with none of its values, indistinguishable from an empty field.
 	if p.hasAccountRow() {
-		label := "    Account: "
+		label := "    Account:"
 		if p.focusIndex == focusIdx {
-			label = activeStyle.Render("  ▶ Account: ")
+			label = activeStyle.Render("  ▶ Account:")
 		}
-		content += label + renderLabelPills(accountPillLabels(p.accounts), p.accountCursor) + "\n"
+		content += label + "\n    " + renderLabelPills(accountPillLabels(p.accounts), p.accountCursor) + "\n"
 	}
 
 	return content

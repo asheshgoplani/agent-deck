@@ -2,10 +2,18 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"sort"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect"
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/claude"
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/ctxtext"
 )
 
 // SessionAnalytics holds parsed session metrics from Claude JSONL files
@@ -16,9 +24,21 @@ type SessionAnalytics struct {
 	CacheReadTokens  int `json:"cache_read_input_tokens"`
 	CacheWriteTokens int `json:"cache_creation_input_tokens"`
 
-	// Current context size (last turn's input + cache read tokens)
-	// This represents the actual context window usage, not cumulative totals
+	// Current context size: the last turn's input_tokens +
+	// cache_creation_input_tokens + cache_read_input_tokens. All three are
+	// prompt-side tokens, so all three occupy the context window. Omitting
+	// cache_creation makes a cache-write turn (input=6, cache_creation=125207,
+	// cache_read=0) report a 6-token context. This is the same sum Claude Code's
+	// own /context uses.
 	CurrentContextTokens int `json:"current_context_tokens"`
+
+	// PeakContextTokens is the largest prompt any turn carried: the same sum
+	// as CurrentContextTokens, at its maximum. It is the one thing the
+	// transcript can say about the context window — the window is at least
+	// this large — and it is what disproves an inferred window that is
+	// smaller (issue #2026). Unlike CurrentContextTokens it does not drop
+	// after a /clear or a compaction, because a proof does not expire.
+	PeakContextTokens int `json:"peak_context_tokens"`
 
 	// Session metrics
 	TotalTurns int           `json:"total_turns"`
@@ -40,6 +60,35 @@ type SessionAnalytics struct {
 
 	// 5-hour billing blocks
 	BillingBlocks []BillingBlock `json:"billing_blocks"`
+
+	// ParseGaps counts transcript lines that were read but could not be
+	// interpreted (malformed JSON, or a line longer than the read limit).
+	// A non-zero value means every number above may be stale: the skipped line
+	// can be the most recent usage record. Callers must surface this rather
+	// than presenting the totals as complete.
+	ParseGaps int `json:"parse_gaps"`
+
+	// ParseGapSample holds the first maxParseGapSamples gaps, for diagnostics.
+	ParseGapSample []ParseGap `json:"parse_gap_sample,omitempty"`
+}
+
+// ParseGap records a transcript line that could not be parsed.
+type ParseGap struct {
+	Line   int    `json:"line"`   // 1-indexed line number within the transcript
+	Reason string `json:"reason"` // ParseGapMalformed | ParseGapOversize
+	Bytes  int    `json:"bytes"`  // byte length of the offending line
+}
+
+// Parse gap reasons.
+const (
+	ParseGapMalformed = "malformed json"
+	ParseGapOversize  = "line exceeds read limit"
+)
+
+// HasParseGaps reports whether any transcript line was skipped, i.e. whether
+// the totals should be labelled as possibly stale.
+func (a *SessionAnalytics) HasParseGaps() bool {
+	return a != nil && a.ParseGaps > 0
 }
 
 // ToolCall represents a tool and its usage count
@@ -68,59 +117,64 @@ func (a *SessionAnalytics) TotalTokens() int {
 	return a.InputTokens + a.OutputTokens + a.CacheReadTokens + a.CacheWriteTokens
 }
 
-// modelContextWindow maps model ID prefixes to their context window sizes.
-// More specific prefixes must come first to ensure correct matching
-// (e.g. "claude-sonnet-4-6" before "claude-sonnet-4").
-var modelContextWindowPrefixes = []struct {
-	prefix string
-	size   int
-}{
-	// Claude 5 family: 1M context
-	{"claude-fable-5", 1_000_000},
-	{"claude-mythos-5", 1_000_000},
-	{"claude-opus-5", 1_000_000},
-	{"claude-sonnet-5", 1_000_000},
-	// 4.8 models: 1M context (must precede 4.x fallback)
-	{"claude-opus-4-8", 1_000_000},
-	// 4.7 models: 1M context (must precede 4.x fallback)
-	{"claude-opus-4-7", 1000000},
-	// 4.6 models: 1M context
-	{"claude-opus-4-6", 1000000},
-	{"claude-sonnet-4-6", 1000000},
-	// 4.x models (non-4.6/4.7): 200k context
-	{"claude-opus-4", 200000},
-	{"claude-sonnet-4", 200000},
-	{"claude-haiku-4", 200000},
-	// 3.x models: 200k context
-	{"claude-3-5", 200000},
-	{"claude-3-opus", 200000},
-	// MiniMax models
-	{"MiniMax-M3", 1000000},            // 1M context
-	{"MiniMax-M2.7", 204800},           // 204.8K context
-	{"MiniMax-M2.5-highspeed", 204000}, // 204K context (must precede M2.5)
-	{"MiniMax-M2.5", 204000},           // 204K context
+// resolvedWindow is the window before observed usage gets its say: the
+// AGENTDECK_CONTEXT_WINDOW override, then the model-id registry, then unknown.
+func (a *SessionAnalytics) resolvedWindow() ctxinspect.WindowInfo {
+	return claude.ResolveWindow(a.Model, os.Getenv)
 }
 
-// contextWindowForModel returns the context window size for a model ID.
-// Returns on first prefix match; entries are ordered most-specific first
-// (e.g. "claude-sonnet-4-6" before "claude-sonnet-4") to ensure correct resolution.
-func contextWindowForModel(model string) int {
-	for _, entry := range modelContextWindowPrefixes {
-		if len(model) >= len(entry.prefix) && model[:len(entry.prefix)] == entry.prefix {
-			return entry.size
+// windowDisproved reports whether observed usage rules the window out. A model
+// id does not carry its window — the same id has been seen on 200k and 1M
+// sessions — but the transcript records how much context a turn held, and no
+// turn can hold more than the window. A peak above the figure is proof the
+// figure is wrong, and the proof does not expire when a later turn is smaller.
+func (a *SessionAnalytics) windowDisproved(w ctxinspect.WindowInfo) bool {
+	return w.Known() && a.PeakContextTokens > w.Tokens
+}
+
+// ContextWindow resolves this session's context window and how it was
+// established.
+//
+// The size comes from the one registry the project keeps, in
+// internal/ctxinspect/claude. Nothing here falls back to a global default,
+// because a denominator invented for an unrecognised model is exactly the
+// confidently wrong figure issue #2026 is about. A window observed usage has
+// disproved is reported unknown, with the disproved figure named, rather than
+// carried forward as a number the bar would clamp and an automatic /clear
+// would trust.
+func (a *SessionAnalytics) ContextWindow() ctxinspect.WindowInfo {
+	if a == nil {
+		return ctxinspect.WindowInfo{Source: ctxinspect.WindowUnknown}
+	}
+	w := a.resolvedWindow()
+	if a.windowDisproved(w) {
+		return ctxinspect.WindowInfo{
+			Source: ctxinspect.WindowUnknown,
+			Detail: fmt.Sprintf("one turn held %s tokens, more than the %s window %s gives for %q, so that figure is wrong and the real window is unknown",
+				ctxtext.TokenAmount(a.PeakContextTokens), ctxtext.TokenAmount(w.Tokens), w.Source, a.Model),
 		}
 	}
-	return 200000 // Default Claude limit
+	return w
 }
 
-// ContextPercent returns the percentage of context window used
-// Uses CurrentContextTokens (last turn's input + cache) for accurate context usage
-// modelLimit is the model's context window size; if 0, it is inferred from the Model field
-func (a *SessionAnalytics) ContextPercent(modelLimit int) float64 {
-	if modelLimit == 0 {
-		modelLimit = contextWindowForModel(a.Model)
+// ContextUsage is the context bar's reading: the current prompt size against
+// the session's window, with the trust of both attached.
+//
+// Every consumer of a context percentage reads this rather than dividing for
+// itself. Known is false when the window is unknown or disproved, Inferred
+// says the window came from the model-id table, and OverLimit says observed
+// usage disproved it. A reading is never above 100. For an over-limit reading
+// Used is the peak that proved it and Window is the disproved figure, so a
+// surface can name both even after a compaction shrank the current turn.
+func (a *SessionAnalytics) ContextUsage() ctxinspect.Occupancy {
+	if a == nil {
+		return ctxinspect.Occupancy{}
 	}
-	return float64(a.CurrentContextTokens) / float64(modelLimit) * 100
+	w := a.resolvedWindow()
+	if a.windowDisproved(w) {
+		return ctxinspect.Occupancy{Used: a.PeakContextTokens, Window: w, Inferred: w.Inferred(), OverLimit: true}
+	}
+	return w.Occupancy(a.CurrentContextTokens)
 }
 
 // ModelPricing holds pricing per million tokens for a model
@@ -177,16 +231,91 @@ type jsonlEntry struct {
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
-		Model   string `json:"model"`
-		Content []struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		} `json:"content"`
+		Model   string        `json:"model"`
+		Content contentBlocks `json:"content"`
 	} `json:"message"`
 	AgentID string `json:"agent_id,omitempty"`
 }
 
-// ParseSessionJSONL parses a Claude session JSONL file and returns analytics
+// contentBlock is one entry of a message's "content" array.
+type contentBlock struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// contentBlocks holds an assistant message's tool_use/text content blocks.
+// User messages commonly carry "content" as a plain string rather than a
+// block array; that shape has nothing to do with tool calls, so it unmarshals
+// to nil instead of failing the whole line as a parse gap.
+type contentBlocks []contentBlock
+
+func (c *contentBlocks) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		*c = nil
+		return nil
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(data, &blocks); err != nil {
+		return err
+	}
+	*c = blocks
+	return nil
+}
+
+const (
+	// maxParseGapSamples caps the per-file gap detail retained for diagnostics.
+	maxParseGapSamples = 20
+
+	// transcriptReaderBufBytes is the read-ahead buffer for the line reader.
+	transcriptReaderBufBytes = 256 * 1024
+)
+
+// maxTranscriptLineBytes caps how much of a single JSONL line is buffered.
+// A longer line is skipped and recorded as a ParseGap instead of aborting the
+// read: bufio.Scanner reports ErrTooLong and stops, which would silently discard
+// every record after the oversize line — including the newest usage record.
+// A var (never mutated at runtime) so tests can shrink it, as geminiConfigDirOverride does.
+var maxTranscriptLineBytes = 16 * 1024 * 1024
+
+// readTranscriptLine reads one newline-terminated line from r, buffering at most
+// limit bytes of it. When the line is longer than limit its remainder is drained
+// and discarded and tooLong is true; size is the full byte length of the line
+// either way. The returned error is io.EOF once the reader is exhausted.
+func readTranscriptLine(r *bufio.Reader, limit int) (line []byte, size int, tooLong bool, err error) {
+	for {
+		chunk, readErr := r.ReadSlice('\n')
+		size += len(chunk)
+		if !tooLong {
+			if len(line)+len(chunk) > limit {
+				tooLong = true
+				line = nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue // partial line; keep draining until the newline
+		}
+		return line, size, tooLong, readErr
+	}
+}
+
+// recordParseGap notes a transcript line that could not be interpreted.
+func (a *SessionAnalytics) recordParseGap(line int, reason string, size int) {
+	a.ParseGaps++
+	if len(a.ParseGapSample) < maxParseGapSamples {
+		a.ParseGapSample = append(a.ParseGapSample, ParseGap{
+			Line:   line,
+			Reason: reason,
+			Bytes:  size,
+		})
+	}
+}
+
+// ParseSessionJSONL parses a Claude session JSONL file and returns analytics.
+// Lines that cannot be parsed are counted in SessionAnalytics.ParseGaps rather
+// than silently dropped, so callers can label the totals as possibly stale.
 func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -200,20 +329,10 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 	toolCounts := make(map[string]int)
 	var firstTime, lastTime time.Time
 
-	scanner := bufio.NewScanner(file)
-	// Increase buffer for large lines (some tool outputs can be huge)
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	for scanner.Scan() {
-		var entry jsonlEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue // Skip malformed lines
-		}
-
+	apply := func(entry jsonlEntry) {
 		// Only count assistant messages
 		if entry.Type != "assistant" {
-			continue
+			return
 		}
 
 		// Track timing
@@ -231,16 +350,25 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 			analytics.Model = entry.Message.Model
 		}
 
-		// Accumulate tokens (cumulative totals for cost calculation)
-		analytics.InputTokens += entry.Message.Usage.InputTokens
-		analytics.OutputTokens += entry.Message.Usage.OutputTokens
-		analytics.CacheReadTokens += entry.Message.Usage.CacheReadInputTokens
-		analytics.CacheWriteTokens += entry.Message.Usage.CacheCreationInputTokens
+		usage := entry.Message.Usage
 
-		// Track current context size (last turn's input + cache read)
-		// This represents the actual context window usage
-		analytics.CurrentContextTokens = entry.Message.Usage.InputTokens +
-			entry.Message.Usage.CacheReadInputTokens
+		// Accumulate tokens (cumulative totals for cost calculation)
+		analytics.InputTokens += usage.InputTokens
+		analytics.OutputTokens += usage.OutputTokens
+		analytics.CacheReadTokens += usage.CacheReadInputTokens
+		analytics.CacheWriteTokens += usage.CacheCreationInputTokens
+
+		// Track current context size from the last record that actually carries
+		// usage. All three prompt-side counters occupy the context window; a
+		// cache-write turn puts nearly all of them in cache_creation, so leaving
+		// it out reports a near-empty context. Records with no usage at all
+		// (synthetic/error assistant messages) must not reset the number to 0.
+		if prompt := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens; prompt > 0 {
+			analytics.CurrentContextTokens = prompt
+			if prompt > analytics.PeakContextTokens {
+				analytics.PeakContextTokens = prompt
+			}
+		}
 
 		// Count turn
 		analytics.TotalTurns++
@@ -250,6 +378,35 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 			if content.Type == "tool_use" && content.Name != "" {
 				toolCounts[content.Name]++
 			}
+		}
+	}
+
+	reader := bufio.NewReaderSize(file, transcriptReaderBufBytes)
+	lineNo := 0
+	for {
+		raw, size, tooLong, readErr := readTranscriptLine(reader, maxTranscriptLineBytes)
+		if size > 0 {
+			lineNo++
+			trimmed := bytes.TrimSpace(raw)
+			switch {
+			case tooLong:
+				analytics.recordParseGap(lineNo, ParseGapOversize, size)
+			case len(trimmed) == 0:
+				// Blank separator line, not a gap.
+			default:
+				var entry jsonlEntry
+				if err := json.Unmarshal(trimmed, &entry); err != nil {
+					analytics.recordParseGap(lineNo, ParseGapMalformed, size)
+				} else {
+					apply(entry)
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return analytics, readErr
 		}
 	}
 
@@ -268,7 +425,7 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 		analytics.Duration = lastTime.Sub(firstTime)
 	}
 
-	return analytics, scanner.Err()
+	return analytics, nil
 }
 
 // CalculateBillingBlocks groups timestamps into billing windows.

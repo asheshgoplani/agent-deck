@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ const (
 	ConductorAgentClaude = "claude"
 	ConductorAgentCodex  = "codex"
 	ConductorAgentHermes = "hermes"
+	ConductorAgentPi     = "pi"
 
 	ConductorSessionTitlePrefix     = "conductor-"
 	ConductorHeartbeatMessagePrefix = "Heartbeat:"
@@ -62,6 +65,13 @@ var conductorAgentSpecs = map[string]ConductorAgentSpec{
 		InstructionsFileName:   "HERMES.md",
 		SupportsClearOnCompact: true,
 	},
+	ConductorAgentPi: {
+		Agent:                  ConductorAgentPi,
+		DisplayName:            "Pi",
+		DefaultCommand:         "pi",
+		InstructionsFileName:   "AGENTS.md",
+		SupportsClearOnCompact: false,
+	},
 }
 
 // ConductorSettings defines conductor (meta-agent orchestration) configuration
@@ -91,6 +101,11 @@ type ConductorSettings struct {
 	// Discord defines Discord bot integration settings
 	Discord DiscordSettings `toml:"discord,omitempty"`
 
+	// GitHubWatcher configures the opt-in GitHub event watcher that lives in
+	// conductor/gh-watcher/ (issue #2134). The Go binary only parses this table;
+	// conductor/setup.sh reads it to decide whether to install the poller unit.
+	GitHubWatcher GitHubWatcherSettings `toml:"github_watcher,omitempty"`
+
 	// Dir overrides the base conductor directory. Empty = default
 	// (<data-dir>/conductor with legacy ~/.agent-deck/conductor fallback).
 	// Tilde and $VAR are expanded.
@@ -105,6 +120,34 @@ type ConductorSettings struct {
 	// 'conductor migrate-dir'). The bridge daemon similarly freezes
 	// AGENT_DECK_CONDUCTOR_DIR at install time.
 	Dir string `toml:"dir,omitempty"`
+}
+
+// GitHubWatcherMode values accepted by [conductor.github_watcher].mode.
+const (
+	// GitHubWatcherModeLog records classified events without sending anything.
+	GitHubWatcherModeLog = "log"
+	// GitHubWatcherModeDispatch sends the lean [github:...] trigger to the conductor.
+	GitHubWatcherModeDispatch = "dispatch"
+)
+
+// GitHubWatcherSettings is the [conductor.github_watcher] table. Both keys are
+// optional: Enabled defaults to false and Mode defaults to "log", so a config
+// without the table changes nothing.
+type GitHubWatcherSettings struct {
+	// Enabled turns the poller on. conductor/setup.sh installs the launchd or
+	// systemd unit only when this is true.
+	Enabled bool `toml:"enabled,omitempty"`
+
+	// Mode is "log" (default) or "dispatch". Use EffectiveMode to read it.
+	Mode string `toml:"mode,omitempty"`
+}
+
+// EffectiveMode returns Mode with the "log" default applied.
+func (g GitHubWatcherSettings) EffectiveMode() string {
+	if g.Mode == "" {
+		return GitHubWatcherModeLog
+	}
+	return g.Mode
 }
 
 // ConductorID is a Telegram/Discord bot identifier used by the conductor
@@ -408,7 +451,8 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 	normalized := normalizeConductorAgent(agent)
 	spec, ok := conductorAgentSpecs[normalized]
 	if !ok {
-		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s, %s, %s)", agent, ConductorAgentClaude, ConductorAgentCodex, ConductorAgentHermes)
+		supported := slices.Sorted(maps.Keys(conductorAgentSpecs))
+		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s)", agent, strings.Join(supported, ", "))
 	}
 	return spec, nil
 }
@@ -779,6 +823,45 @@ func renderConductorInstructionsTemplate(baseTemplate, name, profile string, spe
 	return content
 }
 
+// renderConductorInstructionsGenerations renders every prior generated-template
+// generation of baseTemplate, newest first, exactly as the release that shipped
+// it would have written the file.
+func renderConductorInstructionsGenerations(baseTemplate, name, profile string, spec ConductorAgentSpec) []string {
+	generations := conductorInstructionsGenerations(baseTemplate)
+	rendered := make([]string, 0, len(generations))
+	for _, generation := range generations {
+		rendered = append(rendered, renderConductorInstructionsTemplate(generation, name, profile, spec))
+	}
+	return rendered
+}
+
+// conductorPerNameTemplateFor returns the per-conductor instructions template
+// for agent. Hermes gets its own template; every other agent (claude, codex,
+// pi, ...) shares the generic one, which substitutes {AGENT}/{AGENT_DISPLAY}/
+// {INSTRUCTIONS_FILE} per the caller's spec.
+func conductorPerNameTemplateFor(agent string) string {
+	if agent == ConductorAgentHermes {
+		return conductorPerNameHermesMDTemplate
+	}
+	return conductorPerNameClaudeMDTemplate
+}
+
+// previousConductorAgentSpec reports the spec of the agent a conductor is
+// being switched away from, but only when that agent writes the same
+// instructions file as the incoming spec (codex and pi both use AGENTS.md).
+// Those are the cases where the incoming setup must replace the previous
+// agent's generated content instead of leaving it stale.
+func previousConductorAgentSpec(existing *ConductorMeta, spec ConductorAgentSpec) (ConductorAgentSpec, bool) {
+	if existing == nil {
+		return ConductorAgentSpec{}, false
+	}
+	previousSpec, ok := conductorAgentSpecs[normalizeConductorAgent(existing.Agent)]
+	if !ok || previousSpec.Agent == spec.Agent || previousSpec.InstructionsFileName != spec.InstructionsFileName {
+		return ConductorAgentSpec{}, false
+	}
+	return previousSpec, true
+}
+
 func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
 	spec, _ := GetConductorAgentSpec(ConductorAgentClaude)
 	return renderConductorInstructionsTemplate(baseTemplate, name, profile, spec)
@@ -786,6 +869,17 @@ func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
 
 func matchesTemplateContent(actual, expected string) bool {
 	return strings.TrimSuffix(actual, "\n") == strings.TrimSuffix(expected, "\n")
+}
+
+// matchesAnyTemplateContent reports whether actual matches any of the given
+// generated-template generations.
+func matchesAnyTemplateContent(actual string, candidates []string) bool {
+	for _, c := range candidates {
+		if matchesTemplateContent(actual, c) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetupConductor creates a Claude conductor for backward compatibility.
@@ -877,19 +971,28 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		// No custom path - write the default template only if absent. An existing
 		// symlink keeps the user's customization; an existing regular file may
 		// carry in-place edits, so re-running setup must not clobber it.
-		var perNameTemplate string
-		if spec.Agent == ConductorAgentHermes {
-			perNameTemplate = conductorPerNameHermesMDTemplate
-		} else {
-			perNameTemplate = conductorPerNameClaudeMDTemplate
-		}
+		perNameTemplate := conductorPerNameTemplateFor(spec.Agent)
 		content := renderConductorInstructionsTemplate(perNameTemplate, name, profile, spec)
-		if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
+		oldGenerations := renderConductorInstructionsGenerations(perNameTemplate, name, profile, spec)
+		// When the conductor is switching between two agents that share an
+		// instructions filename (codex and pi both read AGENTS.md), the sibling
+		// agent's generated content is replaceable too; otherwise it would be
+		// stranded under the new agent's name. Hand edits and symlinks stay.
+		if previousSpec, ok := previousConductorAgentSpec(existing, spec); ok {
+			siblingTemplate := conductorPerNameTemplateFor(previousSpec.Agent)
+			oldGenerations = append(oldGenerations, renderConductorInstructionsTemplate(siblingTemplate, name, profile, previousSpec))
+			oldGenerations = append(oldGenerations, renderConductorInstructionsGenerations(siblingTemplate, name, profile, previousSpec)...)
+		}
+		if err := writeGeneratedFileOrMigrate(targetPath, oldGenerations, content, 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
 		}
 	}
-	for otherAgent, otherSpec := range conductorAgentSpecs {
-		if otherAgent == spec.Agent {
+	// Drop instructions files left behind by other agents. Keying off the
+	// filename rather than the agent name matters because agents can share one
+	// (codex and pi both read AGENTS.md): removing by agent would delete the
+	// file this run just wrote.
+	for _, otherSpec := range conductorAgentSpecs {
+		if otherSpec.InstructionsFileName == spec.InstructionsFileName {
 			continue
 		}
 		stalePath := filepath.Join(dir, otherSpec.InstructionsFileName)
@@ -1295,12 +1398,7 @@ done
 
 MSG="{HEARTBEAT_PREFIX} Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention."
 if [ -n "$RULES_FILE" ]; then
-    RULES=$(cat "$RULES_FILE")
-    if [ -n "$RULES" ]; then
-        MSG="$MSG
-
-$RULES"
-    fi
+    MSG="$MSG Read heartbeat rules from $RULES_FILE."
 fi
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
@@ -1408,6 +1506,106 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 	return closeErr
 }
 
+// exchangeGeneratedFiles atomically swaps two pathnames. After the exchange,
+// the temporary pathname holds the displaced destination, which lets the
+// caller validate and retain the exact file it replaced for recovery.
+var exchangeGeneratedFiles = exchangeGeneratedFile
+
+// writeGeneratedFileOrMigrate creates a generated file when absent and upgrades
+// it only when its contents exactly match one of the prior generated-template
+// generations (newest first; see conductorInstructionsGenerations). Edited
+// files and existing symlinks remain user-owned. Migration retains the
+// displaced inode so an editor with an open descriptor cannot lose its writes.
+func writeGeneratedFileOrMigrate(path string, previousGenerations []string, current string, perm os.FileMode) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return writeFileIfAbsent(path, []byte(current), perm)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to replace unsafe generated-file target %q (%s)", path, info.Mode().Type())
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !matchesAnyTemplateContent(string(content), previousGenerations) {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".previous-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	exchanged := false
+	defer func() {
+		if !exchanged {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	fail := func(op string, opErr error) error {
+		_ = tmp.Close()
+		return fmt.Errorf("%s generated replacement: %w", op, opErr)
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		return fail("chmod", err)
+	}
+	if _, err := tmp.Write([]byte(current)); err != nil {
+		return fail("write", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail("sync", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close generated replacement: %w", err)
+	}
+
+	// Avoid needless exchanges when a change is already visible. This recheck is
+	// only an optimization: correctness comes from validating the file displaced
+	// by the atomic exchange below.
+	latestInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("recheck generated target: %w", err)
+	}
+	if !latestInfo.Mode().IsRegular() || !os.SameFile(info, latestInfo) {
+		return fmt.Errorf("generated target changed during migration: %s", path)
+	}
+	latest, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("recheck generated content: %w", err)
+	}
+	if !matchesAnyTemplateContent(string(latest), previousGenerations) {
+		return fmt.Errorf("generated target was edited during migration: %s", path)
+	}
+	if err := exchangeGeneratedFiles(tmpPath, path); err != nil {
+		return fmt.Errorf("replace generated target: %w", err)
+	}
+	// From this point tmpPath belongs to the displaced inode, which may still
+	// have an editor writing through an open descriptor. Never unlink it.
+	exchanged = true
+	fsyncDir(dir)
+	displacedInfo, statErr := os.Lstat(tmpPath)
+	var displaced []byte
+	var readErr error
+	if statErr == nil && displacedInfo.Mode().IsRegular() {
+		displaced, readErr = os.ReadFile(tmpPath)
+	}
+	if statErr != nil || !displacedInfo.Mode().IsRegular() || readErr != nil ||
+		!os.SameFile(info, displacedInfo) || !matchesAnyTemplateContent(string(displaced), previousGenerations) {
+		// A second exchange could overwrite a newer visible edit. Keep both
+		// paths and make the publication conflict actionable instead.
+		return fmt.Errorf("generated target %q changed during publication; publication occurred, displaced file retained at %q for reconciliation", path, tmpPath)
+	}
+	sessionLog.Info("generated_instructions_migrated", slog.String("path", path), slog.String("previous_path", tmpPath))
+	return nil
+}
+
 // InstallSharedConductorInstructions writes the shared instructions file for the given conductor agent,
 // or creates a symlink if customPath is provided.
 func InstallSharedConductorInstructions(agent, customPath string) error {
@@ -1429,12 +1627,12 @@ func InstallSharedConductorInstructions(agent, customPath string) error {
 		return createSymlinkWithExpansion(targetPath, customPath)
 	}
 
-	// No custom path - write the default template only if nothing is there yet.
-	// An existing file is preserved: a symlink keeps the user's customization,
-	// and a regular file may carry in-place edits we must not clobber on re-run.
-	// writeFileIfAbsent's O_EXCL makes both cases a no-op.
+	// No custom path: create the current generated template, or migrate an exact
+	// copy of a prior generated-template generation. Customized files and
+	// symlinks are preserved.
 	content := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-	if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
+	oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
+	if err := writeGeneratedFileOrMigrate(targetPath, oldGenerations, content, 0o644); err != nil {
 		return fmt.Errorf("failed to write shared %s: %w", spec.InstructionsFileName, err)
 	}
 	return nil

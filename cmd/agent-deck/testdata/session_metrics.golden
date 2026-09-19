@@ -1,0 +1,34 @@
+{
+  "dead_letters": 0,
+  "events": 7,
+  "flags": [],
+  "journal": "ok",
+  "last_status_change": {
+    "age_ms": "<age_ms>",
+    "at": "<at>",
+    "status": "waiting"
+  },
+  "restarts": 1,
+  "sends": {
+    "ack_p50_ms": 250,
+    "ack_p95_ms": 250,
+    "confirmed": 1,
+    "count": 2,
+    "failed": 0,
+    "unconfirmed": 1,
+    "unconfirmed_rate": 0.5,
+    "unknown": 0
+  },
+  "session_id": "metrics-s1",
+  "since": "<since>",
+  "turns": {
+    "count": 2,
+    "measured": 2,
+    "p50_ms": 20000,
+    "p95_ms": 30000
+  },
+  "until": "<until>",
+  "version": 1,
+  "waiting_ms": "<positive>",
+  "worker": null
+}

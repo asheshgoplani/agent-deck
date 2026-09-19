@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/ctxinspect/ctxtext"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,86 +26,37 @@ func TestSessionAnalytics_TotalTokens(t *testing.T) {
 	assert.Equal(t, 1800, analytics.TotalTokens())
 }
 
-func TestSessionAnalytics_ContextPercent(t *testing.T) {
-	analytics := &SessionAnalytics{
-		InputTokens:          1000,
-		OutputTokens:         500,
-		CacheReadTokens:      200,
-		CacheWriteTokens:     100,
-		CurrentContextTokens: 1800, // Last turn's context size
-	}
-
-	// CurrentContextTokens 1800 / 200000 limit * 100 = 0.9%
-	assert.InDelta(t, 0.9, analytics.ContextPercent(200000), 0.01)
-}
-
-func TestSessionAnalytics_ContextPercent_DefaultLimit(t *testing.T) {
-	analytics := &SessionAnalytics{
-		InputTokens:          20000,
-		OutputTokens:         0,
-		CurrentContextTokens: 20000, // Last turn's context size
-	}
-
-	// CurrentContextTokens 20000 / 200000 default limit * 100 = 10%
-	assert.InDelta(t, 10.0, analytics.ContextPercent(0), 0.01)
-}
-
-func TestSessionAnalytics_ContextPercent_OpusModel(t *testing.T) {
+func TestSessionAnalytics_ContextUsage_OpusModel(t *testing.T) {
+	t.Setenv(ctxtext.WindowEnvVar, "")
 	analytics := &SessionAnalytics{
 		CurrentContextTokens: 500000,
+		PeakContextTokens:    500000,
 		Model:                "claude-opus-4-6",
 	}
 
 	// 500000 / 1000000 (opus context window) * 100 = 50%
-	assert.InDelta(t, 50.0, analytics.ContextPercent(0), 0.01)
+	assert.InDelta(t, 50.0, analytics.ContextUsage().Percent, 0.01)
 }
 
-func TestSessionAnalytics_ContextPercent_Fable5Model(t *testing.T) {
+func TestSessionAnalytics_ContextUsage_Fable5Model(t *testing.T) {
 	// Regression for the 100%-clamped context bar: a real Fable 5 session at
 	// ~494k context tokens is at ~49% of its 1M window, not 247% of 200k.
+	t.Setenv(ctxtext.WindowEnvVar, "")
 	analytics := &SessionAnalytics{
 		CurrentContextTokens: 494561,
+		PeakContextTokens:    494561,
 		Model:                "claude-fable-5",
 	}
 
 	// 494561 / 1000000 (fable-5 context window) * 100 = 49.46%
-	assert.InDelta(t, 49.46, analytics.ContextPercent(0), 0.01)
-}
-
-func TestContextWindowForModel(t *testing.T) {
-	// Claude 5 family: 1M
-	assert.Equal(t, 1_000_000, contextWindowForModel("claude-fable-5"))
-	assert.Equal(t, 1_000_000, contextWindowForModel("claude-mythos-5"))
-	assert.Equal(t, 1_000_000, contextWindowForModel("claude-opus-5"))
-	assert.Equal(t, 1_000_000, contextWindowForModel("claude-sonnet-5"))
-	// 4.8 models: 1M (must match before 4.x fallback)
-	assert.Equal(t, 1_000_000, contextWindowForModel("claude-opus-4-8"))
-	assert.Equal(t, 1_000_000, contextWindowForModel("claude-opus-4-8-20260801"))
-	// 4.7 models: 1M (must match before 4.x fallback)
-	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-7"))
-	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-7-20260101"))
-	// 4.6 models: 1M
-	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-6"))
-	assert.Equal(t, 1000000, contextWindowForModel("claude-sonnet-4-6"))
-	// 4.x non-4.6/4.7 models: 200k
-	assert.Equal(t, 200000, contextWindowForModel("claude-opus-4-20250514"))
-	assert.Equal(t, 200000, contextWindowForModel("claude-sonnet-4-20250514"))
-	assert.Equal(t, 200000, contextWindowForModel("claude-haiku-4-5"))
-	// 3.x models: 200k
-	assert.Equal(t, 200000, contextWindowForModel("claude-3-5-sonnet"))
-	// MiniMax models
-	assert.Equal(t, 1000000, contextWindowForModel("MiniMax-M3"))
-	assert.Equal(t, 204800, contextWindowForModel("MiniMax-M2.7"))
-	// Unknown/empty: 200k fallback
-	assert.Equal(t, 200000, contextWindowForModel("unknown-model"))
-	assert.Equal(t, 200000, contextWindowForModel(""))
+	assert.InDelta(t, 49.46, analytics.ContextUsage().Percent, 0.01)
 }
 
 func TestSessionAnalytics_ZeroTokens(t *testing.T) {
 	analytics := &SessionAnalytics{}
 
 	assert.Equal(t, 0, analytics.TotalTokens())
-	assert.InDelta(t, 0.0, analytics.ContextPercent(200000), 0.01)
+	assert.InDelta(t, 0.0, analytics.ContextUsage().Percent, 0.01)
 }
 
 func TestToolCall(t *testing.T) {
@@ -264,6 +216,11 @@ this is not valid json
 	assert.Equal(t, 300, analytics.InputTokens)
 	assert.Equal(t, 150, analytics.OutputTokens)
 	assert.Equal(t, 2, analytics.TotalTurns)
+
+	// Skipped lines are recorded, not silently dropped: a bad line can be the
+	// most recent usage record, so callers must be able to say "totals may be stale".
+	assert.Equal(t, 2, analytics.ParseGaps)
+	assert.True(t, analytics.HasParseGaps())
 }
 
 func TestParseJSONL_EmptyFile(t *testing.T) {

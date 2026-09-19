@@ -61,6 +61,30 @@ func TestSendKeysAndEnter_ActiveWindow_NoWindowSuffix(t *testing.T) {
 	}
 }
 
+func TestPrimaryWindowKeyDelivery_TargetsFirstWindow(t *testing.T) {
+	calls := recordKeySender(t)
+	s := &Session{Name: "multiwin"}
+
+	if err := s.SendKeysToPrimaryWindow("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SendNamedKeyToPrimaryWindow("Tab"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SendEnterToPrimaryWindow(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(*calls) != 3 {
+		t.Fatalf("expected text, Tab, Enter calls; got %v", *calls)
+	}
+	for _, call := range *calls {
+		if !strings.Contains(call, "-t multiwin:^") {
+			t.Fatalf("primary-window call targeted active window: %q", call)
+		}
+	}
+}
+
 // TestSendKeysAndEnterToWindow_VimMode_GuardsThenTargetsWindow verifies the
 // window send still honors the #1264 vim insert-guard (Escape, i) and that the
 // guard, paste, and Enter are ALL aimed at the window target.

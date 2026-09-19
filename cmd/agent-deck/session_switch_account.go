@@ -24,6 +24,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	noRestart := fs.Bool("no-restart", false, "Do not restart a running session after the switch")
+	archiveDestination := fs.Bool("archive-destination", false, "Archive a destination conversation that is newer or diverged instead of refusing")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session switch-account <id|title> <account> [options]")
@@ -83,12 +84,18 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	}
 
 	result, switchErr := session.SwitchAccount(userConfig, inst, account, session.AccountSwitchOptions{
-		NoRestart: *noRestart,
+		NoRestart:          *noRestart,
+		Storage:            storage,
+		ArchiveDestination: *archiveDestination,
 	})
 	if result == nil {
 		// Every abort path leaves the instance untouched, so there is nothing
 		// to persist.
-		out.Error(switchErr.Error(), ErrCodeInvalidOperation)
+		message := switchErr.Error()
+		if errors.Is(switchErr, session.ErrSwitchDestinationDivergent) {
+			message += "; re-run with --archive-destination to archive it and switch anyway"
+		}
+		out.Error(message, ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	for _, warning := range result.Warnings {
@@ -114,13 +121,14 @@ func handleSessionSwitchAccount(profile string, args []string) {
 
 	out.Success(fmt.Sprintf("Switched %s: account %q -> %q; %s", inst.Title, result.OldAccount, result.NewAccount, result.Conversation),
 		map[string]interface{}{
-			"success":           true,
-			"id":                inst.ID,
-			"title":             inst.Title,
-			"old_account":       result.OldAccount,
-			"new_account":       result.NewAccount,
-			"migrated_path":     result.MigratedPath,
-			"claude_session_id": inst.ClaudeSessionID,
-			"restarted":         result.Restarted,
+			"success":              true,
+			"id":                   inst.ID,
+			"title":                inst.Title,
+			"old_account":          result.OldAccount,
+			"new_account":          result.NewAccount,
+			"migrated_path":        result.MigratedPath,
+			"destination_archived": result.DestinationArchived,
+			"claude_session_id":    inst.ClaudeSessionID,
+			"restarted":            result.Restarted,
 		})
 }

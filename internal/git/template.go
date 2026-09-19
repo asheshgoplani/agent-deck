@@ -67,11 +67,26 @@ func escapeBranchForPath(branch string) string {
 // resolveTemplate expands a path template with the given variables.
 // Returns the resolved absolute path.
 //
-// SECURITY NOTE: Templates are trusted input from the user's own config.toml file.
-// No path containment validation is performed because the user controls both the
-// template and the resulting worktree location. Malicious templates would be
-// self-inflicted. The filepath.Clean call normalizes the path but does not
-// restrict it to any particular directory.
+// SECURITY NOTE: this function performs no path containment validation by
+// design — the filepath.Clean call normalizes the path but does not restrict
+// it to any particular directory. That is safe only because of who is
+// allowed to supply template:
+//   - A template from the user's own global config.toml or an explicit CLI
+//     flag is trusted input; the user controls both the template and the
+//     resulting worktree location, so a malicious template there would be
+//     self-inflicted.
+//   - A template sourced from a directory-local .agent-deck/config.toml
+//     (#2093) may come from an untrusted git checkout, so it is NOT trusted
+//     input. It is bound checked exactly once, upstream, in
+//     internal/session.ResolveWorktreeSettingsForDir (see
+//     validateDirLocalWorktreeValue in internal/session/dirlocalconfig.go),
+//     which relies on the invariant that every caller passes the same
+//     directory both as the target directory it resolves against and as
+//     RepoDir here. A dir-local template that fails that check is rejected
+//     before assignment and never reaches resolveTemplate at all.
+//
+// This function stays containment-agnostic by design and must not be treated
+// as a second line of defense.
 func resolveTemplate(template string, vars templateVars) string {
 	sanitizedBranch := sanitizeBranchForPath(vars.branch)
 

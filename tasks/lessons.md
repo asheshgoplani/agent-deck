@@ -1,0 +1,12 @@
+# Lessons
+
+- Delayed subprocess regression fixtures must register gate-release cleanup before waiting for entry and explicitly join every worker after a timeout. Acquiring the worker's mutex does not prove that worker has run.
+- Docker-mounted Git worktrees need accessible repository metadata or `-buildvcs=false` for nested fixture builds. Expected-red checks must match the specific behavioral assertion, not merely the test name.
+- Compare total observable subprocess calls across implementations. Protocol-specific delays establish TTL stress, not a representative speedup ratio.
+- A tmux fake must distinguish `pane_pid` from `pane_dead` queries. Returning PID 1 for a liveness query reports the pane as dead and prevents the intended polling path.
+- Construct tmux fixtures with the real tool command so status detection loads the correct busy patterns. Assert exact baseline call counts to detect accidental bypass of the metadata path.
+- Hosted-runner checkout ownership may differ from container UID 1000. Make only required module metadata writable when using `-mod=mod`.
+- Do not infer "hook X never fires" from the absence of a transcript record type; check the artifact the hook itself writes (the hook status file's ts against the turn's end time). Rebuild a commit rather than following it with a "remove binary" commit when a build artifact lands in it: history, not the tip, is what gets pushed.
+- When adding a pane capture to a shared helper, list every caller first: a helper shared by a CLI poll and a hook handler puts the capture on the hook edge too. Hook handlers never capture panes; make the capture opt-in at the call site. Order samples from several processes at the resolution they are taken at (milliseconds), not the resolution they are displayed at.
+- A wrapper that runs the user's own command (statusLine, hook) must fail open on every path of its own, including the "resolve where to store" step that runs before the command: a shared helper that calls os.Exit is the wrong shape for it. Wire-time validation belongs where the wiring is written (refuse a slot the store cannot name) so the failure never reaches the user's render path.
+- A wrap function's line limit is the limit of the line the piece lands on, not the current line: check `lead+piece` against the continuation width after a flush, and prove the result with a second pass (each output line must come back unchanged).

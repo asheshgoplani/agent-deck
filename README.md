@@ -23,7 +23,7 @@
 
 https://github.com/user-attachments/assets/e4f55917-435c-45ba-92cc-89737d0d1401
 
-## Maintainers & contributors wanted
+## Contributing: start here
 
 agent-deck is actively maintained by [Ashesh](https://github.com/asheshgoplani), and it welcomes both contributors and co-maintainers. PRs here don't sit: every incoming PR is validated (applied, built, tested) within about a day, and good ones merge in the next release batch. Recent releases have shipped dozens of community fixes.
 
@@ -31,9 +31,14 @@ Beyond one-off PRs, we're looking for 1-2 regular co-maintainers: people who wan
 
 To get started:
 
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) for how the review pipeline works.
-- Start at the pinned issue: [Looking for contributors — start here (#1650)](https://github.com/asheshgoplani/agent-deck/issues/1650).
-- The [agent-deck-contributor skill](.github/skills/agent-deck-contributor) walks an AI agent (or you) through building, testing, and shaping a clean PR.
+1. Read [CONTRIBUTING.md](CONTRIBUTING.md): how the pipeline works, what makes a PR land fast, and the house rules.
+2. Contributing with an AI agent? Point it at [.github/INTAKE.md](.github/INTAKE.md), the machine-readable intake spec — or the [agent-deck-contributor skill](.github/skills/agent-deck-contributor), which walks an agent (or you) through building, testing, and shaping a clean PR.
+3. Comment on an issue before starting work so we can tell you if someone (human or agent) is already on it.
+4. Look for issues labeled [`good first issue`](https://github.com/asheshgoplani/agent-deck/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22): curated to be small and self-contained.
+
+If you've had a couple of PRs land here and want to help steer, open an issue titled "maintainer: your area". We'd love the help.
+
+Looking for something specific to work on? [docs/ROADMAP.md](docs/ROADMAP.md) lists ideas and follow-ups that are real but not yet scheduled.
 
 If you've had a couple of PRs land here and want to help steer, say so on #1650 or open an issue titled "maintainer: your area". We'd love the help.
 
@@ -79,6 +84,26 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 
 </details>
 
+<details>
+<summary>Shell completion</summary>
+
+`agent-deck completion <bash|zsh|fish>` prints a completion script for commands and subcommands (`agent-deck se<Tab>` → `session`, `agent-deck session st<Tab>` → `start`/`stop`), plus live resource names where it matters — `agent-deck remote update <Tab>` offers your configured remotes, `agent-deck session set-parent <Tab> <Tab>` offers session titles at both positions, and `agent-deck -p <Tab>` offers your profiles.
+
+```bash
+# bash
+echo 'source <(agent-deck completion bash)' >> ~/.bashrc
+
+# zsh
+echo 'source <(agent-deck completion zsh)' >> ~/.zshrc
+
+# fish
+agent-deck completion fish > ~/.config/fish/completions/agent-deck.fish
+```
+
+Open a new shell (or re-source the config file) afterwards.
+
+</details>
+
 ## Quick Start
 
 ```bash
@@ -114,7 +139,17 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 | `d` | Delete |
 | `b` | Re-run worktree setup script |
 | `E` | Container shell (sandboxed sessions) |
+| `c` / `C` | Copy last AI response / session info (repo, path, branch) |
+| `V` / `Y` | Copy visible terminal text / a fenced code block |
+| `Shift+drag` | Select text natively (`Option+drag` in iTerm2) — see below |
 | `?` | Full help |
+
+> **Why can't I drag-select text?** The TUI holds the terminal in mouse
+> reporting mode so clicks, wheel scrolling and the divider drag work, which
+> means your terminal never sees a drag as a selection. Hold `Shift` while
+> dragging (`Option` in iTerm2) to bypass it, or use the `c` / `C` / `V` / `Y`
+> copy keys above. Full detail in
+> [Terminal shortcuts](docs/terminal-shortcuts.md#text-selection-and-copying).
 
 See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all shortcuts and [CLI Reference](skills/agent-deck/references/cli-reference.md) for all commands.
 
@@ -147,7 +182,7 @@ Two short guides to read next:
 
 ### Fork Sessions
 
-Try different approaches without losing context. Fork Claude, OpenCode, Pi, and Codex sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
+Try different approaches without losing context. Fork Claude, OpenCode, Pi, Codex, and Oh My Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
 
 - Press `f` for quick fork, `F` to customize name/group
 - Fork your forks to explore as many branches as you need
@@ -227,6 +262,12 @@ Backward compat: sessions in the `conductor` group with NO matching `[conductors
 
 Closes [issue #602](https://github.com/asheshgoplani/agent-deck/issues/602).
 
+#### Context window and the proactive `/clear`
+
+The session analytics context bar divides the current prompt size by the model's context window. A model id does not carry its window, so a size read off the model-id table is shown as `≈49.5% (window inferred from model id)`, a reading larger than that table figure is shown as over-limit with the figure named (the window is then unknown, not 100% full), and an id the table has never seen shows `window unknown`. Set `AGENTDECK_CONTEXT_WINDOW=<tokens>` in the deck's environment to supply the real size; it renders plain, with no `≈`.
+
+A conductor's proactive `/clear` (`clear_on_compact`) only arms on an established window — that variable, or a size the harness reported. On an inferred, unknown or disproved window it stays off and the conductor falls back to Claude's own compaction; the reason is logged once per session as `conductor_clear_on_compact_disarmed`. See [issue #2026](https://github.com/asheshgoplani/agent-deck/issues/2026).
+
 #### Switch a session's account on the fly
 
 For a new one-shot session, use `agent-deck launch . -c claude --account <name>`.
@@ -243,6 +284,12 @@ session that already exists; saving it asks "Switch Account?" first, then runs t
 migrate-and-resume flow as `session switch-account`, and the session card's
 `[account:"…"]` badge follows. Both rows are hidden when no
 `[profiles.<name>.claude].config_dir` blocks are configured.
+
+Rows of a remote deck get the same dialog: `Shift+P` on a remote session lists
+that remote's own slots, previews the switch there (`session switch-preview`)
+and, once confirmed, runs the remote's own `session switch`; transcripts and
+credentials never leave the remote. See
+[docs/REMOTE-COMMANDS.md](docs/REMOTE-COMMANDS.md#switching-a-remote-sessions-account-or-harness).
 
 ### Session naming
 
@@ -484,7 +531,7 @@ See the [Docker Sandbox Guide](skills/agent-deck/references/sandbox.md) for the 
 
 ### Forking sessions
 
-Press `f` to **quick-fork** the selected session, or `Shift+F` for the fork **dialog** (customize title, group, branch, and toggles). A fork inherits the parent's conversation context through each tool's native fork — supported for **Claude, OpenCode, Pi, and Codex** (and Codex-compatible custom tools) across the TUI, CLI (`agent-deck session fork <id>`), and Web UI.
+Press `f` to **quick-fork** the selected session, or `Shift+F` for the fork **dialog** (customize title, group, branch, and toggles). A fork inherits the parent's conversation context through each tool's native fork — supported for **Claude, OpenCode, Pi, Codex, and Oh My Pi** (and Codex-compatible custom tools) across the TUI, CLI (`agent-deck session fork <id>`), and Web UI.
 
 Quick fork (`f`) is **comprehensive by default**: it creates a new git worktree + branch, carries the parent's uncommitted working-tree state, matches the parent's Docker isolation, and inherits the parent's Claude launch options. The `Shift+F` dialog opens pre-seeded from the same defaults ("comprehensive, tweak down"). Jujutsu (jj) repos are supported too — the fork materializes the parent's working state into a new jj workspace.
 
@@ -733,9 +780,12 @@ Agent Deck works with any terminal-based AI tool:
 | **Codex** | Status detection, MCP, organization, conductor, fork |
 | **Copilot** | Organization, launch |
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
+| **Muse Code** (`muse`) | Status detection, organization, launch, resume |
 | **Cursor** (terminal) | Status detection, organization |
 | **Hermes Agent** | Organization, launch |
+| **pi** (`pi-coding-agent`) | Status detection (hook-driven), organization, launch, resume, fork |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
+| **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 Codex status detection uses Codex's notify hook. Install and verify it once for each Codex home:
@@ -746,6 +796,15 @@ agent-deck codex-hooks status
 ```
 
 If you set `CODEX_HOME`, use the same environment here and when launching Codex. Without the hook, turn-level running/waiting status cannot converge reliably.
+
+pi status detection works the same way, through a small agent-deck extension in pi's global extension directory:
+
+```bash
+agent-deck pi-hooks install
+agent-deck pi-hooks status
+```
+
+Restart running pi sessions after installing. Without the extension a pi session's status is read from the pane, which is slower and occasionally wrong; with it, agent-deck uses pi's own turn events and falls back to the pane only when no recent event is available. `PI_CODING_AGENT_DIR` is honored if you set it.
 
 DeepSeek Harness is the `dsh` binary from [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/deepseek-harness)
 (`npm install -g @deepseek-ai/dsh`). It boots *profiles*: `web` (a browser UI served
@@ -809,6 +868,79 @@ cost_line_template = "{cost_yesterday} yda | {cost_today} today | {cost_projecte
 ```
 
 Resolution chain: `profiles.<active>.costs.cost_line_template > [costs].cost_line_template > hardcoded "{cost_today} today"`. Setting the template to an empty string explicitly disables the segment.
+
+### Provider Quota (`agent-deck usage`)
+
+Cost tracking answers "how many dollars"; this answers "how much of my
+subscription is left". When you run several agents at once, the limit you hit
+first is usually the provider's 5-hour or weekly plan window, not a dollar
+budget.
+
+The numbers come from the providers themselves — nothing here is estimated from
+token counts.
+
+```
+$ agent-deck usage
+Claude  updated 2m ago
+  5h       23.5%  resets in 2h14m
+  7d       41.2%  resets in 3d6h
+Z.ai (pro)  updated 1m ago
+  5h        0.0%
+  7d       22.0%  resets in 4d3h
+```
+
+`agent-deck usage --json` prints the same report for scripting. `--refresh`
+forces a fetch for pull-based providers.
+
+**Claude** is read from the documented `rate_limits` block in the JSON Claude
+Code pipes to a `statusLine` command. `agent-deck hooks install` wires the
+ingester into every configured account slot's `settings.json` for you
+(wrapping an existing `statusLine` command, byte-for-byte, or installing the
+plain ingester when there is none); `agent-deck hooks status` reports the feed
+per slot. To wire it by hand in `~/.claude/settings.json`:
+
+```json
+{"statusLine": {"type": "command", "command": "agent-deck usage ingest claude"}}
+```
+
+If you already have a status line, keep it by wrapping it — the same payload is
+passed through and your command's output and exit status are forwarded verbatim:
+
+```json
+{"statusLine": {"type": "command",
+                "command": "agent-deck usage ingest claude -- your-existing-command"}}
+```
+
+Only `rate_limits` is kept. The transcript path, cwd, prompt and model in that
+payload are never stored or printed.
+
+The wrapper never fails closed: whatever goes wrong on agent-deck's side
+(reading or parsing the payload, opening or writing the cache) is a warning on
+stderr, and your command still runs with the same bytes on stdin, its output
+and exit status forwarded. Your command does not see the `-p <slot>` the
+wrapper was given: `AGENTDECK_PROFILE` reaches it exactly as your shell set it.
+`hooks install` wires the ingester through the same absolute binary path the
+hooks pin, so a status line keeps working across `PATH` changes; if that binary
+is moved or removed, Claude Code shows a blank status line until
+`agent-deck hooks install` re-pins it (the notify daemon does so on start) or
+`agent-deck hooks uninstall` restores your original `statusLine`. A slot whose
+config dir does not exist, or whose profile name the cache cannot use as a
+directory (`[A-Za-z0-9_-]`, so `team.a` is refused), is skipped and reported
+by `hooks status` as `cannot wire (...)`; nothing is created for it.
+
+For Claude, `agent-deck usage` itself makes no network request: it reads the
+cache the ingester wrote.
+
+**Z.ai / GLM Coding Plan** is read from the monitor endpoint the vendor's own
+coding plugin calls, on the host you configured in `ANTHROPIC_BASE_URL`, using
+`ANTHROPIC_AUTH_TOKEN`. There is no default host: if `ANTHROPIC_BASE_URL` is
+unset or does not point at a Z.ai host, the provider is skipped and no request
+is made. Run `agent-deck usage` inside a session where those variables are set
+(an agent-deck-launched session has already sourced its profile's env file).
+
+Snapshots are cached under `$XDG_CACHE_HOME/agent-deck/quota/<profile>/`. A
+snapshot older than the freshness bound is still shown, marked `(stale)` — a
+Claude snapshot only refreshes while Claude is actually running.
 
 ### Socket Isolation (v1.7.50+)
 
@@ -916,6 +1048,10 @@ agent-deck remote list            # includes each remote's version, ↑ when beh
 By default the controller pushes its version to older remotes on its own: after `agent-deck update`, and in the background on startup (`[updates] auto_update_remotes = false` in `config.toml` opts out). The TUI shows `v1.15.0 ↑` on a remote header that is behind; `u` on that header updates it after a confirmation. A remote whose binary lives in a directory its user cannot write (a root-owned `/usr/local/bin`) is updated through passwordless `sudo -n` when the remote grants it; otherwise the update reports `install path <path> is not writable by <user>` and the fix: move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo. That symlink layout is supported by the deploy itself: the install path is resolved through symlinks on the remote first, the file behind the link is what gets replaced (owner and mode kept, sudo only if *that* directory is unwritable), a symlink is never overwritten by a regular file, and afterwards `command -v agent-deck` must resolve to the deployed file. If the remote's `$PATH` binary and `agent_deck_path` are different files, both are updated and the report says so.
 
 A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. `remote drain <name>` closes that gap by pulling — it reads the remote's records over the same SSH path (consuming nothing there) and writes them into the local inbox, safe to run on every heartbeat and safe to repeat.
+
+Remote polling runs in the background. A failed poll shows its reason (`auth failed`, `timeout`, `host down`, or `poll failed`) beside the remote. Authentication failures pause automatic polling across restarts until the remote configuration changes or you authenticate and run `agent-deck remote list --retry`. This clears cached poll state for all configured remotes without opening SSH; add `--check` for an explicit version check. The next TUI refresh resumes polling.
+
+`remote list --json` includes `last_poll_ms`, `last_poll_status`, and `last_poll_error`. An unobserved remote has `null` latency, status `unknown`, and an empty error. Other statuses are `ok`, `auth_failed`, `timeout`, `host_down`, and `error`. These fields describe the last session-list poll, independently of the version cache. To inspect or reset the remotes configured on another host, use `agent-deck remote exec <host> remote list --json` or append `--retry`.
 
 Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). `remote list`, `remote sessions` and `remote drain` support `--json` output for scripting. See the [Remote Commands reference](skills/agent-deck/references/cli-reference.md#remote-commands) for flags, security behavior, and examples.
 

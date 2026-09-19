@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
@@ -32,7 +34,13 @@ func resolveWorktreeTarget(path, branch string, explicit bool) (worktreePath, re
 	}
 	root := backend.RepoDir()
 
-	wtSettings := session.GetWorktreeSettings()
+	// Resolved for path (the session's target directory, per #2093) so
+	// directory-local .agent-deck/config.toml overrides apply before the
+	// worktree path is calculated.
+	wtSettings, settingsErr := session.GetWorktreeSettingsForDir(path)
+	if settingsErr != nil {
+		return "", "", false, fmt.Sprintf("invalid directory-local config: %v", settingsErr)
+	}
 	worktreePath = backend.WorktreePath(vcs.WorktreePathOptions{
 		Branch:    branch,
 		Location:  wtSettings.DefaultLocation,

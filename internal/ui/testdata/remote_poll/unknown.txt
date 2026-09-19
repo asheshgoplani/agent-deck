@@ -1,0 +1,4 @@
+  ▾ remotes/dev (1) · unknown · refreshing…
+    └─ ? Remote work claude · last known
+▶ ▾ remotes/dev (1) · unknown · refreshing… (R retry)
+▶   └─ ? Remote work claude · last known

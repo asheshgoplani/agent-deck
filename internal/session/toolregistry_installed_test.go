@@ -381,3 +381,21 @@ func TestPickerToolNames_MapsShellAlias(t *testing.T) {
 		}
 	}
 }
+
+func TestPickerToolNames_IncludesOMP(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	got := PickerToolNames()
+	found := false
+	for _, name := range got {
+		if name == "omp" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("PickerToolNames() = %v, want to contain %q", got, "omp")
+	}
+}

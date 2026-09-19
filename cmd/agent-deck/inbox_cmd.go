@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -56,9 +57,10 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox export [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
+	fmt.Fprintln(w, "       agent-deck inbox dead-letter <list|show|retry|purge>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Drain pending completion events from the parent's durable outbox.")
-	fmt.Fprintln(w, "The `drain` form (issue #1225) collapses last-wins per child and")
+	fmt.Fprintln(w, "The `drain` form (issue #1225) preserves distinct turns per child and")
 	fmt.Fprintln(w, "dedups re-delivery via turn_fingerprint; run it first on every")
 	fmt.Fprintln(w, "heartbeat. Reading clears the inbox.")
 	fmt.Fprintln(w, "The `export` form (issue #1948) READS this host's completion and")
@@ -67,6 +69,8 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "The `writer-status` form reports whether a notify-daemon is")
 	fmt.Fprintln(w, "actually recording transitions here — without it, an empty export")
 	fmt.Fprintln(w, "cannot be told apart from a host where nothing has been watching.")
+	fmt.Fprintln(w, "The `dead-letter` family safely inspects, retries, or purges terminal")
+	fmt.Fprintln(w, "delivery failures; run `agent-deck inbox dead-letter help` for details.")
 }
 
 func printInboxExportUsage(w io.Writer) {
@@ -164,7 +168,7 @@ func inboxExitCode(err error) int {
 //
 //	agent-deck inbox <session-id>          legacy raw drain (read + truncate)
 //	agent-deck inbox drain [--json] <id>   issue #1225 consumer drain — collapses
-//	                                       last-wins per child and dedups
+//	                                       preserves distinct turns and dedups retries
 //	                                       re-delivery via turn_fingerprint. This
 //	                                       is the conductor's heartbeat step.
 func runInbox(stdout io.Writer, args []string) error {
@@ -179,6 +183,9 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 			retErr = fmt.Errorf("write inbox output: %w", tracked.err)
 		}
 	}()
+	if len(args) > 0 && args[0] == "dead-letter" {
+		return runInboxDeadLetter(stdout, args[1:])
+	}
 	if len(args) > 0 && args[0] == "drain" {
 		return runInboxDrain(stdout, args[1:], explicitProfile)
 	}
@@ -208,13 +215,86 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	return nil
 }
 
+// runInboxDeadLetterRetry and runInboxDeadLetterPurge are the #2062 management
+// subcommands; runInboxDeadLetter in inbox_deadletter_cmd.go dispatches to them.
+func runInboxDeadLetterRetry(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("inbox dead-letter retry", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "output JSON")
+	fs.SetOutput(stdout)
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: agent-deck inbox dead-letter retry [--json] <record-id>")
+	}
+	id := fs.Arg(0)
+	target, err := session.RetryDeadLetter(id)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return json.NewEncoder(stdout).Encode([]session.DeadLetterActionOutcome{
+			{ID: id, Action: "retry", Outcome: "delivered", Reason: "delivered to inbox " + target},
+		})
+	}
+	fmt.Fprintf(stdout, "Delivered dead-letter record %s to inbox %s.\n", id, target)
+	return nil
+}
+
+func runInboxDeadLetterPurge(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("inbox dead-letter purge", flag.ContinueOnError)
+	olderThan := fs.Duration("older-than", 0, "purge records older than this duration")
+	yes := fs.Bool("yes", false, "confirm an unbounded purge")
+	asJSON := fs.Bool("json", false, "output JSON")
+	fs.SetOutput(stdout)
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("inbox dead-letter purge accepts no arguments")
+	}
+	if *olderThan < 0 {
+		return fmt.Errorf("--older-than must be a positive duration")
+	}
+	var results []session.DeadLetterActionOutcome
+	var err error
+	if *olderThan > 0 {
+		results, err = session.PurgeDeadLettersOlderThan(time.Now().Add(-*olderThan))
+	} else if *yes {
+		results, err = session.PurgeAllDeadLetters()
+	} else {
+		return fmt.Errorf("refusing unbounded purge: pass --yes or a positive --older-than duration")
+	}
+	if err != nil {
+		return fmt.Errorf("purge dead letters: %w", err)
+	}
+	if *asJSON {
+		if results == nil {
+			results = []session.DeadLetterActionOutcome{}
+		}
+		return json.NewEncoder(stdout).Encode(results)
+	}
+	removed, skipped := 0, 0
+	for _, r := range results {
+		switch r.Outcome {
+		case "removed":
+			removed++
+		case "skipped":
+			skipped++
+		}
+	}
+	fmt.Fprintf(stdout, "Purged %d dead-letter record(s); skipped %d _unowned record(s) (%s).\n", removed, skipped, session.UnownedPurgeSkipReason)
+	return nil
+}
+
 // runInboxDrain is the issue #1225 consumer path: exactly-once-per-turn,
-// last-wins-per-child. Used by the conductor heartbeat and any machine consumer.
+// exactly-once-per-turn. Used by the conductor heartbeat and any machine consumer.
 func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) error {
 	fs := flag.NewFlagSet("inbox drain", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the drained events as a JSON array")
+	strict := fs.Bool("strict", false, "exit 4 when any dead-lettered or _unowned record exists")
 	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox drain [--json] [<session-id>|self]")
+		fmt.Fprintln(stdout, "Usage: agent-deck inbox drain [--json] [--strict] [<session-id>|self]")
 		fmt.Fprintln(stdout, "With no id (or 'self'), drains the caller's own session.")
 		fmt.Fprintln(stdout, "Full session IDs resolve across all profiles; titles and shortened IDs")
 		fmt.Fprintln(stdout, "resolve only within the effective profile.")
@@ -250,15 +330,22 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 		printInboxEvents(stdout, events)
 	}
 
-	deadLetters, err := session.CountDeadLetterRecords()
+	// Messaging audit P1-4 (#2101): a dead letter is parked, not pending
+	// delivery, and nothing can ack it yet, so it must not turn every
+	// heartbeat drain into a failure. Print the per-store counts; exit 4 only
+	// when the caller asked for it with --strict.
+	counts, err := session.CountDeadLetterStores()
 	if err != nil {
 		return fmt.Errorf("count dead letters: %w", err)
 	}
-	if deadLetters > 0 {
+	if total := counts.Total(); total > 0 {
 		if !*asJSON {
-			fmt.Fprintf(stdout, "WARNING: %d dead-lettered event(s) require attention.\n", deadLetters)
+			fmt.Fprintf(stdout, "WARNING: %d dead-lettered event(s) require attention (dead-letter: %d, _unowned: %d); see 'agent-deck inbox dead-letter list'.\n",
+				total, counts.DeadLetter, counts.Unowned)
 		}
-		return &deadLettersPendingError{count: deadLetters}
+		if *strict {
+			return &deadLettersPendingError{count: total}
+		}
 	}
 	return nil
 }

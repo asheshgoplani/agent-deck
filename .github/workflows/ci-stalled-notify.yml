@@ -1,0 +1,159 @@
+name: CI stalled notify
+
+# Fork PRs from first-time contributors sit with every workflow at
+# `action_required` until a maintainer clicks "Approve and run". Nothing else
+# surfaces that state; the PR just looks like CI never reported. This workflow
+# listens to the gating workflows, labels the PR `needs-ci` while a gating run
+# on the PR's current head is waiting for approval, posts to the same ntfy
+# topic pr-notify.yml uses, and clears the label only when no gating run on
+# that head is waiting any more. It never comments on the PR.
+#
+# Reconciliation rules (decision logic lives in
+# .github/scripts/ci-stalled-notify.cjs, unit tested by
+# tests/ci/ci-stalled-notify.test.cjs and the `selftest` job below):
+#   - an event whose head sha is not the PR's live head is stale and ignored,
+#     so a delayed completion for an old head cannot clear a real stall;
+#   - the label is removed only when every gating run for the current head
+#     has left action_required, not when any single run completes.
+
+on:
+  workflow_run:
+    workflows: ["Go tests", "golangci-lint", "CodeQL"]
+    types: [requested, completed]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/ci-stalled-notify.yml'
+      - '.github/scripts/ci-stalled-notify.cjs'
+      - 'tests/ci/ci-stalled-notify.test.cjs'
+
+permissions:
+  pull-requests: write
+  actions: read
+  contents: read
+
+env:
+  STALL_LABEL: needs-ci
+  GATING_WORKFLOWS: '["Go tests", "golangci-lint", "CodeQL"]'
+
+jobs:
+  # Runs on PRs that touch this workflow or its logic, so the reconciliation
+  # rules are exercised by CI before they are trusted on workflow_run events.
+  selftest:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Unit test the reconciliation logic
+        run: node --test tests/ci/ci-stalled-notify.test.cjs
+
+  stalled:
+    # Only completed events carry a conclusion (action_required included);
+    # a plain `requested` event is a normal run start.
+    if: github.event_name == 'workflow_run' && github.event.action == 'completed'
+    runs-on: ubuntu-latest
+    steps:
+      # The script is read from the default branch, never from the PR head.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Find PR and reconcile label
+        id: reconcile
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const path = require('path');
+            const { reconcile } = require(path.join(process.env.GITHUB_WORKSPACE, '.github/scripts/ci-stalled-notify.cjs'));
+            const run = context.payload.workflow_run;
+            const label = process.env.STALL_LABEL;
+            const gatingWorkflows = JSON.parse(process.env.GATING_WORKFLOWS);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Prefer the PRs GitHub attached to the run. That list is empty for
+            // fork PRs, which is exactly the case this workflow exists for, so
+            // fall back to the open PRs whose head sha matches the run.
+            let prs = (run.pull_requests || []).map(p => p.number);
+            if (prs.length === 0) {
+              const open = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              prs = open.filter(p => p.head.sha === run.head_sha).map(p => p.number);
+            }
+            if (prs.length === 0) {
+              const found = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${owner}/${repo} is:pr is:open sha:${run.head_sha}`,
+                per_page: 5,
+              });
+              prs = found.data.items.map(i => i.number);
+            }
+            if (prs.length === 0) {
+              core.info(`No open PR for ${run.head_sha} (${run.name} #${run.run_number}); nothing to do.`);
+              core.setOutput('notify', 'false');
+              return;
+            }
+
+            const notify = [];
+            for (const number of prs) {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+              if (pr.state !== 'open') continue;
+              const labeled = pr.labels.some(l => l.name === label);
+
+              // Every run for the PR's live head, so one completion cannot
+              // clear the label while another gate is still waiting.
+              const currentHeadRuns = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+                owner, repo, head_sha: pr.head.sha, per_page: 100,
+              });
+
+              const decision = reconcile({
+                runHeadSha: run.head_sha,
+                runConclusion: run.conclusion,
+                prHeadSha: pr.head.sha,
+                labeled,
+                currentHeadRuns: currentHeadRuns.map(r => ({ name: r.name, head_sha: r.head_sha, conclusion: r.conclusion })),
+                gatingWorkflows,
+              });
+              core.info(`#${number}: ${decision.action} (${decision.reason})`);
+
+              if (decision.action === 'add') {
+                await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [label] });
+                notify.push({
+                  type: 'ci_stalled',
+                  number,
+                  title: pr.title,
+                  url: pr.html_url,
+                  author: pr.user.login,
+                  head_branch: pr.head.ref,
+                  head_sha: pr.head.sha,
+                  workflow: run.name,
+                  run_url: run.html_url,
+                  conclusion: run.conclusion,
+                });
+              } else if (decision.action === 'remove') {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: label });
+              }
+            }
+
+            core.setOutput('notify', notify.length > 0 ? 'true' : 'false');
+            // Base64 so the JSON survives the outputs boundary unchanged, as pr-notify.yml does.
+            core.setOutput('context_b64', Buffer.from(JSON.stringify(notify)).toString('base64'));
+
+      - name: Send to ntfy
+        if: steps.reconcile.outputs.notify == 'true'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          CONTEXT_B64: ${{ steps.reconcile.outputs.context_b64 }}
+        run: |
+          # Decode the list; one notification per newly labeled PR.
+          CONTEXT=$(echo "$CONTEXT_B64" | base64 -d)
+
+          echo "$CONTEXT" | jq -c '.[]' | while read -r ITEM; do
+            PR_NUM=$(echo "$ITEM" | jq -r '.number')
+            PR_TITLE=$(echo "$ITEM" | jq -r '.title' | tr -d '\r\n')
+
+            curl -s \
+              -H "Title: CI needs approval: #${PR_NUM} ${PR_TITLE}" \
+              -H "Priority: high" \
+              -H "Tags: github,ci,approval" \
+              -d "$ITEM" \
+              "https://ntfy.sh/${NTFY_TOPIC}"
+          done

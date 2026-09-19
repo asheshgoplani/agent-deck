@@ -1,5 +1,73 @@
 package session
 
+import "strings"
+
+// previousConductorInstructionsTemplate reconstructs the immediately previous
+// generated template. Installers compare its fully rendered form byte-for-byte
+// before migrating, so any user customization is preserved.
+func previousConductorInstructionsTemplate(template string) string {
+	template = strings.Replace(template,
+		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | **Always triage with this compact count summary first:** `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`,
+		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | Get counts: `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`, 1)
+	template = strings.Replace(template,
+		`| `+"`"+`agent-deck -p <PROFILE> list --json`+"`"+` | Expensive full inventory; use only when the user explicitly needs details for every profile session, never for status triage or polling |`,
+		`| `+"`"+`agent-deck -p <PROFILE> list --json`+"`"+` | List all sessions with details (id, title, path, tool, status, group) |`, 1)
+	template = strings.Replace(template,
+		`| `+"`"+`agent-deck -p <PROFILE> session children --follow --until-done`+"`"+` | Block in one shell call while children run; emits every waiting/error transition and exits when all children are terminal |`+"\n", "", 1)
+	template = strings.Replace(template,
+		`For child work still in flight, wait with one blocking `+"`"+`agent-deck -p <PROFILE> session children --follow --until-done`+"`"+` call. Do not spend turns repeatedly calling `+"`"+`list --json`+"`"+` or `+"`"+`session children --json`+"`"+`.`+"\n\n", "", 1)
+	template = strings.ReplaceAll(template,
+		`4. Only if the compact counts require action, inspect the affected child through `+"`"+`session children`+"`"+`/`+"`"+`session show`+"`"+`; never use `+"`"+`list --json`+"`"+` for triage`,
+		`4. Run `+"`"+`agent-deck -p {PROFILE} list --json`+"`"+` to know what sessions exist`)
+	// The session-creation rows used to be rendered per agent; they are now
+	// agent-neutral so codex and pi can share one AGENTS.md (#2297).
+	template = strings.ReplaceAll(template, `-c <tool>`, `-c {AGENT}`)
+	template = strings.Replace(template,
+		`| Create a new session. `+"`"+`<tool>`+"`"+` is claude, codex, hermes or pi; default to this conductor's own tool. |`,
+		`| Create a new {AGENT_DISPLAY} session |`, 1)
+	template = strings.Replace(template,
+		`| Create a new session with a worktree |`,
+		`| Create a new {AGENT_DISPLAY} session with a worktree |`, 1)
+	return template
+}
+
+// preSubstateGuidanceConductorInstructionsTemplate reconstructs the shared
+// template's shape from before #1814 added the substate-guidance row: the
+// plain "crashed or missing" error row with no paragraph after it. This is
+// what v1.10.9-v1.10.11 (and earlier, back to the local-first rewrite in
+// v1.9.73) shipped. Per-name templates carried no such row, so this is a
+// no-op for them.
+func preSubstateGuidanceConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template,
+		`| `+"`"+`error`+"`"+` (red) | Crashed, missing, or wedged (auth/model failure) | Check the substate first. Then try `+"`"+`session restart`+"`"+`; if that fails, escalate. |
+
+**Substate (Claude sessions only; refines status in `+"`"+`list`+"`"+`/`+"`"+`show`+"`"+` JSON):** `+"`"+`auth-401`+"`"+` covers two different pane banners. A credential banner (`+"`"+`Please run /login`+"`"+`, `+"`"+`API Error: 401`+"`"+`) means the fleet is HOLDING the session; restarting will NOT fix it. Check `+"`"+`session show --json <id>`+"`"+` for the `+"`"+`auth_hold`+"`"+` object (the authoritative source, present even after the pane exits) and escalate for re-login. A dropped-socket banner (`+"`"+`socket connection closed`+"`"+`) also classifies as `+"`"+`auth-401`+"`"+` but is NOT held and IS restart-recoverable: restart it. `+"`"+`model-unavailable`+"`"+` means the selected model is down (shows as error, not running); self-heal currently only observes this and takes no action, so switch it yourself with `+"`"+`agent-deck -p <PROFILE> session set <id> model <model>`+"`"+` then `+"`"+`agent-deck -p <PROFILE> session restart <id>`+"`"+`. `+"`"+`idle-at-empty-prompt`+"`"+` (shown as coarse status `+"`"+`idle`+"`"+` or `+"`"+`waiting`+"`"+`) means the session is genuinely sitting at its prompt with nothing happening. Never restart-loop an `+"`"+`error`+"`"+` session that `+"`"+`auth_hold`+"`"+` confirms is credential-held.`,
+		`| `+"`"+`error`+"`"+` (red) | Session crashed or missing | Try `+"`"+`session restart`+"`"+`. If that fails, escalate. |`, 1)
+}
+
+// conductorInstructionsGenerations reconstructs every prior generated-template
+// generation for the given template, newest first, that
+// writeGeneratedFileOrMigrate should recognise as a migratable predecessor of
+// the current one. Each step reverts one more shipped change; a step that
+// changes nothing (the template never carried that wording) is dropped so
+// migration never checks a duplicate generation.
+//
+// Verified against fixtures rendered from the actual shipped source
+// (testdata/conductor_templates_shipped.tsv): this reconstructs the
+// v1.11.0-v1.16.10 generation and the v1.10.9-v1.10.11 generation. It does
+// NOT reconstruct v1.9.73 or v1.9.70, which shipped further template
+// changes (Codex `session approve` docs, the local-first rewrite) that are
+// not reverted here; a conductor instructions file last written by one of
+// those releases is treated as user-edited and left alone.
+func conductorInstructionsGenerations(template string) []string {
+	previous := previousConductorInstructionsTemplate(template)
+	gens := []string{previous}
+	if older := preSubstateGuidanceConductorInstructionsTemplate(previous); older != previous {
+		gens = append(gens, older)
+	}
+	return gens
+}
+
 // conductorSharedClaudeMDTemplate is the shared instructions file written to
 // ~/.agent-deck/conductor/<instructions-file> for the selected conductor agent.
 // It contains CLI reference, protocols, and formats shared by all conductors (mechanism).
@@ -15,8 +83,9 @@ Each conductor has its own identity in its subdirectory and its own policy in PO
 ### Status & Listing
 | Command | Description |
 |---------|-------------|
-| ` + "`" + `agent-deck -p <PROFILE> status --json` + "`" + ` | Get counts: ` + "`" + `{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}` + "`" + ` |
-| ` + "`" + `agent-deck -p <PROFILE> list --json` + "`" + ` | List all sessions with details (id, title, path, tool, status, group) |
+| ` + "`" + `agent-deck -p <PROFILE> status --json` + "`" + ` | **Always triage with this compact count summary first:** ` + "`" + `{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}` + "`" + ` |
+| ` + "`" + `agent-deck -p <PROFILE> list --json` + "`" + ` | Expensive full inventory; use only when the user explicitly needs details for every profile session, never for status triage or polling |
+| ` + "`" + `agent-deck -p <PROFILE> session children --follow --until-done` + "`" + ` | Block in one shell call while children run; emits every waiting/error transition and exits when all children are terminal |
 | ` + "`" + `agent-deck -p <PROFILE> session show --json <id_or_title>` + "`" + ` | Full details for one session |
 
 ### Reading Session Output
@@ -38,9 +107,9 @@ Each conductor has its own identity in its subdirectory and its own policy in PO
 | ` + "`" + `agent-deck -p <PROFILE> session start <id_or_title>` + "`" + ` | Start a stopped session |
 | ` + "`" + `agent-deck -p <PROFILE> session stop <id_or_title>` + "`" + ` | Stop a running session |
 | ` + "`" + `agent-deck -p <PROFILE> session restart <id_or_title>` + "`" + ` | Restart a managed session |
-| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c {AGENT} -g "group"` + "`" + ` | Create a new {AGENT_DISPLAY} session |
-| ` + "`" + `agent-deck -p <PROFILE> launch <path> -t "Title" -c {AGENT} -g "group" -m "prompt"` + "`" + ` | Create + start + send initial prompt in one command (preferred for new task sessions) |
-| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c {AGENT} --worktree feature/branch -b` + "`" + ` | Create a new {AGENT_DISPLAY} session with a worktree |
+| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c <tool> -g "group"` + "`" + ` | Create a new session. ` + "`" + `<tool>` + "`" + ` is claude, codex, hermes or pi; default to this conductor's own tool. |
+| ` + "`" + `agent-deck -p <PROFILE> launch <path> -t "Title" -c <tool> -g "group" -m "prompt"` + "`" + ` | Create + start + send initial prompt in one command (preferred for new task sessions) |
+| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c <tool> --worktree feature/branch -b` + "`" + ` | Create a new session with a worktree |
 
 ### Session Resolution
 Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**, or **fuzzy match**.
@@ -77,6 +146,8 @@ into your pane. The drain marks records consumed (exactly-once effects) and prin
 them; act on each before composing your status. Your Stop hook drains the same queue
 automatically at each turn boundary, so this heartbeat drain is the idle-conductor
 fallback — together they guarantee no completion is missed whether you are busy or idle.
+
+For child work still in flight, wait with one blocking ` + "`" + `agent-deck -p <PROFILE> session children --follow --until-done` + "`" + ` call. Do not spend turns repeatedly calling ` + "`" + `list --json` + "`" + ` or ` + "`" + `session children --json` + "`" + `.
 
 **Your heartbeat response format:**
 
@@ -305,7 +376,7 @@ When you first start (or after a restart):
 1. Read ` + "`" + `./state.json` + "`" + ` if it exists (restore context)
 2. Read ` + "`" + `./LEARNINGS.md` + "`" + ` and ` + "`" + `../LEARNINGS.md` + "`" + ` if they exist (review past patterns)
 3. Run ` + "`" + `agent-deck -p {PROFILE} status --json` + "`" + ` to get the current state
-4. Run ` + "`" + `agent-deck -p {PROFILE} list --json` + "`" + ` to know what sessions exist
+4. Only if the compact counts require action, inspect the affected child through ` + "`" + `session children` + "`" + `/` + "`" + `session show` + "`" + `; never use ` + "`" + `list --json` + "`" + ` for triage
 5. Log startup in ` + "`" + `./task-log.md` + "`" + `
 6. If any sessions are in error state (NOT stopped), try to restart them. Sessions in "stopped" status were intentionally closed by the user and must NOT be restarted.
 7. Reply: "Conductor {NAME} ({PROFILE}) online. N sessions tracked (X running, Y waiting)."
@@ -403,7 +474,7 @@ When you first start (or after a restart):
 1. Read ` + "`" + `./state.json` + "`" + ` if it exists (restore context)
 2. Read ` + "`" + `./LEARNINGS.md` + "`" + ` and ` + "`" + `../LEARNINGS.md` + "`" + ` if they exist (review past patterns)
 3. Run ` + "`" + `agent-deck -p {PROFILE} status --json` + "`" + ` to get the current state
-4. Run ` + "`" + `agent-deck -p {PROFILE} list --json` + "`" + ` to know what sessions exist
+4. Only if the compact counts require action, inspect the affected child through ` + "`" + `session children` + "`" + `/` + "`" + `session show` + "`" + `; never use ` + "`" + `list --json` + "`" + ` for triage
 5. Run ` + "`" + `hermes kanban list --status blocked --json` + "`" + ` to check for blocked tasks needing attention
 6. Log startup in ` + "`" + `./task-log.md` + "`" + `
 7. If any sessions are in error state (NOT stopped), try to restart them. Sessions in "stopped" status were intentionally closed by the user and must NOT be restarted.

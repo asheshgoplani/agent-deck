@@ -81,7 +81,8 @@ func TestUpdateOpenCodeSession_DoesNotHoldLockAcrossSubprocess(t *testing.T) {
 }
 
 // TestUpdateStatus_DropsLockAroundOpencode is the other half of the regression
-// guard: it parses the UpdateStatus source and asserts that the
+// guard: it parses the shared updateStatus implementation (called by both
+// UpdateStatus and StatusUpdatePass) and asserts that the
 // `if i.Tool == "opencode"` branch releases and reacquires i.mu around the
 // UpdateOpenCodeSession() call. Without this, even a correct callee can be
 // starved by a caller that holds the lock.
@@ -105,7 +106,7 @@ func TestUpdateStatus_DropsLockAroundOpencode(t *testing.T) {
 	var updateStatus *ast.FuncDecl
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "UpdateStatus" {
+		if !ok || fn.Name.Name != "updateStatus" {
 			continue
 		}
 		if fn.Recv == nil || len(fn.Recv.List) == 0 {
@@ -115,7 +116,7 @@ func TestUpdateStatus_DropsLockAroundOpencode(t *testing.T) {
 		break
 	}
 	if updateStatus == nil {
-		t.Fatal("UpdateStatus function not declared in instance.go")
+		t.Fatal("updateStatus implementation not declared in instance.go")
 	}
 
 	// Serialize the function body and scan for the required pattern.

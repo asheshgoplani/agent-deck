@@ -31,11 +31,26 @@ func RefreshInstancesForCLIStatus(instances []*Instance) {
 		if inst == nil {
 			continue
 		}
-		if !IsClaudeCompatible(inst.Tool) && !IsCodexCompatible(inst.Tool) && inst.Tool != "gemini" && inst.Tool != "cursor" && inst.Tool != "hermes" {
+		if !HookStatusTool(inst.Tool) {
 			continue
 		}
 		if hs := readHookStatusFile(inst.ID); hs != nil {
 			inst.UpdateHookStatus(hs)
 		}
+	}
+}
+
+// ReloadHookStatus re-reads inst's hook status file from disk and applies it.
+// It is the cold-load half of RefreshInstancesForCLIStatus without the tmux
+// cache warm-up, for callers that poll only the hook signal, such as
+// `session send`'s busy probe (issues #1978, #2033), and it goes through the
+// same UpdateHookStatus ownership checks. A missing or unreadable file leaves
+// the instance untouched.
+func ReloadHookStatus(inst *Instance) {
+	if inst == nil {
+		return
+	}
+	if hs := readHookStatusFile(inst.ID); hs != nil {
+		inst.UpdateHookStatus(hs)
 	}
 }

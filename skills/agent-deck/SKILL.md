@@ -2,7 +2,7 @@
 name: agent-deck
 description: Terminal session manager for AI coding agents. Use when user mentions "agent-deck", "session", "sub-agent", "MCP attach", "git worktree", or needs to (1) create/start/stop/restart/fork sessions, (2) attach/detach MCPs, (3) manage groups/profiles, (4) get session output, (5) configure agent-deck, (6) troubleshoot issues, (7) launch sub-agents, or (8) create/manage worktree sessions. Covers CLI commands, TUI shortcuts, config.toml options, and automation.
 metadata:
-  compatibility: "claude, opencode"
+  compatibility: "claude, codex, opencode"
 ---
 
 # Agent Deck
@@ -11,7 +11,7 @@ Terminal session manager for AI coding agents. Built with Go + Bubble Tea.
 
 **Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck) | **Discord:** [discord.gg/e4xSs6NBN8](https://discord.gg/e4xSs6NBN8)
 
-> Run `agent-deck --version` for your installed version. This skill targets v1.9+ but most patterns work back to v1.7.
+> Run `agent-deck --version` for your installed version. This skill targets v1.16.11+; most patterns work back to v1.7. See [Backward Compatibility](#backward-compatibility) for what's gated behind ≥1.16.11.
 
 ## Script Path Resolution (IMPORTANT)
 
@@ -63,10 +63,11 @@ What agent-deck does, at the noun level (independent of which surface — CLI / 
 | **Manage groups** | Move / delete groups; organize sessions hierarchically | CLI ✅ · TUI ✅ |
 | **Manage watchers** | Install / configure event-driven adapters (Gmail, GitHub, ntfy) — doorbell-not-messenger | CLI ✅ · TUI ✅ |
 | **Heartbeat orchestration** | Cron / ScheduleWakeup feeding the conductor periodic system-state nudges | CLI ✅ |
+| **Dead-letter triage** | `inbox dead-letter` list/show/retry/purge; `Alt+D` in the TUI | CLI + TUI ✅ |
 | **Worktree workflows** | `--worktree` to create isolated git-worktree-backed sessions for parallel branch work | CLI ✅ |
 | **Channel routing** | Telegram / Slack inbound delivery to the right conductor, with `--channels` per-session binding | CLI ✅ |
 | **Attach MCPs** | Per-session or global MCP plugin attach / detach / status, with optional pooling | CLI ✅ · TUI ✅ · Web UI ⚪ |
-| **Attach skills** | Pool-based on-demand skill loading per Claude session | CLI ✅ · TUI ✅ |
+| **Attach skills** | Pool-based on-demand skill loading; attached skills materialize in the runtime's project skill root | CLI ✅ · TUI ✅ |
 | **Session-metadata mutation** | `session set` for `claude-session-id`, `path`, `wrapper`, `channels`, `parent`; `session unset-parent` | CLI ✅ |
 | **State persistence** | `state.json` + `task-log.md` + `LEARNINGS.md` + `HANDOFF.md` survive Claude Code compaction/restart | CLI ✅ |
 | **GitHub pipeline oversight** | Conductor-driven release flow: PR merge → tag → goreleaser → release | CLI ✅ |
@@ -84,8 +85,8 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 
 | In-session capability | claude (Claude Code) | codex | gemini |
 |---|---|---|---|
-| **Multi-agent fan-out *inside one session*** | ✅ **Agent tool** (parallel subagents, each its own context window; `run_in_background`) **and Workflow tool** (deterministic JS: `agent()`/`pipeline()`/`parallel()` over item lists, structured-output schemas, phases) | ❌ single-agent — fan out by launching codex *peers* via agent-deck | ❌ not exposed — fan out via agent-deck peers |
-| **Skills** | ✅ Skill tool + agent-deck pool skills (`~/.agent-deck/skills/pool/`; new installs `$XDG_DATA_HOME/agent-deck/skills/pool/`, default `~/.local/share/agent-deck/skills/pool/`) | ❌ | ✅ `gemini skills` |
+| **Multi-agent fan-out *inside one session*** | ✅ **Agent tool** (parallel subagents, each its own context window; `run_in_background`) **and Workflow tool** (deterministic JS: `agent()`/`pipeline()`/`parallel()` over item lists, structured-output schemas, phases) | ✅ native subagents/helpers when exposed by the active Codex runtime; use Agent Deck when work needs separately managed visible sessions | ❌ not exposed — use separately managed sessions when needed |
+| **Skills** | ✅ Skill tool + agent-deck pool skills (`~/.agent-deck/skills/pool/`; new installs `$XDG_DATA_HOME/agent-deck/skills/pool/`, default `~/.local/share/agent-deck/skills/pool/`) | ✅ `agent-deck skill attach` materializes project skills in `.agents/skills` | ✅ `gemini skills` |
 | **MCP servers** | ✅ `claude mcp` / `--mcp-config`; agent-deck `mcp attach` | ✅ `codex mcp`; also runs **as** a server (`codex mcp-server`) | ✅ `gemini mcp`, `--allowed-mcp-server-names` |
 | **Built-in code review** | ✅ `ultrareview` (cloud multi-agent) + `/code-review` skill | ✅ `codex review` / `codex exec review --uncommitted` | via prompt only |
 | **Plan / read-only mode** | `--permission-mode plan` | `-s read-only` | `--approval-mode plan` |
@@ -98,7 +99,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | **Resume / fork conversation** | `-r/--resume`, `--fork-session` | `codex resume` / `codex fork` | `--resume`, `--session-file` |
 | **Local / OSS models** | 3P providers (Bedrock/Vertex) | `--oss`, `--local-provider lmstudio\|ollama` | `gemini gemma` routing |
 
-**Choosing the `-c` tool for a child:** default to **claude** — only it has in-session multi-agent fan-out (Agent + Workflow tools) *and* pool skills, so it can own a whole task end-to-end and orchestrate its own sub-work. Reach for **codex** for a fast non-interactive second opinion or code review (`codex review`) and sandboxed exec; **gemini** for a third opinion or large-context reads. For codex/gemini, parallelism comes from launching multiple agent-deck *peers*, not from inside the session.
+**Choosing the `-c` tool for a child:** default to **claude** when its Agent and Workflow tools fit the task. Reach for **codex** for a fast non-interactive second opinion, code review (`codex review`), sandboxed exec, or native in-process helpers when exposed by that runtime; use Agent Deck when work needs a separately managed visible session. Reach for **gemini** for a third opinion or large-context reads.
 
 **agent-deck powers every child also has** (independent of CLI): `agent-deck mcp attach/detach` then `session restart`; `launch` further child or peer sessions (`-no-parent` for peers); load pool skills on demand; `session send` to talk to sibling sessions. See [Sub-Agent Launch](#sub-agent-launch), [Peer (Root) Sessions vs Sub-Agents](#peer-root-sessions-vs-sub-agents), [MCP Management](#mcp-management).
 
@@ -115,10 +116,10 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
-| `agent-deck session output <name>` | Get last response |
+| `agent-deck session output <name>` | Get bounded, ANSI-clean last response (JSON/quiet/copy preserve full source) |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
-| `agent-deck session fork <name>` | Fork Claude/Pi conversation |
+| `agent-deck session fork <name>` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi conversation |
 | `agent-deck session switch-account <name> <account>` | Switch Claude account, conversation follows |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
@@ -128,12 +129,135 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck worktree list` | List worktrees with sessions |
 | `agent-deck worktree cleanup` | Find orphaned worktrees/sessions |
 | `agent-deck feedback` | Submit feedback (opens rating prompt + optional comment) |
+| `agent-deck session context <name>` | Context inspector: what is in a session's context window and what it costs |
 
 **Status:** `●` running | `◐` waiting | `○` idle | `✕` error
 
 ## Session Identity Inside a Harness
 
 Every session agent-deck launches (claude, codex, pi, gemini) already carries a short identity block in its instructions: session id, title, tool, group, profile, account, parent session, project path, the core CLI commands, `agent-deck session current --json` for the live record, and the completion sentinel. Custom `--cmd` sessions get the same block via `$AGENTDECK_IDENTITY_FILE`. A child therefore does not need to be told who it is or how to reach its parent; a prompt only has to state the task. Opt out per session with `--no-identity` or globally with `[launch] inject_identity = false`; gemini additionally needs its identity folder trusted (see `documentation/HARNESS_IDENTITY.md`).
+
+## Context Inspection (what is in a session's context window)
+
+**Use when:** anyone asks "what is in my/this session's context", "why is context so full",
+"what can I clean up", or you want to audit a child session's overhead before dispatching
+heavy work. Same data as the TUI `C` overlay — full CLI parity by design, so agents can
+use every feature themselves.
+
+```bash
+agent-deck -p <profile> session context <name>                        # overview: gauge + categories
+agent-deck -p <profile> session context <name> --tab breakdown --all  # every item, ranked, with ids + levers
+agent-deck -p <profile> session context <name> --item <id>            # ONE item: provenance, lever, verbatim text
+agent-deck -p <profile> session context <name> --tab verify           # the arithmetic, measured anchor to the digit
+agent-deck -p <profile> session context <name> --json                 # machine-readable; provenance on every figure
+agent-deck -p <profile> session context <name> --strict               # exit 3 if the report breaks its own invariants
+agent-deck -p <profile> session context <name> --capabilities         # what this harness can report at all
+```
+
+Reading the output:
+- Every figure carries provenance: **measured** (harness-reported), **~est** (estimated,
+  with an error band), or **—/ABSENT** (unknown). An unknown is never printed as zero.
+- **POTENTIAL** column = what a skill would cost if invoked; skills cost only their
+  name+description until then, so deleting skills saves almost nothing.
+- Figures are as-of-now-on-disk: a running session keeps its boot-time copy until restart.
+- `--verify` types /context into the LIVE session to compare against the harness's own
+  accounting. It mutates the session: confirmation required, use sparingly, never on a busy session.
+- Exit codes: 0 ok · 1 could not run (bad args, no pane, unreadable panel) · 2 not found · 3 invariant/reconciliation failure · 4 verify drift · 5 verify indeterminate. `--verify` always asks first; `--yes` skips the prompt for CI.
+
+Agents may run read-only sweeps freely (`list --json` → context per session) to find
+bloated sessions; report findings, never edit another session's files without its owner.
+
+## Session-to-Session Communication (how sessions talk to each other)
+
+**Use when:** a session needs to message another session, a parent needs to collect child
+results, anyone asks "how do I notify the conductor", "did my child finish", "how do I read
+another session's answer", or a send seems to have vanished. Every command below was
+verified against the installed binary (v1.16.11-rc.2). From any non-interactive shell
+(cron, systemd, hooks) always pass `-p <profile>` explicitly, or session resolution
+silently uses the default profile and the target is "not found".
+
+### The channel map
+
+| Channel | Direction | Command | Guarantee |
+|---|---|---|---|
+| **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane (or, opt-in, Claude's own messaging socket). `--json` carries a stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) — read that, not the 11-value `delivery` diagnostic (`submitted`, `queued`, `delivered`, `unverified`, `queued_socket`, `line_too_long`, `menu_open`, `pane_gone`, `typed_not_submitted`, `no_evidence`, `send_failed`, `composer_blocked`, `socket_write_failed`). NOT durable: if the send fails or the sender dies, the message is gone. |
+| **output** | read a session's last reply | `session output <id> -q` | Read-only transcript snapshot; non-consuming; `--pane` returns the tmux pane capture instead. Default text is ANSI-stripped and capped at `--max-tokens` (default 25000) with the full output kept on disk; `--json`/`-q`/`--copy` carry the full source. |
+| **children** | parent reads its child fleet | `session children --json`, `--follow [--until-done]` | Read-only; merges live status with the completion ledger; explicitly does NOT clear the inbox. |
+| **inbox drain** | child completions → parent | `inbox drain self --json` | THE durable channel: fsync'd append + WAL, at-least-once delivery with exactly-once effects (turn-fingerprint dedup), survives crashes and restarts. Last-wins PER CHILD: intermediate events are dropped by design. Single-profile only. Draining consumes. |
+| **transition events** | daemon → parent's inbox | automatic (requires `parent_session_id`) | Only `running → waiting/error/idle` edges fire; deduped (90s + 2h windows); sessions with no parent link are WARN-logged once and DROPPED. |
+| **[DONE] sentinel** | worker asserts completion | worker prints `===AGENTDECK_DONE=== status=ok summary=...` | Idempotent per distinct completion; the only trustworthy "finished" signal (see Completion sentinel section). |
+| **heartbeat** | bridge → conductor | bridge-driven `send --wait -q` | Lossy by design: skipped while the conductor is busy, never queued; only fires when waiting>0 or error>0. |
+| **handoff** | Claude → Codex context copy | `session handoff <id> [--json --out file]` | One-shot read-only transcript copy (32k-char tail budget); no ongoing link afterwards. |
+
+### Verified commands
+
+```bash
+agent-deck -p <profile> session send <id> "single line message"          # default: waits for readiness, verifies
+agent-deck -p <profile> session send <id> "answer now?" --wait -q --timeout 300s   # send + wait + raw reply, one call
+agent-deck -p <profile> session send <id> "nudge" --no-wait -q           # fire immediately (heartbeats/nudges)
+agent-deck -p <profile> session send <id> "done ping" --defer-if-busy --defer-timeout 30m  # hold until idle; DROPS at timeout
+git diff | agent-deck -p <profile> session send <id> --message-file -    # long/multiline payload safely from stdin
+agent-deck -p <profile> session send <id> "draft text" --draft           # type without submitting
+agent-deck -p <profile> session output <id> -q                           # read last response (raw text)
+agent-deck -p <profile> session output <id> --pane                       # pane capture, ANSI stripped + capped (fallback when transcript read refuses)
+agent-deck -p <profile> session children --json                          # child fleet snapshot + parent id
+agent-deck -p <profile> session children --follow --until-done           # JSONL event stream, exits when all children terminal
+agent-deck -p <profile> inbox drain self --json                          # FIRST step of every heartbeat; consumes exactly-once
+agent-deck -p <profile> session show <id> --json                         # has parent_session_id + substate (list --json does NOT)
+agent-deck -p <profile> session handoff <id> --json                      # build cross-tool handoff prompt, read-only
+agent-deck -p <profile> session search "term" --json --limit 5           # substring search across Claude transcripts
+```
+
+### What each channel guarantees, and what it does not
+
+- **`send` result is evidence-graded, not binary.** With `--json` read the `delivery`
+  field: `submitted` / `unverified` / `typed_not_submitted` / `no_evidence` / `send_failed`.
+  Exit 0 plus `delivery:"unverified"` is NOT proof the turn started (#1793: a boundary-sized
+  Codex send can pass every check and never submit). Confirm with `session show --json`
+  (status flips to running) or `output` when the answer matters.
+- **A non-zero send exit does NOT prove non-delivery.** The 3-second tmux send-keys
+  deadline can kill a send that already landed in the pane. Blind retry on non-zero =
+  double-send. Check the pane (`session output <id> --pane`) before resending.
+- **Only the inbox is durable.** `send` in every mode dies with the sender. Child→parent
+  completions ride the inbox; everything else (parent→child, peer→peer, cross-profile)
+  is fire-and-forget keystrokes. Cross-profile parents are a terminal drop.
+- **Inbox is last-wins per child.** A parent draining after three child status changes
+  sees only the latest. There is no replayable message history between sessions; use
+  files (RESULTS.md, task-log.md) for anything that must not collapse.
+- **`--defer-if-busy` drops on timeout** with a non-zero exit; the message is NOT queued
+  for later. Treat a defer timeout as undelivered and decide explicitly.
+- **Heartbeats are lossy on purpose** (skip while busy, never queued); the durable
+  completions arrive via the inbox drain that every heartbeat starts with.
+
+### Pitfalls and workarounds
+
+- **Single-line only for positional messages.** Embedded newlines make `send` exit 1,
+  and a backgrounded wrapper swallows the failure (silent loss). For multiline payloads
+  use `--message-file <file>` or `--message-file -` (stdin) — that path is safe.
+- **#876 Enter fallback after `--no-wait`.** On a freshly launched session `--no-wait`
+  can leave the message typed but not submitted. Wait ~3s, then send an idempotent
+  Enter: `tmux send-keys -t "$(agent-deck -p <profile> session show --json <id> | jq -r .tmux_session)" Enter`.
+  Note `--no-wait` deliberately disables auto-resend (double-send protection), so this
+  manual fallback is on you.
+- **Never spam a busy session.** A `running` target queues your keystrokes into its
+  composer mid-turn. Use `--defer-if-busy`, or poll `session show --json` until
+  `status` leaves `running`. Bound every repeated signal: 3 identical sends/nudges
+  with no state change means stop and change tactic, not send a fourth.
+- **Read `substate`, not just `status`.** `error` + substate `auth-401` means dead
+  credentials (restarting will NOT fix it; the fleet HOLDs these); substate
+  `model-unavailable` means the model is down. Never restart-loop either. `substate`
+  is omitempty: absent means none, not healthy-confirmed.
+- **Topology reads:** `list --json` omits `parent_session_id`. To see linkage use
+  `session show --json <id>` or `session children`. Verify every `launch` created the
+  linkage you expect; children born without a parent link get NO transition events.
+- **Addressing:** prefer id prefixes over titles (a Claude session can rename itself and
+  break title targeting; `session set-title-lock <id> on` prevents that). Always `-p`
+  from non-interactive senders.
+- **If `session output` refuses with "colliding transcript"** (one claude_session_id
+  claimed by two live instances, seen after restart/fork), fall back to
+  `session output <id> --pane` — read-only and always available.
+- **Slash commands via send:** wrap conversationally ("Please run /cmd ...") — bare
+  `/cmd` sends to a freshly restarted child are ignored.
 
 ## Sub-Agent Launch
 
@@ -383,14 +507,27 @@ Key constraints:
 | Key | Action |
 |-----|--------|
 | `n` | New session |
-| `r/R` | Restart (reloads MCPs) |
+| `r` | Rename session |
+| `R` | Restart session (reloads MCPs) |
 | `m` | MCP Manager |
 | `s` | Skills Manager |
-| `f/F` | Fork Claude/OpenCode/Pi/Codex session |
+| `f/F` | Fork Claude/OpenCode/Pi/Codex/Oh My Pi session |
 | `d` | Delete |
 | `A` | Archive (stops tmux, hides from default list) |
 | `Shift+U` | Unarchive (does not auto-start tmux) |
 | `M` | Move to group |
+
+### Copy & Text Selection
+Mouse drag does not select text — the TUI holds the terminal in mouse reporting
+mode so clicks, scrolling and the divider drag work. Hold `Shift` while dragging
+(`Option` in iTerm2) for native selection, or use these:
+
+| Key | Copies |
+|-----|--------|
+| `c` | Last AI response |
+| `C` | Session info (repo / path / branch) |
+| `V` | Visible terminal text, links included |
+| `Y` | A fenced code block (picker if several) |
 
 ### Search & Filter
 | Key | Action |
@@ -712,6 +849,21 @@ For trivial mechanical actions where the action IS its own verification (and the
 
 The verifier requirement attaches to claims about external mutable state: PRs, releases, comments, deployments, bulk operations.
 
+## Runtime Health & Fleet Maintenance (v1.16.11+)
+
+**Use when:** anyone asks "is agent-deck healthy", "why is the deck slow", "did that completion event get lost", or you're deploying a local build to a remote ahead of a release.
+
+```bash
+agent-deck health --json --since 1h          # per-process CPU/RSS/FDs/goroutines vs performance budgets, no data leaves the host
+agent-deck inbox dead-letter list --json      # inspect records that failed to route (list/show only — no retry/purge)
+agent-deck remote update dev --from-build /path/to/local/dist   # push a verified local build to a remote, no release needed
+```
+
+- `health` reports against fixed budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`); use `--since` to widen the history window when a regression is intermittent.
+- `inbox dead-letter list|show` is diagnostic-only in this release — there is no `retry` or `purge` subcommand (both are explicitly rejected). Recovering a dead-lettered record means fixing the underlying routing issue and re-draining, not resubmitting the record itself.
+- `remote update --from-build <dir>` is for shipping a verified local three-platform build (darwin/arm64, linux/amd64, linux/arm64) to a remote before it's published as a release — same checksum/version verification and downgrade guard as a normal `remote update`.
+- `[ui.remote_preview]`/`[ui.header]` share one field vocabulary: `version`, `sessions_by_status`, `harnesses`, `load`, `memory`, `disk`, `last_poll`, and the opt-in `accounts` (named Claude account slots with live 5h/7d usage, one aligned row per slot in the preview, read from each slot's local quota cache — `agent-deck hooks install` wires the feed) and `ssh` (who is connected to the host over SSH right now, per user) — see [Configuration](#configuration)/config-reference.md.
+
 ## Configuration
 
 **File:** `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored)
@@ -1029,6 +1181,25 @@ These were surfaced by mining real conductor transcripts (see [Self-Improvement]
 | CLI verb inconsistency: `session update --no-parent`, `group remove`, `launch -parent` all rejected | Correct verbs: `session unset-parent`, `group delete`, `launch` does not accept `-parent` (it's automatic) | [#974](https://github.com/asheshgoplani/agent-deck/issues/974) |
 
 See the [Self-Improvement](#self-improvement) section for how these were discovered and how to surface more from your own conductor's transcripts.
+
+## Backward Compatibility
+
+This skill is read by whatever deck version the reading session is on, including a remote running an older build — check with `agent-deck --version` before assuming a feature below exists.
+
+| Needs ≥1.16.11 | On an older deck |
+|---|---|
+| `session send` `confirmation` field, `queued_socket`/`delivered`/`unverified` delivery values, `send_transport = "auto"` | Read `delivery` and `submitted` only; treat any non-`submitted` exit-0 outcome as "sent, not confirmed" and verify with `session show --json` or `output` |
+| `session context` (context inspector), TUI `C` key | No context inspector at all — audit context by reading the instruction files and skills directly |
+| `agent-deck health` | No local health/budget reporting — watch for slowness manually (`top`, `agent-deck status`) |
+| `remote update --from-build`, `remote list --check --json` version fields | `remote update` from published releases only; `remote list` without live version drift detection |
+| `remote sessions --json` bare-array/`--with-errors` split, `remote drain` | Older builds may return `null` instead of `[]` for zero sessions, and lack `remote drain`/`inbox export` entirely (a `remote drain` against one reports a version error pointing at `remote update`) |
+| `inbox dead-letter list\|show` | No dead-letter inspection — a lost completion is invisible; fall back to reading transcripts / RESULTS.md for the child's actual outcome |
+| `[ui.remote_preview]`/`[ui.header]` `accounts` field | Older builds show version/sessions/load only, no per-account usage in the header or remote panel |
+| `session children --follow`, `--until-done` | Fall back to the until-loop in [Fanning out several children?](#sub-agent-launch) polling `--json` on an interval |
+| `shell` as accepted tool alias | Use a `custom` `-c "bash -c '...'"` command instead — same effect, more typing |
+| Harness identity injection (`AGENTDECK_IDENTITY_FILE`, append-system-prompt for claude/pi, developer-instructions override for codex, trust-gated context dir for gemini) | A launched session gets none of this — state its session id, tool, and how to reach its parent explicitly in the launch prompt |
+
+Any command not in this table (session start/stop/send/output, `mcp attach`, `session set-parent`, worktrees, groups) has worked unchanged since well before this refresh.
 
 ## References
 

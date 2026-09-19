@@ -1,0 +1,14 @@
+                                                               
+                                                               
+                               ⬡                               
+                                                               
+                          Remote: lab                          
+             Host: alice@lab.example — 5 sessions              
+                                                               
+    Harnesses  claude:2 · codex:2 · pi:1                       
+    35.6G/44.7G                                                
+    agent-deck v1.16.9 · older than here (update available)    
+                                                               
+         • Press Enter on a session to attach via SSH          
+                                                               
+                                                               

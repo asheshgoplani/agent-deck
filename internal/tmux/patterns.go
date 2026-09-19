@@ -146,6 +146,35 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				`re:(?mi)^dsh web:\s+https?://`,
 			},
 		}
+	case "omp":
+		// Oh My Pi (github.com/can1357/oh-my-pi). PROVENANCE — CAPTURED LIVE
+		// against the real installed binary (v17.3.8) via a PTY-driven omp
+		// session (not inferred from docs):
+		//
+		//   Busy    "⠋ Working… ⟨esc⟩" (generic) or "⠴ Echo hi ⟨esc⟩" (tool-
+		//           derived label). The stable anchor across every busy state
+		//           is the literal "⟨esc⟩" marker (U+27E8/U+27E9 angle
+		//           brackets), which is distinct from every other registered
+		//           tool's ascii "esc to interrupt" phrasing.
+		//   Waiting "Allow tool: bash\nCommand: echo hi\n\n  Approve\n   Deny\n\n
+		//           up/down navigate  enter select  esc cancel" — captured by
+		//           launching with --approval-mode always-ask and triggering
+		//           a bash tool call.
+		//
+		// No distinct idle-only literal string was found: the idle status bar
+		// is visually identical (same box-drawn border) whether busy or not,
+		// differing only in the presence/absence of the spinner+"⟨esc⟩" line
+		// beneath it, which BusyPatterns already covers. This mirrors "pi"
+		// and "deepseek", which also rely on busy-pattern absence for idle.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				`re:⟨esc⟩`,
+			},
+			PromptPatterns: []string{
+				`re:(?m)^\s*Allow tool:\s`,
+			},
+			SpinnerChars: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		}
 	case "pi":
 		return &RawPatterns{
 			BusyPatterns: []string{
@@ -207,6 +236,29 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				"Switch modes",
 			},
 		}
+	case "muse":
+		// Muse Code CLI (`muse`). All patterns CAPTURED live from 1.0.2
+		// in a tmux pane (echo provider):
+		//
+		//   busy:  "◈ Thinking (2s · esc to interrupt)"
+		//   idle:  "⟩" + placeholder "Type @ to search and insert workspace
+		//           file paths", status bar "<provider> · /abs/path"
+		//   reply: "◆ <text>" assistant marker
+		//
+		// Deliberately NOT a prompt pattern: the bare "⟩" (U+27E9). Submitted
+		// prompts stay in history as "⟩ <text>", so it describes a state that
+		// is not necessarily waiting; the placeholder only ever renders in
+		// the live input box. Busy is checked before prompt in the detector,
+		// so the history lines cannot mask a working session.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"◈ Thinking (",
+				"esc to interrupt",
+			},
+			PromptPatterns: []string{
+				"Type @ to search and insert workspace file paths",
+			},
+		}
 	case "shell":
 		return &RawPatterns{
 			PromptPatterns: []string{"$ ", "# ", "% "},
@@ -219,6 +271,143 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 	default:
 		return nil
 	}
+}
+
+// Codex error banners (status-light audit 2026-09-17, defect A). Codex renders
+// a terminal error as a line led by "■" and then redraws its composer
+// ("› Ask Codex to do anything") underneath, so prompt detection alone reads
+// the pane as an ordinary idle prompt. Captured live:
+//
+//	■ You've hit your usage limit. To continue using Codex and get access to GPT-5.3-Codex, start a free
+//	trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th, 2026 8:03 AM.
+//
+// Every pattern is matched only on a "■"-led banner line (lowercased), never on
+// prose or the composer, so a user typing about the limit cannot trip it.
+const codexErrorBannerPrefix = "■"
+
+// codexUsageLimitBannerPatterns: the plan's usage window is exhausted. CAPTURED.
+var codexUsageLimitBannerPatterns = []string{
+	"hit your usage limit",
+	"usage limit",
+}
+
+// codexAuthBannerPatterns: the session cannot make progress until the user
+// logs in again. Deliberately NARROW (review P2-7): an auth verdict feeds the
+// fleet auth gate, which counts it toward halting fleet boots, so only the
+// exact phrasing Codex prints for an expired/missing login is matched — the
+// "codex login" instruction it appends to every login-required banner, and
+// its "not logged in" wording. No capture of the banner exists yet; the
+// instruction text is Codex's own command name and cannot appear in a
+// warning that merely mentions authentication. Generic words
+// ("authentication", "unauthorized", "log in to", "sign in to") are NOT
+// matched: a "■" warning carrying them degrades to the pre-existing waiting
+// verdict, never to auth-401.
+var codexAuthBannerPatterns = []string{
+	"codex login",
+	"not logged in",
+}
+
+// codexRetryAtRe pulls the retry time out of the usage-limit banner text.
+var codexRetryAtRe = regexp.MustCompile(`(?i)try again at\s+([^.]+)`)
+
+// Codex banner kinds returned by scanCodexErrorBanner.
+const (
+	codexBannerUsageLimit = "usage-limit"
+	codexBannerAuth       = "auth"
+)
+
+// codexComposerPlaceholder is the empty composer's placeholder text.
+const codexComposerPlaceholder = "Ask Codex to do anything"
+
+// codexTurnGlyphs lead the lines that prove the session moved on after a
+// banner: "›" the echoed submitted prompt (and the composer), "•" an
+// assistant reply or tool call.
+const (
+	codexPromptGlyph    = "›"
+	codexAssistantGlyph = "•"
+)
+
+// codexBusyCues are the codex busy patterns (see DefaultRawPatterns "codex"):
+// while one is on screen the session is visibly working, so no banner above
+// it is current.
+var codexBusyCues = []string{"ctrl+c to interrupt", "esc to interrupt"}
+
+// codexLine is one line of the tail as scanCodexErrorBanner sees it: the
+// trimmed text and whether it starts at column 0 of the pane. Codex prints
+// its own "■" banners at column 0; the tool-output block under a "• Ran …"
+// line ("  └ first line", then lines indented to the same column) never
+// does, so a "■" inside a cat/grep result is quoted content, not a banner
+// (review round 3 P3-6). Tool output sits BELOW its "•" line, so the "•"
+// stop alone cannot exclude it when the block is directly above the composer.
+type codexLine struct {
+	text    string
+	column0 bool
+}
+
+// scanCodexErrorBanner scans the last 15 non-empty lines for a "■"-led codex
+// error banner that belongs to the CURRENT turn and returns its kind (""
+// when none) and, for a usage-limit banner, the retry time it prints ("try
+// again at Oct 10th, 2026 8:03 AM"). The banner wraps, so the continuation
+// lines up to the next "■"/"›" line are joined before the retry time is read.
+//
+// Newest signal wins (review P1-2, the same rule the Claude scans apply): the
+// walk goes up from the bottom and stops at the first line that proves the
+// session continued after any banner above it — a submitted prompt ("› text"
+// above the composer, which is always the bottom-most "›" line), an
+// assistant/tool line ("• …"), or a live busy cue anywhere in the tail. A
+// banner sitting directly above the composer is still an error.
+//
+// Only a "■" Codex printed itself counts: a column-0 line (see codexLine).
+func scanCodexErrorBanner(content string) (kind, detail string) {
+	lines := strings.Split(content, "\n")
+	var recent []codexLine
+	for i := len(lines) - 1; i >= 0 && len(recent) < 15; i-- {
+		raw := StripANSI(lines[i])
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if containsAny(strings.ToLower(line), codexBusyCues) {
+			return "", ""
+		}
+		column0 := !strings.HasPrefix(raw, " ") && !strings.HasPrefix(raw, "\t")
+		recent = append([]codexLine{{text: line, column0: column0}}, recent...)
+	}
+	seenComposer := false
+	for i := len(recent) - 1; i >= 0; i-- {
+		line := recent[i].text
+		switch {
+		case strings.HasPrefix(line, codexPromptGlyph):
+			text := strings.TrimSpace(strings.TrimPrefix(line, codexPromptGlyph))
+			if seenComposer && text != "" && !strings.HasPrefix(text, codexComposerPlaceholder) {
+				return "", "" // a later turn was submitted; anything above is history
+			}
+			seenComposer = true
+			continue
+		case strings.HasPrefix(line, codexAssistantGlyph):
+			return "", "" // the session produced output after any banner above
+		case !strings.HasPrefix(line, codexErrorBannerPrefix), !recent[i].column0:
+			continue // not a banner, or one quoted inside indented tool output
+		}
+		lower := strings.ToLower(line)
+		switch {
+		case containsAny(lower, codexUsageLimitBannerPatterns):
+			banner := line
+			for j := i + 1; j < len(recent); j++ {
+				if strings.HasPrefix(recent[j].text, codexErrorBannerPrefix) || strings.HasPrefix(recent[j].text, codexPromptGlyph) {
+					break
+				}
+				banner += " " + recent[j].text
+			}
+			if m := codexRetryAtRe.FindStringSubmatch(banner); m != nil {
+				return codexBannerUsageLimit, "try again at " + strings.TrimSpace(m[1])
+			}
+			return codexBannerUsageLimit, ""
+		case containsAny(lower, codexAuthBannerPatterns):
+			return codexBannerAuth, ""
+		}
+	}
+	return "", ""
 }
 
 // defaultSpinnerChars returns the braille + asterisk spinner characters used by Claude Code.

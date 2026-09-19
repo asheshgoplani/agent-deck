@@ -13,19 +13,10 @@ import {
   railSignal, profileSignal,
 } from './uiState.js'
 import { ToastHistoryDrawerToggle } from './ToastHistoryDrawer.js'
+import { tabStrip } from './paneRegistry.js'
 
-const TABS = [
-  { id: 'command-center', label: 'Command Center' },
-  { id: 'fleet',     label: 'Fleet'     },
-  { id: 'terminal',  label: 'Terminal'  },
-  { id: 'mcp',       label: 'MCPs'      },
-  { id: 'skills',    label: 'Skills'    },
-  { id: 'conductor', label: 'Conductor' },
-  { id: 'watchers',  label: 'Watchers'  },
-  { id: 'costs',     label: 'Costs'     },
-  { id: 'search',    label: 'Search'    },
-  { id: 'archived',  label: 'Archived'  },
-]
+// Tab order and labels come from the pane registry (issue #2137).
+const TABS = tabStrip()
 
 export function Topbar() {
   const activeTab = activeTabSignal.value

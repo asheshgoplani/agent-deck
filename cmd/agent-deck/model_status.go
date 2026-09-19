@@ -60,6 +60,23 @@ func addAutoNameJSON(target map[string]interface{}, inst *session.Instance) {
 	}
 }
 
+// addCodexMetadataJSON surfaces the Codex session id and the local rollout
+// root on `session show --json`, so structured consumers can locate a Codex
+// session's rollout JSONL without re-implementing CODEX_HOME resolution. Both
+// keys are omitted for non-Codex tools; resolved_codex_home is also omitted
+// for SSH sessions (see Instance.ResolvedCodexHome).
+func addCodexMetadataJSON(target map[string]interface{}, inst *session.Instance) {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) {
+		return
+	}
+	if inst.CodexSessionID != "" {
+		target["codex_session_id"] = inst.CodexSessionID
+	}
+	if home := inst.ResolvedCodexHome(); home != "" {
+		target["resolved_codex_home"] = home
+	}
+}
+
 func modelStatusDisplay(inst *session.Instance) string {
 	if inst == nil {
 		return "-"

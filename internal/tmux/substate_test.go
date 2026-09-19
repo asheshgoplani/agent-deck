@@ -99,6 +99,41 @@ func TestClassifySubstate_IdleAtEmptyPrompt(t *testing.T) {
 	}
 }
 
+// TestClassifySubstate_InteractiveMenu pins #2185: an open AskUserQuestion
+// picker or permission dialog satisfies the same pane-text checks as a bare
+// empty prompt (both make hasClaudePrompt true), but must not be reported as
+// idle-at-empty-prompt — a supervisor reading that label would assume nothing
+// is happening when work is in fact blocked on an unanswered question.
+func TestClassifySubstate_InteractiveMenu(t *testing.T) {
+	d := NewPromptDetector("claude")
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "open AskUserQuestion menu (issue reproduction)",
+			content: "Which approach should I take?\n" +
+				"❯ 1. Option A\n" +
+				"  2. Option B\n" +
+				"\n" +
+				"Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+		},
+		{
+			name: "permission dialog yes/no",
+			content: "│ Do you want to proceed?\n" +
+				"❯ Yes\n" +
+				"  No, and tell Claude what to do differently",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := d.ClassifySubstate(tc.content); got != SubstateInteractiveMenu {
+				t.Errorf("got %q, want %q for %s", got, SubstateInteractiveMenu, tc.name)
+			}
+		})
+	}
+}
+
 func TestClassifySubstate_Running(t *testing.T) {
 	d := NewPromptDetector("claude")
 	cases := []struct {

@@ -19,9 +19,20 @@ func wrapWithHangingIndent(text string, width int, indent string) string {
 	if text == "" || width <= 0 {
 		return text
 	}
+	lines := wrapLines(text, width)
+	for i := 1; i < len(lines); i++ {
+		lines[i] = indent + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// wrapLines wraps text at word boundaries and returns each visual row as its
+// own slice element, so callers that build a scrollable []string of real
+// screen rows count and align wrapped content correctly.
+func wrapLines(text string, width int) []string {
 	words := strings.Fields(text)
-	if len(words) == 0 {
-		return text
+	if width <= 0 || len(words) == 0 {
+		return []string{text}
 	}
 	var lines []string
 	current := words[0]
@@ -33,14 +44,36 @@ func wrapWithHangingIndent(text string, width int, indent string) string {
 		lines = append(lines, current)
 		current = w
 	}
-	lines = append(lines, current)
-	if len(lines) == 1 {
-		return lines[0]
+	return append(lines, current)
+}
+
+// renderHelpRow renders one key/description help entry as a set of fully
+// styled, individually countable screen rows.
+//
+// The two columns are wrapped independently and then paired row by row, so a
+// three-alternative key label (e.g. "+ / K / Shift+↑") wraps into an aligned
+// column instead of being hard wrapped by keyStyle's fixed Width(). The
+// literal " " between the columns guarantees a separator even when the key
+// label exactly fills keyWidth (e.g. "--group <name>").
+func renderHelpRow(key, desc string, keyWidth, descWidth int, keyStyle, descStyle lipgloss.Style) []string {
+	keyLines := wrapLines(key, keyWidth)
+	descLines := wrapLines(desc, descWidth)
+
+	rowCount := max(len(keyLines), len(descLines))
+	rows := make([]string, 0, rowCount)
+	for i := 0; i < rowCount; i++ {
+		k := ""
+		if i < len(keyLines) {
+			k = keyLines[i]
+		}
+		if i >= len(descLines) || descLines[i] == "" {
+			// No description cell: don't leave the column gap dangling.
+			rows = append(rows, strings.TrimRight("  "+keyStyle.Render(k), " "))
+			continue
+		}
+		rows = append(rows, "  "+keyStyle.Render(k)+" "+descStyle.Render(descLines[i]))
 	}
-	for i := 1; i < len(lines); i++ {
-		lines[i] = indent + lines[i]
-	}
-	return strings.Join(lines, "\n")
+	return rows
 }
 
 // HelpOverlay shows keyboard shortcuts in a modal
@@ -54,6 +87,10 @@ type HelpOverlay struct {
 	// this overlay is part of the TUI: a user who has adopted nothing must not
 	// find a key here for a surface that does not exist for them.
 	hasAgents bool
+
+	// Runtime shortcuts follow the layout selected at startup. A saved
+	// opposite preference only takes effect after restart.
+	embeddedLayout bool
 }
 
 // SetHasAgents records whether anything has been adopted.
@@ -62,6 +99,11 @@ func (h *HelpOverlay) SetHasAgents(has bool) {
 		return
 	}
 	h.hasAgents = has
+}
+
+// SetEmbeddedLayout records the layout used by the running dashboard.
+func (h *HelpOverlay) SetEmbeddedLayout(enabled bool) {
+	h.embeddedLayout = enabled
 }
 
 // NewHelpOverlay creates a new help overlay
@@ -212,6 +254,9 @@ func (h *HelpOverlay) View() string {
 	promptSessionKey := h.key(hotkeyPromptSession, "o")
 	copyKey := h.key(hotkeyCopyOutput, "c")
 	copyPaneKey := h.key(hotkeyCopyPane, "V")
+	yoloKey := h.key(hotkeyToggleYolo, "y")
+	copyInfoKey := h.key(hotkeyCopyInfo, "B")
+	contextInspectorKey := h.key(hotkeyContextInspector, "C")
 	sendKey := h.key(hotkeySendOutput, "x")
 	execShellKey := h.key(hotkeyExecShell, "E")
 	openShellHereKey := h.key(hotkeyOpenShellHere, "h")
@@ -224,6 +269,7 @@ func (h *HelpOverlay) View() string {
 	worktreeSetupKey := h.key(hotkeyWorktreeSetup, "b")
 	worktreeKey := h.key(hotkeyWorktreeFinish, "W")
 	watcherPanelKey := h.key(hotkeyWatcherPanel, "w")
+	deadLettersKey := h.key(hotkeyDeadLetters, "alt+d")
 	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
@@ -231,6 +277,40 @@ func (h *HelpOverlay) View() string {
 	unarchiveKey := h.key(hotkeyUnarchiveSession, "Shift+U")
 	viewArchivedKey := h.key(hotkeyViewArchived, "^")
 	detachKey := DetachByteLabel(DetachByteFromBinding(h.key(hotkeyDetach, "ctrl+q")))
+	altSessionKey := h.key(hotkeyAltSession, "`")
+	mruBackKey := h.key(hotkeyMRUBack, "alt+left")
+	mruForwardKey := h.key(hotkeyMRUForward, "alt+right")
+	navigationItems := [][2]string{
+		{"j / Down", "Move down"},
+		{"k / Up", "Move up"},
+		{"Ctrl+u/d", "Half page up/down"},
+		{"PgUp / PgDn", "Half page up/down"},
+		{"Ctrl+f/b", "Full page up/down"},
+		{"Home / End", "Jump to first / last item"},
+		{"G", "Global search"},
+		{"h / Left", "Collapse / parent"},
+		{"l / Right", "Expand / toggle"},
+		{"1-9", "Jump to root group"},
+		{"Space", "Jump mode"},
+		{altSessionKey, "Alternate session (swap with the previous one, vim-style)"},
+		{mruBackKey, "Walk back through recently used sessions"},
+		{mruForwardKey, "Walk forward through recently used sessions"},
+	}
+	quickStartEnter := "Attach to selected session"
+	if h.embeddedLayout {
+		quickStartEnter = "Focus embedded terminal for selected session"
+		navigationItems = append(navigationItems,
+			[2]string{"Enter", "Focus embedded terminal / toggle group"},
+			[2]string{"Alt+Enter", "Full-screen attach"},
+			[2]string{"Shift+Enter", "Open session in new iTerm window (macOS)"},
+			[2]string{"Alt+V", "Toggle grouped / flat agent sidebar"},
+		)
+	} else {
+		navigationItems = append(navigationItems,
+			[2]string{"Enter", "Attach to session / toggle group"},
+			[2]string{"Shift+Enter", "Open session in new iTerm window (macOS)"},
+		)
+	}
 
 	sections := []struct {
 		title string
@@ -239,7 +319,7 @@ func (h *HelpOverlay) View() string {
 		{
 			title: "QUICK START",
 			items: [][2]string{
-				{"Enter", "Attach to selected session"},
+				{"Enter", quickStartEnter},
 				{restartKey, "Restart selected session"},
 				{detachKey, "Detach from session"},
 				{helpKey, "Open this help"},
@@ -247,21 +327,7 @@ func (h *HelpOverlay) View() string {
 		},
 		{
 			title: "NAVIGATION",
-			items: [][2]string{
-				{"j / Down", "Move down"},
-				{"k / Up", "Move up"},
-				{"Ctrl+u/d", "Half page up/down"},
-				{"PgUp / PgDn", "Half page up/down"},
-				{"Ctrl+f/b", "Full page up/down"},
-				{"Home / End", "Jump to first / last item"},
-				{"gg / G", "Jump to top / global search"},
-				{"h / Left", "Collapse / parent"},
-				{"l / Right", "Expand / toggle"},
-				{"1-9", "Jump to root group"},
-				{"Space", "Jump mode"},
-				{"Enter", "Attach / toggle"},
-				{"Shift+Enter", "Open session in new iTerm window (macOS)"},
-			},
+			items: navigationItems,
 		},
 		{
 			title: "GROUP NAVIGATION (v1.7.60)",
@@ -301,16 +367,31 @@ func (h *HelpOverlay) View() string {
 				{indentKeys, "Indent / outdent (in group)"},
 				{pinKeys, "Pin (cycle off→top→bottom→off)"},
 				{forkKeys, "Fork session (Claude/Pi)"},
-				{copyKey, "Copy output to clipboard"},
-				{"C", "Copy preview info (Repo / Path / Branch)"},
-				{"Y", "Copy a code block from output"},
-				{copyPaneKey, "Copy visible terminal text, including links"},
+				{yoloKey, "Toggle YOLO mode"},
+				{contextInspectorKey, "Inspect full context (everything the agent is being sent, ranked by cost)"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
 				{openShellHereKey, "Open shell in session's worktree (split pane / window)"},
 				{editPathsKey, "Edit multi-repo paths"},
 				{editSessionKey, "Edit session settings (title/color/...)"},
 				{notesKey, "Edit notes"},
+			},
+		},
+		{
+			// The copy family used to sit mid-way down the 30-row SESSIONS list,
+			// where it went unfound: the recurring user question was "why can't I
+			// select text?" rather than "which key copies?". Its own section, with
+			// the Shift+drag row, answers that question where people look for it.
+			title: "COPY & TEXT SELECTION",
+			items: [][2]string{
+				{copyKey, "Copy last AI response"},
+				{copyInfoKey, "Copy session info (repo / path / branch)"},
+				{copyPaneKey, "Copy visible terminal text, including links"},
+				{"Y", "Copy a fenced code block (picker if several)"},
+				// Not a binding: agent-deck holds the terminal in mouse mode 1002
+				// (tea.WithMouseCellMotion) so drags arrive as events and the
+				// terminal never renders a selection. Shift/Option bypasses that.
+				{"Shift+drag", "Native terminal selection (Option+drag in iTerm2)"},
 			},
 		},
 		{
@@ -326,6 +407,7 @@ func (h *HelpOverlay) View() string {
 			title: "WATCHERS",
 			items: [][2]string{
 				{watcherPanelKey, "Watcher panel"},
+				{deadLettersKey, "Dead-letter events"},
 			},
 		},
 		{
@@ -419,14 +501,12 @@ func (h *HelpOverlay) View() string {
 		keyWidth = 10 // Compact key column for small screens
 	}
 	// Description column budget: dialogWidth minus border (2) + padding (4)
-	// + leading "  " (2) + key column. Hanging indent for wrapped lines is
-	// the same width as the leading spaces + key column so continuations sit
-	// aligned under the description column.
-	descWidth := dialogWidth - 2 - 4 - 2 - keyWidth
+	// + leading "  " (2) + key column + the 1-space key/description gap
+	// renderHelpRow always emits.
+	descWidth := dialogWidth - 2 - 4 - 2 - keyWidth - 1
 	if descWidth < 10 {
 		descWidth = 10
 	}
-	hangingIndent := strings.Repeat(" ", 2+keyWidth)
 
 	keyStyle := lipgloss.NewStyle().
 		Foreground(ColorPurple).
@@ -455,9 +535,7 @@ func (h *HelpOverlay) View() string {
 	for i, section := range sections {
 		lines = append(lines, sectionStyle.Render(section.title))
 		for _, item := range section.items {
-			wrapped := wrapWithHangingIndent(item[1], descWidth, hangingIndent)
-			line := "  " + keyStyle.Render(item[0]) + descStyle.Render(wrapped)
-			lines = append(lines, line)
+			lines = append(lines, renderHelpRow(item[0], item[1], keyWidth, descWidth, keyStyle, descStyle)...)
 		}
 		if i < len(sections)-1 {
 			lines = append(lines, "")
@@ -485,8 +563,19 @@ func (h *HelpOverlay) View() string {
 	// Check if scrolling is needed
 	needsScroll := totalLines > availableHeight
 
+	// When scrolling, reserve one line each for the top and bottom indicator
+	// slots unconditionally — even on a page where one stays blank — so the
+	// clamp below and the render below share one content budget. Reserving
+	// them only when shown made maxScroll larger than any page could
+	// actually render, so the last page was unreachable and "▼ more below"
+	// stayed lit forever.
+	contentHeight := availableHeight
+	if needsScroll {
+		contentHeight = max(availableHeight-2, 1)
+	}
+
 	// Clamp scroll offset
-	maxScroll := totalLines - availableHeight
+	maxScroll := totalLines - contentHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -497,52 +586,27 @@ func (h *HelpOverlay) View() string {
 		h.scrollOffset = 0
 	}
 
-	// Build visible content
-	var content strings.Builder
-
+	// Build visible content as discrete rows, then join once — no ad hoc
+	// newline bookkeeping that could leave a stray blank line before the
+	// footer.
+	visibleRows := lines
 	if needsScroll {
-		// Show scroll indicator at top if not at beginning
+		// The top indicator always occupies a row, blank when at the top, so
+		// the content budget stays fixed across every scroll position.
+		topIndicator := ""
 		if h.scrollOffset > 0 {
-			content.WriteString(scrollIndicatorStyle.Render("▲ more above"))
-			content.WriteString("\n")
-			availableHeight-- // Account for indicator line
+			topIndicator = scrollIndicatorStyle.Render("▲ more above")
 		}
+		endIdx := min(h.scrollOffset+contentHeight, totalLines)
 
-		// Determine end index
-		endIdx := h.scrollOffset + availableHeight
-		if h.scrollOffset > 0 {
-			// Leave room for bottom indicator if needed
-			if endIdx < totalLines {
-				availableHeight--
-				endIdx = h.scrollOffset + availableHeight
-			}
-		}
-		if endIdx > totalLines {
-			endIdx = totalLines
-		}
-
-		// Render visible lines
-		for i := h.scrollOffset; i < endIdx; i++ {
-			content.WriteString(lines[i])
-			if i < endIdx-1 {
-				content.WriteString("\n")
-			}
-		}
-
-		// Show scroll indicator at bottom if more content below
+		visibleRows = append([]string{topIndicator}, lines[h.scrollOffset:endIdx]...)
 		if endIdx < totalLines {
-			content.WriteString("\n")
-			content.WriteString(scrollIndicatorStyle.Render("▼ more below"))
-		}
-	} else {
-		// No scrolling needed, render all lines
-		for i, line := range lines {
-			content.WriteString(line)
-			if i < len(lines)-1 {
-				content.WriteString("\n")
-			}
+			visibleRows = append(visibleRows, scrollIndicatorStyle.Render("▼ more below"))
 		}
 	}
+
+	var content strings.Builder
+	content.WriteString(strings.Join(visibleRows, "\n"))
 
 	// Footer with appropriate hint
 	content.WriteString("\n\n")

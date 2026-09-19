@@ -62,6 +62,9 @@ type PaneCapture struct {
 	Raw string
 	// OK is true when the capture call itself succeeded.
 	OK bool
+	// Err is the capture error when OK is false (nil otherwise). It lets a
+	// consumer tell a gone pane (tmux.ErrCaptureGone) from a transient failure.
+	Err error
 }
 
 // Captured wraps a successful pane capture.
@@ -70,7 +73,7 @@ func Captured(raw string) PaneCapture { return PaneCapture{Raw: raw, OK: true} }
 // CaptureOutcome wraps a capture attempt and its error in one step.
 func CaptureOutcome(raw string, err error) PaneCapture {
 	if err != nil {
-		return PaneCapture{}
+		return PaneCapture{Err: err}
 	}
 	return Captured(raw)
 }

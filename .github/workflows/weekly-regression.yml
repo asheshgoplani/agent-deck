@@ -166,7 +166,7 @@ jobs:
 
       - name: Upload regenerated baselines
         if: inputs.update_baselines == true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: visual-baselines-${{ github.run_id }}
           retention-days: 30
@@ -181,7 +181,7 @@ jobs:
 
       - name: Upload test artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: weekly-regression-${{ github.run_id }}
           retention-days: 30

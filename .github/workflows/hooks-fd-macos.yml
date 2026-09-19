@@ -1,0 +1,204 @@
+name: Hooks cleanup and descriptor regressions
+
+on:
+  pull_request:
+    paths:
+      - 'internal/fswatch/**'
+      - 'internal/session/hook_watcher.go'
+      - 'internal/session/hook_cleanup*'
+      - 'internal/session/storage.go'
+      - 'internal/ui/home.go'
+      - 'internal/ui/hook_cleanup*'
+      - '.github/scripts/hooks-fd/**'
+      - '.github/workflows/hooks-fd-macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-docker:
+    name: Docker cleanup reviewed-base red and head green
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_REVISION: 4f6b51214637f5aaff06aaf3f123f76de48196c4
+      ASYNC_REVISION: cf356983894adab71b0d6bee16cad2f23a423441
+      HEAD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.HEAD_REVISION }}
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.BASE_REVISION }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.ASYNC_REVISION }}
+          path: async-baseline
+          persist-credentials: false
+      - name: Prepare isolated test image and regression overlays
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence "$RUNNER_TEMP/hooks-go-cache"
+          exec > >(tee evidence/cleanup-setup.log) 2>&1
+          chmod 777 "$RUNNER_TEMP/hooks-go-cache"
+          test "$(git -C baseline rev-parse HEAD)" = "$BASE_REVISION"
+          test "$(git -C head rev-parse HEAD)" = "$HEAD_REVISION"
+          git -C baseline diff --exit-code
+          for file in internal/ui/hook_cleanup_async_test.go internal/session/hook_cleanup_targeted_test.go; do
+            sha256sum "head/$file"
+            cp "head/$file" "baseline/$file"
+          done
+          test "$(git -C async-baseline rev-parse HEAD)" = "$ASYNC_REVISION"
+          git -C async-baseline diff --exit-code
+          cp head/internal/ui/hook_cleanup_async_test.go async-baseline/internal/ui/
+          cp head/internal/ui/testdata/hook_cleanup_search.txt async-baseline/internal/ui/testdata/
+          cat > "$RUNNER_TEMP/hooks-test.Dockerfile" <<'DOCKERFILE'
+          FROM golang:1.25
+          RUN apt-get update && apt-get install -y --no-install-recommends tmux
+          ENV GOMODCACHE=/tmp/gomod
+          WORKDIR /deps
+          COPY go.mod go.sum ./
+          RUN go mod download && chmod -R a+rwX /tmp/gomod
+          DOCKERFILE
+          docker build -f "$RUNNER_TEMP/hooks-test.Dockerfile" -t hooks-cleanup-test head 2>&1 | tee evidence/image-build.log
+      - name: Require behavioral red and run head regression suite in Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee evidence/cleanup-comparison.log) 2>&1
+          echo "base=$BASE_REVISION head=$HEAD_REVISION"
+          uname -a
+          docker image inspect hooks-cleanup-test --format 'image={{.Id}} platform={{.Os}}/{{.Architecture}}'
+          run_tests() {
+            checkout=$1
+            revision=$2
+            pattern=$3
+            shift 3
+            echo "revision=$revision checkout=$checkout"
+            set -x
+            docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
+              -v "$PWD/$checkout:/src:ro" -w /src \
+              -v "$RUNNER_TEMP/hooks-go-cache:/tmp/go-cache" \
+              -e HOME=/tmp/h -e GOMODCACHE=/tmp/gomod -e GOCACHE=/tmp/go-cache \
+              -e GOFLAGS=-mod=mod -e CI=true -e AGENTDECK_SKIP_UPDATE_CHECK=1 \
+              -e TEST_REVISION="$revision" hooks-cleanup-test \
+              sh -c 'echo "sha=$TEST_REVISION"; uname -a; go version; go test -v -race -count=1 -timeout=5m -run "$@"' sh "$pattern" "$@"
+            status=$?
+            set +x
+            return "$status"
+          }
+          regression='TestHookCleanupDeletionKeepsUIResponsive|TestHookCleanupDeleteDoesNotSweepUnrelatedOrphans'
+          set +e
+          run_tests baseline "$BASE_REVISION" "$regression" ./internal/session ./internal/ui > evidence/cleanup-base-red.log 2>&1
+          baseline_status=$?
+          set -e
+          cat evidence/cleanup-base-red.log
+          test "$baseline_status" -eq 1
+          # All cases must fail behaviorally. A compile/setup failure is not red evidence.
+          grep -F -- '--- FAIL: TestHookCleanupDeletionKeepsUIResponsive/delete' evidence/cleanup-base-red.log
+          grep -F -- '--- FAIL: TestHookCleanupDeletionKeepsUIResponsive/finish' evidence/cleanup-base-red.log
+          grep -F -- 'UI deletion handler blocked on hook cleanup' evidence/cleanup-base-red.log
+          grep -F -- '--- FAIL: TestHookCleanupDeleteDoesNotSweepUnrelatedOrphans' evidence/cleanup-base-red.log
+          grep -F -- 'targeted deletion must not sweep unrelated orphans' evidence/cleanup-base-red.log
+          set +e
+          run_tests async-baseline "$ASYNC_REVISION" '^TestHookCleanupDeletionKeepsUIResponsive$/^undo$' ./internal/ui > evidence/undo-base-red.log 2>&1
+          undo_status=$?
+          set -e
+          cat evidence/undo-base-red.log
+          test "$undo_status" -eq 1
+          grep -F -- 'undo restarted before hook cleanup completed' evidence/undo-base-red.log
+          grep -F -- '--- FAIL: TestHookCleanupDeletionKeepsUIResponsive/undo' evidence/undo-base-red.log
+          run_tests head "$HEAD_REVISION" "$regression" ./internal/session ./internal/ui 2>&1 | tee evidence/cleanup-head-green.log
+          run_tests head "$HEAD_REVISION" 'TestHookCleanup|TestPolling' ./internal/session ./internal/fswatch ./internal/ui 2>&1 | tee evidence/hooks-race-green.log
+      - name: Retain SHA-stamped Docker evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hooks-cleanup-docker-${{ env.HEAD_REVISION }}
+          path: evidence/
+          if-no-files-found: error
+
+  native-descriptors:
+    name: Native macOS baseline red and head green
+    runs-on: macos-14
+    timeout-minutes: 15
+    env:
+      BASE_REVISION: 7d2302fb8a41c5fcab7a441d56729b4b6547885a
+      HEAD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.HEAD_REVISION }}
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.BASE_REVISION }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: head/go.mod
+          cache-dependency-path: head/go.sum
+      - name: Compare identical orphan fixture on unchanged base and production head
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          exec > >(tee evidence/native-descriptors.log) 2>&1
+          uname -a
+          sw_vers
+          go version
+          echo "base=$BASE_REVISION head=$HEAD_REVISION"
+          shasum -a 256 head/.github/scripts/hooks-fd/main.go.txt
+          export FD_FIXTURE="$RUNNER_TEMP/hooks-fd-orphans"
+          mkdir -p "$FD_FIXTURE"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ["FD_FIXTURE"])
+          for i in range(1000):
+              path = root / f"orphan-{i:04d}.json"
+              path.write_text("{}")
+              path.chmod(0o600)
+          PY
+          for checkout in baseline head; do
+            mkdir -p "$checkout/.fd-regression"
+            package=github.com/fsnotify/fsnotify
+            if [[ "$checkout" == head ]]; then
+              package=github.com/asheshgoplani/agent-deck/internal/fswatch
+            fi
+            sed "s|WATCH_PACKAGE|$package|" head/.github/scripts/hooks-fd/main.go.txt > "$checkout/.fd-regression/main.go"
+          done
+          # Confirm baseline source uses the factory measured by the overlay.
+          grep -F 'watcher, err := fsnotify.NewWatcher()' baseline/internal/session/hook_watcher.go
+          grep -F 'watcher, err := fswatch.NewWatcher()' head/internal/session/hook_watcher.go
+          test "$(git -C baseline rev-parse HEAD)" = "$BASE_REVISION"
+          test "$(git -C head rev-parse HEAD)" = "$HEAD_REVISION"
+          git -C baseline diff --exit-code
+          echo "command: (cd baseline && FD_REVISION=$BASE_REVISION FD_FIXTURE=$FD_FIXTURE go run ./.fd-regression)"
+          set +e
+          (cd baseline && FD_REVISION="$BASE_REVISION" go run ./.fd-regression) > evidence/baseline.log 2>&1
+          baseline_status=$?
+          set -e
+          cat evidence/baseline.log
+          test "$baseline_status" -eq 1
+          # Compile, setup, Add, or inspection errors cannot satisfy baseline red.
+          grep -E '^FD_BOUND_EXCEEDED delta=1[0-9]{3}$' evidence/baseline.log
+          echo "command: (cd head && FD_REVISION=$HEAD_REVISION FD_FIXTURE=$FD_FIXTURE go run ./.fd-regression)"
+          (cd head && FD_REVISION="$HEAD_REVISION" go run ./.fd-regression) 2>&1 | tee evidence/head.log
+          grep -E '^FD_BOUND_PASS$' evidence/head.log
+      - name: Retain SHA-stamped native descriptor evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hooks-fd-macos-${{ env.HEAD_REVISION }}
+          path: evidence/
+          if-no-files-found: error

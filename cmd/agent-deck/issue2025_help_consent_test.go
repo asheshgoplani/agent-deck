@@ -88,7 +88,7 @@ func TestEveryRegisteredCommandHelpIsReadOnly(t *testing.T) {
 	// dispatchers, and intentionally define no nested help surface.
 	noHelpSurface := map[string]bool{
 		"--version": true, "-v": true, "version": true,
-		"codex-notify": true, "hook-handler": true,
+		"codex-notify": true, "hook-handler": true, "__complete": true,
 	}
 	var commands []string
 	for command := range commandRegistry {
@@ -205,10 +205,12 @@ func TestEveryRegisteredCommandFamilyBareHelpIsReadOnly(t *testing.T) {
 		{"mcp", "Usage: agent-deck mcp"},
 		{"oc", "Usage: agent-deck openclaw"},
 		{"openclaw", "Usage: agent-deck openclaw"},
+		{"pi-hooks", "Usage: agent-deck pi-hooks"},
 		{"plugin", "Usage: agent-deck plugin"},
 		{"remote", "Usage: agent-deck remote"},
 		{"session", "Usage: agent-deck session"},
 		{"skill", "Usage: agent-deck skill"},
+		{"tmux-hooks", "Usage: agent-deck tmux-hooks"},
 		{"watcher", "Usage: agent-deck watcher"},
 		{"worktree", "Usage: agent-deck worktree"},
 		{"wt", "Usage: agent-deck worktree"},

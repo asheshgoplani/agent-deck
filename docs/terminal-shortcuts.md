@@ -4,6 +4,51 @@ This page documents keyboard shortcuts that interact with agent-deck's
 tmux-backed session model — and the small set of platform / terminal
 quirks that can surprise users.
 
+## Text selection and copying
+
+**Why dragging doesn't select text.** The agent-deck TUI starts with mouse
+reporting enabled (`tea.WithMouseCellMotion`, mouse mode 1002), so button
+presses, releases and drag motion are delivered to the application as escape
+sequences. That is what powers click-to-select a row, double-click to attach,
+wheel scrolling and dragging the preview divider — and it is also why your
+terminal never interprets a drag as a selection gesture. This is expected
+behavior, not a bug.
+
+There are two ways around it.
+
+**1. Bypass mouse reporting at the terminal level:**
+
+| Keystroke | Where |
+| --------- | ----- |
+| `Shift`+drag | Most Linux terminals, Windows Terminal, WSL2 |
+| `Option`+drag | iTerm2 |
+
+**2. Use the built-in copy keys**, which go through the system clipboard with an
+OSC 52 fallback so they also work over SSH:
+
+| Key | Copies |
+| --- | ------ |
+| `c` | Last AI response |
+| `C` | Session info — repo / path / branch |
+| `V` | Current visible terminal pane, links included |
+| `Y` | A fenced code block from output (picker when there are several) |
+
+`c` and `V` are rebindable under `[hotkeys]` as `copy_output` and `copy_pane`;
+`C` and `Y` are fixed.
+
+If your terminal has no selection bypass, you can disable tmux mouse mode for
+new and reconnected sessions — this trades away tmux scrolling, pane resizing
+and mouse copy mode:
+
+```toml
+[tmux]
+mouse = false
+```
+
+Note that this applies to **attached sessions only**. The agent-deck list view
+keeps its own mouse capture either way, so `Shift`+drag and the copy keys remain
+the route there.
+
 ## Detach from an attached session
 
 | Keystroke | What happens |
@@ -39,7 +84,7 @@ round trip through the list.
 | --------- | ------------ |
 | `Ctrl-S` | Open the session switcher, pre-highlighted on the session you're currently in. |
 
-With the switcher open:
+With the switcher open from the overview or a full-screen attachment:
 
 - **`Ctrl-S`** again — cycle **forward** (the first step lands on the
   most-recently-used *other* session); **`Ctrl-A`** — cycle **backward**.
@@ -68,6 +113,19 @@ already in, so an immediate `Enter` is a no-op) and waits — it only starts
 the auto-attach countdown once you actually cycle inside it, so an
 accidental press never yanks you away.
 
+### Embedded layout
+
+When pressed in a focused embedded local pane, the configured switcher chord
+opens the local-session picker and reveals the sidebar. Cycling changes the highlight,
+but there is no automatic idle commit. Press `Enter` to attach to the highlight.
+Press `Esc` to return to the originating session. `Ctrl-Q` returns to the
+overview. A picker opened from the overview or a full-screen attachment keeps
+the timed behavior described above.
+
+The explicit choice keeps queued input from being redirected by a timer. The
+switcher remains unbound by default, and remote sessions do not intercept its
+chord. Changing the embedded-layout setting takes effect at the next launch.
+
 **Why a `ctrl+<letter>` chord and not `Ctrl-Tab` / `Ctrl-Shift-Tab`?**
 Those chords only produce a distinct keystroke on terminals running an
 enhanced keyboard protocol (kitty / Ghostty / WezTerm / foot), and not
@@ -83,7 +141,7 @@ Claude Code's "stash prompt" (and XON/XOFF flow-control), readline binds
 the switcher ships unbound and you pick a key that's free in the tools you
 actually attach to.
 
-**Why does it auto-commit instead of switching on key release?**
+**Why does the overview/full-screen picker auto-commit instead of switching on key release?**
 Terminals don't deliver key-*release* events without an enhanced
 keyboard protocol that isn't available here, so "switch the moment you
 release Ctrl" can't be detected. The idle auto-commit (~1s) approximates
@@ -93,6 +151,46 @@ or `Esc` to back out.
 The trigger is configured under `[hotkeys]` as `switch_session` (must be a
 `ctrl+<letter>` chord); it is unbound by default and never overrides the
 detach key.
+
+## Jump to a recently used session
+
+The switcher above is one way to hop across the tree without scrolling;
+these two are faster for the common case of bouncing between a couple of
+sessions and don't open any overlay. Both are backed by the same persisted
+`last_accessed` column the switcher's MRU ordering uses, so the order
+survives a restart — see `agent-deck session recent` below for the CLI view
+of the same data.
+
+| Key | What happens |
+| --- | ------------ |
+| `` ` `` | **Alternate-session toggle.** Swap straight to the session you were on immediately before this one — vim's `Ctrl-^` for sessions. Press it again and you're back where you started. |
+| `Alt-Left` | **MRU walk back.** Step to the previous session in visit order. |
+| `Alt-Right` | **MRU walk forward.** Step to the next session in visit order (redo). |
+
+Both cross group boundaries, like the switcher does. A burst of `Alt-Left`/
+`Alt-Right` holds the walk order stable instead of reshuffling after every
+hop — only a genuinely new selection (an ordinary `Enter`, or the alternate
+toggle) advances the ring. Rebind them under `[hotkeys]` as `alt_session`,
+`mru_back` and `mru_forward` if they collide with your terminal.
+
+Unlike `switch_session`, these three work from the session list only — they
+are not intercepted inside an attach loop, so pressing them while attached
+to a session sends the keystroke to whatever is running inside that
+session instead.
+
+### `agent-deck session recent`
+
+The CLI counterpart, useful for scripting or checking the ordering agent-deck
+will walk without opening the TUI:
+
+```console
+$ agent-deck session recent
+2026-08-23 07:21:34  FP-Agent-Desk                  a1b2c3d4
+2026-08-23 07:20:19  Gog-Secure                      e5f6a7b8
+2026-08-23 07:19:54  FP-Max-Memory                   c9d0e1f2
+
+$ agent-deck session recent --json --limit 5
+```
 
 ## Known terminal gotchas
 

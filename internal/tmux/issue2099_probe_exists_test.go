@@ -50,3 +50,15 @@ func TestIssue2099_ProbeExistsIsExactAndUncached(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, exists, "a killed session must probe as gone regardless of the cache")
 }
+
+// #1873 relies on ProbeExists separating "tmux said the session is gone" from
+// "no tmux client ever answered". A client that cannot be launched at all must
+// be an error, not a false.
+func TestProbeExists_ClientThatCannotLaunchIsUnknownNotAbsent(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no tmux binary reachable
+	s := NewSession("probe-1873-nolaunch", t.TempDir())
+	exists, err := s.ProbeExists()
+	require.Error(t, err, "a probe with no tmux client is indeterminate")
+	assert.False(t, exists)
+	assert.Contains(t, err.Error(), "did not complete")
+}

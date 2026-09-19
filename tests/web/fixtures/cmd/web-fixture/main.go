@@ -95,14 +95,62 @@ func main() {
 	// Wrap the server's handler with the fixture admin endpoints so tests can
 	// reset and inspect state without going through the real Go test harness.
 	handler := server.Handler()
+	streams := newFixtureStreamConnections()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/__fixture/stream-outage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		enabled := r.URL.Query().Get("enabled") == "true"
+		status := 0
+		if enabled {
+			status = http.StatusServiceUnavailable
+			if r.URL.Query().Get("status") == "401" {
+				status = http.StatusUnauthorized
+			}
+		}
+		streams.setUnavailable(status)
+		disconnected := 0
+		if enabled {
+			disconnected = streams.disconnect()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled":      enabled,
+			"disconnected": disconnected,
+		})
+	})
 	mux.Handle("/__fixture/", store.adminHandler())
+	mux.Handle("/events/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status := streams.unavailableStatus(); status != 0 {
+			http.Error(w, "fixture stream outage", status)
+			return
+		}
+		conn, _ := r.Context().Value(fixtureConnKey{}).(net.Conn)
+		if conn == nil {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		defer streams.track(conn)()
+		handler.ServeHTTP(w, r)
+	}))
+	mux.Handle("/api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status := streams.unavailableStatus(); status != 0 {
+			http.Error(w, "fixture stream outage", status)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	mux.Handle("/", handler)
 
 	httpSrv := &http.Server{
 		Addr:              boundAddr.String(),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			return context.WithValue(ctx, fixtureConnKey{}, conn)
+		},
 	}
 
 	errCh := make(chan error, 1)
@@ -183,6 +231,58 @@ type fixtureDeletedEntry struct {
 	deletedAt time.Time
 }
 
+type fixtureConnKey struct{}
+
+type fixtureStreamConnections struct {
+	mu          sync.Mutex
+	active      map[net.Conn]struct{}
+	unavailable int
+}
+
+func newFixtureStreamConnections() *fixtureStreamConnections {
+	return &fixtureStreamConnections{active: make(map[net.Conn]struct{})}
+}
+
+func (s *fixtureStreamConnections) track(conn net.Conn) func() {
+	s.mu.Lock()
+	s.active[conn] = struct{}{}
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.active, conn)
+		s.mu.Unlock()
+	}
+}
+
+func (s *fixtureStreamConnections) setUnavailable(status int) {
+	s.mu.Lock()
+	s.unavailable = status
+	s.mu.Unlock()
+}
+
+func (s *fixtureStreamConnections) unavailableStatus() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unavailable
+}
+
+func (s *fixtureStreamConnections) disconnect() int {
+	s.mu.Lock()
+	connections := make([]net.Conn, 0, len(s.active))
+	for conn := range s.active {
+		connections = append(connections, conn)
+	}
+	s.mu.Unlock()
+
+	for _, conn := range connections {
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetLinger(0)
+		}
+		_ = conn.Close()
+	}
+	return len(connections)
+}
+
 func newFixtureStore() *fixtureStore {
 	return &fixtureStore{
 		now:      time.Now,
@@ -201,8 +301,8 @@ func (s *fixtureStore) seed() {
 	defer s.mu.Unlock()
 	s.remotesEnabled = false
 	s.groups = map[string]*web.MenuGroup{
-		"work":           {Name: "work", Path: "work", Expanded: true, Order: 0, SessionCount: 2},
-		"work/innotrade": {Name: "innotrade", Path: "work/innotrade", Expanded: true, Order: 1, SessionCount: 1},
+		"work":           {Name: "work", Path: "work", Expanded: true, Order: 0, SessionCount: 2, DefaultPath: "/srv/work"},
+		"work/innotrade": {Name: "innotrade", Path: "work/innotrade", Expanded: true, Order: 1, SessionCount: 1, DefaultPath: "/srv/innotrade"},
 		"personal":       {Name: "personal", Path: "personal", Expanded: false, Order: 2, SessionCount: 1},
 	}
 	now := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)

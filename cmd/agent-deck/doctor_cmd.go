@@ -5,17 +5,20 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func handleDoctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	jsonOutput := fs.Bool("json", false, "Output account directory diagnostics as JSON")
+	jsonOutput := fs.Bool("json", false, "Output account and runtime health diagnostics as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck doctor [--json]\n\nCheck named Claude slots configured as [profiles.<name>.claude].config_dir.\nWarn when slots share a directory; missing or unreadable paths remain unknown.\nThis reads directory metadata only and does not verify live login identities.")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck doctor [--json]\n\nReport local runtime health and check named Claude slots configured as [profiles.<name>.claude].config_dir.\nWarn when slots share a directory; missing or unreadable paths remain unknown.\nAccount checks read directory metadata; health reads local samples. Neither verifies live login identities.\nAlso lists untracked tmux sessions (agentdeck_ prefix, not in `list --json`) so you can decide whether to keep or stop them; never stops any itself.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -33,17 +36,36 @@ func handleDoctor(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: load config: %q\n", err.Error())
 		os.Exit(1)
 	}
+	runtimeHealth, err := readRuntimeHealth("", time.Hour)
+	if err != nil {
+		// Report returns its schema and budgets even when history cannot be read.
+		runtimeHealth.Flags = append(runtimeHealth.Flags, "runtime health unknown: "+strconv.QuoteToASCII(err.Error()))
+	}
+	runtimeHealth.UntrackedTmuxSessions = untrackedTmuxSessionsForHealth("")
 	slots := session.DiagnoseClaudeAccountDirectories(config)
+	// Codex notify hook for this host's default CODEX_HOME: without it every
+	// codex session made here is content detection only.
+	codexConfig := getCodexConfigPath()
+	codexHooks := codexHooksStateForConfig(codexConfig)
 	if *jsonOutput {
 		report := struct {
 			AccountSlots []session.AccountDirectoryDiagnostic `json:"account_slots"`
-		}{slots}
+			Health       health.Summary                       `json:"health"`
+			CodexHooks   struct {
+				State  string `json:"state"`
+				Config string `json:"config"`
+			} `json:"codex_hooks"`
+		}{AccountSlots: slots, Health: runtimeHealth}
+		report.CodexHooks.State = codexHooks
+		report.CodexHooks.Config = codexConfig
 		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encode diagnostics: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
+	fmt.Print(health.Format(runtimeHealth))
+	fmt.Printf("Codex notify %s\n", codexHooksLine(codexHooks, codexConfig))
 	fmt.Println("Named Claude account directories:")
 	if len(slots) == 0 {
 		fmt.Println("No named Claude account slots configured.")

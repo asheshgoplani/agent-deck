@@ -35,6 +35,15 @@ const (
 	hotkeyForkWithOptions  = "fork_with_options"
 	hotkeyCopyOutput       = "copy_output"
 	hotkeyCopyPane         = "copy_pane"
+	// hotkeyCopyInfo copies the preview pane's Repo / Path / Branch block
+	// (#791). It shipped hardcoded on "C"; that key now opens the context
+	// inspector, so this moved to "B" and became rebindable like everything
+	// else. Users who want the old key back set [hotkeys].copy_info = "C" and
+	// [hotkeys].context_inspector to something else.
+	hotkeyCopyInfo = "copy_info"
+	// hotkeyContextInspector opens the full-context overlay: everything the
+	// harness is being sent, ranked by what it costs, with a lever per item.
+	hotkeyContextInspector = "context_inspector"
 	hotkeySendOutput       = "send_output"
 	hotkeyExecShell        = "exec_shell"
 	hotkeyOpenShellHere    = "open_shell_here"
@@ -53,6 +62,7 @@ const (
 	hotkeyInstallUpdate    = "install_update" // run `agent-deck update` from the TUI (update_install.go)
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
+	hotkeyDeadLetters      = "dead_letters"
 	// hotkeyAgentsPanel opens the Agents tab.
 	//
 	// The design mockup asks for "a". Every plain letter that reads as
@@ -73,6 +83,17 @@ const (
 	// suggested Ctrl+S collides with Claude Code (stash prompt) and XOFF
 	// flow-control. Users opt in by binding [hotkeys].switch_session.
 	hotkeySwitchSession = "switch_session" // canonical "ctrl+s" (opt-in)
+	// hotkeyAltSession is the vim-style alternate-session toggle (#2058): one
+	// key that swaps between the current session and the one you were on
+	// immediately before, the way Ctrl+^ swaps vim's alternate buffer. Backed
+	// by MRUHistory.Alternate (internal/session/mru.go).
+	hotkeyAltSession = "alt_session"
+	// hotkeyMRUBack / hotkeyMRUForward walk back/forward through recently
+	// visited sessions (#2058), MRU-ordered via the persisted last_accessed
+	// column (MRUHistory.WalkBack/WalkForward). A burst of either key holds
+	// the walk order stable rather than reshuffling after each hop.
+	hotkeyMRUBack    = "mru_back"
+	hotkeyMRUForward = "mru_forward"
 	// Scrollback pager. While attached to a session from the deck (Enter), the
 	// deck owns the viewport so tmux's own copy-mode/scrollback is unreachable
 	// (#1491). This trigger, intercepted in the attach loop, opens an in-view
@@ -115,6 +136,8 @@ var hotkeyActionOrder = []string{
 	hotkeyForkWithOptions,
 	hotkeyCopyOutput,
 	hotkeyCopyPane,
+	hotkeyCopyInfo,
+	hotkeyContextInspector,
 	hotkeySendOutput,
 	hotkeyExecShell,
 	hotkeyOpenShellHere,
@@ -133,8 +156,12 @@ var hotkeyActionOrder = []string{
 	hotkeyInstallUpdate,
 	hotkeyDetach,
 	hotkeyWatcherPanel,
+	hotkeyDeadLetters,
 	hotkeyAgentsPanel,
 	hotkeySwitchSession,
+	hotkeyAltSession,
+	hotkeyMRUBack,
+	hotkeyMRUForward,
 }
 
 var defaultHotkeyBindings = map[string]string{
@@ -165,6 +192,8 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyForkWithOptions:  "F",
 	hotkeyCopyOutput:       "c",
 	hotkeyCopyPane:         "V",
+	hotkeyCopyInfo:         "B",
+	hotkeyContextInspector: "C",
 	hotkeySendOutput:       "x",
 	hotkeyExecShell:        "E",
 	hotkeyOpenShellHere:    "H",
@@ -183,8 +212,12 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyInstallUpdate:    "ctrl+y",
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
+	hotkeyDeadLetters:      "alt+d",
 	hotkeyAgentsPanel:      "alt+a",
 	hotkeySwitchSession:    "ctrl+s",
+	hotkeyAltSession:       "`",
+	hotkeyMRUBack:          "alt+left",
+	hotkeyMRUForward:       "alt+right",
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{

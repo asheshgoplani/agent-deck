@@ -41,7 +41,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.16.10" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.11" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -99,8 +99,9 @@ func recordCLITelemetry(subcommand string, rest []string) {
 	case "add", "list", "ls", "remove", "rm", "rename", "mv", "status", "profile", "update",
 		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
 		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
-		"remote", "worktree", "wt", "costs", "web", "uninstall", "migrate-paths", "hooks",
-		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "deepseek", "feedback", "creds-refresh":
+		"remote", "worktree", "wt", "costs", "usage", "web", "uninstall", "migrate-paths", "hooks",
+		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "feedback", "creds-refresh",
+		"config":
 	default:
 		return
 	}
@@ -267,6 +268,54 @@ func initColorProfile() {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 }
 
+// inheritedProfileEnv is AGENTDECK_PROFILE as this process inherited it,
+// before -p/--profile overwrote it (inheritedProfileEnvSet false: it was
+// unset). profileEnvOverridden records that -p actually overwrote it; the
+// bare form (no -p) leaves the environment alone. See inheritedEnviron.
+var (
+	inheritedProfileEnv    string
+	inheritedProfileEnvSet bool
+	profileEnvOverridden   bool
+)
+
+// applyProfileFlag propagates an explicit -p/--profile selection so config
+// lookups (e.g., per-profile Claude config) resolve consistently across all
+// command paths in this process. The inherited value is kept so a child
+// this process runs on the user's behalf (the wrapped statusLine command)
+// sees the environment it would have seen without the flag.
+func applyProfileFlag(profile string) {
+	if profile == "" {
+		return
+	}
+	inheritedProfileEnv, inheritedProfileEnvSet = os.LookupEnv("AGENTDECK_PROFILE")
+	profileEnvOverridden = true
+	_ = os.Setenv("AGENTDECK_PROFILE", profile)
+}
+
+// inheritedEnviron is os.Environ with AGENTDECK_PROFILE as it was inherited:
+// the -p flag selects a profile for THIS process, not for a command it runs
+// on the user's behalf. A statusLine script that itself calls agent-deck
+// keeps resolving the profile it always did. Without -p nothing was
+// overridden and the environment is passed through untouched.
+func inheritedEnviron() []string {
+	// The statusLine wrapper passes the shell's environment through to the
+	// wrapped command verbatim; it is the user's own command, not an agent
+	// child, so the childenv scrubbing does not apply here.
+	if !profileEnvOverridden {
+		return os.Environ() //nolint:forbidigo // verbatim pass-through for the wrapped statusLine command
+	}
+	env := make([]string, 0, len(os.Environ())+1) //nolint:forbidigo // see above
+	for _, kv := range os.Environ() {             //nolint:forbidigo // see above
+		if !strings.HasPrefix(kv, "AGENTDECK_PROFILE=") {
+			env = append(env, kv)
+		}
+	}
+	if inheritedProfileEnvSet {
+		env = append(env, "AGENTDECK_PROFILE="+inheritedProfileEnv)
+	}
+	return env
+}
+
 func main() {
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
@@ -281,11 +330,7 @@ func main() {
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
-	if profile != "" {
-		// Propagate explicit profile selection so config lookups (e.g., per-profile Claude config)
-		// resolve consistently across all command paths in this process.
-		_ = os.Setenv("AGENTDECK_PROFILE", profile)
-	}
+	applyProfileFlag(profile)
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer
@@ -348,6 +393,12 @@ func main() {
 		case "help", "--help", "-h":
 			printHelp()
 			return
+		case "completion":
+			handleCompletion(args[1:])
+			return
+		case "__complete":
+			handleComplete(profile, args[1:])
+			return
 		case "add":
 			handleAdd(profile, args[1:])
 			return
@@ -404,6 +455,9 @@ func main() {
 		case "launch":
 			handleLaunch(profile, args[1:])
 			return
+		case "health":
+			handleHealth(profile, args[1:])
+			return
 		case "doctor":
 			handleDoctor(args[1:])
 			return
@@ -434,11 +488,20 @@ func main() {
 		case "remote-agent":
 			handleRemoteAgent(profile, args[1:])
 			return
+		case "system":
+			handleSystem(args[1:])
+			return
 		case "worktree", "wt":
 			handleWorktree(profile, args[1:])
 			return
 		case "costs":
 			handleCosts(profile, args[1:])
+			return
+		case "usage":
+			handleUsage(profile, args[1:])
+			return
+		case "config":
+			handleConfig(profile, args[1:])
 			return
 		case "web":
 			webEnabled = true
@@ -481,6 +544,12 @@ func main() {
 		case "cursor-hooks":
 			handleCursorHooks(args[1:])
 			return
+		case "tmux-hooks":
+			handleTmuxHooks(args[1:])
+			return
+		case "pi-hooks":
+			handlePiHooks(args[1:])
+			return
 		case "deepseek":
 			handleDeepSeek(args[1:])
 			return
@@ -507,6 +576,104 @@ func main() {
 			handleDebugDump()
 			return
 		}
+
+		// An unrecognised subcommand used to fall through and launch the TUI.
+		// Every plausible guess at a command that exists under another name —
+		// `agent-deck context`, `ctx`, `inspect`, `tokens` — therefore opened a
+		// full-screen app instead of saying "no such command", and with no TTY
+		// it hung until killed. A word that is not a flag and not a command is a
+		// mistake, and the shell's job is to say so.
+		//
+		// Only handled here when there's a real terminal to print the
+		// "did you mean" suggestion to; the non-TTY case (a forwarded SSH
+		// exec, a redirect, CI) falls through to the walk-defect-#4 guard
+		// below, which carries the "not a terminal" wording that guard's
+		// own regression test checks for.
+		if !webEnabled && args[0] != "" && !strings.HasPrefix(args[0], "-") && stdinStdoutIsTerminal() {
+			fmt.Fprintf(os.Stderr, "Error: unknown command %q.\n", args[0])
+			if suggestion := suggestCommand(args[0]); suggestion != "" {
+				fmt.Fprintf(os.Stderr, "Did you mean: %s\n", suggestion)
+			}
+			fmt.Fprintln(os.Stderr, "Run 'agent-deck help' for the command list, or 'agent-deck' with no arguments for the TUI.")
+			os.Exit(1)
+		}
+	}
+
+	// Extract --group / -g and --select, and validate/warn on them, before
+	// the no-TTY gate below: a scripted or non-interactive invocation must
+	// still get its scope/select diagnostics rather than only the "needs an
+	// interactive terminal" error (#2011 follow-up — this used to run after
+	// the gate, so TestEval_SelectFlag_GroupScopeWarning never saw the
+	// warning in a non-PTY harness).
+	var groupScope string
+	groupScope, args = extractGroupFlag(args)
+	var initialSelect string
+	initialSelect, _ = extractSelectFlag(args)
+	if groupScope != "" {
+		normalizedGroup := normalizeGroupPath(groupScope)
+		// Validate group exists by loading current sessions
+		if storage, err := session.NewStorageWithProfile(profile); err == nil {
+			if _, groups, err := storage.LoadWithGroups(); err == nil {
+				groupTree := session.NewGroupTreeWithGroups(nil, groups)
+				if _, exists := groupTree.Groups[normalizedGroup]; !exists {
+					fmt.Fprintf(os.Stderr, "Error: group '%s' not found\n", groupScope)
+					os.Exit(2)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
+		}
+	}
+	// Warn if --select names a session outside the --group scope (#709).
+	// When both are given, the preselect runs AFTER the group scope is
+	// applied: Home.applyInitialSelection will fail silently if the session
+	// is outside the scope; we pre-warn here so the user sees both outputs
+	// without digging through logs.
+	if initialSelect != "" && groupScope != "" {
+		normalizedGroup := normalizeGroupPath(groupScope)
+		if storage, err := session.NewStorageWithProfile(profile); err == nil {
+			if instances, _, err := storage.LoadWithGroups(); err == nil {
+				found := false
+				for _, inst := range instances {
+					if inst == nil {
+						continue
+					}
+					if inst.ID != initialSelect && !strings.EqualFold(inst.Title, initialSelect) {
+						continue
+					}
+					gp := inst.GroupPath
+					if gp == normalizedGroup || strings.HasPrefix(gp, normalizedGroup+"/") {
+						found = true
+					}
+					break
+				}
+				if !found {
+					fmt.Fprintf(os.Stderr, "Warning: --select %q is not in group %q; cursor will not be repositioned\n", initialSelect, groupScope)
+				}
+			}
+		}
+	}
+
+	// walk defect #4: args[0] not matching any case above is silently
+	// discarded below (nothing reads the raw `args` slice again — only
+	// flags like --group/--select survive extraction), so a stale or
+	// unrecognized command word falls all the way through into the
+	// alt-screen TUI boot exactly like a bare `agent-deck` invocation. That
+	// is how a remote on an agent-deck release that predates a given
+	// subcommand (a forwarded `remote <name> health` reaching a remote that
+	// predates `health`, or any future command added to only one side)
+	// hangs instead of erroring: the forwarded SSH exec has no pty, so the
+	// TUI's synchronous input read never returns. Refuse instead of hanging
+	// whenever this fallthrough is reached without a real terminal.
+	// "web" is the one case above that intentionally falls through instead
+	// of returning (it needs the shared boot code below to start its HTTP
+	// server, headless or not) — it is a recognized command, not the
+	// unrecognized-args[0] fallthrough this guard targets.
+	if len(args) > 0 && !webEnabled && !stdinStdoutIsTerminal() {
+		fmt.Fprintf(os.Stderr, "Error: %q is not a recognized command and stdout is not a terminal, so the interactive UI cannot open; run 'agent-deck help' for the command list\n", args[0])
+		os.Exit(2)
 	}
 
 	// Every path that reaches this point boots the bubbletea TUI (which
@@ -531,6 +698,33 @@ func main() {
 	// pipe got killed by e.g. an SSH logout scope cleanup. Runs in the
 	// background so it never blocks TUI boot. See .planning/v178-ssh-reviver/PLAN.md.
 	go reviveOnStartup(profile)
+
+	// Block TUI launch when stdin is not a terminal.
+	//
+	// A full-screen app with no keyboard is not a screen, it is a hang: bubbletea
+	// reads keys from stdin, so with stdin on a pipe or /dev/null there is no way
+	// to press q and the process paints into the void until it is killed. That is
+	// literally what a cold reviewer's first typo produced — `agent-deck context`
+	// fell through to the TUI and their terminal was dead for two minutes. The
+	// unknown-command guard above closes the common path; this closes the rest of
+	// it (a redirect, a CI job, a `| head`, a scripted invocation).
+	//
+	// Headless web mode never boots a TUI, so it is exempt, and the escape hatch
+	// exists for harnesses that deliberately drive the TUI without a PTY.
+	if !webHeadless && !term.IsTerminal(int(os.Stdin.Fd())) && os.Getenv("AGENT_DECK_ALLOW_NO_TTY") == "" {
+		fmt.Fprintln(os.Stderr, "Error: the agent-deck TUI needs an interactive terminal, and stdin is not one.")
+		fmt.Fprintln(os.Stderr, "Started without a terminal it would draw a full-screen app you cannot type into,")
+		fmt.Fprintln(os.Stderr, "and there would be no key that closes it.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Every reporting command works without a terminal. For example:")
+		fmt.Fprintln(os.Stderr, "  agent-deck list                       # List sessions")
+		fmt.Fprintln(os.Stderr, "  agent-deck status --json              # Status counts as JSON")
+		fmt.Fprintln(os.Stderr, "  agent-deck session context <id>       # What is loaded into every turn")
+		fmt.Fprintln(os.Stderr, "  agent-deck help                       # The full command list")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "To drive the TUI from a harness that has no PTY, set AGENT_DECK_ALLOW_NO_TTY=1.")
+		os.Exit(1)
+	}
 
 	// Block TUI launch inside a managed session to prevent infinite nesting.
 	// CLI commands (add, session start/stop, mcp attach, etc.) still work fine.
@@ -599,6 +793,13 @@ func main() {
 		ensureTmuxInPathOrExit()
 	}
 
+	healthRole := "tui"
+	if webHeadless {
+		healthRole = "web"
+	}
+	stopHealth := startRuntimeHealth(profile, healthRole)
+	defer stopHealth()
+
 	// Create storage early to register instance via SQLite
 	earlyStorage, err := session.NewStorageWithProfile(profile)
 	if err == nil {
@@ -634,6 +835,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		stopHealth()
 		// Stop interval hooks and wait for their kill to land. Hook commands
 		// run in their own process groups — intentionally detached from the
 		// terminal's hangup safety net — and only the in-app quit path
@@ -659,6 +861,9 @@ func main() {
 			_ = db.ReleaseAllClaims()
 			_ = db.UnregisterInstance()
 		}
+		// Hand the outer terminal's cursor and pointer back if the embedded
+		// terminal owned them; deferred releases do not survive os.Exit.
+		runEmbeddedTerminalCleanup()
 		os.Exit(0)
 	}()
 
@@ -741,13 +946,6 @@ func main() {
 		}()
 	}
 
-	// Extract --group / -g flag here (TUI-only path; subcommands consume their own -g)
-	var groupScope string
-	groupScope, args = extractGroupFlag(args)
-	// Extract --select flag (#709): preselect a session without scoping groups.
-	var initialSelect string
-	initialSelect, _ = extractSelectFlag(args)
-
 	// v1.7.41: record TUI launch for feedback-prompt pacing. Seeds
 	// FirstSeenAt on the very first launch and bumps LaunchCount on every
 	// subsequent launch, so feedback.ShouldShow can enforce the min-days +
@@ -770,56 +968,13 @@ func main() {
 
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
-	// Apply group scope if specified via --group / -g flag
+	// --group / --select were already extracted and validated above, before
+	// the no-TTY gate; apply them to the model now that it exists.
 	if groupScope != "" {
-		normalizedGroup := normalizeGroupPath(groupScope)
-		// Validate group exists by loading current sessions
-		if storage, err := session.NewStorageWithProfile(profile); err == nil {
-			if _, groups, err := storage.LoadWithGroups(); err == nil {
-				groupTree := session.NewGroupTreeWithGroups(nil, groups)
-				if _, exists := groupTree.Groups[normalizedGroup]; !exists {
-					fmt.Fprintf(os.Stderr, "Error: group '%s' not found\n", groupScope)
-					os.Exit(2)
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
-		}
-		homeModel.SetGroupScope(normalizedGroup)
+		homeModel.SetGroupScope(normalizeGroupPath(groupScope))
 	}
-	// Apply preselection if specified via --select (#709).
-	// When both -g and --select are given, the preselect runs AFTER the group
-	// scope is applied: Home.applyInitialSelection will fail silently if the
-	// session is outside the scope; we pre-warn here so the user sees both
-	// outputs without digging through logs.
 	if initialSelect != "" {
 		homeModel.SetInitialSelection(initialSelect)
-		if groupScope != "" {
-			if storage, err := session.NewStorageWithProfile(profile); err == nil {
-				if instances, _, err := storage.LoadWithGroups(); err == nil {
-					normalizedGroup := normalizeGroupPath(groupScope)
-					found := false
-					for _, inst := range instances {
-						if inst == nil {
-							continue
-						}
-						if inst.ID != initialSelect && !strings.EqualFold(inst.Title, initialSelect) {
-							continue
-						}
-						gp := inst.GroupPath
-						if gp == normalizedGroup || strings.HasPrefix(gp, normalizedGroup+"/") {
-							found = true
-						}
-						break
-					}
-					if !found {
-						fmt.Fprintf(os.Stderr, "Warning: --select %q is not in group %q; cursor will not be repositioned\n", initialSelect, groupScope)
-					}
-				}
-			}
-		}
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -1005,8 +1160,8 @@ func main() {
 	// key reporting. Terminals that don't support the protocol ignore this
 	// sequence safely.
 	//
-	// As a belt-and-suspenders fallback, we also wrap os.Stdin with
-	// NewCSIuReader, which translates any remaining CSI u sequences (including
+	// As a belt-and-suspenders fallback, the selected compatibility input path
+	// translates any remaining CSI u sequences (including
 	// Shift+hyphen → '_', codepoint 95) to their legacy byte equivalents
 	// before Bubble Tea sees them. This handles terminals that send CSI u
 	// sequences even after the disable request (e.g. tmux with extended-keys).
@@ -1049,12 +1204,41 @@ func main() {
 	// startup; live sibling TUIs (allow_multiple=true) are preserved.
 	tmux.SweepStaleControlClients(tmux.DefaultSocketName())
 
-	p := tea.NewProgram(
-		homeModel,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithInput(ui.NewCSIuReader(os.Stdin)),
-	)
+	programOptions := []tea.ProgramOption{tea.WithAltScreen()}
+	if homeModel.EmbeddedTerminalEnabled() {
+		// The input/output wrappers let the dashboard temporarily hand terminal
+		// traffic to an embedded tmux client without giving up the outer TUI.
+		sessionOutput := ui.NewSessionOutput(os.Stdout)
+		sessionInput := ui.NewSessionInputRouter(os.Stdin)
+		// One release for every exit: the normal return below, the signal
+		// handler, and the p.Run error path (both of which os.Exit past defers).
+		setEmbeddedTerminalCleanup(func() {
+			sessionInput.Deactivate()
+			sessionOutput.ReleaseEmbeddedCursor()
+		})
+		defer runEmbeddedTerminalCleanup()
+		homeModel.SetSessionIO(sessionInput, sessionOutput)
+		programOptions = append(
+			programOptions,
+			// The embedded terminal may request all-motion mouse reporting even
+			// while Bubble Tea owns the outer TTY. The input router translates
+			// coordinates before forwarding those events to the child tmux client.
+			tea.WithMouseAllMotion(),
+			tea.WithReportFocus(),
+			tea.WithInput(sessionInput),
+			tea.WithOutput(sessionOutput),
+		)
+	} else {
+		// Preserve the original Agent Deck protocol exactly when the feature is
+		// omitted or disabled: cell-motion mouse tracking, no focus reporting,
+		// and only the existing CSI-u compatibility reader around stdin.
+		programOptions = append(
+			programOptions,
+			tea.WithMouseCellMotion(),
+			tea.WithInput(ui.NewCSIuReader(os.Stdin)),
+		)
+	}
+	p := tea.NewProgram(homeModel, programOptions...)
 
 	// Start maintenance worker (background goroutine, respects config toggle)
 	maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
@@ -1064,6 +1248,7 @@ func main() {
 	})
 
 	if _, err := p.Run(); err != nil {
+		runEmbeddedTerminalCleanup()
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -1186,19 +1371,20 @@ func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.I
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
 var commandRegistry = map[string]bool{
-	"add": true, "accounts": true, "doctor": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"add": true, "accounts": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
 	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "worktree": true, "wt": true, "costs": true, "web": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true, "config": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
-	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
+	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
-	"help": true, "--help": true, "-h": true,
+	"help": true, "--help": true, "-h": true, "completion": true,
+	"__complete": true,
 }
 
 // extractProfileFlag extracts the global -p or --profile flag from args,
@@ -1359,13 +1545,14 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"c": true, "cmd": true,
 		"m": true, "message": true, "message-file": true,
 		"p": true, "parent": true,
-		"mcp":            true,
-		"channel":        true,
-		"plugin":         true,
-		"extra-arg":      true,
-		"wrapper":        true,
-		"model":          true,
-		"effort":         true,
+		"mcp":           true,
+		"channel":       true,
+		"plugin":        true,
+		"extra-arg":     true,
+		"wrapper":       true,
+		"model":         true,
+		"effort":        true,
+		"startup-query": true, "additional-path": true,
 		"w":              true,
 		"worktree":       true,
 		"location":       true,
@@ -1495,6 +1682,10 @@ func shouldLockTitle(userProvidedTitle, titleLockFlag, noTitleSyncFlag bool) boo
 
 // handleAdd adds a new session from CLI
 func handleAdd(profile string, args []string) {
+	handleAddCommand(profile, args, nil)
+}
+
+func handleAddCommand(profile string, args []string, inspectFlags func(*flag.FlagSet)) {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
 	title := fs.String("title", "", "Session title (defaults to folder name)")
 	titleShort := fs.String("t", "", "Session title (short)")
@@ -1589,7 +1780,7 @@ func handleAdd(profile string, args []string) {
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex or Hermes sessions")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
 	claudeFlags := registerClaudeOptionFlags(fs) // the dialog's Claude Options rows
 
@@ -1604,6 +1795,15 @@ func handleAdd(profile string, args []string) {
 	// and becomes the most-specific level of CLAUDE_CONFIG_DIR resolution.
 	// Empty = fall through to conductor/group/env/profile/global/default.
 	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
+
+	capabilities := fs.Bool("capabilities", false, "Report authoritative creation fields and host catalogs (requires --json)")
+	startupQuery := fs.String("startup-query", "", "Claude startup query, delivered once on initial start")
+	var additionalPaths []string
+	fs.Func("additional-path", "Additional project directory on this host (repeatable)", func(value string) error { additionalPaths = append(additionalPaths, value); return nil })
+	if inspectFlags != nil {
+		inspectFlags(fs)
+		return
+	}
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
@@ -1666,11 +1866,33 @@ func handleAdd(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	args = reorderArgsForFlagParsing(args)
-
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := fs.Parse(normalizeCreationArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
+	if *capabilities {
+		writeCreationCatalog(profile, fs, *jsonOutput)
+		return
+	}
+	if *attach {
+		if *jsonOutput || *sshHost != "" {
+			NewCLIOutput(*jsonOutput, false).Error("--attach cannot be combined with --json or --ssh", ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+		if !stdinStdoutIsTerminal() {
+			NewCLIOutput(false, false).Error("--attach requires an interactive terminal", ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+	}
+	if *sshHost != "" && len(additionalPaths) > 0 {
+		NewCLIOutput(*jsonOutput, false).Error("--additional-path requires creation on the owning host; use remote add", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	validatedAdditionalPaths, pathValidationErr := validateCreationPaths(additionalPaths)
+	if pathValidationErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error(pathValidationErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	if *sshHost != "" && len(pluginFlags) > 0 {
 		fmt.Fprintln(os.Stderr, "Warning: --plugin is persisted but cannot be installed or enabled automatically over SSH; configure the selected plugins in the remote Claude profile.")
 	}
@@ -1709,10 +1931,26 @@ func handleAdd(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	if err := validateCreationOptions(firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), selectedAccount, *modelID, *effort, *yoloMode || *geminiYoloMode, claudeFlags, mcpFlags, pluginFlags, channelFlags, extraArgFlags); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	queryMode := "new"
+	if *resumeSession != "" {
+		queryMode = "resume"
+	}
+	if *claudeFlags.continueMode {
+		queryMode = "continue"
+	}
+	if err := validateCreationStartupQuery(*startupQuery, firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput)), queryMode, *attach && *sshHost == "", extraArgFlags...); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Validate --resume-session requires Claude
 	if *resumeSession != "" {
 		tool := firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
-		if tool != "claude" {
+		if !session.IsClaudeCompatible(tool) {
 			fmt.Println("Error: --resume-session only works with Claude sessions (-c claude)")
 			os.Exit(1)
 		}
@@ -1730,6 +1968,18 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
+	regLock, regLockErr := session.AcquireRegistrationLock(profile)
+	if regLockErr != nil {
+		NewCLIOutput(*jsonOutput, false).Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	releaseRegistration := func() {
+		if regLock != nil {
+			regLock.Release()
+			regLock = nil
+		}
+	}
+	defer releaseRegistration()
 	// Load existing sessions with profile
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
@@ -1748,11 +1998,7 @@ func handleAdd(profile string, args []string) {
 	// Seed groups declared in config.toml into the DB before resolving the
 	// new session's group and working directory.
 	if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
-		if session.ReconcileDeclarativeGroups(groupTree, cfg) {
-			if err := storage.SaveGroupsOnly(groupTree); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to persist declarative groups: %v\n", err)
-			}
-		}
+		session.ReconcileDeclarativeGroups(groupTree, cfg)
 	}
 
 	// Resolve parent session if specified
@@ -1833,6 +2079,20 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
+	if *startupQuery != "" {
+		if err := validateStartupQueryCapacity(profile, sessionGroup, sessionParent, path, *noParent, true, true, nil); err != nil {
+			NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+	if err := validateMultiRepoCreation(path, validatedAdditionalPaths, wtBranch, createNewBranch, *worktreeLocation); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := validatePrimaryCreationPath(path, validatedAdditionalPaths); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	// Verify path exists and is a directory (skip for SSH remote sessions)
 	if *sshHost != "" {
 		// An explicitly given path (positional arg, e.g. `add <remote-path>
@@ -1885,7 +2145,7 @@ func handleAdd(profile string, args []string) {
 
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot, worktreeType string
-	if wtBranch != "" {
+	if wtBranch != "" && len(validatedAdditionalPaths) == 0 {
 		// -w/-b worktree creation is a 100% local filesystem operation
 		// (detectAndCreateBackend + git/jj worktree add below all run against
 		// `path` on THIS machine). Combined with --ssh, `path` at this point
@@ -1915,8 +2175,15 @@ func handleAdd(profile string, args []string) {
 		repoRoot := backend.RepoDir()
 
 		// Determine worktree settings and apply configured branch prefix
-		// (e.g., "$USER/" -> "dani.fernandez/") before validation/existence checks
-		wtSettings := session.GetWorktreeSettings()
+		// (e.g., "$USER/" -> "dani.fernandez/") before validation/existence
+		// checks. Resolved for repoRoot so directory-local
+		// .agent-deck/config.toml overrides (#2093) apply before the
+		// worktree path is calculated.
+		wtSettings, err := session.GetWorktreeSettingsForDir(repoRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid directory-local config: %v\n", err)
+			os.Exit(1)
+		}
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
 		// Pre-validate branch name for better error messages
@@ -1936,17 +2203,14 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		location := wtSettings.DefaultLocation
-		if *worktreeLocation != "" {
-			location = *worktreeLocation
-		}
+		location, template := worktreeLocationAndTemplate(wtSettings, *worktreeLocation)
 
 		// Generate worktree path
 		worktreePath = backend.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  location,
 			SessionID: git.GeneratePathID(),
-			Template:  wtSettings.Template(),
+			Template:  template,
 		})
 
 		// Check for an existing worktree for this branch before creating a new one
@@ -2013,18 +2277,6 @@ func handleAdd(profile string, args []string) {
 	// lock is the stale snapshot the lock exists to invalidate. Released
 	// explicitly right after the save so an interactive `--attach` does not hold
 	// it for the length of the attach.
-	regLock, regLockErr := session.AcquireRegistrationLock(profile)
-	if regLockErr != nil {
-		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	releaseRegistration := func() {
-		if regLock != nil {
-			regLock.Release()
-			regLock = nil
-		}
-	}
-	defer releaseRegistration()
 	freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
 	if reloadErr != nil {
 		// Never fall back to the pre-lock snapshot: that is the stale list the
@@ -2127,7 +2379,7 @@ func handleAdd(profile string, args []string) {
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
 	if len(channelFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			fmt.Println("Error: --channel only supported for claude sessions (use -c claude); requires --channels on the claude binary")
 			os.Exit(1)
 		}
@@ -2136,7 +2388,7 @@ func handleAdd(profile string, args []string) {
 
 	// Apply --plugin flags (catalog-only, claude-only, RFC docs/rfc/PLUGIN_ATTACH.md).
 	if len(pluginFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			fmt.Println("Error: --plugin only supported for claude sessions (use -c claude); plugins enable Claude Code plugin features per-session via enabledPlugins")
 			os.Exit(1)
 		}
@@ -2156,7 +2408,7 @@ func handleAdd(profile string, args []string) {
 	// Apply --extra-arg flags (claude only for now — these are passed to the
 	// claude binary via buildClaudeExtraFlags; other tools have their own builders).
 	if len(extraArgFlags) > 0 {
-		if newInstance.Tool != "claude" {
+		if !session.IsClaudeCompatible(newInstance.Tool) {
 			fmt.Println("Error: --extra-arg only supported for claude sessions (use -c claude); claude is the only tool whose builder appends user extra args")
 			os.Exit(1)
 		}
@@ -2231,12 +2483,17 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
-	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode); err != nil {
+	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode, cliFlagWasSet(fs, "yolo", "gemini-yolo")); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 	if err := applyCLIClaudeOptionFlags(newInstance, claudeFlags); err != nil {
 		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := applyCreationExtras(newInstance, *startupQuery, validatedAdditionalPaths, wtBranch, createNewBranch, *worktreeLocation); err != nil {
+		NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -2252,6 +2509,9 @@ func handleAdd(profile string, args []string) {
 
 	// Rebuild group tree and save
 	groupTree = session.NewGroupTreeWithGroups(instances, groups)
+	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
+		session.ReconcileDeclarativeGroups(groupTree, cfg)
+	}
 	mainCfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = mainCfg.GroupDefaults.MaxConcurrent
 	// Ensure the session's group exists
@@ -2380,6 +2640,10 @@ func handleAdd(profile string, args []string) {
 		"tool":    newInstance.Tool,
 		"group":   newInstance.GroupPath,
 		"profile": storage.Profile(),
+		// #2202: `add` only registers the session — it never spawns tmux.
+		// Say so explicitly rather than leaving a caller to infer it from
+		// the absence of any start-related field.
+		"started": false,
 	}
 	if sessionCommandInput != "" {
 		jsonData["command"] = sessionCommandInput
@@ -2496,6 +2760,12 @@ func handleList(profile string, args []string) {
 	}
 
 	if len(instances) == 0 {
+		if *jsonOutput {
+			// Still a list: --json consumers decode stdout as an array, and the
+			// human sentinel below is not JSON.
+			fmt.Println("[]")
+			return
+		}
 		fmt.Printf("No sessions found in profile '%s'.\n", storage.Profile())
 		return
 	}
@@ -2538,13 +2808,7 @@ func handleList(profile string, args []string) {
 // normal archive flag (via `session unarchive`) intentionally restores a source
 // row to the default list without replaying or deleting its retained lineage.
 func defaultListInstances(instances []*session.Instance) []*session.Instance {
-	visible := make([]*session.Instance, 0, len(instances))
-	for _, inst := range instances {
-		if inst != nil && !(inst.IsArchived() && inst.SupersededBy != "") {
-			visible = append(visible, inst)
-		}
-	}
-	return visible
+	return session.VisibleInstances(instances)
 }
 
 // buildListJSON is the body of `list --json`: every session with its status
@@ -2568,7 +2832,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Model             string    `json:"model,omitempty"`
 		ModelVersion      string    `json:"model_version,omitempty"`
 		Status            string    `json:"status"`
-		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
+		Substate          string    `json:"substate,omitempty"`        // Honest Status v2: additive refinement
+		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
 		Profile           string    `json:"profile"`
 		CreatedAt         time.Time `json:"created_at"`
@@ -2581,14 +2846,29 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		ArchivedAt        time.Time `json:"archived_at,omitempty"`
 		SupersededBy      string    `json:"superseded_by,omitempty"`
 		Supersedes        string    `json:"supersedes,omitempty"`
+		CodexSessionID    string    `json:"codex_session_id,omitempty"`
+		ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
 		// apply the local recency filter (session.TimeFilterMode) to this
 		// session, the same way it applies to a local one.
 		LastActivityAt string `json:"last_activity_at,omitempty"`
+		// Viewers are the people attached to the tmux session (the remote
+		// deck's "who else is viewing" indicator reads it from here). A
+		// pointer so "nobody" ([]) and "unknown" (absent: tmux could not be
+		// asked, or a build predating the field) stay distinct.
+		Viewers *[]tmux.Viewer `json:"viewers,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
+	viewers := session.ViewersByTmuxSession(context.Background(), instances)
+	var pass session.StatusUpdatePass
 	for i, inst := range instances {
-		_ = inst.UpdateStatus()
+		// Listings need live status, not native-session discovery. Persisted
+		// rows have no status freshness stamp, so still validate liveness.
+		_ = pass.UpdateStatusOnly(inst)
+		// The substate read is this pass's one pane capture and can settle
+		// the status it reads (hook lag, session/hook_lag.go): take it
+		// before the status so both describe the same frame.
+		substate := string(inst.Substate())
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
 			ID:                inst.ID,
@@ -2601,7 +2881,8 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Account:           inst.Account,
 			Command:           inst.Command,
 			Status:            StatusString(inst.Status),
-			Substate:          string(inst.Substate()),
+			Substate:          substate,
+			SubstateDetail:    inst.SubstateDetail(),
 			Profile:           profileName,
 			CreatedAt:         inst.CreatedAt,
 			SSHHost:           inst.SSHHost,
@@ -2613,10 +2894,15 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			ArchivedAt:        inst.ArchivedAt,
 			SupersededBy:      inst.SupersededBy,
 			Supersedes:        inst.Supersedes,
+			CodexSessionID:    inst.CodexSessionID,
+			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			sj.TmuxSession = tmuxSess.Name
+			if v, known := viewers[tmuxSess.Name]; known {
+				sj.Viewers = &v
+			}
 		}
 		if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
 			sj.ModelID = modelInfo.ModelID
@@ -2660,8 +2946,11 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 			CreatedAt         time.Time `json:"created_at"`
 			SSHHost           string    `json:"ssh_host,omitempty"`
 			SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
+			CodexSessionID    string    `json:"codex_session_id,omitempty"`
+			ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		}
-		var allSessions []sessionJSON
+		// Non-nil so an empty result marshals as [] rather than null.
+		allSessions := []sessionJSON{}
 
 		for _, profileName := range profiles {
 			storage, err := session.NewStorageWithProfile(profileName)
@@ -2690,6 +2979,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 					CreatedAt:         inst.CreatedAt,
 					SSHHost:           inst.SSHHost,
 					SSHRemotePath:     inst.SSHRemotePath,
+					CodexSessionID:    inst.CodexSessionID,
+					ResolvedCodexHome: inst.ResolvedCodexHome(),
 				})
 			}
 		}
@@ -3026,6 +3317,11 @@ func countByStatus(instances []*session.Instance) statusCounts {
 	// Warm tmux pane-title cache + load hook statuses so `status`/`status --json`
 	// reports the same counts the TUI and /api/menu do (issue #610).
 	session.RefreshInstancesForCLIStatus(instances)
+	// Superseded/archived source rows (from cross-harness "Restart with new
+	// session ID") stay in storage with their old tmux session still
+	// reachable, but `list --json` hides them. Without this filter `status`
+	// counts them anyway, so its total silently exceeds `list --json`'s.
+	instances = session.VisibleInstances(instances)
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
@@ -3119,6 +3415,10 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		os.Exit(1)
 	}
+	// Same tracked set as `list --json`: hide archived cross-harness sources
+	// superseded by a "Restart with new session ID" so status totals never
+	// exceed the enumerable session list.
+	instances = session.VisibleInstances(instances)
 
 	if len(instances) == 0 {
 		if *jsonOutput {
@@ -3149,7 +3449,10 @@ func handleStatus(profile string, args []string) {
 			// ADDED, never renamed: existing fields stay byte-stable; omitempty
 			// so the default "" never appears in output.
 			Substate string `json:"substate,omitempty"`
-			Path     string `json:"path"`
+			// SubstateDetail is free text for the substate (today the codex
+			// usage-limit retry time). Same omitempty contract.
+			SubstateDetail string `json:"substate_detail,omitempty"`
+			Path           string `json:"path"`
 		}
 		type statusJSON struct {
 			Waiting  int                 `json:"waiting"`
@@ -3173,13 +3476,15 @@ func handleStatus(profile string, args []string) {
 			resp.Sessions = make([]statusSessionJSON, 0, len(instances))
 			for _, inst := range instances {
 				_ = inst.UpdateStatus()
+				substate := string(inst.Substate()) // before Status: see buildListJSON
 				sj := statusSessionJSON{
-					ID:       inst.ID,
-					Title:    inst.Title,
-					Tool:     inst.Tool,
-					Status:   StatusString(inst.Status),
-					Substate: string(inst.Substate()),
-					Path:     inst.ProjectPath,
+					ID:             inst.ID,
+					Title:          inst.Title,
+					Tool:           inst.Tool,
+					Status:         StatusString(inst.Status),
+					Substate:       substate,
+					SubstateDetail: inst.SubstateDetail(),
+					Path:           inst.ProjectPath,
 				}
 				if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
 					sj.ModelID = modelInfo.ModelID
@@ -3907,7 +4212,8 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
-	fmt.Println("  doctor           Check named Claude account directory sharing")
+	fmt.Println("  doctor           Check accounts and runtime health")
+	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")
 	fmt.Println("  list, ls         List all sessions")
 	fmt.Println("  remove, rm       Remove a session")
@@ -3921,9 +4227,12 @@ func printHelp() {
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
 	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
+	fmt.Println("  tmux-hooks       Manage the window policy hook on the tmux server")
+	fmt.Println("  pi-hooks         Manage pi (pi-coding-agent) hook integration")
 	fmt.Println("  deepseek         Inspect the DeepSeek Harness (dsh) integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
+	fmt.Println("  usage            Show remaining provider subscription quota")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
@@ -3938,6 +4247,7 @@ func printHelp() {
 	fmt.Println("  uninstall        Uninstall Agent Deck")
 	fmt.Println("  version          Show version")
 	fmt.Println("  help             Show this help")
+	fmt.Println("  completion       Print a shell completion script (bash, zsh, fish)")
 	fmt.Println()
 	fmt.Println("Session Commands:")
 	fmt.Println("  session start <id>        Start a session's tmux process")
@@ -3946,6 +4256,8 @@ func printHelp() {
 	fmt.Println("  session fork <id>         Fork Claude or Pi session with context")
 	fmt.Println("  session attach <id>       Attach to session interactively")
 	fmt.Println("  session show [id]         Show session details")
+	fmt.Println("  session viewers [id]      Who is viewing a session (attached terminals)")
+	fmt.Println("  session context [id]      Show what is loaded into every turn, and what you can remove")
 	fmt.Println()
 	fmt.Println("Fleet Recovery Commands:")
 	fmt.Println("  fleet status              Report sessions whose panes are gone (read-only)")
@@ -3977,6 +4289,12 @@ func printHelp() {
 	fmt.Println("  cursor-hooks install      Install Cursor hooks")
 	fmt.Println("  cursor-hooks uninstall    Remove Cursor hooks")
 	fmt.Println("  cursor-hooks status       Show Cursor hooks install status")
+	fmt.Println("  tmux-hooks install        Install or refresh the tmux window policy hook")
+	fmt.Println("  tmux-hooks uninstall      Remove the tmux window policy hook (only if agent-deck's)")
+	fmt.Println("  tmux-hooks status         Show whether the tmux hook slot is agent-deck's")
+	fmt.Println("  pi-hooks install          Install or upgrade the pi extension")
+	fmt.Println("  pi-hooks uninstall        Remove the pi extension")
+	fmt.Println("  pi-hooks status           Show pi extension install status")
 	fmt.Println("  deepseek status           Show resolved dsh binary, DSH_HOME, profile")
 	fmt.Println("  deepseek profiles         List profiles under $DSH_HOME/profiles")
 	fmt.Println("  deepseek sessions [path]  List dsh sessions recorded for a workspace")
@@ -4009,6 +4327,10 @@ func printHelp() {
 	fmt.Println("  worktree info <session>   Show worktree info for a session")
 	fmt.Println("  worktree cleanup          Find and remove orphaned worktrees/sessions")
 	fmt.Println()
+	fmt.Println("Config Commands:")
+	fmt.Println("  config show --effective [path] [--json]   Show merged [worktree] settings and their source")
+	fmt.Println("                                             (built-in default / global / dir-local file)")
+	fmt.Println()
 	fmt.Println("Profile Commands:")
 	fmt.Println("  profile list              List all profiles")
 	fmt.Println("  profile create <name>     Create a new profile")
@@ -4022,6 +4344,7 @@ func printHelp() {
 	fmt.Println("  agent-deck add -t \"My App\" -g dev .   # With title and group")
 	fmt.Println("  agent-deck session start my-project   # Start a session")
 	fmt.Println("  agent-deck session show               # Show current session (in tmux)")
+	fmt.Println("  agent-deck session context my-project # What is loaded into every turn, ranked by cost")
 	fmt.Println("  agent-deck mcp list --json            # List MCPs as JSON")
 	fmt.Println("  agent-deck mcp attach my-app exa      # Attach MCP to session")
 	fmt.Println("  agent-deck skill attach my-app react  # Attach skill to project")
@@ -4031,6 +4354,11 @@ func printHelp() {
 	fmt.Println("  agent-deck web --read-only            # TUI + web in read-only mode")
 	fmt.Println("  agent-deck web --token secret         # auth token (REQUIRED to bind a non-loopback address)")
 	fmt.Println("  agent-deck web --help                 # Show web command flags")
+	fmt.Println()
+	fmt.Println("Shell Completion:")
+	fmt.Println("  agent-deck completion bash             # Print bash completion script")
+	fmt.Println("  agent-deck completion zsh              # Print zsh completion script")
+	fmt.Println("  agent-deck completion fish             # Print fish completion script")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
 	fmt.Println("  AGENTDECK_PROFILE    Default profile to use")
@@ -4048,9 +4376,10 @@ func printHelp() {
 	fmt.Println("Keyboard shortcuts (in TUI):")
 	fmt.Println("  n          New session")
 	fmt.Println("  g          New group")
-	fmt.Println("  Enter      Attach to session")
+	fmt.Println("  Enter      Attach to session (with [ui].embedded_terminal = true: focus the embedded terminal pane)")
 	fmt.Println("  m          MCP Manager")
 	fmt.Println("  s          Skills Manager")
+	fmt.Println("  C          Inspect context (what is loaded into every turn)")
 	fmt.Println("  M          Move session to group")
 	fmt.Println("  r          Rename session/group")
 	fmt.Println("  R          Restart session")
@@ -4059,6 +4388,29 @@ func printHelp() {
 	fmt.Println("  /          Search")
 	fmt.Println("  Ctrl+Q     Detach from session")
 	fmt.Println("  q          Quit")
+}
+
+// suggestCommand maps a plausible-but-wrong first word onto the command that
+// does what the user was reaching for. It exists because the names people guess
+// are not always the names a command tree grew: everything below was an actual
+// first guess at `session context`.
+func suggestCommand(arg string) string {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "context", "ctx", "inspect", "tokens", "usage":
+		return "agent-deck session context [id]"
+	case "sessions":
+		return "agent-deck list"
+	case "start", "stop", "restart", "fork", "attach", "show":
+		return "agent-deck session " + strings.ToLower(arg) + " <id>"
+	case "mcps":
+		return "agent-deck mcp list"
+	case "skills":
+		return "agent-deck skill list"
+	case "groups":
+		return "agent-deck group list"
+	default:
+		return ""
+	}
 }
 
 // mergeFlags returns the non-empty value, preferring the first

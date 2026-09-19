@@ -3,8 +3,8 @@
 Every session agent-deck launches is told, at runtime and in a form the model
 can read, that it runs inside agent-deck, what its own session identity is,
 and how to use the `agent-deck` CLI from inside. This works in every harness
-(`claude`, `codex`, `pi`, `gemini`) and, through an environment variable, in
-custom `--cmd` sessions too.
+(`claude`, `codex`, `pi`, `omp`, `gemini`) and, through an environment
+variable, in custom `--cmd` sessions too.
 
 ## What the session learns
 
@@ -57,11 +57,18 @@ Nothing is ever written into the project directory: no `AGENTS.md`,
 | `claude` | `--append-system-prompt-file <file>` (Claude's own prompt is kept) | yes, incl. `--resume` and forks | custom `[claude].command` wrappers, `claude <subcommand>` passthrough: env var only |
 | `codex` | `-c developer_instructions="<block>"`, the block inlined as a TOML basic string (lossless for any title/path); a `developer_instructions` you configured in that launch's `CODEX_HOME/config.toml` is placed first so it is never replaced. `model_instructions_file` would replace the base prompt and is not used | yes, incl. `resume` / `fork` | custom codex commands (`-c "codex --flag"`): env var only |
 | `pi` | `--append-system-prompt <file>` | yes, incl. `session fork` | |
+| `omp` | `--append-system-prompt <file>` (Oh My Pi, same shape as `pi`; upstream docs `docs/cli-reference.md`) | yes, incl. `session fork` | |
 | `gemini` | `--include-directories <dir>` with `GEMINI.md` inside, loaded as project memory next to the project's own | yes, incl. `--resume` | see folder trust below |
 | custom `--cmd`, opencode, cursor, copilot, crush, hermes, deepseek | `AGENTDECK_IDENTITY_FILE` in the environment | yes | no prompt injection; the command decides whether to read the file |
+| plain shell session (`shell`, no command) | `AGENTDECK_IDENTITY_FILE` exported into the pane shell by one line typed at start, together with `AGENTDECK_INSTANCE_ID`, `AGENTDECK_PROFILE`, `AGENTDECK_TOOL` and `AGENTDECK_TITLE` (the pane shell was already running when tmux's session environment was set, so an export is the only way to reach it) | yes | the line is visible in the pane; it is space-prefixed so a history that ignores such lines skips it |
 
 SSH (`--ssh`) and Docker-sandboxed sessions are skipped entirely: the file
 lives on the controller host and would not be visible where the harness runs.
+
+A session created on a remote through `remote <name> add` or the TUI dialog
+is spawned by that remote's own agent-deck, so it gets the block like a local
+session there: the file is written on the remote, and `$AGENTDECK_IDENTITY_FILE`
+in the session is a path on that host.
 
 A session switched to another harness (`session switch-harness`, #2237) is a
 new instance in the new harness; its launch command carries the new
@@ -121,8 +128,80 @@ agent-deck launch --no-identity . -c claude -m "..."
 The TUI New Session dialog has no row for this in this release; use the CLI
 flag or the config key.
 
+## Context levels (issue #2260)
+
+`inject_identity = false` is an all-or-nothing switch. Context levels give
+three sizes of the same block instead of just on/off:
+
+| Level | What is written |
+|-------|------------------|
+| `none` | nothing — no file, no harness flag (same as `inject_identity = false` / `--no-identity`) |
+| `primer` | a short block: session id, title, tool and parent only, no CLI reference or skills list |
+| `full` | the block shown above (session record + CLI reference + skills + completion sentinel) — the only behaviour that existed before this issue, and the default |
+
+Precedence is **global < group < session**: the nearest, most specific
+setting wins.
+
+```toml
+# config.toml — global default
+[launch]
+context_level = "primer"   # none | primer | full
+
+# per group, walks ancestor groups like other [groups."<path>"] overrides
+[groups."conductor/workers"]
+context_level = "full"
+```
+
+```bash
+# per session, persisted; restart required (baked into the spawn command)
+agent-deck session set <id> context-level primer
+agent-deck session set <id> context-level ""       # clear: inherit group/global
+```
+
+The legacy `--no-identity` per-session opt-out keeps meaning `none` and
+keeps winning over a positive `context_level` at any layer (backward
+compatibility for an operator who set it before this issue existed). The
+legacy *global* `inject_identity = false`, however, is just the global
+layer's value: a group or session `context_level` overrides it, the same as
+any other global < group < session precedence.
+
+### Inspecting what a session actually gets
+
+`agent-deck session primer [id]` resolves the level for a session (or the
+current one, auto-detected, if `id` is omitted) and prints exactly the text
+that session's harness receives — or would receive on its next
+start/restart — plus which layer decided the level:
+
+```
+$ agent-deck session primer my-project
+Session:       my-project (8c211446-1789219548)
+Context level: primer
+Source:        group:conductor/workers
+Identity file: /Users/you/.local/share/agent-deck/runtime/identity/8c211446-1789219548/identity.md
+
+# agent-deck session (primer)
+You are running inside agent-deck, a terminal session manager for AI coding agents.
+- session id: 8c211446-1789219548
+- title: my-project
+- tool: claude
+- parent session id: (none: this is a root session)
+Run `agent-deck session current --json` for the full record and CLI reference.
+It is at $AGENTDECK_IDENTITY_FILE and is regenerated on every start/restart.
+```
+
+`--json` gives the same fields programmatically (`context_level`, `source`,
+`active`, `identity_file`, `text`, and `skip_reason` when injection is
+skipped for an SSH/sandboxed session or the level is `none`). `source` is one
+of `session`, `session (--no-identity)`, `group:<path>`, `global`,
+`global (inject_identity=false)`, or `default`. Fields that are unset on the
+session record render as `(none)` (or `(none: this is a root session)` for
+the parent) exactly as the full block does — the command never invents a
+value that isn't on the record.
+
 ## Verifying
 
 Inside any session: `echo $AGENTDECK_IDENTITY_FILE`, `cat` it, or run
 `agent-deck session current --json`. From outside, the flag is visible on the
-pane's start command (`tmux display-message -p '#{pane_start_command}'`).
+pane's start command (`tmux display-message -p '#{pane_start_command}'`), or
+run `agent-deck session primer <id>` to see the resolved level and text
+without attaching.

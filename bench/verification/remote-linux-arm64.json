@@ -1,0 +1,333 @@
+{
+  "schema_version": 1,
+  "platform": "linux-arm64",
+  "machine": "docker-arm64-16cpu-shared",
+  "revision": "87cf89e544f4366ec464d4420160676793fa8bc9",
+  "seed": 2286,
+  "runs": 1,
+  "metrics": [
+    {
+      "size": 10,
+      "name": "cold_start_populated_terminal_frame_ms",
+      "unit": "ms",
+      "samples": [
+        5788.619502
+      ],
+      "p50": 5788.619502,
+      "p95": 5788.619502
+    },
+    {
+      "size": 10,
+      "name": "cold_start_populated_terminal_frame_tmux_subprocesses",
+      "unit": "count",
+      "samples": [
+        5
+      ],
+      "p50": 5,
+      "p95": 5
+    },
+    {
+      "size": 10,
+      "name": "goroutines",
+      "unit": "count",
+      "samples": [
+        4
+      ],
+      "p50": 4,
+      "p95": 4
+    },
+    {
+      "size": 10,
+      "name": "group_activity_map_ms",
+      "unit": "ms",
+      "samples": [
+        0.0023250000000000002
+      ],
+      "p50": 0.0023250000000000002,
+      "p95": 0.0023250000000000002
+    },
+    {
+      "size": 10,
+      "name": "list_json_ms",
+      "unit": "ms",
+      "samples": [
+        255.154
+      ],
+      "p50": 255.154,
+      "p95": 255.154
+    },
+    {
+      "size": 10,
+      "name": "list_json_tmux_subprocesses",
+      "unit": "count",
+      "samples": [
+        48
+      ],
+      "p50": 48,
+      "p95": 48
+    },
+    {
+      "size": 10,
+      "name": "orphan_hook_files_remaining",
+      "unit": "count",
+      "samples": [
+        30
+      ],
+      "p50": 30,
+      "p95": 30
+    },
+    {
+      "size": 10,
+      "name": "remote_auth_refresh_ms",
+      "unit": "ms",
+      "samples": [
+        1.522
+      ],
+      "p50": 1.522,
+      "p95": 1.522
+    },
+    {
+      "size": 10,
+      "name": "remote_auth_refresh_ssh_subprocesses",
+      "unit": "count",
+      "samples": [
+        1
+      ],
+      "p50": 1,
+      "p95": 1
+    },
+    {
+      "size": 10,
+      "name": "remote_fast_refresh_ms",
+      "unit": "ms",
+      "samples": [
+        1.128
+      ],
+      "p50": 1.128,
+      "p95": 1.128
+    },
+    {
+      "size": 10,
+      "name": "remote_fast_refresh_ssh_subprocesses",
+      "unit": "count",
+      "samples": [
+        2
+      ],
+      "p50": 2,
+      "p95": 2
+    },
+    {
+      "size": 10,
+      "name": "remote_slow_refresh_ms",
+      "unit": "ms",
+      "samples": [
+        6003.511
+      ],
+      "p50": 6003.511,
+      "p95": 6003.511
+    },
+    {
+      "size": 10,
+      "name": "remote_slow_refresh_ssh_subprocesses",
+      "unit": "count",
+      "samples": [
+        2
+      ],
+      "p50": 2,
+      "p95": 2
+    },
+    {
+      "size": 10,
+      "name": "send_cli_unconfirmed",
+      "unit": "count",
+      "samples": [
+        1
+      ],
+      "p50": 1,
+      "p95": 1
+    },
+    {
+      "size": 10,
+      "name": "send_round_trip_ms",
+      "unit": "ms",
+      "samples": [
+        7508.44
+      ],
+      "p50": 7508.44,
+      "p95": 7508.44
+    },
+    {
+      "size": 10,
+      "name": "send_round_trip_tmux_subprocesses",
+      "unit": "count",
+      "samples": [
+        98
+      ],
+      "p50": 98,
+      "p95": 98
+    },
+    {
+      "size": 10,
+      "name": "session_show_ms",
+      "unit": "ms",
+      "samples": [
+        41.639
+      ],
+      "p50": 41.639,
+      "p95": 41.639
+    },
+    {
+      "size": 10,
+      "name": "session_show_tmux_subprocesses",
+      "unit": "count",
+      "samples": [
+        3
+      ],
+      "p50": 3,
+      "p95": 3
+    },
+    {
+      "size": 10,
+      "name": "status_pass_ms",
+      "unit": "ms",
+      "samples": [
+        229.70325
+      ],
+      "p50": 229.70325,
+      "p95": 229.70325
+    },
+    {
+      "size": 10,
+      "name": "tmux_calls",
+      "unit": "count",
+      "samples": [
+        62
+      ],
+      "p50": 62,
+      "p95": 62
+    },
+    {
+      "size": 10,
+      "name": "tui_first_populated_frame_ms",
+      "unit": "ms",
+      "samples": [
+        274.167916
+      ],
+      "p50": 274.167916,
+      "p95": 274.167916
+    },
+    {
+      "size": 10,
+      "name": "tui_key_repeat_frame_ms",
+      "unit": "ms",
+      "samples": [
+        2.394458,
+        0.662042,
+        0.640917,
+        0.530167,
+        0.6125,
+        0.532792,
+        0.620458,
+        0.74275,
+        1.19475,
+        0.731917,
+        0.697125,
+        0.825625,
+        0.593958,
+        0.652542,
+        1.969958,
+        0.675166,
+        0.544583,
+        0.523291,
+        0.71625,
+        0.530375,
+        0.635,
+        0.653333,
+        0.650792,
+        0.5415,
+        0.625583,
+        0.541167,
+        0.533791,
+        0.616791,
+        0.539041,
+        0.612042,
+        0.557916,
+        0.953292,
+        5.362417,
+        1.203708,
+        0.662875,
+        1.271166,
+        0.815,
+        0.628459,
+        0.64825,
+        0.577334,
+        0.620875,
+        0.564167,
+        0.544,
+        0.537458,
+        0.551292,
+        0.574125,
+        0.61075,
+        0.977667,
+        2.693666,
+        1.344959,
+        0.769291,
+        0.896375,
+        0.953375,
+        1.063667,
+        0.6845,
+        0.747167,
+        0.657791,
+        0.951791,
+        0.973958,
+        0.692208,
+        1.059625,
+        0.867459,
+        0.673417,
+        0.922834,
+        0.678167,
+        0.648291,
+        0.64525,
+        0.576125,
+        0.645584,
+        0.569791,
+        0.56775,
+        0.634208,
+        0.537917,
+        2.519042,
+        1.3645,
+        1.276417,
+        0.60425,
+        0.572042,
+        0.621958,
+        0.55025,
+        1.069791,
+        0.842958,
+        0.698959,
+        0.976375,
+        0.629,
+        0.629625,
+        0.588166,
+        0.558,
+        0.554167,
+        1.515875,
+        1.60475,
+        1.681875,
+        0.956208,
+        0.788584,
+        0.855875,
+        0.706875,
+        0.628083,
+        0.550542,
+        0.53675,
+        0.655417
+      ],
+      "p50": 0.652542,
+      "p95": 1.681875
+    }
+  ],
+  "unavailable": {
+    "open_fds": "shared runtime-health sampler is not available in the base revision",
+    "rss_bytes": "shared runtime-health sampler is not available in the base revision"
+  }
+}

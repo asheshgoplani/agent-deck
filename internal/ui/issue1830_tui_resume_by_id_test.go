@@ -36,6 +36,7 @@ func TestIssue1830_TUICreateResumeByIDVouchesOwnership(t *testing.T) {
 	msg := h.createSessionInGroupWithWorktreeAndOptions(
 		"resume-by-id-test",
 		t.TempDir(),
+		"",
 		"claude",
 		"test",
 		"", "", "",

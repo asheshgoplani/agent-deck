@@ -1,0 +1,2 @@
+terminal_width=48 list_width=16
+   └─ ● … shell

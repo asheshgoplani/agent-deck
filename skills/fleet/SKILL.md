@@ -2,7 +2,7 @@
 name: fleet
 description: Fan out a fleet of independent agent-deck child sessions from inside a session and check their progress non-blockingly. Use when the user wants to "launch several/N sessions", "fan out", "run agents in parallel", "spin up a fleet", "kick off background agents", or "check progress from the main session" without blocking — covers launching parented children, polling status + completion via `session children`, and collecting results via `session output`.
 metadata:
-  compatibility: "claude, opencode"
+  compatibility: "claude, codex, opencode"
 ---
 
 # Fleet
@@ -102,13 +102,15 @@ agent-deck session children --json
 ```
 
 Lists your sub-sessions with, per child: `id`, `title`, live `status`
-(running / waiting / idle / error), and the last asserted completion
+(running / waiting / idle / error), and last asserted completion history
 (`done_status` = ok|fail, `done_summary`, `done_at`). Defaults to the current
 session; pass an id/title to inspect another parent. **Read-only** — it never
 clears the inbox, so you can poll it as often as you like from any chat without
 disturbing the conductor or other readers.
 
-A child with a `done_status` has finished and asserted its result.
+`done_status` records a prior assertion; it is not proof that the current turn
+is finished. Treat live `running`, `queued`, or `unknown` as still active even
+when completion history is present.
 
 **Prefer push over polling when your harness supports it.** Instead of
 re-running the check yourself, let the fleet notify you:
@@ -116,8 +118,9 @@ re-running the check yourself, let the fleet notify you:
 ```bash
 # One-shot "wake me when the whole fleet is finished" — run this in the
 # BACKGROUND (e.g. Claude Code's run_in_background Bash): it streams JSONL
-# events and exits 0 once every child is terminal (done sentinel, error,
-# or stopped). The harness notifies you when it exits.
+# events and exits 0 once every child either needs input or is terminal
+# (waiting, done sentinel, error, or stopped). The harness notifies you when
+# it exits, so answer waiting children before starting another wait.
 agent-deck session children --follow --until-done
 
 # Live event stream for a long-running fleet — attach a stream watcher
@@ -235,13 +238,14 @@ agent-deck ls --json | jq -r '.[] | select(.title|test("<name>")) | "\(.title)\t
 All read-only / on-demand — none of them block your session:
 
 - `agent-deck session children [id] --json` — **the default monitor.** Live
-  status + last completion per child. Non-destructive (never clears the inbox),
+  status + last completion history per child. Non-destructive (never clears the inbox),
   so poll it as often as you like. Start here every heartbeat.
 - `agent-deck session children --follow [--until-done]` — **the push monitor.**
   Streams JSONL child events (snapshot/added/status/done/removed/error +
   heartbeat) until interrupted; with `--until-done` it exits 0 once every child
-  is terminal. Run it in the background for a completion wake-up, or attach a
-  stream watcher for live events. Read-only like the plain form.
+  is waiting or terminal. Run it in the background for an intervention or
+  completion wake-up, or attach a stream watcher for live events. Read-only
+  like the plain form.
 - `agent-deck session output <id> --json` — a child's latest full response.
 - `agent-deck session send <id> "<msg>" [--wait|--stream|--no-wait|--draft]` —
   send a follow-up / answer a `waiting` child.
@@ -301,3 +305,7 @@ it with `AGENTDECK_NO_CHILDREN_CONTEXT=1` in its environment.
   worktree/branch stay on disk).
 - **Stopping / cleanup:** `agent-deck session stop <id>` and
   `agent-deck session remove <id>` (add `--force` if needed) tear a child down.
+
+## Backward Compatibility
+
+Verified against v1.16.11-rc.2. `agent-deck session children` and `launch --assert-done` (the two hard requirements this skill states up front) have been stable for several releases — if `agent-deck session children --help` succeeds, you have them. `--follow`/`--until-done` are the newer, push-style additions: on a deck without them, fall back to the until-loop already shown above (`until agent-deck session children --json | jq -e '...'; do sleep 15; done`). `session send`'s finer-grained `--json` delivery values (`queued`, `delivered`, `unverified`) are recent (see the [agent-deck skill](../agent-deck/SKILL.md#backward-compatibility)); on an older deck, treat any exit-0 send as "delivered, confirm separately" rather than branching on a `confirmation` field that may not exist yet.

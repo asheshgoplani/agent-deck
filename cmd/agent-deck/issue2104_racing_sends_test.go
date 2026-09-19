@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // ---------------------------------------------------------------------------
@@ -106,6 +108,19 @@ func (p *racingClaudePane) SendKeysChunked(body string) error {
 func (p *racingClaudePane) SendKeysAndEnter(body string) error {
 	p.typeBody(body)
 	time.Sleep(p.chunkDelay)
+	return p.SendEnter()
+}
+
+// SendKeysAndEnterChecked mirrors SendKeysAndEnter above, with the pre-Enter
+// paste check *tmux.Session runs in between: a check that reports not-ok
+// withholds the Enter and surfaces its error.
+func (p *racingClaudePane) SendKeysAndEnterChecked(body string, capture func() (string, error), check tmux.PostPasteCheck) error {
+	p.typeBody(body)
+	time.Sleep(p.chunkDelay)
+	pane, capErr := capture()
+	if ok, err := check(pane, capErr); !ok {
+		return err
+	}
 	return p.SendEnter()
 }
 

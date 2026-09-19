@@ -24,7 +24,7 @@ func TestIssue1952_OrdinaryWaitingTurnRemainsActionableAfterRemoteDrain(t *testi
 	if err != nil {
 		t.Fatalf("ExportPendingRecords: %v", err)
 	}
-	collapsed := collapseLastWins(records)
+	collapsed := collapseTurnRetries(records)
 	if len(collapsed) != 1 {
 		t.Fatalf("one observed turn must remain one record after export and collapse, got %+v", collapsed)
 	}

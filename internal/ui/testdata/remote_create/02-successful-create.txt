@@ -1,0 +1,18 @@
+  ▾ remotes/lab (1) ● 1
+▶   └─ ● parity-1789685743 claude
+--- preview ---
+parity-1789685743  ● running
+
+Remote:  lab
+Path:    /tmp
+Tool:    claude
+Group:   tmp
+Viewers: unknown (remote did not report viewers)
+
+Last response
+----------------------------------------
+Fetching remote preview...
+
+Press Enter to attach via SSH
+--- footer ---
+(no error)

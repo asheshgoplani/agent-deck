@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -193,7 +194,14 @@ func WriteInboxEventIfNew(parentSessionID string, event TransitionNotificationEv
 		return false, fmt.Errorf("lock inbox append: %w", err)
 	}
 	defer fileLock.Release()
+	return writeInboxEventIfNewFlocked(parentSessionID, event)
+}
 
+// writeInboxEventIfNewFlocked is WriteInboxEventIfNew for a caller that
+// already holds the inbox flock (lock order step 1); it takes inboxWriteMu
+// itself.
+func writeInboxEventIfNewFlocked(parentSessionID string, event TransitionNotificationEvent) (bool, error) {
+	path := InboxPathFor(parentSessionID)
 	fp := EventFingerprint(event)
 
 	inboxWriteMu.Lock()
@@ -261,6 +269,67 @@ func checkedInboxAppendCapacity(existingLen, lineLen int) (int, error) {
 	return existingLen + lineLen + 1, nil
 }
 
+// forEachInboxLine reads JSONL records without allowing one malformed or
+// oversized line to prevent later records from being processed. Oversized lines
+// are discarded through their terminating newline; the callback sees only
+// non-empty, bounded lines without the newline delimiter.
+func forEachInboxLine(f *os.File, fn func([]byte) error) error {
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var line []byte
+
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			if len(line)+len(fragment) > maxInboxLineBytes {
+				line = nil
+				if fragment[len(fragment)-1] != '\n' {
+					for {
+						discard, discardErr := reader.ReadSlice('\n')
+						if len(discard) > 0 && discard[len(discard)-1] == '\n' {
+							break
+						}
+						if discardErr != nil {
+							if errors.Is(discardErr, io.EOF) {
+								return nil
+							}
+							// The remainder of an oversized line refills the
+							// reader once per buffer; that is not a failure.
+							if errors.Is(discardErr, bufio.ErrBufferFull) {
+								continue
+							}
+							return discardErr
+						}
+					}
+				}
+			} else {
+				line = append(line, fragment...)
+				if fragment[len(fragment)-1] == '\n' {
+					line = line[:len(line)-1]
+					if len(strings.TrimSpace(string(line))) > 0 {
+						if err := fn(line); err != nil {
+							return err
+						}
+					}
+					line = nil
+				}
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if len(line) > 0 && len(strings.TrimSpace(string(line))) > 0 {
+					return fn(line)
+				}
+				return nil
+			}
+			if errors.Is(err, bufio.ErrBufferFull) {
+				continue
+			}
+			return err
+		}
+	}
+}
+
 // loadInboxFingerprintsLocked scans an existing inbox file and returns the
 // set of fingerprints already persisted. Caller holds inboxWriteMu.
 //
@@ -275,33 +344,23 @@ func loadInboxFingerprintsLocked(path string) map[string]struct{} {
 		return out
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	if err := forEachInboxLine(f, func(line []byte) error {
 		var probe struct {
 			TransitionNotificationEvent
 			Fingerprint string `json:"fp"`
 		}
-		if err := json.Unmarshal([]byte(line), &probe); err != nil {
-			continue
+		if err := json.Unmarshal(line, &probe); err != nil {
+			return nil
 		}
 		fp := probe.Fingerprint
 		if fp == "" {
 			fp = EventFingerprint(probe.TransitionNotificationEvent)
 		}
 		out[fp] = struct{}{}
-	}
-	// Audit B6: a scanner error (e.g. an oversized line at the raised cap, or a
-	// read fault) must not silently yield an INCOMPLETE dedup set — that would
-	// let WriteInboxEvent re-append events the file already holds. On error we
-	// reset to the empty set: a fresh full scan failed, so treat dedup state as
-	// unknown rather than partially-known. The caller's write still proceeds;
-	// worst case is a duplicate the drain's turn_fingerprint dedup collapses.
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
+		// A read failure leaves dedup state unknown; the caller may still append,
+		// and the durable consumer will collapse any resulting duplicate.
 		return map[string]struct{}{}
 	}
 	return out
@@ -363,6 +422,11 @@ func SweepInboxByTuple(parentSessionID, childSessionID, fromStatus, toStatus str
 
 	path := InboxPathFor(parentSessionID)
 
+	fileLock, err := acquireInboxLock(parentSessionID)
+	if err != nil {
+		return 0, err
+	}
+	defer fileLock.Release()
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
@@ -398,24 +462,18 @@ func SweepInboxByTTL(maxAge time.Duration) (int, error) {
 
 	cutoff := time.Now().Add(-maxAge)
 
-	inboxWriteMu.Lock()
-	defer inboxWriteMu.Unlock()
-
 	totalDropped := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
-		dropped, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
-			// Drop entries whose timestamp is older than the cutoff.
-			// Entries with a zero timestamp (e.g. legacy or test data
-			// without a stable clock) are conservatively kept.
-			if ev.Timestamp.IsZero() {
-				return false
-			}
-			return ev.Timestamp.Before(cutoff)
-		})
+		// Messaging audit P3-1: _unowned has no consumer and no ack path, so
+		// a TTL expiry there is silent loss of the only copy. Leave it to the
+		// operator until `inbox dead-letter ack|replay` exists.
+		if e.Name() == sanitizeInboxName(UnownedInboxID)+".jsonl" {
+			continue
+		}
+		dropped, err := sweepOneInboxByTTL(filepath.Join(dir, e.Name()), cutoff)
 		if err != nil {
 			return totalDropped, err
 		}
@@ -424,13 +482,45 @@ func SweepInboxByTTL(maxAge time.Duration) (int, error) {
 	return totalDropped, nil
 }
 
+// sweepOneInboxByTTL rewrites one inbox file under its own flock (messaging
+// audit P1-3: the sweep is a rewrite like any producer's, and the daemon runs
+// it in a different process from the consumer).
+func sweepOneInboxByTTL(path string, cutoff time.Time) (int, error) {
+	return withInboxFileLocked(path, func() (int, error) {
+		return rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
+			// Drop entries whose timestamp is older than the cutoff.
+			// Entries with a zero timestamp (e.g. legacy or test data
+			// without a stable clock) are conservatively kept.
+			if ev.Timestamp.IsZero() {
+				return false
+			}
+			return ev.Timestamp.Before(cutoff)
+		})
+	})
+}
+
+// withInboxFileLocked runs rewrite with the inbox file's flock (bounded wait)
+// and inboxWriteMu held, lock order 1 then 3, for sweeps that walk the inbox
+// directory by file rather than by parent id.
+func withInboxFileLocked(path string, rewrite func() (int, error)) (int, error) {
+	fileLock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
+	if err != nil {
+		return 0, fmt.Errorf("lock inbox %s: %w", filepath.Base(path), err)
+	}
+	defer fileLock.Release()
+	inboxWriteMu.Lock()
+	defer inboxWriteMu.Unlock()
+	return rewrite()
+}
+
 // rewriteInboxLocked streams one inbox file and writes out every line
 // whose decoded event does NOT match shouldDrop. Returns the count of
 // dropped lines. Caller holds inboxWriteMu.
 //
-// Mirrors the rm_sweep.go strategy: temp file + atomic rename, with
-// unparseable lines preserved verbatim to avoid silent data loss during
-// cleanup.
+// Mirrors the rm_sweep.go strategy: temp file + atomic rename, with bounded
+// unparseable lines preserved verbatim to avoid silent data loss during cleanup.
+// Oversized lines are discarded by forEachInboxLine because they cannot be
+// retained safely within the inbox line-size contract.
 func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent) bool) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -443,25 +533,19 @@ func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent
 
 	var kept [][]byte
 	var dropped int
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		raw := scanner.Bytes()
-		if len(strings.TrimSpace(string(raw))) == 0 {
-			continue
-		}
+	if err := forEachInboxLine(f, func(raw []byte) error {
 		var ev TransitionNotificationEvent
 		if err := json.Unmarshal(raw, &ev); err != nil {
 			kept = append(kept, append([]byte(nil), raw...))
-			continue
+			return nil
 		}
 		if shouldDrop(ev) {
 			dropped++
-			continue
+			return nil
 		}
 		kept = append(kept, append([]byte(nil), raw...))
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return dropped, err
 	}
 	_ = f.Close()
@@ -521,8 +605,8 @@ func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent
 //
 // This is the LEGACY raw at-most-once path (exposed as `agent-deck inbox <id>`
 // for ad-hoc inspection). The read+remove pair IS atomic against concurrent
-// WriteInboxEvent/CommitToInbox — inboxWriteMu is held across Open→Remove, so a
-// producer cannot interleave a write between them. What it does NOT provide is
+// WriteInboxEvent/CommitToInbox — the inbox flock and inboxWriteMu are held
+// across Open→Remove, so a producer cannot interleave a write between them. What it does NOT provide is
 // crash durability: a process death after the file is removed but before the
 // caller acts loses the records. For the guaranteed at-least-once-with-dedup
 // contract use DrainInboxForParent / DrainForStopHook (inbox_consumer.go), which
@@ -533,6 +617,11 @@ func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent
 	}
 	path := InboxPathFor(parentSessionID)
 
+	fileLock, err := acquireInboxLock(parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer fileLock.Release()
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
@@ -546,20 +635,14 @@ func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent
 	defer f.Close()
 
 	var out []TransitionNotificationEvent
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	if err := forEachInboxLine(f, func(line []byte) error {
 		var ev TransitionNotificationEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue // skip corrupt lines rather than failing the whole drain
+		if err := json.Unmarshal(line, &ev); err != nil {
+			return nil // skip corrupt lines rather than failing the whole drain
 		}
 		out = append(out, ev)
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return out, err
 	}
 

@@ -874,3 +874,16 @@ func truncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
+
+// worktreeLocationAndTemplate picks the location and path template to pass to
+// vcs.WorktreePathOptions for a new worktree.
+//
+// An explicit --location flag wins over a configured or inherited
+// path_template (#2093): WorktreePath ignores Location whenever Template is
+// non-empty, so the template has to be cleared for the flag to take effect.
+func worktreeLocationAndTemplate(settings session.WorktreeSettings, explicitLocation string) (location, template string) {
+	if explicitLocation != "" {
+		return explicitLocation, ""
+	}
+	return settings.DefaultLocation, settings.Template()
+}

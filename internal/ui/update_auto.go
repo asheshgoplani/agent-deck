@@ -122,6 +122,8 @@ func (h *Home) handleUpdateCheck(msg updateCheckMsg) tea.Cmd {
 	} else {
 		h.updateInfo = msg.info
 	}
+	// The nudge banner takes a row from the embedded pane.
+	h.syncEmbeddedTerminalGeometry()
 	// auto_install: start the unattended updater in the background.
 	return h.maybeAutoInstall(msg.info)
 }

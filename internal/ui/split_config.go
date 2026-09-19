@@ -19,8 +19,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// previewPctStep is the percentage delta per < / > keystroke.
-const previewPctStep = 5
+const (
+	previewPctStep    = 5
+	compactSidebarPct = 18
+)
 
 // Preview-orientation values, re-exported from the session package so the
 // ui layer can compare h.previewOrientation without importing the constant
@@ -112,8 +114,10 @@ func (h *Home) splitPaneWidths() (int, int) {
 	if h.width <= 0 {
 		return 0, 0
 	}
-	previewPct := h.getPreviewPct()
-	sessionsPct := 100 - previewPct
+	sessionsPct := compactSidebarPct
+	if !h.compactEmbeddedSidebar() {
+		sessionsPct = 100 - h.getPreviewPct()
+	}
 	left := int(float64(h.width) * float64(sessionsPct) / 100.0)
 	right := h.width - left - paneSeparatorWidth
 
@@ -139,13 +143,22 @@ func (h *Home) splitPaneWidths() (int, int) {
 	return left, right
 }
 
+// dividerGrabSlop widens the mouse target for the split divider beyond the
+// three columns it actually draws. Three columns is a ~2mm target: you aim at
+// it, miss by one, and select a session row instead — the drag reads as broken
+// when it was only narrow. The slop columns it borrows are the far-right
+// padding of a session row and the leading edge of the preview, neither of
+// which carries anything you click for.
+const dividerGrabSlop = 2
+
 // isOnDivider reports whether column x falls on the " │ " separator drawn
 // between the sessions and preview panes in the dual layout. The separator
 // occupies the paneSeparatorWidth columns immediately to the right of the
-// sessions pane. Used as the grab target for mouse-drag resizing.
+// sessions pane, plus dividerGrabSlop columns of grab tolerance on each side.
+// Used as the grab target for mouse-drag resizing.
 func (h *Home) isOnDivider(x int) bool {
 	left := h.sessionsPaneWidth()
-	return x >= left && x < left+paneSeparatorWidth
+	return x >= left-dividerGrabSlop && x < left+paneSeparatorWidth+dividerGrabSlop
 }
 
 // setPreviewPctFromMouseX resizes the split so the divider follows the mouse
@@ -175,6 +188,7 @@ func (h *Home) setPreviewPctFromMouseX(x int) {
 		previewPct = session.MaxPreviewPct
 	}
 	h.previewPct = previewPct
+	h.compactSidebar = false
 	h.previewPctOverlayAt = time.Now().Add(previewPctOverlayDuration)
 }
 
@@ -186,6 +200,9 @@ func (h *Home) setPreviewPctFromMouseX(x int) {
 // whether to trigger a repaint.
 func (h *Home) adjustPreviewPct(delta int) bool {
 	current := h.getPreviewPct()
+	if h.compactEmbeddedSidebar() {
+		current = 100 - compactSidebarPct
+	}
 	next := current + delta
 	if next < session.MinPreviewPct {
 		next = session.MinPreviewPct
@@ -200,8 +217,10 @@ func (h *Home) adjustPreviewPct(delta int) bool {
 		return false
 	}
 	h.previewPct = next
+	h.compactSidebar = false
 	h.previewPctOverlayAt = time.Now().Add(previewPctOverlayDuration)
 	persistPreviewPct(next)
+	h.saveUIState()
 	return true
 }
 

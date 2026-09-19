@@ -57,6 +57,75 @@ import (
 // commands, which have no instruction mechanism of their own).
 const IdentityFileEnv = "AGENTDECK_IDENTITY_FILE"
 
+// Context-level values (issue #2260). "none" disables injection entirely
+// (equivalent to the legacy --no-identity / inject_identity=false opt-out).
+// "primer" injects BuildPrimerPrompt's short session-identity block.
+// "full" injects BuildIdentityPrompt's block (the only behaviour that
+// existed before this issue) and is the fallback for anything unset or
+// unrecognized.
+const (
+	ContextLevelNone   = "none"
+	ContextLevelPrimer = "primer"
+	ContextLevelFull   = "full"
+)
+
+// NormalizeContextLevel validates and canonicalizes a context-level value
+// (case-insensitive, surrounding whitespace trimmed). Callers that treat an
+// empty string as "unset / inherit" must check that before calling this —
+// it rejects "" like any other unrecognized value.
+func NormalizeContextLevel(s string) (string, error) {
+	switch level := strings.ToLower(strings.TrimSpace(s)); level {
+	case ContextLevelNone, ContextLevelPrimer, ContextLevelFull:
+		return level, nil
+	default:
+		return "", fmt.Errorf("invalid context level %q: expected one of none, primer, full", s)
+	}
+}
+
+// EffectiveContextLevel resolves the context-level for this session with
+// global < group < session precedence (issue #2260) and reports which layer
+// decided it, for `session primer`'s inspection output:
+//
+//	"session"                        - i.ContextLevel explicit override
+//	"session (--no-identity)"        - the legacy per-session opt-out
+//	"group:<path>"                   - nearest ancestor group override
+//	"global"                         - [launch].context_level
+//	"global (inject_identity=false)" - legacy global opt-out
+//	"default"                        - nothing configured anywhere
+//
+// A malformed value at any layer (hand-edited config) is treated as unset
+// and falls through to the next layer, rather than failing the spawn.
+func (i *Instance) EffectiveContextLevel() (level, source string) {
+	if i == nil {
+		return ContextLevelFull, "default"
+	}
+	// The legacy per-session opt-out keeps winning over a positive override
+	// at any other layer for backward compatibility: an operator who set
+	// --no-identity before this issue existed must not have it silently
+	// reversed by an unrelated group/global context_level.
+	if i.IdentityInjectionDisabled {
+		return ContextLevelNone, "session (--no-identity)"
+	}
+	if lvl, err := NormalizeContextLevel(i.ContextLevel); err == nil {
+		return lvl, "session"
+	}
+	cfg, _ := LoadUserConfig()
+	if cfg != nil {
+		if raw, group := cfg.GetGroupContextLevel(i.GroupPath); raw != "" {
+			if lvl, err := NormalizeContextLevel(raw); err == nil {
+				return lvl, "group:" + group
+			}
+		}
+		if lvl, err := NormalizeContextLevel(cfg.Launch.ContextLevel); err == nil {
+			return lvl, "global"
+		}
+		if cfg.Launch.InjectIdentity != nil && !*cfg.Launch.InjectIdentity {
+			return ContextLevelNone, "global (inject_identity=false)"
+		}
+	}
+	return ContextLevelFull, "default"
+}
+
 // identityFileName is the canonical identity file inside the per-session
 // directory. geminiIdentityFileName is the same content under the name
 // gemini discovers as context when the directory is added to its workspace.
@@ -69,17 +138,22 @@ const (
 // model-readable identity block. Global config, per-session opt-out, and the
 // remote/sandbox exclusions all gate here so every call site agrees.
 func (i *Instance) identityInjectionEnabled() bool {
-	if i == nil || i.IdentityInjectionDisabled {
+	if i == nil {
 		return false
 	}
 	if i.IsSSH() || i.IsSandboxed() {
 		return false
 	}
-	cfg, _ := LoadUserConfig()
-	if cfg == nil {
-		return true
-	}
-	return cfg.Launch.GetInjectIdentity()
+	level, _ := i.EffectiveContextLevel()
+	return level != ContextLevelNone
+}
+
+// ContextInjectionActive is the exported form of identityInjectionEnabled,
+// for `session primer`'s inspection output: whether a spawn actually writes
+// the identity/primer file (SSH and sandboxed sessions never do, regardless
+// of the resolved context level).
+func (i *Instance) ContextInjectionActive() bool {
+	return i.identityInjectionEnabled()
 }
 
 // IdentityDir returns the agent-deck-owned root that holds one directory per
@@ -113,20 +187,6 @@ func (i *Instance) IdentityFilePath() (string, error) {
 // (LOCKED DECISION 3: under ~40 lines) — it is a pointer to the CLI, not a
 // manual; the agent-deck skill and `agent-deck --help` carry the rest.
 func (i *Instance) BuildIdentityPrompt() string {
-	// Every record field lands on exactly one line: control characters
-	// (newlines in a title, say) are collapsed so the block's line count and
-	// shape are bounded regardless of what the operator typed.
-	val := func(s string) string {
-		s = strings.TrimSpace(identityOneLine(s))
-		if s == "" {
-			return "(none)"
-		}
-		return s
-	}
-	parent := "(none: this is a root session)"
-	if strings.TrimSpace(i.ParentSessionID) != "" {
-		parent = val(i.ParentSessionID)
-	}
 	profile := sessionProfileEnvValue()
 	if strings.TrimSpace(profile) == "" {
 		profile = DefaultProfile
@@ -137,16 +197,17 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("# agent-deck session context\n")
 	b.WriteString("You are running inside agent-deck, a terminal session manager for AI coding agents. The `agent-deck` CLI is on PATH and is how you talk to it; the same identity is in the AGENTDECK_* environment variables.\n\n")
 	b.WriteString("## This session (snapshot from the agent-deck database at launch)\n")
-	fmt.Fprintf(&b, "- session id: %s\n", val(i.ID))
-	fmt.Fprintf(&b, "- title: %s\n", val(i.Title))
-	fmt.Fprintf(&b, "- tool: %s\n", val(i.Tool))
-	fmt.Fprintf(&b, "- group: %s\n", val(i.GroupPath))
+	fmt.Fprintf(&b, "- session id: %s\n", identityField(i.ID))
+	fmt.Fprintf(&b, "- title: %s\n", identityField(i.Title))
+	fmt.Fprintf(&b, "- tool: %s\n", identityField(i.Tool))
+	fmt.Fprintf(&b, "- group: %s\n", identityField(i.GroupPath))
 	fmt.Fprintf(&b, "- profile: %s\n", profile)
-	fmt.Fprintf(&b, "- account: %s\n", val(i.Account))
-	fmt.Fprintf(&b, "- parent session id: %s\n", parent)
-	fmt.Fprintf(&b, "- project path: %s\n", val(i.ProjectPath))
+	fmt.Fprintf(&b, "- host: %s\n", identityField(i.hostLabel()))
+	fmt.Fprintf(&b, "- account: %s\n", identityField(i.Account))
+	fmt.Fprintf(&b, "- parent session id: %s\n", i.identityParentField())
+	fmt.Fprintf(&b, "- project path: %s\n", identityField(i.ProjectPath))
 	if strings.TrimSpace(i.WorktreeBranch) != "" {
-		fmt.Fprintf(&b, "- worktree branch: %s\n", val(i.WorktreeBranch))
+		fmt.Fprintf(&b, "- worktree branch: %s\n", identityField(i.WorktreeBranch))
 	}
 	b.WriteString("\n## agent-deck CLI (flags go BEFORE positional arguments)\n")
 	b.WriteString("- `agent-deck session current --json` — this session's full, current metadata from the database (source of truth; the snapshot above may be renamed or re-parented later)\n")
@@ -154,8 +215,10 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("- `agent-deck session output <id-or-title>` — read another session's last response\n")
 	b.WriteString("- `agent-deck launch <path> -t \"Title\" -c claude --message \"prompt\"` — spawn a child session linked to you as its parent (`-no-parent` for a peer)\n")
 	b.WriteString("- `agent-deck session children --json` — live status and asserted completions of your children\n")
-	fmt.Fprintf(&b, "- `agent-deck inbox drain --json %s` — completion events your children queued for you\n", val(i.ID))
+	fmt.Fprintf(&b, "- `agent-deck inbox drain --json %s` — completion events your children queued for you\n", identityField(i.ID))
 	b.WriteString("- `agent-deck list --json` — every session in this profile\n")
+	b.WriteString("\n## Skills\n")
+	fmt.Fprintf(&b, "Pool skills exist for many tasks. List: `agent-deck skill list`; attach to this session: `agent-deck skill attach <session id> <skill>` (then restart); attached now: %s.\n", attachedSkillNames(i.ProjectPath))
 	b.WriteString("\n## Completion sentinel\n")
 	b.WriteString("When a task you were given by a parent is fully done, end your final message with exactly one line:\n")
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
@@ -163,6 +226,96 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\nThis block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n")
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
+}
+
+// BuildPrimerPrompt renders the "primer" context-level block: session
+// identity only, no CLI reference or skills list, for operators who want
+// the harness to know who it is without spending the full ~40-line budget
+// on it. Pure, like BuildIdentityPrompt, and never longer than it.
+func (i *Instance) BuildPrimerPrompt() string {
+	var b strings.Builder
+	b.WriteString("# agent-deck session (primer)\n")
+	b.WriteString("You are running inside agent-deck, a terminal session manager for AI coding agents.\n")
+	fmt.Fprintf(&b, "- session id: %s\n", identityField(i.ID))
+	fmt.Fprintf(&b, "- title: %s\n", identityField(i.Title))
+	fmt.Fprintf(&b, "- tool: %s\n", identityField(i.Tool))
+	fmt.Fprintf(&b, "- parent session id: %s\n", i.identityParentField())
+	b.WriteString("Run `agent-deck session current --json` for the full record and CLI reference.\n")
+	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
+	return b.String()
+}
+
+// BuildContextPromptForLevel renders the block for the given resolved
+// context-level: BuildPrimerPrompt for primer, BuildIdentityPrompt (the
+// pre-#2260 behaviour) for full and for anything unrecognized — a
+// hand-edited config with a stray value degrades to the safest, most
+// informative option. Callers gate on level == ContextLevelNone themselves
+// (this always renders something; `session primer` only calls it when
+// ContextInjectionActive is true).
+func (i *Instance) BuildContextPromptForLevel(level string) string {
+	switch level {
+	case ContextLevelPrimer:
+		return i.BuildPrimerPrompt()
+	default:
+		return i.BuildIdentityPrompt()
+	}
+}
+
+// hostLabel identifies where this session actually runs: the configured
+// remote's name for an SSH session, or the local machine's hostname.
+func (i *Instance) hostLabel() string {
+	if i.IsSSH() {
+		if cfg, _ := LoadUserConfig(); cfg != nil {
+			for name, rc := range cfg.Remotes {
+				if rc.Host == i.SSHHost {
+					return name
+				}
+			}
+		}
+		return i.SSHHost
+	}
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// attachedSkillNames lists the project's currently-attached pool skills (from
+// skills.toml), or "none". Never errors: a missing/unreadable manifest reads
+// the same as no skills attached.
+func attachedSkillNames(projectPath string) string {
+	skills, err := GetAttachedProjectSkills(projectPath)
+	if err != nil || len(skills) == 0 {
+		return "none"
+	}
+	names := make([]string, len(skills))
+	for i, s := range skills {
+		names[i] = s.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+// identityField renders one record field for an identity/primer block: every
+// field lands on exactly one line (control characters — a newline in a title,
+// say — are collapsed) so the block's line count and shape are bounded
+// regardless of what the operator typed. An empty field is never invented;
+// it renders as the "(none)" placeholder.
+func identityField(s string) string {
+	s = strings.TrimSpace(identityOneLine(s))
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+// identityParentField renders the "parent session id" line's value, naming a
+// root session explicitly rather than showing a bare "(none)".
+func (i *Instance) identityParentField() string {
+	if strings.TrimSpace(i.ParentSessionID) == "" {
+		return "(none: this is a root session)"
+	}
+	return identityField(i.ParentSessionID)
 }
 
 // identityOneLine replaces every control character (newline, tab, escape,
@@ -209,7 +362,8 @@ func (i *Instance) ensureIdentityFile() (dir, file string, ok bool) {
 	// path. Atomic (tmp+rename) so a reader mid-write never sees a truncated
 	// block. Regeneration on start/restart still happens whenever the record
 	// changed, because the rendered content then differs.
-	content := []byte(i.BuildIdentityPrompt())
+	level, _ := i.EffectiveContextLevel()
+	content := []byte(i.BuildContextPromptForLevel(level))
 	for _, name := range []string{identityFileName, geminiIdentityFileName} {
 		path := filepath.Join(dir, name)
 		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, content) {
@@ -502,7 +656,15 @@ func tomlBasicString(s string) string {
 // of a shell string (the #2237 cross-harness launch plan). Empty when
 // injection is off or the tool has no instruction mechanism (env var only).
 func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
-	switch canonicalSwitchHarness(tool) {
+	harness := canonicalSwitchHarness(tool)
+	if harness == "" && strings.EqualFold(strings.TrimSpace(tool), "omp") {
+		// omp is not a cross-harness switch destination yet, so
+		// canonicalSwitchHarness does not name it, but it takes pi's
+		// --append-system-prompt <file>. buildOMPCommand uses the
+		// shell-string counterpart, ompIdentityFlag.
+		harness = "omp"
+	}
+	switch harness {
 	case "claude":
 		_, file, ok := i.ensureIdentityFile()
 		if !ok {
@@ -518,7 +680,7 @@ func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
 			return nil
 		}
 		return []string{"-c", value}
-	case "pi":
+	case "pi", "omp":
 		_, file, ok := i.ensureIdentityFile()
 		if !ok {
 			return nil
@@ -531,6 +693,17 @@ func (i *Instance) identityNativeArgs(tool, codexHome string) []string {
 // piIdentityFlag returns pi's `--append-system-prompt <file>` (pi reads a
 // path argument as file contents) or "".
 func (i *Instance) piIdentityFlag() string {
+	_, file, ok := i.ensureIdentityFile()
+	if !ok {
+		return ""
+	}
+	return " --append-system-prompt " + shellescape.Quote(file)
+}
+
+// ompIdentityFlag returns omp's `--append-system-prompt <file>` or "". It is
+// the same flag as pi's, documented in can1357/oh-my-pi
+// docs/cli-reference.md.
+func (i *Instance) ompIdentityFlag() string {
 	_, file, ok := i.ensureIdentityFile()
 	if !ok {
 		return ""

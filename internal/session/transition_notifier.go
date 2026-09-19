@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -54,12 +56,10 @@ type TransitionNotificationEvent struct {
 	// applies. Observability hook only — does not affect delivery/dedup.
 	Substate string `json:"substate,omitempty"`
 
-	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
-	// bytes of the child's tmux pane at transition time) used by the
-	// notifier's #1142 dedup to suppress repeated [EVENT] notifications
-	// for a dormant child whose pane content hasn't changed. Optional —
-	// empty string disables hash-based dedup and falls back to the legacy
-	// 90s short window.
+	// LastOutputHash is a stable per-turn signal used by the notifier's #1142
+	// deduplication. Claude uses a transcript-derived signal; Codex uses its
+	// persisted hook generation or sequence. Optional — an empty string disables
+	// hash-based deduplication and falls back to the legacy 90-second short window.
 	LastOutputHash string `json:"last_output_hash,omitempty"`
 
 	// OutputHashStale marks an interactive transition whose LastOutputHash did
@@ -166,6 +166,15 @@ type TransitionNotifier struct {
 	terminalMu   sync.Mutex
 	terminalSeen map[string]bool
 
+	// overflowMu guards overflowWarned, the set of children whose parent inbox
+	// is saturated at maxPendingTurnsPerChild. Backpressure stays retryable, so
+	// without a signal here a stalled parent makes its child re-observe the
+	// same transition every poll with nothing in any log — the runaway class
+	// the dead-letter work removed. Cleared once a commit for that child
+	// succeeds, so a second stall is reported again.
+	overflowMu     sync.Mutex
+	overflowWarned map[string]bool
+
 	// outputHashDedupTTLOverride lets tests shrink the issue #1142
 	// output-hash dedup window without waiting hours of wall-clock time.
 	// Zero means "use defaultOutputHashDedupTTL". Production never sets
@@ -222,13 +231,19 @@ func NewTransitionNotifier() *TransitionNotifier {
 // terminalDrop records a synchronously-determined terminal-undeliverable event
 // (audit B5/B9). Intentional suppressions (no_notify, self_conductor) are silent
 // and orphan is already logged once at resolve time, so those return early.
-// Every other reason (child_removed, parent_removed/cross-profile, unresolvable)
-// gets an operator-visible missed-log line AND a dead-letter record, deduped
-// once per (child|reason) so a chatty child can't flood. This is what makes a
-// dropped completion visible instead of silent.
+// child_removed (the conductor removed the worker between observe and resolve)
+// is log-only: the operator sees a missed-log line, but no dead-letter record
+// is parked because nothing can ack one and the record has no recipient
+// (messaging audit P1-4, #2101). Every other reason (parent_removed /
+// cross-profile, unresolvable) gets an operator-visible missed-log line AND a
+// dead-letter record, deduped once per (child|reason) so a chatty child can't
+// flood. This is what makes a dropped completion visible instead of silent.
 func (n *TransitionNotifier) terminalDrop(event TransitionNotificationEvent, reason string) {
 	switch reason {
 	case "", deadLetterReasonNoNotify, deadLetterReasonSelfConductor, deadLetterReasonOrphan:
+		return
+	case deadLetterReasonChildMissing:
+		n.logMissed(event, reason)
 		return
 	}
 	key := strings.TrimSpace(event.ChildSessionID) + "|" + reason
@@ -420,12 +435,12 @@ func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance)
 	if parent.ID == child.ID {
 		return nil
 	}
-	if isConductorSessionTitle(parent.Title) {
-		_ = parent.UpdateStatus()
-		if !isLiveSessionStatus(parent.Status) {
-			return nil
-		}
-	}
+	// Messaging audit P1-4 (#2101, #2062): there is deliberately no
+	// conductor-liveness gate here. A registered parent that is not
+	// running|waiting|idle at this instant (restarting, stopped, mid-switch)
+	// is exactly what the durable inbox is for — it drains the record at its
+	// next turn. Gating on liveness diverted such completions to _unowned +
+	// dead-letter, where nothing could ever re-attach or ack them.
 	return parent
 }
 
@@ -464,7 +479,12 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 
 	elapsed := event.Timestamp.Unix() - record.At
 
-	if record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
+	// A supplied turn signal is authoritative, but only when BOTH sides carry
+	// one — otherwise there is nothing to compare and the legacy window is the
+	// floor. Requiring both sides to be empty would let a child whose signal is
+	// momentarily unavailable re-emit the identical transition (issue #1187).
+	if (event.LastOutputHash == "" || record.OutputHash == "") &&
+		record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
 		return true
 	}
 
@@ -530,14 +550,14 @@ func transitionEventOutputHash(inst *Instance) string {
 	return transitionContentSignal(inst)
 }
 
-// transitionContentSignal returns a dedup signal derived from the child's
-// transcript size. A Claude-compatible JSONL transcript is append-only and
-// grows ONLY when a real message is written (user prompt, assistant turn, tool
-// call) — it is completely untouched when the pane merely redraws its animated
-// chrome. So the signal stays identical across idle polls and strictly changes
-// on a genuine new turn. Returns "" when no transcript is resolvable (e.g.
-// non-Claude tools), which routes the caller to the legacy 90s window.
+// transitionContentSignal returns a stable signal for the child's logical turn.
+// Claude uses the append-only transcript size; Codex uses its persisted hook
+// generation or sequence. Returns "" when neither source is available, which
+// routes the caller to the legacy 90-second window.
 func transitionContentSignal(inst *Instance) string {
+	if signal := codexTurnSignal(inst); signal != "" {
+		return signal
+	}
 	path := inst.GetJSONLPath()
 	if path == "" {
 		return ""
@@ -547,6 +567,35 @@ func transitionContentSignal(inst *Instance) string {
 		return ""
 	}
 	return fmt.Sprintf("jsonl:%d", info.Size())
+}
+
+// codexTurnSignal returns a durable per-turn signal from the Codex hook state.
+// Codex does not expose a Claude-compatible JSONL transcript, but its hook
+// watcher persists a completed generation and a monotonic sequence. Both are
+// stable across notifier polls and process restarts.
+func codexTurnSignal(inst *Instance) string {
+	if inst == nil || !strings.EqualFold(strings.TrimSpace(inst.Tool), "codex") {
+		return ""
+	}
+	hs := readHookStatusFile(inst.ID)
+	if hs == nil {
+		return ""
+	}
+	// The generic hook sequence advances for noise as well as completions.  Only
+	// the Codex writer's start/completion-bound sequence is a turn identity.
+	if hs.CodexCompletedSequence > 0 && hs.CodexStartedSequence == hs.CodexCompletedSequence {
+		generation := strings.TrimSpace(hs.CodexCompletedGeneration)
+		if generation != "" {
+			sum := sha256.Sum256([]byte(generation))
+			return fmt.Sprintf("codex-completion:%d:%s", hs.CodexCompletedSequence, hex.EncodeToString(sum[:]))
+		}
+		return fmt.Sprintf("codex-completion:%d", hs.CodexCompletedSequence)
+	}
+	if generation := strings.TrimSpace(hs.CodexCompletedGeneration); generation != "" {
+		sum := sha256.Sum256([]byte(generation))
+		return "codex-generation-sha256:" + hex.EncodeToString(sum[:])
+	}
+	return ""
 }
 
 func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {

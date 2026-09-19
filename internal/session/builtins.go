@@ -25,6 +25,13 @@ type builtinTool struct {
 	// focused — see PR open questions).
 	Icon string
 
+	// Color is the brand color slot the TUI paints this tool with. It names a
+	// theme palette slot ("orange", "purple", "cyan", "accent", "yellow",
+	// "red") rather than a literal color so it follows live theme switches.
+	// Empty means "no brand color": the UI falls back to its default dim text.
+	// Mirrors the arms of the former ToolColor() switch in internal/ui/styles.go.
+	Color string
+
 	// detectSubstrings are case-insensitive strings.Contains fragments against
 	// the command string — the exact arms of the legacy detectTool() switch.
 	detectSubstrings []string
@@ -33,6 +40,14 @@ type builtinTool struct {
 	// for short ambiguous names like "pi" where Contains would false-match
 	// "epic"/"tapioca". Mirrors detectTool()'s hasCommandToken() arm.
 	detectTokens []string
+
+	// executableOnly restricts token matching to the executable position
+	// (first shellwords field, basename-compared). For collision-prone
+	// names like "muse" (vs "amuse", "museum", or `echo muse`) even a
+	// whole-token match is too loose anywhere but the executable slot.
+	// Unset preserves the legacy whole-line token match, so every other
+	// tool is byte-identical in behavior.
+	executableOnly bool
 
 	// Installed reports whether this tool's command resolved on the host PATH at
 	// registry-init time. It is ONLY populated when the show_only_installed_tools
@@ -55,24 +70,35 @@ type builtinTool struct {
 //   - "shell" is the catch-all fallback, never matched by a pattern.
 func builtinTools() []builtinTool {
 	return []builtinTool{
-		{Name: "claude", Icon: "🤖", detectSubstrings: []string{"claude"}},
+		{Name: "claude", Icon: "🤖", Color: "orange", detectSubstrings: []string{"claude"}},
 		{Name: "opencode", Icon: "🌐", detectSubstrings: []string{"opencode", "open-code"}},
-		{Name: "gemini", Icon: "✨", detectSubstrings: []string{"gemini"}},
-		{Name: "codex", Icon: "💻", detectSubstrings: []string{"codex"}},
-		{Name: "pi", Icon: "π", detectTokens: []string{"pi"}},
-		{Name: "copilot", Icon: "🐙", detectSubstrings: []string{"copilot"}},
-		{Name: "crush", Icon: "💘", detectSubstrings: []string{"crush"}},
+		{Name: "gemini", Icon: "✨", Color: "purple", detectSubstrings: []string{"gemini"}},
+		{Name: "codex", Icon: "💻", Color: "cyan", detectSubstrings: []string{"codex"}},
+		{Name: "pi", Icon: "π", Color: "accent", detectTokens: []string{"pi"}},
+		// Oh My Pi (github.com/can1357/oh-my-pi). Binary is `omp` (npm
+		// @oh-my-pi/pi-coding-agent, bin: "omp"). Token match only: "omp" as a
+		// substring would false-match "compass"/"accomplish"/"component" —
+		// the same reason "pi" and "dsh" are token-matched.
+		{Name: "omp", Icon: "⌥", Color: "accent", detectSubstrings: []string{"oh-my-pi", "@oh-my-pi/pi-coding-agent"}, detectTokens: []string{"omp"}},
+		{Name: "copilot", Icon: "🐙", Color: "accent", detectSubstrings: []string{"copilot"}},
+		{Name: "crush", Icon: "💘", Color: "purple", detectSubstrings: []string{"crush"}},
+		// Executable-position token match only: substring "muse" would
+		// false-match "amuse", "museum", and paths like
+		// "/tmp/muse-project", and even a whole-token match fires on
+		// `echo muse`. Basename comparison keeps bare paths
+		// ("/x/bin/muse") working.
+		{Name: "muse", Icon: "🔮", detectTokens: []string{"muse"}, executableOnly: true},
 		// detectTokens includes bare "agent" (standalone Cursor Agent CLI).
 		// Token match only: substring "agent" would false-match "agent-deck".
-		{Name: "cursor", Icon: "📝", detectSubstrings: []string{"cursor"}, detectTokens: []string{"agent"}},
-		{Name: "hermes", Icon: "☤", detectSubstrings: []string{"hermes"}},
+		{Name: "cursor", Icon: "📝", Color: "accent", detectSubstrings: []string{"cursor"}, detectTokens: []string{"agent"}},
+		{Name: "hermes", Icon: "☤", Color: "yellow", detectSubstrings: []string{"hermes"}},
 		// DeepSeek Harness. The tool is named for the vendor; the binary is
 		// `dsh`, so the substring alone would never match a real command line.
 		// "dsh" is a token match, not a substring: as a substring it would
 		// false-match "dshell", "fdsh", and any path containing those three
 		// letters — the same reason "pi" is token-matched.
-		{Name: "deepseek", Icon: "🐋", detectSubstrings: []string{"deepseek"}, detectTokens: []string{"dsh"}},
-		{Name: "aider", Icon: "🐚"},
+		{Name: "deepseek", Icon: "🐋", Color: "cyan", detectSubstrings: []string{"deepseek"}, detectTokens: []string{"dsh"}},
+		{Name: "aider", Icon: "🐚", Color: "red"},
 		{Name: "shell", Icon: "🐚"},
 	}
 }
