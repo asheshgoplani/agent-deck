@@ -181,8 +181,10 @@ func startEmbeddedTerminalWithClipboard(
 	}
 
 	ctx, cancel := context.WithCancel(parent)
-	// #nosec G204 -- BuildAttachCommand single-quotes every dynamic local and
-	// remote operand; the only unquoted tokens are fixed tmux/ssh flags.
+	// #nosec G204,G702 -- BuildAttachCommand single-quotes every dynamic local
+	// and remote operand (shellQuote); the only unquoted tokens are fixed
+	// tmux/ssh flags. Proven against a real shell by
+	// TestShellQuote_SafeAgainstShellInjection in internal/terminal.
 	cmd := exec.CommandContext(ctx, "sh", "-c", "exec "+command)
 	cmd.Env = embeddedTerminalEnv(childenv.ForLaunch(""))
 
