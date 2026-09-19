@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Letter hotkeys in the overview now also fire on their Russian ЙЦУКЕН twin (`т` for `n`, `А` for `F`, `Г` for `Shift+u`), so the deck keeps working with a non-Latin keyboard layout selected. Twins follow rebinds, an explicit `[hotkeys]` value always wins over a derived twin, fixed navigation keys stay Latin only, and attached panes still receive raw bytes (@na-bal, #2307, closes #2306).
+
 ### Fixed
 
 - The TUI no longer restarts itself into a freshly installed build while the `update --unattended` child it spawned is still running: that re-exec closed the child's stdout pipe mid remote sweep, killed it, and left it a zombie whose sweep marker and `update.lock` still read as "in progress" (`sweep already in progress ... being updated by <pid>`, `Another agent-deck update is already running`). The restart now waits for the child (`tui_restart_deferred_for_update`, bounded by the child's own timeout), the child ignores a lost stdout, and both the remote-sweep marker and `update.lock` treat a zombie holder as dead. The reviver confirms a dead-pipe reading with a second sample and the startup sweep of a re-exec'd TUI waits for the pipes to reattach, so a live session is no longer "respawned" right after `tui_restarted`.
