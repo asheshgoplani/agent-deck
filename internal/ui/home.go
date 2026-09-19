@@ -41,6 +41,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/send"
@@ -10017,10 +10018,15 @@ func (h *Home) handleGlobalSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-// openGlobalSearch opens the Recall overlay when the index is available,
-// else the local title search.
+// errRecallOff is the footer notice when G falls back to the local title
+// search because the index is not open.
+var errRecallOff = errors.New("Recall is off ([recall] enabled = false in config.toml); showing the local title search instead")
+
+// openGlobalSearch opens the Recall overlay when the index is available;
+// otherwise the local title search, with a footer line saying why.
 func (h *Home) openGlobalSearch() tea.Cmd {
 	if !h.globalSearch.HasSource() {
+		h.setError(errRecallOff)
 		h.search.Show()
 		return nil
 	}
@@ -10046,13 +10052,13 @@ func (h *Home) handleGlobalSearchSelection(result *GlobalSearchResult) tea.Cmd {
 	h.instancesMu.RUnlock()
 	switch {
 	case result.Sidechain:
-		h.setError(fmt.Errorf("a subagent transcript cannot be resumed; open its parent session (agent-deck recall show #%d)", result.SessID))
+		h.setError(fmt.Errorf("a subagent transcript cannot be resumed; open its parent session (agent-deck recall show %s)", query.Ref(result.SessID)))
 		return nil
 	case result.Harness != reader.HarnessClaude:
-		h.setError(fmt.Errorf("%s conversations are searchable but not resumable yet: agent-deck recall show #%d", result.Harness, result.SessID))
+		h.setError(fmt.Errorf("%s conversations are searchable but not resumable yet: agent-deck recall show %s", result.Harness, query.Ref(result.SessID)))
 		return nil
 	case result.Missing:
-		h.setError(fmt.Errorf("the transcript file is gone; its text is still in the index: agent-deck recall show #%d", result.SessID))
+		h.setError(fmt.Errorf("the transcript file is gone; its text is still in the index: agent-deck recall show %s", query.Ref(result.SessID)))
 		return nil
 	}
 	return h.createSessionFromGlobalSearch(result)
@@ -11931,8 +11937,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "/":
-		// Recall search first if available, otherwise local search
-		return h, h.openGlobalSearch()
+		// The quick local title filter; Tab from it reaches Recall, and G
+		// opens Recall directly.
+		h.search.Show()
+		return h, nil
 
 	case "?":
 		h.helpOverlay.SetEmbeddedLayout(h.embeddedLayout)

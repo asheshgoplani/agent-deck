@@ -115,8 +115,10 @@ func TestRecall_EveryHarnessEndToEnd(t *testing.T) {
 		t.Fatalf("open codex: %d %s %s", code, stdout, stderr)
 	}
 
-	// Fake Stop hook: a new Claude transcript is queued and indexed by the
-	// hook itself; --no-sweep proves no sweep was needed to find it.
+	// Fake Stop hook: a new Claude transcript is queued and nothing else
+	// (the Stop hook is synchronous on Claude's turn end); the async
+	// SessionEnd hook then indexes exactly that file, and --no-sweep
+	// proves no sweep was needed to find it.
 	sid := "eeeeeeee-0000-4000-8000-000000000009"
 	path := filepath.Join(home, ".claude", "projects", "-tmp-hookproj", sid+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -134,17 +136,33 @@ func TestRecall_EveryHarnessEndToEnd(t *testing.T) {
 		t.Fatalf("hook-handler: %d %s %s", code, stdout, stderr)
 	}
 	r := search("pelican", "--no-sweep", "--json")
-	if len(r.Result.Hits) != 1 || r.Result.Hits[0].NativeID != sid {
-		t.Fatalf("the hook did not index its transcript: %+v", r.Result.Hits)
+	if len(r.Result.Hits) != 0 {
+		t.Fatalf("the Stop hook must only queue, not index: %+v", r.Result.Hits)
 	}
 	stdout, _, _ = runAgentDeck(t, home, "recall", "status", "--json")
 	mustJSON(t, stdout, &st)
 	if st.Queued != 1 {
-		t.Fatalf("queued = %d want the hook's line", st.Queued)
+		t.Fatalf("queued = %d want the Stop hook's line", st.Queued)
 	}
-	// The next sweep drains the queue and finds nothing new to parse.
+	payload = strings.Replace(payload, `"Stop"`, `"SessionEnd"`, 1)
+	stdout, stderr, code = runAgentDeckEnv(t, home, payload, []string{"AGENTDECK_INSTANCE_ID=hook-inst"}, "hook-handler")
+	if code != 0 {
+		t.Fatalf("hook-handler: %d %s %s", code, stdout, stderr)
+	}
+	r = search("pelican", "--no-sweep", "--json")
+	if len(r.Result.Hits) != 1 || r.Result.Hits[0].NativeID != sid {
+		t.Fatalf("the SessionEnd hook did not index its transcript: %+v", r.Result.Hits)
+	}
+	// The listing's #n is what show accepts, in both forms.
+	for _, ref := range []string{fmt.Sprint(r.Result.Hits[0].SessID), "#" + fmt.Sprint(r.Result.Hits[0].SessID)} {
+		stdout, stderr, code = runAgentDeck(t, home, "recall", "show", ref)
+		if code != 0 || !strings.Contains(stdout, "pelican") {
+			t.Fatalf("show %q: %d %s %s", ref, code, stdout, stderr)
+		}
+	}
+	// The next sweep drains both queue lines and finds nothing new to parse.
 	stdout, _, code = runAgentDeck(t, home, "recall", "sweep", "--json")
-	if code != 0 || !strings.Contains(stdout, `"queued": 1`) || !strings.Contains(stdout, `"parsed": 0`) {
+	if code != 0 || !strings.Contains(stdout, `"queued": 2`) || !strings.Contains(stdout, `"parsed": 0`) {
 		t.Fatalf("sweep: %d %s", code, stdout)
 	}
 	stdout, _, _ = runAgentDeck(t, home, "recall", "status", "--json")

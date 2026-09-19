@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"sync"
 
@@ -109,7 +108,7 @@ func (r *recallIndex) Search(ctx context.Context, q string, limit int) (query.Se
 }
 
 func (r *recallIndex) Show(ctx context.Context, sessID int64, turns int) (query.Detail, error) {
-	return r.q.Show(ctx, fmt.Sprintf("#%d", sessID), turns)
+	return r.q.Show(ctx, query.Ref(sessID), turns)
 }
 
 func (r *recallIndex) Status(ctx context.Context) (query.Status, error) {

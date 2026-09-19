@@ -654,15 +654,23 @@ type Detail struct {
 // ErrNotFound means no session matched the reference.
 var ErrNotFound = errors.New("recall: no such session")
 
-// Resolve finds a session by numeric sess_id, exact or prefix native id,
-// or deck session id. Exact matches win over a prefix; a prefix shared by
-// two sessions is ambiguous.
+// Ref is the `#n` form of a session id: what every listing prints, what
+// `recall show` accepts and what the TUI preview passes. Resolve is the
+// one place that reads it back.
+func Ref(sessID int64) string { return "#" + strconv.FormatInt(sessID, 10) }
+
+// Resolve finds a session by numeric sess_id (bare or as `#n`), exact or
+// prefix native id, or deck session id. Exact matches win over a prefix;
+// a prefix shared by two sessions is ambiguous.
 func (s *Searcher) Resolve(ctx context.Context, ref string) (SessionRow, error) {
 	ref = strings.TrimSpace(ref)
-	if ref == "" {
+	if ref == "" || ref == "#" {
 		return SessionRow{}, ErrNotFound
 	}
-	id, _ := strconv.ParseInt(ref, 10, 64)
+	id, _ := strconv.ParseInt(strings.TrimPrefix(ref, "#"), 10, 64)
+	if id <= 0 && strings.HasPrefix(ref, "#") {
+		return SessionRow{}, ErrNotFound // `#` is only ever the numeric form
+	}
 	//nolint:gosec // sessionCols is a fixed const; all values are bound via ? args, never interpolated
 	rows, err := s.st.R.QueryContext(ctx, `SELECT `+sessionCols+` FROM session s LEFT JOIN card c ON c.sess_id=s.sess_id
 		WHERE s.sess_id=? OR s.deck_id=? OR s.native_id=? OR s.native_id LIKE ? ESCAPE '\'

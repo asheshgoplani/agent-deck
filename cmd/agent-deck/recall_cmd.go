@@ -533,7 +533,7 @@ func formatRecallHit(h query.Hit) string {
 	if h.DeckID != "" {
 		deck = " deck:" + h.DeckID
 	}
-	return fmt.Sprintf("  #%-6d %s  %s/%s  %s%s  [%s]\n      %s  %s", h.SessID, recallDate(h.EndedAt, h.StartedAt), h.Harness, h.Profile,
+	return fmt.Sprintf("  %-7s %s  %s/%s  %s%s  [%s]\n      %s  %s", query.Ref(h.SessID), recallDate(h.EndedAt, h.StartedAt), h.Harness, h.Profile,
 		title, deck, strings.Join(marks, ", "), shortNative(h.NativeID), h.CWD)
 }
 
@@ -643,7 +643,7 @@ func formatRecallSession(r query.SessionRow) string {
 	if len(marks) > 0 {
 		extra = "  [" + strings.Join(marks, ", ") + "]"
 	}
-	return fmt.Sprintf("  #%-6d %s  %s/%-9s %3d turns %4d tools %2d err  %s%s\n      %s  %s", r.SessID, recallDate(r.EndedAt, r.StartedAt),
+	return fmt.Sprintf("  %-7s %s  %s/%-9s %3d turns %4d tools %2d err  %s%s\n      %s  %s", query.Ref(r.SessID), recallDate(r.EndedAt, r.StartedAt),
 		r.Harness, r.Profile, r.Turns, r.ToolCalls, r.Errors, title, extra, shortNative(r.NativeID), r.CWD)
 }
 

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,6 +133,7 @@ func TestGlobalSearchKeyHandling(t *testing.T) {
 // read and one ungated bounded sweep; a deferral continues gated; typing
 // searches after the debounce; moving the cursor loads a preview once.
 func TestGlobalSearch_ShowRefreshesThenSearches(t *testing.T) {
+	fastCatchUp(t)
 	src := newStubRecall()
 	src.refresh = []ingest.Result{{Deferred: 2, DeferredBytes: 5 << 20}, {}}
 	gs := NewGlobalSearch()
@@ -175,6 +177,78 @@ func TestGlobalSearch_ShowRefreshesThenSearches(t *testing.T) {
 	gs.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if gs.IsVisible() || gs.Selected().SessID != 43 {
 		t.Fatalf("enter: visible %v selected %+v", gs.IsVisible(), gs.Selected())
+	}
+}
+
+// fastCatchUp shortens the pause between catch-up passes so drain does not
+// sleep; the pacing itself is asserted by TestGlobalSearch_CatchUpIsPaced.
+func fastCatchUp(t *testing.T) {
+	t.Helper()
+	old := recallCatchUpDelay
+	recallCatchUpDelay = time.Millisecond
+	t.Cleanup(func() { recallCatchUpDelay = old })
+}
+
+// TestGlobalSearch_CatchUpIsPaced: a deferred pass does not chain the next
+// gated pass immediately; it schedules a tick and the pass runs when the
+// tick fires (and only while the overlay is still open and sweeping).
+func TestGlobalSearch_CatchUpIsPaced(t *testing.T) {
+	src := newStubRecall()
+	gs := NewGlobalSearch()
+	gs.SetSource(src)
+	gs.SetSize(120, 40)
+	gs.Show()
+	_, cmd := gs.Update(recallRefreshMsg{res: ingest.Result{Deferred: 4, DeferredBytes: 1 << 20}})
+	if cmd == nil {
+		t.Fatal("a deferred pass must schedule the continuation")
+	}
+	if len(src.refreshes) != 0 {
+		t.Fatalf("the next pass must wait for the tick, got %v", src.refreshes)
+	}
+	if !gs.sweeping || !strings.Contains(gs.staleLine(), "catching up") {
+		t.Fatalf("stale line %q sweeping %v", gs.staleLine(), gs.sweeping)
+	}
+	// The tick fires: one gated pass.
+	_, cmd = gs.Update(recallCatchUpMsg{})
+	if cmd == nil {
+		t.Fatal("the tick must run the gated pass")
+	}
+	if msg, ok := cmd().(recallRefreshMsg); !ok || !msg.gated {
+		t.Fatalf("expected a gated refresh, got %#v", msg)
+	}
+	if len(src.refreshes) != 1 || !src.refreshes[0] {
+		t.Fatalf("refreshes %v", src.refreshes)
+	}
+	// A tick that outlives the overlay (closed, or the chain ended) is inert.
+	gs.sweeping = false
+	if _, cmd := gs.Update(recallCatchUpMsg{}); cmd != nil {
+		t.Fatal("no pass after the chain ended")
+	}
+	gs.Hide()
+	if _, cmd := gs.Update(recallCatchUpMsg{}); cmd != nil {
+		t.Fatal("no pass after the overlay closed")
+	}
+}
+
+// TestGlobalSearch_PreviewErrorIsShown: when `recall show` fails for the
+// selected hit the pane says so instead of "loading turns..." forever.
+func TestGlobalSearch_PreviewErrorIsShown(t *testing.T) {
+	src := newStubRecall()
+	gs := NewGlobalSearch()
+	gs.SetSource(src)
+	gs.SetSize(120, 40)
+	gs.Show()
+	gs.input.SetValue("clock")
+	gs.query = "clock"
+	res, _ := src.Search(context.Background(), "clock", recallResultLimit)
+	gs.Update(globalSearchResultsMsg{query: "clock", res: res})
+	if !strings.Contains(ansi.Strip(gs.View()), "loading turns...") {
+		t.Fatal("before the preview answers the pane says it is loading")
+	}
+	gs.Update(recallPreviewMsg{sessID: 41, err: query.ErrNotFound})
+	frame := ansi.Strip(gs.View())
+	if strings.Contains(frame, "loading turns...") || !strings.Contains(frame, "preview failed: recall: no such session") {
+		t.Fatalf("frame:\n%s", frame)
 	}
 }
 
@@ -231,10 +305,16 @@ func TestGlobalSearchHighlightMatches(t *testing.T) {
 	}
 }
 
-// assertOverlayGolden compares the overlay frame with testdata (UPDATE_GOLDEN=1 rewrites).
+// assertOverlayGolden compares the overlay frame with testdata (UPDATE_GOLDEN=1 rewrites)
+// and checks that no line is wider than the terminal.
 func assertOverlayGolden(t *testing.T, gs *GlobalSearch, name string) {
 	t.Helper()
 	got := ansi.Strip(gs.View()) + "\n"
+	for _, line := range strings.Split(got, "\n") {
+		if w := ansi.StringWidth(line); w > gs.width {
+			t.Fatalf("%s: a line is %d cells wide on a %d-column terminal:\n%s", name, w, gs.width, line)
+		}
+	}
 	path := filepath.Join("testdata", name)
 	if os.Getenv("UPDATE_GOLDEN") == "1" {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
@@ -277,4 +357,12 @@ func TestGlobalSearchGolden(t *testing.T) {
 
 	gs.Update(recallRefreshMsg{res: ingest.Result{Deferred: 3, DeferredBytes: 152 << 20}})
 	assertOverlayGolden(t, gs, "recall_search_behind.golden")
+
+	// The same results screen at the three widths the task named: the
+	// overlay follows the terminal below its 160-column cap and fits 80.
+	gs.Update(recallRefreshMsg{res: ingest.Result{}})
+	for _, w := range []int{200, 120, 80} {
+		gs.SetSize(w, 40)
+		assertOverlayGolden(t, gs, fmt.Sprintf("recall_search_results_%d.golden", w))
+	}
 }

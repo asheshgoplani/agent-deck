@@ -1,0 +1,39 @@
+
+
+  ╭────────────────────────────╮╭────────────────────────────────────────────╮
+  │ 🔍 Recall (1793 sessions,  ││ 📄 Auth fix review                         │
+  │ 151524 messages)           ││ claude/personal  3fec37ee-811  deck:auth-  │
+  │ index as on disk           ││ fix                                        │
+  │                            ││ 📁 /Users/x/proj                           │
+  │ ╭────────────────────────╮ ││                                            │
+  │ │ > clock skew           │ ││ the root cause was clock skew, not the     │
+  │ ╰────────────────────────╯ ││ retry budget                               │
+  │                            ││                                            │
+  │   7 matching message(s)    ││ 12 turns • 30 tool calls • 1 errors •      │
+  │   › Auth fix review        ││ model claude-opus-5                        │
+  │     claude • title/hint •  ││ hints: ticket=SB-412  tags: auth           │
+  │ 3 in body                  ││                                            │
+  │     Fix flaky auth         ││ 👤 Review PR 2308 for the auth fix         │
+  │     aaaaaaaa-0000-4000-…   ││ 🤖 Reading the diff. The root cause was    │
+  │                            ││    clock skew.                             │
+  │ [↑↓] Select  [Enter] Open  ││ … 10 more; agent-deck recall show #41      │
+  │ [Tab] Local                ││                                            │
+  │ [ ] scroll preview   [Esc] ││                                            │
+  │ Cancel                     ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
+  ╰────────────────────────────╯╰────────────────────────────────────────────╯
+

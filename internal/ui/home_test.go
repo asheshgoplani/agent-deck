@@ -902,22 +902,31 @@ func TestHomeSearchOpensGlobalWhenAvailable(t *testing.T) {
 	home.recallSource = src
 	home.globalSearch.SetSource(src)
 
-	// Press / to open search - should open Recall search when the index is available
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
-	model, cmd := home.Update(msg)
-
+	// G opens Recall when the index is available.
+	model, cmd := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
 	h, ok := model.(*Home)
 	if !ok {
 		t.Fatal("Update should return *Home")
 	}
 	if !h.globalSearch.IsVisible() {
-		t.Error("Global search should be visible after pressing / when index is available")
+		t.Error("Global search should be visible after pressing G when index is available")
 	}
 	if h.search.IsVisible() {
 		t.Error("Local search should NOT be visible when global search opens")
 	}
 	if cmd == nil {
 		t.Error("opening must schedule the bounded refresh")
+	}
+	if h.err != nil {
+		t.Errorf("no notice when Recall opens: %v", h.err)
+	}
+	h.globalSearch.Hide()
+
+	// / stays the quick local filter even with the index open.
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	h = model.(*Home)
+	if h.globalSearch.IsVisible() || !h.search.IsVisible() {
+		t.Errorf("/ must open the local title search: global %v local %v", h.globalSearch.IsVisible(), h.search.IsVisible())
 	}
 }
 
@@ -929,10 +938,8 @@ func TestHomeSearchOpensLocalWhenNoIndex(t *testing.T) {
 	// Ensure no recall index
 	home.recallSource = nil
 
-	// Press / to open search - should fall back to local search
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
-	model, _ := home.Update(msg)
-
+	// G falls back to the local search and says why in the footer.
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
 	h, ok := model.(*Home)
 	if !ok {
 		t.Fatal("Update should return *Home")
@@ -942,6 +949,18 @@ func TestHomeSearchOpensLocalWhenNoIndex(t *testing.T) {
 	}
 	if !h.search.IsVisible() {
 		t.Error("Local search should be visible when global index is not available")
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "Recall is off") {
+		t.Errorf("the fallback must be announced: %v", h.err)
+	}
+	h.search.Hide()
+	h.clearError()
+
+	// / never announces anything: it is the local filter by design.
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	h = model.(*Home)
+	if !h.search.IsVisible() || h.err != nil {
+		t.Errorf("/ local: visible %v err %v", h.search.IsVisible(), h.err)
 	}
 }
 
@@ -953,12 +972,12 @@ func TestHomeGlobalSearchEscape(t *testing.T) {
 	home.recallSource = src
 	home.globalSearch.SetSource(src)
 
-	// Open global search with /
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
+	// Open Recall search with G
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}}
 	home.Update(msg)
 
 	if !home.globalSearch.IsVisible() {
-		t.Fatal("Global search should be visible after pressing /")
+		t.Fatal("Global search should be visible after pressing G")
 	}
 
 	// Press Escape to close

@@ -397,6 +397,16 @@ func TestSessionsResolveShowStatus(t *testing.T) {
 	if r, err := s.Resolve(ctx, fmt.Sprint(r.SessID)); err != nil || r.NativeID != sessA {
 		t.Fatalf("numeric: %v", err)
 	}
+	// The `#n` a listing prints (and the TUI preview passes) is the same id.
+	if got, err := s.Resolve(ctx, Ref(r.SessID)); err != nil || got.SessID != r.SessID {
+		t.Fatalf("#n: %v %+v (ref %q)", err, got, Ref(r.SessID))
+	}
+	if _, err := s.Resolve(ctx, "#"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("bare #: %v", err)
+	}
+	if _, err := s.Resolve(ctx, "#0"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("#0: %v", err)
+	}
 	d, err := s.Show(ctx, sessA, 2)
 	if err != nil {
 		t.Fatal(err)

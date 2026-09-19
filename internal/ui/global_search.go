@@ -57,7 +57,16 @@ const (
 	recallResultLimit  = 15
 	recallPreviewTurns = 12
 	recallDebounce     = 250 * time.Millisecond
+	// recallMaxWidth caps the overlay on wide terminals; below it the
+	// overlay takes the terminal width less a margin, so it fits 80 columns.
+	recallMaxWidth = 160
 )
+
+// recallCatchUpDelay paces the background continuation of a deferred
+// sweep: one bounded pass, then a pause, then the next through the gate,
+// so a large backlog never holds a core while the user types. Tests
+// shorten it.
+var recallCatchUpDelay = time.Second
 
 // GlobalSearchResult is one ranked session as the overlay shows it and as
 // Home receives it on Enter.
@@ -112,6 +121,9 @@ type recallStatusMsg struct {
 	err    error
 }
 
+// recallCatchUpMsg fires after recallCatchUpDelay: run the next gated pass.
+type recallCatchUpMsg struct{}
+
 // GlobalSearch is the Recall search overlay.
 type GlobalSearch struct {
 	input         textinput.Model
@@ -134,7 +146,8 @@ type GlobalSearch struct {
 	refresh  string // staleness line: what the last pass deferred or skipped
 	sweeping bool
 	preview  map[int64]query.Detail
-	previewT map[int64]bool // preview requested
+	previewT map[int64]bool   // preview requested
+	previewE map[int64]string // preview failed: what `recall show` answered
 }
 
 // NewGlobalSearch creates the overlay without a source; SetSource wires it.
@@ -144,7 +157,7 @@ func NewGlobalSearch() *GlobalSearch {
 	ti.Focus()
 	ti.CharLimit = 200
 	ti.Width = 60
-	return &GlobalSearch{input: ti, results: []*GlobalSearchResult{}, preview: map[int64]query.Detail{}, previewT: map[int64]bool{}}
+	return &GlobalSearch{input: ti, results: []*GlobalSearchResult{}, preview: map[int64]query.Detail{}, previewT: map[int64]bool{}, previewE: map[int64]string{}}
 }
 
 // SetSource wires the index the overlay reads (nil disables it).
@@ -175,6 +188,7 @@ func (gs *GlobalSearch) Show() tea.Cmd {
 	gs.refresh = ""
 	gs.preview = map[int64]query.Detail{}
 	gs.previewT = map[int64]bool{}
+	gs.previewE = map[int64]string{}
 	if gs.source == nil {
 		return nil
 	}
@@ -243,6 +257,11 @@ func (gs *GlobalSearch) previewCmd(sessID int64) tea.Cmd {
 	}
 }
 
+// catchUpCmd schedules the next gated pass after recallCatchUpDelay.
+func (gs *GlobalSearch) catchUpCmd() tea.Cmd {
+	return tea.Tick(recallCatchUpDelay, func(time.Time) tea.Msg { return recallCatchUpMsg{} })
+}
+
 // requestPreview asks for the selected session's preview once.
 func (gs *GlobalSearch) requestPreview() tea.Cmd {
 	sel := gs.Selected()
@@ -274,10 +293,10 @@ func (gs *GlobalSearch) Update(msg tea.Msg) (*GlobalSearch, tea.Cmd) {
 			gs.refresh = "index refresh failed: " + msg.err.Error()
 		case msg.res.Deferred > 0:
 			gs.refresh = fmt.Sprintf("index behind by %d source(s) / %s; catching up in the background", msg.res.Deferred, humanBytes(msg.res.DeferredBytes))
-			// Continue in bounded passes, through the gate, while the
-			// overlay is open.
+			// Continue in bounded passes, paced and through the gate,
+			// while the overlay is open.
 			gs.sweeping = true
-			return gs, tea.Batch(gs.refreshCmd(true), gs.statusCmd())
+			return gs, tea.Batch(gs.catchUpCmd(), gs.statusCmd())
 		default:
 			gs.refresh = ""
 		}
@@ -286,6 +305,12 @@ func (gs *GlobalSearch) Update(msg tea.Msg) (*GlobalSearch, tea.Cmd) {
 			cmds = append(cmds, gs.searchCmd(gs.query)) // re-run on the fresher index
 		}
 		return gs, tea.Batch(cmds...)
+
+	case recallCatchUpMsg:
+		if !gs.sweeping || gs.source == nil {
+			return gs, nil // closed and reopened meanwhile: Show restarted the chain
+		}
+		return gs, gs.refreshCmd(true)
 
 	case globalSearchDebounceMsg:
 		if msg.query == gs.input.Value() && msg.query != "" && gs.source != nil {
@@ -309,7 +334,9 @@ func (gs *GlobalSearch) Update(msg tea.Msg) (*GlobalSearch, tea.Cmd) {
 		return gs, gs.requestPreview()
 
 	case recallPreviewMsg:
-		if msg.err == nil {
+		if msg.err != nil {
+			gs.previewE[msg.sessID] = msg.err.Error()
+		} else {
 			gs.preview[msg.sessID] = msg.detail
 		}
 		return gs, nil
@@ -444,10 +471,14 @@ func (gs *GlobalSearch) View() string {
 	if !gs.visible {
 		return ""
 	}
-	totalWidth := min(max(gs.width-4, 100), 160)
+	// Two panes plus four border cells must fit the terminal: the overlay
+	// is the terminal width less a margin, capped for wide screens, and
+	// never wider than the screen it is drawn on.
+	totalWidth := min(max(gs.width-4, 40), recallMaxWidth)
 	leftWidth := totalWidth * 38 / 100
-	rightWidth := totalWidth - leftWidth - 3
+	rightWidth := totalWidth - leftWidth - 4
 	previewHeight := max(gs.height-12, 10)
+	gs.input.Width = max(leftWidth-8, 10)
 
 	var left strings.Builder
 	left.WriteString(globalSearchHeaderStyle.Render(gs.headerLine()) + "\n")
@@ -542,7 +573,7 @@ func (gs *GlobalSearch) staleLine() string {
 	case gs.refresh != "":
 		return gs.refresh
 	case gs.hasStat && gs.status.LastSweep > 0:
-		return "index fresh as of " + humanizeSince(time.Since(time.Unix(gs.status.LastSweep, 0))) + " ago"
+		return "index swept " + humanizeSince(time.Since(time.Unix(gs.status.LastSweep, 0)))
 	}
 	return "index as on disk"
 }
@@ -551,7 +582,7 @@ func (gs *GlobalSearch) staleLine() string {
 func (gs *GlobalSearch) resultMeta(r *GlobalSearchResult) string {
 	parts := []string{}
 	if !r.EndedAt.IsZero() {
-		parts = append(parts, humanizeSince(time.Since(r.EndedAt))+" ago")
+		parts = append(parts, humanizeSince(time.Since(r.EndedAt)))
 	}
 	parts = append(parts, r.Harness)
 	if r.CardHit {
@@ -578,6 +609,9 @@ func (gs *GlobalSearch) previewLines(sel *GlobalSearchResult, width int) []strin
 	}
 	d, ok := gs.preview[sel.SessID]
 	if !ok {
+		if why, failed := gs.previewE[sel.SessID]; failed {
+			return append(lines, lipgloss.NewStyle().Foreground(ColorRed).Render("preview failed: "+why))
+		}
 		return append(lines, lipgloss.NewStyle().Foreground(ColorComment).Italic(true).Render("loading turns..."))
 	}
 	s := d.Session
@@ -602,7 +636,7 @@ func (gs *GlobalSearch) previewLines(sel *GlobalSearchResult, width int) []strin
 		}
 	}
 	if d.Truncated > 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render(fmt.Sprintf("… %d more; agent-deck recall show #%d", d.Truncated, sel.SessID)))
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render(fmt.Sprintf("… %d more; agent-deck recall show %s", d.Truncated, query.Ref(sel.SessID))))
 	}
 	return lines
 }
