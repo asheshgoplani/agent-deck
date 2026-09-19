@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// Recall phase 1: the Claude adoption arbitration is the only writer of
-// harness session links. A cold-start bind writes the authoritative row via
-// WriteClaudeSessionBinding; a rejected candidate that was bound earlier has
+// Recall phase 1: the Claude adoption arbitration is the writer of harness
+// session links. A cold-start bind writes the authoritative row via
+// WriteClaudeSessionBinding, a live hook confirming a minted id writes it via
+// confirmClaudeSessionLink; a rejected candidate that was bound earlier has
 // its row retracted, so the recall index can never bind that transcript to
 // this instance again.
 func TestUpdateHookStatus_SessionLinkWrittenOnBindRetractedOnReject(t *testing.T) {
@@ -67,5 +68,81 @@ func TestUpdateHookStatus_SessionLinkWrittenOnBindRetractedOnReject(t *testing.T
 	links, _ = db.ListSessionLinks(inst.ID)
 	if len(links) != 1 || links[0].NativeID != sessB || !links[0].Authoritative {
 		t.Fatalf("links after reject = %+v; want only authoritative %s (rejected %s retracted)", links, sessB, sessA)
+	}
+}
+
+// TestUpdateHookStatus_BothLinkWritersProduceARow covers the two Claude link
+// call sites: an id agent-deck minted itself (assigned directly at launch,
+// confirmed by the first hook in the equality branch) and an id the hook
+// arbitration bound (bindClaudeSessionFromHook). Each yields exactly one
+// authoritative session_links row, repeated hooks do not multiply it, and a
+// rejected candidate is retracted without touching the confirmed link.
+func TestUpdateHookStatus_BothLinkWritersProduceARow(t *testing.T) {
+	const profile = "_test_recall_links_minted"
+	_, storage := bootstrapDaemonProfile(t, profile)
+	db := storage.GetDB()
+
+	projDir := filepath.Join(os.Getenv("HOME"), "realproject")
+	foreignTmp := filepath.Join(os.Getenv("HOME"), "fake-tmpdir", "T")
+	for _, d := range []string{projDir, foreignTmp} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	const minted = "11111111-1111-4111-8111-111111111111"
+	const hookBound = "22222222-2222-4222-8222-222222222222"
+	const foreign = "33333333-3333-4333-8333-333333333333"
+
+	// Call site 1: the minted-id path. buildCommand assigns the id directly
+	// (instance.go --session-id), so the instance reaches its first hook
+	// already bound and no bind/rebind ever fires.
+	mintedInst := &Instance{
+		ID: "inst-recall-minted", Title: "minted", ProjectPath: projDir, GroupPath: DefaultGroupPath,
+		Tool: "claude", Status: StatusRunning, CreatedAt: time.Now(), ClaudeSessionID: minted,
+	}
+	// Call site 2: the hook-bind path (cold start, no id yet).
+	boundInst := &Instance{
+		ID: "inst-recall-bound", Title: "bound", ProjectPath: projDir, GroupPath: DefaultGroupPath,
+		Tool: "claude", Status: StatusRunning, CreatedAt: time.Now(),
+	}
+	if err := storage.SaveWithGroups([]*Instance{mintedInst, boundInst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if links, _ := db.ListSessionLinks(mintedInst.ID); len(links) != 0 {
+		t.Fatalf("minted id must not be linked before a hook confirms it: %+v", links)
+	}
+
+	for _, ev := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse"} {
+		mintedInst.UpdateHookStatus(&HookStatus{Status: "running", SessionID: minted, Event: ev, UpdatedAt: time.Now(), Cwd: projDir})
+		boundInst.UpdateHookStatus(&HookStatus{Status: "running", SessionID: hookBound, Event: ev, UpdatedAt: time.Now(), Cwd: projDir})
+	}
+	for _, tc := range []struct {
+		inst *Instance
+		want string
+	}{{mintedInst, minted}, {boundInst, hookBound}} {
+		if tc.inst.ClaudeSessionID != tc.want {
+			t.Fatalf("%s: ClaudeSessionID = %q, want %q", tc.inst.ID, tc.inst.ClaudeSessionID, tc.want)
+		}
+		links, err := db.ListSessionLinks(tc.inst.ID)
+		if err != nil {
+			t.Fatalf("ListSessionLinks(%s): %v", tc.inst.ID, err)
+		}
+		if len(links) != 1 || links[0].Harness != "claude" || links[0].NativeID != tc.want || !links[0].Authoritative {
+			t.Fatalf("%s: links = %+v; want one authoritative claude/%s row", tc.inst.ID, links, tc.want)
+		}
+	}
+
+	// Adoption rejection: a foreign-cwd candidate on the minted instance is
+	// retracted (no row) and the confirmed minted link stays authoritative.
+	if err := db.UpsertSessionLink(mintedInst.ID, "claude", foreign, "", false); err != nil {
+		t.Fatal(err)
+	}
+	mintedInst.UpdateHookStatus(&HookStatus{Status: "running", SessionID: foreign, Event: "PreToolUse", UpdatedAt: time.Now().Add(time.Second), Cwd: foreignTmp})
+	if mintedInst.ClaudeSessionID != minted {
+		t.Fatalf("foreign-cwd candidate rebound the minted instance to %q", mintedInst.ClaudeSessionID)
+	}
+	links, _ := db.ListSessionLinks(mintedInst.ID)
+	if len(links) != 1 || links[0].NativeID != minted || !links[0].Authoritative {
+		t.Fatalf("links after reject = %+v; want only authoritative %s (rejected %s retracted)", links, minted, foreign)
 	}
 }

@@ -582,6 +582,7 @@ type Instance struct {
 	hookEvent                   string    // Hook event name that caused the last status (e.g. "PermissionRequest")
 	hookSessionID               string    // Session ID from hook payload
 	hookLastUpdate              time.Time // When hook status was last received
+	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
 	codexStartedSessionID       string
@@ -6891,6 +6892,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			// clear any lingering disk-scan taint on it rather than being
 			// treated as a no-op.
 			i.markClaudeSessionIDVerified()
+			// Recall phase 1: an id agent-deck minted itself (--session-id at
+			// launch) never passes through bindClaudeSessionFromHook, so this
+			// confirmation is where its session_links row gets written.
+			i.confirmClaudeSessionLink(sessionID, hookSource)
 			return
 		}
 		// Issue #1729 guard: a candidate whose hook-reported cwd is provably
@@ -11783,16 +11788,45 @@ func (i *Instance) bindClaudeSessionFromHook(sessionID, hookSource, hookEvent, a
 				slog.String("instance_id", i.ID),
 				slog.String("new_id", sessionID),
 				slog.String("error", err.Error()))
+		} else {
+			i.linkedClaudeSessionID = sessionID
 		}
 	}
+}
+
+// confirmClaudeSessionLink records the authoritative recall session_links
+// row for an id a live hook just confirmed as this instance's own. It is the
+// second Claude link writer next to bindClaudeSessionFromHook: ids agent-deck
+// mints at launch (--session-id) are assigned directly and reach
+// UpdateHookStatus already equal, so without this the common local Claude
+// session would never get a link. Idempotent upsert; the in-memory marker
+// keeps it to one write per id per process, not one per hook event.
+func (i *Instance) confirmClaudeSessionLink(sessionID, hookSource string) {
+	if sessionID == "" || i.linkedClaudeSessionID == sessionID {
+		return
+	}
+	db := statedb.GetGlobal()
+	if db == nil {
+		return
+	}
+	if err := db.UpsertSessionLink(i.ID, "claude", sessionID, "", true); err != nil {
+		sessionLog.Warn("claude_session_link_confirm_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("session_id", sessionID),
+			slog.String("source", hookSource),
+			slog.String("error", err.Error()))
+		return
+	}
+	i.linkedClaudeSessionID = sessionID
 }
 
 // retractClaudeCandidateLink drops the recall session_links row of a
 // candidate id the adoption arbitration rejected. A candidate that was bound
 // earlier and lost a re-adoption (or turned out to be a zombie) must not
 // linger as a link, or the recall index would bind its transcript to this
-// instance. Rows are only ever written by bindClaudeSessionFromHook's
-// WriteClaudeSessionBinding; this is the matching retraction.
+// instance. Rows are written by bindClaudeSessionFromHook's
+// WriteClaudeSessionBinding and by confirmClaudeSessionLink; this is the
+// matching retraction.
 func (i *Instance) retractClaudeCandidateLink(candidate string) {
 	db := statedb.GetGlobal()
 	if db == nil || candidate == "" {
@@ -11803,6 +11837,10 @@ func (i *Instance) retractClaudeCandidateLink(candidate string) {
 			slog.String("instance_id", i.ID),
 			slog.String("candidate", candidate),
 			slog.String("error", err.Error()))
+		return
+	}
+	if i.linkedClaudeSessionID == candidate {
+		i.linkedClaudeSessionID = ""
 	}
 }
 

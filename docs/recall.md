@@ -52,7 +52,13 @@ agent-deck remote lab session annotate auth-fix --outcome worked
 `--self` resolves the calling session from `AGENTDECK_INSTANCE_ID` (or the
 current tmux session). Over `remote <host>`, the command runs on the remote
 and writes the remote's own `state.db`; a remote session's hints are only
-reachable through that path and never copied locally.
+reachable through that path and never copied locally. A remote whose
+agent-deck predates `session annotate` answers with one line, `remote "lab"
+runs v1.16.10 without session annotate; update it with 'agent-deck remote
+update lab'`, exit 1; with `--json` the same failure is
+`{"error", "remote", "remote_version"}` (`remote_version` is `unknown` when
+the remote's version could not be read). The remote's own usage text is never
+forwarded.
 
 Hint values are capped at 8 KiB. `--note-stdin` reads one note from stdin
 and stores it under the `note` key (replacing a previous note).
@@ -61,8 +67,11 @@ and stores it under the `note` key (replacing a previous note).
 
 `session_links` records which harness conversation id an instance is bound
 to (`claude`, `codex`, `gemini`, or a custom tool name). It is written only
-by the binding writers that already know the mapping; a rebind keeps the
-previous id as history with `authoritative = 0`, and a candidate the
+by the binding writers that already know the mapping. For Claude that is two
+paths: a hook-driven bind or rebind, and the first live hook that confirms an
+id agent-deck minted itself at launch (`--session-id`), so every local Claude
+session that fires hooks ends up with an authoritative row. A rebind keeps
+the previous id as history with `authoritative = 0`, and a candidate the
 adoption arbitration rejects has its row retracted. Later phases bind
 transcripts to sessions only through an authoritative link, never by
 working directory.
