@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
@@ -149,6 +150,33 @@ func TestRecallNotify_QueuesContainedPathsOnly(t *testing.T) {
 	}
 	if entries, _ := recall.Drain(qp); len(entries) != 1 || entries[0].Instance != "inst-2" {
 		t.Fatalf("instance queue: %+v", entries)
+	}
+
+	// The transition daemon's form: accepted at once, resolved and queued
+	// by the background worker (finding 3 of the phase-3 review: no root
+	// walk on the daemon goroutine).
+	for i := 0; i < 3; i++ {
+		if !RecallNotifyInstanceAsync(inst, "turn_end") {
+			t.Fatal("the async notify must accept a local instance")
+		}
+	}
+	if RecallNotifyInstanceAsync(nil, "turn_end") {
+		t.Fatal("nil instance accepted")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if n := recall.QueueLen(qp); n == 3 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("async notifies queued %d lines, want 3", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	entries, _ = recall.Drain(qp)
+	for _, e := range entries {
+		if e.Instance != "inst-2" || e.Event != "turn_end" || e.Harness != "claude" {
+			t.Errorf("async entry %+v", e)
+		}
 	}
 }
 

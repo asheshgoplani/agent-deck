@@ -18,9 +18,12 @@ import (
 // (docs/recall.md, phase 3). On Stop and SessionEnd it appends the
 // session's transcript to the hook queue after the recall containment
 // check (RecallContainedPath: every Claude config dir plus the
-// worker-scratch root, symlink-resolved, fail-closed), then, when
-// [recall] hook_sweep is on and the sweep lock is free, indexes ONLY that
-// file within the interactive budget (150 ms / 32 MB). Everything is
+// worker-scratch root, symlink-resolved, fail-closed). Stop is installed
+// synchronous and sits on Claude's turn-end latency, so that is ALL the
+// Stop path does: one appended line, no database, no lock (FINAL-DESIGN
+// §6 trigger 1). SessionEnd is asynchronous; there, when [recall]
+// hook_sweep is on and the sweep lock is free, the hook also indexes ONLY
+// that file within the interactive budget (150 ms / 32 MB). Everything is
 // behind recover() and gated on [recall] enabled: a hook must never fail
 // and must never block Claude on recall work.
 func recallHookTrigger(instanceID, event string, payload []byte) {
@@ -38,7 +41,7 @@ func recallHookTrigger(instanceID, event string, payload []byte) {
 		return
 	}
 	path, _, ok := session.RecallNotifyTranscript(stop.TranscriptPath, event, instanceID)
-	if !ok {
+	if !ok || key != "sessionend" {
 		return
 	}
 	cfg, err := session.LoadUserConfig()

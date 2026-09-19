@@ -2853,9 +2853,10 @@ type RecallSettings struct {
 	// Harnesses lists the harnesses the index reads (default: every
 	// registered reader: claude, codex, pi, gemini, opencode, hermes).
 	Harnesses []string `toml:"harnesses,omitempty"`
-	// HookSweep lets a Claude Stop/SessionEnd hook index its own transcript
-	// inline, within the interactive budget (default true). Off, the hook
-	// only queues the file for the next sweep.
+	// HookSweep lets the asynchronous Claude SessionEnd hook index its own
+	// transcript inline, within the interactive budget (default true). Off,
+	// the hook only queues the file for the next sweep. The synchronous
+	// Stop hook never sweeps: it appends one queue line and returns.
 	HookSweep *bool `toml:"hook_sweep,omitempty"`
 }
 
@@ -2883,7 +2884,8 @@ func (r RecallSettings) GetHarnesses() []string {
 	return out
 }
 
-// GetHookSweep reports whether hooks index their transcript inline (default true).
+// GetHookSweep reports whether the SessionEnd hook indexes its transcript
+// inline (default true).
 func (r RecallSettings) GetHookSweep() bool {
 	return r.HookSweep == nil || *r.HookSweep
 }

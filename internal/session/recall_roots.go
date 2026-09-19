@@ -232,6 +232,12 @@ func openCodeStorageDir(home string) string {
 // and after symlink resolution, the same fail-closed shape as
 // ValidateTranscriptPath). It returns the resolved path and the harness.
 func RecallContainedPath(path string) (string, string, bool) {
+	return recallContainedIn(path, RecallRoots())
+}
+
+// recallContainedIn is RecallContainedPath against roots resolved by the
+// caller, so a batch of notifies walks the roots once.
+func recallContainedIn(path string, roots []reader.Root) (string, string, bool) {
 	if strings.TrimSpace(path) == "" {
 		return "", "", false
 	}
@@ -239,7 +245,7 @@ func RecallContainedPath(path string) (string, string, bool) {
 	if strings.Contains(clean, "..") || !filepath.IsAbs(clean) {
 		return "", "", false
 	}
-	ref, rd, ok := reader.Locate(clean, RecallRoots())
+	ref, rd, ok := reader.Locate(clean, roots)
 	if !ok {
 		return "", "", false
 	}

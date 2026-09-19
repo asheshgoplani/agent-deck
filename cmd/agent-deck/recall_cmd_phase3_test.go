@@ -160,9 +160,15 @@ func TestRecall_EveryHarnessEndToEnd(t *testing.T) {
 			t.Fatalf("show %q: %d %s %s", ref, code, stdout, stderr)
 		}
 	}
-	// The next sweep drains both queue lines and finds nothing new to parse.
+	// The next sweep drains both queue lines (one distinct file) and finds
+	// nothing new to parse.
+	stdout, _, _ = runAgentDeck(t, home, "recall", "status", "--json")
+	mustJSON(t, stdout, &st)
+	if st.Queued != 2 {
+		t.Fatalf("queued = %d want the Stop and SessionEnd lines", st.Queued)
+	}
 	stdout, _, code = runAgentDeck(t, home, "recall", "sweep", "--json")
-	if code != 0 || !strings.Contains(stdout, `"queued": 2`) || !strings.Contains(stdout, `"parsed": 0`) {
+	if code != 0 || !strings.Contains(stdout, `"queued": 1`) || !strings.Contains(stdout, `"parsed": 0`) {
 		t.Fatalf("sweep: %d %s", code, stdout)
 	}
 	stdout, _, _ = runAgentDeck(t, home, "recall", "status", "--json")

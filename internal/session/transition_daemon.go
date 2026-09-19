@@ -619,9 +619,11 @@ func (d *TransitionDaemon) journalStatusChanges(profile string, byID map[string]
 		from, fromSubstate, _ := strings.Cut(previous, "|")
 		// Recall trigger (docs/recall.md): a running session that stopped
 		// running just finished a turn; queue its transcript for the next
-		// sweep. One appended line, no database, no lock.
+		// sweep. Handed to the recall notify worker like the journal write
+		// goes to its async writer: resolving the transcript path walks
+		// the recall roots, and nothing on this goroutine may.
 		if from == "running" && to != "running" {
-			RecallNotifyInstance(byID[id], "turn_end")
+			RecallNotifyInstanceAsync(byID[id], "turn_end")
 		}
 		if writer == nil {
 			continue

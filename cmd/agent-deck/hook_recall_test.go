@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/testcorpus"
@@ -178,13 +179,34 @@ func TestRecallHookTrigger_QueuesAndIndexesOnlyThatFile(t *testing.T) {
 		t.Fatal("only Stop and SessionEnd trigger recall")
 	}
 
+	// Stop is synchronous on Claude's turn end: it appends the queue line
+	// and touches nothing else (no recall.db open, no lock, no sweep).
+	started := time.Now()
 	recallHookTrigger("inst-1", "Stop", []byte(`{"hook_event_name":"Stop","transcript_path":`+fmt.Sprintf("%q", mine)+`}`))
+	stopTook := time.Since(started)
 	if n := recall.QueueLen(queue); n != 1 {
 		t.Fatalf("queue lines = %d", n)
 	}
 	data, _ := os.ReadFile(queue)
 	if !strings.Contains(string(data), mine) || !strings.Contains(string(data), `"instance":"inst-1"`) || !strings.Contains(string(data), `"harness":"claude"`) {
 		t.Fatalf("queue line: %s", data)
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatal("the Stop hook must not open recall.db")
+	}
+	lockPath, _ := recall.LockPath()
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatal("the Stop hook must not take the sweep lock")
+	}
+	if stopTook > 50*time.Millisecond {
+		t.Fatalf("Stop path took %s; it must stay under 50 ms", stopTook)
+	}
+
+	// SessionEnd is asynchronous: it queues and, with hook_sweep on,
+	// indexes exactly this file.
+	recallHookTrigger("inst-1", "SessionEnd", []byte(`{"hook_event_name":"SessionEnd","transcript_path":`+fmt.Sprintf("%q", mine)+`}`))
+	if n := recall.QueueLen(queue); n != 2 {
+		t.Fatalf("queue lines after SessionEnd = %d", n)
 	}
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
@@ -207,7 +229,7 @@ func TestRecallHookTrigger_QueuesAndIndexesOnlyThatFile(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM msg`).Scan(&msgs); err != nil || msgs != 3 {
 		t.Fatalf("msgs after repeat = %d (%v)", msgs, err)
 	}
-	if n := recall.QueueLen(queue); n != 2 {
+	if n := recall.QueueLen(queue); n != 3 {
 		t.Fatalf("queue lines after repeat = %d", n)
 	}
 }
