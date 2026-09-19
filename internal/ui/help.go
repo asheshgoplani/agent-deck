@@ -287,7 +287,7 @@ func (h *HelpOverlay) View() string {
 		{"PgUp / PgDn", "Half page up/down"},
 		{"Ctrl+f/b", "Full page up/down"},
 		{"Home / End", "Jump to first / last item"},
-		{"G", "Global search"},
+		{"G", "Recall search (every conversation on this machine)"},
 		{"h / Left", "Collapse / parent"},
 		{"l / Right", "Expand / toggle"},
 		{"1-9", "Jump to root group"},

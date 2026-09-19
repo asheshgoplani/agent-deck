@@ -41,6 +41,8 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
+	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -269,8 +271,9 @@ type Home struct {
 
 	// Components
 	search               *Search
-	globalSearch         *GlobalSearch              // Global session search across all Claude conversations
-	globalSearchIndex    *session.GlobalSearchIndex // Search index (nil if disabled)
+	globalSearch         *GlobalSearch // Recall search over recall.db (the G key)
+	recallSource         RecallSource  // the index behind it (nil when [recall] enabled = false)
+	recallOff            string        // why the index is not open ("" when it is); G shows it in the local search
 	newDialog            *NewDialog
 	pendingRemoteName    string                // #1353: remote target for the open new-session dialog ("" = local)
 	groupDialog          *GroupDialog          // For creating/renaming groups
@@ -2158,22 +2161,22 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.startLogWorkers()
 	}
 
-	// Initialize global search
-	// DISABLED: Global search opens 884+ directory watchers and loads 4.4 GB of JSONL
-	// content into memory, causing agent-deck to balloon to 6+ GB and get OOM-killed.
-	// TODO: Fix by limiting watched dirs and enforcing balanced tier for large datasets.
+	// Recall search (the G key) reads recall.db, the on-disk index that
+	// `agent-deck recall` maintains (docs/recall.md). It replaced the
+	// in-memory global search index, which opened one directory watcher per
+	// project and loaded every transcript into memory (6+ GB, OOM-killed).
+	// Opening the index is one SQLite open; nothing is parsed here, and with
+	// [recall] enabled = false the key falls back to the local title search.
 	h.globalSearch = NewGlobalSearch()
-	// claudeDir := session.GetClaudeConfigDir()
-	// userConfig, _ := session.LoadUserConfig()
-	// if userConfig != nil && userConfig.GlobalSearch.Enabled {
-	// 	globalSearchIndex, err := session.NewGlobalSearchIndex(claudeDir, userConfig.GlobalSearch)
-	// 	if err != nil {
-	// 		uiLog.Warn("global_search_init_failed", slog.String("error", err.Error()))
-	// 	} else {
-	// 		h.globalSearchIndex = globalSearchIndex
-	// 		h.globalSearch.SetIndex(globalSearchIndex)
-	// 	}
-	// }
+	if src, err := openRecallIndex(actualProfile); err != nil {
+		uiLog.Warn("recall_index_open_failed", slog.String("error", err.Error()))
+		h.recallOff = "Recall index unavailable: " + err.Error()
+	} else if src != nil {
+		h.recallSource = src
+		h.globalSearch.SetSource(src)
+	} else {
+		h.recallOff = recallOffNotice
+	}
 
 	// Initialize MCP socket pool if enabled
 	// Note: Pool initialization happens AFTER loading sessions so we can discover MCPs in use
@@ -9705,14 +9708,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, tea.Batch(cmds...)
 
-	case globalSearchDebounceMsg, globalSearchResultsMsg:
-		// Route async global search messages to the global search component
-		if h.globalSearch.IsVisible() {
-			var cmd tea.Cmd
-			h.globalSearch, cmd = h.globalSearch.Update(msg)
-			return h, cmd
-		}
-		return h, nil
+	case globalSearchDebounceMsg, globalSearchResultsMsg, recallPreviewMsg, recallRefreshMsg, recallStatusMsg, recallCatchUpMsg:
+		// Route async Recall messages to the overlay whatever is on top: the
+		// catch-up tick must reach it while it is open, and once it is hidden
+		// the overlay drops them itself (Hide ends the catch-up chain).
+		var cmd tea.Cmd
+		h.globalSearch, cmd = h.globalSearch.Update(msg)
+		return h, cmd
 
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
@@ -9983,9 +9985,9 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	h.search, cmd = h.search.Update(msg)
 
 	// Check if user wants to switch to global search
-	if h.search.WantsSwitchToGlobal() && h.globalSearchIndex != nil {
+	if h.search.WantsSwitchToGlobal() && h.globalSearch.HasSource() {
 		h.globalSearch.SetSize(h.width, h.height)
-		h.globalSearch.Show()
+		cmd = tea.Batch(cmd, h.globalSearch.Show())
 	}
 
 	return h, cmd
@@ -10019,21 +10021,54 @@ func (h *Home) handleGlobalSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-// handleGlobalSearchSelection handles selection from global search
+// recallOffNotice is what G says when the index is not open because
+// [recall] is disabled (an open error is quoted instead, see NewHome).
+const recallOffNotice = "Recall is off ([recall] enabled = false in config.toml)"
+
+// openGlobalSearch opens the Recall overlay when the index is available;
+// otherwise the local title search, with a line inside it saying why
+// (the footer is hidden behind the overlay for as long as it is open).
+func (h *Home) openGlobalSearch() tea.Cmd {
+	if !h.globalSearch.HasSource() {
+		notice := h.recallOff
+		if notice == "" {
+			notice = recallOffNotice
+		}
+		h.search.SetNotice(notice + "; showing the local title search instead")
+		h.search.Show()
+		return nil
+	}
+	h.globalSearch.SetSize(h.width, h.height)
+	return h.globalSearch.Show()
+}
+
+// handleGlobalSearchSelection opens a Recall hit the way `recall open`
+// does: jump to the registered session that owns the conversation (the
+// bound deck id, or the Claude session id an instance carries); otherwise
+// register a new Claude session that resumes it. Other harnesses and
+// subagent transcripts are not resumable from the index; the footer says
+// how to read them.
 func (h *Home) handleGlobalSearchSelection(result *GlobalSearchResult) tea.Cmd {
-	// Check if session already exists in Agent Deck
 	h.instancesMu.RLock()
 	for _, inst := range h.instances {
-		if inst.ClaudeSessionID == result.SessionID {
+		if (result.DeckID != "" && inst.ID == result.DeckID) || (result.Harness == reader.HarnessClaude && inst.ClaudeSessionID == result.SessionID) {
 			h.instancesMu.RUnlock()
-			// Jump to existing session
 			h.jumpToSession(inst)
 			return nil
 		}
 	}
 	h.instancesMu.RUnlock()
-
-	// Create new session with this Claude session ID
+	switch {
+	case result.Sidechain:
+		h.setError(fmt.Errorf("a subagent transcript cannot be resumed; open its parent session (agent-deck recall show %s)", query.Ref(result.SessID)))
+		return nil
+	case result.Harness != reader.HarnessClaude:
+		h.setError(fmt.Errorf("%s conversations are searchable but not resumable yet: agent-deck recall show %s", result.Harness, query.Ref(result.SessID)))
+		return nil
+	case result.Missing:
+		h.setError(fmt.Errorf("the transcript file is gone; its text is still in the index: agent-deck recall show %s", query.Ref(result.SessID)))
+		return nil
+	}
 	return h.createSessionFromGlobalSearch(result)
 }
 
@@ -11291,14 +11326,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.markNavigationActivity()
 		return h, h.fetchSelectedPreview()
 
-	case "G": // Open global search (fall back to local search if index not available)
-		if h.globalSearchIndex != nil {
-			h.globalSearch.SetSize(h.width, h.height)
-			h.globalSearch.Show()
-		} else {
-			h.search.Show()
-		}
-		return h, nil
+	case "G": // Recall search over the index (local title search when recall is off)
+		return h, h.openGlobalSearch()
 
 	// Group-scoped navigation layer (v1.7.60): Alt+* keys navigate only within
 	// the cursor's current group. Plain j/k/1-9/g/G// remain unchanged above.
@@ -11916,13 +11945,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "/":
-		// Open global search first if available, otherwise local search
-		if h.globalSearchIndex != nil {
-			h.globalSearch.SetSize(h.width, h.height)
-			h.globalSearch.Show()
-		} else {
-			h.search.Show()
-		}
+		// The quick local title filter; Tab from it reaches Recall, and G
+		// opens Recall directly.
+		h.search.Show()
 		return h, nil
 
 	case "?":
@@ -13414,9 +13439,9 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		}
 		// Close theme watcher
 		h.stopThemeWatcher()
-		// Close global search index
-		if h.globalSearchIndex != nil {
-			h.globalSearchIndex.Close()
+		// Close the recall index
+		if h.recallSource != nil {
+			h.recallSource.Close()
 		}
 		// Stop watcher engine (D-07: lifecycle tied to TUI)
 		if h.watcherEngine != nil {

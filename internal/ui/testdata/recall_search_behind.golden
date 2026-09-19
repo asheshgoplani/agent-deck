@@ -1,0 +1,39 @@
+
+
+  ╭───────────────────────────────────────────────────╮╭─────────────────────────────────────────────────────────────────────────────────╮
+  │ 🔍 Recall (1793 sessions, 151524 messages)        ││ 📄 Auth fix review                                                              │
+  │ index behind by 3 source(s) / 152.0 MB; catching  ││ claude/personal  3fec37ee-811  deck:auth-fix                                    │
+  │ up in the background                              ││ 📁 /Users/x/proj                                                                │
+  │                                                   ││                                                                                 │
+  │ ╭───────────────────────────────────────────────╮ ││ the root cause was clock skew, not the retry budget                             │
+  │ │ > clock skew                                  │ ││                                                                                 │
+  │ ╰───────────────────────────────────────────────╯ ││ 12 turns • 30 tool calls • 1 errors • model claude-opus-5                       │
+  │                                                   ││ hints: ticket=SB-412  tags: auth                                                │
+  │   7 matching message(s)                           ││                                                                                 │
+  │   › Auth fix review                               ││ 👤 Review PR 2308 for the auth fix                                              │
+  │     claude • title/hint • 3 in body               ││ 🤖 Reading the diff. The root cause was clock skew.                             │
+  │     Fix flaky auth                                ││ … 10 more; agent-deck recall show #41                                           │
+  │     aaaaaaaa-0000-4000-8000-000000000001          ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │ [↑↓] Select  [Enter] Open  [Tab] Local            ││                                                                                 │
+  │ [ ] scroll preview   [Esc] Cancel                 ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  │                                                   ││                                                                                 │
+  ╰───────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────────────────────────────────╯
+

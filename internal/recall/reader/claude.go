@@ -1,13 +1,9 @@
 package reader
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
-	"io/fs"
 	"path/filepath"
 	"strings"
 	"time"
@@ -39,109 +35,44 @@ func (Claude) Harness() string { return HarnessClaude }
 // skipDirs are never descended into.
 var skipDirs = map[string]bool{"tool-results": true, "workflows": true}
 
-// Discover walks each root's projects/ tree once. Roots whose projects dir
-// resolves to one already walked (the worker-scratch symlinks) are skipped
-// at the directory level, and files are deduplicated by (dev, ino), so a
-// transcript reachable through many paths is one source.
+// claudeLayout: <cfgdir>/projects/**/*.jsonl, deduplicated at the projects
+// level (the worker-scratch symlinks) so a tree reachable through many
+// roots is walked once.
+var claudeLayout = layout{
+	harness: HarnessClaude,
+	base:    "projects",
+	skip:    skipDirs,
+	keep:    isJSONL,
+	ident: func(ref *SourceRef, _ string) bool {
+		claudeIdentity(ref)
+		return true
+	},
+}
+
+// Discover walks each root's projects/ tree once.
 func (Claude) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error) error {
-	seenRoot := map[string]bool{}
-	seenFile := map[[2]uint64]bool{}
-	for _, r := range roots {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		real, err := fsEvalSymlinks(filepath.Join(r.Dir, "projects"))
-		if err != nil {
-			continue // no projects dir: nothing to index
-		}
-		if seenRoot[real] {
-			continue
-		}
-		seenRoot[real] = true
-		if err := walkClaudeProjects(ctx, real, r, seenFile, emit); err != nil {
-			return err
-		}
-	}
-	return nil
+	return claudeLayout.discover(ctx, roots, emit)
 }
 
-func walkClaudeProjects(ctx context.Context, dir string, r Root, seen map[[2]uint64]bool, emit func(SourceRef) error) error {
-	entries, err := fsReadDir(dir)
-	if err != nil {
-		return nil // vanished or unreadable: skip, the next sweep sees it
-	}
-	for _, d := range entries {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		name := d.Name()
-		path := filepath.Join(dir, name)
-		switch {
-		case d.IsDir():
-			if skipDirs[name] {
-				continue
-			}
-			if err := walkClaudeProjects(ctx, path, r, seen, emit); err != nil {
-				return err
-			}
-		case filepath.Ext(name) == ".jsonl":
-			path, info, ok := regularFile(d, path)
-			if !ok {
-				continue
-			}
-			dev, ino := FileIdentity(info)
-			key := [2]uint64{dev, ino}
-			if ino != 0 {
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-			}
-			ref := SourceRef{
-				Harness:       HarnessClaude,
-				Profile:       r.Profile,
-				Path:          path,
-				Dev:           dev,
-				Ino:           ino,
-				Size:          info.Size(),
-				MtimeNS:       info.ModTime().UnixNano(),
-				RetentionDays: r.RetentionDays,
-				NativeID:      strings.TrimSuffix(name, ".jsonl"),
-			}
-			if filepath.Base(dir) == "subagents" {
-				ref.IsSidechain = true
-				ref.ParentNativeID = filepath.Base(filepath.Dir(dir))
-				ref.NativeID = ref.ParentNativeID + "/" + ref.NativeID
-			}
-			if err := emit(ref); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+// Locate builds the SourceRef of one transcript under a root's projects/
+// tree (the Stop hook's path). tool-results/ and workflows/ are not
+// transcripts.
+func (Claude) Locate(path string, roots []Root) (SourceRef, bool) {
+	return claudeLayout.locate(path, roots)
 }
 
-// regularFile resolves a directory entry to the regular file behind it (one
-// lstat, plus a symlink resolution and stat when the entry is a link). ok is
-// false for anything that is not a regular file.
-func regularFile(d fs.DirEntry, path string) (string, fs.FileInfo, bool) {
-	if d.Type()&fs.ModeSymlink == 0 {
-		info, err := entryInfo(d)
-		if err != nil || !info.Mode().IsRegular() {
-			return "", nil, false
-		}
-		return path, info, true
+// claudeIdentity derives the native id from the path: the file's uuid,
+// prefixed by the parent session's for a subagents/ transcript.
+func claudeIdentity(ref *SourceRef) {
+	ref.NativeID = strings.TrimSuffix(filepath.Base(ref.Path), ".jsonl")
+	if parent := filepath.Dir(ref.Path); filepath.Base(parent) == "subagents" {
+		ref.IsSidechain = true
+		ref.ParentNativeID = filepath.Base(filepath.Dir(parent))
+		ref.NativeID = ref.ParentNativeID + "/" + ref.NativeID
 	}
-	resolved, err := fsEvalSymlinks(path)
-	if err != nil {
-		return "", nil, false
-	}
-	info, err := fsStat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", nil, false
-	}
-	return resolved, info, true
 }
+
+func isJSONL(name string) bool { return filepath.Ext(name) == ".jsonl" }
 
 // noiseTypes never carry conversation text and are roughly 41% of bytes;
 // they are skipped on the raw line before any decode.
@@ -247,111 +178,18 @@ type toolArgs struct {
 	Skill        string `json:"skill"`
 }
 
-type pendingCall struct {
-	name    string
-	ts      time.Time
-	digest  string
-	touches []FileTouch
-}
-
 // Ingest streams src from byte offset from. It stops at a torn trailing
 // line (the cursor never covers it), skips over-long lines whole, decodes
 // only the record types that carry text or structure, and never holds more
 // than one record in memory.
 func (Claude) Ingest(ctx context.Context, src SourceRef, from int64, sink Sink, b *Budget) (int64, error) {
-	f, err := fsOpen(src.Path)
-	if err != nil {
-		return from, err
-	}
-	defer f.Close()
-	if from > 0 {
-		if _, err := f.Seek(from, io.SeekStart); err != nil {
-			return from, err
-		}
-	}
-	br := bufio.NewReaderSize(f, 256<<10)
-	st := &claudeState{src: src, sink: sink, pending: map[string]pendingCall{}}
-	off := from
-	var scratch []byte
-	for lines := 0; ; lines++ {
-		if lines&63 == 0 {
-			if err := ctx.Err(); err != nil {
-				return off, err
-			}
-			if b.Expired() {
-				return off, ErrBudget
-			}
-		}
-		line, n, complete, tooLong, err := readLine(br, &scratch)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return off, err
-		}
-		if !complete {
-			break // torn trailing line: left for the next sweep
-		}
-		if tooLong {
-			sink.Count(CountLineTooLong, 1)
-		} else {
-			st.line(line, off, int64(n))
-			if st.err != nil {
-				return off, st.err // the sink refused (quarantine): the cursor stays put
-			}
-		}
-		off += int64(n)
-		if !b.Consume(int64(n)) {
-			st.flush()
-			return off, ErrBudget
-		}
-	}
-	st.flush()
-	return off, nil
-}
-
-// readLine returns the next newline-terminated line. complete is false at a
-// torn tail (no trailing newline); tooLong lines are consumed but not
-// returned. n is the number of bytes consumed either way.
-func readLine(br *bufio.Reader, scratch *[]byte) (line []byte, n int, complete, tooLong bool, err error) {
-	*scratch = (*scratch)[:0]
-	for {
-		chunk, err := br.ReadSlice('\n')
-		n += len(chunk)
-		switch {
-		case err == nil:
-			if tooLong || len(*scratch)+len(chunk) > MaxLineBytes {
-				return nil, n, true, true, nil
-			}
-			if len(*scratch) == 0 {
-				return chunk, n, true, false, nil
-			}
-			*scratch = append(*scratch, chunk...)
-			return *scratch, n, true, false, nil
-		case errors.Is(err, bufio.ErrBufferFull):
-			if !tooLong {
-				if len(*scratch)+len(chunk) > MaxLineBytes {
-					tooLong = true
-					*scratch = (*scratch)[:0]
-				} else {
-					*scratch = append(*scratch, chunk...)
-				}
-			}
-		case errors.Is(err, io.EOF):
-			// Torn tail: bytes without a newline stay unconsumed for the
-			// cursor's purposes; the next sweep re-reads them.
-			return nil, 0, false, tooLong, io.EOF
-		default:
-			return nil, n, false, tooLong, err
-		}
-	}
+	st := &claudeState{emitter: newEmitter(src, sink)}
+	return st.scan(ctx, from, 0, b, st.line)
 }
 
 type claudeState struct {
-	src         SourceRef
-	sink        Sink
-	pending     map[string]pendingCall
-	sessionSent bool
-	titleSent   bool
-	model       string
-	err         error // first sink error; stops the pass
+	emitter
+	titleSent bool
 }
 
 func (st *claudeState) line(line []byte, off, n int64) {
@@ -398,14 +236,11 @@ func (st *claudeState) title(title, src string) {
 }
 
 func (st *claudeState) message(rec *claudeRecord, off, n int64) {
-	if !st.sessionSent {
-		st.sessionSent = true
-		native := st.src.NativeID
-		if !st.src.IsSidechain && rec.SessionID != "" {
-			native = rec.SessionID
-		}
-		st.sink.Session(Session{NativeID: native, CWD: rec.CWD, Branch: rec.GitBranch, Version: rec.Version})
+	native := ""
+	if !st.src.IsSidechain {
+		native = rec.SessionID
 	}
+	st.session(Session{NativeID: native, CWD: rec.CWD, Branch: rec.GitBranch, Version: rec.Version})
 	ts := parseTS(rec.Timestamp)
 	m := Msg{
 		TS:        unixOrZero(ts),
@@ -417,10 +252,7 @@ func (st *claudeState) message(rec *claudeRecord, off, n int64) {
 	}
 	if rec.Type == "assistant" {
 		m.Role = recall.RoleAssistant
-		if rec.Message.Model != "" && rec.Message.Model != st.model {
-			st.model = rec.Message.Model
-			st.sink.Session(Session{Model: st.model})
-		}
+		st.setModel(rec.Message.Model)
 		u := rec.Message.Usage
 		if u.InputTokens+u.OutputTokens > 0 {
 			st.fail(st.sink.Usage(Usage{UUID: rec.UUID, TS: ts, Model: rec.Message.Model,
@@ -437,12 +269,6 @@ func (st *claudeState) message(rec *claudeRecord, off, n int64) {
 		return
 	}
 	st.fail(st.sink.Msg(m))
-}
-
-func (st *claudeState) fail(err error) {
-	if err != nil && st.err == nil {
-		st.err = err
-	}
 }
 
 // content decodes a message body: a plain string or an array of typed
@@ -470,56 +296,24 @@ func (st *claudeState) content(raw json.RawMessage, ts time.Time, m *Msg) string
 		blk := &blocks[i]
 		switch blk.Type {
 		case "text":
-			if blk.Text == "" {
-				continue
-			}
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(blk.Text)
-			if classify.IsInterrupt(blk.Text) {
+			joinText(&sb, blk.Text)
+			if blk.Text != "" && classify.IsInterrupt(blk.Text) {
 				m.IsInterrupt = true
 			}
 		case "tool_use":
 			m.ToolNames = append(m.ToolNames, blk.Name)
 			pc := pendingCall{name: blk.Name, ts: ts}
 			pc.digest, pc.touches = digestArgs(blk.Name, blk.Input)
-			if blk.ID != "" {
-				st.pending[blk.ID] = pc
-			} else {
-				st.emitCall(pc, ts, false)
-			}
+			st.openCall(blk.ID, pc)
 		case "tool_result":
 			m.IsToolResult = true
 			if blk.IsError {
 				m.IsError = true
 			}
-			if pc, ok := st.pending[blk.ToolUseID]; ok {
-				delete(st.pending, blk.ToolUseID)
-				st.emitCall(pc, ts, blk.IsError)
-			} else {
-				st.emitCall(pendingCall{name: "", ts: ts}, ts, blk.IsError)
-			}
+			st.closeCall(blk.ToolUseID, pendingCall{ts: ts}, ts, blk.IsError)
 		}
 	}
 	return sb.String()
-}
-
-func (st *claudeState) emitCall(pc pendingCall, resultTS time.Time, isError bool) {
-	tc := ToolCall{Name: pc.name, TS: unixOrZero(pc.ts), IsError: isError, ArgDigest: pc.digest, Touches: pc.touches}
-	if !pc.ts.IsZero() && !resultTS.IsZero() && resultTS.After(pc.ts) {
-		tc.DurationMS = resultTS.Sub(pc.ts).Milliseconds()
-	}
-	st.fail(st.sink.ToolCall(tc))
-}
-
-// flush emits calls whose result never arrived in this pass (the result
-// may land in the next append; it is then an unmatched result).
-func (st *claudeState) flush() {
-	for id, pc := range st.pending {
-		delete(st.pending, id)
-		st.emitCall(pc, time.Time{}, false)
-	}
 }
 
 // digestArgs picks the one argument that identifies a call (the command,
@@ -549,15 +343,6 @@ func digestArgs(name string, input json.RawMessage) (string, []FileTouch) {
 	return clipRunes(digest, ArgDigestChars), touches
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func joinNonEmpty(a, b string) string {
 	switch {
 	case a != "" && b != "":
@@ -582,26 +367,6 @@ func clipRunes(s string, n int) string {
 		i++
 	}
 	return s
-}
-
-// unixOrZero is t.Unix(), with 0 (not the year-one epoch) for a missing
-// timestamp.
-func unixOrZero(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.Unix()
-}
-
-func parseTS(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
 }
 
 // usageSink keeps only Usage events.

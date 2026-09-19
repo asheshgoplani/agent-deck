@@ -2850,6 +2850,14 @@ type RecallSettings struct {
 	// PerSourceMB caps how much of one transcript a single sweep parses;
 	// the rest continues next sweep (default 64; 0 = unlimited).
 	PerSourceMB *int `toml:"per_source_mb,omitempty"`
+	// Harnesses lists the harnesses the index reads (default: every
+	// registered reader: claude, codex, pi, gemini, opencode, hermes).
+	Harnesses []string `toml:"harnesses,omitempty"`
+	// HookSweep lets the asynchronous Claude SessionEnd hook index its own
+	// transcript inline, within the interactive budget (default true). Off,
+	// the hook only queues the file for the next sweep. The synchronous
+	// Stop hook never sweeps: it appends one queue line and returns.
+	HookSweep *bool `toml:"hook_sweep,omitempty"`
 }
 
 // Recall defaults.
@@ -2862,6 +2870,24 @@ const (
 // GetEnabled reports whether the recall index is switched on (default false).
 func (r RecallSettings) GetEnabled() bool {
 	return r.Enabled != nil && *r.Enabled
+}
+
+// GetHarnesses returns the harness names to index, lower-cased and
+// trimmed; nil means every registered reader.
+func (r RecallSettings) GetHarnesses() []string {
+	var out []string
+	for _, h := range r.Harnesses {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// GetHookSweep reports whether the SessionEnd hook indexes its transcript
+// inline (default true).
+func (r RecallSettings) GetHookSweep() bool {
+	return r.HookSweep == nil || *r.HookSweep
 }
 
 // GetMaxLoadAvg returns the load gate threshold (default 4.0).

@@ -148,3 +148,106 @@ func ValidateRecallTranscriptPath(path string) (string, bool) {
 	}
 	return cleanPath, true
 }
+
+// RecallRoots returns every harness root the index walks: the Claude
+// roots above plus one root per other harness home found on this machine
+// (Codex: every configured Codex config dir, $CODEX_HOME and ~/.codex; pi:
+// ~/.pi and the parent of $PI_CODING_AGENT_DIR; Gemini: ~/.gemini;
+// OpenCode: the XDG data dir's opencode/storage; Hermes: ~/.hermes).
+// Roots of harnesses not in [recall] harnesses are left out. A root whose
+// directory does not exist is left out too, so a machine without Codex
+// never stats a Codex tree.
+func RecallRoots() []reader.Root {
+	cfg, _ := LoadUserConfig()
+	var want map[string]bool
+	if cfg != nil {
+		if hs := cfg.Recall.GetHarnesses(); len(hs) > 0 {
+			want = map[string]bool{}
+			for _, h := range hs {
+				want[h] = true
+			}
+		}
+	}
+	keep := func(harness string) bool { return want == nil || want[harness] }
+	var roots []reader.Root
+	if keep(reader.HarnessClaude) {
+		roots = append(roots, RecallClaudeRoots()...)
+	}
+	home, _ := os.UserHomeDir()
+	home = strings.TrimSpace(home)
+	seen := map[string]bool{}
+	add := func(harness, profile, dir string) {
+		if !keep(harness) {
+			return
+		}
+		dir = filepath.Clean(ExpandPath(strings.TrimSpace(dir)))
+		if dir == "." || !filepath.IsAbs(dir) {
+			return
+		}
+		key := harness + ":" + resolveCanonical(dir)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			return
+		}
+		roots = append(roots, reader.Root{Harness: harness, Profile: profile, Dir: dir})
+	}
+	if cfg != nil {
+		for _, name := range ConfiguredAccountNames(cfg) {
+			add(reader.HarnessCodex, name, cfg.GetProfileCodexConfigDir(name))
+		}
+		add(reader.HarnessCodex, "", cfg.Codex.ConfigDir)
+	}
+	add(reader.HarnessCodex, "", os.Getenv("CODEX_HOME"))
+	if home != "" {
+		add(reader.HarnessCodex, "", filepath.Join(home, ".codex"))
+		add(reader.HarnessPi, "", filepath.Join(home, ".pi"))
+	}
+	if dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); dir != "" {
+		add(reader.HarnessPi, "", filepath.Dir(ExpandPath(dir)))
+	}
+	add(reader.HarnessGemini, "", GetGeminiConfigDir())
+	add(reader.HarnessOpenCode, "", openCodeStorageDir(home))
+	add(reader.HarnessHermes, "", GetHermesConfigDir())
+	return roots
+}
+
+// openCodeStorageDir is where OpenCode keeps its JSON session tree:
+// $XDG_DATA_HOME/opencode/storage, else ~/.local/share/opencode/storage.
+func openCodeStorageDir(home string) string {
+	if dir := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dir != "" {
+		return filepath.Join(dir, "opencode", "storage")
+	}
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "opencode", "storage")
+}
+
+// RecallContainedPath is the recall containment check for any harness: a
+// transcript path a hook or journal reports is accepted only when a
+// registered reader locates it under one of the recall roots (lexically
+// and after symlink resolution, the same fail-closed shape as
+// ValidateTranscriptPath). It returns the resolved path and the harness.
+func RecallContainedPath(path string) (string, string, bool) {
+	return recallContainedIn(path, RecallRoots())
+}
+
+// recallContainedIn is RecallContainedPath against roots resolved by the
+// caller, so a batch of notifies walks the roots once.
+func recallContainedIn(path string, roots []reader.Root) (string, string, bool) {
+	if strings.TrimSpace(path) == "" {
+		return "", "", false
+	}
+	clean := filepath.Clean(path)
+	if strings.Contains(clean, "..") || !filepath.IsAbs(clean) {
+		return "", "", false
+	}
+	ref, rd, ok := reader.Locate(clean, roots)
+	if !ok {
+		return "", "", false
+	}
+	return ref.Path, rd.Harness(), true
+}

@@ -12,17 +12,24 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/classify"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/recall/store"
 )
+
+// ingestLog carries the one line a failed or quarantined source pass
+// leaves in the log; Result.Errors and Result.Quarantined count them.
+var ingestLog = logging.ForComponent(logging.CompRecall)
 
 // Defaults for the interactive budget (the sweep that runs before a search)
 // and the batch transaction bound.
@@ -73,6 +80,10 @@ type Ref struct {
 // completed sweep (unix seconds).
 const metaLastSweep = "last_sweep"
 
+// metaMigEmptyCompact marks an index whose zero-character compaction rows
+// (written before the Codex reader stopped storing them) were removed.
+const metaMigEmptyCompact = "mig_empty_compact"
+
 // UsageSink receives the usage records of a source whose conversation is
 // bound to a deck session, so cost events are written from the same pass
 // that indexed the text. profile is the transcript's profile; deckID was
@@ -106,6 +117,9 @@ type Options struct {
 	// Verify re-checks every ledgered source's signatures even when size
 	// and mtime are unchanged (recall sweep --full).
 	Verify bool
+	// QueuePath is the hook queue (recall.QueuePath()); a Sweep drains it
+	// and parses the listed files before the rest ("" or absent: nothing).
+	QueuePath string
 	// Progress, when set, is called after every source.
 	Progress func(p Progress)
 	// Now overrides the clock in tests.
@@ -127,6 +141,7 @@ type Progress struct {
 // Result summarises one Sweep.
 type Result struct {
 	Discovered    int      `json:"discovered"`
+	Queued        int      `json:"queued,omitempty"`
 	Unchanged     int      `json:"unchanged"`
 	Parsed        int      `json:"parsed"`
 	Deferred      int      `json:"deferred"`
@@ -186,12 +201,18 @@ type candidate struct {
 	rd  reader.Reader
 }
 
+// cursor is the reader's cursor kind: how the ledger resumes this source.
+func (c candidate) cursor() reader.CursorKind { return reader.CursorOf(c.rd) }
+
 // Sweep discovers every source, parses what changed within the budget,
 // marks what vanished, and projects cards for every touched session.
 func (in *Ingester) Sweep(ctx context.Context) (Result, error) {
 	start := in.opts.Now()
 	var res Result
 	if err := in.opts.Gate.Check(); err != nil {
+		return res, err
+	}
+	if err := in.migrateEmptyCompactRows(); err != nil {
 		return res, err
 	}
 	ledger, byKey, byPath, err := in.loadLedger()
@@ -202,6 +223,7 @@ func (in *Ingester) Sweep(ctx context.Context) (Result, error) {
 	if err != nil {
 		return res, err
 	}
+	in.prioritizeQueued(&res, cands)
 	touched := map[int64]bool{}
 	for i, c := range cands {
 		if err := ctx.Err(); err != nil {
@@ -255,6 +277,135 @@ func (in *Ingester) Sweep(ctx context.Context) (Result, error) {
 	res.Sessions = len(touched)
 	res.ElapsedMS = in.opts.Now().Sub(start).Milliseconds()
 	return res, nil
+}
+
+// prioritizeQueued drains the hook queue and moves the files it names to
+// the front of the candidate list, so the transcripts hooks just reported
+// are parsed inside the interactive budget before the rest of the walk.
+func (in *Ingester) prioritizeQueued(res *Result, cands []candidate) {
+	if in.opts.QueuePath == "" {
+		return
+	}
+	entries, err := recall.Drain(in.opts.QueuePath)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	res.Queued = len(entries)
+	rank := make(map[string]int, len(entries))
+	for i, e := range entries {
+		if real, err := filepath.EvalSymlinks(e.Path); err == nil {
+			rank[real] = i + 1
+		} else {
+			rank[filepath.Clean(e.Path)] = i + 1
+		}
+	}
+	// Queued files first, in queue order (newest first); the rest keep the
+	// walk's order.
+	sort.SliceStable(cands, func(i, j int) bool {
+		ri, rj := rank[cands[i].ref.Path], rank[cands[j].ref.Path]
+		if ri == 0 || rj == 0 {
+			return ri != 0
+		}
+		return ri < rj
+	})
+}
+
+// SweepFiles indexes exactly the given transcript paths (a Stop hook's
+// file, a queue entry): each is located under the roots by its harness's
+// reader, parsed within the budget and its card re-projected. Nothing is
+// walked and nothing is marked missing; a path outside every root is
+// counted as an error and never opened.
+func (in *Ingester) SweepFiles(ctx context.Context, paths []string) (Result, error) {
+	start := in.opts.Now()
+	var res Result
+	if err := in.opts.Gate.Check(); err != nil {
+		return res, err
+	}
+	_, byKey, byPath, err := in.loadLedger()
+	if err != nil {
+		return res, err
+	}
+	touched := map[int64]bool{}
+	for _, p := range paths {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		ref, rd, ok := reader.Locate(p, in.opts.Roots)
+		if !ok || !in.hasReader(rd) {
+			res.Errors++
+			continue
+		}
+		res.Discovered++
+		row := byKey[[2]uint64{ref.Dev, ref.Ino}]
+		if row == nil {
+			row = byPath[ref.Path]
+		}
+		c := candidate{ref: ref, row: row, rd: rd}
+		if row != nil && !in.changed(row, ref) {
+			res.Unchanged++
+			if row.sessID != 0 {
+				touched[row.sessID] = true
+			}
+			continue
+		}
+		if in.opts.Budget.Exhausted() {
+			in.deferCandidate(&res, c)
+			continue
+		}
+		out, err := in.ingestSource(ctx, c)
+		res.BytesRead += out.bytes
+		res.Messages += out.messages
+		if out.sessID != 0 {
+			touched[out.sessID] = true
+		}
+		in.recordOutcome(&res, c, out, err)
+		if passFailed(err) && ctx.Err() != nil {
+			return res, err
+		}
+	}
+	if err := in.projectCards(touched); err != nil {
+		return res, err
+	}
+	res.Sessions = len(touched)
+	res.ElapsedMS = in.opts.Now().Sub(start).Milliseconds()
+	return res, nil
+}
+
+// hasReader reports whether rd is one of this ingester's readers.
+func (in *Ingester) hasReader(rd reader.Reader) bool {
+	for _, r := range in.opts.Readers {
+		if r.Harness() == rd.Harness() {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateEmptyCompactRows drops, once per index, the zero-character
+// compact_summary rows an earlier reader stored for Codex compactions
+// (the edge and the superseded flags they left stand). A rebuilt index
+// never has them; an existing one is cleaned on its next sweep.
+func (in *Ingester) migrateEmptyCompactRows() error {
+	var v string
+	if err := in.st.W.QueryRow(`SELECT v FROM meta WHERE k=?`, metaMigEmptyCompact).Scan(&v); err == nil {
+		return nil
+	}
+	tx, err := in.st.W.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	where := `class=? AND nchars=0`
+	if _, err := tx.Exec(`DELETE FROM msg_fts WHERE rowid IN (SELECT msg_id FROM msg WHERE `+where+`)`, int(classify.CompactSummary)); err != nil {
+		return fmt.Errorf("recall: migrate empty compactions (fts): %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM msg WHERE `+where, int(classify.CompactSummary)); err != nil {
+		return fmt.Errorf("recall: migrate empty compactions: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO meta(k, v) VALUES (?, '1') ON CONFLICT(k) DO NOTHING`, metaMigEmptyCompact); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // touchAnnotated adds the sessions whose state.db rows changed since the
@@ -347,8 +498,11 @@ func (in *Ingester) recordOutcome(res *Result, c candidate, out sourceOutcome, e
 		}
 	case errors.Is(err, errQuarantined):
 		res.Quarantined++
+		ingestLog.Info("recall_source_quarantined", slog.String("path", c.ref.Path), slog.String("harness", c.ref.Harness))
 	case err != nil:
 		res.Errors++
+		ingestLog.Warn("recall_source_failed", slog.String("path", c.ref.Path), slog.String("harness", c.ref.Harness),
+			slog.Int64("parsed_to", out.parsedTo), slog.String("error", err.Error()))
 	default:
 		res.Parsed++
 	}
@@ -451,18 +605,23 @@ type sourceOutcome struct {
 func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcome, error) {
 	var out sourceOutcome
 	ref := c.ref
-	prefix, err := hashRange(ref.Path, 0, sigBytes)
-	if err != nil {
-		return out, err
+	kind := c.cursor()
+	prefix := ""
+	if kind != reader.CursorOpaque {
+		var err error
+		if prefix, err = hashRange(ref.Path, 0, sigBytes); err != nil {
+			return out, err
+		}
 	}
 	row := c.row
 	from := int64(0)
+	var err error
 	if row == nil {
 		row, err = in.insertSource(ref, prefix)
 		if err != nil {
 			return out, err
 		}
-	} else if from, err = in.resumeOffset(row, ref, prefix); err != nil {
+	} else if from, err = in.resumeOffset(row, ref, prefix, kind); err != nil {
 		return out, err
 	}
 	budget := in.sourceBudget()
@@ -479,7 +638,7 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 	}
 	if sink.quarantineWhy != "" {
 		_ = sink.rollback()
-		if err := in.finishSource(row, ref, 0, prefix, recall.SourceQuarantined, sink.quarantineWhy); err != nil {
+		if err := in.finishSource(row, ref, 0, prefix, recall.SourceQuarantined, sink.quarantineWhy, kind); err != nil {
 			return out, err
 		}
 		return out, errQuarantined
@@ -493,7 +652,7 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 		// the cursor rewinds to that checkpoint, never to the pass start,
 		// so the next pass does not insert them again.
 		out.parsedTo = sink.checkpoint
-		if err := in.finishSource(row, ref, sink.checkpoint, prefix, recall.SourceError, rerr.Error()); err != nil {
+		if err := in.finishSource(row, ref, sink.checkpoint, prefix, recall.SourceError, rerr.Error(), kind); err != nil {
 			return out, err
 		}
 		return out, rerr
@@ -510,7 +669,16 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 	if errors.Is(rerr, reader.ErrBudget) {
 		state = recall.SourcePartial
 	}
-	if err := in.finishSource(row, ref, parsedTo, prefix, state, ""); err != nil {
+	ledgered := ref
+	if state == recall.SourceOK && kind == reader.CursorBytes && parsedTo < ref.Size {
+		// The reader stopped short of the end on its own: a torn trailing
+		// line, or bytes the harness has not committed yet (Codex's
+		// projection cursor). The ledger records the size it parsed to,
+		// not the file's, so changed() re-examines the tail next sweep
+		// even when the file is never written again.
+		ledgered.Size = parsedTo
+	}
+	if err := in.finishSource(row, ledgered, parsedTo, prefix, state, "", kind); err != nil {
 		return out, err
 	}
 	if sink.sessID != 0 {
@@ -523,15 +691,16 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 
 // resumeOffset decides where the next pass over a ledgered source starts:
 // the old cursor when the file only grew, 0 after a full reparse (the
-// inode holds a different file, the file was truncated, or the bytes under
-// the cursor were rewritten). A quarantined row stays quarantined. The path
-// and profile are refreshed when the file moved.
-func (in *Ingester) resumeOffset(row *ledgerRow, ref reader.SourceRef, prefix string) (int64, error) {
+// inode holds a different file, the file was truncated, the bytes under
+// the cursor were rewritten, or the reader's cursor kind is CursorNone and
+// every change is a rewrite). A quarantined row stays quarantined. The
+// path and profile are refreshed when the file moved.
+func (in *Ingester) resumeOffset(row *ledgerRow, ref reader.SourceRef, prefix string, kind reader.CursorKind) (int64, error) {
 	fullReparse := false
 	switch {
 	case row.state == recall.SourceQuarantined:
 		// A quarantined copy that later diverged is still a copy.
-		if err := in.finishSource(row, ref, row.parsedTo, prefix, recall.SourceQuarantined, "copy of an indexed source"); err != nil {
+		if err := in.finishSource(row, ref, row.parsedTo, prefix, recall.SourceQuarantined, "copy of an indexed source", kind); err != nil {
 			return 0, err
 		}
 		return 0, errQuarantined
@@ -542,6 +711,13 @@ func (in *Ingester) resumeOffset(row *ledgerRow, ref reader.SourceRef, prefix st
 		if _, err := in.st.W.Exec(`DELETE FROM tombstone WHERE src_id=?`, row.srcID); err != nil {
 			return 0, err
 		}
+	case kind == reader.CursorNone:
+		fullReparse = true // rewritten wholesale: nothing to resume
+	case kind == reader.CursorOpaque:
+		// A row-id cursor over a store that is not byte-addressable: no
+		// signatures; a cursor above the reported size means the store
+		// was reset.
+		fullReparse = row.parsedTo > ref.Size
 	case row.prefixSig != "" && row.prefixSig != prefix:
 		fullReparse = true // the inode now holds a different file
 	case row.parsedTo > ref.Size:
@@ -626,9 +802,9 @@ func (in *Ingester) insertSource(ref reader.SourceRef, prefix string) (*ledgerRo
 	return &ledgerRow{srcID: id, path: ref.Path, dev: ref.Dev, ino: ref.Ino, prefixSig: prefix, readerVer: recall.ReaderVersion}, nil
 }
 
-func (in *Ingester) finishSource(row *ledgerRow, ref reader.SourceRef, parsedTo int64, prefix string, state int, lastErr string) error {
+func (in *Ingester) finishSource(row *ledgerRow, ref reader.SourceRef, parsedTo int64, prefix string, state int, lastErr string, kind reader.CursorKind) error {
 	tail := ""
-	if parsedTo > 0 {
+	if parsedTo > 0 && kind == reader.CursorBytes {
 		var err error
 		if tail, err = hashRange(ref.Path, parsedTo-sigBytes, parsedTo); err != nil {
 			return err
@@ -900,6 +1076,9 @@ func (s *sink) Session(info reader.Session) {
 	if s.ref.IsSidechain && s.ref.ParentNativeID != "" {
 		s.linkParent(sessID)
 	}
+	if info.ForkOf != "" && info.ForkOf != native {
+		s.linkEdge(sessID, info.ForkOf, "fork_of")
+	}
 }
 
 // adopt makes sessID the pass's session and continues its sequence.
@@ -936,24 +1115,43 @@ func (s *sink) resolveSession(native string) (sessID, ownerSrc int64, err error)
 	return sessID, owner.Int64, nil
 }
 
-// linkParent writes the subagent_of edge to the owning session, creating
-// the parent row if its file has not been parsed yet.
+// linkParent writes the subagent_of edge to the owning session.
 func (s *sink) linkParent(sessID int64) {
-	var parent int64
+	s.linkEdge(sessID, s.ref.ParentNativeID, "subagent_of")
+}
+
+// linkEdge writes a conv_edge from sessID to the session with the given
+// native id (same harness and profile), creating that session's row if
+// its file has not been parsed yet.
+func (s *sink) linkEdge(sessID int64, toNative, kind string) {
+	var to int64
 	err := s.tx.QueryRow(`SELECT sess_id FROM session WHERE host_uid=? AND harness=? AND profile=? AND native_id=?`,
-		store.LocalHostUID, s.ref.Harness, s.ref.Profile, s.ref.ParentNativeID).Scan(&parent)
+		store.LocalHostUID, s.ref.Harness, s.ref.Profile, toNative).Scan(&to)
 	if errors.Is(err, sql.ErrNoRows) {
 		res, err := s.tx.Exec(`INSERT INTO session(host_uid, harness, profile, native_id, text_tier) VALUES (?, ?, ?, ?, ?)`,
-			store.LocalHostUID, s.ref.Harness, s.ref.Profile, s.ref.ParentNativeID, s.in.opts.TextTier)
+			store.LocalHostUID, s.ref.Harness, s.ref.Profile, toNative, s.in.opts.TextTier)
 		if err != nil {
 			return
 		}
-		parent, _ = res.LastInsertId()
+		to, _ = res.LastInsertId()
 	} else if err != nil {
 		return
 	}
-	_, _ = s.tx.Exec(`INSERT OR IGNORE INTO conv_edge(from_sess, to_sess, kind, created_at) VALUES (?, ?, 'subagent_of', ?)`,
-		sessID, parent, s.in.opts.Now().Unix())
+	_, _ = s.tx.Exec(`INSERT OR IGNORE INTO conv_edge(from_sess, to_sess, kind, created_at) VALUES (?, ?, ?, ?)`,
+		sessID, to, kind, s.in.opts.Now().Unix())
+}
+
+// supersede marks every message before a compaction summary superseded
+// and records the boundary as a compacted_into edge on the session
+// itself (Codex keeps the compacted thread in the same rollout, so the
+// edge is a self-edge whose weight counts the compactions).
+func (s *sink) supersede() error {
+	if _, err := s.tx.Exec(`UPDATE msg SET superseded=1 WHERE sess_id=? AND superseded=0`, s.sessID); err != nil {
+		return err
+	}
+	_, err := s.tx.Exec(`INSERT INTO conv_edge(from_sess, to_sess, kind, weight, created_at) VALUES (?, ?, 'compacted_into', 1, ?)
+		ON CONFLICT(from_sess, to_sess, kind) DO UPDATE SET weight=weight+1`, s.sessID, s.sessID, s.in.opts.Now().Unix())
+	return err
 }
 
 // stop reports the error that ends the pass, if any.
@@ -974,6 +1172,17 @@ func (s *sink) Msg(m reader.Msg) error {
 	if s.sessID == 0 {
 		return nil // no session yet (a title record before any message)
 	}
+	if m.IsCompact && strings.TrimSpace(m.Text) == "" {
+		// A compaction with no readable summary (every real Codex one):
+		// the history before it is superseded and the edge recorded, but
+		// no empty row stands in for the summary.
+		if m.SupersedesPrior {
+			if err := s.supersede(); err != nil {
+				return fmt.Errorf("recall: supersede: %w", err)
+			}
+		}
+		return nil
+	}
 	cls := classify.Message(m.Text, classify.Signals{
 		Assistant: m.Role == recall.RoleAssistant, ToolResult: m.IsToolResult, IsError: m.IsError,
 		IsMeta: m.IsMeta, CompactSummary: m.IsCompact,
@@ -990,6 +1199,11 @@ func (s *sink) Msg(m reader.Msg) error {
 		}
 		if m.TS > s.sess.lastTS {
 			s.sess.lastTS = m.TS
+		}
+	}
+	if m.SupersedesPrior {
+		if err := s.supersede(); err != nil {
+			return fmt.Errorf("recall: supersede: %w", err)
 		}
 	}
 	s.seq++

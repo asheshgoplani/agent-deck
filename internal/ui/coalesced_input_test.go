@@ -18,7 +18,7 @@ func TestCoalescedInputOpensSearchAndPreservesText(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			home := NewHome()
 			home.width, home.height = 100, 30
-			home.globalSearchIndex = nil
+			home.recallSource = nil
 			text := "/Betaé界"
 			if burst {
 				home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
@@ -143,7 +143,7 @@ func TestCoalescedInputRemoteRowPreservesSearchAndCreationTarget(t *testing.T) {
 			setXDGTestHome(t)
 			h := NewHome()
 			h.width, h.height = 100, 30
-			h.globalSearchIndex = nil
+			h.recallSource = nil
 			remote := session.RemoteSessionInfo{ID: "remote-proof", Title: "Remoteé界", RemoteName: "shared", Tool: "shell"}
 			h.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "shared"}}
 			h.cursor = 0

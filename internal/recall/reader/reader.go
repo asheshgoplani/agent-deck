@@ -39,6 +39,10 @@ type SourceRef struct {
 	// session and feeds the subagent_of edge.
 	IsSidechain    bool
 	ParentNativeID string
+	// Aux is reader-private context carried from Discover to Ingest: for
+	// Codex the harness home whose projection database and title index
+	// apply, for Hermes the state.db path.
+	Aux string
 }
 
 // Session carries what the reader learned about the conversation as a
@@ -51,6 +55,9 @@ type Session struct {
 	Title    string
 	TitleSrc string
 	Model    string
+	// ForkOf is the native id of the conversation this one was forked or
+	// resumed from (pi's parentSession); ingest writes a fork_of edge.
+	ForkOf string
 }
 
 // Msg is one indexable message: already-decoded text (text blocks only),
@@ -69,6 +76,11 @@ type Msg struct {
 	IsError      bool
 	IsInterrupt  bool
 	IsCompact    bool
+	// SupersedesPrior marks a compaction summary that replaces every
+	// message before it in the session (Codex `compacted`): ingest flags
+	// the earlier rows superseded and records the boundary as an edge. The
+	// replaced history is never re-emitted, so it is indexed once.
+	SupersedesPrior bool
 }
 
 // ToolCall is one tool_use, joined to its tool_result when the result was
@@ -122,6 +134,37 @@ type Sink interface {
 	ToolCall(ToolCall) error
 	Usage(Usage) error
 	Count(Counter, int64)
+}
+
+// CursorKind says what a source's parsed_to cursor means and therefore how
+// ingest resumes it. Readers that do not implement Cursored are CursorBytes.
+type CursorKind int
+
+const (
+	// CursorBytes: an append-only file; parsed_to is a byte offset guarded
+	// by the tail signature, and a pass resumes from it.
+	CursorBytes CursorKind = iota
+	// CursorNone: the file is rewritten wholesale on change (Gemini's one
+	// JSON document, OpenCode's session tree); every change is a full
+	// reparse from 0 and no tail signature is kept.
+	CursorNone
+	// CursorOpaque: parsed_to is a reader-defined cursor (Hermes: the last
+	// mirrored message id) over a source that is not a file whose bytes can
+	// be signed; no prefix or tail signature is taken.
+	CursorOpaque
+)
+
+// Cursored is implemented by readers whose sources are not byte-tailable.
+type Cursored interface {
+	Cursor() CursorKind
+}
+
+// CursorOf returns rd's cursor kind (CursorBytes when it says nothing).
+func CursorOf(rd Reader) CursorKind {
+	if c, ok := rd.(Cursored); ok {
+		return c.Cursor()
+	}
+	return CursorBytes
 }
 
 // Reader is one harness.
@@ -200,7 +243,18 @@ func (b *Budget) Consumed() int64 {
 	return b.consumed
 }
 
-// Registry lists the shipped readers; phase 3 adds the other harnesses.
+// Registry lists the shipped readers, one per harness. Adding a harness is
+// one file and one line here.
 func Registry() []Reader {
-	return []Reader{Claude{}}
+	return []Reader{Claude{}, Codex{}, Pi{}, Gemini{}, OpenCode{}, Hermes{}}
+}
+
+// ByHarness returns the registered reader for a harness name, or nil.
+func ByHarness(name string) Reader {
+	for _, rd := range Registry() {
+		if rd.Harness() == name {
+			return rd
+		}
+	}
+	return nil
 }

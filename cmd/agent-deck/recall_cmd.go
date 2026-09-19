@@ -34,23 +34,25 @@ import (
 func printRecallHelp() {
 	fmt.Println(`Usage: agent-deck recall <command> [options]
 
-Search and inspect every Claude conversation on this machine (docs/recall.md).
-Requires [recall] enabled = true in config.toml. The index (recall.db) is
-disposable; hints and tags live in state.db and survive a rebuild.
+Search and inspect every conversation on this machine, across harnesses
+(Claude, Codex, pi, Gemini, OpenCode, Hermes; docs/recall.md). Requires
+[recall] enabled = true in config.toml. The index (recall.db) is disposable;
+hints and tags live in state.db and survive a rebuild.
 
 Commands:
   search "<q>"     Full-text search over messages, titles and hints
   sessions         List indexed sessions (newest first)
   show <session>   One session: card, tools, files, messages
-  open <session>   Relaunch a session (resumes the Claude conversation)
+  open <session>   Relaunch a session (start its deck session, or resume a Claude conversation)
   status           Index size, sources by state, what is pending
   backfill         Index all history (resumable; refuses while sessions are busy)
   sweep            Index what changed since the last sweep
   gc               Reclaim space from vanished transcripts
   rebuild          Delete the index and backfill again
 
-Every command accepts --json and --help. <session> is a session number from
-the listing, a Claude conversation id (or prefix), or an agent-deck session id.
+Every command accepts --json and --help. <session> is a #number from a
+listing, a harness conversation id (or unique prefix), or an agent-deck
+session id. The TUI's G key is the same search over the same index.
 
 Examples:
   agent-deck recall search "clock skew" --since 30d --profile work
@@ -95,16 +97,17 @@ func handleRecall(profile string, args []string) {
 
 // recallEnv is everything a recall subcommand needs, opened once.
 type recallEnv struct {
-	profile  string
-	cfg      *session.UserConfig
-	st       *store.Store
-	dbPath   string
-	lockPath string
-	stateDB  string
-	storage  *session.Storage
-	reg      *statedb.StateDB
-	registry *recallRegistry
-	roots    []reader.Root
+	profile   string
+	cfg       *session.UserConfig
+	st        *store.Store
+	dbPath    string
+	lockPath  string
+	queuePath string
+	stateDB   string
+	storage   *session.Storage
+	reg       *statedb.StateDB
+	registry  *recallRegistry
+	roots     []reader.Root
 }
 
 func (e *recallEnv) close() {
@@ -152,7 +155,11 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 		out.Error(fmt.Sprintf("recall: open %s: %v", dbPath, err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	env := &recallEnv{profile: profile, cfg: cfg, st: st, dbPath: dbPath, lockPath: lockPath, roots: session.RecallClaudeRoots()}
+	env := &recallEnv{profile: profile, cfg: cfg, st: st, dbPath: dbPath, lockPath: lockPath, roots: session.RecallRoots()}
+	if env.queuePath, err = recall.QueuePath(); err != nil {
+		out.Error(fmt.Sprintf("recall: resolve queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	if storage, err := session.NewStorageWithProfile(profile); err == nil {
 		env.storage = storage
 		env.reg = storage.GetDB()
@@ -165,163 +172,27 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 	return env
 }
 
-// recallRegistry adapts every profile's state.db to the ingester. recall.db
-// is machine-global and state.db per profile, and a deck session of
-// profile A may run under account B (its transcript under B's config
-// dir), so a link, its hints and its cost events can live in any profile.
-// Lookups try the transcript's profile first, then the invoking one, then
-// the rest; the state.db that holds the authoritative link owns the card's
-// instance hints and receives the usage. Only the invoking profile's
-// state.db is created or migrated; the others are opened as they are and
-// skipped when absent.
+// recallRegistry is session.RecallRegistry (every profile's state.db,
+// shared with the hook and the TUI) plus the CLI's usage sink: cost
+// events go to the state.db that holds the deck session's link.
 type recallRegistry struct {
-	profile string
-	dbs     map[string]*statedb.StateDB
-	order   []string
-	opened  []*statedb.StateDB
-	pricer  *costs.Pricer
-	sinks   map[*statedb.StateDB]*costs.UsageImporter
-	owners  map[string]string // deck id -> the profile whose state.db holds its link
+	*session.RecallRegistry
+	pricer *costs.Pricer
+	sinks  map[*statedb.StateDB]*costs.UsageImporter
 }
 
 func newRecallRegistry(profile string, reg *statedb.StateDB) *recallRegistry {
-	r := &recallRegistry{
-		profile: profile,
-		dbs:     map[string]*statedb.StateDB{},
-		sinks:   map[*statedb.StateDB]*costs.UsageImporter{},
-		owners:  map[string]string{},
-	}
-	if reg != nil {
-		r.dbs[profile] = reg
-		r.order = append(r.order, profile)
-	}
-	names, _ := session.ListProfiles()
-	sort.Strings(names)
-	for _, name := range names {
-		if _, ok := r.dbs[name]; ok {
-			continue
-		}
-		path, err := session.GetDBPathForProfile(name)
-		if err != nil {
-			continue
-		}
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		db, err := statedb.Open(path)
-		if err != nil {
-			continue
-		}
-		r.dbs[name] = db
-		r.opened = append(r.opened, db)
-		r.order = append(r.order, name)
-	}
-	return r
+	return &recallRegistry{RecallRegistry: session.NewRecallRegistry(profile, reg), sinks: map[*statedb.StateDB]*costs.UsageImporter{}}
 }
 
-func (r *recallRegistry) close() {
-	for _, db := range r.opened {
-		_ = db.Close()
-	}
-}
-
-// lookup lists the profiles whose state.db to consult for a transcript of
-// profile, that profile's own first.
-func (r *recallRegistry) lookup(profile string) []string {
-	out := make([]string, 0, len(r.order))
-	if r.dbs[profile] != nil {
-		out = append(out, profile)
-	}
-	for _, name := range r.order {
-		if name != profile {
-			out = append(out, name)
-		}
-	}
-	return out
-}
-
-// owner returns the deck session bound to a conversation and the state.db
-// holding that authoritative link.
-func (r *recallRegistry) owner(profile, harness, native string) (string, *statedb.StateDB) {
-	for _, name := range r.lookup(profile) {
-		db := r.dbs[name]
-		if id, err := db.AuthoritativeLinkOwner(harness, native); err == nil && id != "" {
-			r.owners[id] = name
-			return id, db
-		}
-	}
-	return "", nil
-}
-
-// ownerProfile names the profile whose state.db holds deck's link ("" when
-// none does).
-func (r *recallRegistry) ownerProfile(deck string) string {
-	return r.owners[deck]
-}
-
-func (r *recallRegistry) DeckID(profile, harness, native string) string {
-	id, _ := r.owner(profile, harness, native)
-	return id
-}
-
-func (r *recallRegistry) ChangedSince(since time.Time) []ingest.Ref {
-	var out []ingest.Ref
-	seen := map[ingest.Ref]bool{}
-	for _, name := range r.order {
-		refs, err := r.dbs[name].RecallChangedRefs(since.Unix())
-		if err != nil {
-			continue
-		}
-		for _, ref := range refs {
-			k := ingest.Ref{Harness: ref.Harness, NativeID: ref.NativeID}
-			if !seen[k] {
-				seen[k] = true
-				out = append(out, k)
-			}
-		}
-	}
-	return out
-}
-
-// Hints joins the hints and tags of the bound instance (from the state.db
-// that owns the link) and those keyed on the conversation id in any
-// profile, for the card's FTS columns.
-func (r *recallRegistry) Hints(profile, harness, native string) (string, string) {
-	var hints, tags []string
-	seenHint, seenTag := map[string]bool{}, map[string]bool{}
-	collect := func(db *statedb.StateDB, scopeKind, scopeID string) {
-		if hs, err := db.ListSessionHints(scopeKind, scopeID); err == nil {
-			for _, h := range hs {
-				if kv := h.Key + "=" + h.Value; !seenHint[kv] {
-					seenHint[kv] = true
-					hints = append(hints, kv)
-				}
-			}
-		}
-		if ts, err := db.ListSessionTags(scopeKind, scopeID); err == nil {
-			for _, t := range ts {
-				if !seenTag[t.Tag] {
-					seenTag[t.Tag] = true
-					tags = append(tags, t.Tag)
-				}
-			}
-		}
-	}
-	for _, name := range r.lookup(profile) {
-		collect(r.dbs[name], statedb.HintScopeHarnessSession, native)
-	}
-	if deck, db := r.owner(profile, harness, native); deck != "" {
-		collect(db, statedb.HintScopeInstance, deck)
-	}
-	return strings.Join(hints, " "), strings.Join(tags, " ")
-}
+func (r *recallRegistry) close() { r.Close() }
 
 // Usage implements ingest.UsageSink: cost events go to the state.db that
 // holds the deck session's link, whichever profile that is.
 func (r *recallRegistry) Usage(profile, deck string, events []reader.Usage) error {
-	db := r.dbs[r.owners[deck]]
+	db := r.DB(r.OwnerProfile(deck))
 	if db == nil {
-		db = r.dbs[r.profile]
+		db = r.DB(r.Profile())
 	}
 	if db == nil {
 		return nil
@@ -371,6 +242,7 @@ func (e *recallEnv) ingestOptions(force bool) ingest.Options {
 		TextTier:       e.cfg.Recall.GetTextTier(),
 		PerSourceBytes: int64(e.cfg.Recall.GetPerSourceMB()) << 20,
 		NewestFirst:    true,
+		QueuePath:      e.queuePath,
 	}
 	if !force {
 		opts.Gate = &ingest.Gate{Busy: e.busySessions, MaxLoadAvg: e.cfg.Recall.GetMaxLoadAvg()}
@@ -438,7 +310,7 @@ type recallFilterFlags struct {
 
 func registerRecallFilters(fs *flag.FlagSet) *recallFilterFlags {
 	f := &recallFilterFlags{hints: map[string]string{}}
-	fs.StringVar(&f.harness, "harness", "", "Only this harness (claude)")
+	fs.StringVar(&f.harness, "harness", "", "Only this harness (claude, codex, pi, gemini, opencode, hermes)")
 	fs.StringVar(&f.profile, "profile", "", "Only this profile's transcripts (default: every profile)")
 	fs.StringVar(&f.project, "project", "", "Only sessions whose working directory is PATH")
 	fs.StringVar(&f.since, "since", "", "Only sessions active since (30d, 24h, or YYYY-MM-DD)")
@@ -661,7 +533,7 @@ func formatRecallHit(h query.Hit) string {
 	if h.DeckID != "" {
 		deck = " deck:" + h.DeckID
 	}
-	return fmt.Sprintf("  #%-6d %s  %s/%s  %s%s  [%s]\n      %s  %s", h.SessID, recallDate(h.EndedAt, h.StartedAt), h.Harness, h.Profile,
+	return fmt.Sprintf("  %-7s %s  %s/%s  %s%s  [%s]\n      %s  %s", query.Ref(h.SessID), recallDate(h.EndedAt, h.StartedAt), h.Harness, h.Profile,
 		title, deck, strings.Join(marks, ", "), shortNative(h.NativeID), h.CWD)
 }
 
@@ -771,7 +643,7 @@ func formatRecallSession(r query.SessionRow) string {
 	if len(marks) > 0 {
 		extra = "  [" + strings.Join(marks, ", ") + "]"
 	}
-	return fmt.Sprintf("  #%-6d %s  %s/%-9s %3d turns %4d tools %2d err  %s%s\n      %s  %s", r.SessID, recallDate(r.EndedAt, r.StartedAt),
+	return fmt.Sprintf("  %-7s %s  %s/%-9s %3d turns %4d tools %2d err  %s%s\n      %s  %s", query.Ref(r.SessID), recallDate(r.EndedAt, r.StartedAt),
 		r.Harness, r.Profile, r.Turns, r.ToolCalls, r.Errors, title, extra, shortNative(r.NativeID), r.CWD)
 }
 
@@ -946,9 +818,6 @@ func handleRecallOpen(profile string, args []string) {
 // recallOpenPlan decides between starting the bound session and registering
 // a resume of the conversation.
 func recallOpenPlan(env *recallEnv, sess query.SessionRow, title string) ([]string, string, error) {
-	if sess.Harness != reader.HarnessClaude {
-		return nil, "", fmt.Errorf("recall open supports Claude conversations only (this one is %s)", sess.Harness)
-	}
 	if sess.Sidechain {
 		return nil, "", errors.New("a subagent transcript cannot be resumed; open its parent session")
 	}
@@ -957,7 +826,7 @@ func recallOpenPlan(env *recallEnv, sess query.SessionRow, title string) ([]stri
 	// and the session then starts under that profile.
 	deck, owner := sess.DeckID, env.reg
 	if env.registry != nil {
-		if id, db := env.registry.owner(sess.Profile, sess.Harness, sess.NativeID); id != "" {
+		if id, db := env.registry.Owner(sess.Profile, sess.Harness, sess.NativeID); id != "" {
 			deck, owner = id, db
 		}
 	}
@@ -966,13 +835,16 @@ func recallOpenPlan(env *recallEnv, sess query.SessionRow, title string) ([]stri
 			for _, r := range rows {
 				if r.ID == deck {
 					args := []string{"session", "start", deck}
-					if p := env.registry.ownerProfile(deck); p != "" && p != env.profile {
+					if p := env.registry.OwnerProfile(deck); p != "" && p != env.profile {
 						args = append([]string{"-p", p}, args...)
 					}
 					return args, "start", nil
 				}
 			}
 		}
+	}
+	if sess.Harness != reader.HarnessClaude {
+		return nil, "", fmt.Errorf("%s conversations are searchable but not resumable yet (no registered session owns this one); read it with recall show", sess.Harness)
 	}
 	if sess.Missing {
 		return nil, "", errors.New("the transcript file is gone; nothing to resume (the index still has its text: recall show)")
@@ -1038,16 +910,18 @@ func handleRecallStatus(profile string, args []string) {
 	roots := make([]map[string]any, 0, len(env.roots))
 	scratch := 0
 	for _, r := range env.roots {
-		if r.Profile == "" {
+		if r.Harness == reader.HarnessClaude && r.Profile == "" {
 			scratch++
 			continue
 		}
-		roots = append(roots, map[string]any{"profile": r.Profile, "dir": r.Dir, "retention_days": r.RetentionDays})
+		roots = append(roots, map[string]any{"harness": r.Harness, "profile": r.Profile, "dir": r.Dir, "retention_days": r.RetentionDays})
 	}
+	queued := recall.QueueLen(env.queuePath)
 	if *jsonOutput {
-		out.printJSON(map[string]any{"success": true, "status": st, "roots": roots, "worker_scratch_roots": scratch,
+		out.printJSON(map[string]any{"success": true, "status": st, "roots": roots, "worker_scratch_roots": scratch, "queued": queued,
 			"config": map[string]any{"text_tier": env.cfg.Recall.GetTextTier(), "max_loadavg": env.cfg.Recall.GetMaxLoadAvg(),
-				"keep_missing_days": env.cfg.Recall.GetKeepMissingDays(), "per_source_mb": env.cfg.Recall.GetPerSourceMB()}})
+				"keep_missing_days": env.cfg.Recall.GetKeepMissingDays(), "per_source_mb": env.cfg.Recall.GetPerSourceMB(),
+				"harnesses": env.cfg.Recall.GetHarnesses(), "hook_sweep": env.cfg.Recall.GetHookSweep()}})
 		return
 	}
 	fmt.Printf("recall.db  %s  (%s, schema %s)\n", st.DBPath, humanBytes(st.DBBytes), st.SchemaVersion)
@@ -1073,17 +947,31 @@ func handleRecallStatus(profile string, args []string) {
 	if st.LastSweep > 0 {
 		fmt.Printf("last sweep %s\n", time.Unix(st.LastSweep, 0).Local().Format("2006-01-02 15:04"))
 	}
-	var profiles []string
+	var profiles, harnesses []string
 	for k, n := range st.ByProfile {
 		profiles = append(profiles, fmt.Sprintf("%s %d", k, n))
 	}
+	for k, n := range st.ByHarness {
+		harnesses = append(harnesses, fmt.Sprintf("%s %d", k, n))
+	}
 	sort.Strings(profiles)
+	sort.Strings(harnesses)
+	if len(harnesses) > 0 {
+		fmt.Printf("harnesses  %s\n", strings.Join(harnesses, ", "))
+	}
 	if len(profiles) > 0 {
 		fmt.Printf("profiles   %s\n", strings.Join(profiles, ", "))
 	}
-	fmt.Printf("roots      %d profile dir(s), %d worker-scratch home(s)\n", len(roots), scratch)
+	if queued > 0 {
+		fmt.Printf("queued     %d hook line(s) waiting for the next sweep\n", queued)
+	}
+	fmt.Printf("roots      %d harness dir(s), %d worker-scratch home(s)\n", len(roots), scratch)
 	for _, r := range roots {
-		fmt.Printf("           %-10s %s (retention %d d)\n", r["profile"], r["dir"], r["retention_days"])
+		if r["harness"] == reader.HarnessClaude {
+			fmt.Printf("           %-9s %-10s %s (retention %d d)\n", r["harness"], r["profile"], r["dir"], r["retention_days"])
+		} else {
+			fmt.Printf("           %-9s %-10s %s\n", r["harness"], r["profile"], r["dir"])
+		}
 	}
 	if st.Tombstones > 0 || st.FreePages > 0 {
 		fmt.Printf("gc         %d tombstone(s), %d free page(s): 'agent-deck recall gc'\n", st.Tombstones, st.FreePages)
@@ -1107,7 +995,7 @@ func handleRecallBackfill(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `Usage: agent-deck recall backfill [--since 90d] [--budget 5m] [--force] [--json]
 
-Index every Claude transcript on this machine, newest first. Resumable: every
+Index every transcript of every harness on this machine, newest first. Resumable: every
 file keeps a cursor, so Ctrl-C keeps what was done. Refuses to start while a
 managed session is running or the load average is above [recall].max_loadavg
 unless --force is given.`)

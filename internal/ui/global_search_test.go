@@ -1,24 +1,118 @@
 package ui
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/recall/ingest"
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// stubRecall is a RecallSource with canned answers: the overlay is tested
+// (and its frames pinned) without a recall.db.
+type stubRecall struct {
+	hits      []query.Hit
+	detail    map[int64]query.Detail
+	status    query.Status
+	refresh   []ingest.Result // one per Refresh call, in order
+	searchErr error
+	searches  []string
+	refreshes []bool
+	closed    bool
+}
+
+func (s *stubRecall) Search(_ context.Context, q string, limit int) (query.SearchResult, error) {
+	s.searches = append(s.searches, q)
+	if s.searchErr != nil {
+		return query.SearchResult{}, s.searchErr
+	}
+	hits := s.hits
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return query.SearchResult{Query: q, Hits: hits, Candidates: 7, ElapsedMS: 3}, nil
+}
+
+func (s *stubRecall) Show(_ context.Context, sessID int64, _ int) (query.Detail, error) {
+	d, ok := s.detail[sessID]
+	if !ok {
+		return query.Detail{}, query.ErrNotFound
+	}
+	return d, nil
+}
+
+func (s *stubRecall) Status(context.Context) (query.Status, error) { return s.status, nil }
+
+func (s *stubRecall) Refresh(_ context.Context, gated bool) (ingest.Result, error) {
+	s.refreshes = append(s.refreshes, gated)
+	if len(s.refresh) == 0 {
+		return ingest.Result{}, nil
+	}
+	r := s.refresh[0]
+	s.refresh = s.refresh[1:]
+	return r, nil
+}
+
+func (s *stubRecall) Close() { s.closed = true }
+
+var fixedEnd = time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC).Unix()
+
+func newStubRecall() *stubRecall {
+	return &stubRecall{
+		hits: []query.Hit{
+			{SessID: 41, Harness: "claude", Profile: "personal", NativeID: "3fec37ee-811e-48c4-ba90-552abd93d9c7", DeckID: "auth-fix", Title: "Auth fix review",
+				CWD: "/Users/x/proj", EndedAt: fixedEnd, BodyHits: 3, CardHit: true, Snippet: "the root cause was clock skew, not the retry budget"},
+			{SessID: 42, Harness: "codex", NativeID: "01a0b956-e4be-7301-8f3c-3f1e39ab75b0", Title: "Fix flaky auth", CWD: "/Users/x/proj", EndedAt: fixedEnd - 86400, BodyHits: 1},
+			{SessID: 43, Harness: "claude", Profile: "work", NativeID: "aaaaaaaa-0000-4000-8000-000000000001", CWD: "/Users/x/other", EndedAt: fixedEnd - 7*86400, BodyHits: 2, Missing: true},
+		},
+		detail: map[int64]query.Detail{
+			41: {Session: query.SessionRow{SessID: 41, Turns: 12, ToolCalls: 30, Errors: 1, Model: "claude-opus-5", Hints: "ticket=SB-412", Tags: "auth"},
+				Messages: []query.Message{
+					{Seq: 1, Role: "user", Text: "Review PR 2308 for the auth fix"},
+					{Seq: 2, Role: "assistant", Text: "Reading the diff. The root cause was clock skew."},
+				}, Truncated: 10},
+		},
+		status: query.Status{Sessions: 1793, Messages: 151524, LastSweep: time.Now().Add(-3 * time.Minute).Unix()},
+	}
+}
+
+// drain runs a tea.Cmd chain synchronously until it yields nothing.
+func drain(gs *GlobalSearch, cmd tea.Cmd) {
+	for cmd != nil {
+		msg := cmd()
+		cmd = nil
+		switch m := msg.(type) {
+		case nil:
+		case tea.BatchMsg:
+			for _, c := range m {
+				drain(gs, c)
+			}
+		default:
+			gs, cmd = gs.Update(m)
+		}
+	}
+}
 
 func TestGlobalSearchVisibility(t *testing.T) {
 	gs := NewGlobalSearch()
-
 	if gs.IsVisible() {
 		t.Error("GlobalSearch should not be visible initially")
 	}
-
-	gs.Show()
+	if cmd := gs.Show(); cmd != nil {
+		t.Error("without a source Show schedules nothing")
+	}
 	if !gs.IsVisible() {
 		t.Error("GlobalSearch should be visible after Show()")
 	}
-
 	gs.Hide()
 	if gs.IsVisible() {
 		t.Error("GlobalSearch should not be visible after Hide()")
@@ -28,222 +122,332 @@ func TestGlobalSearchVisibility(t *testing.T) {
 func TestGlobalSearchKeyHandling(t *testing.T) {
 	gs := NewGlobalSearch()
 	gs.Show()
-
-	// Test escape closes
 	gs.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if gs.IsVisible() {
 		t.Error("Escape should hide GlobalSearch")
 	}
 }
 
-func TestGlobalSearchCursorNavigation(t *testing.T) {
+// TestGlobalSearch_ShowRefreshesThenSearches: opening runs the status
+// read and one ungated bounded sweep; a deferral continues gated; typing
+// searches after the debounce; moving the cursor loads a preview once.
+func TestGlobalSearch_ShowRefreshesThenSearches(t *testing.T) {
+	fastCatchUp(t)
+	src := newStubRecall()
+	src.refresh = []ingest.Result{{Deferred: 2, DeferredBytes: 5 << 20}, {}}
 	gs := NewGlobalSearch()
-	gs.Show()
-
-	// Add some mock results
-	gs.results = []*GlobalSearchResult{
-		{SessionID: "1", Summary: "First"},
-		{SessionID: "2", Summary: "Second"},
-		{SessionID: "3", Summary: "Third"},
+	gs.SetSource(src)
+	gs.SetSize(160, 45)
+	drain(gs, gs.Show())
+	if len(src.refreshes) != 2 || src.refreshes[0] || !src.refreshes[1] {
+		t.Fatalf("refresh passes %v: want one ungated pass then a gated continuation", src.refreshes)
 	}
-
-	// Test down navigation
-	gs.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if gs.cursor != 1 {
-		t.Errorf("Expected cursor at 1, got %d", gs.cursor)
+	if gs.refresh != "" || !gs.hasStat || gs.status.Sessions != 1793 {
+		t.Fatalf("after the passes: refresh %q stat %v", gs.refresh, gs.status)
 	}
-
-	gs.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if gs.cursor != 2 {
-		t.Errorf("Expected cursor at 2, got %d", gs.cursor)
+	// Type a query: the search waits for the debounce, then runs once.
+	for _, r := range "clock skew" {
+		_, cmd := gs.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if r == 'w' { // the last keystroke's tick is the one that fires
+			drain(gs, cmd)
+		}
 	}
-
-	// Should not go past end
-	gs.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if gs.cursor != 2 {
-		t.Errorf("Cursor should stay at 2, got %d", gs.cursor)
+	if len(src.searches) != 1 || src.searches[0] != "clock skew" {
+		t.Fatalf("searches %v", src.searches)
 	}
-
-	// Test up navigation
-	gs.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if gs.cursor != 1 {
-		t.Errorf("Expected cursor at 1, got %d", gs.cursor)
+	if len(gs.results) != 3 || gs.results[0].Title != "Auth fix review" || gs.results[0].DeckID != "auth-fix" {
+		t.Fatalf("results: %+v", gs.results)
 	}
-}
-
-func TestGlobalSearchSelected(t *testing.T) {
-	gs := NewGlobalSearch()
-	gs.Show()
-
-	// No results, should return nil
-	if gs.Selected() != nil {
-		t.Error("Selected should be nil when no results")
+	if _, ok := gs.preview[41]; !ok {
+		t.Fatal("the selected hit's preview was not loaded")
 	}
-
-	// Add results
-	gs.results = []*GlobalSearchResult{
-		{SessionID: "1", Summary: "First"},
-		{SessionID: "2", Summary: "Second"},
+	_, cmd := gs.Update(tea.KeyMsg{Type: tea.KeyDown})
+	drain(gs, cmd)
+	if gs.cursor != 1 || gs.Selected().Harness != "codex" {
+		t.Fatalf("cursor %d selected %+v", gs.cursor, gs.Selected())
 	}
-
-	// Should return first
-	selected := gs.Selected()
-	if selected == nil || selected.SessionID != "1" {
-		t.Error("Selected should return first result")
+	_, cmd = gs.Update(tea.KeyMsg{Type: tea.KeyDown})
+	drain(gs, cmd)
+	_, cmd = gs.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if cmd != nil || gs.cursor != 2 {
+		t.Fatalf("cursor must stop at the last row: %d", gs.cursor)
 	}
-
-	// Move cursor and check
-	gs.cursor = 1
-	selected = gs.Selected()
-	if selected == nil || selected.SessionID != "2" {
-		t.Error("Selected should return second result")
-	}
-}
-
-func TestGlobalSearchEnterClosesAndSelects(t *testing.T) {
-	gs := NewGlobalSearch()
-	gs.Show()
-	gs.results = []*GlobalSearchResult{
-		{SessionID: "test-1", Summary: "Test"},
-	}
-
+	// Enter closes; the parent reads Selected.
 	gs.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if gs.IsVisible() {
-		t.Error("Enter should hide GlobalSearch")
+	if gs.IsVisible() || gs.Selected().SessID != 43 {
+		t.Fatalf("enter: visible %v selected %+v", gs.IsVisible(), gs.Selected())
+	}
+}
+
+// fastCatchUp shortens the pause between catch-up passes so drain does not
+// sleep; the pacing itself is asserted by TestGlobalSearch_CatchUpIsPaced.
+func fastCatchUp(t *testing.T) {
+	t.Helper()
+	old := recallCatchUpDelay
+	recallCatchUpDelay = time.Millisecond
+	t.Cleanup(func() { recallCatchUpDelay = old })
+}
+
+// TestGlobalSearch_CatchUpIsPaced: a deferred pass does not chain the next
+// gated pass immediately; it schedules a tick and the pass runs when the
+// tick fires (and only while the overlay is still open and sweeping).
+func TestGlobalSearch_CatchUpIsPaced(t *testing.T) {
+	src := newStubRecall()
+	gs := NewGlobalSearch()
+	gs.SetSource(src)
+	gs.SetSize(120, 40)
+	gs.Show()
+	_, cmd := gs.Update(recallRefreshMsg{res: ingest.Result{Deferred: 4, DeferredBytes: 1 << 20}})
+	if cmd == nil {
+		t.Fatal("a deferred pass must schedule the continuation")
+	}
+	if len(src.refreshes) != 0 {
+		t.Fatalf("the next pass must wait for the tick, got %v", src.refreshes)
+	}
+	if !gs.sweeping || !strings.Contains(gs.staleLine(), "catching up") {
+		t.Fatalf("stale line %q sweeping %v", gs.staleLine(), gs.sweeping)
+	}
+	// The tick fires: one gated pass.
+	_, cmd = gs.Update(recallCatchUpMsg{})
+	if cmd == nil {
+		t.Fatal("the tick must run the gated pass")
+	}
+	if msg, ok := cmd().(recallRefreshMsg); !ok || !msg.gated {
+		t.Fatalf("expected a gated refresh, got %#v", msg)
+	}
+	if len(src.refreshes) != 1 || !src.refreshes[0] {
+		t.Fatalf("refreshes %v", src.refreshes)
+	}
+	// A tick that outlives the overlay (closed, or the chain ended) is inert.
+	gs.sweeping = false
+	if _, cmd := gs.Update(recallCatchUpMsg{}); cmd != nil {
+		t.Fatal("no pass after the chain ended")
+	}
+	gs.Hide()
+	if _, cmd := gs.Update(recallCatchUpMsg{}); cmd != nil {
+		t.Fatal("no pass after the overlay closed")
+	}
+}
+
+// TestGlobalSearch_PreviewErrorIsShown: when `recall show` fails for the
+// selected hit the pane says so instead of "loading turns..." forever.
+func TestGlobalSearch_PreviewErrorIsShown(t *testing.T) {
+	src := newStubRecall()
+	gs := NewGlobalSearch()
+	gs.SetSource(src)
+	gs.SetSize(120, 40)
+	gs.Show()
+	gs.input.SetValue("clock")
+	gs.query = "clock"
+	res, _ := src.Search(context.Background(), "clock", recallResultLimit)
+	gs.Update(globalSearchResultsMsg{query: "clock", res: res})
+	if !strings.Contains(ansi.Strip(gs.View()), "loading turns...") {
+		t.Fatal("before the preview answers the pane says it is loading")
+	}
+	gs.Update(recallPreviewMsg{sessID: 41, err: query.ErrNotFound})
+	frame := ansi.Strip(gs.View())
+	if strings.Contains(frame, "loading turns...") || !strings.Contains(frame, "preview failed: recall: no such session") {
+		t.Fatalf("frame:\n%s", frame)
+	}
+}
+
+func TestGlobalSearch_RefreshSkippedAndSearchErrorAreShown(t *testing.T) {
+	src := newStubRecall()
+	gs := NewGlobalSearch()
+	gs.SetSource(src)
+	gs.SetSize(120, 40)
+	gs.Show()
+	gs.Update(recallRefreshMsg{err: errors.New("another sweep is running")})
+	if !strings.Contains(gs.staleLine(), "another sweep is running") {
+		t.Fatalf("stale line %q", gs.staleLine())
+	}
+	gs.input.SetValue("x")
+	gs.query = "x"
+	gs.Update(globalSearchResultsMsg{query: "x", err: errors.New("fts5: syntax error")})
+	if !strings.Contains(ansi.Strip(gs.View()), "fts5: syntax error") {
+		t.Fatal("a search error must be visible")
+	}
+}
+
+func TestGlobalSearchMarkInAgentDeck(t *testing.T) {
+	src := newStubRecall()
+	gs := NewGlobalSearch()
+	gs.SetSource(src)
+	gs.Show()
+	gs.applySearchResults(query.SearchResult{Hits: src.hits})
+	gs.MarkInAgentDeck([]*session.Instance{
+		{ID: "auth-fix"},
+		{ID: "other", ClaudeSessionID: "aaaaaaaa-0000-4000-8000-000000000001"},
+	})
+	if !gs.results[0].InAgentDeck || gs.results[0].InstanceID != "auth-fix" {
+		t.Fatalf("deck id match: %+v", gs.results[0])
+	}
+	if gs.results[1].InAgentDeck {
+		t.Fatalf("codex hit must not match a Claude session id: %+v", gs.results[1])
+	}
+	if !gs.results[2].InAgentDeck || gs.results[2].InstanceID != "other" {
+		t.Fatalf("claude session id match: %+v", gs.results[2])
 	}
 }
 
 func TestGlobalSearchHighlightMatches(t *testing.T) {
 	gs := NewGlobalSearch()
-
-	tests := []struct {
-		name     string
-		text     string
-		query    string
-		contains string
-	}{
-		{
-			name:     "empty query returns original text",
-			text:     "Hello World",
-			query:    "",
-			contains: "Hello World",
-		},
-		{
-			name:     "empty text returns empty",
-			text:     "",
-			query:    "test",
-			contains: "",
-		},
-		{
-			name:     "case insensitive match",
-			text:     "Hello World",
-			query:    "world",
-			contains: "Hello ", // Text before match should be preserved
-		},
-		{
-			name:     "preserves original case in match",
-			text:     "Hello WORLD",
-			query:    "world",
-			contains: "WORLD", // Original case preserved in highlight
-		},
-		{
-			name:     "multiple matches",
-			text:     "test one test two test",
-			query:    "test",
-			contains: "one", // Text between matches should be preserved
-		},
+	if got := gs.highlightMatches("Hello World", ""); got != "Hello World" {
+		t.Errorf("empty query: %q", got)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := gs.highlightMatches(tt.text, tt.query)
-			if tt.query == "" {
-				// Empty query should return original text unchanged
-				if result != tt.text {
-					t.Errorf("Expected original text %q, got %q", tt.text, result)
-				}
-				return
-			}
-			// For non-empty query, verify:
-			// 1. Result contains the expected content (between matches)
-			if tt.contains != "" && !strings.Contains(result, tt.contains) {
-				t.Errorf("Expected result to contain %q, got %q", tt.contains, result)
-			}
-			// 2. Result is not empty when both text and query are provided
-			if tt.text != "" && result == "" {
-				t.Errorf("Expected non-empty result for text %q with query %q", tt.text, tt.query)
-			}
-			// Note: lipgloss may not emit ANSI codes in test environment (no TTY)
-			// so we skip checking for escape sequences
-		})
+	if got := gs.highlightMatches("", "x"); got != "" {
+		t.Errorf("empty text: %q", got)
+	}
+	got := ansi.Strip(gs.highlightMatches("test one TEST two", `"test" AND one`))
+	if got != "test one TEST two" {
+		t.Errorf("highlighting must keep the text: %q", got)
 	}
 }
 
-func TestGlobalSearchQueryStorage(t *testing.T) {
-	gs := NewGlobalSearch()
-	gs.Show()
-
-	// Initially query should be empty
-	if gs.query != "" {
-		t.Errorf("Expected empty query, got %q", gs.query)
+// assertOverlayGolden compares the overlay frame with testdata (UPDATE_GOLDEN=1 rewrites)
+// and checks that no line is wider than the terminal.
+func assertOverlayGolden(t *testing.T, gs *GlobalSearch, name string) {
+	t.Helper()
+	got := ansi.Strip(gs.View()) + "\n"
+	for _, line := range strings.Split(got, "\n") {
+		if w := ansi.StringWidth(line); w > gs.width {
+			t.Fatalf("%s: a line is %d cells wide on a %d-column terminal:\n%s", name, w, gs.width, line)
+		}
 	}
-
-	// Simulate typing by setting input value (query is set in Update's default case)
-	gs.input.SetValue("test search")
-	gs.query = gs.input.Value()
-
-	// Query should now be stored
-	if gs.query != "test search" {
-		t.Errorf("Expected query 'test search', got %q", gs.query)
+	path := filepath.Join("testdata", name)
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-}
-
-func TestGlobalSearchFormatPreviewContentWithHighlighting(t *testing.T) {
-	gs := NewGlobalSearch()
-	gs.Show()
-	gs.query = "hello"
-
-	// Test with user message
-	content := "User: Hello world\nAssistant: Hi there"
-	lines := gs.formatPreviewContent(content, 80)
-
-	// Should have at least 2 lines
-	if len(lines) < 2 {
-		t.Errorf("Expected at least 2 lines, got %d", len(lines))
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// First line should have user emoji
-	if len(lines) > 0 && len(lines[0]) == 0 {
-		t.Error("Expected non-empty first line")
+	if got != string(want) {
+		t.Fatalf("%s golden mismatch\nwant:\n%s\ngot:\n%s", name, want, got)
 	}
 }
 
-func TestGlobalSearchMatchCount(t *testing.T) {
+// TestGlobalSearchGolden pins the three states of the Recall screen: just
+// opened (index summary, refreshing), results with the preview of the
+// selected hit, and the staleness line after a deferred pass.
+func TestGlobalSearchGolden(t *testing.T) {
+	src := newStubRecall()
+	src.status.LastSweep = 0
 	gs := NewGlobalSearch()
+	gs.SetSource(src)
+	gs.SetSize(140, 40)
 	gs.Show()
+	gs.Update(recallStatusMsg{status: src.status})
+	assertOverlayGolden(t, gs, "recall_search_open.golden")
 
-	// Test results with different match counts
-	gs.results = []*GlobalSearchResult{
-		{SessionID: "1", Summary: "First", Content: "test test test", MatchCount: 3},
-		{SessionID: "2", Summary: "Second", Content: "test", MatchCount: 1},
-		{SessionID: "3", Summary: "Third", Content: "no matches here", MatchCount: 0},
+	gs.Update(recallRefreshMsg{res: ingest.Result{}})
+	gs.input.SetValue("clock skew")
+	gs.query = "clock skew"
+	res, _ := src.Search(context.Background(), "clock skew", recallResultLimit)
+	gs.Update(globalSearchResultsMsg{query: "clock skew", res: res})
+	gs.Update(recallPreviewMsg{sessID: 41, detail: src.detail[41]})
+	gs.MarkInAgentDeck([]*session.Instance{{ID: "auth-fix"}})
+	for i := range gs.results {
+		gs.results[i].EndedAt = time.Time{} // relative dates would drift
 	}
+	assertOverlayGolden(t, gs, "recall_search_results.golden")
 
-	// Verify match counts are stored correctly
-	if gs.results[0].MatchCount != 3 {
-		t.Errorf("Expected MatchCount 3, got %d", gs.results[0].MatchCount)
-	}
-	if gs.results[1].MatchCount != 1 {
-		t.Errorf("Expected MatchCount 1, got %d", gs.results[1].MatchCount)
-	}
-	if gs.results[2].MatchCount != 0 {
-		t.Errorf("Expected MatchCount 0, got %d", gs.results[2].MatchCount)
-	}
+	gs.Update(recallRefreshMsg{res: ingest.Result{Deferred: 3, DeferredBytes: 152 << 20}})
+	assertOverlayGolden(t, gs, "recall_search_behind.golden")
 
-	// Verify View renders without errors (contains match info)
-	gs.SetSize(160, 40)
-	view := gs.View()
-	if view == "" {
-		t.Error("Expected non-empty view output")
+	// The same results screen at the three widths the task named: the
+	// overlay follows the terminal below its 160-column cap and fits 80.
+	gs.Update(recallRefreshMsg{res: ingest.Result{}})
+	for _, w := range []int{200, 120, 80} {
+		gs.SetSize(w, 40)
+		assertOverlayGolden(t, gs, fmt.Sprintf("recall_search_results_%d.golden", w))
+	}
+}
+
+// stepHome runs a tea.Cmd chain through Home.Update the way bubbletea
+// delivers it, until it yields nothing (fastCatchUp keeps the tick short).
+func stepHome(t *testing.T, h *Home, cmd tea.Cmd) *Home {
+	t.Helper()
+	for cmd != nil {
+		msg := cmd()
+		cmd = nil
+		switch m := msg.(type) {
+		case nil:
+		case tea.BatchMsg:
+			for _, c := range m {
+				h = stepHome(t, h, c)
+			}
+		default:
+			var model tea.Model
+			model, cmd = h.Update(m)
+			h = model.(*Home)
+		}
+	}
+	return h
+}
+
+// TestHome_CatchUpTickAdvancesTheIndexWithOverlayOpen: the paced tick
+// travels through Home.Update (as in the real TUI, where Home owns the
+// message loop) and reaches the overlay, so the gated passes run and the
+// header count advances while G is on screen; the frame is pinned.
+func TestHome_CatchUpTickAdvancesTheIndexWithOverlayOpen(t *testing.T) {
+	fastCatchUp(t)
+	home := NewHome()
+	home.width, home.height = 120, 24
+	home.initialLoading = false
+	src := newStubRecall()
+	src.status = query.Status{Sessions: 1, Messages: 16, LastSweep: 0}
+	// The first (ungated) pass reports a backlog; the next gated pass
+	// finishes it. Each pass grows the index the status line reports.
+	src.refresh = []ingest.Result{{Deferred: 1305, DeferredBytes: 2560 << 20}, {Parsed: 3}}
+	home.recallSource = src
+	home.globalSearch.SetSource(src)
+
+	model, cmd := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	h := model.(*Home)
+	if !h.globalSearch.IsVisible() {
+		t.Fatal("overlay not open")
+	}
+	// Deliver the opening status and the first refresh only (the tick is
+	// scheduled but not yet fired): behind, count 1/16.
+	msgs := cmd().(tea.BatchMsg)
+	for _, c := range msgs {
+		model, _ = h.Update(c())
+		h = model.(*Home)
+	}
+	before := stripAnsi(h.View())
+	if !strings.Contains(before, "Recall (1 sessions, 16 messages)") || !strings.Contains(before, "catching up in the background") {
+		t.Fatalf("before the tick:\n%s", before)
+	}
+	// The tick fires and arrives at Home: one gated pass, its status re-read.
+	src.status = query.Status{Sessions: 2, Messages: 48, LastSweep: 0}
+	model, cmd = h.Update(recallCatchUpMsg{})
+	h = model.(*Home)
+	if cmd == nil {
+		t.Fatalf("Home dropped recallCatchUpMsg (overlay visible=%v sweeping=%v)", h.globalSearch.IsVisible(), h.globalSearch.sweeping)
+	}
+	h = stepHome(t, h, cmd)
+	if got := src.refreshes; len(got) != 2 || got[0] || !got[1] {
+		t.Fatalf("refreshes (gated flags) = %v, want [false true]", got)
+	}
+	after := stripAnsi(h.View())
+	if !strings.Contains(after, "Recall (2 sessions, 48 messages)") || !h.globalSearch.IsVisible() {
+		t.Fatalf("after the tick (overlay visible=%v):\n%s", h.globalSearch.IsVisible(), after)
+	}
+	assertFrameGolden(t, "recall_catchup_home_120.golden", after)
+
+	// Esc ends the chain: a tick that outlives the overlay runs nothing.
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	h = model.(*Home)
+	if h.globalSearch.IsVisible() || h.globalSearch.sweeping {
+		t.Fatalf("after Esc: visible=%v sweeping=%v", h.globalSearch.IsVisible(), h.globalSearch.sweeping)
+	}
+	if _, cmd := h.Update(recallCatchUpMsg{}); cmd != nil {
+		t.Fatal("a tick after Esc must not schedule a pass")
+	}
+	if len(src.refreshes) != 2 {
+		t.Fatalf("refreshes after Esc = %v", src.refreshes)
 	}
 }

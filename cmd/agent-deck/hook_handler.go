@@ -283,6 +283,11 @@ func handleHookHandler() {
 	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
 	writeCostEvent(instanceID, data)
 
+	// Recall trigger (docs/recall.md): on the turn-end and session-end
+	// edges, queue this session's transcript and, budget permitting, index
+	// it right away. Behind recover(): recall can never fail the hook.
+	recallHookTrigger(instanceID, payload.HookEventName, data)
+
 	// PermissionRequest in DSP-launched, agent-deck-managed sessions: emit an
 	// explicit allow decision so headless / /remote-control contexts (which
 	// have no UI fallback) do not silently deny. DSP is the user-declared
@@ -894,10 +899,11 @@ type stopHookPayload struct {
 	TranscriptPath string `json:"transcript_path"`
 }
 
-// transcriptMessage is the last line of the transcript JSONL file (assistant turn).
+// transcriptMessage is one transcript record as the cost path reads it.
 type transcriptMessage struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type        string `json:"type"`
+	IsSidechain bool   `json:"isSidechain"`
+	Message     struct {
 		Model string `json:"model"`
 		Usage struct {
 			InputTokens              int64 `json:"input_tokens"`
@@ -937,20 +943,9 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 	}
 	logCostDebug("transcript_path: %s", cleanPath)
 
-	lastLine, err := readLastLine(cleanPath)
-	if err != nil {
-		logCostDebug("read transcript failed: %v", err)
-		return
-	}
-
-	var msg transcriptMessage
-	if err := json.Unmarshal([]byte(lastLine), &msg); err != nil {
-		logCostDebug("parse transcript line failed: %v", err)
-		return
-	}
-
-	if msg.Type != "assistant" {
-		logCostDebug("last line type=%s, not assistant", msg.Type)
+	msg, ok := lastAssistantUsage(cleanPath)
+	if !ok {
+		logCostDebug("no main-chain assistant record in the transcript tail")
 		return
 	}
 
@@ -1058,17 +1053,37 @@ func detectDoneSentinel(rawPayload []byte) doneScanResult {
 	}
 }
 
-// readLastLine reads the last non-empty line from a file.
-func readLastLine(path string) (string, error) {
-	lines, err := session.TranscriptTailLines(path, 1)
+// lastAssistantUsage returns the just-finished turn's main-chain assistant
+// record from the transcript tail. Claude Code appends system, attachment
+// and sidechain records after the assistant turn, so the literal last line
+// is often not the one carrying usage; reading only it silently dropped
+// the cost event for every such turn. The walk mirrors
+// session.ScanTranscriptTailForDone: back over a bounded tail, skipping
+// sidechain traffic, stopping at the first assistant or user record.
+func lastAssistantUsage(path string) (transcriptMessage, bool) {
+	lines, err := session.TranscriptTailLines(path, costScanTailLines)
 	if err != nil {
-		return "", err
+		logCostDebug("read transcript failed: %v", err)
+		return transcriptMessage{}, false
 	}
-	if len(lines) == 0 {
-		return "", fmt.Errorf("no non-empty line")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var msg transcriptMessage
+		if json.Unmarshal([]byte(lines[i]), &msg) != nil || msg.IsSidechain {
+			continue
+		}
+		switch msg.Type {
+		case "assistant":
+			return msg, true
+		case "user":
+			return transcriptMessage{}, false // the reply has not flushed yet
+		}
 	}
-	return lines[0], nil
+	return transcriptMessage{}, false
 }
+
+// costScanTailLines bounds the backward walk for the usage record; the
+// same margin the done-sentinel scan uses.
+const costScanTailLines = 25
 
 // logCostDebug writes debug messages to the XDG cache cost-debug.log.
 // Only active when AGENTDECK_DEBUG is set.

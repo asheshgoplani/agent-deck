@@ -93,6 +93,7 @@ type recallStatusJSON struct {
 type recallSearchJSON struct {
 	Result struct {
 		Hits []struct {
+			SessID   int64  `json:"sess_id"`
 			NativeID string `json:"native_id"`
 			DeckID   string `json:"deck_id"`
 			CardHit  bool   `json:"card_hit"`

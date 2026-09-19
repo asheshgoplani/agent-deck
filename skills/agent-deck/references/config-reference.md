@@ -877,7 +877,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 ## [recall] Section
 
-Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...`), one machine-global `recall.db` in the data dir beside `profiles/` (phase 2: Claude transcripts of every profile).
+Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...` and the TUI `G` key), one machine-global `recall.db` in the data dir beside `profiles/` covering Claude (every profile), Codex, pi, Gemini, OpenCode and Hermes.
 
 ```toml
 [recall]
@@ -886,6 +886,8 @@ max_loadavg = 4.0           # backfill/sweep/rebuild refuse above this 1-minute 
 text_tier = "clipped"       # message bodies stored clipped to 8 KiB, or "full"
 keep_missing_days = 30      # how long a vanished transcript's tombstone survives before gc drops it
 per_source_mb = 64          # per-sweep cap on one transcript; the rest continues next sweep (0 = unlimited)
+harnesses = ["claude", "codex", "pi", "gemini", "opencode", "hermes"]  # which harnesses to index (default: all)
+hook_sweep = true           # the async Claude SessionEnd hook indexes its own transcript inline (150 ms / 32 MB); Stop only queues
 ```
 
 | Key | Type | Default | Description |
@@ -895,6 +897,8 @@ per_source_mb = 64          # per-sweep cap on one transcript; the rest continue
 | `text_tier` | string | `"clipped"` | `clipped` stores 8 KiB per message body (the FTS index always covers the full text); `full` stores whole bodies. |
 | `keep_missing_days` | int | `30` | `recall gc` drops the ledger row and tombstone of a transcript missing longer than this. |
 | `per_source_mb` | int | `64` | Most of one file a single sweep parses before deferring the rest. |
+| `harnesses` | list | all | Harness names to index; a harness whose home is absent is skipped anyway. |
+| `hook_sweep` | bool | `true` | The asynchronous Claude `SessionEnd` hook indexes only its own transcript within the interactive budget; off, it only queues the file for the next sweep. The synchronous `Stop` hook never sweeps: it appends one queue line and returns. |
 
 ## [notifications] Section
 

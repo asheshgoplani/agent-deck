@@ -1,0 +1,20 @@
+
+
+
+         ╭────────────────────────────────────────────────────────────╮
+         │                                                            │
+         │  🔍 Local Search (Agent Deck sessions)                     │
+         │                                                            │
+         │  ╭──────────────────────────────────────────────────╮      │
+         │  │ > Search sessions...                             │      │
+         │  ╰──────────────────────────────────────────────────╯      │
+         │  ⚠ Recall is off ([recall] enabled = false in              │
+         │  config.toml); showing the local title search instead      │
+         │    Tip: waiting / running / idle to filter by status       │
+         │                                                            │
+         │    › heron-fix (claude)                                    │
+         │    1 result                                                │
+         │    [Enter] Select  [↑↓] Navigate  [Tab] Global             │
+         │  [Esc] Cancel                                              │
+         │                                                            │
+         ╰────────────────────────────────────────────────────────────╯

@@ -541,6 +541,7 @@ func handleSessionStop(profile string, args []string) {
 	// synchronously, so a slow health volume would otherwise delay the answer
 	// the user is waiting on.
 	session.RecordSessionEvent(profile, inst.ID, health.KindStop, nil)
+	session.RecallNotifyInstance(inst, health.KindStop)
 }
 
 // handleSessionArchive stops a session and marks it archived so it is hidden
