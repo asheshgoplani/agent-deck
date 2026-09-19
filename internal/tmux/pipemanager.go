@@ -41,6 +41,8 @@ type PipeManager struct {
 	// Reconnection tracking
 	reconnectMu  sync.Mutex
 	reconnecting map[string]bool
+	// budget refuses attempts on a session that keeps failing to connect.
+	budget *connectBudget
 
 	// Lifecycle
 	ctx    context.Context
@@ -55,6 +57,7 @@ func NewPipeManager(ctx context.Context, onOutput func(sessionName string)) *Pip
 		pipes:        make(map[string]*ControlPipe),
 		onOutput:     onOutput,
 		reconnecting: make(map[string]bool),
+		budget:       newConnectBudget(nil, nil),
 		ctx:          childCtx,
 		cancel:       cancel,
 	}
@@ -89,6 +92,11 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 	}
 	pm.mu.Unlock()
 
+	// A session that keeps failing is left alone for a while (connectBudget).
+	if err := pm.budget.allow(sessionName); err != nil {
+		return err
+	}
+
 	// Prevent concurrent pipe creation for the same session (TOCTOU guard)
 	pm.reconnectMu.Lock()
 	if pm.reconnecting[sessionName] {
@@ -112,8 +120,10 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 	// Create new pipe (outside lock since it spawns a process)
 	pipe, err := NewControlPipe(sessionName, socketName)
 	if err != nil {
+		pm.budget.failed(sessionName, err)
 		return fmt.Errorf("connect pipe for %s: %w", sessionName, err)
 	}
+	pm.budget.succeeded(sessionName)
 
 	pm.mu.Lock()
 	// Double-check: another goroutine may have connected while we were creating
