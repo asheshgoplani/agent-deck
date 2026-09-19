@@ -214,6 +214,7 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	// Candidate count first, so the ceiling is reported honestly.
 	countArgs := append([]any{res.Match}, args...)
 	countArgs = append(countArgs, ceiling+1)
+	//nolint:gosec // hits is fixed SQL text plus roleClause/filterSQL output; all values are bound via ? args, never interpolated
 	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM (`+hits+`)`, countArgs...).Scan(&res.Candidates); err != nil {
 		return res, fmt.Errorf("recall: match %q: %w", res.Match, err)
 	}
@@ -662,6 +663,7 @@ func (s *Searcher) Resolve(ctx context.Context, ref string) (SessionRow, error) 
 		return SessionRow{}, ErrNotFound
 	}
 	id, _ := strconv.ParseInt(ref, 10, 64)
+	//nolint:gosec // sessionCols is a fixed const; all values are bound via ? args, never interpolated
 	rows, err := s.st.R.QueryContext(ctx, `SELECT `+sessionCols+` FROM session s LEFT JOIN card c ON c.sess_id=s.sess_id
 		WHERE s.sess_id=? OR s.deck_id=? OR s.native_id=? OR s.native_id LIKE ? ESCAPE '\'
 		ORDER BY (s.sess_id=?) DESC, (s.deck_id=?) DESC, (s.native_id=?) DESC LIMIT 2`,
@@ -879,6 +881,7 @@ func (s *Searcher) Status(ctx context.Context) (Status, error) {
 		col string
 		dst map[string]int
 	}{{"harness", st.ByHarness}, {"profile", st.ByProfile}} {
+		//nolint:gosec // g.col comes only from the fixed "harness"/"profile" literals above, never user input
 		rows, err := db.QueryContext(ctx, `SELECT `+g.col+`, count(*) FROM session GROUP BY 1`)
 		if err != nil {
 			return st, err
