@@ -54,7 +54,7 @@ func TestRebootstrapLaunchAgents_BootstrapBackoffUntilItSticks(t *testing.T) {
 	res, err := RebootstrapLaunchAgents(RebootstrapOptions{
 		GOOS: "darwin", ExePath: exe, LaunchAgentsDir: agents, UID: 501,
 		Runner: r, Sleep: func(d time.Duration) { slept = append(slept, d) },
-		Out: &out, Logger: discardLogger(),
+		Out: &out, Logger: discardLogger(), PendingPath: pendingPath(t),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"com.agentdeck.web"}, res.Restarted)
@@ -83,7 +83,7 @@ func TestRebootstrapLaunchAgents_RebootstrapsFromPlistWhenNotRunning(t *testing.
 	res, err := RebootstrapLaunchAgents(RebootstrapOptions{
 		GOOS: "darwin", ExePath: exe, LaunchAgentsDir: agents, UID: 501,
 		Runner: r, Sleep: func(d time.Duration) { clock = clock.Add(d) },
-		Out: io.Discard, Logger: log, VerifyTimeout: time.Second,
+		Out: io.Discard, Logger: log, VerifyTimeout: time.Second, PendingPath: pendingPath(t),
 		now: func() time.Time { return clock },
 	})
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestRebootstrapLaunchAgents_FailsAfterSecondRound(t *testing.T) {
 	_, err := RebootstrapLaunchAgents(RebootstrapOptions{
 		GOOS: "darwin", ExePath: exe, LaunchAgentsDir: agents, UID: 501,
 		Runner: r, Sleep: func(d time.Duration) { clock = clock.Add(d) },
-		Out: &out, Logger: discardLogger(), VerifyTimeout: time.Second,
+		Out: &out, Logger: discardLogger(), VerifyTimeout: time.Second, PendingPath: pendingPath(t),
 		now: func() time.Time { return clock },
 	})
 	require.Error(t, err)
