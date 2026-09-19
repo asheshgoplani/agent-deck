@@ -145,8 +145,14 @@ func isReleaseVersion(v string) bool {
 type remoteVersionCache struct {
 	Polls   map[string]RemotePollState    `json:"polls,omitempty"`
 	Remotes map[string]RemoteVersionState `json:"remotes"`
-	// AutoUpdateRanAt throttles the startup auto-update sweep.
-	AutoUpdateRanAt time.Time `json:"auto_update_ran_at,omitempty"`
+	// AutoUpdateRanAt throttles the startup auto-update sweep;
+	// AutoUpdateRanVersion is the controller version that sweep pushed, so
+	// a controller that restarted into a newer release sweeps again at
+	// once instead of waiting out the interval (2026-09-19: the sweep the
+	// install should have run died with its updater, and the stamp from
+	// the morning kept every later start from catching up).
+	AutoUpdateRanAt      time.Time `json:"auto_update_ran_at,omitempty"`
+	AutoUpdateRanVersion string    `json:"auto_update_ran_version,omitempty"`
 	// Sweep marks a sweep this controller is running right now, so a
 	// `remote update --all` started meanwhile waits for it instead of
 	// racing it to the remotes' deploy locks (#2244).
@@ -414,9 +420,21 @@ func RemoteAutoUpdateRanAt() time.Time {
 	return loadRemoteVersionCache().AutoUpdateRanAt
 }
 
-// MarkRemoteAutoUpdateRan stamps the sweep time used by ShouldAutoUpdateRemotes.
-func MarkRemoteAutoUpdateRan(at time.Time) error {
-	return updateRemoteVersionCache(func(cache *remoteVersionCache) { cache.AutoUpdateRanAt = at })
+// MarkRemoteAutoUpdateRan stamps the sweep time and the controller version
+// it pushed, both read by ShouldAutoUpdateRemotes.
+func MarkRemoteAutoUpdateRan(at time.Time, version string) error {
+	return updateRemoteVersionCache(func(cache *remoteVersionCache) {
+		cache.AutoUpdateRanAt = at
+		cache.AutoUpdateRanVersion = version
+	})
+}
+
+// RemoteAutoUpdateRanVersion returns the controller version the last sweep
+// pushed ("" when never, or stamped by a build before this field).
+func RemoteAutoUpdateRanVersion() string {
+	remoteVersionCacheMu.Lock()
+	defer remoteVersionCacheMu.Unlock()
+	return loadRemoteVersionCache().AutoUpdateRanVersion
 }
 
 // ClaimRemoteAutoUpdateRun is the startup sweep's check-and-stamp in one
@@ -425,11 +443,12 @@ func MarkRemoteAutoUpdateRan(at time.Time) error {
 // stamp before returning true. Two TUIs starting at once therefore agree on
 // a single sweep, and a stamp that cannot be written yields false, so a
 // broken cache dir never causes a sweep on every startup (#2164).
-func ClaimRemoteAutoUpdateRun(settings UpdateSettings, remoteCount int, now time.Time) bool {
+func ClaimRemoteAutoUpdateRun(settings UpdateSettings, remoteCount int, version string, now time.Time) bool {
 	claimed := false
 	err := updateRemoteVersionCache(func(cache *remoteVersionCache) {
-		if ShouldAutoUpdateRemotes(settings, remoteCount, cache.AutoUpdateRanAt, now) {
+		if ShouldAutoUpdateRemotes(settings, remoteCount, cache.AutoUpdateRanAt, cache.AutoUpdateRanVersion, version, now) {
 			cache.AutoUpdateRanAt = now
+			cache.AutoUpdateRanVersion = version
 			claimed = true
 		}
 	})
@@ -439,13 +458,19 @@ func ClaimRemoteAutoUpdateRun(settings UpdateSettings, remoteCount int, now time
 // ShouldAutoUpdateRemotes is the pure decision behind the startup sweep:
 // the key must not be off (it is on by default), there must be remotes, and
 // the previous sweep must be older than the update check interval (so a TUI
-// restarted ten times in a row does not SSH into every remote ten times). A
-// zero lastRun always runs.
-func ShouldAutoUpdateRemotes(settings UpdateSettings, remoteCount int, lastRun, now time.Time) bool {
+// restarted ten times in a row does not SSH into every remote ten times), or
+// have pushed a different controller version than this one (a controller
+// that just restarted into a new release sweeps at once, even when the
+// sweep its install should have run never happened). A zero lastRun always
+// runs; an empty lastVersion (older stamp) defers to the interval alone.
+func ShouldAutoUpdateRemotes(settings UpdateSettings, remoteCount int, lastRun time.Time, lastVersion, version string, now time.Time) bool {
 	if !settings.GetAutoUpdateRemotes() || remoteCount == 0 {
 		return false
 	}
 	if lastRun.IsZero() {
+		return true
+	}
+	if lastVersion != "" && version != "" && update.CompareVersions(lastVersion, version) != 0 {
 		return true
 	}
 	hours := settings.CheckIntervalHours

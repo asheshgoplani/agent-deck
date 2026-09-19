@@ -113,6 +113,10 @@ type Installer struct {
 	Check func() (*UpdateInfo, error)
 	// Install runs the unattended updater (default: RunUnattendedInstall).
 	Install func(ctx context.Context, exe, trigger string) (string, error)
+	// Pending reports whether a launch agent waits to be re-registered
+	// (default: HasPendingRebootstrap). With nothing to install, a tick
+	// still runs the updater to retry it, once per InstallRetryAfter.
+	Pending func() bool
 	// Log receives one line per decision (default: slog.Default()).
 	Log *slog.Logger
 
@@ -177,14 +181,13 @@ func (in *Installer) tick(ctx context.Context, now time.Time) {
 			in.Log.Info("headless_auto_install_skipped", slog.String("latest", info.LatestVersion), slog.String("reason", reason))
 		}
 		in.lastSkip = reason
+		in.maybeDrainPending(ctx, now)
 		return
 	}
 	in.lastSkip = ""
 	in.attempts[info.LatestVersion] = now
 	in.Log.Info("headless_auto_install_started", slog.String("exe", in.Exe), slog.String("latest", info.LatestVersion), slog.String("trigger", in.Trigger))
-	runCtx, cancel := context.WithTimeout(ctx, UnattendedInstallTimeout)
-	out, err := in.Install(runCtx, in.Exe, in.Trigger)
-	cancel()
+	out, err := in.runUpdater(ctx)
 	if err != nil {
 		in.Log.Warn("headless_auto_install_failed", slog.String("latest", info.LatestVersion), slog.String("error", err.Error()), slog.String("output", out))
 		return
@@ -192,6 +195,35 @@ func (in *Installer) tick(ctx context.Context, now time.Time) {
 	// The binary watch (Watcher) sees the new file and re-execs at the
 	// next idle point; nothing more to do here.
 	in.Log.Info("headless_auto_install_finished", slog.String("latest", info.LatestVersion), slog.String("output", out))
+}
+
+// pendingDrainKey is the attempts key of a run started only to retry
+// pending launch agents.
+const pendingDrainKey = "launchd-pending"
+
+// maybeDrainPending runs the updater for a pending launch agent when
+// nothing is being installed: the run re-registers every pending agent
+// this process is not inside (its own service stays deferred for the
+// timer or a TUI), at most once per InstallRetryAfter.
+func (in *Installer) maybeDrainPending(ctx context.Context, now time.Time) {
+	if !in.Pending() || now.Sub(in.attempts[pendingDrainKey]) < InstallRetryAfter {
+		return
+	}
+	in.attempts[pendingDrainKey] = now
+	in.Log.Info("headless_launchd_pending_drain_started", slog.String("exe", in.Exe), slog.String("trigger", in.Trigger))
+	out, err := in.runUpdater(ctx)
+	if err != nil {
+		in.Log.Warn("headless_launchd_pending_drain_failed", slog.String("error", err.Error()), slog.String("output", out))
+		return
+	}
+	in.Log.Info("headless_launchd_pending_drain_finished", slog.String("output", out))
+}
+
+// runUpdater runs one bounded unattended updater.
+func (in *Installer) runUpdater(ctx context.Context) (string, error) {
+	runCtx, cancel := context.WithTimeout(ctx, UnattendedInstallTimeout)
+	defer cancel()
+	return in.Install(runCtx, in.Exe, in.Trigger)
 }
 
 // skipReason returns "" when info may be installed now, else why not.
@@ -219,6 +251,9 @@ func (in *Installer) fillDefaults() {
 	}
 	if in.Install == nil {
 		in.Install = RunUnattendedInstall
+	}
+	if in.Pending == nil {
+		in.Pending = HasPendingRebootstrap
 	}
 	if in.Log == nil {
 		in.Log = slog.Default()

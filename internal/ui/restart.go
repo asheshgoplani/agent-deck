@@ -106,6 +106,9 @@ func (h *Home) restartBlockReason() string {
 // (autoInstallTimeout), after which its context kills it and the in-flight
 // flag clears.
 func (h *Home) updateInFlightReason() string {
+	if h.autoInstallInFlight == pendingDrainKey {
+		return "the updater is still re-registering launchd agents"
+	}
 	return "unattended update to v" + h.autoInstallInFlight + " is still running (remote sweep included)"
 }
 
@@ -145,13 +148,23 @@ const autoRestartRetryAfter = time.Minute
 // tmux sessions and servers are never touched by the hand-over.
 func (h *Home) maybeAutoRestart() tea.Cmd {
 	installed := h.installedUpdateVersion()
-	if installed == "" || h.restartRequested || !h.autoRestartEnabled() {
+	if installed == "" {
+		h.noteRestartWait("")
 		return nil
 	}
-	if time.Now().Before(h.autoRestartHoldUntil) {
+	switch {
+	case h.restartRequested:
+		h.noteRestartWait("restart already requested, the shutdown sequence has not finished")
+		return nil
+	case !h.autoRestartEnabled():
+		h.noteRestartWait("auto_restart is off or suppressed for this process; press " + h.restartDeckKeyLabel())
+		return nil
+	case time.Now().Before(h.autoRestartHoldUntil):
+		h.noteRestartWait(h.autoRestartHoldReason)
 		return nil
 	}
 	if reason := h.restartBlockReason(); reason != "" {
+		h.noteRestartWait(reason)
 		if time.Since(h.autoRestartLoggedAt) >= autoRestartLogEvery {
 			h.autoRestartLoggedAt = time.Now()
 			if h.autoInstallInFlight != "" && reason == h.updateInFlightReason() {
@@ -170,12 +183,73 @@ func (h *Home) maybeAutoRestart() tea.Cmd {
 			// change of the file resets the watch and the hold.
 			h.setError(fmt.Errorf("%w: %s; still running v%s", errRestartBlocked, reason, Version))
 			h.autoRestartHoldUntil = time.Now().Add(autoRestartRetryAfter)
+			h.autoRestartHoldReason = reason
 		}
 		return nil
 	}
+	h.noteRestartWait("")
 	uiLog.Info("tui_auto_restart", slog.String("running", Version), slog.String("installed", installed))
 	_, cmd := h.tryRestartDeck()
 	return cmd
+}
+
+// restartOverdueAfter is how long a newer build may sit on disk without a
+// restart before the TUI calls it overdue: tui_restart_overdue in the log
+// (once an hour) with the blocking reason, the same reason in the banner,
+// and "overdue" in the heartbeat the fleet watch reads.
+const restartOverdueAfter = 2 * time.Hour
+
+// restartOverdueLogEvery rate-limits tui_restart_overdue.
+const restartOverdueLogEvery = time.Hour
+
+// noteRestartWait records why this tick did not restart ("" when nothing
+// is in the way, or nothing to restart into) and raises the overdue state
+// once the wait has lasted restartOverdueAfter.
+func (h *Home) noteRestartWait(reason string) {
+	h.restartWaitReason = reason
+	if reason == "" {
+		h.restartOverdueReason = ""
+		return
+	}
+	since := h.installedUpdateSince()
+	if since.IsZero() || time.Since(since) < restartOverdueAfter {
+		h.restartOverdueReason = ""
+		return
+	}
+	h.restartOverdueReason = reason
+	if time.Since(h.restartOverdueLoggedAt) < restartOverdueLogEvery {
+		return
+	}
+	h.restartOverdueLoggedAt = time.Now()
+	uiLog.Warn("tui_restart_overdue",
+		slog.String("running", Version),
+		slog.String("installed", h.installedUpdateVersion()),
+		slog.Duration("waiting_for", time.Since(since).Round(time.Minute)),
+		slog.String("reason", reason),
+		slog.Int("pid", os.Getpid()))
+}
+
+// installedUpdateSince is when the newer build on disk was first seen.
+func (h *Home) installedUpdateSince() time.Time {
+	if h.binaryWatch == nil {
+		return time.Time{}
+	}
+	return h.binaryWatch.installedSince
+}
+
+// restartStateForHeartbeat is the restart state the heartbeat reports.
+func (h *Home) restartStateForHeartbeat() (state, reason string) {
+	switch {
+	case h.installedUpdateVersion() == "":
+		return "idle", ""
+	case h.restartRequested:
+		return "requested", h.restartWaitReason
+	case h.restartOverdueReason != "":
+		return "overdue", h.restartOverdueReason
+	case h.restartWaitReason != "":
+		return "waiting", h.restartWaitReason
+	}
+	return "idle", ""
 }
 
 // autoRestartEnabled reads [updates].auto_restart (default true) and

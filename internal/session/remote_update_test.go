@@ -192,9 +192,33 @@ func TestShouldAutoUpdateRemotes(t *testing.T) {
 		{"short interval", UpdateSettings{AutoUpdateRemotes: boolPtr(true), CheckIntervalHours: 1}, 1, now.Add(-2 * time.Hour), true},
 	}
 	for _, tc := range cases {
-		if got := ShouldAutoUpdateRemotes(tc.settings, tc.remotes, tc.lastRun, now); got != tc.want {
+		if got := ShouldAutoUpdateRemotes(tc.settings, tc.remotes, tc.lastRun, "1.16.11", "1.16.11", now); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A controller that restarted into a newer release sweeps at once: the
+// interval only throttles repeats of the same version. An old stamp with no
+// version, or a sweep by the same version, keep the interval rule.
+func TestShouldAutoUpdateRemotes_NewControllerVersionSweepsAtOnce(t *testing.T) {
+	now := time.Date(2026, 9, 19, 14, 40, 0, 0, time.UTC)
+	on := UpdateSettings{AutoUpdateRemotes: boolPtr(true), CheckIntervalHours: 24}
+	ranAt := now.Add(-3 * time.Hour)
+	if !ShouldAutoUpdateRemotes(on, 4, ranAt, "1.16.11", "1.16.12", now) {
+		t.Fatal("1.16.11 swept three hours ago; a 1.16.12 controller must sweep now")
+	}
+	if ShouldAutoUpdateRemotes(on, 4, ranAt, "1.16.12", "1.16.12", now) {
+		t.Fatal("the same version inside the interval must not sweep again")
+	}
+	if ShouldAutoUpdateRemotes(on, 4, ranAt, "", "1.16.12", now) {
+		t.Fatal("a stamp without a version keeps the interval rule")
+	}
+	if !ShouldAutoUpdateRemotes(on, 4, ranAt, "1.16.12+local.abc", "1.16.13", now) {
+		t.Fatal("a newer release than the stamped local build sweeps")
+	}
+	if ShouldAutoUpdateRemotes(UpdateSettings{AutoUpdateRemotes: boolPtr(false)}, 4, ranAt, "1.16.11", "1.16.12", now) {
+		t.Fatal("opted out never sweeps")
 	}
 }
 
@@ -419,7 +443,7 @@ func TestClaimRemoteAutoUpdateRun(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if ClaimRemoteAutoUpdateRun(on, 2, now) {
+			if ClaimRemoteAutoUpdateRun(on, 2, "1.16.12", now) {
 				claimed.Add(1)
 			}
 		}()
@@ -431,17 +455,17 @@ func TestClaimRemoteAutoUpdateRun(t *testing.T) {
 	if !RemoteAutoUpdateRanAt().Equal(now) {
 		t.Fatalf("stamp = %v, want %v", RemoteAutoUpdateRanAt(), now)
 	}
-	if ClaimRemoteAutoUpdateRun(on, 2, now.Add(time.Hour)) {
+	if ClaimRemoteAutoUpdateRun(on, 2, "1.16.12", now.Add(time.Hour)) {
 		t.Fatal("a claim inside the interval must fail")
 	}
-	if !ClaimRemoteAutoUpdateRun(on, 2, now.Add(25*time.Hour)) {
+	if !ClaimRemoteAutoUpdateRun(on, 2, "1.16.12", now.Add(25*time.Hour)) {
 		t.Fatal("a claim after the interval must succeed")
 	}
 	off := UpdateSettings{AutoUpdateRemotes: boolPtr(false)}
-	if ClaimRemoteAutoUpdateRun(off, 2, now.Add(72*time.Hour)) {
+	if ClaimRemoteAutoUpdateRun(off, 2, "1.16.12", now.Add(72*time.Hour)) {
 		t.Fatal("an opted-out config must never claim")
 	}
-	if ClaimRemoteAutoUpdateRun(on, 0, now.Add(72*time.Hour)) {
+	if ClaimRemoteAutoUpdateRun(on, 0, "1.16.12", now.Add(72*time.Hour)) {
 		t.Fatal("no remotes, no claim")
 	}
 	if entries, _ := filepath.Glob(filepath.Join(filepath.Dir(mustCachePath(t)), "*.claim")); len(entries) != 0 {
@@ -460,14 +484,14 @@ func TestClaimRemoteAutoUpdateRun_LockHeldAndStale(t *testing.T) {
 	if err := os.WriteFile(lock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if ClaimRemoteAutoUpdateRun(on, 2, now) {
+	if ClaimRemoteAutoUpdateRun(on, 2, "1.16.12", now) {
 		t.Fatal("a fresh lock held by another process must block the claim")
 	}
 	old := time.Now().Add(-2 * remoteVersionCacheLockStale)
 	if err := os.Chtimes(lock, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if !ClaimRemoteAutoUpdateRun(on, 2, now) {
+	if !ClaimRemoteAutoUpdateRun(on, 2, "1.16.12", now) {
 		t.Fatal("an abandoned lock must be cleared and the claim succeed")
 	}
 }
@@ -485,7 +509,7 @@ func TestClaimRemoteAutoUpdateRun_UnwritableCacheNeverClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if ClaimRemoteAutoUpdateRun(UpdateSettings{CheckIntervalHours: 24}, 2, time.Now()) {
+	if ClaimRemoteAutoUpdateRun(UpdateSettings{CheckIntervalHours: 24}, 2, "1.16.12", time.Now()) {
 		t.Fatal("a stamp that cannot be written must not grant a sweep")
 	}
 }
@@ -556,7 +580,7 @@ func TestRemoteVersionCache_WritersWaitForTheLockHolder(t *testing.T) {
 		{"RecordRemoteVersions", func() error {
 			return RecordRemoteVersions(map[string]RemoteVersionState{"lab": {Version: "1.16.0", Found: true}})
 		}},
-		{"MarkRemoteAutoUpdateRan", func() error { return MarkRemoteAutoUpdateRan(stamp.Add(time.Hour)) }},
+		{"MarkRemoteAutoUpdateRan", func() error { return MarkRemoteAutoUpdateRan(stamp.Add(time.Hour), "1.16.12") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := os.WriteFile(lock, nil, 0o600); err != nil {
@@ -715,7 +739,7 @@ func TestRemoteVersionCache_RoundTrip(t *testing.T) {
 	if !RemoteAutoUpdateRanAt().IsZero() {
 		t.Fatal("auto update stamp must start zero")
 	}
-	if err := MarkRemoteAutoUpdateRan(at); err != nil {
+	if err := MarkRemoteAutoUpdateRan(at, "1.16.12"); err != nil {
 		t.Fatal(err)
 	}
 	if !RemoteAutoUpdateRanAt().Equal(at) {

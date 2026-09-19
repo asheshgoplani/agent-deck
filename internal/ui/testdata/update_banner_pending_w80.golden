@@ -1,0 +1,24 @@
+ ⟨ ○ │ ○ │ ○ ⟩  Agent Deck [_test]  no sessions                          v0.0.0 
+  All    ● 0   ◐ 0   ○ 0   !@#& filter • 0 all • % open • ^ archived • …        
+ ⬆ v1.16.1 installed, restarting when idle (ctrl+t now)                         
+SESSIONS                     │ PREVIEW                                          
+──────────────────────────── │ ─────────────────────────────────────────────────
+╭────────────────────╮       │                                                  
+│         ⬡          │       │                     ✦                            
+│  No Sessions Yet   │       │                Ready to Go                       
+│ • Press n to cr... │       │          Your workspace is set up                
+│                    │       │   • Press n to create your first session         
+│                    │       │     • Press i to import tmux sessions            
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+│                    │       │                                                  
+╰────────────────────╯       │                                                  
+────────────────────────────────────────────────────────────────────────────────
+n/N New i Import │                     ↑↓ Nav / Search S Settings ? Help q Quit 
