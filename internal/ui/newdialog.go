@@ -2829,7 +2829,7 @@ func (d *NewDialog) renderRemoteMCPRow(focused bool) string {
 	return b.String()
 }
 
-func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarget) {
+func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarget, dialogWidth int) {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
 	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 
@@ -2838,7 +2838,7 @@ func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarg
 	} else {
 		content.WriteString(labelStyle.Render("  Command:"))
 	}
-	content.WriteString("\n  ")
+	content.WriteString("\n")
 
 	// Render command options as consistent pill buttons.
 	var cmdButtons []string
@@ -2872,10 +2872,14 @@ func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarg
 
 		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
 	}
-	// Joined with a literal space, not butted together: word-aware wrapping
-	// can only break at an actual space, so without one a tool name
-	// straddling the wrap point (e.g. "copilot") gets split mid-word.
-	content.WriteString(strings.Join(cmdButtons, " "))
+	// Wrapped here (not left to the outer viewportDialogContent Width-render)
+	// so every continuation line keeps the same 2-column indent as the first.
+	// lipgloss's word-wrap reflows the whole logical line as plain text and
+	// has no notion of "this line's indent" to carry over, so a row wrapped
+	// by it alone lands flush against the left edge (finding #3, cosmetic TUI
+	// review: the Command row wrapped with a different indent).
+	innerWidth := dialogWidth - 8 // Padding(2,4) → 4 columns each side.
+	content.WriteString(wrapIndented(cmdButtons, " ", "  ", innerWidth))
 	content.WriteString("\n")
 
 	// show_only_installed_tools empty-fallback hint (issue #1259).
@@ -3206,7 +3210,7 @@ func (d *NewDialog) View() string {
 	// (see renderMultiRepoSection, called after the Branch input). In multi-repo
 	// mode the single Path field is hidden — its list renders below the fold.
 	markFocusedRow(focusCommand)
-	d.renderCommandSection(&content, cur)
+	d.renderCommandSection(&content, cur, dialogWidth)
 	markFocusedRow(focusModel)
 	d.renderModelSection(&content, cur, dialogWidth)
 	markFocusedRow(focusReasoningEffort)

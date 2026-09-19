@@ -18272,14 +18272,68 @@ func (h *Home) renderFilterBar() string {
 		}
 	}
 
-	hint := h.renderFilterBarHint()
-
 	// Join pills with spaces (leading space replaces Padding)
-	filterRow := " " + strings.Join(pills, " ") + hint
+	pillsRow := " " + strings.Join(pills, " ")
+	hint := h.fitFilterBarHint(cellWidth(pillsRow))
 
 	return lipgloss.NewStyle().
 		MaxWidth(h.width).
-		Render(filterRow)
+		Render(pillsRow + hint)
+}
+
+// fitFilterBarHint fits as many leading filter-bar hint segments as possible
+// into the space remaining after usedWidth (the pills already rendered),
+// dropping low-priority segments from the end (view mode, then time range,
+// then archived, ...) when the full hint would overflow h.width. A trailing
+// ellipsis is appended only when a segment was actually dropped, and the cut
+// always lands on a "• " boundary rather than mid-word.
+func (h *Home) fitFilterBarHint(usedWidth int) string {
+	dim := lipgloss.NewStyle().Foreground(ColorComment).Faint(true)
+	const leadIn = "  "
+	const sep = " • "
+
+	segs := h.renderFilterBarHint()
+	available := h.width - usedWidth
+	// An uninitialized terminal width, or pills that already fill the bar,
+	// leave nothing meaningful to budget against: keep every segment and let
+	// the caller's MaxWidth clamp.
+	unconstrained := h.width <= 0 || available < 0
+
+	// Reserve room for a trailing " • …" up front: a segment that fits on
+	// its own but leaves no space for the ellipsis afterward must still be
+	// dropped, or the appended ellipsis would itself overflow the width.
+	sepWidth := cellWidth(sep)
+	ellipsisReserve := sepWidth + cellWidth("…")
+
+	used := cellWidth(leadIn)
+	kept := 0
+	for i, seg := range segs {
+		next := used + cellWidth(seg)
+		if kept > 0 {
+			next += sepWidth
+		}
+		if !unconstrained {
+			budget := available
+			if i < len(segs)-1 {
+				budget -= ellipsisReserve
+			}
+			if next > budget {
+				break
+			}
+		}
+		used = next
+		kept++
+	}
+
+	hint := dim.Render(leadIn) + strings.Join(segs[:kept], dim.Render(sep))
+	if kept < len(segs) {
+		if kept > 0 {
+			hint += dim.Render(sep + "…")
+		} else {
+			hint = dim.Render(leadIn + "…")
+		}
+	}
+	return hint
 }
 
 // updateSizes updates component sizes
@@ -20363,13 +20417,6 @@ func (h *Home) renderHelpBarFull() string {
 		Bold(true)
 	contextLabel := ctxStyle.Render(contextTitle + ":")
 
-	// Build shortcuts line with visual grouping
-	var shortcutsLine string
-	shortcutsLine = strings.Join(primaryHints, " ")
-	if len(secondaryHints) > 0 {
-		shortcutsLine += sep + strings.Join(secondaryHints, " ")
-	}
-
 	// Reload indicator
 	var reloadIndicator string
 	h.reloadMu.Lock()
@@ -20382,42 +20429,157 @@ func (h *Home) renderHelpBarFull() string {
 		reloadIndicator = reloadStyle.Render("⟳ Reloading...")
 	}
 
-	// Global shortcuts (right side) - more compact with separators
+	// Global shortcuts (right side) - more compact with separators. "↑↓ Nav"
+	// and Quit are pinned; the rest drop lowest-priority-first (from the end
+	// of this slice) when space is tight, before either pinned key is
+	// sacrificed.
 	globalStyle := lipgloss.NewStyle().Foreground(ColorComment)
-	globalParts := []string{globalStyle.Render("↑↓ Nav")}
-	globalParts = append(globalParts, globalStyle.Render("+/- Move"))
-	if key := h.actionKey(hotkeySearch); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key+" Search"))
+	navHint := globalStyle.Render("↑↓ Nav")
+	var quitHint string
+	if key := h.actionKey(hotkeyQuit); key != "" {
+		quitHint = globalStyle.Render(key + " Quit")
 	}
-	globalParts = append(globalParts, globalStyle.Render("G Global"))
+	var droppableGlobal []string
+	droppableGlobal = append(droppableGlobal, globalStyle.Render("+/- Move"))
+	if key := h.actionKey(hotkeySearch); key != "" {
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Search"))
+	}
+	droppableGlobal = append(droppableGlobal, globalStyle.Render("G Global"))
 	if key := h.actionKey(hotkeySettings); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key+" Settings"))
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Settings"))
 	}
 	if key := h.actionKey(hotkeyHelp); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key+" Help"))
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Help"))
 	}
-	if key := h.actionKey(hotkeyQuit); key != "" {
-		globalParts = append(globalParts, globalStyle.Render(key+" Quit"))
-	}
-	globalHints := strings.Join(globalParts, sep)
 
-	// Calculate spacing between left (context) and right (global) portions
-	leftPart := contextLabel + " " + shortcutsLine
+	leftPrefix := contextLabel
 	if reloadIndicator != "" {
-		leftPart = reloadIndicator + sep + leftPart
-	}
-	rightPart := globalHints
-	padding := h.width - lipgloss.Width(leftPart) - lipgloss.Width(rightPart) - spacingNormal
-	if padding < spacingNormal {
-		// Content too wide for one line — drop right part to avoid overflow
-		padding = spacingNormal
-		rightPart = ""
+		leftPrefix = reloadIndicator + sep + leftPrefix
 	}
 
-	helpContent := leftPart + strings.Repeat(" ", padding) + rightPart
+	helpContent := h.fitFullFooter(fullFooterParts{
+		leftPrefix: leftPrefix,
+		primary:    primaryHints,
+		secondary:  secondaryHints,
+		sep:        sep,
+		nav:        navHint,
+		droppable:  droppableGlobal,
+		quit:       quitHint,
+	})
 
 	raw := lipgloss.JoinVertical(lipgloss.Left, border, helpContent)
 	return lipgloss.NewStyle().MaxWidth(h.width).Render(raw)
+}
+
+// fullFooterParts is the raw material of the full-tier footer line: the left
+// (context) block's fixed prefix plus its two priority tiers of hints, and the
+// right (global) block's pinned and droppable hints. sep is the separator used
+// between hint groups on both sides.
+type fullFooterParts struct {
+	leftPrefix string   // context label, optionally prefixed with the reload indicator
+	primary    []string // context hints, highest priority
+	secondary  []string // context hints, dropped before primary ones
+	sep        string
+	nav        string   // pinned: never dropped
+	droppable  []string // global hints, dropped from the end when space is tight
+	quit       string   // pinned: never dropped
+}
+
+// fitFullFooter assembles the full-footer's single content line, width-aware
+// rather than lipgloss's hard, ellipsis-less MaxWidth cut (finding #1,
+// cosmetic TUI review: at 120 cols the left block hard-truncated at the
+// terminal edge while the entire right block — including "↑↓ Nav" and Quit —
+// vanished with no ellipsis).
+//
+// It tries, in order: (1) the full left block with progressively fewer
+// droppable global hints, dropped lowest-priority-first (from the end of
+// droppable, i.e. Help before Settings before ...); (2) once even the bare
+// Nav+Quit global block doesn't fit alongside the full left block,
+// progressively fewer context hints — also dropped lowest-priority-first,
+// i.e. from the end of secondary then the end of primary — with a trailing
+// ellipsis. nav and quit are never dropped; leftPrefix never is either.
+func (h *Home) fitFullFooter(p fullFooterParts) string {
+	// buildRight renders the global block keeping the n highest-priority
+	// droppable hints, always framed by the pinned nav and quit hints.
+	buildRight := func(n int) string {
+		parts := []string{p.nav}
+		parts = append(parts, p.droppable[:n]...)
+		if p.quit != "" {
+			parts = append(parts, p.quit)
+		}
+		return strings.Join(parts, p.sep)
+	}
+
+	totalHints := len(p.primary) + len(p.secondary)
+	// buildLeft renders the context block keeping the k highest-priority
+	// context hints (primary before secondary), with a trailing ellipsis
+	// whenever that drops any.
+	buildLeft := func(k int) string {
+		nPrimary := min(k, len(p.primary))
+		nSecondary := min(k-nPrimary, len(p.secondary))
+		var groups []string
+		if nPrimary > 0 {
+			groups = append(groups, strings.Join(p.primary[:nPrimary], " "))
+		}
+		if nSecondary > 0 {
+			groups = append(groups, strings.Join(p.secondary[:nSecondary], " "))
+		}
+		left := p.leftPrefix
+		if len(groups) > 0 {
+			left += " " + strings.Join(groups, p.sep)
+		}
+		if k < totalHints {
+			left += " …"
+		}
+		return left
+	}
+
+	fits := func(left, right string) bool {
+		if h.width <= 0 {
+			return true // uninitialized width: no constraint, keep everything
+		}
+		total := lipgloss.Width(left) + spacingNormal
+		if right != "" {
+			total += lipgloss.Width(right)
+		}
+		return total <= h.width
+	}
+	assemble := func(left, right string) string {
+		if right == "" {
+			return left
+		}
+		padding := spacingNormal
+		if h.width > 0 {
+			if p := h.width - lipgloss.Width(left) - lipgloss.Width(right) - spacingNormal; p > padding {
+				padding = p
+			}
+		}
+		return left + strings.Repeat(" ", padding) + right
+	}
+
+	fullLeft := buildLeft(totalHints)
+
+	// 1. Keep the full left block; shrink the global block from its
+	// lowest-priority end.
+	for n := len(p.droppable); n >= 0; n-- {
+		right := buildRight(n)
+		if fits(fullLeft, right) {
+			return assemble(fullLeft, right)
+		}
+	}
+
+	// 2. Even bare Nav+Quit doesn't fit alongside the full left block: trim
+	// context hints from their lowest-priority end instead.
+	minRight := buildRight(0)
+	for k := totalHints; k >= 0; k-- {
+		left := buildLeft(k)
+		if fits(left, minRight) {
+			return assemble(left, minRight)
+		}
+	}
+
+	// 3. Extremely narrow fallback: contextLabel alone, no global block.
+	return buildLeft(0)
 }
 
 // helpKey formats a keyboard shortcut for the help bar
@@ -24911,10 +25073,16 @@ func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 	return status == filter
 }
 
-// renderFilterBarHint renders the filter-bar keyboard-shortcut hint with the
-// shortcut character of the currently-engaged filter highlighted (subtle shade
-// brighter than the surrounding faint hint text).
-func (h *Home) renderFilterBarHint() string {
+// renderFilterBarHint returns the filter bar's keyboard-shortcut hint as
+// independent segments (status filters, all/open/archived, view mode, time
+// range), with the shortcut character of the currently-engaged filter
+// highlighted (subtle shade brighter than the surrounding faint hint text).
+//
+// Segments rather than one pre-joined string, so fitFilterBarHint can drop
+// whole segments from the low-priority end when the bar would otherwise
+// overflow, instead of lipgloss.MaxWidth hard-cutting mid-word (finding #2,
+// cosmetic TUI review: 80x24 cut "t view • * time" down to "t v").
+func (h *Home) renderFilterBarHint() []string {
 	dim := lipgloss.NewStyle().Foreground(ColorComment).Faint(true)
 	hi := lipgloss.NewStyle().Foreground(ColorTextDim) // same hue, no Faint
 
@@ -24925,24 +25093,22 @@ func (h *Home) renderFilterBarHint() string {
 		return dim.Render(c)
 	}
 
-	hint := dim.Render("  ") +
+	segs := []string{
 		mark("!", h.statusFilter == session.StatusRunning) +
-		mark("@", h.statusFilter == session.StatusWaiting) +
-		mark("#", h.statusFilter == session.StatusIdle) +
-		mark(FilterKeyError, h.statusFilter == session.StatusError) +
-		dim.Render(" filter • ") +
-		mark("0", h.statusFilter == "") +
-		dim.Render(" all • ") +
-		mark(FilterKeyActive, h.statusFilter == FilterModeActive) +
-		dim.Render(" open • ") +
-		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) +
-		dim.Render(" archived")
+			mark("@", h.statusFilter == session.StatusWaiting) +
+			mark("#", h.statusFilter == session.StatusIdle) +
+			mark(FilterKeyError, h.statusFilter == session.StatusError) +
+			dim.Render(" filter"),
+		mark("0", h.statusFilter == "") + dim.Render(" all"),
+		mark(FilterKeyActive, h.statusFilter == FilterModeActive) + dim.Render(" open"),
+		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) + dim.Render(" archived"),
+	}
 
 	// View-mode indicator (running-on-top / populated-on-top), only when active.
 	if h.groupViewMode != session.GroupViewNormal {
-		hint += dim.Render(" • ") + mark("t", true) + dim.Render(" "+h.groupViewMode.Label())
+		segs = append(segs, mark("t", true)+dim.Render(" "+h.groupViewMode.Label()))
 	} else {
-		hint += dim.Render(" • ") + mark("t", false) + dim.Render(" view")
+		segs = append(segs, mark("t", false)+dim.Render(" view"))
 	}
 
 	// Time-range filter indicator (today / 3 days / 7 days), only when active.
@@ -24951,11 +25117,11 @@ func (h *Home) renderFilterBarHint() string {
 		timeFilterKey = "*"
 	}
 	if h.timeFilter != session.TimeFilterAll {
-		hint += dim.Render(" • ") + mark(timeFilterKey, true) + dim.Render(" "+h.timeFilter.Label())
+		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+h.timeFilter.Label()))
 	} else {
-		hint += dim.Render(" • ") + mark(timeFilterKey, false) + dim.Render(" time")
+		segs = append(segs, mark(timeFilterKey, false)+dim.Render(" time"))
 	}
-	return hint
+	return segs
 }
 
 type remoteCreationCatalogFetchedMsg struct {

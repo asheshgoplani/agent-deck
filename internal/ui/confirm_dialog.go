@@ -651,7 +651,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y delete · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmArchiveSession, ConfirmArchiveRemoteSession:
 		title = "Archive Session?"
@@ -667,7 +667,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Archive", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y archive · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y archive · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmUnarchiveSession, ConfirmUnarchiveRemoteSession:
 		title = "Unarchive Session?"
@@ -682,7 +682,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Unarchive", ColorGreen, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y unarchive · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y unarchive · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmCloseSession:
 		title = "Close Session?"
@@ -696,7 +696,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Close", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y close · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y close · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmKillWindow:
 		title = "⚠  Kill Window?"
@@ -707,7 +707,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Kill", ColorRed, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y kill · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y kill · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmDeleteRemoteSession:
 		title = "⚠  Delete Remote Session?"
@@ -718,7 +718,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y delete · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmDeleteRemoteGroup:
 		title = "⚠  Delete Remote Group?"
@@ -729,7 +729,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y delete · n cancel · ←/→ navigate · Enter select · Esc")))
 	case ConfirmUpdateRemote:
 		title = "Update Remote?"
 		warning = fmt.Sprintf("Update remote %s from v%s to v%s?", c.remoteName, c.targetName, c.targetID)
@@ -739,7 +739,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Update", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y update · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y update · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmCloseRemoteSession:
 		title = "Close Remote Session?"
@@ -750,7 +750,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Close", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y close · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y close · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmRemoveSession:
 		title = "Remove Session?"
@@ -761,7 +761,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Remove", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y remove · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y remove · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmBulkRemoveErrored:
 		title = "Remove All Errored Sessions?"
@@ -772,7 +772,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Remove All", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y remove · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y remove · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmDeleteGroup:
 		title = "⚠  Delete Group?"
@@ -783,7 +783,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Delete", ColorRed, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y delete · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmQuitWithPool:
 		title = "MCP Pool Running"
@@ -794,7 +794,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Keep running", ColorGreen, c.focusedButton == 0), "  ",
 			renderButton("Shut down", ColorRed, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("k keep · s shut down · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("k keep · s shut down · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmCreateDirectory:
 		title = "📁  Directory Not Found"
@@ -808,7 +808,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Create", ColorGreen, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorRed, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y create · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y create · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmCrossHarnessTransfer:
 		title = "Transfer Context to Fresh Target?"
@@ -823,7 +823,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Transfer", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y transfer · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y transfer · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmSwitchAccount:
 		title = "Switch Account?"
@@ -838,7 +838,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Switch", ColorYellow, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y switch · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y switch · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmArchiveDestinationSwitch:
 		title = "Archive Destination Copy?"
@@ -849,7 +849,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Archive & Switch", ColorRed, c.focusedButton == 0), "  ",
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y archive & switch · n cancel · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y archive & switch · n cancel · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmNotice:
 		title = c.noticeTitle
@@ -868,7 +868,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Install", ColorGreen, c.focusedButton == 0), "  ",
 			renderButton("Skip", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y install · n skip · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y install · n skip · ←/→ navigate · Enter select · Esc")))
 
 	case ConfirmInstallHermesHooks:
 		title = "Hermes Agent Hooks"
@@ -879,7 +879,7 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Install", ColorGreen, c.focusedButton == 0), "  ",
 			renderButton("Skip", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
-			hintStyle.Render("y install · n skip · ←/→ navigate · Enter select · Esc"))
+			hintStyle.Render(glueHintGroups("y install · n skip · ←/→ navigate · Enter select · Esc")))
 	}
 
 	// Title style
@@ -945,4 +945,37 @@ func (c *ConfirmDialog) View() string {
 	}
 
 	return dialogBox
+}
+
+// nbsp is a non-breaking space. ansi.Wordwrap excludes U+00A0 from its
+// breakable-space check, so substituting it for an ordinary space pins two
+// words onto the same rendered line.
+const nbsp = "\u00a0"
+
+// glueHintGroups joins the words within each " · "-separated key-group of a
+// footer hint with a non-breaking space, so a narrow dialog can only wrap at a
+// group boundary and never splits a key from its label (e.g. "Enter" /
+// "select" on a 50-col confirm dialog). The " · " separators themselves keep
+// their ordinary, breakable spaces.
+func glueHintGroups(hint string) string {
+	return glueGroups(hint, " · ")
+}
+
+// glueBracketHintGroups is glueHintGroups' counterpart for "[Key] Label  ..."
+// style hints (double-space-separated groups, e.g. the search dialog's
+// footer): it glues the single space between each bracketed key and its label,
+// while leaving the double-space group separators breakable.
+func glueBracketHintGroups(hint string) string {
+	return glueGroups(hint, "  ")
+}
+
+// glueGroups splits hint on sep, replaces every ordinary space inside each
+// group with a non-breaking one, and rejoins with sep — a plain string
+// transform with no rendering side effects.
+func glueGroups(hint, sep string) string {
+	groups := strings.Split(hint, sep)
+	for i, g := range groups {
+		groups[i] = strings.ReplaceAll(g, " ", nbsp)
+	}
+	return strings.Join(groups, sep)
 }
