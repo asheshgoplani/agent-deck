@@ -14,21 +14,30 @@ import json
 import sys
 from pathlib import Path
 
-NOISE_TYPES = {
-    "permission-mode",
-    "queue-operation",
-    "attachment",
-    "file-history-snapshot",
-    "ai-title",
-    "pr-link",
-    "system",
-}
+# The taxonomy (noise record types, the skill-load marker, heartbeat
+# prefixes, clip lengths) is shared with agent-deck's recall classifier
+# (internal/recall/classify) through rules.json, which sits beside this
+# script. The Go side embeds the same file and a test fails the build when
+# the two copies differ, so a rule changed here must be changed there too.
+RULES_PATH = Path(__file__).with_name("rules.json")
 
-SKILL_LOAD_MARKER = "Base directory for this skill:"
 
-ARG_PREVIEW_CHARS = 200
-ASSIST_PREVIEW_CHARS = 500
-USER_PREVIEW_CHARS = 1000
+def load_rules(path: Path = RULES_PATH) -> dict:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+RULES = load_rules()
+
+NOISE_TYPES = set(RULES["noise_types"])
+
+SKILL_LOAD_MARKER = RULES["skill_load_marker"]
+HEARTBEAT_PREFIXES = tuple(RULES["heartbeat_prefixes"])
+
+ARG_PREVIEW_CHARS = RULES["clip"]["arg_preview_chars"]
+ASSIST_PREVIEW_CHARS = RULES["clip"]["assist_preview_chars"]
+USER_PREVIEW_CHARS = RULES["clip"]["user_preview_chars"]
+ERROR_PREVIEW_CHARS = RULES["clip"]["error_preview_chars"]
 
 
 def short_uuid(u: str | None) -> str:
@@ -69,8 +78,7 @@ def abbreviate_args(inp) -> str:
 
 
 def is_heartbeat(text: str) -> bool:
-    t = text.strip()
-    return t.startswith("[HEARTBEAT]") or t.startswith("[EVENT]")
+    return text.strip().startswith(HEARTBEAT_PREFIXES)
 
 
 def extract_skill_name(text: str) -> str | None:
@@ -141,7 +149,7 @@ def distill(path: Path, out: Path) -> dict:
                                 if c.get("is_error"):
                                     err = text_of(c.get("content", ""))
                                     out_lines.append(
-                                        f"[{uid}] {ts} ERROR: {clip(err, 400)}"
+                                        f"[{uid}] {ts} ERROR: {clip(err, ERROR_PREVIEW_CHARS)}"
                                     )
                                     stats["kept_error"] += 1
                                 # silently drop non-error tool_results
