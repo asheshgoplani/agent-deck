@@ -534,7 +534,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// Runs on EVERY pass, the first scan included — see the FIRST SCAN note on
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
-	d.journalStatusChanges(profile, statuses, substates)
+	d.journalStatusChanges(profile, byID, statuses, substates)
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.
@@ -600,11 +600,8 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 // never straight to the journal: this runs on the daemon's only goroutine, the
 // one every other profile's status detection also depends on, so a slow or
 // wedged health volume must not be able to block it.
-func (d *TransitionDaemon) journalStatusChanges(profile string, statuses, substates map[string]string) {
+func (d *TransitionDaemon) journalStatusChanges(profile string, byID map[string]*Instance, statuses, substates map[string]string) {
 	writer := d.journalWriter(profile)
-	if writer == nil {
-		return
-	}
 	seen, known := d.lastJournaled[profile]
 	if !known {
 		seen = map[string]string{}
@@ -620,6 +617,15 @@ func (d *TransitionDaemon) journalStatusChanges(profile string, statuses, substa
 			continue
 		}
 		from, fromSubstate, _ := strings.Cut(previous, "|")
+		// Recall trigger (docs/recall.md): a running session that stopped
+		// running just finished a turn; queue its transcript for the next
+		// sweep. One appended line, no database, no lock.
+		if from == "running" && to != "running" {
+			RecallNotifyInstance(byID[id], "turn_end")
+		}
+		if writer == nil {
+			continue
+		}
 		event := health.Event{TS: now, SessionID: id, Kind: health.KindStatus, From: from, To: to}
 		detail := map[string]any{}
 		if substate != "" {

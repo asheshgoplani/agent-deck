@@ -253,6 +253,18 @@ func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRec
 	if err := WriteCompletionRecord(rec); err != nil {
 		return rec, err
 	}
+	if RecallEnabled() {
+		if st, err := NewStorageWithProfile(profile); err == nil {
+			if instances, err := st.Load(); err == nil {
+				for _, inst := range instances {
+					if inst.ID == childID {
+						RecallNotifyInstance(inst, health.KindWorkerDone)
+					}
+				}
+			}
+			st.Close()
+		}
+	}
 	_ = SessionEventJournal(profile).Append(health.Event{TS: rec.FinishedAt, SessionID: childID, Kind: health.KindWorkerDone, Detail: map[string]any{
 		"status":      rec.Status,
 		"exit_code":   rec.ExitCode,
