@@ -84,8 +84,14 @@ agent-deck recall sweep [--full] | gc | rebuild
 - Search ranks sessions: a title, hint or tag hit always beats any number of
   body mentions. Terms are AND-ed; `SB-412` and `handle_sess` stay whole;
   `--phrase` verifies the literal phrase and says how many candidates it
-  checked. The output (and `index` in `--json`) says when the bounded
-  pre-search sweep left files behind; run `recall sweep` then.
+  checked. Filters (`--profile`, `--since`, `--project`, `--session`,
+  `--role`) narrow the body candidates before the 5,000-message ceiling
+  (newest first), so a filtered search on a common term is complete. The
+  output (and `index` in `--json`) says when the bounded pre-search sweep
+  left files behind; run `recall sweep` then.
+- One index, every profile: links, hints and cost events are read from and
+  written to the profile whose state.db holds the link, whichever profile
+  ran the sweep; `recall open` starts a session under its own profile.
 - Exit codes: 2 recall off / not found, 3 load-gated or locked.
 - Typical agent flow: `recall search "<what you remember>" --json`, pick a
   hit, `recall show <id> --tier card`, then `--turns 40` for the excerpt;

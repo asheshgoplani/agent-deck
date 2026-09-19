@@ -156,7 +156,9 @@ full text), every `tool_use` with its name, timestamp, the duration to its
 the files those calls read, wrote or edited, token usage per assistant
 record (summed on the session and, for a conversation bound to a deck
 session, written as cost events in the same pass, so `costs sync` and the
-index never read a transcript twice), interrupts, compactions, API errors,
+index never read a transcript twice), interrupts (one per Escape press: the
+`[Request interrupted by user]` marker; the interrupted tool result before
+it is the same press), compactions, API errors,
 the harness title (`custom-title`, `agent-name`, `ai-title`, `summary`),
 cwd, branch and model. Tool results, thinking, attachments, snapshots,
 progress and queue records are never stored. Unknown record kinds are
@@ -195,28 +197,48 @@ reparsed from zero. A copied transcript (fork, session-share import,
 switch-account within one profile) keeps its conversation id and is
 quarantined, never merged; the same file under another profile is its own
 session. A vanished file has its messages dropped at once and a tombstone
-written; the session and card stay, labelled missing. `sweep --full` also
+written; the session and card stay, labelled missing. A file that comes
+back under the same path (an unmounted volume, a permission hiccup, a
+rename and back) is parsed again from byte 0 on the next sweep, whether or
+not `gc` dropped its ledger row in between, and its tombstone goes. A
+source whose pass failed with a read error keeps every row up to its last
+checkpoint and is retried from there on the next sweep. `sweep --full` also
 re-verifies every signature and re-projects every card.
+
+`recall.db` is machine-global; `state.db` is per profile, and a deck
+session of one profile may run under another account (its transcript then
+lives under that account's config dir). A sweep therefore consults every
+profile's `state.db` for links, hints and tags, the transcript's own
+profile first: the profile whose `state.db` holds the authoritative link
+owns the card's hints and receives the cost events, whichever profile ran
+the sweep. Only the invoking profile's `state.db` is created or migrated;
+the others are opened as they are and skipped when absent.
 
 **search** ranks sessions, not messages: a hit in the title, hints or tags
 (the card, a ranked phrase-capable FTS surface) always outranks any number
 of body mentions; body hits then rank by count and recency. Terms are
 AND-ed, `AND`/`OR`/`NOT` and a trailing `*` work, and identifiers such as
 `SB-412` or `handle_sess` are single terms. The body index is a
-membership filter capped at 5,000 messages per query; the output says when
-the cap was hit. `--phrase` decompresses up to `--phrase-scan-limit`
-candidate bodies, checks the literal phrase, and prints how many it
-verified. `--hint` and `--tag` join the active profile's `state.db` live,
-so an annotation typed a second ago filters immediately. Before every
+membership filter; `--profile`, `--since`, `--project`, `--session` and
+`--role` narrow it in the same SQL before the 5,000-message ceiling is
+applied to the newest matches, so a filtered search on a common term sees
+every matching session of that profile, and the output says when the
+ceiling was hit. `--phrase` decompresses up to `--phrase-scan-limit`
+candidate bodies, checks the literal phrase (the query's words, without
+`AND`/`OR`/`NOT` or `title:` prefixes), and prints how many it verified.
+`--hint` and `--tag` join the active profile's `state.db` live, so an
+annotation typed a second ago filters immediately. Before every
 search a bounded sweep runs: 150 ms and 32 MB, after which the search
 proceeds on the index as it is and the output says what was deferred.
 
 **show** prints the card, a tool summary (calls, errors, total duration per
 tool), the touched files and the decoded messages. **open** relaunches: a
-conversation still bound to an agent-deck session starts that session; a
-transcript with no record is re-registered with `add --resume-session` in
-its original directory (and its account), so old history becomes a live
-session again. `--dry-run` prints the plan.
+conversation still bound to an agent-deck session starts that session,
+under the profile whose `state.db` holds the link (`-p <profile> session
+start <id>` when that is not the invoking profile); a transcript with no
+record is re-registered with `add --resume-session` in its original
+directory (and its account), so old history becomes a live session again.
+`--dry-run` prints the plan.
 
 **status** reports sources by state (ok, partial, error, missing,
 quarantined), bytes indexed and pending, the index size as a share of its
@@ -239,8 +261,24 @@ pages back; **rebuild** deletes `recall.db` and backfills.
 - One `flock` beside `recall.db`, so every profile contends on one lock.
 - An unchanged tree costs one `readdir` per directory and one `lstat` per
   file, never an `open`; symlinked roots cost one resolution each.
-- The index is 2 to 3.5% of its input (see the receipt for the measured
-  numbers on the real corpus).
+- The index is about 3.8% of its input and the first backfill pass peaks
+  at about 93 MB resident (later passes 48 to 76 MB), measured on the real
+  corpus (3.4 GB of Claude transcripts, 1,809 files). The design projected
+  about 2% and 60 to 90 MB; the difference is the per-call `tool_call`
+  table (0.9 points, kept: `show` prints the tool timeline from it) and
+  per-message zstd without a shared dictionary (2.1x on real chat text
+  where the projection assumed 3.5x). These measured numbers are the
+  acceptance bar; a trained zstd dictionary is the follow-up that would
+  recover most of the gap.
+- A read of `recall.db` written by another schema version never deletes it
+  outside the sweep lock: the file is recreated under the lock, so a
+  running backfill is never pulled out from under.
+
+`ValidateRecallTranscriptPath` (internal/session/recall_roots.go) has no
+caller yet: it is the phase 3 hook containment check, landed with the
+roots it validates against. Progress records are no longer read by `costs
+sync`; no transcript on the design machine carries one today, and the
+recall reader takes usage from assistant records only.
 
 ### Config
 
