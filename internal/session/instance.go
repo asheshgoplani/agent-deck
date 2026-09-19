@@ -6746,6 +6746,7 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 						Source: "tmux_env", OldID: i.ClaudeSessionID, Candidate: sessionID,
 						Reason: "zombie_id_no_conversation_data",
 					})
+					i.retractClaudeCandidateLink(sessionID)
 					// Don't adopt the zombie; skip the update but still refresh prompt below
 					rejected = true
 					sessionID = i.ClaudeSessionID
@@ -6909,6 +6910,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
 				HookEvent: status.Event, Reason: "candidate_cwd_outside_instance_paths",
 			})
+			i.retractClaudeCandidateLink(sessionID)
 			return
 		}
 		// Cold start — no session bound yet. Accept the first candidate
@@ -6931,6 +6933,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
 				HookEvent: status.Event, Reason: "candidate_has_no_conversation_data",
 			})
+			i.retractClaudeCandidateLink(sessionID)
 			return
 		}
 		// v1.7.23 guard (issue #661): when BOTH current and candidate have
@@ -6964,6 +6967,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 						Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
 						HookEvent: status.Event, Reason: "candidate_has_less_conversation_data",
 					})
+					i.retractClaudeCandidateLink(sessionID)
 					return
 				}
 			}
@@ -11780,6 +11784,25 @@ func (i *Instance) bindClaudeSessionFromHook(sessionID, hookSource, hookEvent, a
 				slog.String("new_id", sessionID),
 				slog.String("error", err.Error()))
 		}
+	}
+}
+
+// retractClaudeCandidateLink drops the recall session_links row of a
+// candidate id the adoption arbitration rejected. A candidate that was bound
+// earlier and lost a re-adoption (or turned out to be a zombie) must not
+// linger as a link, or the recall index would bind its transcript to this
+// instance. Rows are only ever written by bindClaudeSessionFromHook's
+// WriteClaudeSessionBinding; this is the matching retraction.
+func (i *Instance) retractClaudeCandidateLink(candidate string) {
+	db := statedb.GetGlobal()
+	if db == nil || candidate == "" {
+		return
+	}
+	if _, err := db.RetractSessionLink(i.ID, "claude", candidate); err != nil {
+		sessionLog.Warn("claude_session_link_retract_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("candidate", candidate),
+			slog.String("error", err.Error()))
 	}
 }
 

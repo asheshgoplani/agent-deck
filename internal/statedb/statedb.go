@@ -609,6 +609,13 @@ func (s *StateDB) Migrate() error {
 		return fmt.Errorf("statedb: create watcher_events index: %w", err)
 	}
 
+	// Recall phase 1: session_hints / session_tags / session_links.
+	// Additive CREATE TABLE IF NOT EXISTS only; SchemaVersion stays at 13
+	// (see recall_hints.go for why).
+	if err := migrateRecallTables(tx); err != nil {
+		return err
+	}
+
 	// ALTER TABLE migrations for existing databases.
 	// CREATE TABLE IF NOT EXISTS won't add new columns to tables that already exist.
 	// Each migration is idempotent: errors from "duplicate column" are silently ignored.
@@ -986,6 +993,12 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 		if _, err := tx.Exec(query, args...); err != nil {
 			return err
 		}
+		// The same sweep drops the instance-scoped recall rows (hints, tags,
+		// links) of the deleted instances; otherwise they accumulate forever
+		// in the one database chosen because it must not be wiped.
+		if err := pruneOrphanedRecallRows(tx); err != nil {
+			return err
+		}
 	}
 
 	stmt, err := tx.Prepare(`
@@ -1050,8 +1063,10 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 // greppable. It is a no-op on an already-empty table.
 func (s *StateDB) ClearAllInstances() error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec("DELETE FROM instances")
-		return err
+		if _, err := s.db.Exec("DELETE FROM instances"); err != nil {
+			return err
+		}
+		return pruneOrphanedRecallRows(s.db)
 	})
 }
 
@@ -1116,8 +1131,10 @@ func loadInstances(query func(string, ...any) (*sql.Rows, error)) ([]*InstanceRo
 // still reports success — the silent-loss half of issue #909.
 func (s *StateDB) DeleteInstance(id string) error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id)
-		return err
+		if _, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+			return err
+		}
+		return pruneOrphanedRecallRows(s.db)
 	})
 }
 
@@ -1441,18 +1458,42 @@ func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) erro
 // write lock, so under contention with WriteStatus / SaveInstance /
 // heartbeat writers a transient SQLITE_BUSY would otherwise drop this
 // update — matching the WriteStatus rationale above.
+//
+// Recall phase 1: the same call also records the mapping in session_links
+// (authoritative), because this is one of the two places that already know
+// it. Nothing else writes session_links for Claude; the adoption
+// arbitration retracts a rejected candidate via RetractSessionLink.
 func (s *StateDB) WriteClaudeSessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return s.writeHarnessSessionBinding(id, sessionID, "claude", detectedAt)
+}
+
+// writeHarnessSessionBinding is the shared body of the Claude, Codex and
+// Gemini binding writers: one json_set on tool_data plus the session_links
+// row, in one transaction so a link never exists without its binding.
+func (s *StateDB) writeHarnessSessionBinding(id, sessionID, harness string, detectedAt time.Time) error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec(
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(
 			`UPDATE instances
 			   SET tool_data = json_set(
 			         COALESCE(tool_data, '{}'),
-			         '$.claude_session_id', ?,
-			         '$.claude_detected_at', ?)
+			         '$.`+harness+`_session_id', ?,
+			         '$.`+harness+`_detected_at', ?)
 			 WHERE id = ?`,
 			sessionID, detectedAt.Unix(), id,
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		if sessionID != "" {
+			if err := upsertSessionLink(tx, id, harness, sessionID, "", true, detectedAt); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
 	})
 }
 
@@ -1465,18 +1506,7 @@ func (s *StateDB) WriteClaudeSessionBinding(id, sessionID string, detectedAt tim
 // bindCodexSessionFromHook has the same in-memory-only mutation shape
 // that the Claude fix in #1140 addressed — tracked as #1139.
 func (s *StateDB) WriteCodexSessionBinding(id, sessionID string, detectedAt time.Time) error {
-	return withBusyRetry(func() error {
-		_, err := s.db.Exec(
-			`UPDATE instances
-			   SET tool_data = json_set(
-			         COALESCE(tool_data, '{}'),
-			         '$.codex_session_id', ?,
-			         '$.codex_detected_at', ?)
-			 WHERE id = ?`,
-			sessionID, detectedAt.Unix(), id,
-		)
-		return err
-	})
+	return s.writeHarnessSessionBinding(id, sessionID, "codex", detectedAt)
 }
 
 // WriteGeminiSessionBinding is the Gemini counterpart of
@@ -1485,18 +1515,7 @@ func (s *StateDB) WriteCodexSessionBinding(id, sessionID string, detectedAt time
 // path in bindGeminiSessionFromHook had the same persistence gap
 // (#1139).
 func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt time.Time) error {
-	return withBusyRetry(func() error {
-		_, err := s.db.Exec(
-			`UPDATE instances
-			   SET tool_data = json_set(
-			         COALESCE(tool_data, '{}'),
-			         '$.gemini_session_id', ?,
-			         '$.gemini_detected_at', ?)
-			 WHERE id = ?`,
-			sessionID, detectedAt.Unix(), id,
-		)
-		return err
-	})
+	return s.writeHarnessSessionBinding(id, sessionID, "gemini", detectedAt)
 }
 
 // WriteGenericSessionBinding persists a custom-tool conversation id
@@ -1510,10 +1529,19 @@ func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt tim
 // id that reached disk while its scope did not would be resumed under the
 // wrong tool or on the wrong host, which is the failure the scope exists to
 // prevent (see internal/session/generic_session_scope.go).
+//
+// Recall phase 1: the same write records (id, tool, sessionID) in
+// session_links as the authoritative link, and a clear demotes the
+// instance's links, in the same transaction as the tool_data write.
 func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, command, location string, detectedAt time.Time) error {
 	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 		if sessionID == "" {
-			_, err := s.db.Exec(
+			if _, err := tx.Exec(
 				`UPDATE instances
 				   SET tool_data = json_remove(
 				         COALESCE(tool_data, '{}'),
@@ -1524,14 +1552,18 @@ func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, command, locat
 				         '$.generic_session_location')
 				 WHERE id = ?`,
 				id,
-			)
-			return err
+			); err != nil {
+				return err
+			}
+			if err := demoteSessionLinks(tx, id); err != nil {
+				return err
+			}
+			return tx.Commit()
 		}
-		at := detectedAt.Unix()
 		if detectedAt.IsZero() {
-			at = time.Now().Unix()
+			detectedAt = time.Now()
 		}
-		_, err := s.db.Exec(
+		if _, err := tx.Exec(
 			`UPDATE instances
 			   SET tool_data = json_set(
 			         COALESCE(tool_data, '{}'),
@@ -1541,9 +1573,18 @@ func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, command, locat
 			         '$.generic_session_command', ?,
 			         '$.generic_session_location', ?)
 			 WHERE id = ?`,
-			sessionID, at, tool, command, location, id,
-		)
-		return err
+			sessionID, detectedAt.Unix(), tool, command, location, id,
+		); err != nil {
+			return err
+		}
+		harness := tool
+		if harness == "" {
+			harness = "generic"
+		}
+		if err := upsertSessionLink(tx, id, harness, sessionID, "", true, detectedAt); err != nil {
+			return err
+		}
+		return tx.Commit()
 	})
 }
 
