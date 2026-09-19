@@ -5422,10 +5422,13 @@ const RecallMCPName = "recall"
 
 // RecallMCPDef is the definition `mcp list` shows and `mcp attach` writes
 // while [recall] enabled = true: this binary serving the index over stdio.
-// A user-defined [mcps.recall] wins over it.
+// A user-defined [mcps.recall] wins over it. The command follows the hook
+// rule (hookExecutablePath): an installed binary is pinned by its stable
+// install path, an unpinnable dev build keeps the bare "agent-deck", so
+// the project's .mcp.json never names a build directory that goes away.
 func RecallMCPDef() MCPDef {
 	command := "agent-deck"
-	if exe, err := os.Executable(); err == nil && exe != "" {
+	if exe, err := hookExecutablePath(); err == nil && exe != "" {
 		command = exe
 	}
 	return MCPDef{Command: command, Args: []string{"recall", "mcp"},

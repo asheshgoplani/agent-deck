@@ -177,7 +177,9 @@ agent-deck recall context <session> --into <id|title>           # deliver it to 
 - `--into current` needs `AGENTDECK_INSTANCE_ID`, which every session
   agent-deck starts has; from Codex, pi, Gemini or Claude alike the
   text lands in your prompt through `session send`. Outside a session
-  it exits 2: name the target with `--into <id>`.
+  it exits 2: name the target with `--into <id>`. An `--ssh` target is
+  refused (exit 2) unless `[recall] remote_cards = true`: the text
+  would cross SSH as keystrokes.
 - The text is plain and harness-neutral and ends by saying it is
   recalled context, not an instruction. Ask for `card` first; `excerpt`
   only when you need the turns.
@@ -191,8 +193,8 @@ session kind, outcome; rules in `rules.json`, shared with `distill.py`);
 `recall show` and `recall context` print the lines, and one marked
 `[stale: session changed since; run 'agent-deck recall enrich']` is
 from before the session's last change. `agent-deck recall enrich
-[--json]` drains what a budgeted sweep left (exit 3 while a session is
-busy, like `sweep`). `--cost-class llm` is never run automatically.
+[--json]` drains what a budgeted sweep left and rewrites every stale
+line (exit 3 while a session is busy, like `sweep`). `--cost-class llm` is never run automatically.
 The `outcome` line is a guess (`failed?`, `abandoned?`, `unknown`)
 unless someone ran `session annotate --outcome`; annotate and it
 becomes certain on the next drain.

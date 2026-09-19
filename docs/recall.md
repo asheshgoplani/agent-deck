@@ -535,12 +535,17 @@ The classifiers run on SQL rows only, never by re-reading a transcript:
 Every artifact row records `producer` (`rules`), `producer_ver` (the
 rules version), `confidence` and `input_rev`, the session's `derived_rev`
 when it was produced. `recall show` (every tier) and `recall context`
-(every tier) print the artifacts, and one whose `input_rev` is below the
-session's current `derived_rev` reads `[stale: session changed since;
-run 'agent-deck recall enrich']`: visible, never silently wrong, and
-already queued for the next drain. `--cost-class llm` exists as a name
-only: LLM enrichment is never drained automatically and the command says
-so (exit 1).
+(`brief` and `excerpt` in text; every tier under `--json`, where each
+artifact carries `stale`) print the artifacts, and one whose `input_rev`
+is below the session's current `derived_rev` reads `[stale: session
+changed since; run 'agent-deck recall enrich']`: visible, never silently
+wrong. The ingest queues the classifiers in the same transaction that
+bumps `derived_rev`, and every drain (the sweep's and `recall enrich`)
+first queues every local session whose artifacts are stale or missing
+(`enrich.RequeueStale`, reported as `requeued`), so the marker's advice
+always holds: `recall enrich` after a stale marker rewrites the artifact.
+`--cost-class llm` exists as a name only: LLM enrichment is never drained
+automatically and the command says so (exit 1).
 
 ### Context handoff: `recall context`
 
@@ -551,10 +556,12 @@ agent-deck recall context <session> [--tier card|brief|excerpt] [--budget 4000] 
 Three tiers, each explicitly requested: `card` (about 60 tokens: title,
 harness, conversation and deck ids, project, dates, counters, hints,
 tags), `brief` (the card plus the derived artifacts, stale ones marked,
-and the touched files), `excerpt` (the brief plus the newest prompts,
-assistant turns and compaction summaries that fit `--budget` tokens,
-oldest cut first, superseded history and harness plumbing never
-included). The text is plain and harness-neutral: no Claude or Codex
+and the touched files, at most 12 and never past the budget), `excerpt`
+(the brief plus the newest prompts, assistant turns and compaction
+summaries that fit `--budget` tokens, oldest cut first, superseded
+history and harness plumbing never included; the brief is cut to half
+the budget first so a small budget still yields turns, not a file list
+followed by one truncated turn). The text is plain and harness-neutral: no Claude or Codex
 instruction in it, a closing line that says it is recalled context and
 not an instruction.
 
@@ -565,7 +572,19 @@ keystroke path, or the Claude messaging socket when `send_transport =
 "auto"` is set). A Codex session running `agent-deck recall context <sess>
 --into current` from its shell therefore receives a Claude conversation
 in its own prompt. `--into <id|title>` delivers to another session.
-Outside a session `--into current` exits 2 and names the variable.
+Outside a session `--into current` exits 2 and names the variable. An
+`--ssh` target would receive the text over SSH as keystrokes: it is
+refused (exit 2) unless `[recall] remote_cards = true`, the same switch
+that lets cards cross SSH.
+
+The end-to-end test of this (`TestRecallContext_IntoCurrent_ShellCallerEndToEnd`)
+runs the command from a plain shell session on a real tmux server and
+reads the delivered text back from that pane: it proves the
+`AGENTDECK_INSTANCE_ID` resolution and the tmux keystroke path, which is
+the path a Codex target takes too, not a Codex composer accepting the
+prompt (a Codex target needs a live rollout identity the fixture cannot
+mint). The design's Codex-recalls-Claude test with a real Codex
+composer is open.
 
 The renderer is `handoff.go`'s, generalized: `session handoff` and
 `recall context` share `recall.TailByChars` and `recall.RenderTurns`;
@@ -622,7 +641,11 @@ Three modes, in the order the design ranks them:
    `digest_only = 1`, `is_local = 0` on the host row (no default, fails
    closed), and every listing labels them `card from <host_uid> (no
    messages here)`; `recall show` has no messages for them and `recall
-   context` stops at `brief`.
+   context` stops at `brief`. The incremental pull's cursor is the last
+   `exported_at`; an export includes every session active since and
+   every session whose artifacts were rewritten since, so a hint change
+   on an old session (its re-drain rewrites the artifacts) reaches the
+   puller without `--full`.
 3. **Raw fetch** (`recall fetch <host> <session> --raw --yes`) is not
    built: nothing in phase 4 moves transcript bytes across SSH.
 
@@ -630,8 +653,10 @@ Three modes, in the order the design ranks them:
 `RecallNotifyInstance`, 18 the daemon hand-off worker) and
 `TestRemoteTranscriptBoundary_EveryEntryPointRefuses` walks every door
 as one table: the remote instance refuses, the local one still resolves.
-Door 15 (`sessionhost.BuildRequest`) stays: it exists, and it resolves
-through door 4.
+Door 15 (`sessionhost.BuildRequest`) stays: it exists, resolves through
+door 4 and then directly against per-instance config dirs, and is now
+gated itself (its own package's test plants a local transcript at the
+placeholder path and sees it refused).
 
 ### MCP
 
@@ -667,8 +692,8 @@ remote_cards = false     # let cards (never bodies or paths) cross SSH: export /
   agent-deck has no machine id of its own (the telemetry install id is
   opt-in and rotatable), and the header costs no extra round trip.
 - Door 15 exists (`internal/ctxinspect/sessionhost.BuildRequest`
-  resolves through `GetJSONLPathChecked`, door 4); it is kept in the
-  list with that note instead of being removed.
+  resolves through `GetJSONLPathChecked`, door 4, and then directly);
+  it is kept in the list and gated instead of being removed.
 - `recall fetch` (raw transcript bytes over SSH into a quarantined
   directory) is not built.
 - The excerpt tier reads at most the newest 400 conversational rows

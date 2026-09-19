@@ -213,3 +213,35 @@ func TestImport_RefusalsAndDigestOnlyRows(t *testing.T) {
 		t.Fatalf("an import wrote %d message rows", n)
 	}
 }
+
+// TestExport_SinceFollowsArtifactChangesOnOldSessions: the incremental
+// pull passes the last exported_at as --since; a session that ended long
+// before it is still exported when its artifacts were rewritten since (a
+// `session annotate` re-queues and re-drains the session, so a hint change
+// on an old session reaches the puller without --full).
+func TestExport_SinceFollowsArtifactChangesOnOldSessions(t *testing.T) {
+	st, _ := indexed(t)
+	cutoff := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	tr, err := Export(&out, st, cutoff, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Sessions != 0 {
+		t.Fatalf("every session ended before the cutoff, exported %d", tr.Sessions)
+	}
+	var sessID int64
+	if err := st.R.QueryRow(`SELECT sess_id FROM session WHERE native_id='dddddddd-0000-4000-8000-00000000000d'`).Scan(&sessID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.W.Exec(`UPDATE artifact SET created_at=? WHERE sess_id=? AND kind='outcome'`, cutoff.Unix()+60, sessID); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if tr, err = Export(&out, st, cutoff, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if tr.Sessions != 1 || tr.Cards != 1 || tr.Artifacts != 3 || !strings.Contains(out.String(), `"native_id":"dddddddd-0000-4000-8000-00000000000d"`) {
+		t.Fatalf("the session with a rewritten artifact must be exported: %+v\n%s", tr, out.String())
+	}
+}

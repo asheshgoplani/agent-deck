@@ -124,7 +124,10 @@ type Trailer struct {
 }
 
 // Export writes this machine's local sessions (never re-exported remote
-// cards) active at or after since as NDJSON.
+// cards) as NDJSON: every session active at or after since, and every
+// session whose derived artifacts were (re)written since, so a hint
+// change on an old session (its re-drain rewrites the artifacts) or a
+// re-classification reaches the next incremental pull without --full.
 func Export(w io.Writer, st *store.Store, since time.Time, now time.Time) (Trailer, error) {
 	uid, err := st.HostUID()
 	if err != nil {
@@ -143,7 +146,9 @@ func Export(w io.Writer, st *store.Store, since time.Time, now time.Time) (Trail
 		COALESCE(s.started_at,0), COALESCE(s.ended_at,0), s.turns, s.tool_calls, s.errors, s.interrupts, s.compacts, COALESCE(s.model,''), s.is_sidechain, s.derived_rev,
 		c.title, c.hints, c.tags, c.summary, c.preview
 		FROM session s LEFT JOIN card c ON c.sess_id=s.sess_id
-		WHERE s.host_uid=? AND s.digest_only=0 AND COALESCE(s.ended_at, s.started_at, 0) >= ? ORDER BY s.sess_id`, store.LocalHostUID, sinceTS)
+		WHERE s.host_uid=? AND s.digest_only=0 AND (COALESCE(s.ended_at, s.started_at, 0) >= ?
+			OR EXISTS (SELECT 1 FROM artifact a WHERE a.sess_id=s.sess_id AND a.created_at >= ?))
+		ORDER BY s.sess_id`, store.LocalHostUID, sinceTS, sinceTS)
 	if err != nil {
 		return tr, err
 	}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/recall/cards"
 	"github.com/asheshgoplani/agent-deck/internal/recall/enrich"
 )
 
@@ -247,13 +250,32 @@ func TestRecallCardSync_OffByDefaultThenPullImportsDigestOnly(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte(strings.Replace(string(data), "[recall]\n", "[recall]\nremote_cards = true\n", 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// export: NDJSON with a header carrying this machine's host_uid and
-	// nothing forbidden.
+	// export: NDJSON with a header carrying this machine's host_uid, one
+	// session line per indexed session (the corpus has a subagent
+	// transcript too, so the count comes from the trailer), and none of
+	// the keys or text the cards package forbids: no path, no offset, no
+	// span, no message. An artifact line's "body" is derived text
+	// ("13 call(s) over 1m0s"), not a message, and is allowed.
 	stdout, stderr, code := runAgentDeck(t, home, "recall", "export", "--cards")
-	if code != 0 || !strings.HasPrefix(stdout, `{"kind":"header"`) || !strings.Contains(stderr, "exported 1 session(s)") {
+	if code != 0 || !strings.HasPrefix(stdout, `{"kind":"header"`) {
 		t.Fatalf("export: %d\n%s\n%s", code, stdout, stderr)
 	}
-	for _, k := range []string{`"path"`, `"cwd"`, `"body"`, `"rec_off"`, `"spanv"`, home} {
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	var trailer struct {
+		Kind     string `json:"kind"`
+		Sessions int    `json:"sessions"`
+		Cards    int    `json:"cards"`
+	}
+	mustJSON(t, lines[len(lines)-1], &trailer)
+	if trailer.Kind != "trailer" || trailer.Sessions < 1 || trailer.Cards != trailer.Sessions || strings.Count(stdout, `{"kind":"session"`) != trailer.Sessions ||
+		!strings.Contains(stderr, fmt.Sprintf("exported %d session(s), %d card(s)", trailer.Sessions, trailer.Cards)) {
+		t.Fatalf("export trailer %+v does not match the stream:\n%s\n%s", trailer, stdout, stderr)
+	}
+	forbidden := []string{home, "/projects/", ".jsonl", `"role"`, `"tool_use"`}
+	for _, k := range cards.ForbiddenKeys {
+		forbidden = append(forbidden, `"`+k+`"`)
+	}
+	for _, k := range forbidden {
 		if strings.Contains(stdout, k) {
 			t.Fatalf("export carries %s:\n%s", k, stdout)
 		}
@@ -286,7 +308,7 @@ func TestRecallCardSync_OffByDefaultThenPullImportsDigestOnly(t *testing.T) {
 		t.Fatalf("pulled card must be labelled in search:\n%s", stdout)
 	}
 	stdout, stderr, code = runAgentDeck(t, home, "recall", "context", "remote-conv-1", "--tier", "excerpt")
-	if code != 2 || !strings.Contains(stderr, "card pulled from another machine") {
+	if code != 2 || !strings.Contains(stderr, "card pulled from another machine") || !strings.Contains(stderr, "agent-deck remote lab recall show remote-conv-1") {
 		t.Fatalf("excerpt over a pulled card: %d %s %s", code, stdout, stderr)
 	}
 	stdout, _, code = runAgentDeck(t, home, "recall", "context", "remote-conv-1", "--tier", "brief")
@@ -386,12 +408,20 @@ func TestRecallEnrich_SweepDrainsAndShowMarksStale(t *testing.T) {
 	if !strings.Contains(human, "outcome: abandoned? (3 interrupts)") {
 		t.Fatalf("the sweep's drain must re-derive from the new rows:\n%s", human)
 	}
-	// Force staleness by hand (a sweep whose drain was cut by its budget
-	// leaves exactly this state) and see the marker in show and context.
+	// Force staleness by hand: derived_rev moves and nothing queues the
+	// session (a pass cancelled between the ingest's commit and the card
+	// projection used to leave exactly this state, with the queue row
+	// done). The marker shows in show and context, and the drain the
+	// marker names must pick the session up on its own.
 	dbPath := filepath.Join(home, ".local", "share", "agent-deck", "recall.db")
-	if out, err := exec.Command("sqlite3", dbPath, "UPDATE session SET derived_rev=derived_rev+1").CombinedOutput(); err != nil {
-		t.Skipf("sqlite3 not available to plant staleness: %v %s", err, out)
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE session SET derived_rev=derived_rev+1 WHERE native_id=?`, sess); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
 	human, _, _ = runAgentDeck(t, home, "recall", "show", sess, "--tier", "card")
 	if strings.Count(human, "[stale: session changed since; run 'agent-deck recall enrich']") != len(enrich.CheapKinds) {
 		t.Fatalf("show must mark every stale artifact:\n%s", human)
@@ -406,8 +436,12 @@ func TestRecallEnrich_SweepDrainsAndShowMarksStale(t *testing.T) {
 		}
 	}
 	stdout, _, code = runAgentDeck(t, home, "recall", "enrich", "--json")
-	if code != 0 || !strings.Contains(stdout, `"written": 3`) {
+	if code != 0 || !strings.Contains(stdout, `"requeued": 3`) || !strings.Contains(stdout, `"written": 3`) {
 		t.Fatalf("enrich after staleness: %d %s", code, stdout)
+	}
+	human, _, _ = runAgentDeck(t, home, "recall", "show", sess, "--tier", "card")
+	if strings.Contains(human, "[stale") || !strings.Contains(human, "outcome: abandoned? (3 interrupts)") {
+		t.Fatalf("the drain must refresh the stale artifacts:\n%s", human)
 	}
 }
 
@@ -436,18 +470,30 @@ func TestRecallContext_PrintsAndIntoCurrentNeedsASession(t *testing.T) {
 	if _, stderr, code := runAgentDeck(t, home, "recall", "context", "no-such", "--tier", "brief"); code != 2 || !strings.Contains(stderr, "no such session") {
 		t.Fatalf("unknown: %d %s", code, stderr)
 	}
+	// An --ssh target would carry the local conversation over SSH as
+	// keystrokes: refused while [recall] remote_cards is off, before any
+	// send is attempted (the session is not even running).
+	if stdout, stderr, code := runAgentDeck(t, home, "add", "--no-parent", "--ssh", "alice@host-a", "--remote-path", "/srv/proj", "-t", "remote-target", "-c", "claude", "--json"); code != 0 {
+		t.Fatalf("add --ssh: %d %s %s", code, stdout, stderr)
+	}
+	if _, stderr, code := runAgentDeck(t, home, "recall", "context", sess, "--into", "remote-target"); code != 2 || !strings.Contains(stderr, "remote_cards = true") || !strings.Contains(stderr, "host-a") {
+		t.Fatalf("--into an --ssh session with remote_cards off: %d %s", code, stderr)
+	}
 }
 
-// TestRecallContext_IntoCurrent_CrossHarnessEndToEnd is the design's phase
-// 4 test: a session of another harness (the caller, identified by
-// AGENTDECK_INSTANCE_ID as every session agent-deck starts is) runs
-// `recall context <claude session> --into current` and the Claude
-// conversation lands in its own pane as a prompt. The target is a plain
-// shell session on a real tmux server: the tmux keystroke path is the one
-// a Codex target takes too (chooseSendTransport: only a Claude target with
-// send_transport = "auto" ever takes the socket), and a shell echoes what
-// it receives, so the pane is the evidence. Needs tmux (the Docker image).
-func TestRecallContext_IntoCurrent_CrossHarnessEndToEnd(t *testing.T) {
+// TestRecallContext_IntoCurrent_ShellCallerEndToEnd: a session that is
+// not the Claude one (the caller, identified by AGENTDECK_INSTANCE_ID as
+// every session agent-deck starts is) runs `recall context <claude
+// session> --into current` and the Claude conversation lands in its own
+// pane as a prompt. The caller is a plain shell session on a real tmux
+// server, so what this proves is the AGENTDECK_INSTANCE_ID resolution and
+// the tmux keystroke delivery, the path a Codex target takes too
+// (chooseSendTransport: only a Claude target with send_transport = "auto"
+// ever takes the socket); a shell echoes what it receives, so the pane is
+// the evidence. It does not prove a Codex composer accepting the prompt:
+// that needs a live rollout identity the fixture cannot mint, and stays
+// open (docs/recall.md, "Context handoff"). Needs tmux (the Docker image).
+func TestRecallContext_IntoCurrent_ShellCallerEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
@@ -515,7 +561,10 @@ func TestMCPList_ShowsRecallWhileEnabled(t *testing.T) {
 	for _, m := range list.MCPs {
 		if m.Name == "recall" {
 			found = true
-			if len(m.Args) != 2 || m.Args[0] != "recall" || m.Args[1] != "mcp" || m.Command == "" || !strings.Contains(m.Description, "built-in") {
+			// The test binary is a dev build outside every install dir, so
+			// the entry keeps the bare command (the hook rule: a build
+			// path in a project's .mcp.json breaks when the build goes).
+			if len(m.Args) != 2 || m.Args[0] != "recall" || m.Args[1] != "mcp" || m.Command != "agent-deck" || !strings.Contains(m.Description, "built-in") {
 				t.Fatalf("recall mcp entry: %+v", m)
 			}
 		}
