@@ -275,3 +275,54 @@ func TestSessionLinks_WrittenByBindingWriters(t *testing.T) {
 		t.Fatal("retracting an unknown candidate reported a change")
 	}
 }
+
+func TestAuthoritativeLinkOwner_OnlyAuthoritativeRows(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.UpsertSessionLink("inst-1", "claude", "conv-old", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertSessionLink("inst-1", "claude", "conv-new", "", true); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := db.AuthoritativeLinkOwner("claude", "conv-new")
+	if err != nil || owner != "inst-1" {
+		t.Fatalf("owner = %q %v", owner, err)
+	}
+	// conv-old was demoted by the rebind: history, not a binding.
+	if owner, _ := db.AuthoritativeLinkOwner("claude", "conv-old"); owner != "" {
+		t.Fatalf("demoted link still binds: %q", owner)
+	}
+	if owner, _ := db.AuthoritativeLinkOwner("codex", "conv-new"); owner != "" {
+		t.Fatalf("harness not honoured: %q", owner)
+	}
+}
+
+func TestRecallChangedRefs_HintsTagsAndLinks(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.UpsertSessionLink("inst-1", "claude", "conv-1", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSessionHint(HintScopeInstance, "inst-1", "ticket", "SB-1", HintSourceAnnotate, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSessionHint(HintScopeHarnessSession, "conv-9", "why", "x", HintSourceAnnotate, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddSessionTag(HintScopeHarnessSession, "conv-8", "auth", HintSourceAnnotate); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := db.RecallChangedRefs(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[HarnessRef]bool{}
+	for _, r := range refs {
+		got[r] = true
+	}
+	if len(got) != 3 || !got[HarnessRef{"claude", "conv-1"}] || !got[HarnessRef{"", "conv-9"}] || !got[HarnessRef{"", "conv-8"}] {
+		t.Fatalf("refs = %v", refs)
+	}
+	if refs, _ := db.RecallChangedRefs(time.Now().Unix() + 3600); len(refs) != 0 {
+		t.Fatalf("future cutoff returned %v", refs)
+	}
+}

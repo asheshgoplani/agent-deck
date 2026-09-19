@@ -877,16 +877,24 @@ index_rate_limit = 20       # Files/second for indexing
 
 ## [recall] Section
 
-Recall, the cross-harness conversation store (`docs/recall.md`). Phase 1 ships the durable hint layer only (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`), which lives in the profile's `state.db` and does not depend on this switch.
+Recall, the cross-harness conversation store (`docs/recall.md`). The durable hint layer (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`) lives in the profile's `state.db` and does not depend on this section. `enabled` gates the transcript index (`agent-deck recall ...`), one machine-global `recall.db` in the data dir beside `profiles/` (phase 2: Claude transcripts of every profile).
 
 ```toml
 [recall]
-enabled = false             # Reserved: gates the recall.db transcript index (later phases)
+enabled = false             # Turn the recall.db transcript index on
+max_loadavg = 4.0           # backfill/sweep/rebuild refuse above this 1-minute load (0 disables)
+text_tier = "clipped"       # message bodies stored clipped to 8 KiB, or "full"
+keep_missing_days = 30      # how long a vanished transcript's tombstone survives before gc drops it
+per_source_mb = 64          # per-sweep cap on one transcript; the rest continues next sweep (0 = unlimited)
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Turn the recall.db index on once it ships. Hints and annotations work regardless. |
+| `enabled` | bool | `false` | Turn the recall.db index on. Hints and annotations work regardless. |
+| `max_loadavg` | float | `4.0` | Load gate for `backfill`, `sweep` and `rebuild` (they also refuse while a session is `running`); `--force` overrides. |
+| `text_tier` | string | `"clipped"` | `clipped` stores 8 KiB per message body (the FTS index always covers the full text); `full` stores whole bodies. |
+| `keep_missing_days` | int | `30` | `recall gc` drops the ledger row and tombstone of a transcript missing longer than this. |
+| `per_source_mb` | int | `64` | Most of one file a single sweep parses before deferring the rest. |
 
 ## [notifications] Section
 

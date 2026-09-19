@@ -184,6 +184,8 @@ func migrationItems() ([]MigrationItem, error) {
 		".ack-signal-legacy",
 		"badge-updates",
 		"worker-scratch",
+		"recall.db",
+		"recall",
 	} {
 		if err := add(CategoryData, dataDir, name); err != nil {
 			return nil, err

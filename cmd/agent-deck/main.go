@@ -99,7 +99,7 @@ func recordCLITelemetry(subcommand string, rest []string) {
 	case "add", "list", "ls", "remove", "rm", "rename", "mv", "status", "profile", "update",
 		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
 		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
-		"remote", "worktree", "wt", "costs", "usage", "web", "uninstall", "migrate-paths", "hooks",
+		"remote", "worktree", "wt", "costs", "usage", "web", "uninstall", "migrate-paths", "hooks", "recall",
 		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "feedback", "creds-refresh",
 		"config":
 	default:
@@ -496,6 +496,9 @@ func main() {
 			return
 		case "costs":
 			handleCosts(profile, args[1:])
+			return
+		case "recall":
+			handleRecall(profile, args[1:])
 			return
 		case "usage":
 			handleUsage(profile, args[1:])
@@ -1378,7 +1381,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true, "config": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -2537,6 +2540,17 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		autoHints[hintKeyParent] = parentInstance.ID
 	}
 	sessionHints, sessionTags := applyCreationHints(storage, newInstance, creationHints, autoHints)
+	// An operator-named conversation (--resume-session) is an explicit
+	// ownership declaration, so it is an authoritative harness link from
+	// creation: the recall index binds the transcript to this session
+	// without waiting for a hook (docs/recall.md, "Harness links").
+	if *resumeSession != "" {
+		if db := storage.GetDB(); db != nil {
+			if err := db.UpsertSessionLink(newInstance.ID, "claude", *resumeSession, "", true); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: session link: %v\n", err)
+			}
+		}
+	}
 
 	// Attach MCPs if specified
 	if len(mcpFlags) > 0 {
@@ -4274,6 +4288,7 @@ func printHelp() {
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  usage            Show remaining provider subscription quota")
+	fmt.Println("  recall           Search every Claude conversation on this machine (docs/recall.md)")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")

@@ -570,6 +570,29 @@ agent-deck session annotate auth-fix --set-hint ticket=SB-413 --remove-tag flaky
 agent-deck session annotate --self --note-stdin < summary.md
 ```
 
+### recall
+
+```bash
+agent-deck recall backfill [--since 90d] [--budget 5m] [--force] [--json]
+agent-deck recall sweep [--full] [--force] [--json]
+agent-deck recall status [--json]
+agent-deck recall sessions [--harness claude] [--profile P] [--project PATH] [--since 30d] [--hint k=v] [--tag t] [--session ID] [--subagents] [--limit 20] [--json]
+agent-deck recall search "<q>" [same filters] [--role user|assistant] [--phrase] [--phrase-scan-limit 2000] [--limit 20] [--no-sweep] [--json]
+agent-deck recall show <session> [--tier card|excerpt|raw] [--turns 40] [--json]
+agent-deck recall open <session> [--title T] [--dry-run] [--json]
+agent-deck recall gc [--keep-days 30] [--json]
+agent-deck recall rebuild [--force] [--json]
+```
+
+The Claude transcript index (`docs/recall.md`); every command needs `[recall] enabled = true` and exits 2 otherwise. `<session>` is the number from the listing, a Claude conversation id or unique prefix, or an agent-deck session id. `backfill`/`sweep`/`rebuild` exit 3 while a session of the active profile is `running` or the load is above `max_loadavg` (`--force` overrides) and while another sweep holds the lock. `search` ranks sessions (title/hint/tag hits first, then body hit count, then recency), AND-s terms, keeps identifiers like `SB-412` whole, joins `--hint`/`--tag` against `state.db` live, applies the structural filters before the 5,000-message body ceiling (newest matches first), runs a 150 ms / 32 MB sweep first and reports what it deferred; `--phrase` verifies the literal phrase and reports how many candidates it checked. `open` starts the bound session (under the profile whose `state.db` holds the link) or re-registers the transcript with `add --resume-session`. Sweeps read links, hints and tags from every profile's `state.db` and write cost events to the profile that holds the link. `--json` returns `result` (search: `hits`, `candidates`, `ceiling_hit`, `scanned`, `verified`) plus an `index` note (`swept`, `deferred`, `deferred_bytes`).
+
+```bash
+agent-deck recall search "clock skew" --since 30d --profile work
+agent-deck recall search SB-412 --hint ticket=SB-412 --phrase --json
+agent-deck recall show 91fd7978 --tier card
+agent-deck recall open 91fd7978 --dry-run
+```
+
 ### session set-parent / unset-parent
 
 ```bash
