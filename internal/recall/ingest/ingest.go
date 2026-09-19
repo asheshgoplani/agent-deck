@@ -23,6 +23,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/classify"
+	"github.com/asheshgoplani/agent-deck/internal/recall/enrich"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/recall/store"
 )
@@ -153,7 +154,11 @@ type Result struct {
 	BytesRead     int64    `json:"bytes_read"`
 	Messages      int      `json:"messages"`
 	Sessions      int      `json:"sessions"`
-	ElapsedMS     int64    `json:"elapsed_ms"`
+	// Enriched counts the artifacts the in-sweep drain wrote;
+	// EnrichDeferred the queue rows it left for the next pass.
+	Enriched       int   `json:"enriched"`
+	EnrichDeferred int   `json:"enrich_deferred,omitempty"`
+	ElapsedMS      int64 `json:"elapsed_ms"`
 }
 
 // Ingester runs sweeps against one open store.
@@ -275,6 +280,20 @@ func (in *Ingester) Sweep(ctx context.Context) (Result, error) {
 		return res, err
 	}
 	res.Sessions = len(touched)
+	// The cheap classifiers run inside the sweep (design 9, T1): the
+	// queue rows the re-projected cards left are drained under what is
+	// left of the budget, so an interactive pass never overruns on them
+	// and a backfill leaves every indexed session classified.
+	if !in.opts.Budget.Exhausted() {
+		er, err := enrich.New(in.st, enrich.Options{Budget: in.opts.Budget, Now: in.opts.Now}).Drain(ctx)
+		res.Enriched, res.EnrichDeferred = er.Written, er.Deferred
+		if err != nil && ctx.Err() != nil {
+			return res, err
+		}
+		if err != nil {
+			return res, fmt.Errorf("recall: enrich: %w", err)
+		}
+	}
 	res.ElapsedMS = in.opts.Now().Sub(start).Milliseconds()
 	return res, nil
 }
@@ -1340,10 +1359,14 @@ func (in *Ingester) projectCard(tx *sql.Tx, sessID int64) error {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO card(sess_id, title, hints, tags, summary, preview) VALUES (?, ?, ?, ?, '', ?)
+	if _, err := tx.Exec(`INSERT INTO card(sess_id, title, hints, tags, summary, preview) VALUES (?, ?, ?, ?, '', ?)
 		ON CONFLICT(sess_id) DO UPDATE SET title=excluded.title, hints=excluded.hints, tags=excluded.tags, preview=excluded.preview`,
-		sessID, title, hints, tags, preview)
-	return err
+		sessID, title, hints, tags, preview); err != nil {
+		return err
+	}
+	// Every content change and every hint change reaches here, so this is
+	// the one place the cheap classifiers are (re)queued.
+	return enrich.Enqueue(tx, sessID)
 }
 
 // RefreshCards reprojects every card (hints changed in state.db, or a

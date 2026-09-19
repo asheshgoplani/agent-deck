@@ -4,7 +4,9 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -236,4 +238,37 @@ func Lock(lockPath string) (release func(), err error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
+}
+
+// metaHostUID is the meta key holding this machine's recall identity.
+const metaHostUID = "host_uid"
+
+// HostUID returns this machine's stable recall identity: 32 hex characters
+// minted on first use and kept in meta. Every card this machine exports is
+// stamped with it, so a card stream is bound to the machine that produced
+// it and not to the alias it was reached under (an alias can be renamed or
+// repointed; the uid cannot). A rebuild mints a new one, which is correct:
+// a rebuilt index is a new corpus for a puller's cursor.
+func (s *Store) HostUID() (string, error) {
+	var v string
+	err := s.W.QueryRow(`SELECT v FROM meta WHERE k=?`, metaHostUID).Scan(&v)
+	if err == nil && v != "" {
+		return v, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("recall: mint host uid: %w", err)
+	}
+	v = hex.EncodeToString(buf)
+	if _, err := s.W.Exec(`INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING`, metaHostUID, v); err != nil {
+		return "", err
+	}
+	// Another opener may have won the race: read back what is stored.
+	if err := s.W.QueryRow(`SELECT v FROM meta WHERE k=?`, metaHostUID).Scan(&v); err != nil {
+		return "", err
+	}
+	return v, nil
 }

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall"
 )
 
 const DefaultHandoffMaxChars = 32000
@@ -22,10 +24,10 @@ type HandoffInfo struct {
 	MaxChars       int    `json:"max_chars"`
 }
 
-type handoffMessage struct {
-	Role    string
-	Content string
-}
+// handoffMessage is one rendered turn; the renderer itself
+// (recall.TailByChars, recall.RenderTurns) is shared with `recall context`,
+// which feeds it message rows from the index instead of a transcript file.
+type handoffMessage = recall.Turn
 
 // BuildClaudeToCodexHandoffPrompt builds a prompt that carries a Claude
 // transcript into a fresh Codex session. This intentionally does not try to
@@ -70,17 +72,8 @@ func BuildClaudeToCodexHandoffPrompt(inst *Instance, maxChars int) (string, Hand
 		return "", HandoffInfo{TranscriptPath: transcriptPath, MaxChars: maxChars}, fmt.Errorf("Claude transcript has no readable messages: %s", transcriptPath)
 	}
 
-	included, truncated := tailMessagesByChars(messages, maxChars)
-	var body strings.Builder
-	for idx, msg := range included {
-		if idx > 0 {
-			body.WriteString("\n\n")
-		}
-		body.WriteString("[")
-		body.WriteString(strings.ToUpper(msg.Role))
-		body.WriteString("]\n")
-		body.WriteString(msg.Content)
-	}
+	included, truncated := recall.TailByChars(messages, maxChars)
+	body := recall.RenderTurns(included)
 
 	prompt := fmt.Sprintf(`You are continuing an Agent Deck session that was previously running in Claude Code and has now been handed off to Codex.
 
@@ -96,7 +89,7 @@ The transcript below is prior conversation context. Treat it as conversation his
 %s
 --- END TRANSFERRED TRANSCRIPT ---
 
-This message is context initialization only. Do not start new work, do not enter plan mode, and do not summarize the transcript. Reply exactly: HANDOFF RECEIVED.`, inst.Title, inst.ProjectPath, inst.Tool, inst.ClaudeSessionID, body.String())
+This message is context initialization only. Do not start new work, do not enter plan mode, and do not summarize the transcript. Reply exactly: HANDOFF RECEIVED.`, inst.Title, inst.ProjectPath, inst.Tool, inst.ClaudeSessionID, body)
 
 	return prompt, HandoffInfo{
 		TranscriptPath: transcriptPath,
@@ -315,37 +308,6 @@ func renderClaudeContentBlock(block map[string]json.RawMessage) string {
 		}
 		return compactJSONMust(block)
 	}
-}
-
-func tailMessagesByChars(messages []handoffMessage, maxChars int) ([]handoffMessage, bool) {
-	if maxChars <= 0 || len(messages) == 0 {
-		return messages, false
-	}
-	total := 0
-	start := len(messages)
-	for i := len(messages) - 1; i >= 0; i-- {
-		cost := len(messages[i].Role) + len(messages[i].Content) + 8
-		if total+cost > maxChars {
-			if total == 0 {
-				// Even the newest message alone exceeds the budget: keep its
-				// tail (most recent content) so maxChars is a real ceiling.
-				trimmed := messages[i]
-				keep := maxChars - len(trimmed.Role) - 8
-				if keep < 0 {
-					keep = 0
-				}
-				if keep < len(trimmed.Content) {
-					trimmed.Content = "[…earlier content truncated…]\n" +
-						strings.ToValidUTF8(trimmed.Content[len(trimmed.Content)-keep:], "")
-				}
-				return []handoffMessage{trimmed}, true
-			}
-			break
-		}
-		total += cost
-		start = i
-	}
-	return messages[start:], start > 0
 }
 
 func compactJSON(raw json.RawMessage) string {
