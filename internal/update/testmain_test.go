@@ -27,6 +27,11 @@ func TestMain(m *testing.M) {
 func runTestMain(m *testing.M) int {
 	cleanupHome := testutil.IsolateHome()
 	defer cleanupHome()
+	// Nothing here talks to tmux, but every TestMain isolates the socket
+	// (internal/testutil/testmain_audit_test.go) so a future test cannot
+	// reach the live server by accident.
+	cleanupTmux := testutil.IsolateTmuxSocket()
+	defer cleanupTmux()
 	os.Unsetenv(launchdServiceEnv)
 	return m.Run()
 }
