@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/procowner"
 )
 
 // updateLog is the component logger for everything the update command does
@@ -177,12 +179,18 @@ func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 	return err
 }
 
+// updateLockHolderAlive reads whether the pid named in update.lock can
+// still run; procowner.Alive counts a zombie as dead. A seam for tests.
+var updateLockHolderAlive = procowner.Alive
+
 // AcquireUpdateLock takes the cross-process lock that keeps the TUI's
 // unattended install and the timer's run from replacing the binary at the
-// same time. The lock is a file created with O_EXCL under dir; a lock older
-// than stale is treated as abandoned (crashed process) and taken over.
-// busy is true when another live run holds it; release is non-nil only when
-// the lock was acquired.
+// same time. The lock is a file created with O_EXCL under dir naming the
+// holder's pid. A lock whose holder is gone (dead, or a zombie its parent
+// never reaped: the v1.16.11 rollout left `update --unattended` saying
+// "already running" behind a defunct pid) or which is older than stale is
+// treated as abandoned and taken over. busy is true when another live run
+// holds it; release is non-nil only when the lock was acquired.
 func AcquireUpdateLock(dir string, stale time.Duration) (release func(), busy bool, err error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, false, err
@@ -205,15 +213,39 @@ func AcquireUpdateLock(dir string, stale time.Duration) (release func(), busy bo
 			}
 			return nil, false, statErr
 		}
-		if time.Since(info.ModTime()) < stale {
+		holder, known := updateLockHolder(path)
+		switch {
+		case known && holder != os.Getpid() && !updateLockHolderAlive(holder):
+			updateLog.Warn("update_lock_dead_holder_removed", slog.String("path", path), slog.Int("pid", holder), slog.Time("mtime", info.ModTime()))
+		case time.Since(info.ModTime()) >= stale:
+			updateLog.Warn("update_lock_stale_removed", slog.String("path", path), slog.Time("mtime", info.ModTime()))
+		default:
 			return nil, true, nil
 		}
-		updateLog.Warn("update_lock_stale_removed", slog.String("path", path), slog.Time("mtime", info.ModTime()))
 		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 			return nil, false, rmErr
 		}
 	}
 	return nil, true, nil
+}
+
+// updateLockHolder parses the pid an update.lock names; known is false when
+// the file does not start with one (an older or foreign writer), in which
+// case only the mtime rule applies.
+func updateLockHolder(path string) (pid int, known bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	pid, err = strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
 }
 
 // UpdateLockFileName is the lock file taken in the cache dir during an

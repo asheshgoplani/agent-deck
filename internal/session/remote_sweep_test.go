@@ -114,3 +114,57 @@ func TestUpdateRemotes_ProbeFailureIsSkipped(t *testing.T) {
 		t.Fatal("a probe failure must not count as a failure")
 	}
 }
+
+// stubSweepProcessAlive scripts the liveness reading behind the sweep marker
+// for one test.
+func stubSweepProcessAlive(t *testing.T, alive map[int]bool) {
+	t.Helper()
+	prev := sweepProcessAlive
+	sweepProcessAlive = func(pid int) bool { return alive[pid] || pid == os.Getpid() }
+	t.Cleanup(func() { sweepProcessAlive = prev })
+}
+
+// v1.16.11 rollout: the TUI re-exec'd itself while its update child was
+// mid-sweep; the child died and stayed a zombie (kill(pid, 0) still
+// succeeded), so the marker read as live and `remote update --all` skipped
+// every remote. A marker whose holder cannot run (dead or zombie) must be
+// replaced; one whose holder is running must still be honoured.
+func TestRemoteSweepMarker_ZombieHolderIsNotLive(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	const zombie, running = 95172, 95173
+	stubSweepProcessAlive(t, map[int]bool{running: true})
+	for _, tc := range []struct {
+		name string
+		pid  int
+		live bool
+	}{
+		{"zombie holder", zombie, false},
+		{"running holder", running, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := updateRemoteVersionCache(func(c *remoteVersionCache) {
+				c.Sweep = &remoteSweepMarker{PID: tc.pid, StartedAt: time.Now(), Remotes: []string{"lab"}}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			_, ok := RemoteSweepInProgress()
+			if ok != tc.live {
+				t.Fatalf("RemoteSweepInProgress = %v, want %v", ok, tc.live)
+			}
+			end, err := BeginRemoteSweep([]string{"lab"})
+			if tc.live {
+				if !errors.Is(err, ErrRemoteSweepRunning) {
+					t.Fatalf("a running holder must block a new sweep, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a zombie holder must not block a new sweep: %v", err)
+			}
+			if sweep, ok := RemoteSweepInProgress(); !ok || sweep.PID != os.Getpid() {
+				t.Fatalf("marker after takeover = %+v, %v; want this pid", sweep, ok)
+			}
+			end()
+		})
+	}
+}
