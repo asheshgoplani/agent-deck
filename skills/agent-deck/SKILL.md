@@ -864,6 +864,20 @@ agent-deck remote update dev --from-build /path/to/local/dist   # push a verifie
 - `remote update --from-build <dir>` is for shipping a verified local three-platform build (darwin/arm64, linux/amd64, linux/arm64) to a remote before it's published as a release — same checksum/version verification and downgrade guard as a normal `remote update`.
 - `[ui.remote_preview]`/`[ui.header]` share one field vocabulary: `version`, `sessions_by_status`, `harnesses`, `load`, `memory`, `disk`, `last_poll`, and the opt-in `accounts` (named Claude account slots with live 5h/7d usage, one aligned row per slot in the preview, read from each slot's local quota cache — `agent-deck hooks install` wires the feed) and `ssh` (who is connected to the host over SSH right now, per user) — see [Configuration](#configuration)/config-reference.md.
 
+## Recall (phase 1: hints)
+
+**Use when:** you want a session to remember what it was for, or you are finishing a task and want the outcome findable later. Details: [recall skill](recall/SKILL.md), `docs/recall.md`.
+
+```bash
+agent-deck add . -c claude --hint purpose="fix flaky auth test" --ticket SB-412 --tag auth   # also on launch
+agent-deck session annotate <id> --decision "clock skew" --outcome worked --tag clock-skew
+agent-deck session annotate <id> --set-hint ticket=SB-413 --remove-tag flaky --unset why
+agent-deck session annotate --self --note-stdin < summary.md    # an agent, on its own session
+agent-deck remote <host> session annotate <id> --outcome worked  # writes the remote's state.db
+```
+
+Hints are single-valued per key (setting again replaces), tags are a set; all of it lives in the profile's state.db and survives any index rebuild. `launch` derives `purpose` from the message's first line and `parent` for children automatically. Search over transcripts (`recall search`) is coming in the next phases; `session search` is unchanged.
+
 ## Configuration
 
 **File:** `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored)
@@ -1220,3 +1234,4 @@ Any command not in this table (session start/stop/send/output, `mcp attach`, `se
 - [goal.md](references/goal.md) - Deep dive into goal-driven worker autonomy: three-entity design, done-condition shell commands, manager loop, nudge generator, escalation bundle, implementation phases
 - [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
 - [fleet skill](../fleet/SKILL.md) - Fan out parallel child sessions and supervise them non-blockingly (`session children`)
+- [recall skill](recall/SKILL.md) - Durable session hints and tags (phase 1); transcript search and context handoff coming in the next phases

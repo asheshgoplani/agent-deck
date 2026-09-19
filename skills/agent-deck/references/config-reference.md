@@ -29,6 +29,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
   - [[ui.remote_preview] Section](#uiremote_preview-section)
   - [[ui.header] Section](#uiheader-section)
 - [[global_search] Section](#global_search-section)
+- [[recall] Section](#recall-section)
 - [[notifications] Section](#notifications-section)
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
@@ -873,6 +874,19 @@ index_rate_limit = 20       # Files/second for indexing
 | `memory_limit_mb` | int | `100` | Max memory for balanced tier. |
 | `recent_days` | int | `90` | Only search recent conversations. |
 | `index_rate_limit` | int | `20` | Indexing speed (reduce for less CPU). |
+
+## [recall] Section
+
+Recall, the cross-harness conversation store (`docs/recall.md`). Phase 1 ships the durable hint layer only (`add`/`launch --hint/--tag/--ticket/--why`, `session annotate`), which lives in the profile's `state.db` and does not depend on this switch.
+
+```toml
+[recall]
+enabled = false             # Reserved: gates the recall.db transcript index (later phases)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recall.db index on once it ships. Hints and annotations work regardless. |
 
 ## [notifications] Section
 
