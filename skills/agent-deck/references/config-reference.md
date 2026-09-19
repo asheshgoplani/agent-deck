@@ -887,7 +887,7 @@ text_tier = "clipped"       # message bodies stored clipped to 8 KiB, or "full"
 keep_missing_days = 30      # how long a vanished transcript's tombstone survives before gc drops it
 per_source_mb = 64          # per-sweep cap on one transcript; the rest continues next sweep (0 = unlimited)
 harnesses = ["claude", "codex", "pi", "gemini", "opencode", "hermes"]  # which harnesses to index (default: all)
-hook_sweep = true           # Claude Stop/SessionEnd hooks index their own transcript inline (150 ms / 32 MB)
+hook_sweep = true           # the async Claude SessionEnd hook indexes its own transcript inline (150 ms / 32 MB); Stop only queues
 ```
 
 | Key | Type | Default | Description |
@@ -898,7 +898,7 @@ hook_sweep = true           # Claude Stop/SessionEnd hooks index their own trans
 | `keep_missing_days` | int | `30` | `recall gc` drops the ledger row and tombstone of a transcript missing longer than this. |
 | `per_source_mb` | int | `64` | Most of one file a single sweep parses before deferring the rest. |
 | `harnesses` | list | all | Harness names to index; a harness whose home is absent is skipped anyway. |
-| `hook_sweep` | bool | `true` | A Claude `Stop`/`SessionEnd` hook indexes only its own transcript within the interactive budget; off, it only queues the file for the next sweep. |
+| `hook_sweep` | bool | `true` | The asynchronous Claude `SessionEnd` hook indexes only its own transcript within the interactive budget; off, it only queues the file for the next sweep. The synchronous `Stop` hook never sweeps: it appends one queue line and returns. |
 
 ## [notifications] Section
 

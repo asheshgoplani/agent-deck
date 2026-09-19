@@ -379,13 +379,22 @@ reparse never double counts cost events, titles (Codex `session_index.jsonl`
 and Hermes `title`), compactions and interrupts. Codex developer messages,
 reasoning blocks, pi thinking and Gemini thoughts are never stored.
 
-Codex `compacted` records: the summary is indexed once as a
-`compact_summary` message that supersedes everything before it in the
-session (`msg.superseded = 1`, still searchable, labelled in `show`), a
-`compacted_into` self-edge counts the compactions, and
+Codex `compacted` records: the record supersedes everything before it in
+the session (`msg.superseded = 1`, still searchable) and a
+`compacted_into` self-edge counts the compactions. On real rollouts the
+record's `message` is always empty (the summary itself is the encrypted
+compaction item), so no row is stored for it; when a rollout does carry
+summary text it is indexed once as a `compact_summary` message.
 `replacement_history` is never re-emitted (it repeats records already
-indexed from their own lines). pi `parentSession`, OpenCode `parentID` and
-Hermes `parent_session_id` become `fork_of` edges.
+indexed from their own lines), and a rollout holding nothing but its
+header and compactions (Codex writes one when a thread resumes after
+compaction) gets no session row. An index written before this rule is
+cleaned once, on its next sweep. A pass that stops at Codex's own
+projection cursor below the file size records the size it parsed to, so
+the tail past the cursor is picked up by the next sweep once Codex commits
+it, even when the rollout is never written again. pi `parentSession`,
+OpenCode `parentID` and Hermes `parent_session_id` become `fork_of`
+edges.
 
 Gemini records only a hash of the working directory, so its sessions have
 no `cwd` and `--project` cannot match them.
@@ -396,11 +405,14 @@ Nothing watches anything. Three things move the index:
 
 1. **The Claude hook.** On `Stop` and `SessionEnd`, `agent-deck hook-handler`
    appends one line to `recall/queue.jsonl` (`{ts, harness, path, event,
-   instance}`) after the recall containment check, then, when
-   `hook_sweep = true` (the default) and the sweep lock is free, indexes
-   exactly that file within the interactive budget (150 ms / 32 MB), with
-   the profile's hints and deck id on the card. Everything is behind
-   `recover()`; a hook never fails or blocks Claude on recall work. The
+   instance}`) after the recall containment check. `Stop` is installed
+   synchronous and sits on Claude's turn-end latency, so that is all it
+   does: no database open, no lock, no sweep. `SessionEnd` is
+   asynchronous; there, when `hook_sweep = true` (the default) and the
+   sweep lock is free, the hook also indexes exactly that file within the
+   interactive budget (150 ms / 32 MB), with the profile's hints and deck
+   id on the card. Everything is behind `recover()`; a hook never fails
+   or blocks Claude on recall work. The
    containment check accepts a path under any Claude config dir agent-deck
    can launch under, including account slots and the worker-scratch homes
    whose `projects` symlink into one, and refuses spoofed siblings and
@@ -412,7 +424,10 @@ Nothing watches anything. Three things move the index:
 2. **Session events.** `session stop`, a task-worker completion
    (`worker_done`) and the transition daemon's running-to-not-running edge
    queue the session's transcript (Claude, Codex or pi; remote sessions
-   never resolve a local file and queue nothing).
+   never resolve a local file and queue nothing). The daemon hands its
+   notifies to a bounded background worker that resolves the recall roots
+   once per batch, so the root walk never runs on the goroutine every
+   profile's status detection depends on.
 3. **The sweep.** Every sweep drains the queue first and parses the files
    it names before the rest of the walk, so a transcript a hook reported
    is fresh even when the bounded interactive budget would not reach it.
@@ -421,11 +436,12 @@ Nothing watches anything. Three things move the index:
 
 ### The TUI
 
-`G` (and `/` when recall is on) opens Recall search over the index, in
-place of the in-memory global search that was disabled for opening one
-watcher per project directory and loading 4.4 GB into memory. Typing runs
-`recall search` (debounced); the right pane is `recall show` for the
-selected hit; Enter jumps to the registered session that owns the
+`G` opens Recall search over the index, in place of the in-memory global
+search that was disabled for opening one watcher per project directory
+and loading 4.4 GB into memory; `/` stays the quick local title filter
+(Tab switches between the two). Typing runs `recall search` (debounced);
+the right pane is `recall show #n` for the selected hit (a failed preview
+says so in the pane); Enter jumps to the registered session that owns the
 conversation (bound deck id or Claude session id) or, for an unowned
 Claude conversation, registers a session that resumes it, exactly as
 `recall open` does. Codex, pi, Gemini, OpenCode and Hermes conversations
@@ -435,18 +451,20 @@ are searchable and previewable but not resumable from the TUI or
 Nothing parses on a keypress. Opening the overlay runs one ungated
 bounded sweep pass in a background command and shows a staleness line
 ("index behind by N source(s) / M MB; catching up in the background",
-then "index fresh as of ..."); while anything was deferred the overlay
-keeps running bounded passes through the busy/load gate, so the catch-up
-never competes with a running agent. With `[recall] enabled = false` the
-key falls back to the local title search as before. Frames:
-`internal/ui/testdata/recall_search_*.golden`.
+then "index swept 3m ago"); while anything was deferred the overlay keeps
+running bounded passes, one second apart and through the busy/load gate,
+so the catch-up never holds a core or competes with a running agent. The
+overlay is the terminal width less a margin, capped at 160 columns, and
+fits 80. With `[recall] enabled = false`, `G` falls back to the local
+title search and the footer says so. Frames at 200, 140, 120 and 80
+columns: `internal/ui/testdata/recall_search_*.golden`.
 
 ### Config
 
 ```toml
 [recall]
 harnesses = ["claude", "codex", "pi", "gemini", "opencode", "hermes"]  # default: all
-hook_sweep = true        # Stop/SessionEnd hooks index their own transcript inline
+hook_sweep = true        # the async SessionEnd hook indexes its own transcript inline (Stop only queues)
 ```
 
 ### What did not survive contact with the code
@@ -458,12 +476,17 @@ hook_sweep = true        # Stop/SessionEnd hooks index their own transcript inli
   store. Index bytes for Hermes are proportional to that store.
 - The `compacted_into` edge is a self-edge: a compacted Codex thread keeps
   its id and its rollout file, so there is no second session to point at.
-- A Gemini message above 4 MiB (the largest real one is 10.5 MB of
-  video-analysis content) is skipped and counted, like an over-long JSONL
-  line; that is what keeps the resident set bounded.
-- The hook's inline sweep is ungated, like the CLI's pre-search sweep: it
-  parses at most one file's tail within 150 ms / 32 MB. Only the
-  background continuation in the TUI goes through the busy/load gate.
+- A Gemini message is read field by field, each field under 4 MiB, so a
+  short prompt survives a 10 MB `displayContent` of inline video beside
+  it (the shape of the largest real file); only a field itself above the
+  cap is dropped and counted, like an over-long JSONL line. That is what
+  keeps the resident set bounded.
+- The SessionEnd hook's inline sweep is ungated, like the CLI's pre-search
+  sweep: it parses at most one file's tail within 150 ms / 32 MB. Only
+  the background continuation in the TUI goes through the busy/load gate.
+- A source pass that fails or is quarantined is counted in the sweep
+  result (`errors`, `quarantined`) and leaves one line in the log
+  (`recall_source_failed` / `recall_source_quarantined`).
 - `recall open` and the TUI resume Claude conversations only; other
   harnesses need a registered session to jump to.
 

@@ -533,7 +533,7 @@ mode so clicks, scrolling and the divider drag work. Hold `Shift` while dragging
 | Key | Action |
 |-----|--------|
 | `/` | Local search |
-| `G` | Global search (all Claude conversations) |
+| `G` | Recall search over every indexed conversation (Claude, Codex, pi, Gemini, OpenCode, Hermes); footer notice and local search when `[recall] enabled = false` |
 | `!@#&` | Filter by status (running/waiting/idle/error) |
 | `^` | View archived sessions |
 

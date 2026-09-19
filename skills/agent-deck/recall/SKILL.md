@@ -69,9 +69,10 @@ every harness: Claude (all profiles), Codex, pi, Gemini, OpenCode, Hermes.
 `--profile` narrows Claude to one account, `--harness` to one harness.
 Nothing runs in the background: a sweep runs inside the command and ends
 with it; the Claude Stop hook, `session stop`, `worker_done` and the
-daemon's turn-end edge queue the transcript that just moved, and the Stop
-hook indexes its own file within 150 ms, so a conversation is usually
-searchable the moment its turn ends.
+daemon's turn-end edge queue the transcript that just moved (the Stop
+hook only appends that line; the async SessionEnd hook also indexes its
+own file within 150 ms), and every search drains the queue first, so a
+conversation is searchable the moment you look for it.
 
 ### Find sessions
 
@@ -144,11 +145,13 @@ Exit codes: 2 recall off / not found, 3 load-gated or locked.
 
 ### The TUI
 
-`G` (and `/`) in the TUI opens the same search: typing = `recall search`,
-the preview = `recall show`, Enter = `recall open`. It never parses on a
-keypress; a bounded sweep refreshes the index after the overlay opens and
-a staleness line says what it deferred. With `[recall] enabled = false`
-the key is the local title search.
+`G` in the TUI opens the same search (`/` stays the local title filter;
+Tab switches): typing = `recall search`, the preview = `recall show #n`,
+Enter = `recall open`. It never parses on a keypress; a bounded sweep
+refreshes the index after the overlay opens and a staleness line says
+what it deferred, with catch-up passes one second apart through the load
+gate. With `[recall] enabled = false` the key falls back to the local
+title search and the footer says so.
 
 ### Remote
 
