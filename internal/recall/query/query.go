@@ -90,8 +90,13 @@ type Hit struct {
 	// Missing means the source file is gone: the hit is listed from the
 	// stored card and bodies, and cannot be reopened from disk.
 	Missing bool `json:"missing,omitempty"`
-	// Verified is set by --phrase: the literal phrase occurs in a body.
+	// Verified is set by --phrase: the literal phrase occurs in a body
+	// (true), or every matching body was read without it (false). It stays
+	// nil when the scan limit ran out before this hit's bodies were reached.
 	Verified *bool `json:"verified,omitempty"`
+	// PhraseChecked is set on every hit of a --phrase search, so a nil
+	// Verified reads as "not reached", not "not asked".
+	PhraseChecked bool `json:"phrase_checked,omitempty"`
 	// Sidechain marks a subagent transcript.
 	Sidechain bool `json:"sidechain,omitempty"`
 }
@@ -191,10 +196,7 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	defer detach()
 
 	where, args := s.filterSQL(o.Filters)
-	roleSQL := ""
-	if o.Role != 0 {
-		roleSQL = " AND m.role=" + strconv.Itoa(o.Role)
-	}
+	roleSQL := roleClause(o.Role)
 	// The structural filters narrow the body candidates BEFORE the
 	// ceiling (the design's query plan): msg_fts membership is joined to
 	// msg and session and filtered in the same subquery, and the ceiling
@@ -270,46 +272,85 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	return res, nil
 }
 
-// verifyPhrase decompresses up to PhraseScan candidate bodies and checks
-// the literal phrase, then marks each hit. Never silent: Scanned and
-// VerifiedCount say what was checked.
+// verifyPhrase checks the literal phrase in the bodies of the ranked hits'
+// own matching messages, hit by hit in rank order and newest message
+// first, decompressing at most PhraseScan bodies in all. The scan follows
+// the hits (the same filtered candidate set the ranking used), never an
+// unfiltered window of the oldest rowids. A hit is verified once one body
+// carries the phrase, NOT found once every matching body was read without
+// it, and left unverified (nil) when the budget ran out before its bodies
+// were reached: unknown is reported as unknown. Scanned and VerifiedCount
+// say what was checked.
 func (s *Searcher) verifyPhrase(ctx context.Context, conn *sql.Conn, res *SearchResult, o SearchOptions) error {
 	scan := o.PhraseScan
 	if scan <= 0 {
 		scan = DefaultPhraseScan
 	}
 	phrase := strings.ToLower(strings.Join(queryTerms(o.Query), " "))
-	rows, err := conn.QueryContext(ctx, `SELECT m.sess_id, m.body FROM msg_fts f JOIN msg m ON m.msg_id=f.rowid WHERE msg_fts MATCH ? LIMIT ?`,
-		strings.Join(mustTerms(o.Query), " AND "), scan)
-	if err != nil {
-		return err
+	match := strings.Join(mustTerms(o.Query), " AND ")
+	roleSQL := roleClause(o.Role)
+	for i := range res.Hits {
+		res.Hits[i].PhraseChecked = true
 	}
-	defer rows.Close()
-	verified := map[int64]bool{}
-	for rows.Next() {
-		var sessID int64
-		var body []byte
-		if err := rows.Scan(&sessID, &body); err != nil {
+	for i := range res.Hits {
+		if res.Scanned >= scan {
+			break // out of budget: the rest stay unverified
+		}
+		found, complete, scanned, err := s.phraseInSession(ctx, conn, match, phrase, roleSQL, res.Hits[i].SessID, scan-res.Scanned)
+		res.Scanned += scanned
+		if err != nil {
 			return err
 		}
-		res.Scanned++
-		if verified[sessID] {
-			continue
+		switch {
+		case found:
+			v := true
+			res.Hits[i].Verified = &v
+			res.VerifiedCount++
+		case complete:
+			v := false
+			res.Hits[i].Verified = &v
 		}
+	}
+	return nil
+}
+
+// phraseInSession reads up to limit matching bodies of one session, newest
+// first, and reports whether one carries the phrase, whether every
+// matching body was read, and how many bodies it decompressed.
+func (s *Searcher) phraseInSession(ctx context.Context, conn *sql.Conn, match, phrase, roleSQL string, sessID int64, limit int) (found, complete bool, scanned int, err error) {
+	rows, err := conn.QueryContext(ctx, `SELECT m.body FROM msg_fts f JOIN msg m ON m.msg_id=f.rowid
+		WHERE msg_fts MATCH ? AND m.sess_id=?`+roleSQL+` ORDER BY f.rowid DESC LIMIT ?`, match, sessID, limit+1)
+	if err != nil {
+		return false, false, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if scanned == limit {
+			return false, false, scanned, rows.Err() // more bodies than budget: unknown
+		}
+		var body []byte
+		if err := rows.Scan(&body); err != nil {
+			return false, false, scanned, err
+		}
+		scanned++
 		text, err := recall.DecompressBody(body)
 		if err != nil {
 			continue
 		}
 		if strings.Contains(strings.ToLower(string(text)), phrase) {
-			verified[sessID] = true
+			return true, true, scanned, rows.Close()
 		}
 	}
-	res.VerifiedCount = len(verified)
-	for i := range res.Hits {
-		v := verified[res.Hits[i].SessID]
-		res.Hits[i].Verified = &v
+	return false, true, scanned, rows.Err()
+}
+
+// roleClause is the body-hit role restriction as a WHERE clause fragment on
+// msg m, empty when no role is asked for.
+func roleClause(role int) string {
+	if role == 0 {
+		return ""
 	}
-	return rows.Err()
+	return " AND m.role=" + strconv.Itoa(role)
 }
 
 // mustTerms is the query's words (no operators, no column prefixes),

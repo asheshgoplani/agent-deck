@@ -435,3 +435,100 @@ func TestSnippet(t *testing.T) {
 		t.Fatalf("utf8: %q", got)
 	}
 }
+
+// --phrase verifies the ranked hits' own matching bodies, newest first,
+// inside the same filtered candidate set the ranking used: a real hit is
+// never printed as "phrase NOT found" because the scan budget went to
+// older messages that were not hits at all. A hit whose bodies were not
+// reached inside the scan budget is left unverified (nil), not false.
+func TestSearch_PhraseVerifiesRankedHitsBeyondTheScanCeiling(t *testing.T) {
+	base := t.TempDir()
+	personal := filepath.Join(base, "claude")
+	work := filepath.Join(base, "claude-work")
+	const oldN, hitN = 120, 50
+	// 120 older sessions carry every word of the phrase but not the phrase;
+	// they fill a scan window of 100 oldest rowids on their own.
+	for i := 0; i < oldN; i++ {
+		writeSession(t, personal, fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012d", i), "/Users/x/app", "",
+			"hello", "app: please deploy the service today.")
+	}
+	// 50 newer sessions carry the literal phrase twice, so they rank first.
+	for i := 0; i < hitN; i++ {
+		writeSession(t, work, fmt.Sprintf("bbbbbbbb-0000-4000-8000-%012d", i), "/Users/x/work", "",
+			"hi", "I will deploy the app now.", "and again", "Deploy the app once more, done.")
+	}
+	st, err := store.Open(filepath.Join(base, "data", "recall.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	roots := []reader.Root{{Harness: "claude", Profile: "personal", Dir: personal}, {Harness: "claude", Profile: "work", Dir: work}}
+	if _, err := ingest.New(st, ingest.Options{Roots: roots}).Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := New(st, "")
+	ctx := context.Background()
+	res, err := s.Search(ctx, SearchOptions{Query: "deploy the app", Phrase: true, PhraseScan: 100, Limit: hitN})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != hitN {
+		t.Fatalf("%d hits, want %d", len(res.Hits), hitN)
+	}
+	notFound := 0
+	for _, h := range res.Hits {
+		if h.Profile != "work" {
+			t.Fatalf("a session without the phrase outranked one with it: %+v", h)
+		}
+		if h.Verified == nil || !*h.Verified {
+			notFound++
+		}
+	}
+	if notFound != 0 || res.VerifiedCount != hitN {
+		t.Fatalf("%d of %d real hits marked NOT found (verified %d, scanned %d): the phrase scan did not follow the ranked hits", notFound, hitN, res.VerifiedCount, res.Scanned)
+	}
+	// A filtered search verifies inside the filtered set too.
+	res, err = s.Search(ctx, SearchOptions{Query: "deploy the app", Phrase: true, PhraseScan: 100, Limit: hitN, Filters: Filters{Profile: "work"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != hitN || res.VerifiedCount != hitN {
+		t.Fatalf("--profile work: %d hits, %d verified", len(res.Hits), res.VerifiedCount)
+	}
+	// Sessions with the words but not the phrase are false, not nil.
+	res, err = s.Search(ctx, SearchOptions{Query: "deploy the app", Phrase: true, PhraseScan: 1000, Limit: oldN + hitN, Filters: Filters{Profile: "personal"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != oldN || res.VerifiedCount != 0 {
+		t.Fatalf("personal: %d hits, %d verified", len(res.Hits), res.VerifiedCount)
+	}
+	for _, h := range res.Hits {
+		if h.Verified == nil || *h.Verified {
+			t.Fatalf("session without the phrase not marked false: %+v", h)
+		}
+	}
+	// A scan budget smaller than the hit list verifies the top hits and
+	// leaves the rest unverified rather than calling them NOT found.
+	res, err = s.Search(ctx, SearchOptions{Query: "deploy the app", Phrase: true, PhraseScan: 10, Limit: hitN})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, unverified := 0, 0
+	for _, h := range res.Hits {
+		if !h.PhraseChecked {
+			t.Fatalf("a hit of a --phrase search not marked as phrase-checked: %+v", h)
+		}
+		switch {
+		case h.Verified == nil:
+			unverified++
+		case *h.Verified:
+			verified++
+		default:
+			t.Fatalf("a real hit marked NOT found under a small scan budget: %+v", h)
+		}
+	}
+	if verified != 10 || unverified != hitN-10 || res.Scanned > 10 {
+		t.Fatalf("scan budget 10: verified %d unverified %d scanned %d", verified, unverified, res.Scanned)
+	}
+}

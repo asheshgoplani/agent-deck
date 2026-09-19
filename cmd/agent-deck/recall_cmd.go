@@ -642,6 +642,8 @@ func formatRecallHit(h query.Hit) string {
 		} else {
 			marks = append(marks, "phrase NOT found")
 		}
+	} else if h.PhraseChecked {
+		marks = append(marks, "phrase unverified (scan limit)")
 	}
 	if h.Missing {
 		marks = append(marks, "source file missing")

@@ -1043,3 +1043,52 @@ func TestSweep_TwoProfilesKeepTheirOwnCardsAndUsage(t *testing.T) {
 		t.Fatalf("usage after the work append: %v", usage.got)
 	}
 }
+
+// uuidUsage counts how often each usage record was handed to the cost sink.
+type uuidUsage struct{ folded map[string]int }
+
+func (u *uuidUsage) Usage(_, _ string, ev []reader.Usage) error {
+	for _, e := range ev {
+		u.folded[e.UUID]++
+	}
+	return nil
+}
+
+// Usage hand-off is transactional with the pass: a pass that dies after a
+// mid-pass checkpoint must not lose the usage of the committed prefix, and
+// the retry must not fold anything twice. Every record of the file is
+// folded exactly once across the failed pass and its retry.
+func TestSweep_ReaderErrorKeepsUsageOfCommittedPrefix(t *testing.T) {
+	f := newFixture(t, testcorpus.Options{Files: 1, Seed: 23})
+	native := f.stats.Sessions[0]
+	reg := profileRegistry{deck: map[string]string{"personal/" + native: "deck-p"}, hints: map[string]string{}, asked: map[string]int{}}
+	clean := &uuidUsage{folded: map[string]int{}}
+	f.sweep(Options{Registry: reg, Usage: clean, BatchBytes: 1})
+	want := len(clean.folded)
+	msgs := f.count(`SELECT count(*) FROM msg`)
+	if want < 10 || msgs < 10 {
+		t.Fatalf("corpus too small: %d usage records, %d msgs", want, msgs)
+	}
+	if err := f.st.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	got := &uuidUsage{folded: map[string]int{}}
+	failing := failAfter{Reader: reader.Claude{}, n: int(msgs / 2)}
+	res, err := New(f.st, Options{Roots: f.roots(), Readers: []reader.Reader{failing}, Registry: reg, Usage: got, BatchBytes: 1}).Sweep(context.Background())
+	if err != nil || res.Errors != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	afterError := len(got.folded)
+	if res := f.sweep(Options{Registry: reg, Usage: got}); res.Parsed != 1 || res.Errors != 0 {
+		t.Fatalf("%+v", res)
+	}
+	var twice []string
+	for id, n := range got.folded {
+		if n != 1 {
+			twice = append(twice, id)
+		}
+	}
+	if len(got.folded) != want || len(twice) != 0 {
+		t.Fatalf("usage folded %d/%d records (%d after the error), %d folded more than once: hand-off is not transactional with the pass", len(got.folded), want, afterError, len(twice))
+	}
+}

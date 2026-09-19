@@ -202,7 +202,9 @@ back under the same path (an unmounted volume, a permission hiccup, a
 rename and back) is parsed again from byte 0 on the next sweep, whether or
 not `gc` dropped its ledger row in between, and its tombstone goes. A
 source whose pass failed with a read error keeps every row up to its last
-checkpoint and is retried from there on the next sweep. `sweep --full` also
+checkpoint, and the usage of that prefix (handed to the cost store with
+each checkpoint, never ahead of it), and is retried from there on the next
+sweep; the retry folds only what the failed pass rolled back. `sweep --full` also
 re-verifies every signature and re-projects every card.
 
 `recall.db` is machine-global; `state.db` is per profile, and a deck
@@ -223,9 +225,13 @@ membership filter; `--profile`, `--since`, `--project`, `--session` and
 `--role` narrow it in the same SQL before the 5,000-message ceiling is
 applied to the newest matches, so a filtered search on a common term sees
 every matching session of that profile, and the output says when the
-ceiling was hit. `--phrase` decompresses up to `--phrase-scan-limit`
-candidate bodies, checks the literal phrase (the query's words, without
-`AND`/`OR`/`NOT` or `title:` prefixes), and prints how many it verified.
+ceiling was hit. `--phrase` checks the literal phrase (the query's words,
+without `AND`/`OR`/`NOT` or `title:` prefixes) in the ranked hits' own
+matching bodies, hit by hit and newest message first, decompressing up to
+`--phrase-scan-limit` bodies in all; a hit is `phrase verified` or `phrase
+NOT found` only after its bodies were read, and `phrase unverified (scan
+limit)` when the limit ran out before it was reached. The output prints
+how many sessions it verified over how many bodies.
 `--hint` and `--tag` join the active profile's `state.db` live, so an
 annotation typed a second ago filters immediately. Before every
 search a bounded sweep runs: 150 ms and 32 MB, after which the search
@@ -311,6 +317,27 @@ the first hook that confirms a minted id writes one too. The index binds
 - `card_fts` hint columns are the ranking feed and refresh on the next
   sweep for sessions whose `state.db` rows changed; the `--hint`/`--tag`
   filters do not wait for that.
+
+### Known limits
+
+- **Copy ownership is decided at first sight and frozen.** When two files
+  carry the same conversation id under one profile (a fork, a
+  session-share import, a switch-account, a conversation continued under
+  a second working directory), the first one indexed owns the session and
+  the other is quarantined (`recall status` counts it, `recall show`
+  labels it). A backfill walks newest first, so a copy that is newer than
+  the original at backfill time becomes the owner, and turns appended to
+  the original afterwards are never indexed: the sweep sees the original
+  grow, re-checks it, and keeps it quarantined. Exposure on the design
+  machine: 2 of 1,823 files, both the same conversation continued under a
+  second directory; the data at risk is only what is appended to the
+  quarantined file after that point. Filed as a follow-up rather than
+  fixed here because the two candidate fixes trade off: re-evaluating
+  ownership when a quarantined file grows ping-pongs (a reparse each
+  time) when both files keep growing, and keying sessions on conversation
+  id plus prefix signature is a schema change. Acceptance for the
+  follow-up: a file quarantined on a backfill that later grows is
+  indexed; both orders tested; no reparse loop when both grow.
 
 ## Later phases
 

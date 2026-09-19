@@ -518,9 +518,6 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 			return out, err
 		}
 	}
-	if err := in.handOffUsage(ref, sink); err != nil {
-		return out, err
-	}
 	return out, rerr
 }
 
@@ -573,7 +570,8 @@ func (in *Ingester) resumeOffset(row *ledgerRow, ref reader.SourceRef, prefix st
 	return row.parsedTo, nil
 }
 
-// handOffUsage gives the pass's usage records to the cost sink when the
+// handOffUsage gives the usage records accumulated since the last
+// checkpoint to the cost sink, keyed by the transcript's profile, when the
 // conversation (or, for a subagent, its parent) is bound to a deck session.
 func (in *Ingester) handOffUsage(ref reader.SourceRef, sink *sink) error {
 	if in.opts.Usage == nil || len(sink.usage) == 0 || in.opts.Registry == nil {
@@ -590,7 +588,11 @@ func (in *Ingester) handOffUsage(ref reader.SourceRef, sink *sink) error {
 	if deck == "" {
 		return nil
 	}
-	return in.opts.Usage.Usage(ref.Profile, deck, sink.usage)
+	if err := in.opts.Usage.Usage(ref.Profile, deck, sink.usage); err != nil {
+		return err
+	}
+	sink.usage = sink.usage[:0]
+	return nil
 }
 
 // sourceBudget derives the per-pass budget for one source from the sweep
@@ -793,9 +795,18 @@ func (s *sink) rollback() error {
 	return err
 }
 
-// commit writes the session aggregates and the checkpoint, then ends the
+// commit hands the usage read since the last checkpoint to the cost sink,
+// writes the session aggregates and the checkpoint, then ends the
 // transaction; parsedTo is the offset every row so far is valid up to.
+// Usage travels with the checkpoint: a pass that fails after one keeps
+// the usage of the committed prefix, and the rolled-back tail's usage is
+// dropped with its rows and read again by the retry, so each record is
+// folded once. A hand-off that fails leaves the batch uncommitted; the
+// importer dedups on record uuid, so folding it again is harmless.
 func (s *sink) commit(parsedTo int64) error {
+	if err := s.in.handOffUsage(s.ref, s); err != nil {
+		return err
+	}
 	if s.tx == nil {
 		return nil
 	}
