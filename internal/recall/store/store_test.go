@@ -57,6 +57,14 @@ func TestOpen_RecreatesOnSchemaMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
+	// OpenCurrent refuses without deleting: the CLI takes the sweep lock
+	// before it recreates through Open.
+	if _, err := OpenCurrent(path); !errors.Is(err, ErrSchema) {
+		t.Fatalf("OpenCurrent on a mismatch: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
+		t.Fatalf("OpenCurrent must leave the file alone: %v", err)
+	}
 	s2, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

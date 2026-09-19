@@ -404,6 +404,8 @@ type HarnessRef struct {
 // RecallChangedRefs returns the harness conversations whose hints, tags or
 // authoritative link were written at or after since (unix seconds): the
 // recall sweep re-projects exactly those cards instead of all of them.
+// Rows scoped on the conversation id carry no harness (nothing writes the
+// column yet), so their Harness is "" and means "any harness".
 func (s *StateDB) RecallChangedRefs(since int64) ([]HarnessRef, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT l.harness, l.native_id FROM session_links l
@@ -411,8 +413,10 @@ func (s *StateDB) RecallChangedRefs(since int64) ([]HarnessRef, error) {
 		    OR EXISTS (SELECT 1 FROM session_hints h WHERE h.scope_kind = ? AND h.scope_id = l.session_id AND h.created_at >= ?)
 		    OR EXISTS (SELECT 1 FROM session_tags t WHERE t.scope_kind = ? AND t.scope_id = l.session_id AND (t.created_at >= ? OR t.deleted_at >= ?)))
 		UNION
-		SELECT DISTINCT h.harness, h.scope_id FROM session_hints h WHERE h.scope_kind = ? AND h.created_at >= ?`,
-		since, HintScopeInstance, since, HintScopeInstance, since, since, HintScopeHarnessSession, since)
+		SELECT DISTINCT h.harness, h.scope_id FROM session_hints h WHERE h.scope_kind = ? AND h.created_at >= ?
+		UNION
+		SELECT DISTINCT '', t.scope_id FROM session_tags t WHERE t.scope_kind = ? AND (t.created_at >= ? OR t.deleted_at >= ?)`,
+		since, HintScopeInstance, since, HintScopeInstance, since, since, HintScopeHarnessSession, since, HintScopeHarnessSession, since, since)
 	if err != nil {
 		return nil, err
 	}

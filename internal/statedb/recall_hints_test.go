@@ -308,6 +308,9 @@ func TestRecallChangedRefs_HintsTagsAndLinks(t *testing.T) {
 	if err := db.SetSessionHint(HintScopeHarnessSession, "conv-9", "why", "x", HintSourceAnnotate, ""); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AddSessionTag(HintScopeHarnessSession, "conv-8", "auth", HintSourceAnnotate); err != nil {
+		t.Fatal(err)
+	}
 	refs, err := db.RecallChangedRefs(0)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +319,7 @@ func TestRecallChangedRefs_HintsTagsAndLinks(t *testing.T) {
 	for _, r := range refs {
 		got[r] = true
 	}
-	if len(got) != 2 || !got[HarnessRef{"claude", "conv-1"}] || !got[HarnessRef{"", "conv-9"}] {
+	if len(got) != 3 || !got[HarnessRef{"claude", "conv-1"}] || !got[HarnessRef{"", "conv-9"}] || !got[HarnessRef{"", "conv-8"}] {
 		t.Fatalf("refs = %v", refs)
 	}
 	if refs, _ := db.RecallChangedRefs(time.Now().Unix() + 3600); len(refs) != 0 {

@@ -68,6 +68,9 @@ type SearchOptions struct {
 	Phrase     bool
 	PhraseScan int
 	Limit      int
+	// Ceiling overrides CandidateCeiling (0: the default); tests use it to
+	// reproduce the ceiling on a small corpus.
+	Ceiling int
 }
 
 // Hit is one ranked session.
@@ -99,8 +102,9 @@ type SearchResult struct {
 	Match      string `json:"match"`
 	Hits       []Hit  `json:"hits"`
 	Candidates int    `json:"candidates"`
-	// CeilingHit means more than CandidateCeiling messages matched and the
-	// ranking saw only the first CandidateCeiling of them.
+	// CeilingHit means more than CandidateCeiling messages matched the
+	// query and the filters, and the ranking saw only the newest
+	// CandidateCeiling of them.
 	CeilingHit bool `json:"ceiling_hit,omitempty"`
 	// Scanned and VerifiedCount describe the --phrase pass.
 	Scanned       int   `json:"scanned,omitempty"`
@@ -163,9 +167,10 @@ func isIdent(s string) bool {
 }
 
 // Search runs the plan: card_fts (ranked, phrase-capable) for the spine,
-// msg_fts membership under the candidate ceiling, structural filters in
-// SQL, then a fixed order: card hit first, then body hit count, then
-// recency. A hint or card hit always outranks an incidental body mention.
+// msg_fts membership intersected with the structural filters in SQL and
+// then capped at the candidate ceiling (newest first), then a fixed
+// order: card hit first, then body hit count, then recency. A hint or card
+// hit always outranks an incidental body mention.
 func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, error) {
 	start := time.Now()
 	res := SearchResult{Query: o.Query, Match: MatchExpr(o.Query)}
@@ -174,6 +179,10 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	}
 	if o.Limit <= 0 {
 		o.Limit = DefaultLimit
+	}
+	ceiling := o.Ceiling
+	if ceiling <= 0 {
+		ceiling = CandidateCeiling
 	}
 	conn, detach, err := s.conn(ctx, o.Filters)
 	if err != nil {
@@ -186,18 +195,26 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	if o.Role != 0 {
 		roleSQL = " AND m.role=" + strconv.Itoa(o.Role)
 	}
+	// The structural filters narrow the body candidates BEFORE the
+	// ceiling (the design's query plan): msg_fts membership is joined to
+	// msg and session and filtered in the same subquery, and the ceiling
+	// takes the newest rowids, so what was appended after a backfill is
+	// never beyond reach. A filter narrows the set; it is never applied to
+	// an already truncated one.
+	hits := `SELECT f.rowid AS msg_id, m.sess_id, m.ts FROM msg_fts f JOIN msg m ON m.msg_id=f.rowid JOIN session s ON s.sess_id=m.sess_id
+		WHERE msg_fts MATCH ?` + roleSQL + where + ` ORDER BY f.rowid DESC LIMIT ?`
 	// Candidate count first, so the ceiling is reported honestly.
-	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ? LIMIT ?)`,
-		res.Match, CandidateCeiling+1).Scan(&res.Candidates); err != nil {
+	countArgs := append([]any{res.Match}, args...)
+	countArgs = append(countArgs, ceiling+1)
+	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM (`+hits+`)`, countArgs...).Scan(&res.Candidates); err != nil {
 		return res, fmt.Errorf("recall: match %q: %w", res.Match, err)
 	}
-	if res.Candidates > CandidateCeiling {
-		res.Candidates = CandidateCeiling
+	if res.Candidates > ceiling {
+		res.Candidates = ceiling
 		res.CeilingHit = true
 	}
-	q := `WITH hits AS (SELECT rowid AS msg_id FROM msg_fts WHERE msg_fts MATCH ? LIMIT ?),
-	per_sess AS (SELECT m.sess_id, count(*) AS n, max(m.ts) AS last, min(m.msg_id) AS first_msg
-		FROM hits h JOIN msg m ON m.msg_id=h.msg_id` + roleSQL + ` GROUP BY m.sess_id),
+	q := `WITH hits AS (` + hits + `),
+	per_sess AS (SELECT sess_id, count(*) AS n, max(ts) AS last, min(msg_id) AS first_msg FROM hits GROUP BY sess_id),
 	cards AS (SELECT rowid AS sess_id, bm25(card_fts) AS score FROM card_fts WHERE card_fts MATCH ?),
 	cand AS (SELECT sess_id FROM per_sess UNION SELECT sess_id FROM cards)
 	SELECT s.sess_id, s.harness, s.profile, s.native_id, s.deck_id, COALESCE(s.title,''), COALESCE(s.cwd,''),
@@ -208,7 +225,9 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	WHERE 1=1` + where + `
 	ORDER BY (c.score IS NOT NULL) DESC, COALESCE(p.n,0) DESC, COALESCE(p.last, s.ended_at, 0) DESC
 	LIMIT ?`
-	qargs := append([]any{res.Match, CandidateCeiling, CardMatchExpr(o.Query)}, args...)
+	qargs := append([]any{res.Match}, args...)
+	qargs = append(qargs, ceiling, CardMatchExpr(o.Query))
+	qargs = append(qargs, args...)
 	qargs = append(qargs, o.Limit)
 	rows, err := conn.QueryContext(ctx, q, qargs...)
 	if err != nil {
@@ -259,7 +278,7 @@ func (s *Searcher) verifyPhrase(ctx context.Context, conn *sql.Conn, res *Search
 	if scan <= 0 {
 		scan = DefaultPhraseScan
 	}
-	phrase := strings.ToLower(strings.Join(strings.Fields(o.Query), " "))
+	phrase := strings.ToLower(strings.Join(queryTerms(o.Query), " "))
 	rows, err := conn.QueryContext(ctx, `SELECT m.sess_id, m.body FROM msg_fts f JOIN msg m ON m.msg_id=f.rowid WHERE msg_fts MATCH ? LIMIT ?`,
 		strings.Join(mustTerms(o.Query), " AND "), scan)
 	if err != nil {
@@ -293,15 +312,12 @@ func (s *Searcher) verifyPhrase(ctx context.Context, conn *sql.Conn, res *Search
 	return rows.Err()
 }
 
-// mustTerms is MatchExpr's quoted terms without operators, for the AND
-// candidate query of --phrase.
+// mustTerms is the query's words (no operators, no column prefixes),
+// quoted, for the AND candidate query of --phrase.
 func mustTerms(q string) []string {
-	var out []string
-	for _, tok := range strings.Fields(q) {
-		tok = strings.Trim(tok, `"*`)
-		if tok == "" || isOperator(tok) {
-			continue
-		}
+	terms := queryTerms(q)
+	out := make([]string, 0, len(terms))
+	for _, tok := range terms {
 		out = append(out, `"`+strings.ReplaceAll(tok, `"`, `""`)+`"`)
 	}
 	return out

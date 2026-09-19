@@ -47,9 +47,16 @@ const (
 // Registry is the read side of state.db the ingester needs: which deck
 // session a harness conversation is bound to (authoritative links only) and
 // the hints and tags that feed the card's FTS columns. nil means none.
+//
+// recall.db is machine-global while state.db is per profile, so every call
+// names the profile whose transcript root the conversation was found under:
+// the implementation looks there first, then in the other profiles (a deck
+// session in profile A can run under account B and write its transcript
+// under B's config dir). A sweep under one profile must never overwrite
+// another profile's cards with its own empty answer.
 type Registry interface {
-	DeckID(harness, nativeID string) string
-	Hints(harness, nativeID string) (hints, tags string)
+	DeckID(profile, harness, nativeID string) string
+	Hints(profile, harness, nativeID string) (hints, tags string)
 	// ChangedSince lists the conversations whose hints, tags or link were
 	// written at or after since, so their cards are re-projected even when
 	// their transcripts did not move.
@@ -68,9 +75,11 @@ const metaLastSweep = "last_sweep"
 
 // UsageSink receives the usage records of a source whose conversation is
 // bound to a deck session, so cost events are written from the same pass
-// that indexed the text.
+// that indexed the text. profile is the transcript's profile; deckID was
+// resolved by Registry.DeckID with the same arguments, so the sink can
+// write to the state.db that owns the link.
 type UsageSink interface {
-	Usage(deckID string, events []reader.Usage) error
+	Usage(profile, deckID string, events []reader.Usage) error
 }
 
 // Options configures one Ingester.
@@ -87,6 +96,8 @@ type Options struct {
 	Gate           *Gate
 	// TextTier is "clipped" (default, 8 KiB bodies) or "full".
 	TextTier string
+	// BatchBytes bounds one transaction in decoded text (0: BatchTextBytes).
+	BatchBytes int64
 	// Since skips sources last modified before it (zero: all).
 	Since time.Time
 	// NewestFirst parses recently modified sources first so value appears
@@ -143,6 +154,9 @@ func New(st *store.Store, opts Options) *Ingester {
 	}
 	if opts.TextTier == "" {
 		opts.TextTier = TextTierClipped
+	}
+	if opts.BatchBytes <= 0 {
+		opts.BatchBytes = BatchTextBytes
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -256,17 +270,31 @@ func (in *Ingester) touchAnnotated(touched map[int64]bool) error {
 		since, _ = strconv.ParseInt(v, 10, 64)
 	}
 	for _, ref := range in.opts.Registry.ChangedSince(time.Unix(since-1, 0)) {
-		var id int64
-		err := in.st.W.QueryRow(`SELECT sess_id FROM session WHERE host_uid=? AND harness=? AND native_id=?`, store.LocalHostUID, ref.Harness, ref.NativeID).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
+		if err := in.touchConversation(touched, ref); err != nil {
+			return err
 		}
-		if err != nil {
+	}
+	return nil
+}
+
+// touchConversation marks every session indexed for ref. The same
+// conversation id may be indexed under several profiles (and a
+// conversation-scoped hint names no harness): all of them are touched.
+func (in *Ingester) touchConversation(touched map[int64]bool, ref Ref) error {
+	rows, err := in.st.W.Query(`SELECT sess_id FROM session WHERE host_uid=? AND native_id=? AND (harness=? OR ?='')`,
+		store.LocalHostUID, ref.NativeID, ref.Harness, ref.Harness)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
 			return err
 		}
 		touched[id] = true
 	}
-	return nil
+	return rows.Err()
 }
 
 // discover runs every reader over its roots and returns the sources that
@@ -367,7 +395,9 @@ func rootsFor(roots []reader.Root, harness string) []reader.Root {
 }
 
 // changed reports whether a ledgered source needs a pass: size or mtime
-// moved, the reader version moved, or the last pass was cut short.
+// moved, the reader version moved, the last pass was cut short or failed
+// (a read error is retried next sweep, from its last checkpoint), or the
+// file is back after a missing pass.
 func (in *Ingester) changed(row *ledgerRow, ref reader.SourceRef) bool {
 	if in.opts.Verify {
 		return true
@@ -375,7 +405,7 @@ func (in *Ingester) changed(row *ledgerRow, ref reader.SourceRef) bool {
 	if row.state == recall.SourceQuarantined {
 		return row.size != ref.Size || row.mtimeNS != ref.MtimeNS
 	}
-	if row.state == recall.SourcePartial || row.state == recall.SourceMissing || row.readerVer != recall.ReaderVersion {
+	if row.state != recall.SourceOK || row.readerVer != recall.ReaderVersion {
 		return true
 	}
 	return row.size != ref.Size || row.mtimeNS != ref.MtimeNS
@@ -436,7 +466,7 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 		return out, err
 	}
 	budget := in.sourceBudget()
-	sink := newSink(in, row, ref, budget)
+	sink := newSink(in, row, ref, from, budget)
 	parsedTo, rerr := c.rd.Ingest(ctx, ref, from, sink, budget)
 	if in.opts.Budget != nil {
 		in.opts.Budget.Consume(budget.Consumed())
@@ -459,7 +489,14 @@ func (in *Ingester) ingestSource(ctx context.Context, c candidate) (sourceOutcom
 		if ctx.Err() != nil {
 			return out, rerr
 		}
-		return out, in.finishSource(row, ref, from, prefix, recall.SourceError, rerr.Error())
+		// Rows up to the last mid-pass checkpoint are committed and stay;
+		// the cursor rewinds to that checkpoint, never to the pass start,
+		// so the next pass does not insert them again.
+		out.parsedTo = sink.checkpoint
+		if err := in.finishSource(row, ref, sink.checkpoint, prefix, recall.SourceError, rerr.Error()); err != nil {
+			return out, err
+		}
+		return out, rerr
 	}
 	if err := sink.commit(parsedTo); err != nil {
 		return out, err
@@ -501,6 +538,13 @@ func (in *Ingester) resumeOffset(row *ledgerRow, ref reader.SourceRef, prefix st
 			return 0, err
 		}
 		return 0, errQuarantined
+	case row.state == recall.SourceMissing:
+		// Back after a missing pass: its rows were dropped with the
+		// tombstone, so every byte is new again.
+		fullReparse = true
+		if _, err := in.st.W.Exec(`DELETE FROM tombstone WHERE src_id=?`, row.srcID); err != nil {
+			return 0, err
+		}
 	case row.prefixSig != "" && row.prefixSig != prefix:
 		fullReparse = true // the inode now holds a different file
 	case row.parsedTo > ref.Size:
@@ -542,11 +586,11 @@ func (in *Ingester) handOffUsage(ref reader.SourceRef, sink *sink) error {
 	if ref.IsSidechain && ref.ParentNativeID != "" {
 		native = ref.ParentNativeID
 	}
-	deck := in.opts.Registry.DeckID(ref.Harness, native)
+	deck := in.opts.Registry.DeckID(ref.Profile, ref.Harness, native)
 	if deck == "" {
 		return nil
 	}
-	return in.opts.Usage.Usage(deck, sink.usage)
+	return in.opts.Usage.Usage(ref.Profile, deck, sink.usage)
 }
 
 // sourceBudget derives the per-pass budget for one source from the sweep
@@ -625,8 +669,10 @@ func (in *Ingester) dropSourceRows(srcID int64) error {
 }
 
 // markMissing records a vanished source: state=3, its message rows gone
-// (the FTS rowids with them), a tombstone written. session, card and
-// artifact rows stay so the hit is still listed, labelled as missing.
+// (the FTS rowids with them), the cursor and tail signature cleared so a
+// return under the same path is parsed from byte 0, a tombstone written.
+// session, card and artifact rows stay so the hit is still listed,
+// labelled as missing.
 func (in *Ingester) markMissing(row *ledgerRow) error {
 	if err := in.dropSourceRows(row.srcID); err != nil {
 		return err
@@ -637,13 +683,13 @@ func (in *Ingester) markMissing(row *ledgerRow) error {
 	}
 	defer tx.Rollback()
 	now := in.opts.Now().Unix()
-	if _, err := tx.Exec(`UPDATE source SET state=?, last_error='source file missing', last_seen=? WHERE src_id=?`, recall.SourceMissing, now, row.srcID); err != nil {
+	if _, err := tx.Exec(`UPDATE source SET state=?, parsed_to=0, tail_sig='', last_error='source file missing', last_seen=? WHERE src_id=?`, recall.SourceMissing, now, row.srcID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO tombstone(src_id, sess_id, reason, at) VALUES (?, ?, 'missing', ?)`, row.srcID, row.sessID, now); err != nil {
 		return err
 	}
-	row.state = recall.SourceMissing
+	row.state, row.parsedTo, row.tailSig = recall.SourceMissing, 0, ""
 	return tx.Commit()
 }
 
@@ -686,10 +732,13 @@ type sink struct {
 	insCall  *sql.Stmt
 	insTouch *sql.Stmt
 
-	sessID        int64
-	nativeID      string
-	seq           int
-	messages      int
+	sessID   int64
+	nativeID string
+	seq      int
+	messages int
+	// checkpoint is the offset every committed row is valid up to: the
+	// pass start, then each mid-pass commit.
+	checkpoint    int64
 	textBytes     int64
 	usage         []reader.Usage
 	quarantineWhy string
@@ -705,8 +754,8 @@ type sessionAgg struct {
 	inTok, outTok, cacheR, cacheW                  int64
 }
 
-func newSink(in *Ingester, row *ledgerRow, ref reader.SourceRef, b *reader.Budget) *sink {
-	return &sink{in: in, row: row, ref: ref, budget: b}
+func newSink(in *Ingester, row *ledgerRow, ref reader.SourceRef, from int64, b *reader.Budget) *sink {
+	return &sink{in: in, row: row, ref: ref, budget: b, checkpoint: from}
 }
 
 func (s *sink) begin() error {
@@ -779,6 +828,9 @@ func (s *sink) commit(parsedTo int64) error {
 	err := s.tx.Commit()
 	s.tx = nil
 	s.textBytes = 0
+	if err == nil {
+		s.checkpoint = parsedTo
+	}
 	return err
 }
 
@@ -800,7 +852,16 @@ func (s *sink) Session(info reader.Session) {
 	if info.Title != "" {
 		s.sess.title, s.sess.titleSrc = info.Title, info.TitleSrc
 	}
-	if s.sessID != 0 || info.NativeID == "" {
+	if s.sessID != 0 {
+		return
+	}
+	if info.NativeID == "" {
+		// A title or compact record before any message of this pass: on a
+		// resumed source the session is already known, so open it now
+		// rather than lose the record when no message follows.
+		if s.row.sessID != 0 && s.checkpoint > 0 {
+			s.adopt(s.row.sessID)
+		}
 		return
 	}
 	if err := s.begin(); err != nil {
@@ -824,13 +885,22 @@ func (s *sink) Session(info reader.Session) {
 		s.quarantineWhy = fmt.Sprintf("copy of source %d (same conversation %s)", owner, native)
 		return
 	}
+	s.adopt(sessID)
+	if s.ref.IsSidechain && s.ref.ParentNativeID != "" {
+		s.linkParent(sessID)
+	}
+}
+
+// adopt makes sessID the pass's session and continues its sequence.
+func (s *sink) adopt(sessID int64) {
+	if err := s.begin(); err != nil {
+		s.fatal = err
+		return
+	}
 	s.sessID = sessID
 	var maxSeq sql.NullInt64
 	if err := s.tx.QueryRow(`SELECT max(seq) FROM msg WHERE sess_id=?`, sessID).Scan(&maxSeq); err == nil && maxSeq.Valid {
 		s.seq = int(maxSeq.Int64)
-	}
-	if s.ref.IsSidechain && s.ref.ParentNativeID != "" {
-		s.linkParent(sessID)
 	}
 }
 
@@ -927,7 +997,7 @@ func (s *sink) Msg(m reader.Msg) error {
 	}
 	s.messages++
 	s.textBytes += int64(len(m.Text))
-	if s.textBytes >= BatchTextBytes {
+	if s.textBytes >= s.in.opts.BatchBytes {
 		// Checkpoint: every row so far is valid up to the end of this record.
 		if err := s.commit(m.RecOff + m.RecLen); err != nil {
 			return err
@@ -1021,14 +1091,14 @@ func (in *Ingester) projectCards(touched map[int64]bool) error {
 }
 
 func (in *Ingester) projectCard(tx *sql.Tx, sessID int64) error {
-	var harness, native, title string
-	if err := tx.QueryRow(`SELECT harness, native_id, COALESCE(title,'') FROM session WHERE sess_id=?`, sessID).Scan(&harness, &native, &title); err != nil {
+	var profile, harness, native, title string
+	if err := tx.QueryRow(`SELECT profile, harness, native_id, COALESCE(title,'') FROM session WHERE sess_id=?`, sessID).Scan(&profile, &harness, &native, &title); err != nil {
 		return err
 	}
 	var hints, tags, deck string
 	if in.opts.Registry != nil {
-		hints, tags = in.opts.Registry.Hints(harness, native)
-		deck = in.opts.Registry.DeckID(harness, native)
+		hints, tags = in.opts.Registry.Hints(profile, harness, native)
+		deck = in.opts.Registry.DeckID(profile, harness, native)
 	}
 	if deck != "" {
 		if _, err := tx.Exec(`UPDATE session SET deck_id=? WHERE sess_id=? AND deck_id<>?`, deck, sessID, deck); err != nil {

@@ -91,14 +91,14 @@ func newFixture(t *testing.T) *fixture {
 
 type regAdapter struct{ db *statedb.StateDB }
 
-func (r regAdapter) DeckID(_, native string) string {
+func (r regAdapter) DeckID(_, _, native string) string {
 	if native == sessA {
 		return "deck-a"
 	}
 	return ""
 }
 func (r regAdapter) ChangedSince(time.Time) []ingest.Ref { return nil }
-func (r regAdapter) Hints(_, native string) (string, string) {
+func (r regAdapter) Hints(_, _, native string) (string, string) {
 	if native == sessA {
 		return "ticket=SB-412 purpose=fix flaky auth test", "auth"
 	}
@@ -224,6 +224,92 @@ func TestSearch_PhraseVerifiesAndReports(t *testing.T) {
 	for _, h := range res.Hits {
 		if h.Verified == nil || *h.Verified {
 			t.Fatalf("hit wrongly verified: %+v", h)
+		}
+	}
+	// Operators and column prefixes are query syntax, not phrase words.
+	for _, q := range []string{"clock AND skew", "title:clock skew", `"clock" skew`} {
+		res, err := s.Search(context.Background(), SearchOptions{Query: q, Phrase: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.VerifiedCount != 2 {
+			t.Fatalf("%q --phrase: verified %d of %d hits", q, res.VerifiedCount, len(res.Hits))
+		}
+	}
+}
+
+// The structural filters narrow the candidate set BEFORE the ceiling, so a
+// filtered search on a common term sees every matching session of that
+// profile, not the few that happen to fall inside the first N rowids; and
+// the ceiling takes the newest rowids, so what was appended after a
+// backfill is never beyond reach.
+func TestSearch_FiltersApplyBeforeTheCandidateCeiling(t *testing.T) {
+	base := t.TempDir()
+	personal := filepath.Join(base, "claude")
+	work := filepath.Join(base, "claude-work")
+	const personalN, workN = 60, 43
+	// The term never appears in a first prompt, so no card (preview) hit
+	// can rescue a session the body ceiling dropped.
+	for i := 0; i < personalN; i++ {
+		writeSession(t, personal, fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012d", i), "/Users/x/app", "",
+			"hello there", "I will deploy the app now.")
+	}
+	for i := 0; i < workN; i++ {
+		writeSession(t, work, fmt.Sprintf("bbbbbbbb-0000-4000-8000-%012d", i), "/Users/x/work", "",
+			"hi", "Deploy done, staging is live.", "deploy again please", "Done.")
+	}
+	st, err := store.Open(filepath.Join(base, "data", "recall.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	roots := []reader.Root{{Harness: "claude", Profile: "personal", Dir: personal}, {Harness: "claude", Profile: "work", Dir: work}}
+	if _, err := ingest.New(st, ingest.Options{Roots: roots}).Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := New(st, "")
+	ctx := context.Background()
+	// 146 messages match (60 personal, 86 work); a ceiling of 100 cuts
+	// the unfiltered set.
+	res, err := s.Search(ctx, SearchOptions{Query: "deploy", Ceiling: 100, Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.CeilingHit || res.Candidates != 100 {
+		t.Fatalf("unfiltered: candidates %d ceiling %v", res.Candidates, res.CeilingHit)
+	}
+	// Every one of the 43 work sessions must come back under --profile.
+	res, err = s.Search(ctx, SearchOptions{Query: "deploy", Ceiling: 100, Limit: 200, Filters: Filters{Profile: "work"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != workN || res.CeilingHit || res.Candidates != 2*workN {
+		t.Fatalf("--profile work sees %d of %d sessions (candidates %d, ceiling %v)", len(res.Hits), workN, res.Candidates, res.CeilingHit)
+	}
+	for _, h := range res.Hits {
+		if h.Profile != "work" || h.BodyHits != 2 {
+			t.Fatalf("hit %+v", h)
+		}
+	}
+	// Same with --since and --project on the personal side.
+	res, _ = s.Search(ctx, SearchOptions{Query: "deploy", Ceiling: 100, Limit: 200, Filters: Filters{Project: "/Users/x/app"}})
+	if len(res.Hits) != personalN {
+		t.Fatalf("--project sees %d of %d", len(res.Hits), personalN)
+	}
+	res, _ = s.Search(ctx, SearchOptions{Query: "deploy", Ceiling: 100, Limit: 200, Role: 1, Filters: Filters{Profile: "work"}})
+	if len(res.Hits) != workN || res.Candidates != workN {
+		t.Fatalf("--role with --profile: %d hits, %d candidates", len(res.Hits), res.Candidates)
+	}
+	// Unfiltered, the ceiling keeps the NEWEST rowids: the work sessions
+	// were indexed last, so a ceiling of exactly their message count
+	// returns all of them and none of the older personal ones.
+	res, _ = s.Search(ctx, SearchOptions{Query: "deploy", Ceiling: 2 * workN, Limit: 200})
+	if len(res.Hits) != workN {
+		t.Fatalf("newest-first ceiling: %d hits", len(res.Hits))
+	}
+	for _, h := range res.Hits {
+		if h.Profile != "work" {
+			t.Fatalf("an old session inside the newest-rowid ceiling: %+v", h)
 		}
 	}
 }

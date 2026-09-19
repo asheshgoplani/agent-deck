@@ -482,15 +482,15 @@ type stubRegistry struct {
 	changed []Ref
 }
 
-func (s stubRegistry) DeckID(_, native string) string { return s.deck[native] }
-func (s stubRegistry) Hints(_, native string) (string, string) {
+func (s stubRegistry) DeckID(_, _, native string) string { return s.deck[native] }
+func (s stubRegistry) Hints(_, _, native string) (string, string) {
 	return s.hints[native], "auth flaky"
 }
 func (s stubRegistry) ChangedSince(time.Time) []Ref { return s.changed }
 
 type stubUsage struct{ got map[string]int }
 
-func (s *stubUsage) Usage(deck string, ev []reader.Usage) error {
+func (s *stubUsage) Usage(_, deck string, ev []reader.Usage) error {
 	s.got[deck] += len(ev)
 	return nil
 }
@@ -690,5 +690,356 @@ func TestSweep_ReprojectsCardsForAnnotatedSessions(t *testing.T) {
 	var v string
 	if err := f.st.R.QueryRow(`SELECT v FROM meta WHERE k=?`, metaLastSweep).Scan(&v); err != nil || v == "" {
 		t.Fatalf("last_sweep not recorded: %v", err)
+	}
+}
+
+// sourceOf returns the ledger row ids of a path.
+func (f *fixture) sourceOf(path string) (srcID, sessID int64) {
+	f.t.Helper()
+	if err := f.st.R.QueryRow(`SELECT src_id, sess_id FROM source WHERE path=?`, path).Scan(&srcID, &sessID); err != nil {
+		f.t.Fatalf("source %s: %v", path, err)
+	}
+	return srcID, sessID
+}
+
+// A source that vanishes (an unmounted volume, a permission hiccup, a
+// rename) and comes back under the same path is re-indexed in full: back
+// unchanged, back with more content, and back after gc dropped its ledger
+// row. Before the fix the pass resumed at the old cursor over the rows
+// markMissing had dropped, and the session stayed empty for good.
+func TestSweep_MissingSourceReappearsAndIsReindexed(t *testing.T) {
+	f := newFixture(t, testcorpus.Options{Files: 3, Seed: 13})
+	f.sweep(Options{})
+	msgs := func(sessID int64) int64 { return f.count(`SELECT count(*) FROM msg WHERE sess_id=?`, sessID) }
+	turns := func(sessID int64) int64 { return f.count(`SELECT turns FROM session WHERE sess_id=?`, sessID) }
+	away := func(path string) {
+		t.Helper()
+		if err := os.Rename(path, path+".away"); err != nil {
+			t.Fatal(err)
+		}
+		if res := f.sweep(Options{}); res.Missing != 1 {
+			t.Fatalf("missing sweep: %+v", res)
+		}
+	}
+	back := func(path string) {
+		t.Helper()
+		if err := os.Rename(path+".away", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions := f.count(`SELECT count(*) FROM session`)
+
+	// (a) missing, then back unchanged.
+	p0 := f.stats.Paths[0]
+	src0, sess0 := f.sourceOf(p0)
+	before0, turns0 := msgs(sess0), turns(sess0)
+	away(p0)
+	if msgs(sess0) != 0 {
+		t.Fatal("missing source kept its rows")
+	}
+	back(p0)
+	info, _ := os.Stat(p0)
+	res := f.sweep(Options{})
+	if res.Parsed != 1 || res.BytesRead != info.Size() {
+		t.Fatalf("reappear sweep must reparse the whole file: %+v (size %d)", res, info.Size())
+	}
+	if got := msgs(sess0); got != before0 {
+		t.Fatalf("reappeared source has %d msgs, had %d", got, before0)
+	}
+	if got := turns(sess0); got != turns0 {
+		t.Fatalf("turns %d after reappearance, had %d", got, turns0)
+	}
+	var state, parsedTo int64
+	if err := f.st.R.QueryRow(`SELECT state, parsed_to FROM source WHERE src_id=?`, src0).Scan(&state, &parsedTo); err != nil || state != recall.SourceOK || parsedTo != info.Size() {
+		t.Fatalf("state %d parsed_to %d (%v)", state, parsedTo, err)
+	}
+	if f.count(`SELECT count(*) FROM tombstone WHERE src_id=?`, src0) != 0 {
+		t.Fatal("tombstone survived the source's return")
+	}
+
+	// (b) missing, then back with more content.
+	p1 := f.stats.Paths[1]
+	_, sess1 := f.sourceOf(p1)
+	before1 := msgs(sess1)
+	away(p1)
+	back(p1)
+	appendTurns(t, p1, f.stats.Sessions[1], 2)
+	if res := f.sweep(Options{}); res.Parsed != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if got := msgs(sess1); got != before1+4 {
+		t.Fatalf("changed source has %d msgs, want %d", got, before1+4)
+	}
+	if f.count(`SELECT count(*) FROM msg_fts WHERE rowid IN (SELECT msg_id FROM msg WHERE sess_id=?)`, sess1) != before1+4 {
+		t.Fatal("fts out of step after the reparse")
+	}
+
+	// (c) missing, gc drops the ledger row, then back: a new source row
+	// for the same session, nothing duplicated.
+	p2 := f.stats.Paths[2]
+	src2, sess2 := f.sourceOf(p2)
+	before2 := msgs(sess2)
+	away(p2)
+	gc, err := New(f.st, Options{Roots: f.roots()}).GC(0)
+	if err != nil || gc.SourcesDropped != 1 {
+		t.Fatalf("gc: %+v %v", gc, err)
+	}
+	back(p2)
+	if res := f.sweep(Options{}); res.Parsed != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if got := msgs(sess2); got != before2 {
+		t.Fatalf("source back after gc has %d msgs, had %d", got, before2)
+	}
+	if f.count(`SELECT count(*) FROM source WHERE path=?`, p2) != 1 || f.count(`SELECT count(*) FROM tombstone WHERE src_id=?`, src2) != 0 {
+		t.Fatal("expected exactly one source row for the returned path and no tombstone")
+	}
+	if f.count(`SELECT count(*) FROM session`) != sessions {
+		t.Fatal("a session row was duplicated")
+	}
+	if f.count(`SELECT count(*) FROM source WHERE state=?`, recall.SourceMissing) != 0 {
+		t.Fatal("a returned source is still marked missing")
+	}
+}
+
+// A resume pass whose new bytes carry no message record (a /rename after
+// the last sweep, a compact boundary) must still reach the session row.
+func TestSweep_ResumePassWithOnlyTitleRecordsKeepsThem(t *testing.T) {
+	f := newFixture(t, testcorpus.Options{Files: 1, Seed: 21})
+	f.sweep(Options{})
+	path := f.stats.Paths[0]
+	_, sessID := f.sourceOf(path)
+	compacts := f.count(`SELECT compacts FROM session WHERE sess_id=?`, sessID)
+	fh, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(fh, `{"type":"custom-title","customTitle":"renamed after sweep","sessionId":%q}`+"\n", f.stats.Sessions[0])
+	fmt.Fprintf(fh, `{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","uuid":"cb9","timestamp":"2026-09-19T10:01:00.000Z"}`+"\n")
+	fh.Close()
+	res := f.sweep(Options{})
+	if res.Parsed != 1 || res.BytesRead == 0 {
+		t.Fatalf("%+v", res)
+	}
+	var title, titleSrc string
+	if err := f.st.R.QueryRow(`SELECT title, title_src FROM session WHERE sess_id=?`, sessID).Scan(&title, &titleSrc); err != nil {
+		t.Fatal(err)
+	}
+	if title != "renamed after sweep" || titleSrc != "custom-title" {
+		t.Fatalf("title %q (%s): the rename was lost", title, titleSrc)
+	}
+	if got := f.count(`SELECT compacts FROM session WHERE sess_id=?`, sessID); got != compacts+1 {
+		t.Fatalf("compacts %d want %d", got, compacts+1)
+	}
+	var cardTitle string
+	if err := f.st.R.QueryRow(`SELECT title FROM card WHERE sess_id=?`, sessID).Scan(&cardTitle); err != nil || cardTitle != title {
+		t.Fatalf("card title %q (%v): card not re-projected", cardTitle, err)
+	}
+	var parsedTo, size int64
+	if err := f.st.R.QueryRow(`SELECT parsed_to, size FROM source WHERE path=?`, path).Scan(&parsedTo, &size); err != nil || parsedTo != size {
+		t.Fatalf("cursor %d != size %d (%v)", parsedTo, size, err)
+	}
+}
+
+// failAfter wraps the Claude reader and makes the sink refuse the nth
+// message, which the reader reports as a pass error.
+type failAfter struct {
+	reader.Reader
+	n int
+}
+
+type failingSink struct {
+	reader.Sink
+	left *int
+}
+
+var errInjected = errors.New("injected read error")
+
+func (s failingSink) Msg(m reader.Msg) error {
+	if *s.left == 0 {
+		return errInjected
+	}
+	*s.left--
+	return s.Sink.Msg(m)
+}
+
+func (r failAfter) Ingest(ctx context.Context, src reader.SourceRef, from int64, sink reader.Sink, b *reader.Budget) (int64, error) {
+	left := r.n
+	return r.Reader.Ingest(ctx, src, from, failingSink{Sink: sink, left: &left}, b)
+}
+
+// A reader error after a mid-pass checkpoint rewinds the cursor to that
+// checkpoint, not to the pass start: the checkpointed rows stay, and the
+// next pass must not insert them again.
+func TestSweep_ReaderErrorRewindsToLastCheckpoint(t *testing.T) {
+	f := newFixture(t, testcorpus.Options{Files: 1, Seed: 23})
+	path := f.stats.Paths[0]
+	whole := f.sweep(Options{BatchBytes: 1})
+	want := f.count(`SELECT count(*) FROM msg`)
+	if want < 10 {
+		t.Fatalf("corpus too small: %d msgs", want)
+	}
+	// Start over with a pass that checkpoints after every message and dies
+	// in the middle.
+	if err := f.st.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	failing := failAfter{Reader: reader.Claude{}, n: int(want / 2)}
+	res, err := New(f.st, Options{Roots: f.roots(), Readers: []reader.Reader{failing}, BatchBytes: 1}).Sweep(context.Background())
+	if err != nil || res.Errors != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	kept := f.count(`SELECT count(*) FROM msg`)
+	var parsedTo int64
+	var state int
+	if err := f.st.R.QueryRow(`SELECT parsed_to, state FROM source WHERE path=?`, path).Scan(&parsedTo, &state); err != nil {
+		t.Fatal(err)
+	}
+	if kept == 0 || parsedTo == 0 || state != recall.SourceError {
+		t.Fatalf("checkpointed rows %d, cursor %d, state %d: the checkpoint was not kept", kept, parsedTo, state)
+	}
+	if f.count(`SELECT count(*) FROM msg WHERE rec_off >= ?`, parsedTo) != 0 {
+		t.Fatalf("rows beyond the cursor survived (cursor %d)", parsedTo)
+	}
+	// The next healthy pass completes the file without duplicates.
+	res = f.sweep(Options{})
+	if res.Parsed != 1 || res.Errors != 0 {
+		t.Fatalf("%+v", res)
+	}
+	if got := f.count(`SELECT count(*) FROM msg`); got != want {
+		t.Fatalf("msgs after recovery = %d want %d (whole-file sweep %+v)", got, want, whole)
+	}
+	if f.count(`SELECT count(*) FROM msg`) != f.count(`SELECT count(*) FROM msg_fts`) {
+		t.Fatal("msg and msg_fts out of step")
+	}
+	if got := f.count(`SELECT turns FROM session`); got != int64(f.stats.Prompts) {
+		t.Fatalf("turns %d want %d: counters doubled", got, f.stats.Prompts)
+	}
+}
+
+// One Escape press is one interrupt: the marker message carries the flag
+// and the interrupted tool result before it must not add a second (or a
+// third) count.
+func TestSweep_InterruptCountedOnce(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "claude", "projects", "-Users-x")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"hi"},"uuid":"u1","timestamp":"2026-09-19T10:00:00.000Z","sessionId":"aaaa"}
+{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 100"}}],"usage":{"input_tokens":1,"output_tokens":1}},"uuid":"a1","timestamp":"2026-09-19T10:00:01.000Z","sessionId":"aaaa"}
+{"parentUuid":"a1","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"FAIL"}]},"toolUseResult":{"stdout":"","stderr":"","interrupted":true},"uuid":"u2","timestamp":"2026-09-19T10:00:09.000Z","sessionId":"aaaa"}
+{"parentUuid":"u2","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]},"uuid":"u3","timestamp":"2026-09-19T10:00:10.000Z","sessionId":"aaaa"}
+{"parentUuid":"u3","isSidechain":false,"type":"user","message":{"role":"user","content":"carry on"},"uuid":"u4","timestamp":"2026-09-19T10:00:20.000Z","sessionId":"aaaa"}
+{"parentUuid":"u4","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"uuid":"u5","timestamp":"2026-09-19T10:00:30.000Z","sessionId":"aaaa"}
+`
+	if err := os.WriteFile(filepath.Join(dir, "aaaa.jsonl"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(base, "recall.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	roots := []reader.Root{{Harness: reader.HarnessClaude, Profile: "p", Dir: filepath.Join(base, "claude")}}
+	if _, err := New(st, Options{Roots: roots}).Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := st.R.QueryRow(`SELECT interrupts FROM session WHERE native_id='aaaa'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("session.interrupts=%d for two Escape presses, want 2", n)
+	}
+}
+
+// profileRegistry answers per (profile, native id), the way the CLI's
+// adapter does over every profile's state.db.
+type profileRegistry struct {
+	deck, hints map[string]string // keyed by profile + "/" + native
+	asked       map[string]int    // profiles asked
+}
+
+func (r profileRegistry) DeckID(profile, _, native string) string {
+	r.asked[profile]++
+	return r.deck[profile+"/"+native]
+}
+func (r profileRegistry) Hints(profile, _, native string) (string, string) {
+	return r.hints[profile+"/"+native], "tag-" + profile
+}
+func (r profileRegistry) ChangedSince(time.Time) []Ref { return nil }
+
+type profileUsage struct{ got map[string]int }
+
+func (u *profileUsage) Usage(profile, deck string, ev []reader.Usage) error {
+	u.got[profile+"/"+deck] += len(ev)
+	return nil
+}
+
+// Two profiles holding the same conversation id are two sessions with
+// their own cards and their own usage fold: the registry is asked with the
+// transcript's profile, so a sweep run under one profile never overwrites
+// the other's hints and tags with its own empty answer or drops the
+// other's cost events.
+func TestSweep_TwoProfilesKeepTheirOwnCardsAndUsage(t *testing.T) {
+	f := newFixture(t, testcorpus.Options{Files: 1, Seed: 41})
+	native := f.stats.Sessions[0]
+	data, err := os.ReadFile(f.stats.Paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(t.TempDir(), "work")
+	otherPath := filepath.Join(other, "projects", "-p", filepath.Base(f.stats.Paths[0]))
+	if err := os.MkdirAll(filepath.Dir(otherPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots := append(f.roots(), reader.Root{Harness: reader.HarnessClaude, Profile: "work", Dir: other})
+	reg := profileRegistry{
+		deck:  map[string]string{"personal/" + native: "deck-p", "work/" + native: "deck-w"},
+		hints: map[string]string{"personal/" + native: "ticket=P-1", "work/" + native: "ticket=W-1"},
+		asked: map[string]int{},
+	}
+	usage := &profileUsage{got: map[string]int{}}
+	opts := Options{Roots: roots, Registry: reg, Usage: usage}
+	if res := f.sweep(opts); res.Parsed != 2 || res.Quarantined != 0 {
+		t.Fatalf("%+v", res)
+	}
+	card := func(profile string) (deck, hints, tags string) {
+		t.Helper()
+		if err := f.st.R.QueryRow(`SELECT s.deck_id, c.hints, c.tags FROM session s JOIN card c ON c.sess_id=s.sess_id WHERE s.profile=? AND s.native_id=?`, profile, native).Scan(&deck, &hints, &tags); err != nil {
+			t.Fatalf("card %s: %v", profile, err)
+		}
+		return
+	}
+	check := func() {
+		t.Helper()
+		if d, h, tg := card("personal"); d != "deck-p" || h != "ticket=P-1" || tg != "tag-personal" {
+			t.Fatalf("personal card: deck %q hints %q tags %q", d, h, tg)
+		}
+		if d, h, tg := card("work"); d != "deck-w" || h != "ticket=W-1" || tg != "tag-work" {
+			t.Fatalf("work card: deck %q hints %q tags %q", d, h, tg)
+		}
+	}
+	check()
+	if usage.got["personal/deck-p"] == 0 || usage.got["work/deck-w"] == 0 || len(usage.got) != 2 {
+		t.Fatalf("usage fold by profile: %v", usage.got)
+	}
+	if reg.asked["work"] == 0 || reg.asked["personal"] == 0 {
+		t.Fatalf("registry asked per profile: %v", reg.asked)
+	}
+	// Only the work transcript grows: its card is re-projected, the
+	// personal card is untouched, and the new usage lands in work.
+	appendTurns(t, otherPath, native, 1)
+	beforeW, beforeP := usage.got["work/deck-w"], usage.got["personal/deck-p"]
+	if res := f.sweep(opts); res.Parsed != 1 {
+		t.Fatalf("%+v", res)
+	}
+	check()
+	if usage.got["work/deck-w"] <= beforeW || usage.got["personal/deck-p"] != beforeP {
+		t.Fatalf("usage after the work append: %v", usage.got)
 	}
 }

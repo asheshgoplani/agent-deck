@@ -153,20 +153,41 @@ var noiseTypes = map[string]bool{
 
 var typeKey = []byte(`"type":"`)
 
-// recordType returns the first "type" value on the line. Claude records put
-// the top-level type before the message body, so the first hit is the
-// record's; a wrong guess only costs a full decode (unknown types decode).
+// recordType returns the record's top-level "type" value without decoding
+// the line: a byte walk that tracks string state and nesting depth, since
+// real attachment and progress records put a nested "type" (and any text
+// may quote one) before the top-level key. "" when there is none; a miss
+// only costs a full decode.
 func recordType(line []byte) string {
-	i := bytes.Index(line, typeKey)
-	if i < 0 {
-		return ""
+	depth, inStr := 0, false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if inStr {
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			if depth == 1 && bytes.HasPrefix(line[i:], typeKey) {
+				rest := line[i+len(typeKey):]
+				if j := bytes.IndexByte(rest, '"'); j >= 0 {
+					return string(rest[:j])
+				}
+				return ""
+			}
+			inStr = true
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
 	}
-	rest := line[i+len(typeKey):]
-	j := bytes.IndexByte(rest, '"')
-	if j < 0 {
-		return ""
-	}
-	return string(rest[:j])
+	return ""
 }
 
 type claudeRecord struct {
@@ -232,8 +253,6 @@ type pendingCall struct {
 	digest  string
 	touches []FileTouch
 }
-
-var interruptedTrue = []byte(`"interrupted":true`)
 
 // Ingest streams src from byte offset from. It stops at a torn trailing
 // line (the cursor never covers it), skips over-long lines whole, decodes
@@ -409,14 +428,11 @@ func (st *claudeState) message(rec *claudeRecord, off, n int64) {
 		}
 	} else {
 		m.Role = recall.RoleUser
-		if bytes.Contains(rec.ToolUseResult, interruptedTrue) {
-			st.sink.Count(CountInterrupt, 1)
-		}
 	}
+	// One Escape press is one interrupt, carried by the marker message's
+	// IsInterrupt flag; the toolUseResult.interrupted record that precedes
+	// the marker is the same press and adds nothing.
 	m.Text = st.content(rec.Message.Content, ts, &m)
-	if m.IsInterrupt {
-		st.sink.Count(CountInterrupt, 1)
-	}
 	if m.Text == "" {
 		return
 	}

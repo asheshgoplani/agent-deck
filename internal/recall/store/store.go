@@ -35,11 +35,28 @@ const writerPragmas = "?_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_p
 
 const readerPragmas = "?mode=ro&_pragma=busy_timeout(15000)&_pragma=query_only(1)&_pragma=cache_size(-8000)&_pragma=mmap_size(0)"
 
+// ErrSchema means the file at path was written by another schema version.
+var ErrSchema = errors.New("recall: recall.db has a different schema version")
+
 // Open opens or creates recall.db at path. A file whose meta.schema_version
 // is not recall.SchemaVersion is deleted and recreated: everything in it is
 // reproducible from transcripts, and that is the whole point of the split
-// with state.db.
+// with state.db. Callers that may run beside a sweep take the sweep lock
+// before recreating: OpenCurrent first, then Open under the lock.
 func Open(path string) (*Store, error) {
+	s, err := OpenCurrent(path)
+	if !errors.Is(err, ErrSchema) {
+		return s, err
+	}
+	if err := RemoveFiles(path); err != nil {
+		return nil, err
+	}
+	return createNew(path)
+}
+
+// OpenCurrent opens recall.db at path, creating it when absent, and returns
+// ErrSchema (with nothing deleted) when the file has another schema version.
+func OpenCurrent(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("recall: mkdir: %w", err)
 	}
@@ -53,17 +70,26 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if !ok {
+		var n int
+		empty := s.W.QueryRow(`SELECT count(*) FROM sqlite_master`).Scan(&n) == nil && n == 0
 		s.Close()
-		if err := RemoveFiles(path); err != nil {
-			return nil, err
+		if !empty {
+			return nil, ErrSchema
 		}
-		if s, err = open(path); err != nil {
-			return nil, err
-		}
-		if err := s.create(); err != nil {
-			s.Close()
-			return nil, err
-		}
+		return createNew(path)
+	}
+	return s, nil
+}
+
+// createNew opens a fresh recall.db at path and lays down the schema.
+func createNew(path string) (*Store, error) {
+	s, err := open(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.create(); err != nil {
+		s.Close()
+		return nil, err
 	}
 	return s, nil
 }

@@ -103,12 +103,16 @@ type recallEnv struct {
 	stateDB  string
 	storage  *session.Storage
 	reg      *statedb.StateDB
+	registry *recallRegistry
 	roots    []reader.Root
 }
 
 func (e *recallEnv) close() {
 	if e.st != nil {
 		e.st.Close()
+	}
+	if e.registry != nil {
+		e.registry.close()
 	}
 	if e.storage != nil {
 		e.storage.Close()
@@ -136,7 +140,14 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 		out.Error(fmt.Sprintf("recall: resolve lock: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	st, err := store.Open(dbPath)
+	st, err := store.OpenCurrent(dbPath)
+	if errors.Is(err, store.ErrSchema) {
+		// Another schema version: recreate, but only under the sweep lock
+		// so a running backfill is never pulled out from under.
+		release := (&recallEnv{lockPath: lockPath}).lock(out)
+		st, err = store.Open(dbPath)
+		release()
+	}
 	if err != nil {
 		out.Error(fmt.Sprintf("recall: open %s: %v", dbPath, err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -150,59 +161,180 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 			env.stateDB = p
 		}
 	}
+	env.registry = newRecallRegistry(env.profile, env.reg)
 	return env
 }
 
-// recallRegistry adapts state.db to the ingester: deck ids from authoritative
-// links only; hints and tags of the bound instance plus any keyed on the
-// harness conversation id, joined into the card's FTS columns.
-type recallRegistry struct{ reg *statedb.StateDB }
-
-func (r recallRegistry) DeckID(harness, native string) string {
-	if r.reg == nil {
-		return ""
-	}
-	id, _ := r.reg.AuthoritativeLinkOwner(harness, native)
-	return id
+// recallRegistry adapts every profile's state.db to the ingester. recall.db
+// is machine-global and state.db per profile, and a deck session of
+// profile A may run under account B (its transcript under B's config
+// dir), so a link, its hints and its cost events can live in any profile.
+// Lookups try the transcript's profile first, then the invoking one, then
+// the rest; the state.db that holds the authoritative link owns the card's
+// instance hints and receives the usage. Only the invoking profile's
+// state.db is created or migrated; the others are opened as they are and
+// skipped when absent.
+type recallRegistry struct {
+	profile string
+	dbs     map[string]*statedb.StateDB
+	order   []string
+	opened  []*statedb.StateDB
+	pricer  *costs.Pricer
+	sinks   map[*statedb.StateDB]*costs.UsageImporter
+	owners  map[string]string // deck id -> the profile whose state.db holds its link
 }
 
-func (r recallRegistry) ChangedSince(since time.Time) []ingest.Ref {
-	if r.reg == nil {
-		return nil
+func newRecallRegistry(profile string, reg *statedb.StateDB) *recallRegistry {
+	r := &recallRegistry{
+		profile: profile,
+		dbs:     map[string]*statedb.StateDB{},
+		sinks:   map[*statedb.StateDB]*costs.UsageImporter{},
+		owners:  map[string]string{},
 	}
-	refs, err := r.reg.RecallChangedRefs(since.Unix())
-	if err != nil {
-		return nil
+	if reg != nil {
+		r.dbs[profile] = reg
+		r.order = append(r.order, profile)
 	}
-	out := make([]ingest.Ref, len(refs))
-	for i, ref := range refs {
-		out[i] = ingest.Ref{Harness: ref.Harness, NativeID: ref.NativeID}
+	names, _ := session.ListProfiles()
+	sort.Strings(names)
+	for _, name := range names {
+		if _, ok := r.dbs[name]; ok {
+			continue
+		}
+		path, err := session.GetDBPathForProfile(name)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		db, err := statedb.Open(path)
+		if err != nil {
+			continue
+		}
+		r.dbs[name] = db
+		r.opened = append(r.opened, db)
+		r.order = append(r.order, name)
+	}
+	return r
+}
+
+func (r *recallRegistry) close() {
+	for _, db := range r.opened {
+		_ = db.Close()
+	}
+}
+
+// lookup lists the profiles whose state.db to consult for a transcript of
+// profile, that profile's own first.
+func (r *recallRegistry) lookup(profile string) []string {
+	out := make([]string, 0, len(r.order))
+	if r.dbs[profile] != nil {
+		out = append(out, profile)
+	}
+	for _, name := range r.order {
+		if name != profile {
+			out = append(out, name)
+		}
 	}
 	return out
 }
 
-func (r recallRegistry) Hints(harness, native string) (string, string) {
-	if r.reg == nil {
-		return "", ""
+// owner returns the deck session bound to a conversation and the state.db
+// holding that authoritative link.
+func (r *recallRegistry) owner(profile, harness, native string) (string, *statedb.StateDB) {
+	for _, name := range r.lookup(profile) {
+		db := r.dbs[name]
+		if id, err := db.AuthoritativeLinkOwner(harness, native); err == nil && id != "" {
+			r.owners[id] = name
+			return id, db
+		}
 	}
+	return "", nil
+}
+
+// ownerProfile names the profile whose state.db holds deck's link ("" when
+// none does).
+func (r *recallRegistry) ownerProfile(deck string) string {
+	return r.owners[deck]
+}
+
+func (r *recallRegistry) DeckID(profile, harness, native string) string {
+	id, _ := r.owner(profile, harness, native)
+	return id
+}
+
+func (r *recallRegistry) ChangedSince(since time.Time) []ingest.Ref {
+	var out []ingest.Ref
+	seen := map[ingest.Ref]bool{}
+	for _, name := range r.order {
+		refs, err := r.dbs[name].RecallChangedRefs(since.Unix())
+		if err != nil {
+			continue
+		}
+		for _, ref := range refs {
+			k := ingest.Ref{Harness: ref.Harness, NativeID: ref.NativeID}
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// Hints joins the hints and tags of the bound instance (from the state.db
+// that owns the link) and those keyed on the conversation id in any
+// profile, for the card's FTS columns.
+func (r *recallRegistry) Hints(profile, harness, native string) (string, string) {
 	var hints, tags []string
-	scopes := [][2]string{{statedb.HintScopeHarnessSession, native}}
-	if deck := r.DeckID(harness, native); deck != "" {
-		scopes = append(scopes, [2]string{statedb.HintScopeInstance, deck})
-	}
-	for _, sc := range scopes {
-		if hs, err := r.reg.ListSessionHints(sc[0], sc[1]); err == nil {
+	seenHint, seenTag := map[string]bool{}, map[string]bool{}
+	collect := func(db *statedb.StateDB, scopeKind, scopeID string) {
+		if hs, err := db.ListSessionHints(scopeKind, scopeID); err == nil {
 			for _, h := range hs {
-				hints = append(hints, h.Key+"="+h.Value)
+				if kv := h.Key + "=" + h.Value; !seenHint[kv] {
+					seenHint[kv] = true
+					hints = append(hints, kv)
+				}
 			}
 		}
-		if ts, err := r.reg.ListSessionTags(sc[0], sc[1]); err == nil {
+		if ts, err := db.ListSessionTags(scopeKind, scopeID); err == nil {
 			for _, t := range ts {
-				tags = append(tags, t.Tag)
+				if !seenTag[t.Tag] {
+					seenTag[t.Tag] = true
+					tags = append(tags, t.Tag)
+				}
 			}
 		}
+	}
+	for _, name := range r.lookup(profile) {
+		collect(r.dbs[name], statedb.HintScopeHarnessSession, native)
+	}
+	if deck, db := r.owner(profile, harness, native); deck != "" {
+		collect(db, statedb.HintScopeInstance, deck)
 	}
 	return strings.Join(hints, " "), strings.Join(tags, " ")
+}
+
+// Usage implements ingest.UsageSink: cost events go to the state.db that
+// holds the deck session's link, whichever profile that is.
+func (r *recallRegistry) Usage(profile, deck string, events []reader.Usage) error {
+	db := r.dbs[r.owners[deck]]
+	if db == nil {
+		db = r.dbs[r.profile]
+	}
+	if db == nil {
+		return nil
+	}
+	sink := r.sinks[db]
+	if sink == nil {
+		if r.pricer == nil {
+			r.pricer = newPricerFromConfig()
+		}
+		sink = costs.NewUsageImporter(costs.NewStore(db.DB()), r.pricer)
+		r.sinks[db] = sink
+	}
+	return sink.Usage(deck, events)
 }
 
 // busySessions reports the managed sessions of this profile that are
@@ -234,13 +366,11 @@ func (e *recallEnv) busySessions() (bool, string) {
 func (e *recallEnv) ingestOptions(force bool) ingest.Options {
 	opts := ingest.Options{
 		Roots:          e.roots,
-		Registry:       recallRegistry{e.reg},
+		Registry:       e.registry,
+		Usage:          e.registry,
 		TextTier:       e.cfg.Recall.GetTextTier(),
 		PerSourceBytes: int64(e.cfg.Recall.GetPerSourceMB()) << 20,
 		NewestFirst:    true,
-	}
-	if e.reg != nil {
-		opts.Usage = costs.NewUsageImporter(costs.NewStore(e.reg.DB()), newPricerFromConfig())
 	}
 	if !force {
 		opts.Gate = &ingest.Gate{Busy: e.busySessions, MaxLoadAvg: e.cfg.Recall.GetMaxLoadAvg()}
@@ -798,6 +928,9 @@ func handleRecallOpen(profile string, args []string) {
 	if *jsonOutput {
 		cmdArgs = append(cmdArgs, "--json")
 	}
+	if len(cmdArgs) > 2 && cmdArgs[0] == "-p" {
+		profile, cmdArgs = cmdArgs[1], cmdArgs[2:]
+	}
 	switch action {
 	case "start":
 		handleSession(profile, cmdArgs[1:])
@@ -816,18 +949,23 @@ func recallOpenPlan(env *recallEnv, sess query.SessionRow, title string) ([]stri
 		return nil, "", errors.New("a subagent transcript cannot be resumed; open its parent session")
 	}
 	// The live link in state.db wins over the deck_id column, which only
-	// moves on a sweep.
-	deck := sess.DeckID
-	if env.reg != nil {
-		if id, err := env.reg.AuthoritativeLinkOwner(sess.Harness, sess.NativeID); err == nil && id != "" {
-			deck = id
+	// moves on a sweep; the link may sit in another profile's state.db,
+	// and the session then starts under that profile.
+	deck, owner := sess.DeckID, env.reg
+	if env.registry != nil {
+		if id, db := env.registry.owner(sess.Profile, sess.Harness, sess.NativeID); id != "" {
+			deck, owner = id, db
 		}
 	}
-	if deck != "" && env.reg != nil {
-		if rows, err := env.reg.LoadInstances(); err == nil {
+	if deck != "" && owner != nil {
+		if rows, err := owner.LoadInstances(); err == nil {
 			for _, r := range rows {
 				if r.ID == deck {
-					return []string{"session", "start", deck}, "start", nil
+					args := []string{"session", "start", deck}
+					if p := env.registry.ownerProfile(deck); p != "" && p != env.profile {
+						args = append([]string{"-p", p}, args...)
+					}
+					return args, "start", nil
 				}
 			}
 		}
@@ -1014,6 +1152,12 @@ func handleRecallSweep(profile string, args []string) {
 func runRecallSweep(env *recallEnv, out *CLIOutput, opts ingest.Options, jsonOutput, quiet bool, verb string) {
 	release := env.lock(out)
 	defer release()
+	runRecallSweepLocked(env, out, opts, jsonOutput, quiet, verb)
+}
+
+// runRecallSweepLocked is runRecallSweep for a caller already holding the
+// sweep lock (rebuild keeps one lock over the reset and the sweep).
+func runRecallSweepLocked(env *recallEnv, out *CLIOutput, opts ingest.Options, jsonOutput, quiet bool, verb string) {
 	ctx, cancel := interruptibleContext()
 	defer cancel()
 	printed := false
@@ -1126,6 +1270,5 @@ func handleRecallRebuild(profile string, args []string) {
 		out.Error("recall rebuild: "+err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	release()
-	runRecallSweep(env, out, opts, *jsonOutput, *quiet, "rebuild")
+	runRecallSweepLocked(env, out, opts, *jsonOutput, *quiet, "rebuild")
 }

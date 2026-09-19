@@ -409,3 +409,122 @@ func TestRecall_OpenPlansResumeOrStart(t *testing.T) {
 		t.Fatalf("open with missing cwd: %d %s", code, stdout)
 	}
 }
+
+// recall.db is machine-global, state.db is per profile. A conversation
+// linked in the work profile (its transcript under the work config dir)
+// must keep the work link's hints on its card and get its cost events in
+// the work state.db when the sweep runs under the personal profile, and
+// `recall open` must start it under its own profile.
+func TestRecall_SweepUnderOneProfileKeepsTheOthersCardsAndCosts(t *testing.T) {
+	home, stats := recallHome(t, 2)
+	native := stats.Sessions[0]
+	data, err := os.ReadFile(stats.Paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A switch-account copy: same conversation id under the work config
+	// dir, its own session in the index.
+	dst := filepath.Join(home, ".claude-work", "projects", "-p", filepath.Base(stats.Paths[0]))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(home, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var added struct {
+		ID string `json:"id"`
+	}
+	stdout, stderr, code := runAgentDeck(t, home, "-p", "personal", "add", "-t", "p-sess", "-c", "claude", proj, "--resume-session", native, "--ticket", "SB-P", "--json")
+	if code != 0 {
+		t.Fatalf("add personal: %s %s", stdout, stderr)
+	}
+	mustJSON(t, stdout, &added)
+	deckP := added.ID
+	stdout, stderr, code = runAgentDeck(t, home, "-p", "work", "add", "-t", "w-sess", "-c", "claude", proj, "--resume-session", native, "--ticket", "SB-W", "--json")
+	if code != 0 {
+		t.Fatalf("add work: %s %s", stdout, stderr)
+	}
+	mustJSON(t, stdout, &added)
+	deckW := added.ID
+
+	// Backfill under personal only; the reads below run under the default
+	// profile, which links nothing itself.
+	if stdout, stderr, code := runAgentDeck(t, home, "-p", "personal", "recall", "backfill", "--json"); code != 0 {
+		t.Fatalf("backfill: %d %s %s", code, stdout, stderr)
+	}
+	var listed struct {
+		Sessions []struct {
+			NativeID string `json:"native_id"`
+			Profile  string `json:"profile"`
+			DeckID   string `json:"deck_id"`
+			Hints    string `json:"hints"`
+		} `json:"sessions"`
+	}
+	for _, want := range []struct{ profile, deck, ticket string }{{"personal", deckP, "ticket=SB-P"}, {"work", deckW, "ticket=SB-W"}} {
+		stdout, _, code := runAgentDeck(t, home, "recall", "sessions", "--profile", want.profile, "--json")
+		if code != 0 {
+			t.Fatalf("sessions --profile %s: %s", want.profile, stdout)
+		}
+		mustJSON(t, stdout, &listed)
+		found := false
+		for _, s := range listed.Sessions {
+			if s.NativeID != native {
+				continue
+			}
+			found = true
+			if s.Profile != want.profile || s.DeckID != want.deck || s.Hints != want.ticket {
+				t.Fatalf("%s card after a personal sweep: %+v (want deck %s hints %q)", want.profile, s, want.deck, want.ticket)
+			}
+		}
+		if !found {
+			t.Fatalf("%s session not listed: %+v", want.profile, listed.Sessions)
+		}
+	}
+	// Cost events landed in the state.db that owns each link.
+	for _, want := range []struct{ profile, deck string }{{"personal", deckP}, {"work", deckW}} {
+		db, err := statedb.OpenReadOnlyLive(profileStateDB(t, home, want.profile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		err = db.DB().QueryRow(`SELECT count(*) FROM cost_events WHERE session_id=?`, want.deck).Scan(&n)
+		db.Close()
+		if err != nil || n == 0 {
+			t.Fatalf("%s cost events for %s: %d (%v)", want.profile, want.deck, n, err)
+		}
+	}
+	// open resolves the work session's link in the work state.db and
+	// starts it there.
+	stdout, stderr, code = runAgentDeck(t, home, "recall", "open", deckW, "--dry-run", "--json")
+	if code != 0 {
+		t.Fatalf("open: %d %s %s", code, stdout, stderr)
+	}
+	var plan struct {
+		Action string   `json:"action"`
+		Args   []string `json:"args"`
+	}
+	mustJSON(t, stdout, &plan)
+	if plan.Action != "start" || !reflect.DeepEqual(plan.Args, []string{"-p", "work", "session", "start", deckW}) {
+		t.Fatalf("plan: %s %v", plan.Action, plan.Args)
+	}
+}
+
+// profileStateDB finds a profile's state.db under a test HOME (XDG or
+// legacy layout).
+func profileStateDB(t *testing.T, home, profile string) string {
+	t.Helper()
+	for _, p := range []string{
+		filepath.Join(home, ".local", "share", "agent-deck", "profiles", profile, "state.db"),
+		filepath.Join(home, ".agent-deck", "profiles", profile, "state.db"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Fatalf("no state.db for profile %s under %s", profile, home)
+	return ""
+}

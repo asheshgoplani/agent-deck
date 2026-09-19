@@ -48,9 +48,9 @@ const realShapes = `{"type":"custom-title","customTitle":"review-2308","sessionI
 {"parentUuid":"s1","isSidechain":false,"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation about the auth fix"},"uuid":"u5","timestamp":"2026-09-19T10:01:01.000Z","sessionId":"3fec37ee-811e-48c4-ba90-552abd93d9c7"}
 {"type":"system","subtype":"api_error","level":"error","error":{"message":"529 Overloaded","status":529},"uuid":"s2","timestamp":"2026-09-19T10:01:02.000Z"}
 {"type":"system","subtype":"turn_duration","durationMs":355783,"messageCount":156,"timestamp":"2026-09-19T10:01:03.000Z","uuid":"s3"}
-{"parentUuid":"u5","isSidechain":false,"type":"attachment","attachment":{"type":"diagnostics","files":[{"uri":"file:///a.go","diagnostics":"the word zebra must not be indexed"}]},"uuid":"at1","timestamp":"2026-09-19T10:01:04.000Z"}
+{"parentUuid":"u5","isSidechain":false,"attachment":{"type":"diagnostics","files":[{"uri":"file:///a.go","diagnostics":"the word zebra must not be indexed"}]},"type":"attachment","uuid":"at1","timestamp":"2026-09-19T10:01:04.000Z"}
 {"type":"file-history-snapshot","messageId":"u5","snapshot":{"trackedFileBackups":{"a.go":{"content":"zebra again"}}}}
-{"type":"progress","data":{"type":"hook_progress","output":"zebra progress"},"uuid":"p1"}
+{"parentUuid":"u5","isSidechain":false,"data":{"type":"hook_progress","output":"zebra progress"},"type":"progress","uuid":"p1"}
 {"type":"queue-operation","operation":"enqueue","content":"zebra queued","sessionId":"3fec37ee-811e-48c4-ba90-552abd93d9c7"}
 {"type":"pr-link","prNumber":2308,"prUrl":"https://example.invalid/pr/2308","sessionId":"3fec37ee-811e-48c4-ba90-552abd93d9c7"}
 {"type":"permission-mode","permissionMode":"default","sessionId":"3fec37ee-811e-48c4-ba90-552abd93d9c7"}
@@ -141,11 +141,22 @@ func TestClaudeIngest_AllRecordKinds(t *testing.T) {
 	if len(rec.usage) != 3 || rec.usage[0].CacheR != 100 || rec.usage[0].CacheW != 7 || rec.usage[0].UUID != "a1" || rec.usage[0].Model != "claude-opus-5" {
 		t.Fatalf("usage = %+v", rec.usage)
 	}
-	// Counters: one compaction, two interrupts (toolUseResult.interrupted
-	// and the marker), one api_error, one unknown type, one bad line.
-	if rec.counts[CountCompact] != 1 || rec.counts[CountInterrupt] != 2 || rec.counts[CountAPIError] != 1 ||
+	// Counters: one compaction, one api_error, one unknown type, one bad
+	// line. Interrupts travel on the marker message's flag only (one Escape
+	// press is one interrupt: the interrupted tool result before the
+	// marker is the same press), so the reader emits no interrupt count.
+	if rec.counts[CountCompact] != 1 || rec.counts[CountInterrupt] != 0 || rec.counts[CountAPIError] != 1 ||
 		rec.counts[CountUnknownType] != 1 || rec.counts[CountBadJSON] != 1 {
 		t.Fatalf("counts = %v", rec.counts)
+	}
+	flagged := 0
+	for _, m := range rec.msgs {
+		if m.IsInterrupt {
+			flagged++
+		}
+	}
+	if flagged != 1 {
+		t.Fatalf("interrupt markers flagged = %d, want 1", flagged)
 	}
 }
 
@@ -284,6 +295,33 @@ func TestRecordType(t *testing.T) {
 	}
 	if recordType([]byte(`{"a":1}`)) != "" {
 		t.Fatal("expected empty")
+	}
+	// Real attachment and progress records put a nested "type" before the
+	// top-level one; the prefilter must read the top-level key.
+	if got := recordType([]byte(`{"parentUuid":"u1","isSidechain":false,"attachment":{"type":"total_tokens_reminder","text":"x"},"type":"attachment","uuid":"at1"}`)); got != "attachment" {
+		t.Fatalf("real attachment order: got %q", got)
+	}
+	if got := recordType([]byte(`{"data":{"type":"hook_progress","output":"\"type\":\"user\" }"},"type":"progress"}`)); got != "progress" {
+		t.Fatalf("nested type inside a string: got %q", got)
+	}
+	if got := recordType([]byte(`{"message":{"content":[{"type":"text","text":"{\"type\":\"x"}]},"type":"assistant"}`)); got != "assistant" {
+		t.Fatalf("type after an array: got %q", got)
+	}
+}
+
+// Real files never put the top-level type first on attachment records;
+// they must still be skipped before any decode and never counted unknown.
+func TestClaude_PrefilterSkipsRealAttachmentRecords(t *testing.T) {
+	real := `{"parentUuid":"u1","isSidechain":false,"attachment":{"type":"total_tokens_reminder","text":"zebra"},"type":"attachment","uuid":"at1","timestamp":"2026-09-05T08:20:56.699Z"}
+{"parentUuid":"u1","isSidechain":false,"data":{"type":"hook_progress","output":"zebra"},"type":"progress","uuid":"p1"}
+{"parentUuid":"u1","isSidechain":false,"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","timestamp":"2026-09-19T10:00:00.000Z","sessionId":"s1"}
+`
+	rec := newRecorder()
+	if _, err := (Claude{}).Ingest(context.Background(), SourceRef{Path: writeTemp(t, real)}, 0, rec, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rec.counts[CountUnknownType] != 0 || len(rec.msgs) != 1 {
+		t.Fatalf("unknown=%d msgs=%d: attachment/progress records were decoded", rec.counts[CountUnknownType], len(rec.msgs))
 	}
 }
 
