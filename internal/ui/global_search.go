@@ -1,16 +1,31 @@
 package ui
 
 import (
+	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/recall/ingest"
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// The Recall search overlay (docs/recall.md, phase 3): the `G` key over
+// recall.db. It replaced the in-memory global search index, which opened
+// one directory watcher per project and loaded every transcript into
+// memory (the OOM the comment at the old init site recorded). Nothing here
+// walks a tree or parses a file on a keypress: every keystroke is an FTS
+// query against the index as it stands, and the index is refreshed by a
+// bounded sweep (150 ms / 32 MB) in a tea.Cmd after the overlay opens,
+// continued in further bounded passes through the busy/load gate while
+// anything was deferred. The header says how stale the index is.
+//
+// Everything the overlay can do has a CLI form: typing = `recall search`,
+// the preview = `recall show`, Enter = `recall open`.
 
 var (
 	globalSearchBoxStyle = lipgloss.NewStyle().
@@ -36,32 +51,67 @@ var (
 			Bold(true)
 )
 
-// GlobalSearchResult wraps a search result for UI display
+// Overlay limits.
+const (
+	recallResultLimit  = 15
+	recallPreviewTurns = 12
+	recallDebounce     = 250 * time.Millisecond
+)
+
+// GlobalSearchResult is one ranked session as the overlay shows it and as
+// Home receives it on Enter.
 type GlobalSearchResult struct {
-	SessionID   string
-	Summary     string
-	Snippet     string
-	Content     string // Full conversation content for preview
-	CWD         string
-	ModTime     time.Time // Last modified time
-	Score       int       // Fuzzy match score (higher = better match)
-	MatchCount  int       // Number of query matches in content
-	InAgentDeck bool      // True if this session is already in Agent Deck
-	InstanceID  string    // Agent Deck instance ID if exists
+	SessID    int64
+	Harness   string
+	Profile   string
+	SessionID string // the harness conversation id
+	DeckID    string // bound agent-deck session, when any
+	Title     string
+	Snippet   string
+	CWD       string
+	EndedAt   time.Time
+	BodyHits  int
+	CardHit   bool
+	Missing   bool
+	Sidechain bool
+	// InAgentDeck / InstanceID: a registered session owns this conversation.
+	InAgentDeck bool
+	InstanceID  string
 }
 
-// globalSearchResultsMsg delivers async search results back to the UI
+// globalSearchResultsMsg delivers async search results back to the UI.
 type globalSearchResultsMsg struct {
-	query   string                  // The query these results are for
-	results []*session.SearchResult // Raw search results from index
+	query string
+	res   query.SearchResult
+	err   error
 }
 
-// globalSearchDebounceMsg fires after the debounce interval
+// globalSearchDebounceMsg fires after the debounce interval.
 type globalSearchDebounceMsg struct {
-	query string // The query to search for
+	query string
 }
 
-// GlobalSearch represents the global session search overlay
+// recallPreviewMsg delivers the preview of one session.
+type recallPreviewMsg struct {
+	sessID int64
+	detail query.Detail
+	err    error
+}
+
+// recallRefreshMsg reports one bounded sweep pass.
+type recallRefreshMsg struct {
+	res   ingest.Result
+	err   error
+	gated bool
+}
+
+// recallStatusMsg delivers the index summary for the header.
+type recallStatusMsg struct {
+	status query.Status
+	err    error
+}
+
+// GlobalSearch is the Recall search overlay.
 type GlobalSearch struct {
 	input         textinput.Model
 	results       []*GlobalSearchResult
@@ -69,59 +119,48 @@ type GlobalSearch struct {
 	width         int
 	height        int
 	visible       bool
-	loading       bool
-	tierName      string
-	entryCount    int
-	switchToLocal bool   // Flag to signal switch to local search
-	previewScroll int    // Scroll offset for preview pane
-	query         string // Current search query for highlighting
-	searching     bool   // True while async search is in flight
+	switchToLocal bool
+	previewScroll int
+	query         string
+	searching     bool
+	searchErr     string
+	candidates    int
+	ceilingHit    bool
 
-	// Index reference (set by Home)
-	index *session.GlobalSearchIndex
+	source   RecallSource
+	status   query.Status
+	hasStat  bool
+	refresh  string // staleness line: what the last pass deferred or skipped
+	sweeping bool
+	preview  map[int64]query.Detail
+	previewT map[int64]bool // preview requested
 }
 
-// NewGlobalSearch creates a new global search overlay
+// NewGlobalSearch creates the overlay without a source; SetSource wires it.
 func NewGlobalSearch() *GlobalSearch {
 	ti := textinput.New()
-	ti.Placeholder = "Search all Claude conversations..."
+	ti.Placeholder = "Search every conversation on this machine..."
 	ti.Focus()
-	ti.CharLimit = 100
+	ti.CharLimit = 200
 	ti.Width = 60
-
-	return &GlobalSearch{
-		input:   ti,
-		results: []*GlobalSearchResult{},
-		cursor:  0,
-		visible: false,
-	}
+	return &GlobalSearch{input: ti, results: []*GlobalSearchResult{}, preview: map[int64]query.Detail{}, previewT: map[int64]bool{}}
 }
 
-// SetIndex sets the search index reference
-func (gs *GlobalSearch) SetIndex(index *session.GlobalSearchIndex) {
-	gs.index = index
-	if index != nil {
-		gs.tierName = session.TierName(index.GetTier())
-		gs.entryCount = index.EntryCount()
-	}
-}
+// SetSource wires the index the overlay reads (nil disables it).
+func (gs *GlobalSearch) SetSource(src RecallSource) { gs.source = src }
 
-// RefreshStats updates the stats from the index
-func (gs *GlobalSearch) RefreshStats() {
-	if gs.index != nil {
-		gs.entryCount = gs.index.EntryCount()
-		gs.loading = gs.index.IsLoading()
-	}
-}
+// HasSource reports whether the overlay can be opened.
+func (gs *GlobalSearch) HasSource() bool { return gs.source != nil }
 
-// SetSize sets the dimensions of the overlay
+// SetSize sets the dimensions of the overlay.
 func (gs *GlobalSearch) SetSize(width, height int) {
 	gs.width = width
 	gs.height = height
 }
 
-// Show makes the overlay visible
-func (gs *GlobalSearch) Show() {
+// Show opens the overlay and returns the commands that refresh the header
+// and run the first bounded sweep pass.
+func (gs *GlobalSearch) Show() tea.Cmd {
 	gs.visible = true
 	gs.input.Focus()
 	gs.input.SetValue("")
@@ -130,10 +169,19 @@ func (gs *GlobalSearch) Show() {
 	gs.switchToLocal = false
 	gs.previewScroll = 0
 	gs.searching = false
-	gs.RefreshStats()
+	gs.searchErr = ""
+	gs.query = ""
+	gs.refresh = ""
+	gs.preview = map[int64]query.Detail{}
+	gs.previewT = map[int64]bool{}
+	if gs.source == nil {
+		return nil
+	}
+	gs.sweeping = true
+	return tea.Batch(gs.statusCmd(), gs.refreshCmd(false))
 }
 
-// WantsSwitchToLocal returns true if user pressed Tab to switch to local search
+// WantsSwitchToLocal returns true if user pressed Tab to switch to local search.
 func (gs *GlobalSearch) WantsSwitchToLocal() bool {
 	if gs.switchToLocal {
 		gs.switchToLocal = false
@@ -142,18 +190,16 @@ func (gs *GlobalSearch) WantsSwitchToLocal() bool {
 	return false
 }
 
-// Hide hides the overlay
+// Hide hides the overlay.
 func (gs *GlobalSearch) Hide() {
 	gs.visible = false
 	gs.input.Blur()
 }
 
-// IsVisible returns whether the overlay is visible
-func (gs *GlobalSearch) IsVisible() bool {
-	return gs.visible
-}
+// IsVisible returns whether the overlay is visible.
+func (gs *GlobalSearch) IsVisible() bool { return gs.visible }
 
-// Selected returns the currently selected result
+// Selected returns the currently selected result.
 func (gs *GlobalSearch) Selected() *GlobalSearchResult {
 	if len(gs.results) == 0 {
 		return nil
@@ -164,52 +210,115 @@ func (gs *GlobalSearch) Selected() *GlobalSearchResult {
 	return gs.results[gs.cursor]
 }
 
-// Update handles messages for the overlay
+func (gs *GlobalSearch) statusCmd() tea.Cmd {
+	src := gs.source
+	return func() tea.Msg {
+		st, err := src.Status(context.Background())
+		return recallStatusMsg{status: st, err: err}
+	}
+}
+
+func (gs *GlobalSearch) refreshCmd(gated bool) tea.Cmd {
+	src := gs.source
+	return func() tea.Msg {
+		res, err := src.Refresh(context.Background(), gated)
+		return recallRefreshMsg{res: res, err: err, gated: gated}
+	}
+}
+
+func (gs *GlobalSearch) searchCmd(q string) tea.Cmd {
+	src := gs.source
+	return func() tea.Msg {
+		res, err := src.Search(context.Background(), q, recallResultLimit)
+		return globalSearchResultsMsg{query: q, res: res, err: err}
+	}
+}
+
+func (gs *GlobalSearch) previewCmd(sessID int64) tea.Cmd {
+	src := gs.source
+	return func() tea.Msg {
+		d, err := src.Show(context.Background(), sessID, recallPreviewTurns)
+		return recallPreviewMsg{sessID: sessID, detail: d, err: err}
+	}
+}
+
+// requestPreview asks for the selected session's preview once.
+func (gs *GlobalSearch) requestPreview() tea.Cmd {
+	sel := gs.Selected()
+	if sel == nil || gs.source == nil || gs.previewT[sel.SessID] {
+		return nil
+	}
+	gs.previewT[sel.SessID] = true
+	return gs.previewCmd(sel.SessID)
+}
+
+// Update handles messages for the overlay.
 func (gs *GlobalSearch) Update(msg tea.Msg) (*GlobalSearch, tea.Cmd) {
 	if !gs.visible {
 		return gs, nil
 	}
-
-	// Refresh stats on every update cycle (catches loading completion)
-	gs.RefreshStats()
-
 	switch msg := msg.(type) {
+	case recallStatusMsg:
+		if msg.err == nil {
+			gs.status, gs.hasStat = msg.status, true
+		}
+		return gs, nil
+
+	case recallRefreshMsg:
+		gs.sweeping = false
+		switch {
+		case msg.err != nil && recallSkipped(msg.err):
+			gs.refresh = "index not refreshed: " + msg.err.Error()
+		case msg.err != nil:
+			gs.refresh = "index refresh failed: " + msg.err.Error()
+		case msg.res.Deferred > 0:
+			gs.refresh = fmt.Sprintf("index behind by %d source(s) / %s; catching up in the background", msg.res.Deferred, humanBytesUI(msg.res.DeferredBytes))
+			// Continue in bounded passes, through the gate, while the
+			// overlay is open.
+			gs.sweeping = true
+			return gs, tea.Batch(gs.refreshCmd(true), gs.statusCmd())
+		default:
+			gs.refresh = ""
+		}
+		cmds := []tea.Cmd{gs.statusCmd()}
+		if gs.query != "" {
+			cmds = append(cmds, gs.searchCmd(gs.query)) // re-run on the fresher index
+		}
+		return gs, tea.Batch(cmds...)
+
 	case globalSearchDebounceMsg:
-		// Debounce timer fired: if query still matches, run async search
-		if msg.query == gs.input.Value() && msg.query != "" {
+		if msg.query == gs.input.Value() && msg.query != "" && gs.source != nil {
 			gs.searching = true
-			query := msg.query
-			index := gs.index
-			return gs, func() tea.Msg {
-				results := index.Search(query)
-				if len(results) == 0 {
-					results = index.FuzzySearch(query)
-				}
-				return globalSearchResultsMsg{query: query, results: results}
-			}
+			return gs, gs.searchCmd(msg.query)
 		}
 		return gs, nil
 
 	case globalSearchResultsMsg:
-		// Async search results arrived: only apply if query still matches
-		if msg.query == gs.input.Value() {
-			gs.searching = false
-			gs.applySearchResults(msg.query, msg.results)
+		if msg.query != gs.input.Value() {
+			return gs, nil
+		}
+		gs.searching = false
+		if msg.err != nil {
+			gs.searchErr = msg.err.Error()
+			gs.results = nil
+			return gs, nil
+		}
+		gs.searchErr = ""
+		gs.applySearchResults(msg.res)
+		return gs, gs.requestPreview()
+
+	case recallPreviewMsg:
+		if msg.err == nil {
+			gs.preview[msg.sessID] = msg.detail
 		}
 		return gs, nil
 
 	case tea.MouseMsg:
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			if gs.cursor > 0 {
-				gs.cursor--
-				gs.previewScroll = 0
-			}
+			return gs, gs.move(-1)
 		case tea.MouseButtonWheelDown:
-			if gs.cursor < len(gs.results)-1 {
-				gs.cursor++
-				gs.previewScroll = 0
-			}
+			return gs, gs.move(1)
 		}
 		return gs, nil
 
@@ -218,472 +327,383 @@ func (gs *GlobalSearch) Update(msg tea.Msg) (*GlobalSearch, tea.Cmd) {
 		case "esc":
 			gs.Hide()
 			return gs, nil
-
 		case "enter":
 			if len(gs.results) > 0 {
-				gs.Hide()
-				// Parent handles the selection
+				gs.Hide() // Home handles the selection
 			}
 			return gs, nil
-
 		case "up":
-			if gs.cursor > 0 {
-				gs.cursor--
-				gs.previewScroll = 0 // Reset preview scroll on cursor change
-			}
-			return gs, nil
-
+			return gs, gs.move(-1)
 		case "down":
-			if gs.cursor < len(gs.results)-1 {
-				gs.cursor++
-				gs.previewScroll = 0 // Reset preview scroll on cursor change
-			}
-			return gs, nil
-
+			return gs, gs.move(1)
 		case "[", "pgup":
-			// Scroll preview up
-			if gs.previewScroll > 0 {
-				gs.previewScroll -= 5
-				if gs.previewScroll < 0 {
-					gs.previewScroll = 0
-				}
-			}
+			gs.previewScroll = max(gs.previewScroll-5, 0)
 			return gs, nil
-
 		case "]", "pgdown":
-			// Scroll preview down (with bounds check)
-			if len(gs.results) > 0 && gs.cursor < len(gs.results) {
-				result := gs.results[gs.cursor]
-				contentLines := gs.formatPreviewContent(result.Content, 80)
-				maxScroll := len(contentLines) - 10 // Leave some visible
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if gs.previewScroll < maxScroll {
-					gs.previewScroll += 5
-				}
-			}
+			gs.previewScroll += 5
 			return gs, nil
-
 		case "tab":
-			// Signal to switch to local search
 			gs.switchToLocal = true
 			gs.Hide()
 			return gs, nil
-
 		default:
 			var cmd tea.Cmd
 			gs.input, cmd = gs.input.Update(msg)
-			query := gs.input.Value()
-			gs.query = query
-			if query == "" {
-				gs.results = nil
-				gs.searching = false
+			q := strings.TrimSpace(gs.input.Value())
+			if q == gs.query {
 				return gs, cmd
 			}
-			// Debounce: schedule search after 250ms
+			gs.query = q
+			if q == "" {
+				gs.results = nil
+				gs.searching = false
+				gs.searchErr = ""
+				return gs, cmd
+			}
 			gs.searching = true
-			debounceCmd := tea.Tick(250*time.Millisecond, func(t time.Time) tea.Msg {
-				return globalSearchDebounceMsg{query: query}
-			})
-			return gs, tea.Batch(cmd, debounceCmd)
+			return gs, tea.Batch(cmd, tea.Tick(recallDebounce, func(time.Time) tea.Msg {
+				return globalSearchDebounceMsg{query: gs.input.Value()}
+			}))
 		}
 	}
-
 	return gs, nil
 }
 
-// applySearchResults converts raw search results into UI results
-func (gs *GlobalSearch) applySearchResults(query string, searchResults []*session.SearchResult) {
-	// Convert to UI results (limit to 15 for split view)
-	gs.results = make([]*GlobalSearchResult, 0, min(len(searchResults), 15))
-	queryLower := strings.ToLower(query)
-	for i, sr := range searchResults {
-		if i >= 15 {
-			break
-		}
-		content := sr.Entry.ContentString()
-		if content == "" {
-			if sr.Snippet != "" {
-				content = sr.Snippet
-			} else {
-				content = sr.Entry.Summary
-			}
-		}
-		// Count occurrences of query in content (case-insensitive)
-		matchCount := strings.Count(strings.ToLower(content), queryLower)
-		gs.results = append(gs.results, &GlobalSearchResult{
-			SessionID:  sr.Entry.SessionID,
-			Summary:    sr.Entry.Summary,
-			Snippet:    sr.Snippet,
-			Content:    content, // Full content for preview (fallbacks for balanced tier)
-			CWD:        sr.Entry.CWD,
-			ModTime:    sr.Entry.ModTime,
-			Score:      sr.Score,
-			MatchCount: matchCount,
-		})
+// move shifts the cursor and requests the new selection's preview.
+func (gs *GlobalSearch) move(delta int) tea.Cmd {
+	if len(gs.results) == 0 {
+		return nil
 	}
+	next := gs.cursor + delta
+	if next < 0 || next >= len(gs.results) {
+		return nil
+	}
+	gs.cursor = next
+	gs.previewScroll = 0
+	return gs.requestPreview()
+}
 
-	// Sort by combined score: fuzzy match score + recency bonus
-	now := time.Now()
-	sort.Slice(gs.results, func(i, j int) bool {
-		// Calculate recency bonus (more recent = higher bonus)
-		recencyI := 1.0 / (1.0 + now.Sub(gs.results[i].ModTime).Hours()/24)
-		recencyJ := 1.0 / (1.0 + now.Sub(gs.results[j].ModTime).Hours()/24)
-
-		// Combined score: fuzzy score * recency (both higher is better)
-		// Note: fuzzy.Score is higher for better matches
-		scoreI := float64(gs.results[i].Score) * (1.0 + recencyI)
-		scoreJ := float64(gs.results[j].Score) * (1.0 + recencyJ)
-
-		return scoreI > scoreJ
-	})
-
+// applySearchResults converts ranked hits into rows. The order is the
+// query layer's (card hit, body hits, recency); the overlay never re-ranks.
+func (gs *GlobalSearch) applySearchResults(res query.SearchResult) {
+	gs.results = make([]*GlobalSearchResult, 0, len(res.Hits))
+	for _, h := range res.Hits {
+		r := &GlobalSearchResult{
+			SessID: h.SessID, Harness: h.Harness, Profile: h.Profile, SessionID: h.NativeID, DeckID: h.DeckID,
+			Title: h.Title, Snippet: h.Snippet, CWD: h.CWD, BodyHits: h.BodyHits, CardHit: h.CardHit,
+			Missing: h.Missing, Sidechain: h.Sidechain,
+		}
+		if ts := h.EndedAt; ts == 0 {
+			ts = h.StartedAt
+			r.EndedAt = unixOrZeroTime(ts)
+		} else {
+			r.EndedAt = unixOrZeroTime(ts)
+		}
+		gs.results = append(gs.results, r)
+	}
+	gs.candidates, gs.ceilingHit = res.Candidates, res.CeilingHit
 	gs.cursor = 0
 	gs.previewScroll = 0
 }
 
-// View renders the overlay with split-pane layout
+func unixOrZeroTime(ts int64) time.Time {
+	if ts == 0 {
+		return time.Time{}
+	}
+	return time.Unix(ts, 0)
+}
+
+// MarkInAgentDeck marks results whose conversation a registered session
+// owns: by the bound deck id, or by the Claude session id the instance
+// carries.
+func (gs *GlobalSearch) MarkInAgentDeck(instances []*session.Instance) {
+	byID := map[string]*session.Instance{}
+	byClaude := map[string]*session.Instance{}
+	for _, inst := range instances {
+		byID[inst.ID] = inst
+		if inst.ClaudeSessionID != "" {
+			byClaude[inst.ClaudeSessionID] = inst
+		}
+	}
+	for _, r := range gs.results {
+		if inst := byID[r.DeckID]; inst != nil {
+			r.InAgentDeck, r.InstanceID = true, inst.ID
+		} else if inst := byClaude[r.SessionID]; inst != nil && r.Harness == "claude" {
+			r.InAgentDeck, r.InstanceID = true, inst.ID
+		}
+	}
+}
+
+// View renders the overlay with split-pane layout.
 func (gs *GlobalSearch) View() string {
 	if !gs.visible {
 		return ""
 	}
+	totalWidth := min(max(gs.width-4, 100), 160)
+	leftWidth := totalWidth * 38 / 100
+	rightWidth := totalWidth - leftWidth - 3
+	previewHeight := max(gs.height-12, 10)
 
-	// Calculate dimensions - use most of the screen
-	totalWidth := gs.width - 4
-	if totalWidth > 160 {
-		totalWidth = 160
-	}
-	if totalWidth < 100 {
-		totalWidth = 100
-	}
-	leftWidth := totalWidth * 35 / 100       // 35% for results
-	rightWidth := totalWidth - leftWidth - 3 // Rest for preview (minus border)
+	var left strings.Builder
+	left.WriteString(globalSearchHeaderStyle.Render(gs.headerLine()) + "\n")
+	left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(gs.staleLine()) + "\n\n")
+	left.WriteString(globalSearchBoxStyle.Width(leftWidth-4).Render(gs.input.View()) + "\n\n")
 
-	previewHeight := gs.height - 12 // Leave room for header, input, hints
-	if previewHeight < 10 {
-		previewHeight = 10
-	}
-
-	// === LEFT PANE: Search + Results ===
-	var leftPane strings.Builder
-
-	// Header with loading indicator
-	var headerText string
-	if gs.loading {
-		headerText = "🔍 Global Search (Loading...)"
-	} else {
-		headerText = fmt.Sprintf("🔍 Global Search (%d sessions)", gs.entryCount)
-	}
-	header := globalSearchHeaderStyle.Render(headerText)
-	leftPane.WriteString(header + "\n\n")
-
-	// Search input
-	searchBox := globalSearchBoxStyle.Width(leftWidth - 4).Render(gs.input.View())
-	leftPane.WriteString(searchBox + "\n\n")
-
-	// Results list
-	if gs.searching && len(gs.results) == 0 {
-		leftPane.WriteString(lipgloss.NewStyle().
-			Foreground(ColorYellow).
-			Render("  Searching..."))
-	} else if len(gs.results) == 0 && gs.input.Value() != "" {
-		leftPane.WriteString(lipgloss.NewStyle().
-			Foreground(ColorComment).
-			Render("  No results"))
-	} else if len(gs.results) == 0 {
-		leftPane.WriteString(lipgloss.NewStyle().
-			Foreground(ColorComment).
-			Italic(true).
-			Render("  Type to search..."))
-	} else {
-		for i, result := range gs.results {
-			title := result.Summary
-			if title == "" {
-				title = result.SessionID[:8] + "..."
-			}
-			// Truncate to fit left pane
-			maxTitleLen := leftWidth - 12
-			if maxTitleLen < 20 {
-				maxTitleLen = 20
-			}
-			if len(title) > maxTitleLen {
-				title = title[:maxTitleLen] + "..."
-			}
-
-			// Format date
-			dateStr := gs.formatRelativeTime(result.ModTime)
-
-			// Build line
+	switch {
+	case gs.searchErr != "":
+		left.WriteString(lipgloss.NewStyle().Foreground(ColorRed).Render("  " + gs.searchErr))
+	case gs.searching && len(gs.results) == 0:
+		left.WriteString(lipgloss.NewStyle().Foreground(ColorYellow).Render("  Searching..."))
+	case len(gs.results) == 0 && gs.input.Value() != "":
+		left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("  No results"))
+	case len(gs.results) == 0:
+		left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Italic(true).Render("  Type to search; titles, hints and tags rank first"))
+	default:
+		summary := fmt.Sprintf("  %d matching message(s)", gs.candidates)
+		if gs.ceilingHit {
+			summary += " (capped; narrow the query)"
+		}
+		left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(summary) + "\n")
+		for i, r := range gs.results {
+			title := clipCells(firstNonEmptyUI(r.Title, r.Snippet, r.SessionID), max(leftWidth-14, 20))
 			prefix := "  "
-			if result.InAgentDeck {
+			if r.InAgentDeck {
 				prefix = "• "
 			}
-
 			if i == gs.cursor {
-				// Selected item - highlight
-				line := globalSelectedStyle.Render(fmt.Sprintf("› %s", title))
-				leftPane.WriteString(line + "\n")
-				// Show date and match count below selected
-				matchText := "match"
-				if result.MatchCount != 1 {
-					matchText = "matches"
-				}
-				leftPane.WriteString(lipgloss.NewStyle().
-					Foreground(ColorPurple).
-					Render(fmt.Sprintf("    %s • %d %s", dateStr, result.MatchCount, matchText)) + "\n")
+				left.WriteString(globalSelectedStyle.Render("› "+title) + "\n")
+				left.WriteString(lipgloss.NewStyle().Foreground(ColorPurple).Render("    "+gs.resultMeta(r)) + "\n")
 			} else {
-				line := globalResultStyle.Render(fmt.Sprintf("%s%s", prefix, title))
-				leftPane.WriteString(line + "\n")
+				left.WriteString(globalResultStyle.Render(prefix+title) + "\n")
 			}
 		}
 	}
+	left.WriteString("\n")
+	left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("[↑↓] Select  [Enter] Open  [Tab] Local\n[ ] scroll preview   [Esc] Cancel"))
 
-	// Left pane hints
-	leftPane.WriteString("\n")
-	leftPane.WriteString(lipgloss.NewStyle().
-		Foreground(ColorComment).
-		Render("[↑↓] Select  [Enter] Open\n[PgUp] or '[' scroll up\n[PgDn] or ']' scroll down\n[Tab] Local  [Esc] Cancel"))
-
-	// === RIGHT PANE: Preview ===
-	var rightPane strings.Builder
-
-	if len(gs.results) > 0 && gs.cursor < len(gs.results) {
-		result := gs.results[gs.cursor]
-
-		// Preview header
-		previewHeader := lipgloss.NewStyle().
-			Foreground(ColorCyan).
-			Bold(true).
-			Render("📄 Preview")
-		rightPane.WriteString(previewHeader + "\n")
-
-		// Show CWD
-		if result.CWD != "" {
-			cwdDisplay := result.CWD
-			if len(cwdDisplay) > rightWidth-5 {
-				cwdDisplay = "..." + cwdDisplay[len(cwdDisplay)-(rightWidth-8):]
-			}
-			rightPane.WriteString(lipgloss.NewStyle().
-				Foreground(ColorComment).
-				Render("📁 "+cwdDisplay) + "\n")
+	var right strings.Builder
+	if sel := gs.Selected(); sel != nil {
+		right.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render("📄 "+firstNonEmptyUI(sel.Title, "(untitled)")) + "\n")
+		meta := sel.Harness
+		if sel.Profile != "" {
+			meta += "/" + sel.Profile
 		}
-		rightPane.WriteString("\n")
-
-		// Format and display content
-		content := result.Content
-		if content == "" {
-			content = "(No content available)"
+		meta += "  " + shortNativeUI(sel.SessionID)
+		if sel.DeckID != "" {
+			meta += "  deck:" + sel.DeckID
 		}
-
-		// Split content into lines and wrap
-		contentLines := gs.formatPreviewContent(content, rightWidth-2)
-
-		// Auto-scroll to first match if scroll is at 0 (initial view)
-		if gs.previewScroll == 0 && gs.query != "" {
-			queryLower := strings.ToLower(gs.query)
-			for i, line := range contentLines {
-				if strings.Contains(strings.ToLower(line), queryLower) {
-					// Scroll to a few lines before the match for context
-					gs.previewScroll = i - 3
-					if gs.previewScroll < 0 {
-						gs.previewScroll = 0
-					}
-					break
-				}
-			}
+		right.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(meta) + "\n")
+		if sel.CWD != "" {
+			right.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("📁 "+clipLeft(sel.CWD, rightWidth-5)) + "\n")
 		}
-
-		// Apply scroll offset
-		startLine := gs.previewScroll
-		if startLine >= len(contentLines) {
-			startLine = len(contentLines) - 1
-			if startLine < 0 {
-				startLine = 0
-			}
-			gs.previewScroll = startLine
+		right.WriteString("\n")
+		lines := gs.previewLines(sel, rightWidth-2)
+		visible := previewHeight - 5
+		start := min(gs.previewScroll, max(len(lines)-visible, 0))
+		gs.previewScroll = start
+		end := min(start+visible, len(lines))
+		for _, l := range lines[start:end] {
+			right.WriteString(l + "\n")
 		}
-
-		// Show visible lines
-		visibleLines := previewHeight - 4 // Account for header
-		endLine := startLine + visibleLines
-		if endLine > len(contentLines) {
-			endLine = len(contentLines)
-		}
-
-		for i := startLine; i < endLine; i++ {
-			rightPane.WriteString(contentLines[i] + "\n")
-		}
-
-		// Scroll indicator
-		if len(contentLines) > visibleLines {
-			scrollInfo := fmt.Sprintf("─── %d/%d lines ───", startLine+1, len(contentLines))
-			rightPane.WriteString("\n" + lipgloss.NewStyle().
-				Foreground(ColorComment).
-				Render(scrollInfo))
+		if len(lines) > visible {
+			right.WriteString("\n" + lipgloss.NewStyle().Foreground(ColorComment).Render(fmt.Sprintf("─── %d/%d lines ───", start+1, len(lines))))
 		}
 	} else {
-		rightPane.WriteString(lipgloss.NewStyle().
-			Foreground(ColorComment).
-			Italic(true).
-			Render("Select a result to preview"))
+		right.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Italic(true).Render("Select a result to preview"))
 	}
 
-	// Style the panes
-	leftStyle := lipgloss.NewStyle().
-		Width(leftWidth).
-		Height(previewHeight+6).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(ColorAccent).
-		Padding(0, 1)
-
-	rightStyle := lipgloss.NewStyle().
-		Width(rightWidth).
-		Height(previewHeight+6).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(ColorCyan).
-		Padding(0, 1)
-
-	// Combine panes side by side
-	combined := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		leftStyle.Render(leftPane.String()),
-		rightStyle.Render(rightPane.String()),
-	)
-
+	leftStyle := lipgloss.NewStyle().Width(leftWidth).Height(previewHeight+6).
+		BorderStyle(lipgloss.RoundedBorder()).BorderForeground(ColorAccent).Padding(0, 1)
+	rightStyle := lipgloss.NewStyle().Width(rightWidth).Height(previewHeight+6).
+		BorderStyle(lipgloss.RoundedBorder()).BorderForeground(ColorCyan).Padding(0, 1)
+	combined := lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(left.String()), rightStyle.Render(right.String()))
 	return centerInScreen(combined, gs.width, gs.height)
 }
 
-// formatPreviewContent formats the conversation content for preview display
-func (gs *GlobalSearch) formatPreviewContent(content string, maxWidth int) []string {
+// headerLine names the overlay and the index size.
+func (gs *GlobalSearch) headerLine() string {
+	if !gs.hasStat {
+		return "🔍 Recall"
+	}
+	return fmt.Sprintf("🔍 Recall (%d sessions, %d messages)", gs.status.Sessions, gs.status.Messages)
+}
+
+// staleLine is the staleness indicator: what the bounded sweep left
+// behind, or when the index was last swept.
+func (gs *GlobalSearch) staleLine() string {
+	switch {
+	case gs.sweeping && gs.refresh == "":
+		return "refreshing the index (bounded: 150 ms / 32 MB per pass)..."
+	case gs.refresh != "":
+		return gs.refresh
+	case gs.hasStat && gs.status.LastSweep > 0:
+		return "index fresh as of " + humanizeSince(time.Since(time.Unix(gs.status.LastSweep, 0))) + " ago"
+	}
+	return "index as on disk"
+}
+
+// resultMeta is the line under the selected row: date, harness, hits.
+func (gs *GlobalSearch) resultMeta(r *GlobalSearchResult) string {
+	parts := []string{}
+	if !r.EndedAt.IsZero() {
+		parts = append(parts, humanizeSince(time.Since(r.EndedAt))+" ago")
+	}
+	parts = append(parts, r.Harness)
+	if r.CardHit {
+		parts = append(parts, "title/hint")
+	}
+	if r.BodyHits > 0 {
+		parts = append(parts, fmt.Sprintf("%d in body", r.BodyHits))
+	}
+	if r.Missing {
+		parts = append(parts, "file missing")
+	}
+	return strings.Join(parts, " • ")
+}
+
+// previewLines renders the selected session's preview: the snippet first,
+// then the card and the first turns once `recall show` answered.
+func (gs *GlobalSearch) previewLines(sel *GlobalSearchResult, width int) []string {
 	var lines []string
-	query := gs.query // Get current search query for highlighting
-
-	// Split by newlines first
-	rawLines := strings.Split(content, "\n")
-
-	for _, rawLine := range rawLines {
-		rawLine = strings.TrimSpace(rawLine)
-		if rawLine == "" {
-			lines = append(lines, "")
-			continue
+	if sel.Snippet != "" {
+		for _, l := range gs.wrapText(sel.Snippet, width) {
+			lines = append(lines, gs.highlightMatches(l, gs.query))
 		}
-
-		// Determine base style and prefix for user vs assistant messages
-		var prefix string
-		var baseColor lipgloss.Color
-		if strings.HasPrefix(rawLine, "User:") || strings.HasPrefix(rawLine, "[User]") {
-			prefix = "👤 "
-			rawLine = strings.TrimPrefix(strings.TrimPrefix(rawLine, "User:"), "[User]")
-			baseColor = ColorGreen
-		} else if strings.HasPrefix(rawLine, "Assistant:") || strings.HasPrefix(rawLine, "[Assistant]") {
-			prefix = "🤖 "
-			rawLine = strings.TrimPrefix(strings.TrimPrefix(rawLine, "Assistant:"), "[Assistant]")
-			baseColor = ColorCyan
-		} else {
-			prefix = ""
-			baseColor = ColorText
+		lines = append(lines, "")
+	}
+	d, ok := gs.preview[sel.SessID]
+	if !ok {
+		return append(lines, lipgloss.NewStyle().Foreground(ColorComment).Italic(true).Render("loading turns..."))
+	}
+	s := d.Session
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render(
+		fmt.Sprintf("%d turns • %d tool calls • %d errors • model %s", s.Turns, s.ToolCalls, s.Errors, firstNonEmptyUI(s.Model, "-"))))
+	if s.Hints != "" || s.Tags != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render("hints: "+firstNonEmptyUI(s.Hints, "-")+"  tags: "+firstNonEmptyUI(s.Tags, "-")))
+	}
+	lines = append(lines, "")
+	for _, m := range d.Messages {
+		prefix, color := "🤖 ", ColorCyan
+		if m.Role == "user" {
+			prefix, color = "👤 ", ColorGreen
 		}
-
-		// Word wrap long lines (wrap before highlighting for accurate width calculation)
-		wrapped := gs.wrapText(rawLine, maxWidth-len(prefix))
-		for i, w := range wrapped {
-			// Apply highlighting after wrap
-			highlighted := gs.highlightMatches(w, query)
+		text := strings.Join(strings.Fields(m.Text), " ")
+		for i, w := range gs.wrapText(text, width-len(prefix)) {
 			if i == 0 {
-				lines = append(lines, lipgloss.NewStyle().Foreground(baseColor).Render(prefix)+highlighted)
+				lines = append(lines, lipgloss.NewStyle().Foreground(color).Render(prefix)+gs.highlightMatches(w, gs.query))
 			} else {
-				padding := strings.Repeat(" ", len(prefix))
-				lines = append(lines, padding+highlighted)
+				lines = append(lines, strings.Repeat(" ", 3)+gs.highlightMatches(w, gs.query))
 			}
 		}
 	}
-
+	if d.Truncated > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorComment).Render(fmt.Sprintf("… %d more; agent-deck recall show #%d", d.Truncated, sel.SessID)))
+	}
 	return lines
 }
 
-// formatRelativeTime formats time as relative using the shared compact
-// two-component formatter (see humanizeSince). Empty for a zero time.
-func (gs *GlobalSearch) formatRelativeTime(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return humanizeSince(time.Since(t))
-}
-
-// wrapText wraps text at word boundaries to fit within maxWidth
+// wrapText wraps text at word boundaries to fit within maxWidth.
 func (gs *GlobalSearch) wrapText(text string, maxWidth int) []string {
+	if maxWidth < 10 {
+		maxWidth = 10
+	}
 	if len(text) <= maxWidth {
 		return []string{text}
 	}
-
 	var lines []string
-	words := strings.Fields(text)
-	var currentLine strings.Builder
-
-	for _, word := range words {
-		if currentLine.Len() == 0 {
-			currentLine.WriteString(word)
-		} else if currentLine.Len()+1+len(word) <= maxWidth {
-			currentLine.WriteString(" ")
-			currentLine.WriteString(word)
-		} else {
-			lines = append(lines, currentLine.String())
-			currentLine.Reset()
-			currentLine.WriteString(word)
+	var cur strings.Builder
+	for _, word := range strings.Fields(text) {
+		switch {
+		case cur.Len() == 0:
+			cur.WriteString(word)
+		case cur.Len()+1+len(word) <= maxWidth:
+			cur.WriteString(" ")
+			cur.WriteString(word)
+		default:
+			lines = append(lines, cur.String())
+			cur.Reset()
+			cur.WriteString(word)
 		}
 	}
-
-	if currentLine.Len() > 0 {
-		lines = append(lines, currentLine.String())
+	if cur.Len() > 0 {
+		lines = append(lines, cur.String())
 	}
-
 	return lines
 }
 
-// highlightMatches highlights occurrences of query in text
-func (gs *GlobalSearch) highlightMatches(text, query string) string {
-	if query == "" || text == "" {
+// highlightMatches highlights every query term in text (case-insensitive).
+func (gs *GlobalSearch) highlightMatches(text, q string) string {
+	if q == "" || text == "" {
 		return text
 	}
-
-	queryLower := strings.ToLower(query)
-	textLower := strings.ToLower(text)
-
-	var result strings.Builder
-	lastEnd := 0
-
-	for {
-		idx := strings.Index(textLower[lastEnd:], queryLower)
-		if idx == -1 {
-			result.WriteString(text[lastEnd:])
-			break
+	out := text
+	for _, term := range strings.Fields(q) {
+		term = strings.Trim(term, `"*`)
+		if term == "" || term == "AND" || term == "OR" || term == "NOT" {
+			continue
 		}
-
-		absIdx := lastEnd + idx
-		// Write text before match
-		result.WriteString(text[lastEnd:absIdx])
-		// Write highlighted match (preserve original case)
-		result.WriteString(highlightStyle.Render(text[absIdx : absIdx+len(query)]))
-		lastEnd = absIdx + len(query)
+		out = highlightTerm(out, term)
 	}
-
-	return result.String()
+	return out
 }
 
-// MarkInAgentDeck marks which results are already in Agent Deck
-func (gs *GlobalSearch) MarkInAgentDeck(instances []*session.Instance) {
-	idMap := make(map[string]string) // sessionID -> instanceID
-	for _, inst := range instances {
-		if inst.ClaudeSessionID != "" {
-			idMap[inst.ClaudeSessionID] = inst.ID
+func highlightTerm(text, term string) string {
+	lower := strings.ToLower(text)
+	needle := strings.ToLower(term)
+	var b strings.Builder
+	last := 0
+	for {
+		i := strings.Index(lower[last:], needle)
+		if i < 0 {
+			b.WriteString(text[last:])
+			return b.String()
 		}
+		at := last + i
+		b.WriteString(text[last:at])
+		b.WriteString(highlightStyle.Render(text[at : at+len(term)]))
+		last = at + len(term)
 	}
+}
 
-	for _, result := range gs.results {
-		if instID, ok := idMap[result.SessionID]; ok {
-			result.InAgentDeck = true
-			result.InstanceID = instID
+func firstNonEmptyUI(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
 		}
 	}
+	return ""
+}
+
+func clipCells(s string, n int) string {
+	rs := []rune(strings.Join(strings.Fields(s), " "))
+	if len(rs) <= n {
+		return string(rs)
+	}
+	return string(rs[:n-1]) + "…"
+}
+
+func clipLeft(s string, n int) string {
+	if n < 8 || len(s) <= n {
+		return s
+	}
+	return "..." + s[len(s)-(n-3):]
+}
+
+func shortNativeUI(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func humanBytesUI(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
 }

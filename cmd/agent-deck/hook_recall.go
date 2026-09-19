@@ -87,7 +87,9 @@ func recallSweepFile(cfg *session.UserConfig, path string) (ingest.Result, error
 	// itself a moment ago.
 	if storage, err := session.NewStorageWithProfile(os.Getenv("AGENTDECK_PROFILE")); err == nil {
 		defer storage.Close()
-		opts.Registry = session.RecallRegistry{DB: storage.GetDB()}
+		reg := session.NewRecallRegistry(storage.Profile(), storage.GetDB())
+		defer reg.Close()
+		opts.Registry = reg
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*ingest.InteractiveDeadline+time.Second)
 	defer cancel()

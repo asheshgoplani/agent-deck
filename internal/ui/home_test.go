@@ -318,7 +318,7 @@ func TestHomeUpdateSearch(t *testing.T) {
 	home.height = 30
 
 	// Disable global search to test local search behavior
-	home.globalSearchIndex = nil
+	home.recallSource = nil
 
 	// Press / to open search (should open local search when global is not available)
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
@@ -898,28 +898,13 @@ func TestHomeSearchOpensGlobalWhenAvailable(t *testing.T) {
 	home := NewHome()
 	home.width = 100
 	home.height = 30
+	src := newStubRecall()
+	home.recallSource = src
+	home.globalSearch.SetSource(src)
 
-	// Create a mock index
-	tmpDir := t.TempDir()
-	searchEnabled := true
-	config := session.GlobalSearchSettings{
-		Enabled:        &searchEnabled,
-		Tier:           "instant",
-		MemoryLimitMB:  100,
-		IndexRateLimit: 100,
-	}
-	index, err := session.NewGlobalSearchIndex(tmpDir, config)
-	if err != nil {
-		t.Fatalf("Failed to create test index: %v", err)
-	}
-	defer index.Close()
-
-	home.globalSearchIndex = index
-	home.globalSearch.SetIndex(index)
-
-	// Press / to open search - should open global search when index is available
+	// Press / to open search - should open Recall search when the index is available
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
-	model, _ := home.Update(msg)
+	model, cmd := home.Update(msg)
 
 	h, ok := model.(*Home)
 	if !ok {
@@ -931,6 +916,9 @@ func TestHomeSearchOpensGlobalWhenAvailable(t *testing.T) {
 	if h.search.IsVisible() {
 		t.Error("Local search should NOT be visible when global search opens")
 	}
+	if cmd == nil {
+		t.Error("opening must schedule the bounded refresh")
+	}
 }
 
 func TestHomeSearchOpensLocalWhenNoIndex(t *testing.T) {
@@ -938,8 +926,8 @@ func TestHomeSearchOpensLocalWhenNoIndex(t *testing.T) {
 	home.width = 100
 	home.height = 30
 
-	// Ensure no global search index
-	home.globalSearchIndex = nil
+	// Ensure no recall index
+	home.recallSource = nil
 
 	// Press / to open search - should fall back to local search
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
@@ -961,24 +949,9 @@ func TestHomeGlobalSearchEscape(t *testing.T) {
 	home := NewHome()
 	home.width = 100
 	home.height = 30
-
-	// Create a mock index
-	tmpDir := t.TempDir()
-	searchEnabled := true
-	config := session.GlobalSearchSettings{
-		Enabled:        &searchEnabled,
-		Tier:           "instant",
-		MemoryLimitMB:  100,
-		IndexRateLimit: 100,
-	}
-	index, err := session.NewGlobalSearchIndex(tmpDir, config)
-	if err != nil {
-		t.Fatalf("Failed to create test index: %v", err)
-	}
-	defer index.Close()
-
-	home.globalSearchIndex = index
-	home.globalSearch.SetIndex(index)
+	src := newStubRecall()
+	home.recallSource = src
+	home.globalSearch.SetSource(src)
 
 	// Open global search with /
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
