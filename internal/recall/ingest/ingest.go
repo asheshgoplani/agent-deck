@@ -394,7 +394,7 @@ func (in *Ingester) migrateEmptyCompactRows() error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	where := `class=? AND nchars=0`
 	if _, err := tx.Exec(`DELETE FROM msg_fts WHERE rowid IN (SELECT msg_id FROM msg WHERE `+where+`)`, int(classify.CompactSummary)); err != nil {
 		return fmt.Errorf("recall: migrate empty compactions (fts): %w", err)

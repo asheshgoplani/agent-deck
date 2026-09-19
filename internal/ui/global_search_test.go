@@ -24,7 +24,6 @@ type stubRecall struct {
 	detail    map[int64]query.Detail
 	status    query.Status
 	refresh   []ingest.Result // one per Refresh call, in order
-	refreshOK bool
 	searchErr error
 	searches  []string
 	refreshes []bool

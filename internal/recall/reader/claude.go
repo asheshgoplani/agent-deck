@@ -178,8 +178,6 @@ type toolArgs struct {
 	Skill        string `json:"skill"`
 }
 
-var interruptedTrue = []byte(`"interrupted":true`)
-
 // Ingest streams src from byte offset from. It stops at a torn trailing
 // line (the cursor never covers it), skips over-long lines whole, decodes
 // only the record types that carry text or structure, and never holds more
