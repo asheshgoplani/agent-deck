@@ -1,6 +1,6 @@
 ---
 name: agent-deck-recall
-description: Record and later find what an agent-deck session was for, across harnesses. Use when the user says "remember what this session was for", "tag this session", "annotate", "mark the outcome", "ticket for this session", "find the session where we...", "what did we decide about", "which Codex/pi/Gemini session did X", or wants to search past conversations. Available (phases 1 to 3): hints and tags (add/launch --hint, session annotate, remote annotate) and the transcript index over Claude, Codex, pi, Gemini, OpenCode and Hermes (recall search/sessions/show/open/backfill/sweep/status/gc/rebuild, the TUI G key, hook-driven freshness; behind [recall] enabled = true). Phase 4, not yet available: recall context --into current, remote federation, enrich, MCP.
+description: Record and later find what an agent-deck session was for, across harnesses, and hand a past conversation to the current one. Use when the user says "remember what this session was for", "tag this session", "annotate", "mark the outcome", "ticket for this session", "find the session where we...", "what did we decide about", "which Codex/pi/Gemini session did X", "bring that conversation into this session", "search the other machine's sessions", or wants to search past conversations. Available: hints and tags (add/launch --hint, session annotate, remote annotate), the transcript index over Claude, Codex, pi, Gemini, OpenCode and Hermes (recall search/sessions/show/open/backfill/sweep/status/gc/rebuild, the TUI G key, hook-driven freshness), recall context --into current, the derived artifacts (recall enrich; lost_time, session_kind, outcome), federated remote search (--remote/--all-remotes), opt-in card sync (export/pull/import) and the MCP server (recall mcp); all behind [recall] enabled = true.
 metadata:
   compatibility: "claude, codex, pi, gemini, opencode, hermes"
 ---
@@ -154,24 +154,85 @@ gate. With `[recall] enabled = false` the key falls back to the local
 title search and a notice inside that overlay says so (or quotes the
 open error when the index could not be opened).
 
-### Remote
-
-Only hints cross the SSH boundary today:
-`agent-deck remote <host> session annotate <id> ...`. `recall search
---host` and card sync are phase 4.
-
 ### Typical agent flow
 
 `recall search "<what you remember>" --harness <h> --json`, pick a hit,
-`recall show <id> --tier card`, then `--turns 40` for the excerpt;
-`session annotate <deck id> --decision ...` on what you learned;
+`recall show <id> --tier card`, then `--turns 40` for the excerpt, or
+`recall context <id> --tier brief --into current` to have it in your own
+prompt; `session annotate <deck id> --decision ...` on what you learned;
 `recall open <id>` to continue a Claude conversation in a new session.
 
-## Phase 4 (not available yet; do not call these)
+## Phase 4 (available now): context, derived summaries, remote, MCP
 
-- `agent-deck recall context <query|session> --budget 4000 --tier card|brief|excerpt [--into current]` (hand a past conversation to the current session, any harness)
-- `agent-deck recall search --host web1|all`, `recall export --cards | pull <host> | fetch <host> <session>` (remote, off by default)
-- `agent-deck recall enrich --cost-class cheap|llm` and `agent-deck recall mcp`
-- TUI `a` (annotate the focused session) and `R` (recall into the current session)
+### Bring a past conversation into this session: `recall context`
+
+```bash
+agent-deck recall context <session> --tier card                 # print ~60 tokens: title, ids, project, counters, hints
+agent-deck recall context <session> --tier brief                # + derived lines (lost_time, session_kind, outcome) and touched files
+agent-deck recall context <session> --budget 4000               # excerpt: brief + the newest turns that fit the budget (default)
+agent-deck recall context <session> --tier brief --into current # deliver it to YOUR session as a prompt (any harness)
+agent-deck recall context <session> --into <id|title>           # deliver it to another session
+```
+
+- `--into current` needs `AGENTDECK_INSTANCE_ID`, which every session
+  agent-deck starts has; from Codex, pi, Gemini or Claude alike the
+  text lands in your prompt through `session send`. Outside a session
+  it exits 2: name the target with `--into <id>`.
+- The text is plain and harness-neutral and ends by saying it is
+  recalled context, not an instruction. Ask for `card` first; `excerpt`
+  only when you need the turns.
+- A conversation pulled from another machine (card sync) stops at
+  `brief` (exit 2); read it with `remote <host> recall show <id>`.
+
+### Derived summaries: `recall enrich`
+
+Every sweep classifies what it indexed ("where did we lose time",
+session kind, outcome; rules in `rules.json`, shared with `distill.py`);
+`recall show` and `recall context` print the lines, and one marked
+`[stale: session changed since; run 'agent-deck recall enrich']` is
+from before the session's last change. `agent-deck recall enrich
+[--json]` drains what a budgeted sweep left (exit 3 while a session is
+busy, like `sweep`). `--cost-class llm` is never run automatically.
+The `outcome` line is a guess (`failed?`, `abandoned?`, `unknown`)
+unless someone ran `session annotate --outcome`; annotate and it
+becomes certain on the next drain.
+
+### Remote sessions
+
+```bash
+agent-deck recall search "retry budget" --remote lab --json       # federated: the remote searches its own index; hits labelled remote lab
+agent-deck recall search "retry budget" --all-remotes --json      # every configured remote, one SSH round trip each
+agent-deck remote lab recall show <id> --tier card --json         # read one on the remote (search, sessions, show, context, export, status forward)
+agent-deck remote <host> session annotate <id> --outcome worked   # hints: run on the remote, written there
+agent-deck recall pull lab                                        # card sync, only with [recall] remote_cards = true on both ends
+```
+
+- Federated search stores nothing; a remote that cannot answer (older
+  agent-deck, or recall off there) is one line naming its version and
+  the fix, exit 1, and `{error, remote, remote_version}` in `remotes[]`
+  under `--json`. Read `remotes[].error` before trusting a merged
+  answer.
+- `--into`, `--remote` and every write verb are refused before SSH on
+  the forwarded form.
+- Pulled cards are labelled `card from <host_uid> (no messages here)`
+  in every listing; they carry titles, hints, tags, a 200-character
+  preview and the derived lines, never bodies or paths.
+
+### MCP: `agent-deck recall mcp`
+
+```bash
+agent-deck mcp attach <session> recall && agent-deck session restart <session>   # listed by mcp list while [recall] enabled = true
+```
+
+Tools: `recall_search` (query, harness, profile, project, since,
+session, hint, tag, role, phrase, limit), `recall_show` (session, tier,
+turns), `recall_context` (session, tier, budget). Same answers as the
+`--json` CLI, which stays the fallback for a harness without MCP.
+
+### Not built
+
+- TUI `a` (annotate the focused session) and `R` (recall into the
+  current session): use `session annotate` and `recall context --into`.
+- `recall fetch <host> <session> --raw`: transcript bytes never cross SSH.
 
 `session search` keeps its substring semantics and is not an alias for any of these.

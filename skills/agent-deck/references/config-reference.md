@@ -888,6 +888,7 @@ keep_missing_days = 30      # how long a vanished transcript's tombstone survive
 per_source_mb = 64          # per-sweep cap on one transcript; the rest continues next sweep (0 = unlimited)
 harnesses = ["claude", "codex", "pi", "gemini", "opencode", "hermes"]  # which harnesses to index (default: all)
 hook_sweep = true           # the async Claude SessionEnd hook indexes its own transcript inline (150 ms / 32 MB); Stop only queues
+remote_cards = false        # let session cards (never bodies or paths) cross SSH: recall export / pull / import
 ```
 
 | Key | Type | Default | Description |
@@ -899,6 +900,7 @@ hook_sweep = true           # the async Claude SessionEnd hook indexes its own t
 | `per_source_mb` | int | `64` | Most of one file a single sweep parses before deferring the rest. |
 | `harnesses` | list | all | Harness names to index; a harness whose home is absent is skipped anyway. |
 | `hook_sweep` | bool | `true` | The asynchronous Claude `SessionEnd` hook indexes only its own transcript within the interactive budget; off, it only queues the file for the next sweep. The synchronous `Stop` hook never sweeps: it appends one queue line and returns. |
+| `remote_cards` | bool | `false` | Opt in to remote card sync: `recall export --cards` on this machine and `recall pull <host>` / `recall import` into it. Cards are titles, hints, tags, 200-character previews and derived summaries; message bodies, offsets and paths never leave. The federated query (`recall search --remote <host>` / `--all-remotes`) never depends on this key: it runs the search on the remote and stores nothing. |
 
 ## [notifications] Section
 
