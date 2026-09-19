@@ -169,3 +169,24 @@ func TestCardFTS_TriggersKeepIndexInStep(t *testing.T) {
 		t.Fatalf("card=%d card_fts=%d; want equal", a, b)
 	}
 }
+
+func TestBodyCodec_RoundTripAndClip(t *testing.T) {
+	text := strings.Repeat("the flaky auth test failed again because of clock skew\n", 400)
+	body := CompressBody([]byte(text))
+	if len(body) >= len(text)/3 {
+		t.Fatalf("compressed %d of %d: expected at least 3x on chat text", len(body), len(text))
+	}
+	back, err := DecompressBody(body)
+	if err != nil || string(back) != text {
+		t.Fatalf("round trip: %v", err)
+	}
+	if got, _ := DecompressBody(nil); got != nil {
+		t.Fatal("nil body must decode to nil")
+	}
+	if c := ClipBytes("héllo", 2); c != "h" {
+		t.Fatalf("ClipBytes cut inside a rune: %q", c)
+	}
+	if c := ClipBytes("héllo", 3); c != "hé" {
+		t.Fatalf("ClipBytes = %q", c)
+	}
+}
