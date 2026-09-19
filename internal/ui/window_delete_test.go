@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -12,6 +13,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// killWindowSocketSeq numbers the private tmux socket of each
+// armKillWindowHome call so no two tests in this binary share a server.
+var killWindowSocketSeq atomic.Int64
 
 // armKillWindowHome builds a Home whose confirm dialog targets a live
 // isolated tmux session, so confirmAction's ConfirmKillWindow path can be
@@ -22,7 +27,12 @@ func armKillWindowHome(t *testing.T) (*Home, string, string) {
 		t.Skip("tmux binary not on PATH; skipping")
 	}
 
-	socket := fmt.Sprintf("kwg%d", os.Getpid())
+	// One socket per test, never one per process: a tmux server keeps its
+	// listening socket until it exits, and kill-server returns to its client
+	// before that. On a shared name the next test's new-session can still
+	// connect to the dying server and fail with "server exited unexpectedly"
+	// (v1.16.11 release run, TestConfirmKillWindow_RefusesRenamedWindow).
+	socket := fmt.Sprintf("kwg%d-%d", os.Getpid(), killWindowSocketSeq.Add(1))
 	target := "agentdeck_kwguard"
 	if out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-x", "80", "-y", "24", "-s", target, "sleep", "300").CombinedOutput(); err != nil {
 		t.Fatalf("create tmux session: %v: %s", err, out)
