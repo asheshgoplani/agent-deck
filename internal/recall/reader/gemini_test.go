@@ -36,7 +36,7 @@ func TestGeminiIngest_StreamsTheDocument(t *testing.T) {
 		title = firstNonEmpty(s.Title, title)
 		model = firstNonEmpty(s.Model, model)
 	}
-	if native != "196a60d9-6cfb-4069-8443-a78a64cedff5" || title != "Analyze the flaky auth test." || model != "gemini-3-flash-preview" {
+	if native != "session-2026-01-19T12-18-196a60d9" || title != "Analyze the flaky auth test." || model != "gemini-3-flash-preview" {
 		t.Fatalf("session %q title %q model %q", native, title, model)
 	}
 	if len(rec.msgs) != 4 {

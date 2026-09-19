@@ -94,7 +94,7 @@ func TestRecall_EveryHarnessEndToEnd(t *testing.T) {
 		"pi":       {"Evaluate Hermes", testcorpus.PiID},
 		"opencode": {"clock skew", testcorpus.OpenCodeSession},
 		"hermes":   {"clock skew", testcorpus.HermesSession},
-		"gemini":   {"clock skew", "196a60d9-6cfb-4069-8443-a78a64cedff5"},
+		"gemini":   {"clock skew", "session-2026-01-19T12-18-196a60d9"},
 	} {
 		r := search(want[0], "--harness", harness, "--json")
 		if len(r.Result.Hits) != 1 || r.Result.Hits[0].NativeID != want[1] {

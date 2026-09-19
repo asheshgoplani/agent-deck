@@ -137,27 +137,28 @@ type geminiState struct {
 	title string
 }
 
-// session emits the Session record once. Gemini records only a hash of
-// the working directory; the cwd column stays empty and project filters
-// cannot match a Gemini session.
-func (st *geminiState) session(native string) {
-	st.emitter.session(Session{NativeID: native})
+// session emits the Session record once, keyed on the file name
+// (session-<ts>-<short id>): Gemini reuses one sessionId across several
+// chat files with different contents (29 ids over 62 files on the design
+// machine), so the document's own sessionId cannot identify a
+// conversation. Gemini records only a hash of the working directory; the
+// cwd column stays empty and project filters cannot match a Gemini session.
+func (st *geminiState) session() {
+	st.emitter.session(Session{NativeID: st.src.NativeID})
 }
 
-// top keeps the top-level keys that matter; startTime and lastUpdated
-// add nothing the messages' own timestamps do not.
+// top keeps the top-level keys that matter; sessionId (see session),
+// startTime and lastUpdated add nothing the file name and the messages'
+// own timestamps do not.
 func (st *geminiState) top(key, v string) {
-	switch key {
-	case "sessionId":
-		st.session(v)
-	case "summary":
+	if key == "summary" {
 		st.title = v
 	}
 }
 
 // finish emits what only the trailing keys could tell.
 func (st *geminiState) finish() {
-	st.session("")
+	st.session()
 	if st.title != "" {
 		st.sink.Session(Session{Title: st.title, TitleSrc: "summary"})
 	}
@@ -211,7 +212,7 @@ func (st *geminiState) message(raw json.RawMessage, off, n int64) {
 		st.sink.Count(CountBadJSON, 1)
 		return
 	}
-	st.session("")
+	st.session()
 	ts := parseTS(m.Timestamp)
 	switch m.Type {
 	case "info":
