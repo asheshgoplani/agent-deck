@@ -697,7 +697,8 @@ func main() {
 	// control pipes for any instance whose tmux server is alive but whose
 	// pipe got killed by e.g. an SSH logout scope cleanup. Runs in the
 	// background so it never blocks TUI boot. See .planning/v178-ssh-reviver/PLAN.md.
-	go reviveOnStartup(profile)
+	// Read the restart hand-off now: the TUI unsets it as soon as it boots.
+	go reviveOnStartup(profile, startupReviveDelay(os.Getenv))
 
 	// Block TUI launch when stdin is not a terminal.
 	//
@@ -3854,6 +3855,13 @@ func handleUpdate(args []string) {
 	}
 
 	if *unattended {
+		// The TUI runs this child with its stdout on a pipe. Should the TUI
+		// go away mid-run (a quit, or a restart that slipped past the
+		// in-flight guard), the next progress line would otherwise kill
+		// this process with SIGPIPE half way through the remote sweep and
+		// leave its sweep marker and update.lock behind. Everything that
+		// matters is in the debug log; a lost stdout is just EPIPE here.
+		signal.Ignore(syscall.SIGPIPE)
 		exit(runUnattendedUpdate(realUnattendedDeps(updateTrigger(*trigger))))
 	}
 
