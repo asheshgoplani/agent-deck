@@ -98,12 +98,19 @@ func remoteRecallUnsupported(args []string, code int, stdout, stderr string) (re
 	combined := stdout + "\n" + stderr
 	switch {
 	case strings.Contains(combined, `unknown command "recall"`), strings.Contains(combined, `"recall" is not a recognized command`):
-		return "predates recall", true
+		return reasonPredatesRecall, true
 	case strings.Contains(combined, "recall is off"):
-		return "has [recall] enabled = false", true
+		return reasonRecallOff, true
 	}
 	return "", false
 }
+
+// The two reasons remoteRecallUnsupported reports; the message picks the
+// fix by them.
+const (
+	reasonPredatesRecall = "predates recall"
+	reasonRecallOff      = "has [recall] enabled = false"
+)
 
 // remoteRecallUnsupportedMessage is the one clear line: which remote, what
 // it runs, what fixes it (the phase-1 `session annotate` precedent).
@@ -113,7 +120,7 @@ func remoteRecallUnsupportedMessage(remote, remoteVersion, reason string) string
 		runs = "an unknown agent-deck version"
 	}
 	fix := fmt.Sprintf("update it with 'agent-deck remote update %s'", remote)
-	if reason == "has [recall] enabled = false" {
+	if reason == reasonRecallOff {
 		fix = "set [recall] enabled = true in its config.toml"
 	}
 	return fmt.Sprintf("remote %q runs %s that %s; %s", remote, runs, reason, fix)
@@ -263,7 +270,7 @@ func recallRemoteCardsOff(out *CLIOutput, verb string) {
 
 func handleRecallExport(profile string, args []string) {
 	fs := newRecallFlagSet("recall export")
-	jsonOutput := fs.Bool("json", false, "Print the counts as JSON on stderr is not needed: the stream itself is NDJSON; --json prints only the trailer")
+	jsonOutput := fs.Bool("json", false, "Accepted for parity; the stream is NDJSON either way (the trailer line carries the counts)")
 	cardsOnly := fs.Bool("cards", true, "Cards only (the only export there is: bodies, offsets and paths never leave)")
 	since := fs.String("since", "", "Only sessions active since (30d, YYYY-MM-DD, or a unix timestamp from a pull cursor)")
 	fs.Usage = func() {
@@ -302,21 +309,14 @@ message body, byte offset, span or filesystem path is ever written. Needs
 		}
 		sinceT = t
 	}
-	w := io.Writer(os.Stdout)
-	var buf bytes.Buffer
-	if *jsonOutput {
-		w = &buf
-	}
-	tr, err := cards.Export(w, env.st, sinceT, time.Now())
+	tr, err := cards.Export(os.Stdout, env.st, sinceT, time.Now())
 	if err != nil {
 		out.Error("recall export: "+err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	if *jsonOutput {
-		_, _ = os.Stdout.Write(buf.Bytes())
-		return
+	if !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "exported %d session(s), %d card(s), %d artifact(s), %d edge(s)\n", tr.Sessions, tr.Cards, tr.Artifacts, tr.Edges)
 	}
-	fmt.Fprintf(os.Stderr, "exported %d session(s), %d card(s), %d artifact(s), %d edge(s)\n", tr.Sessions, tr.Cards, tr.Artifacts, tr.Edges)
 }
 
 func handleRecallImport(profile string, args []string) {

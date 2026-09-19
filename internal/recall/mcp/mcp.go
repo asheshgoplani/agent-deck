@@ -97,13 +97,13 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 		var req request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			if err := s.write(response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{codeParse, "parse error: " + err.Error()}}); err != nil {
+			if err := s.writeError(nil, codeParse, "parse error: "+err.Error()); err != nil {
 				return err
 			}
 			continue
 		}
 		if req.Method == "" {
-			if err := s.write(response{JSONRPC: "2.0", ID: idOrNull(req.ID), Error: &rpcError{codeInvalidReq, "missing method"}}); err != nil {
+			if err := s.writeError(req.ID, codeInvalidReq, "missing method"); err != nil {
 				return err
 			}
 			continue
@@ -113,19 +113,19 @@ func (s *Server) Serve(ctx context.Context) error {
 			continue
 		}
 		result, rerr := s.dispatch(ctx, req)
-		resp := response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rerr}
-		if err := s.write(resp); err != nil {
+		if err := s.write(response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rerr}); err != nil {
 			return err
 		}
 	}
 	return sc.Err()
 }
 
-func idOrNull(id json.RawMessage) json.RawMessage {
+// writeError replies with a JSON-RPC error; an absent id is written as null.
+func (s *Server) writeError(id json.RawMessage, code int, msg string) error {
 	if len(id) == 0 {
-		return json.RawMessage("null")
+		id = json.RawMessage("null")
 	}
-	return id
+	return s.write(response{JSONRPC: "2.0", ID: id, Error: &rpcError{code, msg}})
 }
 
 func (s *Server) write(resp response) error {
@@ -298,10 +298,8 @@ func (s *Server) search(ctx context.Context, raw json.RawMessage) (string, error
 		return "", badArgs("recall_search: query is required")
 	}
 	opts := query.SearchOptions{Query: a.Query, Phrase: a.Phrase, Limit: a.Limit}
-	opts.Harness, opts.Profile, opts.Project, opts.DeckID, opts.Tags = a.Harness, a.Profile, a.Project, a.Session, a.Tag
-	if len(a.Hint) > 0 {
-		opts.Hints = a.Hint
-	}
+	opts.Harness, opts.Profile, opts.Project, opts.DeckID = a.Harness, a.Profile, a.Project, a.Session
+	opts.Tags, opts.Hints = a.Tag, a.Hint
 	switch strings.ToLower(a.Role) {
 	case "":
 	case "user":
@@ -319,7 +317,7 @@ func (s *Server) search(ctx context.Context, raw json.RawMessage) (string, error
 		if err != nil {
 			return "", badArgs("recall_search: %v", err)
 		}
-		opts.Since = unixTime(ts)
+		opts.Since = time.Unix(ts, 0)
 	}
 	res, note, err := s.h.Search(ctx, opts)
 	if err != nil {
@@ -400,5 +398,3 @@ func (s *Server) context(ctx context.Context, raw json.RawMessage) (string, erro
 	}
 	return res.Text, nil
 }
-
-func unixTime(ts int64) time.Time { return time.Unix(ts, 0) }

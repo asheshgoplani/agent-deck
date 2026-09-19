@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -212,9 +213,7 @@ func (s *Searcher) excerptTurns(ctx context.Context, sessID int64) ([]recall.Tur
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for i, j := 0, len(turns)-1; i < j; i, j = i+1, j-1 {
-		turns[i], turns[j] = turns[j], turns[i]
-	}
+	slices.Reverse(turns)
 	return turns, nil
 }
 

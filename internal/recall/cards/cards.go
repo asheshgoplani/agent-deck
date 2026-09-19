@@ -148,10 +148,6 @@ func Export(w io.Writer, st *store.Store, since time.Time, now time.Time) (Trail
 		return tr, err
 	}
 	defer rows.Close()
-	type sessRef struct {
-		id                       int64
-		harness, profile, native string
-	}
 	var refs []sessRef
 	for rows.Next() {
 		var s Session
@@ -182,42 +178,66 @@ func Export(w io.Writer, st *store.Store, since time.Time, now time.Time) (Trail
 		return tr, err
 	}
 	for _, r := range refs {
-		arts, err := st.R.Query(`SELECT kind, body, body_json, producer, producer_ver, confidence, input_rev, created_at FROM artifact WHERE sess_id=? ORDER BY kind`, r.id)
+		n, err := exportArtifacts(enc, st, r)
+		tr.Artifacts += n
 		if err != nil {
 			return tr, err
 		}
-		for arts.Next() {
-			a := Artifact{Kind: KindArtifact, NativeID: r.native, Harness: r.harness, Profile: r.profile}
-			if err := arts.Scan(&a.ArtKind, &a.Body, &a.BodyJSON, &a.Producer, &a.ProducerVer, &a.Confidence, &a.InputRev, &a.CreatedAt); err != nil {
-				arts.Close()
-				return tr, err
-			}
-			if err := enc.Encode(a); err != nil {
-				arts.Close()
-				return tr, err
-			}
-			tr.Artifacts++
-		}
-		arts.Close()
-		edges, err := st.R.Query(`SELECT t.native_id, e.kind, e.weight FROM conv_edge e JOIN session t ON t.sess_id=e.to_sess WHERE e.from_sess=?`, r.id)
+		n, err = exportEdges(enc, st, r)
+		tr.Edges += n
 		if err != nil {
 			return tr, err
 		}
-		for edges.Next() {
-			e := Edge{Kind: KindEdge, FromNative: r.native, Harness: r.harness, Profile: r.profile}
-			if err := edges.Scan(&e.ToNative, &e.EdgeKind, &e.Weight); err != nil {
-				edges.Close()
-				return tr, err
-			}
-			if err := enc.Encode(e); err != nil {
-				edges.Close()
-				return tr, err
-			}
-			tr.Edges++
-		}
-		edges.Close()
 	}
 	return tr, enc.Encode(tr)
+}
+
+// sessRef is what the artifact and edge rows of one exported session need.
+type sessRef struct {
+	id                       int64
+	harness, profile, native string
+}
+
+// exportArtifacts writes the artifact rows of r and returns how many.
+func exportArtifacts(enc *json.Encoder, st *store.Store, r sessRef) (int, error) {
+	rows, err := st.R.Query(`SELECT kind, body, body_json, producer, producer_ver, confidence, input_rev, created_at FROM artifact WHERE sess_id=? ORDER BY kind`, r.id)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		a := Artifact{Kind: KindArtifact, NativeID: r.native, Harness: r.harness, Profile: r.profile}
+		if err := rows.Scan(&a.ArtKind, &a.Body, &a.BodyJSON, &a.Producer, &a.ProducerVer, &a.Confidence, &a.InputRev, &a.CreatedAt); err != nil {
+			return n, err
+		}
+		if err := enc.Encode(a); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
+}
+
+// exportEdges writes the outgoing edge rows of r and returns how many.
+func exportEdges(enc *json.Encoder, st *store.Store, r sessRef) (int, error) {
+	rows, err := st.R.Query(`SELECT t.native_id, e.kind, e.weight FROM conv_edge e JOIN session t ON t.sess_id=e.to_sess WHERE e.from_sess=?`, r.id)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		e := Edge{Kind: KindEdge, FromNative: r.native, Harness: r.harness, Profile: r.profile}
+		if err := rows.Scan(&e.ToNative, &e.EdgeKind, &e.Weight); err != nil {
+			return n, err
+		}
+		if err := enc.Encode(e); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
 }
 
 func deref(s *string) string {

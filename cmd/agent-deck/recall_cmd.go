@@ -1075,8 +1075,10 @@ func handleRecallStatus(profile string, args []string) {
 	if queued > 0 {
 		fmt.Printf("queued     %d hook line(s) waiting for the next sweep\n", queued)
 	}
-	if pending := enrichQueue[enrich.CostCheap+"/"+enrich.StatePending]; pending > 0 || enrichQueue[enrich.CostCheap+"/"+enrich.StateFailed] > 0 {
-		fmt.Printf("enrich     %d pending, %d failed: 'agent-deck recall enrich'\n", pending, enrichQueue[enrich.CostCheap+"/"+enrich.StateFailed])
+	enrichPending := enrichQueue[enrich.CostCheap+"/"+enrich.StatePending]
+	enrichFailed := enrichQueue[enrich.CostCheap+"/"+enrich.StateFailed]
+	if enrichPending > 0 || enrichFailed > 0 {
+		fmt.Printf("enrich     %d pending, %d failed: 'agent-deck recall enrich'\n", enrichPending, enrichFailed)
 	}
 	fmt.Printf("roots      %d harness dir(s), %d worker-scratch home(s)\n", len(roots), scratch)
 	for _, r := range roots {

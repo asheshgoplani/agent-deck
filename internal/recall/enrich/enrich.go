@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/classify"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/recall/store"
@@ -262,7 +263,7 @@ func (d *Drainer) fail(q queued, cause error) error {
 	}
 	backoff := time.Duration(attempts*attempts) * time.Minute
 	_, err := d.st.W.Exec(`UPDATE enrich_queue SET state=?, attempts=?, not_before=?, last_error=? WHERE sess_id=? AND kind=?`,
-		state, attempts, d.opts.Now().Add(backoff).Unix(), clip(cause.Error(), 500), q.sessID, q.kind)
+		state, attempts, d.opts.Now().Add(backoff).Unix(), recall.ClipBytes(cause.Error(), 500), q.sessID, q.kind)
 	return err
 }
 
@@ -588,11 +589,4 @@ func mustJSON(v any) string {
 		return "{}"
 	}
 	return string(b)
-}
-
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }
