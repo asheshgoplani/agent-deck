@@ -90,8 +90,23 @@ func (h *Home) restartBlockReason() string {
 		return "close the open dialog first"
 	case h.sessionActionInFlight():
 		return "a session action is still running, try again in a moment"
+	case h.autoInstallInFlight != "":
+		return h.updateInFlightReason()
 	}
 	return h.restartTargetProblem()
+}
+
+// updateInFlightReason is the block reason while the unattended updater
+// this TUI spawned is still running. The child is a plain exec.Cmd whose
+// stdout is a pipe back to this process: a re-exec closes that pipe (the
+// child dies of SIGPIPE mid remote sweep) and the new image never waits
+// for it (zombie), which is how the v1.16.11 rollout left four remotes on
+// the old build behind a "sweep in progress" marker. So the restart waits
+// for the child; the wait is bounded by the child's own timeout
+// (autoInstallTimeout), after which its context kills it and the in-flight
+// flag clears.
+func (h *Home) updateInFlightReason() string {
+	return "unattended update to v" + h.autoInstallInFlight + " is still running (remote sweep included)"
 }
 
 // tryRestartDeck is the restart_deck key handler. It either refuses with a
@@ -139,7 +154,15 @@ func (h *Home) maybeAutoRestart() tea.Cmd {
 	if reason := h.restartBlockReason(); reason != "" {
 		if time.Since(h.autoRestartLoggedAt) >= autoRestartLogEvery {
 			h.autoRestartLoggedAt = time.Now()
-			uiLog.Info("tui_auto_restart_waiting", slog.String("installed", installed), slog.String("reason", reason))
+			if h.autoInstallInFlight != "" && reason == h.updateInFlightReason() {
+				uiLog.Info("tui_restart_deferred_for_update",
+					slog.String("installed", installed),
+					slog.String("updating_to", h.autoInstallInFlight),
+					slog.Duration("running_for", time.Since(h.autoInstallAttempts[h.autoInstallInFlight]).Round(time.Second)),
+					slog.Duration("bound", autoInstallTimeout))
+			} else {
+				uiLog.Info("tui_auto_restart_waiting", slog.String("installed", installed), slog.String("reason", reason))
+			}
 		}
 		if strings.HasPrefix(reason, "new binary") {
 			// The target itself is bad: say so once, keep running the old
@@ -194,9 +217,11 @@ func (h *Home) RestartTarget() (string, bool) {
 const (
 	// restartSelectEnv carries the id of the session the cursor was on.
 	restartSelectEnv = "AGENTDECK_RESTART_SELECT"
-	// restartedFromEnv carries the version that restarted, for the
-	// "restarted into vNEW (was vOLD)" notice.
-	restartedFromEnv = "AGENTDECK_RESTARTED_FROM"
+	// RestartedFromEnv carries the version that restarted, for the
+	// "restarted into vNEW (was vOLD)" notice. Exported because main()'s
+	// startup reviver reads it before Home consumes it: a process that was
+	// just re-exec'd pauses that sweep (see startupReviveDelay).
+	RestartedFromEnv = "AGENTDECK_RESTARTED_FROM"
 )
 
 // RestartHandoff is what the new process needs to pick up where this one
@@ -221,7 +246,7 @@ func (h *Home) RestartHandoff() RestartHandoff {
 func buildRestartEnv(env []string, hand RestartHandoff) []string {
 	out := make([]string, 0, len(env)+2)
 	for _, kv := range env {
-		if strings.HasPrefix(kv, restartSelectEnv+"=") || strings.HasPrefix(kv, restartedFromEnv+"=") {
+		if strings.HasPrefix(kv, restartSelectEnv+"=") || strings.HasPrefix(kv, RestartedFromEnv+"=") {
 			continue
 		}
 		out = append(out, kv)
@@ -230,7 +255,7 @@ func buildRestartEnv(env []string, hand RestartHandoff) []string {
 		out = append(out, restartSelectEnv+"="+hand.SelectedID)
 	}
 	if hand.OldVersion != "" {
-		out = append(out, restartedFromEnv+"="+hand.OldVersion)
+		out = append(out, RestartedFromEnv+"="+hand.OldVersion)
 	}
 	return out
 }
@@ -239,7 +264,7 @@ func buildRestartEnv(env []string, hand RestartHandoff) []string {
 func parseRestartEnv(getenv func(string) string) RestartHandoff {
 	return RestartHandoff{
 		SelectedID: strings.TrimSpace(getenv(restartSelectEnv)),
-		OldVersion: strings.TrimSpace(getenv(restartedFromEnv)),
+		OldVersion: strings.TrimSpace(getenv(RestartedFromEnv)),
 	}
 }
 
@@ -248,7 +273,7 @@ func parseRestartEnv(getenv func(string) string) RestartHandoff {
 func consumeRestartEnv() RestartHandoff {
 	hand := parseRestartEnv(os.Getenv)
 	_ = os.Unsetenv(restartSelectEnv)
-	_ = os.Unsetenv(restartedFromEnv)
+	_ = os.Unsetenv(RestartedFromEnv)
 	return hand
 }
 
