@@ -151,7 +151,7 @@ func (s *Store) create() error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, stmt := range recall.AllDDL() {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("recall: create schema: %w", err)

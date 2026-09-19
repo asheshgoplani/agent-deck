@@ -62,7 +62,7 @@ func Generate(dir string, o Options) (Stats, error) {
 	if o.Projects <= 0 {
 		o.Projects = 23
 	}
-	r := rand.New(rand.NewSource(o.Seed))
+	r := rand.New(rand.NewSource(o.Seed)) //nolint:gosec // synthetic test fixture data, deterministic seed is the point
 	for f := 0; ; f++ {
 		if o.Files > 0 && f >= o.Files {
 			break
@@ -117,7 +117,7 @@ var vocabulary = func() []string {
 	config profile claude codex gemini json sqlite index search recall hint tag ticket
 	parse token bytes line record message user assistant tool result output input
 	restart stop start launch fork handoff remote host ssh local worktree group`)
-	r := rand.New(rand.NewSource(1))
+	r := rand.New(rand.NewSource(1)) //nolint:gosec // synthetic test fixture data, deterministic seed is the point
 	for i := 0; i < 4000; i++ {
 		n := 4 + r.Intn(9)
 		var sb strings.Builder

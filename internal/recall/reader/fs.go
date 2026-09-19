@@ -58,11 +58,6 @@ func fsReadDir(path string) ([]fs.DirEntry, error) {
 	return os.ReadDir(path)
 }
 
-func fsLstat(path string) (fs.FileInfo, error) {
-	fsCounts.lstat.Add(1)
-	return os.Lstat(path)
-}
-
 func fsStat(path string) (fs.FileInfo, error) {
 	fsCounts.stat.Add(1)
 	return os.Stat(path)

@@ -221,6 +221,7 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 		res.Candidates = ceiling
 		res.CeilingHit = true
 	}
+	//nolint:gosec // fragments are fixed SQL text and roleClause/filterSQL output; all values are bound via ? args, never interpolated
 	q := `WITH hits AS (` + hits + `),
 	per_sess AS (SELECT sess_id, count(*) AS n, max(ts) AS last, min(msg_id) AS first_msg FROM hits GROUP BY sess_id),
 	cards AS (SELECT rowid AS sess_id, bm25(card_fts) AS score FROM card_fts WHERE card_fts MATCH ?),
@@ -340,6 +341,7 @@ type phraseScan struct {
 // phraseInSession reads up to limit matching bodies of one session, newest
 // first. A clipped body can confirm the phrase but never refute it.
 func (s *Searcher) phraseInSession(ctx context.Context, conn *sql.Conn, match, phrase, roleSQL string, sessID int64, limit int) (r phraseScan, err error) {
+	//nolint:gosec // roleSQL is fixed text from roleClause; all values are bound via ? args, never interpolated
 	rows, err := conn.QueryContext(ctx, `SELECT m.body, m.nchars FROM msg_fts f JOIN msg m ON m.msg_id=f.rowid
 		WHERE msg_fts MATCH ? AND m.sess_id=?`+roleSQL+` ORDER BY f.rowid DESC LIMIT ?`, match, sessID, limit+1)
 	if err != nil {
@@ -597,6 +599,7 @@ func (s *Searcher) Sessions(ctx context.Context, f Filters, limit int) ([]Sessio
 	defer detach()
 	where, args := s.filterSQL(f)
 	args = append(args, limit)
+	//nolint:gosec // sessionCols is a fixed const and where is fixed text from filterSQL; all values are bound via ? args, never interpolated
 	rows, err := conn.QueryContext(ctx, `SELECT `+sessionCols+` FROM session s LEFT JOIN card c ON c.sess_id=s.sess_id WHERE 1=1`+where+
 		` ORDER BY COALESCE(s.ended_at, s.started_at, 0) DESC, s.sess_id DESC LIMIT ?`, args...)
 	if err != nil {

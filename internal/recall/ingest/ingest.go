@@ -427,7 +427,7 @@ func (in *Ingester) loadLedger() ([]*ledgerRow, map[[2]uint64]*ledgerRow, map[st
 		if err := rows.Scan(&r.srcID, &r.path, &dev, &ino, &r.size, &r.mtimeNS, &r.parsedTo, &r.prefixSig, &r.tailSig, &r.readerVer, &r.state, &r.sessID); err != nil {
 			return nil, nil, nil, err
 		}
-		r.dev, r.ino = uint64(dev), uint64(ino)
+		r.dev, r.ino = uint64(dev), uint64(ino) //nolint:gosec // dev/ino are opaque identifier bits stored as int64 for SQLite, not magnitudes
 		all = append(all, r)
 		if r.ino != 0 {
 			byKey[[2]uint64{r.dev, r.ino}] = r
@@ -617,7 +617,7 @@ func (in *Ingester) sourceBudget() *reader.Budget {
 func (in *Ingester) insertSource(ref reader.SourceRef, prefix string) (*ledgerRow, error) {
 	res, err := in.st.W.Exec(`INSERT INTO source(host_uid, harness, profile, path, dev, ino, size, mtime_ns, parsed_to, prefix_sig, reader_ver, retention_d, state, last_seen)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
-		store.LocalHostUID, ref.Harness, ref.Profile, ref.Path, int64(ref.Dev), int64(ref.Ino), ref.Size, ref.MtimeNS, prefix,
+		store.LocalHostUID, ref.Harness, ref.Profile, ref.Path, int64(ref.Dev), int64(ref.Ino), ref.Size, ref.MtimeNS, prefix, //nolint:gosec // dev/ino are opaque identifier bits stored as int64 for SQLite, not magnitudes
 		recall.ReaderVersion, ref.RetentionDays, recall.SourceOK, in.opts.Now().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("recall: insert source: %w", err)
@@ -636,7 +636,7 @@ func (in *Ingester) finishSource(row *ledgerRow, ref reader.SourceRef, parsedTo 
 	}
 	_, err := in.st.W.Exec(`UPDATE source SET size=?, mtime_ns=?, parsed_to=?, prefix_sig=?, tail_sig=?, reader_ver=?, retention_d=?, state=?, last_error=?, last_seen=?, dev=?, ino=?
 		WHERE src_id=?`, ref.Size, ref.MtimeNS, parsedTo, prefix, tail, recall.ReaderVersion, ref.RetentionDays, state, lastErr, in.opts.Now().Unix(),
-		int64(ref.Dev), int64(ref.Ino), row.srcID)
+		int64(ref.Dev), int64(ref.Ino), row.srcID) //nolint:gosec // dev/ino are opaque identifier bits stored as int64 for SQLite, not magnitudes
 	if err != nil {
 		return fmt.Errorf("recall: update source: %w", err)
 	}
@@ -653,7 +653,7 @@ func (in *Ingester) dropSourceRows(srcID int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	stmts := []string{
 		`DELETE FROM msg_fts WHERE rowid IN (SELECT msg_id FROM msg WHERE src_id=?)`,
 		`DELETE FROM msg WHERE src_id=?`,
@@ -683,7 +683,7 @@ func (in *Ingester) markMissing(row *ledgerRow) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := in.opts.Now().Unix()
 	if _, err := tx.Exec(`UPDATE source SET state=?, parsed_to=0, tail_sig='', last_error='source file missing', last_seen=? WHERE src_id=?`, recall.SourceMissing, now, row.srcID); err != nil {
 		return err
@@ -1092,7 +1092,7 @@ func (in *Ingester) projectCards(touched map[int64]bool) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, id := range ids {
 		if err := in.projectCard(tx, id); err != nil {
 			return err
