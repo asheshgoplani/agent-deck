@@ -1072,7 +1072,7 @@ func runPostUpdateRemoteSweep(ctx context.Context, remotes map[string]session.Re
 	}
 	defer end()
 	results := runRemoteUpdates(ctx, remotes, newVersion, !unattended)
-	_ = session.MarkRemoteAutoUpdateRan(time.Now())
+	_ = session.MarkRemoteAutoUpdateRan(time.Now(), newVersion)
 	return results
 }
 
@@ -1159,7 +1159,7 @@ func startRemoteAutoUpdate() {
 		if err != nil || config == nil {
 			return
 		}
-		if !session.ClaimRemoteAutoUpdateRun(settings, len(config.Remotes), time.Now()) {
+		if !session.ClaimRemoteAutoUpdateRun(settings, len(config.Remotes), Version, time.Now()) {
 			return
 		}
 		remotes := config.Remotes

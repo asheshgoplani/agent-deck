@@ -3878,7 +3878,10 @@ func handleUpdate(args []string) {
 		// leave its sweep marker and update.lock behind. Everything that
 		// matters is in the debug log; a lost stdout is just EPIPE here.
 		signal.Ignore(syscall.SIGPIPE)
-		exit(runUnattendedUpdate(realUnattendedDeps(updateTrigger(*trigger))))
+		deps, closeAudit := realUnattendedDeps(updateTrigger(*trigger))
+		code := runUnattendedUpdate(deps)
+		closeAudit()
+		exit(code)
 	}
 
 	if strings.TrimSpace(*targetVersion) != "" {

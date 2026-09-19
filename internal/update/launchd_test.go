@@ -308,8 +308,8 @@ func TestRebootstrapLaunchAgents_FailsWhenAgentNeverRuns(t *testing.T) {
 	assert.Contains(t, err.Error(), "state = waiting")
 	assert.Contains(t, err.Error(), "run: launchctl bootout gui/501/com.agentdeck.transition-notifier; launchctl bootstrap gui/501 "+plist)
 	assert.Contains(t, out.String(), "✗ com.agentdeck.transition-notifier")
-	assert.Equal(t, 20, polls, "10s budget in 500ms steps")
-	assert.Len(t, r.calls, 3+20, "bootout, bootstrap, first print, then one print per poll")
+	assert.Equal(t, 40, polls, "10s budget in 500ms steps, twice: the second round re-bootstraps from the plist")
+	assert.Len(t, r.calls, 2*(3+20), "per round: bootout, bootstrap, first print, then one print per poll")
 }
 
 func TestRebootstrapLaunchAgents_BootstrapRetriesThenFails(t *testing.T) {
@@ -336,7 +336,7 @@ func TestRebootstrapLaunchAgents_BootstrapRetriesThenFails(t *testing.T) {
 			bootstraps++
 		}
 	}
-	assert.Equal(t, 5, bootstraps)
+	assert.Equal(t, bootstrapAttempts, bootstraps, "a bootstrap launchd never accepts is a hard failure: no second round")
 }
 
 func TestRebootstrapLaunchAgents_BootoutHardFailureStops(t *testing.T) {

@@ -256,3 +256,42 @@ func TestAutoUpdate_SuppressedProcessNeverActsOnItsOwn(t *testing.T) {
 		t.Fatal("interactive process must restart on its own")
 	}
 }
+
+// A launch agent an earlier unattended run deferred (it ran inside that
+// service) is drained by the next run: the TUI starts the updater child
+// for that even when the binary on disk is current, once per hour, under
+// the same gates as an install.
+func TestAutoInstall_DrainsPendingLaunchAgents(t *testing.T) {
+	h, f := newAutoInstallTestHome(t)
+	h.updateInfo.Available = false
+	prev := pendingLaunchAgents
+	pendingLaunchAgents = func() bool { return true }
+	t.Cleanup(func() { pendingLaunchAgents = prev })
+
+	cmd := h.maybeAutoInstall(h.updateInfo)
+	if cmd == nil {
+		t.Fatal("expected the updater to run for the pending launch agent")
+	}
+	if h.autoInstallInFlight != pendingDrainKey {
+		t.Fatalf("inFlight = %q, want %q", h.autoInstallInFlight, pendingDrainKey)
+	}
+	if again := h.maybeAutoInstall(h.updateInfo); again != nil {
+		t.Fatal("no second run while one is in flight")
+	}
+	msg := cmd().(unattendedInstallFinishedMsg)
+	h.handleUnattendedInstallFinished(msg)
+	if len(f.exes) != 1 {
+		t.Fatalf("runs = %v, want one", f.exes)
+	}
+	if again := h.maybeAutoInstall(h.updateInfo); again != nil {
+		t.Fatal("the drain is retried at most once per hour")
+	}
+
+	// Gates still apply: a suppressed process never spawns the child.
+	h2, f2 := newAutoInstallTestHome(t)
+	h2.updateInfo.Available = false
+	h2.autoUpdateSuppressedReason = "CI=true"
+	if cmd := h2.maybeAutoInstall(h2.updateInfo); cmd != nil || len(f2.exes) != 0 {
+		t.Fatal("suppressed process must not drain")
+	}
+}

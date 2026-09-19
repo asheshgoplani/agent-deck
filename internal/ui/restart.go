@@ -106,6 +106,9 @@ func (h *Home) restartBlockReason() string {
 // (autoInstallTimeout), after which its context kills it and the in-flight
 // flag clears.
 func (h *Home) updateInFlightReason() string {
+	if h.autoInstallInFlight == pendingDrainKey {
+		return "the updater is still re-registering launchd agents"
+	}
 	return "unattended update to v" + h.autoInstallInFlight + " is still running (remote sweep included)"
 }
 

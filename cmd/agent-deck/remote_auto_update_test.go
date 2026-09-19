@@ -45,7 +45,7 @@ func TestRunRemoteAutoUpdate_SkipsMissingAndStamps(t *testing.T) {
 		t.Fatal("stamp must start zero in an isolated home")
 	}
 	settings := session.UpdateSettings{CheckIntervalHours: 24} // on by default
-	if !session.ClaimRemoteAutoUpdateRun(settings, 2, time.Now()) {
+	if !session.ClaimRemoteAutoUpdateRun(settings, 2, Version, time.Now()) {
 		t.Fatal("the first startup must claim the sweep")
 	}
 	results := runRemoteAutoUpdate(map[string]session.RemoteConfig{
@@ -68,7 +68,7 @@ func TestRunRemoteAutoUpdate_SkipsMissingAndStamps(t *testing.T) {
 	if session.RemoteAutoUpdateRanAt().IsZero() {
 		t.Error("the claim must stamp the run time")
 	}
-	if session.ClaimRemoteAutoUpdateRun(settings, 2, time.Now()) {
+	if session.ClaimRemoteAutoUpdateRun(settings, 2, Version, time.Now()) {
 		t.Error("a second startup right after the sweep must not sweep again")
 	}
 }

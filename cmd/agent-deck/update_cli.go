@@ -74,6 +74,9 @@ type unattendedDeps struct {
 	autoInstall bool
 	lockDir     string
 	out         io.Writer
+	// log is the run's logger (update.log + debug log, tagged with the
+	// run's identity); nil falls back to the debug log tagged with trigger.
+	log *slog.Logger
 
 	check          func() (*update.UpdateInfo, error)
 	detectHomebrew func() (execPath, upgradeCmd string, managed bool, err error)
@@ -81,6 +84,11 @@ type unattendedDeps struct {
 	install        func(latest string) error
 	updateBridge   func() error
 	hygiene        func() error
+	// drainPending re-registers launch agents an earlier run deferred
+	// because it ran inside them (update.DrainPendingRebootstrap); it runs
+	// when there is nothing to install, since an install's own hygiene
+	// covers every agent anyway.
+	drainPending func() error
 	// sweepRemotes pushes the new version to older remotes when
 	// [updates] auto_update_remotes is on (#2166); it never prompts and
 	// its failures are per-remote, never this run's.
@@ -91,7 +99,10 @@ type unattendedDeps struct {
 // changelog, no stdin. Returns the process exit code. Every branch logs with
 // the trigger so the debug log shows what a timer or TUI run did.
 func runUnattendedUpdate(d unattendedDeps) int {
-	log := unattendedLogger(d.trigger)
+	log := d.log
+	if log == nil {
+		log = unattendedLogger(d.trigger)
+	}
 	log.Info("unattended_update_start", slog.String("current", d.version))
 
 	info, err := d.check()
@@ -108,6 +119,13 @@ func runUnattendedUpdate(d unattendedDeps) int {
 	if !info.Available {
 		fmt.Fprintf(d.out, "v%s is current; nothing to do\n", d.version)
 		log.Info("unattended_skipped", slog.String("reason", "current"))
+		if d.drainPending != nil {
+			if err := d.drainPending(); err != nil {
+				fmt.Fprintf(d.out, "Launch agent still not re-registered: %v\n", err)
+				log.Error("unattended_pending_drain_failed", slog.String("err", err.Error()))
+				return exitUpdateFailed
+			}
+		}
 		return exitUpdateOK
 	}
 	if !d.autoInstall {
@@ -176,12 +194,18 @@ func unattendedLogger(trigger string) *slog.Logger {
 }
 
 // realUnattendedDeps wires runUnattendedUpdate to GitHub, the binary and
-// launchd.
-func realUnattendedDeps(trigger string) unattendedDeps {
-	log := unattendedLogger(trigger)
+// launchd. The returned func closes the audit log (update.log) after the
+// run.
+func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 	lockDir, err := ensureEffectiveCacheDir()
 	if err != nil {
 		lockDir = os.TempDir()
+	}
+	// Every line of the run goes to update.log too, so the audit trail
+	// survives the shared debug.log being rotated by another process.
+	log, closeLog, auditErr := update.OpenAuditLog(lockDir, logging.Logger(), update.NewAuditIdentity(trigger, Version))
+	if auditErr != nil {
+		log.Warn("unattended_audit_log_unavailable", slog.String("err", auditErr.Error()))
 	}
 	return unattendedDeps{
 		version:        Version,
@@ -189,6 +213,7 @@ func realUnattendedDeps(trigger string) unattendedDeps {
 		autoInstall:    session.GetUpdateSettings().GetAutoInstall(),
 		lockDir:        lockDir,
 		out:            os.Stdout,
+		log:            log,
 		check:          func() (*update.UpdateInfo, error) { return update.CheckForUpdate(Version, true) },
 		detectHomebrew: update.DetectHomebrewManagedInstall,
 		preflight: func() error {
@@ -203,29 +228,84 @@ func realUnattendedDeps(trigger string) unattendedDeps {
 		},
 		updateBridge: update.UpdateBridgePy,
 		hygiene:      func() error { return rebootstrapLaunchAgentsAfterInstall(log) },
+		drainPending: func() error { return drainPendingLaunchAgents(log) },
 		sweepRemotes: func(latest string) { sweepRemotesUnattended(latest, log) },
+	}, closeLog
+}
+
+// drainPendingLaunchAgents re-registers the launch agents a previous run
+// left in the pending marker (it ran inside them). No marker: no-op.
+func drainPendingLaunchAgents(log *slog.Logger) error {
+	if runtime.GOOS != "darwin" || !update.HasPendingRebootstrap() {
+		return nil
 	}
+	fmt.Println("Re-registering launchd agents a previous update deferred...")
+	res, err := update.DrainPendingRebootstrap(update.RebootstrapOptions{Logger: log})
+	if err != nil {
+		return err
+	}
+	for _, label := range res.Deferred {
+		fmt.Printf("  ⏸ %s: still deferred, this run is inside it\n", label)
+	}
+	return nil
 }
 
 // sweepRemotesUnattended is the unattended counterpart of
 // updateRemotesAfterLocalUpdate: with auto_update_remotes on it runs the
 // same no-prompt sweep (#2166); with it off there is nobody to answer the
-// Y/n prompt, so the remotes are left alone and the log says so.
+// Y/n prompt, so the remotes are left alone. Every way the sweep does not
+// run is logged with its reason (unattended_remote_sweep_skipped or
+// _deferred), so "the remotes are still old" is never a silent outcome.
 func sweepRemotesUnattended(latest string, log *slog.Logger) {
 	config, err := session.LoadUserConfig()
-	if err != nil || config == nil || len(config.Remotes) == 0 {
+	sweep, running := session.RemoteSweepInProgress()
+	d := unattendedSweepDecision(config, err, session.GetUpdateSettings(), sweep, running)
+	if d.reason != "" {
+		if d.deferred {
+			fmt.Printf("remote sweep deferred: %s\n", d.reason)
+			log.Info("unattended_remote_sweep_deferred", slog.String("reason", d.reason), slog.Int("remotes", d.remotes), slog.Int("sweep_pid", sweep.PID))
+		} else {
+			if d.remotes > 0 {
+				fmt.Printf("remote sweep skipped: %s\n", d.reason)
+			}
+			log.Info("unattended_remote_sweep_skipped", slog.String("reason", d.reason), slog.Int("remotes", d.remotes))
+		}
 		return
 	}
-	if !session.GetUpdateSettings().GetAutoUpdateRemotes() {
-		fmt.Println("auto_update_remotes is off; remotes left alone (run `agent-deck remote update --all` to update them)")
-		log.Info("unattended_remote_sweep_skipped", slog.String("reason", "auto_update_remotes_off"), slog.Int("remotes", len(config.Remotes)))
-		return
-	}
-	fmt.Printf("auto_update_remotes is on: updating %d remote(s) to v%s\n", len(config.Remotes), latest)
-	log.Info("unattended_remote_sweep_start", slog.Int("remotes", len(config.Remotes)), slog.String("latest", latest))
+	fmt.Printf("auto_update_remotes is on: updating %d remote(s) to v%s\n", d.remotes, latest)
+	log.Info("unattended_remote_sweep_start", slog.Int("remotes", d.remotes), slog.String("latest", latest))
 	results := runPostUpdateRemoteSweep(context.Background(), config.Remotes, latest, true)
+	if results == nil {
+		log.Info("unattended_remote_sweep_deferred", slog.String("reason", "another sweep took the marker first"))
+		return
+	}
 	fmt.Printf("\n%s\n", remoteUpdateSummary(results))
-	log.Info("unattended_remote_sweep_done", slog.Int("remotes", len(results)))
+	log.Info("unattended_remote_sweep_done", slog.Int("remotes", len(results)), slog.String("summary", remoteUpdateSummary(results)))
+}
+
+// sweepDecision is why an unattended sweep does not run ("" runs it).
+type sweepDecision struct {
+	reason   string
+	deferred bool // another sweep is running; this one is not lost, just not now
+	remotes  int
+}
+
+// unattendedSweepDecision is the pure decision behind sweepRemotesUnattended.
+func unattendedSweepDecision(config *session.UserConfig, loadErr error, settings session.UpdateSettings, sweep session.RemoteSweep, running bool) sweepDecision {
+	switch {
+	case loadErr != nil:
+		return sweepDecision{reason: "config unreadable: " + loadErr.Error()}
+	case config == nil || len(config.Remotes) == 0:
+		return sweepDecision{reason: "no remotes configured"}
+	}
+	n := len(config.Remotes)
+	switch {
+	case !settings.GetAutoUpdateRemotes():
+		return sweepDecision{reason: "auto_update_remotes is off (run `agent-deck remote update --all` to update them)", remotes: n}
+	case running:
+		return sweepDecision{reason: fmt.Sprintf("a sweep from pid %d (started %s) is still running; the next start of a newer controller sweeps again", sweep.PID, sweep.StartedAt.Format("15:04:05")), deferred: true, remotes: n}
+	}
+	return sweepDecision{remotes: n}
 }
 
 // rebootstrapLaunchAgentsAfterInstall is the post-install hygiene shared by

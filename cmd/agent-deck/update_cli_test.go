@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -78,6 +79,7 @@ func newUnattendedHarness(t *testing.T, info *update.UpdateInfo) *unattendedHarn
 		},
 		updateBridge: func() error { h.calls = append(h.calls, "bridge"); return nil },
 		hygiene:      func() error { h.calls = append(h.calls, "hygiene"); return nil },
+		drainPending: func() error { h.calls = append(h.calls, "drain"); return nil },
 		sweepRemotes: func(latest string) { h.calls = append(h.calls, "remotes "+latest) },
 	}
 	return h
@@ -99,13 +101,24 @@ func TestRunUnattendedUpdate_HappyPath(t *testing.T) {
 func TestRunUnattendedUpdate_NothingToDo(t *testing.T) {
 	h := newUnattendedHarness(t, &update.UpdateInfo{CurrentVersion: "1.16.5", LatestVersion: "1.16.5"})
 	assert.Equal(t, exitUpdateOK, runUnattendedUpdate(h.deps))
-	assert.Equal(t, []string{"check"}, h.calls)
+	assert.Equal(t, []string{"check", "drain"}, h.calls, "a current binary still drains launch agents an earlier run deferred")
 	assert.Contains(t, h.out.String(), "v1.16.5 is current; nothing to do")
 
 	h = newUnattendedHarness(t, &update.UpdateInfo{CurrentVersion: "1.16.5", LatestVersion: "1.16.5", PublishingVersion: "1.17.0"})
 	assert.Equal(t, exitUpdateOK, runUnattendedUpdate(h.deps))
 	assert.Equal(t, []string{"check"}, h.calls)
 	assert.Contains(t, h.out.String(), "v1.17.0 is still publishing")
+}
+
+// A pending launch agent that still cannot be re-registered is a loud
+// failure of the run, not a silent "current".
+func TestRunUnattendedUpdate_DrainFailureExits1(t *testing.T) {
+	h := newUnattendedHarness(t, &update.UpdateInfo{CurrentVersion: "1.16.5", LatestVersion: "1.16.5"})
+	h.deps.drainPending = func() error {
+		return errors.New("com.agentdeck.web did not come back: state = waiting; run: launchctl bootout x; launchctl bootstrap y")
+	}
+	assert.Equal(t, exitUpdateFailed, runUnattendedUpdate(h.deps))
+	assert.Contains(t, h.out.String(), "com.agentdeck.web did not come back")
 }
 
 func TestRunUnattendedUpdate_HonoursAutoInstallOff(t *testing.T) {
@@ -245,4 +258,29 @@ func TestRunTimerCommand_UnsupportedOS(t *testing.T) {
 	var out bytes.Buffer
 	assert.Equal(t, 1, runTimerCommandWith(cfg, &recordingRunner{}, "install", false, &out))
 	assert.Contains(t, out.String(), "not supported on windows")
+}
+
+// Every way the post-install remote sweep does not run has a reason the
+// log carries; a running sweep is "deferred", not "skipped".
+func TestUnattendedSweepDecision(t *testing.T) {
+	on := session.UpdateSettings{}
+	offValue := false
+	off := session.UpdateSettings{AutoUpdateRemotes: &offValue}
+	two := &session.UserConfig{Remotes: map[string]session.RemoteConfig{"a": {Host: "a"}, "b": {Host: "b"}}}
+	sweep := session.RemoteSweep{PID: 51055, StartedAt: time.Date(2026, 9, 19, 14, 35, 4, 0, time.Local)}
+
+	d := unattendedSweepDecision(nil, errors.New("boom"), on, session.RemoteSweep{}, false)
+	assert.Equal(t, "config unreadable: boom", d.reason)
+	d = unattendedSweepDecision(&session.UserConfig{}, nil, on, session.RemoteSweep{}, false)
+	assert.Equal(t, "no remotes configured", d.reason)
+	d = unattendedSweepDecision(two, nil, off, session.RemoteSweep{}, false)
+	assert.Contains(t, d.reason, "auto_update_remotes is off")
+	assert.Equal(t, 2, d.remotes)
+	assert.False(t, d.deferred)
+	d = unattendedSweepDecision(two, nil, on, sweep, true)
+	assert.True(t, d.deferred)
+	assert.Contains(t, d.reason, "pid 51055")
+	assert.Contains(t, d.reason, "14:35:04")
+	d = unattendedSweepDecision(two, nil, on, session.RemoteSweep{}, false)
+	assert.Equal(t, sweepDecision{remotes: 2}, d)
 }

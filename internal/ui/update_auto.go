@@ -65,7 +65,15 @@ var (
 	// restart on its own (go test, CI, skip env, test markers, no TTY;
 	// issue #2251). Evaluated once at startup into Home.autoUpdateSuppressed.
 	autoUpdateSuppressed = update.TUIAutoUpdateSuppressed
+	// pendingLaunchAgents reports whether an earlier unattended run left a
+	// launch agent for a later run to re-register (it ran inside that
+	// service; update.RebootstrapOptions.ServiceLabel).
+	pendingLaunchAgents = update.HasPendingRebootstrap
 )
+
+// pendingDrainKey is the autoInstallAttempts / autoInstallInFlight key of
+// a run started only to drain pending launch agents.
+const pendingDrainKey = "launchd-pending"
 
 // runUnattendedUpdateProcess is the production runUnattendedUpdate.
 func runUnattendedUpdateProcess(ctx context.Context, exe string) (string, error) {
@@ -171,22 +179,45 @@ func (h *Home) maybeAutoInstall(info *update.UpdateInfo) tea.Cmd {
 			log("tui_auto_install_skipped", slog.String("latest", info.LatestVersion), slog.String("reason", reason))
 		}
 		h.autoInstallLastSkip = reason
-		return nil
+		return h.maybeDrainPendingLaunchAgents()
 	}
 	h.autoInstallLastSkip = ""
-	version := info.LatestVersion
+	uiLog.Info("tui_auto_install_started", slog.String("exe", h.restartExecutable()), slog.String("latest", info.LatestVersion))
+	return h.startUnattendedRun(info.LatestVersion)
+}
+
+// maybeDrainPendingLaunchAgents starts the updater child for a launch agent
+// an earlier run deferred, when nothing else stops an unattended run (the
+// same gates as an install, minus "an update is available"), at most once
+// an hour.
+func (h *Home) maybeDrainPendingLaunchAgents() tea.Cmd {
+	switch {
+	case h.autoUpdateSuppressedReason != "", h.homebrewManaged, h.binaryOrphanReason != "",
+		h.autoInstallInFlight != "", h.restartExecutable() == "":
+		return nil
+	case time.Since(h.autoInstallAttempts[pendingDrainKey]) < autoInstallRetryAfter:
+		return nil
+	case !pendingLaunchAgents():
+		return nil
+	}
+	uiLog.Info("tui_launchd_pending_drain_started", slog.String("exe", h.restartExecutable()))
+	return h.startUnattendedRun(pendingDrainKey)
+}
+
+// startUnattendedRun runs the updater child on its own goroutine, keyed by
+// version (or pendingDrainKey) for the in-flight and retry bookkeeping.
+func (h *Home) startUnattendedRun(key string) tea.Cmd {
 	exe := h.restartExecutable()
 	if h.autoInstallAttempts == nil {
 		h.autoInstallAttempts = map[string]time.Time{}
 	}
-	h.autoInstallAttempts[version] = time.Now()
-	h.autoInstallInFlight = version
-	uiLog.Info("tui_auto_install_started", slog.String("exe", exe), slog.String("latest", version))
+	h.autoInstallAttempts[key] = time.Now()
+	h.autoInstallInFlight = key
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), autoInstallTimeout)
 		defer cancel()
 		out, err := runUnattendedUpdate(ctx, exe)
-		return unattendedInstallFinishedMsg{version: version, output: out, err: err}
+		return unattendedInstallFinishedMsg{version: key, output: out, err: err}
 	}
 }
 
@@ -202,7 +233,11 @@ func (h *Home) handleUnattendedInstallFinished(msg unattendedInstallFinishedMsg)
 			slog.String("latest", msg.version),
 			slog.String("error", msg.err.Error()),
 			slog.String("output", tail))
-		h.setError(fmt.Errorf("auto-update to v%s failed: %s; run agent-deck update", msg.version, firstLine(tail, msg.err.Error())))
+		if msg.version == pendingDrainKey {
+			h.setError(fmt.Errorf("re-registering launchd agents failed: %s; run agent-deck update", firstLine(tail, msg.err.Error())))
+		} else {
+			h.setError(fmt.Errorf("auto-update to v%s failed: %s; run agent-deck update", msg.version, firstLine(tail, msg.err.Error())))
+		}
 	} else {
 		uiLog.Info("tui_auto_install_finished", slog.String("latest", msg.version), slog.String("output", tail))
 	}
