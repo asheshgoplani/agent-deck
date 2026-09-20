@@ -2864,6 +2864,12 @@ type RecallSettings struct {
 	// pull`/`recall import` into it (default false). The federated query
 	// (`recall search --remote`) never depends on it: it stores nothing.
 	RemoteCards *bool `toml:"remote_cards,omitempty"`
+	// BackfillOnEnable runs one bounded background pass, from the
+	// notify-daemon's poll loop, the first time recall is enabled with an
+	// empty index or a never-finished initial backfill (default true;
+	// issue #2329). It throttles instead of refusing under load, unlike
+	// the manual `recall backfill`, which still refuses without --force.
+	BackfillOnEnable *bool `toml:"backfill_on_enable,omitempty"`
 }
 
 // Recall defaults.
@@ -2900,6 +2906,12 @@ func (r RecallSettings) GetRemoteCards() bool {
 // inline (default true).
 func (r RecallSettings) GetHookSweep() bool {
 	return r.HookSweep == nil || *r.HookSweep
+}
+
+// GetBackfillOnEnable reports whether the daemon runs the one-time
+// background initial backfill (default true).
+func (r RecallSettings) GetBackfillOnEnable() bool {
+	return r.BackfillOnEnable == nil || *r.BackfillOnEnable
 }
 
 // GetMaxLoadAvg returns the load gate threshold (default 4.0).
