@@ -4910,12 +4910,25 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 //     (finding 12);
 //   - remotes absent from both fetched and failed → dropped (deconfigured).
 //
+// A remote's own `list --json` answer is untrusted wire data: nothing on the
+// client enforces that it names each session id at most once (a
+// misconfigured profile scope, a remote-side listing bug, or two profiles
+// whose sessions happen to share an id could all produce a collision), and a
+// duplicate id here used to survive straight into the flattened tree as two
+// rows for "the same" session with two different Status/Group snapshots —
+// the group and session duplication seen in the field (root cause: a
+// same-id collision inside one fetch's own slice, never de-duplicated
+// before this function's caller renders it). dedupeRemoteSessionsByID closes
+// that off at the merge point, which is the only place both this round's
+// fetch AND the carried-over previous round meet, so every path into
+// h.remoteSessions goes through the same guarantee.
+//
 // It is a pure function so the reconciliation logic is unit-testable without
 // SSH or the Bubble Tea event loop.
 func mergeRemoteSessions(prev, fetched map[string][]session.RemoteSessionInfo, failed map[string]bool) map[string][]session.RemoteSessionInfo {
 	merged := make(map[string][]session.RemoteSessionInfo, len(fetched)+len(failed))
 	for name, sess := range fetched {
-		merged[name] = sess
+		merged[name] = dedupeRemoteSessionsByID(sess)
 	}
 	for name := range failed {
 		if _, ok := merged[name]; ok {
@@ -4927,6 +4940,51 @@ func mergeRemoteSessions(prev, fetched map[string][]session.RemoteSessionInfo, f
 		}
 	}
 	return merged
+}
+
+// dedupeRemoteSessionsByID collapses same-id entries within one remote's
+// session slice to exactly one row per id, keeping the LAST occurrence's
+// data (the freshest Status/Group the remote sent this round) while leaving
+// it at its FIRST position, so the row order the remote listed stays stable
+// across a round that happens to repeat an id. Sessions with an empty ID
+// never dedupe against each other — an empty id means "no id was reported",
+// not "the same unidentified session" — matching how the rest of the
+// pipeline already treats RemoteSessionInfo.ID as the join key (buildRemote-
+// FlatItems*, remoteHeaderCounts). A slice with no collisions is returned
+// unchanged (same backing array), so the common case allocates nothing.
+func dedupeRemoteSessionsByID(sess []session.RemoteSessionInfo) []session.RemoteSessionInfo {
+	if len(sess) < 2 {
+		return sess
+	}
+	firstAt := make(map[string]int, len(sess)) // id -> first index seen
+	lastData := make(map[string]session.RemoteSessionInfo, len(sess))
+	hasDup := false
+	for i, s := range sess {
+		if s.ID == "" {
+			continue
+		}
+		if _, seen := firstAt[s.ID]; !seen {
+			firstAt[s.ID] = i
+		} else {
+			hasDup = true
+		}
+		lastData[s.ID] = s
+	}
+	if !hasDup {
+		return sess
+	}
+	out := make([]session.RemoteSessionInfo, 0, len(sess))
+	for i, s := range sess {
+		if s.ID == "" {
+			out = append(out, s)
+			continue
+		}
+		if firstAt[s.ID] != i {
+			continue // a later occurrence's data already replaced this id's kept row
+		}
+		out = append(out, lastData[s.ID])
+	}
+	return out
 }
 
 // shouldFetchRemoteSessions reports whether the periodic tick should kick off
