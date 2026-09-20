@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "about": "Shared classification rules for recall. Read by internal/recall/classify (Go, embedded) and skills/agent-deck/scripts/self-improvement/distill.py (Python, sibling copy). The two copies must be byte-identical: TestRulesJSONSharedWithDistill fails the build otherwise.",
+  "noise_types": [
+    "permission-mode",
+    "queue-operation",
+    "attachment",
+    "file-history-snapshot",
+    "ai-title",
+    "pr-link",
+    "system"
+  ],
+  "skill_load_marker": "Base directory for this skill:",
+  "heartbeat_prefixes": ["[HEARTBEAT]", "[EVENT]"],
+  "interrupt_marker": "[Request interrupted by user",
+  "meta_prefixes": [
+    "<system-reminder>",
+    "<command-name>",
+    "<local-command-stdout>",
+    "<local-command-caveat>"
+  ],
+  "clip": {
+    "arg_preview_chars": 200,
+    "assist_preview_chars": 500,
+    "user_preview_chars": 1000,
+    "error_preview_chars": 400
+  },
+  "lost_time": {
+    "slow_call_ms": 60000,
+    "error_share_min": 0.2,
+    "min_errors": 3,
+    "retry_window": 2,
+    "top_tools": 3
+  },
+  "session_kind": {
+    "heartbeat_share_min": 0.3,
+    "min_heartbeats": 3,
+    "conductor_purpose_prefix": "conductor",
+    "parent_hint_key": "parent",
+    "subagent_min_tool_calls": 0
+  },
+  "outcome": {
+    "hint_key": "outcome",
+    "error_share_failed": 0.5,
+    "min_tool_calls": 5,
+    "interrupts_abandoned": 3
+  }
+}

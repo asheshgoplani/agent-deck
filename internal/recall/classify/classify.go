@@ -1,8 +1,9 @@
-// Package classify assigns the free (T0) message class at ingest. The
-// taxonomy mirrors skills/agent-deck/scripts/self-improvement/distill.py
-// (PROMPT / USER / TOOL / ERROR / ASSIST / HEARTBEAT / SKILL_LOAD) so the Go
-// and Python paths agree on what a heartbeat or a skill load is; phase 4
-// moves the constants into a shared rules.json both read.
+// Package classify assigns the free (T0) message class at ingest and holds
+// the rules the cheap (T1) classifiers in internal/recall/enrich run on.
+// The taxonomy is skills/agent-deck/scripts/self-improvement/distill.py's
+// (PROMPT / USER / TOOL / ERROR / ASSIST / HEARTBEAT / SKILL_LOAD), and
+// since phase 4 both read it from one rules.json (rules.go), so the Go and
+// Python paths cannot drift.
 package classify
 
 import "strings"
@@ -43,11 +44,9 @@ func (c Class) String() string {
 	return "unknown"
 }
 
-// SkillLoadMarker is distill.py's SKILL_LOAD_MARKER.
-const SkillLoadMarker = "Base directory for this skill:"
-
-// interruptMarker is what Claude Code writes when the user presses Escape.
-const interruptMarker = "[Request interrupted by user"
+// SkillLoadMarker is rules.json's skill_load_marker (distill.py's
+// SKILL_LOAD_MARKER).
+var SkillLoadMarker = rules.SkillLoadMarker
 
 // Signals are the structural facts the reader observed about one record.
 type Signals struct {
@@ -79,22 +78,30 @@ func Message(text string, s Signals) Class {
 		return Heartbeat
 	case strings.Contains(t, SkillLoadMarker):
 		return SkillLoad
-	case s.IsMeta || strings.HasPrefix(t, "<system-reminder>") || strings.HasPrefix(t, "<command-name>") ||
-		strings.HasPrefix(t, "<local-command-stdout>") || strings.HasPrefix(t, "<local-command-caveat>"):
+	case s.IsMeta || hasAnyPrefix(t, rules.MetaPrefixes):
 		return Meta
 	}
 	return Prompt
 }
 
-// IsHeartbeat mirrors distill.py's is_heartbeat.
-func IsHeartbeat(text string) bool {
-	t := strings.TrimSpace(text)
-	return strings.HasPrefix(t, "[HEARTBEAT]") || strings.HasPrefix(t, "[EVENT]")
+func hasAnyPrefix(t string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
 }
 
-// IsInterrupt reports the Escape-key marker.
+// IsHeartbeat mirrors distill.py's is_heartbeat (rules.json
+// heartbeat_prefixes).
+func IsHeartbeat(text string) bool {
+	return hasAnyPrefix(strings.TrimSpace(text), rules.HeartbeatPrefix)
+}
+
+// IsInterrupt reports the Escape-key marker (rules.json interrupt_marker).
 func IsInterrupt(text string) bool {
-	return strings.HasPrefix(strings.TrimSpace(text), interruptMarker)
+	return strings.HasPrefix(strings.TrimSpace(text), rules.InterruptMarker)
 }
 
 // SkillName mirrors distill.py's extract_skill_name: the last path segment

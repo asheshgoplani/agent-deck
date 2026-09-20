@@ -2858,6 +2858,12 @@ type RecallSettings struct {
 	// the hook only queues the file for the next sweep. The synchronous
 	// Stop hook never sweeps: it appends one queue line and returns.
 	HookSweep *bool `toml:"hook_sweep,omitempty"`
+	// RemoteCards allows conversation-derived cards (titles, hints, tags,
+	// 200-character previews, derived summaries; never bodies or paths) to
+	// cross the SSH boundary: `recall export` on this machine and `recall
+	// pull`/`recall import` into it (default false). The federated query
+	// (`recall search --remote`) never depends on it: it stores nothing.
+	RemoteCards *bool `toml:"remote_cards,omitempty"`
 }
 
 // Recall defaults.
@@ -2882,6 +2888,12 @@ func (r RecallSettings) GetHarnesses() []string {
 		}
 	}
 	return out
+}
+
+// GetRemoteCards reports whether cards may cross the SSH boundary
+// (default false).
+func (r RecallSettings) GetRemoteCards() bool {
+	return r.RemoteCards != nil && *r.RemoteCards
 }
 
 // GetHookSweep reports whether the SessionEnd hook indexes its transcript
@@ -5402,7 +5414,42 @@ func GetAvailableMCPs() map[string]MCPDef {
 	if err != nil || config == nil {
 		return make(map[string]MCPDef)
 	}
-	return config.MCPs
+	return withRecallMCP(config)
+}
+
+// RecallMCPName is the built-in MCP entry for `agent-deck recall mcp`.
+const RecallMCPName = "recall"
+
+// RecallMCPDef is the definition `mcp list` shows and `mcp attach` writes
+// while [recall] enabled = true: this binary serving the index over stdio.
+// A user-defined [mcps.recall] wins over it. The command follows the hook
+// rule (hookExecutablePath): an installed binary is pinned by its stable
+// install path, an unpinnable dev build keeps the bare "agent-deck", so
+// the project's .mcp.json never names a build directory that goes away.
+func RecallMCPDef() MCPDef {
+	command := "agent-deck"
+	if exe, err := hookExecutablePath(); err == nil && exe != "" {
+		command = exe
+	}
+	return MCPDef{Command: command, Args: []string{"recall", "mcp"},
+		Description: "Recall: search, show and hand over every conversation on this machine (built-in; docs/recall.md)"}
+}
+
+// withRecallMCP returns the configured MCPs plus the built-in recall entry
+// when the index is enabled; the config's own map is never mutated.
+func withRecallMCP(config *UserConfig) map[string]MCPDef {
+	if !config.Recall.GetEnabled() {
+		return config.MCPs
+	}
+	if _, defined := config.MCPs[RecallMCPName]; defined {
+		return config.MCPs
+	}
+	out := make(map[string]MCPDef, len(config.MCPs)+1)
+	for k, v := range config.MCPs {
+		out[k] = v
+	}
+	out[RecallMCPName] = RecallMCPDef()
+	return out
 }
 
 // GetAvailableMCPNames returns sorted list of MCP names from config.toml

@@ -59,6 +59,16 @@ func BuildRequest(inst *session.Instance, peers []*session.Instance, opts Reques
 	}
 
 	var warnings []string
+	if !inst.TranscriptIsResolvableLocally() {
+		// The conversation of an --ssh session is on the remote host. Its
+		// ProjectPath is a local placeholder, so a lookup here would not
+		// miss: it would resolve a LOCAL session's transcript (#1851, door
+		// 15 in internal/session/remote_transcript_boundary.go). The
+		// report stays projected.
+		warnings = append(warnings, fmt.Sprintf(
+			"transcript not resolved, so this report is projected rather than observed: session %s runs on %s and its conversation is not on this machine", inst.ID, inst.SSHHost))
+		return req, warnings, nil
+	}
 	switch {
 	case session.IsClaudeCompatible(req.Tool):
 		// The dir the process runs under, not the dir that names its account.

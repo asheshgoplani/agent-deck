@@ -875,10 +875,13 @@ agent-deck session annotate --self --note-stdin < summary.md    # an agent, on i
 agent-deck recall search "clock skew" --since 30d --json        # needs [recall] enabled = true
 agent-deck recall search "retry budget" --harness codex --json  # one harness; --profile work narrows Claude
 agent-deck recall show <session> --turns 20 && agent-deck recall open <session>
+agent-deck recall context <session> --tier brief --into current # hand a past conversation to THIS session (any harness)
+agent-deck recall search "retry budget" --all-remotes --json     # federated: every remote searches its own index
 agent-deck remote <host> session annotate <id> --outcome worked  # hints on a remote session
+agent-deck mcp attach <session> recall                           # the built-in MCP server (recall mcp)
 ```
 
-Hints are single-valued per key (setting again replaces), tags are a set; all of it lives in the profile's state.db and survives any index rebuild. The index (`recall backfill|sweep|status|sessions|search|show|open|gc|rebuild`) is off by default, covers Claude transcripts of every profile plus Codex, pi, Gemini, OpenCode and Hermes, never runs a daemon or watcher, refuses batch work while a session is busy, and stays fresh through the Claude Stop hook, `session stop`, `worker_done` and the daemon's turn-end edge (each appends one line to `recall/queue.jsonl`; the Stop hook also indexes its own file within 150 ms). The TUI `G` key is the same search. `recall open` resumes Claude conversations and starts any bound session; other harnesses are searchable, not resumable. Phase 4 (not yet available): `recall context --into current`, remote federation, MCP. `session search` is unchanged.
+Hints are single-valued per key (setting again replaces), tags are a set; all of it lives in the profile's state.db and survives any index rebuild. The index (`recall backfill|sweep|status|sessions|search|show|open|gc|rebuild`) is off by default, covers Claude transcripts of every profile plus Codex, pi, Gemini, OpenCode and Hermes, never runs a daemon or watcher, refuses batch work while a session is busy, and stays fresh through the Claude Stop hook, `session stop`, `worker_done` and the daemon's turn-end edge (each appends one line to `recall/queue.jsonl`; the Stop hook also indexes its own file within 150 ms). The TUI `G` key is the same search. `recall open` resumes Claude conversations and starts any bound session; other harnesses are searchable, not resumable. Phase 4: `recall context <session> --into current` delivers a past conversation (card, brief or excerpt under a token budget) to the calling session through `session send`; every sweep derives `lost_time`, `session_kind` and `outcome` lines (`recall enrich` drains the rest; stale ones are marked); `recall search --remote <host>`/`--all-remotes` federates over SSH and stores nothing (an older remote is one line + exit 1); card sync (`export`/`pull`/`import`) is off unless `[recall] remote_cards = true`; `recall mcp` is an MCP server `mcp list` offers as `recall`. `session search` is unchanged.
 
 ## Configuration
 
@@ -1236,4 +1239,4 @@ Any command not in this table (session start/stop/send/output, `mcp attach`, `se
 - [goal.md](references/goal.md) - Deep dive into goal-driven worker autonomy: three-entity design, done-condition shell commands, manager loop, nudge generator, escalation bundle, implementation phases
 - [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
 - [fleet skill](../fleet/SKILL.md) - Fan out parallel child sessions and supervise them non-blockingly (`session children`)
-- [recall skill](recall/SKILL.md) - Durable session hints and tags, and the cross-harness transcript index (search/show/open, the TUI G key); context handoff and MCP in phase 4
+- [recall skill](recall/SKILL.md) - Durable session hints and tags, the cross-harness transcript index (search/show/open, the TUI G key), `recall context --into current`, derived summaries, federated remote search, card sync and the MCP server

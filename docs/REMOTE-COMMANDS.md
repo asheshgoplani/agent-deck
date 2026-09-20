@@ -41,8 +41,16 @@ Run the same command through `remote lab`. Output, JSON fields, diagnostics and 
 | `skill attach task review` | `remote lab skill attach task review` |
 | `group list --json` | `remote lab group list --json` |
 | `group reorder work --up` | `remote lab group reorder work --up` |
+| `recall search "clock skew" --json` | `remote lab recall search "clock skew" --json` |
+| `recall sessions --since 30d --json` | `remote lab recall sessions --since 30d --json` |
+| `recall show 91fd7978 --tier card --json` | `remote lab recall show 91fd7978 --tier card --json` |
+| `recall context 91fd7978 --tier brief` | `remote lab recall context 91fd7978 --tier brief` |
+| `recall export --cards` | `remote lab recall export --cards` (needs `[recall] remote_cards = true` on the server) |
+| `recall status --json` | `remote lab recall status --json` |
 
 Prefix every entry with `agent-deck`. The full `session show/output/send` forms also work remotely. Interactive attach uses the existing `agent-deck remote attach lab task` command. Other commands are rejected before execution; there is no local fallback. Interactive options such as `session start --attach` need a terminal and are better run from an SSH login.
+
+The `recall` verbs forwarded are the read-only ones above (`docs/recall.md` "Remote"); each has a closed option set, so `--into`, `--remote`, `--all-remotes`, `backfill`, `import`, `pull`, `mcp` and any unknown option are refused before SSH. `agent-deck recall search --remote lab` (or `--all-remotes`) runs the same forwarded search on each remote and merges the answers locally under the remote's name. A remote whose agent-deck predates recall, runs it with `[recall] enabled = false`, or runs v1.16.13 without the phase-4 verb asked for (`pull`, remote `context`, remote `export`), answers with one line (`remote "lab" runs v1.16.12 that predates recall; update it with 'agent-deck remote update lab'`), exit 1, and `{"error", "remote", "remote_version"}` under `--json`. Card sync (`recall pull lab`) is off unless both ends set `[recall] remote_cards = true`; it carries titles, hints, tags, previews and derived summaries, never message bodies, offsets or paths.
 
 `--message-file` is the path exception: the file is read on your computer and streamed through SSH stdin. Use `--message-file -` for a pipeline. Inline messages and all other path arguments retain their ordinary meanings on the server. Repeated message-file options use the last value, matching the local flag parser.
 

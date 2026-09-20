@@ -68,6 +68,14 @@ func remoteCommandArgs(args []string) ([]string, error) {
 					return append([]string(nil), args...), nil
 				}
 			}
+		case "recall":
+			// Read-only forwards over the remote's own index; the option
+			// set is closed (remoteRecallOptions) so a delivery (--into),
+			// a second hop (--remote) or an unknown flag never travels.
+			if err := validateRemoteRecallArgs(args[1:]); err != nil {
+				return nil, err
+			}
+			return append([]string(nil), args...), nil
 		}
 	}
 	return nil, fmt.Errorf("unsupported remote command %q; run 'agent-deck remote' for supported commands", strings.Join(args, " "))
@@ -169,7 +177,10 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	// The boolean options of launch/start/send do not consume a following token.
 	// Unknown options are conservatively treated as value-taking: they must never
 	// cause a flag-shaped value to be opened as a controller file.
-	boolOptions := " json quiet q no-wait wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts "
+	// The recall booleans (phrase, subagents, no-sweep, cards, full, raw,
+	// yes) are listed too, so a forwarded recall verb can never have one
+	// of them mis-shifted as value-taking.
+	boolOptions := " json quiet q no-wait wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts phrase subagents no-sweep cards full raw yes "
 	// Creation booleans come from the same registered parser as capabilities.
 	// Otherwise a new boolean can swallow --message-file as its apparent value.
 	if args[0] == "launch" {
@@ -286,10 +297,10 @@ func runRemoteExec(name string, args []string) (int, error) {
 	var stdout io.Writer = os.Stdout
 	var stderr io.Writer = os.Stderr
 	var capturedOut, capturedErr bytes.Buffer
-	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) || isSessionAnnotateArgs(args) {
+	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) || isSessionAnnotateArgs(args) || isRecallArgs(args) {
 		stderr = &capturedErr
 	}
-	if isSessionAnnotateArgs(args) {
+	if isSessionAnnotateArgs(args) || isRecallArgs(args) {
 		stdout = &capturedOut
 	}
 	err = runner.RunIO(context.Background(), input, stdout, stderr, args...)
@@ -301,6 +312,16 @@ func runRemoteExec(name string, args []string) (int, error) {
 		}
 		if msg, ok := remotePrimerUnsupported(name, args, exitErr.ExitCode(), capturedErr.String()); ok {
 			return 2, errors.New(msg)
+		}
+		if reason, ok := remoteRecallUnsupported(args, exitErr.ExitCode(), capturedOut.String(), capturedErr.String()); ok {
+			// The phase-1 annotate precedent: one line naming the remote's
+			// version, exit 1, {error, remote, remote_version} under --json.
+			remoteVersion, _ := runner.CheckBinary(context.Background())
+			if wantsJSON(args) {
+				_, _ = os.Stdout.Write(remoteRecallUnsupportedJSON(name, remoteVersion, reason))
+				return 1, nil
+			}
+			return 1, errors.New(remoteRecallUnsupportedMessage(name, remoteVersion, reason))
 		}
 		if remoteAnnotateUnsupported(args, exitErr.ExitCode(), capturedErr.String()) {
 			// Only now is the extra round trip worth it: name the version the

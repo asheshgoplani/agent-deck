@@ -105,6 +105,12 @@ type Hit struct {
 	PhraseChecked bool `json:"phrase_checked,omitempty"`
 	// Sidechain marks a subagent transcript.
 	Sidechain bool `json:"sidechain,omitempty"`
+	// HostUID and DigestOnly mark a card pulled from another machine.
+	HostUID    string `json:"host_uid,omitempty"`
+	DigestOnly bool   `json:"digest_only,omitempty"`
+	// Remote is the alias of the remote that answered a federated search
+	// (set by the CLI, never by the index).
+	Remote string `json:"remote,omitempty"`
 }
 
 // SearchResult is what `recall search` prints.
@@ -229,7 +235,8 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	cand AS (SELECT sess_id FROM per_sess UNION SELECT sess_id FROM cards)
 	SELECT s.sess_id, s.harness, s.profile, s.native_id, s.deck_id, COALESCE(s.title,''), COALESCE(s.cwd,''),
 		COALESCE(s.started_at,0), COALESCE(s.ended_at,0), COALESCE(p.n,0), c.score IS NOT NULL, COALESCE(p.first_msg,0), s.is_sidechain,
-		EXISTS(SELECT 1 FROM source src WHERE src.sess_id=s.sess_id AND src.state=` + strconv.Itoa(recall.SourceMissing) + `)
+		EXISTS(SELECT 1 FROM source src WHERE src.sess_id=s.sess_id AND src.state=` + strconv.Itoa(recall.SourceMissing) + `),
+		s.host_uid, s.digest_only
 	FROM cand JOIN session s ON s.sess_id=cand.sess_id
 	LEFT JOIN per_sess p ON p.sess_id=s.sess_id LEFT JOIN cards c ON c.sess_id=s.sess_id
 	WHERE 1=1` + where + `
@@ -247,13 +254,16 @@ func (s *Searcher) Search(ctx context.Context, o SearchOptions) (SearchResult, e
 	for rows.Next() {
 		var h Hit
 		var firstMsg int64
-		var cardHit, sidechain, missing int
+		var cardHit, sidechain, missing, digest int
 		if err := rows.Scan(&h.SessID, &h.Harness, &h.Profile, &h.NativeID, &h.DeckID, &h.Title, &h.CWD, &h.StartedAt, &h.EndedAt,
-			&h.BodyHits, &cardHit, &firstMsg, &sidechain, &missing); err != nil {
+			&h.BodyHits, &cardHit, &firstMsg, &sidechain, &missing, &h.HostUID, &digest); err != nil {
 			rows.Close()
 			return res, err
 		}
-		h.CardHit, h.Sidechain, h.Missing = cardHit == 1, sidechain == 1, missing == 1
+		h.CardHit, h.Sidechain, h.Missing, h.DigestOnly = cardHit == 1, sidechain == 1, missing == 1, digest == 1
+		if h.HostUID == store.LocalHostUID {
+			h.HostUID = ""
+		}
 		res.Hits = append(res.Hits, h)
 		firsts = append(firsts, firstMsg)
 	}
@@ -567,6 +577,10 @@ type SessionRow struct {
 	Tags       string  `json:"tags,omitempty"`
 	Messages   int     `json:"messages,omitempty"`
 	CostUSD    float64 `json:"cost_usd,omitempty"`
+	// HostUID and DigestOnly mark a card imported from another machine
+	// (recall pull): no bodies are here, and every listing says so.
+	HostUID    string `json:"host_uid,omitempty"`
+	DigestOnly bool   `json:"digest_only,omitempty"`
 }
 
 // sessionCols selects a SessionRow from session s LEFT JOIN card c: the
@@ -576,15 +590,19 @@ var sessionCols = `s.sess_id, s.harness, s.profile, s.native_id, s.deck_id, COAL
 	COALESCE(s.started_at,0), COALESCE(s.ended_at,0), s.turns, s.tool_calls, s.errors, s.interrupts, s.compacts, s.in_tok, s.out_tok, s.cache_r, s.cache_w,
 	COALESCE(s.model,''), s.is_sidechain, COALESCE(c.preview,''), COALESCE(c.hints,''), COALESCE(c.tags,''), s.derived_rev,
 	COALESCE((SELECT path FROM source src WHERE src.sess_id=s.sess_id AND src.state<>` + strconv.Itoa(recall.SourceQuarantined) + ` ORDER BY src.state LIMIT 1),''),
-	EXISTS(SELECT 1 FROM source src WHERE src.sess_id=s.sess_id AND src.state=` + strconv.Itoa(recall.SourceMissing) + `)`
+	EXISTS(SELECT 1 FROM source src WHERE src.sess_id=s.sess_id AND src.state=` + strconv.Itoa(recall.SourceMissing) + `),
+	s.host_uid, s.digest_only`
 
 func scanSession(sc interface{ Scan(...any) error }) (SessionRow, error) {
 	var r SessionRow
-	var sidechain, missing int
+	var sidechain, missing, digest int
 	err := sc.Scan(&r.SessID, &r.Harness, &r.Profile, &r.NativeID, &r.DeckID, &r.Title, &r.TitleSrc, &r.CWD, &r.Branch,
 		&r.StartedAt, &r.EndedAt, &r.Turns, &r.ToolCalls, &r.Errors, &r.Interrupts, &r.Compacts, &r.InTok, &r.OutTok, &r.CacheR, &r.CacheW,
-		&r.Model, &sidechain, &r.Preview, &r.Hints, &r.Tags, &r.DerivedRev, &r.Path, &missing)
-	r.Sidechain, r.Missing = sidechain == 1, missing == 1
+		&r.Model, &sidechain, &r.Preview, &r.Hints, &r.Tags, &r.DerivedRev, &r.Path, &missing, &r.HostUID, &digest)
+	r.Sidechain, r.Missing, r.DigestOnly = sidechain == 1, missing == 1, digest == 1
+	if r.HostUID == store.LocalHostUID {
+		r.HostUID = ""
+	}
 	return r, err
 }
 
@@ -643,10 +661,13 @@ type ToolStat struct {
 
 // Detail is `recall show` for one session.
 type Detail struct {
-	Session  SessionRow `json:"session"`
-	Tools    []ToolStat `json:"tools,omitempty"`
-	Files    []string   `json:"files,omitempty"`
-	Messages []Message  `json:"messages,omitempty"`
+	Session SessionRow `json:"session"`
+	Tools   []ToolStat `json:"tools,omitempty"`
+	Files   []string   `json:"files,omitempty"`
+	// Artifacts are the derived rows (enrich), each marked stale when the
+	// session moved since it was produced; present in every tier.
+	Artifacts []Artifact `json:"artifacts,omitempty"`
+	Messages  []Message  `json:"messages,omitempty"`
 	// Truncated reports messages left out by --turns.
 	Truncated int `json:"truncated,omitempty"`
 }
@@ -714,6 +735,9 @@ func (s *Searcher) Show(ctx context.Context, ref string, turns int) (Detail, err
 		return d, err
 	}
 	if d.Files, err = s.touchedFiles(ctx, sess.SessID); err != nil {
+		return d, err
+	}
+	if d.Artifacts, err = s.Artifacts(ctx, sess.SessID); err != nil {
 		return d, err
 	}
 	if err := s.st.R.QueryRowContext(ctx, `SELECT count(*) FROM msg WHERE sess_id=?`, sess.SessID).Scan(&d.Session.Messages); err != nil {

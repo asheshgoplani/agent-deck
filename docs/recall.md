@@ -496,7 +496,211 @@ hook_sweep = true        # the async SessionEnd hook indexes its own transcript 
 - `recall open` and the TUI resume Claude conversations only; other
   harnesses need a registered session to jump to.
 
-## Later phases
+## Phase 4: analysis, remote, handoff, MCP
 
-Phase 4: analysis queue, remote federation, `recall context --into
-current`, MCP.
+Still behind `[recall] enabled = true`. Phase 4 adds the cheap analysis
+layer, the remote surface (federated by default, card sync opt-in), the
+context handoff into any session, and an MCP server over the same index.
+
+### Analysis: rules.json, the queue, the artifacts
+
+One taxonomy, one file. `internal/recall/classify/rules.json` holds the
+noise record types, the skill-load marker, the heartbeat prefixes, the
+interrupt marker, the meta prefixes and the clip lengths that
+`distill.py` used to carry as constants, plus the thresholds of the three
+phase-4 classifiers. The Go side embeds it; `distill.py` reads the copy
+beside itself (`skills/agent-deck/scripts/self-improvement/rules.json`);
+`TestRulesJSONSharedWithDistill` fails the build when the two differ, so
+the Go and Python paths cannot drift.
+
+`enrich_queue` is filled from one place: every card re-projection (a
+content change bumped `derived_rev`, or hints changed in `state.db`)
+queues the three cheap kinds for that session. Every sweep drains what
+it queued within what is left of its budget, so a backfill leaves every
+session classified and an interactive 150 ms pass never overruns on
+classification; `agent-deck recall enrich` drains the rest (same load
+gate, exit 3 while a session is busy; `--kind`, `--limit`, `--budget`,
+`--retry-failed`). There are no worker goroutines: a drain is a bounded
+pass in the caller's goroutine, like the sweep, which is what the
+no-daemon test enforces.
+
+The classifiers run on SQL rows only, never by re-reading a transcript:
+
+| kind | reads | says |
+|---|---|---|
+| `lost_time` | `tool_call` (name, error, duration), `session.interrupts`, `session.compacts` | tools that errored often (`error_share_min`, `min_errors`) or looped on retries (`retry_window`), calls over `slow_call_ms`, interrupts, compactions; "no time lost to tool errors, retries or interrupts" otherwise |
+| `session_kind` | `session.is_sidechain`, the card's hints (`purpose`, `parent`), `msg` class counts | `subagent`, `conductor` (a `purpose=conductor ...` hint, or heartbeats over `heartbeat_share_min` of user messages), `worker` (a `parent` hint), `interactive` |
+| `outcome` | the card's `outcome` hint, `session.errors`/`tool_calls`, `session.interrupts` | the annotated outcome (confidence 1), else `abandoned?` (interrupts at or over `interrupts_abandoned`), `failed?` (error share over `error_share_failed` with at least `min_tool_calls` calls), else `unknown` with the annotate command |
+
+Every artifact row records `producer` (`rules`), `producer_ver` (the
+rules version), `confidence` and `input_rev`, the session's `derived_rev`
+when it was produced. `recall show` (every tier) and `recall context`
+(`brief` and `excerpt` in text; every tier under `--json`, where each
+artifact carries `stale`) print the artifacts, and one whose `input_rev`
+is below the session's current `derived_rev` reads `[stale: session
+changed since; run 'agent-deck recall enrich']`: visible, never silently
+wrong. The ingest queues the classifiers in the same transaction that
+bumps `derived_rev`, and every drain (the sweep's and `recall enrich`)
+first queues every local session whose artifacts are stale or missing
+(`enrich.RequeueStale`, reported as `requeued`), so the marker's advice
+always holds: `recall enrich` after a stale marker rewrites the artifact.
+`--cost-class llm` exists as a name only: LLM enrichment is never drained
+automatically and the command says so (exit 1).
+
+### Context handoff: `recall context`
+
+```bash
+agent-deck recall context <session> [--tier card|brief|excerpt] [--budget 4000] [--into current|<session>] [--json]
+```
+
+Three tiers, each explicitly requested: `card` (about 60 tokens: title,
+harness, conversation and deck ids, project, dates, counters, hints,
+tags), `brief` (the card plus the derived artifacts, stale ones marked,
+and the touched files, at most 12 and never past the budget), `excerpt`
+(the brief plus the newest prompts, assistant turns and compaction
+summaries that fit `--budget` tokens, oldest cut first, superseded
+history and harness plumbing never included; the brief is cut to half
+the budget first so a small budget still yields turns, not a file list
+followed by one truncated turn). The text is plain and harness-neutral: no Claude or Codex
+instruction in it, a closing line that says it is recalled context and
+not an instruction.
+
+`--into current` resolves `AGENTDECK_INSTANCE_ID`, which agent-deck
+exports into every session it starts, and delivers the text to that
+session through `session send` (readiness wait, composer guard, the tmux
+keystroke path, or the Claude messaging socket when `send_transport =
+"auto"` is set). A Codex session running `agent-deck recall context <sess>
+--into current` from its shell therefore receives a Claude conversation
+in its own prompt. `--into <id|title>` delivers to another session.
+Outside a session `--into current` exits 2 and names the variable. An
+`--ssh` target would receive the text over SSH as keystrokes: it is
+refused (exit 2) unless `[recall] remote_cards = true`, the same switch
+that lets cards cross SSH.
+
+The end-to-end test of this (`TestRecallContext_IntoCurrent_ShellCallerEndToEnd`)
+runs the command from a plain shell session on a real tmux server and
+reads the delivered text back from that pane: it proves the
+`AGENTDECK_INSTANCE_ID` resolution and the tmux keystroke path, which is
+the path a Codex target takes too, not a Codex composer accepting the
+prompt (a Codex target needs a live rollout identity the fixture cannot
+mint). The design's Codex-recalls-Claude test with a real Codex
+composer is open.
+
+The renderer is `handoff.go`'s, generalized: `session handoff` and
+`recall context` share `recall.TailByChars` and `recall.RenderTurns`;
+`session handoff` itself is unchanged and still reads only through its
+gated transcript path (doors 10 and 11), while `recall context` reads the
+index and delivers through `session send`, so it resolves no transcript
+from an `Instance` and adds no door. A card pulled from another machine
+stops at `brief` (exit 2 for `excerpt`, with the `remote <host> recall
+show` command to run).
+
+### Remote
+
+Three modes, in the order the design ranks them:
+
+1. **Federated query, the default, nothing stored.** `recall search
+   --remote <host>` (repeatable) or `--all-remotes` runs `agent-deck
+   recall search <q> <filters> --json` on each configured remote over SSH
+   (one round trip each, 1 to 2 s dominated by the handshake), prints its
+   hits under the remote's name labelled `remote <host>`, and returns
+   them in `remotes[]` under `--json`. Remotes rank on their own index;
+   hits are not re-ranked here. `agent-deck remote <host> recall
+   search|sessions|show|context|export|status ...` forwards the same
+   read-only verbs directly; the option set per verb is closed
+   (`remoteRecallOptions`), so `--into`, `--remote`, `--all-remotes`, any
+   write verb and any unknown option are refused before SSH, and the
+   booleans are known to the forwarder so none is ever mis-shifted as
+   value-taking.
+
+   Older remotes degrade as `session annotate` did in phase 1: a remote
+   whose agent-deck predates recall (v1.16.12 and older), runs v1.16.13
+   with `[recall] enabled = false`, or runs v1.16.13 without a phase-4
+   verb it was asked for (`pull`, remote `context`, remote `export`, all
+   answering `unknown recall command: <verb>`) is reported in one line,
+   `remote "lab" runs v1.16.12 that predates recall; update it with
+   'agent-deck remote update lab'` (or `... that has [recall] enabled =
+   false; set [recall] enabled = true in its config.toml`, or `... that
+   predates recall context; update it with ...`), the command exits 1,
+   and under `--json` the remote's entry (or the whole output of the
+   forwarded form) is `{"error", "remote", "remote_version"}`. The one
+   classifier (`remoteRecallUnsupported`) covers all three shapes for
+   every surface (forwarded, federated search, `pull`), so the remote's
+   own usage or JSON text is never forwarded.
+2. **Card sync, opt-in, derived only.** Off by default: `[recall]
+   remote_cards = true` on both ends turns it on. `recall export --cards`
+   writes NDJSON: a header with this machine's `host_uid` (32 hex
+   characters minted once and kept in `recall.db`'s `meta`), then
+   `session`, `card`, `artifact` and `edge` rows, then a trailer. It
+   never emits a message body, a byte offset, a span or a filesystem
+   path; the only conversation text is the card's 200-character preview,
+   and `TestExport_NeverEmitsOffsetsSpansBodiesOrPaths` asserts all of
+   it. `recall pull <host>` runs that export on the remote from the last
+   pull's cursor and imports it here; `recall import --host <alias>
+   [file|-]` imports a saved stream. An import is refused when no
+   `--host` is given, when the stream carries no `host_uid`, when the
+   `host_uid` disagrees with the one recorded for that alias (a renamed
+   or repointed remote), when the same `host_uid` is already imported
+   under another alias (it would double every card), and when the stream
+   is this machine's own. Imported rows carry the remote's `host_uid`,
+   `digest_only = 1`, `is_local = 0` on the host row (no default, fails
+   closed), and every listing labels them `card from <host_uid> (no
+   messages here)`; `recall show` has no messages for them and `recall
+   context` stops at `brief`. The incremental pull's cursor is the last
+   `exported_at`; an export includes every session active since and
+   every session whose artifacts were rewritten since, so a hint change
+   on an old session (its re-drain rewrites the artifacts) reaches the
+   puller without `--full`.
+3. **Raw fetch** (`recall fetch <host> <session> --raw --yes`) is not
+   built: nothing in phase 4 moves transcript bytes across SSH.
+
+`remote_transcript_boundary.go` now lists recall's doors (17
+`RecallNotifyInstance`, 18 the daemon hand-off worker) and
+`TestRemoteTranscriptBoundary_EveryEntryPointRefuses` walks every door
+as one table: the remote instance refuses, the local one still resolves.
+Door 15 (`sessionhost.BuildRequest`) stays: it exists, resolves through
+door 4 and then directly against per-instance config dirs, and is now
+gated itself (its own package's test plants a local transcript at the
+placeholder path and sees it refused).
+
+### MCP
+
+`agent-deck recall mcp` is a Model Context Protocol server over stdio
+(newline-delimited JSON-RPC 2.0; `initialize`, `ping`, `tools/list`,
+`tools/call`) exposing `recall_search`, `recall_show` and
+`recall_context` with the same arguments as the CLI. A tool failure (no
+such session, index off) comes back as a tool result with `isError`, so
+the model can read it; a bad argument is a JSON-RPC invalid-params
+error. It reads the same index the CLI does, runs the same bounded sweep
+before a search, and exits when stdin closes. While `[recall] enabled =
+true`, `agent-deck mcp list` shows it as the built-in `recall` entry
+(this binary, `recall mcp`), so `agent-deck mcp attach <session> recall`
+followed by `session restart` attaches it per session like any other
+MCP; a user-defined `[mcps.recall]` wins over the built-in. For a harness
+without MCP, the `--json` CLI stays the fallback.
+
+### Config
+
+```toml
+[recall]
+remote_cards = false     # let cards (never bodies or paths) cross SSH: export / pull / import
+```
+
+### What did not survive contact with the code
+
+- "Bounded workers" for the queue are bounded passes, not goroutines:
+  the load-guarantee test forbids a goroutine launch anywhere under
+  `internal/recall`, and a drain that runs in the sweep's goroutine and
+  ends with it is the same guarantee the sweep gives.
+- `host_uid` is minted by recall itself (`meta.host_uid`) and carried in
+  the export header, not fetched through the forwarded `status` call:
+  agent-deck has no machine id of its own (the telemetry install id is
+  opt-in and rotatable), and the header costs no extra round trip.
+- Door 15 exists (`internal/ctxinspect/sessionhost.BuildRequest`
+  resolves through `GetJSONLPathChecked`, door 4, and then directly);
+  it is kept in the list and gated instead of being removed.
+- `recall fetch` (raw transcript bytes over SSH into a quarantined
+  directory) is not built.
+- The excerpt tier reads at most the newest 400 conversational rows
+  before the character budget trims them, so a 100 MB conductor
+  transcript is never decompressed whole for a 4,000-token excerpt.

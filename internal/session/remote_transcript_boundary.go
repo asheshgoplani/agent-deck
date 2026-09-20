@@ -9,7 +9,8 @@ package session
 // doors while the commit message called the rule unconditional. So the doors
 // are listed here, each one gated on Instance.TranscriptIsResolvableLocally(),
 // and TestRemoteTranscriptBoundary_EveryEntryPointRefuses in
-// issue1851_remote_transcript_boundary_test.go exercises the list.
+// issue1851_remote_transcript_boundary_test.go walks the list as one table
+// (the per-door tests in that file are its long form).
 //
 // Why a hit is worse than a miss: an --ssh session stores a LOCAL placeholder
 // in ProjectPath (defaulting to the directory `add --ssh` ran in). Every lookup
@@ -42,10 +43,32 @@ package session
 //
 // Outside package session:
 //
-// 15. internal/ctxinspect/sessionhost.BuildRequest — its retry ladder re-resolves
-//     against per-instance config dirs
+// 15. internal/ctxinspect/sessionhost.BuildRequest — resolves the transcript
+//     through GetJSONLPathChecked (door 4) and then, when that finds nothing,
+//     directly against per-instance config dirs, so it is gated itself before
+//     any lookup (TestBuildRequestNeverResolvesARemoteSessionsTranscriptLocally
+//     in its own package). The recall design notes said this door did not
+//     exist; it does.
 // 16. cmd/agent-deck streamSessionSend — polls for a local transcript that can
 //     never appear
+//
+// Recall (docs/recall.md), phase 3 and 4:
+//
+// 17. RecallNotifyInstance / recallInstanceTranscript (recall_notify.go) —
+//     resolves the instance's transcript (Claude jsonl, Codex rollout, pi
+//     session file) and queues it for the index; a remote session queues
+//     nothing, so its placeholder never names a local file to index
+// 18. RecallNotifyInstanceAsync -> recallNotifyBatch (recall_notify.go) — the
+//     daemon's hand-off, gated again in the worker because the instance
+//     may be re-read there
+//
+// Recall has no other door: the index binds a conversation to a deck session
+// only through an authoritative session_links row (RecallRegistry.DeckID),
+// never by ProjectPath, and `recall context --into` delivers text to a
+// session through `session send`; it resolves no transcript from an Instance.
+// A card pulled from another machine (digest_only=1) carries that machine's
+// host_uid and no path; is_local on the host row has no default, so an
+// imported row can never read as local (fail closed, design 10).
 //
 // claudeTranscriptDir (instance.go) is deliberately NOT gated: it is a collision
 // KEY, never opened as a path, and it is keyed on the remote location precisely

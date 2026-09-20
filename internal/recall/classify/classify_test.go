@@ -1,6 +1,11 @@
 package classify
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestMessage(t *testing.T) {
 	cases := []struct {
@@ -47,5 +52,43 @@ func TestSkillName(t *testing.T) {
 func TestString(t *testing.T) {
 	if Heartbeat.String() != "heartbeat" || Class(99).String() != "unknown" {
 		t.Fatal("String")
+	}
+}
+
+// TestRulesJSONSharedWithDistill is the drift guard: the embedded rules and
+// the copy distill.py reads beside itself must be the same bytes.
+func TestRulesJSONSharedWithDistill(t *testing.T) {
+	root := moduleRootDir(t)
+	sibling, err := os.ReadFile(filepath.Join(root, "skills", "agent-deck", "scripts", "self-improvement", "rules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sibling, RulesJSON()) {
+		t.Fatal("skills/agent-deck/scripts/self-improvement/rules.json differs from internal/recall/classify/rules.json: copy one over the other")
+	}
+	r := Current()
+	if !r.IsNoise("attachment") || r.IsNoise("user") || r.Clip.AssistPreviewChars != 500 || r.LostTime.SlowCallMS <= 0 || r.Outcome.HintKey != "outcome" {
+		t.Fatalf("rules: %+v", r)
+	}
+	if _, err := ParseRules([]byte(`{"version":1}`)); err == nil {
+		t.Fatal("a rules.json without the markers must be refused")
+	}
+}
+
+func moduleRootDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
+		}
+		dir = parent
 	}
 }

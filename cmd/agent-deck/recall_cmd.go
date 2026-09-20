@@ -16,6 +16,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/recall"
+	"github.com/asheshgoplani/agent-deck/internal/recall/enrich"
 	"github.com/asheshgoplani/agent-deck/internal/recall/ingest"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
@@ -40,15 +41,21 @@ Search and inspect every conversation on this machine, across harnesses
 hints and tags live in state.db and survive a rebuild.
 
 Commands:
-  search "<q>"     Full-text search over messages, titles and hints
+  search "<q>"     Full-text search over messages, titles and hints (--remote <host> / --all-remotes federate)
   sessions         List indexed sessions (newest first)
-  show <session>   One session: card, tools, files, messages
+  show <session>   One session: card, derived summary, tools, files, messages
+  context <session>  Render a session as context for any harness; --into current delivers it to this session
   open <session>   Relaunch a session (start its deck session, or resume a Claude conversation)
+  enrich           Drain the classifier queue (where did we lose time, session kind, outcome)
   status           Index size, sources by state, what is pending
   backfill         Index all history (resumable; refuses while sessions are busy)
   sweep            Index what changed since the last sweep
   gc               Reclaim space from vanished transcripts
   rebuild          Delete the index and backfill again
+  export           Emit this machine's session cards (no bodies, no paths) for a remote to pull
+  import           Import cards exported elsewhere (--host <alias> required)
+  pull <host>      Run export on a remote and import its cards ([recall] remote_cards = true)
+  mcp              Serve search/show/context to an agent as an MCP server over stdio
 
 Every command accepts --json and --help. <session> is a #number from a
 listing, a harness conversation id (or unique prefix), or an agent-deck
@@ -57,7 +64,9 @@ session id. The TUI's G key is the same search over the same index.
 Examples:
   agent-deck recall search "clock skew" --since 30d --profile work
   agent-deck recall search SB-412 --hint ticket=SB-412 --phrase
+  agent-deck recall search "retry budget" --all-remotes --json
   agent-deck recall show 91fd7978 --turns 20
+  agent-deck recall context 91fd7978 --tier brief --into current
   agent-deck recall backfill --budget 5m`)
 }
 
@@ -78,6 +87,18 @@ func handleRecall(profile string, args []string) {
 		handleRecallShow(profile, args[1:])
 	case "open":
 		handleRecallOpen(profile, args[1:])
+	case "context":
+		handleRecallContext(profile, args[1:])
+	case "enrich":
+		handleRecallEnrich(profile, args[1:])
+	case "export":
+		handleRecallExport(profile, args[1:])
+	case "import":
+		handleRecallImport(profile, args[1:])
+	case "pull":
+		handleRecallPull(profile, args[1:])
+	case "mcp":
+		handleRecallMCP(profile, args[1:])
 	case "status":
 		handleRecallStatus(profile, args[1:])
 	case "backfill":
@@ -335,6 +356,37 @@ func registerRecallFilters(fs *flag.FlagSet) *recallFilterFlags {
 	return f
 }
 
+// forwardArgs re-expresses the parsed filters as flags for a remote's own
+// `recall search`; --project is the remote's path, resolved there.
+func (f *recallFilterFlags) forwardArgs() []string {
+	var out []string
+	add := func(flag, v string) {
+		if v != "" {
+			out = append(out, "--"+flag, v)
+		}
+	}
+	add("harness", f.harness)
+	add("profile", f.profile)
+	add("project", f.project)
+	add("since", f.since)
+	add("session", f.deck)
+	keys := make([]string, 0, len(f.hints))
+	for k := range f.hints {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, "--hint", k+"="+f.hints[k])
+	}
+	for _, t := range f.tags {
+		out = append(out, "--tag", t)
+	}
+	if f.sidechains {
+		out = append(out, "--subagents")
+	}
+	return out
+}
+
 func (f *recallFilterFlags) filters() (query.Filters, error) {
 	q := query.Filters{Harness: f.harness, Profile: f.profile, Tags: f.tags, DeckID: f.deck, IncludeSidechains: f.sidechains}
 	if f.project != "" {
@@ -424,14 +476,23 @@ func handleRecallSearch(profile string, args []string) {
 	phraseScan := fs.Int("phrase-scan-limit", query.DefaultPhraseScan, "Bodies to decompress in all with --phrase")
 	limit := fs.Int("limit", query.DefaultLimit, "Sessions to return")
 	noSweep := fs.Bool("no-sweep", false, "Skip the bounded index refresh before searching")
+	var remotes []string
+	fs.Func("remote", "Also run the search on this configured remote (repeatable; one SSH round trip each) and label its hits", func(s string) error {
+		remotes = append(remotes, strings.TrimSpace(s))
+		return nil
+	})
+	allRemotes := fs.Bool("all-remotes", false, "Also run the search on every configured remote")
 	filters := registerRecallFilters(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), `Usage: agent-deck recall search "<query>" [filters] [--role user|assistant] [--phrase] [--limit 20] [--json]
+		fmt.Fprintln(fs.Output(), `Usage: agent-deck recall search "<query>" [filters] [--role user|assistant] [--phrase] [--limit 20] [--remote <host>|--all-remotes] [--json]
 
 Terms are AND-ed; AND / OR / NOT and trailing * (prefix) work; identifiers like
 SB-412 and handle_sess are single terms. Titles, hints and tags always outrank
 an incidental mention in a message body. A bounded sweep (150 ms / 32 MB) runs
-first and the output says what it left for 'recall sweep'.`)
+first and the output says what it left for 'recall sweep'. --remote / --all-remotes
+run the same search on each remote's own index over SSH (nothing is copied) and
+print its hits under the remote's name; a remote whose agent-deck cannot answer
+is reported in one line and the command exits 1.`)
 		fs.PrintDefaults()
 	}
 	if !parseRecallFlags(fs, args) {
@@ -446,6 +507,14 @@ first and the output says what it left for 'recall sweep'.`)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(2)
+	}
+	forwarded := filters.forwardArgs()
+	forwarded = append(forwarded, fs.Arg(0), "--json", "--limit", strconv.Itoa(*limit))
+	if *role != "" {
+		forwarded = append(forwarded, "--role", *role)
+	}
+	if *phrase {
+		forwarded = append(forwarded, "--phrase", "--phrase-scan-limit", strconv.Itoa(*phraseScan))
 	}
 	opts := query.SearchOptions{Filters: f, Query: fs.Arg(0), Phrase: *phrase, PhraseScan: *phraseScan, Limit: *limit}
 	switch strings.ToLower(*role) {
@@ -471,11 +540,34 @@ first and the output says what it left for 'recall sweep'.`)
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	if *jsonOutput {
-		out.printJSON(map[string]any{"success": true, "result": res, "index": note})
-		return
+	targets, err := resolveRemoteTargets(env.cfg, remotes, *allRemotes)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(2)
 	}
-	printRecallSearch(res, note)
+	var remoteResults []RemoteSearchResult
+	if len(targets) > 0 {
+		remoteResults = federatedSearch(ctx, env.cfg, targets, forwarded)
+	}
+	failed := 0
+	for _, r := range remoteResults {
+		if r.Error != "" {
+			failed++
+		}
+	}
+	if *jsonOutput {
+		payload := map[string]any{"success": failed == 0, "result": res, "index": note}
+		if len(targets) > 0 {
+			payload["remotes"] = remoteResults
+		}
+		out.printJSON(payload)
+	} else {
+		printRecallSearch(res, note)
+		printRemoteSearch(remoteResults)
+	}
+	if failed > 0 {
+		os.Exit(1)
+	}
 }
 
 func printRecallSearch(res query.SearchResult, note recallIndexNote) {
@@ -524,6 +616,12 @@ func formatRecallHit(h query.Hit) string {
 	}
 	if h.Sidechain {
 		marks = append(marks, "subagent")
+	}
+	if h.DigestOnly {
+		marks = append(marks, "card from "+h.HostUID+" (no messages here)")
+	}
+	if h.Remote != "" {
+		marks = append(marks, "remote "+h.Remote)
 	}
 	title := h.Title
 	if title == "" {
@@ -639,6 +737,9 @@ func formatRecallSession(r query.SessionRow) string {
 	if r.Sidechain {
 		marks = append(marks, "subagent")
 	}
+	if r.DigestOnly {
+		marks = append(marks, "card from "+r.HostUID+" (no messages here)")
+	}
 	extra := ""
 	if len(marks) > 0 {
 		extra = "  [" + strings.Join(marks, ", ") + "]"
@@ -726,6 +827,12 @@ func printRecallDetail(d query.Detail) {
 		fmt.Println("  Files:")
 		for _, f := range d.Files {
 			fmt.Println("      " + f)
+		}
+	}
+	if len(d.Artifacts) > 0 {
+		fmt.Println("  Derived:")
+		for _, a := range d.Artifacts {
+			fmt.Println("      " + a.Line())
 		}
 	}
 	if len(d.Messages) > 0 {
@@ -917,14 +1024,17 @@ func handleRecallStatus(profile string, args []string) {
 		roots = append(roots, map[string]any{"harness": r.Harness, "profile": r.Profile, "dir": r.Dir, "retention_days": r.RetentionDays})
 	}
 	queued := recall.QueueLen(env.queuePath)
+	enrichQueue, _ := enrich.QueueCounts(env.st.R)
+	hostUID, _ := env.st.HostUID()
 	if *jsonOutput {
 		out.printJSON(map[string]any{"success": true, "status": st, "roots": roots, "worker_scratch_roots": scratch, "queued": queued,
+			"enrich_queue": enrichQueue, "host_uid": hostUID,
 			"config": map[string]any{"text_tier": env.cfg.Recall.GetTextTier(), "max_loadavg": env.cfg.Recall.GetMaxLoadAvg(),
 				"keep_missing_days": env.cfg.Recall.GetKeepMissingDays(), "per_source_mb": env.cfg.Recall.GetPerSourceMB(),
-				"harnesses": env.cfg.Recall.GetHarnesses(), "hook_sweep": env.cfg.Recall.GetHookSweep()}})
+				"harnesses": env.cfg.Recall.GetHarnesses(), "hook_sweep": env.cfg.Recall.GetHookSweep(), "remote_cards": env.cfg.Recall.GetRemoteCards()}})
 		return
 	}
-	fmt.Printf("recall.db  %s  (%s, schema %s)\n", st.DBPath, humanBytes(st.DBBytes), st.SchemaVersion)
+	fmt.Printf("recall.db  %s  (%s, schema %s, host %s)\n", st.DBPath, humanBytes(st.DBBytes), st.SchemaVersion, hostUID)
 	fmt.Printf("sessions   %d   messages %d   tool calls %d   cards %d (fts %d)\n", st.Sessions, st.Messages, st.ToolCalls, st.Cards, st.CardFTSRows)
 	var states []string
 	for _, k := range []string{"ok", "partial", "error", "missing", "quarantined"} {
@@ -964,6 +1074,11 @@ func handleRecallStatus(profile string, args []string) {
 	}
 	if queued > 0 {
 		fmt.Printf("queued     %d hook line(s) waiting for the next sweep\n", queued)
+	}
+	enrichPending := enrichQueue[enrich.CostCheap+"/"+enrich.StatePending]
+	enrichFailed := enrichQueue[enrich.CostCheap+"/"+enrich.StateFailed]
+	if enrichPending > 0 || enrichFailed > 0 {
+		fmt.Printf("enrich     %d pending, %d failed: 'agent-deck recall enrich'\n", enrichPending, enrichFailed)
 	}
 	fmt.Printf("roots      %d harness dir(s), %d worker-scratch home(s)\n", len(roots), scratch)
 	for _, r := range roots {
@@ -1101,8 +1216,15 @@ func runRecallSweepLocked(env *recallEnv, out *CLIOutput, opts ingest.Options, j
 }
 
 func recallResultLine(res ingest.Result) string {
-	return fmt.Sprintf("%d source(s) seen, %d unchanged, %d parsed (%s), %d message(s), %d session(s) updated, %d missing, %d error(s), %.1fs",
+	line := fmt.Sprintf("%d source(s) seen, %d unchanged, %d parsed (%s), %d message(s), %d session(s) updated, %d missing, %d error(s), %.1fs",
 		res.Discovered, res.Unchanged, res.Parsed, humanBytes(res.BytesRead), res.Messages, res.Sessions, res.Missing, res.Errors, float64(res.ElapsedMS)/1000)
+	if res.Enriched > 0 || res.EnrichDeferred > 0 {
+		line += fmt.Sprintf("; %d artifact(s) derived", res.Enriched)
+		if res.EnrichDeferred > 0 {
+			line += fmt.Sprintf(", %d queued for 'recall enrich'", res.EnrichDeferred)
+		}
+	}
+	return line
 }
 
 func handleRecallGC(profile string, args []string) {
