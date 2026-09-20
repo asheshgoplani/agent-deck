@@ -194,6 +194,12 @@ func TestInstaller_SkipConditions(t *testing.T) {
 	}
 	for name, arrange := range cases {
 		t.Run(name, func(t *testing.T) {
+			// Pin jitter to zero so the backoff boundary below is exact;
+			// NextRecheckAfterFailures otherwise adds up to 25% jitter.
+			origJitter := backoffJitter
+			backoffJitter = func(int64) int64 { return 0 }
+			t.Cleanup(func() { backoffJitter = origJitter })
+
 			f := newFakeInstaller(t, &UpdateInfo{Available: true, CurrentVersion: "1.16.7", LatestVersion: "1.16.8"})
 			arrange(f)
 			ctx, cancel := context.WithCancel(context.Background())
