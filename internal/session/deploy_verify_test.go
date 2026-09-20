@@ -75,7 +75,7 @@ func TestDeployScript_TruncatedTransferKeepsOldBinary(t *testing.T) {
 	go func() {
 		done <- pipeRunner(t, noSudo, pr).deployResolvedBinary(context.Background(), []byte{}, target, "1.16.15")
 	}()
-	if _, err := io.WriteString(pw, string(truncated)); err != nil {
+	if _, err := pw.Write(truncated); err != nil {
 		t.Fatal(err)
 	}
 	// Close the pipe early, exactly as a killed sender would: the remote's
