@@ -44,6 +44,13 @@ export const ICONS = {
   term:    'M4 4h16v16H4z M8 9l3 3-3 3 M13 15h4',
   // edit (pencil) — used by Sidebar SessionItem to open EditSessionDialog.
   edit:    'M12 20h9 M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z',
+  // archive (lid + box + handle slot). Replaces the ⌂ house glyph the sidebar
+  // used, which is the *home* symbol and read as anything but archiving.
+  archive: 'M21 8v13H3V8 M1 3h22v5H1z M10 12h4',
+  // merge (two nodes, branch curving into the trunk) — worktree finish, which
+  // merges the branch and cleans up. Replaces the ⎇✓ text glyph. Circles are
+  // drawn as paired arcs because Icon renders a single <path>.
+  merge:   'M15 18a3 3 0 106 0 3 3 0 10-6 0 M3 6a3 3 0 106 0 3 3 0 10-6 0 M6 21V9a9 9 0 009 9',
 }
 
 export function Dot({ status, size = 7 }) {

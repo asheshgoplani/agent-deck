@@ -84,6 +84,9 @@ export function ArchivedPane() {
       return
     }
     confirmDialogSignal.value = {
+      tone: 'danger',
+      confirmLabel: 'Delete',
+      title: 'Delete archived session?',
       message: `Delete archived session "${s.title}"? This removes it permanently.`,
       onConfirm: () => apiFetch('DELETE', `/api/sessions/${s.id}`)
         .then(() => {

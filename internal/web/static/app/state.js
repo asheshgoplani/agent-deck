@@ -105,7 +105,15 @@ export const focusedIdSignal = signal(null)
 // here — that helper is what fills the context.
 export const createSessionDialogSignal = signal(null)
 
-// confirmDialogSignal: null or { message: string, onConfirm: function }
+// confirmDialogSignal: null or
+//   { message: string, onConfirm: function,
+//     tone?: 'danger'|'warn', confirmLabel?: string, title?: string }
+// tone/confirmLabel/title are optional and default to the delete presentation
+// ('danger', "Delete", "Are you sure?"). Set them per action so the button
+// names what it does — the modal is shared by archive/close/worktree-finish,
+// and without them every action rendered as a red "Delete". Severity follows
+// the TUI (internal/ui/confirm_dialog.go): 'warn' for reversible actions
+// (archive, close), 'danger' for destructive ones (delete, worktree finish).
 export const confirmDialogSignal = signal(null)
 
 // groupNameDialogSignal: null or { mode: 'create'|'rename', groupPath: string, currentName: string, onSubmit: function }

@@ -24,8 +24,10 @@
 //     body entirely — the mutator names the child. The fixture's
 //     ForkSession appends " (fork)", so the real child title is
 //     "agent-deck (fork)" (NOT "-fork"); we assert the server-side truth.
-//   - Delete + worktree-finish route through ConfirmDialog.js whose confirm
-//     button is always labeled "Delete" and cancel is "Cancel".
+//   - Delete + worktree-finish route through ConfirmDialog.js, whose confirm
+//     button is labeled per action (tone/confirmLabel on the payload) and
+//     whose cancel is "Cancel": "Delete" for delete, "Finish worktree" for
+//     worktree-finish. Archive and close are yellow ("Archive" / "Close").
 //
 // Phone (<768px) skips: sidebar rows are desktop/tablet-only (same pattern
 // as keyboard-parity.spec.js / skills.spec.js).
@@ -176,10 +178,56 @@ test.describe('sidebar session action buttons', () => {
     expect(snap.items.some(i => i.session && i.session.id === 'sess-004')).toBe(false)
   })
 
+  test('Archive button: yellow "Archive" confirm, never a red "Delete"', async ({ page, request }) => {
+    // Regression guard for the archive confirm reading as a delete. The dialog
+    // was written delete-only (#519) and reused for archive without being
+    // generalized, so it offered to "Delete" the session in red. Severity and
+    // wording mirror the TUI's ConfirmArchiveSession (ColorYellow / "Archive",
+    // internal/ui/confirm_dialog.go). Asserted through the rendered DOM, so
+    // dropping tone/confirmLabel at the call site fails here.
+    await gotoSidebar(page)
+    const row = rowFor(page, 'scratch') // sess-004
+
+    await row.hover()
+    await row.locator('[data-testid="session-archive-btn"]').click()
+    const dialog = page.locator('[role="dialog"]')
+    await expect(dialog).toBeVisible()
+    // Exact copy from Sidebar.js doAction('archive').
+    await expect(dialog).toContainText('Archive session "scratch"? The process will be stopped and hidden from the active list.')
+
+    // The bug: the confirm button must name archiving, in the reversible
+    // (yellow .btn.warn) tone — not the destructive red .btn.danger/"Delete".
+    await expect(dialog.locator('.btn.warn')).toHaveText('Archive')
+    await expect(dialog.getByRole('button', { name: 'Delete' })).toHaveCount(0)
+    await expect(dialog.locator('.btn.danger')).toHaveCount(0)
+    await expect(dialog.locator('.kicker.warn')).toHaveCount(1)
+
+    // Cancel → no mutation.
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.sess')).toHaveCount(SEEDED_COUNT)
+
+    // Confirm → POST /archive; the row leaves the active list but the session
+    // record survives (archived, not deleted — that is what separates the two).
+    await row.hover()
+    await row.locator('[data-testid="session-archive-btn"]').click()
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Archive' }).click()
+
+    await expect(page.locator('.sess')).toHaveCount(SEEDED_COUNT - 1, { timeout: 4000 })
+    await expect(rowFor(page, 'scratch')).toHaveCount(0)
+
+    // Leaving the sidebar is not enough — delete does that too. The archived
+    // feed is what separates them: the record still exists, just hidden.
+    // (/__fixture/snapshot is the ACTIVE menu, which omits archived rows.)
+    const archived = await (await request.get('/api/sessions/archived')).json()
+    expect(archived.sessions.some(s => s.id === 'sess-004')).toBe(true)
+  })
+
   test('Worktree finish button shows merge confirm; confirm removes the session row', async ({ page, request }) => {
     await gotoSidebar(page)
     // Only sess-001 is seeded with worktreeBranch+worktreeRepoRoot, so
-    // exactly one row carries the ⎇✓ button (dataModel.js worktree gate).
+    // exactly one row carries the merge button (dataModel.js worktree gate).
     const finishBtns = page.locator('[data-action="worktree-finish"]')
     await expect(finishBtns).toHaveCount(1)
 
@@ -194,9 +242,9 @@ test.describe('sidebar session action buttons', () => {
     await expect(dialog).toContainText('Finish worktree for "agent-deck"?')
     await expect(dialog).toContainText('Merges branch "feat/fixture" into default branch')
 
-    // Confirm (generic ConfirmDialog confirm label is "Delete"); the fixture
-    // FinishWorktree removes the session, SSE refresh drops the row.
-    await dialog.getByRole('button', { name: 'Delete' }).click()
+    // Confirm. The button names the action rather than claiming to delete;
+    // the fixture FinishWorktree removes the session, SSE refresh drops the row.
+    await dialog.getByRole('button', { name: 'Finish worktree' }).click()
     await expect(page.locator('.sess')).toHaveCount(SEEDED_COUNT - 1, { timeout: 4000 })
     await expect(rowFor(page, 'agent-deck')).toHaveCount(0)
     const snap = await (await request.get('/__fixture/snapshot')).json()
