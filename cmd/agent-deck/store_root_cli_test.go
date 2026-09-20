@@ -156,14 +156,26 @@ func TestCLI_Doctor_ReportsStoreDivergence(t *testing.T) {
 		t.Fatalf("health output lacks the divergence flag:\n%s", stdout)
 	}
 
-	// Read-only diagnostics create nothing under HOME (SQLite WAL sidecars
-	// of the read-only live open excepted).
-	for path := range snapshotTree(t, home) {
-		if before[path] || strings.HasSuffix(path, "-shm") || strings.HasSuffix(path, "-wal") {
+	// Read-only diagnostics create no new files under HOME. The read-only
+	// live open of each store leaves SQLite's -shm/-wal sidecars behind
+	// (and bumps the profile dir's mtime), so compare paths, not contents.
+	seen := snapshotPaths(before)
+	for path := range snapshotPaths(snapshotTree(t, home)) {
+		if seen[path] || strings.HasSuffix(path, "-shm") || strings.HasSuffix(path, "-wal") {
 			continue
 		}
 		t.Errorf("doctor/health created %s", path)
 	}
+}
+
+// snapshotPaths reduces a snapshotTree to its relative paths (the key's
+// leading field, before " mode=").
+func snapshotPaths(snapshot map[string]bool) map[string]bool {
+	paths := make(map[string]bool, len(snapshot))
+	for key := range snapshot {
+		paths[strings.SplitN(key, " mode=", 2)[0]] = true
+	}
+	return paths
 }
 
 // TestCLI_Doctor_CleanLayoutHasNoStoreWarning: a single-root layout prints
