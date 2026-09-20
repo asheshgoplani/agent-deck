@@ -374,6 +374,16 @@ func main() {
 	// no-op on non-macOS, suppressible via AGENTDECK_SUPPRESS_TMUX_WARNING.
 	tmux.WarnIfVulnerableTmux()
 
+	// One stderr WARNING per CLI process when the profile store layout needs
+	// the user's hand (stray or unpinned second store). CLI processes never
+	// open the debug log, so this is their only trace of the decision; the
+	// TUI and the notify daemon log `store_selected` after logging.Init.
+	// Hook and completion handlers must stay silent, doctor/health/migrate-
+	// paths print the same information themselves.
+	if len(args) > 0 && !storeRootQuietCommands[args[0]] {
+		session.WarnStoreRootDivergence(os.Stderr)
+	}
+
 	var webEnabled bool
 	// webHeadless: true when --no-tui is passed to the `web` subcommand.
 	// Skips bubbletea boot (the bulk of ~60 MB RSS) and runs HTTP-server only.
@@ -932,6 +942,9 @@ func main() {
 		// dynamicHandler + lumberjack pipeline that logging.Init wires up.
 		// See internal/session/userconfig.go LogCgroupIsolationDecision.
 		session.LogCgroupIsolationDecision()
+		// Same shape: the profile store root decision, made long before the
+		// log file was open, is emitted here exactly once.
+		session.LogStoreRootSelection()
 
 		if debugMode {
 			logging.ForComponent(logging.CompUI).Info("instance_started",
@@ -1372,6 +1385,25 @@ func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.I
 		Enabled:        func() bool { return session.GetUpdateSettings().GetAutoInstall() },
 		Log:            webLog,
 	}
+}
+
+// storeRootQuietCommands never print the profile store WARNING to stderr:
+// hook and completion handlers feed other programs, and doctor, health and
+// migrate-paths report the layout themselves.
+var storeRootQuietCommands = map[string]bool{
+	"hook-handler":  true,
+	"__complete":    true,
+	"completion":    true,
+	"doctor":        true,
+	"health":        true,
+	"migrate-paths": true,
+	"telemetry":     true,
+	"version":       true,
+	"--version":     true,
+	"-v":            true,
+	"help":          true,
+	"--help":        true,
+	"-h":            true,
 }
 
 // commandRegistry lists every token that main()'s dispatch switch treats
@@ -4304,7 +4336,7 @@ func printHelp() {
 	fmt.Println("  update           Check for and install updates")
 	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
-	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths")
+	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths and pin the XDG data root")
 	fmt.Println("  uninstall        Uninstall Agent Deck")
 	fmt.Println("  version          Show version")
 	fmt.Println("  help             Show this help")
