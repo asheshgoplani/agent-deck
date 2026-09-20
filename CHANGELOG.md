@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The profile store root is chosen by content, never by a bare directory stat: an empty `~/.local/share/agent-deck/profiles/<profile>/state.db` beside a populated legacy `~/.agent-deck` store no longer hijacks every new CLI, hook and daemon process (twice on 2026-09-19/20 the fleet looked wiped from the CLI while the TUI kept running on the legacy store). When both roots hold profiles the one with more session rows wins, a stray empty XDG store is logged as `WARN stray_xdg_store`, every process logs `store_selected path=... reason=...` once, a second store for a profile is never created implicitly, the TUI's startup reviver no longer opens a store before the outer-tmux guard, and `agent-deck doctor`/`health` report both roots with session counts and the active one.
+
 ## [1.16.13] - 2026-09-19
 
 ### Added

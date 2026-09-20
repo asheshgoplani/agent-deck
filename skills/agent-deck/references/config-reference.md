@@ -39,6 +39,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[mcps.*] Section](#mcps-section)
 - [[tools.*] Section](#tools-section)
 - [Path Resolution](#path-resolution)
+- [Data Locations](#data-locations)
 
 ## Top-Level
 
@@ -1349,3 +1350,7 @@ description = "GitHub access"
 | `CLAUDE_CONFIG_DIR` | Override Claude config dir |
 | `AGENTDECK_DEBUG=1` | Enable debug logging |
 | `AGENTDECK_IDENTITY_FILE` | Set in every spawned session: path of the model-readable identity block for that session (see `[launch] inject_identity`) |
+
+## Data Locations
+
+Session state lives in one **profile store** per profile: `profiles/<profile>/state.db` under a single data root, either the XDG data dir (`$XDG_DATA_HOME/agent-deck`, default `~/.local/share/agent-deck`) or the legacy `~/.agent-deck`. Which root is active is decided per process by content, never by a bare directory stat: if only one root holds `profiles/`, that root is used; if neither does (fresh install), the XDG dir is used; if **both** hold profiles, the root with **more session rows** wins and an equal count keeps the XDG default. An empty XDG store next to a populated legacy one is treated as a stray: the legacy root stays active and the log carries a `WARN stray_xdg_store` with the path. Every process logs its choice once (`store_selected path=... reason=...`), and a running TUI keeps the root it started with. A new `state.db` is created only when the profile has no store under the other root; otherwise the open fails with `profile store exists under the other data root` instead of silently creating an empty twin. `agent-deck doctor` (and the `health` flags) print both roots with their session counts, the active one and a WARNING when they diverge; the explicit way to move data between roots is `agent-deck migrate-paths` (copy legacy into the XDG layout, legacy left untouched), and the way to clear a stray is to move its `profiles/` aside. Sandboxed runs of agent-deck must export `HOME` first and the `XDG_*_HOME` variables in a second `export`, since `export HOME=$T XDG_DATA_HOME=$HOME/.local/share` expands the old `$HOME` and points a throwaway home at the real data dir.

@@ -696,13 +696,6 @@ func main() {
 		AllowInteractivePrompt: false,
 	})
 
-	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds
-	// control pipes for any instance whose tmux server is alive but whose
-	// pipe got killed by e.g. an SSH logout scope cleanup. Runs in the
-	// background so it never blocks TUI boot. See .planning/v178-ssh-reviver/PLAN.md.
-	// Read the restart hand-off now: the TUI unsets it as soon as it boots.
-	go reviveOnStartup(profile, startupReviveDelay(os.Getenv))
-
 	// Block TUI launch when stdin is not a terminal.
 	//
 	// A full-screen app with no keyboard is not a screen, it is a hang: bubbletea
@@ -768,6 +761,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "      AGENT_DECK_ALLOW_OUTER_TMUX=1 agent-deck")
 		os.Exit(1)
 	}
+
+	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds
+	// control pipes for any instance whose tmux server is alive but whose
+	// pipe got killed by e.g. an SSH logout scope cleanup. Runs in the
+	// background so it never blocks TUI boot. See .planning/v178-ssh-reviver/PLAN.md.
+	// Read the restart hand-off now: the TUI unsets it as soon as it boots.
+	//
+	// It runs only past the no-TTY and outer-tmux guards above: a TUI that
+	// exits there must not open (and, on a first touch, create) a profile
+	// store. The 2026-09-20 03:06 stray XDG store was created by exactly
+	// this goroutine in a TUI that then exited at the outer-tmux guard.
+	go reviveOnStartup(profile, startupReviveDelay(os.Getenv))
 
 	// Set version for UI update checking
 	ui.SetVersion(Version)

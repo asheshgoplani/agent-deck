@@ -105,6 +105,11 @@ func handleHealth(profile string, args []string) {
 	}
 	aggregate := sessionAggregateForHealth(profile, *since)
 	report.Sessions = &aggregate
+	if sel, selErr := session.SelectStoreRoot(); selErr == nil {
+		if warning := sel.Warning(); warning != "" {
+			report.Flags = append(report.Flags, "profile store divergence: "+warning)
+		}
+	}
 	if *jsonOutput {
 		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 			fmt.Fprintln(os.Stderr, err)

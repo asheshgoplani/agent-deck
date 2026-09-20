@@ -250,6 +250,12 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		return nil, err
 	}
 
+	// A brand-new store is only created when the profile has no store under
+	// the other data root (stray XDG store incidents, 2026-09-19/20).
+	if err := guardNewProfileStore(effectiveProfile, profileDir); err != nil {
+		return nil, err
+	}
+
 	// Ensure directory exists with secure permissions (0700 = owner only)
 	if err := os.MkdirAll(profileDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create storage directory: %w", err)
