@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func handleMigratePaths(args []string) {
@@ -24,8 +25,11 @@ func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: agent-deck migrate-paths [--dry-run] [--force]")
 		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Copy legacy ~/.agent-deck files into the XDG config/data/cache layout.")
-		fmt.Fprintln(stderr, "The legacy directory is left untouched.")
+		fmt.Fprintln(stderr, "Copy legacy ~/.agent-deck files into the XDG config/data/cache layout")
+		fmt.Fprintln(stderr, "and pin the XDG data dir as the active profile store root")
+		fmt.Fprintln(stderr, "(profiles/.active-root). An empty stray XDG profiles/ directory is")
+		fmt.Fprintln(stderr, "set aside as profiles.stray-<timestamp> first. The legacy directory")
+		fmt.Fprintln(stderr, "is left untouched.")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Options:")
 		fmt.Fprintln(stderr, "  --dry-run  Show what would be copied without writing files")
@@ -52,6 +56,19 @@ func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintln(stdout, "Migrating legacy ~/.agent-deck paths to XDG layout")
+	if !*dryRun {
+		// An empty XDG profiles/ beside the populated legacy store (the stray
+		// of the 2026-09-19/20 incidents) would otherwise be reported as a
+		// conflict and, under --force, preserved file by file.
+		aside, err := session.SetAsideStrayXDGStore()
+		if err != nil {
+			fmt.Fprintf(stderr, "failed to set aside the stray XDG profile store: %v\n", err)
+			return 1
+		}
+		if aside != "" {
+			fmt.Fprintf(stdout, "set aside empty stray data profiles -> %s\n", aside)
+		}
+	}
 	result, err := agentpaths.MigrateLegacyLayout(agentpaths.MigrationOptions{
 		DryRun: *dryRun,
 		Force:  *force,
@@ -69,6 +86,16 @@ func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 	}
 	if result == nil || (len(result.Copied) == 0 && len(result.Skipped) == 0) {
 		fmt.Fprintln(stdout, "nothing to migrate")
+	}
+	if !*dryRun {
+		marker, err := session.MarkXDGStoreActive()
+		if err != nil {
+			fmt.Fprintf(stderr, "failed to pin the XDG profile store root: %v\n", err)
+			return 1
+		}
+		if marker != "" {
+			fmt.Fprintf(stdout, "active profile store root pinned to XDG: %s\n", marker)
+		}
 	}
 	fmt.Fprintf(stdout, "legacy directory left untouched: %s\n", legacyDir)
 	return 0

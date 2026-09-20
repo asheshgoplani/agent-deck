@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +49,9 @@ func handleDoctor(args []string) {
 	// codex session made here is content detection only.
 	codexConfig := getCodexConfigPath()
 	codexHooks := codexHooksStateForConfig(codexConfig)
+	// Profile store roots: which data root is active and whether a second
+	// one holds profiles too (stray XDG store incidents, 2026-09-19/20).
+	storeRoots, storeRootsErr := session.StoreRootReport()
 	if *jsonOutput {
 		report := struct {
 			AccountSlots []session.AccountDirectoryDiagnostic `json:"account_slots"`
@@ -55,9 +60,16 @@ func handleDoctor(args []string) {
 				State  string `json:"state"`
 				Config string `json:"config"`
 			} `json:"codex_hooks"`
+			StoreRoots *session.StoreRootSelection `json:"store_roots,omitempty"`
+			StoreError string                      `json:"store_roots_error,omitempty"`
 		}{AccountSlots: slots, Health: runtimeHealth}
 		report.CodexHooks.State = codexHooks
 		report.CodexHooks.Config = codexConfig
+		if storeRootsErr != nil {
+			report.StoreError = storeRootsErr.Error()
+		} else {
+			report.StoreRoots = &storeRoots
+		}
 		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encode diagnostics: %v\n", err)
 			os.Exit(1)
@@ -65,6 +77,7 @@ func handleDoctor(args []string) {
 		return
 	}
 	fmt.Print(health.Format(runtimeHealth))
+	fmt.Print(formatStoreRoots(storeRoots, storeRootsErr))
 	fmt.Printf("Codex notify %s\n", codexHooksLine(codexHooks, codexConfig))
 	fmt.Println("Named Claude account directories:")
 	if len(slots) == 0 {
@@ -84,4 +97,56 @@ func handleDoctor(args []string) {
 		}
 		fmt.Println()
 	}
+}
+
+// formatStoreRoots renders the profile store roots for `doctor`: the active
+// root with its reason, both candidates with per-profile session counts, and
+// a WARNING line when both roots hold profiles.
+func formatStoreRoots(sel session.StoreRootSelection, err error) string {
+	if err != nil {
+		return fmt.Sprintf("Profile store: unknown (%v)\n", err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Profile store: %s (%s, reason=%s)\n", sel.Active, sel.Kind, sel.Reason)
+	for _, root := range []session.StoreRootInfo{sel.Legacy, sel.XDG} {
+		marker := ""
+		if root.Kind == sel.Kind {
+			marker = " [active]"
+		}
+		fmt.Fprintf(&b, "  %-6s %s: %s%s\n", root.Kind, root.Path, formatStoreRootState(root), marker)
+	}
+	if warning := sel.Warning(); warning != "" {
+		fmt.Fprintf(&b, "  WARNING: %s\n", warning)
+	}
+	if note := sel.Note(); note != "" {
+		fmt.Fprintf(&b, "  Note: %s\n", note)
+	}
+	return b.String()
+}
+
+// formatStoreRootState renders "no profiles", "N sessions (a=1, b=unreadable)"
+// or "unreadable" when no store under the root could be counted.
+func formatStoreRootState(root session.StoreRootInfo) string {
+	if !root.HasProfiles {
+		return "no profiles"
+	}
+	state := fmt.Sprintf("%d sessions", root.Sessions)
+	if root.Sessions == 0 && root.Unreadable > 0 {
+		state = "unreadable"
+	}
+	if root.Marker {
+		state += ", marker"
+	}
+	if len(root.Profiles) == 0 {
+		return state
+	}
+	parts := make([]string, 0, len(root.Profiles))
+	for _, name := range slices.Sorted(maps.Keys(root.Profiles)) {
+		if n := root.Profiles[name]; n < 0 {
+			parts = append(parts, name+"=unreadable")
+		} else {
+			parts = append(parts, fmt.Sprintf("%s=%d", name, n))
+		}
+	}
+	return state + " (" + strings.Join(parts, ", ") + ")"
 }

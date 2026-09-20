@@ -54,8 +54,11 @@ func GetAgentDeckDir() (string, error) {
 	)
 }
 
+// profileDataRootDir is the data root that holds profiles/. Unlike the
+// marker-only EffectiveDataDir it never prefers an empty XDG store over a
+// populated legacy one; see store_root.go for the rule.
 func profileDataRootDir() (string, error) {
-	return agentpaths.EffectiveDataDir(ProfilesDirName, "sessions.json")
+	return selectProfileDataRoot()
 }
 
 // GetConfigPath returns the path to the global config file

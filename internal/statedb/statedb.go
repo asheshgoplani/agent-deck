@@ -765,12 +765,22 @@ func (s *StateDB) Migrate() error {
 
 // IsEmpty returns true if the instances table has no rows.
 func (s *StateDB) IsEmpty() (bool, error) {
-	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM instances").Scan(&count)
+	count, err := s.InstanceCount()
 	if err != nil {
 		return false, err
 	}
 	return count == 0, nil
+}
+
+// InstanceCount returns the number of session rows (archived included). It
+// is the "is this store populated" signal the profile-root selection uses
+// to never prefer an empty store over a populated one.
+func (s *StateDB) InstanceCount() (int, error) {
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM instances").Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // --- Instance CRUD ---

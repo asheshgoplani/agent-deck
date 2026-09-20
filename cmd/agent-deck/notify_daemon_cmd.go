@@ -143,6 +143,7 @@ func initDaemonLogging() func() {
 		logCfg.Compress = ls.GetDebugCompress()
 	}
 	logging.Init(logCfg)
+	session.LogStoreRootSelection()
 	return logging.Shutdown
 }
 

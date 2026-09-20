@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The profile store root is chosen by an explicit, stable rule, never by a bare directory stat: an empty `~/.local/share/agent-deck/profiles/<profile>/state.db` beside a populated legacy `~/.agent-deck` store no longer hijacks every new CLI, hook and daemon process (twice on 2026-09-19/20 the fleet looked wiped from the CLI while the TUI kept running on the legacy store). When both roots hold profiles, the marker `profiles/.active-root` that `agent-deck migrate-paths` now writes pins the XDG root (the legacy copy it leaves behind is ignored, however many rows it keeps); without a marker the legacy root stays active and a WARNING names the remedy. The only automatic protection is an empty store beside a populated one, which is a stray: the populated root is used. An unreadable store counts as unknown, never as empty. `migrate-paths` sets an empty stray XDG `profiles/` aside (`profiles.stray-<timestamp>`) before copying, so the remedy the WARNING names works on the incident layout. A second store for a profile is never created implicitly, the TUI's startup reviver no longer opens a store before the outer-tmux guard, the TUI and notify daemon log `store_selected` (plus a WARN naming a stray or unreadable store) once per process, every other CLI process prints the WARNING once on stderr (hook and completion handlers stay silent), and `agent-deck doctor`/`health` report both roots with real session counts, the marker, unreadable stores and the active root. Already-migrated users get the marker by rerunning `agent-deck migrate-paths --force` once; older binaries keep resolving the XDG root by the bare `profiles/` stat.
+
 ## [1.16.13] - 2026-09-19
 
 ### Added

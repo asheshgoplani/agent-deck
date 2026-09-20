@@ -39,6 +39,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[mcps.*] Section](#mcps-section)
 - [[tools.*] Section](#tools-section)
 - [Path Resolution](#path-resolution)
+- [Data Locations](#data-locations)
 
 ## Top-Level
 
@@ -1351,3 +1352,23 @@ description = "GitHub access"
 | `CLAUDE_CONFIG_DIR` | Override Claude config dir |
 | `AGENTDECK_DEBUG=1` | Enable debug logging |
 | `AGENTDECK_IDENTITY_FILE` | Set in every spawned session: path of the model-readable identity block for that session (see `[launch] inject_identity`) |
+
+## Data Locations
+
+Session state lives in one **profile store** per profile: `profiles/<profile>/state.db` under a single data root, either the XDG data dir (`$XDG_DATA_HOME/agent-deck`, default `~/.local/share/agent-deck`) or the legacy `~/.agent-deck`. Which root is active is decided per process by this table, never by a bare directory stat or by which copy has more rows:
+
+| legacy `profiles/` | XDG `profiles/` | active root | reason |
+|---|---|---|---|
+| absent | absent | XDG | `default_new` (fresh install) |
+| present | absent | legacy | `legacy_only` |
+| absent | present | XDG | `xdg_only` |
+| present | present, with `profiles/.active-root` | XDG | `active_root_marker` (migrated; the legacy copy is ignored) |
+| populated or unreadable | empty | legacy | `stray_xdg_store` + WARNING |
+| empty | populated or unreadable | XDG | `stray_legacy_store` + WARNING |
+| populated | unreadable | legacy | `xdg_store_unreadable` + WARNING |
+| unreadable | populated | XDG | `legacy_store_unreadable` + WARNING |
+| anything else (both populated, both empty, both unreadable), no marker | | legacy | `no_marker_legacy` + WARNING |
+
+"Empty" means every store under the root opens read-only and holds 0 session rows; an unreadable store is unknown and never counts as empty. The marker `profiles/.active-root` is written only by `agent-deck migrate-paths` (which also sets an empty stray XDG `profiles/` aside as `profiles.stray-<timestamp>` before copying, and leaves the legacy directory untouched); a `profiles/` directory that a stray process created never carries one, and moving the XDG `profiles/` aside removes the pin with it. Already-migrated installs (both copies populated, no marker) get the marker by running `agent-deck migrate-paths --force` once: existing XDG files are kept, missing ones copied from legacy. A running TUI keeps the root it started with. A new `state.db` is created only when the profile has no store under the other root; otherwise the open fails with `profile store exists under the other data root` instead of silently creating an empty twin.
+
+The decision is emitted once per process: the TUI and the notify daemon log `store_selected path=... reason=...` (and a `WARN` named after the reason, e.g. `stray_xdg_store`, with the offending path) to `debug.log`; every other CLI process prints the same WARNING once on stderr (hook, completion, doctor, health and migrate-paths stay silent there). `agent-deck doctor` (and the `health` flags) print both roots with their session counts, unreadable stores, the marker and the active root, plus the WARNING or, for a migrated layout, a note that the legacy copy can be moved aside. Sandboxed runs of agent-deck must export `HOME` first and the `XDG_*_HOME` variables in a second `export`, since `export HOME=$T XDG_DATA_HOME=$HOME/.local/share` expands the old `$HOME` and points a throwaway home at the real data dir.

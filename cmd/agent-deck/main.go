@@ -374,6 +374,16 @@ func main() {
 	// no-op on non-macOS, suppressible via AGENTDECK_SUPPRESS_TMUX_WARNING.
 	tmux.WarnIfVulnerableTmux()
 
+	// One stderr WARNING per CLI process when the profile store layout needs
+	// the user's hand (stray or unpinned second store). CLI processes never
+	// open the debug log, so this is their only trace of the decision; the
+	// TUI and the notify daemon log `store_selected` after logging.Init.
+	// Hook and completion handlers must stay silent, doctor/health/migrate-
+	// paths print the same information themselves.
+	if len(args) > 0 && !storeRootQuietCommands[args[0]] {
+		session.WarnStoreRootDivergence(os.Stderr)
+	}
+
 	var webEnabled bool
 	// webHeadless: true when --no-tui is passed to the `web` subcommand.
 	// Skips bubbletea boot (the bulk of ~60 MB RSS) and runs HTTP-server only.
@@ -696,13 +706,6 @@ func main() {
 		AllowInteractivePrompt: false,
 	})
 
-	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds
-	// control pipes for any instance whose tmux server is alive but whose
-	// pipe got killed by e.g. an SSH logout scope cleanup. Runs in the
-	// background so it never blocks TUI boot. See .planning/v178-ssh-reviver/PLAN.md.
-	// Read the restart hand-off now: the TUI unsets it as soon as it boots.
-	go reviveOnStartup(profile, startupReviveDelay(os.Getenv))
-
 	// Block TUI launch when stdin is not a terminal.
 	//
 	// A full-screen app with no keyboard is not a screen, it is a hang: bubbletea
@@ -768,6 +771,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "      AGENT_DECK_ALLOW_OUTER_TMUX=1 agent-deck")
 		os.Exit(1)
 	}
+
+	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds
+	// control pipes for any instance whose tmux server is alive but whose
+	// pipe got killed by e.g. an SSH logout scope cleanup. Runs in the
+	// background so it never blocks TUI boot. See .planning/v178-ssh-reviver/PLAN.md.
+	// Read the restart hand-off now: the TUI unsets it as soon as it boots.
+	//
+	// It runs only past the no-TTY and outer-tmux guards above: a TUI that
+	// exits there must not open (and, on a first touch, create) a profile
+	// store. The 2026-09-20 03:06 stray XDG store was created by exactly
+	// this goroutine in a TUI that then exited at the outer-tmux guard.
+	go reviveOnStartup(profile, startupReviveDelay(os.Getenv))
 
 	// Set version for UI update checking
 	ui.SetVersion(Version)
@@ -927,6 +942,9 @@ func main() {
 		// dynamicHandler + lumberjack pipeline that logging.Init wires up.
 		// See internal/session/userconfig.go LogCgroupIsolationDecision.
 		session.LogCgroupIsolationDecision()
+		// Same shape: the profile store root decision, made long before the
+		// log file was open, is emitted here exactly once.
+		session.LogStoreRootSelection()
 
 		if debugMode {
 			logging.ForComponent(logging.CompUI).Info("instance_started",
@@ -1367,6 +1385,25 @@ func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.I
 		Enabled:        func() bool { return session.GetUpdateSettings().GetAutoInstall() },
 		Log:            webLog,
 	}
+}
+
+// storeRootQuietCommands never print the profile store WARNING to stderr:
+// hook and completion handlers feed other programs, and doctor, health and
+// migrate-paths report the layout themselves.
+var storeRootQuietCommands = map[string]bool{
+	"hook-handler":  true,
+	"__complete":    true,
+	"completion":    true,
+	"doctor":        true,
+	"health":        true,
+	"migrate-paths": true,
+	"telemetry":     true,
+	"version":       true,
+	"--version":     true,
+	"-v":            true,
+	"help":          true,
+	"--help":        true,
+	"-h":            true,
 }
 
 // commandRegistry lists every token that main()'s dispatch switch treats
@@ -4299,7 +4336,7 @@ func printHelp() {
 	fmt.Println("  update           Check for and install updates")
 	fmt.Println("  telemetry        Opt-in anonymous usage reports: status|enable|disable|preview|show-last|reset-id (see TELEMETRY.md)")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
-	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths")
+	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths and pin the XDG data root")
 	fmt.Println("  uninstall        Uninstall Agent Deck")
 	fmt.Println("  version          Show version")
 	fmt.Println("  help             Show this help")
