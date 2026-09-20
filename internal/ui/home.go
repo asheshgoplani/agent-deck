@@ -17006,6 +17006,7 @@ func restartWithArchiveTransition(
 // the archived view.
 func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
+	previewSize := h.detachedRestartPreviewSize(id)
 	mcpUILog.Debug(
 		"restart_session_called",
 		slog.String("id", inst.ID),
@@ -17027,6 +17028,11 @@ func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
 		}
 
 		unarchived, err := restartWithArchiveTransition(current, h.persistArchived, current.Restart)
+		if err == nil {
+			if fitErr := fitRestartedPreview(current, previewSize); fitErr != nil {
+				uiLog.Debug("restart_preview_resize_failed", slog.String("session", id), slog.Any("error", fitErr))
+			}
+		}
 		mcpUILog.Debug("restart_session_result", slog.String("id", id), slog.Any("error", err))
 		return sessionRestartedMsg{
 			sessionID:  id,
@@ -17048,6 +17054,7 @@ func (h *Home) restartSessionFreshWith(
 	restartFresh func(*session.Instance) error,
 ) tea.Cmd {
 	id := inst.ID
+	previewSize := h.detachedRestartPreviewSize(id)
 	mcpUILog.Debug(
 		"restart_session_fresh_called",
 		slog.String("id", inst.ID),
@@ -17069,6 +17076,11 @@ func (h *Home) restartSessionFreshWith(
 		unarchived, err := restartWithArchiveTransition(current, persist, func() error {
 			return restartFresh(current)
 		})
+		if err == nil {
+			if fitErr := fitRestartedPreview(current, previewSize); fitErr != nil {
+				uiLog.Debug("restart_preview_resize_failed", slog.String("session", id), slog.Any("error", fitErr))
+			}
+		}
 		mcpUILog.Debug("restart_session_fresh_result", slog.String("id", id), slog.Any("error", err))
 		return sessionRestartedMsg{
 			sessionID:  id,
