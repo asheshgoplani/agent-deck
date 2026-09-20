@@ -34,6 +34,13 @@ const (
 type Remote struct {
 	LatencyMS float64 `json:"latency_ms"`
 	Outcome   string  `json:"outcome"`
+	// StatusPassMS and TmuxCalls are the remote's own status-pass timing for
+	// this poll, when it answered with one (#2331: an older remote binary,
+	// or one that could not be asked, leaves both zero — LatencyMS is then
+	// the only number available, same as before this field existed).
+	StatusPassMS int64 `json:"status_pass_ms,omitempty"`
+	TmuxCalls    int64 `json:"tmux_calls,omitempty"`
+	Sessions     int   `json:"sessions,omitempty"`
 }
 type Sample struct {
 	Version       int       `json:"version"`
@@ -95,14 +102,38 @@ func RecordDBQuery(d time.Duration) {
 	defer observations.Unlock()
 	observations.db = &v
 }
-func RecordRemote(name string, d time.Duration, outcome string) {
+
+// RecordRemote records one poll's outcome. statusPassMS/tmuxCalls/sessions
+// are the remote's own status-pass timing for this poll (#2331), zero when
+// it did not answer with one — an older remote binary, or a call that
+// failed before it got that far.
+func RecordRemote(name string, d time.Duration, outcome string, statusPassMS, tmuxCalls int64, sessions int) {
 	observations.Lock()
 	defer observations.Unlock()
 	if observations.remotes == nil {
 		observations.remotes = make(map[string]Remote)
 	}
-	observations.remotes[name] = Remote{float64(d) / float64(time.Millisecond), outcome}
+	observations.remotes[name] = Remote{
+		LatencyMS:    float64(d) / float64(time.Millisecond),
+		Outcome:      outcome,
+		StatusPassMS: statusPassMS,
+		TmuxCalls:    tmuxCalls,
+		Sessions:     sessions,
+	}
 }
+
+// remoteWarning names the stage a slow or failed poll spent its time in
+// (#2331). Without StatusPassMS (an older remote binary, or a call that
+// failed before answering with one) it falls back to the old generic
+// message — the only number anyone ever had before this field existed.
+func remoteWarning(name string, r Remote) string {
+	if r.StatusPassMS <= 0 {
+		return fmt.Sprintf("Health: remote %s poll is slow or failed", strconv.QuoteToASCII(name))
+	}
+	return fmt.Sprintf("Health: remote %s list --json status pass is slow (%.1fs, %d tmux calls, %d sessions)",
+		strconv.QuoteToASCII(name), float64(r.StatusPassMS)/1000, r.TmuxCalls, r.Sessions)
+}
+
 func BudgetWarning(d time.Duration, sessions int, tmuxCalls int64) string {
 	if statusPassSustainedBreach(d) {
 		return "Health: status pass exceeds 250 ms budget"
@@ -218,7 +249,7 @@ func Start(dir, role, hooksDir, binaryVersion string) func() {
 		}
 		for name, r := range s.Remotes {
 			if r.LatencyMS >= 2000 || r.Outcome != "ok" {
-				observations.warning = fmt.Sprintf("Health: remote %s poll is slow or failed", strconv.QuoteToASCII(name))
+				observations.warning = remoteWarning(name, r)
 				break
 			}
 		}

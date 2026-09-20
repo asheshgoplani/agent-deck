@@ -167,6 +167,21 @@ type SSHRunner struct {
 	// runFn lets tests stub out command execution. nil = real SSH.
 	runFn func(ctx context.Context, args ...string) ([]byte, error)
 
+	// fetchSessionsFn lets tests stub FetchSessions's stdout+stderr directly
+	// (needed because ListStats travels on stderr, which runFn does not
+	// carry). nil = real SSH via run(), reading lastStderr.
+	fetchSessionsFn func(ctx context.Context, args ...string) (stdout, stderr []byte, err error)
+
+	// lastStderr holds the most recent successful run()'s stderr (#2331):
+	// FetchSessions reads it right after its own Run call returns, before
+	// any concurrent call on this runner can overwrite it (fetchOneRemote
+	// issues FetchSessions synchronously, then fans the version/stats/cost/
+	// group calls out afterward). A pointer + its own mutex, not a plain
+	// sync.Mutex field, because channelFor's `rc := *r` (remote_channel.go)
+	// copies SSHRunner by value to capture a closure and copying a Mutex is
+	// a vet error; a pointer copies safely and both copies still share it.
+	lastStderr *lastStderrBox
+
 	// name is the remote's config name; it keys the shared persistent
 	// channel (#2174). Empty for runners built without a name.
 	name string
@@ -198,6 +213,7 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 		Profile:        rc.GetProfile(),
 		commandTimeout: rc.GetCommandTimeout(),
 		name:           name,
+		lastStderr:     &lastStderrBox{},
 	}
 }
 
@@ -268,9 +284,10 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	// every command. A transport failure falls through to a plain exec, so
 	// the channel can only make things faster, never break them.
 	if ch := channelFor(r); ch != nil && ch.Connected() && remoteChannelArgsSafe(args) {
-		out, err := ch.Request(ctx, args)
+		out, stderr, err := ch.RequestWithStderr(ctx, args)
 		switch {
 		case err == nil:
+			r.setLastStderr(stderr)
 			return out, nil
 		case errors.Is(err, errChannelDown):
 			// Never reached the agent: an exec is the same request.
@@ -319,7 +336,43 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 		return stdout.Bytes(), fmt.Errorf("ssh command failed: %w: %s", err, detail)
 	}
 
+	r.setLastStderr(stderr.Bytes())
 	return stdout.Bytes(), nil
+}
+
+// lastStderrBox is lastStderr's storage: a pointer field on SSHRunner so
+// copying the runner (channelFor's `rc := *r`) copies the pointer, not a
+// lock, and every copy still shares the one box.
+type lastStderrBox struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+// setLastStderr records the stderr of the run() call that just succeeded.
+// A runner built by a struct literal (tests, mainly) has a nil box, which
+// this treats as "not tracked" — the same as an SSHRunner that predates
+// this field.
+func (r *SSHRunner) setLastStderr(stderr []byte) {
+	if r.lastStderr == nil {
+		return
+	}
+	r.lastStderr.mu.Lock()
+	r.lastStderr.data = append([]byte(nil), stderr...)
+	r.lastStderr.mu.Unlock()
+}
+
+// consumeLastStderr returns and clears the stderr captured by the most
+// recent successful run(), so a later call on this runner does not see a
+// stale value from an earlier command.
+func (r *SSHRunner) consumeLastStderr() []byte {
+	if r.lastStderr == nil {
+		return nil
+	}
+	r.lastStderr.mu.Lock()
+	defer r.lastStderr.mu.Unlock()
+	data := r.lastStderr.data
+	r.lastStderr.data = nil
+	return data
 }
 
 // Attach connects interactively to a remote agent-deck session.
@@ -577,13 +630,31 @@ func (r *SSHRunner) buildRemoteCommand(args ...string) string {
 	return strings.Join(parts, " ")
 }
 
-// FetchSessions retrieves the session list from the remote agent-deck instance.
-func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, error) {
-	output, err := r.Run(ctx, "list", "--json")
-	if err != nil {
-		return nil, err
+// FetchSessions retrieves the session list from the remote agent-deck
+// instance, along with the remote's own status-pass timing when it answered
+// with one (#2331: an older remote, or a malformed line, simply yields a nil
+// *ListStats — this is best-effort observability, never a fetch failure).
+func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, *ListStats, error) {
+	if r.fetchSessionsFn != nil {
+		stdout, stderr, err := r.fetchSessionsFn(ctx, "list", "--json", ListStatsFlag)
+		if err != nil {
+			return nil, nil, err
+		}
+		sessions, err := parseRemoteSessions(stdout)
+		if err != nil {
+			return nil, nil, err
+		}
+		return sessions, parseListStats(stderr), nil
 	}
-	return parseRemoteSessions(output)
+	output, err := r.Run(ctx, "list", "--json", ListStatsFlag)
+	if err != nil {
+		return nil, nil, err
+	}
+	sessions, err := parseRemoteSessions(output)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sessions, parseListStats(r.consumeLastStderr()), nil
 }
 
 // parseRemoteSessions decodes `list --json` output; empty or non-JSON output

@@ -1700,7 +1700,7 @@ type remoteFetchRoundMsg struct {
 
 // remoteFetchRunner is what one per-remote fetch needs from an SSHRunner.
 type remoteFetchRunner interface {
-	FetchSessions(context.Context) ([]session.RemoteSessionInfo, error)
+	FetchSessions(context.Context) ([]session.RemoteSessionInfo, *session.ListStats, error)
 	FetchCostSummary(context.Context) (*costs.RemoteCostSummary, error)
 	FetchGroupPaths(context.Context) ([]string, error)
 }
@@ -4794,8 +4794,15 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 	}
 	remoteStarted := time.Now()
 	remoteOutcome := "ok"
-	defer func() { health.RecordRemote(name, time.Since(remoteStarted), remoteOutcome) }()
-	sessions, err := runner.FetchSessions(ctx)
+	var listStats *session.ListStats
+	defer func() {
+		statusPassMS, tmuxCalls, statCount := int64(0), int64(0), 0
+		if listStats != nil {
+			statusPassMS, tmuxCalls, statCount = listStats.StatusPassMS, listStats.TmuxCalls, listStats.Sessions
+		}
+		health.RecordRemote(name, time.Since(remoteStarted), remoteOutcome, statusPassMS, tmuxCalls, statCount)
+	}()
+	sessions, listStats, err := runner.FetchSessions(ctx)
 	pollErr = err
 	if err != nil {
 		remoteOutcome = "failed"
@@ -22213,6 +22220,14 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	pendingStr := ""
 	if unavailable {
 		pendingStr = " " + DimStyle.Render("· last known")
+	} else if age, stale := h.remoteRowStale(item.RemoteName); stale {
+		// #2331: a poll that answers slowly (the remote's own status pass
+		// ran long under load) is not "unavailable" — it succeeded — but
+		// its snapshot can be tens of seconds old by the time this row
+		// paints, with nothing above to say so. remotePollUnavailable only
+		// catches an outright failed/paused poll; this catches the row that
+		// is quietly stale despite the poll having gone fine.
+		pendingStr = " " + DimStyle.Render(fmt.Sprintf("· status %s old", formatRemoteAge(age)))
 	}
 	if item.RemoteSession != nil {
 		if verb, ok := h.remotePending[item.RemoteSession.ID]; ok {

@@ -49,7 +49,7 @@ type RemoteFleetCounts struct {
 }
 
 type remoteFleetRunner interface {
-	FetchSessions(context.Context) ([]RemoteSessionInfo, error)
+	FetchSessions(context.Context) ([]RemoteSessionInfo, *ListStats, error)
 	MeasureLatency(context.Context) (time.Duration, error)
 }
 
@@ -223,7 +223,7 @@ func (s *RemoteFleetScanner) scanRemote(ctx context.Context, name string, config
 	remoteCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	runner := s.newRunner(name, config)
-	sessions, err := runner.FetchSessions(remoteCtx)
+	sessions, _, err := runner.FetchSessions(remoteCtx)
 	if err != nil {
 		s.mu.RLock()
 		prior, hadPrior := s.states[name]

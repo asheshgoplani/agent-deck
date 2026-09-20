@@ -29,6 +29,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -2784,6 +2785,10 @@ func handleList(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
 	includeSuperseded := fs.Bool("include-superseded", false, "Include archived source rows retained for cross-harness recovery")
+	// Undocumented: SSHRunner passes this on its own remote invocation
+	// (#2331) so a slow `list --json` names its own status-pass duration
+	// instead of leaving the caller with one opaque round-trip number.
+	statsFlag := fs.Bool(strings.TrimPrefix(session.ListStatsFlag, "-"), false, "")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
@@ -2841,8 +2846,23 @@ func handleList(profile string, args []string) {
 	if *jsonOutput {
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
+		statusStarted := time.Now()
+		tmuxBefore := tmux.SubprocessStarts()
 		session.RefreshInstancesForCLIStatus(instances)
 		output, err := buildListJSON(storage.Profile(), instances)
+		statusElapsed := time.Since(statusStarted)
+		tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
+		// #2331: this status pass is the one thing both the poll (`list
+		// --json`) and the remote-agent's push probe run, but unlike its
+		// TUI/web siblings (backgroundStatusUpdate, refreshStatuses) it never
+		// recorded itself, so a slow remote gave the controller one opaque
+		// wall-clock number with no stage to blame. Record it locally like
+		// the other two surfaces, plus emit a stderr stats line an SSH caller
+		// can read, since a remote's own health.jsonl is never fetched back.
+		health.RecordStatusPass(statusElapsed, len(instances), tmuxCalls)
+		if *statsFlag {
+			emitListStats(statusElapsed, tmuxCalls, len(instances))
+		}
 		if err != nil {
 			fmt.Printf("Error: failed to format JSON output: %v\n", err)
 			os.Exit(1)
@@ -2877,6 +2897,15 @@ func handleList(profile string, args []string) {
 // row to the default list without replaying or deleting its retained lineage.
 func defaultListInstances(instances []*session.Instance) []*session.Instance {
 	return session.VisibleInstances(instances)
+}
+
+func emitListStats(elapsed time.Duration, tmuxCalls int64, sessions int) {
+	stats := session.ListStats{StatusPassMS: elapsed.Milliseconds(), TmuxCalls: tmuxCalls, Sessions: sessions}
+	encoded, err := json.Marshal(stats)
+	if err != nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr, session.ListStatsPrefix+string(encoded))
 }
 
 // buildListJSON is the body of `list --json`: every session with its status

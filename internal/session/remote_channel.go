@@ -857,14 +857,22 @@ func (c *RemoteChannel) markDownGen(gen uint64) {
 // On a non-zero exit the command's stdout is returned with the error: a
 // --json verb that refuses (switch-preview) or fails (switch) answers there.
 func (c *RemoteChannel) Request(ctx context.Context, args []string) ([]byte, error) {
+	stdout, _, err := c.RequestWithStderr(ctx, args)
+	return stdout, err
+}
+
+// RequestWithStderr is Request plus the agent's stderr for the call, for
+// callers that need out-of-band data the agent appends there (#2331: the
+// list-stats line a `list --json --stats` request answers with).
+func (c *RemoteChannel) RequestWithStderr(ctx context.Context, args []string) ([]byte, []byte, error) {
 	r, err := c.roundTrip(ctx, remoteChannelRequest{Args: args})
 	if err != nil {
 		if r.Stdout == "" {
-			return nil, err
+			return nil, nil, err
 		}
-		return []byte(r.Stdout), err
+		return []byte(r.Stdout), []byte(r.Stderr), err
 	}
-	return []byte(r.Stdout), nil
+	return []byte(r.Stdout), []byte(r.Stderr), nil
 }
 
 // Watching returns the session whose pane the remote is pushing over this
