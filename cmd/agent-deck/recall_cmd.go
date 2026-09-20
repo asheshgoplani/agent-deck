@@ -1031,7 +1031,8 @@ func handleRecallStatus(profile string, args []string) {
 			"enrich_queue": enrichQueue, "host_uid": hostUID,
 			"config": map[string]any{"text_tier": env.cfg.Recall.GetTextTier(), "max_loadavg": env.cfg.Recall.GetMaxLoadAvg(),
 				"keep_missing_days": env.cfg.Recall.GetKeepMissingDays(), "per_source_mb": env.cfg.Recall.GetPerSourceMB(),
-				"harnesses": env.cfg.Recall.GetHarnesses(), "hook_sweep": env.cfg.Recall.GetHookSweep(), "remote_cards": env.cfg.Recall.GetRemoteCards()}})
+				"harnesses": env.cfg.Recall.GetHarnesses(), "hook_sweep": env.cfg.Recall.GetHookSweep(), "remote_cards": env.cfg.Recall.GetRemoteCards(),
+				"backfill_on_enable": env.cfg.Recall.GetBackfillOnEnable()}})
 		return
 	}
 	fmt.Printf("recall.db  %s  (%s, schema %s, host %s)\n", st.DBPath, humanBytes(st.DBBytes), st.SchemaVersion, hostUID)
@@ -1056,6 +1057,13 @@ func handleRecallStatus(profile string, args []string) {
 	}
 	if st.LastSweep > 0 {
 		fmt.Printf("last sweep %s\n", time.Unix(st.LastSweep, 0).Local().Format("2006-01-02 15:04"))
+	}
+	switch st.InitialBackfill.State {
+	case store.InitialBackfillRunning:
+		fmt.Printf("backfill   initial pass running: %d session(s) so far, %d source(s) still pending\n",
+			st.InitialBackfill.SessionsDone, st.InitialBackfill.SessionsPending)
+	case store.InitialBackfillPending:
+		fmt.Printf("backfill   initial pass pending: the daemon runs it in the background when [recall] backfill_on_enable = true (default)\n")
 	}
 	var profiles, harnesses []string
 	for k, n := range st.ByProfile {

@@ -890,18 +890,20 @@ per_source_mb = 64          # per-sweep cap on one transcript; the rest continue
 harnesses = ["claude", "codex", "pi", "gemini", "opencode", "hermes"]  # which harnesses to index (default: all)
 hook_sweep = true           # the async Claude SessionEnd hook indexes its own transcript inline (150 ms / 32 MB); Stop only queues
 remote_cards = false        # let session cards (never bodies or paths) cross SSH: recall export / pull / import
+backfill_on_enable = true   # the daemon runs one throttled background pass the first time recall is enabled with an empty or never-finished index
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Turn the recall.db index on. Hints and annotations work regardless. |
-| `max_loadavg` | float | `4.0` | Load gate for `backfill`, `sweep` and `rebuild` (they also refuse while a session is `running`); `--force` overrides. |
+| `max_loadavg` | float | `4.0` | Load gate for `backfill`, `sweep` and `rebuild` (they also refuse while a session is `running`); `--force` overrides. Also scales the sleep between `backfill_on_enable`'s chunks, which never refuses outright. |
 | `text_tier` | string | `"clipped"` | `clipped` stores 8 KiB per message body (the FTS index always covers the full text); `full` stores whole bodies. |
 | `keep_missing_days` | int | `30` | `recall gc` drops the ledger row and tombstone of a transcript missing longer than this. |
 | `per_source_mb` | int | `64` | Most of one file a single sweep parses before deferring the rest. |
 | `harnesses` | list | all | Harness names to index; a harness whose home is absent is skipped anyway. |
 | `hook_sweep` | bool | `true` | The asynchronous Claude `SessionEnd` hook indexes only its own transcript within the interactive budget; off, it only queues the file for the next sweep. The synchronous `Stop` hook never sweeps: it appends one queue line and returns. |
 | `remote_cards` | bool | `false` | Opt in to remote card sync: `recall export --cards` on this machine and `recall pull <host>` / `recall import` into it. Cards are titles, hints, tags, 200-character previews and derived summaries; message bodies, offsets and paths never leave. The federated query (`recall search --remote <host>` / `--all-remotes`) never depends on this key: it runs the search on the remote and stores nothing. |
+| `backfill_on_enable` | bool | `true` | Run the initial catch-up backfill from `agent-deck notify-daemon`, throttled instead of gated, the first time `enabled` is true with an empty index or a marker saying the pass never finished (`recall status --json`'s `initial_backfill`). Off, an empty index stays empty until someone runs `recall backfill` by hand. |
 
 ## [notifications] Section
 

@@ -272,3 +272,104 @@ func (s *Store) HostUID() (string, error) {
 	}
 	return v, nil
 }
+
+// Initial backfill state (docs/recall.md, issue #2329): the one-time
+// background pass that catches an empty or never-finished index up when
+// [recall] backfill_on_enable is true. The marker lives in recall.db's meta
+// table beside host_uid and last_sweep, so it resets with the disposable
+// index (a rebuild, or a schema bump, both warrant a fresh catch-up) and
+// survives a process restart (a daemon that dies mid-pass leaves it
+// "running"; the next daemon picks that up the same as "pending").
+const (
+	InitialBackfillPending = "pending"
+	InitialBackfillRunning = "running"
+	InitialBackfillDone    = "done"
+)
+
+const (
+	metaInitialBackfillState           = "initial_backfill_state"
+	metaInitialBackfillDoneAt          = "initial_backfill_done_at"
+	metaInitialBackfillSessionsDone    = "initial_backfill_sessions_done"
+	metaInitialBackfillSessionsPending = "initial_backfill_sessions_pending"
+)
+
+// InitialBackfillStatus is the `initial_backfill` block of `recall status
+// --json`.
+type InitialBackfillStatus struct {
+	State           string `json:"state"`
+	DoneAt          int64  `json:"done_at,omitempty"`
+	SessionsDone    int    `json:"sessions_done"`
+	SessionsPending int    `json:"sessions_pending"`
+}
+
+// InitialBackfillStatus reads the persisted marker. An index with no marker
+// at all (built before this feature shipped, or by a plain `recall
+// backfill`) is reported "done" when it already holds sessions, "pending"
+// when it is still empty: the marker only needs to exist once the
+// background pass itself has touched it.
+func (s *Store) InitialBackfillStatus() (InitialBackfillStatus, error) {
+	var status InitialBackfillStatus
+	var state, doneAt, done, pending sql.NullString
+	row := s.W.QueryRow(`SELECT
+		(SELECT v FROM meta WHERE k=?),
+		(SELECT v FROM meta WHERE k=?),
+		(SELECT v FROM meta WHERE k=?),
+		(SELECT v FROM meta WHERE k=?)`,
+		metaInitialBackfillState, metaInitialBackfillDoneAt, metaInitialBackfillSessionsDone, metaInitialBackfillSessionsPending)
+	if err := row.Scan(&state, &doneAt, &done, &pending); err != nil {
+		return status, err
+	}
+	status.State = state.String
+	status.DoneAt, _ = strconv.ParseInt(doneAt.String, 10, 64)
+	status.SessionsDone, _ = strconv.Atoi(done.String)
+	status.SessionsPending, _ = strconv.Atoi(pending.String)
+	if status.State != "" {
+		return status, nil
+	}
+	var n int
+	if err := s.W.QueryRow(`SELECT count(*) FROM session`).Scan(&n); err != nil {
+		return status, err
+	}
+	if n > 0 {
+		status.State, status.SessionsDone = InitialBackfillDone, n
+	} else {
+		status.State = InitialBackfillPending
+	}
+	return status, nil
+}
+
+// SetInitialBackfillState writes the marker (pending/running/done); doneAt
+// is stamped only when state is done.
+func (s *Store) SetInitialBackfillState(state string, now int64) error {
+	tx, err := s.W.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, metaInitialBackfillState, state); err != nil {
+		return err
+	}
+	if state == InitialBackfillDone {
+		if _, err := tx.Exec(`INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, metaInitialBackfillDoneAt, strconv.FormatInt(now, 10)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SetInitialBackfillProgress checkpoints how much of the initial backfill is
+// done after one chunk, so a restart mid-pass (or a `recall status` while it
+// runs) reports the last chunk's numbers rather than stale ones.
+func (s *Store) SetInitialBackfillProgress(sessionsDone, sessionsPending int) error {
+	tx, err := s.W.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for k, v := range map[string]int{metaInitialBackfillSessionsDone: sessionsDone, metaInitialBackfillSessionsPending: sessionsPending} {
+		if _, err := tx.Exec(`INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, strconv.Itoa(v)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

@@ -858,6 +858,10 @@ type Status struct {
 	Tombstones    int            `json:"tombstones"`
 	FreePages     int64          `json:"free_pages"`
 	LastSweep     int64          `json:"last_sweep,omitempty"`
+	// InitialBackfill is the daemon-driven catch-up pass's state
+	// (docs/recall.md, issue #2329): pending/running/done, when it
+	// finished, and its last checkpointed progress.
+	InitialBackfill store.InitialBackfillStatus `json:"initial_backfill"`
 }
 
 var sourceStateNames = map[int]string{recall.SourceOK: "ok", recall.SourcePartial: "partial", recall.SourceError: "error", recall.SourceMissing: "missing", recall.SourceQuarantined: "quarantined"}
@@ -933,5 +937,8 @@ func (s *Searcher) Status(ctx context.Context) (Status, error) {
 	// file within 30 days: the index is what survives.
 	cut := time.Now().Add(30 * 24 * time.Hour).UnixNano()
 	_ = db.QueryRowContext(ctx, `SELECT COALESCE(sum(size),0) FROM source WHERE retention_d>0 AND state IN (0,1) AND mtime_ns + retention_d*86400*1000000000 < ?`, cut).Scan(&st.ExpiringBytes)
+	if ib, err := s.st.InitialBackfillStatus(); err == nil {
+		st.InitialBackfill = ib
+	}
 	return st, nil
 }
