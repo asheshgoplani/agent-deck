@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A remote install now verifies the staged binary actually runs and reports the version being deployed before the atomic rename into place, closing a gap where `InstallBinary`/`InstallBinaryWithForce` (the path every ordinary release deploy and the unattended remote sweep use) called the deploy script with no expected version, silently skipping the `--version` check that `InstallLocalArchive` already had. A transfer cut mid-stream — an SSH channel closed early, a killed sweep process — used to land whatever partial bytes arrived at the final install path with no verification; it is now rejected before the rename, and the previously installed binary is left untouched (#2340).
+- Draining pending launch agents (re-registering a service an install's own hygiene deferred bootstrapping) now defers while a remote sweep from this controller is still in flight, instead of booting the service out from under its still-running sweep child. This is what truncated agentbox's v1.16.15 binary: a second, tui-triggered unattended run found the controller already current, skipped straight to the drain step, and booted out `com.agentdeck.web` while its child was mid-transfer to agentbox (#2340).
+- An unattended run that finds the controller already current still sweeps remotes that are behind, instead of leaving them stranded until the next release: previously the "nothing to install locally" skip returned before ever considering the remotes, so a sweep killed mid-run (see above) was never retried until the controller itself needed an upgrade again (#2340).
+
 ## [1.16.15] - 2026-09-20
 
 ### Fixed

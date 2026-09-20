@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -127,13 +128,28 @@ func TestRunUnattendedUpdate_HappyPath(t *testing.T) {
 func TestRunUnattendedUpdate_NothingToDo(t *testing.T) {
 	h := newUnattendedHarness(t, &update.UpdateInfo{CurrentVersion: "1.16.5", LatestVersion: "1.16.5"})
 	assert.Equal(t, exitUpdateOK, runUnattendedUpdate(h.deps))
-	assert.Equal(t, []string{"check", "drain"}, h.calls, "a current binary still drains launch agents an earlier run deferred")
+	// A run with nothing to install locally still sweeps: remotes can be
+	// behind an already-current controller (#2340: the sweep that should
+	// have caught them up was killed mid-transfer by a concurrent run's
+	// launch-agent bootout), so "current" must not be a silent dead end
+	// for them.
+	assert.Equal(t, []string{"check", "remotes 1.16.5", "drain"}, h.calls, "a current binary still sweeps remotes and drains launch agents an earlier run deferred")
 	assert.Contains(t, h.out.String(), "v1.16.5 is current; nothing to do")
 
 	h = newUnattendedHarness(t, &update.UpdateInfo{CurrentVersion: "1.16.5", LatestVersion: "1.16.5", PublishingVersion: "1.17.0"})
 	assert.Equal(t, exitUpdateOK, runUnattendedUpdate(h.deps))
-	assert.Equal(t, []string{"check", "drain"}, h.calls, "a release still publishing does not hold back the drain")
+	assert.Equal(t, []string{"check", "drain"}, h.calls, "a release still publishing does not hold back the drain (and has nothing new to sweep)")
 	assert.Contains(t, h.out.String(), "v1.17.0 is still publishing")
+}
+
+// A run that finds itself current but has no remotes configured (or the
+// config could not be read) must still drain: sweepRemotes always runs on
+// the "current" skip, but sweepRemotesUnattended itself is a no-op when
+// there is nothing to sweep. This is the pure decision, not the CLI glue.
+func TestUnattendedSweepDecision_RunsEvenWhenControllerIsCurrent(t *testing.T) {
+	d := unattendedSweepDecision(&session.UserConfig{}, nil, session.UpdateSettings{}, session.RemoteSweep{}, false)
+	assert.Equal(t, "no remotes configured", d.reason)
+	assert.False(t, d.deferred)
 }
 
 // The drain is independent of installing: a run that stops before the
@@ -150,6 +166,24 @@ func TestRunUnattendedUpdate_DrainsWhenNotInstalling(t *testing.T) {
 	h.deps.drainPending = func() error { return errors.New("com.agentdeck.web did not come back") }
 	assert.Equal(t, exitUpdateFailed, runUnattendedUpdate(h.deps))
 	assert.Contains(t, h.out.String(), "com.agentdeck.web did not come back")
+}
+
+// #2340: draining pending launch agents must never bootout a service whose
+// child still holds the remote-sweep marker -- that is exactly how a
+// tui-triggered run's drain killed the web daemon's sweep child mid-transfer
+// and left a truncated binary on agentbox. A live sweep defers the drain
+// entirely; DrainPendingRebootstrap is never called.
+func TestDrainPendingLaunchAgentsUnlessSweeping_DefersToLiveSweep(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	called := false
+	sweep := session.RemoteSweep{PID: 12345, StartedAt: time.Now()}
+	err := drainPendingLaunchAgentsUnlessSweeping(log, func() (session.RemoteSweep, bool) {
+		called = true
+		return sweep, true
+	})
+	require.NoError(t, err)
+	assert.True(t, called, "the sweep must be checked before draining")
 }
 
 // A pending launch agent that still cannot be re-registered is a loud

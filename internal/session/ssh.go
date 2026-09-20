@@ -1471,13 +1471,13 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 	if err != nil {
 		return err
 	}
-	return r.deployResolvedBinary(ctx, binaryData, resolved)
+	return r.deployResolvedBinary(ctx, binaryData, resolved, "")
 }
 
 // deployResolvedBinary runs the deploy script against a path that has
 // already been resolved through any symlinks.
-func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte, remotePath string) error {
-	return r.deployResolvedPayload(ctx, binaryData, remotePath, "", "")
+func (r *SSHRunner) deployResolvedBinary(ctx context.Context, binaryData []byte, remotePath, expectedVersion string) error {
+	return r.deployResolvedPayload(ctx, binaryData, remotePath, "", expectedVersion)
 }
 
 func (r *SSHRunner) deployResolvedPayload(ctx context.Context, binaryData []byte, remotePath, checksum, expectedVersion string) error {
@@ -1733,8 +1733,15 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 
 // InstallBinaryWithForce permits replacing newer PATH targets when forced.
 func (r *SSHRunner) InstallBinaryWithForce(ctx context.Context, binaryData []byte, expectedVersion string, force bool) error {
+	want := strings.TrimPrefix(expectedVersion, "v")
 	return r.installPayload(ctx, expectedVersion, false, force, func(target string) error {
-		return r.deployResolvedBinary(ctx, binaryData, target)
+		// want must reach remoteDeployScript's "$expected" so it runs the
+		// staged binary's `--version` and refuses to rename a corrupt or
+		// truncated transfer into place (#2340: InstallBinary used to call
+		// deployResolvedBinary with no version, silently skipping the
+		// remote-side check that InstallLocalArchive already had, and a
+		// transfer cut mid-stream landed at the final path unverified).
+		return r.deployResolvedBinary(ctx, binaryData, target, want)
 	})
 }
 

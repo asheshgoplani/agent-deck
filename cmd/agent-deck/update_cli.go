@@ -183,6 +183,15 @@ func runUnattendedUpdate(d unattendedDeps) int {
 	if !info.Available {
 		fmt.Fprintf(d.out, "v%s is current; nothing to do\n", d.version)
 		log.Info("unattended_skipped", slog.String("reason", "current"))
+		// A run that finds nothing to install locally still sweeps: a
+		// remote sweep killed mid-transfer (2026-09-20: the launch-agent
+		// bootout of #2340) leaves remotes behind a controller that is
+		// already current, and the "current" skip must not silently strand
+		// them there until the next release. sweepRemotesUnattended defers
+		// to any sweep already running rather than racing it.
+		if d.sweepRemotes != nil {
+			d.sweepRemotes(d.version)
+		}
 		return drain()
 	}
 	if !d.autoInstall {
@@ -293,8 +302,32 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 // drainPendingLaunchAgents re-registers the launch agents a previous run
 // left in the pending marker (it ran inside them, or booted them out and
 // launchd never accepted them back). No marker: no-op.
+//
+// It refuses to run while a remote sweep from this controller is still in
+// flight (session.RemoteSweepInProgress): the pending marker for
+// com.agentdeck.web is exactly what an install's own hygiene leaves behind
+// because it cannot safely bootout the service it is running inside, and
+// that service's child is often the very process still streaming a binary
+// to a remote. Draining it there boots the service out from under that
+// child mid-transfer, which is what truncated the binary agentbox got at
+// v1.16.15 (#2340): a second, tui-triggered run found the controller
+// already current, skipped straight to drain(), and killed the web
+// daemon's sweep child while it was mid-write. A deferred drain is picked
+// up by the next run once the sweep has cleared the marker.
 func drainPendingLaunchAgents(log *slog.Logger) error {
 	if runtime.GOOS != "darwin" || !update.HasPendingRebootstrap() {
+		return nil
+	}
+	return drainPendingLaunchAgentsUnlessSweeping(log, session.RemoteSweepInProgress)
+}
+
+// drainPendingLaunchAgentsUnlessSweeping is the GOOS-independent core of
+// drainPendingLaunchAgents, split out so the sweep guard is testable on any
+// platform (the darwin/pending-marker gates above it are not).
+func drainPendingLaunchAgentsUnlessSweeping(log *slog.Logger, sweepInProgress func() (session.RemoteSweep, bool)) error {
+	if sweep, running := sweepInProgress(); running {
+		fmt.Printf("Launch agent re-registration deferred: a remote sweep (pid %d, started %s) is still running\n", sweep.PID, sweep.StartedAt.Format("15:04:05"))
+		log.Info("unattended_pending_drain_deferred", slog.Int("sweep_pid", sweep.PID), slog.Time("sweep_started_at", sweep.StartedAt))
 		return nil
 	}
 	fmt.Println("Re-registering launchd agents a previous update left pending...")
