@@ -13,10 +13,11 @@ import (
 // one-shot lifecycle operation: callers invoke it after a restart instead of
 // on every preview poll.
 //
-// A real interactive viewer owns the window geometry, so this is a no-op while
-// one is attached. resize-window temporarily pins window-size=manual; restore
-// the exact local/inherited policy afterwards so the next attach keeps normal
-// shared-view sizing semantics.
+// A real interactive viewer owns the window geometry. In particular, an attached
+// controlling TTY must not be resized (see #1114 for the failure mode), so this
+// is a no-op while one is attached. resize-window temporarily pins
+// window-size=manual; restore the exact local/inherited policy afterwards so
+// the next attach keeps normal shared-view sizing semantics.
 func (s *Session) FitDetachedPreview(cols, rows int) error {
 	if s == nil || cols < 1 || rows < 1 {
 		return nil
