@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall"
+	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/recall/store"
 	"github.com/asheshgoplani/agent-deck/internal/recall/testcorpus"
 )
@@ -118,15 +119,19 @@ func TestInitialRecallBackfill_EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// recallHome lays out sample corpora for every harness (Codex, pi,
+	// Gemini, OpenCode, Hermes), which the daemon's pass indexes too, so
+	// the total session count is not just this test's Claude corpus;
+	// scope the count to Claude to check what this test actually wrote.
 	var sessions int
-	if err := st.W.QueryRow(`SELECT count(*) FROM session`).Scan(&sessions); err != nil {
+	if err := st.W.QueryRow(`SELECT count(*) FROM session WHERE harness=?`, reader.HarnessClaude).Scan(&sessions); err != nil {
 		t.Fatal(err)
 	}
 	if sessions != stats.Files {
-		t.Fatalf("sessions = %d, want %d (every generated transcript indexed)", sessions, stats.Files)
+		t.Fatalf("claude sessions = %d, want %d (every generated transcript indexed)", sessions, stats.Files)
 	}
-	if status.SessionsDone != stats.Files {
-		t.Fatalf("status.sessions_done = %d, want %d", status.SessionsDone, stats.Files)
+	if status.SessionsDone < stats.Files {
+		t.Fatalf("status.sessions_done = %d, want at least %d", status.SessionsDone, stats.Files)
 	}
 	if status.SessionsPending != 0 {
 		t.Fatalf("status.sessions_pending = %d, want 0", status.SessionsPending)

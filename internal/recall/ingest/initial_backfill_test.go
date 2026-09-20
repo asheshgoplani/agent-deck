@@ -184,8 +184,14 @@ func TestRunThrottledBackfill_NeverRefusesUnderLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunThrottledBackfill under simulated load 55: %v", err)
 	}
-	if res.Deferred != 0 || res.Parsed != f.stats.Files {
+	// Parsed counts passes, not files: a small ChunkBytes can resume the
+	// same file across several chunks, so it may legitimately exceed the
+	// file count. The ledger's final state is the real assertion.
+	if res.Deferred != 0 {
 		t.Fatalf("did not finish under load: %+v", res)
+	}
+	if got := f.count(`SELECT count(*) FROM session`); got != int64(f.stats.Files) {
+		t.Fatalf("sessions = %d, want %d", got, f.stats.Files)
 	}
 }
 
