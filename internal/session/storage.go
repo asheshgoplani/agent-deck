@@ -1746,6 +1746,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			MultiRepoTempDir:      instData.MultiRepoTempDir,
 			tmuxSession:           tmuxSess,
 		}
+		// Restore configured detection without restarting the running harness.
+		inst.loadCustomPatternsFromConfig()
+
 		// Convert multi-repo worktree data
 		for _, wt := range instData.MultiRepoWorktrees {
 			inst.MultiRepoWorktrees = append(inst.MultiRepoWorktrees, MultiRepoWorktree{
