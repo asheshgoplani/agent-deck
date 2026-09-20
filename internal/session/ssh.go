@@ -202,6 +202,9 @@ type SSHRunner struct {
 	// update/deploy path (ResolveRemotePath, DeployBinary, version checks)
 	// without spawning a real ssh/scp subprocess. nil = real SSH (#1171).
 	remoteExecFn func(ctx context.Context, remoteCmd string, stdin []byte) ([]byte, error)
+
+	// nudgeFn lets tests stub NudgeCheckNow without spawning ssh. nil = real SSH.
+	nudgeFn func(ctx context.Context) error
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
@@ -616,6 +619,58 @@ func (input *sshAttachInput) result(err error) error {
 // RunCommand executes an arbitrary agent-deck command on the remote.
 func (r *SSHRunner) RunCommand(ctx context.Context, args ...string) ([]byte, error) {
 	return r.Run(ctx, args...)
+}
+
+// nudgeDialTimeout bounds how long NudgeCheckNow waits for the SSH
+// connection + fork to succeed. It is not how long the remote's own check
+// takes — that runs backgrounded on the remote, detached from this SSH
+// session, so the nudge returns as soon as the remote has launched it.
+const nudgeDialTimeout = 10 * time.Second
+
+// NudgeCheckNow tells the remote to check for an update right now, without
+// transferring any bytes itself: the remote's own `agent-deck update
+// --check-now` downloads and verifies on its own if a release is available.
+// It is fire-and-forget — the remote command is backgrounded with nohup and
+// disowned before this call returns, so a slow or stuck remote update never
+// blocks the controller (which moves on to nudging the next remote) and a
+// dropped SSH connection never interrupts it either.
+func (r *SSHRunner) NudgeCheckNow(ctx context.Context) error {
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return err
+	}
+	if r.nudgeFn != nil {
+		return r.nudgeFn(ctx)
+	}
+	remoteCmd := r.buildRemoteCommand("update", "--check-now", "--trigger", "nudge")
+	background := fmt.Sprintf("nohup sh -c %s >/dev/null 2>&1 </dev/null & disown 2>/dev/null; true", shellQuote(remoteCmd))
+	timeoutCtx, cancel := context.WithTimeout(ctx, nudgeDialTimeout)
+	defer cancel()
+	// #nosec G204 -- args are ssh connection options plus a shell-quoted
+	// remote command built from this runner's own config, never user input
+	// at call time.
+	cmd := exec.CommandContext(timeoutCtx, "ssh", r.sshBaseArgs(background)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("nudge failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// fallbackUpdateTimeout bounds the compatibility fallback for a remote too
+// old to understand --check-now (see NudgeRemotes): the remote's own
+// `agent-deck update --unattended` downloads and verifies the release
+// itself, which needs more headroom than an ordinary status command.
+const fallbackUpdateTimeout = 5 * time.Minute
+
+// FallbackUpdate runs `agent-deck update --unattended` on the remote and
+// blocks until it finishes: the compatibility path for a remote whose
+// version predates the --check-now nudge (NudgeRemotes). The bytes are
+// still fetched BY the remote, exactly as an interactive `agent-deck
+// update` on that host would.
+func (r *SSHRunner) FallbackUpdate(ctx context.Context) ([]byte, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, fallbackUpdateTimeout)
+	defer cancel()
+	return r.run(timeoutCtx, "update", "--unattended", "--trigger", "nudge-fallback")
 }
 
 // buildRemoteCommand safely quotes each argument for execution through the remote shell.

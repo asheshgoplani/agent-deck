@@ -142,13 +142,13 @@ func TestRunUnattendedUpdate_NothingToDo(t *testing.T) {
 	assert.Contains(t, h.out.String(), "v1.17.0 is still publishing")
 }
 
-// A run that finds itself current but has no remotes configured (or the
-// config could not be read) must still drain: sweepRemotes always runs on
-// the "current" skip, but sweepRemotesUnattended itself is a no-op when
-// there is nothing to sweep. This is the pure decision, not the CLI glue.
-func TestUnattendedSweepDecision_RunsEvenWhenControllerIsCurrent(t *testing.T) {
-	d := unattendedSweepDecision(&session.UserConfig{}, nil, session.UpdateSettings{}, session.RemoteSweep{}, false)
-	assert.Equal(t, "no remotes configured", d.reason)
+// A run that finds itself current but has no remotes configured must still
+// drain: sweepRemotes (remoteFollowUpForTrigger's hook) always runs on the
+// "current" skip, but remoteFollowUpUnattended itself is a no-op when there
+// is nothing to nudge or sweep.
+func TestUnattendedSweepDecision_NoRemotes(t *testing.T) {
+	d := unattendedSweepDecision(&session.UserConfig{}, session.RemoteSweep{}, false)
+	assert.Equal(t, sweepDecision{remotes: 0}, d)
 	assert.False(t, d.deferred)
 }
 
@@ -336,27 +336,32 @@ func TestRunTimerCommand_UnsupportedOS(t *testing.T) {
 	assert.Contains(t, out.String(), "not supported on windows")
 }
 
-// Every way the post-install remote sweep does not run has a reason the
-// log carries; a running sweep is "deferred", not "skipped".
+// The only thing left for unattendedSweepDecision to decide, once a caller
+// already knows sweep_remotes is on and there are remotes, is whether
+// another sweep from this controller is still running: a running sweep is
+// "deferred", not "skipped".
 func TestUnattendedSweepDecision(t *testing.T) {
-	on := session.UpdateSettings{}
-	offValue := false
-	off := session.UpdateSettings{AutoUpdateRemotes: &offValue}
 	two := &session.UserConfig{Remotes: map[string]session.RemoteConfig{"a": {Host: "a"}, "b": {Host: "b"}}}
 	sweep := session.RemoteSweep{PID: 51055, StartedAt: time.Date(2026, 9, 19, 14, 35, 4, 0, time.Local)}
 
-	d := unattendedSweepDecision(nil, errors.New("boom"), on, session.RemoteSweep{}, false)
-	assert.Equal(t, "config unreadable: boom", d.reason)
-	d = unattendedSweepDecision(&session.UserConfig{}, nil, on, session.RemoteSweep{}, false)
-	assert.Equal(t, "no remotes configured", d.reason)
-	d = unattendedSweepDecision(two, nil, off, session.RemoteSweep{}, false)
-	assert.Contains(t, d.reason, "auto_update_remotes is off")
-	assert.Equal(t, 2, d.remotes)
-	assert.False(t, d.deferred)
-	d = unattendedSweepDecision(two, nil, on, sweep, true)
+	d := unattendedSweepDecision(two, sweep, true)
 	assert.True(t, d.deferred)
 	assert.Contains(t, d.reason, "pid 51055")
 	assert.Contains(t, d.reason, "14:35:04")
-	d = unattendedSweepDecision(two, nil, on, session.RemoteSweep{}, false)
+
+	d = unattendedSweepDecision(two, session.RemoteSweep{}, false)
 	assert.Equal(t, sweepDecision{remotes: 2}, d)
+}
+
+// A run that is itself answering another controller's nudge ("nudge" or
+// "nudge-fallback" trigger) must never follow up with its own remotes: the
+// nudge fans out from the one controller that installed a release to the
+// remotes it is configured with, not across hops.
+func TestRemoteFollowUpForTrigger_NudgeTriggersDoNotFanOut(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	assert.Nil(t, remoteFollowUpForTrigger("nudge", log))
+	assert.Nil(t, remoteFollowUpForTrigger("nudge-fallback", log))
+	assert.NotNil(t, remoteFollowUpForTrigger("tui", log))
+	assert.NotNil(t, remoteFollowUpForTrigger("timer", log))
+	assert.NotNil(t, remoteFollowUpForTrigger("manual", log))
 }

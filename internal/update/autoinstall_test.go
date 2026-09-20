@@ -33,6 +33,48 @@ func TestNextRecheck(t *testing.T) {
 	}
 }
 
+// TestNextRecheckAfterFailures pins the exponential-backoff-with-jitter
+// schedule a headless poller uses after repeated failures: doubling per
+// consecutive failure, capped at RecheckBackoffMax, and never checking
+// before the un-jittered floor for that failure count.
+func TestNextRecheckAfterFailures(t *testing.T) {
+	now := time.Date(2026, 9, 13, 17, 0, 0, 0, time.UTC)
+
+	if got := NextRecheckAfterFailures(time.Time{}, 3); !got.IsZero() {
+		t.Fatalf("never checked: NextRecheckAfterFailures = %v, want zero (due now)", got)
+	}
+	if got, want := NextRecheckAfterFailures(now, 0), now.Add(RecheckInterval); !got.Equal(want) {
+		t.Fatalf("no failures: NextRecheckAfterFailures = %v, want %v (same as NextRecheck(last, false))", got, want)
+	}
+
+	// Pin jitter to zero so the floor of each step is exact.
+	origJitter := backoffJitter
+	backoffJitter = func(int64) int64 { return 0 }
+	t.Cleanup(func() { backoffJitter = origJitter })
+
+	if got, want := NextRecheckAfterFailures(now, 1), now.Add(RecheckBackoff); !got.Equal(want) {
+		t.Fatalf("1st failure: NextRecheckAfterFailures = %v, want %v", got, want)
+	}
+	if got, want := NextRecheckAfterFailures(now, 2), now.Add(2*RecheckBackoff); !got.Equal(want) {
+		t.Fatalf("2nd failure: NextRecheckAfterFailures = %v, want %v (doubled)", got, want)
+	}
+	// Enough consecutive failures must saturate at the cap, not keep doubling
+	// into an ever-larger delay.
+	if got, want := NextRecheckAfterFailures(now, 20), now.Add(RecheckBackoffMax); !got.Equal(want) {
+		t.Fatalf("many failures: NextRecheckAfterFailures = %v, want the capped %v", got, want)
+	}
+
+	// Jitter only ever adds delay (never checks earlier than the floor) and
+	// stays bounded (never balloons past the floor plus its ceiling).
+	backoffJitter = func(n int64) int64 { return n - 1 }
+	floor := now.Add(RecheckBackoff)
+	ceiling := floor.Add(RecheckBackoff / 4)
+	got := NextRecheckAfterFailures(now, 1)
+	if got.Before(floor) || got.After(ceiling) {
+		t.Fatalf("jittered NextRecheckAfterFailures = %v, want within [%v, %v]", got, floor, ceiling)
+	}
+}
+
 // fakeInstaller drives an Installer with canned check results and counts
 // the unattended runs it started.
 type fakeInstaller struct {

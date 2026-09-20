@@ -34,11 +34,24 @@ const (
 	DefaultCheckInterval = 1 * time.Hour
 )
 
-// checkInterval stores the configurable interval (set via SetCheckInterval)
+// checkInterval stores the configurable interval (set via SetCheckInterval
+// or SetCheckIntervalDuration)
 var checkInterval = DefaultCheckInterval
 
-// apiBaseURL is the base URL for GitHub API calls. Overridable in tests.
-var apiBaseURL = "https://api.github.com"
+// apiBaseURL is the base URL for GitHub API calls. Overridable in tests, and
+// at runtime via AGENTDECK_GITHUB_API_BASE_URL for driving a real binary
+// against a fake release server (sandboxed end-to-end proofs of the update
+// flow) without ever pointing it at the real GitHub API.
+var apiBaseURL = envOr("AGENTDECK_GITHUB_API_BASE_URL", "https://api.github.com")
+
+// envOr returns the trimmed value of the named env var, or fallback when
+// unset or blank.
+func envOr(name, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // detectHomebrewManagedInstall is a test seam for self-update install paths.
 var detectHomebrewManagedInstall = DetectHomebrewManagedInstall
@@ -54,10 +67,19 @@ var bridgeScriptInstaller func() error
 // UpdateBridgePy falls back to the default XDG/legacy resolution.
 var conductorDirResolver func() (string, error)
 
-// SetCheckInterval sets the update check interval from config
+// SetCheckInterval sets the update check interval from config, in hours.
 func SetCheckInterval(hours int) {
 	if hours > 0 {
 		checkInterval = time.Duration(hours) * time.Hour
+	}
+}
+
+// SetCheckIntervalDuration sets the update check interval directly. Used to
+// wire [updates].check_interval (a duration string, default 90s) so the
+// near-event-driven poll cadence isn't limited to whole hours.
+func SetCheckIntervalDuration(d time.Duration) {
+	if d > 0 {
+		checkInterval = d
 	}
 }
 
@@ -102,6 +124,12 @@ type UpdateCache struct {
 	DownloadURL    string    `json:"download_url"`
 	ReleaseURL     string    `json:"release_url"`
 	ReleasesBehind int       `json:"releases_behind,omitempty"`
+	// ETag is the GitHub response's ETag for /releases/latest, sent back as
+	// If-None-Match on the next poll. GitHub answers an unchanged resource
+	// with 304 Not Modified, which does not count against the caller's API
+	// rate limit, so polling every check_interval (default 90s) stays cheap
+	// between releases.
+	ETag string `json:"etag,omitempty"`
 }
 
 // UpdateInfo contains information about an available update
@@ -224,6 +252,14 @@ func resolveGitHubToken() string {
 // token is available. On a 403 response from an unauthenticated request it
 // returns a friendlier rate-limit error pointing the user at authentication.
 func githubAPIGet(url string) (*http.Response, bool, error) {
+	return githubAPIGetConditional(url, "")
+}
+
+// githubAPIGetConditional is githubAPIGet with an optional If-None-Match
+// sent when etag is non-empty, so an unchanged release answers 304 Not
+// Modified instead of re-sending (and re-billing the rate limit for) the
+// full body.
+func githubAPIGetConditional(url, etag string) (*http.Response, bool, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, false, err
@@ -234,6 +270,9 @@ func githubAPIGet(url string) (*http.Response, bool, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -337,24 +376,38 @@ func ShouldNudge(info *UpdateInfo) bool {
 
 // fetchLatestRelease fetches the latest release from GitHub
 func fetchLatestRelease() (*Release, error) {
+	release, _, _, err := fetchLatestReleaseConditional("")
+	return release, err
+}
+
+// fetchLatestReleaseConditional fetches the latest release from GitHub,
+// sending If-None-Match: etag when etag is non-empty. notModified is true
+// on a 304 (release is unchanged; release is nil), in which case the caller
+// should keep using its cached copy. newETag is the response's ETag, to
+// remember for the next call regardless of whether it was a 200 or a 304.
+func fetchLatestReleaseConditional(etag string) (release *Release, newETag string, notModified bool, err error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", apiBaseURL, GitHubRepo)
 
-	resp, authed, err := githubAPIGet(url)
+	resp, authed, err := githubAPIGetConditional(url, etag)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch release: %w", err)
+		return nil, "", false, fmt.Errorf("failed to fetch release: %w", err)
 	}
 	defer resp.Body.Close()
+	newETag = resp.Header.Get("ETag")
 
+	if resp.StatusCode == http.StatusNotModified {
+		return nil, newETag, true, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, rateLimitError(resp.StatusCode, authed)
+		return nil, newETag, false, rateLimitError(resp.StatusCode, authed)
 	}
 
-	var release Release
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, fmt.Errorf("failed to parse release: %w", err)
+	var r Release
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, newETag, false, fmt.Errorf("failed to parse release: %w", err)
 	}
 
-	return &release, nil
+	return &r, newETag, false, nil
 }
 
 // getAssetURL returns the download URL for the current platform
@@ -545,6 +598,17 @@ func compareNumericIdentifiers(a, b string) int {
 	return strings.Compare(a, b)
 }
 
+// applyCacheToInfo fills info from a cached (or just-confirmed-unchanged)
+// release: used both when the cache is still fresh and when a conditional
+// poll comes back 304 Not Modified.
+func applyCacheToInfo(info *UpdateInfo, cache *UpdateCache, currentVersion string) {
+	info.LatestVersion = cache.LatestVersion
+	info.DownloadURL = cache.DownloadURL
+	info.ReleaseURL = cache.ReleaseURL
+	info.ReleasesBehind = cache.ReleasesBehind
+	info.Available = CompareVersions(currentVersion, cache.LatestVersion) < 0
+}
+
 // CheckForUpdate checks if a new version is available
 // Uses cache to avoid hitting GitHub API too frequently
 func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error) {
@@ -558,24 +622,43 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 		return info, nil
 	}
 
+	cache, cacheErr := loadCache()
+	haveCache := cacheErr == nil
+
 	// Try to use cache first (unless force check)
-	if !forceCheck {
-		cache, err := loadCache()
-		if err == nil && time.Since(cache.CheckedAt) < checkInterval {
-			// Cache is fresh, use it
-			info.LatestVersion = cache.LatestVersion
-			info.DownloadURL = cache.DownloadURL
-			info.ReleaseURL = cache.ReleaseURL
-			info.ReleasesBehind = cache.ReleasesBehind
-			info.Available = CompareVersions(currentVersion, cache.LatestVersion) < 0
-			return info, nil
-		}
+	if !forceCheck && haveCache && time.Since(cache.CheckedAt) < checkInterval {
+		applyCacheToInfo(info, cache, currentVersion)
+		return info, nil
 	}
 
-	// Fetch from GitHub
-	release, err := fetchLatestRelease()
+	// Poll GitHub, conditionally: an unchanged release (304) does not spend
+	// the rate limit, so the near-event-driven interval (default 90s) stays
+	// cheap between releases (#update-pull-nudge).
+	etag := ""
+	if haveCache {
+		etag = cache.ETag
+	}
+	release, newETag, notModified, err := fetchLatestReleaseConditional(etag)
 	if err != nil {
 		return info, err
+	}
+	if notModified {
+		if !haveCache {
+			// A 304 with no cache to fall back on cannot happen against a
+			// real server (there is nothing to compare against without
+			// sending an ETag), but stay defensive rather than panic on a
+			// nil cache.
+			return info, fmt.Errorf("GitHub reported no change but no cached release is on disk")
+		}
+		applyCacheToInfo(info, cache, currentVersion)
+		refreshed := *cache
+		refreshed.CheckedAt = time.Now()
+		refreshed.CurrentVersion = currentVersion
+		if newETag != "" {
+			refreshed.ETag = newETag
+		}
+		_ = saveCache(&refreshed) // renew freshness; ignore save errors
+		return info, nil
 	}
 
 	// Count how many releases the user is behind. A failure here is
@@ -627,13 +710,14 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 	}
 
 	// Update cache
-	cache := &UpdateCache{
+	cache = &UpdateCache{
 		CheckedAt:      time.Now(),
 		LatestVersion:  latestVersion,
 		CurrentVersion: currentVersion,
 		DownloadURL:    downloadURL,
 		ReleaseURL:     release.HTMLURL,
 		ReleasesBehind: releasesBehind,
+		ETag:           newETag,
 	}
 	_ = saveCache(cache) // Ignore cache save errors
 
