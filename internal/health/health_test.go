@@ -97,7 +97,7 @@ func TestSamplerAndPositiveSince(t *testing.T) {
 	}
 	RecordStatusPass(10*time.Millisecond, 3, 2)
 	RecordDBQuery(time.Millisecond)
-	RecordRemote("test", time.Second, "ok")
+	RecordRemote("test", time.Second, "ok", 0, 0, 0)
 	stop()
 	stop()
 	if Enabled() {
@@ -216,7 +216,7 @@ func TestSamplerConsumesIntervalObservations(t *testing.T) {
 	d := t.TempDir()
 	RecordStatusPass(time.Millisecond, 1, 1)
 	RecordDBQuery(time.Millisecond)
-	RecordRemote("test", time.Millisecond, "ok")
+	RecordRemote("test", time.Millisecond, "ok", 0, 0, 0)
 	stop := Start(d, "tui", t.TempDir(), "1.16.11-test")
 	stop()
 	r, err := Report(d, time.Hour)
@@ -246,5 +246,35 @@ func TestSamplerReportsJournalDropped(t *testing.T) {
 	}
 	if got := r.Processes[0].Latest.JournalDropped; got < before+2 {
 		t.Fatalf("want journal_dropped >= %d, got %d", before+2, got)
+	}
+}
+
+// TestRemoteWarning_NamesStageWithStats and its sibling below pin #2331: the
+// footer used to say only "remote X poll is slow or failed" with no number
+// and no stage — a slow poll and a broken one looked identical. With the
+// remote's own status-pass stats attached, the warning names the stage and
+// the duration; without them (older remote binary, or a call that failed
+// before it answered with any), it falls back to the original wording so a
+// genuinely unreachable host is not misreported as merely a slow one.
+func TestRemoteWarning_NamesStageWithStats(t *testing.T) {
+	d := t.TempDir()
+	RecordRemote("agentbox", 46800*time.Millisecond, "ok", 46800, 312, 76)
+	Start(d, "tui", t.TempDir(), "1.16.11-test")
+	got := CurrentWarning()
+	for _, want := range []string{`"agentbox"`, "status pass", "46.8s", "312 tmux calls", "76 sessions"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("warning = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+func TestRemoteWarning_FallsBackWithoutStats(t *testing.T) {
+	d := t.TempDir()
+	RecordRemote("legacyhost", 3*time.Second, "failed", 0, 0, 0)
+	Start(d, "tui", t.TempDir(), "1.16.11-test")
+	got := CurrentWarning()
+	want := `Health: remote "legacyhost" poll is slow or failed`
+	if got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
 	}
 }

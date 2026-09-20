@@ -97,6 +97,60 @@ func (h *Home) remotePollUnavailable(name string) bool {
 	return h.remoteFromCache[name] || (known && state.LastPollStatus != "ok")
 }
 
+// remoteRowStaleAge threshold (#2331): a poll that succeeds slowly (the
+// remote's own status pass ran long under load) still returns a snapshot
+// that is up to that long old by the time it renders, and remotePollUnavailable
+// (above) says nothing about it — it only flags a poll that failed outright.
+// remoteRowAge fills that gap using the same h.remoteFetchedAt stamp the
+// on-disk startup cache already relies on for its own staleness check
+// (remoteSessionsCacheMaxAge in remote_cache.go), just applied live instead
+// of only at load time. remoteSessionsCacheSaveInterval (30s) is the
+// shortest gap between two on-disk cache writes; a row is called stale once
+// its in-memory fetch stamp is older than that same cadence, so the age
+// marker appears no later than a healthy remote's own steady-state refresh
+// rate would explain.
+const remoteRowStaleAge = remoteSessionsCacheSaveInterval
+
+// remoteRowAge reports how long ago name's rows last came from a live fetch
+// (poll or push), and whether that is known at all — a remote polled since
+// this process started always knows; one seeded purely from the on-disk
+// startup cache reports its cached age via the same map (applyRemoteSessionsSnapshot
+// sets remoteFetchedAt too), so a cold-start row and a slow-poll row render
+// through the same "how old is this" path instead of two separate labels.
+func (h *Home) remoteRowAge(name string) (time.Duration, bool) {
+	h.remoteSessionsMu.RLock()
+	fetched, known := h.remoteFetchedAt[name]
+	h.remoteSessionsMu.RUnlock()
+	if !known || fetched.IsZero() {
+		return 0, false
+	}
+	return time.Since(fetched), true
+}
+
+// formatRemoteAge renders a stale-row age as "47s old" / "3m old", unlike
+// humanizeSince (which floors anything under a minute to "just now" — wrong
+// here, since remoteRowStaleAge itself is 30s, so every row this badge ever
+// shows would otherwise read as "just now").
+func formatRemoteAge(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return fmt.Sprintf("%dm", int(d/time.Minute))
+}
+
+// remoteRowStale reports whether name's rows are old enough to need the "·
+// status Ns old" marker: known-stale-by-age, OR the poll itself is flagged
+// unavailable/failed (remotePollUnavailable) but with no age on record yet
+// (e.g. a remote configured this session that has never had a live fetch
+// land — falls back to the plain "last known" wording callers already use).
+func (h *Home) remoteRowStale(name string) (time.Duration, bool) {
+	age, known := h.remoteRowAge(name)
+	if known && age >= remoteRowStaleAge {
+		return age, true
+	}
+	return 0, false
+}
+
 func (h *Home) remotePollConfigMatches(name string, rc session.RemoteConfig) bool {
 	h.remoteSessionsMu.RLock()
 	defer h.remoteSessionsMu.RUnlock()

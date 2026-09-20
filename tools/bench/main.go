@@ -412,7 +412,7 @@ host = "bench-auth"
 			name := "remote_" + host + "_refresh"
 			beforeSSH := lines(filepath.Join(root, "ssh.log"))
 			start := time.Now()
-			rows, e := session.NewSSHRunner(host, session.RemoteConfig{Host: "bench-" + host}).FetchSessions(context.Background())
+			rows, _, e := session.NewSSHRunner(host, session.RemoteConfig{Host: "bench-" + host}).FetchSessions(context.Background())
 			if host == "auth" {
 				if e == nil {
 					return fmt.Errorf("auth fixture unexpectedly succeeded")

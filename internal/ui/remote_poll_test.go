@@ -16,9 +16,9 @@ type authPollRunner struct {
 	calls *atomic.Int32
 }
 
-func (r authPollRunner) FetchSessions(context.Context) ([]session.RemoteSessionInfo, error) {
+func (r authPollRunner) FetchSessions(context.Context) ([]session.RemoteSessionInfo, *session.ListStats, error) {
 	r.calls.Add(1)
-	return nil, errors.New("ssh: Permission denied (publickey).")
+	return nil, nil, errors.New("ssh: Permission denied (publickey).")
 }
 
 func TestRemotePollAuthBackoffAndReason(t *testing.T) {
@@ -138,10 +138,10 @@ type stuckPollRunner struct {
 	started, release chan struct{}
 }
 
-func (r stuckPollRunner) FetchSessions(context.Context) ([]session.RemoteSessionInfo, error) {
+func (r stuckPollRunner) FetchSessions(context.Context) ([]session.RemoteSessionInfo, *session.ListStats, error) {
 	close(r.started)
 	<-r.release
-	return nil, context.Canceled
+	return nil, nil, context.Canceled
 }
 
 func TestRemotePollStartAndExitDoNotWaitForSlowRunner(t *testing.T) {

@@ -16,9 +16,9 @@ type retryPollRunner struct {
 	calls *atomic.Int32
 }
 
-func (r retryPollRunner) FetchSessions(context.Context) ([]session.RemoteSessionInfo, error) {
+func (r retryPollRunner) FetchSessions(context.Context) ([]session.RemoteSessionInfo, *session.ListStats, error) {
 	r.calls.Add(1)
-	return nil, nil
+	return nil, nil, nil
 }
 
 func TestRemotePollHeaderRetryEvent(t *testing.T) {

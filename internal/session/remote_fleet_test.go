@@ -21,7 +21,7 @@ type trackingFleetRunner struct {
 	release <-chan struct{}
 }
 
-func (f trackingFleetRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, error) {
+func (f trackingFleetRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, *ListStats, error) {
 	active := f.active.Add(1)
 	defer f.active.Add(-1)
 	for {
@@ -32,19 +32,19 @@ func (f trackingFleetRunner) FetchSessions(ctx context.Context) ([]RemoteSession
 	}
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	case <-f.release:
-		return []RemoteSessionInfo{}, nil
+		return []RemoteSessionInfo{}, nil, nil
 	}
 }
 
 func (trackingFleetRunner) MeasureLatency(context.Context) (time.Duration, error) { return 0, nil }
 
-func (f fakeFleetRemoteRunner) FetchSessions(context.Context) ([]RemoteSessionInfo, error) {
+func (f fakeFleetRemoteRunner) FetchSessions(context.Context) ([]RemoteSessionInfo, *ListStats, error) {
 	if f.err != nil {
-		return nil, f.err
+		return nil, nil, f.err
 	}
-	return append([]RemoteSessionInfo(nil), f.sessions...), nil
+	return append([]RemoteSessionInfo(nil), f.sessions...), nil, nil
 }
 
 func (f fakeFleetRemoteRunner) MeasureLatency(context.Context) (time.Duration, error) {
@@ -165,7 +165,7 @@ type sequenceFleetRunner struct {
 	onFetch func()
 }
 
-func (f sequenceFleetRunner) FetchSessions(context.Context) ([]RemoteSessionInfo, error) {
+func (f sequenceFleetRunner) FetchSessions(context.Context) ([]RemoteSessionInfo, *ListStats, error) {
 	if f.onFetch != nil {
 		f.onFetch()
 	}
@@ -173,9 +173,9 @@ func (f sequenceFleetRunner) FetchSessions(context.Context) ([]RemoteSessionInfo
 	defer f.mu.Unlock()
 	*f.calls++
 	if *f.calls > 1 {
-		return nil, errors.New("offline")
+		return nil, nil, errors.New("offline")
 	}
-	return []RemoteSessionInfo{{ID: "kept", Status: "waiting"}}, nil
+	return []RemoteSessionInfo{{ID: "kept", Status: "waiting"}}, nil, nil
 }
 
 func TestRemoteFleetScannerStartsFailureBackoffAfterScanCompletes(t *testing.T) {

@@ -477,7 +477,7 @@ func printRemoteSessionCompletions(remoteName string) {
 	runner := session.NewSSHRunner(remoteName, rc)
 	ctx, cancel := context.WithTimeout(context.Background(), remoteSessionCompletionTimeout)
 	defer cancel()
-	sessions, err := runner.FetchSessions(ctx)
+	sessions, _, err := runner.FetchSessions(ctx)
 	if err != nil {
 		return
 	}

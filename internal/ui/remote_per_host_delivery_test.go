@@ -23,17 +23,18 @@ type stubFetchRunner struct {
 	name     string
 	sessions []session.RemoteSessionInfo
 	release  chan struct{}
+	stats    *session.ListStats
 }
 
-func (s stubFetchRunner) FetchSessions(ctx context.Context) ([]session.RemoteSessionInfo, error) {
+func (s stubFetchRunner) FetchSessions(ctx context.Context) ([]session.RemoteSessionInfo, *session.ListStats, error) {
 	if s.release != nil {
 		select {
 		case <-s.release:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	}
-	return append([]session.RemoteSessionInfo(nil), s.sessions...), nil
+	return append([]session.RemoteSessionInfo(nil), s.sessions...), s.stats, nil
 }
 
 func (s stubFetchRunner) FetchCostSummary(context.Context) (*costs.RemoteCostSummary, error) {

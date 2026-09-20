@@ -650,7 +650,7 @@ func handleRemoteSessions(args []string) {
 		}
 
 		runner := session.NewSSHRunner(name, rc)
-		sessions, err := runner.FetchSessions(ctx)
+		sessions, _, err := runner.FetchSessions(ctx)
 		if !addRemoteSessionFetch(&output, name, rc.Host, sessions, err) {
 			if !jsonOutput {
 				fmt.Printf("  [%s] Error: %v\n", name, err)
@@ -714,7 +714,7 @@ func handleRemoteAttach(args []string) {
 	runner := session.NewSSHRunner(remoteName, rc)
 
 	ctx := context.Background()
-	sessions, err := runner.FetchSessions(ctx)
+	sessions, _, err := runner.FetchSessions(ctx)
 	if err != nil {
 		fmt.Printf("Error: failed to fetch remote sessions: %v\n", err)
 		os.Exit(1)
@@ -764,7 +764,7 @@ func handleRemoteRename(args []string) {
 	ctx := context.Background()
 
 	// Resolve session reference
-	sessions, err := runner.FetchSessions(ctx)
+	sessions, _, err := runner.FetchSessions(ctx)
 	if err != nil {
 		fmt.Printf("Error: failed to fetch remote sessions: %v\n", err)
 		os.Exit(1)

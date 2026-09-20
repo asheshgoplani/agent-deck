@@ -84,7 +84,7 @@ func TestIssue1112_RemoteFetchSessions_PreservesWaitingStatus(t *testing.T) {
 	})
 	runner, _ := stubbedRunner(payload)
 
-	sessions, err := runner.FetchSessions(context.Background())
+	sessions, _, err := runner.FetchSessions(context.Background())
 	if err != nil {
 		t.Fatalf("FetchSessions: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestIssue1112_RemoteFetchSessions_AllStatusesPropagate(t *testing.T) {
 	payload := jsonListResponse(in)
 	runner, _ := stubbedRunner(payload)
 
-	sessions, err := runner.FetchSessions(context.Background())
+	sessions, _, err := runner.FetchSessions(context.Background())
 	if err != nil {
 		t.Fatalf("FetchSessions: %v", err)
 	}
@@ -154,14 +154,14 @@ func TestIssue1112_RemoteFetchSessions_StatusChangeObserved(t *testing.T) {
 		},
 	}
 
-	first, err := runner.FetchSessions(context.Background())
+	first, _, err := runner.FetchSessions(context.Background())
 	if err != nil {
 		t.Fatalf("first FetchSessions: %v", err)
 	}
 	if first[0].Status != "running" {
 		t.Fatalf("first Status=%q, want running", first[0].Status)
 	}
-	second, err := runner.FetchSessions(context.Background())
+	second, _, err := runner.FetchSessions(context.Background())
 	if err != nil {
 		t.Fatalf("second FetchSessions: %v", err)
 	}
@@ -180,11 +180,11 @@ func TestIssue1112_RemoteFetchSessions_RoutesViaListJSON(t *testing.T) {
 		{ID: "x", Title: "x", Status: "waiting"},
 	})
 	runner, lastArgs := stubbedRunner(payload)
-	if _, err := runner.FetchSessions(context.Background()); err != nil {
+	if _, _, err := runner.FetchSessions(context.Background()); err != nil {
 		t.Fatalf("FetchSessions: %v", err)
 	}
 	got := strings.Join(*lastArgs, " ")
-	want := "list --json"
+	want := "list --json " + ListStatsFlag
 	if got != want {
 		t.Errorf("ssh argv = %q, want %q — the status RPC must use the list --json wire form", got, want)
 	}
@@ -203,7 +203,7 @@ func TestIssue1112_RemoteFetchSessions_FieldsRoundTrip(t *testing.T) {
 			return []byte(body), nil
 		},
 	}
-	sessions, err := runner.FetchSessions(context.Background())
+	sessions, _, err := runner.FetchSessions(context.Background())
 	if err != nil {
 		t.Fatalf("FetchSessions: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestIssue1112_RemoteFetchSessions_EmptyListIsNotAnError(t *testing.T) {
 			return []byte("No sessions found in profile 'default'.\n"), nil
 		},
 	}
-	sessions, err := runner.FetchSessions(context.Background())
+	sessions, _, err := runner.FetchSessions(context.Background())
 	if err != nil {
 		t.Fatalf("FetchSessions on empty remote: unexpected error %v", err)
 	}

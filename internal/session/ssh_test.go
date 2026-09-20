@@ -23,6 +23,41 @@ func TestSSHRunnerBuildRemoteCommand_QuotesAllDynamicArgs(t *testing.T) {
 	}
 }
 
+// TestBuildRemoteCommand_OmitsProfileFlagOnlyForDefault pins the sentinel
+// buildRemoteCommand checks (empty or "default") against what
+// RemoteConfig.GetProfile() actually produces when unset (#2331
+// investigation: raised as a possible cause of a remote's status probe
+// hitting the wrong profile — checked and it is not; this guards the two
+// values staying in sync so a future change to GetProfile's default can't
+// silently reopen that question).
+func TestBuildRemoteCommand_OmitsProfileFlagOnlyForDefault(t *testing.T) {
+	unset := RemoteConfig{Host: "agentbox"}
+	if got := unset.GetProfile(); got != "default" {
+		t.Fatalf("GetProfile() on an unset profile = %q, want %q", got, "default")
+	}
+
+	tests := []struct {
+		profile   string
+		wantsFlag bool
+	}{
+		{"", false},
+		{"default", false},
+		{unset.GetProfile(), false}, // pins the two sentinels to the same value
+		{"work", true},
+		{"ashesh-buddii", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.profile, func(t *testing.T) {
+			runner := &SSHRunner{AgentDeckPath: "agent-deck", Profile: tc.profile}
+			got := runner.buildRemoteCommand("list", "--json")
+			hasFlag := strings.Contains(got, "-p ")
+			if hasFlag != tc.wantsFlag {
+				t.Fatalf("buildRemoteCommand(%q) = %q, -p present=%v, want %v", tc.profile, got, hasFlag, tc.wantsFlag)
+			}
+		})
+	}
+}
+
 func TestWrapForSSH_QuotesSSHHost(t *testing.T) {
 	inst := NewInstance("ssh-test", "/tmp")
 	inst.SSHHost = "user@host -oProxyCommand=bad"
