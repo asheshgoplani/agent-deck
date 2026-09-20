@@ -263,13 +263,24 @@ pages back; **rebuild** deletes `recall.db` and backfills.
 
 ### Load guarantees (all tested)
 
-- No daemon, no file watcher. A sweep runs inside the command that asked
-  for it and ends with it.
+- No daemon or file watcher *inside `internal/recall`*: a sweep runs inside
+  the caller's goroutine and ends with it (`TestRecall_NoDaemonNoWatcher`
+  forbids a goroutine launch or a watcher import anywhere under
+  `internal/recall` and `cmd/agent-deck/recall_cmd.go`). The one caller
+  that keeps its own goroutine alive across many sweeps is
+  `backfill_on_enable`'s initial-backfill pass, and it lives in
+  `internal/session` (the existing notify-daemon), not in `internal/recall`
+  itself — the package that owns `recall.db` still makes no daemon of its
+  own.
 - The interactive sweep before a read stops at 150 ms or 32 MB and reports
   what it deferred; the index stays consistent at every cut.
 - `backfill`, `sweep` and `rebuild` refuse to start while any session of
   the active profile is `running` or the one-minute load average is above
   `max_loadavg` (default 4.0); `--force` overrides. Reads are never gated.
+  The daemon-driven initial backfill (`backfill_on_enable`, below) is the
+  one exception to "refuse": it throttles instead, in small ungated
+  chunks, so it still finishes on a machine that would refuse the manual
+  command.
 - One writer connection, transactions bounded at 8 MB of decoded text, one
   record resident at a time: a 100 MB transcript adds about 11 MB of heap.
 - One `flock` beside `recall.db`, so every profile contends on one lock.
@@ -294,15 +305,75 @@ roots it validates against. Progress records are no longer read by `costs
 sync`; no transcript on the design machine carries one today, and the
 recall reader takes usage from assistant records only.
 
+### Initial backfill
+
+Enabling `[recall] enabled = true` used to index nothing until someone ran
+`agent-deck recall backfill` by hand, and that command refuses outright
+under the load gate — a busy machine never gets a window. `[recall]
+backfill_on_enable = true` (default) closes that gap: `agent-deck
+notify-daemon`, the always-on daemon/timer path every machine (including
+remotes) already runs, checks on every poll tick whether recall is enabled
+with an empty index or a persisted marker saying the initial backfill never
+finished, and if so starts it, once per daemon process. It never runs from
+the TUI's render loop and never from the Stop/SessionEnd hook.
+
+The background pass is a different load-gate policy from the manual
+command: it **throttles instead of refusing**. Each chunk is small (a
+couple of seconds, a few megabytes) and ungated; between chunks it sleeps,
+scaled by the one-minute load average (minimally at or under half of
+`max_loadavg`, up to several seconds at or above it), so a heavy machine
+still finishes, just slower, instead of never starting. On Linux the pass's
+own goroutine runs at a lower scheduling priority (`setpriority`); there is
+no equivalent on other platforms, so this is a Linux-only refinement, not a
+correctness requirement. Exactly one chunk runs anywhere on the machine at
+a time: each chunk takes the same machine-global sweep lock the manual
+commands use, without waiting, and releases it before sleeping, so an
+interactive search's pre-search sweep or a hook's inline sweep is never
+starved for the whole pass — only for one chunk at a time. The manual
+`recall backfill`/`sweep`/`rebuild` are unchanged: they still refuse
+outright under load or a busy session, and `--force` still overrides them.
+
+Progress and completion are in `recall status --json`'s `initial_backfill`:
+`state` (`pending`, `running`, `done`), `done_at`, `sessions_done`,
+`sessions_pending`, checkpointed after every chunk. One log line marks the
+start (`recall_initial_backfill_started`) and one the end — success
+(`recall_initial_backfill_done`) or an interruption that leaves the marker
+"running" for the next daemon to resume (`recall_initial_backfill_interrupted`).
+The marker lives in `recall.db`'s `meta` table, so it resets with the
+disposable index (a `recall rebuild` or a schema bump both warrant a fresh
+catch-up) and survives a process restart: a daemon killed mid-pass leaves
+"running", and the next one treats that exactly like "pending" — nothing
+already committed is re-parsed, since the ledger's own per-source byte
+cursors (not the marker) decide where each file resumes. An index that
+already holds sessions when this feature first runs, with no marker (built
+by an older binary, or by a plain `recall backfill`), is treated as
+already caught up: no background pass fires for it.
+
+The daemon's pass indexes text and builds cards exactly like the manual
+`recall backfill`, but writes no cost events (no `UsageSink`, unlike the
+CLI's own `recall backfill`/`sweep`): the daemon has no per-profile cost
+store wiring of its own to reuse safely across every profile a machine-wide
+pass may touch. A backfilled session's token counts land in the index and
+`recall show`; its usage history reaches `costs sync` from a later `recall
+sweep`/`backfill` run by hand, or the next time that session's own hook
+fires.
+
+**Remotes:** nothing remote-specific was needed. `notify-daemon` is the
+same binary and the same poll loop on every machine, so a remote enabling
+recall (`agent-deck remote <host> ...`, or the remote's own config edit)
+gets the same background catch-up from its own daemon; a fleet on
+auto-update indexes itself without an operator visiting each host by hand.
+
 ### Config
 
 ```toml
 [recall]
 enabled = true
-max_loadavg = 4.0        # backfill/sweep refuse above this (0 disables)
+max_loadavg = 4.0        # backfill/sweep refuse above this (0 disables); also scales backfill_on_enable's sleep
 text_tier = "clipped"    # or "full": whole bodies instead of 8 KiB
 keep_missing_days = 30   # tombstone retention for vanished transcripts
 per_source_mb = 64       # per-sweep cap on one file; the rest continues next sweep
+backfill_on_enable = true  # the daemon runs one throttled background pass to catch an empty/unfinished index up
 ```
 
 ### Where the files are
@@ -401,7 +472,8 @@ no `cwd` and `--project` cannot match them.
 
 ### Triggers
 
-Nothing watches anything. Three things move the index:
+Nothing watches anything. Three things move the index once it exists; a
+fourth, distinct one gets it going in the first place:
 
 1. **The Claude hook.** On `Stop` and `SessionEnd`, `agent-deck hook-handler`
    appends one line to `recall/queue.jsonl` (`{ts, harness, path, event,
@@ -433,6 +505,10 @@ Nothing watches anything. Three things move the index:
    is fresh even when the bounded interactive budget would not reach it.
    The queue is advisory: a path is re-validated before it is opened, and
    the walk finds the same files without it.
+4. **The initial backfill** (`backfill_on_enable`, phase 2 above) is not a
+   freshness trigger like the three above: it fires once, when recall's
+   index has nothing in it yet (or a marker says an earlier attempt never
+   finished), and stops firing once it has caught up.
 
 ### The TUI
 

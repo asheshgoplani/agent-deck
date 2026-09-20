@@ -67,12 +67,31 @@ Needs `[recall] enabled = true` in config.toml (every command exits 2 with a
 clear message otherwise). One index for every profile on the machine and
 every harness: Claude (all profiles), Codex, pi, Gemini, OpenCode, Hermes.
 `--profile` narrows Claude to one account, `--harness` to one harness.
-Nothing runs in the background: a sweep runs inside the command and ends
+Every interactive sweep runs inside the command that asked for it and ends
 with it; the Claude Stop hook, `session stop`, `worker_done` and the
 daemon's turn-end edge queue the transcript that just moved (the Stop
 hook only appends that line; the async SessionEnd hook also indexes its
 own file within 150 ms), and every search drains the queue first, so a
-conversation is searchable the moment you look for it.
+conversation is searchable the moment you look for it. The one exception:
+`agent-deck notify-daemon` (the always-on daemon, every machine including
+remotes) runs a single background *initial backfill* the first time it
+sees recall enabled with an empty index or a never-finished pass
+(`[recall] backfill_on_enable = true`, the default) — see "Enabling recall
+for the first time" below.
+
+### Enabling recall for the first time
+
+Turning `[recall] enabled = true` on no longer leaves the index empty: the
+notify-daemon runs one throttled background backfill on its own, the first
+time it sees an empty index or a marker saying the pass never finished
+(`[recall] backfill_on_enable = true`, default). It never refuses under
+load like the manual command below does — it shrinks its chunks and sleeps
+longer instead, so a machine sitting above `max_loadavg` still finishes,
+just slower. Progress: `agent-deck recall status --json`'s
+`initial_backfill` (`state`: `pending`/`running`/`done`, `done_at`,
+`sessions_done`, `sessions_pending`). Nothing to do if the daemon is not
+running (a machine that only ever uses the CLI interactively) — run
+`recall backfill` by hand there instead.
 
 ### Find sessions
 
@@ -136,7 +155,7 @@ next sweep.
 ### Keep it fresh: sweep, status, gc, rebuild
 
 ```bash
-agent-deck recall status --json                # sizes, sources by state, by_harness, queued hook lines, roots
+agent-deck recall status --json                # sizes, sources by state, by_harness, queued hook lines, roots, initial_backfill
 agent-deck recall sweep [--full] [--json]      # drains recall/queue.jsonl first, then what changed
 agent-deck recall gc | rebuild
 ```
