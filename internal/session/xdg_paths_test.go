@@ -164,8 +164,14 @@ func TestGetProfilesDir_LegacyFallbackWhenSessionsJSONExists(t *testing.T) {
 	}
 }
 
-func TestGetProfilesDir_XDGWinsWhenProfileMarkerExists(t *testing.T) {
+// TestGetProfilesDir_BothRootsHoldProfiles: a bare XDG profiles/ directory
+// beside the legacy one no longer wins by its existence (that was the stray
+// store incident); without the migration marker the legacy root stays active,
+// with it the XDG root does. See store_root.go for the full table.
+func TestGetProfilesDir_BothRootsHoldProfiles(t *testing.T) {
 	home, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	ResetStoreRootSelection()
+	t.Cleanup(ResetStoreRootSelection)
 	legacyProfilesDir := filepath.Join(home, ".agent-deck", ProfilesDirName)
 	xdgProfilesDir := filepath.Join(xdgDataHome, "agent-deck", ProfilesDirName)
 	if err := os.MkdirAll(legacyProfilesDir, 0o755); err != nil {
@@ -179,9 +185,20 @@ func TestGetProfilesDir_XDGWinsWhenProfileMarkerExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProfilesDir(): %v", err)
 	}
+	if got != legacyProfilesDir {
+		t.Fatalf("GetProfilesDir() without marker = %q, want %q", got, legacyProfilesDir)
+	}
 
+	if err := os.WriteFile(filepath.Join(xdgProfilesDir, StoreRootMarkerName), []byte("xdg\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ResetStoreRootSelection()
+	got, err = GetProfilesDir()
+	if err != nil {
+		t.Fatalf("GetProfilesDir(): %v", err)
+	}
 	if got != xdgProfilesDir {
-		t.Fatalf("GetProfilesDir() = %q, want %q", got, xdgProfilesDir)
+		t.Fatalf("GetProfilesDir() with marker = %q, want %q", got, xdgProfilesDir)
 	}
 }
 
