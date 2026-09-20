@@ -75,6 +75,15 @@ func TestSaveRemoteSessionsCache_ResetsAgeForLiveFetchedOnly(t *testing.T) {
 	}
 	t.Cleanup(func() { storage.Close() })
 
+	// TestMain disables remoteSessionsCacheEnabled package-wide (every other
+	// test in this package shares one storage profile, and a stray cache
+	// write inflates unrelated status counters) — saveRemoteSessionsCache's
+	// early return on it means it never reaches the remoteFetchedAt update
+	// either, not just the disk write, so this test needs it back on for
+	// its own scope, same as remote_cache_test.go / remote_poll_baseline_test.go.
+	remoteSessionsCacheEnabled = true
+	t.Cleanup(func() { remoteSessionsCacheEnabled = false })
+
 	h := NewHome()
 	h.storage = storage
 	old := time.Now().Add(-time.Hour)
