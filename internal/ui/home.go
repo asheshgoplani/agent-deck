@@ -243,6 +243,8 @@ type pendingTitle struct {
 
 // Home is the main application model
 type Home struct {
+	previewSizer tmux.PreviewSizer
+
 	// Dimensions
 	width  int
 	height int
@@ -5349,12 +5351,20 @@ func truncateRemotePreviewContent(content string) string {
 }
 
 // fetchPreview returns a command that asynchronously fetches preview content.
-// windowIndex < 0 captures the session's primary pane; >= 0 captures a specific window.
+// windowIndex < 0 captures the session's current pane; >= 0 captures a specific window.
 func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int) tea.Cmd {
 	if inst == nil {
 		return nil
 	}
+	size := h.detachedPreviewSize(key)
 	return func() tea.Msg {
+		if size.Cols > 0 && size.Rows > 0 {
+			if pane := inst.GetTmuxSession(); pane != nil {
+				if err := h.previewSizer.Fit(pane, windowIndex, size.Cols, size.Rows); err != nil {
+					uiLog.Debug("preview_resize_failed", slog.String("session", inst.ID), slog.Any("error", err))
+				}
+			}
+		}
 		var content string
 		var err error
 		if windowIndex >= 0 {
