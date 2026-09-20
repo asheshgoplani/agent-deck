@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,13 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/tests/eval/harness"
 )
+
+// listStatsTestActivityField strips last_activity_at before comparing two
+// `list --json` invocations: each call is a live status refresh, so that
+// timestamp legitimately advances between calls even with nothing else
+// changed — it is not part of the "did --stats affect stdout" question this
+// test asks.
+var listStatsTestActivityField = regexp.MustCompile(`"last_activity_at":\s*"[^"]*"`)
 
 // TestEmitListStats_Format pins the wire shape SSHRunner.FetchSessions
 // (internal/session/list_stats.go) parses: a single prefixed JSON line on
@@ -58,8 +66,10 @@ func TestListJSON_StatsFlag_Opt(t *testing.T) {
 	if strings.Contains(plain.stderr, session.ListStatsPrefix) {
 		t.Fatalf("list --json (no flag): stderr unexpectedly carries a stats line: %q", plain.stderr)
 	}
-	if withStats.stdout != plain.stdout {
-		t.Fatalf("--stats changed stdout:\nwith:    %q\nwithout: %q", withStats.stdout, plain.stdout)
+	withStatsStdout := listStatsTestActivityField.ReplaceAllString(withStats.stdout, `"last_activity_at":""`)
+	plainStdout := listStatsTestActivityField.ReplaceAllString(plain.stdout, `"last_activity_at":""`)
+	if withStatsStdout != plainStdout {
+		t.Fatalf("--stats changed stdout:\nwith:    %q\nwithout: %q", withStatsStdout, plainStdout)
 	}
 }
 
