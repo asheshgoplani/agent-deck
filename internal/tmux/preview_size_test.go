@@ -70,6 +70,31 @@ func TestFitDetachedPreviewAccountsForStatusRows(t *testing.T) {
 	require.Equal(t, "latest", ctl("show-options", "-wqv", "-t", target, "window-size"))
 }
 
+
+func TestFitDetachedPreviewRestoresInheritedWindowPolicy(t *testing.T) {
+	requireTmux(t)
+	socket, target := makeIsolatedServer(t)
+	s := &Session{Name: target, SocketName: socket}
+
+	ctl := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("tmux", append([]string{"-L", socket}, args...)...).CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		return strings.TrimSpace(string(out))
+	}
+
+	ctl("set-option", "-t", target, "status", "off")
+	ctl("set-option", "-gw", "window-size", "largest")
+	ctl("set-option", "-wu", "-t", target, "window-size")
+	require.Equal(t, "", ctl("show-options", "-wqv", "-t", target, "window-size"))
+
+	require.NoError(t, s.FitDetachedPreview(112, 44))
+
+	require.Equal(t, "112x44", ctl("display-message", "-p", "-t", target, "#{window_width}x#{window_height}"))
+	require.Equal(t, "", ctl("show-options", "-wqv", "-t", target, "window-size"))
+	require.Equal(t, "largest", ctl("show-options", "-wAv", "-t", target, "window-size"))
+}
+
 func TestFitDetachedPreviewLeavesInteractiveViewerGeometryAlone(t *testing.T) {
 	requireTmux(t)
 	socket, target := makeIsolatedServer(t)
