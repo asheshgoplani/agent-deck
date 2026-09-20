@@ -109,8 +109,15 @@ test.describe('non-destructive close + undo delete', () => {
     await page.waitForSelector('.sess.sel', { timeout: 2000 })
 
     // Press Shift+D. A confirm dialog appears; accept it.
+    //
+    // Target the confirm button by its exact label. This used to be a loose
+    // /confirm|yes|close/i regex, which matched the header dismiss X (then
+    // labelled "Close") rather than the confirm button (then labelled
+    // "Delete") — so the dialog was dismissed and the close never ran, and
+    // the assertion below passed vacuously. ConfirmDialog.js now labels the
+    // confirm button per action ("Close" here) and the X "Dismiss".
     await page.keyboard.press('Shift+D')
-    await page.getByRole('button', { name: /confirm|yes|close/i }).click()
+    await page.getByRole('button', { name: 'Close', exact: true }).click()
 
     // Wait for the SSE-driven menu refresh and assert the close API was
     // hit (and not delete). Easiest is to read fixture state.

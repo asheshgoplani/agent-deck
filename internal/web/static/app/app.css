@@ -302,6 +302,9 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .sess .actions .mini.danger:hover { color: var(--tn-red); }
 .sess .actions .mini.good:hover   { color: var(--tn-green); }
 .sess .actions .mini.fork:hover   { color: var(--tn-purple); }
+/* Archive is reversible, so it warms to the same yellow its confirm dialog
+   and the TUI's ConfirmArchiveSession use — not the destructive red. */
+.sess .actions .mini.warn:hover   { color: var(--tn-yellow); }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -368,6 +371,9 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .btn.ghost { background: transparent; }
 .btn.ghost:hover { background: var(--card); }
 .btn.danger { color: var(--tn-red); border-color: rgba(247,118,142,0.3); }
+/* Reversible-but-disruptive actions (archive, close). Mirrors the TUI's
+ * ColorYellow confirm buttons in internal/ui/confirm_dialog.go. */
+.btn.warn { color: var(--tn-yellow); border-color: rgba(224,175,104,0.3); }
 .btn .kbd { font-family: var(--mono); font-size: 10.5px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; margin-left: 4px; }
 
 .kind-switcher { display: flex; gap: 2px; padding: 0 14px 8px; border-bottom: 1px solid var(--border); background: var(--panel); }
@@ -635,6 +641,10 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 .dialog .dh { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .dialog .dh .kicker { font-family: var(--mono); font-size: 10px; color: var(--accent); letter-spacing: 0.1em; padding: 2px 6px; background: var(--accent-soft); border-radius: 3px; }
+/* Confirm-dialog severity tones. ConfirmDialog.js used to set these inline,
+ * which beat any stylesheet rule and forced every action to read as a delete. */
+.dialog .dh .kicker.danger { color: var(--tn-red); background: rgba(247,118,142,0.12); }
+.dialog .dh .kicker.warn { color: var(--tn-yellow); background: rgba(224,175,104,0.12); }
 .dialog .dh .t { font-size: 14px; font-weight: 600; color: var(--text-hi); flex: 1; }
 .dialog .db { padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
 .dialog .df { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }

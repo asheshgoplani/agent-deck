@@ -55,6 +55,11 @@ function doAction(action, s) {
   if (action === 'fork')    return apiFetch('POST', `/api/sessions/${id}/fork`, { title: s.title + '-fork' }).catch(() => {})
   if (action === 'archive') {
     confirmDialogSignal.value = {
+      // Reversible (unarchive restores it), so yellow rather than red —
+      // matches TUI ConfirmArchiveSession.
+      tone: 'warn',
+      confirmLabel: 'Archive',
+      title: 'Archive session?',
       message: `Archive session "${s.title}"? The process will be stopped and hidden from the active list.`,
       onConfirm: () => apiFetch('POST', `/api/sessions/${id}/archive`)
         .then(() => {
@@ -70,6 +75,9 @@ function doAction(action, s) {
   }
   if (action === 'delete') {
     confirmDialogSignal.value = {
+      tone: 'danger',
+      confirmLabel: 'Delete',
+      title: 'Delete session?',
       message: `Delete session "${s.title}"? This stops the tmux session and removes metadata.`,
       onConfirm: () => apiFetch('DELETE', `/api/sessions/${id}`).catch(() => {}),
     }
@@ -80,6 +88,11 @@ function doAction(action, s) {
     // branch and uses default flags (merge + delete branch).
     const branch = s.worktreeBranch || s.branch
     confirmDialogSignal.value = {
+      // Destructive and not undoable (branch + worktree are deleted), so it
+      // keeps the red tone; only the label stops claiming to be a delete.
+      tone: 'danger',
+      confirmLabel: 'Finish worktree',
+      title: 'Finish worktree?',
       message: `Finish worktree for "${s.title}"? Merges branch "${branch}" into default branch, removes worktree, deletes branch, and removes session.`,
       onConfirm: () => apiFetch('POST', `/api/sessions/${id}/worktree/finish`).catch(() => {}),
     }
@@ -140,8 +153,8 @@ function SessionItem({ s, sel, rowKey, onSelect, showCols }) {
         <button class="mini good" title="Restart" data-testid="session-restart-btn" onClick=${() => doAction('restart', s)}><${Icon} d=${ICONS.restart} size=${12}/></button>
         <button class="mini" title="Edit" data-testid="edit-session-btn" onClick=${() => doAction('edit', s)}><${Icon} d=${ICONS.edit} size=${12}/></button>
         ${s.canFork && html`<button class="mini fork" title="Fork" data-testid="session-fork-btn" onClick=${() => doAction('fork', s)}><${Icon} d=${ICONS.fork} size=${12}/></button>`}
-        ${s.worktree && html`<button class="mini" title="Finish worktree (merge + cleanup)" onClick=${() => doAction('worktreeFinish', s)} data-action="worktree-finish" data-testid="session-worktree-finish-btn">⎇✓</button>`}
-        <button class="mini" title="Archive" onClick=${() => doAction('archive', s)}>⌂</button>
+        ${s.worktree && html`<button class="mini" title="Finish worktree (merge + cleanup)" onClick=${() => doAction('worktreeFinish', s)} data-action="worktree-finish" data-testid="session-worktree-finish-btn"><${Icon} d=${ICONS.merge} size=${12}/></button>`}
+        <button class="mini warn" title="Archive" data-testid="session-archive-btn" onClick=${() => doAction('archive', s)}><${Icon} d=${ICONS.archive} size=${12}/></button>
         <button class="mini danger" title="Delete" data-testid="session-delete-btn" onClick=${() => doAction('delete', s)}><${Icon} d=${ICONS.trash} size=${12}/></button>
       </div>
     </div>

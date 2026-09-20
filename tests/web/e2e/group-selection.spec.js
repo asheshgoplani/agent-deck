@@ -11,8 +11,13 @@
 import { test, expect } from '@playwright/test'
 
 test.describe('group selection', () => {
-  test.beforeEach(async ({ page, viewport }) => {
+  test.beforeEach(async ({ page, request, viewport }) => {
     test.skip(!!viewport && viewport.width < 768, 'sidebar is desktop/tablet-only')
+    // Spec files share one fixture process, and these tests assert on seeded
+    // status counts (the stats panel's "2 sessions · 1 running · 1 idle").
+    // Reset like every other suite does rather than inheriting whatever the
+    // previously-run file left behind.
+    await request.post('/__fixture/reset')
     await page.goto('/')
     await expect(page.locator('.sess')).toHaveCount(4, { timeout: 5000 })
   })

@@ -446,6 +446,11 @@ export function AppShell() {
         const s = focusedSession()
         if (!s) return
         confirmDialogSignal.value = {
+          // Non-destructive: the record survives, so start/restart brings it
+          // back. Yellow, matching TUI ConfirmCloseSession.
+          tone: 'warn',
+          confirmLabel: 'Close',
+          title: 'Close session?',
           message: `Close session "${s.title}"? The tmux process will be killed; metadata is preserved.`,
           onConfirm: () => apiFetch('POST', `/api/sessions/${s.id}/close`).catch(() => {}),
         }
