@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall"
-	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/recall/store"
 	"github.com/asheshgoplani/agent-deck/internal/recall/testcorpus"
 )
@@ -72,6 +71,14 @@ func TestMaybeStartInitialRecallBackfill_StartsOnlyOnce(t *testing.T) {
 // notify-daemon's poll loop would trigger it (issue #2329).
 func TestInitialRecallBackfill_EndToEnd(t *testing.T) {
 	home := recallHome(t, true)
+	// recallHome also lays out sample Codex/pi/Gemini/OpenCode/Hermes
+	// fixtures for other recall tests to share; scope this daemon pass to
+	// Claude so it indexes only the corpus this test itself wrote (matching
+	// RecallRoots(), which reads [recall] harnesses).
+	cfg := userConfigCache
+	cfg.Recall.Harnesses = []string{"claude"}
+	withConfig(t, cfg)
+
 	stats, err := testcorpus.Generate(filepath.Join(home, ".claude"), testcorpus.Options{Files: 5, Seed: 11, SubagentEvery: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -119,19 +126,15 @@ func TestInitialRecallBackfill_EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	// recallHome lays out sample corpora for every harness (Codex, pi,
-	// Gemini, OpenCode, Hermes), which the daemon's pass indexes too, so
-	// the total session count is not just this test's Claude corpus;
-	// scope the count to Claude to check what this test actually wrote.
 	var sessions int
-	if err := st.W.QueryRow(`SELECT count(*) FROM session WHERE harness=?`, reader.HarnessClaude).Scan(&sessions); err != nil {
+	if err := st.W.QueryRow(`SELECT count(*) FROM session`).Scan(&sessions); err != nil {
 		t.Fatal(err)
 	}
 	if sessions != stats.Files {
-		t.Fatalf("claude sessions = %d, want %d (every generated transcript indexed)", sessions, stats.Files)
+		t.Fatalf("sessions = %d, want %d (every generated transcript indexed, nothing else: [recall] harnesses is scoped to claude)", sessions, stats.Files)
 	}
-	if status.SessionsDone < stats.Files {
-		t.Fatalf("status.sessions_done = %d, want at least %d", status.SessionsDone, stats.Files)
+	if status.SessionsDone != stats.Files {
+		t.Fatalf("status.sessions_done = %d, want %d", status.SessionsDone, stats.Files)
 	}
 	if status.SessionsPending != 0 {
 		t.Fatalf("status.sessions_pending = %d, want 0", status.SessionsPending)

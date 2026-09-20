@@ -124,6 +124,22 @@ func TestRunThrottledBackfill_ChunksUntilCaughtUp(t *testing.T) {
 	if atomic.LoadInt32(&chunks) < 2 {
 		t.Fatalf("chunks = %d, want at least 2 (a 64-byte cap over %d files should not finish in one)", chunks, f.stats.Files)
 	}
+	// The regression this guards: a source that spans several chunks used
+	// to be counted once per chunk it touched (Sweep re-walks and
+	// re-reports the whole corpus every call), inflating Discovered/
+	// Parsed/Sessions past the true file count once chunking was
+	// exercised. finalizeThrottledResult derives them from the ledger
+	// once, after the loop ends, so they must equal the real totals even
+	// though this run took several chunks to get there.
+	if res.Parsed != f.stats.Files {
+		t.Fatalf("Parsed = %d, want %d (must count each file once, not once per chunk that touched it)", res.Parsed, f.stats.Files)
+	}
+	if res.Sessions != f.stats.Files {
+		t.Fatalf("Sessions = %d, want %d", res.Sessions, f.stats.Files)
+	}
+	if res.Discovered != f.stats.Files {
+		t.Fatalf("Discovered = %d, want %d", res.Discovered, f.stats.Files)
+	}
 	if got := f.count(`SELECT count(*) FROM session`); got != int64(f.stats.Files) {
 		t.Fatalf("sessions = %d, want %d (every file indexed exactly once across chunks)", got, f.stats.Files)
 	}
@@ -184,10 +200,7 @@ func TestRunThrottledBackfill_NeverRefusesUnderLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunThrottledBackfill under simulated load 55: %v", err)
 	}
-	// Parsed counts passes, not files: a small ChunkBytes can resume the
-	// same file across several chunks, so it may legitimately exceed the
-	// file count. The ledger's final state is the real assertion.
-	if res.Deferred != 0 {
+	if res.Deferred != 0 || res.Parsed != f.stats.Files || res.Sessions != f.stats.Files {
 		t.Fatalf("did not finish under load: %+v", res)
 	}
 	if got := f.count(`SELECT count(*) FROM session`); got != int64(f.stats.Files) {
@@ -272,6 +285,9 @@ func TestRunInitialBackfill_ResumeAfterInterrupt(t *testing.T) {
 	}
 	if res.Deferred != 0 {
 		t.Fatalf("resume did not finish: %+v", res)
+	}
+	if res.Parsed != f.stats.Files {
+		t.Fatalf("Parsed after resume = %d, want %d (the ledger's final state, not per-call chunk sums)", res.Parsed, f.stats.Files)
 	}
 	final, err := f.st.InitialBackfillStatus()
 	if err != nil {

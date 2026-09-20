@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/recall"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/recall/store"
 )
@@ -154,20 +155,20 @@ func ctxSleep(ctx context.Context, d time.Duration) error {
 func RunThrottledBackfill(ctx context.Context, st *store.Store, base Options, topts ThrottleOptions) (Result, error) {
 	topts.setDefaults()
 	niceCurrentGoroutine(ThrottleNice)
-	var total Result
+	var acc Result
 	for {
 		if err := ctx.Err(); err != nil {
-			return total, err
+			return finalizeThrottledResult(st, acc), err
 		}
 		release, err := store.Lock(topts.LockPath)
 		if err != nil {
 			if errors.Is(err, store.ErrLocked) {
 				if serr := topts.Sleep(ctx, topts.MinSleep); serr != nil {
-					return total, serr
+					return finalizeThrottledResult(st, acc), serr
 				}
 				continue
 			}
-			return total, err
+			return finalizeThrottledResult(st, acc), err
 		}
 		chunkOpts := base
 		chunkOpts.Gate = nil
@@ -178,45 +179,84 @@ func RunThrottledBackfill(ctx context.Context, st *store.Store, base Options, to
 		chunkOpts.Now = topts.Now
 		res, serr := New(st, chunkOpts).Sweep(ctx)
 		release()
-		total = mergeThrottledResults(total, res)
+		// Every chunk's Sweep re-walks and re-reports the WHOLE corpus
+		// (discover() has no notion of "since the last chunk"), so only the
+		// fields that are genuinely incremental per chunk — bytes and
+		// messages a resumed source's cursor had not reached yet — are
+		// accumulated here. Count-style fields (how many sources are
+		// Discovered/Parsed/Missing/...) would double-count a source
+		// touched by more than one chunk if summed the same way;
+		// finalizeThrottledResult derives them once, from the ledger's own
+		// current state, after the loop ends.
+		acc.Queued += res.Queued
+		acc.BytesRead += res.BytesRead
+		acc.Messages += res.Messages
+		acc.Enriched += res.Enriched
+		acc.EnrichDeferred += res.EnrichDeferred
+		acc.ElapsedMS += res.ElapsedMS
+		acc.Deferred = res.Deferred
+		acc.DeferredBytes = res.DeferredBytes
+		acc.DeferredPaths = res.DeferredPaths
 		if topts.OnChunk != nil {
 			topts.OnChunk(res)
 		}
 		if serr != nil {
-			return total, serr
+			return finalizeThrottledResult(st, acc), serr
 		}
 		if res.Deferred == 0 {
-			return total, nil
+			return finalizeThrottledResult(st, acc), nil
 		}
 		sleepFor := ThrottleSleep(topts.LoadAvg(), topts.MaxLoadAvg, topts.MinSleep, topts.MidSleep, topts.MaxSleep)
 		if serr := topts.Sleep(ctx, sleepFor); serr != nil {
-			return total, serr
+			return finalizeThrottledResult(st, acc), serr
 		}
 	}
 }
 
-// mergeThrottledResults accumulates a multi-chunk Result: counts sum, but
-// Deferred and DeferredBytes are the last chunk's own snapshot of what is
-// still outstanding, not a running total across chunks that already caught
-// up on some of it.
-func mergeThrottledResults(a, b Result) Result {
-	a.Discovered += b.Discovered
-	a.Queued += b.Queued
-	a.Unchanged += b.Unchanged
-	a.Parsed += b.Parsed
-	a.Deferred = b.Deferred
-	a.DeferredBytes = b.DeferredBytes
-	a.DeferredPaths = b.DeferredPaths
-	a.Missing += b.Missing
-	a.Quarantined += b.Quarantined
-	a.Errors += b.Errors
-	a.BytesRead += b.BytesRead
-	a.Messages += b.Messages
-	a.Sessions += b.Sessions
-	a.Enriched += b.Enriched
-	a.EnrichDeferred += b.EnrichDeferred
-	a.ElapsedMS += b.ElapsedMS
-	return a
+// finalizeThrottledResult fills in Discovered/Unchanged/Parsed/Missing/
+// Quarantined/Errors/Sessions from the ledger's own current state: a
+// one-time query against `source` (grouped by state) and `session`,
+// authoritative regardless of how many chunks it took to get there, so a
+// source spanning several chunks is counted once, not once per chunk that
+// touched it. acc's chunk-accumulated fields (BytesRead, Messages, Deferred
+// and friends) are left as they are — those genuinely are the sum, or the
+// last chunk's own snapshot, of real incremental work.
+func finalizeThrottledResult(st *store.Store, acc Result) Result {
+	rows, err := st.W.Query(`SELECT state, count(*) FROM source WHERE host_uid=? GROUP BY state`, store.LocalHostUID)
+	if err != nil {
+		return acc
+	}
+	defer rows.Close()
+	var ok, partial, missing, quarantined, errored int
+	for rows.Next() {
+		var state, n int
+		if err := rows.Scan(&state, &n); err != nil {
+			return acc
+		}
+		switch state {
+		case recall.SourceOK:
+			ok = n
+		case recall.SourcePartial:
+			partial = n
+		case recall.SourceMissing:
+			missing = n
+		case recall.SourceQuarantined:
+			quarantined = n
+		case recall.SourceError:
+			errored = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return acc
+	}
+	acc.Discovered = ok + partial + missing + quarantined + errored
+	acc.Parsed = ok + partial
+	acc.Unchanged = 0
+	acc.Missing = missing
+	acc.Quarantined = quarantined
+	acc.Errors = errored
+	_ = st.W.QueryRow(`SELECT count(*) FROM session`).Scan(&acc.Sessions)
+	return acc
 }
 
 // RunInitialBackfill drives the persisted marker around RunThrottledBackfill:
