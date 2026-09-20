@@ -2788,7 +2788,7 @@ func handleList(profile string, args []string) {
 	// Undocumented: SSHRunner passes this on its own remote invocation
 	// (#2331) so a slow `list --json` names its own status-pass duration
 	// instead of leaving the caller with one opaque round-trip number.
-	statsFlag := fs.Bool(strings.TrimPrefix(session.ListStatsFlag, "-"), false, "")
+	statsFlag := fs.Bool(strings.TrimLeft(session.ListStatsFlag, "-"), false, "")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
