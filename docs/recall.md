@@ -614,14 +614,19 @@ Three modes, in the order the design ranks them:
    value-taking.
 
    Older remotes degrade as `session annotate` did in phase 1: a remote
-   whose agent-deck predates recall (v1.16.12 and older) or runs
-   v1.16.13 with `[recall] enabled = false` is reported in one line,
+   whose agent-deck predates recall (v1.16.12 and older), runs v1.16.13
+   with `[recall] enabled = false`, or runs v1.16.13 without a phase-4
+   verb it was asked for (`pull`, remote `context`, remote `export`, all
+   answering `unknown recall command: <verb>`) is reported in one line,
    `remote "lab" runs v1.16.12 that predates recall; update it with
    'agent-deck remote update lab'` (or `... that has [recall] enabled =
-   false; set [recall] enabled = true in its config.toml`), the command
-   exits 1, and under `--json` the remote's entry (or the whole output of
-   the forwarded form) is `{"error", "remote", "remote_version"}`. The
-   remote's own usage or JSON text is never forwarded.
+   false; set [recall] enabled = true in its config.toml`, or `... that
+   predates recall context; update it with ...`), the command exits 1,
+   and under `--json` the remote's entry (or the whole output of the
+   forwarded form) is `{"error", "remote", "remote_version"}`. The one
+   classifier (`remoteRecallUnsupported`) covers all three shapes for
+   every surface (forwarded, federated search, `pull`), so the remote's
+   own usage or JSON text is never forwarded.
 2. **Card sync, opt-in, derived only.** Off by default: `[recall]
    remote_cards = true` on both ends turns it on. `recall export --cards`
    writes NDJSON: a header with this machine's `host_uid` (32 hex

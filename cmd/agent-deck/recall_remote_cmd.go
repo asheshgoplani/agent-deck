@@ -91,10 +91,13 @@ func validateRemoteRecallArgs(args []string) error {
 func isRecallArgs(args []string) bool { return len(args) > 0 && args[0] == "recall" }
 
 // remoteRecallUnsupported classifies an older remote's answer to a
-// forwarded recall verb. Two shapes exist: an agent-deck before recall
-// (v1.16.12 and older) says the command is not recognized; v1.16.13 has
-// the verbs but answers "recall is off" with exit 2 unless [recall] is
-// enabled there. Any other failure passes through as the remote printed it.
+// forwarded recall verb. Three shapes exist: an agent-deck before recall
+// (v1.16.12 and older) says the command is not recognized; a v1.16.13
+// remote knows the phase 1-3 verbs but not a phase-4 one (pull, context,
+// export) and answers "unknown recall command: <verb>" with its own usage
+// text, exit 1; and a remote with every verb but [recall] enabled = false
+// answers "recall is off" with exit 2. Any other failure passes through as
+// the remote printed it.
 func remoteRecallUnsupported(args []string, code int, stdout, stderr string) (reason string, ok bool) {
 	if code == 0 || !isRecallArgs(args) {
 		return "", false
@@ -105,6 +108,14 @@ func remoteRecallUnsupported(args []string, code int, stdout, stderr string) (re
 		return reasonPredatesRecall, true
 	case strings.Contains(combined, "recall is off"):
 		return reasonRecallOff, true
+	}
+	const marker = "unknown recall command: "
+	if idx := strings.Index(combined, marker); idx >= 0 {
+		verb := strings.TrimSpace(strings.SplitN(combined[idx+len(marker):], "\n", 2)[0])
+		if verb != "" {
+			return reasonPredatesRecall + " " + verb, true
+		}
+		return reasonPredatesRecall, true
 	}
 	return "", false
 }

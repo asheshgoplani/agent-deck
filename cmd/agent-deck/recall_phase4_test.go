@@ -85,6 +85,23 @@ func TestRemoteRecallUnsupported_Detection(t *testing.T) {
 	if err := json.Unmarshal(remoteRecallUnsupportedJSON("lab", "", "predates recall"), &obj); err != nil || obj["remote_version"] != remoteVersionUnknown || obj["remote"] != "lab" || !strings.Contains(obj["error"], "unknown agent-deck version") {
 		t.Fatalf("json = %v %v", obj, err)
 	}
+	// A v1.16.13 remote with the phase-1-3 verbs but not a phase-4 one
+	// (pull's export, remote context, remote export) answers its own
+	// usage text on stdout, then the "unknown recall command" line on
+	// stderr, exit 1: the verb name is folded into the reason so the
+	// message names the fix without the remote's usage ever appearing.
+	usage := "Usage: agent-deck recall <command> [options]\n\nCommands:\n  search \"<q>\"     Full-text search\n"
+	unknown := "Error: unknown recall command: context\n\n"
+	if reason, ok := remoteRecallUnsupported([]string{"recall", "context", "abc"}, 1, usage, unknown); !ok || reason != "predates recall context" {
+		t.Fatalf("v1.16.13 without context: %q %v", reason, ok)
+	}
+	if reason, ok := remoteRecallUnsupported([]string{"recall", "export", "--cards"}, 1, usage, "Error: unknown recall command: export\n\n"); !ok || reason != "predates recall export" {
+		t.Fatalf("v1.16.13 without export: %q %v", reason, ok)
+	}
+	msg = remoteRecallUnsupportedMessage("lab", "1.16.13", "predates recall context")
+	if msg != `remote "lab" runs v1.16.13 that predates recall context; update it with 'agent-deck remote update lab'` {
+		t.Fatalf("message = %q", msg)
+	}
 }
 
 // fakeRemoteSSH puts an `ssh` shim first on PATH. mode "old" answers like
@@ -114,6 +131,22 @@ func fakeRemoteSSH(t *testing.T, mode string) string {
     exit 0 ;;
   *"'recall' 'search'"*)
     printf '{"success": true, "result": {"query": "retry budget", "match": "\"retry\" \"budget\"", "hits": [{"sess_id": 4, "harness": "codex", "native_id": "remote-conv-1", "title": "remote retry budget", "body_hits": 2, "card_hit": true, "snippet": "raise the retry budget"}], "candidates": 2, "elapsed_ms": 3}, "index": {"swept": true, "elapsed_ms": 1}}\n'
+    exit 0 ;;`
+	case "v13nophase4":
+		// A real v1.16.13 remote (phases 1-3, no phase-4 verbs): search
+		// still answers; context and export (which pull runs on the
+		// remote) fall to the generic "unknown recall command" branch
+		// and print the remote's own usage text on stdout first.
+		body = `  *"'recall' 'context'"*)
+    printf 'Usage: agent-deck recall <command> [options]\n\nCommands:\n  search "<q>"     Full-text search\n  show <session>   One session\n\nExamples:\n  agent-deck recall search "clock skew"\n'
+    printf 'Error: unknown recall command: context\n\n' >&2
+    exit 1 ;;
+  *"'recall' 'export'"*)
+    printf 'Usage: agent-deck recall <command> [options]\n\nCommands:\n  search "<q>"     Full-text search\n  show <session>   One session\n\nExamples:\n  agent-deck recall search "clock skew"\n'
+    printf 'Error: unknown recall command: export\n\n' >&2
+    exit 1 ;;
+  *"'recall' 'search'"*)
+    printf '{"success": true, "result": {"query": "retry budget", "hits": [], "candidates": 0, "elapsed_ms": 1}, "index": {"swept": true, "elapsed_ms": 1}}\n'
     exit 0 ;;`
 	}
 	version := "1.16.12"
@@ -193,6 +226,63 @@ func TestRemoteRecall_OlderRemoteDegrades(t *testing.T) {
 				t.Fatalf("calls:\n%s", calls)
 			}
 		})
+	}
+}
+
+// TestRemoteRecall_OlderRemoteDegrades_Phase4Verbs is finding 1 of the
+// round-2 review: a real v1.16.13 remote (phase 1-3 verbs, no phase-4 ones)
+// answers a forwarded `context`, a forwarded `export`, or the `export`
+// `pull` runs on it with its own usage text and "unknown recall command:
+// <verb>", exit 1. All three must classify the same as the pre-recall and
+// recall-off shapes: one line, exit 1, {error, remote, remote_version}
+// under --json, the remote's usage text never on stdout.
+func TestRemoteRecall_OlderRemoteDegrades_Phase4Verbs(t *testing.T) {
+	home := remoteHome(t)
+	fakeRemoteSSH(t, "v13nophase4")
+	cfg := filepath.Join(home, ".config", "agent-deck", "config.toml")
+	data, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte(strings.Replace(string(data), "[recall]\n", "[recall]\nremote_cards = true\n", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wantContext := `remote "lab" runs v1.16.13 that predates recall context; update it with 'agent-deck remote update lab'`
+	stdout, stderr, code := runAgentDeck(t, home, "remote", "lab", "recall", "context", "abc", "--tier", "card")
+	if code != 1 || stdout != "" || strings.TrimSpace(stderr) != "Error: "+wantContext {
+		t.Fatalf("remote context: exit %d\nstdout: %q\nstderr: %q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "remote", "lab", "recall", "context", "abc", "--tier", "card", "--json")
+	if code != 1 || strings.Contains(stdout, "Usage: agent-deck recall") || strings.Contains(stderr, "Usage: agent-deck recall") {
+		t.Fatalf("remote context --json leaked usage text: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil || got["error"] != wantContext || got["remote"] != "lab" || got["remote_version"] != "1.16.13" {
+		t.Fatalf("remote context --json = %s (%v)", stdout, err)
+	}
+
+	wantExport := `remote "lab" runs v1.16.13 that predates recall export; update it with 'agent-deck remote update lab'`
+	stdout, stderr, code = runAgentDeck(t, home, "remote", "lab", "recall", "export", "--cards", "--json")
+	if code != 1 || strings.Contains(stdout, "Usage: agent-deck recall") {
+		t.Fatalf("remote export --json: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil || got["error"] != wantExport || got["remote"] != "lab" || got["remote_version"] != "1.16.13" {
+		t.Fatalf("remote export --json = %s (%v)", stdout, err)
+	}
+
+	// `recall pull lab` runs `recall export` on the remote; the same
+	// classifier must catch it there too (recall_remote_cmd.go's pull path).
+	stdout, stderr, code = runAgentDeck(t, home, "recall", "pull", "lab")
+	if code != 1 || stdout != "" || strings.TrimSpace(stderr) != "Error: "+wantExport {
+		t.Fatalf("pull: exit %d\nstdout: %q\nstderr: %q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "recall", "pull", "lab", "--json")
+	if code != 1 || strings.Contains(stdout, "Usage: agent-deck recall") {
+		t.Fatalf("pull --json: exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil || got["error"] != wantExport || got["remote"] != "lab" || got["remote_version"] != "1.16.13" {
+		t.Fatalf("pull --json = %s (%v)", stdout, err)
 	}
 }
 
