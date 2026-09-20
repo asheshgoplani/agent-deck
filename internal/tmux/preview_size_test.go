@@ -70,7 +70,6 @@ func TestFitDetachedPreviewAccountsForStatusRows(t *testing.T) {
 	require.Equal(t, "latest", ctl("show-options", "-wqv", "-t", target, "window-size"))
 }
 
-
 func TestFitDetachedPreviewRestoresInheritedWindowPolicy(t *testing.T) {
 	requireTmux(t)
 	socket, target := makeIsolatedServer(t)
