@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.15] - 2026-09-20
+
+### Fixed
+
+- Recall's background first indexing no longer reports "done" after a few sessions; it keeps going, slice by slice, until every folder of every user on the machine is indexed, and `recall status` shows real progress (#2337).
+- Remote session rows show how old their status is and the health line names the slow step when a remote polls slowly; the new stats request is only sent to remotes that understand it, older remotes keep polling as before (#2333).
+- Refreshed web visual baselines (#2338).
+
 ## [1.16.14] - 2026-09-20
 
 ### Added
