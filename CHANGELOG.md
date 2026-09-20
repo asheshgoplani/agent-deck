@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Recall phase 4 (behind `[recall] enabled = false`): enrichment and classifiers run on the index rows, search across remotes (`recall search --remote <host>` / `--all-remotes`) with opt-in card sync, `recall context <session> --into current` hands a session's brief to the one you are in, and `agent-deck recall mcp` exposes search/show/context over MCP (#2320).
+- Recall phase 4 (behind `[recall] enabled = false`): enrichment and classifiers run on the index rows, search across remotes (`recall search --remote <host>` / `--all-remotes`) with opt-in card sync, `recall context <session> --into current` hands a session's brief to the one you are in, and `agent-deck recall mcp` exposes search/show/context over MCP (#2320). When Recall is switched on, old sessions are indexed in the background on their own, slowed down under load instead of refusing (#2331).
 
 ### Fixed
 
