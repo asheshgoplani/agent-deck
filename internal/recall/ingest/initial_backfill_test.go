@@ -109,6 +109,14 @@ func TestShouldRunInitialBackfill_TriggerMatrix(t *testing.T) {
 		if err := f.st.SetInitialBackfillState(store.InitialBackfillDone, 100); err != nil {
 			t.Fatal(err)
 		}
+		// A modern done marker always has roots_walked/roots_total recorded
+		// (even at 0, when a real pass found no configured roots); only a
+		// marker missing those fields outright (the legacy pre-#2337 shape,
+		// covered by TestInitialBackfillStatus_LegacyDoneMarkerReVerifiedOnce)
+		// is treated as pending.
+		if err := f.st.SetInitialBackfillProgress(0, 0, 0, 0, nil); err != nil {
+			t.Fatal(err)
+		}
 		should, err := ShouldRunInitialBackfill(f.st)
 		if err != nil || should {
 			t.Fatalf("should=%v err=%v, want false, nil", should, err)
