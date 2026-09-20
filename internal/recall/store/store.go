@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall"
@@ -291,38 +292,65 @@ const (
 	metaInitialBackfillDoneAt          = "initial_backfill_done_at"
 	metaInitialBackfillSessionsDone    = "initial_backfill_sessions_done"
 	metaInitialBackfillSessionsPending = "initial_backfill_sessions_pending"
+	metaInitialBackfillRootsWalked     = "initial_backfill_roots_walked"
+	metaInitialBackfillRootsTotal      = "initial_backfill_roots_total"
+	metaInitialBackfillUnreadableRoots = "initial_backfill_unreadable_roots"
 )
 
 // InitialBackfillStatus is the `initial_backfill` block of `recall status
-// --json`.
+// --json`. RootsWalked/RootsTotal and UnreadableRoots (each entry
+// "harness:profile:dir: error") are checkpointed by the same chunk that
+// checkpoints SessionsDone/SessionsPending, so a scan that only ever
+// reaches a fraction of the configured roots is visible here rather than
+// silently folded into a false "done".
 type InitialBackfillStatus struct {
-	State           string `json:"state"`
-	DoneAt          int64  `json:"done_at,omitempty"`
-	SessionsDone    int    `json:"sessions_done"`
-	SessionsPending int    `json:"sessions_pending"`
+	State           string   `json:"state"`
+	DoneAt          int64    `json:"done_at,omitempty"`
+	SessionsDone    int      `json:"sessions_done"`
+	SessionsPending int      `json:"sessions_pending"`
+	RootsWalked     int      `json:"roots_walked,omitempty"`
+	RootsTotal      int      `json:"roots_total,omitempty"`
+	UnreadableRoots []string `json:"unreadable_roots,omitempty"`
 }
 
 // InitialBackfillStatus reads the persisted marker. An index with no marker
 // at all (built before this feature shipped, or by a plain `recall
-// backfill`) is reported "done" when it already holds sessions, "pending"
-// when it is still empty: the marker only needs to exist once the
-// background pass itself has touched it.
+// backfill`) is always "pending", regardless of how many sessions it
+// already holds: a handful of sessions an ordinary hook sweep wrote before
+// the background pass ever ran look identical, in the ledger, to a fully
+// completed manual backfill, and treating session-count alone as proof of
+// completeness is exactly what let `recall status` report "done" on a
+// machine where the background pass had barely scanned two of ten
+// configured roots (issue: initial backfill completeness). Reporting
+// "pending" here costs nothing: ShouldRunInitialBackfill then lets the
+// throttled pass run once, which re-verifies every already-ledgered source
+// as unchanged (cheap) and persists a real marker so this fallback is never
+// consulted again for this index.
 func (s *Store) InitialBackfillStatus() (InitialBackfillStatus, error) {
 	var status InitialBackfillStatus
-	var state, doneAt, done, pending sql.NullString
+	var state, doneAt, done, pending, walked, total, unreadable sql.NullString
 	row := s.W.QueryRow(`SELECT
 		(SELECT v FROM meta WHERE k=?),
 		(SELECT v FROM meta WHERE k=?),
 		(SELECT v FROM meta WHERE k=?),
+		(SELECT v FROM meta WHERE k=?),
+		(SELECT v FROM meta WHERE k=?),
+		(SELECT v FROM meta WHERE k=?),
 		(SELECT v FROM meta WHERE k=?)`,
-		metaInitialBackfillState, metaInitialBackfillDoneAt, metaInitialBackfillSessionsDone, metaInitialBackfillSessionsPending)
-	if err := row.Scan(&state, &doneAt, &done, &pending); err != nil {
+		metaInitialBackfillState, metaInitialBackfillDoneAt, metaInitialBackfillSessionsDone, metaInitialBackfillSessionsPending,
+		metaInitialBackfillRootsWalked, metaInitialBackfillRootsTotal, metaInitialBackfillUnreadableRoots)
+	if err := row.Scan(&state, &doneAt, &done, &pending, &walked, &total, &unreadable); err != nil {
 		return status, err
 	}
 	status.State = state.String
 	status.DoneAt, _ = strconv.ParseInt(doneAt.String, 10, 64)
 	status.SessionsDone, _ = strconv.Atoi(done.String)
 	status.SessionsPending, _ = strconv.Atoi(pending.String)
+	status.RootsWalked, _ = strconv.Atoi(walked.String)
+	status.RootsTotal, _ = strconv.Atoi(total.String)
+	if unreadable.String != "" {
+		status.UnreadableRoots = strings.Split(unreadable.String, "\n")
+	}
 	if status.State != "" {
 		return status, nil
 	}
@@ -330,11 +358,8 @@ func (s *Store) InitialBackfillStatus() (InitialBackfillStatus, error) {
 	if err := s.W.QueryRow(`SELECT count(*) FROM session`).Scan(&n); err != nil {
 		return status, err
 	}
-	if n > 0 {
-		status.State, status.SessionsDone = InitialBackfillDone, n
-	} else {
-		status.State = InitialBackfillPending
-	}
+	status.State = InitialBackfillPending
+	status.SessionsDone = n
 	return status, nil
 }
 
@@ -357,17 +382,30 @@ func (s *Store) SetInitialBackfillState(state string, now int64) error {
 	return tx.Commit()
 }
 
-// SetInitialBackfillProgress checkpoints how much of the initial backfill is
-// done after one chunk, so a restart mid-pass (or a `recall status` while it
-// runs) reports the last chunk's numbers rather than stale ones.
-func (s *Store) SetInitialBackfillProgress(sessionsDone, sessionsPending int) error {
+// SetInitialBackfillProgress checkpoints one chunk's worth of initial
+// backfill progress, so a restart mid-pass (or a `recall status` while it
+// runs) reports the last chunk's numbers rather than stale ones: how many
+// sessions are done/pending, and how many of the configured roots the scan
+// could actually walk. walked+len(unreadable) always equals total
+// (root-level discovery is not budget-limited, so every root is either
+// walked or found unreadable on the very first chunk), but a root that
+// never lists is reported here rather than silently dropped from the
+// count. unreadable entries are "harness:profile:dir: error".
+func (s *Store) SetInitialBackfillProgress(sessionsDone, sessionsPending, rootsWalked, rootsTotal int, unreadableRoots []string) error {
 	tx, err := s.W.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for k, v := range map[string]int{metaInitialBackfillSessionsDone: sessionsDone, metaInitialBackfillSessionsPending: sessionsPending} {
-		if _, err := tx.Exec(`INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, strconv.Itoa(v)); err != nil {
+	vals := map[string]string{
+		metaInitialBackfillSessionsDone:    strconv.Itoa(sessionsDone),
+		metaInitialBackfillSessionsPending: strconv.Itoa(sessionsPending),
+		metaInitialBackfillRootsWalked:     strconv.Itoa(rootsWalked),
+		metaInitialBackfillRootsTotal:      strconv.Itoa(rootsTotal),
+		metaInitialBackfillUnreadableRoots: strings.Join(unreadableRoots, "\n"),
+	}
+	for k, v := range vals {
+		if _, err := tx.Exec(`INSERT INTO meta(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v); err != nil {
 			return err
 		}
 	}

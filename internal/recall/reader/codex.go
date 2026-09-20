@@ -66,6 +66,12 @@ func (Codex) Discover(ctx context.Context, roots []Root, emit func(SourceRef) er
 	return codexLayout.discover(ctx, roots, emit)
 }
 
+// CheckRoots reports every Codex home whose sessions/archived_sessions
+// trees exist but could not be listed.
+func (Codex) CheckRoots(roots []Root) []RootIssue {
+	return codexLayout.checkRoots(roots)
+}
+
 // Locate builds the SourceRef of one rollout under a Codex home.
 func (Codex) Locate(path string, roots []Root) (SourceRef, bool) {
 	return codexLayout.locate(path, roots)

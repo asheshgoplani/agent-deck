@@ -53,6 +53,12 @@ func (Gemini) Discover(ctx context.Context, roots []Root, emit func(SourceRef) e
 	return geminiLayout.discover(ctx, roots, emit)
 }
 
+// CheckRoots reports every Gemini home whose tmp/ tree exists but could
+// not be listed.
+func (Gemini) CheckRoots(roots []Root) []RootIssue {
+	return geminiLayout.checkRoots(roots)
+}
+
 func isGeminiChat(name string) bool {
 	return strings.HasPrefix(name, "session-") && filepath.Ext(name) == ".json"
 }

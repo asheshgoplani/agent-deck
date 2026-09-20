@@ -36,42 +36,62 @@ func (d *TransitionDaemon) maybeStartInitialRecallBackfill(ctx context.Context) 
 		return
 	}
 	d.recallBackfillStarted = true
-	go runInitialRecallBackfill(ctx)
+	go func() {
+		if runInitialRecallBackfill(ctx) {
+			return
+		}
+		// The attempt bailed out before it could even open the index or
+		// read the persisted marker (a transient db-open/lock failure, or
+		// the goroutine panicked): that is not "this daemon already
+		// covered it", so the one-shot latch must not swallow every later
+		// tick for the rest of this process's life. Clearing it lets the
+		// next poll (at most notifyPollSlow away) try again instead of
+		// leaving `initial_backfill` stuck at "pending" until an operator
+		// restarts the daemon.
+		d.recallBackfillMu.Lock()
+		d.recallBackfillStarted = false
+		d.recallBackfillMu.Unlock()
+	}()
 }
 
 // runInitialRecallBackfill opens recall.db and, when the persisted marker
 // (or an empty index) says the initial backfill never finished, runs it.
-func runInitialRecallBackfill(ctx context.Context) {
+// It returns whether the attempt actually reached the point of deciding
+// should-run (true) or bailed out early on a transient failure that the
+// caller should retry on a later tick (false); a genuine "nothing to do"
+// (should=false) counts as reached, not a bail-out.
+func runInitialRecallBackfill(ctx context.Context) (attempted bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			recallBackfillLog.Warn("recall_initial_backfill_panic", slog.Any("panic", r))
+			attempted = false
 		}
 	}()
 	dbPath, err := recall.DBPath()
 	if err != nil {
-		return
+		return false
 	}
 	lockPath, err := recall.LockPath()
 	if err != nil {
-		return
+		return false
 	}
 	st, err := openRecallStoreForDaemon(dbPath, lockPath)
 	if err != nil {
 		recallBackfillLog.Warn("recall_initial_backfill_open_failed", slog.String("error", err.Error()))
-		return
+		return false
 	}
 	defer st.Close()
 	should, err := ingest.ShouldRunInitialBackfill(st)
 	if err != nil {
 		recallBackfillLog.Warn("recall_initial_backfill_status_failed", slog.String("error", err.Error()))
-		return
+		return false
 	}
 	if !should {
-		return
+		return true
 	}
 	cfg, err := LoadUserConfig()
 	if err != nil || cfg == nil {
-		return
+		return false
 	}
 	queuePath, _ := recall.QueuePath()
 	reg := NewRecallRegistry("", nil)
@@ -88,6 +108,7 @@ func runInitialRecallBackfill(ctx context.Context) {
 	if _, err := ingest.RunInitialBackfill(ctx, st, opts, topts); err != nil && ctx.Err() == nil {
 		recallBackfillLog.Warn("recall_initial_backfill_failed", slog.String("error", err.Error()))
 	}
+	return true
 }
 
 // openRecallStoreForDaemon mirrors the CLI's schema-mismatch handling

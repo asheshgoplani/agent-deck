@@ -125,6 +125,14 @@ type Options struct {
 	Progress func(p Progress)
 	// Now overrides the clock in tests.
 	Now func() time.Time
+	// CheckRootIssues reports every configured root a reader could not
+	// list (RootChecker, initial backfill completeness) on top of the
+	// ordinary walk. Off by default: it costs one extra EvalSymlinks/
+	// ReadDir pass per root, which an interactive/hook Sweep (run on
+	// every search and every Stop hook) should never pay for something
+	// only `recall status`'s initial_backfill block reports. The
+	// throttled initial-backfill pass turns it on.
+	CheckRootIssues bool
 }
 
 // Progress is one line of backfill feedback.
@@ -154,6 +162,16 @@ type Result struct {
 	BytesRead     int64    `json:"bytes_read"`
 	Messages      int      `json:"messages"`
 	Sessions      int      `json:"sessions"`
+	// RootIssues lists every configured root whose harness-specific
+	// transcript tree exists but could not be listed (permission denied,
+	// most commonly a shared box's other-user config dir): reported rather
+	// than silently left out of the walk. RootsWalked/RootsTotal count
+	// configured roots, not candidates: root-level discovery runs in full
+	// every sweep regardless of the byte/time budget, so these are never
+	// budget-partial the way Discovered/Parsed can be across chunks.
+	RootIssues  []reader.RootIssue `json:"root_issues,omitempty"`
+	RootsWalked int                `json:"roots_walked,omitempty"`
+	RootsTotal  int                `json:"roots_total,omitempty"`
 	// Enriched counts the artifacts the in-sweep drain wrote;
 	// EnrichDeferred the queue rows it left for the next pass.
 	Enriched       int   `json:"enriched"`
@@ -472,10 +490,18 @@ func (in *Ingester) touchConversation(touched map[int64]bool, ref Ref) error {
 // Unchanged ledger rows are marked seen so they are not reported missing.
 func (in *Ingester) discover(ctx context.Context, res *Result, byKey map[[2]uint64]*ledgerRow, byPath map[string]*ledgerRow) ([]candidate, error) {
 	var cands []candidate
+	res.RootsTotal = len(in.opts.Roots)
+	res.RootsWalked = res.RootsTotal
 	for _, rd := range in.opts.Readers {
 		roots := rootsFor(in.opts.Roots, rd.Harness())
 		if len(roots) == 0 {
 			continue
+		}
+		if in.opts.CheckRootIssues {
+			if issues := reader.CheckRootsOf(rd, roots); len(issues) > 0 {
+				res.RootIssues = append(res.RootIssues, issues...)
+				res.RootsWalked -= len(issues)
+			}
 		}
 		err := rd.Discover(ctx, roots, func(ref reader.SourceRef) error {
 			res.Discovered++

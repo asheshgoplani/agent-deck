@@ -54,6 +54,12 @@ func (OpenCode) Discover(ctx context.Context, roots []Root, emit func(SourceRef)
 	return opencodeLayout.discover(ctx, roots, emit)
 }
 
+// CheckRoots reports every OpenCode storage dir whose session/ tree
+// exists but could not be listed.
+func (OpenCode) CheckRoots(roots []Root) []RootIssue {
+	return opencodeLayout.checkRoots(roots)
+}
+
 func isJSON(name string) bool { return filepath.Ext(name) == ".json" }
 
 // opencodeTreeStat sums the message and part files of one session.

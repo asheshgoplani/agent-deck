@@ -45,6 +45,12 @@ func (Pi) Discover(ctx context.Context, roots []Root, emit func(SourceRef) error
 	return piLayout.discover(ctx, roots, emit)
 }
 
+// CheckRoots reports every pi home whose session trees exist but could not
+// be listed.
+func (Pi) CheckRoots(roots []Root) []RootIssue {
+	return piLayout.checkRoots(roots)
+}
+
 // Locate builds the SourceRef of one pi session file under a pi home.
 func (Pi) Locate(path string, roots []Root) (SourceRef, bool) {
 	return piLayout.locate(path, roots)

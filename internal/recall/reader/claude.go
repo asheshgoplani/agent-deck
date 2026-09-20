@@ -54,6 +54,12 @@ func (Claude) Discover(ctx context.Context, roots []Root, emit func(SourceRef) e
 	return claudeLayout.discover(ctx, roots, emit)
 }
 
+// CheckRoots reports every root whose projects/ tree exists but could not
+// be listed.
+func (Claude) CheckRoots(roots []Root) []RootIssue {
+	return claudeLayout.checkRoots(roots)
+}
+
 // Locate builds the SourceRef of one transcript under a root's projects/
 // tree (the Stop hook's path). tool-results/ and workflows/ are not
 // transcripts.
