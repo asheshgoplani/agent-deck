@@ -125,6 +125,14 @@ type Options struct {
 	Progress func(p Progress)
 	// Now overrides the clock in tests.
 	Now func() time.Time
+	// CheckRootIssues reports every configured root a reader could not
+	// list (RootChecker, initial backfill completeness) on top of the
+	// ordinary walk. Off by default: it costs one extra EvalSymlinks/
+	// ReadDir pass per root, which an interactive/hook Sweep (run on
+	// every search and every Stop hook) should never pay for something
+	// only `recall status`'s initial_backfill block reports. The
+	// throttled initial-backfill pass turns it on.
+	CheckRootIssues bool
 }
 
 // Progress is one line of backfill feedback.
@@ -489,9 +497,11 @@ func (in *Ingester) discover(ctx context.Context, res *Result, byKey map[[2]uint
 		if len(roots) == 0 {
 			continue
 		}
-		if issues := reader.CheckRootsOf(rd, roots); len(issues) > 0 {
-			res.RootIssues = append(res.RootIssues, issues...)
-			res.RootsWalked -= len(issues)
+		if in.opts.CheckRootIssues {
+			if issues := reader.CheckRootsOf(rd, roots); len(issues) > 0 {
+				res.RootIssues = append(res.RootIssues, issues...)
+				res.RootsWalked -= len(issues)
+			}
 		}
 		err := rd.Discover(ctx, roots, func(ref reader.SourceRef) error {
 			res.Discovered++

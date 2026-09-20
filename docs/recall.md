@@ -373,7 +373,11 @@ commonly) is never silently dropped from the walk: it is counted in
 `unreadable_roots` (`"harness:profile:dir: error"`) instead, so the gap is
 visible in `recall status` rather than folded into a false "done". A root
 with nothing there yet (no transcripts written under that profile) is not
-an issue — only a real listing failure is.
+an issue — only a real listing failure is. This check is one extra
+directory listing per root, so only the initial-backfill pass pays for it
+(`Options.CheckRootIssues`); the interactive sweep before a search and a
+Stop hook's inline sweep — both on a tight budget already, and run far more
+often — do not.
 
 The one-shot daemon trigger (`maybeStartInitialRecallBackfill`) is
 level-triggered, not edge-triggered: it re-reads the live config on every

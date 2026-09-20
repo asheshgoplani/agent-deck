@@ -178,6 +178,12 @@ func RunThrottledBackfill(ctx context.Context, st *store.Store, base Options, to
 			chunkOpts.PerSourceBytes = topts.ChunkBytes
 		}
 		chunkOpts.Now = topts.Now
+		// Only the initial-backfill pass pays for root-issue checking (see
+		// Options.CheckRootIssues): it is the one path `recall status`'s
+		// completeness promise depends on, and it already re-walks the
+		// whole corpus every chunk, so one more EvalSymlinks/ReadDir per
+		// root is noise next to that.
+		chunkOpts.CheckRootIssues = true
 		res, serr := New(st, chunkOpts).Sweep(ctx)
 		release()
 		// Every chunk's Sweep re-walks and re-reports the WHOLE corpus

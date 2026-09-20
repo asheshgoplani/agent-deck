@@ -328,16 +328,20 @@ type multiRootFixture struct {
 	files int // total files across every root
 }
 
-func newMultiRootFixture(t *testing.T, profiles []string, filesPerRoot int) *multiRootFixture {
+// newMultiRootFixture lays out one root per (profile, dirName) pair — two
+// pairs may share a profile (one account with two config dirs, e.g.
+// ashesh-buddii and ashesh-personal both owned by the same person) as long
+// as dirName differs, since dirName also names the directory on disk.
+func newMultiRootFixture(t *testing.T, roots []rootSpec, filesPerRoot int) *multiRootFixture {
 	t.Helper()
 	base := t.TempDir()
 	mf := &multiRootFixture{t: t}
-	for i, p := range profiles {
-		dir := filepath.Join(base, p)
+	for i, r := range roots {
+		dir := filepath.Join(base, r.dirName)
 		if _, err := testcorpus.Generate(dir, testcorpus.Options{Files: filesPerRoot, Seed: int64(i + 1)}); err != nil {
 			t.Fatal(err)
 		}
-		mf.roots = append(mf.roots, reader.Root{Harness: reader.HarnessClaude, Profile: p, Dir: dir, RetentionDays: 30})
+		mf.roots = append(mf.roots, reader.Root{Harness: reader.HarnessClaude, Profile: r.profile, Dir: dir, RetentionDays: 30})
 		mf.files += filesPerRoot
 	}
 	st, err := store.Open(filepath.Join(base, "data", "recall.db"))
@@ -347,6 +351,19 @@ func newMultiRootFixture(t *testing.T, profiles []string, filesPerRoot int) *mul
 	t.Cleanup(st.Close)
 	mf.st = st
 	return mf
+}
+
+// rootSpec names one root's profile and its on-disk directory name.
+type rootSpec struct{ profile, dirName string }
+
+// sameNameRoots is the common case: profile and dirName are identical
+// (each root belongs to a distinct profile).
+func sameNameRoots(names ...string) []rootSpec {
+	specs := make([]rootSpec, len(names))
+	for i, n := range names {
+		specs[i] = rootSpec{profile: n, dirName: n}
+	}
+	return specs
 }
 
 func (mf *multiRootFixture) count(q string, args ...any) int64 {
@@ -364,7 +381,7 @@ func (mf *multiRootFixture) count(q string, args ...any) int64 {
 // account), and the pass must index every session under every root, not
 // just the first one or two it happens to reach.
 func TestRunInitialBackfill_MultiRootAllProfilesIndexed(t *testing.T) {
-	mf := newMultiRootFixture(t, []string{"alice", "alice-work", "bob"}, 7)
+	mf := newMultiRootFixture(t, []rootSpec{{profile: "alice", dirName: "alice"}, {profile: "alice", dirName: "alice-work"}, {profile: "bob", dirName: "bob"}}, 7)
 	topts := ThrottleOptions{LockPath: mf.st.Path + ".lock", ChunkDeadline: time.Hour, ChunkBytes: 1 << 20, Sleep: noSleep}
 	res, err := RunInitialBackfill(context.Background(), mf.st, Options{Roots: mf.roots}, topts)
 	if err != nil {
@@ -409,7 +426,7 @@ func TestRunInitialBackfill_UnreadableRootReported(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores permission bits, so the unreadable root would still be readable")
 	}
-	mf := newMultiRootFixture(t, []string{"alice", "bob"}, 4)
+	mf := newMultiRootFixture(t, sameNameRoots("alice", "bob"), 4)
 	// bob's projects/ tree exists but is not listable: chmod, not a
 	// missing directory (a missing one is a legitimate empty profile, not
 	// an issue).
@@ -452,7 +469,7 @@ func TestRunInitialBackfill_UnreadableRootReported(t *testing.T) {
 // exact shape of the live bug (agentbox: 3 sessions from 2 of 10 roots,
 // state=done, ~950 files never scanned).
 func TestInitialBackfillStatus_DoneStateInvariant(t *testing.T) {
-	mf := newMultiRootFixture(t, []string{"active", "dormant"}, 5)
+	mf := newMultiRootFixture(t, sameNameRoots("active", "dormant"), 5)
 	// Simulate ordinary hook-driven sweeps that only ever touched the
 	// "active" profile's root, exactly as a Stop hook would: no
 	// initial_backfill marker is ever written by a plain Sweep.
@@ -506,7 +523,7 @@ func TestInitialBackfillStatus_DoneStateInvariant(t *testing.T) {
 // the marker "running", and only a later chunk that truly needs to defer
 // nothing may report "done".
 func TestRunInitialBackfill_BudgetExhaustionNeverFalselyDone(t *testing.T) {
-	mf := newMultiRootFixture(t, []string{"r1", "r2", "r3"}, 10)
+	mf := newMultiRootFixture(t, sameNameRoots("r1", "r2", "r3"), 10)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var chunks int32
