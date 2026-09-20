@@ -335,8 +335,9 @@ outright under load or a busy session, and `--force` still overrides them.
 
 Progress and completion are in `recall status --json`'s `initial_backfill`:
 `state` (`pending`, `running`, `done`), `done_at`, `sessions_done`,
-`sessions_pending`, checkpointed after every chunk. One log line marks the
-start (`recall_initial_backfill_started`) and one the end — success
+`sessions_pending`, `roots_walked`, `roots_total` and `unreadable_roots`,
+checkpointed after every chunk. One log line marks the start
+(`recall_initial_backfill_started`) and one the end — success
 (`recall_initial_backfill_done`) or an interruption that leaves the marker
 "running" for the next daemon to resume (`recall_initial_backfill_interrupted`).
 The marker lives in `recall.db`'s `meta` table, so it resets with the
@@ -344,10 +345,47 @@ disposable index (a `recall rebuild` or a schema bump both warrant a fresh
 catch-up) and survives a process restart: a daemon killed mid-pass leaves
 "running", and the next one treats that exactly like "pending" — nothing
 already committed is re-parsed, since the ledger's own per-source byte
-cursors (not the marker) decide where each file resumes. An index that
-already holds sessions when this feature first runs, with no marker (built
-by an older binary, or by a plain `recall backfill`), is treated as
-already caught up: no background pass fires for it.
+cursors (not the marker) decide where each file resumes.
+
+An index that already holds sessions when this feature first runs, with no
+marker (built by an older binary, or by a plain `recall backfill`), is
+**always** reported "pending", never inferred "done" from session count
+alone. A shared box's ordinary hook sweeps (a Stop hook indexing whatever
+profile is active right now) can easily write a handful of sessions before
+the background pass ever gets a tick to run, and those look, from the
+ledger alone, identical to a fully completed manual backfill — that
+conflation is exactly what let `recall status` report `state: done,
+sessions_done: 3` on a box with ten configured roots and roughly two
+thousand transcripts, having actually walked two of them. Treating an
+unmarked index as always-pending costs nothing: `ShouldRunInitialBackfill`
+then lets one real throttled pass run, which re-verifies every
+already-ledgered source as unchanged (cheap: no bytes re-read) and
+persists a real marker so this fallback is never consulted again for that
+index.
+
+`done` also requires every configured root to have been walked, not just
+`sessions_pending == 0`: root-level directory listing runs in full on
+every chunk regardless of the byte/time budget (only per-file parsing is
+budget-limited), so `roots_walked` reaches `roots_total` on the very first
+chunk in the normal case. A root whose harness-specific transcript tree
+exists but could not be listed (a shared box's other-user config dir, most
+commonly) is never silently dropped from the walk: it is counted in
+`unreadable_roots` (`"harness:profile:dir: error"`) instead, so the gap is
+visible in `recall status` rather than folded into a false "done". A root
+with nothing there yet (no transcripts written under that profile) is not
+an issue — only a real listing failure is.
+
+The one-shot daemon trigger (`maybeStartInitialRecallBackfill`) is
+level-triggered, not edge-triggered: it re-reads the live config on every
+poll tick (at most `notifyPollSlow` apart) until it sees `[recall] enabled
+= true` and `backfill_on_enable = true`, so a daemon that was already
+running before the flag flipped still picks it up on its next tick without
+a restart. The per-process "started" guard only latches permanently once
+the attempt actually reaches a decision (opened the store and read
+`ShouldRunInitialBackfill`, whether or not there was work to do); a
+transient failure before that point (the db momentarily locked or
+unopenable) clears the guard so the next tick retries, instead of leaving
+`initial_backfill` stuck at "pending" for the rest of that daemon's life.
 
 The daemon's pass indexes text and builds cards exactly like the manual
 `recall backfill`, but writes no cost events (no `UsageSink`, unlike the

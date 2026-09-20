@@ -167,6 +167,23 @@ func CursorOf(rd Reader) CursorKind {
 	return CursorBytes
 }
 
+// RootChecker is implemented by readers that can report a configured root
+// they could not read, distinct from Discover's own candidate emission: a
+// permission-denied config dir on a shared box must show up in `recall
+// status`, not vanish into a silently-empty walk.
+type RootChecker interface {
+	CheckRoots(roots []Root) []RootIssue
+}
+
+// CheckRootsOf returns rd's unreadable roots (nil when rd does not
+// implement RootChecker).
+func CheckRootsOf(rd Reader, roots []Root) []RootIssue {
+	if rc, ok := rd.(RootChecker); ok {
+		return rc.CheckRoots(roots)
+	}
+	return nil
+}
+
 // Reader is one harness.
 type Reader interface {
 	Harness() string

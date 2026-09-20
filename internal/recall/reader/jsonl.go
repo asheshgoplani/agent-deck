@@ -252,6 +252,20 @@ func locateUnder(path, subdir string, roots []Root) (string, os.FileInfo, Root, 
 	return "", nil, Root{}, false
 }
 
+// RootIssue describes one configured root a harness could not read: not a
+// per-source parse failure but a walk-level one (permission denied, most
+// commonly a shared box's other-user config dir), reported so a scan never
+// silently drops a whole root's sessions off the map (docs/recall.md,
+// initial backfill completeness). A root with nothing there yet (its base
+// subdir does not exist) is not an issue: that is a legitimate empty
+// profile, not a failure.
+type RootIssue struct {
+	Harness string
+	Profile string
+	Dir     string
+	Err     string
+}
+
 // layout describes where a file-per-conversation harness keeps its
 // transcripts under one root, so Discover and Locate are shared: base is
 // the subdir of the root that is symlink-resolved and deduplicated once
@@ -302,6 +316,36 @@ func (l layout) discover(ctx context.Context, roots []Root, emit func(SourceRef)
 		}
 	}
 	return nil
+}
+
+// checkRoots reports every root under which l's base subdir exists but
+// could not be listed: a real error (permission denied, and similarly),
+// never a merely-absent subdir (nothing configured there yet, e.g. a
+// profile with no transcripts). Every root is checked here regardless of
+// how many candidates the walk itself found, so a root that discover()
+// silently skipped is still accounted for.
+func (l layout) checkRoots(roots []Root) []RootIssue {
+	var issues []RootIssue
+	subdirs := l.subdirs
+	if len(subdirs) == 0 {
+		subdirs = []string{""}
+	}
+	for _, r := range roots {
+		base, err := fsEvalSymlinks(filepath.Join(r.Dir, l.base))
+		if err != nil {
+			if !os.IsNotExist(err) {
+				issues = append(issues, RootIssue{Harness: l.harness, Profile: r.Profile, Dir: r.Dir, Err: err.Error()})
+			}
+			continue
+		}
+		for _, sub := range subdirs {
+			if _, err := fsReadDir(filepath.Join(base, sub)); err != nil && !os.IsNotExist(err) {
+				issues = append(issues, RootIssue{Harness: l.harness, Profile: r.Profile, Dir: r.Dir, Err: err.Error()})
+				break
+			}
+		}
+	}
+	return issues
 }
 
 // locate builds the SourceRef of one transcript under a root (the Stop

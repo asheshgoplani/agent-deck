@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -197,6 +198,9 @@ func RunThrottledBackfill(ctx context.Context, st *store.Store, base Options, to
 		acc.Deferred = res.Deferred
 		acc.DeferredBytes = res.DeferredBytes
 		acc.DeferredPaths = res.DeferredPaths
+		acc.RootIssues = res.RootIssues
+		acc.RootsWalked = res.RootsWalked
+		acc.RootsTotal = res.RootsTotal
 		if topts.OnChunk != nil {
 			topts.OnChunk(res)
 		}
@@ -288,7 +292,7 @@ func RunInitialBackfill(ctx context.Context, st *store.Store, base Options, topt
 		}
 		var sessions int
 		_ = st.W.QueryRow(`SELECT count(*) FROM session`).Scan(&sessions)
-		_ = st.SetInitialBackfillProgress(sessions, res.Deferred)
+		_ = st.SetInitialBackfillProgress(sessions, res.Deferred, res.RootsWalked, res.RootsTotal, rootIssueStrings(res.RootIssues))
 	}
 	result, rerr := RunThrottledBackfill(ctx, st, base, topts)
 	if rerr != nil {
@@ -300,6 +304,21 @@ func RunInitialBackfill(ctx context.Context, st *store.Store, base Options, topt
 		return result, err
 	}
 	ingestLog.Info("recall_initial_backfill_done", slog.Int("sessions", result.Sessions),
-		slog.Int64("bytes_read", result.BytesRead), slog.Int64("elapsed_ms", result.ElapsedMS))
+		slog.Int64("bytes_read", result.BytesRead), slog.Int64("elapsed_ms", result.ElapsedMS),
+		slog.Int("roots_walked", result.RootsWalked), slog.Int("roots_total", result.RootsTotal))
 	return result, nil
+}
+
+// rootIssueStrings renders each RootIssue as one "harness:profile:dir:
+// error" line for the persisted marker (store.InitialBackfillStatus,
+// `recall status --json`'s unreadable_roots).
+func rootIssueStrings(issues []reader.RootIssue) []string {
+	if len(issues) == 0 {
+		return nil
+	}
+	out := make([]string, len(issues))
+	for i, is := range issues {
+		out[i] = fmt.Sprintf("%s:%s:%s: %s", is.Harness, is.Profile, is.Dir, is.Err)
+	}
+	return out
 }
