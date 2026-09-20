@@ -634,27 +634,91 @@ func (r *SSHRunner) buildRemoteCommand(args ...string) string {
 // instance, along with the remote's own status-pass timing when it answered
 // with one (#2331: an older remote, or a malformed line, simply yields a nil
 // *ListStats — this is best-effort observability, never a fetch failure).
+//
+// #2333: every real remote at the time --stats shipped was still on
+// v1.16.13, which rejects an unrecognized flag outright (Go's flag package,
+// ExitOnError, before "list" ever runs) — sending --stats unconditionally
+// broke polling of every remote fleet-wide until each one's binary caught
+// up. So the flag is only sent once this remote is known to accept it
+// (remoteSupportsStats, keyed to the remote's cached version so an upgrade
+// forces one fresh probe); an unknown remote is still asked optimistically,
+// but a rejection is detected, remembered, and retried without the flag in
+// the same call instead of surfacing as a fetch failure.
 func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, *ListStats, error) {
+	sentStats := r.remoteSupportsStats()
+	stdout, stderr, err := r.fetchSessionsOnce(ctx, sentStats)
+	switch {
+	case sentStats && err != nil && isStatsFlagRejected(err):
+		r.recordStatsSupport(false)
+		sentStats = false
+		stdout, stderr, err = r.fetchSessionsOnce(ctx, false)
+	case sentStats && err == nil:
+		r.recordStatsSupport(true)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	sessions, err := parseRemoteSessions(stdout)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !sentStats {
+		return sessions, nil, nil
+	}
+	return sessions, parseListStats(stderr), nil
+}
+
+// fetchSessionsOnce runs one `list --json[--stats]` against the remote,
+// through whichever transport this runner uses (test stub or real SSH).
+func (r *SSHRunner) fetchSessionsOnce(ctx context.Context, withStats bool) (stdout, stderr []byte, err error) {
+	args := []string{"list", "--json"}
+	if withStats {
+		args = append(args, ListStatsFlag)
+	}
 	if r.fetchSessionsFn != nil {
-		stdout, stderr, err := r.fetchSessionsFn(ctx, "list", "--json", ListStatsFlag)
-		if err != nil {
-			return nil, nil, err
-		}
-		sessions, err := parseRemoteSessions(stdout)
-		if err != nil {
-			return nil, nil, err
-		}
-		return sessions, parseListStats(stderr), nil
+		return r.fetchSessionsFn(ctx, args...)
 	}
-	output, err := r.Run(ctx, "list", "--json", ListStatsFlag)
-	if err != nil {
-		return nil, nil, err
+	out, runErr := r.Run(ctx, args...)
+	if runErr != nil {
+		return out, nil, runErr
 	}
-	sessions, err := parseRemoteSessions(output)
-	if err != nil {
-		return nil, nil, err
+	return out, r.consumeLastStderr(), nil
+}
+
+// isStatsFlagRejected reports whether err is Go's flag package refusing
+// --stats on `list`, i.e. a remote binary built before #2331 that has never
+// heard of the flag (v1.16.13 and earlier). Any other error — unreachable
+// host, timeout, a `list` that panicked — must not be read as "no stats
+// support"; it just fails the poll as it always did.
+func isStatsFlagRejected(err error) bool {
+	if err == nil {
+		return false
 	}
-	return sessions, parseListStats(r.consumeLastStderr()), nil
+	msg := err.Error()
+	return strings.Contains(msg, "flag provided but not defined") &&
+		strings.Contains(msg, strings.TrimLeft(ListStatsFlag, "-"))
+}
+
+// remoteSupportsStats decides whether this poll should ask for --stats. An
+// unknown remote (never probed, or probed at a version that has since
+// changed) is asked optimistically; FetchSessions detects and remembers an
+// actual rejection rather than this guessing from a version number, since
+// "which release added --stats" is not something the controller should
+// have to hardcode.
+func (r *SSHRunner) remoteSupportsStats() bool {
+	state, ok := LoadRemoteVersions()[r.name]
+	if !ok || state.StatsSupported == nil {
+		return true
+	}
+	return *state.StatsSupported
+}
+
+// recordStatsSupport persists this poll's --stats verdict against the
+// remote's currently-known version (RecordRemoteStatsSupport drops it if
+// that version has moved since, rather than pinning the wrong version).
+func (r *SSHRunner) recordStatsSupport(supported bool) {
+	version := LoadRemoteVersions()[r.name].Version
+	_ = RecordRemoteStatsSupport(r.name, version, supported)
 }
 
 // parseRemoteSessions decodes `list --json` output; empty or non-JSON output

@@ -33,6 +33,14 @@ type RemoteVersionState struct {
 	InstalledFrom string    `json:"installed_from,omitempty"`
 	Found         bool      `json:"found"`
 	CheckedAt     time.Time `json:"checked_at"`
+	// StatsSupported records whether this remote's `list --json` accepts
+	// --stats, learned by SSHRunner.FetchSessions the first time it tries
+	// the flag against this exact Version (#2333: v1.16.13 and earlier
+	// reject it outright). nil means "not yet probed against this
+	// version" — a poll still sends --stats optimistically and records the
+	// answer. Keyed to Version (see RecordRemoteVersions) so an upgrade
+	// forces one fresh probe instead of inheriting a stale verdict.
+	StatsSupported *bool `json:"stats_supported,omitempty"`
 }
 
 // Outdated reports whether the remote runs something older than controller.
@@ -407,8 +415,32 @@ func RecordRemoteVersions(states map[string]RemoteVersionState) error {
 			if state.InstalledFrom == "" && previous.Version == state.Version {
 				state.InstalledFrom = previous.InstalledFrom
 			}
+			if state.StatsSupported == nil && previous.Version == state.Version {
+				state.StatsSupported = previous.StatsSupported
+			}
 			cache.Remotes[name] = state
 		}
+	})
+}
+
+// RecordRemoteStatsSupport remembers whether name's `list --json` accepts
+// --stats, keyed to the exact remote Version this was learned against
+// (#2333): a version bump between now and the next probe means a stale
+// verdict for the old binary must not survive the upgrade. If the remote's
+// cached version has moved on since this probe started (a concurrent
+// version check landed first), the answer is dropped rather than pinned to
+// the wrong version — the next poll simply probes again.
+func RecordRemoteStatsSupport(name, version string, supported bool) error {
+	return updateRemoteVersionCache(func(cache *remoteVersionCache) {
+		state, ok := cache.Remotes[name]
+		if !ok {
+			state = RemoteVersionState{Version: version, CheckedAt: time.Now()}
+		}
+		if state.Version != version {
+			return
+		}
+		state.StatsSupported = &supported
+		cache.Remotes[name] = state
 	})
 }
 
