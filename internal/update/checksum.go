@@ -13,13 +13,12 @@ package update
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
-	"time"
 )
 
 // ChecksumsAssetName is the release asset goreleaser publishes containing the
@@ -88,20 +87,6 @@ func assetArchiveName(release *Release, goos, goarch string) string {
 	return fmt.Sprintf("agent-deck_%s_%s_%s.tar.gz", version, goos, goarch)
 }
 
-// httpGetBytes downloads url fully into memory under a bounded timeout.
-func httpGetBytes(url string, timeout time.Duration) ([]byte, error) {
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
-}
-
 // DownloadVerifiedBinary downloads the release archive for goos/goarch, verifies
 // its SHA-256 against the release's checksums.txt, then extracts and returns the
 // agent-deck binary bytes. It is the integrity gate for remote deploys and is
@@ -109,6 +94,13 @@ func httpGetBytes(url string, timeout time.Duration) ([]byte, error) {
 // asset, a missing checksums.txt asset, an asset absent from checksums.txt, or a
 // hash mismatch all abort BEFORE any binary is returned.
 func DownloadVerifiedBinary(release *Release, goos, goarch string) ([]byte, error) {
+	return DownloadVerifiedBinaryContext(context.Background(), release, goos, goarch, nil)
+}
+
+// DownloadVerifiedBinaryContext is DownloadVerifiedBinary bounded by ctx:
+// cancelling it stops the download promptly. progress, when non-nil, receives
+// a self-overwriting progress line for the archive.
+func DownloadVerifiedBinaryContext(ctx context.Context, release *Release, goos, goarch string, progress io.Writer) ([]byte, error) {
 	if release == nil {
 		return nil, fmt.Errorf("nil release")
 	}
@@ -126,11 +118,11 @@ func DownloadVerifiedBinary(release *Release, goos, goarch string) ([]byte, erro
 		return nil, fmt.Errorf("release %s publishes no %s — refusing to deploy an unverified artifact", release.TagName, ChecksumsAssetName)
 	}
 
-	archive, err := httpGetBytes(assetURL, 120*time.Second)
+	archive, err := downloadBytes(ctx, assetURL, archiveTuning, progress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download release archive: %w", err)
 	}
-	checksumsData, err := httpGetBytes(checksumsURL, 30*time.Second)
+	checksumsData, err := downloadBytes(ctx, checksumsURL, checksumsTuning, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download %s: %w", ChecksumsAssetName, err)
 	}
