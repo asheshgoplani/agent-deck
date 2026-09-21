@@ -109,6 +109,14 @@ func TestShouldRunInitialBackfill_TriggerMatrix(t *testing.T) {
 		if err := f.st.SetInitialBackfillState(store.InitialBackfillDone, 100); err != nil {
 			t.Fatal(err)
 		}
+		// A modern done marker always has roots_walked/roots_total recorded
+		// (even at 0, when a real pass found no configured roots); only a
+		// marker missing those fields outright (the legacy pre-#2337 shape,
+		// covered by TestInitialBackfillStatus_LegacyDoneMarkerReVerifiedOnce)
+		// is treated as pending.
+		if err := f.st.SetInitialBackfillProgress(0, 0, 0, 0, nil); err != nil {
+			t.Fatal(err)
+		}
 		should, err := ShouldRunInitialBackfill(f.st)
 		if err != nil || should {
 			t.Fatalf("should=%v err=%v, want false, nil", should, err)
@@ -589,5 +597,94 @@ func TestRunInitialBackfill_BudgetExhaustionNeverFalselyDone(t *testing.T) {
 	}
 	if final.SessionsPending != 0 {
 		t.Fatalf("sessions_pending = %d, want 0", final.SessionsPending)
+	}
+}
+
+// TestInitialBackfillStatus_LegacyDoneMarkerReVerifiedOnce guards the
+// g14/sbbox symptom: pre-#2337 code wrote a "done" marker with no
+// roots_walked/roots_total meta rows at all (the fields didn't exist yet),
+// and `recall status` on those hosts reports roots=None/None forever
+// "complete" because InitialBackfillStatus used to trust state=="done" at
+// face value. A legacy marker must be treated as pending exactly once, so
+// the next background pass re-walks every root and persists a real marker;
+// after that, done must mean done (no infinite re-verification loop), and a
+// modern done marker that legitimately has roots_walked set must not be
+// disturbed.
+func TestInitialBackfillStatus_LegacyDoneMarkerReVerifiedOnce(t *testing.T) {
+	f := newFixture(t, testcorpus.Options{Files: 4, Seed: 11})
+	// Reproduce exactly what pre-#2337 code left behind: SetInitialBackfillState
+	// only ever wrote state/done_at, never roots_walked/roots_total.
+	if err := f.st.SetInitialBackfillState(store.InitialBackfillDone, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := f.st.InitialBackfillStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != store.InitialBackfillPending {
+		t.Fatalf("state = %q, want pending (a legacy done marker with no roots_walked/roots_total must be re-verified once)", status.State)
+	}
+
+	should, err := ShouldRunInitialBackfill(f.st)
+	if err != nil || !should {
+		t.Fatalf("should=%v err=%v, want true, nil", should, err)
+	}
+
+	topts := ThrottleOptions{LockPath: f.st.Path + ".lock", ChunkDeadline: time.Hour, ChunkBytes: 1 << 20, Sleep: noSleep}
+	if _, err := RunInitialBackfill(context.Background(), f.st, Options{Roots: f.roots()}, topts); err != nil {
+		t.Fatalf("RunInitialBackfill: %v", err)
+	}
+
+	final, err := f.st.InitialBackfillStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != store.InitialBackfillDone {
+		t.Fatalf("state after the real pass = %q, want done", final.State)
+	}
+	if final.RootsWalked == 0 || final.RootsWalked != final.RootsTotal {
+		t.Fatalf("roots_walked=%d roots_total=%d, want equal and > 0 (a real marker must be persisted)", final.RootsWalked, final.RootsTotal)
+	}
+
+	// Not re-triggered: a real marker with roots_walked set must never be
+	// consulted through the legacy fallback again.
+	should, err = ShouldRunInitialBackfill(f.st)
+	if err != nil || should {
+		t.Fatalf("should=%v err=%v, want false, nil (a real marker must not be re-verified again)", should, err)
+	}
+	var chunks int32
+	topts.OnChunk = func(Result) { atomic.AddInt32(&chunks, 1) }
+	res, err := RunInitialBackfill(context.Background(), f.st, Options{Roots: f.roots()}, topts)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if res.Sessions != 0 || res.Parsed != 0 || atomic.LoadInt32(&chunks) != 0 {
+		t.Fatalf("second run did work: res=%+v chunks=%d, want a no-op", res, chunks)
+	}
+}
+
+// TestInitialBackfillStatus_ModernDoneMarkerUnaffected guards the flip side
+// of the legacy-marker fix: a modern "done" marker that already has
+// roots_walked set (even to a legitimate small/zero value) must be left
+// alone, never forced back to pending.
+func TestInitialBackfillStatus_ModernDoneMarkerUnaffected(t *testing.T) {
+	f := newFixture(t, testcorpus.Options{Files: 0})
+	if err := f.st.SetInitialBackfillState(store.InitialBackfillDone, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SetInitialBackfillProgress(0, 0, 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	status, err := f.st.InitialBackfillStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != store.InitialBackfillDone {
+		t.Fatalf("state = %q, want done (a marker with roots_total explicitly recorded, even as 0, is not legacy)", status.State)
+	}
+	should, err := ShouldRunInitialBackfill(f.st)
+	if err != nil || should {
+		t.Fatalf("should=%v err=%v, want false, nil", should, err)
 	}
 }

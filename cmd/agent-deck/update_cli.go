@@ -295,8 +295,21 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 		updateBridge: update.UpdateBridgePy,
 		hygiene:      func() error { return rebootstrapLaunchAgentsAfterInstall(log) },
 		drainPending: func() error { return drainPendingLaunchAgents(log) },
-		sweepRemotes: func(latest string) { sweepRemotesUnattended(latest, log) },
+		sweepRemotes: remoteFollowUpForTrigger(trigger, log),
 	}, closeLog
+}
+
+// remoteFollowUpForTrigger returns the unattendedDeps.sweepRemotes hook for
+// this run's trigger, or nil to skip it entirely. A run whose own trigger is
+// "nudge" or "nudge-fallback" — i.e. this process is itself answering
+// another controller's nudge — never follows up with its own remotes: the
+// nudge is not meant to fan out across hops, only from the one controller
+// that actually installed a release to the remotes it is configured with.
+func remoteFollowUpForTrigger(trigger string, log *slog.Logger) func(latest string) {
+	if trigger == "nudge" || trigger == "nudge-fallback" {
+		return nil
+	}
+	return func(latest string) { remoteFollowUpUnattended(latest, log) }
 }
 
 // drainPendingLaunchAgents re-registers the launch agents a previous run
@@ -341,29 +354,50 @@ func drainPendingLaunchAgentsUnlessSweeping(log *slog.Logger, sweepInProgress fu
 	return nil
 }
 
-// sweepRemotesUnattended is the unattended counterpart of
-// updateRemotesAfterLocalUpdate: with auto_update_remotes on it runs the
-// same no-prompt sweep (#2166); with it off there is nobody to answer the
-// Y/n prompt, so the remotes are left alone. Every way the sweep does not
+// remoteFollowUpUnattended is what an unattended run does with its
+// configured remotes after installing (or finding itself already current):
+// nudge every one of them to check for the release right now (best-effort,
+// never blocking on their download, never sending them any bytes), then —
+// only when [updates].sweep_remotes opts back into the old push model —
+// also run the byte-pushing sweep this replaced.
+func remoteFollowUpUnattended(latest string, log *slog.Logger) {
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		log.Info("unattended_remote_followup_skipped", slog.String("reason", "config unreadable: "+err.Error()))
+		return
+	}
+	if config == nil || len(config.Remotes) == 0 {
+		return
+	}
+
+	fmt.Printf("nudging %d remote(s) to check for v%s now\n", len(config.Remotes), latest)
+	log.Info("unattended_remote_nudge_start", slog.Int("remotes", len(config.Remotes)), slog.String("latest", latest))
+	results := session.NudgeRemotes(context.Background(), config.Remotes, log, session.NudgeRemoteOptions{})
+	for _, r := range results {
+		fmt.Printf("  %s\n", r)
+	}
+
+	if !session.GetUpdateSettings().GetSweepRemotes() {
+		return
+	}
+	sweepRemotesUnattended(latest, log, config)
+}
+
+// sweepRemotesUnattended is the opt-in byte-pushing sweep [updates]
+// sweep_remotes restores: with it on, an unattended run also SSHes the new
+// binary onto every remote (#2166's original behavior), same no-prompt
+// deploy as `agent-deck remote update --all`. Every way the sweep does not
 // run is logged with its reason (unattended_remote_sweep_skipped or
 // _deferred), so "the remotes are still old" is never a silent outcome.
-func sweepRemotesUnattended(latest string, log *slog.Logger) {
-	config, err := session.LoadUserConfig()
+func sweepRemotesUnattended(latest string, log *slog.Logger, config *session.UserConfig) {
 	sweep, running := session.RemoteSweepInProgress()
-	d := unattendedSweepDecision(config, err, session.GetUpdateSettings(), sweep, running)
-	switch {
-	case d.deferred:
+	d := unattendedSweepDecision(config, sweep, running)
+	if d.deferred {
 		fmt.Printf("remote sweep deferred: %s\n", d.reason)
 		log.Info("unattended_remote_sweep_deferred", slog.String("reason", d.reason), slog.Int("remotes", d.remotes), slog.Int("sweep_pid", sweep.PID))
 		return
-	case d.reason != "":
-		if d.remotes > 0 {
-			fmt.Printf("remote sweep skipped: %s\n", d.reason)
-		}
-		log.Info("unattended_remote_sweep_skipped", slog.String("reason", d.reason), slog.Int("remotes", d.remotes))
-		return
 	}
-	fmt.Printf("auto_update_remotes is on: updating %d remote(s) to v%s\n", d.remotes, latest)
+	fmt.Printf("sweep_remotes is on: pushing v%s to %d remote(s)\n", latest, d.remotes)
 	log.Info("unattended_remote_sweep_start", slog.Int("remotes", d.remotes), slog.String("latest", latest))
 	results := runPostUpdateRemoteSweep(context.Background(), config.Remotes, latest, true)
 	if results == nil {
@@ -374,26 +408,22 @@ func sweepRemotesUnattended(latest string, log *slog.Logger) {
 	log.Info("unattended_remote_sweep_done", slog.Int("remotes", len(results)), slog.String("summary", remoteUpdateSummary(results)))
 }
 
-// sweepDecision is why an unattended sweep does not run ("" runs it).
+// sweepDecision is why an unattended byte-push sweep does not run now ("":
+// runs it); deferred means another sweep from this controller is already
+// running, so this one is not lost, just not now.
 type sweepDecision struct {
 	reason   string
-	deferred bool // another sweep is running; this one is not lost, just not now
+	deferred bool
 	remotes  int
 }
 
 // unattendedSweepDecision is the pure decision behind sweepRemotesUnattended.
-func unattendedSweepDecision(config *session.UserConfig, loadErr error, settings session.UpdateSettings, sweep session.RemoteSweep, running bool) sweepDecision {
-	if loadErr != nil {
-		return sweepDecision{reason: "config unreadable: " + loadErr.Error()}
-	}
-	if config == nil || len(config.Remotes) == 0 {
-		return sweepDecision{reason: "no remotes configured"}
-	}
+// Callers only reach it once sweep_remotes and "there are remotes" are
+// already known true, so the only thing left to decide is whether another
+// sweep from this controller is still running.
+func unattendedSweepDecision(config *session.UserConfig, sweep session.RemoteSweep, running bool) sweepDecision {
 	d := sweepDecision{remotes: len(config.Remotes)}
-	switch {
-	case !settings.GetAutoUpdateRemotes():
-		d.reason = "auto_update_remotes is off (run `agent-deck remote update --all` to update them)"
-	case running:
+	if running {
 		d.reason = fmt.Sprintf("a sweep from pid %d (started %s) is still running; the next start of a newer controller sweeps again", sweep.PID, sweep.StartedAt.Format("15:04:05"))
 		d.deferred = true
 	}

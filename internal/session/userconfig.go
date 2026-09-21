@@ -1385,13 +1385,59 @@ type UpdateSettings struct {
 	// Default: true (nil = true)
 	CheckEnabled *bool `toml:"check_enabled,omitempty"`
 
-	// CheckIntervalHours is how often to check for updates (in hours)
-	// Default: 24
+	// CheckIntervalHours is how often the startup remote sweep (see
+	// AutoUpdateRemotes/ShouldAutoUpdateRemotes) throttles itself, in hours.
+	// Default: 24. This is unrelated to CheckInterval below, which governs
+	// the near-event-driven GitHub poll every daemon/TUI runs.
 	CheckIntervalHours int `toml:"check_interval_hours,omitzero"`
+
+	// CheckInterval is how often every agent-deck daemon/TUI polls the
+	// GitHub releases endpoint for a new release, as a Go duration string
+	// (e.g. "90s", "2m"). The poll is a conditional GET (ETag /
+	// If-None-Match): a 304 (no new release) does not spend the caller's
+	// GitHub API rate limit, so a short interval is cheap. On error the
+	// caller backs off exponentially with jitter rather than retrying at
+	// this rate (see update.NextRecheck). Default: "90s".
+	CheckInterval string `toml:"check_interval,omitempty"`
+
+	// SweepRemotes pushes the controller's binary bytes to every configured
+	// remote after an unattended install, the way AutoUpdateRemotes always
+	// did before this setting existed. Default: false — remotes are instead
+	// nudged (a best-effort, byte-free "check now" over the same channel,
+	// falling back to `ssh <host> agent-deck update` for a remote that does
+	// not understand the nudge) and pull + verify themselves. `agent-deck
+	// remote update <host>` is unaffected either way: it always pulls onto
+	// the named remote by hand, regardless of this setting.
+	SweepRemotes *bool `toml:"sweep_remotes,omitempty"`
 
 	// NotifyInCLI shows update notification in CLI commands (not just TUI)
 	// Default: true (nil = true)
 	NotifyInCLI *bool `toml:"notify_in_cli,omitempty"`
+}
+
+// DefaultCheckInterval is how often a daemon/TUI polls GitHub for a new
+// release when [updates].check_interval is unset.
+const DefaultCheckInterval = 90 * time.Second
+
+// GetCheckInterval returns the configured poll interval, defaulting to
+// DefaultCheckInterval when unset or unparsable. Never returns a
+// non-positive duration.
+func (u UpdateSettings) GetCheckInterval() time.Duration {
+	if v := strings.TrimSpace(u.CheckInterval); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return DefaultCheckInterval
+}
+
+// GetSweepRemotes reports whether the controller pushes bytes to remotes
+// after an install, instead of nudging them to pull (default: false).
+func (u UpdateSettings) GetSweepRemotes() bool {
+	if u.SweepRemotes == nil {
+		return false
+	}
+	return *u.SweepRemotes
 }
 
 // GetCheckEnabled returns whether update checks are enabled (default: true).
@@ -5162,8 +5208,12 @@ auto_install = true
 auto_restart = true
 # Enable update checks on startup (default: true)
 check_enabled = true
-# How often to check for updates in hours (default: 24)
-check_interval_hours = 24
+# How often to poll GitHub for a new release, e.g. "90s", "2m" (default: "90s").
+# Polls are conditional (ETag) so an unchanged answer (304) is nearly free.
+# check_interval = "90s"
+# Push the controller's binary onto every configured remote after an
+# install, instead of nudging remotes to pull it themselves (default: false)
+# sweep_remotes = true
 # Show update notification in CLI commands, not just TUI (default: true)
 notify_in_cli = true
 

@@ -66,7 +66,7 @@ func init() {
 // unsandboxed-test warning on every run of this package (issue #2012).
 func initUpdateSettings() {
 	settings := session.GetUpdateSettings()
-	update.SetCheckInterval(settings.CheckIntervalHours)
+	update.SetCheckIntervalDuration(settings.GetCheckInterval())
 	update.SetBridgeScriptInstaller(session.InstallBridgeScript)
 	update.SetConductorDirResolver(session.ConductorDir)
 }
@@ -1383,6 +1383,7 @@ func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.I
 		Exe:            exe,
 		RunningVersion: Version,
 		Trigger:        "web",
+		Interval:       session.GetUpdateSettings().GetCheckInterval(),
 		Enabled:        func() bool { return session.GetUpdateSettings().GetAutoInstall() },
 		Log:            webLog,
 	}
@@ -3902,6 +3903,7 @@ func handleUpdate(args []string) {
 	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents)")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
 	unattended := fs.Bool("unattended", false, "Install without prompts (no changelog, no stdin); honours [updates] auto_install; exit 2 on Homebrew installs")
+	checkNow := fs.Bool("check-now", false, "Same as --unattended, but for a controller's nudge: checks GitHub right away and never nudges this host's own remotes")
 	trigger := fs.String("trigger", "", "Who started this run, for the debug log: tui, timer or manual (default: $AGENTDECK_UPDATE_TRIGGER or manual)")
 	installTimer := fs.Bool("install-timer", false, "Install (or replace) the daily unattended update timer (launchd on macOS, systemd --user on Linux)")
 	uninstallTimer := fs.Bool("uninstall-timer", false, "Remove the daily unattended update timer")
@@ -3922,6 +3924,7 @@ func handleUpdate(args []string) {
 		fmt.Println("  agent-deck update --check --json      # Machine-readable check incl. timer state, running TUIs, pending launch agents")
 		fmt.Println("  agent-deck update --version 1.7.3     # Install a specific version (may downgrade)")
 		fmt.Println("  agent-deck update --unattended        # No prompts; what the timer and the TUI run")
+		fmt.Println("  agent-deck update --check-now          # What a controller's nudge runs on this host")
 		fmt.Println("  agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)")
 		fmt.Println("  agent-deck update --install-timer --dry-run")
 		fmt.Println("  agent-deck update --uninstall-timer")
@@ -3950,7 +3953,7 @@ func handleUpdate(args []string) {
 		exit(runTimerCommand("status", false, os.Stdout))
 	}
 
-	if *unattended {
+	if *unattended || *checkNow {
 		// The TUI runs this child with its stdout on a pipe. Should the TUI
 		// go away mid-run (a quit, or a restart that slipped past the
 		// in-flight guard), the next progress line would otherwise kill
@@ -3958,7 +3961,11 @@ func handleUpdate(args []string) {
 		// leave its sweep marker and update.lock behind. Everything that
 		// matters is in the debug log; a lost stdout is just EPIPE here.
 		signal.Ignore(syscall.SIGPIPE)
-		deps, closeAudit := realUnattendedDeps(updateTrigger(*trigger))
+		effectiveTrigger := updateTrigger(*trigger)
+		if *checkNow && strings.TrimSpace(*trigger) == "" {
+			effectiveTrigger = "nudge"
+		}
+		deps, closeAudit := realUnattendedDeps(effectiveTrigger)
 		code := runUnattendedUpdate(deps)
 		closeAudit()
 		exit(code)

@@ -363,6 +363,17 @@ already-ledgered source as unchanged (cheap: no bytes re-read) and
 persists a real marker so this fallback is never consulted again for that
 index.
 
+The same fallback covers a `done` marker written by pre-#2337 code, which
+predates `roots_walked`/`roots_total` and so wrote `state: done` with
+neither field ever set: `InitialBackfillStatus` reports that marker
+"pending" too, exactly once, rather than trusting a `done` state that never
+proved every root was walked (this is what a shared box upgraded across
+that release shows as `roots=None/None` in `recall status` forever, since a
+literal reading of `state: done` never re-verifies). A modern marker that
+legitimately finished with `roots_total: 0` (no roots configured) is
+unaffected — it has both fields explicitly recorded, just at zero — so only
+a marker missing the fields outright is re-run.
+
 `done` also requires every configured root to have been walked, not just
 `sessions_pending == 0`: root-level directory listing runs in full on
 every chunk regardless of the byte/time budget (only per-file parsing is
