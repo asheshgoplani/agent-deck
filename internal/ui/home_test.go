@@ -1009,8 +1009,13 @@ func TestHomeSearchRecallOffGolden(t *testing.T) {
 
 // assertFrameGolden compares a whole frame with internal/ui/testdata
 // (UPDATE_GOLDEN=1 rewrites).
+//
+// Every golden frame also passes assertNoOverwideRows: no row may take more
+// cells than the frame's own width on either terminal width convention
+// (#2334).
 func assertFrameGolden(t *testing.T, name, got string) {
 	t.Helper()
+	assertNoOverwideRows(t, got, 0)
 	got = strings.TrimRight(got, "\n") + "\n"
 	path := filepath.Join("testdata", name)
 	if os.Getenv("UPDATE_GOLDEN") == "1" {
