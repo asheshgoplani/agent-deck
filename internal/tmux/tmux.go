@@ -2747,6 +2747,8 @@ func (s *Session) Start(command string) error {
 	// #1625: the key-handling defaults are gated through OptionOverrides so an
 	// explicit user tmux setting wins (see gatedTmuxKeyOptionArgs).
 	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
+	// #2334: Indic vowel signs take their consonant's cell (tmux >= 3.6).
+	startArgs = append(startArgs, complexScriptWidthArgs(s.OptionOverrides, hostTmuxVersionString())...)
 	// Multi-client size policy (#2186, #2259, shared attach): every window
 	// of a Deck session follows the client that is using it
 	// (window-size=latest, aggressive-resize on; `largest` on a tmux < 3.1),
@@ -3530,6 +3532,7 @@ func (s *Session) EnableMouseMode() error {
 	// #1625: gate the key-handling defaults through OptionOverrides so an explicit
 	// user tmux setting wins (mirrors Start; see gatedTmuxKeyOptionArgs).
 	enhanceArgs = append(enhanceArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
+	enhanceArgs = append(enhanceArgs, complexScriptWidthArgs(s.OptionOverrides, hostTmuxVersionString())...)
 	enhanceCmd := s.tmuxCmd(enhanceArgs...)
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options

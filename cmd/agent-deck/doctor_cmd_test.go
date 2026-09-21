@@ -151,3 +151,34 @@ func TestDoctorRemoteNeverRunsLocally(t *testing.T) {
 		t.Fatalf("remote rejection changed HOME")
 	}
 }
+
+// #2334: doctor reports how the host tmux sizes Indic vowel signs, in both
+// output forms.
+func TestDoctorReportsTmuxComplexScriptWidths(t *testing.T) {
+	home := t.TempDir()
+	stdout, stderr, code := runAgentDeck(t, home, "doctor", "--json")
+	if code != 0 {
+		t.Fatalf("doctor exit %d: %s %s", code, stdout, stderr)
+	}
+	var report struct {
+		ComplexScript struct {
+			State  string `json:"state"`
+			Detail string `json:"detail"`
+		} `json:"tmux_complex_script_widths"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("doctor JSON: %v: %s", err, stdout)
+	}
+	switch report.ComplexScript.State {
+	case "ok", "warn", "unknown":
+	default:
+		t.Fatalf("tmux_complex_script_widths state %q: %s", report.ComplexScript.State, stdout)
+	}
+	if report.ComplexScript.Detail == "" {
+		t.Fatalf("tmux_complex_script_widths has no detail: %s", stdout)
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "doctor")
+	if code != 0 || !strings.Contains(stdout, "tmux complex-script widths "+strings.ToUpper(report.ComplexScript.State)) {
+		t.Fatalf("human output lacks the complex-script line: exit %d: %s %s", code, stdout, stderr)
+	}
+}

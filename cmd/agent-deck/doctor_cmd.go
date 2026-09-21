@@ -13,6 +13,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 func handleDoctor(args []string) {
@@ -52,6 +53,9 @@ func handleDoctor(args []string) {
 	// Profile store roots: which data root is active and whether a second
 	// one holds profiles too (stray XDG store incidents, 2026-09-19/20).
 	storeRoots, storeRootsErr := session.StoreRootReport()
+	// How this host's tmux sizes Indic vowel signs versus Ghostty/Claude
+	// Code (#2334): the attached-view Hindi misalignment.
+	complexScript := tmux.CheckComplexScriptWidths()
 	if *jsonOutput {
 		report := struct {
 			AccountSlots []session.AccountDirectoryDiagnostic `json:"account_slots"`
@@ -60,9 +64,10 @@ func handleDoctor(args []string) {
 				State  string `json:"state"`
 				Config string `json:"config"`
 			} `json:"codex_hooks"`
-			StoreRoots *session.StoreRootSelection `json:"store_roots,omitempty"`
-			StoreError string                      `json:"store_roots_error,omitempty"`
-		}{AccountSlots: slots, Health: runtimeHealth}
+			StoreRoots    *session.StoreRootSelection  `json:"store_roots,omitempty"`
+			StoreError    string                       `json:"store_roots_error,omitempty"`
+			ComplexScript tmux.ComplexScriptWidthCheck `json:"tmux_complex_script_widths"`
+		}{AccountSlots: slots, Health: runtimeHealth, ComplexScript: complexScript}
 		report.CodexHooks.State = codexHooks
 		report.CodexHooks.Config = codexConfig
 		if storeRootsErr != nil {
@@ -79,6 +84,7 @@ func handleDoctor(args []string) {
 	fmt.Print(health.Format(runtimeHealth))
 	fmt.Print(formatStoreRoots(storeRoots, storeRootsErr))
 	fmt.Printf("Codex notify %s\n", codexHooksLine(codexHooks, codexConfig))
+	fmt.Printf("tmux complex-script widths %s: %s\n", strings.ToUpper(complexScript.State), complexScript.Detail)
 	fmt.Println("Named Claude account directories:")
 	if len(slots) == 0 {
 		fmt.Println("No named Claude account slots configured.")

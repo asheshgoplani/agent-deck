@@ -19491,7 +19491,7 @@ func clampViewToViewport(content string, width, height int) string {
 
 	const sgrReset = "\x1b[0m"
 	var rendered strings.Builder
-	rendered.Grow(len(content) + len(lines)*2*len(sgrReset))
+	rendered.Grow(len(content) + len(lines)*(2*len(sgrReset)+len(ansi.ResetModeAutoWrap)+len(ansi.SetModeAutoWrap)))
 
 	for i, line := range lines {
 		// #937 v2: cellWidth/cellTruncate (not ansi.*) so this final
@@ -19526,8 +19526,21 @@ func clampViewToViewport(content string, width, height int) string {
 		// scrolling the header off the alternate screen. Every row starts at
 		// column 0 here, so per-row expansion lands on the same stops the
 		// terminal would use.
+		//
+		// #2334: fitTerminalRow instead of fitCellWidth so a complex-script
+		// row (Devanagari vowel signs, ZWJ emoji) fits under the per code
+		// point width convention too, and every row runs with auto-wrap off
+		// (DECAWM) and switches it back on at its own end. A row that is still
+		// wider on some terminal is clipped at the right margin instead of
+		// wrapping onto the next screen row, which would shift every later row
+		// against Bubble Tea's line-diff model and leave the duplicated,
+		// interleaved preview blocks of the report on screen. Restoring per
+		// row keeps auto-wrap on between writes, so no exit, suspend, attach
+		// or crash path can leave it off in the user's shell.
 		rendered.WriteString(sgrReset)
-		rendered.WriteString(fitCellWidth(expandTabs(line), width))
+		rendered.WriteString(ansi.ResetModeAutoWrap)
+		rendered.WriteString(fitTerminalRow(expandTabs(line), width))
+		rendered.WriteString(ansi.SetModeAutoWrap)
 		rendered.WriteString(sgrReset)
 	}
 
