@@ -25289,8 +25289,13 @@ func hookCleanupCmd(cleanup func(), done chan struct{}) tea.Cmd {
 func (h *Home) remoteAccountsLine(remoteName, account string, now time.Time) string {
 	result, ok := h.remoteHostStatsState(remoteName)
 	if !ok {
+		// No stats entry: either never polled or the remote cannot report
+		// them. Only blame the remote when it is known to be older.
 		versionState, _ := h.remoteVersionState(remoteName)
-		return remoteStatsUnknownLine(versionState, Version)
+		if versionState.Compare(Version) == session.RemoteVersionOlder {
+			return remoteStatsUnknownLine(versionState, Version)
+		}
+		return "accounts not polled yet"
 	}
 	if !result.Stats.AccountsAvailable {
 		return "accounts unknown (remote does not report accounts)"

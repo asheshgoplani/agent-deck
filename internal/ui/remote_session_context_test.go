@@ -97,9 +97,13 @@ func TestRemoteAccountsLine_NamedSlotAbsentFromNonEmptyList(t *testing.T) {
 
 func TestRemoteAccountsLine_UnpolledHostExactLine(t *testing.T) {
 	h := NewHome()
-	want := remoteStatsUnknownLine(session.RemoteVersionState{}, Version)
+	if got := h.remoteAccountsLine("box", "work", time.Now()); got != "accounts not polled yet" {
+		t.Fatalf("got %q", got)
+	}
+	h.remoteVersions = map[string]session.RemoteVersionState{"box": {Version: "0.0.1", Found: true, CheckedAt: time.Now()}}
+	want := remoteStatsUnknownLine(h.remoteVersions["box"], Version)
 	if got := h.remoteAccountsLine("box", "work", time.Now()); got != want {
-		t.Fatalf("got %q want %q", got, want)
+		t.Fatalf("older remote: got %q want %q", got, want)
 	}
 }
 
