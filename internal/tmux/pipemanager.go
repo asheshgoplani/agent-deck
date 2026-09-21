@@ -38,6 +38,10 @@ type PipeManager struct {
 	// connected or auto-reconnected. nil = legacy behaviour (want everything).
 	wantPipe func(sessionName string) bool
 
+	// sharedViewOverrides, when non-nil, makes Connect apply the shared-view
+	// size policy (ApplySharedViewSize) with these [tmux.options] overrides.
+	sharedViewOverrides func() map[string]string
+
 	// Reconnection tracking
 	reconnectMu  sync.Mutex
 	reconnecting map[string]bool
@@ -116,6 +120,13 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 	// Without this, each TUI reconnect accumulates orphan `tmux -C attach-session`
 	// processes that are never cleaned up (#595).
 	killStaleControlClients(sessionName, socketName)
+
+	pm.mu.RLock()
+	overrides := pm.sharedViewOverrides
+	pm.mu.RUnlock()
+	if overrides != nil {
+		ApplySharedViewSize(socketName, sessionName, overrides())
+	}
 
 	// Create new pipe (outside lock since it spawns a process)
 	pipe, err := NewControlPipe(sessionName, socketName)
@@ -359,8 +370,16 @@ func (pm *PipeManager) SetWindowChangeCallback(cb func()) {
 	pm.onWindowChange = cb
 }
 
-// SetSharedViewOverrides is a stub (red commit).
-func (pm *PipeManager) SetSharedViewOverrides(fn func() map[string]string) {}
+// SetSharedViewOverrides makes every Connect install the shared-view size
+// policy on the session first (ApplySharedViewSize, with fn's [tmux.options]
+// overrides), so a session born under an older policy (`largest`, rc.6's
+// `smallest`) converges on the current one as soon as a deck follows it,
+// without a restart and whoever attaches.
+func (pm *PipeManager) SetSharedViewOverrides(fn func() map[string]string) {
+	pm.mu.Lock()
+	pm.sharedViewOverrides = fn
+	pm.mu.Unlock()
+}
 
 // SetWantPipe installs the predicate that decides which sessions hold a live
 // pipe. Call once at startup before Connect. nil-safe: an unset predicate means
@@ -413,6 +432,10 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 			if pm.onWindowChange != nil {
 				pm.onWindowChange()
 			}
+		case <-pipe.ClientEvents():
+			// This pipe (or another client) came or went: never leave the
+			// window following a control client (latest_viewer.go).
+			HandLatestToViewer(pipe.socketName, sessionName)
 		case <-pipe.Done():
 			return
 		}

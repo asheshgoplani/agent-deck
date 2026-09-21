@@ -2155,6 +2155,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		})
 		tmux.SetPipeManager(pm)
 		pm.SetWantPipe(func(name string) bool { return h.liveSet.want(name) })
+		pm.SetSharedViewOverrides(session.SharedViewOverrides)
 
 		go h.livePipeReconciler()
 		go h.statusWorker()

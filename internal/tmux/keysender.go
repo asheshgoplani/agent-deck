@@ -89,6 +89,8 @@ type localKeySender struct {
 //
 // Attaching does not resize the target: control-mode clients impose no size
 // unless they ask for one (`refresh-client -C`), which this one never does.
+// It does take the window's latest slot, which is handed back to a person
+// once the attach settles (HandLatestToViewer).
 //
 // Returns a started KeySender on success. On any setup failure — including a
 // target that no longer exists — the subprocess is cleaned up and an error is
@@ -141,6 +143,7 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 		// client surfaces as a write error on the first Send, which is the
 		// same signal callers already fall back on.
 	}
+	go HandLatestToViewer(socket, target)
 	return k, nil
 }
 
