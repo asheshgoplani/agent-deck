@@ -359,6 +359,9 @@ func (pm *PipeManager) SetWindowChangeCallback(cb func()) {
 	pm.onWindowChange = cb
 }
 
+// SetSharedViewOverrides is a stub (red commit).
+func (pm *PipeManager) SetSharedViewOverrides(fn func() map[string]string) {}
+
 // SetWantPipe installs the predicate that decides which sessions hold a live
 // pipe. Call once at startup before Connect. nil-safe: an unset predicate means
 // every session is wanted (legacy behaviour).
