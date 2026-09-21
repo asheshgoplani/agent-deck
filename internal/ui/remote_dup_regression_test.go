@@ -27,6 +27,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +81,12 @@ func assertNoDuplicateRows(t *testing.T, items []session.Item) {
 			key := "remote:" + it.RemoteName + "\x00" + it.RemoteSession.ID
 			if sessionSeen[key] {
 				t.Fatalf("row %d: duplicate remote session row for remote %q id %q", i, it.RemoteName, it.RemoteSession.ID)
+			}
+			sessionSeen[key] = true
+		case session.ItemTypeWindow:
+			key := "window:" + it.WindowSessionID + "\x00" + it.WindowID + "\x00" + strconv.Itoa(it.WindowIndex)
+			if sessionSeen[key] {
+				t.Fatalf("row %d: duplicate window row for session %q window %q", i, it.WindowSessionID, it.WindowID)
 			}
 			sessionSeen[key] = true
 		}
