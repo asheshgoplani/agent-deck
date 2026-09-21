@@ -12642,6 +12642,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.openContextInspector(item.Session)
 			}
+			// The inspector reads the harness transcript from local files; a
+			// remote row has none here, and a per-open SSH call would add remote
+			// load (#2332). Say so instead of silently doing nothing.
+			if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				h.setError(fmt.Errorf("context inspector: not available for remote sessions yet"))
+			}
 		}
 		return h, nil
 
@@ -21938,6 +21944,11 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 		unknownReason = remoteViewersUnknownReason(versionState, Version)
 	}
 	b.WriteString(dimStyle.Render("Viewers: ") + viewersText(remoteViewers, remoteViewersKnown, unknownReason, time.Now()) + "\n")
+	// Account usage comes from the host stats already polled for the group
+	// header, so this adds no SSH round trip.
+	if line := h.remoteAccountsLine(item.RemoteName, time.Now()); line != "" {
+		b.WriteString(dimStyle.Render(line) + "\n")
+	}
 	b.WriteString("\n")
 
 	pvKey := remotePreviewCacheKey(item.RemoteName, rs.ID)
@@ -25269,5 +25280,19 @@ func hookCleanupCmd(cleanup func(), done chan struct{}) tea.Cmd {
 		}
 		cleanup()
 		return nil
+	}
+}
+
+// remoteAccountsLine is the per-session preview's account usage line, taken
+// from the cached host stats. "" when the host has not been polled yet.
+func (h *Home) remoteAccountsLine(remoteName string, now time.Time) string {
+	result, ok := h.remoteHostStatsState(remoteName)
+	switch {
+	case !ok:
+		return ""
+	case !result.Stats.AccountsAvailable:
+		return "accounts unknown (remote does not report accounts)"
+	default:
+		return renderAccountsPreviewLine(result.Stats.Accounts, now)
 	}
 }
