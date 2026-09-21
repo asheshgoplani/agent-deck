@@ -3227,6 +3227,15 @@ type TmuxSettings struct {
 	// Default: true (nil = use default true, preserves pre-#730 behavior)
 	Mouse *bool `toml:"mouse,omitempty"`
 
+	// IndicZeroWidthMarks gives Indic spacing vowel signs (ा ि ी ो) zero width
+	// on the tmux server so glibc tmux (Linux packages) lays out Hindi,
+	// Bengali or Tamil text the way Claude Code does (#2334). It aligns
+	// Claude Code but misaligns Codex, the shell and vim for Indic text, it
+	// applies to the whole tmux server (the user's default one unless
+	// socket_name is set), and it needs tmux >= 3.6. Turning it back off
+	// removes exactly the entries agent-deck added. Default: false.
+	IndicZeroWidthMarks bool `toml:"indic_zero_width_marks,omitempty"`
+
 	// LaunchInUserScope starts new tmux servers via `systemd-run --user --scope`
 	// so the tmux server lives under the user's systemd manager instead of the
 	// current login session scope. This keeps tmux alive when an SSH session

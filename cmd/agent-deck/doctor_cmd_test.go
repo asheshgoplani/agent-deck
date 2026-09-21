@@ -152,33 +152,38 @@ func TestDoctorRemoteNeverRunsLocally(t *testing.T) {
 	}
 }
 
-// #2334: doctor reports how the host tmux sizes Indic vowel signs, in both
-// output forms.
-func TestDoctorReportsTmuxComplexScriptWidths(t *testing.T) {
+// #2334: doctor says nothing about Indic zero-width marks by default, and
+// prints an INFO note (never a warning) for users who opted in.
+func TestDoctorIndicZeroWidthMarksOnlyWhenOptedIn(t *testing.T) {
 	home := t.TempDir()
-	stdout, stderr, code := runAgentDeck(t, home, "doctor", "--json")
-	if code != 0 {
-		t.Fatalf("doctor exit %d: %s %s", code, stdout, stderr)
+	stdout, stderr, code := runAgentDeck(t, home, "doctor")
+	if code != 0 || strings.Contains(stdout, "indic_zero_width_marks") {
+		t.Fatalf("default doctor mentions the opt-in: exit %d: %s %s", code, stdout, stderr)
 	}
-	var report struct {
-		ComplexScript struct {
-			State  string `json:"state"`
-			Detail string `json:"detail"`
-		} `json:"tmux_complex_script_widths"`
+	stdout, _, _ = runAgentDeck(t, home, "doctor", "--json")
+	if strings.Contains(stdout, "tmux_indic_zero_width_marks") {
+		t.Fatalf("default doctor JSON carries the opt-in: %s", stdout)
 	}
-	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
-		t.Fatalf("doctor JSON: %v: %s", err, stdout)
+
+	configDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
 	}
-	switch report.ComplexScript.State {
-	case "ok", "warn", "unknown":
-	default:
-		t.Fatalf("tmux_complex_script_widths state %q: %s", report.ComplexScript.State, stdout)
-	}
-	if report.ComplexScript.Detail == "" {
-		t.Fatalf("tmux_complex_script_widths has no detail: %s", stdout)
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[tmux]\nindic_zero_width_marks = true\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	stdout, stderr, code = runAgentDeck(t, home, "doctor")
-	if code != 0 || !strings.Contains(stdout, "tmux complex-script widths "+strings.ToUpper(report.ComplexScript.State)) {
-		t.Fatalf("human output lacks the complex-script line: exit %d: %s %s", code, stdout, stderr)
+	if code != 0 || !strings.Contains(stdout, "tmux indic_zero_width_marks INFO: on") {
+		t.Fatalf("opted-in doctor lacks the INFO note: exit %d: %s %s", code, stdout, stderr)
+	}
+	stdout, _, _ = runAgentDeck(t, home, "doctor", "--json")
+	var report struct {
+		Indic *struct {
+			Applied bool   `json:"applied"`
+			Detail  string `json:"detail"`
+		} `json:"tmux_indic_zero_width_marks"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil || report.Indic == nil || report.Indic.Detail == "" {
+		t.Fatalf("opted-in doctor JSON: %v: %s", err, stdout)
 	}
 }
