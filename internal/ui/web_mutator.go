@@ -613,6 +613,7 @@ func (m *WebMutator) SetGroupExpanded(groupPath string, expanded bool) error {
 	if _, ok := tree.Groups[groupPath]; !ok {
 		return web.ErrGroupNotFound
 	}
+	prior := tree.Groups[groupPath].Expanded
 	if expanded {
 		tree.ExpandGroup(groupPath)
 	} else {
@@ -624,7 +625,18 @@ func (m *WebMutator) SetGroupExpanded(groupPath string, expanded bool) error {
 		// all there is to do, and the next snapshot already reflects it.
 		return nil
 	}
-	return m.h.storage.SaveGroupsOnly(tree.ShallowCopyForSave())
+	if err := m.h.storage.SaveGroupsOnly(tree.ShallowCopyForSave()); err != nil {
+		// Roll the flip back. The handler turns this into a 500 and the client
+		// reverts its optimistic toggle, so leaving the tree flipped would have
+		// the very next snapshot publish a collapse state that was never
+		// stored — and a TUI sharing this process render it.
+		if g, ok := tree.Groups[groupPath]; ok {
+			g.Expanded = prior
+			tree.Expanded[groupPath] = prior
+		}
+		return err
+	}
+	return nil
 }
 
 // FinishWorktree merges (or skips), removes the worktree, optionally

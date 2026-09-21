@@ -3,6 +3,7 @@
 // synthetic HTTP error permanently closes the stream.
 
 import { test, expect } from '@playwright/test'
+import { expandSeededCollapsedGroups } from '../helpers/seededSidebar.js'
 
 const RECOVERED_TITLE = 'recovered-after-offline'
 const OLD_SERVICE_WORKER = `
@@ -60,6 +61,7 @@ test.describe('service worker SSE recovery', () => {
     })
 
     await page.goto('/')
+    await expandSeededCollapsedGroups(page)
     await expect(page.locator('.sess')).toHaveCount(4, { timeout: 5000 })
 
     // First install a distinct older worker and let it control this page.

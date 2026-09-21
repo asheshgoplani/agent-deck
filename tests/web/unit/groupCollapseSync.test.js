@@ -343,3 +343,60 @@ describe('coalescing rapid toggles', () => {
     await Promise.all([a, b])
   })
 })
+
+// The guard is held past the PATCH response, not dropped on it. The server has
+// the value by then, but its snapshot is still being built and fingerprinted,
+// so a snapshot generated BEFORE the write can still land afterwards.
+describe('holding the guard until the server confirms', () => {
+  beforeEach(() => reset())
+
+  it('ignores a stale snapshot that lands after a successful write', async () => {
+    const { sessionsSignal, groupExpandedSignal } = await reset()
+    const { toggleGroupOpen, isGroupOpen } = await import(dataModelModulePath)
+    sessionsSignal.value = [group('cf1', 'cf1', true)]
+
+    vi.stubGlobal('fetch', okFetch())
+    await toggleGroupOpen('cf1')
+    expect(isGroupOpen(groupExpandedSignal.value, 'cf1')).toBe(false)
+
+    // Stale: generated before the write landed, so still reports expanded.
+    sessionsSignal.value = [group('cf1', 'cf1', true), group('other', 'other', true)]
+    expect(isGroupOpen(groupExpandedSignal.value, 'cf1')).toBe(false)
+
+    // The confirming snapshot arrives and agrees.
+    sessionsSignal.value = [group('cf1', 'cf1', false), group('other', 'other', true)]
+    expect(isGroupOpen(groupExpandedSignal.value, 'cf1')).toBe(false)
+  })
+
+  it('resumes adopting server state once the write is confirmed', async () => {
+    const { sessionsSignal, groupExpandedSignal } = await reset()
+    const { toggleGroupOpen, isGroupOpen } = await import(dataModelModulePath)
+    sessionsSignal.value = [group('cf2', 'cf2', true)]
+
+    vi.stubGlobal('fetch', okFetch())
+    await toggleGroupOpen('cf2')
+
+    // Confirmation releases the guard...
+    sessionsSignal.value = [group('cf2', 'cf2', false)]
+    // ...so a later TUI-side expand is adopted normally rather than suppressed.
+    sessionsSignal.value = [group('cf2', 'cf2', true)]
+    expect(isGroupOpen(groupExpandedSignal.value, 'cf2')).toBe(true)
+  })
+
+  // Otherwise a group deleted between the write and its confirmation would pin
+  // its guard forever, and never reconcile again if it came back.
+  it('releases the guard for a group that vanishes before confirming', async () => {
+    const { sessionsSignal, groupExpandedSignal } = await reset()
+    const { toggleGroupOpen, isGroupOpen } = await import(dataModelModulePath)
+    sessionsSignal.value = [group('cf3', 'cf3', true), group('keep', 'keep', true)]
+
+    vi.stubGlobal('fetch', okFetch())
+    await toggleGroupOpen('cf3')
+
+    // Deleted server-side: a snapshot arrives without it, dropping the guard.
+    sessionsSignal.value = [group('keep', 'keep', true)]
+    // It comes back expanded, and is adopted rather than suppressed.
+    sessionsSignal.value = [group('cf3', 'cf3', true), group('keep', 'keep', true)]
+    expect(isGroupOpen(groupExpandedSignal.value, 'cf3')).toBe(true)
+  })
+})

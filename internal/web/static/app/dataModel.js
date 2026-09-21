@@ -315,15 +315,19 @@ function flushGroupWrite(path, entry) {
     .catch(() => { failed = true })   // apiFetch already toasted
     .then(() => {
       if (entry.desired !== sending) return flushGroupWrite(path, entry)
-      pendingGroupWrites.delete(path)
-      // ONLY a failed write is rolled back here. On success the server holds
-      // the new value but its snapshot is still in flight — notifyMenuChanged
-      // only pokes a channel, and the SSE goroutine then has to rebuild and
-      // fingerprint a whole snapshot, so the small PATCH response nearly
-      // always wins that race. Reconciling here would therefore adopt the
-      // PRE-toggle `expanded` and flip the chevron back under the user until
-      // the real snapshot landed. The effect picks it up when it does.
-      if (failed) reconcileGroupExpanded(menuModelSignal.value.groups)
+      if (failed) {
+        // The server never took the value, so the optimistic flip has to go.
+        pendingGroupWrites.delete(path)
+        reconcileGroupExpanded(menuModelSignal.value.groups)
+        return
+      }
+      // Success, but the guard STAYS until a snapshot actually reports the
+      // value we sent. notifyMenuChanged only pokes a channel, and the SSE
+      // goroutine still has to rebuild and fingerprint a whole snapshot, so
+      // the small PATCH response nearly always wins that race — dropping the
+      // guard here would let a snapshot generated BEFORE the write land
+      // afterwards and flip the chevron back under the user.
+      entry.awaitingConfirmation = true
     })
 }
 
@@ -338,9 +342,20 @@ function flushGroupWrite(path, entry) {
 export function reconcileGroupExpanded(groups) {
   const current = groupExpandedSignal.peek()
   let next = null
+  const seen = new Set()
   for (const g of groups || []) {
     if (!g || !g.path || g.derived) continue
-    if (pendingGroupWrites.has(g.path) || localGroupOverrides.has(g.path)) continue
+    seen.add(g.path)
+    const pending = pendingGroupWrites.get(g.path)
+    if (pending) {
+      // Release the guard the moment the server echoes back what we last sent;
+      // the value already matches, so there is nothing to adopt this pass.
+      if (pending.awaitingConfirmation && (g.expanded !== false) === pending.desired) {
+        pendingGroupWrites.delete(g.path)
+      }
+      continue
+    }
+    if (localGroupOverrides.has(g.path)) continue
     const open = g.expanded !== false
     if (isGroupOpen(current, g.path) === open) continue
     next ||= { ...current }
@@ -348,6 +363,11 @@ export function reconcileGroupExpanded(groups) {
     // so it stays small and a deleted group cannot linger in localStorage.
     if (open) delete next[g.path]
     else next[g.path] = false
+  }
+  // A group deleted between the write and its confirmation would otherwise
+  // hold its guard forever, and never reconcile again if it came back.
+  for (const [path, entry] of pendingGroupWrites) {
+    if (entry.awaitingConfirmation && !seen.has(path)) pendingGroupWrites.delete(path)
   }
   if (next) groupExpandedSignal.value = next
 }
