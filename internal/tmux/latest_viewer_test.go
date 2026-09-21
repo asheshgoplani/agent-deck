@@ -107,6 +107,12 @@ func TestPickLatestViewer_Table(t *testing.T) {
 			want: twin, wantOK: true,
 		},
 		{
+			name:       "same second of activity: the one that attached later (listed last)",
+			candidates: []latestCandidate{colleague, {pid: 4, activity: 100, cols: 200, rows: 55}},
+			cols:       92, rows: 49,
+			want: latestCandidate{pid: 4, activity: 100, cols: 200, rows: 55}, wantOK: true,
+		},
+		{
 			name:       "the window fits nobody (frozen at a departed viewer's size): the most recently active",
 			candidates: []latestCandidate{colleague, maintainer},
 			cols:       92, rows: 49,

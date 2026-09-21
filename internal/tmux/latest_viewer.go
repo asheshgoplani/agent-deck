@@ -118,7 +118,9 @@ func parseLatestCandidates(out, windowID string) []latestCandidate {
 
 // pickLatestViewer chooses the person to hold the latest slot of a cols x rows
 // window: among the people it fits, else among everyone, the most recently
-// active. ok is false with fewer than two people.
+// active. client_activity has one-second resolution, so a tie goes to the one
+// listed last: tmux lists clients in the order they attached. ok is false with
+// fewer than two people.
 func pickLatestViewer(candidates []latestCandidate, cols, rows int) (best latestCandidate, ok bool) {
 	if len(candidates) < 2 {
 		return latestCandidate{}, false
@@ -126,7 +128,7 @@ func pickLatestViewer(candidates []latestCandidate, cols, rows int) (best latest
 	bestFits := false
 	for i, c := range candidates {
 		fits := c.cols == cols && c.rows == rows
-		if i == 0 || (fits && !bestFits) || (fits == bestFits && c.activity > best.activity) {
+		if i == 0 || (fits && !bestFits) || (fits == bestFits && c.activity >= best.activity) {
 			best, bestFits = c, fits
 		}
 	}
