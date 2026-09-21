@@ -143,7 +143,10 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 		// client surfaces as a write error on the first Send, which is the
 		// same signal callers already fall back on.
 	}
-	go HandLatestToViewer(socket, target)
+	go func() {
+		time.Sleep(latestSettle)
+		HandLatestToViewer(socket, target)
+	}()
 	return k, nil
 }
 

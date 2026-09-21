@@ -149,6 +149,9 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 	// Start output event forwarder
 	go pm.forwardOutputEvents(sessionName, pipe)
 
+	// Never leave the window following a control client (latest_viewer.go)
+	go pm.watchClientEvents(sessionName, pipe)
+
 	// Start reconnection watcher
 	go pm.watchPipe(sessionName, pipe)
 
@@ -432,13 +435,38 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 			if pm.onWindowChange != nil {
 				pm.onWindowChange()
 			}
-		case <-pipe.ClientEvents():
-			// This pipe (or another client) came or went: never leave the
-			// window following a control client (latest_viewer.go).
-			HandLatestToViewer(pipe.socketName, sessionName)
 		case <-pipe.Done():
 			return
 		}
+	}
+}
+
+// watchClientEvents runs HandLatestToViewer after each client event of pipe
+// (its own attach included), once the event has settled: a person who just
+// attached takes the latest slot only when their resize arrives, a moment
+// after tmux announces the attach, and must not be pre-empted in between.
+// Events arriving while it waits are folded into the same run.
+func (pm *PipeManager) watchClientEvents(sessionName string, pipe *ControlPipe) {
+	for {
+		select {
+		case <-pm.ctx.Done():
+			return
+		case <-pipe.Done():
+			return
+		case <-pipe.ClientEvents():
+		}
+		select {
+		case <-pm.ctx.Done():
+			return
+		case <-pipe.Done():
+			return
+		case <-time.After(latestSettle):
+		}
+		select {
+		case <-pipe.ClientEvents():
+		default:
+		}
+		HandLatestToViewer(pipe.socketName, sessionName)
 	}
 }
 

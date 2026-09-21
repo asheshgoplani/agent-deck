@@ -5,6 +5,7 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -37,11 +38,20 @@ func TestParseLatestCandidates_Table(t *testing.T) {
 			want:   []latestCandidate{{pid: 101, activity: 1790001877, cols: 200, rows: 55}},
 		},
 		{
-			name: "agent-deck's control client is never a candidate",
+			name: "a control client is a control candidate with its width only (never signalled)",
 			out: "101\tattached,UTF-8\t10\t140\t34\t@1\ton\n" +
 				"102\tattached,focused,control-mode,UTF-8\t20\t80\t\t@1\ton\n",
 			window: "@1",
-			want:   []latestCandidate{{pid: 101, activity: 10, cols: 140, rows: 33}},
+			want: []latestCandidate{
+				{pid: 101, activity: 10, cols: 140, rows: 33},
+				{cols: 80, control: true},
+			},
+		},
+		{
+			name:   "a suspended client is never a candidate (tmux leaves it out of the size)",
+			out:    "108\tattached,suspended,UTF-8\t30\t120\t40\t@1\ton\n",
+			window: "@1",
+			want:   nil,
 		},
 		{
 			name:   "an ignore-size client is never a candidate",
@@ -113,6 +123,22 @@ func TestPickLatestViewer_Table(t *testing.T) {
 			want: latestCandidate{pid: 4, activity: 100, cols: 200, rows: 55}, wantOK: true,
 		},
 		{
+			name:       "a sized control client (iTerm2 -CC) as wide as the window holds it: nobody is signalled",
+			candidates: []latestCandidate{colleague, maintainer, {cols: 120, control: true}},
+			cols:       120, rows: 40,
+		},
+		{
+			name:       "a size-less control client (agent-deck's pipe, 80 wide) is not a person",
+			candidates: []latestCandidate{colleague, {cols: 80, control: true}, maintainer},
+			cols:       92, rows: 49,
+			want: maintainer, wantOK: true,
+		},
+		{
+			name:       "one pty person plus control clients: tmux sizes the window to that person by itself",
+			candidates: []latestCandidate{colleague, {cols: 80, control: true}},
+			cols:       92, rows: 49,
+		},
+		{
 			name:       "the window fits nobody (frozen at a departed viewer's size): the most recently active",
 			candidates: []latestCandidate{colleague, maintainer},
 			cols:       92, rows: 49,
@@ -127,6 +153,13 @@ func TestPickLatestViewer_Table(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestIsOwnTmuxClient_RefusesOtherProcesses(t *testing.T) {
+	t.Parallel()
+	assert.False(t, isOwnTmuxClient(os.Getpid()), "the test binary is not a tmux client")
+	assert.False(t, isOwnTmuxClient(1), "init is never a tmux client")
+	assert.False(t, isOwnTmuxClient(1<<30), "a pid nobody holds")
 }
 
 // requireHarnessWindow polls the harness window until it is want; it fails

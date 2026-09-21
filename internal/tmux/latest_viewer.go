@@ -1,10 +1,16 @@
 package tmux
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Shared view: agent-deck's control clients and the window's latest client.
@@ -32,17 +38,29 @@ import (
 // sets the latest client: a client takes it by sending a resize, which its
 // `tmux attach` process does on SIGWINCH (client.c) without changing the
 // terminal's size.
+//
+// A control client that asked for a size (`refresh-client -C`, as iTerm2's
+// `tmux -CC` integration does) is a person too: tmux sizes the window from it
+// and it may hold the slot. Only size-less control clients are nobody.
+
+// latestSettle is how long a client event is left to settle before the slot
+// is judged: tmux announces an attach before the newcomer's first resize,
+// which is what makes the newcomer the latest client, and a hand-back in
+// between would take the window from them.
+const latestSettle = 250 * time.Millisecond
 
 // latestCandidateFormat is the list-clients format parseLatestCandidates reads.
 const latestCandidateFormat = "#{client_pid}\t#{client_flags}\t#{client_activity}\t#{client_width}\t#{client_height}\t#{window_id}\t#{status}"
 
-// latestCandidate is a person's client on a window: one that may hold the
-// window's latest slot. cols x rows is the window size it asks for (its
-// terminal minus its status lines).
+// latestCandidate is a client on a window that may hold the window's latest
+// slot. cols x rows is the window size it asks for (its terminal minus its
+// status lines). A control candidate is never signalled and only its width is
+// known: tmux reports no height for a control client.
 type latestCandidate struct {
 	pid        int
 	activity   int64
 	cols, rows int
+	control    bool
 }
 
 // HandLatestToViewer makes sure the window currently shown by target (a
@@ -77,15 +95,24 @@ func HandLatestToViewer(socketName, target string) {
 	if !ok {
 		return
 	}
+	// The pid is what the client reported and may have changed hands since
+	// list-clients: signal only our own tmux client.
+	if !isOwnTmuxClient(viewer.pid) {
+		statusLog.Debug("hand_latest_to_viewer_skipped",
+			slog.String("target", target), slog.Int("pid", viewer.pid))
+		return
+	}
 	if err := syscall.Kill(viewer.pid, syscall.SIGWINCH); err != nil {
 		statusLog.Debug("hand_latest_to_viewer_failed",
 			slog.String("target", target), slog.Int("pid", viewer.pid), slog.String("error", err.Error()))
 	}
 }
 
-// parseLatestCandidates decodes latestCandidateFormat output into the people
-// on windowID. Control-mode and ignore-size clients are skipped: tmux never
-// sizes a window from them, so the slot must never go to them.
+// parseLatestCandidates decodes latestCandidateFormat output into the clients
+// on windowID that may hold its latest slot. ignore-size and suspended clients
+// are skipped: tmux never sizes a window from them. Control-mode clients are
+// kept as control candidates with their width, which is the default 80 for a
+// size-less one such as agent-deck's own pipe.
 func parseLatestCandidates(out, windowID string) []latestCandidate {
 	var candidates []latestCandidate
 	for _, line := range strings.Split(out, "\n") {
@@ -94,16 +121,23 @@ func parseLatestCandidates(out, windowID string) []latestCandidate {
 			continue
 		}
 		flags := "," + f[1] + ","
-		if strings.Contains(flags, ",control-mode,") || strings.Contains(flags, ",ignore-size,") {
+		if strings.Contains(flags, ",ignore-size,") || strings.Contains(flags, ",suspended,") {
+			continue
+		}
+		cols, err := strconv.Atoi(f[3])
+		if err != nil || cols < 1 {
+			continue
+		}
+		if strings.Contains(flags, ",control-mode,") {
+			candidates = append(candidates, latestCandidate{cols: cols, control: true})
 			continue
 		}
 		pid, err := strconv.Atoi(f[0])
 		if err != nil || pid <= 1 { // never signal init or a process group
 			continue
 		}
-		cols, err1 := strconv.Atoi(f[3])
-		height, err2 := strconv.Atoi(f[4])
-		if err1 != nil || err2 != nil || cols < 1 {
+		height, err := strconv.Atoi(f[4])
+		if err != nil {
 			continue
 		}
 		rows, err := detachedPreviewPaneRows(height, f[6])
@@ -116,21 +150,71 @@ func parseLatestCandidates(out, windowID string) []latestCandidate {
 	return candidates
 }
 
-// pickLatestViewer chooses the person to hold the latest slot of a cols x rows
-// window: among the people it fits, else among everyone, the most recently
-// active. client_activity has one-second resolution, so a tie goes to the one
-// listed last: tmux lists clients in the order they attached. ok is false with
-// fewer than two people.
+// pickLatestViewer chooses the person on a pty to hold the latest slot of a
+// cols x rows window: among the people it fits, else among everyone, the most
+// recently active. client_activity has one-second resolution, so a tie goes to
+// the one listed last: tmux lists clients in the order they attached. ok is
+// false with fewer than two people on ptys, and when the window is as wide as
+// a control client: that is a sized control client (iTerm2 -CC) holding the
+// slot, a person nobody may take the window from. The cost is that a window
+// frozen at exactly 80 columns, a size-less control client's width, is left
+// alone.
 func pickLatestViewer(candidates []latestCandidate, cols, rows int) (best latestCandidate, ok bool) {
-	if len(candidates) < 2 {
-		return latestCandidate{}, false
-	}
+	people := 0
 	bestFits := false
-	for i, c := range candidates {
+	for _, c := range candidates {
+		if c.control {
+			if c.cols == cols {
+				return latestCandidate{}, false
+			}
+			continue
+		}
 		fits := c.cols == cols && c.rows == rows
-		if i == 0 || (fits && !bestFits) || (fits == bestFits && c.activity >= best.activity) {
+		if people == 0 || (fits && !bestFits) || (fits == bestFits && c.activity >= best.activity) {
 			best, bestFits = c, fits
 		}
+		people++
+	}
+	if people < 2 {
+		return latestCandidate{}, false
 	}
 	return best, true
+}
+
+// isOwnTmuxClient reports whether pid is, right now, a tmux client process
+// running as this user: #{client_pid} is whatever the client reported, and a
+// pid can change hands between list-clients and the signal. Linux reads /proc;
+// elsewhere a bounded ps. Anything unreadable answers false.
+func isOwnTmuxClient(pid int) bool {
+	uid, comm, ok := procUIDAndComm(pid)
+	return ok && uid == os.Getuid() && isReapableTmuxClientComm(comm)
+}
+
+func procUIDAndComm(pid int) (uid int, comm string, ok bool) {
+	if status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+		commRaw, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err != nil {
+			return 0, "", false
+		}
+		for _, line := range strings.Split(string(status), "\n") {
+			if fields := strings.Fields(line); len(fields) > 1 && fields[0] == "Uid:" {
+				uid, err := strconv.Atoi(fields[1])
+				return uid, strings.TrimSpace(string(commRaw)), err == nil
+			}
+		}
+		return 0, "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), processProbeTimeout)
+	defer cancel()
+	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int).
+	out, err := exec.CommandContext(ctx, "ps", "-o", "uid=,comm=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, "", false
+	}
+	uidText, commText, found := strings.Cut(strings.TrimSpace(string(out)), " ")
+	if !found {
+		return 0, "", false
+	}
+	uid, err = strconv.Atoi(uidText)
+	return uid, filepath.Base(strings.TrimSpace(commText)), err == nil
 }
