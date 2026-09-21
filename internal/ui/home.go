@@ -738,6 +738,11 @@ type Home struct {
 	// the reload (mirrors pendingTitleChanges for session renames).
 	pendingGroupOps []pendingGroupOp
 
+	// Duplicate-row warning throttle and dump-error latch (flat_items_dump.go).
+	dupWarnKey    string
+	dupWarnAt     time.Time
+	dumpErrLogged bool
+
 	// UI state persistence across restarts
 	pendingCursorRestore *uiState // Consumed on first loadSessionsMsg to restore cursor
 	uiStateSaveTicks     int      // Counter for periodic UI state saves in tick handler

@@ -1,9 +1,12 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -190,5 +193,95 @@ func TestDumpFlatItems_WritesIdentitiesAndFlagsDuplicates(t *testing.T) {
 	h.flatItems = append(h.flatItems[:1], append([]session.Item{h.flatItems[0]}, h.flatItems[1:]...)...)
 	if d := h.flatItemsDump(); !strings.Contains(d, "DUPLICATE of row 0") {
 		t.Fatalf("a repeated row must be flagged:\n%s", d)
+	}
+}
+
+func TestCheckFlatItemsUnique_LogsOncePerDuplicateSet(t *testing.T) {
+	var buf bytes.Buffer
+	prev := uiLog
+	uiLog = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { uiLog = prev })
+
+	h := fieldStoreHome(t)
+	defer h.cancel()
+	h.flatItems = append(h.flatItems, h.flatItems[0]) // one persistent duplicate
+	for i := 0; i < 100; i++ {
+		h.checkFlatItemsUnique()
+	}
+	if n := strings.Count(buf.String(), "duplicate_list_row"); n != 1 {
+		t.Fatalf("100 checks with one persistent duplicate: want 1 warning, got %d", n)
+	}
+	h.flatItems = append(h.flatItems, h.flatItems[1]) // the set changes
+	h.checkFlatItemsUnique()
+	if n := strings.Count(buf.String(), "duplicate_list_row"); n != 2 {
+		t.Fatalf("changed duplicate set must log again: got %d warnings", n)
+	}
+	h.dupWarnAt = h.dupWarnAt.Add(-2 * dupWarnInterval) // interval elapsed
+	h.checkFlatItemsUnique()
+	if n := strings.Count(buf.String(), "duplicate_list_row"); n != 3 {
+		t.Fatalf("elapsed interval must log again: got %d warnings", n)
+	}
+}
+
+func TestDumpFlatItems_AtomicNoTempLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "rows.txt")
+	t.Setenv(dumpRowsEnv, out)
+	h := fieldStoreHome(t)
+	defer h.cancel()
+	stop := make(chan struct{})
+	done := make(chan string, 1)
+	go func() { // a reader must only ever see a complete dump
+		for {
+			select {
+			case <-stop:
+				done <- ""
+				return
+			default:
+			}
+			raw, err := os.ReadFile(out)
+			if err != nil {
+				continue
+			}
+			if !strings.HasPrefix(string(raw), "size=") || !strings.HasSuffix(string(raw), "\n") ||
+				strings.Count(string(raw), "\n") != len(h.flatItems)+1 {
+				done <- "torn dump: " + string(raw)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 300; i++ {
+		h.dumpFlatItems()
+	}
+	close(stop)
+	if msg := <-done; msg != "" {
+		t.Fatal(msg)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("want only rows.txt in %s, got %d entries", dir, len(entries))
+	}
+	if fi, _ := os.Stat(out); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("dump mode %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestDumpFlatItems_WriteErrorLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := uiLog
+	uiLog = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { uiLog = prev })
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(dumpRowsEnv, filepath.Join(blocker, "rows.txt")) // parent is a file
+	h := fieldStoreHome(t)
+	defer h.cancel()
+	for i := 0; i < 5; i++ {
+		h.dumpFlatItems()
+	}
+	if n := strings.Count(buf.String(), "dump_rows_write_failed"); n != 1 {
+		t.Fatalf("want one write-error log, got %d", n)
 	}
 }

@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -15,25 +18,68 @@ import (
 // row: if the dump has one row and the screen two, the model is clean.
 const dumpRowsEnv = "AGENTDECK_DUMP_ROWS"
 
+// dupWarnInterval is how long an unchanged set of duplicate rows stays quiet
+// before it is logged again. Rebuilds follow status and poll traffic, so a
+// persistent duplicate would otherwise log on every one.
+const dupWarnInterval = 10 * time.Minute
+
+// duplicateRowIdentities returns the sorted identities that appear more than
+// once in items.
+func duplicateRowIdentities(items []session.Item) []string {
+	count := make(map[string]int, len(items))
+	for _, it := range items {
+		if id, ok := it.Identity(); ok {
+			count[id]++
+		}
+	}
+	var dups []string
+	for id, n := range count {
+		if n > 1 {
+			dups = append(dups, strings.ReplaceAll(id, "\x00", "|"))
+		}
+	}
+	sort.Strings(dups)
+	return dups
+}
+
 // checkFlatItemsUnique logs a warning when the rebuilt list holds two rows
-// with the same identity. View-mode partitioning repeats headers by design,
-// so it is skipped there.
+// with the same identity: once per distinct set of duplicates, again only when
+// the set changes or dupWarnInterval passes. View-mode partitioning repeats
+// headers by design, so it is skipped there.
 func (h *Home) checkFlatItemsUnique() {
 	if h.groupViewMode != session.GroupViewNormal {
 		return
 	}
-	if i, id, dup := session.FirstDuplicateRow(h.flatItems); dup {
-		uiLog.Warn("duplicate_list_row", slog.Int("row", i), slog.String("identity", strings.ReplaceAll(id, "\x00", "|")))
+	dups := duplicateRowIdentities(h.flatItems)
+	if len(dups) == 0 {
+		h.dupWarnKey = ""
+		return
 	}
+	key := strings.Join(dups, "\n")
+	now := time.Now()
+	if key == h.dupWarnKey && now.Sub(h.dupWarnAt) < dupWarnInterval {
+		return
+	}
+	h.dupWarnKey, h.dupWarnAt = key, now
+	uiLog.Warn("duplicate_list_row", slog.Any("identities", dups))
 }
 
-// dumpFlatItems writes the current flat item list to $AGENTDECK_DUMP_ROWS.
+// dumpFlatItems atomically rewrites $AGENTDECK_DUMP_ROWS with the current flat
+// item list (temp file in the same directory, then rename), so a reader never
+// sees a half-written dump. A write error is logged once.
 func (h *Home) dumpFlatItems() {
 	path := os.Getenv(dumpRowsEnv)
 	if path == "" {
 		return
 	}
-	_ = os.WriteFile(path, []byte(h.flatItemsDump()), 0o600)
+	if err := atomicfile.WriteFile(path, []byte(h.flatItemsDump()), 0o600); err != nil {
+		if !h.dumpErrLogged {
+			h.dumpErrLogged = true
+			uiLog.Warn("dump_rows_write_failed", slog.String("path", path), slog.Any("error", err))
+		}
+		return
+	}
+	h.dumpErrLogged = false
 }
 
 func (h *Home) flatItemsDump() string {
