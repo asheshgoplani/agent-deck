@@ -109,7 +109,8 @@ func (h *Home) updateInFlightReason() string {
 	if h.autoInstallInFlight == pendingDrainKey {
 		return "the updater is still re-registering launchd agents"
 	}
-	return "unattended update to v" + h.autoInstallInFlight + " is still running (remote sweep included)"
+	long, _ := h.updateRunPhase()
+	return "unattended update to v" + h.autoInstallInFlight + " is still running (" + long + ")"
 }
 
 // tryRestartDeck is the restart_deck key handler. It either refuses with a
@@ -141,10 +142,8 @@ func (h *Home) tryRestartDeck() (tea.Model, tea.Cmd) {
 
 // queuedRestartMessage is the footer line after the key was queued.
 func (h *Home) queuedRestartMessage() string {
-	if h.autoInstallInFlight == pendingDrainKey {
-		return "restart queued after the launchd re-registration"
-	}
-	return "restart queued after the sweep"
+	_, short := h.updateRunPhase()
+	return "restart queued after " + short
 }
 
 // fireQueuedRestart runs the restart a key press queued while the updater

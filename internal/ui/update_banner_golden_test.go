@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/charmbracelet/x/ansi"
 )
 
 // updateBannerGoldenWidths are the terminal widths every banner variant is
 // pinned at: wide, the usual laptop, and the 80-column floor where the
 // text is cut.
-var updateBannerGoldenWidths = []int{200, 120, 80}
+var updateBannerGoldenWidths = []int{200, 120, 80, 60}
 
 // updateBannerCases are the banner variants an installed update can show,
 // each built from a Home in that state.
@@ -38,6 +39,38 @@ var updateBannerCases = []struct {
 		},
 		want: "⚠ v1.16.1 installed 3h ago, restart overdue: close the open dialog first (ctrl+t to restart now)",
 	},
+	{
+		name: "nudging",
+		arrange: func(h *Home) {
+			h.autoInstallInFlight = "1.16.1"
+			h.autoInstallProgress = progressFrom("nudging 4 remote(s) to check for v1.16.1 now\n")
+		},
+		want: "⬆ v1.16.1 installed, nudging 4 remotes to update, then restarting (ctrl+t queues it)",
+	},
+	{
+		name: "sweep",
+		arrange: func(h *Home) {
+			h.autoInstallInFlight = "1.16.1"
+			h.autoInstallProgress = progressFrom("sweep_remotes is on: pushing v1.16.1 to 4 remote(s)\n")
+		},
+		want: "⬆ v1.16.1 installed, finishing the remote sweep (4 remotes), then restarting (ctrl+t queues it)",
+	},
+	{
+		name: "queued",
+		arrange: func(h *Home) {
+			h.autoInstallInFlight = "1.16.1"
+			h.restartQueued = true
+			h.autoInstallProgress = progressFrom("nudging 4 remote(s) to check for v1.16.1 now\n")
+		},
+		want: "⬆ v1.16.1 installed, restart queued: nudging 4 remotes to update, then restarting",
+	},
+}
+
+// progressFrom is an UnattendedProgress fed the given child output.
+func progressFrom(out string) *update.UnattendedProgress {
+	p := &update.UnattendedProgress{}
+	_, _ = p.Write([]byte(out))
+	return p
 }
 
 // newUpdateBannerTestHome is newAutoRestartTestHome at the given width

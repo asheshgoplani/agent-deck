@@ -79,19 +79,13 @@ func (h *Home) renderUpdateBannerText() string {
 // longest variant that fits the terminal width.
 func (h *Home) updateRunBannerText(v string) string {
 	key := h.restartDeckKeyLabel()
-	what, short := "finishing the remote sweep", "remote sweep"
-	if h.autoInstallInFlight == pendingDrainKey {
-		what, short = "re-registering launchd agents", "launchd agents"
-	} else if done, total := h.autoInstallProgress.Remotes(); total > 0 {
-		what += fmt.Sprintf(" (%d/%d remotes)", done, total)
-		short += fmt.Sprintf(" %d/%d", done, total)
-	}
+	what, short := h.updateRunPhase()
 	var variants []string
 	switch {
 	case h.restartQueued:
 		variants = []string{
 			fmt.Sprintf(" ⬆ v%s installed, restart queued: %s, then restarting ", v, what),
-			fmt.Sprintf(" ⬆ v%s installed, restart queued after the %s ", v, short),
+			fmt.Sprintf(" ⬆ v%s installed, restart queued after %s ", v, short),
 			fmt.Sprintf(" ⬆ v%s, restart queued ", v),
 		}
 	case !h.autoRestartEnabled():
@@ -114,6 +108,27 @@ func (h *Home) updateRunBannerText(v string) string {
 		}
 	}
 	return variants[len(variants)-1]
+}
+
+// updateRunPhase names what the updater child is doing, in a long and a
+// short form, for the banner and the footer: "nudging 4 remotes" by
+// default, "finishing the remote sweep" only in the opt-in push model.
+func (h *Home) updateRunPhase() (long, short string) {
+	if h.autoInstallInFlight == pendingDrainKey {
+		return "re-registering launchd agents", "launchd agents"
+	}
+	mode, total := h.autoInstallProgress.Phase()
+	remotes := "remotes"
+	if total == 1 {
+		remotes = "remote"
+	}
+	switch mode {
+	case update.PhaseNudge:
+		return fmt.Sprintf("nudging %d %s to update", total, remotes), fmt.Sprintf("nudging %d %s", total, remotes)
+	case update.PhaseSweep:
+		return fmt.Sprintf("finishing the remote sweep (%d %s)", total, remotes), fmt.Sprintf("remote sweep %d", total)
+	}
+	return "finishing the update", "the update"
 }
 
 // handleUpdateNudgeDismiss is the key handler for Esc. It marks the

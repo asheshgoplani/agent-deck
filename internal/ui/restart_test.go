@@ -469,7 +469,7 @@ func TestRestart_DeferredWhileUnattendedUpdateRuns(t *testing.T) {
 	if strings.Count(logs.String(), "tui_restart_deferred_for_update") != 1 {
 		t.Fatalf("deferral must be logged once per autoRestartLogEvery, got:\n%s", logs.String())
 	}
-	assertRestartQueued(t, h, "restart queued after the sweep")
+	assertRestartQueued(t, h, "restart queued after the update")
 	h.restartQueued = false // keep this test on the auto path
 	h.err = nil
 

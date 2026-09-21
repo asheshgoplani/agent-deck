@@ -79,7 +79,7 @@ func TestAutoUpdate_RestartWaitsForSweepAndMarkerClears(t *testing.T) {
 	if cmd := h.maybeAutoRestart(); cmd != nil || h.restartRequested || h.isQuitting {
 		t.Fatal("auto restart must be deferred while the update child sweeps")
 	}
-	assertRestartQueued(t, h, "restart queued after the sweep")
+	assertRestartQueued(t, h, "restart queued after the update")
 	h.restartQueued = false // keep this test on the auto path
 	h.err = nil
 

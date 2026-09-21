@@ -15,11 +15,7 @@ import (
 // state while a newer build is on disk, the banner it must show, and what
 // the restart key does. The banner may only promise what the key does.
 func TestUpdateRunGuardBannerKeyTable(t *testing.T) {
-	progress := func(lines string) *update.UnattendedProgress {
-		p := &update.UnattendedProgress{}
-		_, _ = p.Write([]byte(lines))
-		return p
-	}
+	progress := progressFrom
 	tests := []struct {
 		name       string
 		auto       bool
@@ -44,32 +40,33 @@ func TestUpdateRunGuardBannerKeyTable(t *testing.T) {
 			keyRestart: true,
 		},
 		{
-			name: "remote sweep running, progress known",
+			name: "nudging remotes (default model)",
 			auto: true,
 			arrange: func(h *Home) {
 				h.autoInstallInFlight = "1.16.1"
-				h.autoInstallProgress = progress("nudging 4 remote(s) to check for v1.16.1 now\n  a: nudged (check now)\n  b: nudged (check now)\n")
+				h.autoInstallProgress = progress("nudging 4 remote(s) to check for v1.16.1 now\n")
 			},
-			banner:    []string{"v1.16.1 installed, finishing the remote sweep (2/4 remotes), then restarting"},
+			banner:    []string{"v1.16.1 installed, nudging 4 remotes to update, then restarting"},
 			notBanner: "ctrl+t now",
 			keyQueued: true,
 		},
 		{
-			name: "remote sweep running, no progress yet",
+			name: "opt-in push sweep",
 			auto: true,
 			arrange: func(h *Home) {
 				h.autoInstallInFlight = "1.16.1"
+				h.autoInstallProgress = progress("sweep_remotes is on: pushing v1.16.1 to 4 remote(s)\n")
 			},
-			banner:    []string{"finishing the remote sweep, then restarting"},
+			banner:    []string{"finishing the remote sweep (4 remotes), then restarting"},
 			notBanner: "ctrl+t now",
 			keyQueued: true,
 		},
 		{
-			name: "sweep running, auto_restart off",
+			name: "run in flight before any remote phase, auto_restart off",
 			arrange: func(h *Home) {
 				h.autoInstallInFlight = "1.16.1"
 			},
-			banner:    []string{"finishing the remote sweep, then press ctrl+t to restart"},
+			banner:    []string{"finishing the update, then press ctrl+t to restart"},
 			notBanner: "ctrl+t now",
 			keyQueued: true,
 		},
@@ -89,8 +86,9 @@ func TestUpdateRunGuardBannerKeyTable(t *testing.T) {
 			arrange: func(h *Home) {
 				h.autoInstallInFlight = "1.16.1"
 				h.restartQueued = true
+				h.autoInstallProgress = progress("nudging 4 remote(s) to check for v1.16.1 now\n")
 			},
-			banner:    []string{"restart queued: finishing the remote sweep, then restarting"},
+			banner:    []string{"restart queued: nudging 4 remotes to update, then restarting"},
 			notBanner: "ctrl+t now",
 			keyQueued: true,
 		},
@@ -119,7 +117,7 @@ func TestUpdateRunGuardBannerKeyTable(t *testing.T) {
 				h.autoInstallInFlight = "1.16.1"
 				h.jumpMode = true
 			},
-			banner:     []string{"finishing the remote sweep"},
+			banner:     []string{"finishing the update"},
 			keyRefused: "close the open dialog first",
 		},
 	}
@@ -147,7 +145,7 @@ func TestUpdateRunGuardBannerKeyTable(t *testing.T) {
 				if h.restartRequested || cmd != nil || !h.restartQueued {
 					t.Fatalf("key must queue (requested=%v queued=%v)", h.restartRequested, h.restartQueued)
 				}
-				if h.err == nil || !strings.HasPrefix(h.err.Error(), "restart queued after the ") {
+				if h.err == nil || !strings.HasPrefix(h.err.Error(), "restart queued after ") {
 					t.Fatalf("queued key needs visible feedback, footer = %v", h.err)
 				}
 				if h.restartQueued {
@@ -172,7 +170,7 @@ func TestUpdateRunBanner_WidthAware(t *testing.T) {
 		h := newUpdateBannerTestHome(t, w)
 		h.autoInstallInFlight = "1.16.14"
 		p := &update.UnattendedProgress{}
-		_, _ = p.Write([]byte("nudging 4 remote(s) to check for v1.16.14 now\n  a: nudged (check now)\n  b: nudged (check now)\n"))
+		_, _ = p.Write([]byte("nudging 4 remote(s) to check for v1.16.14 now\n"))
 		h.autoInstallProgress = p
 		got := h.renderUpdateBannerText()
 		if lipgloss.Width(got) > w {
@@ -192,7 +190,7 @@ func TestRestartQueued_FiresWhenRunEnds(t *testing.T) {
 		h := newUpdateBannerTestHome(t, 120)
 		stubUpdateSettings(t, session.UpdateSettings{AutoRestart: boolPtr(auto)})
 		h.autoInstallInFlight = "1.16.1"
-		assertRestartQueued(t, h, "restart queued after the sweep")
+		assertRestartQueued(t, h, "restart queued after the update")
 		// Ticks while the run is going do nothing.
 		if cmd := h.maybeAutoRestart(); cmd != nil || h.restartRequested {
 			t.Fatalf("auto=%v: restart fired while the run is in flight", auto)
@@ -216,27 +214,53 @@ func TestRestartQueued_DroppedWhenRunFindsNothing(t *testing.T) {
 	}
 }
 
-// TestUnattendedProgress_ParsesRemotePhase pins the output lines the
-// progress reader keys on, the nudge and the opt-in sweep headers.
+// TestUnattendedProgress_ParsesRemotePhase feeds it exactly what main's
+// unattended run prints (update_cli.go remoteFollowUpUnattended: the header,
+// then every result line at once, including deferred and failure lines) and
+// pins that the phase and total come from the header only, never from the
+// indented lines.
 func TestUnattendedProgress_ParsesRemotePhase(t *testing.T) {
 	p := &update.UnattendedProgress{}
-	if d, n := p.Remotes(); d != 0 || n != 0 {
-		t.Fatalf("fresh = %d/%d", d, n)
+	if m, n := p.Phase(); m != update.PhaseNone || n != 0 {
+		t.Fatalf("fresh = %v/%d", m, n)
 	}
-	_, _ = p.Write([]byte("✓ Updated to v1.16.1\nnudging 3 remote(s) to check for v1.16.1 now\n  a: nudged"))
-	if d, n := p.Remotes(); d != 0 || n != 3 {
-		t.Fatalf("partial line must not count: %d/%d", d, n)
+	_, _ = p.Write([]byte("✓ Updated to v1.16.1\nnudging 3 remote(s) to che"))
+	if m, _ := p.Phase(); m != update.PhaseNone {
+		t.Fatal("partial header line must not count")
 	}
-	_, _ = p.Write([]byte(" (check now)\n  b: nudge failed: x\n"))
-	if d, n := p.Remotes(); d != 2 || n != 3 {
-		t.Fatalf("after two = %d/%d", d, n)
+	_, _ = p.Write([]byte("ck for v1.16.1 now\n"))
+	if m, n := p.Phase(); m != update.PhaseNudge || n != 3 {
+		t.Fatalf("nudge header = %v/%d", m, n)
 	}
-	_, _ = p.Write([]byte("sweep_remotes is on: pushing v1.16.1 to 3 remote(s)\n  c: ok\n"))
-	if d, n := p.Remotes(); d != 1 || n != 3 {
-		t.Fatalf("sweep phase restarts the count = %d/%d", d, n)
+	_, _ = p.Write([]byte("  a: nudged (check now)\n  b: nudge failed: x\n  ⏸ c: still deferred, this run is inside it\n"))
+	if m, n := p.Phase(); m != update.PhaseNudge || n != 3 {
+		t.Fatalf("result lines must not change the phase: %v/%d", m, n)
+	}
+	_, _ = p.Write([]byte("sweep_remotes is on: pushing v1.16.1 to 3 remote(s)\n  Platform: linux/amd64\n"))
+	if m, n := p.Phase(); m != update.PhaseSweep || n != 3 {
+		t.Fatalf("sweep header = %v/%d", m, n)
 	}
 	var nilP *update.UnattendedProgress
-	if d, n := nilP.Remotes(); d != 0 || n != 0 {
-		t.Fatal("nil progress must read 0/0")
+	if m, n := nilP.Phase(); m != update.PhaseNone || n != 0 {
+		t.Fatal("nil progress must read none/0")
+	}
+}
+
+// TestUnattendedProgress_BoundsLineBuffer pins that a child printing
+// megabytes without a newline does not grow the buffer, and that a header
+// after it is still read.
+func TestUnattendedProgress_BoundsLineBuffer(t *testing.T) {
+	p := &update.UnattendedProgress{}
+	junk := make([]byte, 1<<20)
+	for i := range junk {
+		junk[i] = 'x'
+	}
+	_, _ = p.Write(junk)
+	if got := p.BufferedLen(); got > 4096 {
+		t.Fatalf("buffered %d bytes of a newline-free stream, want at most 4096", got)
+	}
+	_, _ = p.Write([]byte("\nnudging 2 remote(s) to check for v1 now\n"))
+	if m, n := p.Phase(); m != update.PhaseNudge || n != 2 {
+		t.Fatalf("header after junk = %v/%d", m, n)
 	}
 }
