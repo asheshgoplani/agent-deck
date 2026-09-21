@@ -6,5 +6,4 @@ Remote:  lab
 Path:    /srv/app
 Tool:    claude
 Viewers: none
-
-Last response
+stats unknown (remote does not report stats)

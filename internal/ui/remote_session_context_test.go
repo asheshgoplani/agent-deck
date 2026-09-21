@@ -20,7 +20,7 @@ func TestRemoteSessionPreview_ShowsAccountUsageFromCachedStats(t *testing.T) {
 	h.remoteSessionsMu.Lock()
 	h.remoteHostStats = map[string]remoteHostStatsResult{"box": {
 		Stats: session.RemoteHostStats{AccountsAvailable: true, Accounts: []session.AccountUsage{{
-			Name: "work", Known: true, FiveHour: session.AccountUsageWindow{Known: true, Percent: 42},
+			Name: "default", Known: true, FiveHour: session.AccountUsageWindow{Known: true, Percent: 42},
 		}}},
 		FetchedAt: time.Now(),
 	}}
