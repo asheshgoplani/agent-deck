@@ -236,3 +236,36 @@ func TestPipeConnectHealsWindowPolicy_Integration(t *testing.T) {
 		})
 	}
 }
+
+// requireHarnessWindowStays checks the window is want now and still want after
+// hold: a heal must leave it alone.
+func requireHarnessWindowStays(t *testing.T, h *multiclienttmux.Harness, want string, hold time.Duration) {
+	t.Helper()
+	requireHarnessWindow(t, h, want)
+	time.Sleep(hold)
+	w, hgt, err := h.WindowSize()
+	require.NoError(t, err)
+	require.Equal(t, want, fmt.Sprintf("%dx%d", w, hgt), "clients: %s", harnessClients(h))
+}
+
+// TestSizedControlClientKeepsTheWindow_Integration (review round 2, S3): a
+// person on a SIZED control client (iTerm2's `tmux -CC` asks for its size with
+// `refresh-client -C`) is a real viewer that tmux sizes the window from and
+// that may hold the latest slot. When agent-deck's own pipe attaches next to
+// it, the window already fits that person, so nobody may be signalled: the
+// window stays at the -CC client's 120x40 instead of jumping to the most
+// recently active pty client.
+func TestSizedControlClientKeepsTheWindow_Integration(t *testing.T) {
+	h := multiclienttmux.NewNamed(t, "sized-cc")
+	require.NoError(t, h.AddClient(140, 34))
+	require.NoError(t, h.AddClient(200, 56))
+	requireHarnessWindow(t, h, "200x55")
+	require.NoError(t, h.AddControlClient(120, 40)) // the iTerm2 -CC person
+	requireHarnessWindow(t, h, "120x40")
+
+	pm := NewPipeManager(context.Background(), nil)
+	t.Cleanup(pm.Close)
+	require.NoError(t, pm.Connect(h.SessionName, h.SocketName))
+	require.True(t, waitFor(3*time.Second, func() bool { return pm.IsConnected(h.SessionName) }))
+	requireHarnessWindowStays(t, h, "120x40", 1500*time.Millisecond)
+}

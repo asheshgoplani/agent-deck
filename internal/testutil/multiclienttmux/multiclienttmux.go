@@ -20,6 +20,7 @@ package multiclienttmux
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -48,8 +49,9 @@ type Harness struct {
 }
 
 type clientProc struct {
-	cmd *exec.Cmd
-	pty *os.File
+	cmd   *exec.Cmd
+	pty   *os.File       // pty-attached clients
+	stdin io.WriteCloser // control-mode clients
 }
 
 // New boots a fresh tmux server on a per-test isolated socket and creates a
@@ -153,6 +155,30 @@ func (h *Harness) AddClient(cols, rows int) error {
 	return nil
 }
 
+// AddControlClient attaches a control-mode client (`tmux -C`) that asks for a
+// size with `refresh-client -C cols x rows`, the way iTerm2's tmux integration
+// (`tmux -CC`) does: a person on a sized control client. It stays attached
+// until cleanup.
+func (h *Harness) AddControlClient(cols, rows int) error {
+	cmd := exec.Command("tmux", "-S", h.SocketPath, "-C", "attach-session", "-t", h.SessionName)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("multiclienttmux: control stdin: %w", err)
+	}
+	cmd.Stdout = io.Discard
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("multiclienttmux: start control client: %w", err)
+	}
+	h.mu.Lock()
+	h.clients = append(h.clients, &clientProc{cmd: cmd, stdin: stdin})
+	h.mu.Unlock()
+	if _, err := fmt.Fprintf(stdin, "refresh-client -C %dx%d\n", cols, rows); err != nil {
+		return fmt.Errorf("multiclienttmux: refresh-client -C: %w", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
 // ResizeClient changes an attached client's PTY dimensions and waits briefly
 // for tmux to process the resulting SIGWINCH.
 func (h *Harness) ResizeClient(index, cols, rows int) error {
@@ -247,7 +273,12 @@ func (h *Harness) cleanup() {
 }
 
 func (c *clientProc) close() {
-	_ = c.pty.Close()
+	if c.pty != nil {
+		_ = c.pty.Close()
+	}
+	if c.stdin != nil {
+		_ = c.stdin.Close()
+	}
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 		_, _ = c.cmd.Process.Wait()
