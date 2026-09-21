@@ -345,3 +345,33 @@ func assertOverlayFrame(t *testing.T, frame string, width, height int, marker st
 	}
 	assertNoOverwideRows(t, frame, width)
 }
+
+// The fast path of terminalSafeWidth trusts widthConventionsAgreeRune: every
+// rune it accepts must measure no wider per code point than as a cluster,
+// and no two accepted runes may join into one cluster (CR LF, zero width
+// either way, excepted). Checked exhaustively against the pinned x/ansi
+// tables so a dependency bump that breaks it fails here.
+func TestWidthConventionsAgree_WhitelistIsExact(t *testing.T) {
+	var set []string
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if widthConventionsAgreeRune(r) {
+			set = append(set, string(r))
+		}
+	}
+	fails := 0
+	for _, a := range set {
+		if _, g := ansi.FirstGraphemeCluster(a, ansi.GraphemeWidth); ansi.StringWidthWc(a) > g {
+			t.Errorf("%q: per-code-point %d > cluster %d", a, ansi.StringWidthWc(a), g)
+			fails++
+		}
+		for _, b := range set {
+			if c, _ := ansi.FirstGraphemeCluster(a+b, ansi.GraphemeWidth); len(c) == len(a)+len(b) && a+b != "\r\n" {
+				t.Errorf("%q and %q join into one cluster", a, b)
+				fails++
+			}
+		}
+		if fails > 20 {
+			t.Fatal("too many failures")
+		}
+	}
+}

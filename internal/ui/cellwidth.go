@@ -73,7 +73,7 @@ func fitCellWidth(s string, width int) string {
 // cluster, a vowel sign wider per code point) and whole-string totals can
 // cancel.
 func terminalSafeWidth(s string) int {
-	if isASCII(s) {
+	if widthConventionsAgree(s) {
 		return cellWidth(s)
 	}
 	s = ansi.Strip(s)
@@ -126,20 +126,47 @@ func fitTerminalRow(s string, width int) string {
 	// Equality is exact per cluster: terminalSafeWidth takes each cluster's
 	// max with the cellWidth figure, so a row that measures the same cannot
 	// hide a disagreement.
-	if isASCII(s) || terminalSafeWidth(s) == cellWidth(s) {
+	if widthConventionsAgree(s) || terminalSafeWidth(s) == cellWidth(s) {
 		return fitCellWidth(s, width)
 	}
 	row := terminalSafeTruncate(s, width-1)
 	return row + strings.Repeat(" ", max(0, width-1-terminalSafeWidth(row))) + "\x1b[0m" + ansi.EraseLineRight
 }
 
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
+// widthConventionsAgree reports, without segmenting, that every rune of s
+// comes from blocks where the grapheme-cluster and per-code-point widths are
+// the same and no two runes can join into one cluster: Latin through
+// U+02FF, general punctuation, super/subscripts and currency, and U+2100 to
+// U+2BFF (letterlike, arrows, math, technical, box drawing, blocks, shapes,
+// misc symbols, dingbats). That covers the deck's own chrome (│ ─ ● ○ ◐ ■ ×
+// ▶ ⚙ ⛁ ▪ ⇅), so ordinary rows skip the per-cluster walk (#2334).
+// TestWidthConventionsAgree_WhitelistIsExact checks every pair of these runes
+// against the pinned width tables. Escape sequences are ASCII and pass.
+func widthConventionsAgree(s string) bool {
+	for i := 0; i < len(s); {
+		if s[i] < utf8.RuneSelf {
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if !widthConventionsAgreeRune(r) {
 			return false
 		}
+		i += size
 	}
 	return true
+}
+
+func widthConventionsAgreeRune(r rune) bool {
+	switch {
+	case r < 0x0300,
+		r >= 0x2010 && r <= 0x2027,
+		r >= 0x2030 && r <= 0x205E,
+		r >= 0x2070 && r <= 0x20CF,
+		r >= 0x2100 && r <= 0x2BFF:
+		return true
+	}
+	return false
 }
 
 // cellTruncate returns a prefix of s whose cellWidth is <= width, appending

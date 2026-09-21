@@ -18982,22 +18982,29 @@ func (h *Home) renderFrame() string {
 	// CRITICAL: Use ensureExactHeight for robust, consistent output across all platforms
 	// This is the single source of truth for output height - guarantees exactly h.height lines
 	// regardless of component content, ANSI codes, or terminal differences
-	rendered := clampViewToViewport(b.String(), h.width, h.height)
-
-	// #1410: when the inline prompt input is open, overlay it at the bottom of
-	// the (already viewport-clamped) list so the operator types without
-	// attaching. Rendered last so it sits above the status line.
-	if h.promptInputDialog.IsVisible() {
-		rendered = h.promptInputDialog.View(rendered)
+	content := b.String()
+	if h.promptInputDialog.IsVisible() || h.sessionSwitcher.IsVisible() {
+		// Overlays compose on rows already fitted to the viewport, and the
+		// composite then goes through the same final clamp as every frame
+		// (#2334), so their rows get the same width safety net and exactly
+		// one auto-wrap off/on bracket each.
+		content = fitViewportRows(content, h.width, h.height)
+		// #1410: when the inline prompt input is open, overlay it at the
+		// bottom of the list so the operator types without attaching.
+		// Rendered last so it sits above the status line.
+		if h.promptInputDialog.IsVisible() {
+			content = h.promptInputDialog.View(content)
+		}
+		// Keep the session list and preview visible while Ctrl+S is open.
+		// The card is anchored to the left edge of the active-session area,
+		// immediately beside the sidebar in a dual layout, so the current
+		// sidebar selection remains visible and spatially close to the
+		// choices.
+		if h.sessionSwitcher.IsVisible() {
+			content = h.renderSessionSwitcherOverlay(content)
+		}
 	}
-	// Keep the session list and preview visible while Ctrl+S is open. The card
-	// is anchored to the left edge of the active-session area, immediately
-	// beside the sidebar in a dual layout, so the current sidebar selection
-	// remains visible and spatially close to the choices.
-	if h.sessionSwitcher.IsVisible() {
-		rendered = h.renderSessionSwitcherOverlay(rendered)
-	}
-	return rendered
+	return clampViewToViewport(content, h.width, h.height)
 }
 
 // sessionSwitcherOverlayRegion returns the active-session portion of the
@@ -19058,8 +19065,8 @@ func (h *Home) renderSessionSwitcherOverlay(background string) string {
 	}
 	cardHeight := lipgloss.Height(card)
 	y := region.Y + max((region.Height-cardHeight)/2, 0)
-	composite := overlayAtCells(background, card, y, region.X)
-	return clampViewToViewport(composite, h.width, h.height)
+	// View runs the composite through the final clampViewToViewport.
+	return overlayAtCells(background, card, y, region.X)
 }
 
 // overlayAtCells paints overlay over base at terminal-cell coordinates. The
@@ -19476,6 +19483,17 @@ func ensureExactHeight(content string, n int) string {
 // This is the final safety net against any component returning an unexpected
 // extra line or a line that still exceeds the viewport width.
 func clampViewToViewport(content string, width, height int) string {
+	return clampRows(content, width, height, true)
+}
+
+// fitViewportRows is clampViewToViewport without the per-row auto-wrap
+// toggles: the base overlays are composed on before the final clamp, which
+// must be the only place a row gets its ?7l/?7h bracket (#2334).
+func fitViewportRows(content string, width, height int) string {
+	return clampRows(content, width, height, false)
+}
+
+func clampRows(content string, width, height int, autoWrapOff bool) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
@@ -19538,9 +19556,13 @@ func clampViewToViewport(content string, width, height int) string {
 		// row keeps auto-wrap on between writes, so no exit, suspend, attach
 		// or crash path can leave it off in the user's shell.
 		rendered.WriteString(sgrReset)
-		rendered.WriteString(ansi.ResetModeAutoWrap)
+		if autoWrapOff {
+			rendered.WriteString(ansi.ResetModeAutoWrap)
+		}
 		rendered.WriteString(fitTerminalRow(expandTabs(line), width))
-		rendered.WriteString(ansi.SetModeAutoWrap)
+		if autoWrapOff {
+			rendered.WriteString(ansi.SetModeAutoWrap)
+		}
 		rendered.WriteString(sgrReset)
 	}
 
