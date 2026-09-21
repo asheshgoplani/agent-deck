@@ -86,7 +86,7 @@ func (h *Home) updateRunBannerText(v string) string {
 		variants = []string{
 			fmt.Sprintf(" ⬆ v%s installed, restart queued: %s, then restarting ", v, what),
 			fmt.Sprintf(" ⬆ v%s installed, restart queued after %s ", v, short),
-			fmt.Sprintf(" ⬆ v%s, restart queued ", v),
+			fmt.Sprintf(" ⬆ v%s installed, restart queued ", v),
 		}
 	case !h.autoRestartEnabled():
 		variants = []string{
