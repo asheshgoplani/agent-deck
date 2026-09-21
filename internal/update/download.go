@@ -28,6 +28,7 @@ type downloadTuning struct {
 	Overall        time.Duration // cap for all attempts together
 	Retries        int           // extra attempts after the first
 	Backoff        time.Duration // base wait before a retry (grows per attempt)
+	MaxBytes       int64         // hard cap on the body; larger is refused
 }
 
 // archiveTuning is used for the release archive (~15 MB).
@@ -37,6 +38,7 @@ var archiveTuning = downloadTuning{
 	Overall:        30 * time.Minute,
 	Retries:        3,
 	Backoff:        2 * time.Second,
+	MaxBytes:       200 << 20,
 }
 
 // checksumsTuning is used for the tiny checksums.txt.
@@ -46,11 +48,8 @@ var checksumsTuning = downloadTuning{
 	Overall:        2 * time.Minute,
 	Retries:        3,
 	Backoff:        2 * time.Second,
+	MaxBytes:       1 << 20,
 }
-
-// downloadProgress, when non-nil, receives one self-overwriting progress line.
-// PerformVerifiedUpdate sets it only when stdout is a terminal.
-var downloadProgress io.Writer
 
 // DownloadError reports a download that gave up, with what was received.
 type DownloadError struct {
@@ -71,6 +70,18 @@ func (e *DownloadError) Error() string {
 	}
 	return fmt.Sprintf("download gave up after %d attempts: %s; received %s (%v). Check your connection and run `agent-deck update` again; the background updater keeps trying too",
 		e.Attempts, what, got, e.Err)
+}
+
+// SizeLimitError means the server sent (or announced) more than allowed.
+type SizeLimitError struct {
+	Limit, Declared int64
+}
+
+func (e *SizeLimitError) Error() string {
+	if e.Declared > e.Limit {
+		return fmt.Sprintf("download refused: the server announced %.1f MB, above the %.0f MB limit for this file", float64(e.Declared)/1e6, float64(e.Limit)/1e6)
+	}
+	return fmt.Sprintf("download refused: the server sent more data than announced or allowed (limit %.0f MB); retry later, the release may be broken", float64(e.Limit)/1e6)
 }
 
 func (e *DownloadError) Unwrap() error { return e.Err }
@@ -163,6 +174,9 @@ func fetchOnce(ctx context.Context, client *http.Client, url string, t downloadT
 		return buf, total, false, retryable, fmt.Errorf("download failed with status %d", resp.StatusCode)
 	}
 
+	if total > t.MaxBytes {
+		return buf, total, false, false, &SizeLimitError{Limit: t.MaxBytes, Declared: total}
+	}
 	var stall atomic.Bool
 	timer := time.AfterFunc(t.StallTimeout, func() { stall.Store(true); cancel() })
 	defer timer.Stop()
@@ -173,6 +187,9 @@ func fetchOnce(ctx context.Context, client *http.Client, url string, t downloadT
 		if n > 0 {
 			timer.Reset(t.StallTimeout)
 			buf = append(buf, chunk[:n]...)
+			if int64(len(buf)) > t.MaxBytes || (total > 0 && int64(len(buf)) > total) {
+				return buf, total, false, false, &SizeLimitError{Limit: t.MaxBytes, Declared: total}
+			}
 			if progress != nil && time.Since(lastDraw) > 250*time.Millisecond {
 				lastDraw = time.Now()
 				drawProgress(progress, int64(len(buf)), total, start)

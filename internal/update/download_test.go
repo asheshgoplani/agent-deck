@@ -22,6 +22,7 @@ func fastTuning() downloadTuning {
 		Overall:        10 * time.Second,
 		Retries:        3,
 		Backoff:        time.Millisecond,
+		MaxBytes:       1 << 20,
 	}
 }
 
@@ -90,7 +91,7 @@ func TestDownloadBytes_StallFailsAfterStallTimeout(t *testing.T) {
 	if !de.Stalled || de.Attempts != 2 || de.Received != 5000 {
 		t.Fatalf("unexpected error detail: %+v", de)
 	}
-	for _, want := range []string{"5.0 MB"[:0] + "0.0 MB of 0.0 MB", "agent-deck update", "background updater"} {
+	for _, want := range []string{"received 0.0 MB of 0.0 MB", "agent-deck update", "background updater"} {
 		if !strings.Contains(de.Error(), want) {
 			t.Fatalf("error %q lacks %q", de.Error(), want)
 		}
@@ -236,5 +237,142 @@ func TestDownloadVerifiedBinary_ResumedArchiveStillChecksummed(t *testing.T) {
 	bad := sha256hex([]byte("other")) + "  agent-deck_1.2.3_linux_amd64.tar.gz\n"
 	if got, err := run(t, bad); err == nil || got != nil || !strings.Contains(err.Error(), "SHA-256 mismatch") {
 		t.Fatalf("resumed + wrong checksum must be refused: %q %v", got, err)
+	}
+}
+
+func TestDownloadBytes_EndlessStreamHitsSizeCap(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		chunk := make([]byte, 8192)
+		for r.Context().Err() == nil { // no Content-Length: chunked, never ends
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer srv.Close()
+	tn := fastTuning()
+	tn.MaxBytes = 100 * 1024
+	_, err := downloadBytes(context.Background(), srv.URL, tn, nil)
+	var se *SizeLimitError
+	if !errors.As(err, &se) {
+		t.Fatalf("want *SizeLimitError, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("size-cap refusal must not be retried, calls=%d", calls.Load())
+	}
+}
+
+func TestDownloadBytes_DeclaredLengthAboveCapRefused(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Length", "5000000")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	tn := fastTuning()
+	tn.MaxBytes = 1000
+	_, err := downloadBytes(context.Background(), srv.URL, tn, nil)
+	var se *SizeLimitError
+	if !errors.As(err, &se) || se.Declared != 5000000 || calls.Load() != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls.Load())
+	}
+}
+
+// A 206 whose Content-Range does not start where we stopped is never spliced.
+func TestDownloadBytes_WrongContentRangeStartRestartsClean(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	data := payload(30000)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			dropAfter(w, data, 12000)
+		case 2: // lies: claims to start at 0 although asked for 12000
+			w.Header().Set("Content-Range", "bytes 0-29999/30000")
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(data)
+		default:
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+		}
+	}))
+	defer srv.Close()
+	got, err := downloadBytes(context.Background(), srv.URL, fastTuning(), nil)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("err=%v equal=%v", err, bytes.Equal(got, data))
+	}
+}
+
+// The asset changes between attempts: the resumed 206 is well-formed but from
+// different content. The splice must be refused by the checksum, once, with no
+// extra download loop.
+func TestDownloadVerifiedBinary_AssetChangedBetweenAttemptsRefused(t *testing.T) {
+	old := archiveTuning
+	archiveTuning = fastTuning()
+	defer func() { archiveTuning = old }()
+
+	v1 := makeTarGz(t, []byte("binary-one-"+strings.Repeat("a", 4000)))
+	v2 := makeTarGz(t, []byte("binary-two-"+strings.Repeat("b", 4000)))
+	cut := len(v1) / 2
+	if len(v2) != len(v1) {
+		t.Skip("fixture archives differ in length")
+	}
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/agent-deck_1.2.3_linux_amd64.tar.gz", func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			dropAfter(w, v1, cut)
+			return
+		}
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(v2))
+	})
+	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(sha256hex(v1) + "  agent-deck_1.2.3_linux_amd64.tar.gz\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	rel := &Release{TagName: "v1.2.3", Assets: []Asset{
+		{Name: "agent-deck_1.2.3_linux_amd64.tar.gz", BrowserDownloadURL: srv.URL + "/agent-deck_1.2.3_linux_amd64.tar.gz"},
+		{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/checksums.txt"},
+	}}
+	got, err := DownloadVerifiedBinary(rel, "linux", "amd64")
+	if err == nil || got != nil || !strings.Contains(err.Error(), "SHA-256 mismatch") {
+		t.Fatalf("spliced archive must be refused: %q %v", got, err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("archive fetched %d times, want exactly 2 (no loop after the checksum refusal)", calls.Load())
+	}
+}
+
+func TestDownloadVerifiedBinaryContext_CancelStopsDownload(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	old := archiveTuning
+	archiveTuning = fastTuning()
+	archiveTuning.StallTimeout = time.Minute
+	defer func() { archiveTuning = old }()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a.tar.gz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		_, _ = w.Write([]byte("x"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	rel := &Release{TagName: "v1.2.3", Assets: []Asset{
+		{Name: "agent-deck_1.2.3_linux_amd64.tar.gz", BrowserDownloadURL: srv.URL + "/a.tar.gz"},
+		{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/c"},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(80 * time.Millisecond); cancel() }()
+	start := time.Now()
+	_, err := DownloadVerifiedBinaryContext(ctx, rel, "linux", "amd64", nil)
+	if !errors.Is(err, context.Canceled) || time.Since(start) > 2*time.Second {
+		t.Fatalf("err=%v after %v", err, time.Since(start))
 	}
 }

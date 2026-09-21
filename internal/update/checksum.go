@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -93,6 +94,13 @@ func assetArchiveName(release *Release, goos, goarch string) string {
 // asset, a missing checksums.txt asset, an asset absent from checksums.txt, or a
 // hash mismatch all abort BEFORE any binary is returned.
 func DownloadVerifiedBinary(release *Release, goos, goarch string) ([]byte, error) {
+	return DownloadVerifiedBinaryContext(context.Background(), release, goos, goarch, nil)
+}
+
+// DownloadVerifiedBinaryContext is DownloadVerifiedBinary bounded by ctx:
+// cancelling it stops the download promptly. progress, when non-nil, receives
+// a self-overwriting progress line for the archive.
+func DownloadVerifiedBinaryContext(ctx context.Context, release *Release, goos, goarch string, progress io.Writer) ([]byte, error) {
 	if release == nil {
 		return nil, fmt.Errorf("nil release")
 	}
@@ -110,11 +118,11 @@ func DownloadVerifiedBinary(release *Release, goos, goarch string) ([]byte, erro
 		return nil, fmt.Errorf("release %s publishes no %s — refusing to deploy an unverified artifact", release.TagName, ChecksumsAssetName)
 	}
 
-	archive, err := downloadBytes(context.Background(), assetURL, archiveTuning, downloadProgress)
+	archive, err := downloadBytes(ctx, assetURL, archiveTuning, progress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download release archive: %w", err)
 	}
-	checksumsData, err := downloadBytes(context.Background(), checksumsURL, checksumsTuning, nil)
+	checksumsData, err := downloadBytes(ctx, checksumsURL, checksumsTuning, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download %s: %w", ChecksumsAssetName, err)
 	}
