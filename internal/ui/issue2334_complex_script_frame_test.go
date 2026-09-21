@@ -297,3 +297,51 @@ func TestAmbiguousWideTerminal_FrameKeepsItsRows_Issue2334(t *testing.T) {
 		t.Logf("screen:\n%s", strings.Join(got, "\n"))
 	}
 }
+
+// P2-2: the prompt bar (#1410) and the Ctrl+S switcher are composed onto the
+// frame after the rows are fitted; both must come out of the same final
+// clamp as every other row: fitted under every width convention and with
+// exactly one auto-wrap off/on bracket around all of the row's content.
+func TestOverlayRows_GoThroughTheFinalClamp_Issue2334(t *testing.T) {
+	hindi := complexScriptCorpus[1].text + " MARK"
+	t.Run("prompt bar", func(t *testing.T) {
+		h := devanagariPreviewHome(t, "running", "tag-A")
+		h.width, h.height = 80, 30
+		h.promptInputDialog.SetSize(80, 30)
+		h.promptInputDialog.Show("r00", "conductor-buddi-sharjeel")
+		h.promptInputDialog.input.SetValue(hindi)
+		assertOverlayFrame(t, h.View(), 80, 30, "Enter Send")
+	})
+	t.Run("ctrl+s switcher", func(t *testing.T) {
+		h := devanagariPreviewHome(t, "running", "tag-A")
+		sessions := mruThree()
+		sessions[1].Title = "बात-" + sessions[1].Title
+		h.sessionSwitcher.SetSize(h.width, h.height)
+		if !h.sessionSwitcher.Show("a", sessions, map[string]string{"b": hindi}) {
+			t.Fatal("switcher did not open")
+		}
+		assertOverlayFrame(t, h.View(), 200, 50, "Switch session")
+	})
+}
+
+func assertOverlayFrame(t *testing.T, frame string, width, height int, marker string) {
+	t.Helper()
+	rows := strings.Split(frame, "\n")
+	if len(rows) != height {
+		t.Fatalf("frame has %d rows, want %d", len(rows), height)
+	}
+	if !strings.Contains(ansi.Strip(frame), marker) {
+		t.Fatalf("overlay %q not drawn:\n%s", marker, ansi.Strip(frame))
+	}
+	for i, row := range rows {
+		off, on := strings.Index(row, ansi.ResetModeAutoWrap), strings.LastIndex(row, ansi.SetModeAutoWrap)
+		if strings.Count(row, ansi.ResetModeAutoWrap) != 1 || strings.Count(row, ansi.SetModeAutoWrap) != 1 || off > on {
+			t.Errorf("row %d does not carry exactly one ?7l…?7h bracket: %q", i, row)
+			continue
+		}
+		if outside := ansi.Strip(row[:off] + row[on:]); outside != "" {
+			t.Errorf("row %d prints %q outside the bracket", i, outside)
+		}
+	}
+	assertNoOverwideRows(t, frame, width)
+}
