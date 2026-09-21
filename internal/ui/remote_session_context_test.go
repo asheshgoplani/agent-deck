@@ -60,3 +60,53 @@ func TestContextInspector_RemoteRowShowsNoticeNotSilence(t *testing.T) {
 		t.Fatalf("expected remote notice, got err=%v", got.err)
 	}
 }
+
+func TestRemoteAccountsLine_MultiAccountWorkVsDefaultWithAge(t *testing.T) {
+	h := NewHome()
+	h.remoteHostStats = remoteAccountsStats(time.Now().Add(-2*time.Minute), "default", "work")
+	work := h.remoteAccountsLine("box", "work", time.Now())
+	if !strings.Contains(work, "work") || !strings.Contains(work, "5h 20%") || strings.Contains(work, "5h 10%") {
+		t.Fatalf("work session must show work's usage only: %q", work)
+	}
+	def := h.remoteAccountsLine("box", "", time.Now())
+	if !strings.Contains(def, "default") || !strings.Contains(def, "5h 10%") || strings.Contains(def, "5h 20%") {
+		t.Fatalf("empty account must show default's usage only: %q", def)
+	}
+	if !strings.Contains(work, "polled") || !strings.Contains(work, "2m ago") {
+		t.Fatalf("poll age missing: %q", work)
+	}
+}
+
+func TestRemoteAccountsLine_AvailableButEmptyAccounts(t *testing.T) {
+	h := NewHome()
+	h.remoteHostStats = remoteAccountsStats(time.Now())
+	want := `account unknown (slot "default" not reported by remote)`
+	if got := h.remoteAccountsLine("box", "", time.Now()); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestRemoteAccountsLine_NamedSlotAbsentFromNonEmptyList(t *testing.T) {
+	h := NewHome()
+	h.remoteHostStats = remoteAccountsStats(time.Now(), "default", "other")
+	want := `account unknown (slot "work" not reported by remote)`
+	if got := h.remoteAccountsLine("box", "work", time.Now()); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestRemoteAccountsLine_UnpolledHostExactLine(t *testing.T) {
+	h := NewHome()
+	want := remoteStatsUnknownLine(session.RemoteVersionState{}, Version)
+	if got := h.remoteAccountsLine("box", "work", time.Now()); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func remoteAccountsStats(fetched time.Time, names ...string) map[string]remoteHostStatsResult {
+	accts := make([]session.AccountUsage, 0, len(names))
+	for i, n := range names {
+		accts = append(accts, session.AccountUsage{Name: n, Known: true, FiveHour: session.AccountUsageWindow{Known: true, Percent: float64(10 * (i + 1))}})
+	}
+	return map[string]remoteHostStatsResult{"box": {Stats: session.RemoteHostStats{AccountsAvailable: true, Accounts: accts}, FetchedAt: fetched}}
+}

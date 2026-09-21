@@ -7,3 +7,5 @@ Path:    /srv/app
 Tool:    claude
 Viewers: unknown (remote older than 1.16.11)
 stats unknown (remote runs an older agent-deck)
+
+Last response

@@ -144,8 +144,8 @@ func TestViewersRemote_Golden(t *testing.T) {
 			h.renderRemoteSessionItem(&frame, item, false)
 			frame.WriteString("\n")
 			preview := strings.Split(stripAnsi(h.renderRemotePreview(item, 90, 20)), "\n")
-			if len(preview) > 8 {
-				preview = preview[:8]
+			if len(preview) > 9 {
+				preview = preview[:9]
 			}
 			frame.WriteString(strings.Join(preview, "\n"))
 			assertViewersGolden(t, step.name, frame.String())
