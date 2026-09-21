@@ -189,7 +189,10 @@ func TestDownloadBytes_ClientErrorIsNotRetried(t *testing.T) {
 
 func TestDownloadBytes_ProgressLine(t *testing.T) {
 	data := payload(20000)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(data) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+	}))
 	defer srv.Close()
 	var out bytes.Buffer
 	if _, err := downloadBytes(context.Background(), srv.URL, fastTuning(), &out); err != nil {
