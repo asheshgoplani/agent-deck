@@ -6,26 +6,34 @@ import (
 	"testing"
 )
 
-// #2334: Indic zero-width marks are opt-in only. Off (the default) emits
-// nothing on any tmux; on, tmux >= 3.6 gets every Indic spacing vowel sign
-// at width 0 in agent-deck's fixed slots, with -o so an occupant is never
-// overwritten; a [tmux] options "codepoint-widths" override still wins.
+// #2334: Indic zero-width marks are opt-in only. A session built without the
+// config adds nothing and removes nothing; with it on, tmux >= 3.6 gets every
+// Indic spacing vowel sign at width 0 in agent-deck's fixed slots, with -o so
+// an occupant is never overwritten; a [tmux] options "codepoint-widths"
+// override still wins.
 func TestIndicZeroWidthArgs_OptInOnly_Issue2334(t *testing.T) {
-	for _, ver := range []string{"3.3a", "3.4", "3.6a", "3.7b", "master", ""} {
-		if got := indicZeroWidthArgs(false, nil, ver); got != nil {
-			t.Errorf("default (off) on tmux %q emitted %d args", ver, len(got))
+	session := func(set, enabled bool, overrides map[string]string) *Session {
+		s := &Session{OptionOverrides: overrides}
+		if set {
+			s.SetIndicZeroWidthMarks(enabled)
 		}
+		return s
+	}
+	// Not configured (tmux discovery) and opted in with an override: nothing,
+	// not even the off-path cleanup, on any tmux.
+	if got := session(false, false, nil).indicZeroWidthMarksArgs(); got != nil {
+		t.Errorf("unconfigured session emitted %d args", len(got))
+	}
+	if got := session(true, true, map[string]string{"codepoint-widths": ""}).indicZeroWidthMarksArgs(); got != nil {
+		t.Errorf("a codepoint-widths override must win, got %d args", len(got))
 	}
 	for _, ver := range []string{"3.3a", "3.4", "3.5a", ""} {
-		if got := indicZeroWidthArgs(true, nil, ver); got != nil {
+		if got := indicZeroWidthArgs(ver); got != nil {
 			t.Errorf("tmux %q has no codepoint-widths, got %d args", ver, len(got))
 		}
 	}
-	if got := indicZeroWidthArgs(true, map[string]string{"codepoint-widths": ""}, "3.6a"); got != nil {
-		t.Errorf("a codepoint-widths override must win, got %d args", len(got))
-	}
 
-	args := indicZeroWidthArgs(true, nil, "3.6a")
+	args := indicZeroWidthArgs("3.6a")
 	joined := strings.Join(args, " ")
 	for _, mark := range []rune{'ा', 'ि', 'ी', 'ो', 'ौ', 'ः', 'া', 'ি', 'ா', 'ி'} {
 		if !strings.Contains(joined, fmt.Sprintf(" U+%04X=0", mark)) {

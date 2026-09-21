@@ -18988,6 +18988,8 @@ func (h *Home) renderFrame() string {
 		// composite then goes through the same final clamp as every frame
 		// (#2334), so their rows get the same width safety net and exactly
 		// one auto-wrap off/on bracket each.
+		// The final clamp fits these rows a second time; fitting is
+		// idempotent, so only the overlay rows change.
 		content = fitViewportRows(content, h.width, h.height)
 		// #1410: when the inline prompt input is open, overlay it at the
 		// bottom of the list so the operator types without attaching.

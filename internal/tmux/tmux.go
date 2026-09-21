@@ -1347,8 +1347,11 @@ type Session struct {
 	mouse bool
 
 	// indicZeroWidthMarks is [tmux] indic_zero_width_marks (#2334, default
-	// false), set via SetIndicZeroWidthMarks.
-	indicZeroWidthMarks bool
+	// false), set via SetIndicZeroWidthMarks. indicZeroWidthMarksSet records
+	// that the config was applied at all: a Session built without it (tmux
+	// discovery) must neither add the marks nor remove a user's opt-in.
+	indicZeroWidthMarks    bool
+	indicZeroWidthMarksSet bool
 
 	// clearOnRestart controls whether RespawnPane clears the scrollback buffer.
 	// When false (default), previous session output is preserved.
@@ -1901,6 +1904,7 @@ func (s *Session) SetIndicZeroWidthMarks(enabled bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.indicZeroWidthMarks = enabled
+	s.indicZeroWidthMarksSet = true
 }
 
 // indicZeroWidthMarksArgs returns the opt-in's set-option chunks for Start's
@@ -1908,15 +1912,18 @@ func (s *Session) SetIndicZeroWidthMarks(enabled bool) {
 // It reads the field without s.mu, like s.mouse on the same paths, because
 // EnableMouseMode runs it under EnsureConfigured's lock.
 func (s *Session) indicZeroWidthMarksArgs() []string {
-	enabled := s.indicZeroWidthMarks
-	ver := hostTmuxVersionString()
-	if !enabled {
-		if _, overridden := s.OptionOverrides["codepoint-widths"]; !overridden {
-			removeOwnedIndicZeroWidthMarks(s.SocketName, ver)
-		}
+	if !s.indicZeroWidthMarksSet {
 		return nil
 	}
-	return indicZeroWidthArgs(enabled, s.OptionOverrides, ver)
+	if _, overridden := s.OptionOverrides["codepoint-widths"]; overridden {
+		return nil
+	}
+	ver := hostTmuxVersionString()
+	if !s.indicZeroWidthMarks {
+		removeOwnedIndicZeroWidthMarks(s.SocketName, ver)
+		return nil
+	}
+	return indicZeroWidthArgs(ver)
 }
 
 // GetMouse reports whether tmux mouse mode is currently enabled for this

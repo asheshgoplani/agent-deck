@@ -78,11 +78,11 @@ func tmuxSupportsCodepointWidths(ver string) bool {
 }
 
 // indicZeroWidthArgs returns the ";"-chained set-option chunks that give the
-// Indic spacing vowel signs zero width, or nil unless the user opted in, tmux
-// has codepoint-widths, and no [tmux] options "codepoint-widths" override
-// takes the option over.
-func indicZeroWidthArgs(enabled bool, overrides map[string]string, tmuxVersion string) []string {
-	if _, ok := overrides["codepoint-widths"]; ok || !enabled || !tmuxSupportsCodepointWidths(tmuxVersion) {
+// Indic spacing vowel signs zero width, or nil when tmux has no
+// codepoint-widths. Session.indicZeroWidthMarksArgs gates it on the opt-in
+// and on a [tmux] options "codepoint-widths" override.
+func indicZeroWidthArgs(tmuxVersion string) []string {
+	if !tmuxSupportsCodepointWidths(tmuxVersion) {
 		return nil
 	}
 	args := make([]string, 0, 5*len(indicSpacingMarks))
@@ -124,9 +124,13 @@ func indicZeroWidthUnsetArgs(slots []int) []string {
 	return args
 }
 
-// indicZeroWidthCleanupOnce limits the removal read to one tmux call per
-// socket per process, keeping per-session tmux calls within budget.
-var indicZeroWidthCleanupOnce sync.Map // socket name -> *sync.Once
+// indicZeroWidthCleaned records the sockets whose owned slots this process
+// already removed, keeping the off path to one tmux read per socket. A read
+// that fails is retried on the next Start.
+var (
+	indicZeroWidthCleanupMu sync.Mutex
+	indicZeroWidthCleaned   = map[string]bool{}
+)
 
 // removeOwnedIndicZeroWidthMarks is the off path: it removes the entries a
 // previous opt-in left on the server, and nothing else.
@@ -134,18 +138,22 @@ func removeOwnedIndicZeroWidthMarks(socketName, tmuxVersion string) {
 	if !tmuxSupportsCodepointWidths(tmuxVersion) {
 		return
 	}
-	once, _ := indicZeroWidthCleanupOnce.LoadOrStore(socketName, &sync.Once{})
-	once.(*sync.Once).Do(func() {
-		out, err := runBoundedOutput(socketName, "show-options", "-s", "codepoint-widths")
-		if err != nil {
-			return // a partial or failed read never authorizes a mutation
+	indicZeroWidthCleanupMu.Lock()
+	defer indicZeroWidthCleanupMu.Unlock()
+	if indicZeroWidthCleaned[socketName] {
+		return
+	}
+	out, err := runBoundedOutput(socketName, "show-options", "-s", "codepoint-widths")
+	if err != nil {
+		return // a partial or failed read never authorizes a mutation
+	}
+	if slots := ownedIndicZeroWidthSlots(out); len(slots) > 0 {
+		if _, err := runBoundedOutput(socketName, indicZeroWidthUnsetArgs(slots)...); err != nil {
+			statusLog.Warn("indic_zero_width_marks_unset_failed", slog.Any("error", err))
+			return
 		}
-		if slots := ownedIndicZeroWidthSlots(out); len(slots) > 0 {
-			if _, err := runBoundedOutput(socketName, indicZeroWidthUnsetArgs(slots)...); err != nil {
-				statusLog.Warn("indic_zero_width_marks_unset_failed", slog.Any("error", err))
-			}
-		}
-	})
+	}
+	indicZeroWidthCleaned[socketName] = true
 }
 
 // IndicZeroWidthMarksInfo is the `agent-deck doctor` note for users who
