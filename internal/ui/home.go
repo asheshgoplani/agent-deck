@@ -21946,7 +21946,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(dimStyle.Render("Viewers: ") + viewersText(remoteViewers, remoteViewersKnown, unknownReason, time.Now()) + "\n")
 	// Account usage comes from the host stats already polled for the group
 	// header, so this adds no SSH round trip.
-	if line := h.remoteAccountsLine(item.RemoteName, time.Now()); line != "" {
+	if line := h.remoteAccountsLine(item.RemoteName, rs.Account, time.Now()); line != "" {
 		b.WriteString(dimStyle.Render(line) + "\n")
 	}
 	b.WriteString("\n")
@@ -25283,16 +25283,26 @@ func hookCleanupCmd(cleanup func(), done chan struct{}) tea.Cmd {
 	}
 }
 
-// remoteAccountsLine is the per-session preview's account usage line, taken
-// from the cached host stats. "" when the host has not been polled yet.
-func (h *Home) remoteAccountsLine(remoteName string, now time.Time) string {
+// remoteAccountsLine is the per-session preview's account usage line: the
+// session's own slot (rs.Account, "" = default) from the cached host stats,
+// with the poll age. Never blank: an unpolled host or older remote says so.
+func (h *Home) remoteAccountsLine(remoteName, account string, now time.Time) string {
 	result, ok := h.remoteHostStatsState(remoteName)
-	switch {
-	case !ok:
-		return ""
-	case !result.Stats.AccountsAvailable:
-		return "accounts unknown (remote does not report accounts)"
-	default:
-		return renderAccountsPreviewLine(result.Stats.Accounts, now)
+	if !ok {
+		versionState, _ := h.remoteVersionState(remoteName)
+		return remoteStatsUnknownLine(versionState, Version)
 	}
+	if !result.Stats.AccountsAvailable {
+		return "accounts unknown (remote does not report accounts)"
+	}
+	slot := account
+	if slot == "" {
+		slot = "default"
+	}
+	for _, u := range result.Stats.Accounts {
+		if u.Name == slot {
+			return fmt.Sprintf("account   %s · polled %s ago", renderAccountUsageEntry(u, now), remoteStatsPolledLabel(result.FetchedAt))
+		}
+	}
+	return fmt.Sprintf("account unknown (slot %q not reported by remote)", slot)
 }
