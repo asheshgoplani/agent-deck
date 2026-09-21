@@ -118,9 +118,18 @@ func (h *Home) updateInFlightReason() string {
 // reconnect to it instead of cold-starting every MCP.
 func (h *Home) tryRestartDeck() (tea.Model, tea.Cmd) {
 	if reason := h.restartBlockReason(); reason != "" {
+		if h.updateInFlightReason() == reason && h.autoInstallInFlight != "" {
+			// The updater child must finish first (a re-exec would cut its
+			// pipe), so the key is not refused: it queues the restart for
+			// the moment the run ends.
+			h.restartQueued = true
+			h.setError(errors.New(h.queuedRestartMessage()))
+			return h, nil
+		}
 		h.setError(fmt.Errorf("%w: %s", errRestartBlocked, reason))
 		return h, nil
 	}
+	h.restartQueued = false
 	h.restartRequested = true
 	h.isQuitting = true
 	uiLog.Info("tui_restart_requested",
@@ -128,6 +137,40 @@ func (h *Home) tryRestartDeck() (tea.Model, tea.Cmd) {
 		"installed", h.installedUpdateVersion(),
 		"exe", h.restartExecutable())
 	return h, h.performQuit(false)
+}
+
+// queuedRestartMessage is the footer line after the key was queued.
+func (h *Home) queuedRestartMessage() string {
+	if h.autoInstallInFlight == pendingDrainKey {
+		return "restart queued after the launchd re-registration"
+	}
+	return "restart queued after the sweep"
+}
+
+// fireQueuedRestart runs the restart a key press queued while the updater
+// child was running. It is a no-op without a queued press; if something
+// else blocks the restart now the queue stays and the tick path retries.
+func (h *Home) fireQueuedRestart() tea.Cmd {
+	if !h.restartQueued || h.autoInstallInFlight != "" {
+		return nil
+	}
+	if h.installedUpdateVersion() == "" {
+		// Nothing to restart into (the run failed or found nothing).
+		h.restartQueued = false
+		return nil
+	}
+	if reason := h.restartBlockReason(); reason != "" {
+		h.noteRestartWait(reason)
+		if strings.HasPrefix(reason, "new binary") {
+			// A bad target will not fix itself: drop the queue and say so
+			// once instead of re-running the dry probe every tick.
+			h.restartQueued = false
+			h.setError(fmt.Errorf("%w: %s; still running v%s", errRestartBlocked, reason, Version))
+		}
+		return nil
+	}
+	_, cmd := h.tryRestartDeck()
+	return cmd
 }
 
 // autoRestartLogEvery rate-limits the "waiting for idle" log line.
@@ -155,6 +198,13 @@ func (h *Home) maybeAutoRestart() tea.Cmd {
 	switch {
 	case h.restartRequested:
 		h.noteRestartWait("restart already requested, the shutdown sequence has not finished")
+		return nil
+	case h.restartQueued && h.autoInstallInFlight == "":
+		// The key was pressed during the update run: that is the request,
+		// whether or not auto_restart is on.
+		if cmd := h.fireQueuedRestart(); cmd != nil {
+			return cmd
+		}
 		return nil
 	case !h.autoRestartEnabled():
 		h.noteRestartWait("auto_restart is off or suppressed for this process; press " + h.restartDeckKeyLabel())

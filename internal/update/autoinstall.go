@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"math/rand"
 	"os/exec"
@@ -98,8 +99,12 @@ func RunUnattendedInstall(ctx context.Context, exe, trigger string) (string, err
 	cmd.Env = append(childenv.ForLaunch(""), TriggerEnv+"="+trigger)
 	cmd.Stdin = nil
 	tail := &TailBuffer{Max: unattendedOutputTail}
-	cmd.Stdout = tail
-	cmd.Stderr = tail
+	out := io.Writer(tail)
+	if p, ok := ctx.Value(progressCtxKey{}).(*UnattendedProgress); ok && p != nil {
+		out = io.MultiWriter(tail, p)
+	}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	err := cmd.Run()
 	return tail.String(), err
 }

@@ -525,6 +525,11 @@ type Home struct {
 	// for ("" when none); autoInstallAttempts is when each version was last
 	// tried, so a failure is not retried every check.
 	autoInstallInFlight string
+	// autoInstallProgress is the remote-phase progress of that run (nil
+	// when none); restartQueued is set by a restart key press that arrived
+	// while it ran: the restart fires as soon as the run ends (restart.go).
+	autoInstallProgress *update.UnattendedProgress
+	restartQueued       bool
 	autoInstallAttempts map[string]time.Time
 	// restartWaitReason is why the last tick did not restart into the
 	// newer build ("" when it could); restartOverdueReason is the same
