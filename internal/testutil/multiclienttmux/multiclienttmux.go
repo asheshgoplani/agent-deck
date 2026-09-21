@@ -104,7 +104,7 @@ func boot(t *testing.T, sessionName string, selector []string, socketPath, socke
 	}
 	if socketPath == "" {
 		args = append(append([]string{}, selector...), "display-message", "-p", "#{socket_path}")
-		out, err := exec.Command("tmux", args...).CombinedOutput()
+		out, err = exec.Command("tmux", args...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("multiclienttmux: read socket path: %v\n%s", err, out)
 		}

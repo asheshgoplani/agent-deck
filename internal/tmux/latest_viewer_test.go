@@ -129,7 +129,7 @@ func TestPickLatestViewer_Table(t *testing.T) {
 	}
 }
 
-// requireWindowStays polls the harness window until it is want; it fails
+// requireHarnessWindow polls the harness window until it is want; it fails
 // with the last size seen (the frozen size when the bug is present).
 func requireHarnessWindow(t *testing.T, h *multiclienttmux.Harness, want string) {
 	t.Helper()
