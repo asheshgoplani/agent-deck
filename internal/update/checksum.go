@@ -13,13 +13,11 @@ package update
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
 )
 
 // ChecksumsAssetName is the release asset goreleaser publishes containing the
@@ -88,20 +86,6 @@ func assetArchiveName(release *Release, goos, goarch string) string {
 	return fmt.Sprintf("agent-deck_%s_%s_%s.tar.gz", version, goos, goarch)
 }
 
-// httpGetBytes downloads url fully into memory under a bounded timeout.
-func httpGetBytes(url string, timeout time.Duration) ([]byte, error) {
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
-}
-
 // DownloadVerifiedBinary downloads the release archive for goos/goarch, verifies
 // its SHA-256 against the release's checksums.txt, then extracts and returns the
 // agent-deck binary bytes. It is the integrity gate for remote deploys and is
@@ -126,11 +110,11 @@ func DownloadVerifiedBinary(release *Release, goos, goarch string) ([]byte, erro
 		return nil, fmt.Errorf("release %s publishes no %s — refusing to deploy an unverified artifact", release.TagName, ChecksumsAssetName)
 	}
 
-	archive, err := httpGetBytes(assetURL, 120*time.Second)
+	archive, err := downloadBytes(context.Background(), assetURL, archiveTuning, downloadProgress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download release archive: %w", err)
 	}
-	checksumsData, err := httpGetBytes(checksumsURL, 30*time.Second)
+	checksumsData, err := downloadBytes(context.Background(), checksumsURL, checksumsTuning, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download %s: %w", ChecksumsAssetName, err)
 	}

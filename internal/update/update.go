@@ -810,6 +810,8 @@ func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
 	}
 
 	fmt.Printf("Downloading and verifying %s/%s release binary...\n", goos, goarch)
+	downloadProgress = terminalProgress()
+	defer func() { downloadProgress = nil }()
 	binaryData, err := DownloadVerifiedBinary(release, goos, goarch)
 	if err != nil {
 		return fmt.Errorf("download/verify failed: %w", err)
