@@ -3626,6 +3626,9 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	// Adjust viewport if cursor is out of view
 	h.syncViewport()
 
+	h.checkFlatItemsUnique()
+	h.dumpFlatItems()
+
 	// Publish an updated web snapshot when menu structure/session list changes.
 	h.publishWebMenuSnapshot()
 }

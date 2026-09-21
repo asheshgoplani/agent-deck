@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 
@@ -123,5 +124,71 @@ func TestDupGroupRow_FieldStoreKeySequences(t *testing.T) {
 			h.Update(k)
 			assertListFrameUnique(t, h, fmt.Sprintf("seed %d step %d keys %v", seed, step, trail))
 		}
+	}
+}
+
+func TestFirstDuplicateRow_AllRowTypes(t *testing.T) {
+	g := &session.Group{Name: "conductors", Path: "conductors"}
+	inst := &session.Instance{ID: "s1"}
+	rem := &session.RemoteSessionInfo{ID: "r1"}
+	rows := map[string][]session.Item{
+		"local group, indented copy": {
+			{Type: session.ItemTypeGroup, Group: g, Path: "conductors", Level: 0},
+			{Type: session.ItemTypeGroup, Group: g, Path: "conductors", Level: 1},
+		},
+		"local session": {
+			{Type: session.ItemTypeSession, Session: inst},
+			{Type: session.ItemTypeSession, Session: inst, Level: 2},
+		},
+		"creating placeholder": {
+			{Type: session.ItemTypeSession, CreatingID: "c1"},
+			{Type: session.ItemTypeSession, CreatingID: "c1"},
+		},
+		"remote group": {
+			{Type: session.ItemTypeRemoteGroup, RemoteName: "a", Path: "x"},
+			{Type: session.ItemTypeRemoteGroup, RemoteName: "a", Path: "x", Level: 2},
+		},
+		"remote session": {
+			{Type: session.ItemTypeRemoteSession, RemoteName: "a", RemoteSession: rem},
+			{Type: session.ItemTypeRemoteSession, RemoteName: "a", RemoteSession: rem},
+		},
+		"window": {
+			{Type: session.ItemTypeWindow, WindowSessionID: "s1", WindowID: "@1", WindowIndex: 1},
+			{Type: session.ItemTypeWindow, WindowSessionID: "s1", WindowID: "@1", WindowIndex: 1},
+		},
+	}
+	for name, items := range rows {
+		if i, _, dup := session.FirstDuplicateRow(items); !dup || i != 1 {
+			t.Errorf("%s: want duplicate at row 1, got dup=%v row=%d", name, dup, i)
+		}
+	}
+	distinct := []session.Item{
+		{Type: session.ItemTypeGroup, Group: g, Path: "conductors"},
+		{Type: session.ItemTypeRemoteGroup, RemoteName: "a", Path: "conductors"},
+		{Type: session.ItemTypeRemoteGroup, RemoteName: "b", Path: "conductors"},
+		{Type: session.ItemTypeDivider}, {Type: session.ItemTypeDivider},
+	}
+	if _, id, dup := session.FirstDuplicateRow(distinct); dup {
+		t.Errorf("distinct rows flagged as duplicate: %q", id)
+	}
+}
+
+func TestDumpFlatItems_WritesIdentitiesAndFlagsDuplicates(t *testing.T) {
+	out := t.TempDir() + "/rows.txt"
+	t.Setenv(dumpRowsEnv, out)
+	h := fieldStoreHome(t)
+	defer h.cancel()
+	h.rebuildFlatItems()
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("dump not written: %v", err)
+	}
+	dump := string(raw)
+	if !strings.Contains(dump, "id=group|conductors") || strings.Contains(dump, "DUPLICATE") {
+		t.Fatalf("dump should list the conductors group once and flag nothing:\n%s", dump)
+	}
+	h.flatItems = append(h.flatItems[:1], append([]session.Item{h.flatItems[0]}, h.flatItems[1:]...)...)
+	if d := h.flatItemsDump(); !strings.Contains(d, "DUPLICATE of row 0") {
+		t.Fatalf("a repeated row must be flagged:\n%s", d)
 	}
 }
