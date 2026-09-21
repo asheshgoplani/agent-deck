@@ -171,10 +171,17 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 .side-chip.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 
-.side-list { flex: 1; overflow: auto; padding: 6px 0 10px; }
+/* --group-indent is one step of nesting. Sidebar.js sets --depth per row and
+   it defaults to 0, so a deck with no subgroups is pixel-identical to before.
+   The step goes on padding rather than margin so the full-width hover and
+   selected backgrounds — and the 2px selected border-left — still run to the
+   edge of the rail at every depth. */
+.side-list { flex: 1; overflow: auto; padding: 6px 0 10px; --group-indent: 12px; }
+
 .side-group-head {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 12px 6px 10px;
+  padding-left: calc(10px + var(--depth, 0) * var(--group-indent, 12px));
   font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
   color: var(--muted); cursor: pointer; user-select: none;
   text-transform: uppercase;
@@ -206,12 +213,35 @@ body[data-rail="hidden"] .rightrail { display: none; }
   grid-template-columns: 14px 1fr auto;
   align-items: center; gap: 8px;
   padding: 5px 12px 5px 16px;
+  /* Matches its group header's indent — see indentVar() in Sidebar.js. */
+  padding-left: calc(16px + var(--depth, 0) * var(--group-indent, 12px));
   min-height: var(--density-row);
   cursor: pointer; user-select: none;
   border-left: 2px solid transparent;
   color: var(--text);
 }
 .sess:hover { background: rgba(255,255,255,0.02); }
+/* Sub-session guide. The TUI draws real box-drawing connectors on every row
+   (home.go:21452 treeBranch/treeLast/subBranch/subLast); the web rail has
+   never had them and uses the .sig kind column instead, so this is just the
+   continuation line — enough to read an indented row as "child of the one
+   above" without importing the whole tree-glyph scheme.
+   Sits in the indent the row already has, so it moves with --depth. */
+.sess.sub::before {
+  content: "";
+  position: absolute;
+  /* Centre of the PARENT row's 14px .sig column, so the line reads as
+     descending from that row: the session padding base (16px) plus half the
+     glyph column (7px), stepped in by one indent less than this row's own
+     (--depth on a session row is already its depth minus one). Anchoring it
+     at the 10px group-header base instead put it in the chevron column, where
+     it looked like it hung off the group header. */
+  left: calc(16px + 7px + (var(--depth, 1) - 1) * var(--group-indent, 12px));
+  top: 0; bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.sess.sub.sel::before { background: var(--accent); }
 .sess.sel {
   background: var(--accent-soft);
   border-left-color: var(--accent);

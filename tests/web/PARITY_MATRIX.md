@@ -38,6 +38,7 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Delete group | `internal/ui/home.go:6302` (`d` key, group) | DELETE `/api/groups/{path}` | `DeleteGroup` | `handlers_groups_test.go` | Moves children to default group |
 | Move session to group | `internal/ui/home.go:6028` (`M`/`shift+m`) | MISSING | N/A | N/A | TUI-only via GroupDialog move mode |
 | Select group | `internal/ui/home.go:8486` (`j`/`k` onto a group row) | N/A (client state) | N/A | `tests/web/e2e/group-selection.spec.js` | Sidebar group name selects; chevron collapses |
+| Collapse/expand group | `internal/ui/home.go:11528` (`enter`), `:11568` (`tab`) on a group row | PATCH `/api/groups/{path}` | `SetGroupExpanded` | `handlers_groups_test.go`, `internal/ui/web_mutator_group_expanded_test.go`, `tests/web/unit/groupCollapseSync.test.js` | Body `{expanded}`; persisted via `SaveGroupsOnly` exactly as the TUI toggle does, so both views share one collapse state. Web adopts `MenuGroup.expanded` from each snapshot; stays local-only when mutations are disabled |
 | Group stats panel | `internal/ui/home.go:19382` (`renderGroupPreview`) | GET `/api/menu` | N/A | `tests/web/e2e/group-selection.spec.js` | Web folds starting→running, queued→idle; no worktree block |
 | New session in group (prefilled) | `internal/ui/home.go:9271` (`n`) + `:12325` (`N`) | POST `/api/sessions` `groupPath` | `CreateSession` | `handlers_sessions_test.go`, `group-selection.spec.js` | Folder from group `defaultPath`, tool from newest session in group |
 | **MCP MANAGEMENT** |

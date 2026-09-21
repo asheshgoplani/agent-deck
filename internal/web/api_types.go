@@ -32,9 +32,18 @@ type CreateGroupRequest struct {
 	ParentPath string `json:"parentPath,omitempty"`
 }
 
-// RenameGroupRequest is the body for PATCH /api/groups/:path.
-type RenameGroupRequest struct {
+// UpdateGroupRequest is the body for PATCH /api/groups/:path. Both fields are
+// optional, but at least one must be present.
+//
+// Expanded is a pointer for the same reason UpdateSessionRequest's bools are:
+// a missing field must not read as "collapse this group". When both are sent,
+// the handler applies Expanded first — a rename changes the path out from
+// under the collapse write.
+type UpdateGroupRequest struct {
 	Name string `json:"name"`
+	// Expanded persists the group's collapse state so the web sidebar and the
+	// TUI agree. nil leaves it untouched.
+	Expanded *bool `json:"expanded,omitempty"`
 }
 
 // UpdateSessionRequest is the body for PATCH /api/sessions/{id}. Every field

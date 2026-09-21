@@ -631,6 +631,17 @@ func (s *parityStore) RenameGroup(groupPath, newName string) error {
 	return nil
 }
 
+func (s *parityStore) SetGroupExpanded(groupPath string, expanded bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[groupPath]
+	if !ok {
+		return ErrGroupNotFound
+	}
+	g.Expanded = expanded
+	return nil
+}
+
 // FinishWorktree is stubbed for parity tests; the worktree finish action
 // isn't part of the snapshot-equality parity matrix (no in-memory worktree
 // state). Returns ErrNotAWorktree so any accidental call is loud.

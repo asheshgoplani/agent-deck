@@ -514,8 +514,13 @@ make ci                   # pre-push gate
 
 ## Out of scope
 
-- Persisting group collapse **server-side**. `PATCH /api/groups/{path}` accepts
-  only `{name}` (`handlers_groups.go:88-107`); localStorage is the fix here.
+- ~~Persisting group collapse **server-side**.~~ Now implemented:
+  `PATCH /api/groups/{path}` takes an optional `{expanded}` alongside `{name}`,
+  routed through `WebMutator.SetGroupExpanded` -> `Storage.SaveGroupsOnly`, the
+  same write the TUI's own toggle performs. The client adopts
+  `MenuGroup.Expanded` from each snapshot and writes its own toggles back;
+  localStorage remains the first-paint cache and the fallback on a read-only
+  server.
 - Real per-group tool/model defaults. Would touch four storage mirrors
   (`groups.go:78`, `storage.go:183`, `statedb.go:270`+`:425`, `migrate.go:64`)
   plus CLI and TUI surfaces to set them.

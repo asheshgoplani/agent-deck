@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -397,9 +398,32 @@ func (s *fixtureStore) LoadMenuSnapshot() (*web.MenuSnapshot, error) {
 
 	items := make([]web.MenuItem, 0, len(s.groups)+len(s.sessions))
 	idx := 0
-	for _, g := range s.groups {
+	// Emit groups in a STABLE order. Ranging the map directly leaked Go's
+	// randomized iteration order into the wire payload, which the client used
+	// to hide by re-sorting on MenuGroup.Order — it no longer does, because
+	// Order is only meaningful between siblings and that sort scrambled nested
+	// groups. The real server emits a deterministic tree walk (BuildMenuSnapshot
+	// over the hierarchically-sorted GroupTree.GroupList), so the fixture owes
+	// callers the same stability. Order-then-path keeps the seed's intended
+	// presentation and, for the seeded tree, each parent ahead of its children.
+	paths := make([]string, 0, len(s.groups))
+	for path := range s.groups {
+		paths = append(paths, path)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		a, b := s.groups[paths[i]], s.groups[paths[j]]
+		if a.Order != b.Order {
+			return a.Order < b.Order
+		}
+		return paths[i] < paths[j]
+	})
+	for _, path := range paths {
+		g := s.groups[path]
 		items = append(items, web.MenuItem{
-			Index: idx, Type: web.MenuItemTypeGroup, Path: g.Path, Group: g, Level: 0,
+			// Level is the path depth, as GetGroupLevel computes it server-side.
+			// It was hardcoded to 0, so a nested group claimed to be a root.
+			Index: idx, Type: web.MenuItemTypeGroup, Path: g.Path, Group: g,
+			Level: strings.Count(g.Path, "/"),
 		})
 		idx++
 	}
@@ -644,6 +668,17 @@ func (s *fixtureStore) RenameGroup(groupPath, newName string) error {
 		return fmt.Errorf("group %q not found", groupPath)
 	}
 	g.Name = newName
+	return nil
+}
+
+func (s *fixtureStore) SetGroupExpanded(groupPath string, expanded bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[groupPath]
+	if !ok {
+		return web.ErrGroupNotFound
+	}
+	g.Expanded = expanded
 	return nil
 }
 
