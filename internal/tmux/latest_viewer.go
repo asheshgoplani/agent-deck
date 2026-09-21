@@ -183,8 +183,11 @@ func pickLatestViewer(candidates []latestCandidate, cols, rows int) (best latest
 
 // isOwnTmuxClient reports whether pid is, right now, a tmux client process
 // running as this user: #{client_pid} is whatever the client reported, and a
-// pid can change hands between list-clients and the signal. Linux reads /proc;
-// elsewhere a bounded ps. Anything unreadable answers false.
+// pid can change hands between list-clients and the signal. Linux reads /proc,
+// where tmux's "tmux: client" title tells a client from a server; elsewhere a
+// bounded ps, whose comm is the executable, so there the check proves only
+// "a tmux process of this user" (SIGWINCH to one's own tmux server is
+// harmless). Anything unreadable answers false.
 func isOwnTmuxClient(pid int) bool {
 	uid, comm, ok := procUIDAndComm(pid)
 	return ok && uid == os.Getuid() && isReapableTmuxClientComm(comm)
@@ -198,7 +201,7 @@ func procUIDAndComm(pid int) (uid int, comm string, ok bool) {
 		}
 		for _, line := range strings.Split(string(status), "\n") {
 			if fields := strings.Fields(line); len(fields) > 1 && fields[0] == "Uid:" {
-				uid, err := strconv.Atoi(fields[1])
+				uid, err = strconv.Atoi(fields[1])
 				return uid, strings.TrimSpace(string(commRaw)), err == nil
 			}
 		}
