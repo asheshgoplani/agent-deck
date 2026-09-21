@@ -25301,7 +25301,7 @@ func (h *Home) remoteAccountsLine(remoteName, account string, now time.Time) str
 	}
 	for _, u := range result.Stats.Accounts {
 		if u.Name == slot {
-			return fmt.Sprintf("account   %s · polled %s ago", renderAccountUsageEntry(u, now), remoteStatsPolledLabel(result.FetchedAt))
+			return fmt.Sprintf("account   %s · polled %s", renderAccountUsageEntry(u, now), remoteStatsPolledLabel(result.FetchedAt))
 		}
 	}
 	return fmt.Sprintf("account unknown (slot %q not reported by remote)", slot)

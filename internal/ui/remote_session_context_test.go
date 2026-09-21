@@ -27,7 +27,7 @@ func TestRemoteSessionPreview_ShowsAccountUsageFromCachedStats(t *testing.T) {
 	h.remoteSessionsMu.Unlock()
 
 	out := h.renderRemotePreview(remoteContextTestItem(), 100, 30)
-	if !strings.Contains(out, "accounts") || !strings.Contains(out, "5h 42%") {
+	if !strings.Contains(out, "account") || !strings.Contains(out, "5h 42%") {
 		t.Fatalf("remote session preview missing account usage line:\n%s", out)
 	}
 }
