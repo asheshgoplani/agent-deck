@@ -11765,8 +11765,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// MCP Manager — Claude, Gemini, and Cursor Agent CLI
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil &&
-				session.ToolSupportsMCPManager(item.Session.Tool) {
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				if !session.ToolSupportsMCPManager(item.Session.Tool) {
+					h.setError(fmt.Errorf("MCP management is not supported for tool %q", item.Session.Tool))
+					return h, nil
+				}
 				h.mcpDialog.SetSize(h.width, h.height)
 				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
 					h.setError(err)

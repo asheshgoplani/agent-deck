@@ -4449,3 +4449,60 @@ func findAccountsFetched(msg tea.Msg) (remoteCreationCatalogFetchedMsg, bool) {
 	}
 	return remoteCreationCatalogFetchedMsg{}, false
 }
+
+// TestMCPManagerUnsupportedToolShowsFeedback verifies that a direct MCP hotkey
+// press on an unsupported local tool produces user-visible feedback without
+// opening the MCP dialog.
+func TestMCPManagerUnsupportedToolShowsFeedback(t *testing.T) {
+	inst := &session.Instance{
+		ID:    "unsupported-mcp",
+		Title: "Unsupported MCP",
+		Tool:  "pi",
+	}
+	home := newTestHomeWithItems(100, 30, []session.Item{
+		{Type: session.ItemTypeSession, Session: inst},
+	})
+	home.cursor = 0
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	updated := model.(*Home)
+
+	if updated.mcpDialog.IsVisible() {
+		t.Fatal("unsupported tool must not open the MCP dialog")
+	}
+	if updated.err == nil {
+		t.Fatal("unsupported MCP hotkey must show user-visible feedback")
+	}
+	const want = `MCP management is not supported for tool "pi"`
+	if got := updated.err.Error(); got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+// TestMCPManagerRemoteSessionKeepsExistingNoOp verifies that the local-only
+// unsupported-tool feedback does not change the existing remote-row behavior.
+func TestMCPManagerRemoteSessionKeepsExistingNoOp(t *testing.T) {
+	remote := session.RemoteSessionInfo{
+		ID:         "remote-mcp",
+		Title:      "Remote MCP",
+		RemoteName: "dev",
+	}
+	home := newTestHomeWithItems(100, 30, []session.Item{
+		{
+			Type:          session.ItemTypeRemoteSession,
+			RemoteSession: &remote,
+			RemoteName:    "dev",
+		},
+	})
+	home.cursor = 0
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	updated := model.(*Home)
+
+	if updated.mcpDialog.IsVisible() {
+		t.Fatal("remote session must not open the local MCP dialog")
+	}
+	if updated.err != nil {
+		t.Fatalf("remote session m hotkey changed existing no-op behavior: %v", updated.err)
+	}
+}
