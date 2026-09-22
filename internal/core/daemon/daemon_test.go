@@ -385,6 +385,7 @@ func TestRequiredIDAndStrictFrameFields(t *testing.T) {
 	for _, tc := range []struct{ name, body, code string }{
 		{"missing id", `{"v":1,"type":"status","token":"%s"}`, CodeBadFrame},
 		{"unknown field", `{"v":1,"type":"status","id":"x","token":"%s","extra":1}`, CodeBadFrame},
+		{"second JSON value", `{"v":1,"type":"status","id":"x","token":"%s"} {}`, CodeBadFrame},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := dialRaw(t, ts.paths.Socket)
