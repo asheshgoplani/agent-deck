@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Recall timeline and follow commands expose ordered, typed native conversation events with a resumable cursor for local chat clients. Both remain behind `[recall] enabled`.
+
 ## [1.16.16] - 2026-09-20
 
 ### Fixed

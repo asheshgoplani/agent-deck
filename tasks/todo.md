@@ -7,3 +7,12 @@
 - [x] 5. Remedies that work: stray WARN says "move the stray profiles/ aside"; refusal error names the real fix; `migrate-paths` writes the marker (plain and --force); end-to-end sandbox test legacy -> XDG then the CLI uses XDG
 - [x] 6. `--group`/`--select` store open before the guards: note (kept before the no-TTY gate on purpose, #2011; the create guard makes it harmless)
 - [x] CHANGELOG + config-reference + PR body; go build/vet/gofmt; incident reproductions re-run; CI; RESULTS.md
+
+# core/recall-slice6-20260922
+
+- [ ] Establish baseline and failing-first tests on g14.
+- [ ] Implement typed timeline and same-transaction cursor.
+- [ ] Implement resumable follow with stale resync and under 2 s append response.
+- [ ] Add per-harness golden tests and documentation.
+- [ ] Verify build, vet, full affected suites, indexing performance and independent review.
+- [ ] Commit local branch and create bundle and results receipt.
