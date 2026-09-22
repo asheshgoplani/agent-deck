@@ -10,9 +10,9 @@
 
 # core/recall-slice6-20260922
 
-- [ ] Establish baseline and failing-first tests on g14.
-- [ ] Implement typed timeline and same-transaction cursor.
-- [ ] Implement resumable follow with stale resync and under 2 s append response.
-- [ ] Add per-harness golden tests and documentation.
-- [ ] Verify build, vet, full affected suites, indexing performance and independent review.
-- [ ] Commit local branch and create bundle and results receipt.
+- [x] Establish baseline and failing-first tests on g14.
+- [x] Implement typed timeline and same-transaction cursor.
+- [x] Implement resumable follow with stale resync and under 2 s append response.
+- [x] Add per-harness golden tests and documentation.
+- [x] Verify build, vet, full affected suites, indexing performance and independent review.
+- [x] Commit local branch and create bundle and results receipt.
