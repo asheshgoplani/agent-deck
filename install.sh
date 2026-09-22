@@ -60,19 +60,27 @@ verify_download_checksum() {
     [[ -n "$actual" && "$expected" == "$actual" ]]
 }
 
-# parse_latest_tag reads a `GET /repos/{repo}/releases/...` JSON body from
-# stdin and prints the release tag. Defined at top level so it is
+# extract_json_field reads a JSON body from stdin and prints every value of
+# field $1, one per line. Defined at top level so it and its callers are
 # unit-testable in isolation (see
 # internal/releasetests/issue2359_install_version_parse_test.go).
 #
-# The API returns the body as a single line (no pretty-printing). A naive
-# `grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/'` therefore matches the
-# WHOLE document, and the greedy `.*` in the sed capture backtracks to the
-# LAST quoted string on that line rather than the value next to "tag_name" —
-# which is the trailing reactions object's "eyes" key, not the tag (#2359).
-# Anchor the extraction on the "tag_name" field itself instead.
+# The GitHub releases API returns its body as a single line (no
+# pretty-printing). A naive `grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/'`
+# therefore matches the WHOLE document, and the greedy `.*` in the sed
+# capture backtracks to the LAST quoted string on that line rather than the
+# value next to the field name — e.g. for "tag_name" that's the trailing
+# reactions object's "eyes" key, not the tag (#2359). Anchor on the field
+# name itself instead, and use grep -o (not a bare match) so every
+# occurrence on the line is captured, not just the first/last.
+extract_json_field() {
+    grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+# parse_latest_tag reads a `GET /repos/{repo}/releases/...` JSON body from
+# stdin and prints the release tag.
 parse_latest_tag() {
-    grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*"([^"]*)"$/\1/'
+    extract_json_field "tag_name" | head -1
 }
 
 # count_release_assets reads a release JSON body from stdin and prints how
@@ -86,12 +94,9 @@ count_release_assets() {
 }
 
 # extract_tarball_asset_names reads a release JSON body from stdin and prints
-# the "name" of every tarball/checksums asset, one per line. Same single-line
-# hazard as parse_latest_tag: a non-anchored grep+sed over the whole line
-# would only ever return the LAST "name" field on the document, not each
-# asset's name.
+# the "name" of every tarball/checksums asset, one per line.
 extract_tarball_asset_names() {
-    grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/' | grep '\.tar\.gz\|checksums' || true
+    extract_json_field "name" | grep '\.tar\.gz\|checksums' || true
 }
 
 # Wrap in main() so the entire script is read before execution.
