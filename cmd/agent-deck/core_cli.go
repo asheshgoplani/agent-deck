@@ -106,7 +106,15 @@ func (f *jsonModeFlag) enabled() bool { return f.mode != jsonOff }
 func (f *jsonModeFlag) envelope() bool { return f.mode == jsonEnvelope }
 
 // runCore executes a registry command with obs receiving its progress events.
-func runCore(id string, in any, obs core.Observer) *core.Result {
+// With `[core] daemon = true` a --json=envelope request goes to the profile's
+// daemon when one answers (docs/daemon-protocol.md); everything else, and
+// every request when no daemon answers, runs in process.
+func runCore(profile string, mode *jsonModeFlag, id string, in any, obs core.Observer) *core.Result {
+	if mode.envelope() && coreDaemonEnabled() {
+		if res, ok := runViaDaemon(profile, id, in); ok {
+			return res
+		}
+	}
 	ctx := context.Background()
 	if obs != nil {
 		ctx = core.WithObserver(ctx, obs)
