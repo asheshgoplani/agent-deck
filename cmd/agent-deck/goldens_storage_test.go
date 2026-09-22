@@ -123,13 +123,18 @@ func seedShellInstance(t *testing.T, dbPath string) {
 	defer db.Close()
 
 	row := &statedb.InstanceRow{
-		ID:           "golden-sess-shell",
-		Title:        "storage bytes shell",
-		ProjectPath:  t.TempDir(),
-		GroupPath:    "my-sessions",
-		Command:      "",
-		Tool:         "shell",
-		Status:       string(session.StatusStopped),
+		ID:          "golden-sess-shell",
+		Title:       "storage bytes shell",
+		ProjectPath: t.TempDir(),
+		GroupPath:   "my-sessions",
+		Command:     "",
+		Tool:        "shell",
+		Status:      string(session.StatusStopped),
+		// TmuxSession must be non-empty: Storage.LoadWithGroups only builds a
+		// *tmux.Session for an instance (Instance.tmuxSession) when this field
+		// is set (internal/session/storage.go), and Instance.Start() refuses
+		// to run at all without one ("tmux session not initialized").
+		TmuxSession:  "ad-golden-sess-shell",
 		CreatedAt:    goldensFixedNow,
 		LastAccessed: goldensFixedNow,
 		ToolData:     []byte(`{}`),
