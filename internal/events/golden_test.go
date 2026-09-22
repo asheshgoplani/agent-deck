@@ -96,56 +96,69 @@ func splitNDJSON(b []byte) [][]byte {
 }
 
 // assertSortedKeys checks that every object's keys, at every nesting level,
-// appear in lexicographic order — using json.Decoder's token stream, which
-// preserves source order (unlike unmarshaling into a map).
+// appear in lexicographic order, via a standard recursive-descent walk of
+// json.Decoder's token stream (which preserves source order, unlike
+// unmarshaling into a map).
 func assertSortedKeys(t *testing.T, line []byte) {
 	t.Helper()
 	dec := json.NewDecoder(bytes.NewReader(line))
-	var stack []struct {
-		inObject bool
-		lastKey  string
-		wantKey  bool
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("token: %v", err)
 	}
-	for {
-		tok, err := dec.Token()
+	checkSortedValue(t, dec, tok)
+}
+
+func checkSortedValue(t *testing.T, dec *json.Decoder, tok json.Token) {
+	t.Helper()
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return // scalar: nothing to check
+	}
+	switch delim {
+	case '{':
+		checkSortedObject(t, dec)
+	case '[':
+		checkSortedArray(t, dec)
+	}
+}
+
+func checkSortedObject(t *testing.T, dec *json.Decoder) {
+	t.Helper()
+	var lastKey string
+	first := true
+	for dec.More() {
+		keyTok, err := dec.Token()
 		if err != nil {
-			break
+			t.Fatalf("object key token: %v", err)
 		}
-		switch v := tok.(type) {
-		case json.Delim:
-			switch v {
-			case '{':
-				stack = append(stack, struct {
-					inObject bool
-					lastKey  string
-					wantKey  bool
-				}{inObject: true, wantKey: true})
-			case '[':
-				stack = append(stack, struct {
-					inObject bool
-					lastKey  string
-					wantKey  bool
-				}{inObject: false})
-			case '}', ']':
-				stack = stack[:len(stack)-1]
-			}
-		case string:
-			if len(stack) > 0 && stack[len(stack)-1].inObject && stack[len(stack)-1].wantKey {
-				top := &stack[len(stack)-1]
-				if top.lastKey != "" && v < top.lastKey {
-					t.Fatalf("keys not sorted: %q before %q", top.lastKey, v)
-				}
-				top.lastKey = v
-				top.wantKey = false
-				continue
-			}
-			if len(stack) > 0 && stack[len(stack)-1].inObject {
-				stack[len(stack)-1].wantKey = true
-			}
-		default:
-			if len(stack) > 0 && stack[len(stack)-1].inObject {
-				stack[len(stack)-1].wantKey = true
-			}
+		key := keyTok.(string)
+		if !first && key < lastKey {
+			t.Fatalf("keys not sorted: %q before %q", lastKey, key)
 		}
+		lastKey, first = key, false
+
+		valTok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("object value token: %v", err)
+		}
+		checkSortedValue(t, dec, valTok)
+	}
+	if _, err := dec.Token(); err != nil { // consume closing '}'
+		t.Fatalf("object close token: %v", err)
+	}
+}
+
+func checkSortedArray(t *testing.T, dec *json.Decoder) {
+	t.Helper()
+	for dec.More() {
+		valTok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("array element token: %v", err)
+		}
+		checkSortedValue(t, dec, valTok)
+	}
+	if _, err := dec.Token(); err != nil { // consume closing ']'
+		t.Fatalf("array close token: %v", err)
 	}
 }

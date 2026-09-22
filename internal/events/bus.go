@@ -22,8 +22,10 @@ const (
 
 	// defaultQueueCap bounds the Publish->writer channel. A full queue means
 	// Publish drops the frame (counted in Stats) instead of blocking the
-	// producer.
-	defaultQueueCap = 4096
+	// producer. Sized to comfortably absorb a burst well past the soak
+	// test's 10k events before the writer (which does real disk I/O, so is
+	// inherently slower than an in-memory channel send) has to catch up.
+	defaultQueueCap = 16384
 
 	// defaultMaxSegBytes / defaultMaxSegFrames rotate the active segment into
 	// a sealed one. Small enough that the golden/soak tests rotate at least
