@@ -82,25 +82,53 @@ func TestConcurrentProcessesHaveUniqueCursorsAndVisibleDrops(t *testing.T) {
 		t.Error("cross-process stats hid producer drops")
 	}
 	want := b.Stats().Cursor
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	if want < 200 {
+		t.Fatalf("two producer processes wrote only %d frames", want)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	sub, err := b.Subscribe(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seen := map[Cursor]bool{}
 	processFrames := 0
-	for frame := range sub.Frames() {
+	var last Cursor
+	record := func(frame Frame) {
 		if seen[frame.Cursor] {
 			t.Fatalf("duplicate cursor %d", frame.Cursor)
 		}
+		if frame.Cursor != last+1 {
+			t.Fatalf("cursor gap: after %d got %d", last, frame.Cursor)
+		}
+		last = frame.Cursor
 		seen[frame.Cursor] = true
 		if frame.Kind == "process" {
 			processFrames++
 		}
+	}
+	for frame := range sub.Frames() {
+		record(frame)
+		if len(seen) == 50 {
+			cancel()
+			break
+		}
+	}
+	for range sub.Frames() {
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, err = b.Subscribe(ctx, last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for frame := range sub.Frames() {
+		record(frame)
 		if Cursor(len(seen)) == want {
 			cancel()
 		}
+	}
+	if err := sub.Err(); err != nil {
+		t.Fatal(err)
 	}
 	if processFrames != 200 {
 		t.Fatalf("got %d/200 cross-process frames", processFrames)
