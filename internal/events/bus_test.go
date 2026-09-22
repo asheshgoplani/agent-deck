@@ -4,10 +4,193 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
+
+func TestBusDirIsProfileSpecific(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("AGENTDECK_PROFILE", "alpha")
+	alpha, err := busDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTDECK_PROFILE", "beta")
+	beta, err := busDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha == beta {
+		t.Fatalf("profiles share bus directory %q", alpha)
+	}
+}
+
+func TestConcurrentProcessesHaveUniqueCursorsAndVisibleDrops(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	commands := make([]*exec.Cmd, 2)
+	for i := range commands {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestBusProcessHelper$")
+		cmd.Env = append(os.Environ(), "EVENTS_HELPER_DIR="+dir, "EVENTS_HELPER_ID="+strconv.Itoa(i))
+		commands[i] = cmd
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, cmd := range commands {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, e0 := os.Stat(ready + "0"); e0 == nil {
+			if _, e1 := os.Stat(ready + "1"); e1 == nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helpers did not open bus")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i, cmd := range commands {
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("helper %d: %v", i, err)
+		}
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if got := b.Stats().Dropped; got == 0 {
+		t.Error("cross-process stats hid producer drops")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, err := b.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[Cursor]bool{}
+	for frame := range sub.Frames() {
+		if seen[frame.Cursor] {
+			t.Fatalf("duplicate cursor %d", frame.Cursor)
+		}
+		seen[frame.Cursor] = true
+		if len(seen) == 200 {
+			cancel()
+		}
+	}
+	if len(seen) != 200 {
+		t.Fatalf("got %d/200 cross-process frames", len(seen))
+	}
+	for i := Cursor(1); i <= 200; i++ {
+		if !seen[i] {
+			t.Errorf("missing cursor %d", i)
+		}
+	}
+}
+
+func TestBusProcessHelper(t *testing.T) {
+	dir := os.Getenv("EVENTS_HELPER_DIR")
+	if dir == "" {
+		return
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := os.Getenv("EVENTS_HELPER_ID")
+	if err := os.WriteFile(filepath.Join(dir, "ready"+id), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for i := 0; i < 100; i++ {
+		b.Publish("process", id, i)
+	}
+	if id == "0" {
+		b.mu.Lock()
+		for i := 0; i < defaultQueueCap*2; i++ {
+			b.Publish("overflow", id, i)
+		}
+		b.mu.Unlock()
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
+	dir := t.TempDir()
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		b.Publish("restart", "", i)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	b.maxSegFrames = 12
+	for i := 10; i < 24; i++ {
+		b.Publish("restart", "", i)
+	}
+	if !b.Flush(5 * time.Second) {
+		t.Fatal("flush")
+	}
+	sealed, err := listSealedSegments(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sealed) == 0 || sealed[0].start != 1 {
+		t.Fatalf("bad sealed range after restart: %+v", sealed)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub, err := b.Subscribe(ctx, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var next Cursor = 6
+	for frame := range sub.Frames() {
+		if frame.Cursor != next {
+			t.Fatalf("cursor want %d got %d", next, frame.Cursor)
+		}
+		next++
+		if next == 25 {
+			cancel()
+		}
+	}
+	if next != 25 {
+		t.Fatalf("resume stopped at %d", next)
+	}
+}
 
 func openTestBus(t *testing.T) *Bus {
 	t.Helper()
