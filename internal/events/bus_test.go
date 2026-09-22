@@ -275,6 +275,14 @@ func TestCompactedActiveOnlyReportsCursorTooOld(t *testing.T) {
 	if !b.Flush(2 * time.Second) {
 		t.Fatal("flush")
 	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Open(b.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	sub, err := b.Subscribe(ctx, 1)
