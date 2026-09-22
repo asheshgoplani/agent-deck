@@ -38,7 +38,10 @@ def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_pay
             raise _StopLoop()
         inbox = tmp_path / "inboxes" / "conductor-id.jsonl"
         inbox.parent.mkdir(exist_ok=True)
-        inbox.write_text(payload if payload is not None else "{}\n" * pending)
+        if payload == "__unreadable__":
+            inbox.mkdir(exist_ok=True)
+        else:
+            inbox.write_text(payload if payload is not None else "{}\n" * pending)
         per_tick.append(0)
         await real_sleep(0)
 
@@ -113,3 +116,9 @@ def test_replaced_inbox_record_at_same_count_wakes(monkeypatch, tmp_path):
         ['{"first":true}\n', '{"first":true}\n', '{"second":true}\n'],
     )
     assert per_tick[0] > 0 and per_tick[1] == 0 and per_tick[2] > 0, per_tick
+
+
+def test_unreadable_inbox_does_not_silence_heartbeat(monkeypatch, tmp_path):
+    conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
+    per_tick = _run_loop(monkeypatch, tmp_path, [conductor], [0], ["__unreadable__"])
+    assert per_tick[0] > 0, per_tick
