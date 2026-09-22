@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 )
 
 var (
@@ -12,20 +13,28 @@ var (
 	defaultBus  *Bus
 )
 
-// disableEnvVar lets an operator or a test turn the bus off without touching
-// config.toml. Any of "0", "false", "no" (case-insensitive) disables it;
-// anything else (including unset) leaves it enabled.
+// disableEnvVar lets an operator or a test explicitly force the bus on or
+// off without touching config.toml: "0"/"false"/"no"/"off" (case-
+// insensitive) disables it, any other non-empty value force-enables it even
+// under `go test`. Unset defers to the default for the context (see
+// openDefault): enabled in production, disabled under `go test`.
 const disableEnvVar = "AGENTDECK_EVENTS_BUS"
 
-func envDisabled() bool {
+// envOverride reports an explicit operator/test choice, if any. ok is false
+// when the variable is unset, in which case the caller falls back to its
+// own default.
+func envOverride() (disabled bool, ok bool) {
 	v := strings.TrimSpace(os.Getenv(disableEnvVar))
 	if v == "" {
-		return false
+		return false, false
 	}
 	if b, err := strconv.ParseBool(v); err == nil {
-		return !b
+		return !b, true
 	}
-	return strings.EqualFold(v, "no") || strings.EqualFold(v, "off")
+	if strings.EqualFold(v, "no") || strings.EqualFold(v, "off") {
+		return true, true
+	}
+	return false, true
 }
 
 // Default returns the process-wide bus for the current profile, opening it
@@ -40,8 +49,20 @@ func Default() *Bus {
 }
 
 func openDefault() *Bus {
-	if envDisabled() {
-		warnDisabled("AGENTDECK_EVENTS_BUS disabled", nil)
+	if disabled, explicit := envOverride(); explicit {
+		if disabled {
+			warnDisabled("AGENTDECK_EVENTS_BUS disabled", nil)
+			return disabledBus()
+		}
+	} else if testing.Testing() {
+		// Default() is a process-wide singleton whose writer runs for the
+		// life of the process — under `go test`, that process is the whole
+		// package's test binary, so an always-on background goroutine here
+		// trips every OTHER test's goroutine-leak checker (e.g.
+		// internal/watcher's engine_test.go), not just this package's. Tests
+		// that want a real bus open one directly via Open() (this package's
+		// own bus_test.go does exactly that) instead of going through the
+		// producer-facing singleton. AGENTDECK_EVENTS_BUS=1 overrides this.
 		return disabledBus()
 	}
 	dir, err := busDir()
