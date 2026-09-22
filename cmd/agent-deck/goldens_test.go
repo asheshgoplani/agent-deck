@@ -188,6 +188,8 @@ func safeSpecs() []goldenSpec {
 		{"deepseek_status_json", []string{"deepseek", "status", "--json"}, 0},
 		{"deepseek_profiles", []string{"deepseek", "profiles"}, 0},
 		{"deepseek_profiles_json", []string{"deepseek", "profiles", "--json"}, 0},
+		{"deepseek_sessions", []string{"deepseek", "sessions"}, 0},
+		{"deepseek_sessions_json", []string{"deepseek", "sessions", "--json"}, 0},
 
 		{"group_list", []string{"-p", goldensProfile, "group", "list"}, 0},
 		{"group_list_json", []string{"-p", goldensProfile, "group", "list", "--json"}, 0},
@@ -207,6 +209,8 @@ func safeSpecs() []goldenSpec {
 		// exit 1: the sandbox cwd is not a git/jj repo (today's real behaviour).
 		{"worktree_list", []string{"-p", goldensProfile, "worktree", "list"}, 1},
 		{"worktree_list_json", []string{"-p", goldensProfile, "worktree", "list", "--json"}, 1},
+		{"worktree_info", []string{"-p", goldensProfile, "worktree", "info", "golden-sess-1"}, 1},
+		{"worktree_info_json", []string{"-p", goldensProfile, "worktree", "info", "golden-sess-1", "--json"}, 1},
 
 		{"config_show_effective", []string{"config", "show", "--effective"}, 0},
 		{"config_show_effective_json", []string{"config", "show", "--effective", "--json"}, 0},
@@ -218,6 +222,9 @@ func safeSpecs() []goldenSpec {
 		{"inbox_export_json", []string{"-p", goldensProfile, "inbox", "export", "--json"}, 0},
 		{"inbox_writer_status", []string{"-p", goldensProfile, "inbox", "writer-status"}, 0},
 		{"inbox_writer_status_json", []string{"-p", goldensProfile, "inbox", "writer-status", "--json"}, 0},
+		{"inbox_dead_letter_list", []string{"-p", goldensProfile, "inbox", "dead-letter", "list"}, 0},
+		{"inbox_dead_letter_list_json", []string{"-p", goldensProfile, "inbox", "dead-letter", "list", "--json"}, 0},
+		{"inbox_dead_letter_show_missing", []string{"-p", goldensProfile, "inbox", "dead-letter", "show", "invalid"}, 1},
 
 		{"hooks_status", []string{"hooks", "status"}, 0},
 
@@ -226,6 +233,8 @@ func safeSpecs() []goldenSpec {
 		// A fresh profile has no clients.json; both forms fail on stderr.
 		{"watcher_routes", []string{"-p", goldensProfile, "watcher", "routes"}, 1},
 		{"watcher_routes_json", []string{"-p", goldensProfile, "watcher", "routes", "--json"}, 1},
+		{"watcher_status_missing", []string{"-p", goldensProfile, "watcher", "status", "missing"}, 1},
+		{"watcher_status_missing_json", []string{"-p", goldensProfile, "watcher", "status", "missing", "--json"}, 1},
 
 		{"completion_bash", []string{"completion", "bash"}, 0},
 		{"completion_zsh", []string{"completion", "zsh"}, 0},

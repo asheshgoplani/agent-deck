@@ -17,7 +17,8 @@ func TestGoldensReviewContract(t *testing.T) {
 		"session_show", "session_viewers", "fleet_status", "mcp_attached",
 		"skill_list", "skill_attached", "group_list", "group_show",
 		"conductor_status", "conductor_list", "worktree_list", "inbox_export",
-		"inbox_writer_status", "watcher_list",
+		"worktree_info", "inbox_writer_status", "inbox_dead_letter_list",
+		"watcher_list", "deepseek_sessions",
 	}
 	seen := make(map[string]bool)
 	for _, spec := range safeSpecs() {
