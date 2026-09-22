@@ -287,19 +287,6 @@ func TestProtocolErrors(t *testing.T) {
 	})
 }
 
-func canonical(t *testing.T, raw []byte) string {
-	t.Helper()
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		t.Fatalf("decode %s: %v", raw, err)
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
 func TestCallReturnsTheRegistryEnvelope(t *testing.T) {
 	reg := testRegistry(t)
 	ts := startServer(t, Options{Registry: reg})
@@ -372,8 +359,12 @@ func scrubRequestID(t *testing.T, raw []byte) string {
 		t.Fatalf("decode %s: %v", raw, err)
 	}
 	m["request_id"] = "<ID>"
-	b, _ := json.Marshal(m)
-	return canonical(t, b)
+	// json.Marshal sorts map keys, so this is canonical.
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func TestCatalogListsEveryRegisteredCommand(t *testing.T) {

@@ -33,9 +33,11 @@ func Dial(ctx context.Context, socket string) (*Client, error) {
 	_ = c.SetReadDeadline(time.Now().Add(helloTimeout))
 	hello, err := cl.fc.read()
 	_ = c.SetReadDeadline(time.Time{})
-	if err == nil && hello.Type == TypeError && hello.Error != nil {
+	switch {
+	case err != nil:
+	case hello.Type == TypeError && hello.Error != nil:
 		err = hello.Error
-	} else if err == nil && (hello.Type != TypeHello || hello.Token == "") {
+	case hello.Type != TypeHello || hello.Token == "":
 		err = fmt.Errorf("daemon: unexpected first frame %q", hello.Type)
 	}
 	if err != nil {
