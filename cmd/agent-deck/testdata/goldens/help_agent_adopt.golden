@@ -1,0 +1,7 @@
+Usage: agent-deck agent adopt <conductor-dir|session|plist|unit> [options]
+
+Introspects the target and emits a DISABLED definition with an evidence report.
+The source is never modified: no plist is unloaded, no unit is edited, no
+credential is moved, and no live session is taken over.
+
+Options:

@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
+.PHONY: bench-fleet build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -139,6 +139,13 @@ dev:
 # Run tests (with race detector)
 test:
 	go test -race -v ./...
+
+# Regenerate the CLI/storage-bytes behaviour-freeze goldens under
+# cmd/agent-deck/testdata/goldens/ after a reviewed, intended behaviour
+# change (CORE-PLAN.md section 7). Never run this to make a red suite green
+# without reading the diff first — see testdata/goldens/README.md.
+goldens-update:
+	AGENTDECK_UPDATE_GOLDENS=1 go test ./cmd/agent-deck/ -run 'TestCLIGoldens$$|TestStorageBytesGoldens$$' -v
 
 # Run hard-gated walltime regression tests (Track B). Honors PERF_BUDGET_MULTIPLIER
 # (default 1.0 locally; CI sets 2.0). See docs/perf-budget-suite.md.

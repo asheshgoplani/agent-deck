@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/session.restart/v1/out",
+  "title": "session.restart output",
+  "type": "object",
+  "properties": {
+    "all": {
+      "$ref": "#/$defs/core.RestartAllOut"
+    },
+    "id": {
+      "type": "string"
+    },
+    "reason": {
+      "description": "Why the restart was skipped",
+      "type": "string"
+    },
+    "skipped": {
+      "description": "The freshness or auth guard skipped the restart",
+      "type": "boolean"
+    },
+    "title": {
+      "type": "string"
+    },
+    "warning": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "core.RestartAllOut": {
+      "type": "object",
+      "properties": {
+        "abandoned": {
+          "type": "integer"
+        },
+        "auth_deaths": {
+          "type": "integer"
+        },
+        "auth_tripped": {
+          "type": "boolean"
+        },
+        "failed": {
+          "type": "integer"
+        },
+        "restarted": {
+          "type": "integer"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/core.RestartRow"
+          }
+        },
+        "skipped_auth": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "trip_message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "abandoned",
+        "auth_deaths",
+        "auth_tripped",
+        "failed",
+        "restarted",
+        "sessions",
+        "skipped_auth",
+        "total",
+        "trip_message"
+      ],
+      "additionalProperties": false
+    },
+    "core.RestartRow": {
+      "type": "object",
+      "properties": {
+        "auth_death": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "skipped": {
+          "type": "boolean"
+        },
+        "spawn_failure": {
+          "$ref": "#/$defs/session.SpawnFailureRecord"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "warning": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "session.SpawnFailureRecord": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "dying_output": {
+          "type": "string"
+        },
+        "elapsed_ms": {
+          "type": "integer"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "elapsed_ms",
+        "instance_id",
+        "reason",
+        "tool",
+        "ts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

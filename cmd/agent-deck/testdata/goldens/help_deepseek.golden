@@ -1,0 +1,22 @@
+Usage: agent-deck deepseek <command> [--json]
+
+Inspect the DeepSeek Harness (`dsh`) integration: which binary agent-deck
+would launch, which DSH_HOME it resolves, which profiles exist there, and
+which conversations a workspace has. Read-only.
+
+Commands:
+  status                  Resolved binary, version, DSH_HOME, profile, resume support
+  profiles                List the profiles under $DSH_HOME/profiles
+  sessions [workspace]    List dsh session IDs recorded for a workspace
+                          (defaults to the current directory)
+  help                    Show this help message
+
+Flags:
+  --json                  Emit machine-readable JSON instead of text
+
+Configuration lives in [deepseek] (command, config_dir, profile, patches,
+host, port, trusted_hosts, resume_flag, extra_args, env_file), with
+per-account overrides in [profiles.<account>.deepseek].config_dir.
+
+Launch a session with:  agent-deck launch -c deepseek
+Install the CLI with:   npm install -g @deepseek-ai/dsh

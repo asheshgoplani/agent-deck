@@ -414,7 +414,11 @@ func main() {
 			handleAdd(profile, args[1:])
 			return
 		case "list", "ls":
-			handleList(profile, args[1:])
+			if coreRegistryEnabled() {
+				cliList(profile, args[1:])
+			} else {
+				handleList(profile, args[1:])
+			}
 			return
 		case "remove", "rm":
 			handleRemove(profile, args[1:])

@@ -1,0 +1,12 @@
+Usage: agent-deck worktree cleanup [options]
+
+Find and remove orphaned worktrees and sessions.
+
+Orphans are detected as:
+  - Sessions with WorktreePath set but the directory doesn't exist
+  - Worktrees that exist but no session points to them
+
+Options:
+
+By default, runs in dry-run mode (shows what would be removed).
+Use --force to actually perform the cleanup.

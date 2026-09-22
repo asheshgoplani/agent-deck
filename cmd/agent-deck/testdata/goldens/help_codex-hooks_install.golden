@@ -1,0 +1,8 @@
+Usage: agent-deck codex-hooks <command>
+
+Manage Codex notify hook integration.
+
+Commands:
+  install      Install or upgrade agent-deck Codex notify hook
+  uninstall    Remove agent-deck Codex notify hook
+  status       Show current hook install status

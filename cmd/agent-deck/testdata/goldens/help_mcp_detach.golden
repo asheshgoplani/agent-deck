@@ -1,0 +1,11 @@
+Usage: agent-deck mcp detach <session-id> <mcp-name> [options]
+
+Detach an MCP from a session.
+Codex-compatible sessions always use the global Codex config.
+
+Options:
+
+Examples:
+  agent-deck mcp detach my-project exa           # Detach from local (Codex uses global)
+  agent-deck mcp detach my-project exa --global  # Detach from global
+  agent-deck mcp detach my-project exa --restart # Detach and restart

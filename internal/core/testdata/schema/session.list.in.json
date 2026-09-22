@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/session.list/v1/in",
+  "title": "session.list input",
+  "type": "object",
+  "properties": {
+    "all_profiles": {
+      "description": "List every profile",
+      "type": "boolean"
+    },
+    "include_superseded": {
+      "description": "Include archived source rows retained for cross-harness recovery",
+      "type": "boolean"
+    },
+    "live_status": {
+      "description": "Refresh status and fill the live fields (status, substate, viewers, model); single profile only",
+      "type": "boolean"
+    },
+    "profile": {
+      "description": "Profile to list; ignored with all_profiles",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile"
+  ],
+  "additionalProperties": false
+}

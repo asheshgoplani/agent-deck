@@ -1,0 +1,28 @@
+  -b	Create new branch/bookmark (use with --worktree)
+  -g string
+    	Group for forked session (short)
+  -group string
+    	Group for forked session
+  -json
+    	Output as JSON
+  -new-branch
+    	Create new branch/bookmark
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -sandbox
+    	Run forked session in Docker sandbox
+  -sandbox-image string
+    	Docker image for sandbox (overrides config default)
+  -t string
+    	Title for forked session (short)
+  -title string
+    	Title for forked session
+  -w string
+    	Create fork in a worktree/workspace for branch (git or jj)
+  -with-state
+    	Carry parent's uncommitted working state into the new worktree/workspace (git or jj; #1029/#1305, requires -w)
+  -with-state-and-gitignored
+    	Like --with-state, plus gitignored files (e.g. .env). Implies --with-state. Requires -w.
+  -worktree string
+    	Create fork in a worktree/workspace for branch (git or jj)

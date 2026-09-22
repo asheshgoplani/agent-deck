@@ -1,0 +1,8 @@
+Usage: agent-deck remove <id|title>
+
+Remove a session by ID or title.
+
+Examples:
+  agent-deck remove abc12345
+  agent-deck remove "My Project"
+  agent-deck -p work remove abc12345   # Remove from 'work' profile

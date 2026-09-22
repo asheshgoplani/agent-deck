@@ -47,7 +47,11 @@ func groupVerbCanonical(verb string) (canonical string, ok bool) {
 func handleGroup(profile string, args []string) {
 	if len(args) == 0 {
 		// Default to list
-		handleGroupList(profile, nil)
+		if coreRegistryEnabled() {
+			cliGroupList(profile, nil)
+		} else {
+			handleGroupList(profile, nil)
+		}
 		return
 	}
 
@@ -61,7 +65,11 @@ func handleGroup(profile string, args []string) {
 
 	switch canonical {
 	case "list":
-		handleGroupList(profile, args[1:])
+		if coreRegistryEnabled() {
+			cliGroupList(profile, args[1:])
+		} else {
+			handleGroupList(profile, args[1:])
+		}
 	case "show":
 		handleGroupShow(profile, args[1:])
 	case "create":

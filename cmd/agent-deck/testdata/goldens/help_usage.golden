@@ -1,0 +1,16 @@
+Usage: agent-deck usage [--json] [--refresh]
+       agent-deck usage ingest claude [-- <command> [args...]]
+
+Show how much of each provider's subscription quota is left, from the
+provider's own numbers.
+
+Options:
+  --json      Print the report as JSON
+  --refresh   Fetch pull-based providers (Z.ai) now instead of serving the
+              cache. Claude is push-only (see ingest) and is unaffected.
+
+Subcommands:
+  ingest claude   Read a Claude Code statusLine payload on stdin and cache the
+                  rate_limits it carries. With a trailing "-- <command>", the
+                  same bytes are passed to that command and its output and exit
+                  status are forwarded, so an existing statusLine keeps working.

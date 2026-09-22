@@ -1,0 +1,20 @@
+Usage: agent-deck update [options]
+
+Check for and install updates (always checks GitHub for latest).
+
+Options:
+
+Examples:
+  agent-deck update                     # Check and install latest if available
+  agent-deck update --check             # Only check, don't install
+  agent-deck update --check --json      # Machine-readable check incl. timer state, running TUIs, pending launch agents
+  agent-deck update --version 1.7.3     # Install a specific version (may downgrade)
+  agent-deck update --unattended        # No prompts; what the timer and the TUI run
+  agent-deck update --check-now          # What a controller's nudge runs on this host
+  agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)
+  agent-deck update --install-timer --dry-run
+  agent-deck update --uninstall-timer
+  agent-deck update --timer-status
+
+On macOS every install re-registers com.agentdeck.* launchd agents that run
+this binary (bootout + bootstrap), otherwise they crash-loop with EX_CONFIG.

@@ -1,0 +1,6 @@
+Runtime health
+  Budgets: status pass <250 ms; descriptors <512; tmux calls <=2 per session; remote poll <2000 ms
+  runtime health unknown: no samples
+Session metrics (journal no events, 1.0 h window, 0 sessions observed)
+  turns/day: unknown; median turn: unknown; unconfirmed send rate: unknown; restarts/day: unknown
+  sessions with dead letters: 0

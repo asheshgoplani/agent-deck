@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/group.list/v1/out",
+  "title": "group.list output",
+  "type": "object",
+  "properties": {
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/core.GroupNode"
+      }
+    },
+    "total_groups": {
+      "type": "integer"
+    },
+    "total_sessions": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "groups",
+    "total_groups",
+    "total_sessions"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "core.GroupNode": {
+      "type": "object",
+      "properties": {
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/core.GroupNode"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "session_count": {
+          "description": "Sessions in this group and its subgroups",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/core.GroupStatus",
+          "description": "Status counts; absent for an empty group"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "session_count"
+      ],
+      "additionalProperties": false
+    },
+    "core.GroupStatus": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "integer"
+        },
+        "idle": {
+          "type": "integer"
+        },
+        "running": {
+          "type": "integer"
+        },
+        "stopped": {
+          "type": "integer"
+        },
+        "waiting": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "error",
+        "idle",
+        "running",
+        "stopped",
+        "waiting"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

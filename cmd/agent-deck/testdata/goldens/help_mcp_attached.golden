@@ -1,0 +1,6 @@
+Usage: agent-deck mcp attached [session-id] [options]
+
+Show MCPs attached to a session.
+If no session ID is provided, uses the current session (if in tmux).
+
+Options:

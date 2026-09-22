@@ -1,0 +1,23 @@
+Usage: agent-deck status [options]
+
+Show a summary of session statuses.
+
+Options:
+
+Examples:
+  agent-deck status              # Quick summary
+  agent-deck status -v           # Detailed list
+  agent-deck status -q           # Just waiting count
+  agent-deck -p work status      # Status for 'work' profile
+  agent-deck status --stale                  # Read-only stale-candidate view (never-started/bash-idle/last-activity)
+  agent-deck status --stale --threshold 48h  # Widen the staleness window
+  agent-deck status --stale --json           # Machine-readable candidates, for agents
+
+--stale --json shape:
+  {"threshold_seconds":86400,"total":5,"stale_count":2,"note":"...",
+   "candidates":[{"id":"...","title":"...","tool":"...","status":"idle",
+     "substate":"...","path":"...","group_path":"...","parent_session_id":"...",
+     "reasons":["never-started"],"never_started":true,"created_at":"...",
+     "last_started_at":"...","last_activity_at":"...","last_activity_age_seconds":90000}]}
+  --stale is READ-ONLY: it never stops or removes a session. Review candidates,
+  then act yourself via `session stop`/`session remove`.

@@ -1,0 +1,4 @@
+  -json
+    	Output as JSON
+  -no-remote
+    	Skip remote machines

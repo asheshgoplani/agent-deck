@@ -1,0 +1,10 @@
+{
+  "default_path": "/repo/backend",
+  "default_path_source": "explicit",
+  "explicit_default_path": "/repo/backend",
+  "max_concurrent": 1,
+  "name": "Backend",
+  "path": "backend",
+  "sessions": 2,
+  "success": true
+}

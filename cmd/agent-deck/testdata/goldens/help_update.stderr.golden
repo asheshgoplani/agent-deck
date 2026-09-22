@@ -1,0 +1,20 @@
+  -check
+    	Only check for updates, don't install
+  -check-now
+    	Same as --unattended, but for a controller's nudge: checks GitHub right away and never nudges this host's own remotes
+  -dry-run
+    	With --install-timer/--uninstall-timer: print the files and commands, execute nothing
+  -install-timer
+    	Install (or replace) the daily unattended update timer (launchd on macOS, systemd --user on Linux)
+  -json
+    	With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents)
+  -timer-status
+    	Show whether the daily update timer is installed and loaded
+  -trigger string
+    	Who started this run, for the debug log: tui, timer or manual (default: $AGENTDECK_UPDATE_TRIGGER or manual)
+  -unattended
+    	Install without prompts (no changelog, no stdin); honours [updates] auto_install; exit 2 on Homebrew installs
+  -uninstall-timer
+    	Remove the daily unattended update timer
+  -version string
+    	Install a specific released version (e.g. 1.7.3); may be a downgrade

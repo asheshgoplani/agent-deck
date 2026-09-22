@@ -1,0 +1,12 @@
+{
+  "command": "dsh",
+  "installed": false,
+  "identity_verified": false,
+  "home": "<SANDBOX_HOME>/.dsh",
+  "home_exists": false,
+  "profile": "web",
+  "profile_mode": "web",
+  "resume_supported": false,
+  "fork_supported": false,
+  "api_key_present": false
+}
