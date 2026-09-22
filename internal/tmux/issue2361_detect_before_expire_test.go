@@ -212,6 +212,8 @@ func TestIssue2361_AliveProbeCannotCrossGenerationClaim(t *testing.T) {
 // prompt. The overdue probe ignores the title; the stuck pane still expires.
 func TestIssue2361_StaleSpinnerTitleDoesNotVouchForStuckPane(t *testing.T) {
 	s := startPaneWithContent(t, "issue2361-stale-title", issue2361StuckPaneContent, "claude", "zfadsffa")
+	// s.tmuxCmd is the socket-aware factory, so this targets the test's
+	// isolated tmux server, never the user's.
 	if out, err := s.tmuxCmd("select-pane", "-t", s.Name+":", "-T", "⠋ working").CombinedOutput(); err != nil {
 		t.Fatalf("set pane title: %v: %s", err, out)
 	}
