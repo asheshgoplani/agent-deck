@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -62,7 +63,7 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 		}
 	}
 	if *commitMessage == "" && conductorID != "" {
-		if err := pullHeartbeatRemotes(conductorID); err != nil {
+		if err := pullHeartbeatRemotes(profile, conductorID); err != nil {
 			in.RemoteError = true
 			fmt.Fprintf(os.Stderr, "heartbeat-tick: remote pull: %v\n", err)
 		}
@@ -107,7 +108,7 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 	}
 }
 
-func pullHeartbeatRemotes(conductorID string) error {
+func pullHeartbeatRemotes(profile, conductorID string) error {
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		return err
@@ -116,18 +117,28 @@ func pullHeartbeatRemotes(conductorID string) error {
 	for name := range config.Remotes {
 		names = append(names, name)
 	}
-	sort.Strings(names)
 	binary, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	for _, name := range names {
+	return pullHeartbeatRemoteNames(names, func(name string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*config.Remotes[name].GetCommandTimeout()+5*time.Second)
-		output, err := exec.CommandContext(ctx, binary, "remote", "drain", name, "--into", conductorID, "--json").CombinedOutput()
+		output, err := exec.CommandContext(ctx, binary, "-p", profile, "remote", "drain", name, "--into", conductorID, "--json").CombinedOutput()
 		cancel()
 		if err != nil {
 			return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
 		}
+		return nil
+	})
+}
+
+func pullHeartbeatRemoteNames(names []string, drain func(string) error) error {
+	sort.Strings(names)
+	var failures []error
+	for _, name := range names {
+		if err := drain(name); err != nil {
+			failures = append(failures, err)
+		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
