@@ -63,6 +63,10 @@ type segRef struct {
 }
 
 func (b *Bus) listAllSegments() ([]segRef, error) {
+	if err := b.lockDisk(); err != nil {
+		return nil, err
+	}
+	defer b.unlockDisk()
 	sealed, err := listSealedSegments(b.dir)
 	if err != nil {
 		return nil, err
@@ -72,12 +76,19 @@ func (b *Bus) listAllSegments() ([]segRef, error) {
 		out = append(out, segRef{path: s.path, start: s.start, end: s.end, sealed: true})
 	}
 
-	b.mu.Lock()
-	activeStart := b.activeStart
-	b.mu.Unlock()
-
 	activePath := b.dir + string(os.PathSeparator) + activeSegmentName
 	if _, err := os.Stat(activePath); err == nil {
+		activeStart, _, _, err := activeBounds(activePath)
+		if err != nil {
+			return nil, err
+		}
+		if activeStart == 0 {
+			if len(sealed) > 0 {
+				activeStart = sealed[len(sealed)-1].end + 1
+			} else {
+				activeStart = 1
+			}
+		}
 		out = append(out, segRef{path: activePath, start: activeStart, sealed: false})
 	}
 	return out, nil

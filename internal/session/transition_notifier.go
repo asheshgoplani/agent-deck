@@ -430,13 +430,10 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) (
 
 // publishTransitionEvent is the slice-4 (CORE-PLAN) tap onto the event bus.
 // It never affects delivery: NotifyTransition/NotifyFinished's outbox commit
-// is unchanged by this call, win or lose. Flush uses a short, bounded
-// timeout so a one-shot process (a hook-handler invocation) doesn't lose the
-// frame to an unflushed buffer on exit, without blocking indefinitely.
+// is unchanged by this call, win or lose. The process owner flushes at exit.
 func publishTransitionEvent(kind string, event TransitionNotificationEvent) {
 	bus := events.Default()
 	bus.Publish(kind, event.ChildSessionID, event)
-	bus.Flush(50 * time.Millisecond)
 }
 
 func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance) *Instance {

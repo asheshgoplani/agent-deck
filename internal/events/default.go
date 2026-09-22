@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"testing"
 )
 
 var (
@@ -15,9 +14,7 @@ var (
 
 // disableEnvVar lets an operator or a test explicitly force the bus on or
 // off without touching config.toml: "0"/"false"/"no"/"off" (case-
-// insensitive) disables it, any other non-empty value force-enables it even
-// under `go test`. Unset defers to the default for the context (see
-// openDefault): enabled in production, disabled under `go test`.
+// insensitive) disables it. It is enabled by default in every process.
 const disableEnvVar = "AGENTDECK_EVENTS_BUS"
 
 // envOverride reports an explicit operator/test choice, if any. ok is false
@@ -54,16 +51,6 @@ func openDefault() *Bus {
 			warnDisabled("AGENTDECK_EVENTS_BUS disabled", nil)
 			return disabledBus()
 		}
-	} else if testing.Testing() {
-		// Default() is a process-wide singleton whose writer runs for the
-		// life of the process — under `go test`, that process is the whole
-		// package's test binary, so an always-on background goroutine here
-		// trips every OTHER test's goroutine-leak checker (e.g.
-		// internal/watcher's engine_test.go), not just this package's. Tests
-		// that want a real bus open one directly via Open() (this package's
-		// own bus_test.go does exactly that) instead of going through the
-		// producer-facing singleton. AGENTDECK_EVENTS_BUS=1 overrides this.
-		return disabledBus()
 	}
 	dir, err := busDir()
 	if err != nil {
@@ -76,6 +63,34 @@ func openDefault() *Bus {
 		return disabledBus()
 	}
 	return b
+}
+
+// OpenProfile creates a bus owned by a component with its own lifecycle.
+// The caller must Close it after its producers stop.
+func OpenProfile(profile string) *Bus {
+	if disabled, explicit := envOverride(); explicit && disabled {
+		return disabledBus()
+	}
+	dir, err := busDirFor(profile)
+	if err != nil {
+		warnDisabled("resolve bus dir", err)
+		return disabledBus()
+	}
+	b, err := Open(dir)
+	if err != nil {
+		warnDisabled("open bus at "+dir, err)
+		return disabledBus()
+	}
+	return b
+}
+
+// CloseDefault is the process owner's shutdown hook. It drains and fsyncs
+// accepted taps before a one-shot command or the TUI exits.
+func CloseDefault() error {
+	if defaultBus == nil {
+		return nil
+	}
+	return defaultBus.Close()
 }
 
 // resetDefaultForTest lets tests re-run openDefault() under a fresh

@@ -14,18 +14,16 @@ import (
 
 const eventsUsage = "Usage: agent-deck events <follow|stats>"
 
-// handleEvents dispatches `agent-deck events ...`. Registered as a plain
-// command in cmd/agent-deck rather than through internal/core's registry:
-// the registry from slice 1 (branch core/registry-slice1-20260922) does not
-// build on top of this branch — see docs/events.md and RESULTS.md for why —
-// so this follows the existing plain-dispatch pattern used by every other
-// subcommand in main.go.
+// handleEvents dispatches `agent-deck events ...` through the CLI adapter.
 func handleEvents(profile string, args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, eventsUsage)
 		os.Exit(1)
 	}
 	switch args[0] {
+	case "--help", "-h", "help":
+		fmt.Fprintln(os.Stdout, eventsUsage)
+		return
 	case "follow":
 		handleEventsFollow(args[1:])
 	case "stats":

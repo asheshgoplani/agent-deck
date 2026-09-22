@@ -93,6 +93,7 @@ type adapterEntry struct {
 type Engine struct {
 	cfg      EngineConfig
 	adapters []adapterEntry
+	bus      *events.Bus
 
 	// eventCh is the internal channel from adapter goroutines to the single-writer.
 	// Capacity 64 per D-12 / T-13-06.
@@ -208,6 +209,7 @@ func (e *Engine) RegisterAdapter(watcherID string, adapter WatcherAdapter, confi
 // then launches an adapter goroutine. It also starts the single-writer goroutine
 // and optionally the health check loop.
 func (e *Engine) Start() error {
+	e.bus = events.OpenProfile(e.cfg.Profile)
 	// Migrate legacy watchers/ dir and scaffold watcher/ layout on every boot.
 	// Non-fatal: log and continue so a filesystem error never prevents event processing.
 	if err := MigrateLegacyWatchersDir(); err != nil {
@@ -443,7 +445,7 @@ func (e *Engine) writerLoop() {
 				env.tracker.RecordEvent()
 
 				// Slice 4 (CORE-PLAN): additive tap onto the event bus.
-				events.Default().Publish("watcher.event", env.watcherID, map[string]any{
+				e.bus.Publish("watcher.event", env.watcherID, map[string]any{
 					"sender":    env.event.Sender,
 					"subject":   env.event.Subject,
 					"routed_to": routedTo,
@@ -663,7 +665,7 @@ func (e *Engine) healthLoop() {
 
 				// Slice 4 (CORE-PLAN): additive tap onto the event bus —
 				// this is the "health journal" producer named in the plan.
-				events.Default().Publish("watcher.health", entry.config.Name, state)
+				e.bus.Publish("watcher.health", entry.config.Name, state)
 
 				// Non-blocking send to healthCh.
 				select {
@@ -709,6 +711,9 @@ func (e *Engine) Stop() {
 		// After Wait, no goroutine can send on routedEventCh / healthCh, so it
 		// is safe to close them.
 		e.wg.Wait()
+		if e.bus != nil {
+			_ = e.bus.Close()
+		}
 
 		close(e.routedEventCh)
 		close(e.healthCh)

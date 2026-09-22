@@ -27,6 +27,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/health"
@@ -332,6 +333,8 @@ func main() {
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
 	applyProfileFlag(profile)
+	events.SetProfile(session.GetEffectiveProfile(profile))
+	defer events.CloseDefault()
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer

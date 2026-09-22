@@ -39,15 +39,8 @@ const (
 	// ErrCursorTooOld instead of silently skipping frames.
 	defaultRetainSegs = 32
 
-	// defaultFlushInterval bounds staleness of durability for producers that
-	// never call Flush (e.g. the tmux %output hot path): at most this long
-	// after a Publish, the frame is fsynced.
+	// defaultFlushInterval controls how often pending drop counts are written.
 	defaultFlushInterval = 25 * time.Millisecond
-
-	// defaultFlushBatch forces an fsync after this many unflushed frames,
-	// independent of the ticker, so a fast burst doesn't wait a full
-	// interval before durability catches up.
-	defaultFlushBatch = 200
 )
 
 // ErrCursorTooOld is returned by Subscribe when `after` is older than every
@@ -68,10 +61,14 @@ type Bus struct {
 
 	enabled bool
 
-	queue   chan queuedFrame
-	closeCh chan struct{}
-	closeWg sync.WaitGroup
-	closed  atomic.Bool
+	queue          chan queuedFrame
+	closeCh        chan struct{}
+	closeWg        sync.WaitGroup
+	closed         atomic.Bool
+	failed         atomic.Bool
+	ioMu           sync.Mutex
+	lockFile       *os.File
+	persistedDrops uint64
 
 	mu           sync.Mutex
 	cursor       Cursor
@@ -80,12 +77,11 @@ type Bus struct {
 	activeBytes  int64
 	activeFrames int
 
-	flushRequested atomic.Bool
-	enqueued       atomic.Uint64
-	written        atomic.Uint64
-	synced         atomic.Uint64
-	published      atomic.Uint64
-	dropped        atomic.Uint64
+	enqueued  atomic.Uint64
+	written   atomic.Uint64
+	synced    atomic.Uint64
+	published atomic.Uint64
+	dropped   atomic.Uint64
 }
 
 type queuedFrame struct {
@@ -146,14 +142,26 @@ func Open(dir string) (*Bus, error) {
 		queue:        make(chan queuedFrame, defaultQueueCap),
 		closeCh:      make(chan struct{}),
 	}
+	lockFile, err := os.OpenFile(filepath.Join(dir, "writer.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("events: open writer lock: %w", err)
+	}
+	b.lockFile = lockFile
+	if err := b.lockDisk(); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("events: lock bus: %w", err)
+	}
+	defer b.unlockDisk()
 
 	sealed, err := listSealedSegments(dir)
 	if err != nil {
+		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: list segments: %w", err)
 	}
 
 	lastCursor, err := recoverActiveSegment(dir)
 	if err != nil {
+		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: recover active segment: %w", err)
 	}
 	if lastCursor == 0 && len(sealed) > 0 {
@@ -162,17 +170,28 @@ func Open(dir string) (*Bus, error) {
 
 	f, err := os.OpenFile(filepath.Join(dir, activeSegmentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
+		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: open active segment: %w", err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
+		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: stat active segment: %w", err)
 	}
 
 	b.cursor = lastCursor
 	b.activeFile = f
 	b.activeStart = lastCursor + 1
+	if info.Size() > 0 {
+		first, _, _, err := activeBounds(filepath.Join(dir, activeSegmentName))
+		if err != nil {
+			_ = f.Close()
+			_ = lockFile.Close()
+			return nil, err
+		}
+		b.activeStart = first
+	}
 	b.activeBytes = info.Size()
 	b.activeFrames = countLines(dir, activeSegmentName)
 
@@ -298,7 +317,7 @@ func genEventID() string {
 // burst outrunning the writer), the frame is dropped and Stats().Dropped
 // increments. A disabled or failed-to-open bus makes this a no-op.
 func (b *Bus) Publish(kind, sessionID string, data any) {
-	if b == nil || !b.enabled || b.closed.Load() {
+	if b == nil || !b.enabled || b.closed.Load() || b.failed.Load() {
 		return
 	}
 	raw, err := json.Marshal(data)
@@ -328,7 +347,6 @@ func (b *Bus) Flush(timeout time.Duration) bool {
 	if b.synced.Load() >= target {
 		return true
 	}
-	b.flushRequested.Store(true)
 	deadline := time.Now().Add(timeout)
 	for b.synced.Load() < target {
 		if time.Now().After(deadline) {
@@ -355,14 +373,30 @@ func (b *Bus) Stats() Stats {
 	if b == nil || !b.enabled {
 		return Stats{Enabled: false}
 	}
+	var diskCursor Cursor
+	var diskDrops uint64
+	var pendingDrops uint64
+	if err := b.lockDisk(); err == nil {
+		b.mu.Lock()
+		if err := b.refreshLocked(); err == nil {
+			diskCursor = b.cursor
+		}
+		b.mu.Unlock()
+		diskDrops, _ = b.diskDropsLocked()
+		pendingDrops = b.dropped.Load() - b.persistedDrops
+		b.unlockDisk()
+	}
+	if diskCursor == 0 {
+		diskCursor = b.Cursor()
+	}
 	return Stats{
-		Enabled:   true,
+		Enabled:   !b.failed.Load(),
 		Dir:       b.dir,
-		Cursor:    b.Cursor(),
+		Cursor:    diskCursor,
 		Published: b.published.Load(),
 		Written:   b.written.Load(),
 		Synced:    b.synced.Load(),
-		Dropped:   b.dropped.Load(),
+		Dropped:   diskDrops + pendingDrops,
 		QueueLen:  len(b.queue),
 		QueueCap:  cap(b.queue),
 	}
@@ -379,11 +413,20 @@ func (b *Bus) Close() error {
 	}
 	close(b.closeCh)
 	b.closeWg.Wait()
+	if err := b.lockDisk(); err == nil {
+		if err := b.persistDropsLocked(); err != nil {
+			b.fail(err)
+		}
+		b.unlockDisk()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.activeFile != nil {
-		return b.activeFile.Close()
+		err := b.activeFile.Close()
+		_ = b.lockFile.Close()
+		return err
 	}
+	_ = b.lockFile.Close()
 	return nil
 }
 
@@ -410,23 +453,18 @@ func (b *Bus) writerLoop() {
 		select {
 		case qf, ok := <-b.queue:
 			if !ok {
-				b.mu.Lock()
-				b.syncLocked()
-				b.mu.Unlock()
 				return
 			}
 			b.writeFrame(qf)
 		case <-ticker.C:
-			b.mu.Lock()
-			if b.activeFile != nil {
-				b.syncLocked()
+			if err := b.lockDisk(); err == nil {
+				if err := b.persistDropsLocked(); err != nil {
+					b.fail(err)
+				}
+				b.unlockDisk()
 			}
-			b.mu.Unlock()
 		case <-b.closeCh:
 			drain()
-			b.mu.Lock()
-			b.syncLocked()
-			b.mu.Unlock()
 			return
 		}
 	}
@@ -436,12 +474,26 @@ func (b *Bus) writerLoop() {
 // active segment and rotates if the segment is now over threshold. Called
 // only from the writer goroutine.
 func (b *Bus) writeFrame(qf queuedFrame) {
+	if b.failed.Load() {
+		b.dropped.Add(1)
+		return
+	}
+	if err := b.lockDisk(); err != nil {
+		b.fail(err)
+		b.dropped.Add(1)
+		return
+	}
+	defer b.unlockDisk()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	b.cursor++
+	if err := b.refreshLocked(); err != nil {
+		b.fail(err)
+		b.dropped.Add(1)
+		return
+	}
+	next := b.cursor + 1
 	f := Frame{
-		Cursor:    b.cursor,
+		Cursor:    next,
 		EventID:   genEventID(),
 		TS:        qf.ts.UnixMilli(),
 		Kind:      qf.kind,
@@ -450,42 +502,46 @@ func (b *Bus) writeFrame(qf queuedFrame) {
 	}
 	line, err := f.CanonicalJSON()
 	if err != nil {
+		b.fail(err)
+		b.dropped.Add(1)
 		return
 	}
 	line = append(line, '\n')
 	if b.activeFile == nil {
+		b.fail(fmt.Errorf("events: active file unavailable"))
+		b.dropped.Add(1)
 		return
 	}
+	before := b.activeBytes
 	n, err := b.activeFile.Write(line)
-	if err != nil {
+	if err != nil || n != len(line) {
+		_ = b.activeFile.Truncate(before)
+		b.fail(fmt.Errorf("events: append: %w", err))
+		b.dropped.Add(1)
 		return
 	}
+	if err := b.activeFile.Sync(); err != nil {
+		_ = b.activeFile.Truncate(before)
+		b.fail(fmt.Errorf("events: sync: %w", err))
+		b.dropped.Add(1)
+		return
+	}
+	b.cursor = next
 	b.activeBytes += int64(n)
 	b.activeFrames++
 	b.written.Add(1)
+	b.synced.Add(1)
 
 	if b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames {
 		b.rotateLocked()
 		return
 	}
-
-	if b.activeFrames%defaultFlushBatch == 0 || b.flushRequested.Load() {
-		b.syncLocked()
-		b.flushRequested.Store(false)
-	}
 }
 
-// syncLocked fsyncs the active segment and advances the synced watermark to
-// the last written cursor. Caller holds b.mu, except at startup/teardown
-// paths that call it without contention.
-func (b *Bus) syncLocked() {
-	if b.activeFile == nil {
-		return
+func (b *Bus) fail(err error) {
+	if b.failed.CompareAndSwap(false, true) {
+		warnDisabled("runtime write failure", err)
 	}
-	if err := b.activeFile.Sync(); err != nil {
-		return
-	}
-	b.synced.Store(b.written.Load())
 }
 
 // rotateLocked seals the active segment (rename to seg-<start>-<end>.ndjson)
@@ -495,10 +551,12 @@ func (b *Bus) rotateLocked() {
 		return
 	}
 	if err := b.activeFile.Sync(); err != nil {
+		b.fail(err)
 		return
 	}
 	b.synced.Store(b.written.Load())
 	if err := b.activeFile.Close(); err != nil {
+		b.fail(err)
 		return
 	}
 
@@ -513,11 +571,13 @@ func (b *Bus) rotateLocked() {
 		if oerr == nil {
 			b.activeFile = f
 		}
+		b.fail(err)
 		return
 	}
 
 	f, err := os.OpenFile(oldPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
+		b.fail(err)
 		return
 	}
 	b.activeFile = f

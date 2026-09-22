@@ -56,13 +56,10 @@ func WriteStatusEvent(event StatusEvent) error {
 
 	// Slice 4 (CORE-PLAN): additive tap onto the event bus. The events/
 	// directory above is the format the rest of agent-deck reads; this only
-	// duplicates the same event onto the bus for `events follow`. Flush with
-	// a short, bounded timeout so a one-shot hook-handler process (which
-	// exits right after this call) doesn't lose the frame to an unflushed
-	// buffer, without ever blocking indefinitely.
+	// duplicates the same event onto the bus for `events follow`. The process
+	// owner flushes on exit, outside this producer path.
 	bus := events.Default()
 	bus.Publish("session.status", event.InstanceID, event)
-	bus.Flush(50 * time.Millisecond)
 
 	hookLog.Debug("status_event_written",
 		slog.String("instance", event.InstanceID),
