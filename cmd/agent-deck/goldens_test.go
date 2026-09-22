@@ -124,6 +124,10 @@ var excludedCommands = []excludedCommand{
 	{"watcher start", "starts a watcher process"},
 	{"watcher stop", "stops a watcher process"},
 	{"agent adopt", "mutates the local agent catalog"},
+	{"costs sync", "mutates cost_events (imports usage from provider logs)"},
+	{"costs recompute", "mutates cost_events (rewrites cost_microdollars; --dry-run form is the safe one but not the default)"},
+	{"watcher import", "requires a positional file argument before flags are parsed, so --help alone is not a safe probe; also mutates config"},
+	{"watcher install-skill", "requires a positional skill argument before flags are parsed, so --help alone is not a safe probe; also mutates the filesystem"},
 }
 
 // safeSpecs is deliverable 1's "N commands covered" list: every top-level
@@ -141,7 +145,7 @@ func safeSpecs() []goldenSpec {
 		{"doctor", []string{"doctor"}, 0},
 		{"health_json", []string{"-p", goldensProfile, "health", "--json"}, 0},
 		{"usage", []string{"-p", goldensProfile, "usage"}, 0},
-		{"costs", []string{"-p", goldensProfile, "costs"}, 0},
+		{"costs_summary", []string{"-p", goldensProfile, "costs", "summary"}, 0},
 		{"agents", []string{"agents"}, 0},
 		{"telemetry_status", []string{"telemetry", "status"}, 0},
 		{"system_stats", []string{"system", "stats"}, 0},
@@ -163,7 +167,8 @@ func safeSpecs() []goldenSpec {
 		{"gemini_hooks_status", []string{"gemini-hooks", "status"}, 0},
 		{"hermes_hooks_status", []string{"hermes-hooks", "status"}, 0},
 		{"cursor_hooks_status", []string{"cursor-hooks", "status"}, 0},
-		{"tmux_hooks_status", []string{"tmux-hooks", "status"}, 0},
+		// exit 1: no tmux server is running yet in a fresh sandbox (today's real behaviour).
+		{"tmux_hooks_status", []string{"tmux-hooks", "status"}, 1},
 		{"pi_hooks_status", []string{"pi-hooks", "status"}, 0},
 		{"deepseek_status", []string{"deepseek", "status"}, 0},
 		{"deepseek_profiles", []string{"deepseek", "profiles"}, 0},
@@ -178,7 +183,8 @@ func safeSpecs() []goldenSpec {
 		{"remote_list", []string{"-p", goldensProfile, "remote", "list"}, 0},
 		{"remote_list_json", []string{"-p", goldensProfile, "remote", "list", "--json"}, 0},
 
-		{"worktree_list", []string{"-p", goldensProfile, "worktree", "list"}, 0},
+		// exit 1: the sandbox cwd is not a git/jj repo (today's real behaviour).
+		{"worktree_list", []string{"-p", goldensProfile, "worktree", "list"}, 1},
 
 		{"config_show_effective_json", []string{"config", "show", "--effective", "--json"}, 0},
 
@@ -240,8 +246,9 @@ func helpSpecs() []goldenSpec {
 		"inbox drain", "inbox export", "inbox writer-status", "inbox dead-letter",
 		"hooks status",
 		"watcher list", "watcher create", "watcher start", "watcher stop", "watcher status",
-		"watcher test", "watcher routes", "watcher import", "watcher install-skill",
+		"watcher test", "watcher routes",
 		"agent adopt", "system stats",
+		"costs sync", "costs summary", "costs recompute",
 	}
 
 	all := append(append([]string{}, topLevel...), subcommands...)
