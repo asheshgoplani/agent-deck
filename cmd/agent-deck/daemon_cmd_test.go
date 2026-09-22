@@ -81,8 +81,8 @@ func startDaemon(t *testing.T, home string, env []string) (*exec.Cmd, daemonStat
 }
 
 // canonicalEnvelope renders an envelope with sorted keys, compact, with the
-// request id and time values scrubbed. In particular, cost counters and tmux
-// names remain visible to the byte comparison.
+// request id and time values scrubbed. Tmux names remain visible. Live
+// status cost counters are excluded by the output schema, not scrubbed here.
 func canonicalEnvelope(t *testing.T, raw []byte) string {
 	t.Helper()
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -265,13 +265,16 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 		runAgentDeckEnv(t, home, "", env, "session", "stop", "beta")
 	})
 	seedSessions(t, home, env, "alpha", "beta")
-	serialHome := shortTempDir(t, "adls")
-	if out, err := exec.Command("cp", "-a", home+"/.", serialHome).CombinedOutput(); err != nil {
-		t.Fatalf("clone seeded store: %v: %s", err, out)
+	serialHomes := []string{shortTempDir(t, "adls"), shortTempDir(t, "adls")}
+	serialEnvs := make([][]string, 2)
+	for i, serialHome := range serialHomes {
+		if out, err := exec.Command("cp", "-a", home+"/.", serialHome).CombinedOutput(); err != nil {
+			t.Fatalf("clone seeded store: %v: %s", err, out)
+		}
+		serialTmuxDir := shortTempDir(t, "adlst")
+		serialEnvs[i] = []string{"TMUX_TMPDIR=" + serialTmuxDir}
+		t.Cleanup(func() { testutil.KillTmuxServersUnder(serialTmuxDir) })
 	}
-	serialTmuxDir := shortTempDir(t, "adlst")
-	serialEnv := []string{"TMUX_TMPDIR=" + serialTmuxDir}
-	t.Cleanup(func() { testutil.KillTmuxServersUnder(serialTmuxDir) })
 	_, st := startDaemon(t, home, env)
 	lock, err := os.OpenFile(filepath.Join(filepath.Dir(st.Socket), "mutation.lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -341,53 +344,30 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 	if err := <-probeDone; err == nil {
 		t.Fatal("unknown session start unexpectedly succeeded")
 	}
-	var order []string
-	for len(order) < 2 {
-		select {
-		case err := <-daemonDone:
-			if err != nil {
-				t.Fatalf("daemon start: %v", err)
-			}
-			order = append(order, "alpha")
-			daemonDone = nil
-		case err := <-argvDone:
-			if err != nil {
-				t.Fatalf("argv start: %v: %s", err, argvOut.String())
-			}
-			order = append(order, "beta")
-			argvDone = nil
-		}
+	if err := <-daemonDone; err != nil {
+		t.Fatalf("daemon start: %v", err)
+	}
+	if err := <-argvDone; err != nil {
+		t.Fatalf("argv start: %v: %s", err, argvOut.String())
 	}
 	stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "list", "--json=envelope")
 	if code != 0 || !strings.Contains(stdout, `"title": "alpha"`) || !strings.Contains(stdout, `"title": "beta"`) {
 		t.Fatalf("raced store missing a session: exit %d: %s %s", code, stdout, stderr)
 	}
-	for _, name := range order {
-		out, errOut, code := runAgentDeckEnv(t, serialHome, "", serialEnv, "session", "start", name, "--json=envelope")
-		if code != 0 {
-			t.Fatalf("serial start %s: exit %d: %s %s", name, code, out, errOut)
+	raced := canonicalStateDB(t, home)
+	for i, order := range [][]string{{"alpha", "beta"}, {"beta", "alpha"}} {
+		for _, name := range order {
+			out, errOut, code := runAgentDeckEnv(t, serialHomes[i], "", serialEnvs[i], "session", "start", name, "--json=envelope")
+			if code != 0 {
+				t.Fatalf("serial start %s: exit %d: %s %s", name, code, out, errOut)
+			}
+		}
+		alignStorageTimes(t, home, serialHomes[i])
+		if bytes.Equal(raced, canonicalStateDB(t, serialHomes[i])) {
+			return
 		}
 	}
-	alignStorageTimes(t, home, serialHome)
-	if raced, serial := canonicalStateDB(t, home), canonicalStateDB(t, serialHome); !bytes.Equal(raced, serial) {
-		diff := 0
-		for diff < len(raced) && diff < len(serial) && raced[diff] == serial[diff] {
-			diff++
-		}
-		a, b := strings.Split(stateDump(t, home), "\n"), strings.Split(stateDump(t, serialHome), "\n")
-		row := 0
-		for row < len(a) && row < len(b) && a[row] == b[row] {
-			row++
-		}
-		var racedRow, serialRow string
-		if row < len(a) {
-			racedRow = a[row]
-		}
-		if row < len(b) {
-			serialRow = b[row]
-		}
-		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v, first offset %d, bytes %x vs %x)\nraced row: %s\nserial row: %s", len(raced), len(serial), order, diff, raced[diff:diff+16], serial[diff:diff+16], racedRow, serialRow)
-	}
+	t.Fatal("raced storage bytes differ from both serial execution orders after aligning only time fields")
 }
 
 // Start records wall-clock seconds in tool_data, and every save records a
@@ -433,53 +413,6 @@ func alignStorageTimes(t *testing.T, racedHome, serialHome string) {
 	if _, err := serial.Exec("UPDATE metadata SET value=? WHERE key='last_modified'", modified); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func stateDump(t *testing.T, home string) string {
-	t.Helper()
-	path := stateDBPath(t, home)
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	tables, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tables.Close()
-	var out strings.Builder
-	for tables.Next() {
-		var name string
-		if err := tables.Scan(&name); err != nil {
-			t.Fatal(err)
-		}
-		rows, err := db.Query(`SELECT * FROM "` + name + `" ORDER BY 1`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cols, err := rows.Columns()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for rows.Next() {
-			values := make([]any, len(cols))
-			ptrs := make([]any, len(cols))
-			for i := range values {
-				ptrs[i] = &values[i]
-			}
-			if err := rows.Scan(ptrs...); err != nil {
-				t.Fatal(err)
-			}
-			line, err := json.Marshal(values)
-			if err != nil {
-				t.Fatal(err)
-			}
-			out.WriteString(name + " " + string(line) + "\n")
-		}
-		rows.Close()
-	}
-	return out.String()
 }
 
 func canonicalStateDB(t *testing.T, home string) []byte {

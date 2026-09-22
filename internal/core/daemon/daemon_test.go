@@ -318,6 +318,16 @@ func TestSlowPartialFrameExpiresWithoutBlockingOtherClients(t *testing.T) {
 	if _, err := slow.c.Write([]byte(`{`)); err != nil {
 		t.Fatal(err)
 	}
+	trickleDone := make(chan struct{})
+	go func() {
+		defer close(trickleDone)
+		for i := 0; i < 3; i++ {
+			time.Sleep(time.Second)
+			if _, err := slow.c.Write([]byte(" ")); err != nil {
+				return
+			}
+		}
+	}()
 	fast, err := Dial(context.Background(), ts.paths.Socket)
 	if err != nil {
 		t.Fatal(err)
@@ -331,6 +341,8 @@ func TestSlowPartialFrameExpiresWithoutBlockingOtherClients(t *testing.T) {
 		t.Fatalf("partial frame reply = %+v (ok=%v), want READ_TIMEOUT", f, ok)
 	}
 	slow.expectClosed()
+	_ = slow.c.Close()
+	<-trickleDone
 }
 
 func TestReplyDeadlineAfterHello(t *testing.T) {

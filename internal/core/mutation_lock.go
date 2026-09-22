@@ -17,6 +17,9 @@ import (
 // CLI processes for one profile. The lock covers the command's load,
 // decision, external effects, and save.
 func RunWithMutationLock(ctx context.Context, reg *Registry, id, profile string, in any) *Result {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	def, ok := reg.Lookup(id)
 	if !ok || def.Class != Mutate {
 		return reg.Run(ctx, id, in)
