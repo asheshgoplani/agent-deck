@@ -1829,30 +1829,26 @@ func (s *Session) startupTimeoutIsCurrent() bool {
 	return s.startupTimedOut
 }
 
-// startupShowsAgentAlive is a pure probe for the startup watchdog (#2361): it
-// reports whether the pane already shows the agent alive, using exactly the
-// same predicates normal detection uses to end startup — a working-state
-// pane title, or a captured frame that hasBusyIndicator or hasPromptIndicator
-// accepts. A pane this returns true for is exactly what detection would still
-// call "starting" had it run within the window, so this cannot loosen #1892
-// beyond what detection already accepts there.
+// startupShowsAgentAlive reports whether an overdue pane already shows the
+// agent alive (#2361), using the same content predicates normal detection uses
+// to end startup: a captured frame that hasBusyIndicator or hasPromptIndicator
+// accepts. A pane this returns true for is one detection would classify as
+// active or waiting, so letting it through cannot loosen #1892 beyond what
+// detection already accepts inside the window.
+//
+// The pane title is deliberately not consulted: it survives respawn-pane, so a
+// previous generation's spinner title would vouch for a replacement that never
+// started.
 //
 // Called WITHOUT s.mu held (CapturePane manages its own locking). It does not
-// mutate lastStableStatus, substate, startupAt, or any other GetStatus field;
-// the only state touched is whatever hasBusyIndicator/hasPromptIndicator's own
-// spinner-tracker bookkeeping does internally as part of computing their
-// answer, which mirrors what a normal detection pass over this same content
-// would already do.
+// set lastStableStatus, substate, or startupAt. It is not strictly pure:
+// hasBusyIndicator may allocate stateTracker and, on a busy match, stamp the
+// spinner tracker's busy time. That is the same bookkeeping the next detection
+// pass does over the same cached capture.
 //
 // Capture errors, including ErrCaptureTimeout, return false: the watchdog
 // falls back to its existing (pre-#2361) behaviour in that case.
 func (s *Session) startupShowsAgentAlive() bool {
-	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
-		if AnalyzePaneTitle(paneInfo.Title, paneInfo.CurrentCommand) == TitleStateWorking {
-			return true
-		}
-	}
-
 	rawContent, err := s.CapturePane()
 	if err != nil {
 		return false
@@ -4473,11 +4469,17 @@ func (s *Session) GetStatus() (string, error) {
 			s.afterStartupAliveProbe()
 		}
 		s.mu.Lock()
-		if s.startupAt.Equal(observedStartupAt) && !s.startupTimedOut {
+		timedOut := s.startupTimedOut
+		if s.startupAt.Equal(observedStartupAt) && !timedOut {
 			s.startupAt = time.Time{}
 			statusLog.Debug("startup_overdue_but_alive", slog.String("session", shortName))
 		}
 		s.mu.Unlock()
+		if timedOut {
+			// A concurrent poll expired this generation between the probe and
+			// the clear; report it the same way the expiry path does.
+			return "error", nil
+		}
 	} else if s.expireStartupHandover() {
 		if s.afterStartupTimeoutClaim != nil {
 			s.afterStartupTimeoutClaim()

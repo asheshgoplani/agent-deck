@@ -206,3 +206,32 @@ func TestIssue2361_AliveProbeCannotCrossGenerationClaim(t *testing.T) {
 		t.Fatal("RespawnPane did not publish a fresh startupAt before the probe's guarded clear ran")
 	}
 }
+
+// A pane title survives respawn-pane, so a previous generation's braille
+// spinner title must not vouch for a replacement that shows neither busy nor
+// prompt. The overdue probe ignores the title; the stuck pane still expires.
+func TestIssue2361_StaleSpinnerTitleDoesNotVouchForStuckPane(t *testing.T) {
+	s := startPaneWithContent(t, "issue2361-stale-title", issue2361StuckPaneContent, "claude", "zfadsffa")
+	if out, err := s.tmuxCmd("select-pane", "-t", s.Name+":", "-T", "⠋ working").CombinedOutput(); err != nil {
+		t.Fatalf("set pane title: %v: %s", err, out)
+	}
+
+	RefreshPaneInfoCache()
+	info, ok := GetCachedPaneInfo(s.Name)
+	if !ok || AnalyzePaneTitle(info.Title, info.CurrentCommand) != TitleStateWorking {
+		t.Fatalf("precondition: pane title not seen as working (title=%q, cached=%v)", info.Title, ok)
+	}
+
+	s.mu.Lock()
+	s.startupAt = time.Now().Add(-startupStateWindow - time.Second)
+	s.lastStableStatus = "starting"
+	s.mu.Unlock()
+
+	status, err := s.GetStatus()
+	if err != nil {
+		t.Fatalf("GetStatus after startup deadline: %v", err)
+	}
+	if status != "error" {
+		t.Fatalf("stuck pane with a spinner title: status = %q, want error", status)
+	}
+}
