@@ -87,7 +87,7 @@ func TestConductorHeartbeatTickCLIReadsInboxAndRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
-	if code != 0 || !strings.Contains(out, "Inbox: 1 pending") || !strings.Contains(out, "Read heartbeat rules from "+rules) || !strings.Contains(out, "1 stopped.") {
+	if code != 0 || !strings.Contains(out, "Inbox: 1 pending") || !strings.Contains(out, "Read heartbeat rules from "+rules) || !strings.Contains(out, "1 idle, 0 error, 0 stopped.") {
 		t.Fatalf("first tick: exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
 	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
