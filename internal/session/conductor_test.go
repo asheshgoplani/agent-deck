@@ -2669,12 +2669,10 @@ func TestConductorHeartbeatScript_GroupScoped(t *testing.T) {
 		t.Fatal("heartbeat script should build its message with the group-scoped heartbeat-tick")
 	}
 
-	// The script must contain an enabled-config guard that queries conductor status
-	if !strings.Contains(conductorHeartbeatScript, "enabled") {
-		t.Fatal("heartbeat script must contain an enabled guard that checks conductor status before sending")
-	}
-	if !strings.Contains(conductorHeartbeatScript, "conductor status") {
-		t.Fatal("heartbeat script must query conductor status to determine if enabled")
+	// The script must check this conductor's persisted heartbeat flag.
+	if !strings.Contains(conductorHeartbeatScript, `conductor status "{NAME}" --json`) ||
+		!strings.Contains(conductorHeartbeatScript, `"heartbeat"[[:space:]]*:[[:space:]]*true`) {
+		t.Fatal("heartbeat script must query this conductor's heartbeat flag before sending")
 	}
 }
 
