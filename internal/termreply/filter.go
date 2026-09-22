@@ -62,16 +62,14 @@ type Filter struct {
 }
 
 // replyKind classifies a whitelisted DA/DSR CSI reply so at most one of each
-// kind is forwarded per attach while armed (see Consume). A fresh Filter is
-// constructed for every attach (attachStdinPump.run in internal/tmux/pty.go),
-// so these budgets are naturally scoped to a single attach's quarantine
-// window and reset on the next one.
+// kind is forwarded per quarantine window while armed (see Consume).
 type replyKind int
 
 const (
 	replyKindDA1 replyKind = iota // CSI ? ... c  (DA1 primary device attributes)
 	replyKindDA2                  // CSI > ... c  (DA2 secondary device attributes)
-	replyKindDSR                  // CSI ... n / CSI ... R (DSR / cursor position report)
+	replyKindDSR                  // CSI ... n (device status report)
+	replyKindCPR                  // CSI ... R (cursor position report)
 	replyKindCount
 )
 
@@ -79,13 +77,22 @@ const (
 // final byte is a whitelisted DA/DSR reply byte. seq is the full sequence
 // including the leading ESC and '[' bytes.
 func classifyReply(seq []byte, final byte) replyKind {
-	if final != csiFinalDeviceAttributesByte {
+	if final == csiFinalDeviceStatusByte {
 		return replyKindDSR
+	}
+	if final == csiFinalCursorPositionByte {
+		return replyKindCPR
 	}
 	if len(seq) > 2 && seq[2] == '>' {
 		return replyKindDA2
 	}
 	return replyKindDA1
+}
+
+// ResetReplyBudget starts a new quarantine window without discarding parser
+// state for a reply split across reads.
+func (f *Filter) ResetReplyBudget() {
+	f.usedReplyKind = [replyKindCount]bool{}
 }
 
 // Active reports whether the filter is carrying parser state across read boundaries.
@@ -240,7 +247,7 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 			// left for any further copy — which then falls through as
 			// literal keyboard input into the pane (issue #2356: stray DA1/
 			// DA2 text leaking into the session prompt on session switch).
-			// tmux negotiates at most one reply per kind (DA1, DA2, DSR) per
+			// tmux negotiates at most one reply per kind (DA1, DA2, DSR, CPR) per
 			// client attach, so budget each kind to a single pass-through
 			// while armed; extra copies within the same quarantine window
 			// are almost certainly stale replies from a torn-down attach and

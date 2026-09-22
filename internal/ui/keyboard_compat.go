@@ -330,6 +330,7 @@ type csiuReader struct {
 	inBuf       []byte // buffered input bytes not yet processed
 	err         error  // pending source error to return after draining buffers
 	replyFilter termreply.Filter
+	replyWindow uint64
 	// pollFn checks whether more bytes follow a lone ESC within a timeout.
 	pollFn func(time.Duration) bool
 }
@@ -433,17 +434,24 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 // this seam so it can choose between compatibility translation and exact PTY
 // forwarding only after observing the current input mode.
 func (c *csiuReader) consume(chunk []byte, final bool) []byte {
+	armed := termreply.Active()
+	if armed {
+		if window := termreply.Window(); window != c.replyWindow {
+			c.replyFilter.ResetReplyBudget()
+			c.replyWindow = window
+		}
+	}
 	if len(chunk) > 0 {
 		// Always run the reply filter. Escape-string families (DCS/OSC/
 		// APC/PM/SOS) are never keyboard input and can arrive outside
 		// any explicit quarantine window (e.g. iTerm2 XTVERSION reply on
 		// focus/resize — #731). `armed` stays tied to termreply.Active()
 		// so generic CSI pass-through works for keyboard input.
-		chunk = c.replyFilter.Consume(chunk, termreply.Active(), false)
+		chunk = c.replyFilter.Consume(chunk, armed, false)
 		c.inBuf = append(c.inBuf, chunk...)
 	}
 	if final {
-		c.inBuf = append(c.inBuf, c.replyFilter.Consume(nil, termreply.Active(), true)...)
+		c.inBuf = append(c.inBuf, c.replyFilter.Consume(nil, armed, true)...)
 	}
 	return c.translate(final)
 }

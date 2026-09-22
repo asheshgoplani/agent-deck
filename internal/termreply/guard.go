@@ -6,6 +6,7 @@ import (
 )
 
 var quarantineUntilUnixNano atomic.Int64
+var quarantineWindow atomic.Uint64
 
 // QuarantineFor drops terminal reply traffic until the later of the existing
 // deadline or now+duration.
@@ -13,16 +14,26 @@ func QuarantineFor(duration time.Duration) {
 	if duration <= 0 {
 		return
 	}
-	target := time.Now().Add(duration).UnixNano()
+	now := time.Now()
+	target := now.Add(duration).UnixNano()
 	for {
 		current := quarantineUntilUnixNano.Load()
 		if current >= target {
 			return
 		}
 		if quarantineUntilUnixNano.CompareAndSwap(current, target) {
+			if current <= now.UnixNano() {
+				quarantineWindow.Add(1)
+			}
 			return
 		}
 	}
+}
+
+// Window identifies the current quarantine period. It changes when a new
+// period starts, even if no input was read between periods.
+func Window() uint64 {
+	return quarantineWindow.Load()
 }
 
 // Active reports whether terminal replies should currently be discarded.
