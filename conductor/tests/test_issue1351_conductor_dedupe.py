@@ -219,6 +219,16 @@ def test_fresh_recovery_malformed_metadata_fails_closed_without_add(
     _assert_invalid_meta_fails_closed()
 
 
+def test_fresh_recovery_invalid_utf8_metadata_fails_closed_without_add(
+    tmp_path, monkeypatch,
+):
+    root = _point_at_absent_meta(tmp_path, monkeypatch)
+    (root / "ops" / "meta.json").write_bytes(
+        b'{"description":"\xff","agent":"codex"}'
+    )
+    _assert_invalid_meta_fails_closed()
+
+
 def test_fresh_recovery_non_object_metadata_fails_closed_without_add(
     tmp_path, monkeypatch,
 ):

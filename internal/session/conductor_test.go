@@ -1442,6 +1442,11 @@ func TestLoadConductorMeta_AgentContract(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "invalid UTF-8 in non-agent field fails closed",
+			raw:     "{\"name\":\"meta-agent\",\"description\":\"\xff\",\"agent\":\"codex\",\"profile\":\"default\"}",
+			wantErr: true,
+		},
+		{
 			name:    "non-object metadata fails closed",
 			raw:     `null`,
 			wantErr: true,

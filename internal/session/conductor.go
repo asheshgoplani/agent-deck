@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 )
@@ -654,6 +655,9 @@ func LoadConductorMeta(name string) (*ConductorMeta, error) {
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read meta.json for conductor %q: %w", name, err)
+	}
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("failed to parse meta.json for conductor %q: invalid UTF-8", name)
 	}
 	var meta *ConductorMeta
 	if err := json.Unmarshal(data, &meta); err != nil {

@@ -313,9 +313,9 @@ class _JSONObject(dict):
 def _load_conductor_meta(meta_path: Path) -> dict | None:
     """Read one durable conductor record, rejecting malformed metadata."""
     try:
-        with open(meta_path) as f:
+        with open(meta_path, encoding="utf-8") as f:
             meta = json.load(f, object_pairs_hook=_JSONObject)
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         log.warning("Failed to read %s: %s", meta_path, e)
         return None
     if not isinstance(meta, dict):
