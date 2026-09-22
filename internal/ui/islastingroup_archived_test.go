@@ -166,6 +166,20 @@ func TestWindowRowsInheritParentIsLast(t *testing.T) {
 	}
 }
 
+// TestWindowRowsInheritParentIsLast_RemoteSessionsNotApplicable documents,
+// per the internal/ui RemoteSession coverage guideline, that this test needs
+// no RemoteSession case: RecomputeTreeConnectors only reads/writes
+// ItemTypeGroup and ItemTypeSession rows (tree_connectors.go:10-12) and
+// passes every other row type, including ItemTypeRemoteSession, through
+// untouched. Remote rows get their own IsLastInGroup from
+// remote_tree.go:159 and render through renderRemoteSessionItemAtWidth, a
+// path entirely separate from the window-injection logic this test
+// exercises. Mirrors TestDialogWidth_RemoteSessionsNotApplicable's
+// documented-skip convention.
+func TestWindowRowsInheritParentIsLast_RemoteSessionsNotApplicable(t *testing.T) {
+	t.Skip("not applicable: RecomputeTreeConnectors and window-row flag inheritance never touch ItemTypeRemoteSession rows (tree_connectors.go:10-12, remote_tree.go:159)")
+}
+
 // TestWindowRows_LastVisibleSubSession_ArchivedSiblingsAfter_NoDanglingBar:
 // tmux-window rows injected under the last VISIBLE sub-session, which has
 // archived siblings created after it, must not carry a dangling │ (G3): the
