@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -263,6 +264,57 @@ func TestDefaultOwnerCloseDrainsOneShot(t *testing.T) {
 	defer opened.Close()
 	if opened.Cursor() != 1 {
 		t.Fatalf("accepted one-shot tap lost at exit: cursor %d", opened.Cursor())
+	}
+}
+
+func TestDefaultProducerDoesNotWaitForDiskLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("AGENTDECK_PROFILE", "lock-test")
+	resetDefaultForTest()
+	t.Cleanup(resetDefaultForTest)
+	dir, err := busDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "writer.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		}
+	}()
+	done := make(chan struct{})
+	go func() { PublishDefault("lock-test", "", nil); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("producer waited for disk lock")
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	released = true
+	if err := CloseDefault(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if b.Cursor() != 1 {
+		t.Fatalf("async accepted frame lost: cursor %d", b.Cursor())
 	}
 }
 
