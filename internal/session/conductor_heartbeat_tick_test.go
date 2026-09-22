@@ -283,3 +283,44 @@ esac
 		}
 	}
 }
+
+func TestHeartbeatScript_FailedSendRetriesNextTick(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := `#!/bin/bash
+while [ "$1" = "-p" ]; do shift 2; done
+case "$1 $2" in
+  "conductor status") echo '{"conductors": [{"heartbeat": true}]}' ;;
+  "session show") echo '{"status": "idle"}' ;;
+  "conductor heartbeat-tick")
+    if [ "$4" = "--commit-message" ]; then touch "$HOME/committed";
+    elif [ ! -f "$HOME/committed" ]; then echo '[HEARTBEAT] remote arrival'; fi ;;
+  "session send")
+    if [ ! -f "$HOME/failed" ]; then touch "$HOME/failed"; exit 1; fi
+    printf '%s' "$4" >> "$HOME/sent" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "agent-deck"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(home, "heartbeat.sh")
+	if err := os.WriteFile(script, []byte(renderConductorHeartbeatScript("ops", "default")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command("bash", script)
+		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+		_, _ = cmd.CombinedOutput()
+	}
+	data, err := os.ReadFile(filepath.Join(home, "sent"))
+	if err != nil || string(data) != "[HEARTBEAT] remote arrival" {
+		t.Fatalf("failed send must retry once then dedup: sent=%q err=%v", data, err)
+	}
+}

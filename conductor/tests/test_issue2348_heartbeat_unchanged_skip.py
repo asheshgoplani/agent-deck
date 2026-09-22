@@ -122,3 +122,21 @@ def test_unreadable_inbox_does_not_silence_heartbeat(monkeypatch, tmp_path):
     conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
     per_tick = _run_loop(monkeypatch, tmp_path, [conductor], [0], ["__unreadable__"])
     assert per_tick[0] > 0, per_tick
+
+
+def test_remote_talkback_record_wakes_bridge(monkeypatch, tmp_path):
+    conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
+    record = '{"source_remote":"build-box","child_session_id":"remote-child"}\n'
+    calls = 0
+
+    def pull_remote(_session_id, _profile):
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            inbox = tmp_path / "inboxes" / "conductor-id.jsonl"
+            inbox.write_text(record)
+        return False
+
+    monkeypatch.setattr(bridge, "_pull_remote_talkback", pull_remote)
+    per_tick = _run_loop(monkeypatch, tmp_path, [conductor] * 3)
+    assert per_tick[0] == 0 and per_tick[1] > 0 and per_tick[2] == 0, per_tick
