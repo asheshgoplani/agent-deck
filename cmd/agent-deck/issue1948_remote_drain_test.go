@@ -102,6 +102,34 @@ func stubFetch(records []session.TransitionNotificationEvent, err error) (remote
 	}, &calls
 }
 
+func TestIssue2348_AutomaticDrainOnlyWritesOwnedChildren(t *testing.T) {
+	drainTestHome(t)
+	configureRemote(t, "box-a", "worker@box-a")
+	configureRemote(t, "box-b", "worker@box-b")
+	registerDrainTarget(t, "conductor-a")
+	registerDrainTarget(t, "conductor-b")
+	records := []session.TransitionNotificationEvent{
+		remoteCompletion("child-a", "A", time.Now()),
+		remoteCompletion("child-b", "B", time.Now()),
+	}
+	fetch, _ := stubFetch(records, nil)
+	for _, tc := range []struct{ remote, conductor, child string }{
+		{"box-a", "conductor-a", "child-a"},
+		{"box-b", "conductor-b", "child-b"},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := runRemoteDrain(&stdout, &stderr,
+			[]string{"--into", tc.conductor, "--child-id", tc.child, tc.remote}, fetch)
+		if code != 0 {
+			t.Fatalf("%s drain exit=%d: %s", tc.conductor, code, stderr.String())
+		}
+		events, err := session.ReadInboxEvents(tc.conductor)
+		if err != nil || len(events) != 1 || events[0].ChildSessionID != tc.remote+":"+tc.child {
+			t.Fatalf("%s received records %+v: %v", tc.conductor, events, err)
+		}
+	}
+}
+
 func TestIssue2038_RemoteDrainRefusesTargetBeforeRemoteIO(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

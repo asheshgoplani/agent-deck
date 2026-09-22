@@ -143,6 +143,17 @@ def test_remote_talkback_record_wakes_bridge(monkeypatch, tmp_path):
     assert per_tick[0] == 0 and per_tick[1] > 0 and per_tick[2] == 0, per_tick
 
 
+def test_unreachable_remote_five_ticks_then_one_new_record(monkeypatch, tmp_path):
+    conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
+    per_tick = _run_loop(
+        monkeypatch, tmp_path, [conductor] * 7,
+        inbox_payloads=[None] * 5 + ['{"new":true}\n'] * 2,
+        remote_pull=lambda *_args: True,
+    )
+    assert per_tick[:5] == [0] * 5, per_tick
+    assert per_tick[5] > 0 and per_tick[6] == 0, per_tick
+
+
 def test_remote_pull_writes_synthetic_talkback_before_snapshot(monkeypatch, tmp_path):
     inbox = tmp_path / "inboxes" / "conductor-id.jsonl"
     inbox.parent.mkdir()
@@ -161,3 +172,27 @@ def test_remote_pull_writes_synthetic_talkback_before_snapshot(monkeypatch, tmp_
         [{"id": "conductor-id", "title": "conductor-ops"}], "ops"
     )
     assert count == 1 and digest and error is False
+
+
+def test_two_conductors_only_pull_their_remote_children(monkeypatch):
+    calls = []
+    sessions = [
+        {"id": "child-a", "parent_session_id": "conductor-a", "ssh_host": "worker@box-a"},
+        {"id": "child-b", "parent_session_id": "conductor-b", "ssh_host": "worker@box-b"},
+    ]
+
+    def cli(*args, **_kwargs):
+        if args[:2] == ("remote", "list"):
+            return subprocess.CompletedProcess(args, 0,
+                '[{"name":"box-a","host":"worker@box-a"},'
+                '{"name":"box-b","host":"worker@box-b"}]', "")
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, '{"written":0}', "")
+
+    monkeypatch.setattr(bridge, "run_cli", cli)
+    bridge._pull_remote_talkback("conductor-a", "default", sessions)
+    bridge._pull_remote_talkback("conductor-b", "default", sessions)
+    assert calls == [
+        ("remote", "drain", "box-a", "--into", "conductor-a", "--child-id", "child-a", "--json"),
+        ("remote", "drain", "box-b", "--into", "conductor-b", "--child-id", "child-b", "--json"),
+    ]
