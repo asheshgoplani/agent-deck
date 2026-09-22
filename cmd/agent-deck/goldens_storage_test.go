@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,8 +104,18 @@ func cleanupPrivateTmux(t *testing.T, dir string) {
 	t.Helper()
 	testutil.KillTmuxServersUnder(dir)
 	var dirs []string
-	serverAlive := func(socket string) bool {
-		return exec.Command("tmux", "-S", socket, "show-options", "-s", "-v", "exit-empty").Run() == nil
+	serverAlive := func(socket string) (bool, error) {
+		out, err := exec.Command("tmux", "-S", socket, "show-options", "-s", "-v", "exit-empty").CombinedOutput()
+		if err == nil {
+			return true, nil
+		}
+		if _, statErr := os.Stat(socket); os.IsNotExist(statErr) {
+			return false, nil
+		}
+		if strings.Contains(string(out), "no server running") || strings.Contains(string(out), "Connection refused") {
+			return false, nil
+		}
+		return false, fmt.Errorf("probing private tmux server %s: %w: %s", socket, err, out)
 	}
 	_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -119,23 +130,44 @@ func cleanupPrivateTmux(t *testing.T, dir string) {
 		if err != nil || info.Mode()&os.ModeSocket == 0 {
 			return nil
 		}
-		if serverAlive(path) {
-			pidText, _ := exec.Command("tmux", "-S", path, "display-message", "-p", "#{pid}").Output()
+		alive, probeErr := serverAlive(path)
+		if probeErr != nil {
+			t.Error(probeErr)
+			return nil
+		}
+		if alive {
+			pidText, pidErr := exec.Command("tmux", "-S", path, "display-message", "-p", "#{pid}").Output()
 			_, _ = exec.Command("tmux", "-S", path, "kill-server").CombinedOutput()
-			if serverAlive(path) {
-				if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(pidText))); parseErr == nil && pid > 0 {
-					if process, findErr := os.FindProcess(pid); findErr == nil {
-						_ = process.Kill()
-					}
+			alive, probeErr = serverAlive(path)
+			if probeErr != nil {
+				t.Error(probeErr)
+				return nil
+			}
+			if alive {
+				pid, parseErr := strconv.Atoi(strings.TrimSpace(string(pidText)))
+				if pidErr != nil || parseErr != nil || pid <= 0 {
+					t.Errorf("private tmux server remains at %s; cannot read its PID: %v %v", path, pidErr, parseErr)
+					return nil
 				}
+				process, findErr := os.FindProcess(pid)
+				if findErr != nil {
+					t.Errorf("finding private tmux server PID %d: %v", pid, findErr)
+					return nil
+				}
+				_ = process.Kill()
 			}
 		}
-		if serverAlive(path) {
+		alive, probeErr = serverAlive(path)
+		if probeErr != nil {
+			t.Error(probeErr)
+			return nil
+		}
+		if alive {
 			// Preserve its exact socket instead of unlinking a live server.
 			t.Errorf("private tmux server survived cleanup at %s", path)
 			return nil
 		}
-		if err := os.Remove(path); err != nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			t.Errorf("removing private tmux socket %s: %v", path, err)
 		}
 		return nil
