@@ -1,0 +1,130 @@
+
+  xxxx xxxx xxxx xxxxx xxxxxxxxxxx, xxxxxxxxxxx xxx xxxxx xxxxxx
+
+  ┌────────────────────────────────┬──────────────────┬───────────────────────────────────┐
+  │            Program             │      Amount      │             Deadline              │
+  ├────────────────────────────────┼──────────────────┼───────────────────────────────────┤
+  │ Prototype Fund                 │ up to €47,500    │ window opens 1 Oct, closes 30 Nov │
+  ├────────────────────────────────┼──────────────────┼───────────────────────────────────┤
+  │ NLnet Restack                  │ €5k to €50k      │ 3 Nov, 12:00 CET                  │
+  ├────────────────────────────────┼──────────────────┼───────────────────────────────────┤
+  │ GitHub Secure Open Source Fund │ $10,000          │ rolling                           │
+  ├────────────────────────────────┼──────────────────┼───────────────────────────────────┤
+  │ FUTO microgrant                │ $1,000 to $5,000 │ rolling, one email                │
+  ├────────────────────────────────┼──────────────────┼───────────────────────────────────┤
+  │ Emergent Ventures              │ no fixed range   │ rolling                           │
+  └────────────────────────────────┴──────────────────┴───────────────────────────────────┘
+
+  xx xxxxx, xxxx xxxxxxxxx xxxx xxx xxxxx xxx xxxxx xxxxxx xx xxx xxx xxxxxx xx xxxx xxxx, xxx xxxx xxxx xxxx xxxxxx xxxxxxxxx. xxx xxxxxxxxx xxxx xxxxxx xxxxx xx xxxxx xxxxx. xx xxxxx x
+  xxx xxxxxxxxx xxxxxx xxxx xxxxxxxxxxx, xx xx xxxxx x xxxxxxxx xxx-xxxxxxx xxxxx, xxx xx xxxxx xxx xxxx-xxxxxxxx xxx xxxxx xx xxxxxxx xxxxxx xxx xxxx xxxxxxx xxxxx.
+
+  xxxxxxxxxx xxxx xx xxx xxxxxx xx xxxxxxx, xxxxxxx, xx xxx xxxxxxxxxx xx x xxxx xxxxxxxxxx.
+
+  xxxx xx xxxxx xxxxxxxxx xxx xxxx xxx x'xx xx xxxxxx. x xxx xxxxx xxx xxxxxxxxx xxxx xxxxx, xx-xxxxx xxx xxxxxxxx xxxxx xxxxxxx xxxx xxxxxxxxxx xxx xxxx x xxxx xxx xxxxxx, xx xxxx xxx
+  xxxxx xxxx xxxxx.
+
+✻ Churned for 35s · done 10:06 AM
+
+❯ xxxx xx xxxx xxxx  xxxxxxx  xxx xxxxx xx xxxxxx xxxx xxxxxxxxxxxxx x xx xxxxxxx xxx xxx xxxxx xxxxx xxxxxxxxx xxxxxxxx xxxx xxxx xxx xxxxxxxxxxx xxx xxx xxxx xxxxxx xxxxx xxxxxx x
+
+⏺ xxxxxxx xxxx xx: xxx xxx xxx xxxx xxxxxx xx xxxxxxx xxxx xxxx, xxxxxxxx, xxxx xx xxxxxxx xxxxxxxxx xx xxxxxxxxxx xxxx, xxx xxxxxx xxxxx. xxxx'x x xxxx xxxxxxxx xx xxx xxxx xxxxx xxxxx
+  xxxx xxxx xxxxxxxx, xxxxx xxx xxxxx xx xxx xx xxxxx. x'xx xxxxxxxx xx xxx xxxx xxx, xxxxxxx xxxxxxx xxxx, xxx xxxxxx xx xxxxxxxx.
+
+⏺ xxxx(x=/xxxxxxx/xxx/xxxxxx-xxx/-xxxxx-xxxxxx-xxx-xxxxx-xxx-xxxxxx-xxxxxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxxxxxxx; xxxxx -x $x/xxxxx && xxx > $x/xxxxxx.xx <…)
+  ⎿  ok
+
+❯ xxxxxxxx xxxxxxxx xx xxxxxx xxx xxxxxx xxxxxxxxxx xx xxxxx xxxx xxxxxx xxxxxxx
+
+⏺ xxx xx—x'xx xxxx xxxx xxx'xx xxxxxxx xxxxxxx xx xxxxxx xxx xxxx xxxxxx xxx xxxxx xxx xxxx xxxxxx, xxx xxxx xx xxxx xxx xxxxx xxxxxxxx xx xxxx. xxxxxxxxx xxx xxx xxxxxxxx xxxxxx xxx.
+  · summarized
+
+⏺ x xxxxxxxxxx xxxxxx xxxxxxxx (↓ xx xxxxxx)
+   ├ xxx xxxxx-xxx xxxx xxxxxxx
+   └ xxx xxxxxxxxx-xxxxxxxx xxxx xxxxxxx
+
+❯ xxxx xxx xx xx xxxx xxx xxx xx xxxxx xxxxx x.x xxxxx
+  ⎿  Message queued for delivery to a895a84ccfd9b35bf at its next tool round.
+  ⎿  Message queued for delivery to ac6b7e8e442cab8ae at its next tool round.
+
+⏺ xxxx(xxxxxxx - <<'xxx'
+      x='xxxxxx.xx'; x=xxxx(x).xxxx()…)
+  ⎿  ok
+     xxx:**xxxxxx xxx:** xxxx-xx-xx: xxxxxx xxxxxxx xx xxx xxxxxxx xx xxxxxx xxx xxxx xxxxxx (#x) xxx xxxxx xxx xxxx xxxxxx (#x). xxxxxxxx xxxxxxxxx.
+
+⏺ xxxxx(~/.xxxxx-xxxx/xxxxxx-xxxxxxx/xxxxxxxx-xxx xxx xxx/xxxxxxxx/-xxxxxxx-xxx-xxxx-xxx-xxxxxx-xxxxxxxx-xxx xxx xxx/xxxxxx/xxxxx-xxxx-xxxxxx-xxxx.xx)
+  ⎿  Wrote 14 lines to ../../../.agent-deck/worker-scratch/93f449c4-000 000 000/projects/-private-tmp-exec-oss-grants-research-000 000 000/memory/agent-deck-grants-desk.md
+       x ---
+       x xxxx: xxxxx-xxxx-xxxxxx-xxxx
+       x xxxxxxxx:
+       x   xxxx: xxxxxxx
+       x ---
+       x xxxxxx xxxx xx xxxxxxx "xxxxxx xxxx" xxx xxxxx xxxx (xxxxxx.xxx/xxxxxxxxxxxxx/xxxxx-xxxx, xx/xxxx xxx xxx xxxxxx-xxxxx xxxxxxxx, xxx, xxxxxx xxxxxxxxxx xx xxxxxxx). xxxxx
+          xxxxxx xxxxxxx xxxx-xx-xx; xxxxx xx xxxx-xx-xx xx `/xxxxx/x/xxx/xxxxx/xxx-xxxxxx-xxxxxxxx/xxxxxx.xx`. xxxx xxxxxxxx xxxxxxx xxxxxxx (xxxx.xxxxxxxx) xxx xxx-xxxxxxxx
+          xx xxxx xxx xxxx xxx.
+      xx xxxxxx xxxx-xx-xx: xxxxxxx xx xxxxxx xxx xxxx xxxxxx xxx xxxxx xxx xxxx xxxxxx (xxxxxxxx xxxxxxx). xxxxxxxxxx xx xxxx xxxxxx/xxxxxxx xxx xxxxxx xxxxxx (xxxx xx, xxxxxxxx
+         x.x xxxxx) xxx xxxxxxxx; xxxxxxxx xx xxxxxxxx.
+     … +x xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxxxx. xxxx xxxxxxxx xxxxxx xxx xxxxxxx; x'xx xxxxx xx xxx xxxxx-xxxxxx xxxxxxxx xx x xxx xxxxxxx xx xxxxxx.xx xx xxxx xx xxxx xxxxxx xxxx.
+
+✻ Waiting for 2 background agents to finish
+
+⏺ xxxxx "xxx xxxxxxxxx-xxxxxxxx xxxx xxxxxxx" xxxxxxxx · xxx xxx
+
+⏺ xxxxxxxx xxxxx xx xxxx. xxxxxxx xx xxx xxxxx-xxx xxxxx (xxxxxxxx, xxxxxxxx, xxxxx, xxxx, xxxxxxx, xxxxxxx, xxx, xxxxxx) xxxxxx xxxxxxx xxx xxxxxxx.
+
+✻ Waiting for 1 background agent to finish
+
+⏺ xxxxx "xxx xxxxx-xxx xxxx xxxxxxx" xxxxxxxx · xxx xx
+
+⏺ xxxx xxxxxx xxx xx. x'xx xxxx xxx xxxxx xxx xxxxx xxxxx xxx xxxxxx, xxxx xxx x "xxxx xxxxxx xxx xxxxxxx" xxxxxxx xx xxxxxx.xx.
+
+  xxxx x xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxx. xxx xxxx-xxxxxx xxxxxxxx xx xx xxxxxx.xx xx x xxx xxxxxxx x, xxxx x xx-xxxxxxxx xxxxx xxx xxx-xxxxx xxxxxx.
+
+  xxxxx xxxxxx xx xxx xxx xxxxxx xxx xxxxx
+
+  ┌─────────────────────┬───────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────┐
+  │        Model        │                              Free anywhere?                               │                        Cheapest paid                         │
+  ├─────────────────────┼───────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+  │ Kimi K3             │ Yes, only on NVIDIA build.nvidia.com (~40 requests/min, no token billing) │ $3 in / $15 out at Moonshot, OpenRouter, Together, Fireworks │
+  ├─────────────────────┼───────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+  │ DeepSeek V4.1 Flash │ No. It was released today. NVIDIA has the older V4 Flash and V4 Pro free  │ $0.15 in / $0.60 out off-peak at DeepSeek direct             │
+  └─────────────────────┴───────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────┘
+
+  xxxxxx'x xxxxx xxxxx xxx xxxx xxx xxxx xxxx xx xxxxxxx xxxxx xxxxxxxx, xx xxxx xxxxxxxxxxxx xxxx xxx xx. xxxxxxxx xxxxxx xxxxx xxxx xxxxxx xxxx xxxxxxx xxxxx xxxxxxxxx-xxxxxxxxxx
+  xxxxxxxx, xxx xxxxxxxx xx xx xxxxxxxx xxxxxxxx xxxxxxx.
+
+  xxxx xxxx xxxxx xxxxxxx
+
+  - xxxxxxx xxxxx xxxxxx. xxxxx xx xxxxxx xx xxxx xx x xxxxx-xxxx xxxxxx xxx xx xxxx, xxxxxxxxx xxx xxxxx-xxxxx xxxx. xxxxxxxx xx-xxxxxxxx xxxxxx. xxxxxxxxx xxxxxx xxxx, xxxxxxxxx xxx xx
+    xxxx xxxxx.
+  - xxxxxxxxxx. x xxx-xxxx $xx xxxxxxxx xxxxxxx x,xxx xxxx-xxxxx xxxxxxxx xxx xxx xxxxxxxxxxx xx xxxxxxxx x xxxxx xxx xxxxx x, xxxx xxxx-xxxxxxx xxxxxxx xx xxxxx xxxx xxxxx xxxx xxx
+    xxxxxxxx xxxxxxxx xxxxx.
+  - xxxxxxx xxxx xxxx. $xx xxx xxxxx xx xxxxxxxxx xxx xxxxxxx, xx xxxx. xxxxxxxx: xxxx xxxx xx xxxx xxx xxxxxxxx xx xxxxxxx xxx xxx xxx-xxx xxx xxx xxxx xxxx xx xxxxxxxxxx.
+  - xxxxxx xxxxxx xxxx xxxx. xxxxxx x.x xxxxx xxxx, xxx xxx xxxxx xxx xxx xx-xxxxxxxx xxxxx xxxx xx xxxx xxxxx.
+  - x.xx. xxx-x.x-xxxxx xxxx, xxxx x xxxxxxxx xxxxxxx xxxxxxxx xx xx xx xxxxxx. xxxxxxx x xxxx xxxxxxxxxx xxxxxxxxx xx xxxxxxxxxx. xxxxx xxxxxx xxxxxxxx xxxxxxx xxx xxxxx, xxxxx xxxxxxx
+    xxxx xxxxxx xxxxx.
+
+  xxxx xxxx xxxxxxxxx: xxxxxxxx xxx xxxxxxxx xxxx xx xxxx xxxxxxx xxxxxxx xxxxx. xxxx'x xxxx xxxx xxxx xx xx xxxxxx xxx xxxxxx, xxx xxxxx xxx xx xxxxx xxxx. xxxxxx xxxxxx xxx xxxxxxx xx
+  xx xxxx. xxx'x xxxxxx xxxxxxx xxxxxxxx xxx xx. xxxxxxxx xxxxx xxxx-xx xxxxxxx.
+
+  xxx xxxxx xxxxx x xxxxxx xxxxx: xxxxxx xxxxxx xxxxxxx xxx xxxx xx xxxxxxxxxxx xx xxxxxxx xxxxx xxxx xx xxxx. xxxxxxxxxxx xxxxx xxxxxxxxxxxxx xx xxxxxx.xxx/xxxxxxxx/xxxxxxx.
+
+  x xxxx xxxxxx xxxx xxxxxx xxx xxx xxx xxxxx xxx xxx xxxxxxxxxxxx xx xxx xxxxxx'x xxxxxx xxxx.
+
+✻ Cooked for 20m 16s · done 4:10 PM
+
+❯ xxxxx xx xx xxxxxxxxx xxxxxxx xxx xxxxxxxxxxxxxxxxxx  xxxxx xxxxx x xx xxx xxxxx x xxxx xxxxx xxxxxx
+  ⎿  You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.
+
+✻ Sautéed for 0s · done 2:49 PM
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── oss-grants-research ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u/src/tries/oss-grants-research | [Fable 5.1] ctx:21% in:207.4k out:882                             ✔ Update installed · Restart to update
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                                                                    new task? /clear to save 208.4k tokens
+                                                                                                                                                                                     /xx
+

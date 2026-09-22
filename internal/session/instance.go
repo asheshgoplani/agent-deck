@@ -86,6 +86,7 @@ const (
 	SubstateRunning           = tmux.SubstateRunning
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateInteractiveMenu   = tmux.SubstateInteractiveMenu
+	SubstateBackgroundWork    = tmux.SubstateBackgroundWork
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
@@ -5990,6 +5991,36 @@ func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, p
 	return derived, false, false
 }
 
+// SeedLiveStatusPrior hands a fresh Instance the verdict an earlier pass of
+// the SAME long-lived process reached for it, so the running→waiting/error
+// debounce (debounceFlipFromRunning) can hold across passes. The notify
+// daemon reloads every Instance from storage on each pass; without this seam
+// each pass looked like a one-shot process (statusSampledLive false), the
+// hold never applied, and a single misread frame in a long turn became a
+// real running→waiting transition event (status-detection audit 2026-09-23).
+// A one-shot process must NOT call it: a persisted status is a guess, not an
+// observation. No-op for an empty status.
+func (i *Instance) SeedLiveStatusPrior(status Status, flipPending bool) {
+	if status == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.Status = status
+	i.statusSampledLive = true
+	i.tmuxFlipFromRunningPending = flipPending
+}
+
+// LiveStatusPrior returns what SeedLiveStatusPrior needs on the next pass:
+// the status this process settled and whether a flip away from running is
+// pending confirmation. sampled is false when this process never settled a
+// verdict itself (nothing worth carrying).
+func (i *Instance) LiveStatusPrior() (status Status, flipPending bool, sampled bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.Status, i.tmuxFlipFromRunningPending, i.statusSampledLive
+}
+
 // shouldDebounceTmuxFlipForTool is deliberately narrower than HookStatusTool:
 // pi has hooks (#2222) but is excluded here on purpose, like shell and "".
 // The call site in updateStatus explains why.
@@ -6360,14 +6391,15 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				i.Status = StatusWaiting
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
-				// ends, even while run_in_background shells or a background agent the
-				// turn is awaiting keep running. Treat the session as still running
-				// so it stays green and the daemon emits no premature "finished"
-				// notification; it settles to waiting (and notifies) once the
-				// background work completes — so "done" means foreground AND
-				// background. BackgroundWorkPending captures the pane (the fast path
-				// has no captured content), so release i.mu around it like the
-				// GetStatus call below, then re-check for a concurrent Kill().
+				// ends. If the turn ended by handing off to a background agent
+				// ("Waiting for N background agent to finish") Claude resumes on
+				// its own, so the session stays running. Background SHELLS left
+				// alive at the prompt do not count (tmux.claudeBackgroundWorkPending):
+				// the operator can act, the light is waiting and the substate says
+				// background-work. BackgroundWorkPending captures the pane (the
+				// fast path has no captured content), so release i.mu around it
+				// like the GetStatus call below, then re-check for a concurrent
+				// Kill().
 				bgWorkPending := false
 				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
 					i.mu.Unlock()

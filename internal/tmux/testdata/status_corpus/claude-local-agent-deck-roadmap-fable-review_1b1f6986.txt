@@ -1,0 +1,50 @@
+  xxx xxxxxxx" xxxx xxxxx xx xxx xxxxx xxxxxxx xxxxxxxx. xxx xxxx xxxxxxxx xx xxx xxx, xxxxxxxxxx-xxxxxxxx xxxxx xxxxx, xxx xxxxxxxxx xxxxx xxxxxx.
+
+  xxxxx xxxxxxxxx
+
+  xxxxxx xxx xxxxx xxxxxxxxxxx xxxxxxxx, xxxxxx xxxxxxxx x xx xxxxxxx xxxx. xxx: xxx xxxxx x xxxxxx xxxxx x; xxxxx x.x; xxxxx xxxxxxxxxx-xxxxxxxx xxx xxxxxxx xxx xxxx xxxxxxxx xxxxxx; xxxx xxxxxx xxx
+  xxxxxx xxxx.
+
+  xxxxxxx xx xxxxxxxxx-xxxxx-xxxx
+
+  1. xxxxxxx xx xxxx xxxxxxx xx xxx xxxxx xxxxxx/xxxx.
+  2. xxxxxxxxx xxxx: xxxx xx xxxxxx xxx xx xxxxxxx xxxxxxxxx xxxxxxxx xxxxx xxxxxxxx xxx xxxxxxxxxxx xxxx, xxxxx xxxxx xxxxxxxxx, xxxxx xxxxxxx xxxxxxxx xxxxxxxxx.
+  3. xxx xxxxxxxx xxxxx xxx xxxxxxxxxxx xxxx xxxxxxxxxx xxxxxxxx xxx xxx xxxxxx xx xxxxx.
+  4. xxx xxxxxxxxxxx: xxxxx xxxxxxxx xxxx xxxxxx/xxxx, xxxxxxx xxxxxxxxxxxxxxxx xxxx xxxxx, xxx xxxxxx, xxxx xxxx xxxxx xxxx xxxxxxx xxxxxxxxxxx xxxxx, xxx xxxxx-xxxxxxx xxxxxxx, xxx xxx xxxxxx
+     xxxxxx.
+  5. xxxxxx:xxxxxxxxxx-xxxxxx xxxx xxxx xxxxxx xxxxx, xxxx xxxxx, xx xxxxxxxxx, xxxxxxxx xxxxxx xxxxxxxx. xxxxx xxxxx xx xxxxxxx.
+  6. xxxxx xxx xxxxxxxx xxxxxx xxxxx xxxx xxxxx xxx xxxxxx xx xxx xxxxxxx.
+  7. xxxxxxxx xx xxx xxxxx.xx xxxxxx xxxxxx, xxx xx-xxxxxx.xxx xxxxxxxxxx xxxxxx, xxxx xxxxxxx xxxx xx xxxx xxxxxxxxxx xx, xx x xxxx xxxx xxxxxx xxxx xx xxxxx.
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  xxxxxxx, xxx xxxxxxxxx xxxxx xxxxxx xx xxxxxxxxx xxxx
+
+✻ Crunched for 5m 10s · done 11:35 AM
+
+❯ xxxxx xxx xxxxxxxxxxx xxxx xxxxxx xxxx xxx xxxxxx xxxx /xxxxx/x/xxxxx-xxxx-xxxxxxxx/xxxxxxxx-xxxxxxxxxxx-xxxx/xxxxxxx-xx.xx. xxxxxx xxxx xx xxx xxxxxx xxxx: xxxxx xx xxxxxxxx, xxxxxxxx xx xx
+  xxxx xxxxx xxxxxxxxx xxxxxxxx. xx xxx xxxx xxxxx xx xxxxxxxx xxxxx.
+
+  xxxx x xxxx
+
+⏺ xxxxx.
+
+  xxxxxxxxx xxxxxxxx (xxxx xxxx xx xxxx xxxxxxxx; xxxxxxx xxxxxx xxx xxxxx xxxxxxxxx):
+
+  1. xx xxxx xxxxx xxxx xx xxxxxxxx xxxxxx-xxxxxxxx xxxxxx xx xxxxxx. xxx xxxxxxx → xxxxxxxx → xxxxxxx | xxxxxx xxxxx xxxxxxx xxxxxxxxx xxxxx. xx xx xxxxx x xxx xxxxxx xx xxxxxx xxxxxxxxx xx xxxxx.xx,
+     xxx xxxxxxxxx xxxxxxxx'x xxx xxxx xxxx (xxxxx xxxxxx xxxxxx) xxxxx. xxxxx xx xxxxx xxxxxxx xxxx xxxxx xxxxx xx xxxxxxxx xxxx_xxxx xxxx xx x xxx xxxxxx, xxx xxx x xx.xx xxxxxx xxxxx x xxxxxxxxxx
+     xxx xxxxxxxx xx.
+  2. xx xxxx x xx xxx-xxxxxxxx. xxxxxxxxxxx xx xxx xx xxx xxxxxxx'x xxxxxxxx xxxxxxxx (xxxxx xxx xxxxxx, xxxx xxxx xxxxx (xx xxxx), xxxxxxxx, xxxxxxx), xxx xx #xxxx xxxxxxx xxxx xx. xxxxxxx xxxx x xx
+     "xxx xxxx xxxxxxxx xxxxxxxx xxxxx xx x xxxxx xxxx xx" xx xx'x xxxx xxxx xx xxxxxxxxx.
+  3. xxxx-xxxxxxxx xxxx xx xxxxxxxx xxx xxx xxxxxxx. xxx xx xxx xxxx xxxxxx-xxxx xxxx xxxx xxx xx xxxxxxxxxxxxxxx. xxx xx xxxxx xxxxxxxx xx xxx xxxxxxx xxxx-xxxxxxxx xxxxxxx (xxxxx-xxxx xxxxxxxxxxxx
+     xxxx xxxxxx xxx xxxxx) xx xx, xxxxx xx xxxxx xxxxxxxxx xxx xxxx xxx xx xxxxxxx xxxxxx xxxxxxx xx.
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  xxxxxx xx xx
+
+✻ Baked for 21s · done 11:39 AM
+                                                                                                                                                                new task? /clear to save 173.3k tokens
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── agent-deck-roadmap-fable-review ─
+❯ xxxxx xxxxxxxxx xxx xxxxx xxxxxxxx xx xxxxxxx-xx.xx, xxxxxxx xxxxx xx xxxxxxxx
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⬆ /xxx-xxxxxx │ ⚠ xxxxx xxxxx — xxx /xxx-xxxxxx │ xxxxx x.x │ xxxxx-xxxx ██░░░░░░░░ xx%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

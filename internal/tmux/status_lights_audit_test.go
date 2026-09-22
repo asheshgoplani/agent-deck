@@ -526,7 +526,7 @@ func TestAudit_B_CompletedTurnAtIdlePrompt(t *testing.T) {
 		content string
 	}{
 		{"live spinner below the completion line", auditCompletedTurnPane + "\n✻ Reticulating… (3s · ↑ 50 tokens · ctrl+c to interrupt)"},
-		{"background shells still running", "✻ Churned for 6m 24s · 2 shells still running\n❯ "},
+		{"awaiting a background agent", "✻ Waiting for 1 background agent to finish\n❯ "},
 		{"open menu, not an idle prompt", auditFeedbackSurveyPane},
 		{"no completion line at all", "⏺ Working on it.\n❯ "},
 		{"user typed into the prompt", "✻ Worked for 2s · done 8:26 PM\n❯ next question"},
@@ -538,6 +538,12 @@ func TestAudit_B_CompletedTurnAtIdlePrompt(t *testing.T) {
 				t.Fatal("must not read as a finished turn at an idle prompt")
 			}
 		})
+	}
+	// Background shells left alive do not keep the turn open (status-detection
+	// audit 2026-09-23): the turn IS finished, the operator can act, and a
+	// hook still saying running over this frame is lagging.
+	if !d.CompletedTurnAtIdlePrompt("✻ Churned for 6m 24s · done 4:36 PM · 2 shells still running\n❯ ") {
+		t.Fatal("a finished turn with background shells alive is still a finished turn")
 	}
 	if NewPromptDetector("codex").CompletedTurnAtIdlePrompt(auditCompletedTurnPane) {
 		t.Fatal("the completed-turn shape is Claude's; other tools stay false")

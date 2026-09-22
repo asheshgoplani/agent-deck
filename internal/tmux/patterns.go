@@ -74,6 +74,16 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 	case "codex":
 		return &RawPatterns{
 			BusyPatterns: []string{
+				// Codex's live status line sits ABOVE the composer and the
+				// model/context footer ("• Working (9m 41s • esc to interrupt)",
+				// "• Waiting for background terminal (13m 23s • esc to
+				// interrupt) · 1 background terminal running"), four to six
+				// lines from the bottom, so the plain "esc to interrupt"
+				// strings below (gated to the last 3 lines) never see it and
+				// the frame read as waiting whenever the pane-title spinner
+				// was not fresh. The bullet + elapsed-time shape is Codex's
+				// own rendering and cannot come from prose.
+				`re:(?m)^•\s+\S[^\n]*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)`,
 				"ctrl+c to interrupt",
 				"esc to interrupt",
 				"press esc to interrupt",
@@ -196,8 +206,17 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				`re:(?m)^\[subagent\]`,
 				`re:(?m)^\[running\]`,
 			},
-			PromptPatterns: []string{`re:(?m)^\s*pi>\s*`},
-			SpinnerChars:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+			PromptPatterns: []string{
+				`re:(?m)^\s*pi>\s*`,
+				// pi's composer has no prompt glyph: the frame ends with the
+				// rule-bounded input box, a "~/path • title" line and the
+				// token/cost status line ("↑5.9k ↓77 R5.5k CH96.6% …"). That
+				// status line only renders with the composer, so it is the
+				// idle-prompt marker (busy is checked first, so a live pi
+				// spinner banner still wins).
+				`re:(?m)^↑[\d.]+[kMG]?\s+↓[\d.]+[kMG]?\s+R[\d.]+`,
+			},
+			SpinnerChars: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 		}
 	case "copilot":
 		// GitHub Copilot CLI (the standalone `copilot` binary, Issue #556).

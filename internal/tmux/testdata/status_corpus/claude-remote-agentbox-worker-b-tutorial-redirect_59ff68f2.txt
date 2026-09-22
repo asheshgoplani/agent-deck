@@ -1,0 +1,49 @@
+  - #xxx xxxxx xxx xx xxxxxxx xxxxxxx. #xxx xxxxx xxx xxxxxxxx xxxxxx xxxx #xxx'x xxxxxx xxxx xxxx
+    xxxxx. xxx xxx xx x xxxxx (xxxxxxxx), xxxxx xxxx #xxx xx xxxxxxx xxxx xxxxxxx.                                                                                               ✕
+  - #xxx xxxxxx xxx xx #xxx'x xxxxx. #xxx xxx x xxxx xxxxxx xxx xxxx-xxxxxxxxxx xxxx xx xx xx
+    xxx.xxxx xxxxxxx, xxx #xxx xx xxxx xxxx xx xxxxx. x xxxxxxx xxx xxxx (xxxxxxxx) xx xxxxx xxx
+    xxxx xx xx xxxx xx xxxxxxx xxx xxxxxxxx. xx xxxxxx xxxx #xxx xxx xxxxx xxxxxxx xx. #xxx xxx xx
+    xx xxxxxxx xxxxx #xxx xxxxx xxx xxxxx xxxx xxxxxx.
+  - #xxx xxxxx x xxxxxx xxxxxx xxxxxxx. xxxxxxx xx xx-xx xxxxx #xxx xxxxxxxxx xx x xxxxx. xxx xxx
+    xx xxx xxxxxx --xxxx xxxxxx/xxxxxxx xxxxxxxx, xxxxx xxxxxx xxxx xxx xxx xxx xxxxxxx. xxxxx
+    xxxxxxx xxxxxxx.
+  - #xxx xxxxxxxxx: #xxx xx xxx xxxx xxx, xx xxxxxxxxxxxxxxxxxxxxxxx, xxxxxxxxxxxxxxxxxxxxxxx xxx
+    xxx xxxx. xxxxx xxx xxxx xx xxxxxx xxxxx xx xxx/_xxxxxx.xxx xx #xxx. xxxxx xxx xx xxxxxxx xxxx
+    #xxx.
+  - #xxx xxxxxxxx: xxx xxxxxx xxxx xxxxxxx #xxx. xxx xxxxxx xxxxxxx xx.x.
+  - xxx x xxxxxx xxxxxxx xxx xxx #xxxx#xxx xxxx xxxx xxxxxxx, xxxx xxxx xx xxx xx xxxx xxxx xx
+    (xxxxxxxx xxxx xx #xxx). xxx xxxxx-x xxx xxx xx xxxxxxxxx.
+
+  xxxxxxxx xxxx xxx xxxxxx xxx: xx.x.x xxxxx'x xxxxx xxx, xx x xxxxxxxx xxxxxxx xx.x (xxxxxxxx).
+  xxxxx xxxxxxxxxx xx xxxxxxxxx xxx: #xxx, #xxx (xxx xx xx.x), xxx.xxxx, xxx x xxx xxxxx, xxx x
+  xxxxxx-xxxxx, xxxxxxxxxx xx xxxxxxxx xxxxxxxxxxx. xxx xxxxxx xxx xxx xxx-xxxx xxxxxxx xx xx-xxx
+  xxxx xx.x.x'x xxx xx xxxxxxxxx.
+
+  xxx xxxx xxxxx #xxx: xxxx xxxxx xxx xxxxx xxx/_xxxxxx.xxx: #xxx, #xxx, #xxx xxx #xxx. xxxx #xxx
+  xxxxxxx xxx xxxxxxx/[xx] xxx xxxxxxxxxx xxxxxxx: xx xxxx ...xxxxxxxxxxxxxxx xxxxx xxxxx xxx                                  xx xxxxxxx xxxx xxxxxxx
+  xxxxxxxxxxxx: xxxx #xxx xxxxxxx, xx xxxx xxxx xxxxx. xx xxxxx xx xxxxxxx xxx xxxxx xxxxx
+  xxxxxxxxxx. x xxxx-xxxx xxxxx xxxxx xx #xxx'x xxx/_xxxxxx.xxx xxxx xxx xxxxx xxx xxxx xx
+  xxxxxxxxx, xx xxxx xxxxxx xxxx xxxx xxxx xxxx. #xxx xx xxx xx xxx xxx xxx.
+
+  xxxxx xxxx:
+  - #xxx xxx xx xxx xxxxx xxx. xx'x xxxxxx xxxx xxxx xx xxxxxxxx xxxxx, xxx xxx xxx xx xxxx xxxx
+    xxx x xxxxxxxx xxx.
+  - xxx xxxx, xx xxxx xxxx: x xxxxx x xxx xxxxxxx xxxxxxx xxxxxxx'x xxxx xxxxxxx. xxx xxxxx xxxx
+    first, so nothing of the other session's was killed; I checked, and it is still running.
+  - xxxx_xxxxxxx xx xxxx xxxxxxxx: xxx xxxxx xxxxxxx xxxxxxxx xxx xxx xxxxx xxxxxx xxxxxxx xx
+    xxxxxxxx xxxx xxxxxxxx-xxx, xx xxxxxxxx-xxx xxxxxx xxxxxxxxx.
+  - xxxxxxxx: xxx xxxxx xxxxxx xxxx, xxx xxxx xxx xxxxxxx.
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  (xxxxxx/xxxxxxx-xxxxx-xx = xxxxxxxx, xxxxx xxxx); xxx xxx xxxxxx xxxxx, xxxx xxxx/xxxx (xxxxx
+  xxxx xxxxx); xxx: #xxx x #xxx xxx xxx, #xxx x #xxx xxxx xxx, #xxx xxxxx xxxxxx --xxxx; xxxxx xx
+  #xxx xxxxxx; xxxx xx xx.x xxxxx xxxxxxxxx, xx.x.x xxx xxx xxx; #xxx xxxxxxx xxxx xxxxx; xxxxxx
+  xxxxx-xxxx-x-xxxxxx.xx
+
+✻ Brewed for 1m 3s · done 10:42 PM · 1 shell still running
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── worker-b-tutorial-redirect ─
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents

@@ -145,6 +145,13 @@ func (d *PromptDetector) hasDeepSeekPrompt(content string) bool {
 // the two cannot drift.
 var deepSeekWebReadyLine = regexp.MustCompile(`(?mi)^dsh web:\s+https?://`)
 
+// isHorizontalRuleLine reports whether line is one of the box rules Claude
+// draws above and below its input box (optionally carrying the session title
+// at the right edge: "──────── account ─").
+func isHorizontalRuleLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(StripANSI(line)), "─────")
+}
+
 // hasClaudePrompt detects if Claude Code is waiting for input
 // Handles BOTH normal mode AND --dangerously-skip-permissions mode
 //
@@ -325,13 +332,22 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 	if len(checkLines) > 8 {
 		checkLines = checkLines[len(checkLines)-8:]
 	}
-	for _, line := range checkLines {
+	for idx, line := range checkLines {
 		cleanLine := strings.TrimSpace(StripANSI(line))
 		// Normalize non-breaking spaces (U+00A0) to regular spaces
 		// Claude Code uses NBSP after the prompt character
 		cleanLine = strings.ReplaceAll(cleanLine, "\u00A0", " ")
 		// Check for standalone prompt character (user hasn't typed yet)
 		if cleanLine == ">" || cleanLine == "❯" || cleanLine == "> " || cleanLine == "❯ " {
+			return true
+		}
+		// Prompt with an unsent draft: "❯ migrate all" drawn between the two
+		// horizontal rules of the input box. The rules tell it apart from an
+		// echoed earlier prompt ("❯ text" followed by a ⏺ reply) and from a
+		// menu option ("❯ 1. Leave it"). 11 of 46 audited idle Claude panes
+		// carried a draft; without this they had no prompt verdict at all.
+		if strings.HasPrefix(cleanLine, "❯ ") && idx > 0 && idx+1 < len(checkLines) &&
+			isHorizontalRuleLine(checkLines[idx-1]) && isHorizontalRuleLine(checkLines[idx+1]) {
 			return true
 		}
 		// Check for prompt with suggestion (Claude shows "❯ Try..." when waiting)
