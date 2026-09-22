@@ -63,6 +63,9 @@ type timelineCursor struct {
 	Hash    string `json:"hash"`
 }
 
+var errTimelineSourceChanged = errors.New("recall: native source changed during timeline read; retry")
+var errTimelineSourceMissing = errors.New("recall: no readable native transcript")
+
 func cursorFor(sessID int64, turns []Turn) string {
 	b, _ := json.Marshal(turns)
 	h := sha256.Sum256(b)
@@ -113,7 +116,7 @@ func (s *Searcher) Timeline(ctx context.Context, ref string) (Timeline, error) {
 		return Timeline{}, err
 	}
 	if len(sources) == 0 {
-		return Timeline{}, fmt.Errorf("recall: no readable transcript for %s", ref)
+		return Timeline{}, fmt.Errorf("%w for %s", errTimelineSourceMissing, ref)
 	}
 	result := Timeline{Session: sess, Turns: make([]Turn, 0)}
 	for _, src := range sources {
@@ -166,7 +169,7 @@ func parseStableTimelineSource(ctx context.Context, src TimelineSource, nativeID
 			return turns, nil
 		}
 	}
-	return nil, errors.New("recall: native source changed during timeline read; retry")
+	return nil, errTimelineSourceChanged
 }
 
 func resolveTimelineSession(ctx context.Context, tx *sql.Tx, ref string) (SessionRow, error) {
@@ -224,6 +227,9 @@ func (s *Searcher) Follow(ctx context.Context, ref, after string, emit func(Fram
 	for {
 		current, err := s.Timeline(ctx, ref)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errTimelineSourceChanged) || errors.Is(err, errTimelineSourceMissing) {
+				return emit(Frame{Type: "resync_required"})
+			}
 			return err
 		}
 		if current.Session.SessID != c.Session || c.Count > len(current.Turns) || cursorFor(c.Session, current.Turns[:c.Count]) != after {

@@ -147,6 +147,27 @@ func TestFollowMalformedCursorRequiresResync(t *testing.T) {
 	}
 }
 
+func TestFollowRemovedSourceRequiresResync(t *testing.T) {
+	f := newFixture(t)
+	f.sweep(t)
+	s := New(f.st, f.stateDB)
+	before, err := s.Timeline(context.Background(), sessA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(writeSessionPathForTimeline(t, f), filepath.Join(t.TempDir(), "moved.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	var frames []Frame
+	err = s.Follow(context.Background(), sessA, before.ThroughCursor, func(frame Frame) error {
+		frames = append(frames, frame)
+		return nil
+	})
+	if err != nil || len(frames) != 1 || frames[0].Type != "resync_required" {
+		t.Fatalf("removed source: frames=%+v err=%v", frames, err)
+	}
+}
+
 func TestFollowSeesSourceAppendWithinTwoSeconds(t *testing.T) {
 	f := newFixture(t)
 	f.sweep(t)
