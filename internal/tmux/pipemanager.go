@@ -406,7 +406,7 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 			// so it deliberately does NOT call Flush — Publish's bounded
 			// queue + drop-with-counter is what keeps this path non-blocking
 			// under pressure (see internal/events).
-			events.Default().Publish("tmux.output", sessionName, nil)
+			events.PublishDefault("tmux.output", sessionName, nil)
 			if pm.onOutput != nil {
 				pm.onOutput(sessionName)
 			}

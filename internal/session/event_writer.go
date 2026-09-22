@@ -58,8 +58,7 @@ func WriteStatusEvent(event StatusEvent) error {
 	// directory above is the format the rest of agent-deck reads; this only
 	// duplicates the same event onto the bus for `events follow`. The process
 	// owner flushes on exit, outside this producer path.
-	bus := events.Default()
-	bus.Publish("session.status", event.InstanceID, event)
+	events.PublishDefault("session.status", event.InstanceID, event)
 
 	hookLog.Debug("status_event_written",
 		slog.String("instance", event.InstanceID),

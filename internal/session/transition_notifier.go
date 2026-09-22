@@ -432,8 +432,7 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) (
 // It never affects delivery: NotifyTransition/NotifyFinished's outbox commit
 // is unchanged by this call, win or lose. The process owner flushes at exit.
 func publishTransitionEvent(kind string, event TransitionNotificationEvent) {
-	bus := events.Default()
-	bus.Publish(kind, event.ChildSessionID, event)
+	events.PublishDefault(kind, event.ChildSessionID, event)
 }
 
 func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance) *Instance {

@@ -30,8 +30,10 @@ trailing spaces).
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |
 | `internal/watcher/engine.go` | `healthLoop` (health snapshot) | `watcher.health` |
 
-Every producer only calls `Publish` into a bounded in-memory queue. The
-background writer takes the cross-process file lock, appends and syncs. A
+The session and tmux producers call `PublishDefault` into a bounded in-memory
+queue. Its background handoff opens the process bus and submits to its
+bounded writer queue. Watcher producers call `Publish` on the Engine-owned bus.
+The writer takes the cross-process file lock, appends and syncs. A
 one-shot CLI process closes its bus when the handler returns, draining its
 accepted taps before exit. A watcher Engine owns a separate bus and closes it
 after its producers stop.
@@ -63,8 +65,8 @@ removed. A `Subscribe(after)` older than every retained segment returns
 
 | Condition | Behavior |
 |---|---|
-| Bus dir unwritable, or `AGENTDECK_EVENTS_BUS=0` | `Publish`/`Subscribe` become no-ops; one `slog.Warn` per process; nothing else in agent-deck depends on the bus. |
-| Queue full (slow disk / producer burst) | Frame dropped; the owning process persists its count asynchronously, and `events stats --json` reads the profile total. |
+| Bus dir unwritable, or `AGENTDECK_EVENTS_BUS=0` | Producer taps and `Subscribe` become no-ops; one `slog.Warn` per process; nothing else in agent-deck depends on the bus. |
+| Either queue full (slow disk / producer burst) | Frame dropped; the owning process persists its count asynchronously, and `events stats --json` reads the profile total. |
 | Append or sync fails after open | One warning, bus disabled, and the failed append does not advance the cursor. Existing producer writes continue. |
 | Process crash before the queued frame is appended | That frame can be lost. A normal CLI or Engine shutdown drains accepted frames. |
 | `events follow` killed and resumed with `--after <cursor>` | Zero lost, zero duplicated — this is the durability proof, asserted in `internal/events/bus_test.go`'s `TestResumeAfterKillLosesNothingAndDuplicatesNothing` and `TestResumeSurvivesProcessRestart`. |
@@ -74,6 +76,7 @@ removed. A `Subscribe(after)` older than every retained segment returns
 ```go
 Open(dir string) (*Bus, error)
 Default() *Bus                                   // process-wide, lazily opened
+PublishDefault(kind, sessionID string, data any)  // bounded, no disk on producer path
 OpenProfile(profile string) *Bus                  // component owned
 (*Bus) Publish(kind, sessionID string, data any)  // never blocks
 (*Bus) Subscribe(ctx, after Cursor) (*Subscription, error)

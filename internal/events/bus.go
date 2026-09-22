@@ -338,6 +338,13 @@ func (b *Bus) Publish(kind, sessionID string, data any) {
 		return
 	}
 	qf := queuedFrame{kind: kind, sessionID: sessionID, data: raw, ts: time.Now()}
+	b.enqueue(qf)
+}
+
+func (b *Bus) enqueue(qf queuedFrame) {
+	if b == nil || !b.enabled || b.closed.Load() || b.failed.Load() {
+		return
+	}
 	b.publishMu.RLock()
 	defer b.publishMu.RUnlock()
 	if b.closed.Load() || b.failed.Load() {

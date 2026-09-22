@@ -252,12 +252,15 @@ func TestDefaultOwnerCloseDrainsOneShot(t *testing.T) {
 	t.Setenv("AGENTDECK_PROFILE", "one-shot")
 	resetDefaultForTest()
 	t.Cleanup(resetDefaultForTest)
-	b := Default()
-	b.Publish("one-shot", "", nil)
+	dir, err := busDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	PublishDefault("one-shot", "", nil)
 	if err := CloseDefault(); err != nil {
 		t.Fatal(err)
 	}
-	opened, err := Open(b.dir)
+	opened, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +318,65 @@ func TestDefaultProducerDoesNotWaitForDiskLock(t *testing.T) {
 	defer b.Close()
 	if b.Cursor() != 1 {
 		t.Fatalf("async accepted frame lost: cursor %d", b.Cursor())
+	}
+}
+
+func TestConcurrentCloseDefaultWaitsForDrain(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("AGENTDECK_PROFILE", "close-drain")
+	resetDefaultForTest()
+	t.Cleanup(resetDefaultForTest)
+	dir, err := busDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "writer.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		}
+	}()
+	PublishDefault("close-drain", "", nil)
+	first := make(chan error, 1)
+	second := make(chan error, 1)
+	go func() { first <- CloseDefault() }()
+	go func() { second <- CloseDefault() }()
+	select {
+	case <-first:
+		t.Fatal("first close returned before disk drain")
+	case <-second:
+		t.Fatal("second close returned before disk drain")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	released = true
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if b.Cursor() != 1 {
+		t.Fatalf("accepted tap lost during concurrent close: cursor %d", b.Cursor())
 	}
 }
 
