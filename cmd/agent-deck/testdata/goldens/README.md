@@ -67,6 +67,11 @@ Applied by `scrub()` in `goldens_test.go`, in this order:
 3. **Version.** Any `vX.Y.Z` (with optional `-dev`/build suffix) →
    `<VERSION>`, so a golden survives a version bump.
 4. **Process IDs.** `pid 12345` → `pid <PID>`.
+5. **The goldens binary's own path.** The suite builds `agent-deck` to a
+   fresh temp directory per test run (outside the sandbox HOME, so it
+   survives every sub-test's `t.TempDir()` cleanup); a command that echoes
+   its own resolved binary path (e.g. `hooks status`'s "This binary: ...")
+   has that path replaced with `<AGENT_DECK_BINARY>`.
 
 Everything else — every table column, every JSON field, every line of
 `--help` usage text, exit codes — is asserted exact. If you need to add a

@@ -1,0 +1,8 @@
+Usage: agent-deck conductor status [name] [options]
+
+Show conductor health status. If name is given, show that conductor only.
+Otherwise show all conductors.
+
+Options:
+  -json
+    	Output as JSON

@@ -1,0 +1,29 @@
+Usage: agent-deck session start <id|title> [options]
+
+Start a session's tmux process.
+
+Options:
+  -attach
+    	Attach to the session after starting (requires an interactive terminal)
+  -json
+    	Output as JSON
+  -m string
+    	Initial message to send once agent is ready (short)
+  -message string
+    	Initial message to send once agent is ready
+  -message-file string
+    	Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts
+  -no-wait
+    	Return as soon as the process is spawned instead of waiting up to 3s for the tool's session id (a caller that attaches right away; the id is still captured by hooks)
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -yolo
+    	Enable YOLO mode when starting Gemini or Codex sessions
+
+Examples:
+  agent-deck session start my-project
+  agent-deck session start my-project --message "Research MCP patterns"
+  agent-deck session start my-project -m "Explain this codebase"
+  agent-deck session start my-project --message-file task.md   # long prompt from file, no shell quoting
+  git diff | agent-deck session start my-project --message-file -   # initial message from stdin

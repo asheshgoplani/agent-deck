@@ -1,0 +1,4 @@
+Usage: agent-deck session attach <id|title>
+
+Attach to a session interactively.
+Press Ctrl+Q to detach.

@@ -1,0 +1,10 @@
+Usage: agent-deck worktree info <session> [options]
+
+Show worktree information for a session.
+
+Arguments:
+  session    Session title, ID prefix, or path
+
+Options:
+  -json
+    	Output as JSON

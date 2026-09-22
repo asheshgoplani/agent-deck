@@ -1,0 +1,31 @@
+Usage: agent-deck fleet status [options]
+
+Report sessions the registry believes are alive whose tmux session is
+gone. Read-only: no restarts, no writes.
+
+With --group-by-credential the report additionally groups every
+auth-401-held session by WHICH credential is dead, so one dead token
+reads as one line instead of N per-session failures. Opt-in: without
+the flag the output is exactly the per-session view it has always been.
+The grouping is computed locally and never leaves the machine.
+
+Options:
+  -confirm-delay duration
+    	Delay between confirming probes (default 750ms)
+  -confirm-probes int
+    	Independent tmux probes that must agree a session is gone before it counts as down (default 2)
+  -dead-fraction float
+    	Share of should-be-alive sessions that must be down for a mass-death verdict (default 0.5)
+  -group string
+    	Only consider sessions in this group path (and its descendants)
+  -group-by-credential
+    	Group auth-401-held sessions by which credential is dead and report one escalation per credential (opt-in, local-only; off by default the per-session view is unchanged)
+  -include-idle
+    	Also treat status=idle sessions as down (off by default: idle is also the status of a session that was never started)
+  -json
+    	Output as JSON
+  -min-dead int
+    	Minimum down sessions for the shape to be reported as a mass death (default 3)
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output

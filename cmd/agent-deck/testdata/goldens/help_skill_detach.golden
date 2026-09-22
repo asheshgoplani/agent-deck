@@ -1,0 +1,14 @@
+Usage: agent-deck skill detach <session-id> <skill> [options]
+
+Detach a managed skill from the session project.
+
+Options:
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -restart
+    	Restart session to unload skill immediately
+  -source string
+    	Source name filter

@@ -1,0 +1,11 @@
+Usage: agent-deck skill attached [session-id] [options]
+
+Show skills attached to a session project.
+If no session ID is provided, uses the current session (if in tmux).
+
+Options:
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output

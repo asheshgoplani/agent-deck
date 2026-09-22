@@ -1,0 +1,9 @@
+Usage: agent-deck conductor list [options]
+
+List all configured conductors.
+
+Options:
+  -json
+    	Output as JSON
+  -profile string
+    	Filter by profile

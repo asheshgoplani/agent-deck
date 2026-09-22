@@ -1,0 +1,10 @@
+Usage: agent-deck mcp list [options]
+
+List all available MCPs from config.toml.
+
+Options:
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output

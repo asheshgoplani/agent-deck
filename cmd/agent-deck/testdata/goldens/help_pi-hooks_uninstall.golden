@@ -1,0 +1,12 @@
+Usage: agent-deck pi-hooks <command>
+
+Manage pi (pi-coding-agent) hook integration.
+
+Installs an extension into pi's global extension directory that
+forwards pi's lifecycle events to agent-deck, so a pi session's status
+comes from real events instead of reading the pane.
+
+Commands:
+  install      Install or upgrade the agent-deck pi extension
+  uninstall    Remove the agent-deck pi extension
+  status       Show current pi extension install status

@@ -1,0 +1,140 @@
+Usage: agent-deck launch [path] [options]
+
+Create, start, and optionally send a message to a new session in one step.
+Combines: add + session start + session send
+
+Arguments:
+  [path]    Project directory (default: group default_path, then global default_path,
+            then the group's most recent session path, then current directory)
+
+Options:
+  -account string
+    	Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)
+  -additional-path value
+    	Additional project directory on this host (repeatable)
+  -assert-done
+    	Append a completion-sentinel instruction to the message (default on for -c claude)
+  -auto-mode
+    	Claude: --permission-mode auto for this session (persisted; requires -c claude)
+  -b	Create new branch (use with --worktree)
+  -c string
+    	Tool/command to run (short)
+  -capabilities
+    	Report authoritative creation fields and host catalogs (requires --json)
+  -channel value
+    	Plugin channel id (can specify multiple times); requires -c claude
+  -chrome
+    	Claude: --chrome for this session (persisted; requires -c claude)
+  -cmd string
+    	Tool/command to run (e.g., 'claude' or 'codex --dangerously-bypass-approvals-and-sandbox')
+  -continue
+    	Claude session mode 'continue' (claude -c: resume the most recent conversation in the directory); requires -c claude
+  -create-dir
+    	Create the project directory when it does not exist
+  -effort string
+    	Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)
+  -extra-arg value
+    	Extra claude CLI token (can specify multiple times); requires -c claude; persisted plaintext — no secrets
+  -g string
+    	Group path (short)
+  -group string
+    	Group path (defaults to parent folder)
+  -hint value
+    	Durable hint key=value for recall (repeatable; e.g. --hint purpose="fix flaky auth test")
+  -idle-timeout string
+    	Auto-stop session after this duration of no tmux output (Go duration: 30m, 1h, 24h). 0 or unset = disabled
+  -inherit-group
+    	Place the child in the parent session's group instead of the cwd-derived group (auto-applied for git worktree children; use this to force it for non-worktree paths)
+  -inherit-telegram-env
+    	Keep TELEGRAM_* env vars in the child (#1133); off by default to prevent duplicate plugin pollers
+  -json
+    	Output as JSON
+  -location string
+    	Worktree location: sibling, subdirectory, or custom path
+  -m string
+    	Initial message to send (short)
+  -mcp value
+    	MCP to attach (can specify multiple times)
+  -message string
+    	Initial message to send once agent is ready
+  -message-file string
+    	Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts
+  -model string
+    	Model ID/version to use for this session (claude, codex, gemini, opencode)
+  -new-branch
+    	Create new branch
+  -no-assert-done
+    	Disable the completion-sentinel instruction
+  -no-channel-link
+    	Disable auto-link between --plugin entries with emits_channel=true and --channel
+  -no-identity
+    	Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)
+  -no-parent
+    	Disable automatic parent linking
+  -no-title-sync
+    	Alias for --title-lock
+  -no-transition-notify
+    	Suppress transition event notifications to parent session
+  -no-wait
+    	Don't wait for agent to be ready before sending message
+  -p string
+    	Parent session (short)
+  -parent string
+    	Parent session (creates sub-session; group is cwd-derived by default — auto-inherits the parent's group for git worktree children or with --inherit-group)
+  -plugin value
+    	Catalog plugin to enable for this session (can specify multiple times); requires -c claude
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -resume-session string
+    	Claude session ID to resume
+  -sandbox
+    	Run session in Docker sandbox
+  -sandbox-image string
+    	Docker image for sandbox (overrides config default)
+  -skip-permissions
+    	Claude: --dangerously-skip-permissions for this session (persisted; requires -c claude)
+  -startup-query string
+    	Claude startup query, delivered once on initial start
+  -t string
+    	Session title (short)
+  -tag value
+    	Tag for recall (repeatable)
+  -teammate-mode
+    	Claude: --teammate-mode tmux for this session (persisted; requires -c claude)
+  -ticket value
+    	Ticket id hint (shorthand for --hint ticket=<id>)
+  -title string
+    	Session title (defaults to folder name; an explicit title is locked against Claude's session-name sync)
+  -title-lock
+    	Lock session title so Claude's session name never overrides it; implied by an explicit -t/--title (#697)
+  -tmux-socket string
+    	tmux -L socket name for this session (overrides [tmux].socket_name)
+  -w string
+    	Create session in git worktree for branch
+  -why value
+    	Why this session exists (shorthand for --hint why=<text>)
+  -worktree string
+    	Create session in git worktree for branch
+  -wrapper string
+    	Wrapper command (use {command} to include tool command; auto-generated when --cmd includes extra flags; a known claude/codex subcommand in --cmd runs as-is with no wrapper instead)
+  -yolo
+    	Enable YOLO mode for Gemini, Codex or Hermes sessions
+
+Examples:
+  agent-deck launch . -c claude
+  agent-deck launch . -c codex --model gpt-5.5
+  agent-deck launch . -c claude --model claude-opus-5 --effort high
+  agent-deck launch . -c claude --skip-permissions --chrome --continue   # the dialog's Claude Options rows
+  agent-deck launch . -c gemini --yolo --sandbox
+  agent-deck launch . -c gemini --model gemini-3.1-pro-preview
+  agent-deck launch . -c claude -m "Explain this codebase"
+  agent-deck launch /path/to/project -t "My Agent" -c claude -g work
+  agent-deck launch . -c claude --mcp memory -m "Research topic X"
+  agent-deck launch . -c claude --channel plugin:telegram@user/repo -m "Listen for messages"
+  agent-deck launch . -c claude -m "Fix bug" --no-wait
+  agent-deck launch . -c claude --message-file task.md   # long prompt from file, no shell quoting
+  agent-deck launch . -c claude -m "Refactor X"   # auto-appends completion sentinel (see session children)
+  agent-deck launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
+  agent-deck launch . -g ard --no-parent -c claude -m "Run review"
+  agent-deck launch . -c claude -w feature/new -b -m "Start work"

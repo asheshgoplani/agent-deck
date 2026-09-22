@@ -1,0 +1,12 @@
+Usage: agent-deck skill list [options]
+
+List discoverable skills from configured global sources.
+
+Options:
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -source string
+    	Filter by source name

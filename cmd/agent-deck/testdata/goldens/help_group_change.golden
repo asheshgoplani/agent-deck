@@ -1,0 +1,21 @@
+Usage: agent-deck group change <source> [<dest>]
+
+Reparent a group (and its subgroups/sessions) under <dest>.
+Omit <dest> or pass "" / root to promote the group to root.
+
+Arguments:
+  <source>   Full path of the group to move (e.g. personal/project1)
+  <dest>     Target parent path (empty = root)
+
+Options:
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+
+Examples:
+  agent-deck group change project1 work
+  agent-deck group change personal/project1 work
+  agent-deck group change work/project1              # Move to root
+  agent-deck group change work/project1 ""          # Move to root

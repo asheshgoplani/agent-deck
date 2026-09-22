@@ -1,0 +1,22 @@
+Usage: agent-deck group create <name> [options]
+
+Create a new group.
+
+Options:
+  -default-path string
+    	Default working directory for new sessions in this group
+  -json
+    	Output as JSON
+  -max-concurrent int
+    	Cap on simultaneous running sessions in this group (0=unlimited, 1=serial, N=cap; default: [group_defaults].max_concurrent, else 1) (default -1)
+  -parent string
+    	Create as subgroup under this parent
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+
+Examples:
+  agent-deck group create mobile
+  agent-deck group create ios --parent mobile
+  agent-deck group create backend --default-path ~/src/backend
+  agent-deck group create wide --max-concurrent 4

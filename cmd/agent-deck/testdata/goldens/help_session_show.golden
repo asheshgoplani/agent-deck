@@ -1,0 +1,12 @@
+Usage: agent-deck session show [id|title] [options]
+
+Show session details. If no ID is provided, auto-detects current session.
+Account: shows the quoted stored account slot, not a resolved account or login identity.
+JSON always includes the raw "account" string, including "" when no slot is stored.
+
+Options:
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output

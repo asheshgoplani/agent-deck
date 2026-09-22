@@ -1,0 +1,26 @@
+Usage: agent-deck group move <session-id> <group>
+       agent-deck group move <group> --to-profile <name> [--force]
+
+Move a session to a different group (default form), or migrate every
+session in <group> to another profile's DB (with --to-profile).
+
+Arguments:
+  <session-id>   Session title, ID prefix, or path
+  <group>        Target group path (or, with --to-profile, the source group)
+
+Options:
+  -force
+    	With --to-profile: migrate even if a session is running
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -to-profile string
+    	Migrate every session in <group> to another profile's DB (issue #928)
+
+Examples:
+  agent-deck group move my-project work/frontend
+  agent-deck group move my-project ""              # Move to root
+  agent-deck group move my-project root            # Move to root
+  agent-deck group move work/api --to-profile march

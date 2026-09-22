@@ -1,0 +1,15 @@
+Usage: agent-deck conductor teardown <name> [options]
+       agent-deck conductor teardown --all [options]
+
+Stop a conductor session and optionally remove its directory.
+
+Arguments:
+  <name>    Conductor name to tear down
+
+Options:
+  -all
+    	Teardown all conductors
+  -json
+    	Output as JSON
+  -remove
+    	Remove conductor directories and sessions

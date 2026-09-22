@@ -1,0 +1,121 @@
+{
+  "instances": [
+    {
+      "account": "",
+      "group_path": "my-sessions",
+      "id": "golden-sess-1",
+      "parent_session_id": "",
+      "pin": "",
+      "project_path": "/repo/app",
+      "status": "idle",
+      "title": "claude idle",
+      "tmux_session": "ad-golden-sess-1",
+      "tool": "claude",
+      "worktree_path": ""
+    },
+    {
+      "account": "",
+      "group_path": "my-sessions",
+      "id": "golden-sess-2",
+      "parent_session_id": "",
+      "pin": "",
+      "project_path": "/repo/app",
+      "status": "running",
+      "title": "codex running",
+      "tmux_session": "ad-golden-sess-2",
+      "tool": "codex",
+      "worktree_path": ""
+    },
+    {
+      "account": "",
+      "group_path": "backend",
+      "id": "golden-sess-3",
+      "parent_session_id": "",
+      "pin": "",
+      "project_path": "/repo/backend",
+      "status": "waiting",
+      "title": "gemini waiting",
+      "tmux_session": "ad-golden-sess-3",
+      "tool": "gemini",
+      "worktree_path": ""
+    },
+    {
+      "account": "",
+      "group_path": "backend",
+      "id": "golden-sess-4",
+      "parent_session_id": "",
+      "pin": "",
+      "project_path": "/repo/backend",
+      "status": "error",
+      "title": "shell error",
+      "tmux_session": "ad-golden-sess-4",
+      "tool": "shell",
+      "worktree_path": ""
+    },
+    {
+      "account": "",
+      "group_path": "backend/api",
+      "id": "golden-sess-5",
+      "parent_session_id": "",
+      "pin": "",
+      "project_path": "/repo/backend/api",
+      "status": "stopped",
+      "title": "claude stopped",
+      "tmux_session": "ad-golden-sess-5",
+      "tool": "claude",
+      "worktree_path": ""
+    },
+    {
+      "account": "",
+      "group_path": "backend/api",
+      "id": "golden-sess-6",
+      "parent_session_id": "",
+      "pin": "",
+      "project_path": "/repo/backend/api",
+      "status": "queued",
+      "title": "codex queued",
+      "tmux_session": "ad-golden-sess-6",
+      "tool": "codex",
+      "worktree_path": ""
+    },
+    {
+      "account": "",
+      "group_path": "my-sessions",
+      "id": "golden-sess-shell",
+      "parent_session_id": "",
+      "pin": "",
+      "project_path": "<SANDBOX_HOME>/shell-fixture-project",
+      "status": "idle",
+      "title": "storage bytes shell",
+      "tmux_session": "agentdeck_storage-bytes-shell_bb8a67b3",
+      "tool": "shell",
+      "worktree_path": ""
+    }
+  ],
+  "groups": [
+    {
+      "default_path": "/repo/backend",
+      "expanded": 1,
+      "max_concurrent": 1,
+      "name": "Backend",
+      "path": "backend",
+      "sort_order": 1
+    },
+    {
+      "default_path": "/repo/backend/api",
+      "expanded": 1,
+      "max_concurrent": 2,
+      "name": "API",
+      "path": "backend/api",
+      "sort_order": 0
+    },
+    {
+      "default_path": "",
+      "expanded": 1,
+      "max_concurrent": 0,
+      "name": "My Sessions",
+      "path": "my-sessions",
+      "sort_order": 0
+    }
+  ]
+}

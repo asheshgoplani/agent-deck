@@ -1,0 +1,145 @@
+Usage: agent-deck add [path] [options]
+
+Add a new session to Agent Deck.
+
+Arguments:
+  [path]    Project directory (default: group default_path, then global default_path,
+            then the group's most recent session path, then current directory)
+
+Options:
+  -Q	Create a quick session (short)
+  -account string
+    	Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)
+  -additional-path value
+    	Additional project directory on this host (repeatable)
+  -attach
+    	Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with --ssh)
+  -auto-mode
+    	Claude: --permission-mode auto for this session (persisted; requires -c claude)
+  -b	Create new branch (use with --worktree; not supported with --ssh)
+  -c string
+    	Tool/command to run (short)
+  -capabilities
+    	Report authoritative creation fields and host catalogs (requires --json)
+  -channel value
+    	Plugin channel id (can specify multiple times); requires -c claude
+  -chrome
+    	Claude: --chrome for this session (persisted; requires -c claude)
+  -cmd string
+    	Tool/command to run (e.g., 'claude' or 'codex --dangerously-bypass-approvals-and-sandbox')
+  -continue
+    	Claude session mode 'continue' (claude -c: resume the most recent conversation in the directory); requires -c claude
+  -create-dir
+    	Create the project directory when it does not exist (like mkdir -p)
+  -effort string
+    	Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)
+  -extra-arg value
+    	Extra claude CLI token (can specify multiple times); requires -c claude; persisted plaintext — no secrets
+  -g string
+    	Group path (short)
+  -gemini-yolo
+    	Enable YOLO mode (alias for --yolo)
+  -group string
+    	Group path (defaults to parent folder)
+  -hint value
+    	Durable hint key=value for recall (repeatable; e.g. --hint purpose="fix flaky auth test")
+  -json
+    	Output as JSON
+  -location string
+    	Worktree location: sibling, subdirectory, or custom path
+  -mcp value
+    	MCP to attach (can specify multiple times; Codex writes $CODEX_HOME/config.toml)
+  -model string
+    	Model ID/version to use for this session (claude, codex, gemini, opencode)
+  -new-branch
+    	Create new branch
+  -no-channel-link
+    	Disable auto-link between --plugin entries with emits_channel=true and --channel (RFC §4.7)
+  -no-identity
+    	Do not inject the agent-deck session identity block into the harness (global default: [launch] inject_identity)
+  -no-parent
+    	Disable automatic parent linking (use 'session set-parent' later to link manually)
+  -no-title-sync
+    	Alias for --title-lock
+  -no-transition-notify
+    	Suppress transition event notifications to parent session
+  -p string
+    	Parent session (short)
+  -parent string
+    	Parent session (creates sub-session, inherits group)
+  -plugin value
+    	Catalog plugin to enable for this session (can specify multiple times); requires -c claude; configure in [plugins.<name>] in <SANDBOX_HOME>/.config/agent-deck/config.toml
+  -q	Minimal output (short)
+  -quick
+    	Create a quick session with a machine-generated handle; TUI shows Claude's live task description when available
+  -quiet
+    	Minimal output
+  -remote-path string
+    	Remote working directory (used with --ssh)
+  -resume-session string
+    	Claude session ID to resume (skips new session creation)
+  -sandbox
+    	Run session in Docker sandbox
+  -sandbox-image string
+    	Docker image for sandbox (overrides config default)
+  -skip-permissions
+    	Claude: --dangerously-skip-permissions for this session (persisted; requires -c claude)
+  -ssh string
+    	SSH destination (e.g., user@host)
+  -startup-query string
+    	Claude startup query, delivered once on initial start
+  -t string
+    	Session title (short)
+  -tag value
+    	Tag for recall (repeatable)
+  -teammate-mode
+    	Claude: --teammate-mode tmux for this session (persisted; requires -c claude)
+  -ticket value
+    	Ticket id hint (shorthand for --hint ticket=<id>)
+  -title string
+    	Session title (defaults to folder name)
+  -title-lock
+    	Lock session title so Claude's session name never overrides it (#697)
+  -tmux-socket string
+    	tmux -L socket name for this session (overrides [tmux].socket_name)
+  -w string
+    	Create session in git worktree for branch (not supported with --ssh)
+  -why value
+    	Why this session exists (shorthand for --hint why=<text>)
+  -worktree string
+    	Create session in git worktree for branch (not supported with --ssh)
+  -wrapper string
+    	Wrapper command (use {command} to include tool command, e.g., 'nvim +"terminal {command}"')
+  -yolo
+    	Enable YOLO mode for Gemini, Codex or Hermes sessions
+
+Examples:
+  agent-deck add                       # Use current directory
+  agent-deck add /path/to/project
+  agent-deck add -t "My Project" -g "work"
+  agent-deck add -c claude .
+  agent-deck add -c codex --model gpt-5.5 .
+  agent-deck add -c claude --model claude-opus-5 --effort high .
+  agent-deck add -c claude --skip-permissions --chrome --continue .   # the dialog's Claude Options rows
+  agent-deck add -c gemini --model gemini-3.1-pro-preview .
+  agent-deck -p work add               # Add to 'work' profile
+  agent-deck add -t "Sub-task" --parent "Main Project"  # Create sub-session
+  agent-deck add -t "Research" -c claude --mcp memory --mcp sequential-thinking /tmp/x
+  agent-deck add -c codex --mcp memory .  # writes to Codex config.toml
+  agent-deck add -t "Bot" -c claude --channel plugin:telegram@user/repo .  # subscribe to plugin channel
+  agent-deck add -c opencode --wrapper "nvim +'terminal {command}' +'startinsert'" .
+  agent-deck add -c "codex --dangerously-bypass-approvals-and-sandbox" .
+  agent-deck add -c gemini --yolo .
+  agent-deck add -c claude -g work .   # -c is shorthand for --cmd
+  agent-deck add -g ard --no-parent -c claude .
+  agent-deck add --quick -c claude .   # Quick session; TUI shows Claude's live task description
+
+Worktree Examples:
+  agent-deck add -w feature/login .    # Create worktree for existing branch
+  agent-deck add -w feature/new -b .   # Create worktree with new branch
+  agent-deck add --worktree fix/bug-123 --new-branch /path/to/repo
+
+SSH Examples:
+  agent-deck add --ssh user@host --remote-path /home/user/project -c claude
+  agent-deck add /home/user/project --ssh user@host -c claude   # positional path shortcut for --remote-path; must be absolute
+  agent-deck add --ssh user@host -c claude -t "remote-dev"

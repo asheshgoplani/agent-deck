@@ -1,0 +1,15 @@
+Usage: agent-deck uninstall [options]
+
+Uninstall Agent Deck from your system.
+
+Options:
+  --dry-run           Show what would be removed without removing
+  --keep-data         Keep XDG config/data/cache locations and legacy ~/.agent-deck/
+  --keep-tmux-config  Keep tmux configuration
+  -y                  Skip confirmation prompts
+
+Examples:
+  agent-deck uninstall              # Interactive uninstall
+  agent-deck uninstall --dry-run    # Preview what would be removed
+  agent-deck uninstall --keep-data  # Remove binary only, keep sessions
+  agent-deck uninstall -y           # Uninstall without prompts

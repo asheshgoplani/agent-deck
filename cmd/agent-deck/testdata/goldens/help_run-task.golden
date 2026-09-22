@@ -1,0 +1,10 @@
+Usage: agent-deck run-task [--child ID] [--profile P] [--title T] -- <command> [args...]
+
+Run a one-shot task worker under the completion wrapper: the worker
+exits when done, the kernel exit is captured exactly once, a durable
+completion record is written, and the parent session is woken once.
+
+child/profile default to $AGENTDECK_INSTANCE_ID / $AGENTDECK_PROFILE.
+
+Example (set as a session wrapper):
+  agent-deck add -c claude --wrapper "agent-deck run-task -- {command}" .
