@@ -1396,12 +1396,16 @@ for candidate in \
     fi
 done
 
-MSG="{HEARTBEAT_PREFIX} Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention."
-if [ -n "$RULES_FILE" ]; then
-    MSG="$MSG Read heartbeat rules from $RULES_FILE."
+if [ "$STATUS" != "idle" ] && [ "$STATUS" != "waiting" ]; then
+    exit 0
 fi
 
-if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
+# Issue #2348: every send is a new turn that re-reads the conductor's whole
+# conversation. heartbeat-tick prints a delta-only {HEARTBEAT_PREFIX} message,
+# or nothing when no waiting/error session or inbox record changed since the
+# last delivered tick; nothing printed means no turn at all.
+MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>/dev/null)
+if [ -n "$MSG" ]; then
     agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q
 fi
 `

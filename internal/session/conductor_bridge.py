@@ -759,6 +759,20 @@ _reply_owner_lock = threading.Lock()
 _wait_send_reservations: dict[tuple[str | None, str], str | None] = {}
 
 
+def _heartbeat_fingerprint(scoped_sessions: list[dict]) -> str:
+    """Identify the actionable part of a heartbeat (issue #2348).
+
+    Every delivered heartbeat is a new turn that re-reads the conductor's whole
+    conversation, so a tick whose waiting/error set equals the last delivered
+    one is skipped. Running/idle churn is not actionable and is left out.
+    """
+    return "|".join(sorted(
+        f"{s.get('status', '')}:{s.get('title', '')}:{s.get('path', '')}"
+        for s in scoped_sessions
+        if s.get("status", "") in ("waiting", "error")
+    ))
+
+
 def _cli_json(stdout: str) -> dict:
     try:
         data = json.loads(stdout)
@@ -3249,6 +3263,11 @@ async def heartbeat_loop(
     # override the guard and deliver anyway (see the block below).
     skip_count_by_conductor: dict[str, int] = {}
 
+    # issue #2348: fingerprint of the last DELIVERED heartbeat per conductor.
+    # An unchanged waiting/error set skips the tick instead of paying a
+    # full-conversation re-read for a message the conductor already acted on.
+    delivered_fingerprint_by_conductor: dict[str, str] = {}
+
     log.info("Heartbeat loop started (global interval: %d minutes)", global_interval)
 
     while True:
@@ -3291,6 +3310,12 @@ async def heartbeat_loop(
 
                 # Only trigger conductor if there are waiting or error sessions
                 if waiting == 0 and error == 0:
+                    delivered_fingerprint_by_conductor.pop(name, None)
+                    continue
+
+                fingerprint = _heartbeat_fingerprint(scoped_sessions)
+                if delivered_fingerprint_by_conductor.get(name) == fingerprint:
+                    log.info("Heartbeat [%s]: nothing changed since last delivery, skipping", name)
                     continue
 
                 # Build heartbeat message with waiting/error session details
@@ -3462,6 +3487,7 @@ async def heartbeat_loop(
                     continue
 
                 skip_count_by_conductor[name] = 0  # delivered → reset skip counter
+                delivered_fingerprint_by_conductor[name] = fingerprint
 
                 # Response is captured via get_session_output (see send_to_conductor).
                 log.info(
