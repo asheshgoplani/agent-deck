@@ -72,6 +72,23 @@ func TestHeartbeatRemotePullContinuesAfterFailure(t *testing.T) {
 	}
 }
 
+func TestIssue2348_HeartbeatOnlySelectsOwnedRemoteChildren(t *testing.T) {
+	remotes := map[string]session.RemoteConfig{
+		"box-a": {Host: "worker@box-a"},
+		"box-b": {Host: "worker@box-b"},
+	}
+	instances := []*session.Instance{
+		{ID: "child-a", ParentSessionID: "conductor-a", SSHHost: "worker@box-a"},
+		{ID: "child-b", ParentSessionID: "conductor-b", SSHHost: "worker@box-b"},
+		{ID: "local-a", ParentSessionID: "conductor-a"},
+	}
+	a := heartbeatRemoteChildren("conductor-a", instances, remotes)
+	b := heartbeatRemoteChildren("conductor-b", instances, remotes)
+	if len(a) != 1 || strings.Join(a["box-a"], ",") != "child-a" || len(b) != 1 || strings.Join(b["box-b"], ",") != "child-b" {
+		t.Fatalf("remote ownership leaked: a=%v b=%v", a, b)
+	}
+}
+
 func TestConductorHeartbeatTickCLIReadsInboxAndRules(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

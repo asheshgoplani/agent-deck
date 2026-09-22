@@ -131,7 +131,7 @@ def test_remote_talkback_record_wakes_bridge(monkeypatch, tmp_path):
     record = '{"source_remote":"build-box","child_session_id":"remote-child"}\n'
     calls = 0
 
-    def pull_remote(_session_id, _profile):
+    def pull_remote(_session_id, _profile, _sessions):
         nonlocal calls
         calls += 1
         if calls >= 2:
@@ -160,14 +160,18 @@ def test_remote_pull_writes_synthetic_talkback_before_snapshot(monkeypatch, tmp_
 
     def cli(*args, **_kwargs):
         if args[:2] == ("remote", "list"):
-            return subprocess.CompletedProcess(args, 0, '[{"name":"build-box"}]', "")
-        assert args == ("remote", "drain", "build-box", "--into", "conductor-id", "--json")
+            return subprocess.CompletedProcess(args, 0,
+                '[{"name":"build-box","host":"worker@build-box"}]', "")
+        assert args == ("remote", "drain", "build-box", "--into", "conductor-id",
+                        "--child-id", "remote-child", "--json")
         inbox.write_text('{"source_remote":"build-box","child_session_id":"remote-child"}\n')
         return subprocess.CompletedProcess(args, 0, '{"written":1}', "")
 
     monkeypatch.setattr(bridge, "run_cli", cli)
     monkeypatch.setattr(bridge, "resolve_data_dir", lambda *_markers: tmp_path)
-    assert bridge._pull_remote_talkback("conductor-id", "default") is False
+    assert bridge._pull_remote_talkback("conductor-id", "default", [
+        {"id": "remote-child", "parent_session_id": "conductor-id", "ssh_host": "worker@build-box"}
+    ]) is False
     count, digest, error = bridge._conductor_inbox_snapshot(
         [{"id": "conductor-id", "title": "conductor-ops"}], "ops"
     )
@@ -196,3 +200,21 @@ def test_two_conductors_only_pull_their_remote_children(monkeypatch):
         ("remote", "drain", "box-a", "--into", "conductor-a", "--child-id", "child-a", "--json"),
         ("remote", "drain", "box-b", "--into", "conductor-b", "--child-id", "child-b", "--json"),
     ]
+
+
+def test_remote_failure_logged_once_until_recovery(monkeypatch, caplog):
+    child = [{"id": "child-a", "parent_session_id": "conductor-a", "ssh_host": "worker@box-a"}]
+    attempts = iter([False, False, False, True, False])
+
+    def cli(*args, **_kwargs):
+        if args[:2] == ("remote", "list"):
+            return subprocess.CompletedProcess(args, 0,
+                '[{"name":"box-a","host":"worker@box-a"}]', "")
+        healthy = next(attempts)
+        return subprocess.CompletedProcess(args, 0 if healthy else 2, '{}', "unreachable")
+
+    monkeypatch.setattr(bridge, "run_cli", cli)
+    bridge._remote_pull_failed.clear()
+    for _ in range(5):
+        bridge._pull_remote_talkback("conductor-a", "default", child)
+    assert len([r for r in caplog.records if "remote pull for conductor-a failed" in r.message]) == 2

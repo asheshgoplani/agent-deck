@@ -778,34 +778,51 @@ def _conductor_inbox_snapshot(sessions: list[dict], name: str) -> tuple[int, str
         return 0, "", True
 
 
-def _pull_remote_talkback(session_id: str, profile: str) -> bool:
-    """Pull configured remote records into this conductor's durable inbox.
+_remote_pull_failed: set[str] = set()
 
-    Return True on an uncertain pull so a failed probe cannot mean quiet.
-    Each command has a time limit; the remote drain itself deduplicates records.
-    """
+
+def _pull_remote_talkback(session_id: str, profile: str, sessions: list[dict]) -> bool:
+    """Pull only this conductor's known remote children into its inbox."""
+    owned = [s for s in sessions if s.get("parent_session_id") == session_id
+             and s.get("ssh_host") and s.get("id")]
+    if not owned:
+        _remote_pull_failed.discard(session_id)
+        return False
+
+    def finish(error: str = "") -> bool:
+        if error:
+            if session_id not in _remote_pull_failed:
+                log.warning("Heartbeat: remote pull for %s failed: %s", session_id, error)
+            _remote_pull_failed.add(session_id)
+            return True
+        _remote_pull_failed.discard(session_id)
+        return False
+
     result = run_cli("remote", "list", "--json", profile=profile, timeout=10)
     if result.returncode != 0:
-        log.warning("Heartbeat: remote list failed: %s", result.stderr)
-        return True
+        return finish(f"remote list: {result.stderr}")
     if result.stdout.startswith("No remotes configured."):
-        return False
+        return finish()
     try:
         remotes = json.loads(result.stdout)
         if not isinstance(remotes, list):
             raise ValueError("remote list was not an array")
-        names = sorted(str(remote["name"]) for remote in remotes)
     except (ValueError, KeyError, TypeError) as exc:
-        log.warning("Heartbeat: invalid remote list: %s", exc)
-        return True
-    failed = False
-    for name in names:
-        drain = run_cli("remote", "drain", name, "--into", session_id, "--json",
+        return finish(f"invalid remote list: {exc}")
+    failures = []
+    for remote in sorted(remotes, key=lambda remote: str(remote.get("name", ""))):
+        child_ids = sorted(str(s["id"]) for s in owned if s["ssh_host"] == remote.get("host"))
+        if not child_ids:
+            continue
+        name = str(remote["name"])
+        args = ["remote", "drain", name, "--into", session_id]
+        for child_id in child_ids:
+            args.extend(("--child-id", child_id))
+        drain = run_cli(*args, "--json",
                         profile=profile, timeout=75)
         if drain.returncode != 0:
-            log.warning("Heartbeat: remote %s drain failed: %s", name, drain.stderr)
-            failed = True
-    return failed
+            failures.append(f"{name}: {drain.stderr}")
+    return finish("; ".join(failures))
 
 
 def _heartbeat_fingerprint(scoped_sessions: list[dict], inbox_pending: int = 0, inbox_digest: str = "") -> str:
@@ -3355,11 +3372,10 @@ async def heartbeat_loop(
                 conductor_session = next(
                     (s for s in sessions if s.get("title") == session_title), None
                 )
-                remote_error = False
                 if conductor_session and conductor_session.get("id"):
                     loop = asyncio.get_running_loop()
-                    remote_error = await loop.run_in_executor(
-                        None, _pull_remote_talkback, str(conductor_session["id"]), profile
+                    await loop.run_in_executor(
+                        None, _pull_remote_talkback, str(conductor_session["id"]), profile, sessions
                     )
                 inbox_pending, inbox_digest, inbox_error = _conductor_inbox_snapshot(sessions, name)
 
@@ -3369,12 +3385,12 @@ async def heartbeat_loop(
                 )
 
                 # Inbox-only child transitions also need a turn to drain them.
-                if waiting == 0 and error == 0 and inbox_pending == 0 and not inbox_error and not remote_error:
+                if waiting == 0 and error == 0 and inbox_pending == 0 and not inbox_error:
                     delivered_fingerprint_by_conductor.pop(name, None)
                     continue
 
                 fingerprint = _heartbeat_fingerprint(scoped_sessions, inbox_pending, inbox_digest)
-                if not inbox_error and not remote_error and delivered_fingerprint_by_conductor.get(name) == fingerprint:
+                if not inbox_error and delivered_fingerprint_by_conductor.get(name) == fingerprint:
                     log.info("Heartbeat [%s]: nothing changed since last delivery, skipping", name)
                     continue
 
@@ -3402,8 +3418,6 @@ async def heartbeat_loop(
                     parts.append(f"Inbox: {inbox_pending} pending, run `agent-deck inbox drain self` first.")
                 if inbox_error:
                     parts.append("Inbox unreadable; inspect the conductor inbox before continuing.")
-                if remote_error:
-                    parts.append("Remote talkback pull failed; inspect configured remotes before continuing.")
                 # Reference HEARTBEAT_RULES.md by path. Inlining the whole file
                 # on every tick bloats prompts and destabilizes the cache prefix.
                 rules_path_ref = None

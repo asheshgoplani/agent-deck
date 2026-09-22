@@ -155,6 +155,8 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "Emit the drain result as JSON")
 	into := fs.String("into", "", "Local session id whose inbox receives the records (default: this session)")
+	var childIDs stringSliceFlag
+	fs.Var(&childIDs, "child-id", "Only deliver this remote child ID (repeatable; used by automatic heartbeat)")
 	fs.Usage = func() { printRemoteDrainUsage(stderr) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return drainExitUsage
@@ -226,6 +228,19 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		return drainExitUnreachable
 	}
 
+	if len(childIDs) > 0 {
+		allowed := make(map[string]bool, len(childIDs))
+		for _, id := range childIDs {
+			allowed[id] = true
+		}
+		filtered := records[:0]
+		for _, record := range records {
+			if allowed[record.ChildSessionID] {
+				filtered = append(filtered, record)
+			}
+		}
+		records = filtered
+	}
 	records, fresh, written, duplicates, unknown, restoreDetected, err := ingestRemoteRecords(name, targetID, records)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: writing to local inbox %s: %v\n", targetID, err)

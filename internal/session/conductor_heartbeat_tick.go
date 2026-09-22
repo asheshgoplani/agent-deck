@@ -40,15 +40,16 @@ type HeartbeatTickInput struct {
 	InboxPending int                    // undrained records in the conductor's inbox
 	InboxDigest  string                 // distinguishes replacement records at the same count
 	InboxError   bool                   // unreadable inbox must not silently suppress a tick
-	RemoteError  bool                   // failed remote pull must not look like no talkback
+	RemoteError  bool                   // poll health is logged, never an actionable fingerprint input
 	RulesPath    string                 // resolved HEARTBEAT_RULES.md, "" if none
 	RulesStamp   string                 // size+mtime of RulesPath, "" if none
 }
 
 // HeartbeatTickState is what the previous delivered tick left behind.
 type HeartbeatTickState struct {
-	Fingerprint string `json:"fingerprint,omitempty"`
-	RulesStamp  string `json:"rules_stamp,omitempty"`
+	Fingerprint  string `json:"fingerprint,omitempty"`
+	RulesStamp   string `json:"rules_stamp,omitempty"`
+	RemoteFailed bool   `json:"remote_failed,omitempty"`
 }
 
 // BuildHeartbeatTick returns the message to send ("" = skip this tick) and the
@@ -71,8 +72,8 @@ func BuildHeartbeatTick(in HeartbeatTickInput, prev HeartbeatTickState) (string,
 	sort.Strings(waiting)
 	sort.Strings(errored)
 
-	next := HeartbeatTickState{RulesStamp: prev.RulesStamp}
-	if len(waiting) == 0 && len(errored) == 0 && in.InboxPending == 0 && !in.InboxError && !in.RemoteError {
+	next := HeartbeatTickState{RulesStamp: prev.RulesStamp, RemoteFailed: prev.RemoteFailed}
+	if len(waiting) == 0 && len(errored) == 0 && in.InboxPending == 0 && !in.InboxError {
 		// Nothing to act on. Forget the fingerprint so the same set is
 		// delivered again if it comes back after being resolved.
 		return "", next
@@ -80,7 +81,7 @@ func BuildHeartbeatTick(in HeartbeatTickInput, prev HeartbeatTickState) (string,
 
 	next.Fingerprint = fmt.Sprintf("w=%s|e=%s|inbox=%d:%s",
 		strings.Join(waiting, ";"), strings.Join(errored, ";"), in.InboxPending, in.InboxDigest)
-	if !in.InboxError && !in.RemoteError && next.Fingerprint == prev.Fingerprint {
+	if !in.InboxError && next.Fingerprint == prev.Fingerprint {
 		return "", next
 	}
 
@@ -100,9 +101,6 @@ func BuildHeartbeatTick(in HeartbeatTickInput, prev HeartbeatTickState) (string,
 	}
 	if in.InboxError {
 		parts = append(parts, "Inbox unreadable; inspect the conductor inbox before continuing.")
-	}
-	if in.RemoteError {
-		parts = append(parts, "Remote talkback pull failed; inspect configured remotes before continuing.")
 	}
 	switch {
 	case in.RulesPath != "" && in.RulesStamp != prev.RulesStamp:
