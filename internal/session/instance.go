@@ -6897,6 +6897,15 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		}
 	}
 
+	// A live lifecycle hook proves the agent became interactive. The hook fast
+	// path in UpdateStatus skips tmux.GetStatus, which is otherwise the only
+	// place the startup clock is cleared, so end the startup phase here or the
+	// first hook-quiet poll expires a healthy pane (#2361).
+	if isNewEvent && i.tmuxSession != nil && !isTerminalHookEvent(status.Event) &&
+		(status.Status == "running" || status.Status == "waiting") {
+		i.tmuxSession.MarkInteractiveAt(status.UpdatedAt)
+	}
+
 	// Issue #1349 defense-in-depth #1: never bind a session id from a terminal
 	// hook event (e.g. SessionEnd). The status/event/ack bookkeeping above still
 	// applies, but a terminal payload's session_id is stale by definition and
