@@ -1779,12 +1779,12 @@ func (s *Session) SetStartupAtForTest(t time.Time) {
 // late hook from a respawned pane cannot vouch for its replacement. Hook
 // timestamps have one-second resolution, hence the truncation.
 //
-// eventAt comes from the hook handler's wall clock, not agent-deck's — the two
-// are never synchronized. One accepted consequence: a previous-generation
-// hook stamped in the same second as a respawn passes the Before guard above
-// and fails open, disarming the watchdog for that generation. This is
-// accepted rather than closed, since a per-generation token is out of scope
-// here.
+// eventAt comes from the hook handler's wall clock, not agent-deck's; the two
+// are never synchronized. Accepted consequence: a previous-generation hook
+// stamped in the same second as a respawn (including one already accepted
+// before the respawn and re-fed afterwards) passes the guard and fails open,
+// disarming the watchdog for that generation. Closing this would need a
+// per-generation token rather than a timestamp.
 func (s *Session) MarkInteractiveAt(eventAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2585,8 +2585,6 @@ func (s *Session) Start(command string) error {
 	s.mu.Lock()
 	s.startupAt = s.Created
 	s.startupTimedOut = false
-	s.mu.Unlock()
-	s.mu.Lock()
 	s.lastStableStatus = "waiting"
 	s.stateTracker = nil
 	s.cachedPromptDetector = nil
