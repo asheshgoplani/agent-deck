@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/core"
 	"github.com/asheshgoplani/agent-deck/internal/core/daemon"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
+	_ "modernc.org/sqlite"
 )
 
 // Slice 5 of docs/CORE-PLAN.md: `agent-deck daemon serve|status|stop`. These
@@ -263,6 +265,13 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 		runAgentDeckEnv(t, home, "", env, "session", "stop", "beta")
 	})
 	seedSessions(t, home, env, "alpha", "beta")
+	serialHome := shortTempDir(t, "adls")
+	if out, err := exec.Command("cp", "-a", home+"/.", serialHome).CombinedOutput(); err != nil {
+		t.Fatalf("clone seeded store: %v: %s", err, out)
+	}
+	serialTmuxDir := shortTempDir(t, "adlst")
+	serialEnv := []string{"TMUX_TMPDIR=" + serialTmuxDir}
+	t.Cleanup(func() { testutil.KillTmuxServersUnder(serialTmuxDir) })
 	_, st := startDaemon(t, home, env)
 	lock, err := os.OpenFile(filepath.Join(filepath.Dir(st.Socket), "mutation.lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -315,16 +324,70 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-daemonDone; err != nil {
-		t.Fatalf("daemon start: %v", err)
-	}
-	if err := <-argvDone; err != nil {
-		t.Fatalf("argv start: %v: %s", err, argvOut.String())
+	var order []string
+	for len(order) < 2 {
+		select {
+		case err := <-daemonDone:
+			if err != nil {
+				t.Fatalf("daemon start: %v", err)
+			}
+			order = append(order, "alpha")
+			daemonDone = nil
+		case err := <-argvDone:
+			if err != nil {
+				t.Fatalf("argv start: %v: %s", err, argvOut.String())
+			}
+			order = append(order, "beta")
+			argvDone = nil
+		}
 	}
 	stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "list", "--json=envelope")
 	if code != 0 || !strings.Contains(stdout, `"title": "alpha"`) || !strings.Contains(stdout, `"title": "beta"`) {
 		t.Fatalf("raced store missing a session: exit %d: %s %s", code, stdout, stderr)
 	}
+	for _, name := range order {
+		out, errOut, code := runAgentDeckEnv(t, serialHome, "", serialEnv, "session", "start", name, "--json=envelope")
+		if code != 0 {
+			t.Fatalf("serial start %s: exit %d: %s %s", name, code, out, errOut)
+		}
+	}
+	if raced, serial := canonicalStateDB(t, home), canonicalStateDB(t, serialHome); !bytes.Equal(raced, serial) {
+		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v)", len(raced), len(serial), order)
+	}
+}
+
+func canonicalStateDB(t *testing.T, home string) []byte {
+	t.Helper()
+	var path string
+	for _, candidate := range []string{
+		filepath.Join(home, ".agent-deck", "profiles", "ch_support_test", "state.db"),
+		filepath.Join(home, ".local", "share", "agent-deck", "profiles", "ch_support_test", "state.db"),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			path = candidate
+			break
+		}
+	}
+	if path == "" {
+		t.Fatal("sandbox state.db not found")
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(home, "canonical-state.db")
+	if _, err := db.Exec("VACUUM INTO ?", out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // TestDaemonDeadCLIStillWorks: with `[core] daemon = true` the CLI sends
