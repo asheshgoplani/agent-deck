@@ -1771,6 +1771,25 @@ func (s *Session) SetStartupAtForTest(t time.Time) {
 	s.startupAt = t
 }
 
+// MarkInteractiveAt ends the startup phase on out-of-band evidence that the
+// agent is running, such as a lifecycle hook event observed at eventAt. Hook
+// fast paths skip GetStatus, so without this the startup clock is never
+// cleared by pane detection and the first fallthrough to GetStatus expires a
+// live pane. Evidence older than the current pane generation is ignored so a
+// late hook from a respawned pane cannot vouch for its replacement. Hook
+// timestamps have one-second resolution, hence the truncation.
+func (s *Session) MarkInteractiveAt(eventAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.startupAt.IsZero() || s.startupTimedOut {
+		return
+	}
+	if eventAt.Before(s.startupAt.Truncate(time.Second)) {
+		return
+	}
+	s.startupAt = time.Time{}
+}
+
 // expireStartupHandover replaces an alive-but-unowned pane with an inert,
 // non-echoing recovery hold when the startup deadline expires. It is called
 // without s.mu held; claiming the flag prevents concurrent pollers from
