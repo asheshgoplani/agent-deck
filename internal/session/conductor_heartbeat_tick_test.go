@@ -246,7 +246,7 @@ func TestHeartbeatScript_UnchangedTicksSendNothing(t *testing.T) {
 	fake := `#!/bin/bash
 while [ "$1" = "-p" ]; do shift 2; done
 case "$1 $2" in
-  "conductor status") echo '{"enabled": true}' ;;
+  "conductor status") echo '{"conductors": [{"heartbeat": true}]}' ;;
   "session show") echo '{"status": "idle"}' ;;
   "conductor heartbeat-tick")
     if [ ! -f "` + ticked + `" ]; then touch "` + ticked + `"; echo "[HEARTBEAT] [ops] Status: 1 waiting."; fi ;;

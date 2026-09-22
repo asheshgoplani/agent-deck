@@ -1371,8 +1371,8 @@ const conductorHeartbeatScript = `#!/bin/bash
 SESSION="conductor-{NAME}"
 PROFILE="{PROFILE}"
 
-# Check if conductor is enabled (grep -q avoids quoting issues in subshells)
-if ! agent-deck -p "$PROFILE" conductor status --json 2>/dev/null | grep -q '"enabled".*true'; then
+# Check this conductor's heartbeat flag, including after teardown.
+if ! agent-deck -p "$PROFILE" conductor status "{NAME}" --json 2>/dev/null | grep -q '"heartbeat"[[:space:]]*:[[:space:]]*true'; then
     exit 0
 fi
 
@@ -2894,14 +2894,7 @@ func installHeartbeatDaemonLaunchd(name string, intervalMinutes int) error {
 		return err
 	}
 	_ = os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755)
-	if _, err := os.Stat(hbPlistPath); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	if err := exec.Command("launchctl", "unload", hbPlistPath).Run(); err != nil {
-		return fmt.Errorf("stop launchd heartbeat: %w", err)
-	}
+	_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
 	if err := os.WriteFile(hbPlistPath, []byte(plistContent), 0o644); err != nil {
 		return fmt.Errorf("failed to write heartbeat plist: %w", err)
 	}
@@ -2978,7 +2971,14 @@ func uninstallHeartbeatDaemonLaunchd(name string) error {
 	if err != nil {
 		return err
 	}
-	_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+	if _, err := os.Stat(hbPlistPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := exec.Command("launchctl", "unload", hbPlistPath).Run(); err != nil {
+		return fmt.Errorf("stop launchd heartbeat: %w", err)
+	}
 	return RemoveHeartbeatPlist(name)
 }
 
