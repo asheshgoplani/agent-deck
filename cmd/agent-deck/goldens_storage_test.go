@@ -73,15 +73,28 @@ func TestStorageBytesGoldens(t *testing.T) {
 	}
 
 	run("session", "start", "golden-sess-shell", "--no-wait")
-	waitForStatus(t, dbPath, "golden-sess-shell", []string{"running", "starting", "idle"}, 10*time.Second)
+	t.Logf("dbPath=%s", dbPath)
+	if matches, globErr := filepath.Glob(filepath.Join(home, "*", "*", "*", "*", "state.db")); globErr == nil {
+		t.Logf("state.db files under HOME: %v", matches)
+	}
+	{
+		rawDB, openErr := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(2000)")
+		if openErr == nil {
+			var rawStatus string
+			_ = rawDB.QueryRow("SELECT status FROM instances WHERE id = ?", "golden-sess-shell").Scan(&rawStatus)
+			t.Logf("raw dbPath status right after session start = %q", rawStatus)
+			rawDB.Close()
+		}
+	}
+	waitForStatus(t, bin, env, "golden-sess-shell", []string{"running", "starting", "idle"}, 10*time.Second)
 	dumpAndAssert("01_after_start")
 
 	run("session", "stop", "golden-sess-shell")
-	waitForStatus(t, dbPath, "golden-sess-shell", []string{"stopped"}, 10*time.Second)
+	waitForStatus(t, bin, env, "golden-sess-shell", []string{"stopped"}, 10*time.Second)
 	dumpAndAssert("02_after_stop")
 
 	run("session", "restart", "golden-sess-shell")
-	waitForStatus(t, dbPath, "golden-sess-shell", []string{"running", "starting", "idle"}, 10*time.Second)
+	waitForStatus(t, bin, env, "golden-sess-shell", []string{"running", "starting", "idle"}, 10*time.Second)
 	dumpAndAssert("03_after_restart")
 
 	run("list")
@@ -91,7 +104,7 @@ func TestStorageBytesGoldens(t *testing.T) {
 	dumpAndAssert("05_after_group_list")
 
 	run("session", "stop", "golden-sess-shell")
-	waitForStatus(t, dbPath, "golden-sess-shell", []string{"stopped"}, 10*time.Second)
+	waitForStatus(t, bin, env, "golden-sess-shell", []string{"stopped"}, 10*time.Second)
 }
 
 // filterEnv drops any entry in env whose key is in drop, so a caller can
@@ -145,30 +158,35 @@ func seedShellInstance(t *testing.T, dbPath string) {
 	}
 }
 
-// waitForStatus polls state.db directly (read-only) until golden-sess-shell's
-// status matches one of want, or the deadline passes. session start/stop/
-// restart return once the tmux process is spawned/killed, not once the
-// status column settles, so the dump right after a command can otherwise
-// race the async status refresh and make the golden flaky.
-func waitForStatus(t *testing.T, dbPath, id string, want []string, timeout time.Duration) {
+// waitForStatus polls `session show --json <id>` (which, like the TUI,
+// re-derives status from the live tmux pane via RefreshInstancesForCLIStatus
+// rather than trusting a possibly-stale DB row) until the id's status
+// matches one of want, or the deadline passes. session start/stop/restart
+// return once the tmux process is spawned/killed, not once a status refresh
+// has run, so the dump right after a command can otherwise race it and make
+// the golden flaky.
+func waitForStatus(t *testing.T, bin string, env []string, id string, want []string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
-		db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(2000)")
-		if err == nil {
-			row := db.QueryRow("SELECT status FROM instances WHERE id = ?", id)
-			_ = row.Scan(&last)
-			db.Close()
-			for _, w := range want {
-				if last == w {
-					return
+		stdout, exit := runGoldens(t, bin, env, []string{"-p", goldensProfile, "session", "show", id, "--json"})
+		if exit == 0 {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(stdout), &doc); err == nil {
+				if s, ok := doc["status"].(string); ok {
+					last = s
+					for _, w := range want {
+						if last == w {
+							return
+						}
+					}
 				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("golden-sess-shell status = %q after %s, want one of %v", last, timeout, want)
+	t.Fatalf("%s status = %q after %s, want one of %v", id, last, timeout, want)
 }
 
 // dumpStateDBRows is the "canonical JSON dump of state.db rows touched"
