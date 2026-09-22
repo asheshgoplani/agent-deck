@@ -20,7 +20,7 @@ Failure mode:
 A private/anonymous feedback channel is being designed for a future
 release — track in https://github.com/asheshgoplani/agent-deck/issues/679.
 
-Prompt frequency (<VERSION>+):
+Prompt frequency (v1.7.41+):
   The TUI auto-prompt appears after 7 launches or 3 days of use,
   whichever comes later. If you dismiss it, we wait 14 days before
   asking again. Maximum 3 prompts per version. Pressing `n` at any

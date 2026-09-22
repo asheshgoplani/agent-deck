@@ -4,15 +4,6 @@ Attach an MCP to a session.
 Codex-compatible sessions always use the global Codex config.
 
 Options:
-  -global
-    	Attach to global config instead of local config (Codex always uses global)
-  -json
-    	Output as JSON
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output
-  -restart
-    	Restart session to load MCP immediately
 
 Examples:
   agent-deck mcp attach my-project exa           # Attach locally (Codex uses global)

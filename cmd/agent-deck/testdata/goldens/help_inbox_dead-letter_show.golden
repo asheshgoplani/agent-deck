@@ -1,0 +1,18 @@
+Usage: agent-deck inbox <session-id>
+       agent-deck inbox drain [--json] <session-id>
+       agent-deck inbox export [--json]
+       agent-deck inbox writer-status [--json]
+       agent-deck inbox dead-letter <list|show|retry|purge>
+
+Drain pending completion events from the parent's durable outbox.
+The `drain` form (issue #1225) preserves distinct turns per child and
+dedups re-delivery via turn_fingerprint; run it first on every
+heartbeat. Reading clears the inbox.
+The `export` form (issue #1948) READS this host's completion and
+transition records without consuming anything; it is what a
+conductor on another machine runs over ssh via `remote drain`.
+The `writer-status` form reports whether a notify-daemon is
+actually recording transitions here — without it, an empty export
+cannot be told apart from a host where nothing has been watching.
+The `dead-letter` family safely inspects, retries, or purges terminal
+delivery failures; run `agent-deck inbox dead-letter help` for details.

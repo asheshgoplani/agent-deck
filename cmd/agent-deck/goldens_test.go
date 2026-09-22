@@ -223,8 +223,9 @@ func safeSpecs() []goldenSpec {
 
 		{"watcher_list", []string{"-p", goldensProfile, "watcher", "list"}, 0},
 		{"watcher_list_json", []string{"-p", goldensProfile, "watcher", "list", "--json"}, 0},
-		{"watcher_routes", []string{"-p", goldensProfile, "watcher", "routes"}, 0},
-		{"watcher_routes_json", []string{"-p", goldensProfile, "watcher", "routes", "--json"}, 0},
+		// A fresh profile has no clients.json; both forms fail on stderr.
+		{"watcher_routes", []string{"-p", goldensProfile, "watcher", "routes"}, 1},
+		{"watcher_routes_json", []string{"-p", goldensProfile, "watcher", "routes", "--json"}, 1},
 
 		{"completion_bash", []string{"completion", "bash"}, 0},
 		{"completion_zsh", []string{"completion", "zsh"}, 0},

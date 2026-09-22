@@ -3,13 +3,6 @@ Usage: agent-deck group delete <name> [options]
 Delete a group.
 
 Options:
-  -force
-    	Move sessions to parent and delete
-  -json
-    	Output as JSON
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output
 
 Examples:
   agent-deck group delete experiments

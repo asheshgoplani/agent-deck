@@ -5,9 +5,3 @@ The source is never modified: no plist is unloaded, no unit is edited, no
 credential is moved, and no live session is taken over.
 
 Options:
-  -json
-    	Output the plan as JSON
-  -manager string
-    	Post name that non-manager roles report to
-  -write
-    	Write the generated definitions (default: dry run)

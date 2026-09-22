@@ -1,7 +1,0 @@
-Usage: agent-deck health [--json] [--since 1h]
-
-Read local runtime health for the selected profile. No data leaves this host.
-  -json
-    	Output runtime health as JSON
-  -since duration
-    	History window (positive Go duration, e.g. 30m or 1h) (default 1h0m0s)

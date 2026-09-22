@@ -7,10 +7,6 @@ Orphans are detected as:
   - Worktrees that exist but no session points to them
 
 Options:
-  -force
-    	Actually remove orphans (default is dry-run)
-  -json
-    	Output as JSON
 
 By default, runs in dry-run mode (shows what would be removed).
 Use --force to actually perform the cleanup.

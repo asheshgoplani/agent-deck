@@ -3,7 +3,3 @@ Usage: agent-deck agents [options]
 List adopted agents, grouped by machine.
 
 Options:
-  -json
-    	Output as JSON
-  -no-remote
-    	Skip remote machines

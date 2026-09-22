@@ -3,5 +3,3 @@ Usage: agent-deck worktree list [options]
 List all git worktrees in the current repository with session associations.
 
 Options:
-  -json
-    	Output as JSON

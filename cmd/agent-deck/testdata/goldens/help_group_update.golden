@@ -3,17 +3,6 @@ Usage: agent-deck group update <name> [options]
 Update group settings.
 
 Options:
-  -clear-default-path
-    	Clear group default working directory
-  -default-path string
-    	Default working directory for new sessions in this group
-  -json
-    	Output as JSON
-  -max-concurrent int
-    	Cap simultaneous running sessions in this group (0=unlimited, 1=serial, N=cap) (default -1)
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output
 
 Examples:
   agent-deck group update mobile --default-path /path/to/repo

@@ -4,15 +4,6 @@ Detach an MCP from a session.
 Codex-compatible sessions always use the global Codex config.
 
 Options:
-  -global
-    	Remove from global config instead of local config (Codex always uses global)
-  -json
-    	Output as JSON
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output
-  -restart
-    	Restart session to unload MCP immediately
 
 Examples:
   agent-deck mcp detach my-project exa           # Detach from local (Codex uses global)

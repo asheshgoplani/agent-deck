@@ -4,5 +4,3 @@ List the terminals attached to a session (who else is viewing it).
 If no ID is provided, auto-detects the current session.
 
 Options:
-  -json
-    	Output as JSON

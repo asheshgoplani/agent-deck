@@ -3,13 +3,6 @@ Usage: agent-deck group show <name> [--resolved] [--json]
 Show a group's settings.
 
 Options:
-  -json
-    	Output as JSON
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output
-  -resolved
-    	Resolve the effective claude config for this group (sources included)
 
 Examples:
   agent-deck group show work

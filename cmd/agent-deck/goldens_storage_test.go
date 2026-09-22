@@ -43,14 +43,23 @@ func TestStorageBytesGoldens(t *testing.T) {
 	env = append(env, "TMUX_TMPDIR="+tmuxTmpdir)
 	t.Cleanup(func() {
 		testutil.KillTmuxServersUnder(tmuxTmpdir)
-		// A failed kill must be visible, including on an earlier test failure.
+		// tmux can leave a stale socket after the server exits. Verify that
+		// no server still answers on each socket before removing the socket.
 		_ = filepath.WalkDir(tmuxTmpdir, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				t.Errorf("checking private tmux socket: %v", walkErr)
 				return nil
 			}
 			if info, err := entry.Info(); err == nil && info.Mode()&os.ModeSocket != 0 {
-				t.Errorf("private tmux socket leaked: %s", path)
+				if err := exec.Command("tmux", "-S", path, "show-options", "-s", "-v", "exit-empty").Run(); err == nil {
+					if out, killErr := exec.Command("tmux", "-S", path, "kill-server").CombinedOutput(); killErr != nil {
+						t.Errorf("private tmux server still alive at %s: %v: %s", path, killErr, out)
+						return nil
+					}
+				}
+				if err := os.Remove(path); err != nil {
+					t.Errorf("removing private tmux socket %s: %v", path, err)
+				}
 			}
 			return nil
 		})

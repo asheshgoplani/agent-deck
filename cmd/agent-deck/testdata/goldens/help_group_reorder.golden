@@ -3,21 +3,6 @@ Usage: agent-deck group reorder <name> [options]
 Reorder a group among its siblings.
 
 Options:
-  -d	Move group down one position (short)
-  -down
-    	Move group down one position
-  -json
-    	Output as JSON
-  -p int
-    	Move group to specific position (short) (default -1)
-  -position int
-    	Move group to specific position (0-indexed) (default -1)
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output
-  -u	Move group up one position (short)
-  -up
-    	Move group up one position
 
 Examples:
   agent-deck group reorder mobile --up

@@ -9,15 +9,6 @@ Arguments:
   <group>        Target group path (or, with --to-profile, the source group)
 
 Options:
-  -force
-    	With --to-profile: migrate even if a session is running
-  -json
-    	Output as JSON
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output
-  -to-profile string
-    	Migrate every session in <group> to another profile's DB (issue #928)
 
 Examples:
   agent-deck group move my-project work/frontend

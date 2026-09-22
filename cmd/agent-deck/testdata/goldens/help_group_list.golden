@@ -3,8 +3,3 @@ Usage: agent-deck group list [options]
 List all groups with session counts.
 
 Options:
-  -json
-    	Output as JSON
-  -q	Minimal output (short)
-  -quiet
-    	Minimal output

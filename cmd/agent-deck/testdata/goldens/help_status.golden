@@ -3,18 +3,6 @@ Usage: agent-deck status [options]
 Show a summary of session statuses.
 
 Options:
-  -json
-    	Output as JSON
-  -q	Only output waiting count (short)
-  -quiet
-    	Only output waiting count (for scripts)
-  -stale
-    	Show read-only stale-session candidates (never stops or removes anything)
-  -threshold string
-    	Staleness age threshold for --stale, e.g. 24h, 48h, 168h (Go duration syntax) (default "24h0m0s")
-  -v	Show detailed session list (short)
-  -verbose
-    	Show detailed session list
 
 Examples:
   agent-deck status              # Quick summary
