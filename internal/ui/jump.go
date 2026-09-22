@@ -83,7 +83,9 @@ func matchJumpHint(hints []string, buffer string) jumpMatchResult {
 	return jumpMatchResult{matched: false, index: -1, isPrefix: false}
 }
 
-var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+// ansiRegex matches CSI sequences, including private-mode ones such as the
+// per-row DECAWM toggles clampViewToViewport emits (\x1b[?7l / \x1b[?7h).
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 
 func stripAnsi(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")

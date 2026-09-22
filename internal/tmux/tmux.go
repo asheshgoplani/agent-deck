@@ -1346,6 +1346,13 @@ type Session struct {
 	// Default: true (set via SetMouse from user config)
 	mouse bool
 
+	// indicZeroWidthMarks is [tmux] indic_zero_width_marks (#2334, default
+	// false), set via SetIndicZeroWidthMarks. indicZeroWidthMarksSet records
+	// that the config was applied at all: a Session built without it (tmux
+	// discovery) must neither add the marks nor remove a user's opt-in.
+	indicZeroWidthMarks    bool
+	indicZeroWidthMarksSet bool
+
 	// clearOnRestart controls whether RespawnPane clears the scrollback buffer.
 	// When false (default), previous session output is preserved.
 	// Set via SetClearOnRestart from user config.
@@ -1888,6 +1895,35 @@ func (s *Session) SetMouse(enabled bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mouse = enabled
+}
+
+// SetIndicZeroWidthMarks mirrors [tmux] indic_zero_width_marks (#2334,
+// default off): whether Start gives Indic spacing vowel signs zero width on
+// the tmux server.
+func (s *Session) SetIndicZeroWidthMarks(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.indicZeroWidthMarks = enabled
+	s.indicZeroWidthMarksSet = true
+}
+
+// indicZeroWidthMarksArgs returns the opt-in's set-option chunks for Start's
+// command chain; with the key off it removes entries a previous opt-in left.
+// It reads the field without s.mu, like s.mouse on the same paths, because
+// EnableMouseMode runs it under EnsureConfigured's lock.
+func (s *Session) indicZeroWidthMarksArgs() []string {
+	if !s.indicZeroWidthMarksSet {
+		return nil
+	}
+	if _, overridden := s.OptionOverrides["codepoint-widths"]; overridden {
+		return nil
+	}
+	ver := hostTmuxVersionString()
+	if !s.indicZeroWidthMarks {
+		removeOwnedIndicZeroWidthMarks(s.SocketName, ver)
+		return nil
+	}
+	return indicZeroWidthArgs(ver)
 }
 
 // GetMouse reports whether tmux mouse mode is currently enabled for this
@@ -2747,6 +2783,8 @@ func (s *Session) Start(command string) error {
 	// #1625: the key-handling defaults are gated through OptionOverrides so an
 	// explicit user tmux setting wins (see gatedTmuxKeyOptionArgs).
 	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
+	// #2334: opt-in only; see complex_script_widths.go for the trade-off.
+	startArgs = append(startArgs, s.indicZeroWidthMarksArgs()...)
 	// Multi-client size policy (#2186, #2259, shared attach): every window
 	// of a Deck session follows the client that is using it
 	// (window-size=latest, aggressive-resize on; `largest` on a tmux < 3.1),
@@ -3530,6 +3568,7 @@ func (s *Session) EnableMouseMode() error {
 	// #1625: gate the key-handling defaults through OptionOverrides so an explicit
 	// user tmux setting wins (mirrors Start; see gatedTmuxKeyOptionArgs).
 	enhanceArgs = append(enhanceArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides, s.configureTerminalFeatures)...)
+	enhanceArgs = append(enhanceArgs, s.indicZeroWidthMarksArgs()...)
 	enhanceCmd := s.tmuxCmd(enhanceArgs...)
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options

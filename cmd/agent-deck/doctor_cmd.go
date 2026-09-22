@@ -13,6 +13,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 func handleDoctor(args []string) {
@@ -52,6 +53,13 @@ func handleDoctor(args []string) {
 	// Profile store roots: which data root is active and whether a second
 	// one holds profiles too (stray XDG store incidents, 2026-09-19/20).
 	storeRoots, storeRootsErr := session.StoreRootReport()
+	// #2334: only users who opted into [tmux] indic_zero_width_marks get a
+	// note on whether their tmux can apply it.
+	var indicMarks *tmux.IndicZeroWidthMarksInfo
+	if config.Tmux.IndicZeroWidthMarks {
+		info := tmux.CheckIndicZeroWidthMarks()
+		indicMarks = &info
+	}
 	if *jsonOutput {
 		report := struct {
 			AccountSlots []session.AccountDirectoryDiagnostic `json:"account_slots"`
@@ -60,9 +68,10 @@ func handleDoctor(args []string) {
 				State  string `json:"state"`
 				Config string `json:"config"`
 			} `json:"codex_hooks"`
-			StoreRoots *session.StoreRootSelection `json:"store_roots,omitempty"`
-			StoreError string                      `json:"store_roots_error,omitempty"`
-		}{AccountSlots: slots, Health: runtimeHealth}
+			StoreRoots *session.StoreRootSelection   `json:"store_roots,omitempty"`
+			StoreError string                        `json:"store_roots_error,omitempty"`
+			IndicMarks *tmux.IndicZeroWidthMarksInfo `json:"tmux_indic_zero_width_marks,omitempty"`
+		}{AccountSlots: slots, Health: runtimeHealth, IndicMarks: indicMarks}
 		report.CodexHooks.State = codexHooks
 		report.CodexHooks.Config = codexConfig
 		if storeRootsErr != nil {
@@ -79,6 +88,9 @@ func handleDoctor(args []string) {
 	fmt.Print(health.Format(runtimeHealth))
 	fmt.Print(formatStoreRoots(storeRoots, storeRootsErr))
 	fmt.Printf("Codex notify %s\n", codexHooksLine(codexHooks, codexConfig))
+	if indicMarks != nil {
+		fmt.Printf("tmux indic_zero_width_marks INFO: %s\n", indicMarks.Detail)
+	}
 	fmt.Println("Named Claude account directories:")
 	if len(slots) == 0 {
 		fmt.Println("No named Claude account slots configured.")

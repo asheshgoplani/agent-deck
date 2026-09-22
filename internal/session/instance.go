@@ -1178,6 +1178,7 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
+	tmuxSess.SetIndicZeroWidthMarks(GetTmuxSettings().IndicZeroWidthMarks)
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
@@ -1265,6 +1266,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
+	tmuxSess.SetIndicZeroWidthMarks(GetTmuxSettings().IndicZeroWidthMarks)
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
@@ -7761,6 +7763,7 @@ func (i *Instance) recreateTmuxSession() {
 	i.tmuxSession.InstanceID = i.ID
 	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	i.tmuxSession.SetMouse(GetTmuxSettings().GetMouse())
+	i.tmuxSession.SetIndicZeroWidthMarks(GetTmuxSettings().IndicZeroWidthMarks)
 	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	i.tmuxSession.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 }

@@ -1642,6 +1642,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			tmuxSess.InstanceID = instData.ID
 			tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 			tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
+			tmuxSess.SetIndicZeroWidthMarks(GetTmuxSettings().IndicZeroWidthMarks)
 			tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 			tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 			// Note: EnableMouseMode and ConfigureStatusBar are deferred to EnsureConfigured()

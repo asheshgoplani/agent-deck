@@ -19002,22 +19002,31 @@ func (h *Home) renderFrame() string {
 	// CRITICAL: Use ensureExactHeight for robust, consistent output across all platforms
 	// This is the single source of truth for output height - guarantees exactly h.height lines
 	// regardless of component content, ANSI codes, or terminal differences
-	rendered := clampViewToViewport(b.String(), h.width, h.height)
-
-	// #1410: when the inline prompt input is open, overlay it at the bottom of
-	// the (already viewport-clamped) list so the operator types without
-	// attaching. Rendered last so it sits above the status line.
-	if h.promptInputDialog.IsVisible() {
-		rendered = h.promptInputDialog.View(rendered)
+	content := b.String()
+	if h.promptInputDialog.IsVisible() || h.sessionSwitcher.IsVisible() {
+		// Overlays compose on rows already fitted to the viewport, and the
+		// composite then goes through the same final clamp as every frame
+		// (#2334), so their rows get the same width safety net and exactly
+		// one auto-wrap off/on bracket each.
+		// The final clamp fits these rows a second time; fitting is
+		// idempotent, so only the overlay rows change.
+		content = fitViewportRows(content, h.width, h.height)
+		// #1410: when the inline prompt input is open, overlay it at the
+		// bottom of the list so the operator types without attaching.
+		// Rendered last so it sits above the status line.
+		if h.promptInputDialog.IsVisible() {
+			content = h.promptInputDialog.View(content)
+		}
+		// Keep the session list and preview visible while Ctrl+S is open.
+		// The card is anchored to the left edge of the active-session area,
+		// immediately beside the sidebar in a dual layout, so the current
+		// sidebar selection remains visible and spatially close to the
+		// choices.
+		if h.sessionSwitcher.IsVisible() {
+			content = h.renderSessionSwitcherOverlay(content)
+		}
 	}
-	// Keep the session list and preview visible while Ctrl+S is open. The card
-	// is anchored to the left edge of the active-session area, immediately
-	// beside the sidebar in a dual layout, so the current sidebar selection
-	// remains visible and spatially close to the choices.
-	if h.sessionSwitcher.IsVisible() {
-		rendered = h.renderSessionSwitcherOverlay(rendered)
-	}
-	return rendered
+	return clampViewToViewport(content, h.width, h.height)
 }
 
 // sessionSwitcherOverlayRegion returns the active-session portion of the
@@ -19078,8 +19087,8 @@ func (h *Home) renderSessionSwitcherOverlay(background string) string {
 	}
 	cardHeight := lipgloss.Height(card)
 	y := region.Y + max((region.Height-cardHeight)/2, 0)
-	composite := overlayAtCells(background, card, y, region.X)
-	return clampViewToViewport(composite, h.width, h.height)
+	// View runs the composite through the final clampViewToViewport.
+	return overlayAtCells(background, card, y, region.X)
 }
 
 // overlayAtCells paints overlay over base at terminal-cell coordinates. The
@@ -19496,6 +19505,17 @@ func ensureExactHeight(content string, n int) string {
 // This is the final safety net against any component returning an unexpected
 // extra line or a line that still exceeds the viewport width.
 func clampViewToViewport(content string, width, height int) string {
+	return clampRows(content, width, height, true)
+}
+
+// fitViewportRows is clampViewToViewport without the per-row auto-wrap
+// toggles: the base overlays are composed on before the final clamp, which
+// must be the only place a row gets its ?7l/?7h bracket (#2334).
+func fitViewportRows(content string, width, height int) string {
+	return clampRows(content, width, height, false)
+}
+
+func clampRows(content string, width, height int, autoWrapOff bool) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
@@ -19511,7 +19531,7 @@ func clampViewToViewport(content string, width, height int) string {
 
 	const sgrReset = "\x1b[0m"
 	var rendered strings.Builder
-	rendered.Grow(len(content) + len(lines)*2*len(sgrReset))
+	rendered.Grow(len(content) + len(lines)*(2*len(sgrReset)+len(ansi.ResetModeAutoWrap)+len(ansi.SetModeAutoWrap)))
 
 	for i, line := range lines {
 		// #937 v2: cellWidth/cellTruncate (not ansi.*) so this final
@@ -19546,8 +19566,25 @@ func clampViewToViewport(content string, width, height int) string {
 		// scrolling the header off the alternate screen. Every row starts at
 		// column 0 here, so per-row expansion lands on the same stops the
 		// terminal would use.
+		//
+		// #2334: fitTerminalRow instead of fitCellWidth so a complex-script
+		// row (Devanagari vowel signs, ZWJ emoji) fits under the per code
+		// point width convention too, and every row runs with auto-wrap off
+		// (DECAWM) and switches it back on at its own end. A row that is still
+		// wider on some terminal is clipped at the right margin instead of
+		// wrapping onto the next screen row, which would shift every later row
+		// against Bubble Tea's line-diff model and leave the duplicated,
+		// interleaved preview blocks of the report on screen. Restoring per
+		// row keeps auto-wrap on between writes, so no exit, suspend, attach
+		// or crash path can leave it off in the user's shell.
 		rendered.WriteString(sgrReset)
-		rendered.WriteString(fitCellWidth(expandTabs(line), width))
+		if autoWrapOff {
+			rendered.WriteString(ansi.ResetModeAutoWrap)
+		}
+		rendered.WriteString(fitTerminalRow(expandTabs(line), width))
+		if autoWrapOff {
+			rendered.WriteString(ansi.SetModeAutoWrap)
+		}
 		rendered.WriteString(sgrReset)
 	}
 
