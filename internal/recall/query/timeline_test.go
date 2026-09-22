@@ -278,6 +278,7 @@ func assertTimelineGolden(t *testing.T, harness string, turns []Turn) {
 		return
 	}
 	if !bytes.Equal(got, want) {
+		t.Logf("TIMELINE_GOLDEN_BASE64[%s]=%s", harness, base64.StdEncoding.EncodeToString(got))
 		t.Errorf("%s timeline differs from full canonical golden\ngot:\n%s\nwant:\n%s", harness, got, want)
 	}
 }
@@ -298,6 +299,28 @@ func TestTimelineHarnessGoldens(t *testing.T) {
 	_, err = f.WriteString(fmt.Sprintf(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"PASS"}]},"uuid":"tool-result","timestamp":"2026-09-11T01:00:01Z","sessionId":%q}`+"\n", sessA))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for i, tool := range []struct {
+		name, input string
+	}{
+		{"Edit", `{"file_path":"auth.go","old_string":"bad","new_string":"good"}`},
+		{"TodoWrite", `{"todos":[{"content":"verify auth"}]}`},
+		{"Agent", `{"description":"inspect auth","prompt":"check flow"}`},
+		{"Skill", `{"skill":"code-simplifier"}`},
+		{"AskUserQuestion", `{"questions":[{"question":"Proceed?"}]}`},
+	} {
+		line := fmt.Sprintf(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_%d","name":%q,"input":%s}]},"uuid":"workflow-%d","timestamp":"2026-09-11T01:00:02Z","sessionId":%q}`+"\n", i+2, tool.name, tool.input, i, sessA)
+		if _, err := f.WriteString(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, line := range []string{
+		`{"type":"system","subtype":"compact_boundary","timestamp":"2026-09-11T01:00:03Z"}` + "\n",
+		`{"type":"future_workflow","timestamp":"2026-09-11T01:00:04Z","payload":{"step":"preserve"}}` + "\n",
+	} {
+		if _, err := f.WriteString(line); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
