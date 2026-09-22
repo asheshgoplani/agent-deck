@@ -12,6 +12,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestStorageBytesGoldens is PROMPT.md deliverable 2: storage-bytes goldens
@@ -27,7 +28,7 @@ import (
 // goldens (testdata/goldens/README.md).
 func TestStorageBytesGoldens(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not on PATH")
+		t.Fatalf("tmux is required for storage goldens: %v", err)
 	}
 	bin := goldensBinary(t)
 	home, env := goldensSandbox(t)
@@ -41,7 +42,18 @@ func TestStorageBytesGoldens(t *testing.T) {
 	env = filterEnv(env, "TMUX", "TMUX_PANE", "TMUX_TMPDIR")
 	env = append(env, "TMUX_TMPDIR="+tmuxTmpdir)
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-S", filepath.Join(tmuxTmpdir, "default"), "kill-server").Run()
+		testutil.KillTmuxServersUnder(tmuxTmpdir)
+		// A failed kill must be visible, including on an earlier test failure.
+		_ = filepath.WalkDir(tmuxTmpdir, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				t.Errorf("checking private tmux socket: %v", walkErr)
+				return nil
+			}
+			if info, err := entry.Info(); err == nil && info.Mode()&os.ModeSocket != 0 {
+				t.Errorf("private tmux socket leaked: %s", path)
+			}
+			return nil
+		})
 	})
 
 	profileDir, err := session.GetProfileDir(goldensProfile)
@@ -205,11 +217,13 @@ func dumpStateDBRows(t *testing.T, dbPath string) string {
 	}
 	out := dump{}
 
-	instCols := []string{"id", "title", "project_path", "group_path", "tool", "status",
-		"tmux_session", "parent_session_id", "worktree_path", "account", "pin"}
-	rows, err := db.Query("SELECT " + strings.Join(instCols, ", ") + " FROM instances ORDER BY id")
+	rows, err := db.Query("SELECT * FROM instances ORDER BY id")
 	if err != nil {
 		t.Fatalf("querying instances: %v", err)
+	}
+	instCols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("instances columns: %v", err)
 	}
 	for rows.Next() {
 		vals := make([]any, len(instCols))
@@ -228,10 +242,13 @@ func dumpStateDBRows(t *testing.T, dbPath string) string {
 	}
 	rows.Close()
 
-	groupCols := []string{"path", "name", "expanded", "sort_order", "default_path", "max_concurrent"}
-	grows, err := db.Query("SELECT " + strings.Join(groupCols, ", ") + " FROM groups ORDER BY path")
+	grows, err := db.Query("SELECT * FROM groups ORDER BY path")
 	if err != nil {
 		t.Fatalf("querying groups: %v", err)
+	}
+	groupCols, err := grows.Columns()
+	if err != nil {
+		t.Fatalf("groups columns: %v", err)
 	}
 	for grows.Next() {
 		vals := make([]any, len(groupCols))

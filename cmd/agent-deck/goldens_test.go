@@ -142,25 +142,39 @@ func safeSpecs() []goldenSpec {
 		{"list", []string{"-p", goldensProfile, "list"}, 0},
 		{"list_json", []string{"-p", goldensProfile, "list", "--json"}, 0},
 		{"status", []string{"-p", goldensProfile, "status"}, 0},
+		{"status_json", []string{"-p", goldensProfile, "status", "--json"}, 0},
 		{"accounts", []string{"accounts"}, 0},
+		{"accounts_json", []string{"accounts", "--json"}, 0},
 		{"doctor", []string{"doctor"}, 0},
+		{"doctor_json", []string{"doctor", "--json"}, 0},
+		{"health", []string{"-p", goldensProfile, "health"}, 0},
 		{"health_json", []string{"-p", goldensProfile, "health", "--json"}, 0},
 		{"usage", []string{"-p", goldensProfile, "usage"}, 0},
+		{"usage_json", []string{"-p", goldensProfile, "usage", "--json"}, 0},
 		{"costs_summary", []string{"-p", goldensProfile, "costs", "summary"}, 0},
+		{"costs_summary_json", []string{"-p", goldensProfile, "costs", "summary", "--json"}, 0},
+		{"costs_recompute_dry_run", []string{"-p", goldensProfile, "costs", "recompute", "--dry-run"}, 0},
 		{"agents", []string{"agents"}, 0},
+		{"agents_json", []string{"agents", "--json"}, 0},
 		{"telemetry_status", []string{"telemetry", "status"}, 0},
 
 		{"session_show", []string{"-p", goldensProfile, "session", "show", "golden-sess-1"}, 0},
+		{"session_show_json", []string{"-p", goldensProfile, "session", "show", "golden-sess-1", "--json"}, 0},
 		{"session_viewers", []string{"-p", goldensProfile, "session", "viewers", "golden-sess-1"}, 0},
+		{"session_viewers_json", []string{"-p", goldensProfile, "session", "viewers", "golden-sess-1", "--json"}, 0},
 
 		{"fleet_status", []string{"-p", goldensProfile, "fleet", "status"}, 0},
+		{"fleet_status_json", []string{"-p", goldensProfile, "fleet", "status", "--json"}, 0},
 
 		{"mcp_list", []string{"-p", goldensProfile, "mcp", "list"}, 0},
 		{"mcp_list_json", []string{"-p", goldensProfile, "mcp", "list", "--json"}, 0},
 		{"mcp_attached", []string{"-p", goldensProfile, "mcp", "attached", "golden-sess-1"}, 0},
+		{"mcp_attached_json", []string{"-p", goldensProfile, "mcp", "attached", "golden-sess-1", "--json"}, 0},
 
 		{"skill_list", []string{"-p", goldensProfile, "skill", "list"}, 0},
+		{"skill_list_json", []string{"-p", goldensProfile, "skill", "list", "--json"}, 0},
 		{"skill_attached", []string{"-p", goldensProfile, "skill", "attached", "golden-sess-1"}, 0},
+		{"skill_attached_json", []string{"-p", goldensProfile, "skill", "attached", "golden-sess-1", "--json"}, 0},
 		{"skill_source_list", []string{"-p", goldensProfile, "skill", "source", "list"}, 0},
 
 		{"codex_hooks_status", []string{"codex-hooks", "status"}, 0},
@@ -171,32 +185,46 @@ func safeSpecs() []goldenSpec {
 		{"tmux_hooks_status", []string{"tmux-hooks", "status"}, 1},
 		{"pi_hooks_status", []string{"pi-hooks", "status"}, 0},
 		{"deepseek_status", []string{"deepseek", "status"}, 0},
+		{"deepseek_status_json", []string{"deepseek", "status", "--json"}, 0},
 		{"deepseek_profiles", []string{"deepseek", "profiles"}, 0},
+		{"deepseek_profiles_json", []string{"deepseek", "profiles", "--json"}, 0},
 
 		{"group_list", []string{"-p", goldensProfile, "group", "list"}, 0},
+		{"group_list_json", []string{"-p", goldensProfile, "group", "list", "--json"}, 0},
 		{"group_show", []string{"-p", goldensProfile, "group", "show", "backend"}, 0},
+		{"group_show_json", []string{"-p", goldensProfile, "group", "show", "backend", "--json"}, 0},
 		{"group_show_resolved", []string{"-p", goldensProfile, "group", "show", "backend", "--resolved"}, 0},
+		{"group_show_resolved_json", []string{"-p", goldensProfile, "group", "show", "backend", "--resolved", "--json"}, 0},
 
 		{"conductor_status", []string{"-p", goldensProfile, "conductor", "status"}, 0},
+		{"conductor_status_json", []string{"-p", goldensProfile, "conductor", "status", "--json"}, 0},
 		{"conductor_list", []string{"-p", goldensProfile, "conductor", "list"}, 0},
+		{"conductor_list_json", []string{"-p", goldensProfile, "conductor", "list", "--json"}, 0},
 
 		{"remote_list", []string{"-p", goldensProfile, "remote", "list"}, 0},
 		{"remote_list_json", []string{"-p", goldensProfile, "remote", "list", "--json"}, 0},
 
 		// exit 1: the sandbox cwd is not a git/jj repo (today's real behaviour).
 		{"worktree_list", []string{"-p", goldensProfile, "worktree", "list"}, 1},
+		{"worktree_list_json", []string{"-p", goldensProfile, "worktree", "list", "--json"}, 1},
 
+		{"config_show_effective", []string{"config", "show", "--effective"}, 0},
 		{"config_show_effective_json", []string{"config", "show", "--effective", "--json"}, 0},
 
 		{"profile_list", []string{"profile", "list"}, 0},
 		{"profile_default_show", []string{"profile", "default"}, 0},
 
 		{"inbox_export", []string{"-p", goldensProfile, "inbox", "export"}, 0},
+		{"inbox_export_json", []string{"-p", goldensProfile, "inbox", "export", "--json"}, 0},
 		{"inbox_writer_status", []string{"-p", goldensProfile, "inbox", "writer-status"}, 0},
+		{"inbox_writer_status_json", []string{"-p", goldensProfile, "inbox", "writer-status", "--json"}, 0},
 
 		{"hooks_status", []string{"hooks", "status"}, 0},
 
 		{"watcher_list", []string{"-p", goldensProfile, "watcher", "list"}, 0},
+		{"watcher_list_json", []string{"-p", goldensProfile, "watcher", "list", "--json"}, 0},
+		{"watcher_routes", []string{"-p", goldensProfile, "watcher", "routes"}, 0},
+		{"watcher_routes_json", []string{"-p", goldensProfile, "watcher", "routes", "--json"}, 0},
 
 		{"completion_bash", []string{"completion", "bash"}, 0},
 		{"completion_zsh", []string{"completion", "zsh"}, 0},
@@ -227,7 +255,7 @@ func helpSpecs() []goldenSpec {
 		"session show", "session viewers", "session context",
 		"fleet status", "fleet recover",
 		"mcp list", "mcp attached", "mcp attach", "mcp detach",
-		"skill list", "skill attached", "skill attach", "skill detach", "skill source",
+		"skill list", "skill attached", "skill attach", "skill detach", "skill source", "skill source list",
 		"codex-hooks install", "codex-hooks uninstall", "codex-hooks status",
 		"gemini-hooks install", "gemini-hooks uninstall", "gemini-hooks status",
 		"hermes-hooks install", "hermes-hooks uninstall", "hermes-hooks status",
@@ -244,6 +272,7 @@ func helpSpecs() []goldenSpec {
 		"config show",
 		"profile list", "profile create", "profile delete", "profile default",
 		"inbox drain", "inbox export", "inbox writer-status", "inbox dead-letter",
+		"inbox dead-letter list", "inbox dead-letter show", "inbox dead-letter retry", "inbox dead-letter purge",
 		"hooks status",
 		"watcher list", "watcher create", "watcher start", "watcher stop", "watcher status",
 		"watcher test", "watcher routes",
@@ -283,8 +312,8 @@ var scrubRules = []struct {
 	{regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`), "<TIMESTAMP>"},
 	// Bare Unix epoch seconds/millis inside JSON number fields (10-13 digits).
 	{regexp.MustCompile(`([:\[,]\s*)\d{10,13}(\s*[,\]}])`), "${1}<EPOCH>${2}"},
-	// Agent Deck semantic version, dev build hash suffixes included.
-	{regexp.MustCompile(`v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?`), "<VERSION>"},
+	// Version fields are normalized by scrubVersionFields below, not arbitrary
+	// dotted numbers in addresses or command examples.
 	// Process IDs / port numbers rendered as "pid 12345" or ":54321".
 	{regexp.MustCompile(`\bpid[ =]\d+\b`), "pid <PID>"},
 	// The goldens binary itself: goldensBinary() builds to a fresh
@@ -315,6 +344,8 @@ func scrub(s, home string) string {
 	for _, r := range scrubRules {
 		s = r.pattern.ReplaceAllString(s, r.repl)
 	}
+	version := regexp.QuoteMeta(Version)
+	s = regexp.MustCompile(`(^|[^0-9.])v?`+version+`($|[^0-9.])`).ReplaceAllString(s, "${1}<VERSION>${2}")
 	return s
 }
 
@@ -405,14 +436,18 @@ func runGoldens(t *testing.T, bin string, env []string, args []string) (stdout s
 // safeSpecs/helpSpecs invocation therefore runs from inside the sandbox
 // HOME, which scrub() already normalizes to <SANDBOX_HOME>.
 func runGoldensIn(t *testing.T, bin string, env []string, dir string, args []string) (stdout string, exitCode int) {
+	stdout, _, exitCode = runGoldensStreamsIn(t, bin, env, dir, args)
+	return stdout, exitCode
+}
+
+func runGoldensStreamsIn(t *testing.T, bin string, env []string, dir string, args []string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Env = env
 	cmd.Dir = dir
-	var out strings.Builder
+	var out, errOut strings.Builder
 	cmd.Stdout = &out
-	cmd.Stderr = &out // deliverable 1 asserts stdout; folding stderr in catches a
-	// command that silently starts writing its output to the wrong stream.
+	cmd.Stderr = &errOut
 	err := cmd.Run()
 	exitCode = 0
 	if err != nil {
@@ -422,7 +457,21 @@ func runGoldensIn(t *testing.T, bin string, env []string, dir string, args []str
 			t.Fatalf("running %v: %v", args, err)
 		}
 	}
-	return out.String(), exitCode
+	return out.String(), errOut.String(), exitCode
+}
+
+func assertGoldenStreams(t *testing.T, name, home, stdout, stderr string) {
+	t.Helper()
+	assertGolden(t, name, home, stdout)
+	stderrPath := goldenPath(t, name+".stderr")
+	if stderr != "" || fileExists(stderrPath) {
+		assertGolden(t, name+".stderr", home, stderr)
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func goldenPath(t *testing.T, name string) string {
@@ -468,11 +517,11 @@ func TestCLIGoldens(t *testing.T) {
 		for _, spec := range safeSpecs() {
 			spec := spec
 			t.Run(spec.name, func(t *testing.T) {
-				stdout, exit := runGoldensIn(t, bin, env, home, spec.args)
+				stdout, stderr, exit := runGoldensStreamsIn(t, bin, env, home, spec.args)
 				if exit != spec.wantExit {
-					t.Fatalf("exit code = %d, want %d; output:\n%s", exit, spec.wantExit, stdout)
+					t.Fatalf("exit code = %d, want %d; stdout:\n%s\nstderr:\n%s", exit, spec.wantExit, stdout, stderr)
 				}
-				assertGolden(t, spec.name, home, stdout)
+				assertGoldenStreams(t, spec.name, home, stdout, stderr)
 			})
 		}
 	})
@@ -482,11 +531,11 @@ func TestCLIGoldens(t *testing.T) {
 		for _, spec := range helpSpecs() {
 			spec := spec
 			t.Run(spec.name, func(t *testing.T) {
-				stdout, exit := runGoldensIn(t, bin, env, home, spec.args)
+				stdout, stderr, exit := runGoldensStreamsIn(t, bin, env, home, spec.args)
 				if exit != spec.wantExit {
-					t.Fatalf("exit code = %d, want %d; output:\n%s", exit, spec.wantExit, stdout)
+					t.Fatalf("exit code = %d, want %d; stdout:\n%s\nstderr:\n%s", exit, spec.wantExit, stdout, stderr)
 				}
-				assertGolden(t, spec.name, home, stdout)
+				assertGoldenStreams(t, spec.name, home, stdout, stderr)
 			})
 		}
 	})
@@ -498,9 +547,18 @@ func TestCLIGoldens(t *testing.T) {
 // count for RESULTS.md instead of a hand count that drifts as specs change.
 func TestCLIGoldensCoverageReport(t *testing.T) {
 	safe := len(safeSpecs())
+	jsonCount := 0
+	for _, spec := range safeSpecs() {
+		for _, arg := range spec.args {
+			if arg == "--json" {
+				jsonCount++
+				break
+			}
+		}
+	}
 	help := len(helpSpecs())
 	excluded := len(excludedCommands)
-	t.Logf("coverage: %d safe (--json/table) commands, %d --help goldens, %d commands excluded from execution (still --help golden-tested)", safe, help, excluded)
+	t.Logf("coverage: %d command paths, %d table/plain variants, %d JSON variants, %d --help goldens, %d commands excluded from execution", safe-jsonCount, safe-jsonCount, jsonCount, help, excluded)
 	for _, e := range excludedCommands {
 		t.Logf("excluded: %-28s %s", e.path, e.reason)
 	}
@@ -516,7 +574,7 @@ func TestCLIGoldensExclusionsHaveNoSafeSpec(t *testing.T) {
 			// Match on the excluded path appearing as the command's leading
 			// words (after any -p/-g global flags), not as a substring
 			// anywhere (e.g. "remote list" must not match "remote").
-			if commandStartsWith(spec.args, e.path) {
+			if commandStartsWith(spec.args, e.path) && !(e.path == "costs recompute" && strings.Contains(full, "--dry-run")) {
 				t.Errorf("safeSpecs %q executes excluded command %q (%s)", full, e.path, e.reason)
 			}
 		}

@@ -18,13 +18,14 @@ happen.
   command's `--help`, every documented subcommand's `--help` (`--help` never
   touches tmux/ssh/network or mutates the store, so it is safe for every
   command with no exceptions), plus every read-only/safely-repeatable command
-  run for real against a seeded store, with `--json` where the command
-  supports it. `TestCLIGoldensCoverageReport` (`go test -run
+  run for real against a seeded store, with separate plain and `--json`
+  variants where supported. Stdout and stderr are checked independently;
+  nonempty stderr lives in a `.stderr.golden` file. `TestCLIGoldensCoverageReport` (`go test -run
   TestCLIGoldensCoverageReport -v ./cmd/agent-deck/`) prints the exact N
   covered / M excluded counts and every exclusion's reason (also in
   `excludedCommands` in that file).
 - `cmd/agent-deck/goldens_storage_test.go` (`TestStorageBytesGoldens`): a
-  canonical JSON dump of every `instances` and `groups` row in `state.db`
+  canonical JSON dump of every persisted column of every `instances` and `groups` row in `state.db`
   after each of `session start`, `session stop`, `session restart`, `list`,
   `group list`, run against a private tmux server (`storage_00_seeded.golden`
   through `storage_05_after_group_list.golden`).
@@ -64,14 +65,16 @@ Applied by `scrub()` in `goldens_test.go`, in this order:
    fractional seconds/zone) → `<TIMESTAMP>`; `YYYY-MM-DD HH:MM:SS` →
    `<TIMESTAMP>`; bare 10–13 digit epoch seconds/millis inside a JSON value
    position → `<EPOCH>`.
-3. **Version.** Any `vX.Y.Z` (with optional `-dev`/build suffix) →
-   `<VERSION>`, so a golden survives a version bump.
+3. **Version.** Only the built binary's known version literal (with optional
+   `v` prefix) → `<VERSION>`, so dotted addresses remain exact.
 4. **Process IDs.** `pid 12345` → `pid <PID>`.
 5. **The goldens binary's own path.** The suite builds `agent-deck` to a
    fresh temp directory per test run (outside the sandbox HOME, so it
    survives every sub-test's `t.TempDir()` cleanup); a command that echoes
    its own resolved binary path (e.g. `hooks status`'s "This binary: ...")
    has that path replaced with `<AGENT_DECK_BINARY>`.
+6. **Live tmux session names.** A started or restarted session's random
+   `agentdeck_<slug>_<hex>` name → `<TMUX_SESSION>` in storage goldens.
 
 Everything else — every table column, every JSON field, every line of
 `--help` usage text, exit codes — is asserted exact. If you need to add a
