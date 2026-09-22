@@ -136,12 +136,6 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 	seedSessions(t, home, env, "alpha", "beta")
 	_, st := startDaemon(t, home, env)
 
-	client, err := daemon.Dial(context.Background(), st.Socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
 	type step struct {
 		argv []string
 		id   string
@@ -225,6 +219,11 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 		}
 	}
 
+	client, err := daemon.Dial(context.Background(), st.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
 	cmds, err := client.Catalog()
 	if err != nil {
 		t.Fatal(err)
@@ -247,6 +246,85 @@ func writeCoreDaemonModeConfig(t *testing.T, home string, enabled bool) {
 
 func writeCoreDaemonConfig(t *testing.T, home string) {
 	writeCoreDaemonModeConfig(t, home, true)
+}
+
+// The real daemon and a direct argv writer must wait on the same profile
+// lock before either can load, decide, spawn, or save.
+func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+	home := shortTempDir(t, "adlk")
+	tmuxDir := shortTempDir(t, "adlkt")
+	env := []string{"TMUX_TMPDIR=" + tmuxDir}
+	t.Cleanup(func() { testutil.KillTmuxServersUnder(tmuxDir) })
+	t.Cleanup(func() {
+		runAgentDeckEnv(t, home, "", env, "session", "stop", "alpha")
+		runAgentDeckEnv(t, home, "", env, "session", "stop", "beta")
+	})
+	seedSessions(t, home, env, "alpha", "beta")
+	_, st := startDaemon(t, home, env)
+	lock, err := os.OpenFile(filepath.Join(filepath.Dir(st.Socket), "mutation.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
+	client, err := daemon.Dial(context.Background(), st.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	daemonDone := make(chan error, 1)
+	go func() {
+		raw, err := client.Call(core.IDSessionStart, core.SessionStartIn{Session: "alpha"})
+		if err == nil {
+			var env core.Envelope
+			err = json.Unmarshal(raw, &env)
+			if err == nil && !env.OK {
+				err = core.Errorf(env.Error.Code, "%s", env.Error.Message)
+			}
+		}
+		daemonDone <- err
+	}()
+	writeCoreDaemonModeConfig(t, home, false)
+	argv := exec.Command(channelsCLIBinary(t), "session", "start", "beta", "--json=envelope")
+	argv.Env = agentDeckTestEnv(home, env)
+	var argvOut bytes.Buffer
+	argv.Stdout, argv.Stderr = &argvOut, &argvOut
+	if err := argv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	argvDone := make(chan error, 1)
+	go func() { argvDone <- argv.Wait() }()
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case err := <-daemonDone:
+		t.Fatalf("daemon mutation bypassed lock: %v", err)
+	default:
+	}
+	select {
+	case err := <-argvDone:
+		t.Fatalf("argv mutation bypassed lock: %v: %s", err, argvOut.String())
+	default:
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-daemonDone; err != nil {
+		t.Fatalf("daemon start: %v", err)
+	}
+	if err := <-argvDone; err != nil {
+		t.Fatalf("argv start: %v: %s", err, argvOut.String())
+	}
+	stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "list", "--json=envelope")
+	if code != 0 || !strings.Contains(stdout, `"title": "alpha"`) || !strings.Contains(stdout, `"title": "beta"`) {
+		t.Fatalf("raced store missing a session: exit %d: %s %s", code, stdout, stderr)
+	}
 }
 
 // TestDaemonDeadCLIStillWorks: with `[core] daemon = true` the CLI sends

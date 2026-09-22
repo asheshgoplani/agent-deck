@@ -23,10 +23,6 @@
       "items": {
         "$ref": "#/$defs/core.SessionRow"
       }
-    },
-    "stats": {
-      "$ref": "#/$defs/session.ListStats",
-      "description": "Cost of the live status pass"
     }
   },
   "required": [
@@ -187,26 +183,6 @@
         "status",
         "title",
         "tool"
-      ],
-      "additionalProperties": false
-    },
-    "session.ListStats": {
-      "type": "object",
-      "properties": {
-        "sessions": {
-          "type": "integer"
-        },
-        "status_pass_ms": {
-          "type": "integer"
-        },
-        "tmux_calls": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "sessions",
-        "status_pass_ms",
-        "tmux_calls"
       ],
       "additionalProperties": false
     },

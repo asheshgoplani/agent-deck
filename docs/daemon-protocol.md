@@ -27,7 +27,8 @@ was sent is never retried in process.
 | Directory | `<data dir>/runtime/profiles/<profile>/` (`agentpaths.ProfileRuntimeDir`), mode 0700 |
 | Socket | `daemon.sock`, mode 0600 |
 | Owner lock | `daemon.lock`: exclusive `flock` plus the owner pid. A second `serve` fails with `daemon already running (pid N)` and touches nothing |
-| Stale socket | The lock dies with its process, so after a SIGKILL the next `serve` removes the leftover socket and takes over. A non-socket file at the path is never removed |
+| Mutation lock | `mutation.lock`: an exclusive per-profile `flock` shared by daemon calls and direct registry CLI mutations. It covers load, decision, external effects and save |
+| Stale socket | After a SIGKILL, the next `serve` removes the socket only if the recorded pid is dead and no listener answers a hello. A live pid, responsive socket, missing pid or non-socket file is never replaced |
 | Peer | Only a Unix socket peer whose uid equals the daemon's (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS). Others get `PEER_REJECTED` before any hello |
 
 ## Frames
@@ -36,6 +37,14 @@ One JSON object per line (NDJSON), at most 1 MiB per line. The first frame on
 a connection is the server's `hello`, which carries a fresh random 32-hex
 `token`. Every client frame must carry `v`, `type`, `id` and that `token`;
 the server echoes `id` on its reply.
+
+The server allows up to 64 concurrent clients. A partial client frame must
+complete within 2 seconds, including the newline; an idle subscription has
+60 seconds to receive another client frame before it is closed. Writes are
+bounded to 2 seconds. The client waits 2 seconds for control replies and 8
+seconds for a command reply, so a hello-only peer cannot hold a CLI call
+indefinitely. A timed-out call is not retried in process because it may have
+already executed.
 
 | Client `type` | Extra fields | Server reply |
 |---|---|---|
@@ -48,14 +57,19 @@ the server echoes `id` on its reply.
 - `envelope` is the same response envelope `--json=envelope` prints
   (`{schema, request_id, ok, data, warnings, revision, error?}`), with
   `request_id` set to the frame `id`. `input` is decoded strictly (unknown
-  fields are `INVALID_INPUT`); an empty `profile` is the daemon's profile,
+  fields and trailing JSON values are `INVALID_INPUT`); an empty `profile` is the daemon's profile,
   another profile is `INVALID_INPUT`.
+- Unknown top-level client-frame fields and an empty or absent `id` are
+  `BAD_FRAME`. The `input` value must be one JSON object. Live status cost
+  counters remain available through the direct CLI's `--stats` diagnostic;
+  they are omitted from canonical envelopes because elapsed time and
+  process-local tmux call counts vary between executors.
 - `event` carries `event`: the bus frame as the exact canonical JSON line
   `events follow --json` prints. Resume after a drop by subscribing again
   with the last `cursor` seen: no frame is lost or repeated. One
   subscription per connection; use a second connection for calls.
-- Mutating commands run one at a time inside the daemon; queries run
-  concurrently.
+- Mutating commands share the profile's cross-process lock with direct CLI
+  registry commands; queries run concurrently.
 
 ## Error codes
 
@@ -71,6 +85,8 @@ local-only.
 | `AUTH_FAILED` | frame without the connection's token | closed |
 | `BAD_FRAME` | line is not JSON | closed |
 | `FRAME_TOO_LARGE` | line over 1 MiB | closed |
+| `READ_TIMEOUT` | partial or idle client frame exceeded its read deadline | closed |
+| `SERVER_BUSY` | 64 clients are already connected | closed |
 | `UNSUPPORTED_VERSION` | `v` is not 1 | kept |
 | `UNKNOWN_TYPE` | unknown `type` | kept |
 | `ALREADY_SUBSCRIBED` | second `subscribe` on one connection | kept |

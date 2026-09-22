@@ -175,6 +175,14 @@ func (c *frameConn) write(f Frame) error {
 	if err != nil {
 		return err
 	}
+	if len(line) > MaxFrameBytes {
+		tooLarge := errorFrame(f.ID, CodeFrameTooLarge, "outgoing frame exceeds %d bytes", MaxFrameBytes)
+		tooLarge.V = ProtocolVersion
+		line, err = json.Marshal(tooLarge)
+		if err != nil {
+			return err
+		}
+	}
 	line = append(line, '\n')
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -288,6 +289,26 @@ func TestProtocolErrors(t *testing.T) {
 			t.Fatalf("reply = %+v", f)
 		}
 	})
+}
+
+func TestProtocolErrorFrameGoldens(t *testing.T) {
+	for _, code := range []string{
+		CodeBadFrame, CodeFrameTooLarge, CodeReadTimeout, CodeServerBusy,
+		CodePeerRejected, CodeAuthFailed, CodeUnsupportedVersion,
+		CodeUnknownType, CodeAlreadySubscribed, CodeEventsUnavailable,
+		CodeCursorTooOld,
+	} {
+		t.Run(code, func(t *testing.T) {
+			var wire bytes.Buffer
+			if err := newFrameConn(&wire).write(errorFrame("r1", code, "message")); err != nil {
+				t.Fatal(err)
+			}
+			want := `{"v":1,"type":"error","id":"r1","error":{"code":"` + code + `","message":"message"}}` + "\n"
+			if wire.String() != want {
+				t.Fatalf("error frame changed:\ngot:  %q\nwant: %q", wire.String(), want)
+			}
+		})
+	}
 }
 
 func TestSlowPartialFrameExpiresWithoutBlockingOtherClients(t *testing.T) {
