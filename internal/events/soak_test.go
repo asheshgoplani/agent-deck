@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -19,52 +20,52 @@ func TestSoakSlowConsumerNeverBlocksProducer(t *testing.T) {
 	b := openTestBus(t)
 	const n = 10000
 
-	unthrottledStart := time.Now()
-	for i := 0; i < n; i++ {
-		b.Publish("kind.soak", "sess", i)
-	}
-	produceElapsed := time.Since(unthrottledStart)
-
-	// A slow consumer: sleeps a fixed per-event delay chosen so the full
-	// drain is ~100x the producer's elapsed time (bounded below so the test
-	// itself stays fast in CI).
-	perEventDelay := produceElapsed / n * 100
-	if perEventDelay < 50*time.Microsecond {
-		perEventDelay = 50 * time.Microsecond
-	}
-	if perEventDelay > time.Millisecond {
-		perEventDelay = time.Millisecond // cap total soak runtime (~10s worst case for n=10000)
-	}
-
-	if produceElapsed > 2*time.Second {
-		t.Fatalf("producing %d events took %v — Publish appears to be blocking on the writer/disk", n, produceElapsed)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	sub, err := b.Subscribe(ctx, 0)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-
-	var last Cursor
-	count := 0
-	for frame := range sub.Frames() {
-		time.Sleep(perEventDelay) // simulate the slow consumer
-		if frame.Cursor <= last {
-			t.Fatalf("out of order: prev=%d got=%d", last, frame.Cursor)
+	type result struct {
+		count int
+		err   error
+	}
+	readDone := make(chan result, 1)
+	go func() {
+		var last Cursor
+		count := 0
+		for frame := range sub.Frames() {
+			time.Sleep(time.Millisecond) // concurrent consumer, over 100x slower than Publish
+			if frame.Cursor <= last {
+				readDone <- result{count, fmt.Errorf("out of order: prev=%d got=%d", last, frame.Cursor)}
+				cancel()
+				return
+			}
+			last = frame.Cursor
+			count++
+			if count == n {
+				cancel()
+			}
 		}
-		last = frame.Cursor
-		count++
-		if count == n {
-			cancel()
-		}
+		readDone <- result{count, sub.Err()}
+	}()
+	unthrottledStart := time.Now()
+	for i := 0; i < n; i++ {
+		b.Publish("kind.soak", "sess", i)
+	}
+	produceElapsed := time.Since(unthrottledStart)
+	if produceElapsed > 2*time.Second {
+		t.Fatalf("producing %d events took %v: Publish blocked", n, produceElapsed)
+	}
+	read := <-readDone
+	if read.err != nil {
+		t.Fatal(read.err)
 	}
 	if err := sub.Err(); err != nil {
 		t.Fatalf("subscription error: %v", err)
 	}
-	if count != n {
-		t.Fatalf("slow consumer only saw %d/%d events (some were lost)", count, n)
+	if read.count != n {
+		t.Fatalf("slow consumer only saw %d/%d events (some were lost)", read.count, n)
 	}
 	if b.Stats().Dropped != 0 {
 		t.Fatalf("expected zero drops at producer pace for %d events, got %d", n, b.Stats().Dropped)

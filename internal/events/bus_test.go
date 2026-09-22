@@ -203,6 +203,38 @@ func TestCLIStatsReadsProducerDropsAcrossProcesses(t *testing.T) {
 	if stats.Dir != dir {
 		t.Fatalf("profile dir = %q, want %q", stats.Dir, dir)
 	}
+	betaOutput, err := exec.Command(binary, "-p", "beta", "events", "stats", "--json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beta Stats
+	if err := json.Unmarshal(betaOutput, &beta); err != nil {
+		t.Fatal(err)
+	}
+	if beta.Dir == dir || beta.Cursor != 0 || beta.Dropped != 0 {
+		t.Fatalf("beta observed alpha bus: %+v", beta)
+	}
+}
+
+func TestDefaultOwnerCloseDrainsOneShot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("AGENTDECK_PROFILE", "one-shot")
+	resetDefaultForTest()
+	t.Cleanup(resetDefaultForTest)
+	b := Default()
+	b.Publish("one-shot", "", nil)
+	if err := CloseDefault(); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := Open(b.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if opened.Cursor() != 1 {
+		t.Fatalf("accepted one-shot tap lost at exit: cursor %d", opened.Cursor())
+	}
 }
 
 func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
@@ -222,7 +254,6 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
 	b.maxSegFrames = 12
 	b.retainSegs = 2
 	for i := 15; i < 36; i++ {
@@ -231,6 +262,14 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	if !b.Flush(5 * time.Second) {
 		t.Fatal("flush")
 	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
 	sealed, err := listSealedSegments(dir)
 	if err != nil {
 		t.Fatal(err)
