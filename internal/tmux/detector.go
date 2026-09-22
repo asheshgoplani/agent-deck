@@ -597,33 +597,42 @@ func hasCodexInterruptBusyProvenanceLines(lines []string, phrases ...string) boo
 				return true
 			}
 
-			phraseEnd := strings.Index(clean, phrase) + len(phrase)
-			if phraseEnd >= len(clean) || clean[phraseEnd] != ')' {
-				continue
-			}
-			remainder := clean[phraseEnd+1:]
-			if remainder != "" && !strings.HasPrefix(remainder, " · ") {
-				continue
-			}
+			for searchFrom := 0; searchFrom < len(clean); {
+				phraseStart := strings.Index(clean[searchFrom:], phrase)
+				if phraseStart < 0 {
+					break
+				}
+				phraseStart += searchFrom
+				phraseEnd := phraseStart + len(phrase)
+				searchFrom = phraseEnd
 
-			openParen := strings.LastIndex(clean[:phraseEnd-len(phrase)], "(")
-			if openParen <= 0 {
-				continue
-			}
-			lead := strings.TrimSpace(clean[:openParen])
-			if lead == "" {
-				continue
-			}
-			interruptPrefix := strings.TrimSpace(clean[openParen+1 : phraseEnd-len(phrase)])
-			if isCodexElapsedInterruptPrefix(interruptPrefix) {
-				return true
-			}
+				if phraseEnd >= len(clean) || clean[phraseEnd] != ')' {
+					continue
+				}
+				remainder := clean[phraseEnd+1:]
+				if remainder != "" && !strings.HasPrefix(remainder, " · ") {
+					continue
+				}
 
-			first, _ := utf8.DecodeRuneInString(lead)
-			if strings.ContainsRune(codexLegacySpinnerGlyphs, first) &&
-				strings.TrimSpace(strings.TrimPrefix(lead, string(first))) != "" &&
-				interruptPrefix == "" {
-				return true
+				openParen := strings.LastIndex(clean[:phraseStart], "(")
+				if openParen <= 0 {
+					continue
+				}
+				lead := strings.TrimSpace(clean[:openParen])
+				if lead == "" {
+					continue
+				}
+				interruptPrefix := strings.TrimSpace(clean[openParen+1 : phraseStart])
+				if isCodexElapsedInterruptPrefix(interruptPrefix) {
+					return true
+				}
+
+				first, _ := utf8.DecodeRuneInString(lead)
+				if strings.ContainsRune(codexLegacySpinnerGlyphs, first) &&
+					strings.TrimSpace(strings.TrimPrefix(lead, string(first))) != "" &&
+					interruptPrefix == "" {
+					return true
+				}
 			}
 		}
 	}

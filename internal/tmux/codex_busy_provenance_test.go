@@ -57,6 +57,10 @@ func TestCodexLiveInterruptStatusRemainsBusy(t *testing.T) {
 			content: "• Working (3s • esc to interrupt)\n› Ask Codex to do anything",
 		},
 		{
+			name:    "quoted phrase before valid status suffix",
+			content: "Searching for \"esc to interrupt\" (3s • esc to interrupt)\n› previous suggestion",
+		},
+		{
 			name: "current status with inline background terminal message",
 			content: "Working (3s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close\n" +
 				"› Ask Codex to do anything",
