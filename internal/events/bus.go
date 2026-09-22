@@ -79,7 +79,6 @@ type Bus struct {
 	activeStart  Cursor
 	activeBytes  int64
 	activeFrames int
-	activeGen    uint64
 
 	flushRequested atomic.Bool
 	enqueued       atomic.Uint64
@@ -525,7 +524,6 @@ func (b *Bus) rotateLocked() {
 	b.activeStart = b.cursor + 1
 	b.activeBytes = 0
 	b.activeFrames = 0
-	b.activeGen++
 
 	b.compactLocked()
 }

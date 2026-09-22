@@ -60,8 +60,9 @@ func WriteStatusEvent(event StatusEvent) error {
 	// a short, bounded timeout so a one-shot hook-handler process (which
 	// exits right after this call) doesn't lose the frame to an unflushed
 	// buffer, without ever blocking indefinitely.
-	events.Default().Publish("session.status", event.InstanceID, event)
-	events.Default().Flush(50 * time.Millisecond)
+	bus := events.Default()
+	bus.Publish("session.status", event.InstanceID, event)
+	bus.Flush(50 * time.Millisecond)
 
 	hookLog.Debug("status_event_written",
 		slog.String("instance", event.InstanceID),

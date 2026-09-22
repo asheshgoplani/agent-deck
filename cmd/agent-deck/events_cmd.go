@@ -66,14 +66,13 @@ func handleEventsFollow(args []string) {
 		os.Exit(1)
 	}
 
-	enc := os.Stdout
 	for frame := range sub.Frames() {
 		line, err := frame.CanonicalJSON()
 		if err != nil {
 			continue
 		}
 		line = append(line, '\n')
-		if _, err := enc.Write(line); err != nil {
+		if _, err := os.Stdout.Write(line); err != nil {
 			os.Exit(1)
 		}
 	}

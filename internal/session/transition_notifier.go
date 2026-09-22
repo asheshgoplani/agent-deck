@@ -434,8 +434,9 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) (
 // timeout so a one-shot process (a hook-handler invocation) doesn't lose the
 // frame to an unflushed buffer on exit, without blocking indefinitely.
 func publishTransitionEvent(kind string, event TransitionNotificationEvent) {
-	events.Default().Publish(kind, event.ChildSessionID, event)
-	events.Default().Flush(50 * time.Millisecond)
+	bus := events.Default()
+	bus.Publish(kind, event.ChildSessionID, event)
+	bus.Flush(50 * time.Millisecond)
 }
 
 func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance) *Instance {

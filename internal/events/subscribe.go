@@ -110,7 +110,7 @@ func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 				if seg.end <= emitted {
 					continue
 				}
-				ok, n, err := s.streamFile(ctx, seg.path, &emitted, 0)
+				ok, n, err := s.streamFile(ctx, seg.path, &emitted)
 				if err != nil {
 					s.errCh <- err
 					return
@@ -179,7 +179,7 @@ func (s *Subscription) checkNotTooOld(b *Bus, after Cursor) error {
 // streamFile scans a fully-sealed (immutable) segment file from the start,
 // emitting frames with Cursor > *emitted. Returns ok=false if ctx was
 // cancelled mid-stream.
-func (s *Subscription) streamFile(ctx context.Context, path string, emitted *Cursor, fromOffset int64) (ok bool, n int, err error) {
+func (s *Subscription) streamFile(ctx context.Context, path string, emitted *Cursor) (ok bool, n int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -188,11 +188,6 @@ func (s *Subscription) streamFile(ctx context.Context, path string, emitted *Cur
 		return false, 0, err
 	}
 	defer f.Close()
-	if fromOffset > 0 {
-		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
-			return false, 0, err
-		}
-	}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 4<<20)
 	for scanner.Scan() {
