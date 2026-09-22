@@ -153,6 +153,64 @@ func TestAttachStdinPump_ForwardsInputAndInterceptsDetach(t *testing.T) {
 	}
 }
 
+// TestAttachStdinPump_SwallowsStaleDAReplyDuringQuarantine reproduces #2356:
+// switching sessions (Windows Terminal, v1.16.16) leaked literal DA1/DA2
+// device-attributes reply text into the new session's prompt. The reply the
+// outer terminal sends for the just-detached attach's query can still be in
+// flight over the network/SSH link when the next attach's stdin pump starts.
+// Because that stray reply is byte-for-byte the same shape as a fresh reply,
+// the previous termreply filter passed every DA/DSR-final CSI through
+// unconditionally while armed, so both the new attach's own legitimate reply
+// AND the stale one from the torn-down attach were forwarded into the pane —
+// tmux only had one outstanding query to consume, so the second, unmatched
+// copy fell through as literal keyboard input.
+//
+// This test wires a fresh pump exactly as a real attach would (startTime =
+// now, so the post-attach quarantine window is armed), writes one legitimate
+// DA1+DA2 reply pair immediately, then simulates the stale reply from the
+// previous, already-torn-down attach arriving ~100ms later — still inside
+// the 500ms quarantine window. It asserts that only the first pair reaches
+// `out` (the stand-in for the tmux attach PTY / ultimately the pane) and
+// that no fragment of the stale second pair leaks through.
+func TestAttachStdinPump_SwallowsStaleDAReplyDuringQuarantine(t *testing.T) {
+	pump, w, out := newTestPump(t, AttachOptions{DetachByte: 17})
+	pump.startTime = time.Now() // arm the quarantine window like a real attach
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	const daReplyPair = "\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c\x1b[>0;10;1c"
+
+	// The new attach's own tmux client negotiates immediately.
+	if _, err := w.Write([]byte(daReplyPair)); err != nil {
+		t.Fatalf("write legitimate reply: %v", err)
+	}
+
+	// A late-arriving stray reply addressed to the previous (already
+	// detached) attach's query, still in flight when the new attach started.
+	time.Sleep(100 * time.Millisecond)
+	if _, err := w.Write([]byte(daReplyPair)); err != nil {
+		t.Fatalf("write stale reply: %v", err)
+	}
+
+	// Give the pump a moment to read and filter both writes, then detach.
+	time.Sleep(50 * time.Millisecond)
+	if _, err := w.Write([]byte{17}); err != nil {
+		t.Fatalf("write detach key: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pump did not exit on the detach key")
+	}
+
+	if got := out.String(); got != daReplyPair {
+		t.Errorf("pane input = %q, want exactly one reply pair %q (stale reply must not leak into the pane)", got, daReplyPair)
+	}
+}
+
 func TestAttachStdinPump_ReportsSwitchIntent(t *testing.T) {
 	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17, SwitchKeyByte: 19})
 
