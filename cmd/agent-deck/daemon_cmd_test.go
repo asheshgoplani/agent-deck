@@ -362,7 +362,7 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 
 func stateRows(t *testing.T, home string) string {
 	t.Helper()
-	path := filepath.Join(home, ".agent-deck", "profiles", "ch_support_test", "state.db")
+	path := stateDBPath(t, home)
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -387,19 +387,7 @@ func stateRows(t *testing.T, home string) string {
 
 func canonicalStateDB(t *testing.T, home string) []byte {
 	t.Helper()
-	var path string
-	for _, candidate := range []string{
-		filepath.Join(home, ".agent-deck", "profiles", "ch_support_test", "state.db"),
-		filepath.Join(home, ".local", "share", "agent-deck", "profiles", "ch_support_test", "state.db"),
-	} {
-		if _, err := os.Stat(candidate); err == nil {
-			path = candidate
-			break
-		}
-	}
-	if path == "" {
-		t.Fatal("sandbox state.db not found")
-	}
+	path := stateDBPath(t, home)
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -417,6 +405,24 @@ func canonicalStateDB(t *testing.T, home string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func stateDBPath(t *testing.T, home string) string {
+	t.Helper()
+	var path string
+	for _, candidate := range []string{
+		filepath.Join(home, ".agent-deck", "profiles", "ch_support_test", "state.db"),
+		filepath.Join(home, ".local", "share", "agent-deck", "profiles", "ch_support_test", "state.db"),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			path = candidate
+			break
+		}
+	}
+	if path == "" {
+		t.Fatal("sandbox state.db not found")
+	}
+	return path
 }
 
 // TestDaemonDeadCLIStillWorks: with `[core] daemon = true` the CLI sends
