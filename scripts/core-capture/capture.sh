@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Behaviour capture for the slice-1 registry commands (docs/CORE-PLAN.md):
+# Behaviour capture for the slice-1 registry commands (docs/core-registry.md):
 # session start/stop/restart, list, group list. Runs one agent-deck binary
 # through a fixed script against a seeded sandbox store and writes, per case,
 # <n>.cmd (argv), <n>.out (stdout), <n>.err (stderr) and <n>.code (exit

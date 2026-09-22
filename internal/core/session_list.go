@@ -21,7 +21,7 @@ type SessionListIn struct {
 // SessionListOut is the output of session.list.
 type SessionListOut struct {
 	Profile  string             `json:"profile,omitempty" doc:"Resolved profile name (single-profile listing)"`
-	Sessions []SessionRow       `json:"sessions,omitempty" doc:"Sessions of the single profile"`
+	Sessions []SessionRow       `json:"sessions" doc:"Sessions of the single profile; empty with all_profiles"`
 	Stats    *session.ListStats `json:"stats,omitempty" doc:"Cost of the live status pass"`
 	// Profiles and ProfileCount are set for all_profiles. ProfileCount counts
 	// every profile found, including ones that failed to load or are empty.
@@ -37,6 +37,10 @@ type ProfileSessions struct {
 
 // SessionRow is one listed session. Status is the raw session status; the
 // fields marked live are only filled with live_status.
+//
+// Field order and tags mirror the sessionJSON struct of buildListJSON in
+// cmd/agent-deck/main.go: `list --json` marshals these rows directly, so a
+// reorder here changes its bytes.
 type SessionRow struct {
 	ID                string         `json:"id"`
 	ParentSessionID   string         `json:"parent_session_id,omitempty"`
@@ -144,34 +148,17 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		// The substate read is this pass's one pane capture and can settle
 		// the status (hook lag): take it before the status.
 		substate := string(inst.Substate())
-		row := SessionRow{
-			ID:                inst.ID,
-			ParentSessionID:   inst.ParentSessionID,
-			ParentProjectPath: parentProjectPath(inst, instances),
-			Title:             inst.Title,
-			Path:              inst.ProjectPath,
-			Group:             inst.GroupPath,
-			Tool:              inst.Tool,
-			Account:           inst.Account,
-			Command:           inst.Command,
-			Status:            string(inst.Status),
-			Substate:          substate,
-			SubstateDetail:    inst.SubstateDetail(),
-			Profile:           profile,
-			CreatedAt:         inst.CreatedAt,
-			SSHHost:           inst.SSHHost,
-			SSHRemotePath:     inst.SSHRemotePath,
-			Channels:          inst.Channels,
-			ExtraArgs:         inst.ExtraArgs,
-			Color:             inst.Color,
-			Archived:          inst.IsArchived(),
-			ArchivedAt:        inst.ArchivedAt,
-			SupersededBy:      inst.SupersededBy,
-			Supersedes:        inst.Supersedes,
-			CodexSessionID:    inst.CodexSessionID,
-			ResolvedCodexHome: inst.ResolvedCodexHome(),
-			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
-		}
+		row := staticSessionRow(inst, instances, profile)
+		row.Substate = substate
+		row.SubstateDetail = inst.SubstateDetail()
+		row.Channels = inst.Channels
+		row.ExtraArgs = inst.ExtraArgs
+		row.Color = inst.Color
+		row.Archived = inst.IsArchived()
+		row.ArchivedAt = inst.ArchivedAt
+		row.SupersededBy = inst.SupersededBy
+		row.Supersedes = inst.Supersedes
+		row.LastActivityAt = inst.DisplayLastActivityTime().Format(time.RFC3339Nano)
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			row.TmuxSession = tmuxSess.Name
 			if v, known := viewers[tmuxSess.Name]; known {
@@ -195,7 +182,7 @@ func listAllProfiles(in SessionListIn) (SessionListOut, error) {
 	if err != nil {
 		return SessionListOut{}, &Error{Code: CodeStorage, Message: fmt.Sprintf("failed to list profiles: %v", err), Cause: err}
 	}
-	out := SessionListOut{ProfileCount: len(profiles), Profiles: []ProfileSessions{}}
+	out := SessionListOut{ProfileCount: len(profiles), Profiles: []ProfileSessions{}, Sessions: []SessionRow{}}
 	for _, name := range profiles {
 		storage, err := session.NewStorageWithProfile(name)
 		if err != nil {

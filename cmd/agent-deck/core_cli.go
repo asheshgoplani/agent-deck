@@ -16,7 +16,7 @@ import (
 // envCoreRegistry switches the slice-1 commands (session start/stop/restart,
 // list, group list) back to their legacy handlers when set to "0". The
 // registry path is the default; the legacy handlers stay until the registry
-// path has soaked (docs/CORE-PLAN.md section 8).
+// path has soaked (docs/core-registry.md).
 const envCoreRegistry = "AGENT_DECK_CORE_REGISTRY"
 
 // coreRegistryEnabled reports whether the five registry-backed commands run
@@ -154,6 +154,8 @@ func exitCoreError(out *CLIOutput, mode *jsonModeFlag, res *core.Result, usage f
 		if sf.SaveErr != nil && !out.jsonMode {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save session state: %v\n", sf.SaveErr)
 		}
+		// spawnFailureOutput reads only the instance's ID and Title, so a stub
+		// carrying those two renders exactly what the legacy handler printed.
 		msg, data := spawnFailureOutput(sf.Verb, &session.Instance{ID: sf.ID, Title: sf.Title}, ce.Cause)
 		out.ErrorWithData(msg, ErrCodeInvalidOperation, data)
 		os.Exit(exit)

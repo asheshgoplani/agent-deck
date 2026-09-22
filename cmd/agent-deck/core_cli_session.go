@@ -13,7 +13,7 @@ import (
 // Registry-backed adapters for session start/stop/restart. Flags, help text,
 // output and exit statuses are byte-identical to handleSessionStart,
 // handleSessionStop and handleSessionRestart (asserted by
-// core_cli_equivalence_test.go); the work itself runs in internal/core.
+// TestCoreRegistryMatchesLegacyHandlers); the work itself runs in internal/core.
 
 func cliSessionStart(profile string, args []string) {
 	fs := flag.NewFlagSet("session start", flag.ExitOnError)

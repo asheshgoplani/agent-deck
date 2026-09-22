@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -16,6 +15,9 @@ type GroupListIn struct {
 // GroupListOut is the output of group.list. Groups is the tree (each group
 // carries its direct children); Flat is every group in display order with its
 // depth, for renderers that draw the tree themselves.
+//
+// The legacy `group list --json` marshalled a map, so its keys came out
+// sorted: keep these JSON fields in alphabetical order.
 type GroupListOut struct {
 	Groups        []GroupNode `json:"groups"`
 	TotalGroups   int         `json:"total_groups"`
@@ -71,8 +73,7 @@ func groupList(ctx context.Context, in GroupListIn) (GroupListOut, error) {
 		status := groupStatus(tree, g.Path)
 		node := GroupNode{Name: g.Name, Path: g.Path, SessionCount: count}
 		if count > 0 {
-			st := status
-			node.Status = &st
+			node.Status = &status
 		}
 		nodes[g.Path] = node
 		out.Flat = append(out.Flat, GroupItem{

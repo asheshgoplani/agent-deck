@@ -1,5 +1,5 @@
 // Package core is the typed command layer shared by every agent-deck surface
-// (CLI today; TUI, web and the daemon in later slices of docs/CORE-PLAN.md).
+// (CLI today; TUI, web and the daemon in later slices; see docs/core-registry.md).
 //
 // A command is one Def: a stable id, the CLI path that reaches it, whether it
 // reads or mutates state, whether remote callers may run it, and a typed

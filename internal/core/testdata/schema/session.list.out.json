@@ -18,7 +18,7 @@
       }
     },
     "sessions": {
-      "description": "Sessions of the single profile",
+      "description": "Sessions of the single profile; empty with all_profiles",
       "type": "array",
       "items": {
         "$ref": "#/$defs/core.SessionRow"
@@ -29,6 +29,9 @@
       "description": "Cost of the live status pass"
     }
   },
+  "required": [
+    "sessions"
+  ],
   "additionalProperties": false,
   "$defs": {
     "core.ProfileSessions": {

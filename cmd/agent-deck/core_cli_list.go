@@ -15,7 +15,7 @@ import (
 
 // Registry-backed adapters for `list` and `group list`. Output is
 // byte-identical to handleList, handleListAllProfiles and handleGroupList
-// (asserted by core_cli_equivalence_test.go).
+// (asserted by TestCoreRegistryMatchesLegacyHandlers).
 
 func cliList(profile string, args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)

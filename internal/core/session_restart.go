@@ -94,6 +94,9 @@ func (deps Deps) sessionRestart(ctx context.Context, in SessionRestartIn) (Sessi
 		return SessionRestartOut{}, d.failSpawn("restart", inst, err)
 	}
 	inst.LastStartedAt = time.Now()
+	// A warning is both part of the typed result and an envelope warning;
+	// the duplication is intentional (typed field for the CLI shape, generic
+	// list for any client).
 	if warning := inst.ConsumeCodexRestartWarning(); warning != "" {
 		out.Warning = warning
 		Warn(ctx, warning)
