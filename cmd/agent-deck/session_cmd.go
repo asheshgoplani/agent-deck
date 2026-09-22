@@ -38,9 +38,17 @@ func handleSession(profile string, args []string) {
 
 	switch args[0] {
 	case "start":
-		handleSessionStart(profile, args[1:])
+		if coreRegistryEnabled() {
+			cliSessionStart(profile, args[1:])
+		} else {
+			handleSessionStart(profile, args[1:])
+		}
 	case "stop":
-		handleSessionStop(profile, args[1:])
+		if coreRegistryEnabled() {
+			cliSessionStop(profile, args[1:])
+		} else {
+			handleSessionStop(profile, args[1:])
+		}
 	case "remove":
 		handleSessionRemove(profile, args[1:])
 	case "cleanup", "prune":
@@ -50,7 +58,11 @@ func handleSession(profile string, args []string) {
 	case "unarchive":
 		handleSessionUnarchive(profile, args[1:])
 	case "restart":
-		handleSessionRestart(profile, args[1:])
+		if coreRegistryEnabled() {
+			cliSessionRestart(profile, args[1:])
+		} else {
+			handleSessionRestart(profile, args[1:])
+		}
 	case "revive":
 		handleSessionRevive(profile, args[1:])
 	case "fork":

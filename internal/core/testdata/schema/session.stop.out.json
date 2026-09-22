@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/session.stop/v1/out",
+  "title": "session.stop output",
+  "type": "object",
+  "properties": {
+    "drained": {
+      "description": "Id of the queued session started in the freed slot",
+      "type": "string"
+    },
+    "drained_title": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "title"
+  ],
+  "additionalProperties": false
+}

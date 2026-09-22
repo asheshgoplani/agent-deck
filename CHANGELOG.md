@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `session start`, `session stop`, `session restart`, `list` and `group list` now run through a typed command registry (`internal/core`). Their output is unchanged; `--json=envelope` prints a response envelope with a stable error code instead of the legacy JSON. See docs/core-registry.md. `AGENT_DECK_CORE_REGISTRY=0` switches back to the previous handlers.
+
 ## [1.16.16] - 2026-09-20
 
 ### Fixed
