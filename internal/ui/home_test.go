@@ -4445,7 +4445,6 @@ func findAccountsFetched(msg tea.Msg) (remoteCreationCatalogFetchedMsg, bool) {
 	return remoteCreationCatalogFetchedMsg{}, false
 }
 
-
 func TestMCPManagerUnsupportedToolShowsFeedback(t *testing.T) {
 	inst := &session.Instance{
 		ID:    "unsupported-mcp",
