@@ -357,7 +357,19 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 		for diff < len(raced) && diff < len(serial) && raced[diff] == serial[diff] {
 			diff++
 		}
-		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v, first offset %d, bytes %x vs %x)\nraced: %s\nserial: %s", len(raced), len(serial), order, diff, raced[diff:diff+16], serial[diff:diff+16], stateRows(t, home), stateRows(t, serialHome))
+		a, b := strings.Split(stateDump(t, home), "\n"), strings.Split(stateDump(t, serialHome), "\n")
+		row := 0
+		for row < len(a) && row < len(b) && a[row] == b[row] {
+			row++
+		}
+		var racedRow, serialRow string
+		if row < len(a) {
+			racedRow = a[row]
+		}
+		if row < len(b) {
+			serialRow = b[row]
+		}
+		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v, first offset %d, bytes %x vs %x)\nraced row: %s\nserial row: %s", len(raced), len(serial), order, diff, raced[diff:diff+16], serial[diff:diff+16], racedRow, serialRow)
 	}
 }
 
@@ -398,7 +410,7 @@ func alignStartedTimes(t *testing.T, racedHome, serialHome string) {
 	}
 }
 
-func stateRows(t *testing.T, home string) string {
+func stateDump(t *testing.T, home string) string {
 	t.Helper()
 	path := stateDBPath(t, home)
 	db, err := sql.Open("sqlite", path)
@@ -406,19 +418,41 @@ func stateRows(t *testing.T, home string) string {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query("SELECT id, status, tmux_session, tmux_socket_name, last_accessed, tool_data FROM instances ORDER BY id")
+	tables, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer tables.Close()
 	var out strings.Builder
-	for rows.Next() {
-		var id, status, tmux, socket, toolData string
-		var accessed int64
-		if err := rows.Scan(&id, &status, &tmux, &socket, &accessed, &toolData); err != nil {
+	for tables.Next() {
+		var name string
+		if err := tables.Scan(&name); err != nil {
 			t.Fatal(err)
 		}
-		out.WriteString(id + " " + status + " " + tmux + " " + socket + " " + strconv.FormatInt(accessed, 10) + " " + toolData + "\n")
+		rows, err := db.Query(`SELECT * FROM "` + name + `" ORDER BY 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			values := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range values {
+				ptrs[i] = &values[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				t.Fatal(err)
+			}
+			line, err := json.Marshal(values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out.WriteString(name + " " + string(line) + "\n")
+		}
+		rows.Close()
 	}
 	return out.String()
 }
