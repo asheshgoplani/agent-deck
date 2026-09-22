@@ -13,6 +13,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +24,15 @@ import (
 	"testing"
 )
 
-var updateGoldens = os.Getenv("AGENTDECK_UPDATE_GOLDENS") != ""
+// updateGoldensFlag is a `go test`-recognized flag alternative to the
+// AGENTDECK_UPDATE_GOLDENS env var: some CI/sandbox runners invoke `go test`
+// with a fixed argument list but no ability to set extra env vars, so both
+// triggers are honored (see shouldUpdateGoldens).
+var updateGoldensFlag = flag.Bool("update-goldens", false, "regenerate CLI/storage-bytes goldens instead of asserting them")
+
+func shouldUpdateGoldens() bool {
+	return *updateGoldensFlag || os.Getenv("AGENTDECK_UPDATE_GOLDENS") != ""
+}
 
 // goldenSpec describes one CLI invocation whose output is frozen.
 type goldenSpec struct {
@@ -412,7 +421,7 @@ func assertGolden(t *testing.T, name, home, got string) {
 	scrubbed := scrub(got, home)
 	path := goldenPath(t, name)
 
-	if updateGoldens {
+	if shouldUpdateGoldens() {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("mkdir goldens dir: %v", err)
 		}
