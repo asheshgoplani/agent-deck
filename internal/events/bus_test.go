@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -234,6 +235,65 @@ func TestDefaultOwnerCloseDrainsOneShot(t *testing.T) {
 	defer opened.Close()
 	if opened.Cursor() != 1 {
 		t.Fatalf("accepted one-shot tap lost at exit: cursor %d", opened.Cursor())
+	}
+}
+
+type pausedJSON struct{ entered, release chan struct{} }
+
+func (p pausedJSON) MarshalJSON() ([]byte, error) {
+	close(p.entered)
+	<-p.release
+	return []byte(`{"ok":true}`), nil
+}
+
+func TestCloseRejectsPublishStillMarshalling(t *testing.T) {
+	b := openTestBus(t)
+	value := pausedJSON{entered: make(chan struct{}), release: make(chan struct{})}
+	published := make(chan struct{})
+	go func() { b.Publish("closing", "", value); close(published) }()
+	<-value.entered
+	closed := make(chan struct{})
+	go func() { _ = b.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked on producer marshal")
+	}
+	close(value.release)
+	<-published
+	if got := b.published.Load(); got != 0 {
+		t.Errorf("accepted %d events after writer exit", got)
+	}
+}
+
+func TestCompactedActiveOnlyReportsCursorTooOld(t *testing.T) {
+	b := openTestBus(t)
+	b.maxSegFrames = 2
+	b.retainSegs = 0
+	b.Publish("compact", "", 1)
+	b.Publish("compact", "", 2)
+	if !b.Flush(2 * time.Second) {
+		t.Fatal("flush")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	sub, err := b.Subscribe(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range sub.Frames() {
+	}
+	if !errors.Is(sub.Err(), ErrCursorTooOld) {
+		t.Fatal("compacted cursor was silently skipped")
+	}
+}
+
+func TestMissingSealedSegmentReportsCursorTooOld(t *testing.T) {
+	s := &Subscription{frames: make(chan Frame, 1)}
+	missing := filepath.Join(t.TempDir(), "compacted.ndjson")
+	_, _, err := s.streamFile(context.Background(), missing, new(Cursor))
+	if !errors.Is(err, ErrCursorTooOld) {
+		t.Fatalf("missing needed segment: %v", err)
 	}
 }
 
