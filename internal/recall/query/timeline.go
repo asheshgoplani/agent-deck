@@ -44,16 +44,12 @@ type Frame struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
-// TimelineSource is the indexed native source address captured by a read
+// timelineSource is the indexed native source address captured by a read
 // transaction. Parsers read the source directly because the search index
 // intentionally omits tool results and non-text records.
-type TimelineSource struct {
-	ID       int64
-	Harness  string
-	Path     string
-	Dev      int64
-	Ino      int64
-	ParsedTo int64
+type timelineSource struct {
+	Harness string
+	Path    string
 }
 
 type timelineCursor struct {
@@ -97,14 +93,14 @@ func (s *Searcher) Timeline(ctx context.Context, ref string) (Timeline, error) {
 	if sess.DigestOnly {
 		return Timeline{}, fmt.Errorf("recall: %s is a remote card without a local transcript", ref)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT src_id, harness, path, dev, ino, parsed_to FROM source WHERE sess_id=? AND state NOT IN (?,?) ORDER BY src_id`, sess.SessID, recall.SourceMissing, recall.SourceQuarantined)
+	rows, err := tx.QueryContext(ctx, `SELECT harness, path FROM source WHERE sess_id=? AND state NOT IN (?,?) ORDER BY src_id`, sess.SessID, recall.SourceMissing, recall.SourceQuarantined)
 	if err != nil {
 		return Timeline{}, err
 	}
-	var sources []TimelineSource
+	var sources []timelineSource
 	for rows.Next() {
-		var src TimelineSource
-		if err := rows.Scan(&src.ID, &src.Harness, &src.Path, &src.Dev, &src.Ino, &src.ParsedTo); err != nil {
+		var src timelineSource
+		if err := rows.Scan(&src.Harness, &src.Path); err != nil {
 			rows.Close()
 			return Timeline{}, err
 		}
@@ -141,7 +137,7 @@ func (s *Searcher) Timeline(ctx context.Context, ref string) (Timeline, error) {
 // the bounded read: its existing prefix stays valid and follow picks up the
 // appended records. OpenCode's message and part files are a tree, so a
 // second parse checks that tree even when its session file is unchanged.
-func parseStableTimelineSource(ctx context.Context, src TimelineSource, nativeID string) ([]Turn, error) {
+func parseStableTimelineSource(ctx context.Context, src timelineSource, nativeID string) ([]Turn, error) {
 	path := src.Path
 	if src.Harness == "hermes" {
 		path, _, _ = strings.Cut(path, "#")

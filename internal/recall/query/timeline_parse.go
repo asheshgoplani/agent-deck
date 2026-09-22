@@ -16,7 +16,7 @@ import (
 // parseTimelineSource reads native records directly. The search index
 // deliberately omits tool output and metadata, so it cannot reconstruct a
 // conversation or expose a newly appended line before the next index sweep.
-func parseTimelineSource(ctx context.Context, src TimelineSource, nativeID string) ([]Turn, error) {
+func parseTimelineSource(ctx context.Context, src timelineSource, nativeID string) ([]Turn, error) {
 	switch src.Harness {
 	case "claude", "codex", "pi":
 		return parseTimelineJSONL(ctx, src)
@@ -31,7 +31,7 @@ func parseTimelineSource(ctx context.Context, src TimelineSource, nativeID strin
 	}
 }
 
-func parseTimelineJSONL(ctx context.Context, src TimelineSource) ([]Turn, error) {
+func parseTimelineJSONL(ctx context.Context, src timelineSource) ([]Turn, error) {
 	f, err := os.Open(src.Path)
 	if err != nil {
 		return nil, err
@@ -55,9 +55,6 @@ func parseTimelineJSONL(ctx context.Context, src TimelineSource) ([]Turn, error)
 		}
 		if err != nil {
 			return nil, err
-		}
-		if !json.Valid(line) {
-			continue
 		}
 		var record map[string]json.RawMessage
 		if json.Unmarshal(line, &record) != nil {
@@ -282,7 +279,7 @@ func piTimelineRecord(rec map[string]json.RawMessage, raw json.RawMessage) []Tur
 	}
 }
 
-func parseTimelineGemini(ctx context.Context, src TimelineSource) ([]Turn, error) {
+func parseTimelineGemini(ctx context.Context, src timelineSource) ([]Turn, error) {
 	data, err := os.ReadFile(src.Path)
 	if err != nil {
 		return nil, err
@@ -324,7 +321,7 @@ func parseTimelineGemini(ctx context.Context, src TimelineSource) ([]Turn, error
 	return out, nil
 }
 
-func parseTimelineOpenCode(ctx context.Context, src TimelineSource, nativeID string) ([]Turn, error) {
+func parseTimelineOpenCode(ctx context.Context, src timelineSource, nativeID string) ([]Turn, error) {
 	storage := filepath.Dir(filepath.Dir(filepath.Dir(src.Path)))
 	if nativeID == "" {
 		nativeID = strings.TrimSuffix(filepath.Base(src.Path), ".json")
@@ -380,7 +377,6 @@ func parseTimelineOpenCode(ctx context.Context, src TimelineSource, nativeID str
 		if err != nil {
 			return nil, err
 		}
-		sort.Slice(parts, func(i, j int) bool { return parts[i].Name() < parts[j].Name() })
 		for _, p := range parts {
 			if p.IsDir() || filepath.Ext(p.Name()) != ".json" {
 				continue
@@ -414,7 +410,7 @@ func parseTimelineOpenCode(ctx context.Context, src TimelineSource, nativeID str
 	return out, nil
 }
 
-func parseTimelineHermes(ctx context.Context, src TimelineSource, nativeID string) ([]Turn, error) {
+func parseTimelineHermes(ctx context.Context, src timelineSource, nativeID string) ([]Turn, error) {
 	path, id, _ := strings.Cut(src.Path, "#")
 	if nativeID != "" {
 		id = nativeID
