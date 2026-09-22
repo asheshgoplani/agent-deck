@@ -76,6 +76,7 @@ func TestConcurrentProcessesHaveUniqueCursorsAndVisibleDrops(t *testing.T) {
 	if got := b.Stats().Dropped; got == 0 {
 		t.Error("cross-process stats hid producer drops")
 	}
+	want := b.Stats().Cursor
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	sub, err := b.Subscribe(ctx, 0)
@@ -83,19 +84,23 @@ func TestConcurrentProcessesHaveUniqueCursorsAndVisibleDrops(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := map[Cursor]bool{}
+	processFrames := 0
 	for frame := range sub.Frames() {
 		if seen[frame.Cursor] {
 			t.Fatalf("duplicate cursor %d", frame.Cursor)
 		}
 		seen[frame.Cursor] = true
-		if len(seen) == 200 {
+		if frame.Kind == "process" {
+			processFrames++
+		}
+		if Cursor(len(seen)) == want {
 			cancel()
 		}
 	}
-	if len(seen) != 200 {
-		t.Fatalf("got %d/200 cross-process frames", len(seen))
+	if processFrames != 200 {
+		t.Fatalf("got %d/200 cross-process frames", processFrames)
 	}
-	for i := Cursor(1); i <= 200; i++ {
+	for i := Cursor(1); i <= want; i++ {
 		if !seen[i] {
 			t.Errorf("missing cursor %d", i)
 		}
@@ -189,6 +194,54 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	}
 	if next != 25 {
 		t.Fatalf("resume stopped at %d", next)
+	}
+}
+
+func TestRuntimeWriteFailureDisablesWithoutCursorGap(t *testing.T) {
+	dir := t.TempDir()
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(dir, activeSegmentName)
+	blocked := filepath.Join(dir, "saved-active")
+	if err := os.Rename(active, blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(active, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b.Publish("failed", "", nil)
+	deadline := time.Now().Add(2 * time.Second)
+	for !b.failed.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !b.failed.Load() {
+		t.Error("bus did not disable on runtime failure")
+	}
+	if b.Cursor() != 0 {
+		t.Errorf("failed append assigned cursor %d", b.Cursor())
+	}
+	if err := os.Rename(active, active+".blocked"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(blocked, active); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b2.Close()
+	b2.Publish("recovered", "", nil)
+	if !b2.Flush(2 * time.Second) {
+		t.Fatal("recovery flush")
+	}
+	if b2.Cursor() != 1 {
+		t.Errorf("recovered cursor = %d, want 1", b2.Cursor())
 	}
 }
 
