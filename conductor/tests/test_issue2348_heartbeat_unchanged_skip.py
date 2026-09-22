@@ -10,6 +10,7 @@ waiting/error set equals the last delivered one.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 
 import pytest
 
@@ -20,7 +21,7 @@ class _StopLoop(Exception):
     pass
 
 
-def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_payloads=None):
+def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_payloads=None, remote_pull=None):
     """Drive heartbeat_loop for len(session_lists) ticks; return per-tick bytes sent."""
     ticks = iter(session_lists)
     inbox_ticks = iter(inbox_counts or [0] * len(session_lists))
@@ -64,6 +65,7 @@ def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_pay
     monkeypatch.setattr(bridge, "hook_driven_interactive", lambda *_a, **_k: (False, True))
     monkeypatch.setattr(bridge, "capture_pane", lambda *_a, **_k: "")
     monkeypatch.setattr(bridge, "send_to_conductor", fake_send)
+    monkeypatch.setattr(bridge, "_pull_remote_talkback", remote_pull or (lambda *_args: False))
 
     config = {"heartbeat_interval": 1, "telegram": {"configured": False}}
     with pytest.raises(_StopLoop):
@@ -137,6 +139,25 @@ def test_remote_talkback_record_wakes_bridge(monkeypatch, tmp_path):
             inbox.write_text(record)
         return False
 
-    monkeypatch.setattr(bridge, "_pull_remote_talkback", pull_remote)
-    per_tick = _run_loop(monkeypatch, tmp_path, [conductor] * 3)
+    per_tick = _run_loop(monkeypatch, tmp_path, [conductor] * 3, remote_pull=pull_remote)
     assert per_tick[0] == 0 and per_tick[1] > 0 and per_tick[2] == 0, per_tick
+
+
+def test_remote_pull_writes_synthetic_talkback_before_snapshot(monkeypatch, tmp_path):
+    inbox = tmp_path / "inboxes" / "conductor-id.jsonl"
+    inbox.parent.mkdir()
+
+    def cli(*args, **_kwargs):
+        if args[:2] == ("remote", "list"):
+            return subprocess.CompletedProcess(args, 0, '[{"name":"build-box"}]', "")
+        assert args == ("remote", "drain", "build-box", "--into", "conductor-id", "--json")
+        inbox.write_text('{"source_remote":"build-box","child_session_id":"remote-child"}\n')
+        return subprocess.CompletedProcess(args, 0, '{"written":1}', "")
+
+    monkeypatch.setattr(bridge, "run_cli", cli)
+    monkeypatch.setattr(bridge, "resolve_data_dir", lambda *_markers: tmp_path)
+    assert bridge._pull_remote_talkback("conductor-id", "default") is False
+    count, digest, error = bridge._conductor_inbox_snapshot(
+        [{"id": "conductor-id", "title": "conductor-ops"}], "ops"
+    )
+    assert count == 1 and digest and error is False

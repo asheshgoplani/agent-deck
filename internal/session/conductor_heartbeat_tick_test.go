@@ -137,6 +137,18 @@ func TestHeartbeatTick_DeliversOnlyChanges(t *testing.T) {
 	}
 }
 
+func TestHeartbeatTick_RemotePullFailureIsNeverQuiet(t *testing.T) {
+	in := HeartbeatTickInput{Name: "ops", RemoteError: true}
+	first, state := BuildHeartbeatTick(in, HeartbeatTickState{})
+	if !strings.Contains(first, "Remote talkback pull failed") {
+		t.Fatalf("remote failure must wake the conductor: %q", first)
+	}
+	second, _ := BuildHeartbeatTick(in, state)
+	if second == "" {
+		t.Fatal("unchanged remote failure must retry instead of becoming quiet")
+	}
+}
+
 func TestUninstallHeartbeatDaemon_StopFailureKeepsEnabled(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("systemd stop failure fixture")
@@ -300,7 +312,7 @@ case "$1 $2" in
   "conductor status") echo '{"conductors": [{"heartbeat": true}]}' ;;
   "session show") echo '{"status": "idle"}' ;;
   "conductor heartbeat-tick")
-    if [ "$4" = "--commit-message" ]; then touch "$HOME/committed";
+    if [[ "$5" = --commit-message=* ]]; then touch "$HOME/committed";
     elif [ ! -f "$HOME/committed" ]; then echo '[HEARTBEAT] remote arrival'; fi ;;
   "session send")
     if [ ! -f "$HOME/failed" ]; then touch "$HOME/failed"; exit 1; fi

@@ -1406,7 +1406,9 @@ fi
 # last delivered tick; nothing printed means no turn at all.
 MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>/dev/null)
 if [ -n "$MSG" ]; then
-    agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q
+    if agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q; then
+        agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" --commit-message="$MSG" >/dev/null
+    fi
 fi
 `
 

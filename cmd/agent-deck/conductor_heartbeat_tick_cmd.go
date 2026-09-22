@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -15,6 +19,7 @@ import (
 func handleConductorHeartbeatTick(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor heartbeat-tick", flag.ExitOnError)
 	rules := fs.String("rules", "", "Resolved HEARTBEAT_RULES.md path (re-read is requested only when it changes)")
+	commitMessage := fs.String("commit-message", "", "Persist this exact message after a successful send")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck conductor heartbeat-tick <name> [--rules PATH]")
 		fmt.Println()
@@ -49,12 +54,25 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 		RulesStamp: session.HeartbeatRulesStamp(*rules),
 	}
 	conductorTitle := session.ConductorSessionTitle(name)
+	var conductorID string
+	for _, inst := range instances {
+		if inst.Title == conductorTitle {
+			conductorID = inst.ID
+			continue
+		}
+	}
+	if *commitMessage == "" && conductorID != "" {
+		if err := pullHeartbeatRemotes(conductorID); err != nil {
+			in.RemoteError = true
+			fmt.Fprintf(os.Stderr, "heartbeat-tick: remote pull: %v\n", err)
+		}
+	}
 	for _, inst := range instances {
 		if inst.Title == conductorTitle {
 			n, digest, err := session.InboxSnapshot(inst.ID)
 			in.InboxPending = n
 			in.InboxDigest = digest
-			in.InboxError = err != nil
+			in.InboxError = in.InboxError || err != nil
 			continue
 		}
 		if strings.HasPrefix(inst.Title, "conductor-") ||
@@ -68,10 +86,48 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 	}
 
 	msg, next := session.BuildHeartbeatTick(in, session.LoadHeartbeatTickState(name))
-	if err := session.SaveHeartbeatTickState(name, next); err != nil {
-		fmt.Fprintf(os.Stderr, "heartbeat-tick: save state: %v\n", err)
+	if *commitMessage != "" {
+		if msg != *commitMessage {
+			fmt.Fprintln(os.Stderr, "heartbeat-tick: inputs changed before commit; next tick will retry")
+			os.Exit(1)
+		}
+		if err := session.SaveHeartbeatTickState(name, next); err != nil {
+			fmt.Fprintf(os.Stderr, "heartbeat-tick: save state: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if msg == "" {
+		if err := session.SaveHeartbeatTickState(name, next); err != nil {
+			fmt.Fprintf(os.Stderr, "heartbeat-tick: save state: %v\n", err)
+		}
 	}
 	if msg != "" {
 		fmt.Println(msg)
 	}
+}
+
+func pullHeartbeatRemotes(conductorID string) error {
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(config.Remotes))
+	for name := range config.Remotes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*config.Remotes[name].GetCommandTimeout()+5*time.Second)
+		output, err := exec.CommandContext(ctx, binary, "remote", "drain", name, "--into", conductorID, "--json").CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
 }

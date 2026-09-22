@@ -90,11 +90,20 @@ func TestConductorHeartbeatTickCLIReadsInboxAndRules(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Inbox: 1 pending") || !strings.Contains(out, "Read heartbeat rules from "+rules) || !strings.Contains(out, "1 idle, 0 error, 0 stopped.") {
 		t.Fatalf("first tick: exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
+	first := strings.TrimSuffix(out, "\n")
+	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
+	if code != 0 || strings.TrimSuffix(out, "\n") != first {
+		t.Fatalf("unconfirmed send must retry: exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules, "--commit-message", first)
+	if code != 0 || out != "" {
+		t.Fatalf("commit confirmed send: exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
 	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
 	if code != 0 || out != "" {
 		t.Fatalf("unchanged tick: exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
-	if err := os.WriteFile(inbox, []byte("{\"new\":true}\n"), 0o600); err != nil {
+	if err := os.WriteFile(inbox, []byte("{\"source_remote\":\"build-box\",\"child_session_id\":\"remote-child\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
