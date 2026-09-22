@@ -572,6 +572,38 @@ func TestAcquireKeepsSocketWhenRecordedPIDLives(t *testing.T) {
 	}
 }
 
+func TestAcquireKeepsResponsiveSocketWithDeadRecordedPID(t *testing.T) {
+	paths := PathsIn(filepath.Join(shortDir(t), "run"))
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.WriteFile(paths.Lock, []byte("999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = c.Write([]byte(`{"v":1,"type":"hello","token":"0123456789abcdef0123456789abcdef"}` + "\n"))
+	}()
+	if _, err := Acquire(paths); err == nil {
+		t.Fatal("Acquire replaced a responsive socket with a dead recorded PID")
+	}
+	<-done
+	if _, err := os.Lstat(paths.Socket); err != nil {
+		t.Fatalf("responsive socket disappeared: %v", err)
+	}
+}
+
 func TestAcquireRefusesANonSocketFile(t *testing.T) {
 	paths := PathsIn(filepath.Join(shortDir(t), "run"))
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {

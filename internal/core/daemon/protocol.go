@@ -111,32 +111,42 @@ var (
 // serves a Unix socket today and a TCP connection later. Writes are
 // serialized; reads must come from one goroutine.
 type frameConn struct {
-	sc *bufio.Scanner
+	r  *bufio.Reader
 	mu sync.Mutex
 	w  io.Writer
 }
 
 func newFrameConn(rw io.ReadWriter) *frameConn {
-	sc := bufio.NewScanner(rw)
-	sc.Buffer(make([]byte, 0, 64*1024), MaxFrameBytes)
-	return &frameConn{sc: sc, w: rw}
+	return &frameConn{r: bufio.NewReader(rw), w: rw}
+}
+
+func (c *frameConn) readLine() ([]byte, error) {
+	var line []byte
+	for {
+		part, err := c.r.ReadSlice('\n')
+		line = append(line, part...)
+		if len(line) > MaxFrameBytes+1 {
+			return nil, errFrameTooLarge
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return line[:len(line)-1], nil
+	}
 }
 
 // read returns the next frame, errFrameTooLarge, errBadFrame, or the
 // transport's error (io.EOF on a clean close).
 func (c *frameConn) read() (Frame, error) {
-	if !c.sc.Scan() {
-		err := c.sc.Err()
-		if errors.Is(err, bufio.ErrTooLong) {
-			return Frame{}, errFrameTooLarge
-		}
-		if err == nil {
-			err = io.EOF
-		}
+	line, err := c.readLine()
+	if err != nil {
 		return Frame{}, err
 	}
 	var f Frame
-	if err := json.Unmarshal(c.sc.Bytes(), &f); err != nil {
+	if err := json.Unmarshal(line, &f); err != nil {
 		return Frame{}, fmt.Errorf("%w: %v", errBadFrame, err)
 	}
 	return f, nil
@@ -145,18 +155,12 @@ func (c *frameConn) read() (Frame, error) {
 // readStrict applies the documented client-frame grammar. Response reads
 // remain permissive so older clients can ignore fields added by a server.
 func (c *frameConn) readStrict() (Frame, error) {
-	if !c.sc.Scan() {
-		err := c.sc.Err()
-		if errors.Is(err, bufio.ErrTooLong) {
-			return Frame{}, errFrameTooLarge
-		}
-		if err == nil {
-			err = io.EOF
-		}
+	line, err := c.readLine()
+	if err != nil {
 		return Frame{}, err
 	}
 	var f Frame
-	dec := json.NewDecoder(bytes.NewReader(c.sc.Bytes()))
+	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return Frame{}, fmt.Errorf("%w: %v", errBadFrame, err)
