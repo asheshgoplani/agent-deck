@@ -51,8 +51,10 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 	conductorTitle := session.ConductorSessionTitle(name)
 	for _, inst := range instances {
 		if inst.Title == conductorTitle {
-			n, _ := session.CountInboxRecords(inst.ID)
+			n, digest, err := session.InboxSnapshot(inst.ID)
 			in.InboxPending = n
+			in.InboxDigest = digest
+			in.InboxError = err != nil
 			continue
 		}
 		if strings.HasPrefix(inst.Title, "conductor-") ||

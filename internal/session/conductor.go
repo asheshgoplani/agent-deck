@@ -2894,7 +2894,14 @@ func installHeartbeatDaemonLaunchd(name string, intervalMinutes int) error {
 		return err
 	}
 	_ = os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755)
-	_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+	if _, err := os.Stat(hbPlistPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := exec.Command("launchctl", "unload", hbPlistPath).Run(); err != nil {
+		return fmt.Errorf("stop launchd heartbeat: %w", err)
+	}
 	if err := os.WriteFile(hbPlistPath, []byte(plistContent), 0o644); err != nil {
 		return fmt.Errorf("failed to write heartbeat plist: %w", err)
 	}
@@ -2976,16 +2983,26 @@ func uninstallHeartbeatDaemonLaunchd(name string) error {
 }
 
 func uninstallHeartbeatDaemonSystemd(name string) error {
-	timerName := SystemdHeartbeatTimerName(name)
-	_ = exec.Command("systemctl", "--user", "disable", "--now", timerName).Run()
-
 	timerPath, err := SystemdHeartbeatTimerPath(name)
-	if err == nil {
-		_ = os.Remove(timerPath)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(timerPath); err == nil {
+		if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdHeartbeatTimerName(name)).Run(); err != nil {
+			return fmt.Errorf("stop systemd heartbeat: %w", err)
+		}
+		if err := os.Remove(timerPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	svcPath, err := SystemdHeartbeatServicePath(name)
-	if err == nil {
-		_ = os.Remove(svcPath)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(svcPath); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return nil

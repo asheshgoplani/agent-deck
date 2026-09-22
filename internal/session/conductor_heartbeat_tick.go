@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +38,8 @@ type HeartbeatTickInput struct {
 	Name         string
 	Sessions     []HeartbeatSessionView // already scoped to the conductor's group
 	InboxPending int                    // undrained records in the conductor's inbox
+	InboxDigest  string                 // distinguishes replacement records at the same count
+	InboxError   bool                   // unreadable inbox must not silently suppress a tick
 	RulesPath    string                 // resolved HEARTBEAT_RULES.md, "" if none
 	RulesStamp   string                 // size+mtime of RulesPath, "" if none
 }
@@ -67,15 +71,15 @@ func BuildHeartbeatTick(in HeartbeatTickInput, prev HeartbeatTickState) (string,
 	sort.Strings(errored)
 
 	next := HeartbeatTickState{RulesStamp: prev.RulesStamp}
-	if len(waiting) == 0 && len(errored) == 0 && in.InboxPending == 0 {
+	if len(waiting) == 0 && len(errored) == 0 && in.InboxPending == 0 && !in.InboxError {
 		// Nothing to act on. Forget the fingerprint so the same set is
 		// delivered again if it comes back after being resolved.
 		return "", next
 	}
 
-	next.Fingerprint = fmt.Sprintf("w=%s|e=%s|inbox=%d",
-		strings.Join(waiting, ";"), strings.Join(errored, ";"), in.InboxPending)
-	if next.Fingerprint == prev.Fingerprint {
+	next.Fingerprint = fmt.Sprintf("w=%s|e=%s|inbox=%d:%s",
+		strings.Join(waiting, ";"), strings.Join(errored, ";"), in.InboxPending, in.InboxDigest)
+	if !in.InboxError && next.Fingerprint == prev.Fingerprint {
 		return "", next
 	}
 
@@ -92,6 +96,9 @@ func BuildHeartbeatTick(in HeartbeatTickInput, prev HeartbeatTickState) (string,
 	}
 	if in.InboxPending > 0 {
 		parts = append(parts, fmt.Sprintf("Inbox: %d pending, run `agent-deck inbox drain self` first.", in.InboxPending))
+	}
+	if in.InboxError {
+		parts = append(parts, "Inbox unreadable; inspect the conductor inbox before continuing.")
 	}
 	switch {
 	case in.RulesPath != "" && in.RulesStamp != prev.RulesStamp:
@@ -159,7 +166,24 @@ func SaveHeartbeatTickState(name string, st HeartbeatTickState) error {
 	return os.Rename(tmp, path)
 }
 
-// CountInboxRecords returns how many undrained records a session's inbox holds.
-func CountInboxRecords(sessionID string) (int, error) {
-	return countNonblankInboxRecords(InboxPathFor(sessionID))
+// InboxSnapshot returns the pending count and content identity in one read.
+func InboxSnapshot(sessionID string) (int, string, error) {
+	data, err := os.ReadFile(InboxPathFor(sessionID))
+	if os.IsNotExist(err) {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	count := 0
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) > 0 {
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, "", nil
+	}
+	digest := sha256.Sum256(data)
+	return count, fmt.Sprintf("%x", digest), nil
 }
