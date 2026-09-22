@@ -73,19 +73,6 @@ func TestStorageBytesGoldens(t *testing.T) {
 	}
 
 	run("session", "start", "golden-sess-shell", "--no-wait")
-	t.Logf("dbPath=%s", dbPath)
-	if matches, globErr := filepath.Glob(filepath.Join(home, "*", "*", "*", "*", "state.db")); globErr == nil {
-		t.Logf("state.db files under HOME: %v", matches)
-	}
-	{
-		rawDB, openErr := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(2000)")
-		if openErr == nil {
-			var rawStatus string
-			_ = rawDB.QueryRow("SELECT status FROM instances WHERE id = ?", "golden-sess-shell").Scan(&rawStatus)
-			t.Logf("raw dbPath status right after session start = %q", rawStatus)
-			rawDB.Close()
-		}
-	}
 	waitForStatus(t, bin, env, "golden-sess-shell", []string{"running", "starting", "idle"}, 10*time.Second)
 	dumpAndAssert("01_after_start")
 
