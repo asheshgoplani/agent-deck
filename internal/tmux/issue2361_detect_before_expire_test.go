@@ -9,8 +9,8 @@ import (
 	"al.essio.dev/pkg/shellescape"
 )
 
-// issue2361StuckPaneContent is the #1892 stuck-pane content verbatim (see
-// PLAN-detect-before-expire.md): a pane whose process stays alive but never
+// issue2361StuckPaneContent is the stuck-pane capture quoted verbatim in issue
+// #1892: a pane whose process stays alive but never
 // renders a busy signal or a prompt. It is the regression guard for this
 // change — the watchdog's new "detect before expire" probe must still let
 // this exact content expire.
