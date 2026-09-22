@@ -890,6 +890,7 @@ func main() {
 		// Hand the outer terminal's cursor and pointer back if the embedded
 		// terminal owned them; deferred releases do not survive os.Exit.
 		runEmbeddedTerminalCleanup()
+		_ = events.CloseDefault()
 		os.Exit(0)
 	}()
 
