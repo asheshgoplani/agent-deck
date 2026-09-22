@@ -182,7 +182,20 @@ func (s *suite) teardown() error {
 			return fmt.Errorf("private tmux teardown: %w: %s; sandbox retained at %s", err, out, s.root)
 		}
 	}
-	if err := os.RemoveAll(s.root); err != nil {
+	// kill-server returns as soon as tmux itself is gone, not once every
+	// process it hosted has finished exiting; one of those (a spawned
+	// tool, an agent-deck instance flushing a final log line) can still
+	// have a file open under s.root for a brief moment after. A bare
+	// RemoveAll can race that with ENOTEMPTY (seen on the g14 test box's
+	// container); a few retries absorb it without an open-ended wait.
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		if err = os.RemoveAll(s.root); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
 		return err
 	}
 	s.root = ""
