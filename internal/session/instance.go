@@ -6829,7 +6829,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	prevHookStatus, prevHookEvent, prevHookLastUpdate := i.hookStatus, i.hookEvent, i.hookLastUpdate
 	prevStartedGen, prevCompletedGen := i.codexStartedGeneration, i.codexCompletedGeneration
 	prevStartedSID, prevCompletedSID := i.codexStartedSessionID, i.codexCompletedSessionID
+	// rejected tracks whether this event was rolled back by restoreHook below.
+	// A rejected candidate must never be read as evidence that the agent is
+	// interactive — see the disarm condition further down.
+	rejected := false
 	restoreHook := func() {
+		rejected = true
 		i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
 		i.codexStartedGeneration, i.codexCompletedGeneration = prevStartedGen, prevCompletedGen
 		i.codexStartedSessionID, i.codexCompletedSessionID = prevStartedSID, prevCompletedSID
@@ -6861,17 +6866,33 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// place the startup clock is cleared, so end the startup phase here or the
 	// first hook-quiet poll expires a healthy pane (#2361). Deferred so it only
 	// counts hooks that survive the ownership checks below: a rejected foreign
-	// ephemeral calls restoreHook, which rolls hookLastUpdate back, and must
-	// not disarm the watchdog. Registered after the Unlock defer, so it runs
-	// with i.mu still held.
-	if isNewEvent && i.tmuxSession != nil && !isTerminalHookEvent(status.Event) &&
-		(status.Status == "running" || status.Status == "waiting") {
-		defer func() {
-			if i.hookLastUpdate.Equal(status.UpdatedAt) {
-				i.tmuxSession.MarkInteractiveAt(status.UpdatedAt)
-			}
-		}()
-	}
+	// ephemeral (rejected set true by restoreHook, above) must not disarm the
+	// watchdog. Registered after the Unlock defer, so it runs with i.mu still
+	// held.
+	//
+	// Not gated on isNewEvent: the COLD LOAD branch in updateStatus reads the
+	// SessionStart hook file straight off disk and stamps i.hookLastUpdate
+	// from it, outside this function, before the watcher ever calls
+	// UpdateHookStatus with that same event. When the watcher's feed arrives,
+	// its UpdatedAt equals what cold-load already recorded, so isNewEvent
+	// would be false and the disarm would never fire — the pane then gets
+	// killed by the startup watchdog despite a real hook on file. Re-feeding
+	// an already-accepted hook is harmless here: MarkInteractiveAt is
+	// idempotent (clearing an already-zero startupAt is a no-op) and
+	// generation-guarded (a timestamp older than the current pane's startupAt
+	// is ignored), and this is the only path that recovers from that
+	// cold-load race.
+	//
+	// agentdeck_spawn_seed (item #2) is excluded: it is a synthetic seed
+	// agent-deck itself writes when handing a pane to Hermes, not evidence
+	// that an agent became interactive, so it must not disarm the watchdog.
+	defer func() {
+		if i.tmuxSession != nil && !rejected && !isTerminalHookEvent(status.Event) &&
+			(status.Status == "running" || status.Status == "waiting") &&
+			status.Event != "agentdeck_spawn_seed" {
+			i.tmuxSession.MarkInteractiveAt(status.UpdatedAt)
+		}
+	}()
 
 	// Issue #1349 defense-in-depth #1: never bind a session id from a terminal
 	// hook event (e.g. SessionEnd). The status/event/ack bookkeeping above still
@@ -6984,6 +7005,11 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				clearRebind := !currentMtime.IsZero() && !candidateMtime.IsZero() &&
 					candidateMtime.Sub(currentMtime) >= clearRebindMtimeGrace
 				if !clearRebind {
+					// This rejection does not call restoreHook, so the event's
+					// status/event/hookLastUpdate stand — and so does the
+					// startup-watchdog disarm registered above: this is still
+					// a live hook from this instance's own session, just not
+					// one that wins the rebind.
 					_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 						InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 						Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
