@@ -1,5 +1,5 @@
 Status: NOT INSTALLED
 Config: <SANDBOX_HOME>/.claude/settings.json
-This binary: unpinnable dev build: hooks keep the bare command (/tmp/ad-goldens-bin-2936665065/agent-deck) (<VERSION>)
+This binary: unpinnable dev build: hooks keep the bare command (<AGENT_DECK_BINARY>) (<VERSION>)
 Run 'agent-deck hooks install' from an installed agent-deck (or start its notify daemon) to repair the hooks.
 Usage feed: no Claude account slots configured ([profiles.<name>.claude] config_dir)

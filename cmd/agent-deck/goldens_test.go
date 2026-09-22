@@ -124,6 +124,7 @@ var excludedCommands = []excludedCommand{
 	{"watcher start", "starts a watcher process"},
 	{"watcher stop", "stops a watcher process"},
 	{"agent adopt", "mutates the local agent catalog"},
+	{"system stats", "reports live host CPU/load/memory/disk numbers; not byte-stable by design, unlike a scrubbable timestamp"},
 	{"costs sync", "mutates cost_events (imports usage from provider logs)"},
 	{"costs recompute", "mutates cost_events (rewrites cost_microdollars; --dry-run form is the safe one but not the default)"},
 	{"watcher import", "requires a positional file argument before flags are parsed, so --help alone is not a safe probe; also mutates config"},
@@ -148,7 +149,6 @@ func safeSpecs() []goldenSpec {
 		{"costs_summary", []string{"-p", goldensProfile, "costs", "summary"}, 0},
 		{"agents", []string{"agents"}, 0},
 		{"telemetry_status", []string{"telemetry", "status"}, 0},
-		{"system_stats", []string{"system", "stats"}, 0},
 
 		{"session_show", []string{"-p", goldensProfile, "session", "show", "golden-sess-1"}, 0},
 		{"session_viewers", []string{"-p", goldensProfile, "session", "viewers", "golden-sess-1"}, 0},
@@ -292,6 +292,12 @@ var scrubRules = []struct {
 	// (it must survive t.TempDir() cleanup across every sub-test), and some
 	// commands (e.g. `hooks status`) echo argv[0]'s resolved path back.
 	{regexp.MustCompile(`/[^\s"]*ad-goldens-bin-[0-9]+/agent-deck(\.exe)?`), "<AGENT_DECK_BINARY>"},
+	// A live tmux session name: `internal/tmux.SessionPrefix` ("agentdeck_")
+	// plus a title slug plus a random hex suffix, assigned fresh every time
+	// a session actually starts/restarts in real tmux (storage-bytes
+	// goldens only — the six never-started CLI-goldens fixtures keep their
+	// literal seeded TmuxSession value and are never touched by this rule).
+	{regexp.MustCompile(`agentdeck_[a-z0-9]+(-[a-z0-9]+)*_[0-9a-f]{6,}`), "<TMUX_SESSION>"},
 }
 
 // scrub normalizes volatile fields per testdata/goldens/README.md: timestamps,
