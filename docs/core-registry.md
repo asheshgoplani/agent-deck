@@ -60,6 +60,12 @@ even with `-q`; `restart --all` with failed sessions still returns `ok: true`
 (the sweep ran) with the per-session outcome in `data.all` and exit status 1.
 Plain `--json` output is unchanged, byte for byte.
 
+## Daemon
+
+`agent-deck daemon serve` runs this same registry behind a unix socket; a
+`call` frame returns the envelope `--json=envelope` prints. See
+docs/daemon-protocol.md.
+
 ## Rollback
 
 `AGENT_DECK_CORE_REGISTRY=0` routes the five commands back to the legacy
