@@ -351,12 +351,50 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 			t.Fatalf("serial start %s: exit %d: %s %s", name, code, out, errOut)
 		}
 	}
+	alignStartedTimes(t, home, serialHome)
 	if raced, serial := canonicalStateDB(t, home), canonicalStateDB(t, serialHome); !bytes.Equal(raced, serial) {
 		diff := 0
 		for diff < len(raced) && diff < len(serial) && raced[diff] == serial[diff] {
 			diff++
 		}
 		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v, first offset %d, bytes %x vs %x)\nraced: %s\nserial: %s", len(raced), len(serial), order, diff, raced[diff:diff+16], serial[diff:diff+16], stateRows(t, home), stateRows(t, serialHome))
+	}
+}
+
+// Start records wall-clock seconds in tool_data. Align only that field in
+// the serial fixture so the database byte comparison tests lifecycle state.
+func alignStartedTimes(t *testing.T, racedHome, serialHome string) {
+	t.Helper()
+	raced, err := sql.Open("sqlite", stateDBPath(t, racedHome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raced.Close()
+	serial, err := sql.Open("sqlite", stateDBPath(t, serialHome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serial.Close()
+	rows, err := raced.Query("SELECT id, json_extract(tool_data, '$.last_started_at') FROM instances ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var started sql.NullInt64
+		if err := rows.Scan(&id, &started); err != nil {
+			t.Fatal(err)
+		}
+		if !started.Valid {
+			continue
+		}
+		if _, err := serial.Exec("UPDATE instances SET tool_data=json_set(tool_data, '$.last_started_at', ?) WHERE id=?", started.Int64, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 
