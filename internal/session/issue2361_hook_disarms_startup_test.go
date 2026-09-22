@@ -101,6 +101,7 @@ func writeIssue2361HookFile(t *testing.T, instanceID, status, event, sessionID, 
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write hook file: %v", err)
 	}
+	t.Cleanup(func() { _ = os.Remove(path) })
 }
 
 // TestIssue2361_ColdLoadFirstStillDisarms covers the race the review flagged:
