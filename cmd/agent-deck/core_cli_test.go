@@ -243,12 +243,25 @@ func TestCoreRegistryMatchesLegacyHandlers(t *testing.T) {
 	legacy := mk("adlg", true)
 	registry := mk("adrg", false)
 
+	// The first successful start and a forced restart --json must really
+	// succeed, so the comparison can't pass because both paths failed alike.
+	mustSucceed := map[string]string{
+		"session start alpha":                  "Started session: alpha",
+		"session restart alpha --force --json": `"success": true`,
+	}
 	for _, args := range equivalenceScript {
 		// Stored paths point into the seed dir, identical in both clones.
 		lOut, lErr, lCode := runAgentDeckEnv(t, legacy.home, "", legacy.env, args...)
 		rOut, rErr, rCode := runAgentDeckEnv(t, registry.home, "", registry.env, args...)
 		lOut, lErr = scrubEquivalence(lOut, legacy.home, legacy.tmux), scrubEquivalence(lErr, legacy.home, legacy.tmux)
 		rOut, rErr = scrubEquivalence(rOut, registry.home, registry.tmux), scrubEquivalence(rErr, registry.home, registry.tmux)
+		key := strings.Join(args, " ")
+		if want, ok := mustSucceed[key]; ok {
+			if rCode != 0 || !strings.Contains(rOut, want) {
+				t.Errorf("%q: exit %d, stdout %q, want success containing %q (stderr %q)", key, rCode, rOut, want, rErr)
+			}
+			delete(mustSucceed, key)
+		}
 		if lCode != rCode || lOut != rOut || lErr != rErr {
 			t.Errorf("%q differs\nexit legacy=%d registry=%d\n--- legacy stdout ---\n%s\n--- registry stdout ---\n%s\n--- legacy stderr ---\n%s\n--- registry stderr ---\n%s",
 				strings.Join(args, " "), lCode, rCode, lOut, rOut, lErr, rErr)
