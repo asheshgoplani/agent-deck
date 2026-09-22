@@ -20,10 +20,11 @@ class _StopLoop(Exception):
     pass
 
 
-def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None):
+def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None, inbox_payloads=None):
     """Drive heartbeat_loop for len(session_lists) ticks; return per-tick bytes sent."""
     ticks = iter(session_lists)
     inbox_ticks = iter(inbox_counts or [0] * len(session_lists))
+    payload_ticks = iter(inbox_payloads or [None] * len(session_lists))
     current = {"sessions": []}
     per_tick: list[int] = []
     real_sleep = asyncio.sleep
@@ -32,11 +33,12 @@ def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None):
         try:
             current["sessions"] = next(ticks)
             pending = next(inbox_ticks)
+            payload = next(payload_ticks)
         except StopIteration:
             raise _StopLoop()
         inbox = tmp_path / "inboxes" / "conductor-id.jsonl"
         inbox.parent.mkdir(exist_ok=True)
-        inbox.write_text("{}\n" * pending)
+        inbox.write_text(payload if payload is not None else "{}\n" * pending)
         per_tick.append(0)
         await real_sleep(0)
 
@@ -102,3 +104,12 @@ def test_inbox_only_transition_wakes_once_and_recurrence_wakes_again(monkeypatch
     assert per_tick[1] > 0
     assert per_tick[2:4] == [0, 0]
     assert per_tick[4] > 0
+
+
+def test_replaced_inbox_record_at_same_count_wakes(monkeypatch, tmp_path):
+    conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
+    per_tick = _run_loop(
+        monkeypatch, tmp_path, [conductor] * 3, [1, 1, 1],
+        ['{"first":true}\n', '{"first":true}\n', '{"second":true}\n'],
+    )
+    assert per_tick[0] > 0 and per_tick[1] == 0 and per_tick[2] > 0, per_tick

@@ -88,4 +88,11 @@ func TestConductorHeartbeatTickCLIReadsInboxAndRules(t *testing.T) {
 	if code != 0 || out != "" {
 		t.Fatalf("unchanged tick: exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
+	if err := os.WriteFile(inbox, []byte("{\"new\":true}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
+	if code != 0 || !strings.Contains(out, "Inbox: 1 pending") {
+		t.Fatalf("replacement record at same count: exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
 }

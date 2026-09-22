@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,38 @@ func TestHeartbeatTick_DeliversOnlyChanges(t *testing.T) {
 	in.Sessions = []HeartbeatSessionView{{Title: "api-fix", Status: StatusWaiting, Path: "/src/api"}}
 	if msg := runTick(t, in); msg == "" {
 		t.Fatal("a session that waits again after being resolved must be delivered")
+	}
+}
+
+func TestUninstallHeartbeatDaemon_StopFailureKeepsEnabled(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("systemd stop failure fixture")
+	}
+	setupHeartbeatTickTest(t, "ops")
+	if err := SaveConductorMeta(&ConductorMeta{Name: "ops", Profile: "default", HeartbeatEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	timer, err := SystemdHeartbeatTimerPath("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(timer), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(timer, []byte("[Timer]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	if err := UninstallHeartbeatDaemon("ops"); err == nil {
+		t.Fatal("failed timer stop must be reported")
+	}
+	meta, err := LoadConductorMeta("ops")
+	if err != nil || !meta.HeartbeatEnabled {
+		t.Fatalf("failed timer stop must keep heartbeat enabled: meta=%+v err=%v", meta, err)
 	}
 }
 
