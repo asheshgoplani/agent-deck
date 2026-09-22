@@ -6900,10 +6900,18 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// A live lifecycle hook proves the agent became interactive. The hook fast
 	// path in UpdateStatus skips tmux.GetStatus, which is otherwise the only
 	// place the startup clock is cleared, so end the startup phase here or the
-	// first hook-quiet poll expires a healthy pane (#2361).
+	// first hook-quiet poll expires a healthy pane (#2361). Deferred so it only
+	// counts hooks that survive the ownership checks below: a rejected foreign
+	// ephemeral calls restoreHook, which rolls hookLastUpdate back, and must
+	// not disarm the watchdog. Registered after the Unlock defer, so it runs
+	// with i.mu still held.
 	if isNewEvent && i.tmuxSession != nil && !isTerminalHookEvent(status.Event) &&
 		(status.Status == "running" || status.Status == "waiting") {
-		i.tmuxSession.MarkInteractiveAt(status.UpdatedAt)
+		defer func() {
+			if i.hookLastUpdate.Equal(status.UpdatedAt) {
+				i.tmuxSession.MarkInteractiveAt(status.UpdatedAt)
+			}
+		}()
 	}
 
 	// Issue #1349 defense-in-depth #1: never bind a session id from a terminal
