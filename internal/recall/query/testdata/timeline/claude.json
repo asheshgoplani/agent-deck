@@ -1,0 +1,74 @@
+[
+  {
+    "seq": 1,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-09-10T01:00:00Z",
+    "text": "Review the auth fix",
+    "raw": {
+      "cwd": "/Users/x/app",
+      "message": {
+        "content": "Review the auth fix",
+        "role": "user",
+        "usage": {
+          "input_tokens": 1,
+          "output_tokens": 1
+        }
+      },
+      "sessionId": "aaaaaaaa-0000-4000-8000-000000000001",
+      "timestamp": "2026-09-10T01:00:00Z",
+      "type": "user",
+      "uuid": "aaaaaaaa-0000-4000-8000-000000000001-0"
+    }
+  },
+  {
+    "seq": 2,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-09-10T02:00:00Z",
+    "text": "I will inspect it.",
+    "raw": {
+      "cwd": "/Users/x/app",
+      "message": {
+        "content": "I will inspect it.",
+        "role": "assistant",
+        "usage": {
+          "input_tokens": 1,
+          "output_tokens": 1
+        }
+      },
+      "sessionId": "aaaaaaaa-0000-4000-8000-000000000001",
+      "timestamp": "2026-09-10T02:00:00Z",
+      "type": "assistant",
+      "uuid": "aaaaaaaa-0000-4000-8000-000000000001-1"
+    }
+  },
+  {
+    "seq": 3,
+    "role": "assistant",
+    "kind": "bash",
+    "timestamp": "2026-09-11T01:00:00Z",
+    "tool_name": "Bash",
+    "text": "go test ./internal/auth",
+    "raw": {
+      "id": "toolu_1",
+      "input": {
+        "command": "go test ./internal/auth"
+      },
+      "name": "Bash",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 4,
+    "role": "user",
+    "kind": "tool_result",
+    "timestamp": "2026-09-11T01:00:01Z",
+    "text": "PASS",
+    "raw": {
+      "content": "PASS",
+      "tool_use_id": "toolu_1",
+      "type": "tool_result"
+    }
+  }
+]

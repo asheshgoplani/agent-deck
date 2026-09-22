@@ -1,0 +1,220 @@
+[
+  {
+    "seq": 1,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-01-19T12:18:54.601Z",
+    "text": "Fix the flaky auth test, the clock skew one",
+    "raw": {
+      "content": "Fix the flaky auth test, the clock skew one",
+      "id": "u1",
+      "timestamp": "2026-01-19T12:18:54.601Z",
+      "type": "user"
+    }
+  },
+  {
+    "seq": 2,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-01-19T12:18:58.887Z",
+    "text": "I will read the issue context first.",
+    "raw": {
+      "content": "I will read the issue context first.",
+      "id": "g1",
+      "model": "gemini-3-flash-preview",
+      "thoughts": [
+        {
+          "description": "zebra thinking text",
+          "subject": "zebra thought",
+          "timestamp": "2026-01-19T12:18:57.014Z"
+        }
+      ],
+      "timestamp": "2026-01-19T12:18:58.887Z",
+      "tokens": {
+        "cached": 5,
+        "input": 10387,
+        "output": 30,
+        "thoughts": 155,
+        "tool": 0,
+        "total": 10572
+      },
+      "toolCalls": [
+        {
+          "args": "{'file_path': '.github-issue-context.json'}",
+          "id": "read_file-1",
+          "name": "read_file",
+          "result": [
+            {
+              "functionResponse": {
+                "id": "read_file-1",
+                "name": "read_file",
+                "response": {
+                  "output": "zebra tool output"
+                }
+              }
+            }
+          ],
+          "resultDisplay": "",
+          "status": "success",
+          "timestamp": "2026-01-19T12:18:59.387Z"
+        }
+      ],
+      "type": "gemini"
+    }
+  },
+  {
+    "seq": 3,
+    "role": "assistant",
+    "kind": "tool_call",
+    "timestamp": "2026-01-19T12:18:59.387Z",
+    "tool_name": "read_file",
+    "text": "{'file_path': '.github-issue-context.json'}",
+    "raw": {
+      "args": "{'file_path': '.github-issue-context.json'}",
+      "id": "read_file-1",
+      "name": "read_file",
+      "result": [
+        {
+          "functionResponse": {
+            "id": "read_file-1",
+            "name": "read_file",
+            "response": {
+              "output": "zebra tool output"
+            }
+          }
+        }
+      ],
+      "resultDisplay": "",
+      "status": "success",
+      "timestamp": "2026-01-19T12:18:59.387Z"
+    }
+  },
+  {
+    "seq": 4,
+    "role": "tool",
+    "kind": "tool_result",
+    "timestamp": "2026-01-19T12:18:59.387Z",
+    "tool_name": "read_file",
+    "text": "[{\"functionResponse\":{\"id\":\"read_file-1\",\"name\":\"read_file\",\"response\":{\"output\":\"zebra tool output\"}}}]",
+    "raw": [
+      {
+        "functionResponse": {
+          "id": "read_file-1",
+          "name": "read_file",
+          "response": {
+            "output": "zebra tool output"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "seq": 5,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-01-19T12:19:00.000Z",
+    "text": "Request cancelled.",
+    "raw": {
+      "content": "Request cancelled.",
+      "id": "i1",
+      "timestamp": "2026-01-19T12:19:00.000Z",
+      "type": "info"
+    }
+  },
+  {
+    "seq": 6,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-01-19T12:19:10.000Z",
+    "text": "Your task is to answer the following question\nabout clock skew",
+    "raw": {
+      "content": [
+        {
+          "text": "Your task is to answer the following question"
+        },
+        {
+          "text": "about clock skew"
+        }
+      ],
+      "id": "u2",
+      "timestamp": "2026-01-19T12:19:10.000Z",
+      "type": "user"
+    }
+  },
+  {
+    "seq": 7,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-01-19T12:19:12.000Z",
+    "text": "The root cause was clock skew.",
+    "raw": {
+      "content": "The root cause was clock skew.",
+      "id": "g2",
+      "model": "gemini-3-flash-preview",
+      "timestamp": "2026-01-19T12:19:12.000Z",
+      "tokens": {
+        "cached": 0,
+        "input": 100,
+        "output": 20,
+        "thoughts": 0,
+        "tool": 0,
+        "total": 120
+      },
+      "toolCalls": [
+        {
+          "args": {
+            "command": "go test ./internal/auth/"
+          },
+          "id": "run_shell_command-1",
+          "name": "run_shell_command",
+          "status": "error",
+          "timestamp": "2026-01-19T12:19:13.000Z"
+        }
+      ],
+      "type": "gemini"
+    }
+  },
+  {
+    "seq": 8,
+    "role": "assistant",
+    "kind": "bash",
+    "timestamp": "2026-01-19T12:19:13.000Z",
+    "tool_name": "run_shell_command",
+    "text": "go test ./internal/auth/",
+    "raw": {
+      "args": {
+        "command": "go test ./internal/auth/"
+      },
+      "id": "run_shell_command-1",
+      "name": "run_shell_command",
+      "status": "error",
+      "timestamp": "2026-01-19T12:19:13.000Z"
+    }
+  },
+  {
+    "seq": 9,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-01-19T12:19:20.000Z",
+    "text": "[API Error: 400]",
+    "raw": {
+      "content": "[API Error: 400]",
+      "id": "e1",
+      "timestamp": "2026-01-19T12:19:20.000Z",
+      "type": "error"
+    }
+  },
+  {
+    "seq": 10,
+    "role": "system",
+    "kind": "other",
+    "timestamp": "2026-01-19T12:19:21.000Z",
+    "text": "zebra",
+    "raw": {
+      "content": "zebra",
+      "id": "x1",
+      "timestamp": "2026-01-19T12:19:21.000Z",
+      "type": "future_kind"
+    }
+  }
+]

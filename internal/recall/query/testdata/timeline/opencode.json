@@ -1,0 +1,168 @@
+[
+  {
+    "seq": 1,
+    "role": "system",
+    "kind": "system",
+    "raw": {
+      "directory": "/Users/x/claude-deck",
+      "id": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "projectID": "60e0658e",
+      "slug": "kind-forest",
+      "summary": {
+        "additions": 0,
+        "deletions": 0,
+        "files": 0
+      },
+      "time": {
+        "created": 1769008566135,
+        "updated": 1770052345394
+      },
+      "title": "Greeting and quick check-in",
+      "version": "1.1.28"
+    }
+  },
+  {
+    "seq": 2,
+    "role": "user",
+    "kind": "system",
+    "raw": {
+      "agent": "build",
+      "id": "msg_a",
+      "model": {
+        "modelID": "big-pickle",
+        "providerID": "opencode"
+      },
+      "role": "user",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "time": {
+        "created": 1769133410652
+      }
+    }
+  },
+  {
+    "seq": 3,
+    "role": "user",
+    "kind": "message",
+    "text": "Fix the flaky auth test, the clock skew one",
+    "raw": {
+      "id": "prt_1",
+      "messageID": "msg_a",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "text": "Fix the flaky auth test, the clock skew one",
+      "type": "text"
+    }
+  },
+  {
+    "seq": 4,
+    "role": "assistant",
+    "kind": "system",
+    "raw": {
+      "cost": 0,
+      "finish": "stop",
+      "id": "msg_b",
+      "modelID": "big-pickle",
+      "parentID": "msg_a",
+      "path": {
+        "cwd": "/Users/x/claude-deck",
+        "root": "/Users/x/claude-deck"
+      },
+      "providerID": "opencode",
+      "role": "assistant",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "time": {
+        "completed": 1769133415000,
+        "created": 1769133412000
+      },
+      "tokens": {
+        "cache": {
+          "read": 32,
+          "write": 0
+        },
+        "input": 20935,
+        "output": 13,
+        "reasoning": 0
+      }
+    }
+  },
+  {
+    "seq": 5,
+    "role": "assistant",
+    "kind": "system",
+    "raw": {
+      "id": "prt_1",
+      "messageID": "msg_b",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "type": "step-start"
+    }
+  },
+  {
+    "seq": 6,
+    "role": "assistant",
+    "kind": "other",
+    "raw": {
+      "id": "prt_2",
+      "messageID": "msg_b",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "text": "zebra reasoning",
+      "type": "reasoning"
+    }
+  },
+  {
+    "seq": 7,
+    "role": "assistant",
+    "kind": "tool_call",
+    "tool_name": "codesearch",
+    "text": "clock skew retries",
+    "raw": {
+      "callID": "call-1",
+      "id": "prt_3",
+      "messageID": "msg_b",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "state": {
+        "input": {
+          "query": "clock skew retries"
+        },
+        "output": "zebra output",
+        "status": "error",
+        "time": {
+          "end": 1769133413000,
+          "start": 1769133412500
+        }
+      },
+      "tool": "codesearch",
+      "type": "tool"
+    }
+  },
+  {
+    "seq": 8,
+    "role": "tool",
+    "kind": "tool_result",
+    "tool_name": "codesearch",
+    "text": "zebra output",
+    "raw": "zebra output"
+  },
+  {
+    "seq": 9,
+    "role": "assistant",
+    "kind": "message",
+    "text": "The root cause was clock skew.",
+    "raw": {
+      "id": "prt_4",
+      "messageID": "msg_b",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "text": "The root cause was clock skew.",
+      "type": "text"
+    }
+  },
+  {
+    "seq": 10,
+    "role": "assistant",
+    "kind": "system",
+    "raw": {
+      "id": "prt_5",
+      "messageID": "msg_b",
+      "sessionID": "ses_41edf7088ffezWqCkbEE66oiGT",
+      "type": "step-finish"
+    }
+  }
+]
