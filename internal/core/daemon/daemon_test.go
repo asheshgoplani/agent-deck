@@ -77,6 +77,7 @@ func startServer(t *testing.T, opts Options) *testServer {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
+	opts.Socket = paths.Socket
 	srv := New(opts)
 	ctx, cancel := context.WithCancel(context.Background())
 	ts := &testServer{paths: paths, srv: srv, done: make(chan error, 1)}
