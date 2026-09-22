@@ -351,7 +351,7 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 			t.Fatalf("serial start %s: exit %d: %s %s", name, code, out, errOut)
 		}
 	}
-	alignStartedTimes(t, home, serialHome)
+	alignStorageTimes(t, home, serialHome)
 	if raced, serial := canonicalStateDB(t, home), canonicalStateDB(t, serialHome); !bytes.Equal(raced, serial) {
 		diff := 0
 		for diff < len(raced) && diff < len(serial) && raced[diff] == serial[diff] {
@@ -373,9 +373,10 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 	}
 }
 
-// Start records wall-clock seconds in tool_data. Align only that field in
-// the serial fixture so the database byte comparison tests lifecycle state.
-func alignStartedTimes(t *testing.T, racedHome, serialHome string) {
+// Start records wall-clock seconds in tool_data, and every save records a
+// nanosecond last_modified marker. Align only those time fields in the
+// serial fixture so the database byte comparison tests lifecycle state.
+func alignStorageTimes(t *testing.T, racedHome, serialHome string) {
 	t.Helper()
 	raced, err := sql.Open("sqlite", stateDBPath(t, racedHome))
 	if err != nil {
@@ -406,6 +407,13 @@ func alignStartedTimes(t *testing.T, racedHome, serialHome string) {
 		}
 	}
 	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	var modified string
+	if err := raced.QueryRow("SELECT value FROM metadata WHERE key='last_modified'").Scan(&modified); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serial.Exec("UPDATE metadata SET value=? WHERE key='last_modified'", modified); err != nil {
 		t.Fatal(err)
 	}
 }
