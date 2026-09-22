@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Fixed
+
+- The update banner no longer offers Ctrl+T while the background update is still running and would refuse the key. It now says what the run is doing (finishing the update, nudging remotes to update, or the remote sweep), and pressing Ctrl+T during the run queues the restart for when it ends (#2336).
+- The preview of a remote session now shows the account that session runs on, with its usage and when it was polled. When that is not known it says so plainly ("accounts not polled yet", or that the remote runs an older agent-deck). Pressing the context inspector key on a remote session shows a notice instead of doing nothing.
+- A shared session with two people attached no longer stays frozen at the size of someone who already left, which showed everyone a small box of dots. agent-deck's own background tmux client used to take the place the window follows; it now hands that place back to a person. Nobody's terminal is ever resized.
+- The deck now checks every rebuild for a duplicate group or session row and logs `duplicate_list_row` (throttled) when one appears. Set `AGENTDECK_DUMP_ROWS=<file>` to write every list row to that file for a bug report.
+- Devanagari and other complex-script text in the preview can no longer wrap a row and corrupt the deck (repeated header blocks, text spilling into the session list). The new opt-in `[tmux] indic_zero_width_marks = true` (tmux 3.6 or newer, off by default) makes tmux measure Indic vowel signs the way Claude Code does; turning it off removes exactly the entries agent-deck added (#2334).
+- `agent-deck update` no longer gives up on a slow connection after two minutes. The download now times out only when it stalls, resumes where it stopped on retry, shows progress in a terminal, and refuses an oversized download.
+- `install.sh` reads the latest version from `tag_name` again instead of picking up `eyes` from the release reactions, and the asset list in its failure message is correct (#2359).
+- Opening the MCP Manager on a tool that does not support it now shows a footer notice instead of doing nothing (#2358, thanks @karaaslanz).
+- The conductor bridge recreates a missing conductor with the agent from its `meta.json` (for example Codex) instead of Claude, and refuses to recreate it when that metadata is unusable (#2352, #2354, thanks @p4p3r). An unknown agent or a stray invalid byte in `meta.json` no longer hides the conductor from the rest of agent-deck; it is still listed and a warning goes to the log.
+- Terminal replies such as `?61;4;6;7c` no longer leak into the session prompt when you switch sessions quickly. Only one reply of each kind reaches tmux per attach (#2356).
+
+### Core (for the upcoming Mac app)
 
 - Recall timeline and follow commands expose ordered, typed native conversation events with a resumable cursor for local chat clients. Both remain behind `[recall] enabled`.
 - `session start`, `session stop`, `session restart`, `list` and `group list` now run through a typed command registry (`internal/core`). Their output is unchanged; `--json=envelope` prints a response envelope with a stable error code instead of the legacy JSON. See docs/core-registry.md. `AGENT_DECK_CORE_REGISTRY=0` switches back to the previous handlers.

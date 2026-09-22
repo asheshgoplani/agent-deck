@@ -96,14 +96,18 @@ func TestRemoteAccountsLine_NamedSlotAbsentFromNonEmptyList(t *testing.T) {
 }
 
 func TestRemoteAccountsLine_UnpolledHostExactLine(t *testing.T) {
+	withControllerVersion(t, "1.16.16")
 	h := NewHome()
 	if got := h.remoteAccountsLine("box", "work", time.Now()); got != "accounts not polled yet" {
 		t.Fatalf("got %q", got)
 	}
-	h.remoteVersions = map[string]session.RemoteVersionState{"box": {Version: "0.0.1", Found: true, CheckedAt: time.Now()}}
-	want := remoteStatsUnknownLine(h.remoteVersions["box"], Version)
-	if got := h.remoteAccountsLine("box", "work", time.Now()); got != want {
+	h.remoteVersions = map[string]session.RemoteVersionState{"box": {Version: "1.16.15", Found: true, CheckedAt: time.Now()}}
+	if got, want := h.remoteAccountsLine("box", "work", time.Now()), "stats unknown (remote runs an older agent-deck)"; got != want {
 		t.Fatalf("older remote: got %q want %q", got, want)
+	}
+	h.remoteVersions = map[string]session.RemoteVersionState{"box": {Version: "1.16.17", Found: true, CheckedAt: time.Now()}}
+	if got := h.remoteAccountsLine("box", "work", time.Now()); got != "accounts not polled yet" {
+		t.Fatalf("newer remote must not be blamed: got %q", got)
 	}
 }
 

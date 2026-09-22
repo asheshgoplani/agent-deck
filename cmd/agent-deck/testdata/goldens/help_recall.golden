@@ -9,6 +9,8 @@ Commands:
   search "<q>"     Full-text search over messages, titles and hints (--remote <host> / --all-remotes federate)
   sessions         List indexed sessions (newest first)
   show <session>   One session: card, derived summary, tools, files, messages
+  timeline <session>  Ordered typed conversation turns with a resume cursor
+  follow <session>    Stream new turns after a timeline cursor as JSONL
   context <session>  Render a session as context for any harness; --into current delivers it to this session
   open <session>   Relaunch a session (start its deck session, or resume a Claude conversation)
   enrich           Drain the classifier queue (where did we lose time, session kind, outcome)
