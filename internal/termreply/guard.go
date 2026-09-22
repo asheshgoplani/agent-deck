@@ -5,8 +5,12 @@ import (
 	"time"
 )
 
-var quarantineUntilUnixNano atomic.Int64
-var quarantineWindow atomic.Uint64
+type quarantineState struct {
+	until  int64
+	window uint64
+}
+
+var quarantine atomic.Pointer[quarantineState]
 
 // QuarantineFor drops terminal reply traffic until the later of the existing
 // deadline or now+duration.
@@ -14,34 +18,52 @@ func QuarantineFor(duration time.Duration) {
 	if duration <= 0 {
 		return
 	}
-	now := time.Now()
-	target := now.Add(duration).UnixNano()
 	for {
-		current := quarantineUntilUnixNano.Load()
-		if current >= target {
+		now := time.Now()
+		target := now.Add(duration).UnixNano()
+		old := quarantine.Load()
+		current := old
+		if current == nil {
+			current = &quarantineState{}
+		}
+		if current.until >= target {
 			return
 		}
-		if quarantineUntilUnixNano.CompareAndSwap(current, target) {
-			if current <= now.UnixNano() {
-				quarantineWindow.Add(1)
-			}
+		next := &quarantineState{until: target, window: current.window}
+		if current.until <= now.UnixNano() {
+			next.window++
+		}
+		if quarantine.CompareAndSwap(old, next) {
 			return
 		}
 	}
 }
 
-// Window identifies the current quarantine period. It changes when a new
-// period starts, even if no input was read between periods.
-func Window() uint64 {
-	return quarantineWindow.Load()
+// State reports whether a quarantine is active and identifies its period.
+// Both values come from one immutable snapshot.
+func State() (bool, uint64) {
+	current := quarantine.Load()
+	if current == nil {
+		return false, 0
+	}
+	return time.Now().UnixNano() < current.until, current.window
 }
 
 // Active reports whether terminal replies should currently be discarded.
 func Active() bool {
-	return time.Now().UnixNano() < quarantineUntilUnixNano.Load()
+	active, _ := State()
+	return active
 }
 
 // Clear removes any active quarantine window. Intended for tests.
 func Clear() {
-	quarantineUntilUnixNano.Store(0)
+	for {
+		current := quarantine.Load()
+		if current == nil {
+			return
+		}
+		if quarantine.CompareAndSwap(current, &quarantineState{window: current.window}) {
+			return
+		}
+	}
 }

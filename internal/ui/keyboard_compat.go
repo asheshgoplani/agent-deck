@@ -434,9 +434,9 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 // this seam so it can choose between compatibility translation and exact PTY
 // forwarding only after observing the current input mode.
 func (c *csiuReader) consume(chunk []byte, final bool) []byte {
-	armed := termreply.Active()
+	armed, window := termreply.State()
 	if armed {
-		if window := termreply.Window(); window != c.replyWindow {
+		if window != c.replyWindow {
 			c.replyFilter.ResetReplyBudget()
 			c.replyWindow = window
 		}
