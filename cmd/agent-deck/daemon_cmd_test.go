@@ -80,7 +80,9 @@ func startDaemon(t *testing.T, home string, env []string) (*exec.Cmd, daemonStat
 
 // canonicalEnvelope renders an envelope with sorted keys, compact, with the
 // request id (random per request) and the time/tmux randomness scrubbed the
-// same way TestCoreRegistryMatchesLegacyHandlers scrubs them.
+// same way TestCoreRegistryMatchesLegacyHandlers scrubs them. session.list's
+// data.stats measures the call itself (wall time, tmux calls; a long-lived
+// daemon keeps a warm tmux cache), so its two cost counters are scrubbed too.
 func canonicalEnvelope(t *testing.T, raw []byte, home, tmuxDir string) string {
 	t.Helper()
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -93,6 +95,11 @@ func canonicalEnvelope(t *testing.T, raw []byte, home, tmuxDir string) string {
 		t.Fatalf("envelope without request_id: %s", raw)
 	}
 	m["request_id"] = "<ID>"
+	if data, ok := m["data"].(map[string]any); ok {
+		if stats, ok := data["stats"].(map[string]any); ok {
+			stats["status_pass_ms"], stats["tmux_calls"] = "<N>", "<N>"
+		}
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
