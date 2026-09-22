@@ -64,14 +64,15 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 	}
 	prev := session.LoadHeartbeatTickState(name)
 	if *commitMessage == "" && conductorID != "" {
+		remoteFailed := false
 		if err := pullHeartbeatRemotes(profile, conductorID, instances); err != nil {
-			in.RemoteError = true
+			remoteFailed = true
 			if !prev.RemoteFailed {
 				fmt.Fprintf(os.Stderr, "heartbeat-tick: remote pull: %v\n", err)
 			}
 		}
-		if in.RemoteError != prev.RemoteFailed {
-			prev.RemoteFailed = in.RemoteError
+		if remoteFailed != prev.RemoteFailed {
+			prev.RemoteFailed = remoteFailed
 			if err := session.SaveHeartbeatTickState(name, prev); err != nil {
 				fmt.Fprintf(os.Stderr, "heartbeat-tick: save remote health: %v\n", err)
 			}

@@ -138,8 +138,8 @@ func TestHeartbeatTick_DeliversOnlyChanges(t *testing.T) {
 }
 
 func TestHeartbeatTick_RemotePullFailureDoesNotWake(t *testing.T) {
-	in := HeartbeatTickInput{Name: "ops", RemoteError: true}
-	state := HeartbeatTickState{}
+	in := HeartbeatTickInput{Name: "ops"}
+	state := HeartbeatTickState{RemoteFailed: true}
 	for tick := 0; tick < 5; tick++ {
 		msg, next := BuildHeartbeatTick(in, state)
 		if len(msg) != 0 {

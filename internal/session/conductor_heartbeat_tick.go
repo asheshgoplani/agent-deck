@@ -40,7 +40,6 @@ type HeartbeatTickInput struct {
 	InboxPending int                    // undrained records in the conductor's inbox
 	InboxDigest  string                 // distinguishes replacement records at the same count
 	InboxError   bool                   // unreadable inbox must not silently suppress a tick
-	RemoteError  bool                   // poll health is logged, never an actionable fingerprint input
 	RulesPath    string                 // resolved HEARTBEAT_RULES.md, "" if none
 	RulesStamp   string                 // size+mtime of RulesPath, "" if none
 }

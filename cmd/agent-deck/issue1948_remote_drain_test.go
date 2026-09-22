@@ -106,13 +106,17 @@ func TestIssue2348_AutomaticDrainOnlyWritesOwnedChildren(t *testing.T) {
 	drainTestHome(t)
 	configureRemote(t, "box-a", "worker@box-a")
 	configureRemote(t, "box-b", "worker@box-b")
-	registerDrainTarget(t, "conductor-a")
-	registerDrainTarget(t, "conductor-b")
+	a := session.NewInstance("conductor-a", t.TempDir())
+	a.ID = "conductor-a"
+	b := session.NewInstance("conductor-b", t.TempDir())
+	b.ID = "conductor-b"
+	saveInboxResolutionSessions(t, "default", a, b)
 	records := []session.TransitionNotificationEvent{
 		remoteCompletion("child-a", "A", time.Now()),
 		remoteCompletion("child-b", "B", time.Now()),
 	}
 	fetch, _ := stubFetch(records, nil)
+	state := map[string]session.HeartbeatTickState{}
 	for _, tc := range []struct{ remote, conductor, child string }{
 		{"box-a", "conductor-a", "child-a"},
 		{"box-b", "conductor-b", "child-b"},
@@ -126,6 +130,19 @@ func TestIssue2348_AutomaticDrainOnlyWritesOwnedChildren(t *testing.T) {
 		events, err := session.ReadInboxEvents(tc.conductor)
 		if err != nil || len(events) != 1 || events[0].ChildSessionID != tc.remote+":"+tc.child {
 			t.Fatalf("%s received records %+v: %v", tc.conductor, events, err)
+		}
+		for _, conductor := range []string{"conductor-a", "conductor-b"} {
+			count, digest, err := session.InboxSnapshot(conductor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			message, next := session.BuildHeartbeatTick(session.HeartbeatTickInput{
+				Name: conductor, InboxPending: count, InboxDigest: digest,
+			}, state[conductor])
+			if (message != "") != (conductor == tc.conductor) {
+				t.Fatalf("after %s drain, %s wake=%q", tc.remote, conductor, message)
+			}
+			state[conductor] = next
 		}
 	}
 }

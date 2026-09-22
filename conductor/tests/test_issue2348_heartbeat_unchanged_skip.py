@@ -218,3 +218,13 @@ def test_remote_failure_logged_once_until_recovery(monkeypatch, caplog):
     for _ in range(5):
         bridge._pull_remote_talkback("conductor-a", "default", child)
     assert len([r for r in caplog.records if "remote pull for conductor-a failed" in r.message]) == 2
+
+
+def test_malformed_remote_list_logs_once_without_crashing(monkeypatch, caplog):
+    child = [{"id": "child-a", "parent_session_id": "conductor-a", "ssh_host": "worker@box-a"}]
+    monkeypatch.setattr(bridge, "run_cli", lambda *args, **kwargs:
+        subprocess.CompletedProcess(args, 0, '[null]', ""))
+    bridge._remote_pull_failed.clear()
+    assert bridge._pull_remote_talkback("conductor-a", "default", child) is True
+    assert bridge._pull_remote_talkback("conductor-a", "default", child) is True
+    assert len([r for r in caplog.records if "invalid remote list" in r.message]) == 1

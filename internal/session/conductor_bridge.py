@@ -807,6 +807,9 @@ def _pull_remote_talkback(session_id: str, profile: str, sessions: list[dict]) -
         remotes = json.loads(result.stdout)
         if not isinstance(remotes, list):
             raise ValueError("remote list was not an array")
+        if any(not isinstance(remote, dict) or not remote.get("name") or not remote.get("host")
+               for remote in remotes):
+            raise ValueError("remote list contained an invalid entry")
     except (ValueError, KeyError, TypeError) as exc:
         return finish(f"invalid remote list: {exc}")
     failures = []
