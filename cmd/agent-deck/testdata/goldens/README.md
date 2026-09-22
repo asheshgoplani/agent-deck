@@ -63,8 +63,10 @@ Applied by `scrub()` in `goldens_test.go`, in this order:
    literals and are asserted verbatim.
 2. **Timestamps.** RFC3339-ish (`2026-09-22T12:00:00Z`, with or without
    fractional seconds/zone) → `<TIMESTAMP>`; `YYYY-MM-DD HH:MM:SS` →
-   `<TIMESTAMP>`; bare 10–13 digit epoch seconds/millis inside a JSON value
-   position → `<EPOCH>`.
+   `<TIMESTAMP>`; bare 10–13 digit epoch seconds/millis inside a CLI JSON value
+   position → `<EPOCH>`. Storage keeps fixed seeded epoch values exact.
+   Only the shell fixture's `last_accessed` value becomes
+   `<VOLATILE_LAST_ACCESSED>` because the CLI updates it while acting.
 3. **Version.** Only the built binary's known version literal (with optional
    `v` prefix) → `<VERSION>`, so dotted addresses remain exact.
 4. **Process IDs.** `pid 12345` → `pid <PID>`.

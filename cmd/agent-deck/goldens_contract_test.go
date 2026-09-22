@@ -76,6 +76,13 @@ func TestStorageGoldenIncludesEveryPersistedColumn(t *testing.T) {
 	}
 }
 
+func TestStorageScrubPreservesFixedEpoch(t *testing.T) {
+	const row = `{"created_at":1790082000,"last_accessed":1790082000}`
+	if got := scrubStorage(row, ""); got != row {
+		t.Fatalf("fixed storage timestamps changed: %q", got)
+	}
+}
+
 func seenHelpPath(path string) bool {
 	for _, spec := range helpSpecs() {
 		if strings.Join(spec.args, " ") == path+" --help" {

@@ -79,7 +79,7 @@ func TestStorageBytesGoldens(t *testing.T) {
 	dumpAndAssert := func(step string) {
 		t.Helper()
 		got := dumpStateDBRows(t, dbPath)
-		assertGolden(t, "storage_"+step, home, got)
+		assertStorageGolden(t, "storage_"+step, home, got)
 	}
 
 	dumpAndAssert("00_seeded")
@@ -246,6 +246,11 @@ func dumpStateDBRows(t *testing.T, dbPath string) string {
 		m := map[string]any{}
 		for i, c := range instCols {
 			m[c] = vals[i]
+		}
+		if m["id"] == "golden-sess-shell" {
+			// The CLI updates this one field on access. All seeded timestamps
+			// on every other row remain literal in the storage golden.
+			m["last_accessed"] = "<VOLATILE_LAST_ACCESSED>"
 		}
 		out.Instances = append(out.Instances, m)
 	}

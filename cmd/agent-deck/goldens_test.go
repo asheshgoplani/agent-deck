@@ -311,8 +311,6 @@ var scrubRules = []struct {
 	{regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?`), "<TIMESTAMP>"},
 	// "2026-09-22 12:00:00" style timestamps.
 	{regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`), "<TIMESTAMP>"},
-	// Bare Unix epoch seconds/millis inside JSON number fields (10-13 digits).
-	{regexp.MustCompile(`([:\[,]\s*)\d{10,13}(\s*[,\]}])`), "${1}<EPOCH>${2}"},
 	// Version fields are normalized by scrubVersionFields below, not arbitrary
 	// dotted numbers in addresses or command examples.
 	// Process IDs / port numbers rendered as "pid 12345" or ":54321".
@@ -336,6 +334,14 @@ var scrubRules = []struct {
 // scrubbed here because the fixture uses fixed golden-sess-N / group paths,
 // so real drift in ID *shape* still shows up as a diff.
 func scrub(s, home string) string {
+	return scrubWithEpoch(s, home, true)
+}
+
+func scrubStorage(s, home string) string {
+	return scrubWithEpoch(s, home, false)
+}
+
+func scrubWithEpoch(s, home string, normalizeEpoch bool) string {
 	if home != "" {
 		s = strings.ReplaceAll(s, home, "<SANDBOX_HOME>")
 		if real, err := filepath.EvalSymlinks(home); err == nil && real != home {
@@ -344,6 +350,12 @@ func scrub(s, home string) string {
 	}
 	for _, r := range scrubRules {
 		s = r.pattern.ReplaceAllString(s, r.repl)
+	}
+	if normalizeEpoch {
+		// CLI output can include the current epoch in JSON fields. Storage
+		// rows use fixed fixture times and normalize only the shell row's
+		// last_accessed field in dumpStateDBRows.
+		s = regexp.MustCompile(`([:\[,]\s*)\d{10,13}(\s*[,\]}])`).ReplaceAllString(s, "${1}<EPOCH>${2}")
 	}
 	version := regexp.QuoteMeta(Version)
 	s = regexp.MustCompile(`(^|[^0-9.])v?`+version+`($|[^0-9.])`).ReplaceAllString(s, "${1}<VERSION>${2}")
@@ -485,8 +497,15 @@ func goldenPath(t *testing.T, name string) string {
 }
 
 func assertGolden(t *testing.T, name, home, got string) {
+	assertGoldenWithScrub(t, name, scrub(got, home))
+}
+
+func assertStorageGolden(t *testing.T, name, home, got string) {
+	assertGoldenWithScrub(t, name, scrubStorage(got, home))
+}
+
+func assertGoldenWithScrub(t *testing.T, name, scrubbed string) {
 	t.Helper()
-	scrubbed := scrub(got, home)
 	path := goldenPath(t, name)
 
 	if shouldUpdateGoldens() {
@@ -549,7 +568,12 @@ func TestCLIGoldens(t *testing.T) {
 func TestCLIGoldensCoverageReport(t *testing.T) {
 	safe := len(safeSpecs())
 	jsonCount := 0
+	paths := make(map[string]bool)
 	for _, spec := range safeSpecs() {
+		name := strings.TrimSuffix(spec.name, "_json")
+		name = strings.TrimSuffix(name, "_resolved")
+		name = strings.TrimSuffix(name, "_effective")
+		paths[name] = true
 		for _, arg := range spec.args {
 			if arg == "--json" {
 				jsonCount++
@@ -559,7 +583,7 @@ func TestCLIGoldensCoverageReport(t *testing.T) {
 	}
 	help := len(helpSpecs())
 	excluded := len(excludedCommands)
-	t.Logf("coverage: %d command paths, %d table/plain variants, %d JSON variants, %d --help goldens, %d commands excluded from execution", safe-jsonCount, safe-jsonCount, jsonCount, help, excluded)
+	t.Logf("coverage: %d command paths, %d table/plain variants, %d JSON variants, %d --help goldens, %d commands excluded from execution", len(paths), safe-jsonCount, jsonCount, help, excluded)
 	for _, e := range excludedCommands {
 		t.Logf("excluded: %-28s %s", e.path, e.reason)
 	}
