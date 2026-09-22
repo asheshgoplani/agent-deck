@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 )
@@ -391,10 +390,21 @@ type ConductorMeta struct {
 	// HeartbeatIdleMinutes is the minutes of inactivity before pausing heartbeats.
 	// 0 or negative = disabled (never pause). Positive = number of minutes.
 	HeartbeatIdleMinutes int `json:"heartbeat_idle_minutes"`
+
+	// Warning is set by LoadConductorMeta when meta.json parsed successfully
+	// but contained something this build doesn't fully understand (an agent
+	// this binary doesn't recognize, for example a newer release's runtime
+	// read by an older binary). The conductor is still returned rather than
+	// treated as missing; a caller that must not trust the stored agent for
+	// a destructive or recreating action (like the bridge's fresh-create
+	// path) should check this and refuse instead. Never persisted.
+	Warning string `json:"-"`
 }
 
 // GetAgent returns the normalized conductor agent, defaulting to Claude.
-// LoadConductorMeta validates durable values; this remains a zero-value fallback.
+// LoadConductorMeta preserves an unrecognized agent as-is (with a warning);
+// this is the zero-value fallback for display/dispatch call sites that need
+// a supported agent rather than the raw stored value.
 func (m *ConductorMeta) GetAgent() string {
 	if m == nil {
 		return ConductorAgentClaude
@@ -656,9 +666,12 @@ func LoadConductorMeta(name string) (*ConductorMeta, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read meta.json for conductor %q: %w", name, err)
 	}
-	if !utf8.Valid(data) {
-		return nil, fmt.Errorf("failed to parse meta.json for conductor %q: invalid UTF-8", name)
-	}
+	// Invalid UTF-8 anywhere in the file (e.g. in an unrelated field like
+	// description) is not fatal: json.Unmarshal already sanitizes invalid
+	// byte sequences in string values to U+FFFD, same as main did before this
+	// validation existed. Rejecting the whole file here would make an older
+	// binary treat metadata as missing over a field it doesn't even care
+	// about, so we don't add a stricter check than json.Unmarshal already does.
 	var meta *ConductorMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("failed to parse meta.json for conductor %q: %w", name, err)
@@ -669,11 +682,18 @@ func LoadConductorMeta(name string) (*ConductorMeta, error) {
 	if meta.Name == "" {
 		meta.Name = name
 	}
-	spec, err := GetConductorAgentSpec(meta.Agent)
-	if err != nil {
-		return nil, fmt.Errorf("invalid agent in meta.json for conductor %q: %w", name, err)
+	// An agent this build doesn't recognize (the older-binary/newer-data
+	// case: a release that adds a conductor runtime, as hermes and pi were
+	// added) must not make the whole conductor disappear from ListConductors,
+	// getConductorEnv, and ConductorClearOnCompact. Keep the record and
+	// preserve the raw agent value instead of silently coercing it to claude;
+	// a warning is attached so a caller that must not treat it as safe to
+	// recreate (the bridge's fresh-create path) can see it's unrecognized.
+	if spec, specErr := GetConductorAgentSpec(meta.Agent); specErr != nil {
+		meta.Warning = fmt.Sprintf("unrecognized agent %q in meta.json for conductor %q: %v", meta.Agent, name, specErr)
+	} else {
+		meta.Agent = spec.Agent
 	}
-	meta.Agent = spec.Agent
 	meta.Profile = normalizeConductorProfile(meta.Profile)
 	return meta, nil
 }
@@ -778,6 +798,11 @@ func ListConductors() ([]ConductorMeta, error) {
 		meta, err := LoadConductorMeta(entry.Name())
 		if err != nil {
 			continue
+		}
+		if meta.Warning != "" {
+			sessionLog.Warn("conductor_meta_warning",
+				slog.String("conductor", entry.Name()),
+				slog.String("warning", meta.Warning))
 		}
 		conductors = append(conductors, *meta)
 	}
