@@ -419,7 +419,7 @@ func parseTimelineHermes(ctx context.Context, src TimelineSource, nativeID strin
 	if nativeID != "" {
 		id = nativeID
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(2000)")
 	if err != nil {
 		return nil, err
 	}

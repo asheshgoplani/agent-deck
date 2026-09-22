@@ -1,7 +1,9 @@
 package query
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -179,7 +181,7 @@ func TestFollowSeesSourceAppendWithinTwoSeconds(t *testing.T) {
 }
 
 // A wire shape assertion catches accidental map-order or omitted-key drift
-// in the compact client-facing projection used by the corpus goldens below.
+// in the selected-turn projections used below.
 func compactTurnJSON(t *testing.T, turns []Turn) string {
 	t.Helper()
 	type row struct {
@@ -196,6 +198,51 @@ func compactTurnJSON(t *testing.T, turns []Turn) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// canonicalTimelineJSON snapshots every client-visible turn field. Raw
+// payloads are normalized through encoding/json so fixture object-key order
+// cannot make a golden platform-dependent.
+func canonicalTimelineJSON(t *testing.T, turns []Turn) []byte {
+	t.Helper()
+	copyTurns := append([]Turn(nil), turns...)
+	for i := range copyTurns {
+		if len(copyTurns[i].Raw) == 0 {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal(copyTurns[i].Raw, &value); err != nil {
+			t.Fatalf("turn %d has invalid raw JSON: %v", i, err)
+		}
+		b, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copyTurns[i].Raw = b
+	}
+	b, err := json.MarshalIndent(copyTurns, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(b, '\n')
+}
+
+func assertTimelineGolden(t *testing.T, harness string, turns []Turn) {
+	t.Helper()
+	got := canonicalTimelineJSON(t, turns)
+	path := filepath.Join("testdata", "timeline", harness+".json")
+	want, err := os.ReadFile(path)
+	if err != nil {
+		// The test-box runner ships committed HEAD but does not return files.
+		// Print an exact snapshot that can be decoded into the checked-in
+		// golden after this failing-first run.
+		t.Logf("TIMELINE_GOLDEN_BASE64[%s]=%s", harness, base64.StdEncoding.EncodeToString(got))
+		t.Errorf("read %s: %v", path, err)
+		return
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("%s timeline differs from full canonical golden\ngot:\n%s\nwant:\n%s", harness, got, want)
+	}
 }
 
 func TestTimelineHarnessGoldens(t *testing.T) {
@@ -278,6 +325,7 @@ func TestTimelineHarnessGoldens(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			assertTimelineGolden(t, tc.harness, timeline.Turns)
 			if timeline.Session.Harness != tc.harness || timeline.ThroughCursor == "" {
 				t.Fatalf("timeline identity/cursor = %+v", timeline)
 			}

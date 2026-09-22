@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -115,7 +117,7 @@ func (s *Searcher) Timeline(ctx context.Context, ref string) (Timeline, error) {
 	}
 	result := Timeline{Session: sess, Turns: make([]Turn, 0)}
 	for _, src := range sources {
-		turns, err := parseTimelineSource(ctx, src, sess.NativeID)
+		turns, err := parseStableTimelineSource(ctx, src, sess.NativeID)
 		if err != nil {
 			return Timeline{}, err
 		}
@@ -129,6 +131,42 @@ func (s *Searcher) Timeline(ctx context.Context, ref string) (Timeline, error) {
 		return Timeline{}, err
 	}
 	return result, nil
+}
+
+// parseStableTimelineSource checks that a mutable native source was not
+// replaced or rewritten while it was read. A pure append may happen after
+// the bounded read: its existing prefix stays valid and follow picks up the
+// appended records. OpenCode's message and part files are a tree, so a
+// second parse checks that tree even when its session file is unchanged.
+func parseStableTimelineSource(ctx context.Context, src TimelineSource, nativeID string) ([]Turn, error) {
+	path := src.Path
+	if src.Harness == "hermes" {
+		path, _, _ = strings.Cut(path, "#")
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		before, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		turns, err := parseTimelineSource(ctx, src, nativeID)
+		if err != nil {
+			return nil, err
+		}
+		after, err := os.Stat(path)
+		if err != nil {
+			continue // rotated while reading
+		}
+		if src.Harness != "opencode" && os.SameFile(before, after) && before.Size() == after.Size() && before.ModTime() == after.ModTime() {
+			return turns, nil
+		}
+		// This also checks a growing file: an unchanged prefix is safe as
+		// the cursor anchor even when another complete line arrived later.
+		again, err := parseTimelineSource(ctx, src, nativeID)
+		if err == nil && os.SameFile(before, after) && len(again) >= len(turns) && reflect.DeepEqual(turns, again[:len(turns)]) {
+			return turns, nil
+		}
+	}
+	return nil, errors.New("recall: native source changed during timeline read; retry")
 }
 
 func resolveTimelineSession(ctx context.Context, tx *sql.Tx, ref string) (SessionRow, error) {
