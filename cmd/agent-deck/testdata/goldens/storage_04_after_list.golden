@@ -87,7 +87,7 @@
       "project_path": "<SANDBOX_HOME>/shell-fixture-project",
       "status": "idle",
       "title": "storage bytes shell",
-      "tmux_session": "agentdeck_storage-bytes-shell_cecb894a",
+      "tmux_session": "<TMUX_SESSION>",
       "tool": "shell",
       "worktree_path": ""
     }
