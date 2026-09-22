@@ -1,0 +1,50 @@
+⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error • ⚙ 16% │ ▪ 865.7G/926.4G                                                                           <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+SESSIONS                                                               │ PREVIEW
+────────────────────────────────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1                                                  │ shell-live  ○ idle
+   ├─ ■ opencode-idle opencode                                         │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle claude                                             │ ⏱ <age>
+   ├─ ◐ claude-waiting claude                                          │ 👁️ no viewers
+   └─ ■ claude-stopped claude                                          │  shell   beta
+    ▾ backend (3) ● 1                                                  │
+     ├─ ✕ codex-idle codex                                             │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
+     ├─ ● claude-running claude                                        │ <hostname>:shell-live ashesh$  export AGENTDECK_INSTANCE_ID=<id>-<id> AGENTDECK_PROFILE=default AGENTDE...
+     └─ ✕ claude-error claude                                          │ /.local/share/agent-deck/runtime/identity/<id>-<id>/identity.md
+2·▾ beta (4) ◐ 1                                                       │ <hostname>:shell-live ashesh$ clear
+   ├─ ✕ gemini-idle gemini                                             │ <hostname>:shell-live ashesh$
+   ├─ ✕ pi-idle pi                                                     │
+   ├─ ◐ claude-i18n claude                                             │
+  ▶└─ ○ shell-live shell <hostname>                                │
+  ▾ remotes/lab (0) · unreachable: host down · poll <age>                │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+                                                                       │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  H  Shell  c  Copy  V  Copy pane  x  Send │  r  Rename  M  Move  d  Delete  D  Close    ↑↓ Nav │ +/- Move │ / Search │ G Global │ q Quit

@@ -1,0 +1,39 @@
+⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                     <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+SESSIONS                                   │ PREVIEW
+────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
+  ▾ alpha (7) ● 1 ◐ 1                      │ 📁 alpha
+   ├─ ■ opencode-idle opencode             │
+   ├─ ✕ claude-idle claude                 │ 4 sessions
+   ├─ ◐ claude-waiting claude              │
+   └─ ■ claude-stopped claude              │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+    ▾ backend (3) ● 1                      │
+     ├─ ✕ codex-idle codex                 │ ────────────────────────────── Sessions ──────────────────────────────
+     ├─ ● claude-running claude            │   ■ opencode-idle opencode
+     └─ ✕ claude-error claude              │   ✕ claude-idle claude
+2·▾ beta (4) ◐ 1                           │   ◐ claude-waiting claude
+   ├─ ✕ gemini-idle gemini                 │   ■ claude-stopped claude
+   ├─ ✕ pi-idle pi                         │
+   ├─ ◐ claude-i18n claude                 │ Tab toggle • r rename • d delete • g subgroup
+   └─ ○ shell-live shell                   │
+  ▾ remotes/lab (0) · unreachable: host d… │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+⚠ Health: tmux calls exceed twice the session count

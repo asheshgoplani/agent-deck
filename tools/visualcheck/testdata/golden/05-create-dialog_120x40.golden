@@ -1,0 +1,32 @@
+╭────────────────────────────────────────────────────────────────────────────────────╮
+                 │                                                                                    │
+                 │                                                                                    │
+                 │    New Session                                                                     │
+                 │                                                                                    │
+                 │      in group: alpha                                                               │
+                 │                                                                                    │
+                 │    ▶ Name:                                                                         │
+                 │      > session-name                                                                │
+                 │                                                                                    │
+                 │      Command:                                                                      │
+                 │        shell     claude     gemini     opencode     codex     pi     copilot       │
+                 │        crush     muse     cursor agent     hermes     deepseek     omp             │
+                 │                                                                                    │
+                 │        Custom:                                                                     │
+                 │        > custom command                                                            │
+                 │                                                                                    │
+                 │      Path:                                                                         │
+                 │      > /tmp/vc-<tmp>                               │
+                 │                                                                                    │
+                 │      [ ] Create in worktree                                                        │
+                 │      [ ] Run in Docker sandbox                                                     │
+                 │                                                                                    │
+                 │      [ ] Multi-repo mode                                                           │
+                 │                                                                                    │
+                 │      [ Create session ]                                                            │
+                 │                                                                                    │
+                 │                                                                                    │
+                 │    Tab next │ ↑↓ navigate │ Enter next │ ^S create │ Esc cancel                    │
+                 │                                                                                    │
+                 │                                                                                    │
+                 ╰────────────────────────────────────────────────────────────────────────────────────╯

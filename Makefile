@@ -264,3 +264,18 @@ check-functional: funccheck-image
 		-e FUNCCHECK_BINARY="$(FUNCCHECK_BINARY)" "$(FUNCCHECK_IMAGE)" \
 		sh -ec 'mkdir -p "$$HOME"; if [ -z "$$FUNCCHECK_BINARY" ]; then go build $(LDFLAGS) -o /tmp/agent-deck-funccheck ./cmd/agent-deck; FUNCCHECK_BINARY=/tmp/agent-deck-funccheck; fi; go run ./tools/funccheck "$$FUNCCHECK_BINARY"'
 endif
+
+# Visual check (docs/CORE-PLAN.md section 7): drives a real agent-deck
+# binary through every TUI screen in a private tmux server, diffs captured
+# frames against tools/visualcheck/testdata/golden, writes contact-sheet.html.
+# Needs Linux + a real tmux (see tools/visualcheck/README.md); run on the
+# g14 test box, not natively on macOS.
+VISUALCHECK_BINARY ?=
+.PHONY: visual-check visual-check-golden
+visual-check:
+	@if [ -z "$(VISUALCHECK_BINARY)" ]; then go build $(LDFLAGS) -o build/agent-deck ./cmd/agent-deck; fi
+	go run ./tools/visualcheck "$(or $(VISUALCHECK_BINARY),build/agent-deck)"
+
+visual-check-golden:
+	@if [ -z "$(VISUALCHECK_BINARY)" ]; then go build $(LDFLAGS) -o build/agent-deck ./cmd/agent-deck; fi
+	UPDATE_GOLDEN=1 go run ./tools/visualcheck "$(or $(VISUALCHECK_BINARY),build/agent-deck)"

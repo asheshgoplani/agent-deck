@@ -1,0 +1,23 @@
+⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+ Tip: Alt+j/k and Alt+1-9 navigate within the current group. Press ? for all key
+SESSIONS                     │ PREVIEW
+──────────────────────────── │ ─────────────────────────────────────────────────
+  ▾ alpha (7) ● 1 ◐ 1        │ 📁 alpha
+   ├─ ■ opencode-… opencode  │
+   ├─ ✕ claude-idle claude   │ 4 sessions
+   ├─ ◐ claude-wait… claude  │
+   └─ ■ claude-stop… claude  │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+    ▾ backend (3) ● 1        │
+     ├─ ✕ codex-idle codex   │ ───────────────── Sessions ─────────────────
+     ├─ ● claude-ru… claude  │   ■ opencode-idle opencode
+     └─ ✕ claude-er… claude  │   ✕ claude-idle claude
+2·▾ beta (4) ◐ 1             │   ◐ claude-waiting claude
+   ├─ ✕ gemini-idle gemini   │   ■ claude-stopped claude
+   ├─ ✕ pi-idle pi           │
+   ├─ ◐ claude-i18n claude   │ Tab toggle • r rename • d delete • g subgroup
+   └─ ○ shell-live shell     │
+  ▾ remotes/lab (0) · unrea… │
+                             │
+                             │
+⚠ Health: tmux calls exceed twice the session count
