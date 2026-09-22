@@ -88,7 +88,24 @@ func Acquire(p Paths) (*Owner, error) {
 		if st.Mode()&os.ModeSocket == 0 {
 			return fail(fmt.Errorf("%s exists and is not a socket; refusing to replace it", p.Socket))
 		}
-		// We hold the lock, so no live daemon owns this socket.
+		// An unlocked owner file alone is insufficient: another listener may
+		// still own the path, or the recorded process may still be alive.
+		pid := readPID(p)
+		if pid <= 0 {
+			return fail(fmt.Errorf("socket exists without a recorded dead owner pid; refusing takeover"))
+		}
+		if err := syscall.Kill(pid, 0); err == nil || errors.Is(err, syscall.EPERM) {
+			return fail(&AlreadyRunningError{PID: pid})
+		} else if !errors.Is(err, syscall.ESRCH) {
+			return fail(fmt.Errorf("check owner pid %d: %w", pid, err))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		client, dialErr := Dial(ctx, p.Socket)
+		cancel()
+		if dialErr == nil {
+			_ = client.Close()
+			return fail(fmt.Errorf("socket still answers hello; refusing takeover"))
+		}
 		if err := os.Remove(p.Socket); err != nil {
 			return fail(fmt.Errorf("remove stale socket: %w", err))
 		}

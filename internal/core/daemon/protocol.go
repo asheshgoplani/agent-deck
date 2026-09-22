@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
+	"time"
 )
 
 // ProtocolVersion is the frame layout version. Every client frame carries it
@@ -35,6 +38,8 @@ const (
 const (
 	CodeBadFrame           = "BAD_FRAME"
 	CodeFrameTooLarge      = "FRAME_TOO_LARGE"
+	CodeReadTimeout        = "READ_TIMEOUT"
+	CodeServerBusy         = "SERVER_BUSY"
 	CodePeerRejected       = "PEER_REJECTED"
 	CodeAuthFailed         = "AUTH_FAILED"
 	CodeUnsupportedVersion = "UNSUPPORTED_VERSION"
@@ -137,6 +142,28 @@ func (c *frameConn) read() (Frame, error) {
 	return f, nil
 }
 
+// readStrict applies the documented client-frame grammar. Response reads
+// remain permissive so older clients can ignore fields added by a server.
+func (c *frameConn) readStrict() (Frame, error) {
+	if !c.sc.Scan() {
+		err := c.sc.Err()
+		if errors.Is(err, bufio.ErrTooLong) {
+			return Frame{}, errFrameTooLarge
+		}
+		if err == nil {
+			err = io.EOF
+		}
+		return Frame{}, err
+	}
+	var f Frame
+	dec := json.NewDecoder(bytes.NewReader(c.sc.Bytes()))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return Frame{}, fmt.Errorf("%w: %v", errBadFrame, err)
+	}
+	return f, nil
+}
+
 // write sends f as one line, stamping the protocol version.
 func (c *frameConn) write(f Frame) error {
 	f.V = ProtocolVersion
@@ -147,6 +174,10 @@ func (c *frameConn) write(f Frame) error {
 	line = append(line, '\n')
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if conn, ok := c.w.(net.Conn); ok {
+		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		defer conn.SetWriteDeadline(time.Time{})
+	}
 	_, err = c.w.Write(line)
 	return err
 }

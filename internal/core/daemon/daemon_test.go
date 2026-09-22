@@ -350,7 +350,7 @@ func TestReplyDeadlineAfterHello(t *testing.T) {
 				if err == nil {
 					t.Fatal("hello-only peer returned success")
 				}
-			case <-time.After(4 * time.Second):
+			case <-time.After(10 * time.Second):
 				_ = c.Close()
 				<-done
 				t.Fatal("hello-only peer kept command blocked")
@@ -375,18 +375,9 @@ func TestRequiredIDAndStrictFrameFields(t *testing.T) {
 			}
 		})
 	}
-	client, err := Dial(context.Background(), ts.paths.Socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	raw, err := client.Call("test.echo", json.RawMessage(`{} {}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var env core.Envelope
-	if err := json.Unmarshal(raw, &env); err != nil || env.Error == nil || env.Error.Code != core.CodeInvalidInput {
-		t.Fatalf("trailing input reply = %s, decode err = %v", raw, err)
+	res := ts.srv.run(context.Background(), "test.echo", json.RawMessage(`{} {}`))
+	if ce := core.AsError(res.Err); ce.Code != core.CodeInvalidInput {
+		t.Fatalf("trailing input = %v, want INVALID_INPUT", res.Err)
 	}
 }
 

@@ -22,6 +22,12 @@ type Client struct {
 // helloTimeout bounds the wait for a daemon's hello.
 const helloTimeout = 2 * time.Second
 
+const (
+	controlReplyTimeout = 2 * time.Second
+	callReplyTimeout    = 8 * time.Second
+	streamIdleTimeout   = time.Minute
+)
+
 // Dial connects to the daemon socket and reads its hello.
 func Dial(ctx context.Context, socket string) (*Client, error) {
 	var d net.Dialer
@@ -54,6 +60,12 @@ func (c *Client) Close() error { return c.c.Close() }
 // roundtrip sends f and returns the reply with the same id. An error frame
 // is returned as *FrameError.
 func (c *Client) roundtrip(f Frame) (Frame, error) {
+	timeout := controlReplyTimeout
+	if f.Type == TypeCall {
+		timeout = callReplyTimeout
+	}
+	_ = c.c.SetDeadline(time.Now().Add(timeout))
+	defer c.c.SetDeadline(time.Time{})
 	c.seq++
 	f.ID = strconv.Itoa(c.seq)
 	f.Token = c.token
@@ -128,6 +140,7 @@ func (c *Client) Subscribe(after uint64) error {
 // --json` prints for it.
 func (c *Client) Next() (json.RawMessage, error) {
 	for {
+		_ = c.c.SetReadDeadline(time.Now().Add(streamIdleTimeout))
 		f, err := c.fc.read()
 		if err != nil {
 			return nil, err

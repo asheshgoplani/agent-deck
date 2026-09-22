@@ -119,7 +119,7 @@ func runCore(profile string, mode *jsonModeFlag, id string, in any, obs core.Obs
 	if obs != nil {
 		ctx = core.WithObserver(ctx, obs)
 	}
-	return coreRegistry().Run(ctx, id, in)
+	return core.RunWithMutationLock(ctx, coreRegistry(), id, profile, in)
 }
 
 // printEnvelope writes the response envelope as indented JSON.

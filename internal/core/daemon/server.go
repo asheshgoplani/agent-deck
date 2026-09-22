@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,16 +45,18 @@ type Server struct {
 	startedAt time.Time
 	calls     atomic.Uint64
 	conns     atomic.Int64
-	// mutateMu runs Mutate commands one at a time inside the daemon.
-	mutateMu sync.Mutex
+	slots     chan struct{}
 
 	stopOnce sync.Once
 	stop     chan struct{}
 }
 
+const frameReadTimeout = 2 * time.Second
+const maxClients = 64
+
 // New returns a server for opts.
 func New(opts Options) *Server {
-	return &Server{opts: opts, startedAt: time.Now(), stop: make(chan struct{})}
+	return &Server{opts: opts, startedAt: time.Now(), slots: make(chan struct{}, maxClients), stop: make(chan struct{})}
 }
 
 // Serve accepts connections on ln until ctx is cancelled or a client sends
@@ -80,9 +83,17 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			}
 			return err
 		}
+		select {
+		case s.slots <- struct{}{}:
+		default:
+			_ = newFrameConn(c).write(errorFrame("", CodeServerBusy, "too many clients"))
+			_ = c.Close()
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-s.slots }()
 			s.handle(ctx, c)
 		}()
 	}
@@ -142,7 +153,13 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 
 	subscribed := false
 	for {
-		f, err := fc.read()
+		readTimeout := frameReadTimeout
+		if subscribed {
+			readTimeout = streamIdleTimeout
+		}
+		_ = c.SetReadDeadline(time.Now().Add(readTimeout))
+		f, err := fc.readStrict()
+		_ = c.SetReadDeadline(time.Time{})
 		switch {
 		case errors.Is(err, errFrameTooLarge):
 			s.fatal(c, fc, errorFrame("", CodeFrameTooLarge, "frame exceeds %d bytes", MaxFrameBytes))
@@ -150,11 +167,18 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		case errors.Is(err, errBadFrame):
 			s.fatal(c, fc, errorFrame("", CodeBadFrame, "%v", err))
 			return
+		case os.IsTimeout(err):
+			s.fatal(c, fc, errorFrame("", CodeReadTimeout, "client frame read timed out"))
+			return
 		case err != nil:
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(f.Token), []byte(token)) != 1 {
 			s.fatal(c, fc, errorFrame(f.ID, CodeAuthFailed, "missing or wrong token"))
+			return
+		}
+		if strings.TrimSpace(f.ID) == "" {
+			s.fatal(c, fc, errorFrame("", CodeBadFrame, "client frame id is required"))
 			return
 		}
 		if f.V != ProtocolVersion {
@@ -165,7 +189,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		var reply Frame
 		switch f.Type {
 		case TypeCall:
-			result, res := s.call(f)
+			result, res := s.call(ctx, f)
 			err := fc.write(result)
 			// Deferred work (journal writes) runs once the answer is out,
 			// the same order the CLI uses.
@@ -220,8 +244,8 @@ func (s *Server) fatal(c net.Conn, fc *frameConn, f Frame) {
 
 // call runs one command through the registry and answers with its
 // envelope. The caller sends the reply, then releases res.Finish.
-func (s *Server) call(f Frame) (Frame, *core.Result) {
-	res := s.run(f.Cmd, f.Input)
+func (s *Server) call(ctx context.Context, f Frame) (Frame, *core.Result) {
+	res := s.run(ctx, f.Cmd, f.Input)
 	env, err := json.Marshal(res.Envelope(f.ID))
 	if err != nil {
 		env, _ = json.Marshal((&core.Result{ID: f.Cmd, Err: core.Errorf(core.CodeInternal, "encode envelope: %v", err)}).Envelope(f.ID))
@@ -230,7 +254,7 @@ func (s *Server) call(f Frame) (Frame, *core.Result) {
 	return Frame{Type: TypeResult, ID: f.ID, Envelope: env}, res
 }
 
-func (s *Server) run(id string, input json.RawMessage) *core.Result {
+func (s *Server) run(ctx context.Context, id string, input json.RawMessage) *core.Result {
 	def, ok := s.opts.Registry.Lookup(id)
 	if !ok {
 		return &core.Result{ID: id, Err: core.Errorf(core.CodeUnknownCommand, "unknown command %q", id)}
@@ -247,14 +271,13 @@ func (s *Server) run(id string, input json.RawMessage) *core.Result {
 	if err := dec.Decode(in.Interface()); err != nil {
 		return &core.Result{ID: id, Err: core.Errorf(core.CodeInvalidInput, "input for %s: %v", id, err)}
 	}
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return &core.Result{ID: id, Err: core.Errorf(core.CodeInvalidInput, "input for %s: trailing JSON value", id)}
+	}
 	if err := s.bindProfile(in.Elem()); err != nil {
 		return &core.Result{ID: id, Err: err}
 	}
-	if def.Class == core.Mutate {
-		s.mutateMu.Lock()
-		defer s.mutateMu.Unlock()
-	}
-	return s.opts.Registry.Run(context.Background(), id, in.Interface())
+	return core.RunWithMutationLock(ctx, s.opts.Registry, id, s.opts.Profile, in.Interface())
 }
 
 // bindProfile fills an empty Profile field with the daemon's profile and
