@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/core"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
@@ -218,6 +219,10 @@ func TestCoreRegistryMatchesLegacyHandlers(t *testing.T) {
 			t.Fatalf("seed add %s: exit %d: %s", s.title, code, stderr)
 		}
 	}
+
+	// A never-started session reads idle for 1.5s after CreatedAt, then
+	// error: age the seed past that window so no case straddles it.
+	time.Sleep(2 * time.Second)
 
 	type sandbox struct {
 		home, tmux string

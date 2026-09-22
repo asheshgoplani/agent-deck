@@ -83,6 +83,10 @@ if [ ! -d "$SEED" ]; then
 	ad group update serial --max-concurrent 1 >/dev/null 2>&1
 	ad add "$ROOT/proj/q1" -t q1 -c bash -g serial >/dev/null 2>&1
 	ad add "$ROOT/proj/q2" -t q2 -c bash -g serial >/dev/null 2>&1
+	# UpdateStatus keeps a never-started session idle for 1.5s after its
+	# CreatedAt (tmux start grace) and reports error afterwards; age the seed
+	# past that window so the seeding run sees what later runs see.
+	sleep 2
 	mkdir -p "$SEED"
 	cp -R "$ROOT/." "$SEED/"
 	trash "$ROOT" 2>/dev/null || mv "$ROOT" "$ROOT.old.$$"
