@@ -133,6 +133,20 @@ func TestFollowStaleCursorRequiresResync(t *testing.T) {
 	}
 }
 
+func TestFollowMalformedCursorRequiresResync(t *testing.T) {
+	f := newFixture(t)
+	f.sweep(t)
+	s := New(f.st, f.stateDB)
+	var frames []Frame
+	err := s.Follow(context.Background(), sessA, "not-a-cursor", func(frame Frame) error {
+		frames = append(frames, frame)
+		return nil
+	})
+	if err != nil || len(frames) != 1 || frames[0].Type != "resync_required" || frames[0].Cursor == "" {
+		t.Fatalf("malformed cursor: frames=%+v err=%v", frames, err)
+	}
+}
+
 func TestFollowSeesSourceAppendWithinTwoSeconds(t *testing.T) {
 	f := newFixture(t)
 	f.sweep(t)
@@ -314,8 +328,8 @@ func TestTimelineHarnessGoldens(t *testing.T) {
 	}{
 		{"claude", sessA, []string{"Review the auth fix", "Bash", "PASS"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"bash","tool":"Bash"},{"role":"user","kind":"tool_result"}]`},
 		{"codex", testcorpus.CodexThread, []string{"Fix the flaky auth test", "shell", "FAIL", "Summary so far"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"bash","tool":"shell"},{"role":"tool","kind":"tool_result"},{"role":"system","kind":"compaction"}]`},
-		{"pi", testcorpus.PiID, []string{"Evaluate Hermes as a harness", "read", "README zebra result", "## Goal"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"tool_call","tool":"read"},{"role":"tool","kind":"tool_result"},{"role":"system","kind":"compaction"}]`},
-		{"gemini", "196a60d9-6cfb-4069-8443-a78a64cedff5", []string{"Fix the flaky auth test", "read_file", "go test ./internal/auth"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"tool_call","tool":"read_file"},{"role":"assistant","kind":"bash","tool":"run_shell_command"}]`},
+		{"pi", testcorpus.PiID, []string{"Evaluate Hermes as a harness", "read", "README zebra result", "## Goal"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"tool_call","tool":"read"},{"role":"tool","kind":"tool_result","tool":"read"},{"role":"system","kind":"compaction"}]`},
+		{"gemini", "session-2026-01-19T12-18-196a60d9", []string{"Fix the flaky auth test", "read_file", "go test ./internal/auth"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"tool_call","tool":"read_file"},{"role":"assistant","kind":"bash","tool":"run_shell_command"}]`},
 		{"opencode", testcorpus.OpenCodeSession, []string{"Fix the flaky auth test", "codesearch", "The root cause was clock skew"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"tool_call","tool":"codesearch"},{"role":"assistant","kind":"message"}]`},
 		{"hermes", testcorpus.HermesSession, []string{"hi, the clock skew", "terminal", "Error: no such dir"}, `[{"role":"user","kind":"message"},{"role":"assistant","kind":"bash","tool":"terminal"},{"role":"tool","kind":"tool_result","tool":"terminal"}]`},
 	}

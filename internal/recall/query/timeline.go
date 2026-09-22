@@ -213,7 +213,11 @@ func resolveTimelineSession(ctx context.Context, tx *sql.Tx, ref string) (Sessio
 func (s *Searcher) Follow(ctx context.Context, ref, after string, emit func(Frame) error) error {
 	c, err := decodeTimelineCursor(after)
 	if err != nil {
-		return err
+		current, lookupErr := s.Timeline(ctx, ref)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		return emit(Frame{Type: "resync_required", Cursor: current.ThroughCursor})
 	}
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
