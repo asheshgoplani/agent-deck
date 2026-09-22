@@ -91,6 +91,10 @@ CloseDefault() error                              // CLI/TUI shutdown
 | `agent-deck events follow --json [--after <cursor>]` | NDJSON frames, oldest first, streams live until killed. |
 | `agent-deck events stats --json` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap}`. |
 
+`cursor` and `dropped` reflect the profile across processes. `published`,
+`written`, `synced` and queue occupancy describe the process running the
+command.
+
 Registered as a plain CLI command on this independent slice-4 branch.
 The slice-1 registry bundle and this branch now share `origin/main` at
 `3b41e36d`, and both bundles verify. Slice 1 remains a separate branch; its
