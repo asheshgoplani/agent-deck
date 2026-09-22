@@ -1185,6 +1185,10 @@ type Session struct {
 	// generation after timeout recovery releases mu but before GetStatus decides
 	// which generation's status to return.
 	afterStartupTimeoutClaim func()
+	// afterStartupAliveProbe is a test seam for scheduling a competing pane
+	// generation (a respawn) between startupShowsAgentAlive's probe and the
+	// generation-guarded clear of startupAt in GetStatus (#2361).
+	afterStartupAliveProbe func()
 
 	// WorkDirIsPlaceholder marks a session whose local WorkDir is not where the
 	// work happens — today that means an SSH session, whose pane only runs an
@@ -1856,6 +1860,41 @@ func (s *Session) startupTimeoutIsCurrent() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.startupTimedOut
+}
+
+// startupShowsAgentAlive is a pure probe for the startup watchdog (#2361): it
+// reports whether the pane already shows the agent alive, using exactly the
+// same predicates normal detection uses to end startup — a working-state
+// pane title, or a captured frame that hasBusyIndicator or hasPromptIndicator
+// accepts. A pane this returns true for is exactly what detection would still
+// call "starting" had it run within the window, so this cannot loosen #1892
+// beyond what detection already accepts there.
+//
+// Called WITHOUT s.mu held (CapturePane manages its own locking). It does not
+// mutate lastStableStatus, substate, startupAt, or any other GetStatus field;
+// the only state touched is whatever hasBusyIndicator/hasPromptIndicator's own
+// spinner-tracker bookkeeping does internally as part of computing their
+// answer, which mirrors what a normal detection pass over this same content
+// would already do.
+//
+// Capture errors, including ErrCaptureTimeout, return false: the watchdog
+// falls back to its existing (pre-#2361) behaviour in that case.
+func (s *Session) startupShowsAgentAlive() bool {
+	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
+		if AnalyzePaneTitle(paneInfo.Title, paneInfo.CurrentCommand) == TitleStateWorking {
+			return true
+		}
+	}
+
+	rawContent, err := s.CapturePane()
+	if err != nil {
+		return false
+	}
+	content := StripANSI(rawContent)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hasBusyIndicator(content) || s.hasPromptIndicator(content)
 }
 
 // SetCustomPatterns sets custom patterns for generic tool support
@@ -4481,7 +4520,30 @@ func (s *Session) GetStatus() (string, error) {
 		return "inactive", nil
 	}
 
-	if s.expireStartupHandover() {
+	s.mu.Lock()
+	observedStartupAt := s.startupAt
+	startupOverdue := !observedStartupAt.IsZero() &&
+		time.Since(observedStartupAt) >= startupStateWindow &&
+		!s.startupTimedOut
+	s.mu.Unlock()
+
+	if startupOverdue && s.startupShowsAgentAlive() {
+		// The pane already shows the agent alive by the same tests normal
+		// detection uses to end startup: resolve the overdue clock instead of
+		// expiring a pane that would otherwise walk straight into normal
+		// detection below. This is what makes the watchdog safe without
+		// relying on a caller (e.g. the hook fast path, #2361) to have polled
+		// GetStatus recently enough to have cleared startupAt itself.
+		if s.afterStartupAliveProbe != nil {
+			s.afterStartupAliveProbe()
+		}
+		s.mu.Lock()
+		if s.startupAt.Equal(observedStartupAt) && !s.startupTimedOut {
+			s.startupAt = time.Time{}
+			statusLog.Debug("startup_overdue_but_alive", slog.String("session", shortName))
+		}
+		s.mu.Unlock()
+	} else if s.expireStartupHandover() {
 		if s.afterStartupTimeoutClaim != nil {
 			s.afterStartupTimeoutClaim()
 		}
