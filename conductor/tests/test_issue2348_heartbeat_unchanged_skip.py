@@ -20,9 +20,10 @@ class _StopLoop(Exception):
     pass
 
 
-def _run_loop(monkeypatch, tmp_path, session_lists):
+def _run_loop(monkeypatch, tmp_path, session_lists, inbox_counts=None):
     """Drive heartbeat_loop for len(session_lists) ticks; return per-tick bytes sent."""
     ticks = iter(session_lists)
+    inbox_ticks = iter(inbox_counts or [0] * len(session_lists))
     current = {"sessions": []}
     per_tick: list[int] = []
     real_sleep = asyncio.sleep
@@ -30,8 +31,12 @@ def _run_loop(monkeypatch, tmp_path, session_lists):
     async def fake_sleep(_seconds):
         try:
             current["sessions"] = next(ticks)
+            pending = next(inbox_ticks)
         except StopIteration:
             raise _StopLoop()
+        inbox = tmp_path / "inboxes" / "conductor-id.jsonl"
+        inbox.parent.mkdir(exist_ok=True)
+        inbox.write_text("{}\n" * pending)
         per_tick.append(0)
         await real_sleep(0)
 
@@ -43,6 +48,7 @@ def _run_loop(monkeypatch, tmp_path, session_lists):
         return True
 
     monkeypatch.setattr(bridge, "CONDUCTOR_DIR", tmp_path)
+    monkeypatch.setattr(bridge, "resolve_data_dir", lambda *_markers: tmp_path)
     monkeypatch.setattr(bridge, "_os_heartbeat_daemon_installed", lambda: False)
     monkeypatch.setattr(bridge.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(bridge, "discover_conductors", lambda: [{"name": "ops", "profile": "default"}])
@@ -87,3 +93,12 @@ def test_new_waiting_session_and_recurrence_are_delivered(monkeypatch, tmp_path)
     assert per_tick[2] == 0  # unchanged
     assert per_tick[3] == 0  # nothing actionable
     assert per_tick[4] > 0  # came back after being resolved
+
+
+def test_inbox_only_transition_wakes_once_and_recurrence_wakes_again(monkeypatch, tmp_path):
+    conductor = [{"id": "conductor-id", "title": "conductor-ops", "status": "idle", "group": "ops"}]
+    per_tick = _run_loop(monkeypatch, tmp_path, [conductor] * 5, [0, 1, 1, 0, 1])
+    assert per_tick[0] == 0
+    assert per_tick[1] > 0
+    assert per_tick[2:4] == [0, 0]
+    assert per_tick[4] > 0
