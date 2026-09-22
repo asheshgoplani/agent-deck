@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,7 @@ func TestStorageBytesGoldens(t *testing.T) {
 	// A dedicated Tool="shell" fixture row, separate from the six goldens_test.go
 	// seeds, so the CLI goldens (which assert the exact seeded set) are never
 	// perturbed by this test mutating a session's status/tmux fields.
-	seedShellInstance(t, dbPath)
+	seedShellInstance(t, dbPath, home)
 
 	dumpAndAssert := func(step string) {
 		t.Helper()
@@ -115,8 +116,18 @@ func filterEnv(env []string, drop ...string) []string {
 	return out
 }
 
-func seedShellInstance(t *testing.T, dbPath string) {
+func seedShellInstance(t *testing.T, dbPath, home string) {
 	t.Helper()
+
+	// A real, existing directory under the sandbox HOME (not t.TempDir(),
+	// which lands under the OS default temp base, not under home) — scrub()
+	// only normalizes paths under home, and this row is the one fixture row
+	// that is actually `session start`ed, so tmux needs somewhere real to cd into.
+	projectPath := filepath.Join(home, "shell-fixture-project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("creating shell fixture project dir: %v", err)
+	}
+
 	db, err := statedb.Open(dbPath)
 	if err != nil {
 		t.Fatalf("opening state.db for shell fixture: %v", err)
@@ -126,7 +137,7 @@ func seedShellInstance(t *testing.T, dbPath string) {
 	row := &statedb.InstanceRow{
 		ID:          "golden-sess-shell",
 		Title:       "storage bytes shell",
-		ProjectPath: t.TempDir(),
+		ProjectPath: projectPath,
 		GroupPath:   "my-sessions",
 		Command:     "",
 		Tool:        "shell",
