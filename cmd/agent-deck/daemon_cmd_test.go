@@ -356,8 +356,33 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 		for diff < len(raced) && diff < len(serial) && raced[diff] == serial[diff] {
 			diff++
 		}
-		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v, first offset %d, bytes %x vs %x)", len(raced), len(serial), order, diff, raced[diff:diff+16], serial[diff:diff+16])
+		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v, first offset %d, bytes %x vs %x)\nraced: %s\nserial: %s", len(raced), len(serial), order, diff, raced[diff:diff+16], serial[diff:diff+16], stateRows(t, home), stateRows(t, serialHome))
 	}
+}
+
+func stateRows(t *testing.T, home string) string {
+	t.Helper()
+	path := filepath.Join(home, ".agent-deck", "profiles", "ch_support_test", "state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT id, status, tmux_session, tmux_socket_name, last_accessed, tool_data FROM instances ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out strings.Builder
+	for rows.Next() {
+		var id, status, tmux, socket, toolData string
+		var accessed int64
+		if err := rows.Scan(&id, &status, &tmux, &socket, &accessed, &toolData); err != nil {
+			t.Fatal(err)
+		}
+		out.WriteString(id + " " + status + " " + tmux + " " + socket + " " + strconv.FormatInt(accessed, 10) + " " + toolData + "\n")
+	}
+	return out.String()
 }
 
 func canonicalStateDB(t *testing.T, home string) []byte {
