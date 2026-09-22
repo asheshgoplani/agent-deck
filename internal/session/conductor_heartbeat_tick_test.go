@@ -169,6 +169,56 @@ func TestUninstallHeartbeatDaemon_StopFailureKeepsEnabled(t *testing.T) {
 	}
 }
 
+func TestLaunchdHeartbeatInstallWritesFreshPlist(t *testing.T) {
+	setupHeartbeatTickTest(t, "ops")
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	if err := installHeartbeatDaemonLaunchd("ops", 15); err != nil {
+		t.Fatal(err)
+	}
+	plist, err := HeartbeatPlistPath("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(plist); err != nil {
+		t.Fatalf("fresh install must write plist: %v", err)
+	}
+}
+
+func TestLaunchdHeartbeatUninstallRefusesFailedUnload(t *testing.T) {
+	setupHeartbeatTickTest(t, "ops")
+	plist, err := HeartbeatPlistPath("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plist), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plist, []byte("plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	if err := uninstallHeartbeatDaemonLaunchd("ops"); err == nil {
+		t.Fatal("failed unload must be reported")
+	}
+	if _, err := os.Stat(plist); err != nil {
+		t.Fatalf("failed unload must preserve plist: %v", err)
+	}
+}
+
+func TestHeartbeatScriptChecksNamedConductorFlag(t *testing.T) {
+	if !strings.Contains(conductorHeartbeatScript, `conductor status "{NAME}" --json`) {
+		t.Fatal("heartbeat script must check this conductor's heartbeat flag")
+	}
+}
+
 // TestHeartbeatScript_UnchangedTicksSendNothing runs the rendered heartbeat.sh
 // against a fake agent-deck and measures the bytes handed to `session send`.
 // The pre-#2348 script sent its full static prompt on every tick.
