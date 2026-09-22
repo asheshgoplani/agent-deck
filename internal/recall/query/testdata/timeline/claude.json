@@ -70,5 +70,120 @@
       "tool_use_id": "toolu_1",
       "type": "tool_result"
     }
+  },
+  {
+    "seq": 5,
+    "role": "assistant",
+    "kind": "edit",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "Edit",
+    "text": "auth.go",
+    "raw": {
+      "id": "toolu_2",
+      "input": {
+        "file_path": "auth.go",
+        "new_string": "good",
+        "old_string": "bad"
+      },
+      "name": "Edit",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 6,
+    "role": "assistant",
+    "kind": "todo",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "TodoWrite",
+    "text": "TodoWrite",
+    "raw": {
+      "id": "toolu_3",
+      "input": {
+        "todos": [
+          {
+            "content": "verify auth"
+          }
+        ]
+      },
+      "name": "TodoWrite",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 7,
+    "role": "assistant",
+    "kind": "subagent",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "Agent",
+    "text": "check flow",
+    "raw": {
+      "id": "toolu_4",
+      "input": {
+        "description": "inspect auth",
+        "prompt": "check flow"
+      },
+      "name": "Agent",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 8,
+    "role": "assistant",
+    "kind": "skill",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "Skill",
+    "text": "code-simplifier",
+    "raw": {
+      "id": "toolu_5",
+      "input": {
+        "skill": "code-simplifier"
+      },
+      "name": "Skill",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 9,
+    "role": "assistant",
+    "kind": "permission",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "AskUserQuestion",
+    "text": "AskUserQuestion",
+    "raw": {
+      "id": "toolu_6",
+      "input": {
+        "questions": [
+          {
+            "question": "Proceed?"
+          }
+        ]
+      },
+      "name": "AskUserQuestion",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 10,
+    "role": "system",
+    "kind": "compaction",
+    "timestamp": "2026-09-11T01:00:03Z",
+    "raw": {
+      "subtype": "compact_boundary",
+      "timestamp": "2026-09-11T01:00:03Z",
+      "type": "system"
+    }
+  },
+  {
+    "seq": 11,
+    "role": "system",
+    "kind": "other",
+    "timestamp": "2026-09-11T01:00:04Z",
+    "raw": {
+      "payload": {
+        "step": "preserve"
+      },
+      "timestamp": "2026-09-11T01:00:04Z",
+      "type": "future_workflow"
+    }
   }
 ]

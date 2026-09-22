@@ -3,6 +3,7 @@
     "seq": 1,
     "role": "system",
     "kind": "system",
+    "timestamp": "2026-01-21T15:16:06.135Z",
     "raw": {
       "directory": "/Users/x/claude-deck",
       "id": "ses_41edf7088ffezWqCkbEE66oiGT",
@@ -25,6 +26,7 @@
     "seq": 2,
     "role": "user",
     "kind": "system",
+    "timestamp": "2026-01-23T01:56:50.652Z",
     "raw": {
       "agent": "build",
       "id": "msg_a",
@@ -43,6 +45,7 @@
     "seq": 3,
     "role": "user",
     "kind": "message",
+    "timestamp": "2026-01-23T01:56:50.652Z",
     "text": "Fix the flaky auth test, the clock skew one",
     "raw": {
       "id": "prt_1",
@@ -56,6 +59,7 @@
     "seq": 4,
     "role": "assistant",
     "kind": "system",
+    "timestamp": "2026-01-23T01:56:52Z",
     "raw": {
       "cost": 0,
       "finish": "stop",
@@ -88,6 +92,7 @@
     "seq": 5,
     "role": "assistant",
     "kind": "system",
+    "timestamp": "2026-01-23T01:56:52Z",
     "raw": {
       "id": "prt_1",
       "messageID": "msg_b",
@@ -99,6 +104,7 @@
     "seq": 6,
     "role": "assistant",
     "kind": "other",
+    "timestamp": "2026-01-23T01:56:52Z",
     "raw": {
       "id": "prt_2",
       "messageID": "msg_b",
@@ -111,6 +117,7 @@
     "seq": 7,
     "role": "assistant",
     "kind": "tool_call",
+    "timestamp": "2026-01-23T01:56:52.5Z",
     "tool_name": "codesearch",
     "text": "clock skew retries",
     "raw": {
@@ -137,6 +144,7 @@
     "seq": 8,
     "role": "tool",
     "kind": "tool_result",
+    "timestamp": "2026-01-23T01:56:53Z",
     "tool_name": "codesearch",
     "text": "zebra output",
     "raw": "zebra output"
@@ -145,6 +153,7 @@
     "seq": 9,
     "role": "assistant",
     "kind": "message",
+    "timestamp": "2026-01-23T01:56:52Z",
     "text": "The root cause was clock skew.",
     "raw": {
       "id": "prt_4",
@@ -158,6 +167,7 @@
     "seq": 10,
     "role": "assistant",
     "kind": "system",
+    "timestamp": "2026-01-23T01:56:52Z",
     "raw": {
       "id": "prt_5",
       "messageID": "msg_b",

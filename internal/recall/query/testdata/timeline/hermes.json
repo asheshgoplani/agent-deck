@@ -3,7 +3,7 @@
     "seq": 1,
     "role": "user",
     "kind": "message",
-    "timestamp": "1786695212.200",
+    "timestamp": "2026-08-14T08:13:32.2Z",
     "text": "hi, the clock skew again",
     "raw": {
       "compacted": 0,
@@ -20,7 +20,7 @@
     "seq": 2,
     "role": "assistant",
     "kind": "message",
-    "timestamp": "1786695213.000",
+    "timestamp": "2026-08-14T08:13:33Z",
     "text": "Let me look.",
     "raw": {
       "compacted": 0,
@@ -37,7 +37,7 @@
     "seq": 3,
     "role": "assistant",
     "kind": "bash",
-    "timestamp": "1786695213.000",
+    "timestamp": "2026-08-14T08:13:33Z",
     "tool_name": "terminal",
     "text": "ls",
     "raw": {
@@ -53,7 +53,7 @@
     "seq": 4,
     "role": "tool",
     "kind": "tool_result",
-    "timestamp": "1786695213.500",
+    "timestamp": "2026-08-14T08:13:33.5Z",
     "tool_name": "terminal",
     "text": "Error: no such dir",
     "raw": {
@@ -71,7 +71,7 @@
     "seq": 5,
     "role": "assistant",
     "kind": "message",
-    "timestamp": "1786695216.000",
+    "timestamp": "2026-08-14T08:13:36Z",
     "text": "Hi! How can I help?",
     "raw": {
       "compacted": 0,
