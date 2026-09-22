@@ -867,7 +867,10 @@ func handleConductorTeardown(_ string, args []string) {
 		}
 
 		// Remove heartbeat timer
-		_ = session.UninstallHeartbeatDaemon(meta.Name)
+		if err := session.UninstallHeartbeatDaemon(meta.Name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error disabling heartbeat for %s: %v\n", meta.Name, err)
+			os.Exit(1)
+		}
 
 		// Optionally remove directory and session
 		if *removeAll {

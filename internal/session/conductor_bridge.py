@@ -759,18 +759,36 @@ _reply_owner_lock = threading.Lock()
 _wait_send_reservations: dict[tuple[str | None, str], str | None] = {}
 
 
-def _heartbeat_fingerprint(scoped_sessions: list[dict]) -> str:
+def _conductor_inbox_pending(sessions: list[dict], name: str) -> int:
+    """Count durable inbox records for this conductor, including inbox-only transitions."""
+    conductor = next((s for s in sessions if s.get("title") == conductor_session_title(name)), None)
+    if not conductor or not conductor.get("id"):
+        return 0
+    session_id = str(conductor["id"]).strip().replace("/", "_").replace("..", "_").replace(" ", "_")
+    path = resolve_data_dir("inboxes") / "inboxes" / f"{session_id}.jsonl"
+    try:
+        with path.open("rb") as inbox:
+            return sum(bool(line.strip()) for line in inbox)
+    except FileNotFoundError:
+        return 0
+    except OSError as exc:
+        log.warning("Heartbeat [%s]: cannot read inbox %s: %s", name, path, exc)
+        return 0
+
+
+def _heartbeat_fingerprint(scoped_sessions: list[dict], inbox_pending: int = 0) -> str:
     """Identify the actionable part of a heartbeat (issue #2348).
 
     Every delivered heartbeat is a new turn that re-reads the conductor's whole
     conversation, so a tick whose waiting/error set equals the last delivered
     one is skipped. Running/idle churn is not actionable and is left out.
     """
-    return "|".join(sorted(
+    actionable = "|".join(sorted(
         f"{s.get('status', '')}:{s.get('title', '')}:{s.get('path', '')}"
         for s in scoped_sessions
         if s.get("status", "") in ("waiting", "error")
     ))
+    return f"{actionable}|inbox={inbox_pending}"
 
 
 def _cli_json(stdout: str) -> dict:
@@ -3302,18 +3320,19 @@ async def heartbeat_loop(
                 idle = sum(1 for s in scoped_sessions if s.get("status", "") == "idle")
                 error = sum(1 for s in scoped_sessions if s.get("status", "") == "error")
                 stopped = sum(1 for s in scoped_sessions if s.get("status", "") == "stopped")
+                inbox_pending = _conductor_inbox_pending(sessions, name)
 
                 log.info(
                     "Heartbeat [%s/%s]: %d waiting, %d running, %d idle, %d error, %d stopped",
                     name, profile, waiting, running, idle, error, stopped,
                 )
 
-                # Only trigger conductor if there are waiting or error sessions
-                if waiting == 0 and error == 0:
+                # Inbox-only child transitions also need a turn to drain them.
+                if waiting == 0 and error == 0 and inbox_pending == 0:
                     delivered_fingerprint_by_conductor.pop(name, None)
                     continue
 
-                fingerprint = _heartbeat_fingerprint(scoped_sessions)
+                fingerprint = _heartbeat_fingerprint(scoped_sessions, inbox_pending)
                 if delivered_fingerprint_by_conductor.get(name) == fingerprint:
                     log.info("Heartbeat [%s]: nothing changed since last delivery, skipping", name)
                     continue
@@ -3338,6 +3357,8 @@ async def heartbeat_loop(
                     parts.append(f"Waiting sessions: {', '.join(waiting_details)}.")
                 if error_details:
                     parts.append(f"Error sessions: {', '.join(error_details)}.")
+                if inbox_pending:
+                    parts.append(f"Inbox: {inbox_pending} pending, run `agent-deck inbox drain self` first.")
                 # Reference HEARTBEAT_RULES.md by path. Inlining the whole file
                 # on every tick bloats prompts and destabilizes the cache prefix.
                 rules_path_ref = None

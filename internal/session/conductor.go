@@ -2948,14 +2948,22 @@ func installHeartbeatDaemonSystemd(name string, intervalMinutes int) error {
 // UninstallHeartbeatDaemon stops and removes the heartbeat timer for a conductor.
 func UninstallHeartbeatDaemon(name string) error {
 	plat := platform.Detect()
+	var err error
 	switch plat {
 	case platform.PlatformMacOS:
-		return uninstallHeartbeatDaemonLaunchd(name)
+		err = uninstallHeartbeatDaemonLaunchd(name)
 	case platform.PlatformLinux, platform.PlatformWSL2:
-		return uninstallHeartbeatDaemonSystemd(name)
-	default:
-		return nil
+		err = uninstallHeartbeatDaemonSystemd(name)
 	}
+	if err != nil {
+		return err
+	}
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		return err
+	}
+	meta.HeartbeatEnabled = false
+	return SaveConductorMeta(meta)
 }
 
 func uninstallHeartbeatDaemonLaunchd(name string) error {
