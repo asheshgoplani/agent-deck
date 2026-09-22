@@ -1,0 +1,14 @@
+Group: backend
+  Name:           Backend
+  Default path:   /repo/backend
+  Max concurrent: 1
+  Sessions:       2
+
+Claude config (resolved for a session in this group):
+  config_dir: <SANDBOX_HOME>/.claude  [default]
+  env_file:   (none)
+  command:    claude  [default]
+  model:      (none — per-session model or Claude's own default)
+  env:        (none)
+  plugins:    (none)
+  mcps:       (none)

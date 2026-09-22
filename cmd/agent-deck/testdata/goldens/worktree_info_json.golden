@@ -1,0 +1,5 @@
+{
+  "code": "INVALID_OPERATION",
+  "error": "session 'claude idle' is not in a worktree",
+  "success": false
+}

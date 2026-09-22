@@ -1,0 +1,10 @@
+Usage: agent-deck remote sessions [name] [options]
+
+Options:
+  --json
+        Output as JSON: a bare array of sessions
+  --with-errors
+        With --json, wrap output as {"sessions":[...],"errors":[...]} and
+        exit 1 if any remote failed
+  --json-envelope
+        Alias for --json --with-errors

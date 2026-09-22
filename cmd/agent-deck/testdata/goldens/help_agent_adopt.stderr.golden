@@ -1,0 +1,6 @@
+  -json
+    	Output the plan as JSON
+  -manager string
+    	Post name that non-manager roles report to
+  -write
+    	Write the generated definitions (default: dry run)

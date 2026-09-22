@@ -1,0 +1,29 @@
+{
+  "alive": 0,
+  "down": 3,
+  "mass_death": true,
+  "probes": 2,
+  "sessions": [
+    {
+      "group": "my-sessions",
+      "id": "golden-sess-2",
+      "status": "running",
+      "title": "codex running"
+    },
+    {
+      "group": "backend",
+      "id": "golden-sess-3",
+      "status": "waiting",
+      "title": "gemini waiting"
+    },
+    {
+      "group": "backend",
+      "id": "golden-sess-4",
+      "status": "error",
+      "title": "shell error"
+    }
+  ],
+  "skipped": 3,
+  "success": true,
+  "total": 6
+}

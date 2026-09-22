@@ -1,0 +1,3 @@
+Status: NOT INSTALLED
+Run 'agent-deck pi-hooks install' to install.
+Extension: <SANDBOX_HOME>/.pi/agent/extensions/agent-deck.ts

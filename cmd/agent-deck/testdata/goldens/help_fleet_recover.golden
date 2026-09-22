@@ -1,0 +1,24 @@
+Usage: agent-deck fleet recover [options]
+
+Restart every session whose tmux session is gone but whose registry
+status claims it should be running. Sessions are restarted ONE AT A
+TIME with --spacing between boots, and each boot is verified before the
+next one starts.
+
+DRY RUN BY DEFAULT: without --yes the command prints the plan and exits
+without restarting anything.
+
+The sweep halts early when the failures look systemic: N consecutive
+failed restarts (--max-failures), N consecutive sessions that restart and
+then die immediately (--max-dead-boots), or sessions booting into an auth
+failure (--auth-halt-after) — restarting the rest of the fleet against a
+broken credential only deepens the cascade.
+
+With --group-by-credential the auth halt names WHICH credential is dead
+and reports one escalation per credential instead of one count for the
+sweep. Opt-in: without the flag the halt message is unchanged.
+
+Sessions the operator stopped or queued, and archived sessions, are
+never touched.
+
+Options:

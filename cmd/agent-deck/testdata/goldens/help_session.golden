@@ -1,0 +1,92 @@
+Usage: agent-deck session <command> [options]
+
+Manage individual sessions.
+
+Commands:
+  start <id>              Start a session's tmux process
+  stop <id>               Stop/kill session process
+  remove <id>             Remove session from registry (stopped/error only; --force to bypass)
+  cleanup [--days N]      Purge dead sessions idle N+ days (dry-run unless --yes)
+  archive <id|title>      Stop session and hide it from active lists (retained in storage)
+  unarchive <id|title>    Restore an archived session (does not restart it)
+  restart [id] [--all] [--env KEY=VALUE]  Restart session (Claude: reload MCPs)
+  revive [--all|--name]   Rebuild dead control pipes for errored sessions
+  fork <id>               Fork Claude, OpenCode, Pi, Codex, or Oh My Pi session with context
+  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)
+  switch-preview <id>     Preview switch capability, fidelity and refusals (read-only, no mutation)
+  attach <id>             Attach to session interactively
+  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session
+  recent [--limit N]      List sessions most-recently-used first (same last_accessed the TUI's alternate/MRU keys use)
+  show [id]               Show session details (auto-detect current if no id)
+  viewers [id]            List the terminals attached to a session (who is viewing it)
+  current                 Show current session and profile (auto-detect)
+  primer [id]             Show the resolved context-level and rendered primer/identity text (#2260; auto-detect current if no id)
+  set <id> <field> <value>  Update session property
+  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target
+  switch-account <id> <account>  Switch Claude account and migrate the conversation
+  move <id> <path>        Move session to a new path (migrates Claude history)
+  send <id> <message>     Send a message to a running session
+  approve <id> [choice]   Resolve a visible Codex approval prompt
+  output <id>             Get the last response from a session
+  context [id]            Show what is loaded into the agent's context, ranked by cost
+  children [id]           List sub-sessions with status + last completion
+  ownership <cmd> <id>    Inspect/reconcile the processes a session owns (#1873)
+  window close <id> <window> --yes  Kill one tmux window in a session (CLI parity for the TUI's window-row 'd')
+  search <query>          Search message content across Claude sessions
+  metrics <id>|--all      Per-session eval numbers from the local event journal (--json, --since)
+  annotate <id>|--self    Record durable hints/tags (purpose, ticket, why, decision, outcome) for recall
+  set-parent <id> <parent>  Link session as sub-session of parent
+  unset-parent <id>       Remove sub-session link
+  update <id> --no-parent          Alias for unset-parent <id>
+  update <id> --parent <pid>       Alias for set-parent <id> <pid>
+  set-transition-notify <id> <on|off>  Enable/disable transition notifications
+  set-title-lock <id> <on|off>         Lock/unlock title from Claude session-name sync (#697)
+
+Global Options:
+  -p, --profile <name>   Use specific profile
+  --json                 Output as JSON
+  -q, --quiet            Minimal output (exit codes only)
+
+Examples:
+  agent-deck session start my-project
+  agent-deck session stop abc123
+  agent-deck session restart my-project
+  agent-deck session restart --all                # Restart all active sessions
+  agent-deck session fork my-project -t "my-project-fork"
+  agent-deck session attach my-project
+  agent-deck session show                  # Auto-detect current session
+  agent-deck session show my-project --json
+  agent-deck session set-parent sub-task main-project  # Make sub-task a sub-session
+  agent-deck session unset-parent sub-task             # Remove sub-session link
+  agent-deck session set-transition-notify worker off    # Suppress notifications
+  agent-deck session set-transition-notify worker on     # Re-enable notifications
+  agent-deck session set-title-lock SCRUM-351 on         # Prevent Claude from renaming it
+  agent-deck session set-title-lock SCRUM-351 off        # Re-enable title sync
+  agent-deck session output my-project                 # Get last response from session
+  agent-deck session output my-project --json          # Get response as JSON
+  agent-deck session context my-project                # What is in the agent's context
+  agent-deck session context my-project --tab breakdown # Ranked by token cost
+  agent-deck session context my-project --json         # Full report with provenance
+  agent-deck session archive my-project                # Stop and hide the session
+  agent-deck session unarchive my-project              # Restore an archived session
+  agent-deck session recent                            # Most-recently-used sessions first
+  agent-deck session recent --json --limit 5           # Same, machine-readable, top 5
+  agent-deck session annotate auth-fix --ticket SB-412 --tag auth  # Durable hints for recall
+  agent-deck session annotate --self --outcome worked  # An agent annotating its own session
+
+Set command fields:
+  title              Session title
+  path               Project path
+  command            Command to run
+  tool               Tool type (claude, gemini, shell, etc.)
+  wrapper            Wrapper command (use {command} to include tool command)
+  claude-session-id  Claude conversation ID (for fork/resume)
+  gemini-session-id  Gemini conversation ID (for resume)
+  tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)
+
+Set examples:
+  agent-deck session set my-project title "New Title"
+  agent-deck session set my-project claude-session-id "abc123-def456"
+  agent-deck session set my-project tool-session-id "019f683f-..."
+  agent-deck session set my-project tool claude
+  agent-deck session set my-project wrapper "nvim +'terminal {command}'"

@@ -1,0 +1,12 @@
+Usage: agent-deck tmux-hooks <command>
+
+Manage the after-new-window hook agent-deck keeps on the tmux server
+(slot after-new-window[2259]; it sizes windows opened by hand inside
+agent-deck sessions and persists on the server after agent-deck exits).
+Targets the server named by [tmux].socket_name, else the default one.
+
+Commands:
+  install      Install or refresh the hook (every session start does this too)
+  uninstall    Remove the hook, only if the slot holds agent-deck's
+  status       Show whether the slot is absent, agent-deck's, or foreign
+  help         Show this help message

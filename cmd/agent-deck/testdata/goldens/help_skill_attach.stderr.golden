@@ -1,0 +1,9 @@
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -restart
+    	Restart session to load skill immediately
+  -source string
+    	Source name override

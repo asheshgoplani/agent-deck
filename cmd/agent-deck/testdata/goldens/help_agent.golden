@@ -1,0 +1,9 @@
+Usage: agent-deck agent <command>
+
+Commands:
+  adopt <target>   Read an existing conductor dir, session, plist or unit
+                   and emit a disabled definition for it
+  list             List adopted agents (same as `agent-deck agents`)
+  show <name>      Show one agent's definition, triggers and connectors
+
+Adoption never modifies the source. It is a dry run unless you pass --write.

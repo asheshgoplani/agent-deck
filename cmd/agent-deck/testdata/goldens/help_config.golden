@@ -1,0 +1,23 @@
+Usage: agent-deck config show --effective [path] [--json]
+
+Commands:
+  show --effective [path]   Print merged [worktree] settings for path (default: cwd),
+                            and which file supplied each value (default/global/dir-local).
+                            Also known as `config explain` in the #2093 proposal.
+
+Directory-local overrides (#2093): a .agent-deck/config.toml found in the target
+directory or an ancestor (up to and including $HOME) can override default_location,
+path_template, and sparse_checkout. Nearer files win; unknown keys are refused.
+
+A dir-local file may come from a checkout you don't fully trust, so its
+default_location/path_template values are bounded: an absolute path, a "~"-relative
+path, or one that resolves outside the directory containing the outermost dir-local
+config file for the target path is refused and falls back to the next source (an
+outer dir-local file, then global config, then the built-in default). Global config
+and --location/--template flags are unaffected and remain fully trusted. A refused
+value and its fallback are shown by `config show --effective`.
+
+Examples:
+  agent-deck config show --effective
+  agent-deck config show --effective ~/projects/example/feature-one
+  agent-deck config show --effective . --json

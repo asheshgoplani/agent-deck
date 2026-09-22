@@ -1,0 +1,5 @@
+Usage: agent-deck skill detach <session-id> <skill> [options]
+
+Detach a managed skill from the session project.
+
+Options:

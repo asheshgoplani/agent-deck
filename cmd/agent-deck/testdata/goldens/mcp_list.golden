@@ -1,0 +1,8 @@
+No MCPs configured.
+
+Define MCPs in ~/.config/agent-deck/config.toml:
+
+  [mcps.exa]
+  command = "npx"
+  args = ["-y", "exa-mcp-server"]
+  description = "Web search via Exa AI"

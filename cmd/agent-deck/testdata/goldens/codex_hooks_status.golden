@@ -1,0 +1,3 @@
+Status: NOT INSTALLED
+Run 'agent-deck codex-hooks install' to install.
+Config: <SANDBOX_HOME>/.codex/config.toml

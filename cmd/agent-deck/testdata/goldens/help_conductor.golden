@@ -1,0 +1,25 @@
+Usage: agent-deck [-p profile] conductor <command>
+
+Manage named conductor sessions for meta-agent orchestration.
+Multiple conductors can exist per profile.
+
+Commands:
+  setup <name>     Set up a named conductor
+  teardown <name>  Stop and optionally remove a conductor (or --all)
+  status [name]    Show conductor health (all or specific)
+  list             List all configured conductors
+  move <name>      Move a conductor to another profile (--to-profile)
+  migrate-dir <path>  Relocate the conductor base dir (move homes + reconcile daemons)
+  help             Show this help
+
+Examples:
+  agent-deck -p work conductor setup ryan --description "Ryan project"
+  agent-deck -p work conductor setup review --agent codex --description "Codex reviewer"
+  agent-deck -p work conductor setup infra --no-heartbeat
+  agent-deck conductor list
+  agent-deck conductor status
+  agent-deck conductor teardown infra --remove
+  agent-deck conductor teardown --all --remove
+  agent-deck conductor move ryan --to-profile march
+  agent-deck conductor migrate-dir ~/vault/conductors          # dry-run plan
+  agent-deck conductor migrate-dir ~/vault/conductors --apply  # perform

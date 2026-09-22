@@ -1,0 +1,9 @@
+Usage: agent-deck profile <command>
+
+Manage named Agent Deck profiles.
+
+Commands:
+  list              List all profiles
+  create <name>     Create a new profile
+  delete <name>     Delete a profile
+  default [name]    Show or set default profile

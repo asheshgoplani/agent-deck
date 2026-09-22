@@ -1,0 +1,2 @@
+Usage: agent-deck inbox export [--json]
+Print this host's completion/transition records without consuming them.

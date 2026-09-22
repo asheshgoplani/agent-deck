@@ -1,0 +1,2 @@
+No agents adopted yet.
+Run `agent-deck agent adopt <conductor-dir|session|plist|unit>` to make an existing setup visible.

@@ -1,0 +1,18 @@
+  -insecure-bind
+    	Allow binding a non-loopback address with no --token or --token-file (UNSAFE: exposes an unauthenticated RCE surface to the network)
+  -listen string
+    	Listen address for web server (default "127.0.0.1:8420")
+  -no-tui
+    	Run in headless mode (HTTP server only, no bubbletea TUI)
+  -push
+    	Enable web push notifications (auto-generates VAPID keys per profile)
+  -push-test-every duration
+    	Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables
+  -push-vapid-subject string
+    	VAPID subject used for web push notifications (default "mailto:agentdeck@localhost")
+  -read-only
+    	Run in read-only mode (input disabled)
+  -token string
+    	Bearer token for API/WS access
+  -token-file string
+    	Read bearer token for API/WS access from a 0600 file (keeps the secret out of the process argv)

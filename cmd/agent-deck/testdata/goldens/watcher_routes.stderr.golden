@@ -1,0 +1,2 @@
+Error loading clients.json: read clients.json at "<SANDBOX_HOME>/.local/share/agent-deck/watcher/clients.json": open <SANDBOX_HOME>/.local/share/agent-deck/watcher/clients.json: no such file or directory
+Run 'agent-deck watcher import <channels.json>' to generate client routing rules.

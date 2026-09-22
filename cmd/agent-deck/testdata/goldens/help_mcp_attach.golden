@@ -1,0 +1,11 @@
+Usage: agent-deck mcp attach <session-id> <mcp-name> [options]
+
+Attach an MCP to a session.
+Codex-compatible sessions always use the global Codex config.
+
+Options:
+
+Examples:
+  agent-deck mcp attach my-project exa           # Attach locally (Codex uses global)
+  agent-deck mcp attach my-project exa --global  # Attach globally
+  agent-deck mcp attach my-project exa --restart # Attach and restart

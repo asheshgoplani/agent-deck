@@ -1,0 +1,11 @@
+Usage: agent-deck openclaw <command> [options]
+
+Commands:
+  sync           Sync OpenClaw agents as agent-deck sessions
+  bridge         Launch bridge TUI for an agent (runs inside tmux)
+  status         Show gateway health and agent summary
+  list           List agents from gateway
+  send           Send a message to an agent
+  help           Show this help
+
+Aliases: openclaw, oc
