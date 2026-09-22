@@ -262,9 +262,11 @@ func TestPublishNeverBlocksWhenQueueIsFull(t *testing.T) {
 	t.Cleanup(func() { _ = b.Close() })
 
 	// Starve the writer so the queue fills: hold b.mu so writeFrame can never
-	// take it, forcing every enqueued frame to sit in the channel.
+	// take it, forcing every enqueued frame to sit in the channel. Released
+	// before any call that itself needs b.mu (Stats/Cursor), so the flood
+	// goroutine's Publish calls (which never touch b.mu) are the only thing
+	// racing against the lock.
 	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
@@ -277,8 +279,11 @@ func TestPublishNeverBlocksWhenQueueIsFull(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
+		b.mu.Unlock()
 		t.Fatal("Publish blocked producers when the queue filled up")
 	}
+	b.mu.Unlock()
+
 	if b.Stats().Dropped == 0 {
 		t.Fatal("expected some frames to be dropped once the queue filled")
 	}
