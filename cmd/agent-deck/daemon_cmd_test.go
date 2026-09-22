@@ -310,7 +310,16 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 	}
 	argvDone := make(chan error, 1)
 	go func() { argvDone <- argv.Wait() }()
-	time.Sleep(300 * time.Millisecond)
+	probe := exec.Command(channelsCLIBinary(t), "session", "start", "nosuch", "--json=envelope")
+	probe.Env = agentDeckTestEnv(home, env)
+	var probeOut bytes.Buffer
+	probe.Stdout, probe.Stderr = &probeOut, &probeOut
+	if err := probe.Start(); err != nil {
+		t.Fatal(err)
+	}
+	probeDone := make(chan error, 1)
+	go func() { probeDone <- probe.Wait() }()
+	time.Sleep(time.Second)
 	select {
 	case err := <-daemonDone:
 		t.Fatalf("daemon mutation bypassed lock: %v", err)
@@ -321,8 +330,16 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 		t.Fatalf("argv mutation bypassed lock: %v: %s", err, argvOut.String())
 	default:
 	}
+	select {
+	case err := <-probeDone:
+		t.Fatalf("argv pre-load decision bypassed lock: %v: %s", err, probeOut.String())
+	default:
+	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)
+	}
+	if err := <-probeDone; err == nil {
+		t.Fatal("unknown session start unexpectedly succeeded")
 	}
 	var order []string
 	for len(order) < 2 {
