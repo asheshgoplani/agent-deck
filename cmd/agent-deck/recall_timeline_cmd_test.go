@@ -37,3 +37,16 @@ func TestRecallTimelineAndFollowCLI(t *testing.T) {
 		t.Fatalf("follow resync: %d %s %s", code, stdout, stderr)
 	}
 }
+
+func TestRecallTimelineAndFollowRequireEnabledGate(t *testing.T) {
+	home := t.TempDir()
+	for _, args := range [][]string{
+		{"recall", "timeline", "session-id", "--json"},
+		{"recall", "follow", "session-id", "--after", "cursor", "--jsonl"},
+	} {
+		stdout, stderr, code := runAgentDeck(t, home, args...)
+		if code != 2 || !strings.Contains(stdout+stderr, "enabled = true") {
+			t.Fatalf("%v bypassed recall gate: exit=%d stdout=%s stderr=%s", args, code, stdout, stderr)
+		}
+	}
+}
