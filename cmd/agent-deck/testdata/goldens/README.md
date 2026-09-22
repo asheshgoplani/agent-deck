@@ -66,7 +66,8 @@ Applied by `scrub()` in `goldens_test.go`, in this order:
    `<TIMESTAMP>`; bare 10–13 digit epoch seconds/millis inside a CLI JSON value
    position → `<EPOCH>`. Storage keeps fixed seeded epoch values exact.
    Only the shell fixture's `last_accessed` value becomes
-   `<VOLATILE_LAST_ACCESSED>` because the CLI updates it while acting.
+   `<VOLATILE_LAST_ACCESSED>` and its `tool_data.last_started_at` becomes
+   `<VOLATILE_LAST_STARTED_AT>` because the CLI updates these while acting.
 3. **Version.** Only the built binary's known version literal (with optional
    `v` prefix) → `<VERSION>`, so dotted addresses remain exact.
 4. **Process IDs.** `pid 12345` → `pid <PID>`.

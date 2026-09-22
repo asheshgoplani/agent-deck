@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -251,6 +252,9 @@ func dumpStateDBRows(t *testing.T, dbPath string) string {
 			// The CLI updates this one field on access. All seeded timestamps
 			// on every other row remain literal in the storage golden.
 			m["last_accessed"] = "<VOLATILE_LAST_ACCESSED>"
+			if toolData, ok := m["tool_data"].(string); ok {
+				m["tool_data"] = regexp.MustCompile(`"last_started_at":\d+`).ReplaceAllString(toolData, `"last_started_at":"<VOLATILE_LAST_STARTED_AT>"`)
+			}
 		}
 		out.Instances = append(out.Instances, m)
 	}
