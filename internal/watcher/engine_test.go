@@ -205,10 +205,16 @@ func TestWatcherEngine_StopClosesProductionBus(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	t.Setenv("AGENTDECK_EVENTS_BUS", "1")
-	engine, _ := newTestEngine(t, nil)
+	engine, db := newTestEngine(t, nil)
+	saveTestWatcher(t, db, "w-bus", "bus-test", "mock")
+	engine.RegisterAdapter("w-bus", &MockAdapter{
+		events:      []Event{{Source: "mock", Sender: "sender@test.com", Subject: "tap", Timestamp: time.Now()}},
+		listenDelay: time.Millisecond,
+	}, AdapterConfig{Type: "mock", Name: "bus-test"}, 60)
 	if err := engine.Start(); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(100 * time.Millisecond)
 	engine.Stop()
 	defer goleak.VerifyNone(t,
 		goleak.IgnoreTopFunction("database/sql.(*DB).connectionOpener"),
