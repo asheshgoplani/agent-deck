@@ -66,6 +66,7 @@ func TestStorageBytesGoldens(t *testing.T) {
 		t.Helper()
 		full := append([]string{"-p", goldensProfile}, args...)
 		stdout, exit := runGoldens(t, bin, env, full)
+		t.Logf("agent-deck %s (exit %d):\n%s", strings.Join(args, " "), exit, stdout)
 		if exit != 0 {
 			t.Fatalf("agent-deck %s: exit %d\n%s", strings.Join(args, " "), exit, stdout)
 		}
