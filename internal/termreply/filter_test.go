@@ -130,6 +130,70 @@ func TestFilterPassesDSRCursorReplyThroughEvenDuringQuarantine(t *testing.T) {
 	require.False(t, f.Active())
 }
 
+// Regression for #2356: a DA1/DA2 reply addressed to a just-detached
+// attach's query can still be in flight when the next attach starts. It is
+// byte-for-byte indistinguishable from a fresh reply, so tmux's client
+// consumes the first copy it sees as satisfying its own outstanding query
+// and has nothing pending for any further copy — which then reaches the
+// pane as literal input. The filter must therefore forward at most one
+// DA1, one DA2, and one DSR/CPR reply per attach (per Filter instance)
+// while armed, and drop any further copy of the same kind rather than
+// leaking it through.
+func TestFilterSwallowsDuplicateDAReplyWhileArmed(t *testing.T) {
+	var f Filter
+
+	da1 := []byte("\x1b[?61;4c")
+	require.Equal(t, da1, f.Consume(da1, true, false), "first DA1 reply must pass through")
+	require.Empty(t, f.Consume(da1, true, false), "stray duplicate DA1 reply must be dropped")
+
+	da2 := []byte("\x1b[>0;10;1c")
+	require.Equal(t, da2, f.Consume(da2, true, false), "first DA2 reply must pass through")
+	require.Empty(t, f.Consume(da2, true, false), "stray duplicate DA2 reply must be dropped")
+
+	dsr := []byte("\x1b[12;34R")
+	require.Equal(t, dsr, f.Consume(dsr, true, false), "first DSR/CPR reply must pass through")
+	require.Empty(t, f.Consume(dsr, true, false), "stray duplicate DSR reply must be dropped")
+
+	require.False(t, f.Active())
+}
+
+// A DA1 budget and a DA2 budget are tracked independently: consuming a DA1
+// reply must not consume the DA2 budget (they arrive as a pair from real
+// terminals), and vice versa.
+func TestFilterDA1AndDA2BudgetsAreIndependent(t *testing.T) {
+	var f Filter
+
+	da1 := []byte("\x1b[?61;4c")
+	da2 := []byte("\x1b[>0;10;1c")
+	require.Equal(t, da1, f.Consume(da1, true, false))
+	require.Equal(t, da2, f.Consume(da2, true, false), "DA2 must still pass through after DA1 consumed its own budget")
+}
+
+func TestFilterDSRAndCPRBudgetsAreIndependent(t *testing.T) {
+	for _, first := range []string{"\x1b[0n", "\x1b[12;34R"} {
+		var f Filter
+		second := "\x1b[0n"
+		if first == second {
+			second = "\x1b[12;34R"
+		}
+		require.Equal(t, []byte(first), f.Consume([]byte(first), true, false))
+		require.Equal(t, []byte(second), f.Consume([]byte(second), true, false), "different query replies need separate budgets")
+		require.Empty(t, f.Consume([]byte(first), true, false), "duplicate reply must still be dropped")
+	}
+}
+
+// Outside the quarantine window (armed=false) the original unconditional,
+// unbudgeted passthrough is preserved: a legitimate terminal that replies to
+// repeated live DA queries outside of any attach hand-off must not be
+// throttled.
+func TestFilterDoesNotBudgetDAReplyWhenNotArmed(t *testing.T) {
+	var f Filter
+
+	da1 := []byte("\x1b[?61;4c")
+	require.Equal(t, da1, f.Consume(da1, false, false))
+	require.Equal(t, da1, f.Consume(da1, false, false), "unarmed passthrough must not be budgeted")
+}
+
 // Locks in that generic non-whitelisted CSI finals (e.g. arrow-like bytes
 // arriving as terminal replies, or other telemetry) continue to be discarded
 // while armed. The DA/DSR whitelist is a narrow carve-out, not a blanket
