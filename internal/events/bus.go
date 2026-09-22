@@ -540,7 +540,7 @@ func (b *Bus) writeFrame(qf queuedFrame) {
 
 func (b *Bus) fail(err error) {
 	if b.failed.CompareAndSwap(false, true) {
-		warnDisabled("runtime write failure", err)
+		slog.Warn("events: bus disabled after write failure", "error", err)
 	}
 }
 

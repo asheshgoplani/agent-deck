@@ -1,12 +1,16 @@
 package events
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,15 +137,71 @@ func TestBusProcessHelper(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		b.Publish("process", id, i)
 	}
+	if !b.Flush(10 * time.Second) {
+		t.Fatal("process frames were not durable")
+	}
 	if id == "0" {
 		b.mu.Lock()
 		for i := 0; i < defaultQueueCap*2; i++ {
 			b.Publish("overflow", id, i)
 		}
+		// The overflow has already happened. Skip disk work for the queued
+		// pressure frames so this cross-process test stays bounded.
+		b.failed.Store(true)
 		b.mu.Unlock()
 	}
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCLIStatsReadsProducerDropsAcrossProcesses(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, ".cache"))
+	dir, err := busDirFor("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Publish("warmup", "", nil)
+	if !b.Flush(5 * time.Second) {
+		t.Fatal("warmup flush")
+	}
+	b.mu.Lock()
+	for i := 0; i < defaultQueueCap*2; i++ {
+		b.Publish("overflow", "", i)
+	}
+	b.failed.Store(true)
+	b.mu.Unlock()
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "agent-deck")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", binary, "./cmd/agent-deck")
+	build.Dir = filepath.Join("..", "..")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, output)
+	}
+	cmd := exec.Command(binary, "-p", "alpha", "events", "stats", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("events stats: %v\n%s", err, output)
+	}
+	var stats Stats
+	if err := json.Unmarshal(output, &stats); err != nil {
+		t.Fatalf("parse stats: %v\n%s", err, output)
+	}
+	if stats.Dropped == 0 {
+		t.Fatal("CLI process did not see producer drops")
+	}
+	if stats.Dir != dir {
+		t.Fatalf("profile dir = %q, want %q", stats.Dir, dir)
 	}
 }
 
@@ -151,7 +211,8 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 10; i++ {
+	b.maxSegFrames = 12
+	for i := 0; i < 15; i++ {
 		b.Publish("restart", "", i)
 	}
 	if err := b.Close(); err != nil {
@@ -163,7 +224,8 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	}
 	defer b.Close()
 	b.maxSegFrames = 12
-	for i := 10; i < 24; i++ {
+	b.retainSegs = 2
+	for i := 15; i < 36; i++ {
 		b.Publish("restart", "", i)
 	}
 	if !b.Flush(5 * time.Second) {
@@ -173,31 +235,35 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sealed) == 0 || sealed[0].start != 1 {
-		t.Fatalf("bad sealed range after restart: %+v", sealed)
+	if len(sealed) != 2 || sealed[0].start != 13 || sealed[0].end != 24 {
+		t.Fatalf("bad sealed range after restart and compaction: %+v", sealed)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	sub, err := b.Subscribe(ctx, 5)
+	sub, err := b.Subscribe(ctx, 14)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var next Cursor = 6
+	var next Cursor = 15
 	for frame := range sub.Frames() {
 		if frame.Cursor != next {
 			t.Fatalf("cursor want %d got %d", next, frame.Cursor)
 		}
 		next++
-		if next == 25 {
+		if next == 37 {
 			cancel()
 		}
 	}
-	if next != 25 {
+	if next != 37 {
 		t.Fatalf("resume stopped at %d", next)
 	}
 }
 
 func TestRuntimeWriteFailureDisablesWithoutCursorGap(t *testing.T) {
+	var warnings bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&warnings, nil)))
+	defer slog.SetDefault(previousLogger)
 	dir := t.TempDir()
 	b, err := Open(dir)
 	if err != nil {
@@ -218,6 +284,10 @@ func TestRuntimeWriteFailureDisablesWithoutCursorGap(t *testing.T) {
 	}
 	if !b.failed.Load() {
 		t.Error("bus did not disable on runtime failure")
+	}
+	b.Publish("failed-again", "", nil)
+	if got := strings.Count(warnings.String(), "events: bus disabled after write failure"); got != 1 {
+		t.Errorf("runtime warnings = %d, want 1: %s", got, warnings.String())
 	}
 	if b.Cursor() != 0 {
 		t.Errorf("failed append assigned cursor %d", b.Cursor())

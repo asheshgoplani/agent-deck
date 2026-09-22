@@ -30,26 +30,27 @@ trailing spaces).
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |
 | `internal/watcher/engine.go` | `healthLoop` (health snapshot) | `watcher.health` |
 
-`tmux.output` is the hottest producer (fires on every pane write) and
-deliberately skips `Flush` — only `Publish`'s bounded queue and drop-counter
-keep it non-blocking. The other producers call `Flush(50ms)` after
-`Publish` so a one-shot process (a hook-handler invocation) doesn't lose the
-frame to an unflushed buffer before it exits; `Flush` is itself bounded, so
-a stuck disk degrades to "returns false", never an indefinite block.
+Every producer only calls `Publish` into a bounded in-memory queue. The
+background writer takes the cross-process file lock, appends and syncs. A
+one-shot CLI process closes its bus when the handler returns, draining its
+accepted taps before exit. A watcher Engine owns a separate bus and closes it
+after its producers stop.
 
 ## On-disk layout
 
-`<profile-data-dir>/bus/`, resolved through `internal/agentpaths`
-(`EffectiveDataPath("bus", "bus")` — same XDG/legacy-dir and per-profile
-rules as every other agent-deck data path). Typically:
+`<data-dir>/bus/<profile>/`, with the data root resolved through
+`internal/agentpaths` and the selected profile appended as a validated local
+name. Typically:
 
-- `~/.local/share/agent-deck/bus/` (XDG), or
-- `~/.agent-deck/bus/` (legacy dir, if that's what's already in use).
+- `~/.local/share/agent-deck/bus/default/` (XDG), or
+- `~/.agent-deck/bus/default/` (legacy root, if already in use).
 
 | File | Meaning |
 |---|---|
 | `active.ndjson` | The segment currently being appended to. |
 | `seg-<start>-<end>.ndjson` | A sealed, immutable segment (cursor range in the name). |
+| `writer.lock` | Cross-process advisory lock for cursor assignment and rotation. |
+| `drops.count` | Cumulative drops from all producers for this profile. |
 
 Rotation: the active segment seals (renamed to `seg-*`) and a fresh
 `active.ndjson` starts once it passes 8 MiB or 50,000 frames. Compaction:
@@ -62,8 +63,9 @@ removed. A `Subscribe(after)` older than every retained segment returns
 | Condition | Behavior |
 |---|---|
 | Bus dir unwritable, or `AGENTDECK_EVENTS_BUS=0` | `Publish`/`Subscribe` become no-ops; one `slog.Warn` per process; nothing else in agent-deck depends on the bus. |
-| Queue full (slow disk / producer burst) | Frame dropped, `Stats().Dropped` increments; producer never blocks. |
-| Process crash between `Publish` and the next fsync | That frame may be lost (at most one flush interval, ~25ms, or one `Flush` window). Everything already synced is intact. |
+| Queue full (slow disk / producer burst) | Frame dropped; the owning process persists its count asynchronously, and `events stats --json` reads the profile total. |
+| Append or sync fails after open | One warning, bus disabled, and the failed append does not advance the cursor. Existing producer writes continue. |
+| Process crash before the queued frame is appended | That frame can be lost. A normal CLI or Engine shutdown drains accepted frames. |
 | `events follow` killed and resumed with `--after <cursor>` | Zero lost, zero duplicated — this is the durability proof, asserted in `internal/events/bus_test.go`'s `TestResumeAfterKillLosesNothingAndDuplicatesNothing` and `TestResumeSurvivesProcessRestart`. |
 
 ## Go API (small, documented — slice 5's daemon streams this bus)
@@ -71,12 +73,14 @@ removed. A `Subscribe(after)` older than every retained segment returns
 ```go
 Open(dir string) (*Bus, error)
 Default() *Bus                                   // process-wide, lazily opened
+OpenProfile(profile string) *Bus                  // component owned
 (*Bus) Publish(kind, sessionID string, data any)  // never blocks
 (*Bus) Subscribe(ctx, after Cursor) (*Subscription, error)
 (*Bus) Cursor() Cursor
 (*Bus) Stats() Stats
 (*Bus) Flush(timeout time.Duration) bool
 (*Bus) Close() error
+CloseDefault() error                              // CLI/TUI shutdown
 ```
 
 ## CLI
@@ -86,10 +90,8 @@ Default() *Bus                                   // process-wide, lazily opened
 | `agent-deck events follow --json [--after <cursor>]` | NDJSON frames, oldest first, streams live until killed. |
 | `agent-deck events stats --json` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap}`. |
 
-Registered as a plain command in `cmd/agent-deck/events_cmd.go`, not through
-`internal/core`'s registry: the slice-1 registry bundle
-(`core/registry-slice1-20260922`) does not apply on top of this branch (see
-RESULTS.md) — `git bundle verify` reports a missing prerequisite commit the
-bundle and this branch's `origin/main` don't share. If/when slice 1 lands on
-a shared history, `events follow`/`events stats` are natural registry
-commands to migrate.
+Registered as a plain CLI command on this independent slice-4 branch.
+The slice-1 registry bundle and this branch now share `origin/main` at
+`3b41e36d`, and both bundles verify. Slice 1 remains a separate branch; its
+registry is absent from this branch. Integration belongs to the later branch
+that combines the two slices.
