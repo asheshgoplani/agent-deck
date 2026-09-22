@@ -133,3 +133,17 @@ func TestEval_TreeConnectors_RenderedRowsMatchExpectedGlyphs(t *testing.T) {
 		t.Errorf("row3-live renders a stray │ continuation even though its parent is last in its group:\n%s", row)
 	}
 }
+
+// TestEval_TreeConnectors_RemoteSessionsNotApplicable documents, per the
+// internal/ui RemoteSession coverage guideline, that this eval needs no
+// RemoteSession scenario: RecomputeTreeConnectors only reads/writes
+// ItemTypeGroup and ItemTypeSession rows (tree_connectors.go:10-12) and
+// passes every other row type, including ItemTypeRemoteSession, through
+// untouched. Remote rows get their own IsLastInGroup from
+// remote_tree.go:159 and render through renderRemoteSessionItemAtWidth, a
+// path entirely separate from the renderSessionItem glyphs this eval checks.
+// Mirrors TestDialogWidth_RemoteSessionsNotApplicable's documented-skip
+// convention.
+func TestEval_TreeConnectors_RemoteSessionsNotApplicable(t *testing.T) {
+	t.Skip("not applicable: RecomputeTreeConnectors never touches ItemTypeRemoteSession rows (tree_connectors.go:10-12, remote_tree.go:159)")
+}
