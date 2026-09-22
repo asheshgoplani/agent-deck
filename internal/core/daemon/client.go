@@ -25,8 +25,9 @@ const helloTimeout = 2 * time.Second
 const (
 	controlReplyTimeout = 2 * time.Second
 	callReplyTimeout    = 8 * time.Second
-	streamIdleTimeout   = time.Minute
 )
+
+var streamIdleTimeout = time.Minute
 
 // Dial connects to the daemon socket and reads its hello.
 func Dial(ctx context.Context, socket string) (*Client, error) {

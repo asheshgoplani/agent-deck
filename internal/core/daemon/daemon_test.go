@@ -385,6 +385,7 @@ func TestRequiredIDAndStrictFrameFields(t *testing.T) {
 	for _, tc := range []struct{ name, body, code string }{
 		{"missing id", `{"v":1,"type":"status","token":"%s"}`, CodeBadFrame},
 		{"unknown field", `{"v":1,"type":"status","id":"x","token":"%s","extra":1}`, CodeBadFrame},
+		{"response-only field", `{"v":1,"type":"status","id":"x","token":"%s","envelope":{}}`, CodeBadFrame},
 		{"second JSON value", `{"v":1,"type":"status","id":"x","token":"%s"} {}`, CodeBadFrame},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -753,6 +754,36 @@ func TestEventsStreamResumesThroughSocket(t *testing.T) {
 
 	if err := second.Subscribe(0); err == nil {
 		t.Fatal("second Subscribe on one connection succeeded")
+	}
+}
+
+func TestEventsKeepSubscriptionAlivePastIdleDeadline(t *testing.T) {
+	previous := streamIdleTimeout
+	streamIdleTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { streamIdleTimeout = previous })
+	bus, err := events.Open(filepath.Join(t.TempDir(), "bus"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	ts := startServer(t, Options{Bus: bus})
+	client, err := Dial(context.Background(), ts.paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Subscribe(0); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		time.Sleep(200 * time.Millisecond)
+		bus.Publish("test.tick", "s1", map[string]int{"i": i})
+		if !bus.Flush(5 * time.Second) {
+			t.Fatal("bus flush timed out")
+		}
+		if _, err := client.Next(); err != nil {
+			t.Fatalf("event %d after active stream: %v", i, err)
+		}
 	}
 }
 

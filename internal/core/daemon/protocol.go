@@ -165,6 +165,21 @@ func (c *frameConn) readStrict() (Frame, error) {
 	if err := dec.Decode(&f); err != nil {
 		return Frame{}, fmt.Errorf("%w: %v", errBadFrame, err)
 	}
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return Frame{}, fmt.Errorf("%w: trailing JSON value", errBadFrame)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(line, &fields); err != nil {
+		return Frame{}, fmt.Errorf("%w: %v", errBadFrame, err)
+	}
+	for key := range fields {
+		if key == "v" || key == "type" || key == "id" || key == "token" ||
+			(f.Type == TypeCall && (key == "cmd" || key == "input")) ||
+			(f.Type == TypeSubscribe && key == "after") {
+			continue
+		}
+		return Frame{}, fmt.Errorf("%w: field %q is not valid for %s", errBadFrame, key, f.Type)
+	}
 	return f, nil
 }
 

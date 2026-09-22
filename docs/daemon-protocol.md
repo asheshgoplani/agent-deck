@@ -40,9 +40,11 @@ the server echoes `id` on its reply.
 
 The server allows up to 64 concurrent clients. A partial client frame must
 complete within 2 seconds, including the newline; an idle subscription has
-60 seconds to receive another client frame before it is closed. Writes are
+60 seconds without an event or client frame before it is closed. Each event
+resets that deadline. Writes are
 bounded to 2 seconds. The client waits 2 seconds for control replies and 8
-seconds for a command reply, so a hello-only peer cannot hold a CLI call
+seconds for a command reply; the server passes a 7-second request context to
+the command executor. A hello-only peer cannot hold a CLI call
 indefinitely. A timed-out call is not retried in process because it may have
 already executed.
 

@@ -81,7 +81,7 @@ func startDaemon(t *testing.T, home string, env []string) (*exec.Cmd, daemonStat
 // canonicalEnvelope renders an envelope with sorted keys, compact, with the
 // request id and time values scrubbed. In particular, cost counters and tmux
 // names remain visible to the byte comparison.
-func canonicalEnvelope(t *testing.T, raw []byte, home, tmuxDir string) string {
+func canonicalEnvelope(t *testing.T, raw []byte) string {
 	t.Helper()
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -206,8 +206,8 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 		}
 		fromDaemon := runArgv(p.a, true)
 		checkOK(p.name+" (daemon CLI)", fromDaemon, p.a.ok)
-		a := canonicalEnvelope(t, fromArgv, home, tmuxDir)
-		s := canonicalEnvelope(t, fromDaemon, home, tmuxDir)
+		a := canonicalEnvelope(t, fromArgv)
+		s := canonicalEnvelope(t, fromDaemon)
 		if a != s {
 			t.Errorf("%s: envelopes differ\nargv:   %s\ndaemon: %s", p.name, a, s)
 		}
@@ -347,7 +347,7 @@ func TestDaemonDeadCLIStillWorks(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%s: list --json=envelope exit %d\n%s\n%s", what, code, stdout, stderr)
 		}
-		return canonicalEnvelope(t, []byte(stdout), home, tmuxDir)
+		return canonicalEnvelope(t, []byte(stdout))
 	}
 	direct := list("no daemon")
 

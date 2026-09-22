@@ -63,7 +63,11 @@ func New(opts Options) *Server {
 // shutdown, then closes ln and every open connection and returns nil.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var wg sync.WaitGroup
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -73,8 +77,6 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		_ = ln.Close()
 	}()
 
-	var wg sync.WaitGroup
-	defer wg.Wait()
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -189,11 +191,13 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		var reply Frame
 		switch f.Type {
 		case TypeCall:
-			result, res := s.call(ctx, f)
+			callCtx, cancelCall := context.WithTimeout(ctx, 7*time.Second)
+			result, res := s.call(callCtx, f)
 			err := fc.write(result)
 			// Deferred work (journal writes) runs once the answer is out,
 			// the same order the CLI uses.
 			res.Finish()
+			cancelCall()
 			if err != nil {
 				return
 			}
@@ -318,6 +322,9 @@ func (s *Server) stream(fc *frameConn, id string, sub *events.Subscription) {
 		}
 		if fc.write(Frame{Type: TypeEvent, ID: id, Event: line}) != nil {
 			return
+		}
+		if conn, ok := fc.w.(net.Conn); ok {
+			_ = conn.SetReadDeadline(time.Now().Add(streamIdleTimeout))
 		}
 	}
 	if err := sub.Err(); err != nil {
