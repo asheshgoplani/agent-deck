@@ -69,6 +69,12 @@ func TestConductorHeartbeatTickCLIReadsInboxAndRules(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &added); err != nil || added.ID == "" {
 		t.Fatalf("add response: %v %s", err, out)
 	}
+	for _, group := range []string{"ops/sub", "other"} {
+		out, stderr, code = runAgentDeck(t, home, "add", "-t", "child-"+strings.ReplaceAll(group, "/", "-"), "-c", "claude", "-g", group, "--no-parent", "--json", project)
+		if code != 0 {
+			t.Fatalf("add %s: %d %s %s", group, code, out, stderr)
+		}
+	}
 	inbox := session.InboxPathFor(added.ID)
 	if err := os.MkdirAll(filepath.Dir(inbox), 0o755); err != nil {
 		t.Fatal(err)
@@ -81,7 +87,7 @@ func TestConductorHeartbeatTickCLIReadsInboxAndRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
-	if code != 0 || !strings.Contains(out, "Inbox: 1 pending") || !strings.Contains(out, "Read heartbeat rules from "+rules) {
+	if code != 0 || !strings.Contains(out, "Inbox: 1 pending") || !strings.Contains(out, "Read heartbeat rules from "+rules) || !strings.Contains(out, "1 stopped.") {
 		t.Fatalf("first tick: exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
 	out, stderr, code = runAgentDeck(t, home, "conductor", "heartbeat-tick", "ops", "--rules", rules)
