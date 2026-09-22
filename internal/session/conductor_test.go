@@ -1397,27 +1397,134 @@ func TestLoadConductorMeta_EmptyProfileDefaultsToDefault(t *testing.T) {
 	}
 }
 
-func TestLoadConductorMeta_EmptyAgentDefaultsToClaude(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	name := "meta-empty-agent"
-	dir, _ := ConductorNameDir(name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("failed to create conductor dir: %v", err)
+func TestLoadConductorMeta_AgentContract(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		metaState   string
+		wantAgent   string
+		wantErr     bool
+		wantWarning bool
+	}{
+		{
+			name:      "missing agent defaults to claude",
+			raw:       `{"name":"meta-agent","profile":"default"}`,
+			wantAgent: ConductorAgentClaude,
+		},
+		{
+			name:      "empty agent defaults to claude",
+			raw:       `{"name":"meta-agent","agent":"  ","profile":"default"}`,
+			wantAgent: ConductorAgentClaude,
+		},
+		{
+			name:      "null agent defaults to claude",
+			raw:       `{"name":"meta-agent","agent":null,"profile":"default"}`,
+			wantAgent: ConductorAgentClaude,
+		},
+		{name: "case-variant agent is accepted", raw: `{"name":"meta-agent","Agent":"codex","profile":"default"}`, wantAgent: ConductorAgentCodex},
+		{
+			name:        "case-variant unsupported agent is preserved with a warning",
+			raw:         `{"name":"meta-agent","AGENT":"not-a-conductor-runtime","profile":"default"}`,
+			wantAgent:   "not-a-conductor-runtime",
+			wantWarning: true,
+		},
+		{name: "last case-variant agent wins", raw: `{"name":"meta-agent","agent":"claude","Agent":"codex","profile":"default"}`, wantAgent: ConductorAgentCodex},
+		{name: "duplicate null preserves prior agent", raw: `{"name":"meta-agent","agent":"codex","agent":null,"profile":"default"}`, wantAgent: ConductorAgentCodex},
+		{name: "last duplicate after case variant wins", raw: `{"name":"meta-agent","agent":"claude","Agent":"codex","agent":"hermes","profile":"default"}`, wantAgent: ConductorAgentHermes},
+		{name: "malformed earlier agent fails closed", raw: `{"name":"meta-agent","agent":42,"Agent":"codex","profile":"default"}`, wantErr: true},
+		{
+			// Back-compat: an agent this build doesn't recognize (e.g. a
+			// newer release's runtime read by an older binary) must not make
+			// the conductor disappear the way it did before this fix. It is
+			// kept, with the raw value preserved and a warning attached, so
+			// a caller that must not treat it as safe to recreate (the
+			// bridge's fresh-create path) can refuse instead of guessing.
+			name:        "unsupported non-empty agent is preserved with a warning",
+			raw:         `{"name":"meta-agent","agent":"not-a-conductor-runtime","profile":"default"}`,
+			wantAgent:   "not-a-conductor-runtime",
+			wantWarning: true,
+		},
+		{
+			name:    "malformed agent type fails closed",
+			raw:     `{"name":"meta-agent","agent":42,"profile":"default"}`,
+			wantErr: true,
+		},
+		{
+			name:    "malformed json fails closed",
+			raw:     `{"name":`,
+			wantErr: true,
+		},
+		{
+			// Back-compat: invalid UTF-8 anywhere in the file must not reject
+			// the whole file. json.Unmarshal already sanitizes invalid byte
+			// sequences in string values to U+FFFD, exactly as main did
+			// before the (now removed) whole-file utf8.Valid check.
+			name:      "invalid UTF-8 in non-agent field is tolerated, matching main",
+			raw:       "{\"name\":\"meta-agent\",\"description\":\"\xff\",\"agent\":\"codex\",\"profile\":\"default\"}",
+			wantAgent: ConductorAgentCodex,
+		},
+		{
+			name:    "non-object metadata fails closed",
+			raw:     `null`,
+			wantErr: true,
+		},
+		{
+			name:      "absent metadata fails closed",
+			metaState: "absent",
+			wantErr:   true,
+		},
+		{
+			name:      "unreadable metadata fails closed",
+			metaState: "directory",
+			wantErr:   true,
+		},
 	}
 
-	raw := `{"name":"meta-empty-agent","profile":"default","heartbeat_enabled":true,"created_at":"2026-01-01T00:00:00Z"}`
-	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(raw), 0o644); err != nil {
-		t.Fatalf("failed to write meta.json: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			useTempConductorHome(t)
+			name := "meta-agent"
+			dir, err := ConductorNameDir(name)
+			if err != nil {
+				t.Fatalf("ConductorNameDir: %v", err)
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatalf("failed to create conductor dir: %v", err)
+			}
 
-	meta, err := LoadConductorMeta(name)
-	if err != nil {
-		t.Fatalf("LoadConductorMeta failed: %v", err)
-	}
-	if meta.Agent != ConductorAgentClaude {
-		t.Fatalf("meta agent = %q, want %q", meta.Agent, ConductorAgentClaude)
+			metaPath := filepath.Join(dir, "meta.json")
+			switch tt.metaState {
+			case "absent":
+			case "directory":
+				if err := os.Mkdir(metaPath, 0o755); err != nil {
+					t.Fatalf("failed to create unreadable meta.json stand-in: %v", err)
+				}
+			default:
+				if err := os.WriteFile(metaPath, []byte(tt.raw), 0o644); err != nil {
+					t.Fatalf("failed to write meta.json: %v", err)
+				}
+			}
+
+			meta, err := LoadConductorMeta(name)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("LoadConductorMeta() error = nil, meta = %+v", meta)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConductorMeta failed: %v", err)
+			}
+			if meta.Agent != tt.wantAgent {
+				t.Fatalf("meta agent = %q, want %q", meta.Agent, tt.wantAgent)
+			}
+			if tt.wantWarning && meta.Warning == "" {
+				t.Fatalf("meta.Warning = %q, want non-empty", meta.Warning)
+			}
+			if !tt.wantWarning && meta.Warning != "" {
+				t.Fatalf("meta.Warning = %q, want empty", meta.Warning)
+			}
+		})
 	}
 }
 

@@ -75,6 +75,9 @@ except ImportError:
 # byte-identical with the embedded copy in conductor_templates.go.
 APP_DIR_NAME = "agent-deck"
 
+# Keep aligned with conductorAgentSpecs; setup persists these canonical names.
+CONDUCTOR_AGENTS = frozenset({"claude", "codex", "hermes", "pi"})
+
 
 def _xdg_dir(env_name: str, *fallback_parts: str) -> Path:
     """Mirror agentpaths.xdgDir: $XDG_*/agent-deck if absolute, else ~/<fallback>/agent-deck."""
@@ -301,6 +304,60 @@ def load_config() -> dict:
     }
 
 
+class _JSONObject(dict):
+    def __init__(self, pairs: list[tuple[str, Any]]) -> None:
+        super().__init__(pairs)
+        self.pairs = pairs
+
+
+def _load_conductor_meta(meta_path: Path) -> dict | None:
+    """Read one durable conductor record, rejecting malformed metadata."""
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f, object_pairs_hook=_JSONObject)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        log.warning("Failed to read %s: %s", meta_path, e)
+        return None
+    if not isinstance(meta, dict):
+        log.warning("Invalid conductor metadata in %s: expected an object", meta_path)
+        return None
+    return meta
+
+
+def _conductor_agent_from_meta(meta: dict, meta_path: Path) -> str | None:
+    """Resolve a persisted runtime using encoding/json's field-name rules."""
+    value = None
+    # Match Go encoding/json: case-insensitive keys; type errors invalidate;
+    # null is a no-op and later strings replace earlier ones.
+    pairs = meta.pairs if isinstance(meta, _JSONObject) else meta.items()
+    for key, candidate in pairs:
+        if not isinstance(key, str) or key.lower() != "agent":
+            continue
+        if candidate is None:
+            continue
+        if not isinstance(candidate, str):
+            log.warning("Invalid conductor agent in %s: expected a string", meta_path)
+            return None
+        value = candidate
+    if value is None:
+        return "claude"
+    agent = value.strip().lower()
+    if not agent:
+        return "claude"
+    if agent not in CONDUCTOR_AGENTS:
+        log.warning("Unsupported conductor agent %r in %s", value, meta_path)
+        return None
+    return agent
+
+
+def _load_conductor_agent(name: str) -> str | None:
+    meta_path = CONDUCTOR_DIR / name / "meta.json"
+    meta = _load_conductor_meta(meta_path)
+    if meta is None:
+        return None
+    return _conductor_agent_from_meta(meta, meta_path)
+
+
 def discover_conductors() -> list[dict]:
     """Discover all conductors by scanning meta.json files.
 
@@ -313,11 +370,14 @@ def discover_conductors() -> list[dict]:
         if entry.is_dir():
             meta_path = entry / "meta.json"
             if meta_path.exists():
-                try:
-                    with open(meta_path) as f:
-                        conductors.append(json.load(f))
-                except (json.JSONDecodeError, IOError) as e:
-                    log.warning("Failed to read %s: %s", meta_path, e)
+                meta = _load_conductor_meta(meta_path)
+                if meta is None:
+                    continue
+                agent = _conductor_agent_from_meta(meta, meta_path)
+                if agent is None:
+                    continue
+                meta["agent"] = agent
+                conductors.append(meta)
     conductors.sort(key=lambda c: c.get("name", ""))
     return conductors
 
@@ -1459,6 +1519,13 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
             profile,
         )
     else:
+        agent = _load_conductor_agent(name)
+        if agent is None:
+            log.error(
+                "Cannot recreate conductor %s without valid runtime metadata",
+                name,
+            )
+            return False
         log.info("Creating conductor session for %s...", name)
         result = await loop.run_in_executor(
             None,
@@ -1469,7 +1536,7 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
                 "-t",
                 session_title,
                 "-c",
-                "claude",
+                agent,
                 "-g",
                 "conductor",
                 "--title-lock",
