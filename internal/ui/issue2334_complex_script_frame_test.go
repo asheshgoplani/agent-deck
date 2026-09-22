@@ -113,6 +113,9 @@ func devanagariPreviewHome(t *testing.T, status, tag string) *Home {
 	home.previewCacheMu.Lock()
 	home.previewCache[key] = devanagariLastResponse + "\n" + tag
 	home.previewCacheMu.Unlock()
+	// Every #2334 frame (golden, replay, overlays) is built from this list,
+	// so it must hold the row-identity invariant too.
+	assertNoDuplicateRows(t, home.flatItems)
 	return home
 }
 
