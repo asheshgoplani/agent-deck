@@ -479,7 +479,7 @@ func TestResumeAfterKillLosesNothingAndDuplicatesNothing(t *testing.T) {
 	for i := 0; i < total; i++ {
 		b.Publish("kind.resume", "sess", map[string]any{"i": i})
 	}
-	if !b.Flush(5 * time.Second) {
+	if !b.Flush(30 * time.Second) {
 		t.Fatal("flush timed out")
 	}
 

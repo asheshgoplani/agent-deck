@@ -109,9 +109,23 @@ func (b *Bus) refreshLocked() error {
 		if len(sealed) > 0 && sealed[len(sealed)-1].end > b.cursor {
 			b.cursor = sealed[len(sealed)-1].end
 		}
+		checkpoint, err := readCursorCheckpoint(b.dir)
+		if err != nil {
+			return err
+		}
+		if checkpoint > b.cursor {
+			b.cursor = checkpoint
+		}
 		b.activeStart = b.cursor + 1
 		b.activeFrames = 0
 	} else {
+		checkpoint, err := readCursorCheckpoint(b.dir)
+		if err != nil {
+			return err
+		}
+		if last < checkpoint {
+			return fmt.Errorf("events: active cursor %d precedes checkpoint %d", last, checkpoint)
+		}
 		if last != b.cursor {
 			b.activeFrames = countLines(b.dir, activeSegmentName)
 		}
@@ -123,6 +137,27 @@ func (b *Bus) refreshLocked() error {
 }
 
 const dropsFileName = "drops.count"
+const cursorFileName = "cursor.state"
+
+func readCursorCheckpoint(dir string) (Cursor, error) {
+	data, err := os.ReadFile(filepath.Join(dir, cursorFileName))
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	value, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	return Cursor(value), err
+}
+
+func writeCursorCheckpoint(dir string, cursor Cursor) error {
+	tmp := filepath.Join(dir, "cursor.tmp."+strconv.Itoa(os.Getpid()))
+	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(uint64(cursor), 10)+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, cursorFileName))
+}
 
 func (b *Bus) diskDropsLocked() (uint64, error) {
 	data, err := os.ReadFile(filepath.Join(b.dir, dropsFileName))

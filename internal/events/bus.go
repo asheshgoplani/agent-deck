@@ -64,6 +64,7 @@ type Bus struct {
 	queue          chan queuedFrame
 	closeCh        chan struct{}
 	closeWg        sync.WaitGroup
+	publishMu      sync.RWMutex
 	closed         atomic.Bool
 	failed         atomic.Bool
 	ioMu           sync.Mutex
@@ -164,8 +165,16 @@ func Open(dir string) (*Bus, error) {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: recover active segment: %w", err)
 	}
-	if lastCursor == 0 && len(sealed) > 0 {
+	if len(sealed) > 0 && sealed[len(sealed)-1].end > lastCursor {
 		lastCursor = sealed[len(sealed)-1].end
+	}
+	checkpoint, err := readCursorCheckpoint(dir)
+	if err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("events: read cursor checkpoint: %w", err)
+	}
+	if checkpoint > lastCursor {
+		lastCursor = checkpoint
 	}
 
 	f, err := os.OpenFile(filepath.Join(dir, activeSegmentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
@@ -184,11 +193,16 @@ func Open(dir string) (*Bus, error) {
 	b.activeFile = f
 	b.activeStart = lastCursor + 1
 	if info.Size() > 0 {
-		first, _, _, err := activeBounds(filepath.Join(dir, activeSegmentName))
+		first, activeLast, _, err := activeBounds(filepath.Join(dir, activeSegmentName))
 		if err != nil {
 			_ = f.Close()
 			_ = lockFile.Close()
 			return nil, err
+		}
+		if activeLast < checkpoint {
+			_ = f.Close()
+			_ = lockFile.Close()
+			return nil, fmt.Errorf("events: active cursor %d precedes checkpoint %d", activeLast, checkpoint)
 		}
 		b.activeStart = first
 	}
@@ -312,10 +326,9 @@ func genEventID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// Publish enqueues an event for durable append and returns immediately. It
-// never blocks the caller: if the internal queue is full (a slow disk or a
-// burst outrunning the writer), the frame is dropped and Stats().Dropped
-// increments. A disabled or failed-to-open bus makes this a no-op.
+// Publish enqueues an event for durable append without waiting for disk. A
+// full queue drops the frame and increments Stats().Dropped. A disabled or
+// failed bus makes this a no-op.
 func (b *Bus) Publish(kind, sessionID string, data any) {
 	if b == nil || !b.enabled || b.closed.Load() || b.failed.Load() {
 		return
@@ -325,6 +338,11 @@ func (b *Bus) Publish(kind, sessionID string, data any) {
 		return
 	}
 	qf := queuedFrame{kind: kind, sessionID: sessionID, data: raw, ts: time.Now()}
+	b.publishMu.RLock()
+	defer b.publishMu.RUnlock()
+	if b.closed.Load() || b.failed.Load() {
+		return
+	}
 	select {
 	case b.queue <- qf:
 		b.published.Add(1)
@@ -357,8 +375,8 @@ func (b *Bus) Flush(timeout time.Duration) bool {
 	return true
 }
 
-// Cursor returns the last cursor assigned (enqueued, not necessarily synced
-// yet — use Flush to wait for durability).
+// Cursor returns the last cursor appended by this Bus. Use Flush to wait for
+// all accepted frames to be synced.
 func (b *Bus) Cursor() Cursor {
 	if b == nil {
 		return 0
@@ -408,9 +426,12 @@ func (b *Bus) Close() error {
 	if b == nil || !b.enabled {
 		return nil
 	}
+	b.publishMu.Lock()
 	if !b.closed.CompareAndSwap(false, true) {
+		b.publishMu.Unlock()
 		return nil
 	}
+	b.publishMu.Unlock()
 	close(b.closeCh)
 	b.closeWg.Wait()
 	if err := b.lockDisk(); err == nil {
@@ -584,6 +605,10 @@ func (b *Bus) rotateLocked() {
 	b.activeStart = b.cursor + 1
 	b.activeBytes = 0
 	b.activeFrames = 0
+	if err := writeCursorCheckpoint(b.dir, b.cursor); err != nil {
+		b.fail(err)
+		return
+	}
 
 	b.compactLocked()
 }

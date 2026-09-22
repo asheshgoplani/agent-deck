@@ -83,11 +83,18 @@ func (b *Bus) listAllSegments() ([]segRef, error) {
 			return nil, err
 		}
 		if activeStart == 0 {
+			last := Cursor(0)
 			if len(sealed) > 0 {
-				activeStart = sealed[len(sealed)-1].end + 1
-			} else {
-				activeStart = 1
+				last = sealed[len(sealed)-1].end
 			}
+			checkpoint, err := readCursorCheckpoint(b.dir)
+			if err != nil {
+				return nil, err
+			}
+			if checkpoint > last {
+				last = checkpoint
+			}
+			activeStart = last + 1
 		}
 		out = append(out, segRef{path: activePath, start: activeStart, sealed: false})
 	}
@@ -96,11 +103,6 @@ func (b *Bus) listAllSegments() ([]segRef, error) {
 
 func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 	defer close(s.frames)
-
-	if err := s.checkNotTooOld(b, after); err != nil {
-		s.errCh <- err
-		return
-	}
 
 	emitted := after
 	var lastActiveStart Cursor = 0
@@ -113,6 +115,10 @@ func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 		segs, err := b.listAllSegments()
 		if err != nil {
 			s.errCh <- err
+			return
+		}
+		if emitted > 0 && len(segs) > 0 && emitted+1 < segs[0].start {
+			s.errCh <- ErrCursorTooOld
 			return
 		}
 		madeProgress := false
@@ -167,26 +173,6 @@ func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 	}
 }
 
-// checkNotTooOld errors out if `after` is older than the oldest byte
-// currently retained (compaction already dropped it).
-func (s *Subscription) checkNotTooOld(b *Bus, after Cursor) error {
-	if after == 0 {
-		return nil
-	}
-	sealed, err := listSealedSegments(b.dir)
-	if err != nil {
-		return err
-	}
-	if len(sealed) == 0 {
-		return nil
-	}
-	oldestRetainedStart := sealed[0].start
-	if after+1 < oldestRetainedStart {
-		return ErrCursorTooOld
-	}
-	return nil
-}
-
 // streamFile scans a fully-sealed (immutable) segment file from the start,
 // emitting frames with Cursor > *emitted. Returns ok=false if ctx was
 // cancelled mid-stream.
@@ -194,7 +180,7 @@ func (s *Subscription) streamFile(ctx context.Context, path string, emitted *Cur
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return true, 0, nil
+			return false, 0, ErrCursorTooOld
 		}
 		return false, 0, err
 	}

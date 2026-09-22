@@ -50,6 +50,7 @@ name. Typically:
 | `active.ndjson` | The segment currently being appended to. |
 | `seg-<start>-<end>.ndjson` | A sealed, immutable segment (cursor range in the name). |
 | `writer.lock` | Cross-process advisory lock for cursor assignment and rotation. |
+| `cursor.state` | Last sealed cursor, retained even when all sealed segments are compacted. |
 | `drops.count` | Cumulative drops from all producers for this profile. |
 
 Rotation: the active segment seals (renamed to `seg-*`) and a fresh

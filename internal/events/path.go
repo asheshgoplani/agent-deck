@@ -9,10 +9,8 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
-// busDirName is the marker/subdirectory name for the bus's data, resolved
-// through agentpaths so it follows the same XDG/legacy-dir rules (and the
-// same per-profile isolation via XDG_DATA_HOME) as every other agent-deck
-// data path. Documented in docs/events.md.
+// busDirName is the shared XDG/legacy data root marker. Each validated
+// profile gets a child directory under it. See docs/events.md.
 const busDirName = "bus"
 
 var selectedProfile atomic.Value
@@ -20,7 +18,7 @@ var selectedProfile atomic.Value
 // SetProfile selects the CLI/TUI process profile before its first publish.
 func SetProfile(profile string) { selectedProfile.Store(profile) }
 
-// busDir returns "<profile-data-dir>/bus", creating no directories itself.
+// busDir returns "<data-dir>/bus/<profile>" without creating directories.
 func busDir() (string, error) {
 	if selected := selectedProfile.Load(); selected != nil {
 		return busDirFor(selected.(string))

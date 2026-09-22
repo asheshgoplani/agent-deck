@@ -7,3 +7,11 @@
 - [x] 5. Remedies that work: stray WARN says "move the stray profiles/ aside"; refusal error names the real fix; `migrate-paths` writes the marker (plain and --force); end-to-end sandbox test legacy -> XDG then the CLI uses XDG
 - [x] 6. `--group`/`--select` store open before the guards: note (kept before the no-TTY gate on purpose, #2011; the create guard makes it harmless)
 - [x] CHANGELOG + config-reference + PR body; go build/vet/gofmt; incident reproductions re-run; CI; RESULTS.md
+
+# core/events-slice4-20260922 (round 2, local only)
+
+- [x] Record wide blast radius and failing-first tests for profile, process, rotation, stats, lifecycle and runtime failures.
+- [x] Fix the event bus, producer waits, CLI help and documentation.
+- [x] Add explicit one-shot and watcher shutdown, stale-cursor and Close race proofs.
+- [ ] Compare committed-head full packages with origin/main on g14 and record every failure.
+- [ ] Review simplification, final host checks, RESULTS.md and verified local bundle.

@@ -23,8 +23,9 @@
 //	Cursor() Cursor
 //	Close() error
 //
-// Producers publish through the process-wide Default() bus. Publish is
-// non-blocking: a bounded queue feeds a background writer goroutine, and a
+// CLI and TUI producers use the process-owned Default() bus; watcher Engines
+// own an OpenProfile bus and close it on Stop. A bounded queue feeds a
+// background writer goroutine, and a
 // full queue increments a drop counter (visible via Stats/`events stats
 // --json`) instead of blocking the caller. A disabled or unwritable bus
 // degrades to a no-op Publish with a single logged warning — nothing about
