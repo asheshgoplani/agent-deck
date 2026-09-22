@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`agent-deck events follow --json [--after <cursor>]` streams a new durable event bus** (CORE-PLAN slice 4, additive only). A new `internal/events` package taps `session.status`, `session.transition`/`session.finished`, `tmux.output`, and `watcher.event`/`watcher.health` as they happen, writing them to a new append-only NDJSON log at `<profile-data-dir>/bus/` (see `docs/events.md`); every existing on-disk format (events/ directory, inbox jsonl, per-parent outbox, state.db) is unchanged and keeps being written exactly as before. Publishing never blocks a producer: a bounded queue drops frames under pressure instead, counted in `agent-deck events stats --json`. Resuming `--after <cursor>` after a killed follower loses nothing and duplicates nothing, durably, across a restart. Registered as a plain `cmd/agent-deck` command, not through the (not-yet-merged) slice-1 registry — see `docs/events.md` and `RESULTS.md` for why.
+
 ## [1.16.16] - 2026-09-20
 
 ### Fixed

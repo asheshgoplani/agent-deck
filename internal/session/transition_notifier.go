@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/events"
 )
 
 const (
@@ -320,7 +322,11 @@ func instanceAcceptsTransitionEvents(inst *Instance) bool {
 // outbox (issue #1225: PULL, not push). A busy conductor drains it at its own
 // turn boundary, so delivery no longer depends on an idle window that never
 // opens. Synchronous returns: committed_inbox / dropped_no_target / failed.
-func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent) TransitionNotificationEvent {
+func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent) (result TransitionNotificationEvent) {
+	// Slice 4 (CORE-PLAN): additive tap onto the event bus, independent of
+	// (and never gating) the durable outbox commit below.
+	defer func() { publishTransitionEvent("session.transition", result) }()
+
 	event.FromStatus = strings.ToLower(strings.TrimSpace(event.FromStatus))
 	event.ToStatus = strings.ToLower(strings.TrimSpace(event.ToStatus))
 	event.Profile = strings.TrimSpace(event.Profile)
@@ -382,7 +388,9 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 // by ShouldNotifyTransition (a finished event has no from→to transition);
 // per-task idempotency is the daemon's responsibility (it only calls this when
 // the detected sentinel actually changed).
-func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) TransitionNotificationEvent {
+func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) (result TransitionNotificationEvent) {
+	defer func() { publishTransitionEvent("session.finished", result) }()
+
 	event.Kind = transitionKindFinished
 	event.Profile = strings.TrimSpace(event.Profile)
 	event.ChildTitle = strings.TrimSpace(event.ChildTitle)
@@ -418,6 +426,16 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) T
 	event.DeliveryResult = transitionDeliveryDropped
 	event.DeadLetterReason = reason
 	return event
+}
+
+// publishTransitionEvent is the slice-4 (CORE-PLAN) tap onto the event bus.
+// It never affects delivery: NotifyTransition/NotifyFinished's outbox commit
+// is unchanged by this call, win or lose. Flush uses a short, bounded
+// timeout so a one-shot process (a hook-handler invocation) doesn't lose the
+// frame to an unflushed buffer on exit, without blocking indefinitely.
+func publishTransitionEvent(kind string, event TransitionNotificationEvent) {
+	events.Default().Publish(kind, event.ChildSessionID, event)
+	events.Default().Flush(50 * time.Millisecond)
 }
 
 func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance) *Instance {

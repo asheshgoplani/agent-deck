@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -400,6 +401,12 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 			if !ok {
 				return
 			}
+			// Slice 4 (CORE-PLAN): additive tap onto the event bus. This is
+			// the hottest producer in the tree (fires on every tmux %output),
+			// so it deliberately does NOT call Flush — Publish's bounded
+			// queue + drop-with-counter is what keeps this path non-blocking
+			// under pressure (see internal/events).
+			events.Default().Publish("tmux.output", sessionName, nil)
 			if pm.onOutput != nil {
 				pm.onOutput(sessionName)
 			}

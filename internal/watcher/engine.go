@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -441,6 +442,15 @@ func (e *Engine) writerLoop() {
 				// New event: update health tracker and forward to TUI (D-14).
 				env.tracker.RecordEvent()
 
+				// Slice 4 (CORE-PLAN): additive tap onto the event bus.
+				events.Default().Publish("watcher.event", env.watcherID, map[string]any{
+					"sender":    env.event.Sender,
+					"subject":   env.event.Subject,
+					"routed_to": routedTo,
+					"dedup_key": env.event.DedupKey(),
+					"is_triage": isTriage,
+				})
+
 				// Persist per-watcher event log + state snapshot. Failures MUST NOT drop the event — log and continue.
 				// Snapshot current health via the existing public Check() method. Check() returns a
 				// read-locked HealthState copy: we pull ConsecutiveErrors directly and derive
@@ -650,6 +660,10 @@ func (e *Engine) healthLoop() {
 				}
 
 				state := entry.tracker.Check()
+
+				// Slice 4 (CORE-PLAN): additive tap onto the event bus —
+				// this is the "health journal" producer named in the plan.
+				events.Default().Publish("watcher.health", entry.config.Name, state)
 
 				// Non-blocking send to healthCh.
 				select {
