@@ -413,6 +413,9 @@ func TestTimelineHarnessGoldens(t *testing.T) {
 				if i > 0 && turn.Seq <= timeline.Turns[i-1].Seq {
 					t.Fatalf("source order lost at %d: %+v", i, timeline.Turns)
 				}
+				if (tc.harness == "opencode" || tc.harness == "hermes") && turn.Timestamp == "" {
+					t.Errorf("%s turn %d lost its native timestamp: %+v", tc.harness, i, turn)
+				}
 				if turn.Kind == "other" && len(turn.Raw) == 0 {
 					t.Errorf("unknown turn lost raw payload: %+v", turn)
 				}

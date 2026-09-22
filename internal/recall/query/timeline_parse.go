@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // parseTimelineSource reads native records directly. The search index
@@ -132,6 +134,13 @@ func timelineToolKind(name string) string {
 
 func timelineTurn(role, kind, ts, tool, body string, raw json.RawMessage) Turn {
 	return Turn{Role: role, Kind: kind, Timestamp: ts, ToolName: tool, Text: body, Raw: append(json.RawMessage(nil), raw...)}
+}
+
+func timelineMillis(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
 func claudeTimelineRecord(rec map[string]json.RawMessage, raw json.RawMessage) []Turn {
@@ -328,7 +337,12 @@ func parseTimelineOpenCode(ctx context.Context, src timelineSource, nativeID str
 	}
 	var out []Turn
 	if data, err := os.ReadFile(src.Path); err == nil && json.Valid(data) {
-		out = append(out, timelineTurn("system", "system", "", "", "", data))
+		session := timelineObject(data)
+		var created struct {
+			Created int64 `json:"created"`
+		}
+		_ = json.Unmarshal(session["time"], &created)
+		out = append(out, timelineTurn("system", "system", timelineMillis(created.Created), "", "", data))
 	} else if err != nil {
 		return nil, err
 	}
@@ -368,7 +382,8 @@ func parseTimelineOpenCode(ctx context.Context, src timelineSource, nativeID str
 		if role != "user" && role != "assistant" {
 			role = "system"
 		}
-		out = append(out, timelineTurn(role, "system", "", "", "", om.raw))
+		messageTS := timelineMillis(om.created)
+		out = append(out, timelineTurn(role, "system", messageTS, "", "", om.raw))
 		partsDir := filepath.Join(storage, "part", om.id)
 		parts, err := os.ReadDir(partsDir)
 		if os.IsNotExist(err) {
@@ -387,22 +402,34 @@ func parseTimelineOpenCode(ctx context.Context, src timelineSource, nativeID str
 			}
 			part := timelineObject(data)
 			kind, name, body := "other", "", ""
+			partTS := messageTS
+			state := timelineObject(part["state"])
+			var toolTimes struct {
+				Start int64 `json:"start"`
+				End   int64 `json:"end"`
+			}
+			_ = json.Unmarshal(state["time"], &toolTimes)
+			if toolTimes.Start > 0 {
+				partTS = timelineMillis(toolTimes.Start)
+			}
 			switch timelineString(part["type"]) {
 			case "text":
 				kind, body = "message", timelineString(part["text"])
 			case "tool":
 				name = timelineString(part["tool"])
 				kind = timelineToolKind(name)
-				state := timelineObject(part["state"])
 				body = timelineToolText(name, state["input"])
 			case "step-start", "step-finish":
 				kind = "system"
 			}
-			out = append(out, timelineTurn(role, kind, "", name, body, data))
+			out = append(out, timelineTurn(role, kind, partTS, name, body, data))
 			if timelineString(part["type"]) == "tool" {
-				state := timelineObject(part["state"])
 				if result := state["output"]; len(result) > 0 {
-					out = append(out, timelineTurn("tool", "tool_result", "", name, timelineText(result), result))
+					resultTS := partTS
+					if toolTimes.End > 0 {
+						resultTS = timelineMillis(toolTimes.End)
+					}
+					out = append(out, timelineTurn("tool", "tool_result", resultTS, name, timelineText(result), result))
 				}
 			}
 		}
@@ -434,7 +461,7 @@ func parseTimelineHermes(ctx context.Context, src timelineSource, nativeID strin
 			return nil, err
 		}
 		raw, _ := json.Marshal(map[string]any{"id": rowID, "role": role, "content": content, "tool_calls": calls, "tool_name": name, "tool_call_id": callID, "timestamp": ts, "compacted": compact})
-		stamp := fmt.Sprintf("%.3f", ts)
+		stamp := timelineMillis(int64(math.Round(ts * 1000)))
 		kind := "message"
 		if compact == 1 {
 			kind = "compaction"

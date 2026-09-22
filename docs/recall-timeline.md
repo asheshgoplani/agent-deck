@@ -32,7 +32,7 @@ arrive out of order.
 | `seq` | One-based event position within this timeline |
 | `role` | Native speaker, normalized to `user`, `assistant`, `tool`, or `system` |
 | `kind` | Typed event from the table above, or `other` |
-| `timestamp` | Native timestamp when present |
+| `timestamp` | Native event time in UTC when present |
 | `tool_name` | Native tool name for calls and results when available |
 | `text` | Readable message, command, summary, or tool result text |
 | `raw` | Native JSON for events the client may need to inspect, always present for `other` |
