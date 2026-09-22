@@ -195,7 +195,9 @@ func TestFollowSeesSourceAppendWithinTwoSeconds(t *testing.T) {
 	appendClaudeTurn(t, writeSessionPathForTimeline(t, f), "latency-turn", "live follow latency")
 	select {
 	case frame := <-frames:
-		if elapsed := time.Since(start); elapsed >= 2*time.Second {
+		elapsed := time.Since(start)
+		t.Logf("follow append latency: %v", elapsed)
+		if elapsed >= 2*time.Second {
 			t.Errorf("follow append latency %v exceeds 2s", elapsed)
 		}
 		if frame.Type != "turn" || frame.Turn == nil || !strings.Contains(frame.Turn.Text, "live follow latency") {
