@@ -1,7 +1,7 @@
 # Visual check (docs/CORE-PLAN.md section 7)
 
 Branch: `core/visual-check-20260922`
-Commit: `ef92d92dc1c98e7c0fe8a94b6cd54a5948a3935f` (plus one follow-up fix committed after this file — see final sha in the summary line)
+Commit: `8285fd403f3f7c5c90191a0b6b2b9a09cca82e04`
 Local only: nothing pushed, no PR, no GitHub write of any kind.
 
 ## What was built
@@ -210,6 +210,7 @@ a debug-only env var the binary would check only in a test/debug build.
   the check (`visual-check`).
 - [x] README with the scrub list and "a diff needs a reviewer's PASS."
 
-Branch `core/visual-check-20260922`, commit `<final sha — filled in below>`.
-`git bundle create branch.bundle origin/main..HEAD` created alongside this
-file for handoff; nothing pushed anywhere.
+Branch `core/visual-check-20260922`, commit `8285fd403f3f7c5c90191a0b6b2b9a09cca82e04`
+(this file's own commit — HEAD). `git bundle create branch.bundle
+origin/main..HEAD` created alongside it for handoff; nothing pushed
+anywhere.
