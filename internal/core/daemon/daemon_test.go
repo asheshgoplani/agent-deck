@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -287,6 +290,106 @@ func TestProtocolErrors(t *testing.T) {
 	})
 }
 
+func TestSlowPartialFrameExpiresWithoutBlockingOtherClients(t *testing.T) {
+	ts := startServer(t, Options{})
+	slow := dialRaw(t, ts.paths.Socket)
+	slow.hello()
+	if _, err := slow.c.Write([]byte(`{`)); err != nil {
+		t.Fatal(err)
+	}
+	fast, err := Dial(context.Background(), ts.paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fast.Close()
+	if _, err := fast.Status(); err != nil {
+		t.Fatalf("other client blocked by partial frame: %v", err)
+	}
+	f, ok := slow.recv()
+	if !ok || f.Error == nil || f.Error.Code != "READ_TIMEOUT" {
+		t.Fatalf("partial frame reply = %+v (ok=%v), want READ_TIMEOUT", f, ok)
+	}
+	slow.expectClosed()
+}
+
+func TestReplyDeadlineAfterHello(t *testing.T) {
+	path := filepath.Join(shortDir(t), "hello-only.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_, _ = c.Write([]byte(`{"v":1,"type":"hello","token":"0123456789abcdef0123456789abcdef"}` + "\n"))
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	for name, invoke := range map[string]func(*Client) error{
+		"status": func(c *Client) error { _, err := c.Status(); return err },
+		"stop":   (*Client).Shutdown,
+		"call":   func(c *Client) error { _, err := c.Call("test.echo", echoIn{}); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := Dial(context.Background(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			done := make(chan error, 1)
+			go func() { done <- invoke(c) }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("hello-only peer returned success")
+				}
+			case <-time.After(4 * time.Second):
+				_ = c.Close()
+				<-done
+				t.Fatal("hello-only peer kept command blocked")
+			}
+		})
+	}
+}
+
+func TestRequiredIDAndStrictFrameFields(t *testing.T) {
+	ts := startServer(t, Options{})
+	for _, tc := range []struct{ name, body, code string }{
+		{"missing id", `{"v":1,"type":"status","token":"%s"}`, CodeBadFrame},
+		{"unknown field", `{"v":1,"type":"status","id":"x","token":"%s","extra":1}`, CodeBadFrame},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := dialRaw(t, ts.paths.Socket)
+			h := r.hello()
+			r.send(fmt.Sprintf(tc.body, h.Token))
+			f, ok := r.recv()
+			if !ok || f.Error == nil || f.Error.Code != tc.code {
+				t.Fatalf("reply = %+v (ok=%v), want %s", f, ok, tc.code)
+			}
+		})
+	}
+	client, err := Dial(context.Background(), ts.paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	raw, err := client.Call("test.echo", json.RawMessage(`{} {}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env core.Envelope
+	if err := json.Unmarshal(raw, &env); err != nil || env.Error == nil || env.Error.Code != core.CodeInvalidInput {
+		t.Fatalf("trailing input reply = %s, decode err = %v", raw, err)
+	}
+}
+
 func TestCallReturnsTheRegistryEnvelope(t *testing.T) {
 	reg := testRegistry(t)
 	ts := startServer(t, Options{Registry: reg})
@@ -452,6 +555,29 @@ func TestStaleSocketIsRecovered(t *testing.T) {
 	go func() { _ = srv.Serve(ctx, owner.Listener()) }()
 	if got := Probe(paths); got.State != StateRunning || got.Status.PID != os.Getpid() {
 		t.Fatalf("Probe after recovery = %+v, want running", got)
+	}
+}
+
+func TestAcquireKeepsSocketWhenRecordedPIDLives(t *testing.T) {
+	paths := PathsIn(filepath.Join(shortDir(t), "run"))
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.WriteFile(paths.Lock, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Acquire(paths); err == nil {
+		t.Fatal("Acquire replaced a live PID's socket")
+	}
+	if c, err := net.DialTimeout("unix", paths.Socket, time.Second); err != nil {
+		t.Fatalf("live listener lost its socket: %v", err)
+	} else {
+		_ = c.Close()
 	}
 }
 
