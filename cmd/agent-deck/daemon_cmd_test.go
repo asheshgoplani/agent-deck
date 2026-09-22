@@ -79,10 +79,8 @@ func startDaemon(t *testing.T, home string, env []string) (*exec.Cmd, daemonStat
 }
 
 // canonicalEnvelope renders an envelope with sorted keys, compact, with the
-// request id (random per request) and the time/tmux randomness scrubbed the
-// same way TestCoreRegistryMatchesLegacyHandlers scrubs them. session.list's
-// data.stats measures the call itself (wall time, tmux calls; a long-lived
-// daemon keeps a warm tmux cache), so its two cost counters are scrubbed too.
+// request id and time values scrubbed. In particular, cost counters and tmux
+// names remain visible to the byte comparison.
 func canonicalEnvelope(t *testing.T, raw []byte, home, tmuxDir string) string {
 	t.Helper()
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -95,16 +93,12 @@ func canonicalEnvelope(t *testing.T, raw []byte, home, tmuxDir string) string {
 		t.Fatalf("envelope without request_id: %s", raw)
 	}
 	m["request_id"] = "<ID>"
-	if data, ok := m["data"].(map[string]any); ok {
-		if stats, ok := data["stats"].(map[string]any); ok {
-			stats["status_pass_ms"], stats["tmux_calls"] = "<N>", "<N>"
-		}
-	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return scrubEquivalence(string(b), home, tmuxDir)
+	s := equivTimestamp.ReplaceAllString(string(b), "<TS>")
+	return equivStartedAgo.ReplaceAllString(s, "started Ns ago")
 }
 
 func seedSessions(t *testing.T, home string, env []string, titles ...string) {
@@ -191,7 +185,8 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 		},
 	}
 
-	runArgv := func(s step) []byte {
+	runArgv := func(s step, viaDaemon bool) []byte {
+		writeCoreDaemonModeConfig(t, home, viaDaemon)
 		stdout, stderr, _ := runAgentDeckEnv(t, home, "", env, s.argv...)
 		if stdout == "" {
 			t.Fatalf("%v: no envelope on stdout (stderr %q)", s.argv, stderr)
@@ -210,20 +205,17 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 
 	covered := map[string]bool{}
 	for _, p := range pairs {
-		fromArgv := runArgv(p.a)
+		fromArgv := runArgv(p.a, false)
 		checkOK(p.name+" (argv)", fromArgv, p.a.ok)
 		for _, s := range p.setup {
-			checkOK(p.name+" setup "+strings.Join(s.argv, " "), runArgv(s), s.ok)
+			checkOK(p.name+" setup "+strings.Join(s.argv, " "), runArgv(s, false), s.ok)
 		}
-		fromSocket, err := client.Call(p.a.id, p.a.in)
-		if err != nil {
-			t.Fatalf("%s: socket call: %v", p.name, err)
-		}
-		checkOK(p.name+" (socket)", fromSocket, p.a.ok)
+		fromDaemon := runArgv(p.a, true)
+		checkOK(p.name+" (daemon CLI)", fromDaemon, p.a.ok)
 		a := canonicalEnvelope(t, fromArgv, home, tmuxDir)
-		s := canonicalEnvelope(t, fromSocket, home, tmuxDir)
+		s := canonicalEnvelope(t, fromDaemon, home, tmuxDir)
 		if a != s {
-			t.Errorf("%s: envelopes differ\nargv:   %s\nsocket: %s", p.name, a, s)
+			t.Errorf("%s: envelopes differ\nargv:   %s\ndaemon: %s", p.name, a, s)
 		}
 		covered[p.a.id] = true
 	}
@@ -242,15 +234,19 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 	}
 }
 
-func writeCoreDaemonConfig(t *testing.T, home string) {
+func writeCoreDaemonModeConfig(t *testing.T, home string, enabled bool) {
 	t.Helper()
 	dir := filepath.Join(home, ".config", "agent-deck")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[core]\ndaemon = true\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[core]\ndaemon = "+strconv.FormatBool(enabled)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeCoreDaemonConfig(t *testing.T, home string) {
+	writeCoreDaemonModeConfig(t, home, true)
 }
 
 // TestDaemonDeadCLIStillWorks: with `[core] daemon = true` the CLI sends
