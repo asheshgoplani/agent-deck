@@ -376,6 +376,7 @@ func scrubWithEpoch(s, home string, normalizeEpoch bool) string {
 var (
 	goldensBinOnce sync.Once
 	goldensBinPath string
+	goldensBinDir  string
 	goldensBinErr  error
 )
 
@@ -387,22 +388,35 @@ func goldensBinary(t *testing.T) string {
 			goldensBinErr = err
 			return
 		}
+		goldensBinDir = dir
 		bin := filepath.Join(dir, "agent-deck")
 		if runtime.GOOS == "windows" {
 			bin += ".exe"
 		}
+		goldensBinPath = bin
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/agent-deck")
 		cmd.Dir = goldensRepoRoot(t)
 		if out, buildErr := cmd.CombinedOutput(); buildErr != nil {
 			goldensBinErr = &buildFailure{err: buildErr, output: string(out)}
 			return
 		}
-		goldensBinPath = bin
 	})
 	if goldensBinErr != nil {
 		t.Fatalf("building goldens binary: %v", goldensBinErr)
 	}
 	return goldensBinPath
+}
+
+func cleanupGoldensBinary() error {
+	if goldensBinDir == "" {
+		return nil
+	}
+	if goldensBinPath != "" {
+		if err := os.Remove(goldensBinPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return os.Remove(goldensBinDir)
 }
 
 type buildFailure struct {

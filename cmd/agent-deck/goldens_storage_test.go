@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,32 +40,13 @@ func TestStorageBytesGoldens(t *testing.T) {
 	// enough to isolate the default socket name to this test (see
 	// internal/testutil.IsolateTmuxSocket, which this mirrors for a
 	// subprocess env instead of the test process's own env).
-	tmuxTmpdir := t.TempDir()
+	tmuxTmpdir, err := os.MkdirTemp("", "ad-goldens-tmux-")
+	if err != nil {
+		t.Fatalf("creating private tmux directory: %v", err)
+	}
 	env = filterEnv(env, "TMUX", "TMUX_PANE", "TMUX_TMPDIR")
 	env = append(env, "TMUX_TMPDIR="+tmuxTmpdir)
-	t.Cleanup(func() {
-		testutil.KillTmuxServersUnder(tmuxTmpdir)
-		// tmux can leave a stale socket after the server exits. Verify that
-		// no server still answers on each socket before removing the socket.
-		_ = filepath.WalkDir(tmuxTmpdir, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				t.Errorf("checking private tmux socket: %v", walkErr)
-				return nil
-			}
-			if info, err := entry.Info(); err == nil && info.Mode()&os.ModeSocket != 0 {
-				if err := exec.Command("tmux", "-S", path, "show-options", "-s", "-v", "exit-empty").Run(); err == nil {
-					if out, killErr := exec.Command("tmux", "-S", path, "kill-server").CombinedOutput(); killErr != nil {
-						t.Errorf("private tmux server still alive at %s: %v: %s", path, killErr, out)
-						return nil
-					}
-				}
-				if err := os.Remove(path); err != nil {
-					t.Errorf("removing private tmux socket %s: %v", path, err)
-				}
-			}
-			return nil
-		})
-	})
+	t.Cleanup(func() { cleanupPrivateTmux(t, tmuxTmpdir) })
 
 	profileDir, err := session.GetProfileDir(goldensProfile)
 	if err != nil {
@@ -88,10 +70,10 @@ func TestStorageBytesGoldens(t *testing.T) {
 	run := func(args ...string) {
 		t.Helper()
 		full := append([]string{"-p", goldensProfile}, args...)
-		stdout, exit := runGoldens(t, bin, env, full)
-		t.Logf("agent-deck %s (exit %d):\n%s", strings.Join(args, " "), exit, stdout)
+		stdout, stderr, exit := runGoldensStreamsIn(t, bin, env, "", full)
+		t.Logf("agent-deck %s (exit %d):\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), exit, stdout, stderr)
 		if exit != 0 {
-			t.Fatalf("agent-deck %s: exit %d\n%s", strings.Join(args, " "), exit, stdout)
+			t.Fatalf("agent-deck %s: exit %d\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), exit, stdout, stderr)
 		}
 	}
 
@@ -115,6 +97,54 @@ func TestStorageBytesGoldens(t *testing.T) {
 
 	run("session", "stop", "golden-sess-shell")
 	waitForStatus(t, bin, env, "golden-sess-shell", []string{"stopped"}, 10*time.Second)
+}
+
+func cleanupPrivateTmux(t *testing.T, dir string) {
+	t.Helper()
+	testutil.KillTmuxServersUnder(dir)
+	var dirs []string
+	serverAlive := func(socket string) bool {
+		return exec.Command("tmux", "-S", socket, "show-options", "-s", "-v", "exit-empty").Run() == nil
+	}
+	_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			t.Errorf("checking private tmux directory: %v", walkErr)
+			return nil
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, path)
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || info.Mode()&os.ModeSocket == 0 {
+			return nil
+		}
+		if serverAlive(path) {
+			pidText, _ := exec.Command("tmux", "-S", path, "display-message", "-p", "#{pid}").Output()
+			_, _ = exec.Command("tmux", "-S", path, "kill-server").CombinedOutput()
+			if serverAlive(path) {
+				if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(pidText))); parseErr == nil && pid > 0 {
+					if process, findErr := os.FindProcess(pid); findErr == nil {
+						_ = process.Kill()
+					}
+				}
+			}
+		}
+		if serverAlive(path) {
+			// Preserve its exact socket instead of unlinking a live server.
+			t.Errorf("private tmux server survived cleanup at %s", path)
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			t.Errorf("removing private tmux socket %s: %v", path, err)
+		}
+		return nil
+	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := os.Remove(dirs[i]); err != nil {
+			t.Errorf("removing private tmux directory %s: %v", dirs[i], err)
+		}
+	}
 }
 
 // filterEnv drops any entry in env whose key is in drop, so a caller can

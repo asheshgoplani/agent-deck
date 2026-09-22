@@ -204,7 +204,7 @@
       "tmux_session": "<TMUX_SESSION>",
       "tmux_socket_name": "",
       "tool": "shell",
-      "tool_data": "{\"last_started_at\":\"<VOLATILE_LAST_STARTED_AT>\"}",
+      "tool_data": "{\"last_started_at\":\"\u003cVOLATILE_LAST_STARTED_AT\u003e\"}",
       "worktree_branch": "",
       "worktree_path": "",
       "worktree_repo": "",
