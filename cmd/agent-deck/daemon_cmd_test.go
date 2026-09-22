@@ -352,7 +352,11 @@ func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
 		}
 	}
 	if raced, serial := canonicalStateDB(t, home), canonicalStateDB(t, serialHome); !bytes.Equal(raced, serial) {
-		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v)", len(raced), len(serial), order)
+		diff := 0
+		for diff < len(raced) && diff < len(serial) && raced[diff] == serial[diff] {
+			diff++
+		}
+		t.Fatalf("raced storage bytes differ from serial execution (%d vs %d bytes, order %v, first offset %d, bytes %x vs %x)", len(raced), len(serial), order, diff, raced[diff:diff+16], serial[diff:diff+16])
 	}
 }
 
