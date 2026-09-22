@@ -4474,7 +4474,6 @@ func TestMCPManagerUnsupportedToolShowsFeedback(t *testing.T) {
 	}
 }
 
-
 // TestMCPManagerRemoteSessionKeepsExistingNoOp verifies that the local-only
 // unsupported-tool feedback does not change the existing remote-row behavior.
 func TestMCPManagerRemoteSessionKeepsExistingNoOp(t *testing.T) {
