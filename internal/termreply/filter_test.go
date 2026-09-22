@@ -169,6 +169,19 @@ func TestFilterDA1AndDA2BudgetsAreIndependent(t *testing.T) {
 	require.Equal(t, da2, f.Consume(da2, true, false), "DA2 must still pass through after DA1 consumed its own budget")
 }
 
+func TestFilterDSRAndCPRBudgetsAreIndependent(t *testing.T) {
+	for _, first := range []string{"\x1b[0n", "\x1b[12;34R"} {
+		var f Filter
+		second := "\x1b[0n"
+		if first == second {
+			second = "\x1b[12;34R"
+		}
+		require.Equal(t, []byte(first), f.Consume([]byte(first), true, false))
+		require.Equal(t, []byte(second), f.Consume([]byte(second), true, false), "different query replies need separate budgets")
+		require.Empty(t, f.Consume([]byte(first), true, false), "duplicate reply must still be dropped")
+	}
+}
+
 // Outside the quarantine window (armed=false) the original unconditional,
 // unbudgeted passthrough is preserved: a legitimate terminal that replies to
 // repeated live DA queries outside of any attach hand-off must not be
