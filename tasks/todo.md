@@ -13,5 +13,5 @@
 - [x] Record wide blast radius and failing-first tests for profile, process, rotation, stats, lifecycle and runtime failures.
 - [x] Fix the event bus, producer waits, CLI help and documentation.
 - [x] Add explicit one-shot and watcher shutdown, stale-cursor and Close race proofs.
-- [ ] Compare committed-head full packages with origin/main on g14 and record every failure.
-- [ ] Review simplification, final host checks, RESULTS.md and verified local bundle.
+- [x] Compare committed-head full packages with origin/main on g14 and record every failure.
+- [x] Review simplification, final host checks, RESULTS.md and verified local bundle.
