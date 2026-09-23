@@ -222,7 +222,7 @@ func stepMCPManager(w *widthRun) error {
 }
 
 func stepSettings(w *widthRun) error {
-	if err := w.send("S"); err != nil {
+	if _, err := w.s.exec("tmux", "send-keys", "-l", "-t", w.tmuxName, "S"); err != nil {
 		return err
 	}
 	if err := waitScreen(w, 5*time.Second, "Settings", "THEME", "DEFAULT TOOL"); err != nil {
@@ -269,9 +269,20 @@ func closeScreen(w *widthRun, title string) error {
 	if err := w.send("Escape"); err != nil {
 		return err
 	}
+	var previous string
 	return w.waitFor(func() (bool, error) {
 		pane, err := w.pane()
-		return err == nil && !strings.Contains(pane, title), err
+		if err != nil {
+			return false, err
+		}
+		if strings.Contains(pane, title) || !strings.Contains(pane, "SESSIONS") {
+			previous = ""
+			return false, nil
+		}
+		current := scrubFrame(pane)
+		stable := previous == current
+		previous = current
+		return stable, nil
 	}, 5*time.Second)
 }
 
