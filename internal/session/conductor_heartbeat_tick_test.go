@@ -249,7 +249,8 @@ case "$1 $2" in
   "conductor status") echo '{"conductors": [{"heartbeat": true}]}' ;;
   "session show") echo '{"status": "idle"}' ;;
   "conductor heartbeat-tick")
-    if [ ! -f "` + ticked + `" ]; then touch "` + ticked + `"; echo "[HEARTBEAT] [ops] Status: 1 waiting."; fi ;;
+    if [ ! -f "` + ticked + `" ]; then touch "` + ticked + `"; echo "[HEARTBEAT] [ops] Status: 1 waiting.";
+    else echo 'nonfatal tick diagnostic' >&2; fi ;;
   "session send") printf '%s' "$4" >> "` + sent + `" ;;
 esac
 `
