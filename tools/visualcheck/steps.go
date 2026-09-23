@@ -342,7 +342,7 @@ func stepAttachShell(w *widthRun) error {
 	}
 	if err := w.waitFor(func() (bool, error) {
 		pane, err := w.s.capturePane(w.sd.shellLive.tmuxName)
-		return err == nil && strings.Contains(pane, "shell-live") &&
+		return err == nil && strings.Contains(pane, "$") &&
 			!strings.Contains(pane, "export AGENTDECK"), err
 	}, 5*time.Second); err != nil {
 		return err

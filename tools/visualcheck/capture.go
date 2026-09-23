@@ -162,8 +162,9 @@ func (w *widthRun) probeRedraw() error {
 // immediately and keeps its captured frame for the report.
 func runStepWithRetry(w *widthRun, step visualCheckStep) error {
 	attempts := 3
-	if step.name == "14-fork" {
-		// Fork mutates the store. Retrying would create duplicate sessions.
+	if step.name == "14-fork" || step.name == "12-attach-shell" {
+		// Fork mutates the store; attach enters a shell. Neither can be
+		// safely retried by sending navigation keys to the current pane.
 		attempts = 1
 	}
 	updating := os.Getenv("UPDATE_GOLDEN") == "1"
