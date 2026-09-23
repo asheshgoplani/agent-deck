@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"regexp"
+	"strings"
+	"unicode/utf8"
 )
 
 // scrubRule is one documented substitution applied to a captured frame
@@ -75,8 +77,25 @@ func init() {
 // match more than one pattern in the same span (e.g. a semver-shaped
 // relative age).
 func scrubFrame(frame string) string {
+	originalLines := strings.Split(frame, "\n")
 	for _, r := range scrubRules {
 		frame = r.pattern.ReplaceAllString(frame, r.replace)
 	}
-	return frame
+	lines := strings.Split(frame, "\n")
+	for i, line := range lines {
+		if i >= len(originalLines) || !strings.Contains(line, "remotes/") || !strings.Contains(line, "· poll <age>") {
+			continue
+		}
+		oldDivider := strings.IndexRune(originalLines[i], '│')
+		newDivider := strings.IndexRune(line, '│')
+		if oldDivider < 0 || newDivider < 0 {
+			continue
+		}
+		left := strings.TrimRight(line[:newDivider], " ")
+		padding := utf8.RuneCountInString(originalLines[i][:oldDivider]) - utf8.RuneCountInString(left)
+		if padding >= 0 {
+			lines[i] = left + strings.Repeat(" ", padding) + line[newDivider:]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
