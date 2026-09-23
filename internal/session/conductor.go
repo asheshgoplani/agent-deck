@@ -742,11 +742,17 @@ func saveConductorMetaLocked(meta *ConductorMeta) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal meta.json: %w", err)
 	}
-	metaPath := filepath.Join(dir, "meta.json")
 	perm := os.FileMode(0o644)
 	if len(meta.Env) > 0 || meta.EnvFile != "" {
 		perm = 0o600 // restrict access when env vars contain secrets
 	}
+	return writeConductorMetaFile(dir, data, perm)
+}
+
+// writeConductorMetaFile atomically replaces dir/meta.json with data. The
+// caller MUST already hold the conductor base lock.
+func writeConductorMetaFile(dir string, data []byte, perm os.FileMode) error {
+	metaPath := filepath.Join(dir, "meta.json")
 	// Write atomically via unique temp-file + rename so a crash mid-write
 	// cannot truncate or corrupt meta.json. Same pattern used by
 	// event_writer.go, mcp_catalog.go, transition_notifier.go, and
@@ -3027,8 +3033,51 @@ func UninstallHeartbeatDaemon(name string) error {
 	if err != nil {
 		return err
 	}
+	if meta.Warning != "" {
+		// Older binary, newer data (#2354): SaveConductorMeta would reject
+		// the unrecognized agent and drop fields this build doesn't know.
+		// Turning the heartbeat off must never be blocked by that.
+		return disableConductorHeartbeatRaw(name)
+	}
 	meta.HeartbeatEnabled = false
 	return SaveConductorMeta(meta)
+}
+
+// disableConductorHeartbeatRaw sets heartbeat_enabled=false in meta.json
+// without decoding it into ConductorMeta, so the stored agent and any fields
+// this build doesn't know are kept as they are.
+func disableConductorHeartbeatRaw(name string) error {
+	lock, err := acquireConductorBaseLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		return err
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	info, err := os.Stat(metaPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat meta.json for conductor %q: %w", name, err)
+	}
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return fmt.Errorf("failed to read meta.json for conductor %q: %w", name, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("failed to parse meta.json for conductor %q: %w", name, err)
+	}
+	if fields == nil {
+		return fmt.Errorf("failed to parse meta.json for conductor %q: expected an object", name)
+	}
+	fields["heartbeat_enabled"] = json.RawMessage("false")
+	data, err = json.MarshalIndent(fields, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal meta.json: %w", err)
+	}
+	return writeConductorMetaFile(dir, data, info.Mode().Perm())
 }
 
 func uninstallHeartbeatDaemonLaunchd(name string) error {

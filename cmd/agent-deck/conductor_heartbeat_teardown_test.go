@@ -111,3 +111,50 @@ func TestConductorHeartbeatTickCLIReadsInboxAndRules(t *testing.T) {
 		t.Fatalf("replacement record at same count: exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
 }
+
+// #2348 x #2354: teardown of a conductor whose meta.json names an agent this
+// build doesn't know (older binary, newer data) must complete like any other.
+func TestConductorTeardownUnknownAgentCompletes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove bool
+	}{{"keep", false}, {"remove", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+			t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+			dir, err := session.ConductorNameDir("future")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			meta := `{"name":"future","agent":"futurebot","profile":"default","heartbeat_enabled":true,"heartbeat_interval":15}`
+			if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(meta), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			args := []string{"conductor", "teardown", "future"}
+			if tc.remove {
+				args = append(args, "--remove")
+			}
+			out, stderr, code := runAgentDeck(t, home, args...)
+			if code != 0 || !strings.Contains(out, "Teardown complete.") {
+				t.Fatalf("teardown remove=%v: exit=%d stdout=%q stderr=%q", tc.remove, code, out, stderr)
+			}
+			if tc.remove {
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Fatalf("teardown --remove must remove the conductor dir: %v", err)
+				}
+				return
+			}
+			loaded, err := session.LoadConductorMeta("future")
+			if err != nil || loaded.HeartbeatEnabled || loaded.Agent != "futurebot" {
+				t.Fatalf("after teardown: meta=%+v err=%v", loaded, err)
+			}
+		})
+	}
+}

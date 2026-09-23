@@ -346,3 +346,46 @@ esac
 		t.Fatalf("failed send must retry once then dedup: sent=%q err=%v", data, err)
 	}
 }
+
+// An older binary reading a newer release's meta.json (an agent it doesn't
+// know, fields it doesn't know) must still be able to turn the heartbeat off:
+// the raw agent and unknown fields survive, only heartbeat_enabled changes.
+func TestUninstallHeartbeatDaemon_UnknownAgentDisablesAndPreservesMeta(t *testing.T) {
+	setupHeartbeatTickTest(t, "future")
+	dir, err := ConductorNameDir("future")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	raw := `{"name":"future","agent":"futurebot","profile":"default","heartbeat_enabled":true,"heartbeat_interval":15,"created_at":"2026-09-23T00:00:00Z","future_field":{"x":1}}`
+	if err := os.WriteFile(metaPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallHeartbeatDaemon("future"); err != nil {
+		t.Fatalf("unknown agent must not block disabling the heartbeat: %v", err)
+	}
+	meta, err := LoadConductorMeta("future")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.HeartbeatEnabled {
+		t.Fatalf("heartbeat must be off after uninstall: %+v", meta)
+	}
+	if meta.Agent != "futurebot" || meta.Warning == "" {
+		t.Fatalf("unknown agent must be preserved raw with a warning: %+v", meta)
+	}
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"future_field"`) {
+		t.Fatalf("fields this build doesn't know must survive: %s", data)
+	}
+	info, err := os.Stat(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("meta.json permissions must be preserved: got %v", info.Mode().Perm())
+	}
+}
