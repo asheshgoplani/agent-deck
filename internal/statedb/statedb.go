@@ -1312,6 +1312,8 @@ func (s *StateDB) DeleteGroupSubtree(path string) error {
 func (s *StateDB) WriteStatus(id, status, tool string) error {
 	observe := loadStatusChangeObserver()
 	if observe == nil {
+		// Only read the prior value when someone listens: the write path
+		// stays one statement for every caller otherwise.
 		return withBusyRetry(func() error {
 			_, err := s.db.Exec(writeStatusSQL, status, tool, status, id)
 			return err
@@ -1320,8 +1322,6 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 	var from, tmuxName string
 	var changed bool
 	err := withBusyRetry(func() error {
-		// Only read the prior value when someone listens: the write path
-		// stays one statement for every caller otherwise.
 		from, tmuxName = "", ""
 		_ = s.db.QueryRow(`SELECT status, tmux_session FROM instances WHERE id = ?`, id).Scan(&from, &tmuxName)
 		if afterStatusRead != nil {

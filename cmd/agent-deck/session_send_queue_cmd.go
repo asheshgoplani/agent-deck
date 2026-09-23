@@ -53,7 +53,8 @@ func attachImages(inst *session.Instance, message string, images []string, now t
 		return "", nil, fmt.Errorf("image dir: %w", err)
 	}
 	// Keep the copies out of the user's git status.
-	if ignore := filepath.Join(dir, ".gitignore"); func() bool { _, err := os.Stat(ignore); return os.IsNotExist(err) }() {
+	ignore := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(ignore); os.IsNotExist(err) {
 		_ = os.WriteFile(ignore, []byte("*\n"), 0o644)
 	}
 	var saved []string
