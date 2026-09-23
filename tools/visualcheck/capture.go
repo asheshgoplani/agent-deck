@@ -79,11 +79,9 @@ func runWidthIsolated(ctx context.Context, bin, updateBin string, spec widthSpec
 		if err := runStepWithRetry(w, step); err != nil {
 			return w.frames, fmt.Errorf("step %q at %s: %w", step.name, spec.name, err)
 		}
-		if step.name == "01-list" {
-			if err := w.probeRedraw(); err != nil {
-				return w.frames, fmt.Errorf("redraw probe at %s: %w", spec.name, err)
-			}
-		}
+	}
+	if err := w.probeRedraw(); err != nil {
+		return w.frames, fmt.Errorf("redraw probe at %s: %w", spec.name, err)
 	}
 	return w.frames, nil
 }
