@@ -125,7 +125,9 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	var inst *session.Instance
 	for _, match := range []func(*session.Instance) bool{
 		func(i *session.Instance) bool { return i.ID == ref },
-		func(i *session.Instance) bool { return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref) },
+		func(i *session.Instance) bool {
+			return ref != "" && (i.ClaudeSessionID == ref || i.CodexSessionID == ref)
+		},
 	} {
 		for _, i := range instances {
 			if match(i) {

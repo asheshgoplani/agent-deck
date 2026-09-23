@@ -2,8 +2,8 @@ package tmux
 
 import (
 	"os"
-	"reflect"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 

@@ -31,11 +31,11 @@ func recordBus(t *testing.T) *[]busRecord {
 
 func TestStatusBusProfile(t *testing.T) {
 	for path, want := range map[string]string{
-		"/h/.agent-deck/profiles/personal/state.db": "personal",
+		"/h/.agent-deck/profiles/personal/state.db":            "personal",
 		"/h/.local/share/agent-deck/profiles/default/state.db": "default",
-		"/tmp/x/state.db":                           "",
+		"/tmp/x/state.db": "",
 		"/h/.agent-deck/profiles/personal/other.db": "",
-		"":                                          "",
+		"": "",
 	} {
 		if got := statusBusProfile(path); got != want {
 			t.Errorf("statusBusProfile(%q) = %q, want %q", path, got, want)
