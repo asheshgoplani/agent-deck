@@ -6988,7 +6988,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// binding. Restarting then resumes a finalized child thread, which
 		// refuses turn/start and error-loops the session. See
 		// codex_subagent_gate.go.
+		// Both rejections below also restore the pre-event hook fields: a
+		// rejected thread's turn-end is not this pane's turn-finished edge,
+		// and its "waiting" must not release `session send --defer-if-busy`
+		// into a main turn that is still running.
 		if i.shouldRejectCodexSubagentRebind(sessionID) {
+			restoreHook()
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
@@ -7002,6 +7007,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			return
 		}
 		if i.shouldRejectCodexUnbackedTurnEnd(sessionID, status.Event) {
+			restoreHook()
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,

@@ -196,10 +196,19 @@ func (i *Instance) shouldRejectCodexSubagentRebind(candidateID string) bool {
 // thread the pane talks to. Earlier events (thread start, prompt submit) can
 // legitimately precede the rollout and keep the fail-open binding.
 func (i *Instance) shouldRejectCodexUnbackedTurnEnd(candidateID, event string) bool {
-	if !codexHookEventEndsTurn(event) {
+	return CodexUnbackedTurnEnd(candidateID, event, i.getCodexHomeDir())
+}
+
+// CodexUnbackedTurnEnd reports whether a turn-end notify for threadID comes
+// from a thread with no rollout under codexHome: an ephemeral helper thread
+// (thread-title generation), never the thread the pane talks to. The notify
+// writer uses it to drop such events before they touch the hook status or
+// anchor; UpdateHookStatus uses it to reject them from older status files.
+func CodexUnbackedTurnEnd(threadID, event, codexHome string) bool {
+	if strings.TrimSpace(threadID) == "" || !codexHookEventEndsTurn(event) {
 		return false
 	}
-	_, flushed := codexThreadMetaForSession(candidateID, i.getCodexHomeDir())
+	_, flushed := codexThreadMetaForSession(threadID, codexHome)
 	return !flushed
 }
 

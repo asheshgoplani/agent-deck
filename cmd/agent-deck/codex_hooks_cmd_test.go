@@ -44,11 +44,28 @@ func TestMapCodexNotifyToStatus(t *testing.T) {
 	}
 }
 
+// seedCodexNotifyRollout gives threadID a rollout under ~/.codex, the Codex
+// home a notify resolves when CODEX_HOME is unset. A turn-end from a thread
+// with no rollout is Codex's title helper and is dropped by the writer.
+func seedCodexNotifyRollout(t *testing.T, home, threadID string) {
+	t.Helper()
+	t.Setenv("CODEX_HOME", "")
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "09", "23")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"type":"session_meta","payload":{"id":"` + threadID + `","source":"cli"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "rollout-2026-09-23T05-13-42-"+threadID+".jsonl"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHandleCodexNotify_WritesStatus(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-1")
 	t.Setenv("CODEX_SESSION_ID", "")
+	seedCodexNotifyRollout(t, tmpHome, "abc-123")
 
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
@@ -88,6 +105,7 @@ func TestHandleCodexNotify_ArgPayload(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-arg")
 	t.Setenv("CODEX_SESSION_ID", "")
+	seedCodexNotifyRollout(t, tmpHome, "thr-1")
 
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
@@ -117,6 +135,7 @@ func TestHandleCodexNotify_JSONRPCMethodPayload(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-method")
 	t.Setenv("CODEX_SESSION_ID", "")
+	seedCodexNotifyRollout(t, tmpHome, "thr-42")
 
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
