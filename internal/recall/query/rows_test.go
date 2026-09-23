@@ -25,11 +25,11 @@ func rowsFixture(t *testing.T, harness string) string {
 
 func readRowsT(t *testing.T, harness, path string, opts RowsOptions) ([]Row, string) {
 	t.Helper()
-	rows, cursor, err := ReadRows(context.Background(), RowsSource{Harness: harness, Path: path}, opts)
+	tl, err := ReadRows(context.Background(), RowsSource{Harness: harness, Path: path}, opts)
 	if err != nil {
 		t.Fatalf("ReadRows(%s): %v", path, err)
 	}
-	return rows, cursor
+	return tl.Turns, tl.ThroughCursor
 }
 
 func TestRowsGoldens(t *testing.T) {
@@ -84,52 +84,63 @@ func TestRowsClaudeMapping(t *testing.T) {
 			t.Errorf("no %s row", kind)
 		}
 	}
-	bash, _ := rowByID(rows, "tool:toolu_bash1")
-	if bash.Kind != "bash" || bash.Title != "Run hello.py" || bash.Result == nil || bash.Result.Lines != 4 {
+	bash, _ := rowByID(rows, "toolu_bash1")
+	if bash.Kind != "bash" || bash.Title != "Run hello.py" || bash.ToolID != "toolu_bash1" || bash.Detail != "python3 hello.py\nls" || bash.Body != "1\n2\n3\n4" || bash.Finished == nil || !*bash.Finished || bash.Summary != "… +1 lines" {
 		t.Errorf("bash row: %+v", bash)
 	}
-	edit, _ := rowByID(rows, "tool:toolu_edit1")
-	if edit.Result == nil || edit.Result.Added != 2 || edit.Result.Removed != 1 {
-		t.Errorf("edit row +/-: %+v", edit.Result)
+	edit, _ := rowByID(rows, "toolu_edit1")
+	if edit.Meta["added"] != 2 || edit.Meta["removed"] != 1 || edit.Summary != "Added 2 lines, removed 1 line" {
+		t.Errorf("edit row +/-: %+v", edit)
 	}
-	read, _ := rowByID(rows, "tool:toolu_read1")
-	if read.Result == nil || !read.Result.IsError {
+	read, _ := rowByID(rows, "toolu_read1")
+	if read.IsError == nil || !*read.IsError {
 		t.Errorf("error result not merged: %+v", read)
 	}
-	q, _ := rowByID(rows, "tool:toolu_q1")
-	if q.Result == nil || !strings.Contains(string(q.Result.Answers), "Which?") {
-		t.Errorf("question answers: %+v", q.Result)
+	q, _ := rowByID(rows, "toolu_q1")
+	if q.Title != "Which?" || q.Summary != "Which? → A" {
+		t.Errorf("question: %+v", q)
 	}
-	// Sidechain children follow their subagent row.
-	var children int
-	for i, r := range rows {
-		if r.ParentID == "tool:toolu_agent1" {
-			children++
-			if rows[i-1].ParentID != "tool:toolu_agent1" && rows[i-1].ID != "tool:toolu_agent1" {
-				t.Errorf("child %s not under its subagent row", r.ID)
-			}
-		}
+	todo, _ := rowByID(rows, "toolu_todo1")
+	if todo.Summary != "1 of 2 done" {
+		t.Errorf("todo: %+v", todo)
 	}
-	if children != 3 {
-		t.Errorf("sidechain children = %d, want 3", children)
+	think, _ := rowByID(rows, "as1")
+	if think.Kind != "thinking" {
+		t.Errorf("single-block row id should be the uuid: %+v", think)
+	}
+	if _, ok := rowByID(rows, "as6#2"); !ok {
+		t.Errorf("multi-block ids are uuid#block")
+	}
+	// Sidechain rows are children of their subagent row.
+	agent, _ := rowByID(rows, "toolu_agent1")
+	if len(agent.Children) != 3 || agent.Children[1].Kind != "bash" || !strings.HasPrefix(agent.Children[0].ID, "sub:agent42:") || agent.Summary != "Done (1 tool use)" {
+		t.Errorf("subagent children: %+v", agent)
+	}
+	compact, _ := rowByID(rows, "s4")
+	if compact.Meta["pre_tokens"] != int64(844000) || compact.Meta["post_tokens"] != int64(19000) {
+		t.Errorf("compaction meta: %+v", compact.Meta)
+	}
+	turn, _ := rowByID(rows, "s3")
+	if turn.Meta["duration_ms"] != int64(75000) {
+		t.Errorf("turn_end meta: %+v", turn.Meta)
 	}
 	// Mid-turn message: no user row exists, the queue row stays, at the
 	// remove timestamp, and the queued_command attachment is not repeated.
 	var absorbed []Row
 	for _, r := range rows {
-		if strings.Contains(r.Text, "MIDTURN") {
+		if strings.Contains(r.Body, "MIDTURN") {
 			absorbed = append(absorbed, r)
 		}
 	}
-	if len(absorbed) != 1 || absorbed[0].Kind != "user" || absorbed[0].Delivery != "absorbed" || absorbed[0].Timestamp != "2026-09-23T08:00:17.000Z" {
+	if len(absorbed) != 1 || absorbed[0].Kind != "user" || absorbed[0].Queued == nil || *absorbed[0].Queued || absorbed[0].TS != "2026-09-23T08:00:17.000Z" {
 		t.Fatalf("absorbed mid-turn message: %+v", absorbed)
 	}
 	// A dequeued message is replaced by its user row; a removed one is gone.
 	for _, r := range rows {
-		if r.Text == "next task please" && r.Delivery != "" {
+		if r.Body == "next task please" && r.Queued != nil {
 			t.Errorf("dequeued placeholder kept: %+v", r)
 		}
-		if r.Text == "oops typo" {
+		if r.Body == "oops typo" {
 			t.Errorf("removed queue entry kept: %+v", r)
 		}
 		if r.Kind == "system" && r.Title == "" {
@@ -147,10 +158,10 @@ func TestRowsClaudeMapping(t *testing.T) {
 func TestRowsCodexMapping(t *testing.T) {
 	rows, _ := readRowsT(t, "codex", rowsFixture(t, "codex"), RowsOptions{})
 	for _, r := range rows {
-		if strings.Contains(r.Text, "AGENTS.md") || strings.Contains(r.Text, "environment_context") || strings.Contains(r.Text, "dev instructions") {
+		if strings.Contains(r.Body, "AGENTS.md") || strings.Contains(r.Body, "environment_context") || strings.Contains(r.Body, "dev instructions") {
 			t.Errorf("boilerplate leaked: %+v", r)
 		}
-		if r.ID == "tool:call_exec1" {
+		if r.ID == "call_exec1" {
 			t.Errorf("code-mode exec wrapper duplicated its CommandExecution: %+v", r)
 		}
 	}
@@ -160,25 +171,39 @@ func TestRowsCodexMapping(t *testing.T) {
 	if n := kindsOf(rows)["assistant"]; n != 1 {
 		t.Errorf("assistant rows = %d, want 1", n)
 	}
-	read, _ := rowByID(rows, "codex:exec-2")
-	if read.Kind != "read" {
-		t.Errorf("read-only command kind = %q", read.Kind)
+	read, _ := rowByID(rows, "exec-2")
+	if read.Kind != "read" || read.Summary != "Read 1 line" {
+		t.Errorf("read-only command: %+v", read)
 	}
-	failed, _ := rowByID(rows, "codex:exec-3")
-	if failed.Result == nil || failed.Result.ExitCode == nil || *failed.Result.ExitCode != 1 || !failed.Result.IsError {
-		t.Errorf("failed command: %+v", failed.Result)
+	failed, _ := rowByID(rows, "exec-3")
+	if failed.Meta["exit_code"] != 1 || failed.IsError == nil || !*failed.IsError {
+		t.Errorf("failed command: %+v", failed)
 	}
-	sub, _ := rowByID(rows, "tool:call_spawn")
-	if sub.Kind != "subagent" || sub.AgentID != "th2" {
+	sub, _ := rowByID(rows, "call_spawn")
+	if sub.Kind != "subagent" || sub.Meta["agent_id"] != "th2" {
 		t.Errorf("spawn_agent row: %+v", sub)
 	}
+	edit, _ := rowByID(rows, "fc-1")
+	if edit.Summary != "Added 1 line, removed 1 line" {
+		t.Errorf("FileChange: %+v", edit)
+	}
 	turn, _ := rowByID(rows, "turn:turn1")
-	if turn.Kind != "turn_end" || turn.DurationMs != 56000 || turn.Tokens == nil || turn.Tokens.Total != 25165 {
+	tokens, _ := turn.Meta["tokens"].(map[string]any)
+	if turn.Kind != "turn_end" || turn.Meta["duration_ms"] != int64(56000) || tokens["total"] != 25165 {
 		t.Errorf("turn_end: %+v", turn)
 	}
 	aborted, _ := rowByID(rows, "turn:turn2")
-	if aborted.Status != "interrupted" {
+	if aborted.Meta["status"] != "interrupted" {
 		t.Errorf("turn_aborted: %+v", aborted)
+	}
+	model := false
+	for _, r := range rows {
+		if r.Title == "Model changed to gpt-6-mini" {
+			model = true
+		}
+	}
+	if !model {
+		t.Error("no model-change system row")
 	}
 }
 
@@ -189,13 +214,22 @@ func TestRowsIDsStableAcrossTailWindow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tail, cursor := readRowsT(t, harness, rowsFixture(t, harness), RowsOptions{TailBytes: info.Size() / 2})
-		if len(tail) == 0 || len(tail) >= len(full) || cursor == "" {
-			t.Fatalf("%s tail window: %d of %d rows", harness, len(tail), len(full))
+		_ = info
+		tail, cursor := readRowsT(t, harness, rowsFixture(t, harness), RowsOptions{Tail: 5})
+		if len(tail) != 5 || cursor == "" {
+			t.Fatalf("%s tail: %d rows", harness, len(tail))
 		}
-		last := tail[len(tail)-1]
-		if want, ok := rowByID(full, last.ID); !ok || want.Kind != last.Kind {
-			t.Errorf("%s: tail row %s not in the full timeline with the same kind", harness, last.ID)
+		for i, r := range tail {
+			want := full[len(full)-5+i]
+			if r.ID != want.ID || r.Kind != want.Kind {
+				t.Errorf("%s: tail row %d = %s/%s, want %s/%s", harness, i, r.ID, r.Kind, want.ID, want.Kind)
+			}
+		}
+		_, fullCursor := readRowsT(t, harness, rowsFixture(t, harness), RowsOptions{})
+		a, _ := decodeRowsCursor(cursor)
+		b, _ := decodeRowsCursor(fullCursor)
+		if a.O != b.O || a.A != b.A {
+			t.Errorf("%s: tail cursor offset %d, full %d", harness, a.O, b.O)
 		}
 	}
 }
@@ -216,8 +250,8 @@ func (c *followCollector) emit(f RowFrame) error {
 	if f.Cursor != "" {
 		c.cursors = append(c.cursors, f.Cursor)
 	}
-	if f.Status != nil {
-		c.status = append(c.status, f.Status)
+	if f.LiveStatus != nil {
+		c.status = append(c.status, f.LiveStatus)
 	}
 	c.set.apply(f)
 	return nil
@@ -313,7 +347,7 @@ func TestRowsFollowMatchesTimelineAndResumes(t *testing.T) {
 			c := &followCollector{set: newRowSet()}
 			first, _ := readRowsT(t, harness, path, RowsOptions{})
 			for _, r := range first {
-				c.set.apply(RowFrame{Type: "row", Row: &r})
+				c.set.apply(RowFrame{Frame: "row", Row: &r})
 			}
 			stop := startFollow(t, src, cursor, nil, c)
 			half := len(lines) / 2
@@ -344,13 +378,13 @@ func TestRowsFollowMatchesTimelineAndResumes(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, _ := c.snapshot()
-			if !reflect.DeepEqual(stripChildren(got), stripChildren(want)) {
+			if !reflect.DeepEqual(normalizeRows(t, got), normalizeRows(t, want)) {
 				gb, _ := json.MarshalIndent(got, "", " ")
 				wb, _ := json.MarshalIndent(want, "", " ")
 				t.Fatalf("follow != timeline\nfollow:\n%s\ntimeline:\n%s", gb, wb)
 			}
 			for _, f := range c.frames {
-				if f.Type == "resync_required" {
+				if f.Frame == "resync_required" {
 					t.Fatalf("unexpected resync: %+v", f)
 				}
 			}
@@ -358,16 +392,15 @@ func TestRowsFollowMatchesTimelineAndResumes(t *testing.T) {
 	}
 }
 
-// stripChildren compares top-level rows: follow emits sidechain children
-// when the sub-agent result lands, timeline places them under the row.
-func stripChildren(rows []Row) []Row {
-	var out []Row
-	for _, r := range rows {
-		if r.ParentID == "" {
-			out = append(out, r)
-		}
+// normalizeRows round-trips rows through JSON so a streamed row and a
+// timeline row compare by their wire form (meta number types differ in Go).
+func normalizeRows(t *testing.T, rows []Row) string {
+	t.Helper()
+	b, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return out
+	return string(b)
 }
 
 func TestRowsFollowEmitsSidechainChildren(t *testing.T) {
@@ -402,13 +435,12 @@ func TestRowsFollowEmitsSidechainChildren(t *testing.T) {
 	waitFor(t, "children", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		n := 0
 		for _, f := range c.frames {
-			if f.Type == "row" && f.Row.ParentID == "tool:toolu_agent1" {
-				n++
+			if f.Frame == "update" && f.Row.ID == "toolu_agent1" && len(f.Row.Children) == 3 {
+				return true
 			}
 		}
-		return n == 3
+		return false
 	})
 	_ = stop()
 }
@@ -423,10 +455,10 @@ func TestRowsFollowResync(t *testing.T) {
 		var got RowFrame
 		err := FollowRows(context.Background(), src, after, 10*time.Millisecond, nil, func(f RowFrame) error {
 			got = f
-			if f.Type == "resync_required" {
+			if f.Frame == "resync_required" {
 				return nil
 			}
-			return errors.New("unexpected frame " + f.Type)
+			return errors.New("unexpected frame " + f.Frame)
 		})
 		if err != nil {
 			t.Fatalf("follow: %v", err)
@@ -467,18 +499,20 @@ func TestRowsFollowSourceMovedByResolver(t *testing.T) {
 	src := RowsSource{Harness: "codex", Path: path, Resolve: func() (string, error) { return moved, nil }}
 	var got RowFrame
 	err := FollowRows(context.Background(), src, cursor, 10*time.Millisecond, nil, func(f RowFrame) error { got = f; return nil })
-	if err != nil || got.Type != "resync_required" || got.Reason != "source_moved" {
+	if err != nil || got.Frame != "resync_required" || got.Reason != "source_moved" {
 		t.Fatalf("resolver move: %v %+v", err, got)
 	}
 }
 
+// TestRowsFollowStatusFrames: status frames go out once a second while the
+// session runs, once when it stops, and never again while it stays idle.
 func TestRowsFollowStatusFrames(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "st.jsonl")
 	appendFile(t, path, fixtureLines(t, "claude")[0])
 	_, cursor := readRowsT(t, "claude", path, RowsOptions{})
 	var mu sync.Mutex
-	state := &LiveStatus{State: "running", Verb: "Cogitating…", Elapsed: "3s"}
+	state := &LiveStatus{SessionID: "s1", Running: true, SessionStatus: "running", Verb: "Cogitating…", ElapsedS: 3}
 	status := func() *LiveStatus {
 		mu.Lock()
 		defer mu.Unlock()
@@ -487,22 +521,76 @@ func TestRowsFollowStatusFrames(t *testing.T) {
 	}
 	c := &followCollector{set: newRowSet()}
 	stop := startFollow(t, RowsSource{Harness: "claude", Path: path}, cursor, status, c)
-	waitFor(t, "first status", func() bool { c.mu.Lock(); defer c.mu.Unlock(); return len(c.status) == 1 })
+	waitFor(t, "two running frames", func() bool { c.mu.Lock(); defer c.mu.Unlock(); return len(c.status) >= 2 })
 	mu.Lock()
-	state = &LiveStatus{State: "waiting"}
+	state = &LiveStatus{SessionID: "s1", SessionStatus: "waiting"}
 	mu.Unlock()
-	waitFor(t, "second status", func() bool { c.mu.Lock(); defer c.mu.Unlock(); return len(c.status) == 2 })
-	time.Sleep(1200 * time.Millisecond) // unchanged status is not repeated
+	waitFor(t, "stopped frame", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return !c.status[len(c.status)-1].Running
+	})
+	c.mu.Lock()
+	n := len(c.status)
+	c.mu.Unlock()
+	time.Sleep(2200 * time.Millisecond) // idle: nothing more
 	_ = stop()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.status) != 2 || c.status[0].Verb != "Cogitating…" || c.status[1].State != "waiting" {
-		t.Fatalf("status frames: %+v", c.status)
+	if len(c.status) != n {
+		t.Fatalf("idle status repeated: %d then %d frames", n, len(c.status))
+	}
+	for _, s := range c.status[:n-1] {
+		if !s.Running || s.Verb != "Cogitating…" || s.SessionID != "s1" {
+			t.Fatalf("running frame: %+v", s)
+		}
+	}
+	line, _ := json.Marshal(c.frames[len(c.frames)-1])
+	if !strings.Contains(string(line), `"frame":"status"`) || !strings.Contains(string(line), `"running":false`) || !strings.Contains(string(line), `"session_id":"s1"`) {
+		t.Fatalf("status wire shape: %s", line)
+	}
+}
+
+// TestRowsSinceAndLimit pages a transcript forward with --limit and --since
+// and ends with exactly the full timeline; changes to rows of an earlier
+// page arrive as updates/removed.
+func TestRowsSinceAndLimit(t *testing.T) {
+	for _, harness := range []string{"claude", "codex"} {
+		full, _ := readRowsT(t, harness, rowsFixture(t, harness), RowsOptions{})
+		set := newRowSet()
+		cursor := ""
+		for page := 0; page < 100; page++ {
+			tl, err := ReadRows(context.Background(), RowsSource{Harness: harness, Path: rowsFixture(t, harness)}, RowsOptions{Since: cursor, Limit: 4})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, u := range tl.Updates {
+				u := u
+				set.apply(RowFrame{Frame: "update", Row: &u})
+			}
+			for _, id := range tl.Removed {
+				set.apply(RowFrame{Frame: "remove", ID: id})
+			}
+			for _, r := range tl.Turns {
+				r := r
+				set.apply(RowFrame{Frame: "row", Row: &r})
+			}
+			if tl.ThroughCursor == cursor {
+				break
+			}
+			cursor = tl.ThroughCursor
+		}
+		if got, want := normalizeRows(t, set.list()), normalizeRows(t, full); got != want {
+			t.Fatalf("%s: paged rows differ\npaged: %s\nfull:  %s", harness, got, want)
+		}
+	}
+	if _, err := ReadRows(context.Background(), RowsSource{Harness: "claude", Path: rowsFixture(t, "claude")}, RowsOptions{Since: "garbage"}); err == nil {
+		t.Fatal("invalid --since accepted")
 	}
 }
 
 func TestRowsUnsupportedHarness(t *testing.T) {
-	_, _, err := ReadRows(context.Background(), RowsSource{Harness: "gemini", Path: "x"}, RowsOptions{})
+	_, err := ReadRows(context.Background(), RowsSource{Harness: "gemini", Path: "x"}, RowsOptions{})
 	if !errors.Is(err, ErrRowsUnsupported) {
 		t.Fatalf("err = %v", err)
 	}

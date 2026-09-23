@@ -247,3 +247,37 @@ func (s *Searcher) Follow(ctx context.Context, ref, after string, emit func(Fram
 		}
 	}
 }
+
+// NativeSource resolves a session reference through the index (row id,
+// `#n`, deck id, native id or prefix) to its first readable native source.
+// The rows reader uses it only when the reference is not a live deck session
+// or a native conversation id found on disk: the index is an accelerator.
+func (s *Searcher) NativeSource(ctx context.Context, ref string) (harness, path string, sess SessionRow, err error) {
+	tx, err := s.st.ReadSnapshot(ctx)
+	if err != nil {
+		return "", "", SessionRow{}, err
+	}
+	defer tx.Rollback()
+	sess, err = resolveTimelineSession(ctx, tx, ref)
+	if err != nil {
+		return "", "", SessionRow{}, err
+	}
+	if sess.DigestOnly {
+		return "", "", sess, fmt.Errorf("recall: %s is a remote card without a local transcript", ref)
+	}
+	err = tx.QueryRowContext(ctx, `SELECT harness, path FROM source WHERE sess_id=? AND state NOT IN (?,?) ORDER BY src_id LIMIT 1`, sess.SessID, recall.SourceMissing, recall.SourceQuarantined).Scan(&harness, &path)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", sess, fmt.Errorf("%w for %s", errTimelineSourceMissing, ref)
+	}
+	return harness, path, sess, err
+}
+
+// TimelineTurnsForSource parses one native source with the v1 parsers, for
+// harnesses the rows reader does not stream directly.
+func TimelineTurnsForSource(ctx context.Context, harness, path, nativeID string) ([]Row, error) {
+	turns, err := parseStableTimelineSource(ctx, timelineSource{Harness: harness, Path: path}, nativeID)
+	if err != nil {
+		return nil, err
+	}
+	return rowsFromTurns(turns), nil
+}

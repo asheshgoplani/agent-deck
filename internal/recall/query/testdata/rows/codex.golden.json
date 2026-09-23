@@ -1,188 +1,246 @@
 [
   {
-    "id": "codex:msg_u1",
+    "id": "msg_u1",
     "kind": "user",
     "ts": "2026-09-23T08:00:02.000Z",
-    "text": "Run hello.py",
-    "images": 1
+    "body": "Run hello.py",
+    "meta": {
+      "images": 1
+    },
+    "raw_type": "response_item/message"
   },
   {
-    "id": "codex:rs_1",
+    "id": "rs_1",
     "kind": "thinking",
     "ts": "2026-09-23T08:00:03.000Z",
     "title": "**Planning the run**",
-    "text": "**Planning the run**"
+    "body": "**Planning the run**",
+    "raw_type": "response_item/reasoning"
   },
   {
-    "id": "codex:msg_a1",
+    "id": "msg_a1",
     "kind": "assistant",
     "ts": "2026-09-23T08:00:04.000Z",
-    "text": "Running it."
+    "body": "Running it.",
+    "raw_type": "response_item/message"
   },
   {
-    "id": "codex:exec-1",
+    "id": "exec-1",
     "kind": "bash",
     "ts": "2026-09-23T08:00:06.000Z",
     "title": "python3 hello.py",
-    "tool_name": "shell",
-    "command": "python3 hello.py",
-    "result": {
-      "text": "1\n2\n",
+    "body": "1\n2\n",
+    "detail": "python3 hello.py",
+    "tool_id": "exec-1",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "duration_ms": 1500,
+      "exit_code": 0,
       "lines": 2,
-      "exit_code": 0
+      "status": "completed",
+      "tool_name": "shell"
     },
-    "status": "completed",
-    "duration_ms": 1500
+    "raw_type": "item_completed/CommandExecution"
   },
   {
-    "id": "codex:exec-2",
+    "id": "exec-2",
     "kind": "read",
     "ts": "2026-09-23T08:00:07.000Z",
     "title": "cat hello.py",
-    "tool_name": "shell",
-    "command": "cat hello.py",
-    "result": {
-      "text": "print(1)\n",
+    "body": "print(1)\n",
+    "summary": "Read 1 line",
+    "detail": "cat hello.py",
+    "tool_id": "exec-2",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "exit_code": 0,
       "lines": 1,
-      "exit_code": 0
+      "status": "completed",
+      "tool_name": "shell"
     },
-    "status": "completed"
+    "raw_type": "item_completed/CommandExecution"
   },
   {
-    "id": "codex:exec-3",
+    "id": "exec-3",
     "kind": "bash",
     "ts": "2026-09-23T08:00:08.000Z",
     "title": "false",
-    "tool_name": "shell",
-    "command": "false",
-    "result": {
-      "is_error": true,
-      "exit_code": 1
+    "summary": "Exit code 1",
+    "detail": "false",
+    "tool_id": "exec-3",
+    "finished": true,
+    "is_error": true,
+    "meta": {
+      "exit_code": 1,
+      "lines": 0,
+      "status": "failed",
+      "tool_name": "shell"
     },
-    "status": "failed"
+    "raw_type": "item_completed/CommandExecution"
   },
   {
-    "id": "codex:fc-1",
+    "id": "fc-1",
     "kind": "edit",
     "ts": "2026-09-23T08:00:09.000Z",
     "title": "Edited /w/hello.py",
-    "tool_name": "apply_patch",
-    "path": "/w/hello.py",
-    "input": {
-      "/w/hello.py": {
-        "type": "update",
-        "unified_diff": "@@\n-a\n+b\n"
-      }
+    "summary": "Added 1 line, removed 1 line",
+    "detail": "/w/hello.py",
+    "tool_id": "fc-1",
+    "finished": true,
+    "meta": {
+      "added": 1,
+      "input": {
+        "/w/hello.py": {
+          "type": "update",
+          "unified_diff": "@@\n-a\n+b\n"
+        }
+      },
+      "removed": 1,
+      "status": "completed",
+      "tool_name": "apply_patch"
     },
-    "status": "completed"
+    "raw_type": "item_completed/FileChange"
   },
   {
-    "id": "codex:mcp-1",
+    "id": "mcp-1",
     "kind": "tool",
     "ts": "2026-09-23T08:00:10.000Z",
     "title": "github.get_issue",
-    "tool_name": "github.get_issue",
-    "input": {
-      "n": 1
+    "body": "issue body",
+    "tool_id": "mcp-1",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "input": {
+        "n": 1
+      },
+      "lines": 1,
+      "status": "completed",
+      "tool_name": "github.get_issue"
     },
-    "result": {
-      "text": "issue body",
-      "lines": 1
-    },
-    "status": "completed"
+    "raw_type": "item_completed/McpToolCall"
   },
   {
-    "id": "tool:call_exec2",
+    "id": "call_exec2",
     "kind": "tool",
     "ts": "2026-09-23T08:00:11.000Z",
     "title": "exec",
-    "tool_name": "exec",
-    "input": {
-      "input": "text(ALL_TOOLS.length)"
+    "body": "42",
+    "tool_id": "call_exec2",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "input": {
+        "input": "text(ALL_TOOLS.length)"
+      },
+      "lines": 1,
+      "tool_name": "exec"
     },
-    "result": {
-      "text": "42",
-      "lines": 1
-    },
-    "status": "completed"
+    "raw_type": "response_item/custom_tool_call"
   },
   {
-    "id": "tool:call_spawn",
+    "id": "call_spawn",
     "kind": "subagent",
     "ts": "2026-09-23T08:00:12.000Z",
     "title": "explore",
-    "tool_name": "spawn_agent",
-    "result": {
-      "text": "{\"task_name\":\"/root/explore\"}",
-      "lines": 1
+    "body": "{\"task_name\":\"/root/explore\"}",
+    "summary": "Agent started",
+    "tool_id": "call_spawn",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "agent_id": "th2",
+      "agent_path": "/root/explore",
+      "lines": 1,
+      "status": "started",
+      "tool_name": "spawn_agent"
     },
-    "agent_id": "th2",
-    "status": "started"
+    "raw_type": "response_item/function_call"
   },
   {
-    "id": "tool:call_shell",
+    "id": "call_shell",
     "kind": "bash",
     "ts": "2026-09-23T08:00:13.000Z",
     "title": "make test",
-    "tool_name": "shell",
-    "command": "make test",
-    "result": {
-      "text": "FAIL\n",
+    "body": "FAIL\n",
+    "detail": "make test",
+    "tool_id": "call_shell",
+    "finished": true,
+    "is_error": true,
+    "meta": {
+      "exit_code": 2,
       "lines": 1,
-      "is_error": true,
-      "exit_code": 2
-    }
+      "tool_name": "shell"
+    },
+    "raw_type": "response_item/function_call"
   },
   {
-    "id": "codex:amsg_1",
+    "id": "amsg_1",
     "kind": "system",
     "ts": "2026-09-23T08:00:14.000Z",
     "title": "Message from /root/explore",
-    "text": "2 lines"
+    "body": "2 lines",
+    "raw_type": "response_item/agent_message"
   },
   {
     "id": "turn:turn1",
     "kind": "turn_end",
     "ts": "2026-09-23T08:00:16.000Z",
     "title": "Worked for 56s",
-    "duration_ms": 56000,
-    "tokens": {
-      "input": 24822,
-      "output": 343,
-      "total": 25165,
-      "context_window": 258400
-    }
+    "meta": {
+      "duration_ms": 56000,
+      "tokens": {
+        "context_window": 258400,
+        "input": 24822,
+        "output": 343,
+        "total": 25165
+      }
+    },
+    "raw_type": "event_msg/task_complete"
   },
   {
     "id": "codex:2026-09-23T08:00:17.000Z:dfbd519c34d4",
     "kind": "system",
     "ts": "2026-09-23T08:00:17.000Z",
-    "title": "Model changed to gpt-6-mini"
+    "title": "Model changed to gpt-6-mini",
+    "meta": {
+      "model": "gpt-6-mini"
+    },
+    "raw_type": "turn_context"
   },
   {
     "id": "turn:turn2",
     "kind": "turn_end",
     "ts": "2026-09-23T08:00:19.000Z",
     "title": "Interrupted",
-    "status": "interrupted"
+    "meta": {
+      "status": "interrupted"
+    },
+    "raw_type": "event_msg/turn_aborted"
   },
   {
     "id": "codex:2026-09-23T08:00:20.000Z:448c248afded",
     "kind": "compaction",
     "ts": "2026-09-23T08:00:20.000Z",
-    "title": "Context compacted"
+    "title": "Context compacted",
+    "raw_type": "compacted"
   },
   {
     "id": "codex:2026-09-23T08:00:21.000Z:58e65f65c39b",
     "kind": "other",
     "ts": "2026-09-23T08:00:21.000Z",
     "title": "mystery_row",
-    "raw": {
-      "timestamp": "2026-09-23T08:00:21.000Z",
-      "type": "mystery_row",
-      "payload": {
-        "x": 1
+    "meta": {
+      "raw": {
+        "timestamp": "2026-09-23T08:00:21.000Z",
+        "type": "mystery_row",
+        "payload": {
+          "x": 1
+        }
       }
-    }
+    },
+    "raw_type": "mystery_row"
   }
 ]

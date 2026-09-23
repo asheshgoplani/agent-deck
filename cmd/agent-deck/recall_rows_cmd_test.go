@@ -14,10 +14,12 @@ import (
 )
 
 // rowsTestSession adds a Claude session to an isolated home and writes its
-// native transcript where Claude Code would, with recall left disabled.
+// native transcript where Claude Code would. [recall] is enabled (the gate)
+// but nothing is ever indexed: rows come from the native file.
 func rowsTestSession(t *testing.T) (home, id, transcript string) {
 	t.Helper()
 	home = t.TempDir()
+	writeMacappConfig(t, home, "[recall]\nenabled = true\nmax_loadavg = 0\n")
 	project := filepath.Join(home, "proj")
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
@@ -60,25 +62,31 @@ type rowsTimelineJSON struct {
 	Schema  string `json:"schema"`
 	Source  string `json:"source"`
 	Session struct {
-		ID      string `json:"id"`
-		Harness string `json:"harness"`
+		ID       string `json:"id"`
+		Harness  string `json:"harness"`
+		NativeID string `json:"native_id"`
+		Path     string `json:"path"`
+		Title    string `json:"title"`
+		Cwd      string `json:"cwd"`
 	} `json:"session"`
-	Rows []struct {
+	Turns []struct {
 		ID   string `json:"id"`
 		Kind string `json:"kind"`
-	} `json:"rows"`
+	} `json:"turns"`
 	ThroughCursor string `json:"through_cursor"`
 	Status        *struct {
-		State string `json:"state"`
+		SessionID     string `json:"session_id"`
+		SessionStatus string `json:"session_status"`
 	} `json:"status"`
 }
 
-// TestRecallRowsWithoutIndexOrGate: a deck session's transcript is read
-// directly, with [recall] disabled and no index at all, by id and by title.
-func TestRecallRowsWithoutIndexOrGate(t *testing.T) {
-	home, id, _ := rowsTestSession(t)
-	for _, ref := range []string{id, "rows-cli"} {
-		stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", ref, "--rows", "--json")
+// TestRecallRowsWithoutIndex: a deck session's transcript is read directly
+// with no index at all, by deck id, by title and by its Claude conversation
+// id; the gate still applies.
+func TestRecallRowsWithoutIndex(t *testing.T) {
+	home, id, transcript := rowsTestSession(t)
+	for _, ref := range []string{id, "rows-cli", "11111111-2222-3333-4444-555555555555"} {
+		stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", ref, "--json")
 		if code != 0 {
 			t.Fatalf("timeline %s: %d %s %s", ref, code, stdout, stderr)
 		}
@@ -86,45 +94,56 @@ func TestRecallRowsWithoutIndexOrGate(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &tl); err != nil {
 			t.Fatalf("JSON: %v %s", err, stdout)
 		}
-		if tl.Schema != "agent-deck.recall.rows/v2" || tl.Source != "native" || tl.Session.ID != id || tl.Session.Harness != "claude" || tl.ThroughCursor == "" || len(tl.Rows) == 0 {
-			t.Fatalf("timeline: %+v", tl)
+		if tl.Schema != "agent-deck.recall.rows/v2" || tl.Source != "native" || tl.Session.ID != id || tl.Session.Harness != "claude" ||
+			tl.Session.NativeID != "11111111-2222-3333-4444-555555555555" || tl.Session.Path != transcript || tl.Session.Title != "rows-cli" || tl.Session.Cwd == "" ||
+			tl.ThroughCursor == "" || len(tl.Turns) == 0 {
+			t.Fatalf("timeline %s: %+v", ref, tl)
 		}
-		if tl.Status == nil || tl.Status.State == "" {
+		if tl.Status == nil || tl.Status.SessionID != id || tl.Status.SessionStatus == "" {
 			t.Fatalf("timeline carries no status: %s", stdout)
 		}
 	}
-	// The v1 path still requires the gate: nothing changed for it.
+	// --tail N answers the last rows; --v1 keeps the slice-6 shape.
+	stdout, _, code := runAgentDeck(t, home, "recall", "timeline", id, "--json", "--tail", "2")
+	var tl rowsTimelineJSON
+	if code != 0 || json.Unmarshal([]byte(stdout), &tl) != nil || len(tl.Turns) != 2 {
+		t.Fatalf("--tail 2: %d %s", code, stdout)
+	}
+	// Gate: with [recall] off nothing is served.
+	writeMacappConfig(t, home, "[recall]\nenabled = false\n")
 	if _, _, code := runAgentDeck(t, home, "recall", "timeline", id, "--json"); code != 2 {
-		t.Fatalf("v1 timeline bypassed the recall gate: exit %d", code)
+		t.Fatalf("timeline bypassed the recall gate: exit %d", code)
 	}
 }
 
 func TestRecallRowsTranscriptFlagAndErrors(t *testing.T) {
 	home := t.TempDir()
+	writeMacappConfig(t, home, "[recall]\nenabled = true\nmax_loadavg = 0\n")
 	fixture, _ := filepath.Abs(filepath.Join("..", "..", "internal", "recall", "query", "testdata", "rows", "codex-rollout.jsonl"))
-	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", "--rows", "--json", "--transcript", fixture, "--harness", "codex")
+	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", "--json", "--transcript", fixture, "--harness", "codex")
 	if code != 0 || !strings.Contains(stdout, `"kind": "turn_end"`) {
 		t.Fatalf("--transcript: %d %s %s", code, stdout, stderr)
 	}
-	if _, _, code := runAgentDeck(t, home, "recall", "timeline", "--rows", "--json", "--transcript", fixture); code == 0 {
+	if _, _, code := runAgentDeck(t, home, "recall", "timeline", "--json", "--transcript", fixture); code == 0 {
 		t.Fatal("--transcript without --harness accepted")
 	}
-	if _, _, code := runAgentDeck(t, home, "recall", "timeline", "no-such-session", "--rows", "--json"); code == 0 {
+	if _, _, code := runAgentDeck(t, home, "recall", "timeline", "no-such-session", "--json"); code == 0 {
 		t.Fatal("unknown session accepted")
 	}
-	stdout, _, _ = runAgentDeck(t, home, "recall", "timeline", "--help")
-	_, helpErr, _ := runAgentDeck(t, home, "recall", "timeline", "--help")
-	if !strings.Contains(stdout+helpErr, "--rows") {
-		t.Fatalf("help does not document --rows: %s %s", stdout, helpErr)
+	stdout, stderr, _ = runAgentDeck(t, home, "recall", "timeline", "--help")
+	for _, flag := range []string{"--since", "--limit", "--tail", "--v1"} {
+		if !strings.Contains(stdout+stderr, flag) {
+			t.Fatalf("help does not document %s: %s %s", flag, stdout, stderr)
+		}
 	}
 }
 
 // TestRecallRowsFollowCLI: follow from the timeline cursor streams an
-// appended line as a row frame within two seconds, and the absorbed queue
-// row appears as remove+row under one id.
+// appended mid-turn message as a queued user row within 500 ms, and its
+// absorption as an update with queued:false at the absorb time.
 func TestRecallRowsFollowCLI(t *testing.T) {
 	home, id, transcript := rowsTestSession(t)
-	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", id, "--rows", "--json")
+	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", id, "--json")
 	if code != 0 {
 		t.Fatalf("timeline: %d %s %s", code, stdout, stderr)
 	}
@@ -132,7 +151,7 @@ func TestRecallRowsFollowCLI(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &tl); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(channelsCLIBinary(t), "recall", "follow", id, "--rows", "--after", tl.ThroughCursor, "--jsonl")
+	cmd := exec.Command(channelsCLIBinary(t), "recall", "follow", id, "--after", tl.ThroughCursor, "--jsonl", "--status")
 	cmd.Env = agentDeckTestEnv(home, nil)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -154,7 +173,15 @@ func TestRecallRowsFollowCLI(t *testing.T) {
 		}
 		close(frames)
 	}()
-	time.Sleep(300 * time.Millisecond)
+	// The first status frame proves the follower is up.
+	select {
+	case f := <-frames:
+		if f["frame"] != "status" || f["session_id"] != id {
+			t.Fatalf("first frame: %v", f)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no status frame")
+	}
 	enqueue := `{"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-23T09:00:00.000Z","content":"typed while busy"}` + "\n"
 	remove := `{"type":"queue-operation","operation":"remove","timestamp":"2026-09-23T09:00:05.000Z","content":"typed while busy","reason":"absorbed_mid_turn"}` + "\n"
 	appended := time.Now()
@@ -167,7 +194,7 @@ func TestRecallRowsFollowCLI(t *testing.T) {
 			if !ok {
 				t.Fatalf("follow exited; frames %v", seen)
 			}
-			typ, _ := f["type"].(string)
+			typ, _ := f["frame"].(string)
 			if typ == "status" {
 				continue
 			}
@@ -175,20 +202,19 @@ func TestRecallRowsFollowCLI(t *testing.T) {
 			if typ == "resync_required" {
 				t.Fatalf("resync: %v", f)
 			}
+			row, _ := f["row"].(map[string]any)
 			if len(seen) == 1 {
-				if lat := time.Since(appended); lat > 2*time.Second {
-					t.Fatalf("appended line took %v to stream", lat)
+				if lat := time.Since(appended); lat > 500*time.Millisecond {
+					t.Errorf("appended line took %v to stream (budget 500ms)", lat)
 				}
-				row, _ := f["row"].(map[string]any)
-				if typ != "row" || row["delivery"] != "queued" || f["cursor"] == nil {
+				if typ != "row" || row["queued"] != true || row["kind"] != "user" || f["cursor"] == nil {
 					t.Fatalf("queued frame: %v", f)
 				}
 				appendFileCLI(t, transcript, remove)
 			}
-			if len(seen) == 3 {
-				row, _ := f["row"].(map[string]any)
-				if strings.Join(seen, ",") != "row,remove,row" || row["delivery"] != "absorbed" {
-					t.Fatalf("absorb frames %v last %v", seen, f)
+			if len(seen) == 2 {
+				if typ != "update" || row["queued"] != false || row["ts"] != "2026-09-23T09:00:05.000Z" {
+					t.Fatalf("absorb frame: %v", f)
 				}
 				return
 			}

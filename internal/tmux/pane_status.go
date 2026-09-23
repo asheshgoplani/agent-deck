@@ -16,9 +16,13 @@ type PaneStatus struct {
 	Tokens      string `json:"tokens,omitempty"`
 	CurrentTool string `json:"current_tool,omitempty"`
 	Queued      int    `json:"queued,omitempty"`
-	Footer      string `json:"footer,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Notice      string `json:"notice,omitempty"`
+	// QueuedText holds the queued inputs the pane lists (Codex "↳" lines).
+	QueuedText []string `json:"queued_text,omitempty"`
+	Footer     string   `json:"footer,omitempty"`
+	Mode       string   `json:"mode,omitempty"`
+	Notice     string   `json:"notice,omitempty"`
+	// AutoCompactPct is Claude's "N% until auto-compact", nil when absent.
+	AutoCompactPct *int `json:"auto_compact_pct,omitempty"`
 }
 
 var (
@@ -27,7 +31,81 @@ var (
 	// Codex: "• Working (30m 26s • esc to interrupt) · 1 background terminal running".
 	codexWorkingStatusRe = regexp.MustCompile(`^\s*•\s+(\S[^(]*?)\s+\(((?:\d+[hms]\s*)+)[•·]\s*esc to interrupt\)(.*)$`)
 	elapsedPartRe        = regexp.MustCompile(`^(?:\d+h\s*)?(?:\d+m\s*)?\d+s$`)
+	autoCompactRe        = regexp.MustCompile(`(\d+)% until auto-compact`)
+	elapsedUnitRe        = regexp.MustCompile(`(\d+)([hms])`)
 )
+
+// ElapsedSeconds converts "1h 2m 3s" / "1m 34s" / "12s" to seconds.
+func ElapsedSeconds(s string) int {
+	total := 0
+	for _, m := range elapsedUnitRe.FindAllStringSubmatch(s, -1) {
+		n := 0
+		for _, c := range m[1] {
+			n = n*10 + int(c-'0')
+		}
+		switch m[2] {
+		case "h":
+			total += n * 3600
+		case "m":
+			total += n * 60
+		default:
+			total += n
+		}
+	}
+	return total
+}
+
+// FooterFacts splits a statusline into named facts. Claude:
+// "[personal] user@host:/path | [Fable 5.1] ctx:5% in:52.4k out:376 5h:40% 7d:20%"
+// gives account, cwd, model, ctx, in, out, 5h, 7d. Codex:
+// "gpt-6-sol · /path · Context 50% left · weekly 87% left · 258K window"
+// gives model, cwd, context_left, context_used, weekly_left, window.
+func FooterFacts(footer string) map[string]string {
+	facts := map[string]string{}
+	footer = strings.TrimSpace(footer)
+	if footer == "" {
+		return facts
+	}
+	if strings.HasPrefix(footer, "[") {
+		left, right, _ := strings.Cut(footer, " | ")
+		if i := strings.Index(left, "]"); i > 0 {
+			facts["account"] = left[1:i]
+			if _, cwd, ok := strings.Cut(left[i+1:], ":"); ok {
+				facts["cwd"] = strings.TrimSpace(cwd)
+			}
+		}
+		if strings.HasPrefix(right, "[") {
+			if i := strings.Index(right, "]"); i > 0 {
+				facts["model"] = right[1:i]
+				right = right[i+1:]
+			}
+		}
+		for _, f := range strings.Fields(right) {
+			if k, v, ok := strings.Cut(f, ":"); ok && k != "" && v != "" {
+				facts[k] = v
+			}
+		}
+		return facts
+	}
+	for i, part := range strings.Split(footer, " · ") {
+		part = strings.TrimSpace(part)
+		switch {
+		case i == 0:
+			facts["model"] = part
+		case strings.HasPrefix(part, "/") || strings.HasPrefix(part, "~"):
+			facts["cwd"] = part
+		case strings.HasPrefix(part, "Context ") && strings.HasSuffix(part, " left"):
+			facts["context_left"] = strings.TrimSuffix(strings.TrimPrefix(part, "Context "), " left")
+		case strings.HasPrefix(part, "Context ") && strings.HasSuffix(part, " used"):
+			facts["context_used"] = strings.TrimSuffix(strings.TrimPrefix(part, "Context "), " used")
+		case strings.HasPrefix(part, "weekly ") && strings.HasSuffix(part, " left"):
+			facts["weekly_left"] = strings.TrimSuffix(strings.TrimPrefix(part, "weekly "), " left")
+		case strings.HasSuffix(part, " window"):
+			facts["window"] = strings.TrimSuffix(part, " window")
+		}
+	}
+	return facts
+}
 
 // ParsePaneStatus reads the visible pane of a Claude Code or Codex session.
 func ParsePaneStatus(content string) PaneStatus {
@@ -74,6 +152,7 @@ func ParsePaneStatus(content string) PaneStatus {
 			continue
 		case inQueue && strings.HasPrefix(line, "↳"):
 			st.Queued++
+			st.QueuedText = append(st.QueuedText, strings.TrimSpace(strings.TrimPrefix(line, "↳")))
 			continue
 		case strings.Contains(line, "Press up to edit queued messages"):
 			if st.Queued == 0 {
@@ -92,6 +171,10 @@ func ParsePaneStatus(content string) PaneStatus {
 			st.Notice = strings.TrimSpace(line[strings.Index(line, "✘"):])
 		case isFooterLine(line, i, lines):
 			st.Footer = line
+		}
+		if m := autoCompactRe.FindStringSubmatch(line); m != nil {
+			n := ElapsedSeconds(m[1] + "s")
+			st.AutoCompactPct = &n
 		}
 		inQueue = inQueue && strings.HasPrefix(line, "↳")
 	}

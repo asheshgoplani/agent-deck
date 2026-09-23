@@ -1,8 +1,12 @@
 # Recall timeline and follow
 
-`agent-deck recall timeline <session> --json` returns `session`, ordered
+Since the Mac app surface (docs/macapp-core.md) both commands answer with
+typed **rows** read straight from the native transcript; see "Rows" below.
+The slice-6 shape described in this first part stays available with `--v1`.
+
+`agent-deck recall timeline <session> --json --v1` returns `session`, ordered
 `turns`, and `through_cursor`. `agent-deck recall follow <session> --after
-<through_cursor> --jsonl` streams one `turn` frame per new event. Each frame
+<through_cursor> --jsonl --v1` streams one `turn` frame per new event. Each frame
 has its own cursor. If the source changes before the cursor, follow emits
 `resync_required`; call timeline again and resume from its new cursor.
 
@@ -40,88 +44,106 @@ arrive out of order.
 Follow polls the native source every 250 ms. This keeps new lines independent
 of the background index sweep and meets the two second local append target.
 
-## Typed rows (`--rows`, schema `agent-deck.recall.rows/v2`)
-
-The Mac app and any other client that renders a conversation use the row
-model instead of the v1 turns. It is additive: without `--rows` both commands
-behave exactly as above.
+## Rows (default, schema `agent-deck.recall.rows/v2`)
 
 ```
-agent-deck recall timeline <session> --rows --json [--tail-bytes N] [--agent <id>]
-agent-deck recall follow   <session> --rows --jsonl --after <through_cursor|cursor|end>
-agent-deck recall timeline --rows --json --transcript <file> --harness claude|codex
+agent-deck recall timeline <session> --json [--since <cursor>] [--limit N] [--tail N] [--agent <id>]
+agent-deck recall follow   <session> --after <cursor|end> --jsonl [--status]
+agent-deck recall timeline --json --transcript <file> --harness claude|codex
 ```
 
-`--rows` resolves `<session>` (id, id prefix, title or path) in the
-agent-deck store and parses that session's native transcript directly: the
-Claude Code JSONL (`<config dir>/projects/<project>/<claude_session_id>.jsonl`)
-or the Codex rollout. It needs neither `[recall] enabled` nor the index, so a
-session whose transcript the sweep deferred still answers at once. Claude
-Code and Codex are read directly; other harnesses keep using the v1 path.
+Both need `[recall] enabled = true` (exit 2 otherwise) but never need the
+index: `<session>` resolves, without touching recall.db, as a deck session id,
+a Claude/Codex conversation id bound to a deck session, a deck title or id
+prefix, or a conversation id whose file exists under any Claude config dir or
+Codex home. Only then is the index asked (`#n`, card ids, other harnesses).
+The native file is parsed directly, so a session whose source the sweep
+deferred answers at once. Claude Code and Codex are read and streamed
+directly; Pi, Gemini, OpenCode and Hermes come from the index as v1 turns
+mapped onto rows (`source: "index"`) and are streamed with `--v1`.
 
-Timeline result:
+Timeline:
 
 ```json
 { "schema": "agent-deck.recall.rows/v2",
-  "session": { "id": "…", "title": "…", "tool": "claude", "harness": "claude", "path": "…jsonl", "native_id": "…" },
+  "session": { "id": "<deck id>", "harness": "claude", "native_id": "…", "path": "…/<id>.jsonl", "title": "…", "cwd": "…" },
   "source": "native",
-  "rows": [ { "id": "tool:toolu_01…", "kind": "bash", "ts": "…", "title": "Run hello.py",
-              "command": "python3 hello.py", "result": { "text": "1\n2", "lines": 2, "exit_code": 0 } } ],
-  "through_cursor": "…",
-  "status": { "state": "running", "verb": "Cogitating…", "elapsed": "1m 12s", "tokens": "↓ 3.7k tokens",
-              "current_tool": "Running go build…", "footer": "…", "mode": "bypass permissions on" } }
+  "turns": [ Row, … ],
+  "through_cursor": "<opaque>",
+  "status": { "session_id": "…", "running": true, "session_status": "running", "verb": "Cogitating…", "elapsed_s": 72, … } }
 ```
 
-| Row field | Meaning |
+`--tail N` returns the last N rows, reading growing windows from the end of
+the file (a 100 MB transcript answers from its last 256 KB). `--limit N`
+stops after N rows with the cursor there; `--since <cursor>` returns what
+changed after a cursor: new rows in `turns`, changes to earlier rows in
+`updates` (merge by id) and ids to drop in `removed`. Paging with
+`--limit`/`--since` until the cursor stops moving yields exactly the full
+timeline. `--agent <id>` returns one Claude sub-agent sidechain.
+
+Row:
+
+| Field | Meaning |
 | --- | --- |
-| `id` | Native and stable: Claude `uuid:block`, `tool:<tool_use_id>`, `queue:<enqueue ts>:<hash>`; Codex `codex:<item id>`, `tool:<call_id>`, `turn:<turn_id>`. Never a line index, so ids survive tail windows and reconnects. |
+| `id` | Native and stable: Claude `uuid` (`uuid#n` for block n of a multi-block message), the `tool_use` id for a tool row, `queue:<enqueue ts>:<hash>` for a typed-while-busy message; Codex item id, call id, `turn:<turn_id>`; content-hash ids for rows without a native id. Never a line index. |
 | `kind` | `user`, `assistant`, `thinking`, `tool`, `bash`, `edit`, `read`, `subagent`, `todo`, `question`, `skill`, `command`, `system`, `compaction`, `turn_end`, `other` |
-| `title` | The one-line text a client shows (tool description, `/command args`, `Worked for 7s`, `Context compacted · 844.0k → 19.0k`, first line of a hook/system injection) |
-| `text` | Full text: user and assistant prose, thinking, system body, sub-agent prompt |
-| `command`, `path`, `tool_name`, `input` | Tool call details; `input` carries the todo list, question options, edit arguments or Codex file changes |
-| `result` | Merged tool result: `text` (capped at 32 KiB, `truncated`), `lines`, `is_error`, `exit_code`, `added`/`removed` for edits, `answers` for questions |
-| `delivery` | `queued` (typed while a turn ran) or `absorbed` (Claude took it mid-turn; no user row is ever written for it) |
-| `parent_id`, `agent_id` | Sidechain rows point at their `subagent` row; the subagent row names the agent |
-| `status`, `duration_ms`, `tokens`, `images` | Tool/turn status (`interrupted`, `completed`), turn duration, token footer numbers, image count on a user row |
-| `raw` | Native JSON, only on `other` rows |
+| `ts` | Native timestamp (for an absorbed queued message: when Claude absorbed it) |
+| `title` | The one line a client shows: tool description, `Edit <path>`, `/command args`, `Worked for 7s`, `Context compacted · 844.0k → 19.0k`, first line of a hook or system injection, the question |
+| `body` | Full text: prose, thinking, system body, sub-agent prompt; for a tool row its output (capped at 32 KiB, `meta.truncated`) |
+| `summary` | The terminal's `⎿` wording: `Read 120 lines`, `Added 3 lines, removed 1 line`, `Backgrounded agent`, `Done (4 tool uses)`, `2 of 5 done`, `Which? → A`, `Exit code 2`, `… +12 lines` |
+| `detail` | The dim mono line: command, path or pattern, sub-agent type |
+| `tool_id` | Native tool call id on tool rows |
+| `finished` | Tool rows: false until the result lands |
+| `is_error` | Tool result was an error or a non-zero exit |
+| `queued` | `true` while a message typed during a turn waits; `false` once absorbed |
+| `meta` | `tool_name`, `path`, `input` (todo list, question options, edit arguments, Codex changes), `lines`, `exit_code`, `added`/`removed`, `answers`, `agent_id`, `status`, `duration_ms`, `pre_tokens`/`post_tokens`, `tokens`, `images`, `delivery` (`queued`/`absorbed`), `model`, `raw` (only on `other`) |
+| `children` | Sub-agent sidechain rows under a `subagent` row (`<session>/subagents/agent-<id>.jsonl`), ids prefixed `sub:<agent id>:` |
+| `raw_type` | The native record type (`assistant`, `system/turn_duration`, `item_completed/CommandExecution`, …) |
 
-Claude Code mapping highlights: `queue-operation enqueue` is a `user` row
-with `delivery: queued`; `remove` with `reason: absorbed_mid_turn` moves it
-to the remove time with `delivery: absorbed`; `dequeue` lets the following
-user row replace it; a plain `remove` drops it. The matching `queued_command`
-attachment is deduplicated. `isMeta`, `[INBOX]`, `<system-reminder>`, stop
-hook feedback and task notifications are `system`; `<command-name>` rows and
-`local_command` are `command`; `turn_duration` is `turn_end`;
-`stop_hook_summary` is a `system` row only when it carries text; pure model
-context (file snapshots, titles, modes, token reminders, skill listings) is
-dropped. Sub-agent sidechains (`<session>/subagents/agent-<id>.jsonl`) are
-inserted under their `subagent` row; `--agent <id>` returns one sidechain.
+Claude Code mapping: `queue-operation enqueue` is a `user` row with
+`queued: true`; `remove` with `reason: absorbed_mid_turn` is an update with
+`queued: false` and the remove `ts` (the client moves the row there, where the
+terminal printed it; no user row is ever written for it); `dequeue` lets the
+following user row replace the queued copy (a `remove` frame for it); a plain
+`remove` drops it. The matching `queued_command` attachment is deduplicated.
+`isMeta`, `[INBOX]`, `<system-reminder>`, `Stop hook feedback:`,
+`<task-notification>` and local-command output are `system`; `<command-name>`
+user rows and `local_command` are `command`; `turn_duration` is `turn_end`
+with `meta.duration_ms`; `compact_boundary` is `compaction` with
+`meta.pre_tokens/post_tokens`; `stop_hook_summary` is `system` only when it
+carries text; hook errors and hook context attachments are `system`; pure
+model context (file snapshots, titles, modes, token reminders, skill listings,
+deferred tool lists) is dropped. `toolUseResult` feeds `summary`.
 
-Codex mapping highlights: AGENTS.md and environment boilerplate and developer
-messages are dropped; `item_completed` `CommandExecution` is `bash` (or `read`
-when every parsed command is read-only), `FileChange` is `edit`,
-`McpToolCall` is `tool`; the `AgentMessage`/`UserMessage`/`Reasoning` items
-duplicate response items and are skipped, as is a code-mode `exec` script
-whose commands arrive as their own items. `task_complete` is `turn_end` with
-the duration and the last `token_count`; `turn_aborted` is an interrupted
-`turn_end`; a model switch in `turn_context` is a `system` row.
+Codex mapping: AGENTS.md/environment boilerplate and developer messages are
+dropped; `event_msg item_completed` `CommandExecution` is `bash` (or `read`
+when every parsed command is read-only), `FileChange` is `edit` with +/-
+counts, `McpToolCall` is `tool`, `SubAgentActivity`/`CollabAgentToolCall`
+update their spawn/wait rows; the `AgentMessage`/`UserMessage`/`Reasoning`
+items duplicate response items and are skipped, as is a code-mode `exec`
+script whose commands arrive as their own items. `task_complete` is
+`turn_end` with the duration and the last `token_count` in `meta.tokens`;
+`turn_aborted` is an interrupted `turn_end`; a model switch in `turn_context`
+or `thread_settings_applied` is a `system` row.
 
 Follow frames, one JSON object per line:
 
-| `type` | Payload | Client action |
+| `frame` | Payload | Client action |
 | --- | --- | --- |
-| `row` | `row` | append (or replace a row with the same id) |
-| `update` | `row` with the id and only the changed fields | merge non-empty fields into that row; ignore unknown ids |
+| `row` | `row` | append (or replace the row with the same id) |
+| `update` | `row` with `id` and only what changed (a tool gaining its result, a queued message absorbed, a sub-agent's children) | merge the present fields into that row, meta keys merged; `queued:false` with a `ts` moves the row to the end; ignore unknown ids |
 | `remove` | `id` | drop that row |
-| `status` | `status` (as in the timeline) | show as the live status strip; sampled once a second, sent only when it changes; never persisted |
-| `resync_required` | `reason` (`invalid_cursor`, `source_rewritten`, `source_shortened`, `source_replaced`, `source_missing`, `source_moved`) | call timeline again |
+| `status` (with `--status`) | `session_id, running, session_status, verb, elapsed_s, tokens, current_tool, facts{account,model,cwd,ctx,in,out,5h,7d \| model,context_left,weekly_left,window}, permission, auto_compact_pct, queued[], notice` | the live status strip; sent once a second while the session runs and once when it stops |
+| `resync_required` | `reason`: `invalid_cursor`, `source_rewritten`, `source_shortened`, `source_replaced`, `source_missing`, `source_moved` | call timeline again |
 
 Only the last frame produced by one native line carries `cursor`, so every
-cursor is a clean resume point: resuming never duplicates or loses a frame.
-The cursor records the byte offset, a hash of the bytes before it, and the
-pending queue ids. Follow polls every 200 ms and reads only new bytes, so a
-line appended to a 100 MB transcript streams in well under the 500 ms budget.
-`--after end` starts at the current end. The `status` frame comes from the
-session's state.db status and, while it runs, from a read-only capture of its
-pane (spinner verb, elapsed, tokens, current tool line, queued inputs, footer,
-permission mode, notices), so a client never reads tmux.
+cursor is a clean resume point: resuming neither loses nor duplicates a
+frame. The cursor holds the byte offset, a hash of the 256 bytes before it,
+and the pending queue ids. Follow polls every 200 ms and reads only the new
+bytes. `--after end` starts at the current end. `source_moved` fires when a
+Codex session's live rollout changes (docs/macapp-core.md, Codex identity).
+The status frame comes from the session's state.db status and, while it
+runs, a read-only capture of its pane (the `✻ Verb… (1m 12s · ↓ 3.7k tokens)`
+or `• Working (30m 26s • esc to interrupt)` line, the `⎿` line under it, the
+statusline, the permission mode, `N% until auto-compact`, queued inputs and
+`✘` notices), so a client never reads tmux.

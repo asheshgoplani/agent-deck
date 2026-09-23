@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"os"
+	"reflect"
 	"path/filepath"
 	"testing"
 )
@@ -26,7 +27,9 @@ func TestParsePaneStatus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := ParsePaneStatus(string(data)); got != tc.want {
+		got := ParsePaneStatus(string(data))
+		got.QueuedText, got.AutoCompactPct = nil, nil
+		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", tc.file, got, tc.want)
 		}
 	}
@@ -55,4 +58,32 @@ func TestParsePaneStatusCorpus(t *testing.T) {
 		}
 	}
 	t.Logf("%d of %d corpus panes parsed as running", running, len(files))
+}
+
+func TestPaneStatusQueuedTextAutoCompactAndFacts(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "pane_status", "codex-queued.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := ParsePaneStatus(string(data))
+	if len(st.QueuedText) != 2 || st.QueuedText[1] != "and a second one" {
+		t.Fatalf("queued text: %q", st.QueuedText)
+	}
+	facts := FooterFacts(st.Footer)
+	if facts["model"] != "gpt-6-sol" || facts["weekly_left"] != "87%" || facts["context_left"] != "50%" || facts["window"] != "258K" || facts["cwd"] != "/work/v4" {
+		t.Fatalf("codex facts: %v", facts)
+	}
+	claude := FooterFacts("[personal] user@host:/work/project | [Fable 5.1] ctx:5% in:52.4k out:376 5h:40% 7d:20%")
+	if claude["account"] != "personal" || claude["model"] != "Fable 5.1" || claude["5h"] != "40%" || claude["7d"] != "20%" || claude["ctx"] != "5%" || claude["cwd"] != "/work/project" {
+		t.Fatalf("claude facts: %v", claude)
+	}
+	ac := ParsePaneStatus("✻ Cogitating… (5s)\n  ⎿  Tip: x\n                                   8% until auto-compact\n")
+	if ac.AutoCompactPct == nil || *ac.AutoCompactPct != 8 {
+		t.Fatalf("auto-compact: %v", ac.AutoCompactPct)
+	}
+	for in, want := range map[string]int{"1m 34s": 94, "12s": 12, "1h 2m 3s": 3723, "30m 26s": 1826, "": 0} {
+		if got := ElapsedSeconds(in); got != want {
+			t.Errorf("ElapsedSeconds(%q) = %d, want %d", in, got, want)
+		}
+	}
 }

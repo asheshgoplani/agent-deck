@@ -14,28 +14,30 @@ func handleRecallTimeline(profile string, args []string) {
 	fs := newRecallFlagSet("recall timeline")
 	jsonOutput := fs.Bool("json", false, "Output canonical JSON")
 	rf := registerRowsFlags(fs)
-	tailBytes := fs.Int64("tail-bytes", 0, "With --rows: parse only the last N bytes (first line boundary after it) for a fast first paint")
-	agentID := fs.String("agent", "", "With --rows: return one Claude Code sub-agent sidechain by agent id")
+	since := fs.String("since", "", "Only what changed after this cursor: new rows in turns, changes to earlier rows in updates/removed")
+	limit := fs.Int("limit", 0, "Stop after N rows; through_cursor points there, so --since pages forward")
+	tail := fs.Int("tail", 0, "Only the last N rows, read from the end of the transcript (fast first paint)")
+	agentID := fs.String("agent", "", "One Claude Code sub-agent sidechain by agent id")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json [--rows [--tail-bytes N] [--agent <id>]]")
-		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --rows --json --transcript <file> --harness claude|codex")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json [--since <cursor>] [--limit N] [--tail N] [--agent <id>]")
+		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --json --transcript <file> --harness claude|codex")
+		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)")
+		fmt.Fprintln(fs.Output(), "<session>: deck session id, title or id prefix; a Claude/Codex conversation id; or #n / any id the index knows.")
+		fmt.Fprintln(fs.Output(), "Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs [recall] enabled = true.")
 		fs.PrintDefaults()
 	}
 	if !parseRecallFlags(fs, args) {
 		return
 	}
-	if *rf.rows {
-		if !*jsonOutput || (fs.NArg() != 1 && *rf.transcript == "") {
-			fs.Usage()
-			os.Exit(2)
-		}
-		handleRecallTimelineRows(profile, fs.Arg(0), rf, *tailBytes, *agentID)
-		return
-	}
 	out := NewCLIOutput(*jsonOutput, false)
-	if fs.NArg() != 1 || !*jsonOutput {
+	if !*jsonOutput || (fs.NArg() != 1 && *rf.transcript == "") {
 		fs.Usage()
 		os.Exit(2)
+	}
+	if !*rf.v1 {
+		requireRecallEnabled(out)
+		handleRecallTimelineRows(profile, fs.Arg(0), rf, query.RowsOptions{Since: *since, Limit: *limit, Tail: *tail, AgentID: *agentID})
+		return
 	}
 	env := openRecallEnv(profile, out)
 	defer env.close()
@@ -49,30 +51,28 @@ func handleRecallTimeline(profile string, args []string) {
 
 func handleRecallFollow(profile string, args []string) {
 	fs := newRecallFlagSet("recall follow")
-	after := fs.String("after", "", "Resume cursor from timeline or a prior follow frame")
+	after := fs.String("after", "", "Resume cursor from timeline or a prior follow frame; 'end' starts at the current end")
 	jsonl := fs.Bool("jsonl", false, "Stream newline-delimited JSON frames")
+	status := fs.Bool("status", false, "Also emit status frames (verb, elapsed, tokens, current tool, footer facts) once a second while the session runs")
 	rf := registerRowsFlags(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall follow <session> --after <cursor> --jsonl [--rows]")
-		fmt.Fprintln(fs.Output(), "       with --rows, --after also accepts 'end'; frames are row, update, remove, status, resync_required")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall follow <session> --after <cursor|end> --jsonl [--status]")
+		fmt.Fprintln(fs.Output(), "Frames: row, update, remove, status, resync_required (docs/recall-timeline.md). --v1 streams the slice-6 turn frames.")
 		fs.PrintDefaults()
 	}
 	if !parseRecallFlags(fs, args) {
 		return
 	}
-	if *rf.rows {
-		if *after == "" || !*jsonl || (fs.NArg() != 1 && *rf.transcript == "") {
-			fs.Usage()
-			os.Exit(2)
-		}
-		handleRecallFollowRows(profile, fs.Arg(0), *after, rf)
-		return
-	}
-	if fs.NArg() != 1 || *after == "" || !*jsonl {
+	if *after == "" || !*jsonl || (fs.NArg() != 1 && *rf.transcript == "") {
 		fs.Usage()
 		os.Exit(2)
 	}
 	out := NewCLIOutput(true, false)
+	if !*rf.v1 {
+		requireRecallEnabled(out)
+		handleRecallFollowRows(profile, fs.Arg(0), *after, rf, *status)
+		return
+	}
 	env := openRecallEnv(profile, out)
 	defer env.close()
 	ctx, cancel := interruptibleContext()

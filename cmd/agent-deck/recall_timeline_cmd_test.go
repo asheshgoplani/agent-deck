@@ -13,7 +13,7 @@ func TestRecallTimelineAndFollowCLI(t *testing.T) {
 		t.Fatalf("backfill: %d %s %s", code, stdout, stderr)
 	}
 	ref := stats.Sessions[0]
-	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", ref, "--json")
+	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", ref, "--json", "--v1")
 	if code != 0 {
 		t.Fatalf("timeline: %d %s %s", code, stdout, stderr)
 	}
@@ -32,7 +32,7 @@ func TestRecallTimelineAndFollowCLI(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"role":"user","content":"replacement"},"timestamp":"2026-09-11T01:00:00Z","sessionId":"`+ref+`"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code = runAgentDeck(t, home, "recall", "follow", ref, "--after", timeline.ThroughCursor, "--jsonl")
+	stdout, stderr, code = runAgentDeck(t, home, "recall", "follow", ref, "--after", timeline.ThroughCursor, "--jsonl", "--v1")
 	if code != 0 || !strings.Contains(stdout, `"type":"resync_required"`) {
 		t.Fatalf("follow resync: %d %s %s", code, stdout, stderr)
 	}
