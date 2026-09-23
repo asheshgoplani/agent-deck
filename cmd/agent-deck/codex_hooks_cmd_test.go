@@ -592,3 +592,57 @@ func TestWriteCodexHookStatus_CorruptPriorFailsClosedAndWarns(t *testing.T) {
 		t.Fatalf("warning does not name the instance:\n%s", buf.String())
 	}
 }
+
+// A Codex subagent (thread_source=subagent) fires agent-turn-complete when it
+// finishes, while the parent turn that spawned it keeps working. The writer
+// must leave the main thread's hook status and anchor alone: recording the
+// subagent's "waiting" flipped a working session to waiting on every finished
+// subagent (rc feedback 2026-09-23).
+func TestHandleCodexNotify_SubagentTurnCompleteKeepsMainStatus(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-subagent")
+	t.Setenv("CODEX_SESSION_ID", "")
+	mainSID, subSID := "main-thread-0155", "subagent-thread-0155"
+	seedCodexNotifyRollout(t, tmpHome, mainSID)
+	dir := filepath.Join(tmpHome, ".codex", "sessions", "2026", "09", "23")
+	subMeta := `{"type":"session_meta","payload":{"session_id":"` + mainSID + `","id":"` + subSID +
+		`","parent_thread_id":"` + mainSID + `","source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + mainSID +
+		`","depth":1,"agent_path":"/root/coverage"}}},"thread_source":"subagent"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "rollout-2026-09-23T10-11-25-"+subSID+".jsonl"), []byte(subMeta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	origArgs, origStdin := os.Args, os.Stdin
+	defer func() { os.Args, os.Stdin = origArgs, origStdin }()
+	notify := func(payload string) {
+		os.Args = []string{"agent-deck", "codex-notify", payload}
+		handleCodexNotify()
+	}
+	notify(`{"type":"agent-turn-start","thread-id":"` + mainSID + `","turn-id":"turn-main"}`)
+	hookPath := filepath.Join(getHooksDir(), "inst-subagent.json")
+	before, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("main turn start not written: %v", err)
+	}
+
+	notify(`{"type":"agent-turn-complete","thread-id":"` + subSID + `","turn-id":"turn-sub"}`)
+	after, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("subagent completion rewrote the main hook status:\nbefore %s\nafter  %s", before, after)
+	}
+	if got := session.ReadHookSessionAnchor("inst-subagent"); got != mainSID {
+		t.Fatalf("anchor = %q, want the main thread %q", got, mainSID)
+	}
+
+	// The main thread's own completion still lands.
+	notify(`{"type":"agent-turn-complete","thread-id":"` + mainSID + `","turn-id":"turn-main"}`)
+	var hook hookStatusFile
+	data, _ := os.ReadFile(hookPath)
+	if err := json.Unmarshal(data, &hook); err != nil || hook.Status != "waiting" || hook.SessionID != mainSID {
+		t.Fatalf("main completion = %+v (err %v), want waiting for %s", hook, err, mainSID)
+	}
+}
