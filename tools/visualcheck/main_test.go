@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"os/exec"
@@ -9,6 +10,25 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestCapturePanePreservesLeadingSpaces(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "bin", "tmux")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '    ╭box╮\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := &suite{root: root, project: root, ctx: context.Background(), env: []string{"PATH=/usr/bin:/bin"}}
+	got, err := s.capturePane("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "    ╭box╮" {
+		t.Fatalf("capture = %q, want first-line indentation", got)
+	}
+}
 
 var regenerateGoldens = flag.Bool("visualcheck.regenerate", false, "regenerate visual check goldens")
 
@@ -115,9 +135,9 @@ func runVisualCheckTest(t *testing.T) {
 		t.Fatal("tmux required")
 	}
 	bin := os.Getenv("VISUALCHECK_BINARY")
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 	if bin == "" {
-		_, thisFile, _, _ := runtime.Caller(0)
-		repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 		bin = filepath.Join(t.TempDir(), "agent-deck")
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/agent-deck")
 		cmd.Dir = repoRoot
@@ -131,7 +151,21 @@ func runVisualCheckTest(t *testing.T) {
 	}
 	dir := t.TempDir()
 	t.Chdir(dir)
-	if code := runMain([]string{abs}); code != 0 {
+	code := runMain([]string{abs})
+	artifactDir := filepath.Join(repoRoot, "visualcheck-artifacts")
+	if err := os.MkdirAll(artifactDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"contact-sheet.html", "visualcheck-report.json"} {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(artifactDir, name), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code != 0 {
 		t.Fatalf("visualcheck exited %d against %s; see contact-sheet.html in %s", code, abs, dir)
 	}
 }
