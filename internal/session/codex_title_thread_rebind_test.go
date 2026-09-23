@@ -165,3 +165,39 @@ func TestLatestCodexTurnGeneration_FreshThreadOwnedByLiveProcess(t *testing.T) {
 		t.Fatal("a rollout-less identity with no live process must stay unavailable")
 	}
 }
+
+// A rejected title-thread completion must not leave its status behind. While
+// the main turn runs, the title thread's agent-turn-complete ("waiting") would
+// otherwise read as a fresh turn-finished edge, and `session send
+// --defer-if-busy` would deliver into the running turn.
+func TestCodexHookRebind_TitleThreadMidTurnKeepsRunningStatus(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	mainSID, titleSID := uniqueSID(t), uniqueSID(t)
+	mainTurn := uniqueSID(t)
+	seedCodex155Rollout(t, codexHome, mainSID, mainTurn)
+	inst.CodexSessionID = mainSID
+
+	mainGen := mainSID + ":" + mainTurn
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: mainSID, Event: "turn.started", UpdatedAt: time.Now(),
+		CodexStartedGeneration: mainGen, CodexStartedSessionID: mainSID, CodexStartedSequence: 1,
+	})
+	titleGen := titleSID + ":" + uniqueSID(t)
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: titleSID, Event: "agent-turn-complete", UpdatedAt: time.Now().Add(time.Second),
+		CodexStartedGeneration: titleGen, CodexCompletedGeneration: titleGen,
+		CodexStartedSessionID: titleSID, CodexCompletedSessionID: titleSID,
+		CodexStartedSequence: 1, CodexCompletedSequence: 1,
+	})
+
+	if hs, fresh := inst.GetHookStatus(); hs != "running" || !fresh {
+		t.Fatalf("hook status after rejected title completion = %q (fresh %v), want running", hs, fresh)
+	}
+	if inst.codexStartedGeneration != mainGen || inst.codexCompletedGeneration != "" {
+		t.Fatalf("generation evidence = started %q completed %q; want the main turn's start only",
+			inst.codexStartedGeneration, inst.codexCompletedGeneration)
+	}
+	if inst.CodexSessionID != mainSID {
+		t.Fatalf("binding = %q, want %q", inst.CodexSessionID, mainSID)
+	}
+}
