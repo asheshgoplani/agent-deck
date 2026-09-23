@@ -375,6 +375,22 @@ func stepDetachShell(w *widthRun) error {
 	if err := w.waitContains("● 1", 8*time.Second); err != nil {
 		return fmt.Errorf("session statuses never resettled after detach: %w", err)
 	}
+	// The preview first shows its pre-attach cached capture of shell-live
+	// (still carrying the launch line stepAttachShell cleared) until the
+	// debounced re-fetch lands. Wait until it mirrors the live pane.
+	var last string
+	if err := w.waitFor(func() (bool, error) {
+		live, err := w.s.capturePane(w.sd.shellLive.tmuxName)
+		if err != nil {
+			return false, err
+		}
+		if last, err = w.pane(); err != nil {
+			return false, err
+		}
+		return previewShowsLivePane(last, live), nil
+	}, 8*time.Second); err != nil {
+		return fmt.Errorf("preview never refreshed to shell-live's post-clear pane after detach: %w\nlast frame:\n%s", err, last)
+	}
 	w.capture("13-detach-shell")
 	return nil
 }

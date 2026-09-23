@@ -193,3 +193,62 @@ func runVisualCheckTest(t *testing.T) {
 		t.Fatalf("visualcheck exited %d against %s; see contact-sheet.html in %s", code, abs, dir)
 	}
 }
+
+func TestPreviewShowsLivePane(t *testing.T) {
+	frame := func(output ...string) string {
+		rows := []string{
+			"SESSIONS                     │ PREVIEW",
+			"──────────────────────────── │ ──────────────────────",
+			"1·▾ alpha (7) ● 1 ◐ 1        │ shell-live  ○ idle",
+			"    ▾ backend (3) ● 1        │",
+			"     ├─ ✕ codex-idle codex   │ ─────── Output ───────",
+		}
+		for _, o := range output {
+			rows = append(rows, "     ├─ ● claude-ru… claude  │ "+o)
+		}
+		rows = append(rows,
+			"  ▶└─ ○ shell-live shell     │",
+			"                             │",
+			"────────────────────────────────────────────────────",
+			"⏎ Attach n/N New │ ↑↓ Nav q Quit",
+		)
+		return strings.Join(rows, "\n")
+	}
+	live := "$ \n\n\n"
+	cases := []struct {
+		name string
+		pane string
+		want bool
+	}{
+		{"refreshed", frame("$"), true},
+		{"pre-attach cache", frame("$  export AGENTDECK_INSTANCE_ID=ab-cd AGENTDECK_PRO...", "/identity/ab-cd/identity.md", "$"), false},
+		{"truncated live line", frame("$ echo hel..."), false},
+		{"empty preview", frame(), false},
+		{"no output section yet", "SESSIONS │ PREVIEW\n  ▶└─ ○ shell-live shell │ $", false},
+		{"attached pane", "$ ", false},
+	}
+	for _, c := range cases {
+		if got := previewShowsLivePane(c.pane, live); got != c.want {
+			t.Errorf("%s: previewShowsLivePane = %v, want %v\n%s", c.name, got, c.want, c.pane)
+		}
+	}
+	if !previewShowsLivePane(frame("$ echo hel..."), "$ echo hello world\n") {
+		t.Error("a preview line truncated with ... should match the live line it abbreviates")
+	}
+	if !previewShowsLivePane(frame("$ echo hel…"), "$ echo hello world\n") {
+		t.Error("a preview line truncated with … should match the live line it abbreviates")
+	}
+	goldens, err := filepath.Glob(filepath.Join("testdata", "golden", "13-detach-shell_*.golden"))
+	if err != nil || len(goldens) == 0 {
+		t.Fatalf("no 13-detach-shell goldens found: %v", err)
+	}
+	for _, g := range goldens {
+		b, err := os.ReadFile(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !previewShowsLivePane(string(b), live) {
+			t.Errorf("%s: the approved frame should count as a refreshed preview", g)
+		}
+	}
+}
