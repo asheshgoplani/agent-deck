@@ -77,6 +77,15 @@ func TestInitialRecallBackfill_EndToEnd(t *testing.T) {
 	// RecallRoots(), which reads [recall] harnesses).
 	cfg := userConfigCache
 	cfg.Recall.Harnesses = []string{"claude"}
+	// The throttled pass sleeps between chunks by the host's one-minute
+	// load average: up to ThrottleMaxSleep (15 s) once load reaches twice
+	// [recall] max_loadavg. On a shared test host that one sleep alone
+	// outlasts the deadline below, so the result depended on what else
+	// the host ran. max_loadavg = 0 disables the load scaling (always the
+	// minimum sleep) and keeps this test about the trigger and the index,
+	// not the host; ThrottleSleep has its own unit tests.
+	noLoadScaling := 0.0
+	cfg.Recall.MaxLoadAvg = &noLoadScaling
 	withConfig(t, cfg)
 
 	stats, err := testcorpus.Generate(filepath.Join(home, ".claude"), testcorpus.Options{Files: 5, Seed: 11, SubagentEvery: 2})
