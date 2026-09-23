@@ -405,6 +405,11 @@ func stepFork(w *widthRun) error {
 		if err != nil {
 			return false, err
 		}
+		if w.spec.width == 80 {
+			// The 24-line preview has no room to show the client's output.
+			return strings.Contains(pane, "claude-waiting (fork)  ◐ waiting") &&
+				strings.Contains(pane, "Status:  clean"), nil
+		}
 		return strings.Contains(pane, "Claude Code synthetic fixture") &&
 			!strings.Contains(pane, "Starting Claude session..."), nil
 	}, 30*time.Second); err != nil {
