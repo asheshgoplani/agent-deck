@@ -204,21 +204,24 @@ func handleSessionSendStatus(profile string, args []string) {
 	out.Success(fmt.Sprintf("%s: %s %s", rec.SendID, rec.State, rec.Reason), recordFields(rec))
 }
 
-// sendWorkerTiming is tunable by tests through the environment.
-func sendWorkerPoll() time.Duration {
-	if d, err := time.ParseDuration(os.Getenv("AGENTDECK_SEND_WORKER_POLL")); err == nil && d > 0 {
+// envDuration reads a positive duration from the environment, so tests can
+// tune the worker's timing; def otherwise.
+func envDuration(name string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(name)); err == nil && d > 0 {
 		return d
 	}
-	return time.Second
+	return def
+}
+
+// sendWorkerPoll is how often the worker rechecks a busy target.
+func sendWorkerPoll() time.Duration {
+	return envDuration("AGENTDECK_SEND_WORKER_POLL", time.Second)
 }
 
 // sendLandWindow is how long a delivered send is watched for in the
 // transcript before it is settled without a landed row.
 func sendLandWindow() time.Duration {
-	if d, err := time.ParseDuration(os.Getenv("AGENTDECK_SEND_LAND_WINDOW")); err == nil && d > 0 {
-		return d
-	}
-	return 2 * time.Minute
+	return envDuration("AGENTDECK_SEND_LAND_WINDOW", 2*time.Minute)
 }
 
 // handleSessionSendWorker is the hidden detached worker: it owns delivery
@@ -281,18 +284,14 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 	fail := func(reason string) {
 		set(func(r *sendqueue.Record) { r.State, r.Reason = sendqueue.StateFailed, reason })
 	}
+	pastDeadline := func() bool { return !deadline.IsZero() && time.Now().After(deadline) }
 	for rec.State == sendqueue.StateQueued {
 		_, instances, _, err := loadSessionData(profile)
 		if err != nil {
 			fail("cannot load sessions: " + err.Error())
 			return
 		}
-		var inst *session.Instance
-		for _, i := range instances {
-			if i.ID == rec.SessionID {
-				inst = i
-			}
-		}
+		inst := instanceByID(instances, rec.SessionID)
 		if inst == nil {
 			fail("target removed")
 			return
@@ -303,7 +302,7 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 		}
 		status, _ := fetchHookDrivenStatus(profile, inst.ID)
 		if status == "running" || status == "starting" {
-			if !deadline.IsZero() && time.Now().After(deadline) {
+			if pastDeadline() {
 				fail("target stayed busy past the retry budget")
 				return
 			}
@@ -333,7 +332,7 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 			set(func(r *sendqueue.Record) { r.State, r.Reason = state, "" })
 		case delivery == deliveryTargetBusy || delivery == deliveryComposerBlocked:
 			// Nothing was typed: safe to try again once the target settles.
-			if !deadline.IsZero() && time.Now().After(deadline) {
+			if pastDeadline() {
 				fail("not delivered before the retry budget ran out: " + delivery)
 				return
 			}
@@ -380,15 +379,22 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 	})
 }
 
+func instanceByID(instances []*session.Instance, id string) *session.Instance {
+	for _, i := range instances {
+		if i.ID == id {
+			return i
+		}
+	}
+	return nil
+}
+
 func liveTranscriptForID(profile, id string) string {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		return ""
 	}
-	for _, i := range instances {
-		if i.ID == id {
-			return session.LiveTranscriptPath(i)
-		}
+	if inst := instanceByID(instances, id); inst != nil {
+		return session.LiveTranscriptPath(inst)
 	}
 	return ""
 }

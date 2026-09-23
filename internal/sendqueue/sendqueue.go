@@ -77,10 +77,8 @@ func NewID(now time.Time) string {
 	// 128 bits -> 26 chars, 5 bits each, most significant first.
 	out := make([]byte, 26)
 	var acc uint64
-	var bits uint
+	bits := uint(2) // leading pad: 26*5 = 130 bits
 	idx := 0
-	// Leading 2 bits pad: 26*5 = 130.
-	acc, bits = 0, 2
 	for _, x := range b {
 		acc = acc<<8 | uint64(x)
 		bits += 8

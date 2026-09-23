@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -116,15 +117,8 @@ func (p *rowParser) rememberAbsorbed(h string) {
 }
 
 func (p *rowParser) wasQueued(h string) bool {
-	if _, ok := p.st.Pending[h]; ok {
-		return true
-	}
-	for _, r := range p.st.Recent {
-		if r == h {
-			return true
-		}
-	}
-	return false
+	_, pending := p.st.Pending[h]
+	return pending || slices.Contains(p.st.Recent, h)
 }
 
 // line parses one complete native JSONL line.
@@ -142,11 +136,9 @@ func (p *rowParser) line(raw []byte) []RowFrame {
 	return nil
 }
 
-func rowFrame(r Row) RowFrame    { return RowFrame{Frame: "row", Row: &r} }
-func updateFrame(r Row) RowFrame { return RowFrame{Frame: "update", Row: &r} }
-func removeFrame(id string) RowFrame {
-	return RowFrame{Frame: "remove", ID: id}
-}
+func rowFrame(r Row) RowFrame        { return RowFrame{Frame: "row", Row: &r} }
+func updateFrame(r Row) RowFrame     { return RowFrame{Frame: "update", Row: &r} }
+func removeFrame(id string) RowFrame { return RowFrame{Frame: "remove", ID: id} }
 
 func firstLine(s string, max int) string {
 	s = strings.TrimSpace(s)

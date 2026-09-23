@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -39,10 +40,7 @@ var (
 func ElapsedSeconds(s string) int {
 	total := 0
 	for _, m := range elapsedUnitRe.FindAllStringSubmatch(s, -1) {
-		n := 0
-		for _, c := range m[1] {
-			n = n*10 + int(c-'0')
-		}
+		n, _ := strconv.Atoi(m[1])
 		switch m[2] {
 		case "h":
 			total += n * 3600
@@ -173,7 +171,7 @@ func ParsePaneStatus(content string) PaneStatus {
 			st.Footer = line
 		}
 		if m := autoCompactRe.FindStringSubmatch(line); m != nil {
-			n := ElapsedSeconds(m[1] + "s")
+			n, _ := strconv.Atoi(m[1])
 			st.AutoCompactPct = &n
 		}
 		inQueue = inQueue && strings.HasPrefix(line, "↳")

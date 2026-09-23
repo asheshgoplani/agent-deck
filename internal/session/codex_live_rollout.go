@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 )
@@ -162,15 +163,9 @@ func TranscriptIDs(inst *Instance) []string {
 	}
 	var ids []string
 	add := func(id string) {
-		if id == "" {
-			return
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
 		}
-		for _, x := range ids {
-			if x == id {
-				return
-			}
-		}
-		ids = append(ids, id)
 	}
 	switch {
 	case IsCodexCompatible(inst.Tool) && inst.CodexRolloutIsResolvableLocally():

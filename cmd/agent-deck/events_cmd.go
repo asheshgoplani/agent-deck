@@ -115,7 +115,7 @@ func eventMatches(f events.Frame, kinds []string, sessionID string) bool {
 	return false
 }
 
-// publishableKinds are the namespaces a client may publish from the CLI.
+// macappKindPrefix is the only namespace a client may publish from the CLI.
 // macapp.* frames drive Mac app plugins (docs/macapp-core.md) and need
 // [macapp] plugins = true.
 const macappKindPrefix = "macapp."

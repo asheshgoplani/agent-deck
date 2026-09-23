@@ -169,9 +169,7 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 	t := &rowsTarget{storage: storage, env: env, native: sess.NativeID, direct: query.SupportsDirectRows(h)}
 	t.src = query.RowsSource{Harness: h, Path: path}
 	t.session = query.RowsSession{ID: sess.DeckID, Harness: h, NativeID: sess.NativeID, Path: path, Title: sess.Title, Cwd: sess.CWD}
-	if inst != nil {
-		t.inst = inst
-	}
+	t.inst = inst
 	return t, nil
 }
 

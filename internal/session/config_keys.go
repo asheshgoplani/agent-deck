@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -171,13 +172,8 @@ func ConfigKeys() []ConfigKey {
 // LookupConfigKey finds a key by name or alias.
 func LookupConfigKey(name string) (ConfigKey, bool) {
 	for _, k := range configKeys {
-		if k.Key == name {
+		if k.Key == name || slices.Contains(k.Aliases, name) {
 			return k, true
-		}
-		for _, a := range k.Aliases {
-			if a == name {
-				return k, true
-			}
 		}
 	}
 	return ConfigKey{}, false
@@ -223,10 +219,8 @@ func (k ConfigKey) Parse(raw string) (any, error) {
 		}
 		return f, nil
 	case "enum":
-		for _, v := range k.Values {
-			if v == raw {
-				return raw, nil
-			}
+		if slices.Contains(k.Values, raw) {
+			return raw, nil
 		}
 		return nil, fmt.Errorf("%s: %q is not one of %s", k.Key, raw, strings.Join(k.Values, ", "))
 	case "list":

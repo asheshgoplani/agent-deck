@@ -114,16 +114,7 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 	accounts := []harnessAccountJSON{}
 	switch name {
 	case "claude":
-		defDir := session.GetClaudeConfigDir()
-		logged := claudeLoggedIn(defDir)
-		for _, a := range configuredAccountSlotsForHarness(cfg, "claude") {
-			li := claudeLoggedIn(a.ConfigDir)
-			accounts = append(accounts, harnessAccountJSON{Name: a.Name, ConfigDir: a.ConfigDir, LoggedIn: li})
-			if *li {
-				logged = li
-			}
-		}
-		return logged, accounts
+		return accountLogins(cfg, name, session.GetClaudeConfigDir(), claudeLoggedIn)
 	case "codex":
 		defHome := os.Getenv("CODEX_HOME")
 		if defHome == "" {
@@ -132,15 +123,7 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 				defHome = session.ExpandPath(cfg.Codex.ConfigDir)
 			}
 		}
-		logged := codexLoggedIn(defHome)
-		for _, a := range configuredAccountSlotsForHarness(cfg, "codex") {
-			li := codexLoggedIn(a.ConfigDir)
-			accounts = append(accounts, harnessAccountJSON{Name: a.Name, ConfigDir: a.ConfigDir, LoggedIn: li})
-			if *li {
-				logged = li
-			}
-		}
-		return logged, accounts
+		return accountLogins(cfg, name, defHome, codexLoggedIn)
 	case "gemini":
 		dir := session.GetGeminiConfigDir()
 		return boolPtr(nonEmptyFile(filepath.Join(dir, "oauth_creds.json")) || os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("GOOGLE_API_KEY") != ""), accounts
@@ -157,6 +140,21 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 		return boolPtr(nonEmptyFile(filepath.Join(dir, ".env")) || nonEmptyFile(filepath.Join(dir, "auth.json"))), accounts
 	}
 	return nil, accounts
+}
+
+// accountLogins checks the default config dir and every configured account
+// slot; the harness counts as logged in when any of them is.
+func accountLogins(cfg *session.UserConfig, name, defDir string, loggedIn func(string) *bool) (*bool, []harnessAccountJSON) {
+	logged := loggedIn(defDir)
+	accounts := []harnessAccountJSON{}
+	for _, a := range configuredAccountSlotsForHarness(cfg, name) {
+		li := loggedIn(a.ConfigDir)
+		accounts = append(accounts, harnessAccountJSON{Name: a.Name, ConfigDir: a.ConfigDir, LoggedIn: li})
+		if *li {
+			logged = li
+		}
+	}
+	return logged, accounts
 }
 
 // hooksFacts reports whether agent-deck's status hooks are installed for the
@@ -400,10 +398,7 @@ func codexRateLimits(codexHome string) (windows []limitWindowJSON, updated time.
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].t.After(list[j].t) })
-	for i, f := range list {
-		if i >= 5 {
-			break
-		}
+	for _, f := range list[:min(len(list), 5)] {
 		if w, ok := lastRateLimits(f.p); ok {
 			return w, f.t, true
 		}

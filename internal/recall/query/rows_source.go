@@ -98,10 +98,7 @@ func decodeRowsCursor(s string) (rowsCursor, error) {
 // anchorAt hashes the bytes just before off, so a resumed read detects a
 // rewritten or replaced file instead of splicing two different histories.
 func anchorAt(f io.ReaderAt, off int64) (string, error) {
-	start := off - 256
-	if start < 0 {
-		start = 0
-	}
+	start := max(off-256, 0)
 	buf := make([]byte, off-start)
 	if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
 		return "", err
@@ -272,6 +269,16 @@ func scanLines(ctx context.Context, f io.ReaderAt, from, to int64, fn func(line 
 
 var errStopScan = errors.New("stop scan")
 
+// applyLines is a scanLines callback that parses each line into set.
+func applyLines(p *rowParser, set *rowSet) func([]byte, int64) error {
+	return func(line []byte, _ int64) error {
+		for _, fr := range p.line(line) {
+			set.apply(fr)
+		}
+		return nil
+	}
+}
+
 // tailStart returns the first line start at or after size-tail.
 func tailStart(f io.ReaderAt, size, tail int64) int64 {
 	if tail <= 0 || tail >= size {
@@ -376,12 +383,7 @@ func readTail(ctx context.Context, src RowsSource, f *os.File, size int64, n int
 		start := tailStart(f, size, window)
 		p := newRowParser(src.Harness, rowParserState{})
 		set := newRowSet()
-		end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
-			for _, fr := range p.line(line) {
-				set.apply(fr)
-			}
-			return nil
-		})
+		end, err := scanLines(ctx, f, start, size, applyLines(p, set))
 		if err != nil {
 			return tl, err
 		}
@@ -425,12 +427,7 @@ func claudeSidechainRows(ctx context.Context, transcript, agentID string) ([]Row
 	}
 	p := newRowParser("claude", rowParserState{})
 	set := newRowSet()
-	if _, err := scanLines(ctx, f, 0, info.Size(), func(line []byte, _ int64) error {
-		for _, fr := range p.line(line) {
-			set.apply(fr)
-		}
-		return nil
-	}); err != nil {
+	if _, err := scanLines(ctx, f, 0, info.Size(), applyLines(p, set)); err != nil {
 		return nil, err
 	}
 	rows := set.list()
@@ -445,14 +442,22 @@ func subagentID(r Row) string {
 	return id
 }
 
+// attachSidechain fills a finished sub-agent row's children from its
+// sidechain transcript.
+func attachSidechain(ctx context.Context, transcript string, r *Row) {
+	// agent_id is only ever set on a subagent row (or its update).
+	id := subagentID(*r)
+	if id == "" || r.Meta["status"] == "async_launched" {
+		return
+	}
+	if children, err := claudeSidechainRows(ctx, transcript, id); err == nil && len(children) > 0 {
+		r.Children = children
+	}
+}
+
 func withClaudeSidechains(ctx context.Context, transcript string, rows []Row) []Row {
 	for i := range rows {
-		// agent_id is only ever set on a subagent row (or its update).
-		if subagentID(rows[i]) != "" && rows[i].Meta["status"] != "async_launched" {
-			if children, err := claudeSidechainRows(ctx, transcript, subagentID(rows[i])); err == nil && len(children) > 0 {
-				rows[i].Children = children
-			}
-		}
+		attachSidechain(ctx, transcript, &rows[i])
 	}
 	return rows
 }
@@ -514,10 +519,8 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 				}
 				for i := range frames {
 					fr := frames[i]
-					if fr.Frame == "update" && src.Harness == "claude" && subagentID(*fr.Row) != "" && fr.Row.Meta["status"] != "async_launched" {
-						if children, err := claudeSidechainRows(ctx, c.P, subagentID(*fr.Row)); err == nil && len(children) > 0 {
-							fr.Row.Children = children
-						}
+					if fr.Frame == "update" && src.Harness == "claude" {
+						attachSidechain(ctx, c.P, fr.Row)
 					}
 					if i == len(frames)-1 {
 						fr.Cursor = encodeRowsCursor(rowsCursor{P: c.P, O: end, A: anchor, S: cloneState(p.st)})
