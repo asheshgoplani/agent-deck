@@ -53,18 +53,26 @@ func TestRemoteStaleRow_ClassicDimsGlyphWhenStaleByAge(t *testing.T) {
 	}
 }
 
+// embeddedCardWidth is a sidebar wide enough for the two-line card;
+// renderRemoteSessionItem pins the width below embeddedCardMinWidth and so
+// always draws the classic row.
+const embeddedCardWidth = embeddedCardMinWidth + 32
+
 func TestRemoteStaleRow_EmbeddedCardFollowsPollHealth(t *testing.T) {
 	h, rs := newStaleRemoteHome(t, true, "timeout", 5*time.Second)
 	var b strings.Builder
-	h.renderRemoteSessionItem(&b, remoteItem(&rs), false)
+	h.renderRemoteSessionItemAtWidth(&b, remoteItem(&rs), false, embeddedCardWidth)
 	got := stripAnsi(b.String())
+	if !strings.Contains(got, "╰") {
+		t.Fatalf("expected the two-line embedded card:\n%s", got)
+	}
 	if strings.Contains(got, "●") || !strings.Contains(got, "?") || !strings.Contains(got, "last known") {
 		t.Fatalf("embedded card must show ? / last known on a failed poll:\n%s", got)
 	}
 
 	h2, rs2 := newStaleRemoteHome(t, true, "ok", 47*time.Second)
 	b.Reset()
-	h2.renderRemoteSessionItem(&b, remoteItem(&rs2), false)
+	h2.renderRemoteSessionItemAtWidth(&b, remoteItem(&rs2), false, embeddedCardWidth)
 	if raw := b.String(); !strings.Contains(stripAnsi(raw), "status 47s old") || strings.Contains(raw, liveRunningGlyph()) {
 		t.Fatalf("embedded card must dim and date a stale row:\n%s", stripAnsi(raw))
 	}
