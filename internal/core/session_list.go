@@ -20,9 +20,12 @@ type SessionListIn struct {
 
 // SessionListOut is the output of session.list.
 type SessionListOut struct {
-	Profile  string             `json:"profile,omitempty" doc:"Resolved profile name (single-profile listing)"`
-	Sessions []SessionRow       `json:"sessions" doc:"Sessions of the single profile; empty with all_profiles"`
-	Stats    *session.ListStats `json:"stats,omitempty" doc:"Cost of the live status pass"`
+	Profile  string       `json:"profile,omitempty" doc:"Resolved profile name (single-profile listing)"`
+	Sessions []SessionRow `json:"sessions" doc:"Sessions of the single profile; empty with all_profiles"`
+	// Stats feeds the opt-in --stats diagnostic on the direct CLI. Wall
+	// time and process-local tmux call counts are not stable command data,
+	// so they are deliberately absent from canonical envelopes.
+	Stats *session.ListStats `json:"-"`
 	// Profiles and ProfileCount are set for all_profiles. ProfileCount counts
 	// every profile found, including ones that failed to load or are empty.
 	Profiles     []ProfileSessions `json:"profiles,omitempty"`

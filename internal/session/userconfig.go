@@ -299,6 +299,18 @@ type UserConfig struct {
 
 	// Performance holds opt-in resource tuning for multi-instance setups.
 	Performance PerformanceSettings `toml:"performance,omitempty"`
+
+	// Core holds the one-core registry and daemon switches (docs/core-registry.md).
+	Core CoreSettings `toml:"core,omitempty"`
+}
+
+// CoreSettings is the [core] section.
+type CoreSettings struct {
+	// Daemon routes --json=envelope requests of registry commands through the
+	// profile's `agent-deck daemon serve` when one answers; the CLI runs them
+	// in process when none does. Default false: direct mode, the socket is
+	// never dialled (docs/daemon-protocol.md).
+	Daemon bool `toml:"daemon,omitempty"`
 }
 
 // SelfHealSettings controls the self-heal supervision policy (SELF-HEAL-DESIGN.md

@@ -16,3 +16,26 @@
 - [x] Add per-harness golden tests and documentation.
 - [x] Verify build, vet, full affected suites, indexing performance and independent review.
 - [x] Commit local branch and create bundle and results receipt.
+- [x] Record wide blast radius and failing-first tests for profile, process, rotation, stats, lifecycle and runtime failures.
+- [x] Fix the event bus, producer waits, CLI help and documentation.
+- [x] Add explicit one-shot and watcher shutdown, stale-cursor and Close race proofs.
+- [x] Compare committed-head full packages with origin/main on g14 and record every failure.
+- [x] Review simplification, final host checks, RESULTS.md and verified local bundle.
+
+# core/events-slice4-20260922 (round 3, local only)
+
+- [x] Failing-first tests for profile routing, reserved status, batched tmux output, watcher profile and bounded shutdown.
+- [x] Preserve the TUI's opened profile and batch output appends with a nonblocking producer path.
+- [x] Run a read-only simplification review and correct its findings.
+- [x] Compare tmux tap throughput with the same harness on the old and fixed heads.
+- [x] Verify the real CLI's kill and resume path in a sandbox.
+- [x] Finish full g14 package comparison, host checks, report and bundle.
+
+# core/daemon-slice5-20260923 (round 3, local only)
+
+- [x] Rebase slice 1 and slice 5 commits onto slice 4 r3, preserving both changelog entries.
+- [x] Prove the eight-second bulk-restart timeout and each equivalence pair's socket call.
+- [x] Fix the bulk-restart reply deadline and the optional stale-socket takeover findings.
+- [x] Verify the equivalence test fails when daemon use is bypassed.
+- [x] Run full touched-package tests on g14 and compare failures with origin/main.
+- [x] Complete host checks, simplification review, RESULTS.md and bundle.

@@ -55,7 +55,7 @@ func cliSessionStart(profile string, args []string) {
 		exitCLIError(out, &jsonOutput, core.IDSessionStart, core.CodeInvalidInput, err.Error(), 1)
 	}
 
-	res := runCore(core.IDSessionStart, core.SessionStartIn{
+	res := runCore(profile, &jsonOutput, core.IDSessionStart, core.SessionStartIn{
 		Profile: profile,
 		Session: fs.Arg(0),
 		Message: initialMessage,
@@ -150,7 +150,7 @@ func cliSessionStop(profile string, args []string) {
 
 	out := NewCLIOutput(jsonOutput.enabled(), *quiet || *quietShort)
 
-	res := runCore(core.IDSessionStop, core.SessionStopIn{Profile: profile, Session: fs.Arg(0)}, func(ev core.Event) {
+	res := runCore(profile, &jsonOutput, core.IDSessionStop, core.SessionStopIn{Profile: profile, Session: fs.Arg(0)}, func(ev core.Event) {
 		if ev.Kind == core.EventQueueDrainFailed {
 			fmt.Fprintf(os.Stderr, "queue drain failed to start %s: %v\n", ev.Title, ev.Err)
 		}
@@ -226,7 +226,7 @@ func cliSessionRestart(profile string, args []string) {
 	out := NewCLIOutput(jsonOutput.enabled(), quietMode)
 	human := !jsonOutput.enabled()
 
-	res := runCore(core.IDSessionRestart, core.SessionRestartIn{
+	res := runCore(profile, &jsonOutput, core.IDSessionRestart, core.SessionRestartIn{
 		Profile: profile,
 		Session: fs.Arg(0),
 		All:     *all,

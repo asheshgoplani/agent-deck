@@ -51,7 +51,7 @@ func cliList(profile string, args []string) {
 		ensureTmuxInPathOrExit()
 	}
 
-	res := runCore(core.IDSessionList, core.SessionListIn{
+	res := runCore(profile, &jsonOutput, core.IDSessionList, core.SessionListIn{
 		Profile:           profile,
 		AllProfiles:       *allProfiles,
 		IncludeSuperseded: *includeSuperseded,
@@ -224,7 +224,7 @@ func cliGroupList(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(jsonOutput.enabled(), quietMode)
 
-	res := runCore(core.IDGroupList, core.GroupListIn{Profile: profile}, nil)
+	res := runCore(profile, &jsonOutput, core.IDGroupList, core.GroupListIn{Profile: profile}, nil)
 	if res.Err != nil {
 		exitCoreError(out, &jsonOutput, res, nil)
 	}
