@@ -87,3 +87,33 @@ func TestPaneStatusQueuedTextAutoCompactAndFacts(t *testing.T) {
 		}
 	}
 }
+
+// TestParsePaneStatusANSICapture: Session.CapturePane runs capture-pane -e,
+// so a live pane arrives with SGR colours around the spinner glyph, the verb
+// and the footer. claude-working-ansi.txt is such a capture of a real Claude
+// pane (review of the macapp core surface, live/pane-e.txt, anonymised);
+// claude-working-plain.txt is the same pane captured without -e. Both must
+// parse to the same status, with the verb, elapsed, tokens and footer facts.
+func TestParsePaneStatusANSICapture(t *testing.T) {
+	read := func(name string) string {
+		data, err := os.ReadFile(filepath.Join("testdata", "pane_status", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	colored := ParsePaneStatus(read("claude-working-ansi.txt"))
+	plain := ParsePaneStatus(read("claude-working-plain.txt"))
+	if !reflect.DeepEqual(colored, plain) {
+		t.Fatalf("-e capture parses differently:\n  -e %+v\nplain %+v", colored, plain)
+	}
+	if !colored.Running || colored.Verb != "Thundering…" || colored.Elapsed != "14s" || colored.Tokens != "↓ 135 tokens" || colored.Mode != "bypass permissions on" {
+		t.Fatalf("status = %+v", colored)
+	}
+	facts := FooterFacts(colored.Footer)
+	for k, want := range map[string]string{"account": "personal", "model": "Fable 5.1", "ctx": "5%", "5h": "33%", "7d": "29%"} {
+		if facts[k] != want {
+			t.Errorf("fact %s = %q, want %q (footer %q)", k, facts[k], want, colored.Footer)
+		}
+	}
+}

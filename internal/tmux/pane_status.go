@@ -106,8 +106,11 @@ func FooterFacts(footer string) map[string]string {
 }
 
 // ParsePaneStatus reads the visible pane of a Claude Code or Codex session.
+// The content may carry SGR colours (CapturePane runs capture-pane -e); they
+// are stripped first, since every pattern below anchors on the bare glyphs.
 func ParsePaneStatus(content string) PaneStatus {
 	var st PaneStatus
+	content = StripANSI(content)
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	spinnerAt := -1
 	for i := len(lines) - 1; i >= 0; i-- {
