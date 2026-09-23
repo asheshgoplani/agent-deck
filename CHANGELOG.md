@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Recall timeline and follow commands expose ordered, typed native conversation events with a resumable cursor for local chat clients. Both remain behind `[recall] enabled`.
 - `session start`, `session stop`, `session restart`, `list` and `group list` now run through a typed command registry (`internal/core`). Their output is unchanged; `--json=envelope` prints a response envelope with a stable error code instead of the legacy JSON. See docs/core-registry.md. `AGENT_DECK_CORE_REGISTRY=0` switches back to the previous handlers.
+- Conductor heartbeats now wake only when a local child's waiting or error state or the conductor inbox changes, and unchanged ticks send nothing. Teardown and `heartbeat_enabled = false` stop the timer cleanly. Heartbeat tick and send failures are logged once until recovery, and a failed send is retried on the next tick (#2348).
 
 ## [1.16.16] - 2026-09-20
 

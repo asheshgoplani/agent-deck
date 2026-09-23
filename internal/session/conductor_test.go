@@ -660,8 +660,10 @@ func TestConductorHeartbeatScript_ReferencesHeartbeatRules(t *testing.T) {
 		strings.Contains(conductorHeartbeatScript, `RULES=$(cat`) {
 		t.Fatal("heartbeat script must reference the rules path, not inline its contents")
 	}
-	if !strings.Contains(conductorHeartbeatScript, `Read heartbeat rules from $RULES_FILE.`) {
-		t.Fatal("heartbeat message should tell the conductor which rules path to read")
+	// #2348: the rules path goes to heartbeat-tick, which asks for a re-read
+	// only when the file changed since the last delivered tick.
+	if !strings.Contains(conductorHeartbeatScript, `conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE"`) {
+		t.Fatal("heartbeat script should hand the resolved rules path to heartbeat-tick")
 	}
 	// The rendered (not raw) script should carry the bridge-style prefix so the
 	// idle-pause matcher (IsConductorHeartbeatMessage) can recognise heartbeat
@@ -747,8 +749,11 @@ func TestRenderConductorHeartbeatScript_ReplacesHeartbeatPrefix(t *testing.T) {
 	if strings.Contains(script, "{HEARTBEAT_PREFIX}") {
 		t.Fatalf("heartbeat script must not contain unresolved prefix placeholder:\n%s", script)
 	}
-	if !strings.Contains(script, ConductorBridgeHeartbeatPrefix+" Check sessions in your group (test)") {
-		t.Fatalf("heartbeat script should contain rendered heartbeat message prefix:\n%s", script)
+	// #2348: the message itself is built by BuildHeartbeatTick from the same
+	// constant (see TestHeartbeatTick_DeliversOnlyChanges); the script only
+	// sends what `conductor heartbeat-tick` prints.
+	if !strings.Contains(script, `conductor heartbeat-tick "test"`) {
+		t.Fatalf("heartbeat script should send the heartbeat-tick message for this conductor:\n%s", script)
 	}
 }
 
@@ -2767,16 +2772,14 @@ func TestConductorHeartbeatScript_GroupScoped(t *testing.T) {
 	if !strings.Contains(conductorHeartbeatScript, "{NAME}") {
 		t.Fatal("heartbeat script must reference {NAME} for group scoping")
 	}
-	if !strings.Contains(conductorHeartbeatScript, "Check sessions in") {
-		t.Fatal("heartbeat script should contain group-scoped message like 'Check sessions in'")
+	if !strings.Contains(conductorHeartbeatScript, `conductor heartbeat-tick "{NAME}"`) {
+		t.Fatal("heartbeat script should build its message with the group-scoped heartbeat-tick")
 	}
 
-	// The script must contain an enabled-config guard that queries conductor status
-	if !strings.Contains(conductorHeartbeatScript, "enabled") {
-		t.Fatal("heartbeat script must contain an enabled guard that checks conductor status before sending")
-	}
-	if !strings.Contains(conductorHeartbeatScript, "conductor status") {
-		t.Fatal("heartbeat script must query conductor status to determine if enabled")
+	// The script must check this conductor's persisted heartbeat flag.
+	if !strings.Contains(conductorHeartbeatScript, `conductor status "{NAME}" --json`) ||
+		!strings.Contains(conductorHeartbeatScript, `"heartbeat"[[:space:]]*:[[:space:]]*true`) {
+		t.Fatal("heartbeat script must query this conductor's heartbeat flag before sending")
 	}
 }
 

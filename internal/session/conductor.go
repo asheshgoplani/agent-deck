@@ -1408,8 +1408,8 @@ const conductorHeartbeatScript = `#!/bin/bash
 SESSION="conductor-{NAME}"
 PROFILE="{PROFILE}"
 
-# Check if conductor is enabled (grep -q avoids quoting issues in subshells)
-if ! agent-deck -p "$PROFILE" conductor status --json 2>/dev/null | grep -q '"enabled".*true'; then
+# Check this conductor's heartbeat flag, including after teardown.
+if ! agent-deck -p "$PROFILE" conductor status "{NAME}" --json 2>/dev/null | grep -q '"heartbeat"[[:space:]]*:[[:space:]]*true'; then
     exit 0
 fi
 
@@ -1433,13 +1433,45 @@ for candidate in \
     fi
 done
 
-MSG="{HEARTBEAT_PREFIX} Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention."
-if [ -n "$RULES_FILE" ]; then
-    MSG="$MSG Read heartbeat rules from $RULES_FILE."
+if [ "$STATUS" != "idle" ] && [ "$STATUS" != "waiting" ]; then
+    exit 0
 fi
 
-if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
-    agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q
+# Issue #2348: every send is a new turn that re-reads the conductor's whole
+# conversation. heartbeat-tick prints a delta-only {HEARTBEAT_PREFIX} message,
+# or nothing when no waiting/error session or inbox record changed since the
+# last delivered tick; nothing printed means no turn at all.
+LOG_FILE="$CONDUCTOR_ROOT/{NAME}/heartbeat.log"
+TICK_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick-failed"
+SEND_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-send-failed"
+TICK_ERROR="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick.stderr"
+if ! MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>"$TICK_ERROR"); then
+    if [ ! -f "$TICK_FAILURE" ]; then
+        IFS= read -r TICK_DETAIL < "$TICK_ERROR" || true
+        printf 'heartbeat: tick failed: %s\n' "${TICK_DETAIL:-unknown error}" >> "$LOG_FILE"
+        : > "$TICK_FAILURE"
+    fi
+    unlink "$TICK_ERROR" 2>/dev/null || true
+    exit 1
+fi
+if [ -s "$TICK_ERROR" ]; then
+    if [ ! -f "$TICK_FAILURE" ]; then
+        IFS= read -r TICK_DETAIL < "$TICK_ERROR" || true
+        printf 'heartbeat: tick diagnostic: %s\n' "$TICK_DETAIL" >> "$LOG_FILE"
+        : > "$TICK_FAILURE"
+    fi
+else
+    unlink "$TICK_FAILURE" 2>/dev/null || true
+fi
+unlink "$TICK_ERROR" 2>/dev/null || true
+if [ -n "$MSG" ]; then
+    if SEND_ERROR=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q 2>&1); then
+        unlink "$SEND_FAILURE" 2>/dev/null || true
+        agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" --commit-message="$MSG" >/dev/null
+    elif [ ! -f "$SEND_FAILURE" ]; then
+        printf 'heartbeat: send failed: %s\n' "${SEND_ERROR%%$'\n'*}" >> "$LOG_FILE"
+        : > "$SEND_FAILURE"
+    fi
 fi
 `
 
@@ -2981,14 +3013,22 @@ func installHeartbeatDaemonSystemd(name string, intervalMinutes int) error {
 // UninstallHeartbeatDaemon stops and removes the heartbeat timer for a conductor.
 func UninstallHeartbeatDaemon(name string) error {
 	plat := platform.Detect()
+	var err error
 	switch plat {
 	case platform.PlatformMacOS:
-		return uninstallHeartbeatDaemonLaunchd(name)
+		err = uninstallHeartbeatDaemonLaunchd(name)
 	case platform.PlatformLinux, platform.PlatformWSL2:
-		return uninstallHeartbeatDaemonSystemd(name)
-	default:
-		return nil
+		err = uninstallHeartbeatDaemonSystemd(name)
 	}
+	if err != nil {
+		return err
+	}
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		return err
+	}
+	meta.HeartbeatEnabled = false
+	return SaveConductorMeta(meta)
 }
 
 func uninstallHeartbeatDaemonLaunchd(name string) error {
@@ -2996,21 +3036,38 @@ func uninstallHeartbeatDaemonLaunchd(name string) error {
 	if err != nil {
 		return err
 	}
-	_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+	if _, err := os.Stat(hbPlistPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := exec.Command("launchctl", "unload", hbPlistPath).Run(); err != nil {
+		return fmt.Errorf("stop launchd heartbeat: %w", err)
+	}
 	return RemoveHeartbeatPlist(name)
 }
 
 func uninstallHeartbeatDaemonSystemd(name string) error {
-	timerName := SystemdHeartbeatTimerName(name)
-	_ = exec.Command("systemctl", "--user", "disable", "--now", timerName).Run()
-
 	timerPath, err := SystemdHeartbeatTimerPath(name)
-	if err == nil {
-		_ = os.Remove(timerPath)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(timerPath); err == nil {
+		if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdHeartbeatTimerName(name)).Run(); err != nil {
+			return fmt.Errorf("stop systemd heartbeat: %w", err)
+		}
+		if err := os.Remove(timerPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	svcPath, err := SystemdHeartbeatServicePath(name)
-	if err == nil {
-		_ = os.Remove(svcPath)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(svcPath); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return nil
