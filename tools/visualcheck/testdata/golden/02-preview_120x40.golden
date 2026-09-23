@@ -16,7 +16,7 @@ SESSIONS                                   │ PREVIEW
    ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Output ───────────────────────────────
   ▶├─ ◐ claude-i18n claude                 │ Claude Code synthetic fixture
    └─ ○ shell-live shell                   │ ❯
-  ▾ remotes/lab (0) · unreachable: host d… │ fixture received: VC_I18N
+  ▾ remotes/lab (0) · host down            │ fixture received: VC_I18N
                                            │ esc to interrupt
                                            │ नमस्ते दुनिया 🚀🌟 यह परीक्षण है।
                                            │ ❯

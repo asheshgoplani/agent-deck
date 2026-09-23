@@ -11,7 +11,7 @@ SESSIONS                                   │ PREVIEW
      ├─ ✕ codex-idle codex                 │ ────────────────────────────── Sessions ──────────────────────────────
      ├─ ● claude-running claude            │   ■ opencode-idle opencode
      └─ ✕ claude-error claude              │   ✕ claude-idle claude
-  ▾ remotes/lab (0) · unreachable: host d… │   ◐ claude-waiting claude
+  ▾ remotes/lab (0) · host down            │   ◐ claude-waiting claude
                                            │   ■ claude-stopped claude
                                            │
                                            │ Tab toggle • r rename • d delete • g subgroup

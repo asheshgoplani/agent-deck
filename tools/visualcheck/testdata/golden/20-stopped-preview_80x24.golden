@@ -16,7 +16,7 @@ SESSIONS                     │ PREVIEW
    ├─ ✕ pi-idle              │
    ├─ ◐ claude-i18n          │ ■ Process exited
    └─ ○ shell-live           │
-  ▾ remotes/lab (0) · unrea… │ The process ended or was stopped.
+  ▾ remotes/lab (0) · host … │ The process ended or was stopped.
                              │ The session record is preserved for resuming.
                              │
                              │ Actions:

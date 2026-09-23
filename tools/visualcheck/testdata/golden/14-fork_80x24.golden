@@ -17,7 +17,7 @@ SESSIONS                     │ PREVIEW
    ├─ ✕ pi-idle              │ ────────────────── Claude ──────────────────
    ├─ ◐ claude-i18n          │ Status:  ● Connected
    └─ ○ shell-live           │ Session: <uuid>
-  ▾ remotes/lab (0) · unrea… │ Model:   tool default
+  ▾ remotes/lab (0) · host … │ Model:   tool default
                              │
                              │ ────────────────── Output ──────────────────
 ────────────────────────────────────────────────────────────────────────────────

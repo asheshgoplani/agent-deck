@@ -13,10 +13,10 @@ SESSIONS                                   │ PREVIEW
      └─ ✕ claude-error claude              │ Model:   tool default
 2·▾ beta (4) ◐ 1                           │ ╭────────────────────────────────────────────────────────╮
    ├─ ✕ gemini-idle gemini                 │ │                                                        │
-   ├─ ✕ pi-idle pi                         │ │  Switch session                                        │────────────
+   ├─ ✕ pi-idle pi                         │ │  Switch session                                        │ ───────────
    ├─ ◐ claude-i18n claude                 │ │                                                        │
    └─ ○ shell-live shell                   │ │  > ◐ claude-waiting (claude)                           │
-  ▾ remotes/lab (0) · unreachable: host d… │ │    ● claude-running (claude)                           │
+  ▾ remotes/lab (0) · host down            │ │    ● claude-running (claude)                           │
                                            │ │    ◐ claude-i18n (claude)                              │
                                            │ │    ○ shell-live (shell)                                │
                                            │ │                                                        │

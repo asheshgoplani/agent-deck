@@ -17,7 +17,7 @@ SESSIONS                                   │ PREVIEW
    ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Claude ───────────────────────────────
    ├─ ◐ claude-i18n claude                 │ Status:  ● Connected
    └─ ○ shell-live shell                   │ Session: <uuid>
-  ▾ remotes/lab (0) · unreachable: host d… │ Model:   tool default
+  ▾ remotes/lab (0) · host down            │ Model:   tool default
                                            │
                                            │ ─────────────────────────────── Output ───────────────────────────────
                                            │ Claude Code synthetic fixture

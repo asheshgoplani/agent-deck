@@ -8,7 +8,7 @@ SESSIONS                                   │ PREVIEW
    ├─ ✕ pi-idle pi                         │
    ├─ ◐ claude-i18n claude                 │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
    └─ ○ shell-live shell                   │
-  ▾ remotes/lab (0) · unreachable: host d… │ ────────────────────────────── Sessions ──────────────────────────────
+  ▾ remotes/lab (0) · host down            │ ────────────────────────────── Sessions ──────────────────────────────
                                            │   ■ opencode-idle opencode
                                            │   ✕ claude-idle claude
                                            │   ◐ claude-waiting claude
