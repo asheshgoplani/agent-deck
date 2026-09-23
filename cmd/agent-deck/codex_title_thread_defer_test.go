@@ -71,9 +71,10 @@ func TestDeferIfBusy_CodexTitleCompletionMidTurnDefers(t *testing.T) {
 		os.Args = []string{"agent-deck", "codex-notify", payload}
 		handleCodexNotify()
 	}
+	fetch := func() (string, error) { return fetchHookDrivenStatus(profile, inst.Title) }
 
 	notify(`{"type":"turn/started","thread-id":"` + mainSID + `","turn-id":"` + mainTurn + `"}`)
-	if got, err := fetchHookDrivenStatus(profile, inst.Title); err != nil || !send.StatusIsBusy(got) {
+	if got, err := fetch(); err != nil || !send.StatusIsBusy(got) {
 		t.Fatalf("main turn started: status = %q, %v; want busy", got, err)
 	}
 
@@ -84,17 +85,16 @@ func TestDeferIfBusy_CodexTitleCompletionMidTurnDefers(t *testing.T) {
 	if anchor := session.ReadHookSessionAnchor(inst.ID); anchor != mainSID {
 		t.Fatalf("hook anchor = %q after title completion, want main thread %q", anchor, mainSID)
 	}
-	if got, err := fetchHookDrivenStatus(profile, inst.Title); err != nil || !send.StatusIsBusy(got) {
+	if got, err := fetch(); err != nil || !send.StatusIsBusy(got) {
 		t.Fatalf("title completion mid-turn: status = %q, %v; want still busy", got, err)
 	}
-	fetch := func() (string, error) { return fetchHookDrivenStatus(profile, inst.Title) }
 	if err := send.WaitUntilNotBusy(fetch, time.Nanosecond, 10*time.Millisecond, func(time.Duration) {}); err == nil {
 		t.Fatal("--defer-if-busy delivered after the title completion; it must keep holding while the main turn runs")
 	}
 
 	// The main thread's own completion is the real turn-finished edge.
 	notify(`{"type":"agent-turn-complete","thread-id":"` + mainSID + `","turn-id":"` + mainTurn + `"}`)
-	if got, err := fetchHookDrivenStatus(profile, inst.Title); err != nil || send.StatusIsBusy(got) {
+	if got, err := fetch(); err != nil || send.StatusIsBusy(got) {
 		t.Fatalf("main completion: status = %q, %v; want not busy", got, err)
 	}
 }
