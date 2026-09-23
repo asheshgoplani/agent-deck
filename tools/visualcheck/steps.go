@@ -341,8 +341,21 @@ func stepAttachShell(w *widthRun) error {
 		return err
 	}
 	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.s.capturePane(w.sd.shellLive.tmuxName)
+		return err == nil && strings.Contains(pane, "shell-live") &&
+			!strings.Contains(pane, "export AGENTDECK"), err
+	}, 5*time.Second); err != nil {
+		return err
+	}
+	// The list preview reads tmux scrollback after detaching. Remove the
+	// shell's launch command so its variable-length identity path cannot
+	// leak back into that frame.
+	if _, err := w.s.exec("tmux", "clear-history", "-t", w.sd.shellLive.tmuxName); err != nil {
+		return err
+	}
+	if err := w.waitFor(func() (bool, error) {
 		pane, err := w.pane()
-		return err == nil && strings.Contains(pane, "shell-live") && !strings.Contains(pane, "SESSIONS"), err
+		return err == nil && strings.Contains(pane, "0:sh*") && !strings.Contains(pane, "SESSIONS"), err
 	}, 5*time.Second); err != nil {
 		return err
 	}

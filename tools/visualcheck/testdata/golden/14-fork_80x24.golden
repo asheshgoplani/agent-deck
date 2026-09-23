@@ -1,13 +1,13 @@
- ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                 <version>
-  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  12 sessions                                 <version>
+  All    ● 1   ◐ 3   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
-1·▾ alpha (8) ● 1 ◐ 1        │ claude-waiting (fork)  ○ starting
+1·▾ alpha (8) ● 1 ◐ 2        │ claude-waiting (fork)  ◐ waiting
    ├─ ■ opencode-… opencode  │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude   │ ⏱ <age>
    ├─ ◐ claude-wait… claude  │ 👁️ no viewers
    ├─ ■ claude-stop… claude  │  claude   alpha
-  ▶└─ ○  claude [fork/claude │ ───────────────── Worktree ─────────────────
+  ▶└─ ◐  claude [fork/claude │ ───────────────── Worktree ─────────────────
     ▾ backend (3) ● 1        │ Branch:  fork/claude-waiting
      ├─ ✕ codex-idle codex   │ Repo:    /tmp/vc-<tmp>
      ├─ ● claude-ru… claude  │ Path:    /tmp/vc-<tmp>

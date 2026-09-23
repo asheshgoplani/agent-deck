@@ -1,13 +1,13 @@
- ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                      <version>
-  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 3 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                      <version>
+  All    ● 1   ◐ 3   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
 SESSIONS                                   │ PREVIEW
 ────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
-1·▾ alpha (8) ● 1 ◐ 1                      │ claude-waiting (fork)  ○ starting
+1·▾ alpha (8) ● 1 ◐ 2                      │ claude-waiting (fork)  ◐ waiting
    ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude                 │ ⏱ <age>
    ├─ ◐ claude-waiting claude              │ 👁️ no viewers
    ├─ ■ claude-stopped claude              │  claude   alpha
-  ▶└─ ○ claude-… claude [fork/claude-...]  │ ────────────────────────────── Worktree ──────────────────────────────
+  ▶└─ ◐ claude-… claude [fork/claude-...]  │ ────────────────────────────── Worktree ──────────────────────────────
     ▾ backend (3) ● 1                      │ Branch:  fork/claude-waiting
      ├─ ✕ codex-idle codex                 │ Repo:    /tmp/vc-<tmp>
      ├─ ● claude-running claude            │ Path:    /tmp/vc-<tmp>
@@ -20,16 +20,16 @@ SESSIONS                                   │ PREVIEW
   ▾ remotes/lab (0) · unreachable: host d… │ Model:   tool default
                                            │
                                            │ ─────────────────────────────── Output ───────────────────────────────
+                                           │ Claude Code synthetic fixture
+                                           │ ❯
                                            │
-                                           │                                 ⣽  ⣽  ⣽
                                            │
-                                           │                        🚀 Launching Claude Code
                                            │
-                                           │                       Starting Claude session...
                                            │
-                                           │                                  ●●○○
                                            │
-                                           │                              Loading... <age>
+                                           │
+                                           │
+                                           │
                                            │
                                            │
                                            │
