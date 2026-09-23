@@ -398,6 +398,18 @@ func stepFork(w *widthRun) error {
 	}, 30*time.Second); err != nil {
 		return err
 	}
+	// The fork exists before its tmux client finishes launching. Capture the
+	// fixture's settled pane, not an arbitrary spinner frame.
+	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		if err != nil {
+			return false, err
+		}
+		return strings.Contains(pane, "Claude Code synthetic fixture") &&
+			!strings.Contains(pane, "Starting Claude session..."), nil
+	}, 30*time.Second); err != nil {
+		return fmt.Errorf("forked client did not settle: %w", err)
+	}
 	w.capture("14-fork")
 	return nil
 }
