@@ -137,6 +137,7 @@ exec ` + shQuote(s.realTmux) + " -L " + shQuote(s.socket) + " -f /dev/null \"$@\
 	}
 	cfg := "[telemetry]\ndisabled = true\n[tmux]\nlaunch_in_user_scope = false\n" +
 		"[ui.header]\nfields = [\"version\", \"sessions_by_status\"]\n" +
+		"[hotkeys]\nswitch_session = \"ctrl+s\"\n" +
 		"[updates]\nauto_update = false\nauto_restart = false\nstartup_check = false\n[worktree]\nbranch_prefix = \"\"\n" +
 		// The group-view step (steps.go) launches a second, short-lived
 		// `agent-deck --group alpha` alongside the main width-run window to

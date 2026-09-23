@@ -181,10 +181,18 @@ func stepEdit(w *widthRun) error {
 	if err := w.send("P"); err != nil {
 		return err
 	}
-	if err := waitScreen(w, 5*time.Second, "Edit Session", "Title:"); err != nil {
+	markers := []string{"Edit Session", "Title:"}
+	if w.spec.width == 80 {
+		// This dialog is taller than 24 rows; its heading scrolls out of view.
+		markers = []string{"same-harness resume", "Title:", "Extra args"}
+	}
+	if err := waitScreen(w, 5*time.Second, markers...); err != nil {
 		return err
 	}
 	w.capture("06-edit")
+	if w.spec.width == 80 {
+		return closeScreen(w, "same-harness resume")
+	}
 	return closeScreen(w, "Edit Session")
 }
 
