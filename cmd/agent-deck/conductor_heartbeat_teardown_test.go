@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,48 +43,6 @@ func TestConductorTeardownReportsHeartbeatOff(t *testing.T) {
 	meta, err := session.LoadConductorMeta("ops")
 	if err != nil || meta.HeartbeatEnabled {
 		t.Fatalf("persisted heartbeat flag after teardown: meta=%+v err=%v", meta, err)
-	}
-}
-
-func TestHeartbeatRemotePullContinuesAfterFailure(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	inbox := session.InboxPathFor("conductor-id")
-	if err := os.MkdirAll(filepath.Dir(inbox), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var visited []string
-	err := pullHeartbeatRemoteNames([]string{"working", "broken"}, func(name string) error {
-		visited = append(visited, name)
-		if name == "broken" {
-			return errors.New("unreachable")
-		}
-		return os.WriteFile(inbox, []byte("{\"source_remote\":\"working\",\"child_session_id\":\"child\"}\n"), 0o600)
-	})
-	if err == nil || strings.Join(visited, ",") != "broken,working" {
-		t.Fatalf("must report failure after pulling healthy remote: visited=%v err=%v", visited, err)
-	}
-	count, digest, snapshotErr := session.InboxSnapshot("conductor-id")
-	if count != 1 || digest == "" || snapshotErr != nil {
-		t.Fatalf("synthetic remote talkback must reach fingerprint input: count=%d digest=%q err=%v", count, digest, snapshotErr)
-	}
-}
-
-func TestIssue2348_HeartbeatOnlySelectsOwnedRemoteChildren(t *testing.T) {
-	remotes := map[string]session.RemoteConfig{
-		"box-a": {Host: "worker@box-a"},
-		"box-b": {Host: "worker@box-b"},
-	}
-	instances := []*session.Instance{
-		{ID: "child-a", ParentSessionID: "conductor-a", SSHHost: "worker@box-a"},
-		{ID: "child-b", ParentSessionID: "conductor-b", SSHHost: "worker@box-b"},
-		{ID: "local-a", ParentSessionID: "conductor-a"},
-	}
-	a := heartbeatRemoteChildren("conductor-a", instances, remotes)
-	b := heartbeatRemoteChildren("conductor-b", instances, remotes)
-	if len(a) != 1 || strings.Join(a["box-a"], ",") != "child-a" || len(b) != 1 || strings.Join(b["box-b"], ",") != "child-b" {
-		t.Fatalf("remote ownership leaked: a=%v b=%v", a, b)
 	}
 }
 

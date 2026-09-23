@@ -1404,10 +1404,24 @@ fi
 # conversation. heartbeat-tick prints a delta-only {HEARTBEAT_PREFIX} message,
 # or nothing when no waiting/error session or inbox record changed since the
 # last delivered tick; nothing printed means no turn at all.
-MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>/dev/null)
+LOG_FILE="$CONDUCTOR_ROOT/{NAME}/heartbeat.log"
+TICK_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick-failed"
+SEND_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-send-failed"
+if ! MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>&1); then
+    if [ ! -f "$TICK_FAILURE" ]; then
+        printf 'heartbeat: tick failed: %s\n' "${MSG%%$'\n'*}" >> "$LOG_FILE"
+        : > "$TICK_FAILURE"
+    fi
+    exit 1
+fi
+unlink "$TICK_FAILURE" 2>/dev/null || true
 if [ -n "$MSG" ]; then
-    if agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q; then
+    if SEND_ERROR=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q 2>&1); then
+        unlink "$SEND_FAILURE" 2>/dev/null || true
         agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" --commit-message="$MSG" >/dev/null
+    elif [ ! -f "$SEND_FAILURE" ]; then
+        printf 'heartbeat: send failed: %s\n' "${SEND_ERROR%%$'\n'*}" >> "$LOG_FILE"
+        : > "$SEND_FAILURE"
     fi
 fi
 `

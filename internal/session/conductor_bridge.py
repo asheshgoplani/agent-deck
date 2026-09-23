@@ -778,56 +778,6 @@ def _conductor_inbox_snapshot(sessions: list[dict], name: str) -> tuple[int, str
         return 0, "", True
 
 
-_remote_pull_failed: set[str] = set()
-
-
-def _pull_remote_talkback(session_id: str, profile: str, sessions: list[dict]) -> bool:
-    """Pull only this conductor's known remote children into its inbox."""
-    owned = [s for s in sessions if s.get("parent_session_id") == session_id
-             and s.get("ssh_host") and s.get("id")]
-    if not owned:
-        _remote_pull_failed.discard(session_id)
-        return False
-
-    def finish(error: str = "") -> bool:
-        if error:
-            if session_id not in _remote_pull_failed:
-                log.warning("Heartbeat: remote pull for %s failed: %s", session_id, error)
-            _remote_pull_failed.add(session_id)
-            return True
-        _remote_pull_failed.discard(session_id)
-        return False
-
-    result = run_cli("remote", "list", "--json", profile=profile, timeout=10)
-    if result.returncode != 0:
-        return finish(f"remote list: {result.stderr}")
-    if result.stdout.startswith("No remotes configured."):
-        return finish()
-    try:
-        remotes = json.loads(result.stdout)
-        if not isinstance(remotes, list):
-            raise ValueError("remote list was not an array")
-        if any(not isinstance(remote, dict) or not remote.get("name") or not remote.get("host")
-               for remote in remotes):
-            raise ValueError("remote list contained an invalid entry")
-    except (ValueError, KeyError, TypeError) as exc:
-        return finish(f"invalid remote list: {exc}")
-    failures = []
-    for remote in sorted(remotes, key=lambda remote: str(remote.get("name", ""))):
-        child_ids = sorted(str(s["id"]) for s in owned if s["ssh_host"] == remote.get("host"))
-        if not child_ids:
-            continue
-        name = str(remote["name"])
-        args = ["remote", "drain", name, "--into", session_id]
-        for child_id in child_ids:
-            args.extend(("--child-id", child_id))
-        drain = run_cli(*args, "--json",
-                        profile=profile, timeout=75)
-        if drain.returncode != 0:
-            failures.append(f"{name}: {drain.stderr}")
-    return finish("; ".join(failures))
-
-
 def _heartbeat_fingerprint(scoped_sessions: list[dict], inbox_pending: int = 0, inbox_digest: str = "") -> str:
     """Identify the actionable part of a heartbeat (issue #2348).
 
@@ -3372,14 +3322,6 @@ async def heartbeat_loop(
                 idle = sum(1 for s in scoped_sessions if s.get("status", "") == "idle")
                 error = sum(1 for s in scoped_sessions if s.get("status", "") == "error")
                 stopped = sum(1 for s in scoped_sessions if s.get("status", "") == "stopped")
-                conductor_session = next(
-                    (s for s in sessions if s.get("title") == session_title), None
-                )
-                if conductor_session and conductor_session.get("id"):
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(
-                        None, _pull_remote_talkback, str(conductor_session["id"]), profile, sessions
-                    )
                 inbox_pending, inbox_digest, inbox_error = _conductor_inbox_snapshot(sessions, name)
 
                 log.info(

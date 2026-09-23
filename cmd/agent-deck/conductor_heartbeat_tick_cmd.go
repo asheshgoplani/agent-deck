@@ -1,15 +1,10 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -55,29 +50,7 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 		RulesStamp: session.HeartbeatRulesStamp(*rules),
 	}
 	conductorTitle := session.ConductorSessionTitle(name)
-	var conductorID string
-	for _, inst := range instances {
-		if inst.Title == conductorTitle {
-			conductorID = inst.ID
-			break
-		}
-	}
 	prev := session.LoadHeartbeatTickState(name)
-	if *commitMessage == "" && conductorID != "" {
-		remoteFailed := false
-		if err := pullHeartbeatRemotes(profile, conductorID, instances); err != nil {
-			remoteFailed = true
-			if !prev.RemoteFailed {
-				fmt.Fprintf(os.Stderr, "heartbeat-tick: remote pull: %v\n", err)
-			}
-		}
-		if remoteFailed != prev.RemoteFailed {
-			prev.RemoteFailed = remoteFailed
-			if err := session.SaveHeartbeatTickState(name, prev); err != nil {
-				fmt.Fprintf(os.Stderr, "heartbeat-tick: save remote health: %v\n", err)
-			}
-		}
-	}
 	for _, inst := range instances {
 		if inst.Title == conductorTitle {
 			n, digest, err := session.InboxSnapshot(inst.ID)
@@ -116,65 +89,4 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 	if msg != "" {
 		fmt.Println(msg)
 	}
-}
-
-func pullHeartbeatRemotes(profile, conductorID string, instances []*session.Instance) error {
-	config, err := session.LoadUserConfig()
-	if err != nil {
-		return err
-	}
-	children := heartbeatRemoteChildren(conductorID, instances, config.Remotes)
-	if len(children) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(children))
-	for name := range children {
-		names = append(names, name)
-	}
-	binary, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	return pullHeartbeatRemoteNames(names, func(name string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*config.Remotes[name].GetCommandTimeout()+5*time.Second)
-		args := []string{"-p", profile, "remote", "drain", name, "--into", conductorID, "--json"}
-		for _, childID := range children[name] {
-			args = append(args, "--child-id", childID)
-		}
-		output, err := exec.CommandContext(ctx, binary, args...).CombinedOutput()
-		cancel()
-		if err != nil {
-			return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
-		}
-		return nil
-	})
-}
-
-func heartbeatRemoteChildren(conductorID string, instances []*session.Instance, remotes map[string]session.RemoteConfig) map[string][]string {
-	children := make(map[string][]string)
-	for _, inst := range instances {
-		if inst.ParentSessionID != conductorID || inst.SSHHost == "" {
-			continue
-		}
-		for name, remote := range remotes {
-			if remote.Host == inst.SSHHost {
-				children[name] = append(children[name], inst.ID)
-			}
-		}
-	}
-	for name := range children {
-		sort.Strings(children[name])
-	}
-	return children
-}
-
-func pullHeartbeatRemoteNames(names []string, drain func(string) error) error {
-	sort.Strings(names)
-	var failures []error
-	for _, name := range names {
-		if err := drain(name); err != nil {
-			failures = append(failures, err)
-		}
-	}
-	return errors.Join(failures...)
 }

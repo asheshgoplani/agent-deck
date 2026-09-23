@@ -156,7 +156,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	asJSON := fs.Bool("json", false, "Emit the drain result as JSON")
 	into := fs.String("into", "", "Local session id whose inbox receives the records (default: this session)")
 	var childIDs stringSliceFlag
-	fs.Var(&childIDs, "child-id", "Only deliver this remote child ID (repeatable; used by automatic heartbeat)")
+	fs.Var(&childIDs, "child-id", "Only deliver this remote child ID (repeatable)")
 	fs.Usage = func() { printRemoteDrainUsage(stderr) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return drainExitUsage

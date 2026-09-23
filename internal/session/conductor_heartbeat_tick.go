@@ -46,9 +46,8 @@ type HeartbeatTickInput struct {
 
 // HeartbeatTickState is what the previous delivered tick left behind.
 type HeartbeatTickState struct {
-	Fingerprint  string `json:"fingerprint,omitempty"`
-	RulesStamp   string `json:"rules_stamp,omitempty"`
-	RemoteFailed bool   `json:"remote_failed,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	RulesStamp  string `json:"rules_stamp,omitempty"`
 }
 
 // BuildHeartbeatTick returns the message to send ("" = skip this tick) and the
@@ -71,7 +70,7 @@ func BuildHeartbeatTick(in HeartbeatTickInput, prev HeartbeatTickState) (string,
 	sort.Strings(waiting)
 	sort.Strings(errored)
 
-	next := HeartbeatTickState{RulesStamp: prev.RulesStamp, RemoteFailed: prev.RemoteFailed}
+	next := HeartbeatTickState{RulesStamp: prev.RulesStamp}
 	if len(waiting) == 0 && len(errored) == 0 && in.InboxPending == 0 && !in.InboxError {
 		// Nothing to act on. Forget the fingerprint so the same set is
 		// delivered again if it comes back after being resolved.

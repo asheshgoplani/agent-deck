@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Conductor heartbeats now wake only for changed local child state or inbox records. Remote talkback requires an explicit `remote drain`; the automatic pull could not match real remote-launched workers. Heartbeat tick and send failures are logged once until recovery, and failed sends retry on the next tick (#2348).
+
 ## [1.16.16] - 2026-09-20
 
 ### Fixed

@@ -137,26 +137,6 @@ func TestHeartbeatTick_DeliversOnlyChanges(t *testing.T) {
 	}
 }
 
-func TestHeartbeatTick_RemotePullFailureDoesNotWake(t *testing.T) {
-	in := HeartbeatTickInput{Name: "ops"}
-	state := HeartbeatTickState{RemoteFailed: true}
-	for tick := 0; tick < 5; tick++ {
-		msg, next := BuildHeartbeatTick(in, state)
-		if len(msg) != 0 {
-			t.Fatalf("unreachable remote tick %d sent %d bytes", tick, len(msg))
-		}
-		state = next
-	}
-	in.InboxPending, in.InboxDigest = 1, "new-record"
-	msg, state := BuildHeartbeatTick(in, state)
-	if msg == "" {
-		t.Fatal("new talkback record must wake once despite failed remote")
-	}
-	if msg, _ = BuildHeartbeatTick(in, state); msg != "" {
-		t.Fatalf("unchanged record woke again: %q", msg)
-	}
-}
-
 func TestUninstallHeartbeatDaemon_StopFailureKeepsEnabled(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("systemd stop failure fixture")
