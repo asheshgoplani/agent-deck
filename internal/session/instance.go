@@ -6284,6 +6284,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 
 	// Check if tmux session exists
 	if !i.tmuxSession.Exists() {
+		if i.tmuxSession.AbsenceIsForeignServer() {
+			// This process runs inside another tmux server and its socket-less
+			// probe followed $TMUX there; the session is alive on the default
+			// server. No verdict: keep the last-known status rather than publish
+			// error for a session this process cannot see (rc 2026-09-23).
+			return nil
+		}
 		if i.neverStarted() {
 			// Added but never started: no tmux session was ever created, so an
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
