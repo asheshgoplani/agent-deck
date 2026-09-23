@@ -382,7 +382,10 @@ func TestUninstallHeartbeatDaemon_UnknownAgentDisablesAndPreservesMeta(t *testin
 		t.Fatalf("fields this build doesn't know must survive: %s", data)
 	}
 	info, err := os.Stat(metaPath)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("meta.json permissions must be preserved: %v %v", info.Mode(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("meta.json permissions must be preserved: got %v", info.Mode().Perm())
 	}
 }
