@@ -1785,8 +1785,9 @@ func (s *Session) SetStartupAtForTest(t time.Time) {
 // MarkInteractiveAt ends the startup phase on out-of-band evidence that the
 // agent is running, such as a lifecycle hook event observed at eventAt. Hook
 // fast paths skip GetStatus, so without this the startup clock is never
-// cleared by pane detection and the first fallthrough to GetStatus expires a
-// live pane. Evidence older than the current pane generation is ignored so a
+// cleared by pane detection (#2361). GetStatus also probes an overdue pane
+// for a live agent before expiring it, but a hook is direct evidence and also
+// covers frames the probe cannot read (e.g. Claude's transcript view). Evidence older than the current pane generation is ignored so a
 // late hook from a respawned pane cannot vouch for its replacement. Hook
 // timestamps have one-second resolution, hence the truncation.
 //
