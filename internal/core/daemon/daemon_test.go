@@ -599,7 +599,7 @@ func TestAcquireKeepsSocketWhenRecordedPIDLives(t *testing.T) {
 	}
 	if _, err := Acquire(paths); err == nil {
 		t.Fatal("Acquire replaced a live PID's socket")
-	} else if !strings.Contains(err.Error(), paths.Lock) || !strings.Contains(err.Error(), "remove manually") {
+	} else if !strings.Contains(err.Error(), paths.Lock) || !strings.Contains(err.Error(), paths.Socket) || !strings.Contains(err.Error(), "manually") {
 		t.Fatalf("reused PID refusal gives no lock and recovery instructions: %v", err)
 	}
 	if c, err := net.DialTimeout("unix", paths.Socket, time.Second); err != nil {
