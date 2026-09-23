@@ -318,6 +318,12 @@ func inheritedEnviron() []string {
 	return env
 }
 
+func configureEventProfile(profile string) (string, error) {
+	selected := session.GetEffectiveProfile(profile)
+	events.SetProfile(selected)
+	return selected, nil
+}
+
 func main() {
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
@@ -333,7 +339,10 @@ func main() {
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
 	applyProfileFlag(profile)
-	events.SetProfile(session.GetEffectiveProfile(profile))
+	if _, err := configureEventProfile(profile); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve events profile: %v\n", err)
+		return
+	}
 	defer events.CloseDefault()
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
