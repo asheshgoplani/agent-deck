@@ -76,6 +76,7 @@ type Bus struct {
 	mu           sync.Mutex
 	cursor       Cursor
 	activeFile   *os.File
+	pendingSync  []*os.File
 	activeStart  Cursor
 	activeBytes  int64
 	activeFrames int
@@ -514,12 +515,15 @@ func (b *Bus) writerLoop() {
 // writeBatch takes the cross-process lock once for up to maxWriteBatch frames.
 // Sync runs on the one-second tick and at shutdown, never per output line.
 func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
-	if b.abandoned.Load() {
+	if b.abandoned.Load() && !sync {
 		return
 	}
 	if b.failed.Load() {
 		b.dropped.Add(uint64(len(batch)))
-		return
+		if !sync {
+			return
+		}
+		batch = nil
 	}
 	if err := b.lockDisk(); err != nil {
 		b.fail(err)
@@ -527,12 +531,12 @@ func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 		return
 	}
 	defer b.unlockDisk()
-	if b.abandoned.Load() {
+	if b.abandoned.Load() && !sync {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(batch) > 0 {
+	if len(batch) > 0 && !b.abandoned.Load() {
 		if err := b.refreshLocked(); err != nil {
 			b.fail(err)
 			b.dropped.Add(uint64(len(batch)))
@@ -553,16 +557,22 @@ func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 			}
 		}
 	}
-	rotate := b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames
-	if sync && b.activeFile != nil && (b.synced.Load() != b.written.Load() || rotate) {
-		if err := b.activeFile.Sync(); err != nil {
-			b.fail(fmt.Errorf("events: sync: %w", err))
-		} else {
+	if sync {
+		for _, file := range b.pendingSync {
+			if err := file.Sync(); err != nil {
+				b.fail(fmt.Errorf("events: sync sealed segment: %w", err))
+			}
+			_ = file.Close()
+		}
+		b.pendingSync = nil
+		if b.activeFile != nil && b.activeFrames > 0 && b.synced.Load() != b.written.Load() {
+			if err := b.activeFile.Sync(); err != nil {
+				b.fail(fmt.Errorf("events: sync: %w", err))
+			}
+		}
+		if !b.failed.Load() {
 			b.synced.Store(b.written.Load())
 		}
-	}
-	if sync && !b.failed.Load() && rotate {
-		b.rotateLocked()
 	}
 	if err := b.persistDropsLocked(); err != nil {
 		b.fail(err)
@@ -598,6 +608,9 @@ func (b *Bus) appendFrameLocked(qf queuedFrame) error {
 	b.activeBytes += int64(n)
 	b.activeFrames++
 	b.written.Add(1)
+	if b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames {
+		b.rotateLocked()
+	}
 
 	return nil
 }
@@ -608,31 +621,21 @@ func (b *Bus) fail(err error) {
 	}
 }
 
-// rotateLocked seals the active segment (rename to seg-<start>-<end>.ndjson)
-// and opens a fresh, empty active segment. Caller holds b.mu.
+// rotateLocked seals the active segment and keeps its descriptor for the next
+// periodic sync. Caller holds b.mu and the cross-process writer lock.
 func (b *Bus) rotateLocked() {
 	if b.activeFrames == 0 {
 		return
 	}
-	if err := b.activeFile.Close(); err != nil {
-		b.fail(err)
-		return
-	}
-
 	sealedName := fmt.Sprintf("seg-%020d-%020d.ndjson", uint64(b.activeStart), uint64(b.cursor))
 	oldPath := filepath.Join(b.dir, activeSegmentName)
 	newPath := filepath.Join(b.dir, sealedName)
 	if err := os.Rename(oldPath, newPath); err != nil {
-		// Best effort: reopen the old path so the bus keeps working even if
-		// the rename failed (e.g. permissions raced). Rotation is a safety
-		// optimization, not a correctness requirement.
-		f, oerr := os.OpenFile(oldPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
-		if oerr == nil {
-			b.activeFile = f
-		}
 		b.fail(err)
 		return
 	}
+	b.pendingSync = append(b.pendingSync, b.activeFile)
+	b.activeFile = nil
 
 	f, err := os.OpenFile(oldPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
