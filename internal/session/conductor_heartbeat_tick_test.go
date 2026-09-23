@@ -234,6 +234,13 @@ func TestHeartbeatScript_UnchangedTicksSendNothing(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)
+	conductorDir, err := ConductorNameDir("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(conductorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	bin := filepath.Join(home, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {

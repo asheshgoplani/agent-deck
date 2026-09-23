@@ -1407,14 +1407,26 @@ fi
 LOG_FILE="$CONDUCTOR_ROOT/{NAME}/heartbeat.log"
 TICK_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick-failed"
 SEND_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-send-failed"
-if ! MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>&1); then
+TICK_ERROR="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick.stderr"
+if ! MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>"$TICK_ERROR"); then
     if [ ! -f "$TICK_FAILURE" ]; then
-        printf 'heartbeat: tick failed: %s\n' "${MSG%%$'\n'*}" >> "$LOG_FILE"
+        IFS= read -r TICK_DETAIL < "$TICK_ERROR" || true
+        printf 'heartbeat: tick failed: %s\n' "${TICK_DETAIL:-unknown error}" >> "$LOG_FILE"
         : > "$TICK_FAILURE"
     fi
+    unlink "$TICK_ERROR" 2>/dev/null || true
     exit 1
 fi
-unlink "$TICK_FAILURE" 2>/dev/null || true
+if [ -s "$TICK_ERROR" ]; then
+    if [ ! -f "$TICK_FAILURE" ]; then
+        IFS= read -r TICK_DETAIL < "$TICK_ERROR" || true
+        printf 'heartbeat: tick diagnostic: %s\n' "$TICK_DETAIL" >> "$LOG_FILE"
+        : > "$TICK_FAILURE"
+    fi
+else
+    unlink "$TICK_FAILURE" 2>/dev/null || true
+fi
+unlink "$TICK_ERROR" 2>/dev/null || true
 if [ -n "$MSG" ]; then
     if SEND_ERROR=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q 2>&1); then
         unlink "$SEND_FAILURE" 2>/dev/null || true
