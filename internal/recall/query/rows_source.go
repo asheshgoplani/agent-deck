@@ -461,7 +461,10 @@ func withClaudeSidechains(ctx context.Context, transcript string, rows []Row) []
 // poll interval (200 ms when zero). status, when set, is sampled once a
 // second: a status frame goes out every second while the session runs and
 // once more when it stops running.
-func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Duration, status func() *LiveStatus, emit func(RowFrame) error) error {
+//
+// extra, when set, is called on every poll and its frames are emitted as
+// they are (delivery frames of queued sends).
+func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Duration, status func() *LiveStatus, extra func() []RowFrame, emit func(RowFrame) error) error {
 	if poll <= 0 {
 		poll = 200 * time.Millisecond
 	}
@@ -527,6 +530,13 @@ func FollowRows(ctx context.Context, src RowsSource, after string, poll time.Dur
 			})
 			if err != nil {
 				return err
+			}
+		}
+		if extra != nil {
+			for _, fr := range extra() {
+				if err := emit(fr); err != nil {
+					return err
+				}
 			}
 		}
 		now := time.Now()

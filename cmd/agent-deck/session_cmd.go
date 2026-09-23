@@ -108,6 +108,10 @@ func handleSession(profile string, args []string) {
 		handleSessionMove(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
+	case "send-status":
+		handleSessionSendStatus(profile, args[1:])
+	case "send-worker":
+		handleSessionSendWorker(profile, args[1:])
 	case "approve":
 		handleSessionApprove(profile, args[1:])
 	case "send-keys":
@@ -166,7 +170,8 @@ func printSessionHelp() {
 	fmt.Println("  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target")
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
-	fmt.Println("  send <id> <message>     Send a message to a running session")
+	fmt.Println("  send <id> <message>     Send a message to a running session (--queue: never dropped, see send-status; --image <path>)")
+	fmt.Println("  send-status <send-id>   State of a queued send: queued, typed, submitted, landed or failed")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  context [id]            Show what is loaded into the agent's context, ranked by cost")
@@ -3030,6 +3035,9 @@ func handleSessionSend(profile string, args []string) {
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
+	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle and never drops the message (see session send-status)")
+	var images imageList
+	fs.Var(&images, "image", "Attach an image (repeatable): Claude Code and Gemini get @<copy under .agentdeck-images/>; Codex and other harnesses exit 2")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session send <id|title> <message> [options]")
@@ -3056,6 +3064,16 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
+		fmt.Println("  agent-deck session send my-project --message-file - --json --queue   # returns send_id at once")
+		fmt.Println("  agent-deck session send my-project \"what is this?\" --image shot.png")
+		fmt.Println()
+		fmt.Println("--queue: result {send_id, state, reason, target_status, ...}; the send waits while the")
+		fmt.Println("  target runs, is typed and verified when it is idle, and is watched until its text lands in")
+		fmt.Println("  the transcript (state landed, landed_row_id). Retry budget 30m, then failed with a reason.")
+		fmt.Println("  Exit 0 queued, 1 failed at once (e.g. target not running).")
+		fmt.Println("--image: Claude Code and Gemini receive @path; Codex takes images only at launch (-i), so a")
+		fmt.Println("  running Codex session exits 2, as does any other harness. Exit codes: 0 sent/queued,")
+		fmt.Println("  1 delivery failed, 2 usage error, unknown session or unsupported image.")
 		fmt.Println()
 		fmt.Println("Codex --json --wait:")
 		fmt.Println("  Emits one structured result correlated to the accepted Codex turn.")
@@ -3117,6 +3135,23 @@ func handleSessionSend(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	if len(images) > 0 || *queue {
+		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
+			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+		var imgErr error
+		message, _, imgErr = attachImages(inst, message, images, time.Now())
+		if imgErr != nil {
+			out.Error(imgErr.Error(), ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+		if *queue {
+			queueSend(profile, storage, inst, message, images, out)
+			return
+		}
 	}
 
 	// --stream is Claude-only in Phase 1. Non-Claude tools error cleanly

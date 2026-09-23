@@ -268,7 +268,7 @@ func startFollow(t *testing.T, src RowsSource, after string, status func() *Live
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- FollowRows(ctx, src, after, 20*time.Millisecond, status, c.emit) }()
+	go func() { done <- FollowRows(ctx, src, after, 20*time.Millisecond, status, nil, c.emit) }()
 	return func() error {
 		cancel()
 		err := <-done
@@ -454,7 +454,7 @@ func TestRowsFollowResync(t *testing.T) {
 	_, cursor := readRowsT(t, "claude", path, RowsOptions{})
 	run := func(src RowsSource, after string) RowFrame {
 		var got RowFrame
-		err := FollowRows(context.Background(), src, after, 10*time.Millisecond, nil, func(f RowFrame) error {
+		err := FollowRows(context.Background(), src, after, 10*time.Millisecond, nil, nil, func(f RowFrame) error {
 			got = f
 			if f.Frame == "resync_required" {
 				return nil
@@ -499,7 +499,7 @@ func TestRowsFollowSourceMovedByResolver(t *testing.T) {
 	moved := filepath.Join(dir, "rollout-b.jsonl")
 	src := RowsSource{Harness: "codex", Path: path, Resolve: func() (string, error) { return moved, nil }}
 	var got RowFrame
-	err := FollowRows(context.Background(), src, cursor, 10*time.Millisecond, nil, func(f RowFrame) error { got = f; return nil })
+	err := FollowRows(context.Background(), src, cursor, 10*time.Millisecond, nil, nil, func(f RowFrame) error { got = f; return nil })
 	if err != nil || got.Frame != "resync_required" || got.Reason != "source_moved" {
 		t.Fatalf("resolver move: %v %+v", err, got)
 	}
@@ -612,5 +612,27 @@ func TestRowsFromTurnsCoversV1Kinds(t *testing.T) {
 	}
 	if strings.Join(kinds, ",") != "user,assistant,bash,system,other" {
 		t.Fatalf("kinds = %v", kinds)
+	}
+}
+
+func TestFindLanded(t *testing.T) {
+	ctx := context.Background()
+	path := rowsFixture(t, "claude")
+	if id, ts, ok := FindLanded(ctx, "claude", path, 0, "  Write hello.py,   नमस्ते 🚀 "); !ok || id != "u1" || ts != "2026-09-23T08:00:03.000Z" {
+		t.Fatalf("user row: %q %q %v", id, ts, ok)
+	}
+	// An absorbed mid-turn message lands as its queue row.
+	if id, _, ok := FindLanded(ctx, "claude", path, 0, "MIDTURN: are you there?"); !ok || !strings.HasPrefix(id, "queue:2026-09-23T08:00:15.000Z:") {
+		t.Fatalf("queued row: %q %v", id, ok)
+	}
+	info, _ := os.Stat(path)
+	if _, _, ok := FindLanded(ctx, "claude", path, info.Size(), "Write hello.py, नमस्ते 🚀"); ok {
+		t.Fatal("found text before the offset")
+	}
+	if _, _, ok := FindLanded(ctx, "claude", path, 0, "never sent"); ok {
+		t.Fatal("found a message that was never sent")
+	}
+	if id, _, ok := FindLanded(ctx, "codex", rowsFixture(t, "codex"), 0, "Run hello.py"); !ok || id != "msg_u1" {
+		t.Fatalf("codex user row: %q %v", id, ok)
 	}
 }
