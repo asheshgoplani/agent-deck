@@ -89,3 +89,5 @@ pi-remote-agentbox-no-cache-field	pi	waiting	idle composer, status line without 
 synth-claude-spinner-12-subagents	claude	active	SYNTHETIC (review r1): live spinner + 12 roster rows under the footer
 synth-claude-idle-12-subagent-rows	claude	waiting	SYNTHETIC (review r1): idle prompt + 12 roster rows under the footer
 synth-claude-awaited-agents-above-16-roster-rows	claude	active	SYNTHETIC: turn handed off to 3 background agents, 16 roster rows push the Waiting line out of the 20-line window
+pi-synth-idle-delegate-task-prose	pi	waiting	SYNTHETIC (review r2 P1): idle composer, finished answer mentions delegate_task in prose; layout of pi-local-tets
+pi-synth-subagent-working	pi	active	SYNTHETIC from pi source (pi-tui Loader "Working (escape to interrupt)", pi-subagents 0.51.0 subagent tool call, compact running row); no live subagent pane was available to capture

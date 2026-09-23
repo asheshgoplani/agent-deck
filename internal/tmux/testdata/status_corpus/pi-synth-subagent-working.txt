@@ -1,0 +1,16 @@
+ Delegating the review to a subagent.
+
+ subagent reviewer
+ ⠙ reviewer | 4 tools, 12.4k tok, 41s · running
+
+ Task: Review internal/tmux/patterns.go for false busy cues
+
+ > read internal/tmux/patterns.go
+
+ ⠼ Working (escape to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/src/work • cleanup
+↑5.9k ↓77 R5.5k CH96.6% $0.034 (sub) 2.1%/272k (auto)                              (openai-codex) gpt-5.6-sol • low

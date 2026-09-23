@@ -1,0 +1,16 @@
+ subagent reviewer
+ ✓ reviewer | 9 tools, 31.2k tok, 1m12s · done
+
+ Removed the legacy delegation path. Summary:
+
+ - The delegate_task function has been removed; callers now use the subagent tool.
+ - delegate_task agent=researcher in the old docs was rewritten to subagent researcher.
+ - No test references delegate_task any more.
+
+ Nothing else is pending.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/src/work • cleanup
+↑5.9k ↓77 R5.5k CH96.6% $0.034 (sub) 2.1%/272k (auto)                              (openai-codex) gpt-5.6-sol • low
