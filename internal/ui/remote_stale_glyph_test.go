@@ -81,3 +81,49 @@ func TestRemoteStaleRow_PreviewFollowsPollHealth(t *testing.T) {
 		t.Fatalf("preview must date a stale row:\n%s", got)
 	}
 }
+
+// Review round 2 (P2-3): the stale-by-age rows the list now dims must not
+// be counted as green running by the filter-bar pill or painted as a
+// full-colour "● N" in the remote host / sub-group headers.
+func TestRemoteStaleRow_FilterBarDoesNotCountStaleRunning(t *testing.T) {
+	h, _ := newStaleRemoteHome(t, false, "ok", 47*time.Second)
+	h.cachedStatusCounts.valid.Store(false)
+	if running, _, _, _, _ := h.countSessionStatuses(); running != 0 {
+		t.Fatalf("filter-bar running = %d, want 0 for a remote whose snapshot is 47s old", running)
+	}
+
+	fresh, _ := newStaleRemoteHome(t, false, "ok", 2*time.Second)
+	fresh.cachedStatusCounts.valid.Store(false)
+	if running, _, _, _, _ := fresh.countSessionStatuses(); running != 1 {
+		t.Fatalf("filter-bar running = %d, want 1 for a fresh remote", running)
+	}
+}
+
+func TestRemoteStaleRow_HeaderCountsDimmedWhenStale(t *testing.T) {
+	liveCount := GroupStatusRunning.Render("● 1")
+	for _, level := range []int{0, 1} {
+		item := session.Item{Type: session.ItemTypeRemoteGroup, RemoteName: "dev", Path: "remotes/dev", Level: level}
+		if level > 0 {
+			item.Path = "remotes/dev/work"
+		}
+		h, _ := newStaleRemoteHome(t, false, "ok", 47*time.Second)
+		h.remoteSessions["dev"][0].Group = "work"
+		var b strings.Builder
+		h.renderRemoteGroupItem(&b, item, false, 0)
+		got := b.String()
+		if !strings.Contains(stripAnsi(got), "● 1") {
+			t.Fatalf("level %d: stale header must still show its count:\n%s", level, stripAnsi(got))
+		}
+		if strings.Contains(got, liveCount) {
+			t.Fatalf("level %d: stale header paints a full-colour green running count:\n%q", level, got)
+		}
+
+		fresh, _ := newStaleRemoteHome(t, false, "ok", 2*time.Second)
+		fresh.remoteSessions["dev"][0].Group = "work"
+		b.Reset()
+		fresh.renderRemoteGroupItem(&b, item, false, 0)
+		if !strings.Contains(b.String(), liveCount) {
+			t.Fatalf("level %d: fresh header must keep the green running count:\n%q", level, b.String())
+		}
+	}
+}

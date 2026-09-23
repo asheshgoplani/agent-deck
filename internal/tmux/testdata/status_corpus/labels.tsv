@@ -82,3 +82,10 @@ shell-local-mru-demo-a_40b08ea8	shell	waiting	bash prompt
 shell-local-mru-demo-b_5b2759f7	shell	waiting	bash prompt
 shell-local-mru-demo-b_62de1d5d	shell	waiting	password prompt (known blind spot: no shell prompt glyph)
 shell-local-mru-demo-c_0d599f20	shell	waiting	bash prompt
+synth-codex-agent-quotes-status-line	codex	waiting	SYNTHETIC (review r1): idle; agent message quotes the "(9m 41s • esc to interrupt)" shape, then Worked for + composer
+synth-codex-ran-grep-for-status-line	codex	waiting	SYNTHETIC (review r1): idle; • Ran grep whose command contains the status shape, then composer
+synth-codex-user-pasted-working	codex	waiting	SYNTHETIC (review r1): idle; user pasted "Working (… • esc to interrupt)" into a › line
+pi-remote-agentbox-no-cache-field	pi	waiting	idle composer, status line without R/CH fields (openai provider, review r1 P2-4)
+synth-claude-spinner-12-subagents	claude	active	SYNTHETIC (review r1): live spinner + 12 roster rows under the footer
+synth-claude-idle-12-subagent-rows	claude	waiting	SYNTHETIC (review r1): idle prompt + 12 roster rows under the footer
+synth-claude-awaited-agents-above-16-roster-rows	claude	active	SYNTHETIC: turn handed off to 3 background agents, 16 roster rows push the Waiting line out of the 20-line window
