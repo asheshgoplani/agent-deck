@@ -21269,7 +21269,9 @@ func (h *Home) renderGroupItem(
 	// Keeping it a constant width means the number no longer eats a level of
 	// indentation, so a numbered root and its children stay properly nested.
 	gutter := strings.Repeat(" ", leftGutterWidth)
-	if item.Level == 0 && !selected && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
+	if selected {
+		gutter = SessionSelectionPrefix.Render("▶ ")
+	} else if item.Level == 0 && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
 		gutter = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
 	}
 
@@ -21306,7 +21308,11 @@ func (h *Home) renderGroupItem(
 	stats := groupStats[group.Path]
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
 	if h.compactEmbeddedSidebar() {
-		row := indent + expandIcon + " " + nameStyle.Render(group.Name) + countStr
+		prefix := ""
+		if selected {
+			prefix = gutter
+		}
+		row := prefix + indent + expandIcon + " " + nameStyle.Render(group.Name) + countStr
 		row = fitCellWidth(row, max(1, listWidth))
 		if selected {
 			row = lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface).Render(row)
