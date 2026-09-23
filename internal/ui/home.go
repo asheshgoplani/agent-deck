@@ -405,7 +405,8 @@ type Home struct {
 	// Round-robin status updates (Priority 1A optimization)
 	// Instead of updating ALL sessions every tick, we update batches of 5-10 sessions
 	// This reduces CPU usage by 90%+ while maintaining responsiveness
-	statusUpdateIndex atomic.Int32 // Current position in round-robin cycle (atomic for thread safety)
+	statusUpdateIndex     atomic.Int32 // Current position in round-robin cycle (atomic for thread safety)
+	fullStatusUpdateIndex atomic.Int32 // Next session in the periodic status sweep
 	// Visible-row round-robin state (#1753): with a large group expanded the
 	// visible set approaches fleet size, so "always refresh every visible row"
 	// degenerates into the same per-row storm the off-screen batching exists to
@@ -6415,8 +6416,20 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 	}
 
-	// Update status for all instances in parallel (I/O bound: tmux subprocess calls)
-	// With PipeManager, skip sessions idle for >5s (no %output events = no status change)
+	// Poll a fixed-size slice of the fleet on each periodic pass. A full-fleet
+	// pass can launch hundreds of probes when the list contains stopped or
+	// disconnected sessions, starving tmux and status readers. Hook and pipe
+	// events still refresh active rows independently.
+	const fullStatusBatchSize = 32
+	startIndex := 0
+	if len(instances) > 0 {
+		startIndex = int(h.fullStatusUpdateIndex.Load()) % len(instances)
+	}
+	nextIndex := startIndex
+	scheduled := 0
+
+	// Update the selected sessions in parallel. With PipeManager, skip sessions
+	// idle for >5s (no %output events = no status change).
 	statusStart := time.Now()
 	var statusChanged atomic.Bool
 	var slowMu sync.Mutex
@@ -6430,8 +6443,9 @@ func (h *Home) backgroundStatusUpdate() {
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
-	for _, inst := range instances {
-		inst := inst // capture loop variable
+	for scan := 0; scan < len(instances); scan++ {
+		idx := (startIndex + scan) % len(instances)
+		inst := instances[idx]
 
 		// Skip archived sessions: their tmux pane is torn down and their row
 		// status is display-frozen (rowStatusGlyph forces the stopped glyph
@@ -6442,8 +6456,15 @@ func (h *Home) backgroundStatusUpdate() {
 		// refresh, so the periodic loop never needs to poll archived sessions.
 		if !h.shouldSweepInstance(inst) {
 			skipped++
+			nextIndex = (idx + 1) % len(instances)
 			continue
 		}
+		if scheduled == fullStatusBatchSize {
+			skipped += len(instances) - scan
+			break
+		}
+		scheduled++
+		nextIndex = (idx + 1) % len(instances)
 
 		// Skip idle sessions when PipeManager knows they haven't produced output.
 		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
@@ -6485,7 +6506,8 @@ func (h *Home) backgroundStatusUpdate() {
 			return nil
 		})
 	}
-	_ = g.Wait() // Errors are logged within each goroutine
+	h.fullStatusUpdateIndex.Store(int32(nextIndex)) // #nosec G115 -- bounded by instance count
+	_ = g.Wait()                                    // Errors are logged within each goroutine
 
 	statusDur := time.Since(statusStart)
 	tracker.tickEnd(statusStart, time.Now())
