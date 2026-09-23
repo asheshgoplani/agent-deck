@@ -310,6 +310,16 @@ func TestHeartbeatScript_FailedSendRetriesNextTick(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	conductorDir, err := ConductorNameDir("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(conductorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	bin := filepath.Join(home, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -323,7 +333,7 @@ case "$1 $2" in
     if [[ "$5" = --commit-message=* ]]; then touch "$HOME/committed";
     elif [ ! -f "$HOME/committed" ]; then echo '[HEARTBEAT] remote arrival'; fi ;;
   "session send")
-    if [ ! -f "$HOME/failed" ]; then touch "$HOME/failed"; exit 1; fi
+    if [ ! -f "$HOME/failed" ]; then touch "$HOME/failed"; echo 'send failed' >&2; exit 1; fi
     printf '%s' "$4" >> "$HOME/sent" ;;
 esac
 `
@@ -338,6 +348,10 @@ esac
 		cmd := exec.Command("bash", script)
 		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
 		_, _ = cmd.CombinedOutput()
+	}
+	logData, err := os.ReadFile(filepath.Join(conductorDir, "heartbeat.log"))
+	if err != nil || strings.Count(string(logData), "heartbeat: send failed") != 1 {
+		t.Fatalf("send failure must produce one visible log line: log=%q err=%v", logData, err)
 	}
 	data, err := os.ReadFile(filepath.Join(home, "sent"))
 	if err != nil || string(data) != "[HEARTBEAT] remote arrival" {
