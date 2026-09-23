@@ -67,13 +67,6 @@ func defaultServerHasSession(name string) bool {
 	return ok
 }
 
-// ResetDefaultServerSessionsForTest drops the cached default-server listing.
-func ResetDefaultServerSessionsForTest() {
-	defaultServerSessions.Lock()
-	defer defaultServerSessions.Unlock()
-	defaultServerSessions.names, defaultServerSessions.err, defaultServerSessions.at = nil, nil, time.Time{}
-}
-
 // AbsenceIsForeignServer reports whether Exists() == false for this session is
 // an artifact of where this process runs rather than evidence that the session
 // is gone: the session has no socket name, this process's $TMUX names a server
