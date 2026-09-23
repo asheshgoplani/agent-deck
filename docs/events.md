@@ -24,7 +24,7 @@ trailing spaces).
 | File | Publishes | Kind |
 |---|---|---|
 | `internal/session/event_writer.go` | No live bus tap (the events/ file format is unchanged). | — |
-| `internal/statedb` `WriteStatus` via `internal/session/status_bus.go` | every status row transition, from whichever process owns the status (TUI poller, notify daemon) | `session.status` |
+| `internal/statedb` `WriteStatus` via `internal/session/status_bus.go` (only with `[macapp] status_events = true`) | every status row transition, from whichever process owns the status (TUI poller, notify daemon); one frame per edge, even when two owners write the same transition | `session.status` |
 | same | entering `running` / leaving `running` | `session.turn` |
 | `internal/session/transition_daemon.go` (only with `[macapp] transcript_events = true`) | a live session's native transcript grew | `session.transcript` |
 | `agent-deck events publish` (only with `[macapp] plugins = true`) | a client/plugin frame | `macapp.*` |

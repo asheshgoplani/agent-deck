@@ -57,7 +57,7 @@ func handleRecallFollow(profile string, args []string) {
 	rf := registerRowsFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall follow <session> --after <cursor|end> --jsonl [--status]")
-		fmt.Fprintln(fs.Output(), "Frames: row, update, remove, status, resync_required (docs/recall-timeline.md). --v1 streams the slice-6 turn frames.")
+		fmt.Fprintln(fs.Output(), "Frames: row, update, remove, status, delivery, resync_required (docs/recall-timeline.md). --v1 streams the slice-6 turn frames.")
 		fs.PrintDefaults()
 	}
 	if !parseRecallFlags(fs, args) {

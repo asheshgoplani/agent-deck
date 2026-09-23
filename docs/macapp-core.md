@@ -11,7 +11,7 @@ read-only transcript and pane reads named below.
 | --- | --- | --- | --- |
 | Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N]` | `[recall] enabled` | docs/recall-timeline.md, "Rows" |
 | Live rows, status strip, send states | `recall follow <session> --after <cursor\|end> --jsonl [--status]` | `[recall] enabled` | same |
-| Status transitions without polling | `events follow --json --kind session.status,session.turn` | none (bus is on by default) | docs/events.md |
+| Status transitions without polling | `events follow --json --kind session.status,session.turn` | `[macapp] status_events` (status owners: TUI, notify daemon) | docs/events.md |
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |
 | Plugin frames | `events publish --kind macapp.<name> --session <id> --data-file -` | `[macapp] plugins` | docs/events.md |
 | Send that never drops | `session send <id> --message-file - --json --queue`, `session send-status <send-id> --json` | none | below |
@@ -39,32 +39,53 @@ file) takes it from there:
 1. While the target's hook-driven status is `running` the send stays
    `queued` (`target_status` says why). A target that is not running fails
    at once with `reason: "target not running"` (exit 1).
-2. When the target is idle it is typed and submitted through the normal
-   `session send` path (readiness wait, composer guard, submit
-   verification): state `submitted` when the harness confirmed it, `typed`
-   otherwise. `target_busy` and `composer_blocked` (nothing typed) are
-   retried; anything that may have typed text is never typed twice.
-3. The worker watches the native transcript from the byte offset before the
-   send until the text appears: state `landed` with `landed_row_id`, the same
-   id `recall timeline`/`follow` give that row. It then waits for the target
-   to take the turn up before the next queued send, so five sends in a row
-   land as five user rows in order instead of being absorbed mid-turn.
-4. The retry budget is 30 minutes (`deadline`), then `failed` with a reason.
-   A delivered send not seen in the transcript within 2 minutes keeps its
-   state, gets a reason and `settled: true`; it is never retyped.
+2. When the target is idle the record moves to `typing` (attempts, sent_at
+   and the transcript offset are written to disk first), and a `session
+   send` child types and submits it through the normal path (readiness
+   wait, composer guard, submit verification). The child reads the message
+   from `<send_id>.message` and writes its JSON result to
+   `<send_id>.result`, so it finishes even if the worker dies.
+3. The child's result decides the next state: `submitted` when the harness
+   confirmed it, `typed` otherwise. Only refusals that guarantee nothing was
+   typed (`target_busy`, `composer_blocked`, Codex `acceptance_refused`)
+   go back to `queued` and are retried. Anything else (`menu_open`, a
+   readiness timeout, `no_evidence`, a crash) may have typed the text: the
+   record stays `typed` with `reason: "outcome unknown (…)"` and the
+   transcript decides. It is never `failed`, because a client that resends
+   on `failed` would double the message.
+4. The worker watches the native transcript from the byte offset before the
+   send until the text lands: state `landed` with `landed_row_id`, the same
+   id `recall timeline`/`follow` give that row. Only delivery counts: a user
+   row (a command row for a `/name` message), or a Claude queued message
+   once it is absorbed into the turn. An enqueue alone is not delivery, and
+   a row stamped before the send is an earlier message, never this one. The
+   worker then waits for the target to take the turn up before the next
+   queued send, so five sends in a row land as five user rows in order.
+5. The retry budget is 30 minutes (`deadline`), then `failed` with a reason
+   (only ever when nothing was typed). A send not seen in the transcript
+   within 2 minutes, or sent to a harness with no transcript reader (not
+   Claude or Codex), keeps its state, gets a reason and `settled: true`.
 
+Delivery is at most once. A worker that finds a `typing` record (its
+predecessor died mid-send) waits for the child, takes its result file, and
+without one settles the record `typed` with an unknown outcome. No worker
+ever types a record that has left `queued`.
+
+Send ids sort in send order, also for callers in the same millisecond.
 Each state change is also a `session.send` bus frame and, in a running
 `recall follow` for that session, a `{"frame":"delivery","send_id","state"}`
-line. `send-status` restarts a worker for a send that is still in flight
-(after a reboot, say). Exit codes: 0 queued or sent, 1 delivery failed, 2
-usage error, unknown session, unknown send id or unsupported image.
+line. `send-status`, `events follow` and `recall follow` restart the worker
+for a send that is still in flight (after a reboot, say). Finished records
+are pruned after 7 days. Exit codes: 0 queued or sent, 1 delivery failed,
+2 usage error, unknown session, unknown send id or unsupported image.
 
 ## Images
 
 `--image <path>` (repeatable) copies the file to
-`<session working dir>/.agentdeck-images/<ms>-<n>-<name>` and appends
+`<session working dir>/.agentdeck-images/<ms>-<n>-<name>` (spaces in the
+name become dashes; the directory gets a `.gitignore` of `*`) and appends
 `@<copy>` to the message for Claude Code and Gemini CLI, which read `@path`
-from the composer. Codex takes images only at launch (`codex -i`), so a
+from the composer. A queued record's `images` lists the copies. Codex takes images only at launch (`codex -i`), so a
 running Codex session exits 2 with `images not supported for codex in a
 running session`; other harnesses exit 2 too. Only png, jpg, jpeg, gif and
 webp files are accepted. `harness list` reports `images: true|false`.
@@ -73,17 +94,31 @@ webp files are accepted. `harness list` reports `images: true|false`.
 
 Codex re-creates its rollout after the trust prompt and a sub-agent writes a
 rollout of its own, so the stored `codex_session_id` can name no file. The
-live rollout is resolved read-only on every call: the stored id's rollout
-when it is a user thread; else the user-thread rollouts (not
-`thread_source=subagent`) in the session's working directory written since
-the session was created, preferring the one that mentions the stored id,
-else the newest. `session show --json` adds `transcript_path` (Claude JSONL
-or that rollout) and `transcript_ids` (every native id seen, newest first),
-both omitted when unknown. `recall follow` answers `resync_required` with
-`reason: source_moved` when the live rollout changes. A Codex `session send`
-with no accepted-turn receipt yet (the first message after the trust prompt)
-now uses the verified composer path instead of refusing; a structured
-`--json --wait` still fails closed.
+live rollout is resolved read-only on every call, and only ever to this
+session's own thread:
+
+1. the stored id's rollout, unless it is a sub-agent thread;
+2. else the thread the pane's own Codex process holds open;
+3. else the user-thread rollouts (`thread_source` user, no parent thread,
+   not `codex exec`) in the session's working directory, written since the
+   session was created and not bound to another deck session: the one whose
+   structured id fields reference the stored id, else the only one. Two or
+   more candidates are ambiguous and resolve to nothing.
+
+`session show --json` adds `transcript_path` (Claude JSONL or that rollout)
+and `transcript_ids` (the live rollout's thread and the stored id), both
+omitted when unknown. `recall follow` answers `resync_required` with
+`reason: source_moved` when the live rollout changes.
+
+A Codex `session send` keeps the exact-acceptance guard on every path,
+plain, queued and `--json --wait`: an unresolved earlier submission, an
+identity owned by another session, a held acceptance lock or a remote
+rollout refuse with exit 1 and `delivery: "acceptance_refused"` (nothing was
+typed). For the first message after the trust prompt, when the identity is
+provably unavailable (none yet, or a stored id with no rollout),
+`--codex-composer-fallback` sends through the verified composer path
+instead of refusing; it is never used for `--json --wait`, and the send
+queue never passes it.
 
 ## Harnesses
 
@@ -150,7 +185,8 @@ than 30 minutes.
 edits config.toml (theme, default tool, Claude/Gemini/Codex/Hermes options,
 updates, logs, global search, preview, sync title, maintenance, system
 stats, display, tool picker, interface) plus `recall.enabled`,
-`macapp.plugins`, `macapp.transcript_events` and `core.daemon`. The TUI's
+`macapp.plugins`, `macapp.transcript_events`, `macapp.status_events` and
+`core.daemon`. The TUI's
 visible-tools editor writes per-tool entries and is not a single key.
 
 `config get <key> --json` → `{key, value, type, default, restart_required,
