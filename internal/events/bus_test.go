@@ -454,8 +454,11 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.maxSegFrames = 12
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 12; i++ {
 		b.Publish("restart", "", i)
+	}
+	if !b.Flush(5 * time.Second) {
+		t.Fatal("first flush")
 	}
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
@@ -466,8 +469,11 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	}
 	b.maxSegFrames = 12
 	b.retainSegs = 2
-	for i := 15; i < 36; i++ {
+	for i := 12; i < 36; i++ {
 		b.Publish("restart", "", i)
+		if (i+1)%12 == 0 && !b.Flush(5*time.Second) {
+			t.Fatal("flush after rotation wave")
+		}
 	}
 	if !b.Flush(5 * time.Second) {
 		t.Fatal("flush")
@@ -769,6 +775,9 @@ func TestResumeAcrossRotation(t *testing.T) {
 	const total = 200
 	for i := 0; i < total; i++ {
 		b.Publish("kind.rotate", "sess", map[string]any{"i": i})
+		if (i+1)%50 == 0 && !b.Flush(5*time.Second) {
+			t.Fatal("flush after rotation wave")
+		}
 	}
 	if !b.Flush(5 * time.Second) {
 		t.Fatal("flush timed out")

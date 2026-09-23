@@ -15,6 +15,7 @@ var (
 	defaultMu     sync.Mutex
 	defaultBus    *Bus
 	profileBuses  map[string]*Bus
+	busSnapshot   atomic.Value // []*Bus, published after each successful open
 	defaultClosed bool
 	tapMu         sync.Mutex
 	tapQueue      chan queuedFrame
@@ -63,6 +64,7 @@ func Default() *Bus {
 	}
 	if defaultBus == nil {
 		defaultBus = openDefault()
+		publishBusSnapshot()
 	}
 	return defaultBus
 }
@@ -191,7 +193,21 @@ func busForTap(profile string) *Bus {
 	}
 	b := OpenProfile(profile)
 	profileBuses[profile] = b
+	publishBusSnapshot()
 	return b
+}
+
+// publishBusSnapshot is called with defaultMu held. The exit path reads this
+// immutable slice without waiting for another profile's blocked Open.
+func publishBusSnapshot() {
+	buses := make([]*Bus, 0, 1+len(profileBuses))
+	if defaultBus != nil {
+		buses = append(buses, defaultBus)
+	}
+	for _, b := range profileBuses {
+		buses = append(buses, b)
+	}
+	busSnapshot.Store(buses)
 }
 
 // CloseDefault is the process owner's shutdown hook. It drains and fsyncs
@@ -214,15 +230,13 @@ func CloseDefault() error {
 	case <-time.After(2 * time.Second):
 		timeoutOnce.Do(func() {
 			tapAbandoned.Store(true)
-			// Count accepted but unwritten frames once. The writer checks
-			// abandoned after acquiring a delayed flock and persists drops
-			// if that lock becomes available before process exit.
-			if defaultMu.TryLock() {
-				abandonBus(defaultBus)
-				for _, b := range profileBuses {
+			// Stop future admission. Each bus counts unwritten accepted frames
+			// after its writer exits, so a concurrent append is never double
+			// counted. The snapshot avoids a blocked profile Open at exit.
+			if snapshot := busSnapshot.Load(); snapshot != nil {
+				for _, b := range snapshot.([]*Bus) {
 					abandonBus(b)
 				}
-				defaultMu.Unlock()
 			}
 		})
 		return ErrCloseTimeout
@@ -233,8 +247,9 @@ func abandonBus(b *Bus) {
 	if b == nil || !b.enabled {
 		return
 	}
+	b.publishMu.Lock()
 	b.abandoned.Store(true)
-	b.dropped.Add(b.enqueued.Load() - b.written.Load())
+	b.publishMu.Unlock()
 }
 
 func drainDefault(tapDone <-chan struct{}, done chan<- struct{}) {
@@ -264,6 +279,7 @@ func resetDefaultForTest() {
 	defaultMu.Lock()
 	defaultBus = nil
 	profileBuses = nil
+	busSnapshot.Store([]*Bus(nil))
 	defaultClosed = false
 	defaultMu.Unlock()
 	tapMu.Lock()

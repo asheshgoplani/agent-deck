@@ -57,8 +57,9 @@ name. Typically:
 | `cursor.state` | Last sealed cursor, retained even when all sealed segments are compacted. |
 | `drops.count` | Cumulative drops from all producers for this profile. |
 
-Rotation: the active segment seals (renamed to `seg-*`) and a fresh
-`active.ndjson` starts once it passes 8 MiB or 50,000 frames. Compaction:
+Rotation: the active segment seals (renamed to `seg-*`) on the next sync pass
+after it passes 8 MiB or 50,000 frames, and a fresh `active.ndjson` starts.
+This keeps file data durable before the sealed cursor range is published. Compaction:
 after each rotation, the oldest sealed segments beyond the last 32 are
 removed. A `Subscribe(after)` older than every retained segment returns
 `events.ErrCursorTooOld` instead of silently skipping frames.
