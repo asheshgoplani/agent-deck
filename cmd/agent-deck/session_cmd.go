@@ -3305,6 +3305,9 @@ func handleSessionSend(profile string, args []string) {
 		tun.retry.turnAdvanced = func() bool { return session.TurnAdvanced(turnQuery) }
 	}
 	if acceptanceGuard != nil {
+		// Codex's counterpart: a new turn in the exact rollout past the
+		// acceptance fence, the evidence the accepted-turn receipt rests on.
+		tun.retry.turnAdvanced = func() bool { return codexTurnAdvancedPastFence(inst, acceptanceFence) }
 		if err := validateCodexAcceptanceFence(inst, acceptanceFence); err != nil {
 			acceptanceGuard.Release()
 			out.Error(fmt.Sprintf("cannot submit against changed Codex turn fence: %v", err), ErrCodeInvalidOperation)
@@ -4302,6 +4305,16 @@ func retryAndRequireStructuredCodexAcceptedTurn(
 	return receipt, requireStructuredCodexAcceptedTurn(inst, jsonOutput, wait, receipt)
 }
 
+// codexTurnAdvancedPastFence reports whether the exact rollout has started a
+// turn after the acceptance fence was captured.
+func codexTurnAdvancedPastFence(inst *session.Instance, fence codexAcceptanceFence) bool {
+	if inst == nil || !fence.available || inst.CodexSessionID != fence.codexSessionID {
+		return false
+	}
+	generation, err := inst.LatestCodexTurnGeneration()
+	return err == nil && generation != "" && generation != fence.priorTurnGeneration
+}
+
 func captureCodexAcceptanceFence(inst *session.Instance) codexAcceptanceFence {
 	if inst == nil || !session.IsCodexCompatible(inst.Tool) {
 		return codexAcceptanceFence{}
@@ -5290,7 +5303,11 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	sawBody := false
 	lastContent := ""
 	for i := 0; i < checks; i++ {
-		// Strongest signal first: an idle agent that starts working received
+		// Turn advancement in the harness's own transcript is authoritative.
+		if opts.turnAdvanced != nil && opts.turnAdvanced() {
+			return deliverySubmitted, nil
+		}
+		// Strongest pane signal: an idle agent that starts working received
 		// what it started working on, which is submission, not just arrival.
 		if baseline.statusOK && !baseline.wasActive {
 			if status, err := target.GetStatus(); err == nil && status == "active" {

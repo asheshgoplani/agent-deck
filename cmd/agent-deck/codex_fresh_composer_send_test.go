@@ -84,3 +84,63 @@ func TestCodexAcceptanceGuardAcceptsFreshComposerThread(t *testing.T) {
 		t.Fatalf("first turn receipt = %#v", receipt)
 	}
 }
+
+// Codex 0.155's pane gives the send loop no reliable busy edge, so without a
+// transcript signal every send ends "delivered, confirmation unknown" and a
+// structured --json --wait send can never carry an accepted-turn receipt. A
+// new turn in the exact rollout past the acceptance fence is the submission.
+func TestCodexTurnAdvancedPastFence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	const thread = "01a0cc41-3ddb-7170-98bc-27b021e69141"
+	path := filepath.Join(home, "sessions", "2026", "09", "23", "rollout-2026-09-23T05-13-42-"+thread+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := `{"type":"event_msg","payload":{"type":"task_started","turn_id":"01a0cc41-a48e-7cd2-be47-03ad5253712d"}}` + "\n" +
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a0cc41-a48e-7cd2-be47-03ad5253712d","last_agent_message":"pong"}}` + "\n"
+	if err := os.WriteFile(path, []byte(first), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst := &session.Instance{ID: "turn-advance", Tool: "codex", CodexSessionID: thread}
+	fence := captureCodexAcceptanceFence(inst)
+	if !fence.available {
+		t.Fatal("fence unavailable")
+	}
+	if codexTurnAdvancedPastFence(inst, fence) {
+		t.Fatal("the fence's own turn is not a new submission")
+	}
+	if codexTurnAdvancedPastFence(inst, codexAcceptanceFence{}) {
+		t.Fatal("an unavailable fence proves nothing")
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, werr := f.WriteString(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"01a0cc45-7448-7191-b5f9-582a363e8392"}}` + "\n")
+	if cerr := f.Close(); werr != nil || cerr != nil {
+		t.Fatalf("append turn: %v %v", werr, cerr)
+	}
+	if !codexTurnAdvancedPastFence(inst, fence) {
+		t.Fatal("a new rollout turn past the fence must confirm submission")
+	}
+}
+
+// The Codex arrival loop must take the rollout's turn advance as submission,
+// like the Claude loop does with its transcript. Same frames as the #1793
+// "delivered, confirmation unknown" case, plus a turn that starts.
+func TestCodexArrivalLoopTakesTurnAdvanceAsSubmission(t *testing.T) {
+	msg := "Reply with exactly: json-pong3"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"› \n", "› " + msg + "\n› \n"},
+	}
+	calls := 0
+	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, tool: "codex",
+		turnAdvanced: func() bool { calls++; return calls >= 2 },
+	})
+	if err != nil || delivery != deliverySubmitted {
+		t.Fatalf("delivery = %q, %v; want %q once the rollout turn advanced", delivery, err, deliverySubmitted)
+	}
+}

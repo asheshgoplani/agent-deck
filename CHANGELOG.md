@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `session send` to a Codex session works again after its first turn and at a fresh composer. Codex 0.155's ephemeral title-generation thread fires the same turn-complete notify but never writes a rollout, and when it landed last it took over the session's identity, so every send failed with "current rollout generation is unavailable". A turn-end that names a thread without a rollout is now ignored. A fresh composer, whose rollout does not exist yet, is identified by the thread writer lock its live Codex process holds, so the first send no longer fails with "Codex session identity is unavailable".
+- `session send` to a Codex session works again after its first turn and at a fresh composer. Codex 0.155's ephemeral title-generation thread fires the same turn-complete notify but never writes a rollout, and when it landed last it took over the session's identity, so every send failed with "current rollout generation is unavailable". A turn-end that names a thread without a rollout is now ignored. A fresh composer, whose rollout does not exist yet, is identified by the thread writer lock its live Codex process holds, so the first send no longer fails with "Codex session identity is unavailable". A Codex send now counts a new turn in its rollout as the submission, so `--json --wait` returns the exact accepted-turn receipt instead of "delivered, confirmation unknown".
 
 ## [1.16.16] - 2026-09-20
 
