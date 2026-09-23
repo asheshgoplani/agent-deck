@@ -1,0 +1,24 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   t Active top • !@#& filter • 0 all • …
+SESSIONS                     │ PREVIEW
+──────────────────────────── │ ─────────────────────────────────────────────────
+▶ ▾ alpha (7) ● 1 ◐ 1        │ 📁 alpha
+   └─ ◐ claude-waiting       │
+    ▾ backend (3) ● 1        │ 4 sessions
+     └─ ● claude-running     │
+2·▾ beta (4) ◐ 1             │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+   └─ ◐ claude-i18n          │
+  ─ idle / done ──────────   │ ───────────────── Sessions ─────────────────
+1·▾ alpha (7) ● 1 ◐ 1        │   ■ opencode-idle opencode
+   ├─ ■ opencode-idle        │   ✕ claude-idle claude
+   ├─ ✕ claude-idle          │   ◐ claude-waiting claude
+   └─ ■ claude-stopped       │   ■ claude-stopped claude
+    ▾ backend (3) ● 1        │
+     ├─ ✕ codex-idle         │ Tab toggle • r rename • d delete • g subgroup
+     └─ ✕ claude-error       │
+2·▾ beta (4) ◐ 1             │
+   ├─ ✕ gemini-idle          │
+   ├─ ✕ pi-idle              │
+  ⋮ +2 below                 │
+────────────────────────────────────────────────────────────────────────────────
+⏎ Toggle n/N New │                     ↑↓ Nav / Search S Settings ? Help q Quit

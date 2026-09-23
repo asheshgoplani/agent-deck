@@ -37,4 +37,4 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  H  Shell  c  Copy  V  Copy pane …       ↑↓ Nav │ q Quit
+Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  H  Shell  c  Copy  V  Copy pane  x  Send …  ↑↓ Nav │ ? Help │ q Quit

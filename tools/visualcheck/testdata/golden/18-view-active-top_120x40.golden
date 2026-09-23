@@ -1,26 +1,26 @@
  ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                     <version>
-  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   t Active on top • !@#& filter • 0 all • % open • ^ archived • * time
 SESSIONS                                   │ PREVIEW
 ────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
-▶ ▸ alpha (7) ● 1 ◐ 1                      │ 📁 alpha
+▶ ▾ alpha (7) ● 1 ◐ 1                      │ 📁 alpha
+   └─ ◐ claude-waiting claude              │
+    ▾ backend (3) ● 1                      │ 4 sessions
+     └─ ● claude-running claude            │
+2·▾ beta (4) ◐ 1                           │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+   └─ ◐ claude-i18n claude                 │
+  ─ idle / done ────────────────────────   │ ────────────────────────────── Sessions ──────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1                      │   ■ opencode-idle opencode
+   ├─ ■ opencode-idle opencode             │   ✕ claude-idle claude
+   ├─ ✕ claude-idle claude                 │   ◐ claude-waiting claude
+   └─ ■ claude-stopped claude              │   ■ claude-stopped claude
+    ▾ backend (3) ● 1                      │
+     ├─ ✕ codex-idle codex                 │ Tab toggle • r rename • d delete • g subgroup
+     └─ ✕ claude-error claude              │
 2·▾ beta (4) ◐ 1                           │
-   ├─ ✕ gemini-idle gemini                 │ 4 sessions
+   ├─ ✕ gemini-idle gemini                 │
    ├─ ✕ pi-idle pi                         │
-   ├─ ◐ claude-i18n claude                 │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
    └─ ○ shell-live shell                   │
-  ▾ remotes/lab (0) · unreachable: host d… │ ────────────────────────────── Sessions ──────────────────────────────
-                                           │   ■ opencode-idle opencode
-                                           │   ✕ claude-idle claude
-                                           │   ◐ claude-waiting claude
-                                           │   ■ claude-stopped claude
-                                           │
-                                           │ Tab toggle • r rename • d delete • g subgroup
-                                           │
-                                           │
-                                           │
-                                           │
-                                           │
-                                           │
+  ▾ remotes/lab (0) · unreachable: host d… │
                                            │
                                            │
                                            │

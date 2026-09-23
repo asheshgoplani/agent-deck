@@ -37,4 +37,4 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP …   ↑↓ Nav │ q Quit
+Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  T  Fresh  f/F  Fork  m  MCP  v  Both …     ↑↓ Nav │ ? Help │ q Quit
