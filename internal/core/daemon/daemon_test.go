@@ -599,6 +599,8 @@ func TestAcquireKeepsSocketWhenRecordedPIDLives(t *testing.T) {
 	}
 	if _, err := Acquire(paths); err == nil {
 		t.Fatal("Acquire replaced a live PID's socket")
+	} else if !strings.Contains(err.Error(), paths.Lock) || !strings.Contains(err.Error(), "remove manually") {
+		t.Fatalf("reused PID refusal gives no lock and recovery instructions: %v", err)
 	}
 	if c, err := net.DialTimeout("unix", paths.Socket, time.Second); err != nil {
 		t.Fatalf("live listener lost its socket: %v", err)
@@ -636,6 +638,39 @@ func TestAcquireKeepsResponsiveSocketWithDeadRecordedPID(t *testing.T) {
 	<-done
 	if _, err := os.Lstat(paths.Socket); err != nil {
 		t.Fatalf("responsive socket disappeared: %v", err)
+	}
+}
+
+func TestAcquireKeepsErrorReplyingSocketWithDeadRecordedPID(t *testing.T) {
+	paths := PathsIn(filepath.Join(shortDir(t), "run"))
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.WriteFile(paths.Lock, []byte("999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = c.Write([]byte(`{"v":1,"type":"error","error":{"code":"SERVER_BUSY","message":"busy"}}` + "\n"))
+	}()
+	if owner, err := Acquire(paths); err == nil {
+		_ = owner.Close()
+		t.Fatal("Acquire replaced a listener that accepted the connection")
+	}
+	<-done
+	if _, err := os.Lstat(paths.Socket); err != nil {
+		t.Fatalf("accepted socket disappeared: %v", err)
 	}
 }
 
