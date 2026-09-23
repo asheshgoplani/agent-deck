@@ -3715,21 +3715,27 @@ func (h *Home) syncViewport() {
 		h.viewOffset = 0
 	}
 
+	// Measure once, then remove one row as the viewport advances. Recounting
+	// the entire remaining span at every offset made a jump to the end of a
+	// large embedded list quadratic in the number of sessions.
+	toCursorHeight := h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth, rowLines)
 	for h.viewOffset < h.cursor {
 		effectiveBudget := lineBudget
 		if h.viewOffset > 0 {
 			effectiveBudget--
 		}
 		effectiveBudget = max(1, effectiveBudget)
-		if h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth, rowLines) <= effectiveBudget {
+		if toCursorHeight <= effectiveBudget {
 			break
 		}
+		toCursorHeight -= h.sidebarItemRenderHeightAtWidthLines(h.flatItems[h.viewOffset], sidebarWidth, rowLines)
 		h.viewOffset++
 	}
 
 	// Scroll back up only to reclaim blank space at the end of the list
 	// (after removals or a resize). Measuring to the end of the list — not
 	// the cursor — keeps the viewport still while the cursor moves within it.
+	toEndHeight := h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, len(h.flatItems), sidebarWidth, rowLines)
 	for h.viewOffset > 0 {
 		candidate := h.viewOffset - 1
 		effectiveBudget := lineBudget
@@ -3737,10 +3743,12 @@ func (h *Home) syncViewport() {
 			effectiveBudget--
 		}
 		effectiveBudget = max(1, effectiveBudget)
-		if h.sidebarItemsHeightWithLines(h.flatItems, candidate, len(h.flatItems), sidebarWidth, rowLines) > effectiveBudget {
+		candidateHeight := toEndHeight + h.sidebarItemRenderHeightAtWidthLines(h.flatItems[candidate], sidebarWidth, rowLines)
+		if candidateHeight > effectiveBudget {
 			break
 		}
 		h.viewOffset = candidate
+		toEndHeight = candidateHeight
 	}
 }
 

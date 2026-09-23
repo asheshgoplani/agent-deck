@@ -6239,6 +6239,17 @@ func (i *Instance) UpdateStatus() error {
 	return i.updateStatus(nil, true)
 }
 
+// probeTmuxExists is called with i.mu held and returns with it held. tmux can
+// wait for a busy server, so status readers must not wait behind this probe.
+func (i *Instance) probeTmuxExists() (exists, current bool) {
+	s := i.tmuxSession
+	status := i.Status
+	i.mu.Unlock()
+	exists = s.Exists()
+	i.mu.Lock()
+	return exists, i.tmuxSession == s && (status == StatusStopped || i.Status != StatusStopped)
+}
+
 func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
@@ -6256,9 +6267,23 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 	// 1.5 seconds is enough for tmux to create the session (<100ms typically)
 	// Don't block status detection once tmux session exists
+	var exists bool
+	var checkedExists bool
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
-		if i.tmuxSession == nil || !i.tmuxSession.Exists() {
+		if i.tmuxSession == nil {
+			if i.Status != StatusRunning && i.Status != StatusIdle {
+				i.Status = StatusStarting
+			}
+			return nil
+		}
+		var current bool
+		exists, current = i.probeTmuxExists()
+		if !current {
+			return nil
+		}
+		checkedExists = true
+		if !exists {
 			if i.Status != StatusRunning && i.Status != StatusIdle {
 				i.Status = StatusStarting
 			}
@@ -6291,7 +6316,14 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 
 	// Check if tmux session exists
-	if !i.tmuxSession.Exists() {
+	if !checkedExists {
+		var current bool
+		exists, current = i.probeTmuxExists()
+		if !current {
+			return nil
+		}
+	}
+	if !exists {
 		if i.tmuxSession.AbsenceIsForeignServer() {
 			// This process runs inside another tmux server and its socket-less
 			// probe followed $TMUX there; the session is alive on the default
