@@ -39,8 +39,15 @@ type TranscriptBusEvent struct {
 	Size          int64  `json:"size"`
 }
 
-func init() {
-	statedb.SetStatusChangeObserver(publishStatusChange)
+// applyStatusBusGate registers the state.db status observer only when
+// [macapp] status_events is on. Off (the default), WriteStatus stays one
+// UPDATE and `events follow` sees no new kinds.
+func applyStatusBusGate(cfg *UserConfig) {
+	if cfg != nil && cfg.Macapp.StatusEvents {
+		statedb.SetStatusChangeObserver(publishStatusChange)
+		return
+	}
+	statedb.SetStatusChangeObserver(nil)
 }
 
 // busPublish is the bus tap; tests replace it with a recorder.

@@ -1311,25 +1311,34 @@ func (s *StateDB) DeleteGroupSubtree(path string) error {
 // status update and the TUI shows stale state.
 func (s *StateDB) WriteStatus(id, status, tool string) error {
 	observe := loadStatusChangeObserver()
+	if observe == nil {
+		return withBusyRetry(func() error {
+			_, err := s.db.Exec(writeStatusSQL, status, tool, status, id)
+			return err
+		})
+	}
 	var from, tmuxName string
 	var changed bool
 	err := withBusyRetry(func() error {
-		if observe != nil {
-			// Only read the prior value when someone listens: the write
-			// path stays one statement for every caller otherwise.
-			from, tmuxName = "", ""
-			_ = s.db.QueryRow(`SELECT status, tmux_session FROM instances WHERE id = ?`, id).Scan(&from, &tmuxName)
+		// Only read the prior value when someone listens: the write path
+		// stays one statement for every caller otherwise.
+		from, tmuxName = "", ""
+		_ = s.db.QueryRow(`SELECT status, tmux_session FROM instances WHERE id = ?`, id).Scan(&from, &tmuxName)
+		if afterStatusRead != nil {
+			afterStatusRead()
 		}
-		res, err := s.db.Exec(
-			`UPDATE instances
-			 SET status = ?, tool = ?,
-			     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
-			 WHERE id = ?`,
-			status, tool, status, id,
-		)
-		if err == nil && observe != nil {
-			n, _ := res.RowsAffected()
-			changed = n > 0 && from != status
+		// The edge is claimed by the write that changes the row: when the
+		// TUI and the notify daemon both write the same transition, only
+		// one UPDATE matches status IS NOT ?, so only one publishes.
+		res, err := s.db.Exec(writeStatusSQL+` AND status IS NOT ?`, status, tool, status, id, status)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		changed = n > 0 && from != status
+		if n == 0 {
+			// Same status: still refresh tool and the acknowledged reset.
+			_, err = s.db.Exec(writeStatusSQL, status, tool, status, id)
 		}
 		return err
 	})
@@ -1338,6 +1347,15 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 	}
 	return err
 }
+
+// afterStatusRead is a test seam between WriteStatus's read of the prior
+// status and its update, where a second writer can interleave.
+var afterStatusRead func()
+
+const writeStatusSQL = `UPDATE instances
+	 SET status = ?, tool = ?,
+	     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+	 WHERE id = ?`
 
 // StatusChange is one status row transition written through WriteStatus.
 type StatusChange struct {

@@ -29,6 +29,78 @@ func recordBus(t *testing.T) *[]busRecord {
 	return &got
 }
 
+// enableStatusBus registers the status observer as [macapp] status_events
+// would, and removes it afterwards.
+func enableStatusBus(t *testing.T) {
+	t.Helper()
+	applyStatusBusGate(&UserConfig{Macapp: MacappSettings{StatusEvents: true}})
+	t.Cleanup(func() { applyStatusBusGate(nil) })
+}
+
+func openStatusBusDB(t *testing.T, dbPath string) *statedb.StateDB {
+	t.Helper()
+	db, err := statedb.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func saveStatusBusRow(t *testing.T, db *statedb.StateDB, id, status string) {
+	t.Helper()
+	now := time.Now()
+	if err := db.SaveInstance(&statedb.InstanceRow{ID: id, Title: "t", ProjectPath: "/p", GroupPath: "g", Tool: "claude", Status: status, TmuxSession: "agentdeck_t_1", CreatedAt: now, LastAccessed: now}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStatusBusOffByDefault: with no [macapp] status_events the observer is
+// not registered, so a status transition publishes nothing (review of the
+// macapp core surface: the observer was registered unconditionally in init).
+func TestStatusBusOffByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	if _, err := LoadUserConfig(); err != nil {
+		t.Fatal(err)
+	}
+	rec := recordBus(t)
+	db := openStatusBusDB(t, filepath.Join(t.TempDir(), "profiles", "statusbus", "state.db"))
+	saveStatusBusRow(t, db, "sess-off", "idle")
+	if err := db.WriteStatus("sess-off", "running", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*rec) != 0 {
+		t.Fatalf("status frames published without [macapp] status_events: %+v", *rec)
+	}
+
+	// Turning the switch on in config.toml registers the tap on the next load.
+	dir := filepath.Join(home, "config", "agent-deck")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[macapp]\nstatus_events = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	if _, err := LoadUserConfig(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { applyStatusBusGate(nil) })
+	if err := db.WriteStatus("sess-off", "waiting", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*rec) == 0 || (*rec)[0].kind != "session.status" {
+		t.Fatalf("status_events = true published %+v", *rec)
+	}
+}
+
 func TestStatusBusProfile(t *testing.T) {
 	for path, want := range map[string]string{
 		"/h/.agent-deck/profiles/personal/state.db":            "personal",
@@ -48,6 +120,7 @@ func TestStatusBusProfile(t *testing.T) {
 // session.status with from/to/tmux_session/changed_at, plus session.turn
 // started/ended with the turn duration. An unchanged write publishes nothing.
 func TestWriteStatusPublishesStatusAndTurnFrames(t *testing.T) {
+	enableStatusBus(t)
 	rec := recordBus(t)
 	dbPath := filepath.Join(t.TempDir(), "profiles", "statusbus", "state.db")
 	db, err := statedb.Open(dbPath)
