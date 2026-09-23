@@ -21,7 +21,9 @@ func SetProfile(profile string) { selectedProfile.Store(profile) }
 // CurrentProfile is the profile selected for this process and its event writers.
 func CurrentProfile() string {
 	if selected := selectedProfile.Load(); selected != nil {
-		return selected.(string)
+		if profile := selected.(string); profile != "" {
+			return profile
+		}
 	}
 	if profile := os.Getenv("AGENTDECK_PROFILE"); profile != "" {
 		return profile

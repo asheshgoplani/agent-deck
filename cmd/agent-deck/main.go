@@ -344,7 +344,7 @@ func main() {
 	applyProfileFlag(profile)
 	if _, err := configureEventProfile(profile); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to resolve events profile: %v\n", err)
-		return
+		os.Exit(1)
 	}
 	defer events.CloseDefault()
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors

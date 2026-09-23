@@ -50,7 +50,7 @@ type EngineConfig struct {
 	ClientsPath string
 
 	// Profile is the agent-deck profile flag passed to spawned triage sessions.
-	// Defaults to AGENTDECK_PROFILE env var, then "default".
+	// Defaults to the profile selected for this process.
 	Profile string
 }
 
