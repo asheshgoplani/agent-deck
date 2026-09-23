@@ -674,6 +674,31 @@ func TestAcquireKeepsErrorReplyingSocketWithDeadRecordedPID(t *testing.T) {
 	}
 }
 
+func TestProbeDoesNotCallAcceptingSocketStale(t *testing.T) {
+	paths := PathsIn(filepath.Join(shortDir(t), "run"))
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte(`{"v":1,"type":"error","error":{"code":"SERVER_BUSY","message":"busy"}}` + "\n"))
+			_ = c.Close()
+		}
+	}()
+	if got := Probe(paths); got.State == StateStale || got.State == StateAbsent {
+		t.Fatalf("accepting socket reported %s", got.State)
+	}
+}
+
 func TestAcquireRefusesANonSocketFile(t *testing.T) {
 	paths := PathsIn(filepath.Join(shortDir(t), "run"))
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
