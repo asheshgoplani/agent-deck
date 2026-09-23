@@ -235,3 +235,23 @@ func appendFileCLI(t *testing.T, path, s string) {
 		t.Fatal(err)
 	}
 }
+
+// TestSessionShowTranscriptPathAndIDs: session show --json names the live
+// native transcript and the native ids seen (macapp-core-needs §3).
+func TestSessionShowTranscriptPathAndIDs(t *testing.T) {
+	home, id, transcript := rowsTestSession(t)
+	stdout, stderr, code := runAgentDeck(t, home, "session", "show", id, "--json")
+	if code != 0 {
+		t.Fatalf("show: %d %s %s", code, stdout, stderr)
+	}
+	var show struct {
+		TranscriptPath string   `json:"transcript_path"`
+		TranscriptIDs  []string `json:"transcript_ids"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &show); err != nil {
+		t.Fatal(err)
+	}
+	if show.TranscriptPath != transcript || len(show.TranscriptIDs) != 1 || show.TranscriptIDs[0] != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("show: %+v", show)
+	}
+}

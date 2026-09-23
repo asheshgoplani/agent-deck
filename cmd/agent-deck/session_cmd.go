@@ -1941,6 +1941,16 @@ func handleSessionShow(profile string, args []string) {
 	// bug report against the wrong component.
 	jsonData["wrapper"] = inst.Wrapper
 
+	// macapp-core-needs §3: the live native transcript and every native id
+	// seen for this session (Codex re-creates its rollout after the trust
+	// prompt). Omitted when unknown, so older consumers see no change.
+	if p := session.LiveTranscriptPath(inst); p != "" {
+		jsonData["transcript_path"] = p
+	}
+	if ids := session.TranscriptIDs(inst); len(ids) > 0 {
+		jsonData["transcript_ids"] = ids
+	}
+
 	if session.SupportsNativeFork(inst.Tool) {
 		jsonData["can_fork"] = inst.CanFork()
 	}
@@ -3219,17 +3229,25 @@ func handleSessionSend(profile string, args []string) {
 	acceptanceFence := codexAcceptanceFence{}
 	var acceptanceGuard *codexAcceptanceGuard
 	if shouldAcquireCodexAcceptanceGuard(inst, *jsonOutput, *wait, *draft) {
-		if err := hydrateLegacyCodexIdentity(inst, instances, storage); err != nil {
-			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+		// macapp-core-needs §3: right after the trust prompt Codex has no
+		// accepted-turn receipt yet (no identity, or an id whose rollout was
+		// re-created). A structured --json --wait still fails closed; any
+		// other send falls back to the verified composer path instead of
+		// refusing.
+		guardErr := hydrateLegacyCodexIdentity(inst, instances, storage)
+		if guardErr == nil {
+			acceptanceGuard, guardErr = acquireCodexAcceptanceGuard(inst, codexAcceptanceLockWait(*timeout))
 		}
-		lockWait := codexAcceptanceLockWait(*timeout)
-		acceptanceGuard, err = acquireCodexAcceptanceGuard(inst, lockWait)
-		if err != nil {
-			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
+		switch {
+		case guardErr == nil:
+			acceptanceFence = acceptanceGuard.fence
+		case structuredCodexWait:
+			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", guardErr), ErrCodeInvalidOperation)
 			os.Exit(1)
+		default:
+			acceptanceGuard = nil
+			fmt.Fprintf(os.Stderr, "Note: no Codex accepted-turn receipt yet (%v); sending through the composer\n", guardErr)
 		}
-		acceptanceFence = acceptanceGuard.fence
 	}
 
 	// Wait for agent to be ready (unless --no-wait is specified).

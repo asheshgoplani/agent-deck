@@ -114,7 +114,7 @@ func LiveTranscriptPath(inst *Instance) string {
 		}
 		return p
 	case IsCodexCompatible(inst.Tool):
-		return CodexRolloutPathForInstance(inst)
+		return CodexLiveRolloutPath(inst)
 	}
 	return ""
 }
