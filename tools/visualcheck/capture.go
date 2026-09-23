@@ -476,6 +476,54 @@ func sessionsColumn(line string) string {
 	return line
 }
 
+// previewShowsLivePane reports whether the list frame's preview Output
+// section shows exactly the live pane's current non-blank lines, rather than
+// a cached capture from before an attach. A preview line the renderer
+// truncated with "..." or "…" matches any live line it abbreviates.
+func previewShowsLivePane(listPane, livePane string) bool {
+	var preview []string
+	inOutput := false
+	for _, line := range strings.Split(listPane, "\n") {
+		i := strings.IndexRune(line, '│')
+		if i < 0 {
+			if inOutput {
+				break // the full-width rule above the footer ends the preview
+			}
+			continue
+		}
+		right := strings.TrimSpace(line[i+len("│"):])
+		if !inOutput {
+			inOutput = strings.Contains(right, "Output") && isSeparatorLine(right)
+			continue
+		}
+		if right != "" {
+			preview = append(preview, right)
+		}
+	}
+	var live []string
+	for _, line := range strings.Split(livePane, "\n") {
+		if l := strings.TrimSpace(line); l != "" {
+			live = append(live, l)
+		}
+	}
+	if !inOutput || len(preview) != len(live) {
+		return false
+	}
+	for i, p := range preview {
+		if p == live[i] {
+			continue
+		}
+		prefix, cut := strings.CutSuffix(p, "...")
+		if !cut {
+			prefix, cut = strings.CutSuffix(p, "…")
+		}
+		if !cut || !strings.HasPrefix(live[i], prefix) {
+			return false
+		}
+	}
+	return true
+}
+
 // listBodyLines returns only the SESSIONS-tree row lines of a captured
 // frame: everything strictly between the divider row under "SESSIONS /
 // PREVIEW" and the divider row above the footer hint bar. Both the header
