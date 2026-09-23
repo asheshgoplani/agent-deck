@@ -103,6 +103,18 @@ func TestListBodyLinesExcludesHeaderAndFooterBadges(t *testing.T) {
 	}
 }
 
+func TestListBodyLinesKeepsRowBesidePreviewDivider(t *testing.T) {
+	frame := strings.Join([]string{
+		"SESSIONS                         │ PREVIEW",
+		"──────────────────────────────── │ ────────────────────────────────────────",
+		"  ▶└─ ■ claude-stopped claude      │ " + strings.Repeat("─", 80),
+		"Session: Enter Attach",
+	}, "\n")
+	if _, found := cursorOnRow(frame, "claude-stopped"); !found {
+		t.Fatalf("selected session row was discarded because preview has a divider:\n%s", frame)
+	}
+}
+
 func TestGalleryRowOrderHasNoDuplicates(t *testing.T) {
 	seen := map[string]bool{}
 	for _, row := range galleryRowOrder {
