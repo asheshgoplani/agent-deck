@@ -22,8 +22,14 @@ var codexStatusLineRe = regexp.MustCompile(`^•\s+\S.*\((?:\d+[hms]\s*)+•\s*e
 // pane whose last answer or command quotes the status shape must not match:
 // those blocks are followed by their own continuation lines or a
 // "─ Worked for … ─" rule before the composer.
+//
+// While a turn runs, Codex 0.155 lists the operator's queued messages between
+// the status line and the composer ("• Queued follow-up inputs", one
+// "  ↳ <message>" row each with indented continuations, then "    shift + ←
+// edit last queued message"). That block is skipped whole, and only when it
+// ends at its own header, so the status line above it still counts.
 func codexLiveStatusLine(content string) bool {
-	lines := lastNLines(content, 25)
+	lines := lastNLines(content, 60)
 	composer := -1
 	for i := len(lines) - 1; i >= 0; i-- {
 		if strings.HasPrefix(lines[i], "› ") {
@@ -36,7 +42,35 @@ func codexLiveStatusLine(content string) bool {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "  └ ") {
 			continue
 		}
+		if header := codexQueuedInputsHeader(lines, i); header >= 0 {
+			i = header
+			continue
+		}
 		return codexStatusLineRe.MatchString(line)
 	}
 	return false
+}
+
+const codexQueuedInputsTitle = "• Queued follow-up inputs"
+
+// codexQueuedInputsHeader returns the index of the "• Queued follow-up inputs"
+// header when lines[end] is the last row of that block, or -1. Every row
+// between the header and end must be a "  ↳ " entry or an indented
+// continuation, and at least one entry must exist.
+func codexQueuedInputsHeader(lines []string, end int) int {
+	entries := 0
+	for i := end; i >= 0; i-- {
+		line := lines[i]
+		switch {
+		case strings.HasPrefix(line, "  ↳ "):
+			entries++
+		case strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "":
+			// Continuation row of an entry, or the "shift + ←" hint.
+		case strings.TrimRight(line, " ") == codexQueuedInputsTitle && entries > 0 && i < end:
+			return i
+		default:
+			return -1
+		}
+	}
+	return -1
 }

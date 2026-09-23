@@ -149,3 +149,17 @@ func TestCodexSubagentTurnEnd_DaemonSendsNoTransition(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexSubagentThread(t *testing.T) {
+	_, codexHome := newCodexGateInstance(t)
+	mainSID, subSID := seedCodexMainAndSubagent(t, codexHome)
+	if !CodexSubagentThread(subSID, codexHome) {
+		t.Fatal("subagent rollout not recognised")
+	}
+	if CodexSubagentThread(mainSID, codexHome) {
+		t.Fatal("user thread misread as subagent")
+	}
+	if CodexSubagentThread(uniqueSID(t), codexHome) || CodexSubagentThread("", codexHome) {
+		t.Fatal("thread without a rollout must fail open")
+	}
+}

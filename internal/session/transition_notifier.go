@@ -593,7 +593,7 @@ func codexTurnSignal(inst *Instance) string {
 		return ""
 	}
 	hs := readHookStatusFile(inst.ID)
-	if hs == nil {
+	if hs == nil || inst.codexHookFromForeignThread(hs) {
 		return ""
 	}
 	// The generic hook sequence advances for noise as well as completions.  Only

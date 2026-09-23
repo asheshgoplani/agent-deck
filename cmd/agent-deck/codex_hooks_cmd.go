@@ -207,7 +207,11 @@ func handleCodexNotify() {
 	// thread id, often while the main turn still runs. It never writes a
 	// rollout, so its event must not replace the anchor or the main thread's
 	// hook status: its "waiting" would read as the turn-finished edge.
-	if home := codexNotifyHome(); home != "" && session.CodexUnbackedTurnEnd(sessionID, event, home) {
+	// Subagent threads (thread_source=subagent) do write a rollout and fire
+	// agent-turn-complete each time a spawned child finishes, while the parent
+	// turn keeps working; their events are not the pane's either.
+	if home := codexNotifyHome(); home != "" &&
+		(session.CodexUnbackedTurnEnd(sessionID, event, home) || session.CodexSubagentThread(sessionID, home)) {
 		return
 	}
 

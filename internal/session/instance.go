@@ -6327,7 +6327,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
 	if i.hookStatus == "" && HookStatusTool(i.Tool) {
-		if hs := readHookStatusFile(i.ID); hs != nil {
+		if hs := readHookStatusFile(i.ID); hs != nil && !i.codexHookFromForeignThread(hs) {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
