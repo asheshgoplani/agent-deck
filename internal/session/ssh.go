@@ -308,39 +308,95 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
-	sshArgs := r.sshBaseArgs(remoteCmd)
+	return r.runExec(ctx, remoteCmd)
+}
 
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
-	cmd.WaitDelay = sshWaitDelay
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if detail := strings.TrimSpace(stderr.String()); detail != "" {
-		level := slog.LevelDebug
-		if err != nil {
-			level = slog.LevelWarn
+// runExec runs one remote command over the shared ControlMaster and, if the
+// master has no channels left, retries once on a dedicated connection.
+//
+// sshd caps concurrent channels per connection at MaxSessions (default 10).
+// agent-deck funnels every remote command through one ControlMaster per host,
+// so a host with a large session fleet can exhaust that cap; ssh then fails
+// the command with a channel-open refusal ("no more sessions", "open failed:
+// administratively prohibited") rather than a timeout, and the caller records
+// an unreachable/dead remote even though it is healthy (#2355).
+//
+// The retry is safe for mutating commands too: a channel-open failure means
+// the request never reached the remote, so nothing has run yet. Detection is
+// deliberately stderr-only — ssh reports channel-open failures on stderr,
+// while a remote command's own output lands on stdout — so a line the remote
+// program happened to print cannot trigger a re-run.
+func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string) ([]byte, error) {
+	stdout, stderr, err := r.execSSH(ctx, r.sshBaseArgs(remoteCmd))
+	if err != nil && isSSHChannelExhaustion(string(stderr)) {
+		if out, retryStderr, retryErr := r.execSSH(ctx, dedicatedSSHArgs(r.Host, remoteCmd)); retryErr == nil {
+			r.logSSHStderr(ctx, retryStderr, false)
+			r.setLastStderr(retryStderr)
+			return out, nil
 		}
-		sessionLog.Log(ctx, level, "ssh_command_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
 	}
+	r.logSSHStderr(ctx, stderr, err != nil)
 	if err != nil {
 		// The remote CLI reports refusals such as "path does not exist" on
 		// stdout; fall back to it so the failure is not a bare exit status.
 		// stdout is returned as well: a --json verb that exits non-zero
 		// (switch-preview refusal, switch failure) still answered there.
-		detail := stderr.String()
-		if strings.TrimSpace(detail) == "" {
-			detail = strings.TrimSpace(stdout.String())
+		detail := stderr
+		if strings.TrimSpace(string(detail)) == "" {
+			detail = bytes.TrimSpace(stdout)
 		}
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		return stdout.Bytes(), fmt.Errorf("ssh command failed: %w: %s", err, detail)
+		return stdout, fmt.Errorf("ssh command failed: %w: %s", err, detail)
 	}
 
-	r.setLastStderr(stderr.Bytes())
-	return stdout.Bytes(), nil
+	r.setLastStderr(stderr)
+	return stdout, nil
+}
+
+// execSSH runs one ssh invocation and returns stdout, stderr and the exit error.
+func (r *SSHRunner) execSSH(ctx context.Context, args []string) ([]byte, []byte, error) {
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.WaitDelay = sshWaitDelay
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+// logSSHStderr records an ssh run's stderr at debug (success) or warn (failure).
+func (r *SSHRunner) logSSHStderr(ctx context.Context, stderr []byte, failed bool) {
+	if detail := strings.TrimSpace(string(stderr)); detail != "" {
+		level := slog.LevelDebug
+		if failed {
+			level = slog.LevelWarn
+		}
+		sessionLog.Log(ctx, level, "ssh_command_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+	}
+}
+
+// dedicatedSSHArgs builds the argv for a one-shot connection that bypasses the
+// shared ControlMaster (ControlPath=none), so sshd's per-connection MaxSessions
+// cap cannot refuse it.
+func dedicatedSSHArgs(host, remoteCmd string) []string {
+	return []string{
+		"-o", "ControlPath=none",
+		"-o", "ConnectTimeout=10",
+		"-o", "BatchMode=yes",
+		host, remoteCmd,
+	}
+}
+
+// isSSHChannelExhaustion reports whether ssh's stderr describes a refused
+// multiplexed channel rather than a failed remote command.
+func isSSHChannelExhaustion(stderr string) bool {
+	d := strings.ToLower(stderr)
+	return strings.Contains(d, "no more sessions") ||
+		strings.Contains(d, "open failed") ||
+		strings.Contains(d, "session open refused") ||
+		strings.Contains(d, "administratively prohibited")
 }
 
 // lastStderrBox is lastStderr's storage: a pointer field on SSHRunner so
