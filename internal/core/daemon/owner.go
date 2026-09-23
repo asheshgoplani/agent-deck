@@ -166,7 +166,7 @@ type State string
 const (
 	// StateRunning: a daemon answered on the socket.
 	StateRunning State = "running"
-	// StateStale: a socket file exists but nothing answers (the owner died).
+	// StateStale: a socket file exists but refuses connections.
 	StateStale State = "stale"
 	// StateUnknown: a socket accepts connections but no daemon answered.
 	StateUnknown State = "unknown"
@@ -177,7 +177,7 @@ const (
 // ProbeResult is the outcome of Probe.
 type ProbeResult struct {
 	State State
-	// PID is the last recorded owner pid (stale) or the daemon's pid.
+	// PID is the last recorded owner pid (stale or unknown) or the daemon's pid.
 	PID    int
 	Status Status
 }

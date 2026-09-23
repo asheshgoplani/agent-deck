@@ -36,6 +36,6 @@
 - [x] Rebase slice 1 and slice 5 commits onto slice 4 r3, preserving both changelog entries.
 - [x] Prove the eight-second bulk-restart timeout and each equivalence pair's socket call.
 - [x] Fix the bulk-restart reply deadline and the optional stale-socket takeover findings.
-- [ ] Verify the equivalence test fails when daemon use is bypassed.
-- [ ] Run full touched-package tests on g14 and compare failures with origin/main.
-- [ ] Complete host checks, simplification review, RESULTS.md and bundle.
+- [x] Verify the equivalence test fails when daemon use is bypassed.
+- [x] Run full touched-package tests on g14 and compare failures with origin/main.
+- [x] Complete host checks, simplification review, RESULTS.md and bundle.
