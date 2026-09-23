@@ -1,0 +1,188 @@
+[
+  {
+    "id": "codex:msg_u1",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:02.000Z",
+    "text": "Run hello.py",
+    "images": 1
+  },
+  {
+    "id": "codex:rs_1",
+    "kind": "thinking",
+    "ts": "2026-09-23T08:00:03.000Z",
+    "title": "**Planning the run**",
+    "text": "**Planning the run**"
+  },
+  {
+    "id": "codex:msg_a1",
+    "kind": "assistant",
+    "ts": "2026-09-23T08:00:04.000Z",
+    "text": "Running it."
+  },
+  {
+    "id": "codex:exec-1",
+    "kind": "bash",
+    "ts": "2026-09-23T08:00:06.000Z",
+    "title": "python3 hello.py",
+    "tool_name": "shell",
+    "command": "python3 hello.py",
+    "result": {
+      "text": "1\n2\n",
+      "lines": 2,
+      "exit_code": 0
+    },
+    "status": "completed",
+    "duration_ms": 1500
+  },
+  {
+    "id": "codex:exec-2",
+    "kind": "read",
+    "ts": "2026-09-23T08:00:07.000Z",
+    "title": "cat hello.py",
+    "tool_name": "shell",
+    "command": "cat hello.py",
+    "result": {
+      "text": "print(1)\n",
+      "lines": 1,
+      "exit_code": 0
+    },
+    "status": "completed"
+  },
+  {
+    "id": "codex:exec-3",
+    "kind": "bash",
+    "ts": "2026-09-23T08:00:08.000Z",
+    "title": "false",
+    "tool_name": "shell",
+    "command": "false",
+    "result": {
+      "is_error": true,
+      "exit_code": 1
+    },
+    "status": "failed"
+  },
+  {
+    "id": "codex:fc-1",
+    "kind": "edit",
+    "ts": "2026-09-23T08:00:09.000Z",
+    "title": "Edited /w/hello.py",
+    "tool_name": "apply_patch",
+    "path": "/w/hello.py",
+    "input": {
+      "/w/hello.py": {
+        "type": "update",
+        "unified_diff": "@@\n-a\n+b\n"
+      }
+    },
+    "status": "completed"
+  },
+  {
+    "id": "codex:mcp-1",
+    "kind": "tool",
+    "ts": "2026-09-23T08:00:10.000Z",
+    "title": "github.get_issue",
+    "tool_name": "github.get_issue",
+    "input": {
+      "n": 1
+    },
+    "result": {
+      "text": "issue body",
+      "lines": 1
+    },
+    "status": "completed"
+  },
+  {
+    "id": "tool:call_exec2",
+    "kind": "tool",
+    "ts": "2026-09-23T08:00:11.000Z",
+    "title": "exec",
+    "tool_name": "exec",
+    "input": {
+      "input": "text(ALL_TOOLS.length)"
+    },
+    "result": {
+      "text": "42",
+      "lines": 1
+    },
+    "status": "completed"
+  },
+  {
+    "id": "tool:call_spawn",
+    "kind": "subagent",
+    "ts": "2026-09-23T08:00:12.000Z",
+    "title": "explore",
+    "tool_name": "spawn_agent",
+    "result": {
+      "text": "{\"task_name\":\"/root/explore\"}",
+      "lines": 1
+    },
+    "agent_id": "th2",
+    "status": "started"
+  },
+  {
+    "id": "tool:call_shell",
+    "kind": "bash",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "make test",
+    "tool_name": "shell",
+    "command": "make test",
+    "result": {
+      "text": "FAIL\n",
+      "lines": 1,
+      "is_error": true,
+      "exit_code": 2
+    }
+  },
+  {
+    "id": "codex:amsg_1",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:14.000Z",
+    "title": "Message from /root/explore",
+    "text": "2 lines"
+  },
+  {
+    "id": "turn:turn1",
+    "kind": "turn_end",
+    "ts": "2026-09-23T08:00:16.000Z",
+    "title": "Worked for 56s",
+    "duration_ms": 56000,
+    "tokens": {
+      "input": 24822,
+      "output": 343,
+      "total": 25165,
+      "context_window": 258400
+    }
+  },
+  {
+    "id": "codex:2026-09-23T08:00:17.000Z:dfbd519c34d4",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:17.000Z",
+    "title": "Model changed to gpt-6-mini"
+  },
+  {
+    "id": "turn:turn2",
+    "kind": "turn_end",
+    "ts": "2026-09-23T08:00:19.000Z",
+    "title": "Interrupted",
+    "status": "interrupted"
+  },
+  {
+    "id": "codex:2026-09-23T08:00:20.000Z:448c248afded",
+    "kind": "compaction",
+    "ts": "2026-09-23T08:00:20.000Z",
+    "title": "Context compacted"
+  },
+  {
+    "id": "codex:2026-09-23T08:00:21.000Z:58e65f65c39b",
+    "kind": "other",
+    "ts": "2026-09-23T08:00:21.000Z",
+    "title": "mystery_row",
+    "raw": {
+      "timestamp": "2026-09-23T08:00:21.000Z",
+      "type": "mystery_row",
+      "payload": {
+        "x": 1
+      }
+    }
+  }
+]

@@ -1,0 +1,287 @@
+[
+  {
+    "id": "a1",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:02.000Z",
+    "title": "SessionStart · hook_additional_context"
+  },
+  {
+    "id": "u1",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:03.000Z",
+    "text": "Write hello.py, नमस्ते 🚀"
+  },
+  {
+    "id": "as1:0",
+    "kind": "thinking",
+    "ts": "2026-09-23T08:00:04.000Z",
+    "title": "Thinking",
+    "text": "plan it"
+  },
+  {
+    "id": "as2:0",
+    "kind": "assistant",
+    "ts": "2026-09-23T08:00:05.000Z",
+    "text": "I'll **start** now."
+  },
+  {
+    "id": "tool:toolu_bash1",
+    "kind": "bash",
+    "ts": "2026-09-23T08:00:06.000Z",
+    "title": "Run hello.py",
+    "tool_name": "Bash",
+    "command": "python3 hello.py\nls",
+    "result": {
+      "text": "1\n2\n3\n4",
+      "lines": 4
+    }
+  },
+  {
+    "id": "tool:toolu_edit1",
+    "kind": "edit",
+    "ts": "2026-09-23T08:00:08.000Z",
+    "title": "Edit /w/hello.py",
+    "tool_name": "Edit",
+    "path": "/w/hello.py",
+    "input": {
+      "file_path": "/w/hello.py",
+      "old_string": "5",
+      "new_string": "10"
+    },
+    "result": {
+      "text": "updated",
+      "lines": 1,
+      "added": 2,
+      "removed": 1
+    }
+  },
+  {
+    "id": "tool:toolu_read1",
+    "kind": "read",
+    "ts": "2026-09-23T08:00:08.000Z",
+    "title": "Read /w/NOTES.md",
+    "tool_name": "Read",
+    "path": "/w/NOTES.md",
+    "result": {
+      "text": "# Notes",
+      "lines": 1,
+      "is_error": true
+    }
+  },
+  {
+    "id": "tool:toolu_agent1",
+    "kind": "subagent",
+    "ts": "2026-09-23T08:00:11.000Z",
+    "title": "Count lines",
+    "text": "Count hello.py lines",
+    "tool_name": "Agent",
+    "input": {
+      "description": "Count lines",
+      "prompt": "Count hello.py lines",
+      "subagent_type": "Explore"
+    },
+    "result": {
+      "text": "2 lines",
+      "lines": 1
+    },
+    "agent_id": "agent42",
+    "status": "completed"
+  },
+  {
+    "id": "sub:agent42:sc1",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:11.000Z",
+    "text": "Count hello.py lines",
+    "parent_id": "tool:toolu_agent1"
+  },
+  {
+    "id": "sub:agent42:tool:toolu_sub_bash",
+    "kind": "bash",
+    "ts": "2026-09-23T08:00:11.000Z",
+    "title": "wc -l hello.py",
+    "tool_name": "Bash",
+    "command": "wc -l hello.py",
+    "result": {
+      "text": "2 hello.py",
+      "lines": 1
+    },
+    "parent_id": "tool:toolu_agent1"
+  },
+  {
+    "id": "sub:agent42:sc4:0",
+    "kind": "assistant",
+    "ts": "2026-09-23T08:00:12.000Z",
+    "text": "2 lines",
+    "parent_id": "tool:toolu_agent1"
+  },
+  {
+    "id": "tool:toolu_todo1",
+    "kind": "todo",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "TodoWrite",
+    "tool_name": "TodoWrite",
+    "input": {
+      "todos": [
+        {
+          "content": "a",
+          "status": "completed"
+        },
+        {
+          "content": "b",
+          "status": "in_progress"
+        }
+      ]
+    }
+  },
+  {
+    "id": "tool:toolu_q1",
+    "kind": "question",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "AskUserQuestion",
+    "tool_name": "AskUserQuestion",
+    "input": {
+      "questions": [
+        {
+          "question": "Which?",
+          "options": [
+            {
+              "label": "A"
+            },
+            {
+              "label": "B"
+            }
+          ]
+        }
+      ]
+    },
+    "result": {
+      "text": "A",
+      "lines": 1,
+      "answers": {
+        "Which?": "A"
+      }
+    }
+  },
+  {
+    "id": "tool:toolu_skill1",
+    "kind": "skill",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "Skill: brainstorming",
+    "tool_name": "Skill"
+  },
+  {
+    "id": "tool:toolu_mon1",
+    "kind": "tool",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "ScheduleWakeup",
+    "tool_name": "ScheduleWakeup",
+    "input": {
+      "delaySeconds": 60
+    }
+  },
+  {
+    "id": "queue:2026-09-23T08:00:15.000Z:3edc30d96cda",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:17.000Z",
+    "text": "MIDTURN: are you there?",
+    "delivery": "absorbed"
+  },
+  {
+    "id": "a3",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:18.000Z",
+    "title": "Agent \"x\" finished",
+    "text": "\u003ctask-notification\u003e\n\u003csummary\u003eAgent \"x\" finished\u003c/summary\u003e\n\u003c/task-notification\u003e"
+  },
+  {
+    "id": "a5",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:19.000Z",
+    "title": "PreToolUse:Bash · hook_blocking_error",
+    "text": "blocked: rm is not allowed"
+  },
+  {
+    "id": "s2",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:21.000Z",
+    "title": "Stop hook: hook exploded",
+    "text": "hook exploded"
+  },
+  {
+    "id": "s3",
+    "kind": "turn_end",
+    "ts": "2026-09-23T08:00:22.000Z",
+    "title": "Worked for 1m 15s",
+    "duration_ms": 75000
+  },
+  {
+    "id": "u2",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:24.000Z",
+    "text": "next task please"
+  },
+  {
+    "id": "u3",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:25.000Z",
+    "title": "[INBOX] child finished",
+    "text": "[INBOX] child finished"
+  },
+  {
+    "id": "u4",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:26.000Z",
+    "title": "Stop hook feedback:",
+    "text": "Stop hook feedback:\nrun the tests"
+  },
+  {
+    "id": "u5",
+    "kind": "command",
+    "ts": "2026-09-23T08:00:27.000Z",
+    "title": "/loop 5m check",
+    "text": "\u003ccommand-message\u003eloop\u003c/command-message\u003e\n\u003ccommand-name\u003e/loop\u003c/command-name\u003e\n\u003ccommand-args\u003e5m check\u003c/command-args\u003e"
+  },
+  {
+    "id": "u6",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:28.000Z",
+    "text": "what is this?",
+    "images": 1
+  },
+  {
+    "id": "s4",
+    "kind": "compaction",
+    "ts": "2026-09-23T08:00:29.000Z",
+    "title": "Context compacted · 844.0k → 19.0k"
+  },
+  {
+    "id": "u7",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:30.000Z",
+    "title": "Compaction summary",
+    "text": "This session is being continued..."
+  },
+  {
+    "id": "s5",
+    "kind": "command",
+    "ts": "2026-09-23T08:00:31.000Z",
+    "title": "/model opus",
+    "text": "\u003ccommand-name\u003e/model\u003c/command-name\u003e\n\u003ccommand-args\u003eopus\u003c/command-args\u003e"
+  },
+  {
+    "id": "o1",
+    "kind": "other",
+    "ts": "2026-09-23T08:00:34.000Z",
+    "title": "brand-new-row",
+    "raw": {
+      "type": "brand-new-row",
+      "payload": {
+        "k": 1
+      },
+      "uuid": "o1",
+      "timestamp": "2026-09-23T08:00:34.000Z",
+      "sessionId": "11111111-2222-3333-4444-555555555555",
+      "isSidechain": false
+    }
+  }
+]

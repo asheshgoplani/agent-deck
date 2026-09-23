@@ -13,11 +13,23 @@ import (
 func handleRecallTimeline(profile string, args []string) {
 	fs := newRecallFlagSet("recall timeline")
 	jsonOutput := fs.Bool("json", false, "Output canonical JSON")
+	rf := registerRowsFlags(fs)
+	tailBytes := fs.Int64("tail-bytes", 0, "With --rows: parse only the last N bytes (first line boundary after it) for a fast first paint")
+	agentID := fs.String("agent", "", "With --rows: return one Claude Code sub-agent sidechain by agent id")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json [--rows [--tail-bytes N] [--agent <id>]]")
+		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --rows --json --transcript <file> --harness claude|codex")
 		fs.PrintDefaults()
 	}
 	if !parseRecallFlags(fs, args) {
+		return
+	}
+	if *rf.rows {
+		if !*jsonOutput || (fs.NArg() != 1 && *rf.transcript == "") {
+			fs.Usage()
+			os.Exit(2)
+		}
+		handleRecallTimelineRows(profile, fs.Arg(0), rf, *tailBytes, *agentID)
 		return
 	}
 	out := NewCLIOutput(*jsonOutput, false)
@@ -39,11 +51,21 @@ func handleRecallFollow(profile string, args []string) {
 	fs := newRecallFlagSet("recall follow")
 	after := fs.String("after", "", "Resume cursor from timeline or a prior follow frame")
 	jsonl := fs.Bool("jsonl", false, "Stream newline-delimited JSON frames")
+	rf := registerRowsFlags(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall follow <session> --after <cursor> --jsonl")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall follow <session> --after <cursor> --jsonl [--rows]")
+		fmt.Fprintln(fs.Output(), "       with --rows, --after also accepts 'end'; frames are row, update, remove, status, resync_required")
 		fs.PrintDefaults()
 	}
 	if !parseRecallFlags(fs, args) {
+		return
+	}
+	if *rf.rows {
+		if *after == "" || !*jsonl || (fs.NArg() != 1 && *rf.transcript == "") {
+			fs.Usage()
+			os.Exit(2)
+		}
+		handleRecallFollowRows(profile, fs.Arg(0), *after, rf)
 		return
 	}
 	if fs.NArg() != 1 || *after == "" || !*jsonl {
