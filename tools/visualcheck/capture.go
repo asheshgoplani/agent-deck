@@ -138,8 +138,8 @@ func (w *widthRun) probeRedraw() error {
 	return nil
 }
 
-// runStepWithRetry retries failed navigation or golden comparisons twice.
-// Exhaustion fails the width; it never turns a failure into advisory.
+// runStepWithRetry retries failed navigation twice. A golden mismatch fails
+// immediately and keeps its captured frame for the report.
 func runStepWithRetry(w *widthRun, step visualCheckStep) error {
 	attempts := 3
 	if step.name == "14-fork" {
@@ -152,19 +152,17 @@ func runStepWithRetry(w *widthRun, step visualCheckStep) error {
 	for attempt := 1; attempt <= attempts; attempt++ {
 		w.frames = w.frames[:startFrames] // discard any partial capture from a failed attempt
 		lastErr = step.run(w)
-		// A step that ran without error but produced a frame that doesn't
-		// match its golden is retried exactly like a step that errored:
-		// this is the same redraw-race class moveCursorToText's hard-kick
-		// already fixes for outright failures (a stale scrollback/preview
-		// summary snapshotted mid-update), just discovered a step later,
-		// after the content is already in hand instead of a wait timing
-		// out. Skipped entirely while regenerating goldens -- there is
-		// nothing to compare against that isn't itself.
-		if lastErr == nil && !updating {
-			lastErr = firstGoldenMismatch(w.frames[startFrames:])
-		}
 		if lastErr == nil {
+			if !updating {
+				// Preserve the actual mismatched frame for the report. A
+				// golden difference is an assertion failure, not navigation
+				// trouble to erase with another attempt.
+				return firstGoldenMismatch(w.frames[startFrames:])
+			}
 			return nil
+		}
+		if pane, err := w.pane(); err == nil {
+			fmt.Fprintf(os.Stderr, "visualcheck %s/%s attempt %d: %v\npane:\n%s\n", step.name, w.spec.name, attempt, lastErr, pane)
 		}
 		if attempt < attempts {
 			_ = w.hardKick()
