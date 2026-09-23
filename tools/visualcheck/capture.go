@@ -99,16 +99,8 @@ func (w *widthRun) probeRedraw() error {
 	if err != nil {
 		return err
 	}
-	if err := w.waitFor(func() (bool, error) {
-		pane, err := w.paneStyledStable()
-		if err != nil {
-			return false, err
-		}
-		on, found := cursorOnRow(pane, visibleRowName("claude-stopped", w.spec.width))
-		return found && on, nil
-	}, 5*time.Second); err != nil {
-		return err
-	}
+	// Record what the rapid burst actually selected. A lost or delayed key
+	// must not be misreported as a persistent painted duplicate.
 	time.Sleep(600 * time.Millisecond)
 	settled, err := w.pane()
 	if err != nil {

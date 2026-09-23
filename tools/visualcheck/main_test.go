@@ -30,6 +30,14 @@ func TestCapturePanePreservesLeadingSpaces(t *testing.T) {
 	}
 }
 
+func TestScrubRemotePollKeepsDividerFixed(t *testing.T) {
+	a := "  ▾ remotes/lab (0) · unreachable: host down · poll 7ms    │ PREVIEW"
+	b := "  ▾ remotes/lab (0) · unreachable: host down · poll 12ms   │ PREVIEW"
+	if scrubFrame(a) != scrubFrame(b) {
+		t.Fatalf("remote rows drift after scrub:\n%s\n%s", scrubFrame(a), scrubFrame(b))
+	}
+}
+
 var regenerateGoldens = flag.Bool("visualcheck.regenerate", false, "regenerate visual check goldens")
 
 func TestScrubFrameRedactsVolatileText(t *testing.T) {

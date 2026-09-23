@@ -88,6 +88,13 @@ func (s *suite) setup() error {
 			return err
 		}
 	}
+	dataDir := filepath.Join(s.root, ".local", "share", "agent-deck")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, ".nav-hint-v1760-shown"), []byte("seeded\n"), 0600); err != nil {
+		return err
+	}
 	// Allowlist environment, following tools/funccheck and tests/eval/harness.
 	// Never inherit agent identity, account/auth paths, TMUX, SSH agents or
 	// host XDG paths.
@@ -136,6 +143,7 @@ exec ` + shQuote(s.realTmux) + " -L " + shQuote(s.socket) + " -f /dev/null \"$@\
 		return err
 	}
 	cfg := "[telemetry]\ndisabled = true\n[tmux]\nlaunch_in_user_scope = false\n" +
+		"[health]\nenabled = false\n" +
 		"[ui.header]\nfields = [\"version\", \"sessions_by_status\"]\n" +
 		"[hotkeys]\nswitch_session = \"ctrl+s\"\n" +
 		"[updates]\nauto_update = false\nauto_restart = false\nstartup_check = false\n[worktree]\nbranch_prefix = \"\"\n" +
