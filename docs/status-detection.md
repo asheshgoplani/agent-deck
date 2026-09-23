@@ -24,7 +24,7 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 | codex | `codex-notify` hook: turn start → running (fresh 20 s), turn end → waiting (fresh 5 s). Absent unless `codex-hooks install` ran. Pane title Braille spinner. | `• Word (9m 41s • esc to interrupt)` status line in the live slot (the last `•` block above the `› ` composer, only blank and `  └ …` lines between; `codexLiveStatusLine`), `esc to interrupt` within the last 3 lines, Braille spinner | `› ` composer (`Ask Codex to do anything`), `Press enter to confirm or esc to go back` | Column-0 `■` banners: usage limit, not logged in |
 | gemini | Hooks BeforeAgent / AfterAgent (2 min) | `esc to cancel` | `gemini>`, `Type your message`, line ending in `>` | none |
 | opencode | SSE `/event` stream, TUI only (30 s) | `thinking...`, `generating...`, pulse glyphs `█▓▒░` | `Ask anything`, `enter submit` | none |
-| pi | Hooks turn_start / turn_end (2 min), excluded from the flip debounce | `── ⠹ Working ──` banner, `[subagent]`, `[running]`, `delegate_task` | `pi>`, the `↑… ↓… ` token/cost status line under the composer | none |
+| pi | Hooks turn_start / turn_end (2 min), excluded from the flip debounce | `── ⠹ Working ──` banner, `[subagent]`, `[running]` (a plain `delegate_task` in prose is not a cue) | `pi>`, the `↑… ↓… ` token/cost status line under the composer | none |
 | hermes | Hooks around every LLM/tool call (2 min); gateway health probe every 30 s | Braille spinner anywhere | shell prompt | gateway unreachable |
 | copilot | none | `Thinking`, `Running`, Braille | `copilot>`, `›`, `>` | none |
 | shell / custom | none | opt-in `[status] shell_running_indicator` | `$ `, `# `, `% `, `❯ `, `(y/N)` | none |
