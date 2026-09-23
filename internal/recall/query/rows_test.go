@@ -108,8 +108,9 @@ func TestRowsClaudeMapping(t *testing.T) {
 	if think.Kind != "thinking" {
 		t.Errorf("single-block row id should be the uuid: %+v", think)
 	}
-	if _, ok := rowByID(rows, "as6#2"); !ok {
-		t.Errorf("multi-block ids are uuid#block")
+	multi := newRowParser("claude", rowParserState{}).line([]byte(`{"type":"assistant","uuid":"m9","timestamp":"t","message":{"content":[{"type":"thinking","thinking":"x"},{"type":"text","text":"a"},{"type":"tool_use","id":"toolu_z","name":"Bash","input":{"command":"ls"}}]}}`))
+	if len(multi) != 3 || multi[0].Row.ID != "m9#0" || multi[1].Row.ID != "m9#1" || multi[2].Row.ID != "toolu_z" {
+		t.Errorf("multi-block ids: %+v %+v %+v", multi[0].Row, multi[1].Row, multi[2].Row)
 	}
 	// Sidechain rows are children of their subagent row.
 	agent, _ := rowByID(rows, "toolu_agent1")
