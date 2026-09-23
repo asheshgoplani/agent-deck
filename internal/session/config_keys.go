@@ -147,7 +147,7 @@ var configKeys = []ConfigKey{
 	{Key: "macapp.transcript_events", Section: "Advanced", Label: "Transcript events", Help: "Notify daemon publishes session.transcript frames when a transcript grows", Type: "bool", RestartRequired: true,
 		get: func(c *UserConfig) any { return c.Macapp.TranscriptEvents },
 		set: func(c *UserConfig, v any) { c.Macapp.TranscriptEvents = v.(bool) }},
-	{Key: "macapp.status_events", Section: "Advanced", Label: "Status events", Help: "Status owners publish session.status and session.turn frames on the events bus", Type: "bool", RestartRequired: true,
+	{Key: "macapp.status_events", Section: "Advanced", Label: "Status events", Help: "Status owners publish session.status and session.turn frames on the events bus", Type: "bool",
 		get: func(c *UserConfig) any { return c.Macapp.StatusEvents },
 		set: func(c *UserConfig, v any) { c.Macapp.StatusEvents = v.(bool) }},
 	{Key: "core.daemon", Section: "Advanced", Label: "Core daemon", Help: "Route --json=envelope registry commands through agent-deck daemon serve (docs/daemon-protocol.md)", Type: "bool",

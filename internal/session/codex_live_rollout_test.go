@@ -57,8 +57,8 @@ func noPaneProcess(t *testing.T) {
 // TestCodexLiveRolloutMacappReceiptCase reproduces the Mac app receipt:
 // session show said codex_session_id 01a0cd46 while the rollouts on disk
 // were 01a0cd45 (the conversation) and 01a0cd47 (its Explore sub-agent).
+// The pane's Codex process holds 01a0cd45 open, which is how it is found.
 func TestCodexLiveRolloutMacappReceiptCase(t *testing.T) {
-	noPaneProcess(t)
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", home)
 	cwd := t.TempDir()
@@ -66,6 +66,7 @@ func TestCodexLiveRolloutMacappReceiptCase(t *testing.T) {
 	main := writeRollout(t, home, "01a0cd45-e811-7dd2-825d-f110cd204fb0", cwd, "", "", now.Add(-2*time.Second))
 	sub := writeRollout(t, home, "01a0cd47-7719-7df3-8eb3-1616c67ce9ea", cwd, "01a0cd45-e811-7dd2-825d-f110cd204fb0", "", now)
 	writeRollout(t, home, "01a0cd99-0000-7000-8000-000000000000", t.TempDir(), "", "", now) // other directory
+	stubCodexPaneOpenPaths(t, []string{main}, nil)
 	inst := &Instance{ID: "c1", Tool: "codex", ProjectPath: cwd, CodexSessionID: "01a0cd46-fefc-7590-aa92-c26773921d1d", CreatedAt: now.Add(-time.Minute)}
 	if got := CodexLiveRolloutPath(inst, nil); got != main {
 		t.Fatalf("live rollout = %s, want the user thread %s (not the sub-agent %s)", got, main, sub)
@@ -86,6 +87,12 @@ func TestCodexLiveRolloutMacappReceiptCase(t *testing.T) {
 	inst.CodexSessionID = "01a0cd47-7719-7df3-8eb3-1616c67ce9ea"
 	if got := CodexLiveRolloutPath(inst, nil); got != main {
 		t.Fatalf("sub-agent id: %s", got)
+	}
+	// Without the pane probe nothing names 01a0cd45 as this session's.
+	noPaneProcess(t)
+	inst.CodexSessionID = "01a0cd46-fefc-7590-aa92-c26773921d1d"
+	if got := CodexLiveRolloutPath(inst, nil); got != "" {
+		t.Fatalf("no pane, no reference: got %s, want none", got)
 	}
 }
 
@@ -148,14 +155,26 @@ func TestCodexLiveRolloutNeverBindsAnotherThread(t *testing.T) {
 	if err := os.Remove(quoting); err != nil {
 		t.Fatal(err)
 	}
+	// Being the only unowned user thread is not a reference: it may be the
+	// user's own Codex in the same directory (review S5).
+	if got := CodexLiveRolloutPath(a, []*Instance{a, b}); got != "" {
+		t.Fatalf("bound the only unowned user thread %s", got)
+	}
+	if ids := TranscriptIDs(a, []*Instance{a, b}); len(ids) != 1 || ids[0] != stored {
+		t.Fatalf("transcript ids = %v (another thread listed)", ids)
+	}
+	// Once it references the stored id structurally it is this session's.
+	mine = writeRollout(t, home, "01c00000-0000-7000-8000-00000000000a", cwd, "",
+		`{"type":"event_msg","payload":{"type":"thread_settings_applied","previous_thread_id":"`+stored+`"}}`, now.Add(-10*time.Second))
 	if got := CodexLiveRolloutPath(a, []*Instance{a, b}); got != mine {
-		t.Fatalf("got %s, want the only unowned user thread %s", got, mine)
+		t.Fatalf("got %s, want the thread referencing the stored id %s", got, mine)
 	}
 	if ids := TranscriptIDs(a, []*Instance{a, b}); len(ids) != 2 || ids[0] != "01c00000-0000-7000-8000-00000000000a" || ids[1] != stored {
 		t.Fatalf("transcript ids = %v (another thread listed)", ids)
 	}
-	// Without the peer list B's thread is a second candidate: ambiguous.
-	if got := CodexLiveRolloutPath(a, nil); got != "" {
+	// Without the peer list B's thread is a candidate too, but it does not
+	// reference the stored id, so only the referencing thread binds.
+	if got := CodexLiveRolloutPath(a, nil); got != mine {
 		t.Fatalf("without peers: %s", got)
 	}
 }
@@ -178,5 +197,33 @@ func TestCodexLiveRolloutPrefersThePaneProcessThread(t *testing.T) {
 	peer := &Instance{ID: "q", Tool: "codex", ProjectPath: cwd, CodexSessionID: "01d00000-0000-7000-8000-00000000000a"}
 	if got := CodexLiveRolloutPath(inst, []*Instance{inst, peer}); got == held {
 		t.Fatalf("followed a thread bound to another session: %s", got)
+	}
+}
+
+// TestCodexLiveRolloutFreshSessionIgnoresForeignThread: review case S5c. A
+// fresh deck session (no stored id yet, no pane thread) in a directory where
+// the user's own Codex writes the only user thread resolves to nothing until
+// its own rollout exists, so session show and recall never show that thread.
+func TestCodexLiveRolloutFreshSessionIgnoresForeignThread(t *testing.T) {
+	noPaneProcess(t)
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	cwd := t.TempDir()
+	now := time.Now()
+	writeRolloutSource(t, home, "01e00000-0000-7000-8000-0000000000f1", cwd, "", `"vscode"`, "", now)
+	fresh := &Instance{ID: "fresh", Tool: "codex", ProjectPath: cwd, CreatedAt: now.Add(-time.Minute)}
+	if got := CodexLiveRolloutPath(fresh, nil); got != "" {
+		t.Fatalf("fresh session bound the foreign thread %s", got)
+	}
+	if ids := TranscriptIDs(fresh, nil); len(ids) != 0 {
+		t.Fatalf("transcript ids = %v, want none", ids)
+	}
+	if got := LiveTranscriptPath(fresh, nil); got != "" {
+		t.Fatalf("LiveTranscriptPath = %s, want none", got)
+	}
+	// The same holds with a stored id that has no rollout yet (review S5).
+	fresh.CodexSessionID = "01e00000-0000-7000-8000-000000000001"
+	if got := CodexLiveRolloutPath(fresh, nil); got != "" {
+		t.Fatalf("stored id without rollout bound the foreign thread %s", got)
 	}
 }

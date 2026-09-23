@@ -23,12 +23,14 @@ import (
 //  1. the exact rollout of the stored id, when it is not a sub-agent thread;
 //  2. else the thread the pane's own Codex process holds open
 //     (LiveCodexThreadID), when its rollout is a user thread;
-//  3. else the user-thread rollouts (session_meta thread_source "user", no
-//     parent thread, not `codex exec`) whose cwd is the session's working
-//     directory, written since the session was created, and not bound to
-//     another session: the one whose structured fields reference the stored
-//     id, else the only one. More than one candidate is ambiguous (another
-//     deck session, the user's own codex run) and resolves to "".
+//  3. else the one user-thread rollout (session_meta thread_source "user",
+//     no parent thread, not `codex exec`) whose cwd is the session's working
+//     directory, written since the session was created, not bound to another
+//     session, and whose structured fields reference the stored id.
+//
+// Nothing else binds: a user thread that is merely the only one in the
+// directory may be the user's own Codex (VS Code or CLI), so a fresh session
+// resolves to "" until its own rollout exists.
 //
 // This never rebinds codex_session_id: identity for accepted-turn receipts
 // stays with the pane environment (hydrateLegacyCodexIdentity).
@@ -197,18 +199,17 @@ func CodexLiveRolloutPath(inst *Instance, peers []*Instance) string {
 			}
 		}
 	}
-	cands := codexUserRolloutsForCwd(home, inst.EffectiveWorkingDir(), inst.CreatedAt, owned)
+	if inst.CodexSessionID == "" {
+		return ""
+	}
 	var refs []codexRolloutCandidate
-	for _, c := range cands {
+	for _, c := range codexUserRolloutsForCwd(home, inst.EffectiveWorkingDir(), inst.CreatedAt, owned) {
 		if rolloutReferencesThread(c.path, inst.CodexSessionID) {
 			refs = append(refs, c)
 		}
 	}
-	switch {
-	case len(refs) == 1:
+	if len(refs) == 1 {
 		return refs[0].path
-	case len(refs) == 0 && len(cands) == 1:
-		return cands[0].path
 	}
 	return ""
 }

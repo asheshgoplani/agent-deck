@@ -14,7 +14,7 @@ read-only transcript and pane reads named below.
 | Status transitions without polling | `events follow --json --kind session.status,session.turn` | `[macapp] status_events` (status owners: TUI, notify daemon) | docs/events.md |
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |
 | Plugin frames | `events publish --kind macapp.<name> --session <id> --data-file -` | `[macapp] plugins` | docs/events.md |
-| Send that never drops | `session send <id> --message-file - --json --queue`, `session send-status <send-id> --json` | none | below |
+| Send that is never silently lost | `session send <id> --message-file - --json --queue`, `session send-status <send-id> --json` | none | below |
 | Images | `session send <id> … --image <path>` | none | below |
 | Codex identity | `session show <id> --json` → `transcript_path`, `transcript_ids` | none | below |
 | Harness facts | `harness list --json`, `harness status <name> --json` | none | below |
@@ -99,11 +99,15 @@ session's own thread:
 
 1. the stored id's rollout, unless it is a sub-agent thread;
 2. else the thread the pane's own Codex process holds open;
-3. else the user-thread rollouts (`thread_source` user, no parent thread,
-   not `codex exec`) in the session's working directory, written since the
-   session was created and not bound to another deck session: the one whose
-   structured id fields reference the stored id, else the only one. Two or
-   more candidates are ambiguous and resolve to nothing.
+3. else the one user-thread rollout (`thread_source` user, no parent
+   thread, not `codex exec`) in the session's working directory, written
+   since the session was created and not bound to another deck session,
+   whose structured id fields reference the stored id. Two or more are
+   ambiguous and resolve to nothing.
+
+A user thread that is merely the only one in the directory is never bound:
+it may be the user's own Codex. A fresh session has no `transcript_path`
+until its own rollout exists.
 
 `session show --json` adds `transcript_path` (Claude JSONL or that rollout)
 and `transcript_ids` (the live rollout's thread and the stored id), both
