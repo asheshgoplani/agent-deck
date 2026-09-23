@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -55,4 +56,16 @@ func compareGolden(step, width, got string) (goldenStatus, error) {
 		return goldenStatus{status: "PASS", want: string(want)}, nil
 	}
 	return goldenStatus{status: "DIFF", want: string(want)}, nil
+}
+
+// clippedDialogBorder reports a frame whose rounded dialog boxes are not
+// whole: every "╭" top border needs its "╰" bottom border on screen. A
+// dialog that fills the terminal and ends with a newline scrolls its top
+// border off, and regeneration would otherwise write that frame as PASS.
+func clippedDialogBorder(frame string) string {
+	top, bottom := strings.Count(frame, "╭"), strings.Count(frame, "╰")
+	if top == bottom {
+		return ""
+	}
+	return fmt.Sprintf("dialog border clipped: %d top corners (╭), %d bottom corners (╰)", top, bottom)
 }

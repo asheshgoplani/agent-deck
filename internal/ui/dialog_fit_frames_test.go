@@ -268,10 +268,13 @@ func TestDialogFitFramesGolden(t *testing.T) {
 func assertDialogFits(t *testing.T, frame string, w, h int, mustShow ...string) {
 	t.Helper()
 	plain := strings.ReplaceAll(stripAnsi(frame), nbsp, " ")
-	rows := strings.Split(strings.TrimRight(plain, "\n"), "\n")
-	if len(rows) > h {
-		t.Errorf("frame is %d rows on a %d-row terminal:\n%s", len(rows), h, plain)
+	// Bubble Tea splits the view on "\n" and keeps only the last h lines, so
+	// a trailing newline is a row too: a dialog that fills the screen and
+	// ends with "\n" loses its top border.
+	if lines := strings.Count(plain, "\n") + 1; lines > h {
+		t.Errorf("frame is %d lines (trailing newline included) on a %d-row terminal:\n%s", lines, h, plain)
 	}
+	rows := strings.Split(strings.TrimRight(plain, "\n"), "\n")
 	for i, row := range rows {
 		if cw := cellWidth(row); cw > w {
 			t.Errorf("row %d is %d cells on a %d-column terminal: %q", i, cw, w, row)
@@ -358,5 +361,68 @@ func TestRecallFitsScreenAndFollowsCursor(t *testing.T) {
 		assertDialogFits(t, gs.View(), sz[0], sz[1], "Recall", "recall-hit-00", "[Esc] Cancel")
 		gs.cursor = len(gs.results) - 1
 		assertDialogFits(t, gs.View(), sz[0], sz[1], "Recall", "› recall-hit-14", "[Esc] Cancel")
+	}
+}
+
+// terminalFrame is what Bubble Tea's renderer puts on an h-row screen: the
+// view split on "\n", keeping only the last h lines.
+func terminalFrame(view string, h int) []string {
+	lines := strings.Split(strings.ReplaceAll(stripAnsi(view), nbsp, " "), "\n")
+	if len(lines) > h {
+		lines = lines[len(lines)-h:]
+	}
+	return lines
+}
+
+// TestLocalSearchKeepsTopBorderOnScreen pins the composition of round 1's
+// dialog fitter with round 5's search window: Local Search fitted to the
+// full height filled all 24 rows at 80x24, centerInScreen's trailing
+// newline made it 25 lines, and the renderer dropped the top border. The
+// frame on screen must hold one whole box: top border, title, the cursor
+// row and the key hints.
+func TestLocalSearchKeepsTopBorderOnScreen(t *testing.T) {
+	isolateDialogFitHome(t)
+	for _, sz := range [][2]int{{60, 15}, {80, 24}, {120, 40}} {
+		w, h := sz[0], sz[1]
+		for _, n := range []int{11, 25} {
+			var items []*session.Instance
+			for i := 1; i <= n; i++ {
+				items = append(items, &session.Instance{ID: fmt.Sprintf("s%d", i), Title: fmt.Sprintf("session-%02d", i), Tool: "claude"})
+			}
+			for _, last := range []bool{false, true} {
+				s := NewSearch()
+				s.SetSize(w, h)
+				s.SetItems(items)
+				s.Show()
+				s.View()
+				if last {
+					s.cursor = len(s.results) - 1
+				}
+				want := fmt.Sprintf("› session-%02d", s.cursor+1)
+				frame := terminalFrame(s.View(), h)
+				screen := strings.Join(frame, "\n")
+				// The outer box's top border is the first row drawn; the
+				// search input is a second, inner box.
+				top := -1
+				for i, row := range frame {
+					if strings.TrimSpace(row) != "" {
+						top = i
+						break
+					}
+				}
+				if top < 0 || !strings.HasPrefix(strings.TrimSpace(frame[top]), "╭") || strings.Count(screen, "╭") != strings.Count(screen, "╰") {
+					t.Fatalf("%dx%d, %d results, cursor %d: box border clipped on screen:\n%s", w, h, n, s.cursor, screen)
+				}
+				// The title sits on one of the two rows under the top border.
+				if !strings.Contains(strings.Join(frame[top+1:min(top+3, len(frame))], "\n"), "Local Search") {
+					t.Errorf("%dx%d, %d results, cursor %d: title is not under the top border:\n%s", w, h, n, s.cursor, screen)
+				}
+				for _, text := range []string{want, "[Esc] Cancel"} {
+					if !strings.Contains(screen, text) {
+						t.Errorf("%dx%d, %d results, cursor %d: screen must show %q:\n%s", w, h, n, s.cursor, text, screen)
+					}
+				}
+			}
+		}
 	}
 }

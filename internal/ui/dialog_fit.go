@@ -53,6 +53,18 @@ func fitDialogHeight(style lipgloss.Style, termHeight int) int {
 	return max(termHeight-style.GetVerticalFrameSize(), 1)
 }
 
+// centeredDialogHeight is the termHeight to fit a dialog to when
+// centerInScreen places it. centerInScreen ends every row with "\n", and
+// Bubble Tea keeps only the last termHeight lines of a view, so a box that
+// fills the screen would lose its top border and title. termHeight <= 0
+// (unknown) is returned unchanged.
+func centeredDialogHeight(termHeight int) int {
+	if termHeight <= 0 {
+		return termHeight
+	}
+	return termHeight - 1
+}
+
 // renderFittedDialog renders s inside style (which carries the dialog's
 // Width) so the box is never taller than termHeight. In order:
 //  1. the box fits: rendered exactly as style.Render(s.content());

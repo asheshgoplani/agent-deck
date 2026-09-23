@@ -793,13 +793,7 @@ func (d *ForkDialog) View() string {
 	// title and the hints stay on screen. Joined, the sections are exactly
 	// title + "\n\n" + form + "\n" + hints.
 	body := strings.Split(beforeOptions+optionsView+errLine, "\n")
-	// Leave one row for the trailing newline emitted by centerInScreen; without
-	// it tmux scrolls the top border off a 24-row terminal.
-	fitHeight := d.height
-	if fitHeight > 0 {
-		fitHeight--
-	}
-	dialog := renderFittedDialog(boxStyle, fitHeight, dialogSections{
+	dialog := renderFittedDialog(boxStyle, centeredDialogHeight(d.height), dialogSections{
 		head:  []string{titleStyle.Render("Fork Session"), ""},
 		body:  body,
 		focus: d.focusedRow(body, strings.Count(beforeOptions, "\n")),

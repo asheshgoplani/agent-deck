@@ -284,7 +284,7 @@ func (s *Search) View() string {
 	}
 
 	// Wrap in overlay box - responsive width, never taller than the screen
-	overlay := renderFittedDialog(overlayStyle.Width(overlayWidth), s.height, sections)
+	overlay := renderFittedDialog(overlayStyle.Width(overlayWidth), centeredDialogHeight(s.height), sections)
 
 	// Center in the screen
 	return centerInScreen(overlay, s.width, s.height)
