@@ -59,10 +59,11 @@ already executed.
 - `envelope` is the same response envelope `--json=envelope` prints
   (`{schema, request_id, ok, data, warnings, revision, error?}`), with
   `request_id` set to the frame `id`. `input` is decoded strictly (unknown
-  fields and trailing JSON values are `INVALID_INPUT`); an empty `profile` is the daemon's profile,
+  command-input fields are `INVALID_INPUT`); an empty `profile` is the daemon's profile,
   another profile is `INVALID_INPUT`.
-- Unknown top-level client-frame fields and an empty or absent `id` are
-  `BAD_FRAME`. The `input` value must be one JSON object. Live status cost
+- Unknown or wrong-type client-frame fields, a second JSON value on the
+  line, and an empty or absent `id` are `BAD_FRAME`. The `input` value must
+  be one JSON object when present; an omitted `input` is `{}`. Live status cost
   counters remain available through the direct CLI's `--stats` diagnostic;
   they are omitted from canonical envelopes because elapsed time and
   process-local tmux call counts vary between executors.
