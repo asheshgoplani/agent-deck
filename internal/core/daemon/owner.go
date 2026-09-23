@@ -168,6 +168,8 @@ const (
 	StateRunning State = "running"
 	// StateStale: a socket file exists but nothing answers (the owner died).
 	StateStale State = "stale"
+	// StateUnknown: a socket accepts connections but no daemon answered.
+	StateUnknown State = "unknown"
 	// StateAbsent: no socket file.
 	StateAbsent State = "absent"
 )
@@ -190,7 +192,18 @@ func Probe(p Paths) ProbeResult {
 			return ProbeResult{State: StateRunning, PID: st.PID, Status: st}
 		}
 	}
-	if _, err := os.Lstat(p.Socket); err == nil {
+	if st, err := os.Lstat(p.Socket); err == nil {
+		if st.Mode()&os.ModeSocket == 0 {
+			return ProbeResult{State: StateUnknown, PID: readPID(p)}
+		}
+		c, dialErr := net.DialTimeout("unix", p.Socket, 2*time.Second)
+		if dialErr == nil {
+			_ = c.Close()
+			return ProbeResult{State: StateUnknown, PID: readPID(p)}
+		}
+		if !errors.Is(dialErr, syscall.ECONNREFUSED) && !errors.Is(dialErr, syscall.ENOENT) {
+			return ProbeResult{State: StateUnknown, PID: readPID(p)}
+		}
 		return ProbeResult{State: StateStale, PID: readPID(p)}
 	}
 	return ProbeResult{State: StateAbsent}

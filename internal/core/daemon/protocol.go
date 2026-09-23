@@ -10,6 +10,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/core"
 )
 
 // ProtocolVersion is the frame layout version. Every client frame carries it
@@ -72,6 +74,16 @@ type Frame struct {
 	Commands []CommandInfo   `json:"commands,omitempty"`
 	Status   *Status         `json:"status,omitempty"`
 	Error    *FrameError     `json:"error,omitempty"`
+}
+
+func isBulkRestart(f Frame) bool {
+	if f.Type != TypeCall || f.Cmd != core.IDSessionRestart {
+		return false
+	}
+	var in struct {
+		All bool `json:"all"`
+	}
+	return json.Unmarshal(f.Input, &in) == nil && in.All
 }
 
 // FrameError is the body of an error frame.

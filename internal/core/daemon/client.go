@@ -7,8 +7,6 @@ import (
 	"net"
 	"strconv"
 	"time"
-
-	"github.com/asheshgoplani/agent-deck/internal/core"
 )
 
 // Client is one protocol connection. It is not safe for concurrent use; a
@@ -67,13 +65,8 @@ func (c *Client) roundtrip(f Frame) (Frame, error) {
 	timeout := controlReplyTimeout
 	if f.Type == TypeCall {
 		timeout = callReplyTimeout
-		if f.Cmd == core.IDSessionRestart {
-			var in struct {
-				All bool `json:"all"`
-			}
-			if json.Unmarshal(f.Input, &in) == nil && in.All {
-				timeout = bulkRestartTimeout
-			}
+		if isBulkRestart(f) {
+			timeout = bulkRestartTimeout
 		}
 	}
 	_ = c.c.SetDeadline(time.Now().Add(timeout))

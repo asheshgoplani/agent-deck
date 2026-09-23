@@ -11,7 +11,7 @@ second store: every call runs the same `internal/core` Def and the same
 | Command | Does | Exit |
 |---|---|---|
 | `agent-deck daemon serve` | Runs in the foreground until SIGINT/SIGTERM or `daemon stop` | 1 if another daemon owns the profile |
-| `agent-deck daemon status [--json]` | `running`, `stale` (socket left by a dead owner) or `absent` | 0 only when running |
+| `agent-deck daemon status [--json]` | `running`, `stale` (socket refuses connections), `unknown` (socket accepts but no daemon answers), or `absent` | 0 only when running |
 | `agent-deck daemon stop` | Sends `shutdown`, waits up to 5s | 0, also when nothing runs |
 
 `[core] daemon = false` (the default) keeps the CLI in direct mode: it never
@@ -45,7 +45,8 @@ resets that deadline. Writes are
 bounded to 2 seconds. The client waits 2 seconds for control replies and 8
 seconds for ordinary command replies. `session restart --all` has a five-minute
 reply deadline because its paced boot sweep can take longer than eight seconds.
-The server's seven-second request context bounds waiting for the mutation lock;
+The server's request context bounds waiting for the mutation lock: seven seconds
+normally, four minutes for bulk restart. The client waits five minutes for its reply;
 the boot executor does not use it to interrupt a sweep. A hello-only peer cannot hold a CLI call
 indefinitely. A timed-out call is not retried in process because it may have
 already executed.

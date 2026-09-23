@@ -191,7 +191,11 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		var reply Frame
 		switch f.Type {
 		case TypeCall:
-			callCtx, cancelCall := context.WithTimeout(ctx, 7*time.Second)
+			lockWait := 7 * time.Second
+			if isBulkRestart(f) {
+				lockWait = 4 * time.Minute
+			}
+			callCtx, cancelCall := context.WithTimeout(ctx, lockWait)
 			result, res := s.call(callCtx, f)
 			err := fc.write(result)
 			// Deferred work (journal writes) runs once the answer is out,

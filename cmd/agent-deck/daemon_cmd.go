@@ -143,7 +143,9 @@ func daemonStatusCmd(profile string, args []string) {
 			fmt.Printf("running: pid %d, profile %s, version %s, since %s, %d calls, %d connections\nsocket: %s\n",
 				st.PID, st.Profile, st.Version, st.StartedAt, st.Calls, st.Connections, paths.Socket)
 		case daemon.StateStale:
-			fmt.Printf("not running: stale socket from pid %d (the next daemon serve replaces it)\nsocket: %s\n", probe.PID, paths.Socket)
+			fmt.Printf("not running: stale socket from pid %d (serve can replace it if the recorded pid is dead)\nsocket: %s\n", probe.PID, paths.Socket)
+		case daemon.StateUnknown:
+			fmt.Printf("unknown: socket exists but the daemon did not answer\nsocket: %s\n", paths.Socket)
 		default:
 			fmt.Printf("not running\nsocket: %s\n", paths.Socket)
 		}
@@ -161,6 +163,10 @@ func daemonStop(profile string, args []string) {
 		os.Exit(1)
 	}
 	probe := daemon.Probe(paths)
+	if probe.State == daemon.StateUnknown {
+		fmt.Fprintf(os.Stderr, "Error: daemon socket %s accepts connections but did not answer; cannot confirm stop\n", paths.Socket)
+		os.Exit(1)
+	}
 	if probe.State != daemon.StateRunning {
 		fmt.Println("daemon not running")
 		return
