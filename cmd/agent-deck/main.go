@@ -27,6 +27,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/health"
@@ -317,6 +318,15 @@ func inheritedEnviron() []string {
 	return env
 }
 
+func configureEventProfile(profile string) error {
+	selected, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return err
+	}
+	events.SetProfile(selected)
+	return nil
+}
+
 func main() {
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
@@ -332,6 +342,11 @@ func main() {
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
 	applyProfileFlag(profile)
+	if err := configureEventProfile(profile); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve events profile: %v\n", err)
+		os.Exit(1)
+	}
+	defer events.CloseDefault()
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer
@@ -511,6 +526,9 @@ func main() {
 			return
 		case "costs":
 			handleCosts(profile, args[1:])
+			return
+		case "events":
+			handleEvents(profile, args[1:])
 			return
 		case "recall":
 			handleRecall(profile, args[1:])
@@ -888,6 +906,7 @@ func main() {
 		// Hand the outer terminal's cursor and pointer back if the embedded
 		// terminal owned them; deferred releases do not survive os.Exit.
 		runEmbeddedTerminalCleanup()
+		_ = events.CloseDefault()
 		os.Exit(0)
 	}()
 
@@ -1424,7 +1443,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "events": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,

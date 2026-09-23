@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -96,6 +97,7 @@ func handleNotifyDaemon(args []string) {
 
 	if err := daemon.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "notify-daemon error: %v\n", err)
+		_ = events.CloseDefault()
 		os.Exit(1)
 	}
 }

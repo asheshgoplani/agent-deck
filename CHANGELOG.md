@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conductor heartbeats now wake only when a local child's waiting or error state or the conductor inbox changes, and unchanged ticks send nothing. Teardown and `heartbeat_enabled = false` stop the timer cleanly. Heartbeat tick and send failures are logged once until recovery, and a failed send is retried on the next tick (#2348).
 - `agent-deck update --check --json` now reports `auto_update_remotes` (the effective `[updates]` setting, on by default) next to `auto_install` and `auto_restart`, so a release gate can verify all three hands-off update settings from one command.
 
+### Added
+
+- **`agent-deck events follow --json [--after <cursor>]` streams a new durable event bus** (CORE-PLAN slice 4, additive only). A new `internal/events` package taps `session.transition`/`session.finished`, `tmux.output`, and `watcher.event`/`watcher.health` into a profile-specific append log at `<data-dir>/bus/<profile>/` (see `docs/events.md`). `session.status` is reserved; no production path publishes it today. Existing event, inbox, outbox and database writes remain in place. A bounded queue keeps producer calls asynchronous, while batched appends under a file lock give simultaneous processes unique cursors without syncing every tmux output line. `events stats --json` reads persisted drop counts across processes. A normal process shutdown drains accepted taps for up to two seconds; followers can resume from a retained cursor across restart and rotation. The command uses plain CLI dispatch while the slice-1 registry remains on its separate branch.
+
 ## [1.16.16] - 2026-09-20
 
 ### Fixed
