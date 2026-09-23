@@ -1,0 +1,15 @@
+    ╭──────────────────────────────────────────────────╮    
+    │    Welcome > Tool > [Claude] > Ready             │    
+    │                                                  │    
+    │    Claude Code Settings                          │    
+    │    ▲ more above                                  │    
+    │                                                  │    
+    │    > Claude config directory:                    │    
+    │        (o) Use default (~/.claude)               │    
+    │        ( ) Use custom: (press Space to           │    
+    │    select)                                       │    
+    │                                                  │    
+    │                                                  │    
+    │    Up/Down: navigate | Space: toggle             │    
+    │    Enter: continue | Esc: back                   │    
+    ╰──────────────────────────────────────────────────╯    

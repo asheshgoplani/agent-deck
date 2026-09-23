@@ -216,24 +216,24 @@ func (s *Search) View() string {
 	s.input.Width = innerWidth - lipgloss.Width(s.input.Prompt)
 	searchBox := searchBoxStyle.Width(innerWidth).Render(s.input.View())
 
-	// Build results list
-	var resultsStr strings.Builder
+	// Build results list, one row per result: on a short terminal
+	// renderFittedDialog scrolls these rows around the cursor.
 	maxResults := 10
 	if len(s.results) > maxResults {
 		s.results = s.results[:maxResults]
 	}
 
+	resultRows := make([]string, 0, len(s.results))
 	for i, item := range s.results {
-		var line string
+		label := item.Title + " (" + item.Tool + ")"
 		if i == s.cursor {
-			line = selectedResultStyle.Render("› " + item.Title + " (" + item.Tool + ")")
+			resultRows = append(resultRows, selectedResultStyle.Render("› "+label))
 		} else {
-			line = resultItemStyle.Render("  " + item.Title + " (" + item.Tool + ")")
+			resultRows = append(resultRows, resultItemStyle.Render("  "+label))
 		}
-		resultsStr.WriteString(line)
-		if i < len(s.results)-1 {
-			resultsStr.WriteString("\n")
-		}
+	}
+	if len(resultRows) == 0 {
+		resultRows = []string{""}
 	}
 
 	// Show count
@@ -263,21 +263,29 @@ func (s *Search) View() string {
 		}
 	}
 
-	// Keyboard shortcuts hint
+	// Keyboard shortcuts hint, on at most two rows broken between hints so
+	// "[Esc] Cancel" never wraps onto a line of its own; [↑↓] Navigate drops
+	// out only when even two rows are too narrow.
+	keys := renderDialogFooterRows(overlayWidth-overlayStyle.GetHorizontalPadding(), 2, "  ",
+		[]string{"  [Enter] Select", "[↑↓] Navigate", "[Tab] Global", "[Esc] Cancel"}, 1)
 	keysHint := lipgloss.NewStyle().
 		Foreground(ColorComment).
-		Render(glueBracketHintGroups("  [Enter] Select  [↑↓] Navigate  [Tab] Global  [Esc] Cancel"))
+		Render(glueBracketHintGroups(keys))
 
 	// Combine everything
-	var content string
+	head := []string{header, "", searchBox}
 	if hintStr != "" {
-		content = header + "\n\n" + searchBox + "\n" + hintStr + "\n\n" + resultsStr.String() + "\n" + countStr + "\n" + keysHint
-	} else {
-		content = header + "\n\n" + searchBox + "\n\n" + resultsStr.String() + "\n" + countStr + "\n" + keysHint
+		head = append(head, hintStr)
+	}
+	sections := dialogSections{
+		head:  append(head, ""),
+		body:  resultRows,
+		focus: s.cursor,
+		foot:  []string{countStr, keysHint},
 	}
 
-	// Wrap in overlay box - responsive width
-	overlay := overlayStyle.Width(overlayWidth).Render(content)
+	// Wrap in overlay box - responsive width, never taller than the screen
+	overlay := renderFittedDialog(overlayStyle.Width(overlayWidth), s.height, sections)
 
 	// Center in the screen
 	return centerInScreen(overlay, s.width, s.height)

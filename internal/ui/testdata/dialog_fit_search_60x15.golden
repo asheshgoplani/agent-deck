@@ -1,0 +1,15 @@
+    ╭──────────────────────────────────────────────────╮
+    │  🔍 Local Search (Agent Deck sessions)           │
+    │                                                  │
+    │  ╭────────────────────────────────────────╮      │
+    │  │ > Search sessions...                   │      │
+    │  ╰────────────────────────────────────────╯      │
+    │    Tip: waiting / running / idle to filter by    │
+    │  status                                          │
+    │    › session-01 (claude)                         │
+    │      session-02 (claude)                         │
+    │  ▼ more below                                    │
+    │    10 results                                    │
+    │    [Enter] Select  [↑↓] Navigate                 │
+    │    [Tab] Global  [Esc] Cancel                    │
+    ╰──────────────────────────────────────────────────╯

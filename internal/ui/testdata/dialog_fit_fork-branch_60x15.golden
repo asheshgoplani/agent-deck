@@ -1,0 +1,15 @@
+    ╭──────────────────────────────────────────────────╮    
+    │  Fork Session                                    │    
+    │                                                  │    
+    │  ▲ more above                                    │    
+    │                                                  │    
+    │    Group:                                        │    
+    │    > alpha                                       │    
+    │    [x] Create in worktree                        │    
+    │                                                  │    
+    │  ▶ Branch:                                       │    
+    │    > fork/probe                                  │    
+    │  ▼ more below                                    │    
+    │  ^F branch search │ Enter create                 │    
+    │  Esc cancel │ Tab next                           │    
+    ╰──────────────────────────────────────────────────╯    

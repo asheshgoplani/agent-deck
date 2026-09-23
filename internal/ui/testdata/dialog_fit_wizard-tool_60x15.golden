@@ -1,0 +1,15 @@
+    ╭──────────────────────────────────────────────────╮    
+    │    Welcome > [Tool] > Claude > Ready             │    
+    │                                                  │    
+    │    Select Default AI Tool                        │    
+    │    This tool will be pre-selected when           │    
+    │    creating new sessions:                        │    
+    │       🤖 claude   Claude Code - Anthropic's      │    
+    │    AI coding assistant                           │    
+    │       ✨ gemini   Gemini CLI - Google's AI       │    
+    │    ▼ more below                                  │    
+    │                                                  │    
+    │                                                  │    
+    │    Up/Down: select                               │    
+    │    Enter: continue | Esc: back                   │    
+    ╰──────────────────────────────────────────────────╯    

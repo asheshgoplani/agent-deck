@@ -1,0 +1,24 @@
+         ╭────────────────────────────────────────────────────────────╮         
+         │                                                            │         
+         │    Welcome > Tool > [Claude] > Ready                       │         
+         │                                                            │         
+         │    Claude Code Settings                                    │         
+         │                                                            │         
+         │                                                            │         
+         │      [ ] Enable dangerous mode                             │         
+         │        Skip permission prompts (--dangerously-skip-        │         
+         │    permissions)                                            │         
+         │                                                            │         
+         │      [ ] Enable auto mode                                  │         
+         │        Classifier-based auto-approval (--permission-       │         
+         │    mode auto)                                              │         
+         │                                                            │         
+         │    > Claude config directory:                              │         
+         │        (o) Use default (~/.claude)                         │         
+         │        ( ) Use custom: (press Space to select)             │         
+         │                                                            │         
+         │                                                            │         
+         │    Up/Down: navigate | Space: toggle                       │         
+         │    Enter: continue | Esc: back                             │         
+         │                                                            │         
+         ╰────────────────────────────────────────────────────────────╯         

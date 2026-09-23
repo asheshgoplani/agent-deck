@@ -1,0 +1,15 @@
+    ╭──────────────────────────────────────────────────╮    
+    │    Welcome > Tool > Claude > [Ready]             │    
+    │                                                  │    
+    │    Ready to Go!                                  │    
+    │                                                  │    
+    │                                                  │    
+    │    Your configuration:                           │    
+    │                                                  │    
+    │      Default tool: 🤖 claude                     │    
+    │      Dangerous mode: disabled                    │    
+    │      Config dir: ~/.claude (default)             │    
+    │    Press Enter to save and start using Agent     │    
+    │    Deck!                                         │    
+    │    Enter: save & finish | Esc: back              │    
+    ╰──────────────────────────────────────────────────╯    

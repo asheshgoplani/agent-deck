@@ -17,8 +17,12 @@ func TestSettingsPanel_LastSetting_ScrollsTailIntoView(t *testing.T) {
 	t.Cleanup(session.ClearUserConfigCache)
 
 	panel := NewSettingsPanel()
-	// Height short enough to force scroll-windowing in View().
-	panel.SetSize(100, 20)
+	// Height short enough to force scroll-windowing in View(). 24 rows (the
+	// default terminal): the tail's wrapped rows (the config path of a temp
+	// HOME wraps to several) plus the cursor row must fit the viewport, and
+	// at 20 rows they only appeared to because wrapped rows went uncounted
+	// and the box overflowed the screen.
+	panel.SetSize(100, 24)
 	panel.Show()
 	panel.cursor = settingsCount - 1
 
@@ -41,8 +45,8 @@ func TestSettingsPanel_LastSetting_ScrollsTailIntoView(t *testing.T) {
 	if !containsString(view, "j/k Navigate") {
 		t.Errorf("help bar must scroll into view at the last setting. Got:\n%s", view)
 	}
-	// The cursor's own row must still be visible.
-	if !containsString(view, "Visible tools") {
+	// The cursor's own row (the last setting) must still be visible.
+	if !containsString(view, "Sidebar density") {
 		t.Errorf("last setting row must remain visible after scrolling to the tail. Got:\n%s", view)
 	}
 }
