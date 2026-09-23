@@ -60,7 +60,7 @@ func (s *suite) setup() error {
 		return err
 	}
 	// A fixed-length suffix, not os.MkdirTemp's variable-digit-count one and
-	// not the PID: this path (and the tmux socket name, same reasoning)
+	// not the PID: this path (and the tmux socket path under it)
 	// gets embedded verbatim in rendered dialogs (e.g. the MCP manager's
 	// "edit: <path>/config.toml" line), and several of those dialogs size
 	// their bounding box to their longest line's rendered width. A
@@ -78,15 +78,23 @@ func (s *suite) setup() error {
 		return err
 	}
 	s.project = filepath.Join(s.root, "project")
-	socketSuffix, err := fixedLengthHex(8)
-	if err != nil {
-		return err
-	}
-	s.socket = "vc-" + socketSuffix
+	// The private server is the DEFAULT server of the sandbox's own
+	// TMUX_TMPDIR: <root>/tmux/tmux-<uid>/default. Every process in the
+	// sandbox then computes the same default socket its $TMUX names, as for a
+	// user whose TUI runs inside their default server, so a socket-less
+	// session's absence is judged on the session's own server (the
+	// foreign-server guard never engages). Isolation comes from TMUX_TMPDIR
+	// and the explicit -S path; `-L default` is never used, so nothing here
+	// can resolve to the host's default server.
+	tmuxDir := filepath.Join(s.root, "tmux", fmt.Sprintf("tmux-%d", os.Getuid()))
+	s.socket = filepath.Join(tmuxDir, "default")
 	for _, p := range []string{"bin", "project", ".agent-deck", ".config", ".cache", ".local/state", ".local/share", "tmux"} {
 		if err = os.MkdirAll(filepath.Join(s.root, p), 0700); err != nil {
 			return err
 		}
+	}
+	if err = os.MkdirAll(tmuxDir, 0700); err != nil {
+		return err
 	}
 	dataDir := filepath.Join(s.root, ".local", "share", "agent-deck")
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
@@ -135,7 +143,7 @@ for arg in "$@"; do
   *) break;;
  esac
 done
-exec ` + shQuote(s.realTmux) + " -L " + shQuote(s.socket) + " -f /dev/null \"$@\"\n"
+exec ` + shQuote(s.realTmux) + " -S " + shQuote(s.socket) + " -f /dev/null \"$@\"\n"
 	if err = os.WriteFile(filepath.Join(s.root, "bin", "tmux"), []byte(wrapper), 0700); err != nil {
 		return err
 	}
@@ -202,8 +210,8 @@ func (s *suite) teardown() error {
 	if s.realTmux != "" && s.socket != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		// #nosec G204 -- real tmux path resolved once; socket is our generated private name.
-		cmd := exec.CommandContext(ctx, s.realTmux, "-L", s.socket, "kill-server")
+		// #nosec G204 -- real tmux path resolved once; socket is the sandbox's own absolute path.
+		cmd := exec.CommandContext(ctx, s.realTmux, "-S", s.socket, "kill-server")
 		cmd.Env = []string{"HOME=" + s.root, "TMUX_TMPDIR=" + filepath.Join(s.root, "tmux"), "PATH=/usr/bin:/bin"}
 		out, err := cmd.CombinedOutput()
 		if err != nil && !tmuxAbsent(string(out)) {
