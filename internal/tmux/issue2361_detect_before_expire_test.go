@@ -2,6 +2,8 @@ package tmux
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +113,48 @@ func TestIssue2361_BusyOverdueResolvesWithoutRespawn(t *testing.T) {
 	newPID, _ := s.getPaneProcessTree()
 	if newPID != oldPID {
 		t.Fatalf("pane was respawned though its busy signal should have resolved the overdue startup: pid %d -> %d", oldPID, newPID)
+	}
+
+	s.mu.Lock()
+	startupAtAfter := s.startupAt
+	s.mu.Unlock()
+	if !startupAtAfter.IsZero() {
+		t.Fatalf("startupAt not cleared after the alive probe resolved the overdue window: %v", startupAtAfter)
+	}
+}
+
+// TestIssue2361_RosterUnderFooterOverdueResolvesWithoutRespawn: an idle
+// Claude pane with a subagent roster under its footer (the corpus frame
+// synth-claude-idle-12-subagent-rows) is waiting, and normal detection sees it
+// that way because prepareFrame trims the roster before the prompt check reads
+// the tail. The overdue probe must read the same prepared frame; on the raw
+// capture the roster hides the prompt and the live pane is respawned into the
+// timeout hold.
+func TestIssue2361_RosterUnderFooterOverdueResolvesWithoutRespawn(t *testing.T) {
+	frame, err := os.ReadFile(filepath.Join("testdata", "status_corpus", "synth-claude-idle-12-subagent-rows.txt"))
+	if err != nil {
+		t.Fatalf("read corpus frame: %v", err)
+	}
+	s := startPaneWithContent(t, "issue2361-roster-overdue", string(frame), "claude", "Task 12: review slice 12")
+
+	oldPID, _ := s.getPaneProcessTree()
+
+	s.mu.Lock()
+	s.startupAt = time.Now().Add(-startupStateWindow - time.Second)
+	s.lastStableStatus = "starting"
+	s.mu.Unlock()
+
+	status, err := s.GetStatus()
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if status == "error" {
+		t.Fatal("overdue idle pane with a roster under the footer was expired into the timeout hold")
+	}
+
+	newPID, _ := s.getPaneProcessTree()
+	if newPID != oldPID {
+		t.Fatalf("pane was respawned though its prompt should have resolved the overdue startup: pid %d -> %d", oldPID, newPID)
 	}
 
 	s.mu.Lock()

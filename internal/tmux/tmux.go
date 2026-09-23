@@ -1865,10 +1865,10 @@ func (s *Session) startupTimeoutIsCurrent() bool {
 
 // startupShowsAgentAlive reports whether an overdue pane already shows the
 // agent alive (#2361), using the same content predicates normal detection uses
-// to end startup: a captured frame that hasBusyIndicator or hasPromptIndicator
-// accepts. A pane this returns true for is one detection would classify as
-// active or waiting, so letting it through cannot loosen #1892 beyond what
-// detection already accepts inside the window.
+// to end startup, over the same prepareFrame-trimmed capture: a frame that
+// hasBusyIndicator or hasPromptIndicator accepts. A pane this returns true for
+// is one detection would classify as active or waiting, so letting it through
+// cannot loosen #1892 beyond what detection already accepts inside the window.
 //
 // The pane title is deliberately not consulted: it survives respawn-pane, so a
 // previous generation's spinner title would vouch for a replacement that never
@@ -1887,10 +1887,9 @@ func (s *Session) startupShowsAgentAlive() bool {
 	if err != nil {
 		return false
 	}
-	content := StripANSI(rawContent)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	content := s.prepareFrame(StripANSI(rawContent))
 	return s.hasBusyIndicator(content) || s.hasPromptIndicator(content)
 }
 
