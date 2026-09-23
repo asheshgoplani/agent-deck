@@ -23,6 +23,22 @@ func connectionStatusLine(archived bool, status session.Status) (text string, st
 	}
 }
 
+// statusBucket maps a session status onto the five buckets the list draws and
+// the header tally, filter pills and group preview count: running, waiting,
+// idle, stopped, error. Every other status (starting, queued, or an empty or
+// unknown value) draws ○ and counts as idle, so a row the list shows is never
+// missing from a count (visualcheck 2026-09-23: a "starting" row drew ○ while
+// the header summed to one session fewer than the list).
+func statusBucket(status session.Status) session.Status {
+	switch status {
+	case session.StatusRunning, session.StatusWaiting, session.StatusIdle,
+		session.StatusStopped, session.StatusError:
+		return status
+	default:
+		return session.StatusIdle
+	}
+}
+
 // rowStatusGlyph decides the session-list row status indicator (glyph + style).
 //
 // The coarse status comes from a render snapshot of the session's last-known
@@ -30,13 +46,11 @@ func connectionStatusLine(archived bool, status session.Status) (text string, st
 // archived row would otherwise keep a live glyph (e.g. ● running); the archived
 // override forces the stopped glyph regardless of the stale status/substate.
 func rowStatusGlyph(status session.Status, substate session.Substate, archived bool) (icon string, style lipgloss.Style) {
-	switch status {
+	switch statusBucket(status) {
 	case session.StatusRunning:
 		icon, style = "●", SessionStatusRunning
 	case session.StatusWaiting:
 		icon, style = "◐", SessionStatusWaiting
-	case session.StatusIdle:
-		icon, style = "○", SessionStatusIdle
 	case session.StatusError:
 		icon, style = "✕", SessionStatusError
 	case session.StatusStopped:

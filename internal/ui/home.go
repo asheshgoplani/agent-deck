@@ -18201,7 +18201,7 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		if state.archivedSuperseded {
 			continue
 		}
-		switch state.status {
+		switch statusBucket(state.status) {
 		case session.StatusRunning:
 			running++
 		case session.StatusWaiting:
@@ -18235,19 +18235,19 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		age, known := h.remoteRowAgeLocked(name)
 		stale := known && age >= remoteRowStaleAge
 		for _, rs := range sessions {
-			switch rs.Status {
-			case "running":
+			switch statusBucket(session.Status(rs.Status)) {
+			case session.StatusRunning:
 				if stale {
 					continue
 				}
 				running++
-			case "waiting":
+			case session.StatusWaiting:
 				waiting++
-			case "idle":
+			case session.StatusIdle:
 				idle++
-			case "stopped":
+			case session.StatusStopped:
 				stopped++
-			case "error":
+			case session.StatusError:
 				errored++
 			}
 		}
@@ -24343,7 +24343,7 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	// Status breakdown with inline badges
 	running, waiting, idle, stopped, errored := 0, 0, 0, 0, 0
 	for _, sess := range visibleSessions {
-		switch sess.Status {
+		switch statusBucket(sess.Status) {
 		case session.StatusRunning:
 			running++
 		case session.StatusWaiting:
@@ -25281,13 +25281,14 @@ func markGroupPathAndAncestors(groupsWithMatches map[string]bool, groupPath stri
 }
 
 // matchesStatusFilter reports whether status passes the current filter.
-// FilterModeActive consults [display].active_filter_excludes; concrete
-// filters require exact match.
+// FilterModeActive consults [display].active_filter_excludes (a status is
+// excluded when it or its statusBucket is); concrete filters match the
+// status's statusBucket, the bucket its row glyph and the pill count show.
 func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 	if filter == FilterModeActive {
-		return !h.activeFilterExcludes[status]
+		return !h.activeFilterExcludes[status] && !h.activeFilterExcludes[statusBucket(status)]
 	}
-	return status == filter
+	return statusBucket(status) == filter
 }
 
 // renderFilterBarHint returns the filter bar's keyboard-shortcut hint as
