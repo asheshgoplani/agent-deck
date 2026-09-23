@@ -40,7 +40,8 @@ const (
 	defaultRetainSegs = 32
 
 	// defaultFlushInterval controls how often pending drop counts are written.
-	defaultFlushInterval = 25 * time.Millisecond
+	defaultFlushInterval = 50 * time.Millisecond
+	maxWriteBatch        = 256
 )
 
 // ErrCursorTooOld is returned by Subscribe when `after` is older than every
@@ -86,6 +87,7 @@ type Bus struct {
 }
 
 type queuedFrame struct {
+	profile   string
 	kind      string
 	sessionID string
 	data      json.RawMessage
@@ -462,18 +464,13 @@ func (b *Bus) writerLoop() {
 	defer b.closeWg.Done()
 	ticker := time.NewTicker(defaultFlushInterval)
 	defer ticker.Stop()
-
-	drain := func() {
-		for {
-			select {
-			case qf, ok := <-b.queue:
-				if !ok {
-					return
-				}
-				b.writeFrame(qf)
-			default:
-				return
-			}
+	syncTicker := time.NewTicker(time.Second)
+	defer syncTicker.Stop()
+	batch := make([]queuedFrame, 0, maxWriteBatch)
+	flush := func(sync bool) {
+		if len(batch) > 0 || sync {
+			b.writeBatch(batch, sync)
+			batch = batch[:0]
 		}
 	}
 
@@ -481,44 +478,77 @@ func (b *Bus) writerLoop() {
 		select {
 		case qf, ok := <-b.queue:
 			if !ok {
+				flush(true)
 				return
 			}
-			b.writeFrame(qf)
-		case <-ticker.C:
-			if err := b.lockDisk(); err == nil {
-				if err := b.persistDropsLocked(); err != nil {
-					b.fail(err)
-				}
-				b.unlockDisk()
+			batch = append(batch, qf)
+			if len(batch) == maxWriteBatch {
+				flush(false)
 			}
+		case <-ticker.C:
+			flush(false)
+		case <-syncTicker.C:
+			flush(true)
 		case <-b.closeCh:
-			drain()
-			return
+			for {
+				select {
+				case qf := <-b.queue:
+					batch = append(batch, qf)
+					if len(batch) == maxWriteBatch {
+						flush(false)
+					}
+				default:
+					flush(true)
+					return
+				}
+			}
 		}
 	}
 }
 
-// writeFrame assigns the next cursor, appends the canonical line to the
-// active segment and rotates if the segment is now over threshold. Called
-// only from the writer goroutine.
-func (b *Bus) writeFrame(qf queuedFrame) {
+// writeBatch takes the cross-process lock once for up to maxWriteBatch frames.
+// Sync runs on the one-second tick and at shutdown, never per output line.
+func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 	if b.failed.Load() {
-		b.dropped.Add(1)
+		b.dropped.Add(uint64(len(batch)))
 		return
 	}
 	if err := b.lockDisk(); err != nil {
 		b.fail(err)
-		b.dropped.Add(1)
+		b.dropped.Add(uint64(len(batch)))
 		return
 	}
 	defer b.unlockDisk()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.refreshLocked(); err != nil {
-		b.fail(err)
-		b.dropped.Add(1)
-		return
+	if len(batch) > 0 {
+		if err := b.refreshLocked(); err != nil {
+			b.fail(err)
+			b.dropped.Add(uint64(len(batch)))
+			return
+		}
+		for i, qf := range batch {
+			if err := b.appendFrameLocked(qf); err != nil {
+				b.fail(err)
+				b.dropped.Add(uint64(len(batch) - i))
+				break
+			}
+		}
 	}
+	if sync && b.activeFile != nil && b.synced.Load() != b.written.Load() {
+		if err := b.activeFile.Sync(); err != nil {
+			b.fail(fmt.Errorf("events: sync: %w", err))
+		} else {
+			b.synced.Store(b.written.Load())
+		}
+	}
+	if err := b.persistDropsLocked(); err != nil {
+		b.fail(err)
+	}
+}
+
+// appendFrameLocked runs inside one batch's disk and in-process locks.
+func (b *Bus) appendFrameLocked(qf queuedFrame) error {
 	next := b.cursor + 1
 	f := Frame{
 		Cursor:    next,
@@ -530,40 +560,27 @@ func (b *Bus) writeFrame(qf queuedFrame) {
 	}
 	line, err := f.CanonicalJSON()
 	if err != nil {
-		b.fail(err)
-		b.dropped.Add(1)
-		return
+		return err
 	}
 	line = append(line, '\n')
 	if b.activeFile == nil {
-		b.fail(fmt.Errorf("events: active file unavailable"))
-		b.dropped.Add(1)
-		return
+		return fmt.Errorf("events: active file unavailable")
 	}
 	before := b.activeBytes
 	n, err := b.activeFile.Write(line)
 	if err != nil || n != len(line) {
 		_ = b.activeFile.Truncate(before)
-		b.fail(fmt.Errorf("events: append: %w", err))
-		b.dropped.Add(1)
-		return
-	}
-	if err := b.activeFile.Sync(); err != nil {
-		_ = b.activeFile.Truncate(before)
-		b.fail(fmt.Errorf("events: sync: %w", err))
-		b.dropped.Add(1)
-		return
+		return fmt.Errorf("events: append: %w", err)
 	}
 	b.cursor = next
 	b.activeBytes += int64(n)
 	b.activeFrames++
 	b.written.Add(1)
-	b.synced.Add(1)
 
 	if b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames {
 		b.rotateLocked()
-		return
 	}
+	return nil
 }
 
 func (b *Bus) fail(err error) {

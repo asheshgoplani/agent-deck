@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/asheshgoplani/agent-deck/internal/events"
 )
 
 // StatusEvent represents a session status change event.
@@ -53,12 +51,6 @@ func WriteStatusEvent(event StatusEvent) error {
 	if err := os.Rename(tmpPath, filePath); err != nil {
 		return fmt.Errorf("rename event: %w", err)
 	}
-
-	// Slice 4 (CORE-PLAN): additive tap onto the event bus. The events/
-	// directory above is the format the rest of agent-deck reads; this only
-	// duplicates the same event onto the bus for `events follow`. The process
-	// owner flushes on exit, outside this producer path.
-	events.PublishDefault("session.status", event.InstanceID, event)
 
 	hookLog.Debug("status_event_written",
 		slog.String("instance", event.InstanceID),

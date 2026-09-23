@@ -4110,6 +4110,8 @@ func (h *Home) startThemeWatcher() tea.Cmd {
 	return listenForThemeChange(h.themeWatcher)
 }
 
+func watcherProfileForHome() string { return session.GetEffectiveProfile("") }
+
 // startWatcherEngine initialises and starts the watcher engine from statedb state.
 // Watchers marked status="running" are registered as adapters before Start() is called.
 // Returns a tea.Batch of channel listener commands, or nil if no watchers exist.
@@ -4137,6 +4139,7 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 
 	engineCfg := watcher.EngineConfig{
 		DB:                  db,
+		Profile:             watcherProfileForHome(),
 		Router:              router,
 		MaxEventsPerWatcher: watcherCfg.GetMaxEventsPerWatcher(),
 		HealthCheckInterval: healthInterval,

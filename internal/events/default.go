@@ -13,12 +13,15 @@ import (
 var (
 	defaultMu     sync.Mutex
 	defaultBus    *Bus
+	profileBuses  map[string]*Bus
 	defaultClosed bool
 	tapMu         sync.Mutex
 	tapQueue      chan queuedFrame
 	tapDone       chan struct{}
 	tapClosed     bool
 	tapDropped    atomic.Uint64
+	closeDone     chan struct{}
+	closeErr      error
 )
 
 // disableEnvVar lets an operator or a test explicitly force the bus on or
@@ -102,6 +105,16 @@ func OpenProfile(profile string) *Bus {
 // open and all appends happen on the background writer. A full queue drops
 // the tap so even a stalled disk cannot delay a producer.
 func PublishDefault(kind, sessionID string, data any) {
+	publishTap("", kind, sessionID, data)
+}
+
+// PublishProfile sends a transition to its owning profile without doing disk
+// work on the notifier goroutine.
+func PublishProfile(profile, kind, sessionID string, data any) {
+	publishTap(profile, kind, sessionID, data)
+}
+
+func publishTap(profile, kind, sessionID string, data any) {
 	if disabled, explicit := envOverride(); explicit && disabled {
 		warnDisabled("AGENTDECK_EVENTS_BUS disabled", nil)
 		return
@@ -110,7 +123,7 @@ func PublishDefault(kind, sessionID string, data any) {
 	if err != nil {
 		return
 	}
-	qf := queuedFrame{kind: kind, sessionID: sessionID, data: raw, ts: time.Now()}
+	qf := queuedFrame{profile: profile, kind: kind, sessionID: sessionID, data: raw, ts: time.Now()}
 	tapMu.Lock()
 	if tapClosed {
 		tapMu.Unlock()
@@ -131,21 +144,44 @@ func PublishDefault(kind, sessionID string, data any) {
 
 func defaultTapLoop(queue <-chan queuedFrame, done chan<- struct{}) {
 	defer close(done)
-	b := Default()
 	ticker := time.NewTicker(defaultFlushInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case qf, ok := <-queue:
 			if !ok {
-				b.dropped.Add(tapDropped.Swap(0))
+				if n := tapDropped.Swap(0); n > 0 {
+					Default().dropped.Add(n)
+				}
 				return
 			}
-			b.enqueue(qf)
+			busForTap(qf.profile).enqueue(qf)
 		case <-ticker.C:
-			b.dropped.Add(tapDropped.Swap(0))
+			if n := tapDropped.Swap(0); n > 0 {
+				Default().dropped.Add(n)
+			}
 		}
 	}
+}
+
+func busForTap(profile string) *Bus {
+	if profile == "" {
+		return Default()
+	}
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	if defaultClosed {
+		return disabledBus()
+	}
+	if profileBuses == nil {
+		profileBuses = make(map[string]*Bus)
+	}
+	if b := profileBuses[profile]; b != nil {
+		return b
+	}
+	b := OpenProfile(profile)
+	profileBuses[profile] = b
+	return b
 }
 
 // CloseDefault is the process owner's shutdown hook. It drains and fsyncs
@@ -154,22 +190,51 @@ func CloseDefault() error {
 	tapMu.Lock()
 	if !tapClosed {
 		tapClosed = true
+		closeDone = make(chan struct{})
 		if tapQueue != nil {
 			close(tapQueue)
 		}
+		go drainDefault(tapDone, closeDone)
 	}
-	done := tapDone
+	done := closeDone
 	tapMu.Unlock()
-	if done != nil {
-		<-done
-	}
-	defaultMu.Lock()
-	defer defaultMu.Unlock()
-	defaultClosed = true
-	if defaultBus == nil {
+	select {
+	case <-done:
+		return closeErr
+	case <-time.After(2 * time.Second):
+		// Disk locks can outlive this process. Count what is still visibly
+		// queued; the background drain persists it if the lock is released.
+		if defaultMu.TryLock() {
+			if defaultBus != nil {
+				defaultBus.dropped.Add(uint64(len(defaultBus.queue)))
+			}
+			for _, b := range profileBuses {
+				b.dropped.Add(uint64(len(b.queue)))
+			}
+			defaultMu.Unlock()
+		}
 		return nil
 	}
-	return defaultBus.Close()
+}
+
+func drainDefault(tapDone <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	if tapDone != nil {
+		<-tapDone
+	}
+	defaultMu.Lock()
+	defaultClosed = true
+	bus := defaultBus
+	others := profileBuses
+	defaultMu.Unlock()
+	if bus != nil {
+		closeErr = bus.Close()
+	}
+	for _, b := range others {
+		if err := b.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
 }
 
 // resetDefaultForTest lets tests re-run openDefault() under a fresh
@@ -178,6 +243,7 @@ func resetDefaultForTest() {
 	_ = CloseDefault()
 	defaultMu.Lock()
 	defaultBus = nil
+	profileBuses = nil
 	defaultClosed = false
 	defaultMu.Unlock()
 	tapMu.Lock()
@@ -185,5 +251,7 @@ func resetDefaultForTest() {
 	tapDone = nil
 	tapClosed = false
 	tapDropped.Store(0)
+	closeDone = nil
+	closeErr = nil
 	tapMu.Unlock()
 }
