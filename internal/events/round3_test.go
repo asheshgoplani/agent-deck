@@ -81,7 +81,12 @@ func TestCloseDefaultHasDeadlineWithHeldWriterLock(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("background close did not finish after lock release")
 	}
-	if got := bus.Stats().Dropped; got == 0 {
+	opened, err := Open(bus.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if got := opened.Stats().Dropped; got == 0 {
 		t.Fatal("abandoned frame was not counted")
 	}
 }
