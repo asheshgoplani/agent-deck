@@ -30,17 +30,18 @@ var widthSpecs = []widthSpec{
 type frameCapture struct {
 	step, width string
 	raw, scrub  string
-	advisory    string // non-empty: this step is flaky/unreachable by design; see PROMPT
+	advisory    string // only for entries explicitly listed in advisoryReasons
 }
 
 // widthRun drives one full walkthrough of the binary at a fixed terminal
 // size, against its own sandbox's freshly seeded store and live sessions.
 type widthRun struct {
-	s        *suite
-	spec     widthSpec
-	tmuxName string
-	sd       *seed
-	frames   []frameCapture
+	s         *suite
+	spec      widthSpec
+	tmuxName  string
+	sd        *seed
+	frames    []frameCapture
+	updateBin string
 }
 
 // runWidthIsolated builds a brand new sandbox (its own HOME, its own
@@ -48,7 +49,7 @@ type widthRun struct {
 // binary through every step in it at the given size, and tears the whole
 // sandbox down again -- see the comment on its call site in main.go for why
 // this is a full sandbox per width rather than one seed reused three times.
-func runWidthIsolated(ctx context.Context, bin string, spec widthSpec) ([]frameCapture, error) {
+func runWidthIsolated(ctx context.Context, bin, updateBin string, spec widthSpec) ([]frameCapture, error) {
 	s := &suite{bin: bin, ctx: ctx}
 	defer s.cleanup()
 
@@ -61,10 +62,11 @@ func runWidthIsolated(ctx context.Context, bin string, spec widthSpec) ([]frameC
 	}
 
 	w := &widthRun{
-		s:        s,
-		spec:     spec,
-		tmuxName: "vc-run-" + spec.name,
-		sd:       sd,
+		s:         s,
+		spec:      spec,
+		tmuxName:  "vc-run-" + spec.name,
+		sd:        sd,
+		updateBin: updateBin,
 	}
 	agentDeck := filepath.Join(s.root, "bin", "agent-deck")
 	if _, err := s.exec("tmux", "new-session", "-d", "-s", w.tmuxName,
@@ -80,13 +82,8 @@ func runWidthIsolated(ctx context.Context, bin string, spec widthSpec) ([]frameC
 	return w.frames, nil
 }
 
-// runStepWithRetry runs one step, and on failure retries it up to twice more
-// after a hard-kick (forced full redraw) and a fresh Home. Key-driven
-// navigation against the real binary showed a rare, non-deterministic
-// partial-repaint race (see moveCursorToText's doc comment); a step that
-// still fails after two hard-kicked retries is recorded advisory rather
-// than aborting the whole width run, per the PROMPT's "if a step is flaky,
-// mark it advisory and say why" -- it is not silently dropped.
+// runStepWithRetry retries failed navigation or golden comparisons twice.
+// Exhaustion fails the width; it never turns a failure into advisory.
 func runStepWithRetry(w *widthRun, step visualCheckStep) error {
 	const attempts = 3
 	updating := os.Getenv("UPDATE_GOLDEN") == "1"
@@ -115,17 +112,13 @@ func runStepWithRetry(w *widthRun, step visualCheckStep) error {
 			time.Sleep(150 * time.Millisecond)
 		}
 	}
-	w.frames = w.frames[:startFrames]
-	w.captureAdvisory(step.name, fmt.Sprintf("flaky after %d attempts against the real binary (see README.md's navigation-race note): %v", attempts, lastErr))
-	return nil
+	return fmt.Errorf("failed after %d attempts: %w", attempts, lastErr)
 }
 
 // firstGoldenMismatch compares each already-captured frame against its
 // committed golden and returns an error describing the first mismatch, or
 // nil if every frame (including any advisory ones, which carry no golden)
-// matches. A MISSING golden is not itself a mismatch worth retrying over --
-// retrying can't make a golden appear -- so it's only reported once no
-// retries are left, via main's own compareGolden call.
+// matches. A missing golden also fails the step.
 func firstGoldenMismatch(frames []frameCapture) error {
 	for _, f := range frames {
 		if f.advisory != "" {
@@ -135,8 +128,8 @@ func firstGoldenMismatch(frames []frameCapture) error {
 		if err != nil {
 			return err
 		}
-		if st.status == "DIFF" {
-			return fmt.Errorf("%s/%s differs from its committed golden", f.step, f.width)
+		if st.status != "PASS" {
+			return fmt.Errorf("%s/%s golden %s", f.step, f.width, st.status)
 		}
 	}
 	return nil
@@ -237,8 +230,15 @@ func (w *widthRun) capture(step string) {
 // headlessly. reason is shown in the contact sheet instead of a PASS/DIFF
 // mark, per the PROMPT's "if a step is flaky, mark it advisory and say why".
 func (w *widthRun) captureAdvisory(step, reason string) {
+	if declared, ok := advisoryReasons[step]; !ok || declared != reason {
+		panic("undeclared advisory: " + step)
+	}
 	w.frames = append(w.frames, frameCapture{step: step, width: w.spec.name, advisory: reason})
 }
+
+// Advisory entries require a deliberate, reviewed exclusion and a reason.
+// There are currently no exclusions: every named screen is required.
+var advisoryReasons = map[string]string{}
 
 // cursorHighlightBG is the background-color SGR substring the TUI paints
 // behind the selected row (and nothing else static on the list screen,
@@ -344,9 +344,17 @@ func (w *widthRun) moveCursorToText(text string, maxPresses int) error {
 		if err != nil {
 			return false, err
 		}
-		on, found := cursorOnRow(pane, text)
+		on, found := cursorOnRow(pane, visibleRowName(text, w.spec.width))
 		return found && on, nil
 	}, 12*time.Second)
+}
+
+func visibleRowName(name string, width int) string {
+	// At 80 columns the left pane renders this title as "claude-wait…".
+	if width == 80 && name == "claude-waiting" {
+		return "claude-wait"
+	}
+	return name
 }
 
 // hardKick forces a genuine full-screen redraw by opening and closing the

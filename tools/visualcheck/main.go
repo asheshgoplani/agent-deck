@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -40,6 +41,20 @@ func runMain(args []string) int {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	updateDir, err := os.MkdirTemp("", "visualcheck-update-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	defer os.RemoveAll(updateDir)
+	updateBin := filepath.Join(updateDir, "agent-deck")
+	_, sourceFile, _, _ := runtime.Caller(0)
+	build := exec.CommandContext(ctx, "go", "build", "-ldflags", "-X main.Version=99.0.0", "-o", updateBin, "./cmd/agent-deck")
+	build.Dir = filepath.Dir(filepath.Dir(filepath.Dir(sourceFile)))
+	if out, err := build.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "build sandbox update: %v: %s\n", err, out)
+		return 2
+	}
 
 	var reports []frameReport
 	failed := false
@@ -54,8 +69,10 @@ func runMain(args []string) int {
 	// no snapshot of the database alone could prevent, because the drift
 	// was never in the database.
 	for _, spec := range widthSpecs {
-		frames, runErr := runWidthIsolated(ctx, bin, spec)
+		frames, runErr := runWidthIsolated(ctx, bin, updateBin, spec)
+		seen := map[string]bool{}
 		for _, f := range frames {
+			seen[f.step] = true
 			if f.advisory != "" {
 				reports = append(reports, frameReport{step: f.step, width: f.width, status: "ADVISORY", reason: f.advisory})
 				continue
@@ -74,6 +91,12 @@ func runMain(args []string) int {
 		if runErr != nil {
 			fmt.Fprintln(os.Stderr, "run", spec.name+":", runErr)
 			failed = true
+		}
+		for _, step := range expectedFrames {
+			if !seen[step] {
+				reports = append(reports, frameReport{step: step, width: spec.name, status: "FAIL", reason: "screen was not captured"})
+				failed = true
+			}
 		}
 	}
 

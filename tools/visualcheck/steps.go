@@ -21,7 +21,7 @@ type visualCheckStep struct {
 
 // visualCheckSteps is the PROMPT's key script: list, preview, group view,
 // expand/collapse, create dialog, edit, fork, ctrl+s switcher, MCP manager,
-// settings, help, update banner (advisory), attach and detach of a shell
+// settings, help, update banner, attach and detach of a shell
 // session. Order matters only in that "fork" (the one step that leaves a
 // lasting mutation) runs last, after every other step's frame has already
 // been captured.
@@ -40,6 +40,12 @@ var visualCheckSteps = []visualCheckStep{
 	{"12-attach-shell", stepAttachShell},
 	{"13-detach-shell", stepDetachShell},
 	{"14-fork", stepFork},
+}
+
+var expectedFrames = []string{
+	"01-list", "02-preview", "03-group-view", "04-collapsed", "04-expanded",
+	"05-create-dialog", "06-edit", "07-switcher", "08-mcp-manager", "09-settings",
+	"10-help", "11-update-banner", "12-attach-shell", "13-detach-shell", "14-fork",
 }
 
 func stepList(w *widthRun) error {
@@ -159,13 +165,13 @@ func stepCreateDialog(w *widthRun) error {
 	if err := w.send("n"); err != nil {
 		return err
 	}
-	if err := w.waitContains("New Session", 5*time.Second); err != nil {
+	if err := waitScreen(w, 5*time.Second, "New Session", "Name:"); err != nil {
 		return err
 	}
 	w.capture("05-create-dialog")
 	// Never submit: leaving the store untouched keeps every later step's
 	// list content identical to what "01-list" already proved.
-	return w.send("Escape")
+	return closeScreen(w, "New Session")
 }
 
 func stepEdit(w *widthRun) error {
@@ -175,22 +181,22 @@ func stepEdit(w *widthRun) error {
 	if err := w.send("P"); err != nil {
 		return err
 	}
-	if err := w.waitContains("claude-waiting", 5*time.Second); err != nil {
+	if err := waitScreen(w, 5*time.Second, "Edit Session", "Title:"); err != nil {
 		return err
 	}
 	w.capture("06-edit")
-	return w.send("Escape")
+	return closeScreen(w, "Edit Session")
 }
 
 func stepSwitcher(w *widthRun) error {
 	if err := w.send("C-s"); err != nil {
 		return err
 	}
-	if err := w.waitContains("claude-waiting", 5*time.Second); err != nil {
+	if err := waitScreen(w, 5*time.Second, "Switch session", "Ctrl+S next"); err != nil {
 		return err
 	}
 	w.capture("07-switcher")
-	return w.send("Escape")
+	return closeScreen(w, "Switch session")
 }
 
 func stepMCPManager(w *widthRun) error {
@@ -200,51 +206,86 @@ func stepMCPManager(w *widthRun) error {
 	if err := w.send("m"); err != nil {
 		return err
 	}
-	if err := w.waitContains("MCP", 5*time.Second); err != nil {
+	if err := waitScreen(w, 5*time.Second, "MCP Manager", "No MCPs configured"); err != nil {
 		return err
 	}
 	w.capture("08-mcp-manager")
-	return w.send("Escape")
+	return closeScreen(w, "MCP Manager")
 }
 
 func stepSettings(w *widthRun) error {
 	if err := w.send("S"); err != nil {
 		return err
 	}
-	if err := w.waitContains("Settings", 5*time.Second); err != nil {
+	if err := waitScreen(w, 5*time.Second, "Settings", "THEME", "DEFAULT TOOL"); err != nil {
 		return err
 	}
 	w.capture("09-settings")
-	return w.send("Escape")
+	return closeScreen(w, "Settings")
 }
 
 func stepHelp(w *widthRun) error {
 	if err := w.send("?"); err != nil {
 		return err
 	}
-	if err := w.waitFor(func() (bool, error) {
+	if err := waitScreen(w, 5*time.Second, "KEYBOARD SHORTCUTS"); err != nil {
+		return err
+	}
+	w.capture("10-help")
+	return closeScreen(w, "KEYBOARD SHORTCUTS")
+}
+
+func waitScreen(w *widthRun, timeout time.Duration, markers ...string) error {
+	var previous string
+	return w.waitFor(func() (bool, error) {
 		pane, err := w.pane()
 		if err != nil {
 			return false, err
 		}
-		return contains(pane, "Esc") && !contains(pane, "New Session"), nil
-	}, 5*time.Second); err != nil {
-		return err
-	}
-	w.capture("10-help")
-	return w.send("Escape")
+		ready := !strings.Contains(pane, "checking...")
+		for _, marker := range markers {
+			ready = ready && strings.Contains(pane, marker)
+		}
+		if !ready {
+			previous = ""
+			return false, nil
+		}
+		current := scrubFrame(pane)
+		stable := previous == current
+		previous = current
+		return stable, nil
+	}, timeout)
 }
 
-// stepUpdateBanner is advisory: the banner only renders once the running
-// process detects that a newer binary was installed on disk behind it
-// (internal/ui's binaryWatch, driven by an actual `agent-deck update`
-// replacing the executable and a background poll noticing the mtime/hash
-// change). There is no in-repo hook to force that state from outside the
-// process without either a real network update or changing production code,
-// both of which are out of scope for a test tool — see RESULTS.md for the
-// proposed headless hook.
+func closeScreen(w *widthRun, title string) error {
+	if err := w.send("Escape"); err != nil {
+		return err
+	}
+	return w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		return err == nil && !strings.Contains(pane, title), err
+	}, 5*time.Second)
+}
+
 func stepUpdateBanner(w *widthRun) error {
-	w.captureAdvisory("11-update-banner", "unreachable headlessly without a real `agent-deck update` binary swap or a production hook; see RESULTS.md")
+	installed := filepath.Join(w.s.root, "bin", "agent-deck")
+	staged := installed + ".new"
+	if err := copyExecutable(w.updateBin, staged); err != nil {
+		return err
+	}
+	if err := os.Rename(staged, installed); err != nil {
+		return err
+	}
+	if err := w.waitContains("installed, press ctrl+t to restart agent-deck", 15*time.Second); err != nil {
+		return err
+	}
+	w.capture("11-update-banner")
+	if err := w.send("C-t"); err != nil {
+		return err
+	}
+	if err := w.waitContains("99.0.0", 15*time.Second); err != nil {
+		return fmt.Errorf("restart into installed build: %w", err)
+	}
 	return nil
 }
 
@@ -278,7 +319,12 @@ func stepAttachShell(w *widthRun) error {
 	if err := w.send("Enter"); err != nil {
 		return err
 	}
-	time.Sleep(150 * time.Millisecond)
+	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		return err == nil && strings.Contains(pane, "shell-live") && !strings.Contains(pane, "SESSIONS"), err
+	}, 5*time.Second); err != nil {
+		return err
+	}
 	w.capture("12-attach-shell")
 	return nil
 }

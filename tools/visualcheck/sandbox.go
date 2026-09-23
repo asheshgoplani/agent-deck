@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,11 +132,12 @@ exec ` + shQuote(s.realTmux) + " -L " + shQuote(s.socket) + " -f /dev/null \"$@\
 	if err = os.WriteFile(filepath.Join(s.root, "bin", "tmux"), []byte(wrapper), 0700); err != nil {
 		return err
 	}
-	if err = os.Symlink(s.bin, filepath.Join(s.root, "bin", "agent-deck")); err != nil {
+	if err = copyExecutable(s.bin, filepath.Join(s.root, "bin", "agent-deck")); err != nil {
 		return err
 	}
 	cfg := "[telemetry]\ndisabled = true\n[tmux]\nlaunch_in_user_scope = false\n" +
-		"[updates]\nauto_update = false\nstartup_check = false\n[worktree]\nbranch_prefix = \"\"\n" +
+		"[ui.header]\nfields = [\"version\", \"sessions_by_status\"]\n" +
+		"[updates]\nauto_update = false\nauto_restart = false\nstartup_check = false\n[worktree]\nbranch_prefix = \"\"\n" +
 		// The group-view step (steps.go) launches a second, short-lived
 		// `agent-deck --group alpha` alongside the main width-run window to
 		// capture the scoped view (SetGroupScope is launch-flag-only, not
@@ -155,6 +157,23 @@ exec ` + shQuote(s.realTmux) + " -L " + shQuote(s.socket) + " -f /dev/null \"$@\
 		}
 	}
 	return nil
+}
+
+func copyExecutable(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func (s *suite) cleanup() {

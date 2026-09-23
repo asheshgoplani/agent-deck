@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 )
+
+var regenerateGoldens = flag.Bool("visualcheck.regenerate", false, "regenerate visual check goldens")
 
 func TestScrubFrameRedactsVolatileText(t *testing.T) {
 	cases := []struct {
@@ -92,6 +95,19 @@ func TestGalleryRowOrderHasNoDuplicates(t *testing.T) {
 // (set by `make visual-check`); otherwise this builds cmd/agent-deck itself,
 // so a plain `go test ./tools/visualcheck` on the test box is enough.
 func TestVisualCheckAgainstRealBinary(t *testing.T) {
+	runVisualCheckTest(t)
+}
+
+func TestVisualCheckRegenerateGoldens(t *testing.T) {
+	if !*regenerateGoldens {
+		t.Skip("pass -args -visualcheck.regenerate explicitly")
+	}
+	t.Setenv("UPDATE_GOLDEN", "1")
+	runVisualCheckTest(t)
+}
+
+func runVisualCheckTest(t *testing.T) {
+	t.Helper()
 	if runtime.GOOS == "darwin" {
 		t.Skip("run on the g14 test box; see README.md")
 	}
