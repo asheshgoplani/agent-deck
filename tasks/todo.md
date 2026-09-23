@@ -15,3 +15,12 @@
 - [x] Add explicit one-shot and watcher shutdown, stale-cursor and Close race proofs.
 - [x] Compare committed-head full packages with origin/main on g14 and record every failure.
 - [x] Review simplification, final host checks, RESULTS.md and verified local bundle.
+
+# core/events-slice4-20260922 (round 3, local only)
+
+- [x] Failing-first tests for profile routing, reserved status, batched tmux output, watcher profile and bounded shutdown.
+- [x] Preserve the TUI's opened profile and batch output appends with a nonblocking producer path.
+- [x] Run a read-only simplification review and correct its findings.
+- [x] Compare tmux tap throughput with the same harness on the old and fixed heads.
+- [x] Verify the real CLI's kill and resume path in a sandbox.
+- [x] Finish full g14 package comparison, host checks, report and bundle.
