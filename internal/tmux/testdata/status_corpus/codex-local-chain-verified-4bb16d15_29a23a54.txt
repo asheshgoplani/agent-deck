@@ -1,0 +1,74 @@
+╭───────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)            │
+│                                       │
+│ model:     loading   /model to change │
+│ directory: loading                    │
+╰───────────────────────────────────────╯
+
+
+› Ask Codex to do anything
+
+  ? xxx xxxxxxxxx
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                              │
+│                                                         │
+│ model:       loading   /model to change                 │
+│ directory:   ~/agent-deck-recovery/…/disposable-project │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra · ~/agent-deck-recovery/local-acceptance-925bffd0/disposable-project · Context 100% left · Context 0% used
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                              │
+│                                                         │
+│ model:       gpt-6-astra medium   /model to change      │
+│ directory:   ~/agent-deck-recovery/…/disposable-project │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+
+› xxxxxxxxxx xxxxxxxxxx xxxx. xx xxx xxx xxxxx xx xxxx xxxxx. xxxxxxxx xxx xxxxxx xxxxxxxxx xxxx: xxxx-xxxxx xxxxx, xx xxx xxxx, xxx xxxxxx x xxxxxxx xx xx xxxxxxx. xxxx xxx xxxxxx xxxxx xxx xxxxx.
+  xxxxx xxxx x xxxxx xxxxxxxxxxxxxxx xx xxx xxxx; xxxxxx xxxxx xxxxx xxx xxxxx xxxxxx-xx.
+
+
+⚠ xxxxx-xxxxxxxxxxx xxxxxxxx xxxxxxx: xxxxxxxxx. xxxxx-xxxxxxxxxxx xxxxxxxx xxx xxxxxxxxxx xxx xxx xxxxxx xxxxxxxxxxxxx. xx xxxxxxxx xxxx xxxxxxx, xxx `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = xxxx` xx /
+  xxxxx/xxxxxx/.xxxxx/xxxxxx.xxxx.
+
+⚠ MCP client for `computer-history` failed to start: MCP startup failed: handshaking with MCP server failed: JSON-RPC error: -32603: Internal error: The data couldn’t be read because it isn’t in the
+  xxxxxxx xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."}): xxxx-xxx xxxxx: -xxxxx: xxxxxxxx xxxxx: xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx
+  xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."})
+
+⚠ MCP client for `computer-history` failed to start: MCP startup failed: handshaking with MCP server failed: JSON-RPC error: -32603: Internal error: The data couldn’t be read because it isn’t in the
+  xxxxxxx xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."}): xxxx-xxx xxxxx: -xxxxx: xxxxxxxx xxxxx: xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx
+  xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."})
+
+⚠ MCP startup incomplete (failed: computer-history)
+
+• xxx xx: xxxx-xxxxx xxxxx, xx xxx xxxx, xxx xxxxxx x xxxxxxx xx xx xxxxxxx, xxxx x xxxxxx xxxxx €xxx. x’xx xxxx xxxxx xxxxxxx xx xxxx xxx xxxxxx-xx.
+
+⚠ Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 10% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 5% of your weekly limit left. Run /status for a breakdown.
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra · ~/agent-deck-recovery/local-acceptance-925bffd0/disposable-project · Context 95% left · Context 5% used · weekly 94% left · 258K window
+
+
+
+
+
+
+
+
+
+

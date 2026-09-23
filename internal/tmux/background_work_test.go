@@ -73,8 +73,10 @@ func TestClaudeBackgroundWorkPending(t *testing.T) {
 		content string
 		want    bool
 	}{
-		{"shells still running (plural)", paneShellsStillRunning, true},
-		{"single shell footer", paneSingleShell, true},
+		// Background shells at the prompt are NOT pending work: the turn is
+		// done and the operator can act (status-detection audit 2026-09-23).
+		{"shells still running (plural)", paneShellsStillRunning, false},
+		{"single shell footer", paneSingleShell, false},
 		{"awaiting background agent", paneAwaitingAgent, true},
 		{"idle, nothing pending", paneIdleNoBackground, false},
 		{"completed agent row, no background", paneCompletedAgentRowNoBackground, false},
@@ -102,5 +104,46 @@ func TestClaudeBackgroundWorkPending_IgnoresScrollbackProse(t *testing.T) {
   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents`
 	if claudeBackgroundWorkPending(content) {
 		t.Fatal("scrollback prose mentioning shells must not be detected as pending background work")
+	}
+}
+
+// Shells and monitors left alive at the prompt are reported as
+// SubstateBackgroundWork, never as running: on the 2026-09-23 audit every
+// remote row shown green on the controller was one of these, hours after the
+// worker had printed its completion sentinel.
+func TestClaudeBackgroundShellsPending(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"shells still running (plural)", paneShellsStillRunning, true},
+		{"single shell footer", paneSingleShell, true},
+		{"monitor still running", "⏺ done\n✻ Baked for 13s · done 2:02 PM · 1 monitor still running\n───\n❯ plepa\n───\n  ⏵⏵ auto mode on · 1 monitor", true},
+		{"awaiting background agent only", paneAwaitingAgent, true}, // footer still shows · 1 shell ·
+		{"idle, nothing pending", paneIdleNoBackground, false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := claudeBackgroundShellsPending(c.content); got != c.want {
+				t.Fatalf("claudeBackgroundShellsPending(%s) = %v, want %v", c.name, got, c.want)
+			}
+		})
+	}
+	if got := ClassifyPaneFrame("claude", paneShellsStillRunning); got != FrameWaiting {
+		t.Errorf("frame with background shells at the prompt = %s, want waiting", got)
+	}
+	s := &Session{detectedTool: "claude"}
+	if got := s.classifySubstate(paneShellsStillRunning); got != SubstateBackgroundWork {
+		t.Errorf("substate = %q, want %q", got, SubstateBackgroundWork)
+	}
+	// paneSingleShell carries a live spinner line above the footer counter:
+	// the shell counter is context, the spinner is what makes it running.
+	if got := ClassifyPaneFrame("claude", paneSingleShell); got != FrameActive {
+		t.Errorf("live spinner with a shell counter = %s, want active", got)
+	}
+	if got := ClassifyPaneFrame("claude", paneAwaitingAgent); got != FrameActive {
+		t.Errorf("awaiting a background agent must stay active, got %s", got)
 	}
 }

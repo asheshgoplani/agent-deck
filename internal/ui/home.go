@@ -18230,9 +18230,16 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		if state, known := h.remotePolls[name]; h.remoteFromCache[name] || (known && state.LastPollStatus != "ok") {
 			continue
 		}
+		// A snapshot older than remoteRowStaleAge renders dimmed; its
+		// running rows must not feed the green pill either.
+		age, known := h.remoteRowAgeLocked(name)
+		stale := known && age >= remoteRowStaleAge
 		for _, rs := range sessions {
 			switch rs.Status {
 			case "running":
+				if stale {
+					continue
+				}
 				running++
 			case "waiting":
 				waiting++
@@ -21979,6 +21986,16 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	if rs.Archived {
 		statusLabel = "archived"
 	}
+	// The preview mirrors the list row's freshness rule: it must never show
+	// a green "● running" for a remote whose poll failed or whose snapshot
+	// is stale (status-detection audit 2026-09-23).
+	if h.remotePollUnavailable(item.RemoteName) {
+		statusIcon, statusStyle = "?", DimStyle
+		statusLabel += " (last known)"
+	} else if age, stale := h.remoteRowStale(item.RemoteName); stale {
+		statusStyle = DimStyle
+		statusLabel += " (status " + formatRemoteAge(age) + " old)"
+	}
 	b.WriteString(statusStyle.Render(statusIcon + " " + statusLabel))
 	b.WriteString("\n\n")
 
@@ -22070,6 +22087,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		if h.remotePollUnavailable(item.RemoteName) {
 			counts.running, counts.waiting = 0, 0
 		}
+		_, stale := h.remoteRowStale(item.RemoteName)
 
 		segName := groupPath
 		if idx := strings.LastIndex(groupPath, "/"); idx >= 0 {
@@ -22082,7 +22100,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			expandIcon,
 			nameStyle.Render(segName),
 			countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
-			remoteStatusSuffix(counts.running, counts.waiting),
+			remoteStatusSuffix(counts.running, counts.waiting, stale),
 		)
 		b.WriteString(truncateRemoteGroupLine(line, listWidth))
 		b.WriteString("\n")
@@ -22094,6 +22112,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	if h.remotePollUnavailable(item.RemoteName) {
 		counts.running, counts.waiting = 0, 0
 	}
+	_, stale := h.remoteRowStale(item.RemoteName)
 	h.remoteSessionsMu.RLock()
 	fromCache := h.remoteFromCache[item.RemoteName]
 	fetching := h.remotesFetchActive
@@ -22135,7 +22154,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
 		renderRemoteVersionMarker(versionState, Version, selected), // #2164: drift marker, e.g. " v1.15.0 ↑"
-		remoteStatusSuffix(counts.running, counts.waiting),
+		remoteStatusSuffix(counts.running, counts.waiting, stale),
 		trailer,
 	)
 	b.WriteString(truncateRemoteGroupLine(line, listWidth))
@@ -22179,14 +22198,19 @@ func (h *Home) remoteHeaderCount(item session.Item) remoteHeaderCount {
 }
 
 // remoteStatusSuffix renders the same running/waiting glyph counts local
-// group headers show, for remote host and sub-group headers.
-func remoteStatusSuffix(running, waiting int) string {
+// group headers show, for remote host and sub-group headers. stale renders
+// them dimmed, like the rows of a snapshot older than remoteRowStaleAge.
+func remoteStatusSuffix(running, waiting int, stale bool) string {
+	runningStyle, waitingStyle := GroupStatusRunning, GroupStatusWaiting
+	if stale {
+		runningStyle, waitingStyle = DimStyle, DimStyle
+	}
 	out := ""
 	if running > 0 {
-		out += " " + GroupStatusRunning.Render(fmt.Sprintf("● %d", running))
+		out += " " + runningStyle.Render(fmt.Sprintf("● %d", running))
 	}
 	if waiting > 0 {
-		out += " " + GroupStatusWaiting.Render(fmt.Sprintf("◐ %d", waiting))
+		out += " " + waitingStyle.Render(fmt.Sprintf("◐ %d", waiting))
 	}
 	return out
 }
@@ -22245,6 +22269,18 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
 		statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
+		// Same freshness rule as the classic row below: a failed/cached poll
+		// shows "?" and "last known"; a snapshot older than remoteRowStaleAge
+		// keeps its glyph but dims it and says how old it is. A green ● here
+		// was the one place a stale remote row still claimed a live session.
+		staleNote := ""
+		if h.remotePollUnavailable(item.RemoteName) {
+			statusIcon, statusStyle = "?", DimStyle
+			staleNote = " · last known"
+		} else if age, stale := h.remoteRowStale(item.RemoteName); stale {
+			statusStyle = DimStyle
+			staleNote = " · status " + formatRemoteAge(age) + " old"
+		}
 		indent := strings.Repeat("  ", max(0, item.Level-1))
 		marker := "  "
 		if selected {
@@ -22279,6 +22315,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if !h.compactSidebar {
 			secondText += " · " + item.RemoteName
 		}
+		secondText += staleNote
 		second := fitCellWidth(indent+"  ╰ "+secondText, max(1, listWidth))
 		if selected || embedded {
 			style := lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface)
@@ -22349,8 +22386,13 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		// its snapshot can be tens of seconds old by the time this row
 		// paints, with nothing above to say so. remotePollUnavailable only
 		// catches an outright failed/paused poll; this catches the row that
-		// is quietly stale despite the poll having gone fine.
+		// is quietly stale despite the poll having gone fine. The glyph is
+		// dimmed with it: a full-colour ● next to "status 47s old" still
+		// read as "running now" (status-detection audit 2026-09-23).
 		pendingStr = " " + DimStyle.Render(fmt.Sprintf("· status %s old", formatRemoteAge(age)))
+		if !selected {
+			sStyle = DimStyle
+		}
 	}
 	if item.RemoteSession != nil {
 		if verb, ok := h.remotePending[item.RemoteSession.ID]; ok {

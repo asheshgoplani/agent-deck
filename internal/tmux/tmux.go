@@ -4532,7 +4532,7 @@ func (s *Session) GetStatus() (string, error) {
 		// Strip ANSI escape sequences for pattern matching.
 		// CapturePane now returns ANSI-rich content (via -e flag) for display,
 		// but status detection needs plain text for reliable string matching.
-		content := StripANSI(rawContent)
+		content := s.prepareFrame(StripANSI(rawContent))
 
 		if errors.Is(err, ErrCaptureTimeout) {
 			// Timeout: preserve previous state to avoid false RED flashing
@@ -4633,14 +4633,11 @@ func (s *Session) GetStatus() (string, error) {
 				return "active", nil
 			}
 
-			// Foreground turn ended but background work is still in flight: a
-			// run_in_background shell, or a background agent the turn is awaiting.
-			// Claude shows this at the prompt ("N shells still running" /
-			// "Waiting for N background agent to finish") with no spinner, so the
-			// busy check above misses it and the session would flip to waiting
-			// (yellow) and fire a premature "finished" notification. Keep it green
-			// until the work actually completes (then the next poll settles to
-			// waiting and notifies — "done" now means foreground AND background).
+			// Foreground turn ended by handing off to a background agent
+			// ("Waiting for N background agent to finish"): Claude resumes by
+			// itself, no spinner is drawn, so the busy check above misses it.
+			// Keep it green until the agent reports back. Background shells at
+			// the prompt are deliberately NOT in this rule (background_work.go).
 			if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
 				return "active", nil
 			}
@@ -4776,8 +4773,9 @@ func (s *Session) GetStatus() (string, error) {
 				s.mu.Unlock()
 				content, captureErr := s.CapturePane()
 				s.mu.Lock()
-
 				if captureErr == nil {
+					content = s.prepareFrame(StripANSI(content))
+
 					// Check for explicit busy indicator (spinner, "ctrl+c to interrupt")
 					isExplicitlyBusy := s.hasBusyIndicator(content)
 
@@ -4905,6 +4903,9 @@ func (s *Session) GetStatus() (string, error) {
 		s.mu.Unlock()
 		content, captureErr := s.CapturePane()
 		s.mu.Lock()
+		if captureErr == nil {
+			content = s.prepareFrame(StripANSI(content))
+		}
 		if captureErr == nil && s.hasBusyIndicator(content) {
 			// Busy indicator is authoritative (includes spinner grace period).
 			s.resetPromptNoBusyHoldLocked()
@@ -5017,7 +5018,9 @@ func (s *Session) getStatusFallback() (string, error) {
 	}
 
 	// Strip ANSI for reliable pattern matching (CapturePane now returns ANSI-rich content)
-	content := StripANSI(rawContent)
+	s.mu.Lock()
+	content := s.prepareFrame(StripANSI(rawContent))
+	s.mu.Unlock()
 
 	// Keep precedence aligned with the main path:
 	// 1) busy (authoritative), 2) prompt, 3) waiting/idle.
@@ -5260,6 +5263,11 @@ func (s *Session) GetWaitingSince() time.Time {
 // hasBusyIndicator checks if the terminal shows explicit busy indicators.
 // Now uses spinner movement detection for all paths (experiment).
 func (s *Session) hasBusyIndicator(content string) bool {
+	// An open menu at the tail of a Claude frame outranks any busy cue
+	// (including the spinner grace period): the turn is blocked on a choice.
+	if s.claudeMenuOutranksBusy(content) {
+		return false
+	}
 	// Always use spinner movement detection regardless of resolvedPatterns
 	return s.hasBusyIndicatorResolved(content)
 }
@@ -5307,7 +5315,7 @@ func (s *Session) BackgroundWorkPending() bool {
 		s.mu.Unlock()
 		return pending
 	}
-	pending := claudeBackgroundWorkPending(StripANSI(rawContent))
+	pending := claudeBackgroundWorkPending(trimClaudeTrailingRoster(StripANSI(rawContent)))
 
 	s.mu.Lock()
 	s.bgWorkPending = pending
@@ -5442,6 +5450,12 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	// Get or create spinner tracker
 	s.ensureStateTrackerLocked()
 	tracker := s.stateTracker.spinnerTracker
+
+	if strings.EqualFold(tool, "codex") && codexLiveStatusLine(content) {
+		tracker.MarkBusy()
+		statusLog.Debug("busy_codex_status_line", slog.String("session", shortName))
+		return true
+	}
 
 	// BusyPatterns (regex + string) are authoritative because they capture
 	// real active-line semantics for each tool.
@@ -5646,10 +5660,10 @@ func (s *Session) GetSubstate() Substate {
 		s.mu.Unlock()
 		return cached
 	}
-	content := StripANSI(rawContent)
 	// Hold s.mu across classifySubstate: it mutates the shared
 	// cachedPromptDetector, which GetStatus also touches under the same lock.
 	s.mu.Lock()
+	content := s.prepareFrame(StripANSI(rawContent))
 	sub := s.classifyFrameLocked(content)
 	s.mu.Unlock()
 	return sub

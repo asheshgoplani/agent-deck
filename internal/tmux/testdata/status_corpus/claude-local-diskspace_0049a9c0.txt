@@ -1,0 +1,50 @@
+  ├──────────────────────────┼─────────────────┼───────────┤
+  │ Compressed memory        │ 20.2 GB         │ near zero │
+  ├──────────────────────────┼─────────────────┼───────────┤
+  │ Swap used                │ 18.5 of 19.4 GB │ near zero │
+  ├──────────────────────────┼─────────────────┼───────────┤
+  │ Paged out since boot     │ 77 GB           │ near zero │
+  └──────────────────────────┴─────────────────┴───────────┘
+
+  xxxx xx xx xx xxx xxxx xx xxxxx xxx xx xx, xx xx xxxx. x xxxx xx xx xxxxx xxxxxxx x.x xxxx xxxxxx xxx xxxxx xxxx, xxxxxxxxx xxxx xxx xxxx xx xxxxxxx. xxx xxxxxxxxxx xxxxxxx xx xx xxxxx
+  xxxx xxxx xx xx xxxxxxx xxxxx xxx xxxxxxx xxx xxx xx xxxx xxxxxx xxxx xxxx xxx xxx xxx xxxx xxxxxxxx xxxx xx.
+
+  xxxx xx xxxxxxxx xxxxx xx
+
+  - xxxxxx, xx xx xxx xxxxx x.x xxxxx. xxx xxxx xxx xx xx xx xx xxxx xx. xx xx xxxxxxx xxx xxxxxxxxxxxxxx xxxxxxx xxx xxxxx xxx xx xxxxx, xxxx x xx xxxx xxxxxxxxx. xxxxx xxxxx xxx xxx
+    xxxxxx xxxxxxx xxxxxx xxxxx xx xxx xxxxxxx.
+  - xxxx xxxxx-xxxx xxxxxxxx, x.x xx. xxxxx xxx xx xxxxxx xxxxxxxxx xxx xx xx xxxx xxx xxxx. xxxx xxxx xxxxxx xx xxx xxx xxxxx xxxx xxx xxxxxx xxxx.
+  - xx xxxxxxxx, xxxx x xxxxxxxx xxxxxxx. xx xxx xx xxxxx xxxxx, xx xxxxxxx, xx xxxx. xx xx xxxxxxxx xxx xxxxxxx x xxxx xxxx xxx x xxxxxx xx xxxxx xxxxxxx xxxxx xxxxx xxxxxxx.
+  - xxxxxx, x.x xx. xxxxxx xxxxxxx xxxxx xxxxxx.
+  - xxxxx xxxxx-xxxx xxx xxxxxxx, x xx x xxxx xxx xxxx. xxxx xxxxx xxxxxxxxxxxx xxx xxxx xxxx xxxxxxx xx xx xxxxxxx xxx xxxx xxxxxx xxxx xxxxx. xxxx xx xxxx xx xxx xxxxxxxxxxx xxx.
+  - Stale orphans from work already finished. Several processes are still running from the agent-deck-recovery folder I deleted two days ago, and two tmux servers plus their agent-deck
+    xxxxxx xxx xxxxxxx xxxx x xxxx xxxxxxxxxx xx /xxx, x.x xxxx xxx. xxxx xxx xxxxxxx xxxx xxxxx xxxx xx xxxxxx xxxxx.
+
+  xxx xxxxx x xxxxx xxx xx xx
+
+  1. xxxxx xxx xx xxxxx xxxxxxxx xxx xxx xx xxxxxxx xxxx. xxxx xx xx xxxxxxxxx xxx xxxx xx xxx x.x xx.
+  2. xxxx xxx xx xxx xxxxx xxxxx-xxxx xxx xxxxxxx. xxxx xx xxxxx xxx xxxxxx xxx xxxx xxxxx xxxx.
+  3. xxxx xxx xxxxxxx xxxx xxxxx-xxxx-xxxxxxxx xxx xxx /xxx xxxx xxxxxxxxxx. xxxxxxx xxxx xxxx xxxxxxx.
+  4. xxxx xxx xxxxxxxxxxxxxx xxxxxxx xxx xxxxx xx xxx xxx xxxx xxxx xxxx xxxx, xx xxxx xxx xxxxxx xx xxxx xx xx xx x xx.
+  5. xxxxxx xxxx xxxx xxxxxxxxxx. xxxxxx xxxx xx xxxxxx xxxx xx xx xxxxx xxx xxxxxx xxx xxxxxx xxxxx xxxxxxxxxx, xxx xxxx xxxx xxx xxxxxx xx xxx xxx.
+
+  xxxxx x xx x xxx xxxxxxxxxx xxx xxxxxx xxxxx xxx xxxx xxxxxxx xxxx xxxxx xx. x xxxx xxx xxxxxxx xxxxxxxx, xxxxx xxx xxxxx xx xx xxxxx xxxxxx xxxx xxxxxx xx.
+
+✻ Brewed for 2m 24s · done 1:41 PM
+
+⏺ Background command "Measure load average, memory pressure, swap and thermal state" was stopped because the system is running low on memory
+
+⏺ xxx xxxxxxxx xx xxxx xxxxxx: xxx xxxxxxxxxx xxxxxxx x xxxx xx xxxxxx xxxxx xxxxxxx xxx xxxxxx xxxxxx xx xxxxx xxx xxx xxxxxx xxxxx xx xxx. xxxx xx xxx xxxxxxxxx xxxxxxxxxx xxxxxx. xxx
+  xxxxxxx xx xxx xxxxxxx xxxxxxxxx xx xxxx xxxxx.
+
+  x xxx xxx xx-xxx xx, xxxxx xxxxxxxx xxxx xxxx xx x xxxxxx-xxxxxxx xxxxxxx xxxxx xx xxxxx, xxx xxx xxxxxxx xxxxxx xxxx xxxx xxxxxxx xxxx.
+
+  xxx xxxx xxxxx xx xx xxxx xxxxxxx xxxxx xxxxx, xxxxxxx xx xxxx xx-xxxxx. xxx xxx xxxx xxx x xxxx xxxxx xxxx xxx xx xxxx xxxxxxxx xxx xxx xxxxxxx, xxxxx xxx xxx xxxx, xxxxxxxxxx xxxx.
+
+✻ Churned for 10s · done 2:34 PM
+                                                                                                                                                  ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── diskspace ─
+❯ xxx xx x x x xxxxxxxx
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u | [Opus 5 (1M context)] ctx:8% in:83.7k out:559
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

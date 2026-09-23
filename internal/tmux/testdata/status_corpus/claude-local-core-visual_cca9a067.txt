@@ -1,0 +1,130 @@
+        xxx xxxxxxx xxxxx
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxxxx(/xxx/xxxx-xxxx-xxxxxx/xxxx/xxxxx/xxxxxxxxxxx/xxxxxxx.xx)
+  ⎿  Added 34 lines
+       xx  // xxxx xx xxxxxxxx xxx xxx xxx" -- xx xx xxx xxxxxxxx xxxxxxx.
+       xx  xxxx xxxxxxxxxxxxxxxx(x *xxxxxxxx, xxxx xxxxxxxxxxxxxxx) xxxxx {
+       xx    xxxxx xxxxxxxx = x
+       xx +  xxxxxxxx := xx.xxxxxx("xxxxxx_xxxxxx") == "x"
+       xx    xxx xxxxxxx xxxxx
+       xx    xxxxxxxxxxx := xxx(x.xxxxxx)
+       xx    xxx xxxxxxx := x; xxxxxxx <= xxxxxxxx; xxxxxxx++ {
+       xx      x.xxxxxx = x.xxxxxx[:xxxxxxxxxxx] // xxxxxxx xxx xxxxxxx xxxxxxx xxxx x xxxxxx xxxxxxx
+       xx      xxxxxxx = xxxx.xxx(x)
+       xx +    // x xxxx xxxx xxx xxxxxxx xxxxx xxx xxxxxxxx x xxxxx xxxx xxxxx'x
+       xx +    // xxxxx xxx xxxxxx xx xxxxxxx xxxxxxx xxxx x xxxx xxxx xxxxxxx:
+       xx +    // xxxx xx xxx xxxx xxxxxx-xxxx xxxxx xxxxxxxxxxxxxxxx'x xxxx-xxxx
+      xxx +    // xxxxxxx xxxxx xxx xxxxxxxx xxxxxxxx (x xxxxx xxxxxxxxxx/xxxxxxx
+      xxx +    // xxxxxxx xxxxxxxxxxx xxx-xxxxxx), xxxx xxxxxxxxxx x xxxx xxxxx,
+      xxx +    // xxxxx xxx xxxxxxx xx xxxxxxx xx xxxx xxxxxxx xx x xxxx xxxxxx
+      xxx +    // xxx. xxxxxxx xxxxxxxx xxxxx xxxxxxxxxxxx xxxxxxx -- xxxxx xx
+      xxx +    // xxxxxxx xx xxxxxxx xxxxxxx xxxx xxx'x xxxxxx.
+      xxx +    xx xxxxxxx == xxx && !xxxxxxxx {
+      xxx +      xxxxxxx = xxxxxxxxxxxxxxxxxxx(x.xxxxxx[xxxxxxxxxxx:])
+      xxx +    }
+      xxx      xx xxxxxxx == xxx {
+      xxx        xxxxxx xxx
+      xxx      }
+     ...
+      xxx    xxxxxx xxx
+      xxx  }
+      xxx
+      xxx +// xxxxxxxxxxxxxxxxxxx xxxxxxxx xxxx xxxxxxx-xxxxxxxx xxxxx xxxxxxx xxx
+      xxx +// xxxxxxxx xxx'x xxxx x xxxxxx xxxxxx -- xx xx'x xxxx xxxxxxxx xxxx xx
+      xxx +// xxxxxxx xxx xxxx, xxx xxxx'x xxx xxxxxxxxxxxxx xxxx.
+      xxx +xxxx xxxxxxxxxxxxxxxxxxx(xxxxxx []xxxxxxxxxxxx) xxxxx {
+      xxx +  xxx _, x := xxxxx xxxxxx {
+      xxx +    xx x.xxxxxxxx != "" {
+      xxx +      xxxxxxxx
+      xxx +    }
+      xxx +    xx, xxx := xxxxxxxxxxxxx(x.xxxx, x.xxxxx, x.xxxxx)
+      xxx +    xx xxx != xxx {
+      xxx +      xxxxxx xxx
+      xxx +    }
+      xxx +    xx xx.xxxxxx == "xxxx" {
+      xxx +      xxxxxx xxx.xxxxxx("%x/%x xxxxxxx xxxx xxx xxxxxxxxx xxxxxx", x.xxxx, x.xxxxx)
+      xxx +    }
+      xxx +  }
+      xxx +  xxxxxx xxx
+      xxx +}
+      xxx +
+      xxx  // xxxx xxxxx x xxxx xxx xxxx (x.x. "xxxx", "xxxxx", "xxxxxx", "x-x") xx xxxx
+      xxx  // xxx'x xxxxxx.
+      xxx  xxxx (x *xxxxxxxx) xxxx(xxxx ...xxxxxx) xxxxx {
+
+⏺ xxxx(xx /xxx/xxxx-xxxx-xxxxxx/xxxx && xxx -x 'x,xxx' xxxxx/xxxxxxxxxxx/xxxxxxx.xx)
+  ⎿  package main
+
+     xxxxxx (
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxxxx(/xxx/xxxx-xxxx-xxxxxx/xxxx/xxxxx/xxxxxxxxxxx/xxxxxxx.xx)
+  ⎿  Added 1 line
+      x  xxxxxx (
+      x    "xxxxxxx"
+      x    "xxx"
+      x +  "xx"
+      x    "xxxx/xxxxxxxx"
+      x    "xxxxxx"
+      x    "xxxxxxx"
+
+⏺ xxxx(xx /xxx/xxxx-xxxx-xxxxxx/xxxx && xxxxx -x xxxxx/xxxxxxxxxxx/*.xx && xx xxxxx -x xxxxx/xxxxxxxxxxx ./xxxxx/xxxxxxxxxxx x>&x | xxxx -xx && xxxx xx)
+  ⎿  OK
+
+⏺ xxxx(xx xxx | xxxx -x "xxxx -x xx-" | xxxx -x xxxx | xxx '{xxxxx $x}' | xxxx -x | xxxxx -x xxxx x>&x | xxxx -x
+      xx -x /xxx/xx-* x>/xxx/xxxx | xxxxx -x xxxxx x>&x | xx…)
+  ⎿  Running in the background (↓ to manage)
+
+⏺ x'xx xxxx xxx xxxx xxx (xxxx xxxx xxxxxx xxx xxxxx xx xxxxxxx xx xxxxx xxx).
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+⏺ xxxxxxx xxx xxxxxxxxxxxx xxx #x.
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+⏺ x'xx xxxxx xxx xxxx xxx xxx xxxxxxxxxxxx.
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+⏺ x'xx xxxx xxxxxxx xxx xxxx xxxxxxx.
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+⏺ xxxxxxx xxx xxx xxxxxxxxxx xxxxxxxxxxxx.
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+⏺ x'xx xxxx xxx xxxx xxx xxx xxxxxxxxxxxx xxx.
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+⏺ xxxxxxx.
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+⏺ x'xx xxxxx xxxx xxx xxxx xxx xxx xxxxxxxxxxxx.
+
+⏺ xxxx(xxxx x)
+  ⎿  w
+
+  Reading 1 file… (ctrl+o to expand)
+  ⎿  /private/tmp/claude-501/-private-tmp-exec-core-visual/6e866def-a22a-4a7c-b8ec-1b0db02e16bc/tasks/b1j61gvqx.output
+
+✳ Architecting… (4m 2s · ↓ 5.4k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── core-visual ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [proj-dwork] u@host:/private/tmp/exec-core-visual/repo | [Sonnet 5] ctx:61% in:612.6k out:163 5h:30% 7d:41%
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents
+

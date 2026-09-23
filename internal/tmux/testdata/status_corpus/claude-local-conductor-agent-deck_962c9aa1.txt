@@ -1,0 +1,50 @@
+
+
+⏺ xxxxxxxxxx xxx xxxxxxxx xxxxxxx: xxxx xxxxxx xxxx xx xxxxxxxxxxx xxxxxx xxxx xxxxxxxxxx xxxxx, xxxx x xxxxx xxxxxxxxxxxx xx xxx xxxxxx xxxxxx. xxxxxxx xxx xxxx xxxxxxxxxxxx xxxxxxx xxx
+  xxx xxx xxx xxxx xxxx (xxxxxxxx). · xxxxxxxxxx
+
+  Ran 1 shell command
+
+❯ xxx xxx xxx xxx xxxx x xxxxxx xxxxx xx xxxx xxx xx xxxx xxxxx xxxxxx x xxxxxxx xxxx xx xxx xxxxxxx xxxx xxxxxxxx xxxxxx xxxxx xxxxxxxxxx xxxxxxxxxx xxxx xxxx xxxxxx xxxxxxxxxx
+  xxxxxxxxx xxxx
+
+❯ xxxx xxxxx xxx xxxxx
+
+❯ xxxx xxxx xxxxxxx xxxx xxx xxxxx xxxx xxx
+
+  Ran 3 shell commands
+
+⏺ xxxxx x xxxxx xxxxxxxx xxx xxxxxx xxxxxxxxxxxx xxxx xxxxx xxxx xxxx xxxxxxxxxxx xxxxxx xxx xxx xxxxxxxxx, xxxx xxxxxxx xxxx xxxxxx xxxx xxx xxxx xxxxx xxxx xxxxxxx xx xxxxxxx xxxxxxx
+  xxxxxx. x'xx xxxx xxxx xx xxx xxxxxxx xxx xxxx xxx xxx xxxxx xxxx xxx xxxxx (xxxxx + xxxxxx, xxxxx-xxxx xxxx) xx xxxxx xx xx'x xxxxx xxx xxx xxxxxxxx. · xxxxxxxxxx
+
+  Ran 1 shell command
+
+❯ xxxxx xxxxxxxxxxx xxxxxx xxxx xxx xxxx xxxxxxxxx xxx xxxxxx xxx xxxxxxxxxxx xx x xxxxxxxxx xxx xxxx xxxx xxx xxxx xxxxxx xx xxx xxxxxxx xxxxx xx xxxx xx xxx xxxxxxxxx xxxxxxxxxx xxxx
+  xxxx xxxxxxxx xxxxx xxxx xxx xxxx x x xxxxxx xxxxxxx xxx xx xxxxxxxxxxx xxx xxx xxxxx xxxx xxxxxxx xxx xxxxxxxxx xxxxxxxxx xxxx xxxxxx xxx xxxxxx xxxx xxxxx xxx xx xxxxxxxxx xx xxxxxx
+  xxxxxx xxxxxxxxx xxxxxxx xxx xxxxxx xxxx xxxx xxx xxx xxxx xxxx xxx xx xxxxxxxxxxxx xxxxxxx xxxx xxxxxxxxx xxxxxx xxxxxxxxxx xxx x xxxxxx xxx xxxxx xxxxxxx xx xxx xxxxxx xxxxxxxxx
+  xxxxxx xxxxx xx xxxxx xxx xxxxx xxxxx
+
+❯ xxx xxxxx xxxxxxx xxx xxxx xxx xx xxxxxxxxx xxxxx xxxxx xxx xxxx xxxxx xxxx xxx xxxxx xxxxx xxx xx xxx xxxxxx xx xxx xxxx xxxxxxxxxxx xx xxx xxxx xxxx xxxxxxx xxxx
+
+  Ran 1 shell command
+
+⏺ xxxx xxxxx xxx xxxxxxxxx xxxxxxx: xxx xxxxxx xxxxx xx xxxxx xxx xxx xxx xxxxxxx xxxxx xxx xxxxx xxx xxx xxxxxxxx. xxx xxxxxxxx x xxxxxx xxxxxxx xxxxx, xxxx xxx xxxx xxxxx-xx xx xx
+  xxxxxxx. · xxxxxxxxxx
+
+✻ Sautéed for 9m 55s · done 12:45 AM
+
+❯ [xxxxx] x xxxxx xxxx xxxxxxxxx x xxxxxxxxxx xx xxxx xxxxx — xxxxx xx xxx xxx xx xxxx xxxx xxx.
+
+⏺ x xxxxxx xxxxxx xxxxxx; xxxxxxx xx `xxxx`, xxxxxxxxx xxxxxxxxx xxxxxxxx
+  ⎿  $ agent-deck inbox drain --json switch-ae028e40604d7dda171ecfde 2>/dev/null | python3 -c "import sys,json
+     xxx x xx xxxx.xxxx(xxx.xxxxx): xxxxx(x.xxx('xxxxx_xxxxx'),x.xxx('xxxx'),x.xxx('xxxx_xxxxxx'),(x.xxx('xxxx_xxxxxxx') xx '')[:xxx])"; xx
+     /xxxxx/x/.xxxxx-xxxx/xxxxxxxxx/xxxxx-xxxx; xxxx=/xxxx…
+
+✳ Undulating… (8s · ↓ 502 tokens)
+  ⎿  Tip: Double-tap esc to rewind the code and/or conversation to a previous point in time
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── conductor-agent-deck ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u/.agent-deck/conductor/agent-deck | [Fable 5.1] ctx:31% in:311.9k out:516 5h:7% 7d:2%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

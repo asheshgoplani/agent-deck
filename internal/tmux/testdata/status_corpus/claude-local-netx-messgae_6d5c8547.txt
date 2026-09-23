@@ -1,0 +1,50 @@
+
+⏺ Background command "Read launch output and search for the test session" completed (exit
+xxxx x)
+
+⏺ xxx, xx xxx xx xxxx, xxx xx xx xxx xxxx xxx xxxxxx.
+
+  xxxx xxx xxx: xx xxx xxxxx-xxxx xxxxxx xxxxxxx, xxxx /xxxxxxx. xxxx xxx xxxxxxxxxx
+  xxxxxxxx, x xxxxxx-xx xxxxxx xx xxxx xx xxxxxx xxx xxxxxx xxxxx xxxxxxx. xx xxxxx xxxxxx.
+
+  xxx xx xxxxx:
+  - xxx xxxxx xxxxxx xxxx xxxxx xxxx xxx xxxxxx,
+    ~/.xxxxx-xxxx/xxxxx/xxxx-xxxxxxx-xxxxxxxx.xx.
+  - xxx xxxxxxxxxx xxxx xxxxx xxxx xx x xxxxxx /xxxxxxx xxx xxxx x xxxxxx xxx xxxx xxxxxxx.
+  - xxx xxxxxxxxxxxx xxxx xxxxx xxxx xxx xxxxxxx xx xxxx. xx xxx xxxxxx xx xxxxx, xx xxxxx
+    xxx xxxxxx xxxx xxx xxxxxxx xxxxxxx xxxxx-xxxx xxxxxxx xxxx.
+  - xxxx-xxxxxxxx xx xxxxxxx, xx xxx-xxxx xxxx-xxxxxxxx xxx xxx xxxxxxxx.
+  - xxxxx xxxx xxx xxxx xxxxxxxx. xxxxxxx xx xxxx xxxxxxxx xxxx xxx xxxx xx xxxx xx
+    xxxxxxxx.xxxx.xxx-xxxxxxx-*.
+
+  xxx xxxxxx xx xxxxx xx "xxxxxxx xxx xxxx xxxxxxxxx. xxxxxxxx xxxx xxx xxxx xxxxx xxx xxxx
+  xxx." xx xxxxxx xx, xxx xxxx xxx xxxx xx ~/.xxxxx-xxxx/xxxxx/xxxx-xxxxxxx-xxxxxxx.xxx.
+
+  xxxxxxxx xxxx. x xxxx xxxxxxx xxxxxxx xxx, x xxxx /xxxxxxx, xxx xxxx xxxx-xxxx xxx xxxxxxxx
+  xxxxxx, xxx xx xxxxxxx xxx. xxxx xxxxxxx xxxxxxx xxxxxxxxxx.
+
+  xxx xxxxxx xx xxxx:
+  - xxxxxxxx xxxxxxx xxxxxxx xxxx x xxxxxxx xx xxxx xx xxx xxx xxxxx. xxxx xxx xxxxxxxx.
+  - xxx xxxxx-xxxx xxxxxx xxxxxxx xxxx --xxxxxxx xxxx xxx xxxxx xxxxxxx x xxxxxxx xxxxxx xxx
+    xxxx. x xxxxxx xxxxxx xx xxxx xxx xxxx xxxxx. xxxxx xx xxxxx x xxxx xxxxxxxxxx.
+
+✻ Worked for 12m 55s · done 6:38 PM
+
+⏺ Background command "Launch a peer test session with a small multi-step task" completed
+(xxxx xxxx x)
+
+  Ran 1 shell command
+
+⏺ xxx xxxx xxxxxxxxxx xxxxxx xxxx xxxxxxxx xxx xxxxxx: xx xxxxx xxx xxxxxxx xxx xxx xxxxx xx
+  xxxxxx xxxxx, xxx xx xxxx xx xxxxx xxxxxxx xxxxxx. xxxxxxx xx xxxxx xx.
+
+  xxxxxxxxxx xxxx xxxxxx xxxxxx. xxx xxxx-xxxxxxx xxxxxxxx xxxx xx xxxxxxxxx xx xxx xxxx
+  xxxxxxxx xxx xxxxxxxx xxxxxxx. xxxxxxx xxxxxxx xxxxxxxx xx xxxx xx xx.
+
+✻ Baked for 33s · done 6:40 PM
+                                                     ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────── netx messgae ─
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u | [Fable 5.1] ctx:8% in:84.9k out:93
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed (status lights)
+
+- Session status lights across Claude, Codex and pi: Claude sessions sitting at the prompt with only background shells left are waiting (substate `background-work`) instead of running; Codex's `• Working (… • esc to interrupt)` line above the composer counts as running, but the same text inside Codex's own transcript does not; unsent drafts and pi's status line count as a prompt; an idle pi session whose last answer names `delegate_task` no longer reads running; stale remote rows, headers and the running pill no longer show a full-colour green (status-detection audit 2026-09-23).
+- **Remotes need this update too.** A remote row is the remote's own verdict, so a remote still on 1.16.16 or older keeps showing idle Claude sessions with background shells as running, whatever version the controller runs. Update the remotes (`agent-deck remote update --all`) to clear it.
 
 ### Fixed
 

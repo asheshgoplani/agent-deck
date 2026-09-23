@@ -1,0 +1,50 @@
+ ▐▛███▛█   Claude Code v2.1.268
+▝▜██████▀  Opus 4.8 with medium effort · Claude Max
+  ▝▝ ▝▝    ~/agent-deck-recovery/local-acceptance-925bffd0/disposable-project
+
+
+❯ xxx xxx xxxxxxxxxx xx xxxxx xxxx xxxxxxx xx x xxxxx xxxxxx xxxxxx.
+  xxxxxx xxxxxxx: xxxxx
+  xxxxxx xxx: /xxxxx/x/xxxxx-xxxx-xxxxxxxx/xxxxx-xxxxxxxxxx-xxxxxxxx/xxxxxxxxxx-xxxxxxx
+  xxxxxx xxxxx: xxxxx-xxxxxxxx-xxxxxxxx
+  xxxxxx xxxxx: xxx/xxxxxx-xxxxx-xxxxxxxxxx
+  xxxx xx x xxxxxxxx xxxxxxxxxx xx xxxxxxxx xxxx xxx xxxxxxxxx xxxx xxxx. xxxxxx xxxxxxx xxxxx, xxxxxxxxxxx, xxxx xxxxx, xxxxxxxxxxx xxxxxxxxxxx, xxxxxx/xxxxxxx xxxxxxxx, xxx xxxxxx xxxxxxx xxxxxxxx
+  xxx xxx xxxxxxxxxxx.
+  --- xxxxx xxxxxxxxxxx xxxxxxx ---
+  [xxxx]
+  xxxxxxxxxx xxxxxxxxxx xxxx. xx xxx xxx xxxxx xx xxxx xxxxx. xxxxxxxx xxx xxxxxx xxxxxxxxx xxxx: xxxx-xxxxx xxxxx, xx xxx xxxx, xxx xxxxxx x xxxxxxx xx xx xxxxxxx. xxxx xxx xxxxxx xxxxx xxx xxxxx.
+  xxxxx xxxx x xxxxx xxxxxxxxxxxxxxx xx xxx xxxx; xxxxxx xxxxx xxxxx xxx xxxxx xxxxxx-xx.
+
+  [xxxxxxxxx]
+  xxx xx: xxxx-xxxxx xxxxx, xx xxx xxxx, xxx xxxxxx x xxxxxxx xx xx xxxxxxx, xxxx x xxxxxx xxxxx €xxx. x’xx xxxx xxxxx xxxxxxx xx xxxx xxx xxxxxx-xx.
+  --- xxx xxxxxxxxxxx xxxxxxx ---
+  xxxxx xxxx xx xxxxxxx xxxx; xx xxx xxxxx xxxxxx xxxxxx.
+
+⏺ xxxxxxxxxx xxxxxxxxx — x xxxx xxx xxxx xxx xxxx xxxx xxxx xx xxx xxxxxx-xx:
+
+  - xxxxx: xxxx-xxxxx
+  - xxxx: xxx
+  - xxxxxx: xxxxxx x (xx'x xxx xxxxxxx xxx)
+  - xxxxxx: xxxxx €xxx
+
+  xx xxxxx xxxx, xxxxxxx xxxxxx. xxxxx xxxx xxx xxxx xx xxxxx xx xxxx.
+
+✻ Sautéed for 6s · done 10:26 AM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u/agent-deck-recovery/local-acceptance-925bffd0/disposable-project | [Opus 4.8] ctx:4% in:43.0k out:355           ✔ Update installed · Restart to update
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents                                                                                                                                              /rc
+
+
+
+
+
+
+
+
+
+
+
+

@@ -134,9 +134,10 @@ func hasClaudeEmptyPromptLine(content string) bool {
 // this frame is lagging. Claude-only; every other tool returns false.
 //
 // Deliberately strict. A typed-but-unsent prompt, a survey or permission
-// picker, "N shells still running", or any spinner all return false — those
-// panes may legitimately still be working or blocked, and this verdict is
-// used to overrule a hook, so it must only fire on the unambiguous frame.
+// picker, an awaited background agent, or any spinner all return false —
+// those panes may legitimately still be working or blocked, and this verdict
+// is used to overrule a hook, so it must only fire on the unambiguous frame.
+// Background shells left alive at the prompt do NOT keep the turn open.
 func (d *PromptDetector) CompletedTurnAtIdlePrompt(content string) bool {
 	if d.tool != "claude" {
 		return false

@@ -1,0 +1,50 @@
+  - xxxx xxx xxxxxxxx xx xxxxxxxx xx xxxx. xxxxxx xxx xxxx xxxxx xx xxxxxxx, xx xxxxx xxxxxx xxxxxx xxxx xxxxx.
+  - xxxxxxxx xxx xxxx xxxxxx xxxxxxx xxxxxxx xxxxxxx xxxxxxxx xx xxxxxxxxx xx, xxxxx xxxxxxx xxxxx-xxxx xxxxx xxx xxxxx xxxx xxxxxxx xxxxx xxxxxxxxx.
+  - xxxxxxxx xxxxxx xxxxx xxxxx xxx xxx xx xxx xx x,xxx xxxxx. xxx xxx xx xxx.
+
+  xxxxx xxxxxxxxxxxxxx xx xxxx xx xxxxx xx, xx xxxxx:
+  1. xxxxx xxx xxxxx. xxxxx xx xxxxx xxxxx; x xxxx xxxx xxxx xxxxxxx xxxx xxxxxx xxx x "xx".
+  2. xxxx xxx xxxxxxxxxxx. xxx xxx xxx xxxxxx xxxx xxxxxxxxxx.
+  3. xxxxx xxxx xxxxxx xxxx. xxxxxxxx xxxx xxxx xxx xxxx xxx xxxxxxx xxx xx xxxx, xxxxx xxxxxxxxx, xx xx $xxx xxx xxxxxxx.
+  4. xxxxxxx xxx xxxx xxxxxx. xxx xxxxx xxxx, xxxxxxxx xxxxx x.x xxxxxx.
+  5. xxxxxx xxxxxx xxxx xxxxxx xxxx. $xxx xxxx xxxx xxxxx xxxxxxx, xxxxxxx xxxxxxxxxxxx xxxxxxxxx. xxxxx xxxxxxxxxx.xx xxx xxxxxxxx.xx xxxxx, xxxxx x xxx xxxxx.
+
+  xxx xxxxxxxxx xxx xxxxx xxxx xxxx xxxxx xx xxxxxxx xxxxxxxx xxxxx-xxxx xx xxxxxx xxxxxxxx xxx. xxxx xxxx xxxxx xxxxxx, xxx xxxxxx, xxxxxxx, xxxxxxxxxx xxx xxxxxxxx xxx xxxxxxx xxxxxxx
+  xxx xxxxxx xxx xxx xxxxxxx xxx xxxx xxx xxxx xxxx.
+
+  xxxxxxx xx xxx xxx xxx xxxxx xxxxxxxxxx: xxxxxxx xx xxxxxxx xxx $xxx xxxxxxx xx xxxx xxxxxxxx, xxxx xxx "xx".
+
+✻ Sautéed for 1h 18m 40s · done 12:35 PM
+
+❯ xxxx xxxx xxxx xxxxx xxxx xx xxxx xxxxxxx xxxxx xxxxxx xx xxxx xxxxx xxxxx xxxxxxx xxx xxx xxxxxx xxxxxxxxx xx xxxxxxx xxxxx xxxxx xxxxx xxxx xxxxxxx xxxx xxxxxx xxxxx xxx xxxx xxxx
+  ⎿  8 skills available
+
+⏺ xxx, x xx xxxx. xxxxxx xxx xxxxx xxx xxxx. xx xxxxxxxxxx xxxxxxx xxxxxx xxx xxxxx xxxxxx, xxxx xxxxx xxxx x xxxx xxxxxxxxxx xxxx xxxxxxx xx x xxxxxxx xxxx, xxx xxxx xxxxx xxx, xxx xxx
+  x xxxxxxx xxxx xxxxxxx xxxxxx-xxxxx xxxxxxxx:
+
+  ┌─────────────────────────┬───────────────────────────────────────┬─────────────────────────────────┬────────────────────────────────────────────────────────────┐
+  │         Program         │             What you get              │         Frontier models         │                           Status                           │
+  ├─────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┼────────────────────────────────────────────────────────────┤
+  │ Cline OSS Grant         │ $1k to $10k credits inside Cline      │ Fable 5, Opus 4.8, GPT-5.6      │ Draft ready, waiting on you                                │
+  ├─────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┼────────────────────────────────────────────────────────────┤
+  │ Kilo OSS Sponsorship    │ $20 to $200 per month gateway credits │ Fable 5.1, Opus 5, GPT-6 Astra  │ Apply next                                                 │
+  ├─────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┼────────────────────────────────────────────────────────────┤
+  │ Codex Open Source Fund  │ Up to $25k OpenAI API credits         │ GPT-5.x, GPT-6 Astra            │ Never submitted, separate from your July Codex application │
+  ├─────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┼────────────────────────────────────────────────────────────┤
+  │ Factory for Open Source │ Free plan, tier unpublished           │ Fable 5.1, Opus 5 on paid tiers │ One short form                                             │
+  ├─────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┼────────────────────────────────────────────────────────────┤
+  │ GitHub Secure OSS Fund  │ $10k cash plus $10k Azure credits     │ Copilot models                  │ Needs GOVERNANCE.md and SECURITY.md first                  │
+  └─────────────────────────┴───────────────────────────────────────┴─────────────────────────────────┴────────────────────────────────────────────────────────────┘
+
+  xxxxxxxxxx xxxx xx xxxxxx xxxxxx, xx-xxxxxxx-xxxx, xxxxx xxxxxxx xxxxx xxxx xx xxxxx xxxxxx, xx x xxxx-xxxxxx xxxxx. xxxx xx xxx xxxxxxxx xxxx xxxxx xxxx xxxx.
+
+  xxx xxxxx, x xxxx xxxxxx xxxx xxx xxxxx xxxxx xxxxxxx xxx $xxx xx xxx xxxxxxx xx xxxx xxxxxx xxx xxxx xx x xxxxxxxxx xxxxxx. xxx "xx" xxx x xxxxxx xx xxx xxxx xxxx xx xx xxx xxxx,
+  xxxxx xxxx xxx xxxxxxx xxxxx xxx xxxx xxx: xxxxx, xxxx xxx, xxxxxx xx xxxx xxxx.
+
+✻ Brewed for 23s · done 12:44 AM
+                                                                                                                                                  ✔ Update installed · Restart to update
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── sponsor ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u/src/tries/oss-grants-research | [Fable 5.1] ctx:20% in:198.2k out:978 5h:5% 7d:1%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
