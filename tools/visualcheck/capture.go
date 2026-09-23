@@ -112,7 +112,8 @@ func runStepWithRetry(w *widthRun, step visualCheckStep) error {
 			time.Sleep(150 * time.Millisecond)
 		}
 	}
-	return fmt.Errorf("failed after %d attempts: %w", attempts, lastErr)
+	pane, _ := w.pane()
+	return fmt.Errorf("failed after %d attempts: %w\nlast pane:\n%s", attempts, lastErr, pane)
 }
 
 // firstGoldenMismatch compares each already-captured frame against its
