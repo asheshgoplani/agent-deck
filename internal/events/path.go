@@ -18,12 +18,20 @@ var selectedProfile atomic.Value
 // SetProfile selects the CLI/TUI process profile before its first publish.
 func SetProfile(profile string) { selectedProfile.Store(profile) }
 
+// CurrentProfile is the profile selected for this process and its event writers.
+func CurrentProfile() string {
+	if selected := selectedProfile.Load(); selected != nil {
+		return selected.(string)
+	}
+	if profile := os.Getenv("AGENTDECK_PROFILE"); profile != "" {
+		return profile
+	}
+	return "default"
+}
+
 // busDir returns "<data-dir>/bus/<profile>" without creating directories.
 func busDir() (string, error) {
-	if selected := selectedProfile.Load(); selected != nil {
-		return busDirFor(selected.(string))
-	}
-	return busDirFor(os.Getenv("AGENTDECK_PROFILE"))
+	return busDirFor(CurrentProfile())
 }
 
 func busDirFor(profile string) (string, error) {

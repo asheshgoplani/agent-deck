@@ -538,12 +538,14 @@ func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// Another writer may have appended or rotated since this Bus last held
+	// the lock; a sync tick must not seal from a stale view.
+	if err := b.refreshLocked(); err != nil {
+		b.fail(err)
+		b.dropAccepted(uint64(len(batch)))
+		return
+	}
 	if len(batch) > 0 {
-		if err := b.refreshLocked(); err != nil {
-			b.fail(err)
-			b.dropAccepted(uint64(len(batch)))
-			return
-		}
 		for i, qf := range batch {
 			if b.abandoned.Load() {
 				break

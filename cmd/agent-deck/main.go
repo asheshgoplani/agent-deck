@@ -319,7 +319,10 @@ func inheritedEnviron() []string {
 }
 
 func configureEventProfile(profile string) (string, error) {
-	selected := session.GetEffectiveProfile(profile)
+	selected, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return "", err
+	}
 	events.SetProfile(selected)
 	return selected, nil
 }

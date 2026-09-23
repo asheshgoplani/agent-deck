@@ -165,10 +165,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		}
 	}
 	if cfg.Profile == "" {
-		cfg.Profile = os.Getenv("AGENTDECK_PROFILE")
-		if cfg.Profile == "" {
-			cfg.Profile = "default"
-		}
+		cfg.Profile = events.CurrentProfile()
 	}
 	if cfg.TriageSpawner == nil {
 		cfg.TriageSpawner = AgentDeckLaunchSpawner{} // BinaryPath resolved lazily at spawn time
