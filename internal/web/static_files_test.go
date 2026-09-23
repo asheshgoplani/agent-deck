@@ -325,6 +325,30 @@ func TestIndexAppRoot(t *testing.T) {
 	}
 }
 
+// Issue #2372: Claude Code sessions capture the mouse, so a plain drag goes to
+// the app. On macOS xterm only forces a native selection for Option-drag when
+// macOptionClickForcesSelection is on, and it defaults off, so without it there
+// is no way to select text in those sessions from the web UI on a Mac.
+// Copy-on-select must skip an empty selection, or a stray click would replace
+// the clipboard with nothing.
+func TestTerminalPanelSelectsAndCopiesPastMouseCapture(t *testing.T) {
+	data, err := embeddedStaticFiles.ReadFile("static/app/TerminalPanel.js")
+	if err != nil {
+		t.Fatalf("read TerminalPanel.js: %v", err)
+	}
+	body := string(data)
+
+	for _, want := range []string{
+		"macOptionClickForcesSelection: true",
+		"terminal.onSelectionChange(",
+		"if (text && navigator.clipboard?.writeText)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("TerminalPanel.js missing %q", want)
+		}
+	}
+}
+
 func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 	data, err := embeddedStaticFiles.ReadFile("static/app/CreateSessionDialog.js")
 	if err != nil {
