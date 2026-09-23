@@ -58,10 +58,10 @@ func rowsHarness(tool string) string {
 }
 
 // liveTranscriptPath resolves an instance's current native transcript.
-func liveTranscriptPath(inst *session.Instance) (string, error) {
+func liveTranscriptPath(inst *session.Instance, peers []*session.Instance) (string, error) {
 	switch rowsHarness(inst.Tool) {
 	case "claude", "codex":
-		if p := session.LiveTranscriptPath(inst); p != "" {
+		if p := session.LiveTranscriptPath(inst, peers); p != "" {
 			return p, nil
 		}
 		return "", fmt.Errorf("session %s has no native transcript on this machine yet", inst.Title)
@@ -94,14 +94,14 @@ func nativeTranscriptByID(id string) (harness, path string) {
 	return "", ""
 }
 
-func instanceTarget(inst *session.Instance, storage *session.Storage) (*rowsTarget, error) {
-	path, err := liveTranscriptPath(inst)
+func instanceTarget(inst *session.Instance, peers []*session.Instance, storage *session.Storage) (*rowsTarget, error) {
+	path, err := liveTranscriptPath(inst, peers)
 	if err != nil {
 		return nil, err
 	}
 	h := rowsHarness(inst.Tool)
 	t := &rowsTarget{inst: inst, storage: storage, direct: true}
-	t.src = query.RowsSource{Harness: h, Path: path, Resolve: func() (string, error) { return liveTranscriptPath(inst) }}
+	t.src = query.RowsSource{Harness: h, Path: path, Resolve: func() (string, error) { return liveTranscriptPath(inst, peers) }}
 	t.session = query.RowsSession{ID: inst.ID, Harness: h, NativeID: firstNonEmpty(inst.ClaudeSessionID, inst.CodexSessionID), Path: path, Title: inst.Title, Cwd: inst.EffectiveWorkingDir()}
 	return t, nil
 }
@@ -143,7 +143,7 @@ func resolveRowsTarget(profile, ref string, f rowsFlags) (*rowsTarget, error) {
 		inst, _, _ = ResolveSession(ref, instances)
 	}
 	if inst != nil {
-		t, err := instanceTarget(inst, storage)
+		t, err := instanceTarget(inst, instances, storage)
 		if err == nil || !errors.Is(err, query.ErrRowsUnsupported) {
 			if err != nil {
 				storage.Close()

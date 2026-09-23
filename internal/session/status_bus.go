@@ -107,7 +107,9 @@ var transcriptGrowth = &transcriptSizes{sizes: map[string]int64{}}
 
 // LiveTranscriptPath is the native transcript an instance writes now:
 // Claude Code's JSONL or Codex's live rollout. "" when there is none.
-func LiveTranscriptPath(inst *Instance) string {
+// peers are the profile's other sessions (a Codex thread bound to one of
+// them is never this session's); nil when unknown.
+func LiveTranscriptPath(inst *Instance, peers []*Instance) string {
 	switch {
 	case inst == nil:
 		return ""
@@ -121,7 +123,7 @@ func LiveTranscriptPath(inst *Instance) string {
 		}
 		return p
 	case IsCodexCompatible(inst.Tool):
-		return CodexLiveRolloutPath(inst)
+		return CodexLiveRolloutPath(inst, peers)
 	}
 	return ""
 }
@@ -137,7 +139,7 @@ func (t *transcriptSizes) publish(profile string, instances []*Instance) {
 		if inst == nil || !isLiveSessionStatus(inst.Status) {
 			continue
 		}
-		path := LiveTranscriptPath(inst)
+		path := LiveTranscriptPath(inst, instances)
 		if path == "" {
 			continue
 		}

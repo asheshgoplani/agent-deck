@@ -310,7 +310,7 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 			time.Sleep(poll)
 			continue
 		}
-		path := session.LiveTranscriptPath(inst)
+		path := session.LiveTranscriptPath(inst, instances)
 		var from int64
 		if info, err := os.Stat(path); err == nil {
 			from = info.Size()
@@ -394,7 +394,7 @@ func liveTranscriptForID(profile, id string) string {
 		return ""
 	}
 	if inst := instanceByID(instances, id); inst != nil {
-		return session.LiveTranscriptPath(inst)
+		return session.LiveTranscriptPath(inst, instances)
 	}
 	return ""
 }

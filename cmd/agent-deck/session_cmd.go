@@ -1948,10 +1948,10 @@ func handleSessionShow(profile string, args []string) {
 	// macapp-core-needs §3: the live native transcript and every native id
 	// seen for this session (Codex re-creates its rollout after the trust
 	// prompt). Omitted when unknown, so older consumers see no change.
-	if p := session.LiveTranscriptPath(inst); p != "" {
+	if p := session.LiveTranscriptPath(inst, instances); p != "" {
 		jsonData["transcript_path"] = p
 	}
-	if ids := session.TranscriptIDs(inst); len(ids) > 0 {
+	if ids := session.TranscriptIDs(inst, instances); len(ids) > 0 {
 		jsonData["transcript_ids"] = ids
 	}
 
@@ -3050,6 +3050,7 @@ func handleSessionSend(profile string, args []string) {
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
+	codexComposerFallback := fs.Bool("codex-composer-fallback", false, "Codex only: when the session's Codex identity is provably unavailable (fresh composer, rollout re-created after the trust prompt), send through the verified composer path instead of refusing. Never used for --json --wait; every other acceptance error still refuses")
 	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle and never drops the message (see session send-status)")
 	var images imageList
 	fs.Var(&images, "image", "Attach an image (repeatable): Claude Code and Gemini get @<copy under .agentdeck-images/>; Codex and other harnesses exit 2")
@@ -3234,11 +3235,13 @@ func handleSessionSend(profile string, args []string) {
 	acceptanceFence := codexAcceptanceFence{}
 	var acceptanceGuard *codexAcceptanceGuard
 	if shouldAcquireCodexAcceptanceGuard(inst, *jsonOutput, *wait, *draft) {
-		// macapp-core-needs §3: right after the trust prompt Codex has no
-		// accepted-turn receipt yet (no identity, or an id whose rollout was
-		// re-created). A structured --json --wait still fails closed; any
-		// other send falls back to the verified composer path instead of
-		// refusing.
+		// Every send keeps the double-send refusal: an unresolved earlier
+		// submission, an identity owned by another session, a held
+		// acceptance lock or a remote rollout all refuse, whatever the
+		// flags. Only --codex-composer-fallback, and only when the identity
+		// is provably unavailable (macapp-core-needs §3: right after the
+		// trust prompt there is no identity, or the stored id has no
+		// rollout), sends through the verified composer path instead.
 		guardErr := hydrateLegacyCodexIdentity(inst, instances, storage)
 		if guardErr == nil {
 			acceptanceGuard, guardErr = acquireCodexAcceptanceGuard(inst, codexAcceptanceLockWait(*timeout))
@@ -3246,12 +3249,13 @@ func handleSessionSend(profile string, args []string) {
 		switch {
 		case guardErr == nil:
 			acceptanceFence = acceptanceGuard.fence
-		case structuredCodexWait:
-			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", guardErr), ErrCodeInvalidOperation)
-			os.Exit(1)
-		default:
+		case codexComposerFallbackAllowed(guardErr, *codexComposerFallback, structuredCodexWait):
 			acceptanceGuard = nil
-			fmt.Fprintf(os.Stderr, "Note: no Codex accepted-turn receipt yet (%v); sending through the composer\n", guardErr)
+			fmt.Fprintf(os.Stderr, "Note: no Codex accepted-turn receipt yet (%v); sending through the composer (--codex-composer-fallback)\n", guardErr)
+		default:
+			out.ErrorWithData(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", guardErr), ErrCodeInvalidOperation,
+				map[string]interface{}{"delivery": deliveryAcceptanceRefused})
+			os.Exit(1)
 		}
 	}
 
@@ -3988,6 +3992,11 @@ const (
 	// per-target lock after the bounded wait (messaging audit P2-2, #2104).
 	// Nothing was typed, so a retry is safe.
 	deliveryTargetBusy = "target_busy"
+	// deliveryAcceptanceRefused: no input sent because exact Codex turn
+	// acceptance could not be established (an unresolved earlier
+	// submission, another session owning the identity, the acceptance lock
+	// held by another send). Nothing was typed, so a retry is safe.
+	deliveryAcceptanceRefused = "acceptance_refused"
 	// deliveryQueued: the message was typed and Entered once, and the
 	// target's hook-driven status reports it mid-turn (issue #2033). Claude
 	// holds such input as a queued message and takes it up when the turn
@@ -4251,7 +4260,7 @@ func hydrateLegacyCodexIdentity(
 		processOwned = candidate != ""
 	}
 	if candidate == "" {
-		return fmt.Errorf("Codex session identity is unavailable")
+		return errCodexIdentityUnavailable
 	}
 	if _, _, err := session.SetField(inst, session.FieldCodexSessionID, candidate, nil); err != nil {
 		restore()
@@ -4289,6 +4298,28 @@ func hydrateLegacyCodexIdentity(
 	return nil
 }
 
+// The two acceptance errors that mean the Codex identity is provably
+// unavailable, rather than contested: no identity at all, or a stored id
+// with no current rollout generation. Only these may use
+// --codex-composer-fallback.
+var (
+	errCodexIdentityUnavailable   = errors.New("Codex session identity is unavailable")
+	errCodexGenerationUnavailable = errors.New("current rollout generation is unavailable")
+)
+
+// codexComposerFallbackAllowed reports whether a send whose acceptance
+// guard failed with err may go through the composer instead of refusing:
+// only with --codex-composer-fallback, never for a structured --json --wait,
+// and only when the identity is provably unavailable. Contested identity
+// (an unresolved earlier submission, another session's thread, the
+// acceptance lock held by another send, a remote rollout) always refuses.
+func codexComposerFallbackAllowed(err error, flag, structuredWait bool) bool {
+	if err == nil || !flag || structuredWait {
+		return false
+	}
+	return errors.Is(err, errCodexIdentityUnavailable) || errors.Is(err, errCodexGenerationUnavailable)
+}
+
 // liveCodexSessionID reads only the authoritative Codex identity from a live
 // pane. Unlike broad session-ID synchronization, it does not mutate metadata
 // for Codex or any unrelated tool.
@@ -4315,7 +4346,7 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 		return nil, fmt.Errorf("exact rollout is unavailable for remote or sandboxed sessions")
 	}
 	if strings.TrimSpace(inst.CodexSessionID) == "" {
-		return nil, fmt.Errorf("Codex session identity is unavailable")
+		return nil, errCodexIdentityUnavailable
 	}
 	lock, err := session.AcquireCodexAcceptanceLock(inst.CodexSessionID, timeout)
 	if err != nil {
@@ -4324,7 +4355,7 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 	fence := captureCodexAcceptanceFence(inst)
 	if !fence.available {
 		lock.Release()
-		return nil, fmt.Errorf("current rollout generation is unavailable")
+		return nil, errCodexGenerationUnavailable
 	}
 	if _, err := session.ReconcileCodexSubmissionMarker(inst.ID, inst.CodexSessionID, fence.priorTurnGeneration); err != nil {
 		lock.Release()

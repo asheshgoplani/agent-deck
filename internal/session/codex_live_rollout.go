@@ -17,13 +17,18 @@ import (
 // its own beside the main one, so the stored codex_session_id can name a
 // thread with no rollout (01a0cd46 in the Mac app receipt) while the live
 // conversation sits in another file (01a0cd45; 01a0cd47 was the sub-agent).
-// The live rollout is therefore resolved, read-only, on every call:
+// The live rollout is therefore resolved, read-only, on every call, and only
+// ever to this session's own thread:
 //
-//  1. the exact rollout of the stored id, when it is a user thread;
-//  2. else the user-thread rollouts (session_meta thread_source != subagent,
-//     no parent thread) whose cwd is the session's working directory and
-//     that were written since the session was created: the one that
-//     mentions the stored id wins, else the most recently written one.
+//  1. the exact rollout of the stored id, when it is not a sub-agent thread;
+//  2. else the thread the pane's own Codex process holds open
+//     (LiveCodexThreadID), when its rollout is a user thread;
+//  3. else the user-thread rollouts (session_meta thread_source "user", no
+//     parent thread, not `codex exec`) whose cwd is the session's working
+//     directory, written since the session was created, and not bound to
+//     another session: the one whose structured fields reference the stored
+//     id, else the only one. More than one candidate is ambiguous (another
+//     deck session, the user's own codex run) and resolves to "".
 //
 // This never rebinds codex_session_id: identity for accepted-turn receipts
 // stays with the pane environment (hydrateLegacyCodexIdentity).
@@ -32,6 +37,8 @@ type codexRolloutHead struct {
 	ID       string
 	Cwd      string
 	Subagent bool
+	// UserThread: thread_source "user", no parent thread, not `codex exec`.
+	UserThread bool
 }
 
 func readCodexRolloutHead(path string) (codexRolloutHead, bool) {
@@ -60,7 +67,10 @@ func readCodexRolloutHead(path string) (codexRolloutHead, bool) {
 	}
 	p := head.Payload
 	sub := p.ThreadSource == "subagent" || p.ParentThreadID != "" || bytes.Contains(p.Source, []byte(`"subagent"`))
-	return codexRolloutHead{ID: p.ID, Cwd: p.Cwd, Subagent: sub}, true
+	var source string
+	_ = json.Unmarshal(p.Source, &source)
+	user := !sub && p.ThreadSource == "user" && source != "exec"
+	return codexRolloutHead{ID: p.ID, Cwd: p.Cwd, Subagent: sub, UserThread: user}, true
 }
 
 func canonicalDir(p string) string {
@@ -79,9 +89,9 @@ type codexRolloutCandidate struct {
 }
 
 // codexUserRolloutsForCwd lists user-thread rollouts in cwd written at or
-// after since, newest first. Only the day directories between since and now
-// are globbed.
-func codexUserRolloutsForCwd(codexHome, cwd string, since time.Time) []codexRolloutCandidate {
+// after since, newest first, skipping threads in owned. Only the day
+// directories between since and now are globbed.
+func codexUserRolloutsForCwd(codexHome, cwd string, since time.Time, owned map[string]bool) []codexRolloutCandidate {
 	want := canonicalDir(cwd)
 	if want == "" || codexHome == "" {
 		return nil
@@ -106,7 +116,7 @@ func codexUserRolloutsForCwd(codexHome, cwd string, since time.Time) []codexRoll
 				continue
 			}
 			head, ok := readCodexRolloutHead(m)
-			if !ok || head.Subagent || canonicalDir(head.Cwd) != want {
+			if !ok || !head.UserThread || owned[head.ID] || canonicalDir(head.Cwd) != want {
 				continue
 			}
 			out = append(out, codexRolloutCandidate{path: m, id: head.ID, mtime: info.ModTime()})
@@ -116,9 +126,15 @@ func codexUserRolloutsForCwd(codexHome, cwd string, since time.Time) []codexRoll
 	return out
 }
 
-// fileMentions reports whether the first 4 MiB of path contain needle.
-func fileMentions(path, needle string) bool {
-	if needle == "" {
+// codexThreadRefFields are the rollout payload fields that name a thread or
+// turn. Message text is never searched: a rollout that quotes an id in chat
+// does not reference that thread.
+var codexThreadRefFields = []string{"id", "session_id", "thread_id", "turn_id", "conversation_id", "forked_from_id", "previous_thread_id"}
+
+// rolloutReferencesThread reports whether a line in the first 4 MiB of path
+// carries threadID in one of its payload's thread/turn id fields.
+func rolloutReferencesThread(path, threadID string) bool {
+	if threadID == "" {
 		return false
 	}
 	f, err := os.Open(path)
@@ -126,12 +142,44 @@ func fileMentions(path, needle string) bool {
 		return false
 	}
 	defer f.Close()
-	b, _ := io.ReadAll(io.LimitReader(f, 4<<20))
-	return bytes.Contains(b, []byte(needle))
+	sc := bufio.NewScanner(io.LimitReader(f, 4<<20))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	needle := []byte(threadID)
+	for sc.Scan() {
+		if !bytes.Contains(sc.Bytes(), needle) {
+			continue
+		}
+		var line struct {
+			Payload map[string]json.RawMessage `json:"payload"`
+		}
+		if json.Unmarshal(sc.Bytes(), &line) != nil {
+			continue
+		}
+		for _, k := range codexThreadRefFields {
+			var v string
+			if json.Unmarshal(line.Payload[k], &v) == nil && v == threadID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// codexThreadsOwnedByPeers lists the Codex threads other sessions are bound to.
+func codexThreadsOwnedByPeers(inst *Instance, peers []*Instance) map[string]bool {
+	owned := map[string]bool{}
+	for _, p := range peers {
+		if p != nil && p.ID != inst.ID && IsCodexCompatible(p.Tool) && p.CodexSessionID != "" && p.CodexSessionID != inst.CodexSessionID {
+			owned[p.CodexSessionID] = true
+		}
+	}
+	return owned
 }
 
 // CodexLiveRolloutPath is the rollout a Codex session writes now, or "".
-func CodexLiveRolloutPath(inst *Instance) string {
+// peers are the profile's other sessions: a thread bound to one of them is
+// never this session's.
+func CodexLiveRolloutPath(inst *Instance, peers []*Instance) string {
 	if inst == nil || !IsCodexCompatible(inst.Tool) || !inst.CodexRolloutIsResolvableLocally() {
 		return ""
 	}
@@ -141,23 +189,35 @@ func CodexLiveRolloutPath(inst *Instance) string {
 			return p
 		}
 	}
-	cands := codexUserRolloutsForCwd(home, inst.EffectiveWorkingDir(), inst.CreatedAt)
-	if len(cands) == 0 {
-		return ""
-	}
-	for _, c := range cands {
-		if fileMentions(c.path, inst.CodexSessionID) {
-			return c.path
+	owned := codexThreadsOwnedByPeers(inst, peers)
+	if live := inst.LiveCodexThreadID(); live != "" && !owned[live] {
+		if p := codexRolloutPathInHome(live, home); p != "" {
+			if head, ok := readCodexRolloutHead(p); ok && head.UserThread {
+				return p
+			}
 		}
 	}
-	return cands[0].path
+	cands := codexUserRolloutsForCwd(home, inst.EffectiveWorkingDir(), inst.CreatedAt, owned)
+	var refs []codexRolloutCandidate
+	for _, c := range cands {
+		if rolloutReferencesThread(c.path, inst.CodexSessionID) {
+			refs = append(refs, c)
+		}
+	}
+	switch {
+	case len(refs) == 1:
+		return refs[0].path
+	case len(refs) == 0 && len(cands) == 1:
+		return cands[0].path
+	}
+	return ""
 }
 
-// TranscriptIDs lists every native conversation id seen for the session,
-// newest first: for Codex the live and earlier user-thread rollouts in its
-// directory since it was created plus the stored id; for Claude the stored
-// session id.
-func TranscriptIDs(inst *Instance) []string {
+// TranscriptIDs lists the native conversation ids of the session, newest
+// first: for Codex the live rollout's thread and the stored id; for Claude
+// the stored session id. Rollouts of other threads in the same directory
+// are never listed.
+func TranscriptIDs(inst *Instance, peers []*Instance) []string {
 	if inst == nil {
 		return nil
 	}
@@ -169,13 +229,10 @@ func TranscriptIDs(inst *Instance) []string {
 	}
 	switch {
 	case IsCodexCompatible(inst.Tool) && inst.CodexRolloutIsResolvableLocally():
-		if p := CodexLiveRolloutPath(inst); p != "" {
+		if p := CodexLiveRolloutPath(inst, peers); p != "" {
 			if head, ok := readCodexRolloutHead(p); ok {
 				add(head.ID)
 			}
-		}
-		for _, c := range codexUserRolloutsForCwd(CodexHomeDirForInstance(inst), inst.EffectiveWorkingDir(), inst.CreatedAt) {
-			add(c.id)
 		}
 		add(inst.CodexSessionID)
 	case IsClaudeCompatible(inst.Tool):
