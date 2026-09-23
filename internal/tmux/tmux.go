@@ -5276,7 +5276,7 @@ func (s *Session) BackgroundWorkPending() bool {
 		s.mu.Unlock()
 		return pending
 	}
-	pending := claudeBackgroundWorkPending(StripANSI(rawContent))
+	pending := claudeBackgroundWorkPending(trimClaudeTrailingRoster(StripANSI(rawContent)))
 
 	s.mu.Lock()
 	s.bgWorkPending = pending
@@ -5411,6 +5411,12 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	// Get or create spinner tracker
 	s.ensureStateTrackerLocked()
 	tracker := s.stateTracker.spinnerTracker
+
+	if strings.EqualFold(tool, "codex") && codexLiveStatusLine(content) {
+		tracker.MarkBusy()
+		statusLog.Debug("busy_codex_status_line", slog.String("session", shortName))
+		return true
+	}
 
 	// BusyPatterns (regex + string) are authoritative because they capture
 	// real active-line semantics for each tool.
@@ -5615,10 +5621,10 @@ func (s *Session) GetSubstate() Substate {
 		s.mu.Unlock()
 		return cached
 	}
-	content := StripANSI(rawContent)
 	// Hold s.mu across classifySubstate: it mutates the shared
 	// cachedPromptDetector, which GetStatus also touches under the same lock.
 	s.mu.Lock()
+	content := s.prepareFrame(StripANSI(rawContent))
 	sub := s.classifyFrameLocked(content)
 	s.mu.Unlock()
 	return sub

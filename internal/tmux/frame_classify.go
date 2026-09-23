@@ -53,10 +53,14 @@ func ClassifyPaneFrame(tool, content string) FrameVerdict {
 //
 // Claude: the agent roster ("⏺ main" / "◯ general-purpose  Task …", one row per
 // sub-agent) and the artifact list ("⧉  name") are drawn BELOW the footer.
-// Every detector scans a fixed number of lines up from the bottom (busy 25,
-// prompt 8..15, menu 15), so a session driving many sub-agents pushes its own
-// spinner line out of every window and reads as idle/waiting while it is
-// working. Those trailing rows say nothing about the turn, so they are cut.
+// The spinner scan covers the whole pane, but the tail-bounded detectors do
+// not: the background-work scan (20 lines), the prompt (8) and the menu (15).
+// A turn handed off to background agents ("✻ Waiting for 3 background agents
+// to finish") is exactly the frame with one roster row per agent, and on a
+// long roster that line fell out of its window and the session read waiting
+// while Claude was still owed the results. Those trailing rows say nothing
+// about the turn, so they are cut. GetStatus, GetSubstate and
+// BackgroundWorkPending (the Stop-hook path) all read the trimmed frame.
 func (s *Session) prepareFrame(content string) string {
 	if !s.isClaudeTool() {
 		return content

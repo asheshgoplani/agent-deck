@@ -496,6 +496,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// itself; anything else is unknown to the journal, never "none".
 	substates := map[string]string{}
 	if tuiAlive {
+		// The TUI owns the verdicts while it is alive; a prior carried from an
+		// earlier no-TUI pass would be hours old by the time the TUI exits.
+		delete(d.livePrior, profile)
 		if db != nil {
 			if rows, err := db.ReadAllStatuses(); err == nil {
 				for id, row := range rows {

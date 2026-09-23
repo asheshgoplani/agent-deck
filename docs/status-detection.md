@@ -21,10 +21,10 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 | Harness | Live signal (wins while fresh) | Frame cues for running | Frame cues for waiting | Frame cues for error |
 |---|---|---|---|---|
 | claude | Hooks: UserPromptSubmit → running, Stop / PermissionRequest / Notification(permission) → waiting, SessionEnd → dead. Fresh for 2 min. No tool-use hooks, so a long turn falls back to the pane after 2 min. | Spinner line `^[✳✽✶✻✢·] Word… (…)`, `esc to interrupt`, Braille spinner in pane title, `Waiting for N background agent to finish` | Bare `❯`, `❯ draft` between the two input-box rules, menu footers (`Enter to select`, `Enter to confirm`, `Allow once`, feedback picker), trust prompt | `API Error: 401`, `Please run /login`, `socket connection closed`, `Crunched for 0s` model-unavailable no-op |
-| codex | `codex-notify` hook: turn start → running (fresh 20 s), turn end → waiting (fresh 5 s). Absent unless `codex-hooks install` ran. Pane title Braille spinner. | `^• Word (9m 41s • esc to interrupt)` status line above the composer, `esc to interrupt` within the last 3 lines, Braille spinner | `› ` composer (`Ask Codex to do anything`), `Press enter to confirm or esc to go back` | Column-0 `■` banners: usage limit, not logged in |
+| codex | `codex-notify` hook: turn start → running (fresh 20 s), turn end → waiting (fresh 5 s). Absent unless `codex-hooks install` ran. Pane title Braille spinner. | `• Word (9m 41s • esc to interrupt)` status line in the live slot (the last `•` block above the `› ` composer, only blank and `  └ …` lines between; `codexLiveStatusLine`), `esc to interrupt` within the last 3 lines, Braille spinner | `› ` composer (`Ask Codex to do anything`), `Press enter to confirm or esc to go back` | Column-0 `■` banners: usage limit, not logged in |
 | gemini | Hooks BeforeAgent / AfterAgent (2 min) | `esc to cancel` | `gemini>`, `Type your message`, line ending in `>` | none |
 | opencode | SSE `/event` stream, TUI only (30 s) | `thinking...`, `generating...`, pulse glyphs `█▓▒░` | `Ask anything`, `enter submit` | none |
-| pi | Hooks turn_start / turn_end (2 min), excluded from the flip debounce | `── ⠹ Working ──` banner, `[subagent]`, `[running]`, `delegate_task` | `pi>`, the `↑… ↓… R…` status line under the composer | none |
+| pi | Hooks turn_start / turn_end (2 min), excluded from the flip debounce | `── ⠹ Working ──` banner, `[subagent]`, `[running]`, `delegate_task` | `pi>`, the `↑… ↓… ` token/cost status line under the composer | none |
 | hermes | Hooks around every LLM/tool call (2 min); gateway health probe every 30 s | Braille spinner anywhere | shell prompt | gateway unreachable |
 | copilot | none | `Thinking`, `Running`, Braille | `copilot>`, `›`, `>` | none |
 | shell / custom | none | opt-in `[status] shell_running_indicator` | `$ `, `# `, `% `, `❯ `, `(y/N)` | none |
@@ -34,8 +34,11 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 1. Pane missing or dead → `inactive` → instance `error` / `stopped`.
 2. Pane title carries a Braille spinner → `active` (every tool, no capture).
 3. Capture the visible pane (no scrollback). Claude frames drop the agent
-   roster and artifact rows drawn under the footer (`prepareFrame`), so a
-   session with many sub-agents keeps its spinner inside the detector windows.
+   roster and artifact rows drawn under the footer (`prepareFrame`, also in
+   `GetSubstate` and the Stop-hook `BackgroundWorkPending`), so a turn handed
+   to many background agents keeps its `Waiting for N background agents`
+   line inside the 20-line background-work window, and the prompt (8) and
+   menu (15) windows see the input box.
 4. Model-unavailable no-op → `error`; tool error banner → `error`.
 5. Open Claude menu at the tail with no live busy cue near it → not busy.
 6. Busy indicator (tool patterns over the last 25 lines, spinner scan, 6 s
@@ -74,8 +77,10 @@ remote, so a remote row is the remote host's own detector result at poll time
 status mapping. The controller polls every 15 s (config `remote_session_refresh_secs`),
 keeps the last good rows when a poll fails, and stamps `remoteFetchedAt`.
 
-Staleness rules on the controller (classic row, embedded card, preview pane
-and header counts all follow them):
+Staleness rules on the controller (classic row, embedded card, preview pane,
+remote host/sub-group header counts and the filter-bar pill all follow them;
+the header renders a stale remote's `● N ◐ N` dimmed, the pill leaves its
+running rows out):
 
 | Condition | Glyph | Text |
 |---|---|---|
@@ -96,3 +101,8 @@ and header counts all follow them):
   sessions with a healthy poll.
 - The remote snapshot age counts from arrival at the controller, not from the
   remote's own capture time.
+- A remote row is that remote's own verdict: a remote still on 1.16.16 or
+  older keeps reporting Claude background shells at an idle prompt as
+  running whatever the controller runs, until the remote is updated.
+- A Codex live status line pushed out of the live slot (a popup drawn between
+  it and the composer) is not seen; the pane-title spinner still is.
