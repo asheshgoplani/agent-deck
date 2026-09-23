@@ -14,7 +14,7 @@ SESSIONS                                   │ PREVIEW
 2·▾ beta (4) ◐ 1                           │ Fork:    f quick fork, F fork with options
    ├─ ✕ gemini-idle gemini                 │
    ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Output ───────────────────────────────
-  ▶├─ ◐ claude-i18n claude <id>    │ Claude Code synthetic fixture
+  ▶├─ ◐ claude-i18n claude                 │ Claude Code synthetic fixture
    └─ ○ shell-live shell                   │ ❯
   ▾ remotes/lab (0) · unreachable: host d… │ fixture received: VC_I18N
                                            │ esc to interrupt

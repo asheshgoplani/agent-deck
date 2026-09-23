@@ -3,19 +3,19 @@
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
 1·▾ alpha (7) ● 1 ◐ 1        │ shell-live  ○ idle
-   ├─ ■ opencode-… opencode  │ 📁 /tmp/vc-<tmp>
-   ├─ ✕ claude-idle claude   │ ⏱ <age>
-   ├─ ◐ claude-wait… claude  │ 👁️ no viewers
-   └─ ■ claude-stop… claude  │  shell   beta
+   ├─ ■ opencode-idle        │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle          │ ⏱ <age>
+   ├─ ◐ claude-waiting       │ 👁️ no viewers
+   └─ ■ claude-stopped       │  shell   beta
     ▾ backend (3) ● 1        │
-     ├─ ✕ codex-idle codex   │ ────────────────── Output ──────────────────
-     ├─ ● claude-ru… claude  │ $
-     └─ ✕ claude-er… claude  │
+     ├─ ✕ codex-idle         │ ────────────────── Output ──────────────────
+     ├─ ● claude-running     │ $
+     └─ ✕ claude-error       │
 2·▾ beta (4) ◐ 1             │
-   ├─ ✕ gemini-idle gemini   │
-   ├─ ✕ pi-idle pi           │
-   ├─ ◐ claude-i18n claude   │
-  ▶└─ ○ shell-live shell     │
+   ├─ ✕ gemini-idle          │
+   ├─ ✕ pi-idle              │
+   ├─ ◐ claude-i18n          │
+  ▶└─ ○ shell-live           │
   ▾ remotes/lab (0) · unrea… │
                              │
                              │

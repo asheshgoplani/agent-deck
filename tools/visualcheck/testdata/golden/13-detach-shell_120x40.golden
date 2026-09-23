@@ -15,7 +15,7 @@ SESSIONS                                   │ PREVIEW
    ├─ ✕ gemini-idle gemini                 │
    ├─ ✕ pi-idle pi                         │
    ├─ ◐ claude-i18n claude                 │
-  ▶└─ ○ shell-live shell <id>      │
+  ▶└─ ○ shell-live shell                   │
   ▾ remotes/lab (0) · unreachable: host d… │
                                            │
                                            │

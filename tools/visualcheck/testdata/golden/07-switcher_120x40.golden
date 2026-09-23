@@ -5,7 +5,7 @@ SESSIONS                                   │ PREVIEW
 1·▾ alpha (7) ● 1 ◐ 1                      │ claude-waiting  ◐ waiting
    ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude                 │ ⏱ <age>
-  ▶├─ ◐ claude-waiting claude <id>…  │ 👁️ no viewers
+  ▶├─ ◐ claude-waiting claude              │ 👁️ no viewers
    └─ ■ claude-stopped claude              │  claude   alpha
     ▾ backend (3) ● 1                      │ ─────────────────────────────── Claude ───────────────────────────────
      ├─ ✕ codex-idle codex                 │ Status:  ● Connected
@@ -15,10 +15,10 @@ SESSIONS                                   │ PREVIEW
    ├─ ✕ gemini-idle gemini                 │ │                                                        │
    ├─ ✕ pi-idle pi                         │ │  Switch session                                        │────────────
    ├─ ◐ claude-i18n claude                 │ │                                                        │
-   └─ ○ shell-live shell                   │ │  > ◐ claude-waiting (claude) <id>              │
-  ▾ remotes/lab (0) · unreachable: host d… │ │    ● claude-running (claude) <id>              │
-                                           │ │    ◐ claude-i18n (claude) <id>                 │
-                                           │ │    ○ shell-live (shell) <id>                   │
+   └─ ○ shell-live shell                   │ │  > ◐ claude-waiting (claude)                           │
+  ▾ remotes/lab (0) · unreachable: host d… │ │    ● claude-running (claude)                           │
+                                           │ │    ◐ claude-i18n (claude)                              │
+                                           │ │    ○ shell-live (shell)                                │
                                            │ │                                                        │
                                            │ │  Ctrl+S next · Ctrl+A prev                             │
                                            │ │  ↑/↓ browse · Enter attach · Esc close                 │

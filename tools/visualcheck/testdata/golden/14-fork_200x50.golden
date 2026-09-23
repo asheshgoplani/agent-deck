@@ -7,7 +7,7 @@ SESSIONS                                                               │ PREVI
    ├─ ✕ claude-idle claude                                             │ ⏱ <age>
    ├─ ◐ claude-waiting claude                                          │ 👁️ no viewers
    ├─ ■ claude-stopped claude                                          │  claude   alpha
-  ▶└─ ◐ claude-waiting (fork) claude [fork/claude-...] <id>    │ ──────────────────────────────────────────────────────── Worktree ────────────────────────────────────────────────────────
+  ▶└─ ◐ claude-waiting (fork) claude [fork/claude-...]                 │ ──────────────────────────────────────────────────────── Worktree ────────────────────────────────────────────────────────
     ▾ backend (3) ● 1                                                  │ Branch:  fork/claude-waiting
      ├─ ✕ codex-idle codex                                             │ Repo:    /tmp/vc-<tmp>
      ├─ ● claude-running claude                                        │ Path:    /tmp/vc-<tmp>
