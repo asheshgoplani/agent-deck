@@ -75,8 +75,8 @@ func TestCrashedSession_DefaultServerOutsideTmuxReadsError(t *testing.T) {
 }
 
 // sandboxTmuxWrapper writes the visualcheck tmux wrapper (tools/visualcheck
-// sandbox.go): every call is pinned to the private server `-S socket`, and a
-// caller's own -L/-S is refused with exit 64.
+// sandbox.go; keep the two in sync): every call is pinned to the private
+// server `-S socket`, and a caller's own -L/-S is refused with exit 64.
 func sandboxTmuxWrapper(t *testing.T, realTmux, dir, socket string) {
 	t.Helper()
 	wrapper := `#!/bin/sh
@@ -147,9 +147,8 @@ func killPrivateServer(realTmux, flag, name, tmpdir string) {
 // the user's default server; a private server that is the session's
 // configured socket_name; and the visualcheck sandbox (a private server
 // reached through the tmux wrapper, pinned to its own TMUX_TMPDIR's default
-// socket). A
-// session that crashed mid-turn must read error in the shared status row,
-// the list row and the header tally.
+// socket). A session that crashed mid-turn must read error in the shared
+// status row, the list row and the header tally.
 func TestCrashedSession_TUIOnItsOwnServerShowsError(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 	bin := foreignTUIBinary(t)

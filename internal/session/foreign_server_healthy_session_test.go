@@ -1,15 +1,11 @@
 package session
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/asheshgoplani/agent-deck/internal/testutil"
-	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // Review of fix/guard-error-hidden round 1, 2026-09-23: treating "no default
@@ -22,35 +18,6 @@ import (
 // The child lives on the test's isolated DEFAULT server
 // (<TMUX_TMPDIR>/tmux-<uid>/default). The TUI runs inside a private -S server,
 // and each case changes only what the TUI can see of the default server.
-
-func startTUIInForeignServerWithTmpdir(t *testing.T, bin, profile, tuiTmpdir string) func() string {
-	t.Helper()
-	configPath, err := GetUserConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, []byte("[claude]\nhooks_enabled = false\n"), 0o600); err != nil { // no first-run dialogs
-		t.Fatal(err)
-	}
-	sock, cleanup := testutil.ShortTmuxSocket()
-	t.Cleanup(cleanup)
-	cmdline := fmt.Sprintf("exec env HOME=%q TMUX_TMPDIR=%q AGENT_DECK_ALLOW_OUTER_TMUX=1 AGENTDECK_SKIP_UPDATE_CHECK=1 AGENTDECK_TELEMETRY=0 TERM=xterm-256color %q -p %q",
-		os.Getenv("HOME"), tuiTmpdir, bin, profile)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if out, err := tmux.ExecContext(ctx, "", "-S", sock, "new-session", "-d", "-s", "tui", "-x", "160", "-y", "45", cmdline).CombinedOutput(); err != nil {
-		t.Fatalf("foreign tmux server: %v: %s", err, out)
-	}
-	return func() string {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		out, _ := tmux.ExecContext(ctx, "", "-S", sock, "capture-pane", "-p", "-t", "tui").CombinedOutput()
-		return string(out)
-	}
-}
 
 func TestForeignTmuxServer_UnlistableDefaultServerWritesNothingForHealthySession(t *testing.T) {
 	skipIfNoTmuxBinary(t)
@@ -112,7 +79,7 @@ func TestForeignTmuxServer_UnlistableDefaultServerWritesNothingForHealthySession
 			d.syncProfile(profile)
 			tuiTmpdir := c.setup(t)
 
-			capture := startTUIInForeignServerWithTmpdir(t, bin, profile, tuiTmpdir)
+			capture := startTUIInForeignTmuxServerWithTmpdir(t, bin, profile, tuiTmpdir)
 			sawNestedTUI, childStatus := false, ""
 			deadline := time.Now().Add(20 * time.Second)
 			for time.Now().Before(deadline) {
