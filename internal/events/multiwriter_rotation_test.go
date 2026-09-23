@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -93,6 +94,65 @@ func TestReviewStaleRotationAcrossWritersDirect(t *testing.T) {
 	_ = a.Close()
 	_ = b.Close()
 	reviewCheckDir(t, dir)
+}
+
+// The second writer runs in another process, as it does when a TUI and
+// notify daemon share a profile. Its rotation must invalidate A's view.
+func TestRotationAcrossWriterProcesses(t *testing.T) {
+	if dir := os.Getenv("EVENTS_ROTATION_CHILD_DIR"); dir != "" {
+		b, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.maxSegFrames = 4
+		b.writeBatch(reviewFrames(2, "child"), true)
+		if err := b.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	a, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.maxSegFrames = 4
+	a.writeBatch(reviewFrames(4, "parent"), false)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "-test.run=^TestRotationAcrossWriterProcesses$")
+	cmd.Env = append(os.Environ(), "EVENTS_ROTATION_CHILD_DIR="+dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("second writer: %v: %s", err, out)
+	}
+	a.writeBatch(nil, true) // stale one-second sync tick after B rotated
+	a.writeBatch(reviewFrames(1, "parent"), true)
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	all := reviewCheckDir(t, dir)
+	if len(all) != 7 {
+		t.Fatalf("on-disk cursors = %v, want exactly 1..7", all)
+	}
+
+	r, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sub, _ := r.Subscribe(ctx, 4)
+	var got []Cursor
+	for f := range sub.Frames() {
+		got = append(got, f.Cursor)
+	}
+	if len(got) != 3 || got[0] != 5 || got[1] != 6 || got[2] != 7 {
+		t.Fatalf("resume after 4 = %v, want [5 6 7]", got)
+	}
 }
 
 // Same race through the real writer loops and tickers only (public API).
