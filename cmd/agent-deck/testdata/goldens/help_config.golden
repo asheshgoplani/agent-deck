@@ -1,6 +1,15 @@
 Usage: agent-deck config show --effective [path] [--json]
+       agent-deck config get <key> [--json]
+       agent-deck config set <key> <value> [--json]
+       agent-deck config schema [--json]
 
 Commands:
+  get <key>                 Print one setting's effective value (its default when unset).
+  set <key> <value>         Write one setting to config.toml with the TUI Settings writer;
+                            prints the value read back. Lists are comma-separated.
+  schema                    Every settable key: section, label, help, type, allowed values,
+                            default, restart_required. The keys are the TUI Settings rows
+                            plus recall.enabled, macapp.*, core.daemon (docs/macapp-core.md).
   show --effective [path]   Print merged [worktree] settings for path (default: cwd),
                             and which file supplied each value (default/global/dir-local).
                             Also known as `config explain` in the #2093 proposal.

@@ -18,6 +18,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/asheshgoplani/agent-deck/internal/harness"
+
 	dark "github.com/thiagokokada/dark-mode-go"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -305,6 +307,10 @@ type UserConfig struct {
 
 	// Macapp holds the switches for the Mac app surface (docs/macapp-core.md).
 	Macapp MacappSettings `toml:"macapp,omitempty"`
+
+	// Harnesses overrides the core install/login table per harness
+	// ([harnesses.<name>] binary, install_command, login_command, docs_url).
+	Harnesses map[string]harness.Override `toml:"harnesses,omitempty"`
 }
 
 // MacappSettings is the [macapp] section. Everything is off by default.
