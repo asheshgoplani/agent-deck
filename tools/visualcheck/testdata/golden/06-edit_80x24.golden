@@ -1,3 +1,5 @@
+         ╭────────────────────────────────────────────────────────────╮
+         │    Edit Session                                            │
          │                                                            │
          │      in group: alpha                                       │
          │      session: claude-waiting                               │
@@ -19,6 +21,4 @@
          │                                                            │
          │                                                            │
          │    Type to edit │ Enter save │ Tab next │ Esc cancel       │
-         │                                                            │
-         │                                                            │
          ╰────────────────────────────────────────────────────────────╯

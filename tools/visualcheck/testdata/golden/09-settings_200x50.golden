@@ -1,50 +1,50 @@
-                                                                  │                                                                  │
-                                                                  │  Settings                                    [Esc] Close         │
-                                                                  │  ------------------------------------------------------------    │
-                                                                  │                                                                  │
-                                                                  │  THEME                                                           │
-                                                                  │    >Dark   Light   System                                        │
-                                                                  │                                                                  │
-                                                                  │  DEFAULT TOOL                                                    │
-                                                                  │     Claude   Gemini   OpenCode   Codex   Pi   Copilot   Crush    │
-                                                                  │  Muse   Cursor   Hermes   DeepSeek   Oh My Pi  >None             │
-                                                                  │    Pre-selected when creating new sessions                       │
-                                                                  │                                                                  │
-                                                                  │  CLAUDE                                                          │
-                                                                  │    [x] Dangerous mode - Skip permission prompts                  │
-                                                                  │    Config directory: ~/.claude (default)                         │
-                                                                  │                                                                  │
-                                                                  │  GEMINI                                                          │
-                                                                  │    [ ] YOLO mode - Auto-approve all actions                      │
-                                                                  │                                                                  │
-                                                                  │  CODEX                                                           │
-                                                                  │    [ ] YOLO mode - Bypass approvals and sandbox                  │
-                                                                  │                                                                  │
-                                                                  │  HERMES                                                          │
-                                                                  │    [ ] YOLO mode - Auto-approve all tool calls                   │
-                                                                  │                                                                  │
-                                                                  │  UPDATES                                                         │
-                                                                  │    [x] Check for updates on startup                              │
-                                                                  │    [ ] Offer to install on startup                               │
-                                                                  │    [x] Install updates automatically                             │
-                                                                  │    [ ] Restart automatically after update                        │
-                                                                  │                                                                  │
-                                                                  │  LOGS                                                            │
-                                                                  │    Max file size: [10] MB    Lines to keep: [10000]              │
-                                                                  │    [x] Remove orphan logs                                        │
-                                                                  │                                                                  │
-                                                                  │  GLOBAL SEARCH                                                   │
-                                                                  │    [x] Enabled                                                   │
-                                                                  │    Search tier: >Auto   Instant   Balanced                       │
-                                                                  │    Recent days: [0] (0 = all)                                    │
-                                                                  │                                                                  │
-                                                                  │  PREVIEW                                                         │
-                                                                  │    [x] Show Output - Terminal output in preview                  │
-                                                                  │    [ ] Show Analytics - Claude analytics panel                   │
-                                                                  │    [ ] Show Notes - Session notes in preview                     │
-                                                                  │    Notes/Output split: [33] %                                    │
-                                                                  │                                                                  │
-                                                                  │  MAINTENANCE                                                     │
-                                                                  │    ▼ more below                                                  │
-                                                                  │                                                                  │
-                                                                  ╰──────────────────────────────────────────────────────────────────╯
+                                                                   ╭────────────────────────────────────────────────────────────────╮
+                                                                   │                                                                │
+                                                                   │  Settings                                    [Esc] Close       │
+                                                                   │  ------------------------------------------------------------  │
+                                                                   │                                                                │
+                                                                   │  THEME                                                         │
+                                                                   │    >Dark   Light   System                                      │
+                                                                   │                                                                │
+                                                                   │  DEFAULT TOOL                                                  │
+                                                                   │     Claude   Gemini   OpenCode   Codex   Pi   Copilot   Crush  │
+                                                                   │  Muse   Cursor   Hermes   DeepSeek   Oh My Pi  >None           │
+                                                                   │    Pre-selected when creating new sessions                     │
+                                                                   │                                                                │
+                                                                   │  CLAUDE                                                        │
+                                                                   │    [x] Dangerous mode - Skip permission prompts                │
+                                                                   │    Config directory: ~/.claude (default)                       │
+                                                                   │                                                                │
+                                                                   │  GEMINI                                                        │
+                                                                   │    [ ] YOLO mode - Auto-approve all actions                    │
+                                                                   │                                                                │
+                                                                   │  CODEX                                                         │
+                                                                   │    [ ] YOLO mode - Bypass approvals and sandbox                │
+                                                                   │                                                                │
+                                                                   │  HERMES                                                        │
+                                                                   │    [ ] YOLO mode - Auto-approve all tool calls                 │
+                                                                   │                                                                │
+                                                                   │  UPDATES                                                       │
+                                                                   │    [x] Check for updates on startup                            │
+                                                                   │    [ ] Offer to install on startup                             │
+                                                                   │    [x] Install updates automatically                           │
+                                                                   │    [ ] Restart automatically after update                      │
+                                                                   │                                                                │
+                                                                   │  LOGS                                                          │
+                                                                   │    Max file size: [10] MB    Lines to keep: [10000]            │
+                                                                   │    [x] Remove orphan logs                                      │
+                                                                   │                                                                │
+                                                                   │  GLOBAL SEARCH                                                 │
+                                                                   │    [x] Enabled                                                 │
+                                                                   │    Search tier: >Auto   Instant   Balanced                     │
+                                                                   │    Recent days: [0] (0 = all)                                  │
+                                                                   │                                                                │
+                                                                   │  PREVIEW                                                       │
+                                                                   │    [x] Show Output - Terminal output in preview                │
+                                                                   │    [ ] Show Analytics - Claude analytics panel                 │
+                                                                   │    [ ] Show Notes - Session notes in preview                   │
+                                                                   │    ▼ more below                                                │
+                                                                   │  j/k Navigate  Space Toggle                                    │
+                                                                   │  h/l Adjust  Enter Edit  Esc Close                             │
+                                                                   │                                                                │
+                                                                   ╰────────────────────────────────────────────────────────────────╯
