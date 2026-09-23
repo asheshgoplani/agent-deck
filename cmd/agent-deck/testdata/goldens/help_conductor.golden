@@ -10,6 +10,7 @@ Commands:
   list             List all configured conductors
   move <name>      Move a conductor to another profile (--to-profile)
   migrate-dir <path>  Relocate the conductor base dir (move homes + reconcile daemons)
+  heartbeat-tick <name>  Print the delta-only heartbeat message (empty when nothing changed)
   help             Show this help
 
 Examples:
