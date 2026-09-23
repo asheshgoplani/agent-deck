@@ -203,8 +203,28 @@ func handleCodexNotify() {
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(os.Getenv("CODEX_SESSION_ID"))
 	}
+	// Codex's thread-title helper fires the same turn-end notify under its own
+	// thread id, often while the main turn still runs. It never writes a
+	// rollout, so its event must not replace the anchor or the main thread's
+	// hook status: its "waiting" would read as the turn-finished edge.
+	if home := codexNotifyHome(); home != "" && session.CodexUnbackedTurnEnd(sessionID, event, home) {
+		return
+	}
 
 	writeCodexHookStatus(instanceID, status, sessionID, event, turnID)
+}
+
+// codexNotifyHome is the Codex home of the Codex process that spawned this
+// notify, resolved by Codex's own rule: CODEX_HOME, else ~/.codex.
+func codexNotifyHome() string {
+	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
+		return session.ExpandPath(home)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
 }
 
 func codexTurnEdge(event string) (started, completed bool) {

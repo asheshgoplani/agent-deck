@@ -7022,7 +7022,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// binding. Restarting then resumes a finalized child thread, which
 		// refuses turn/start and error-loops the session. See
 		// codex_subagent_gate.go.
+		// Both rejections below also restore the pre-event hook fields: a
+		// rejected thread's turn-end is not this pane's turn-finished edge,
+		// and its "waiting" must not release `session send --defer-if-busy`
+		// into a main turn that is still running.
 		if i.shouldRejectCodexSubagentRebind(sessionID) {
+			restoreHook()
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
@@ -7033,6 +7038,15 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				slog.String("candidate", sessionID),
 				slog.String("event", status.Event),
 			)
+			return
+		}
+		if i.shouldRejectCodexUnbackedTurnEnd(sessionID, status.Event) {
+			restoreHook()
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_turn_ended_without_rollout",
+			})
 			return
 		}
 		i.bindCodexSessionFromHook(sessionID, status.Event)
@@ -8049,8 +8063,15 @@ func parseCodexLastAssistantMessage(lines []string, sessionID string) (*Response
 // LatestCodexTurnGeneration returns the newest durable turn-start identity in
 // the exact rollout bound to this instance. It never derives identity from
 // prompt or response content.
+//
+// A thread the pane's live Codex process owns but has not yet written a
+// rollout for (fresh composer, no turn started) has no turn generation yet, so
+// it reports "" without error, like an empty rollout.
 func (i *Instance) LatestCodexTurnGeneration() (string, error) {
 	path, err := i.codexRolloutPath()
+	if errors.Is(err, errNoExactContextArtifact) && i.LiveCodexThreadID() == i.CodexSessionID {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}

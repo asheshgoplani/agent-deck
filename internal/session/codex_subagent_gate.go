@@ -185,6 +185,46 @@ func (i *Instance) shouldRejectCodexSubagentRebind(candidateID string) bool {
 	return ok && meta.ThreadSource == "subagent"
 }
 
+// shouldRejectCodexUnbackedTurnEnd reports whether a turn-end notify names a
+// thread with no rollout in this instance's Codex home. Codex runs ephemeral
+// helper threads (thread-title generation) that fire the same
+// agent-turn-complete notify with their own id but never write a rollout. When
+// that notify lands after the main thread's, binding it points the instance
+// at a thread no rollout will ever exist for, and every exact-acceptance send
+// is refused until another main-thread turn completes. A real thread's rollout
+// is on disk from its turn start, so a turn-end without one is never the
+// thread the pane talks to. Earlier events (thread start, prompt submit) can
+// legitimately precede the rollout and keep the fail-open binding.
+func (i *Instance) shouldRejectCodexUnbackedTurnEnd(candidateID, event string) bool {
+	return CodexUnbackedTurnEnd(candidateID, event, i.getCodexHomeDir())
+}
+
+// CodexUnbackedTurnEnd reports whether a turn-end notify for threadID comes
+// from a thread with no rollout under codexHome: an ephemeral helper thread
+// (thread-title generation), never the thread the pane talks to. The notify
+// writer uses it to drop such events before they touch the hook status or
+// anchor; UpdateHookStatus uses it to reject them from older status files.
+func CodexUnbackedTurnEnd(threadID, event, codexHome string) bool {
+	if strings.TrimSpace(threadID) == "" || !codexHookEventEndsTurn(event) {
+		return false
+	}
+	_, flushed := codexThreadMetaForSession(threadID, codexHome)
+	return !flushed
+}
+
+func codexHookEventEndsTurn(event string) bool {
+	canon := strings.NewReplacer(".", "/", "-", "/", "_", "/").Replace(strings.ToLower(strings.TrimSpace(event)))
+	if !strings.Contains(canon, "turn") {
+		return false
+	}
+	for _, end := range []string{"complete", "fail", "abort", "cancel", "ended"} {
+		if strings.Contains(canon, end) {
+			return true
+		}
+	}
+	return false
+}
+
 func (i *Instance) filterCodexProcessProbeCandidate(candidateID string) string {
 	if candidateID == "" || !i.shouldRejectCodexSubagentRebind(candidateID) {
 		return candidateID

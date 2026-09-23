@@ -3317,6 +3317,9 @@ func handleSessionSend(profile string, args []string) {
 		tun.retry.turnAdvanced = func() bool { return session.TurnAdvanced(turnQuery) }
 	}
 	if acceptanceGuard != nil {
+		// Codex's counterpart: a new turn in the exact rollout past the
+		// acceptance fence, the evidence the accepted-turn receipt rests on.
+		tun.retry.turnAdvanced = func() bool { return codexTurnAdvancedPastFence(inst, acceptanceFence) }
 		if err := validateCodexAcceptanceFence(inst, acceptanceFence); err != nil {
 			acceptanceGuard.Release()
 			out.Error(fmt.Sprintf("cannot submit against changed Codex turn fence: %v", err), ErrCodeInvalidOperation)
@@ -4164,7 +4167,9 @@ func (g *codexAcceptanceGuard) ResolveAccepted() error {
 // hydrateLegacyCodexIdentity repairs the narrow upgrade case where a live,
 // local Codex pane already owns an exact rollout but its database row predates
 // durable Codex identity tracking. The pane environment is the authority; disk
-// scans and terminal text are deliberately not identity sources here.
+// scans and terminal text are deliberately not identity sources here. Without
+// a pane identity, the one thread the pane's live Codex process holds open is
+// used instead: a fresh composer owns its thread before any rollout exists.
 func hydrateLegacyCodexIdentity(
 	inst *session.Instance,
 	peers []*session.Instance,
@@ -4182,6 +4187,11 @@ func hydrateLegacyCodexIdentity(
 	}
 
 	candidate := liveCodexSessionID(inst)
+	processOwned := false
+	if candidate == "" {
+		candidate = inst.LiveCodexThreadID()
+		processOwned = candidate != ""
+	}
 	if candidate == "" {
 		return fmt.Errorf("Codex session identity is unavailable")
 	}
@@ -4206,7 +4216,7 @@ func hydrateLegacyCodexIdentity(
 		restore()
 		return fmt.Errorf("live Codex session identity has no unique current rollout: %w", err)
 	}
-	if strings.TrimSpace(generation) == "" {
+	if strings.TrimSpace(generation) == "" && !processOwned {
 		restore()
 		return fmt.Errorf("live Codex session identity current turn generation is unavailable")
 	}
@@ -4305,6 +4315,16 @@ func retryAndRequireStructuredCodexAcceptedTurn(
 		receipt = waitForAcceptedCodexTurn(inst, delivery, acceptedAt, fence)
 	}
 	return receipt, requireStructuredCodexAcceptedTurn(inst, jsonOutput, wait, receipt)
+}
+
+// codexTurnAdvancedPastFence reports whether the exact rollout has started a
+// turn after the acceptance fence was captured.
+func codexTurnAdvancedPastFence(inst *session.Instance, fence codexAcceptanceFence) bool {
+	if inst == nil || !fence.available || inst.CodexSessionID != fence.codexSessionID {
+		return false
+	}
+	generation, err := inst.LatestCodexTurnGeneration()
+	return err == nil && generation != "" && generation != fence.priorTurnGeneration
 }
 
 func captureCodexAcceptanceFence(inst *session.Instance) codexAcceptanceFence {
@@ -5295,7 +5315,11 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	sawBody := false
 	lastContent := ""
 	for i := 0; i < checks; i++ {
-		// Strongest signal first: an idle agent that starts working received
+		// Turn advancement in the harness's own transcript is authoritative.
+		if opts.turnAdvanced != nil && opts.turnAdvanced() {
+			return deliverySubmitted, nil
+		}
+		// Strongest pane signal: an idle agent that starts working received
 		// what it started working on, which is submission, not just arrival.
 		if baseline.statusOK && !baseline.wasActive {
 			if status, err := target.GetStatus(); err == nil && status == "active" {
