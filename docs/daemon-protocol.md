@@ -28,7 +28,7 @@ was sent is never retried in process.
 | Socket | `daemon.sock`, mode 0600 |
 | Owner lock | `daemon.lock`: exclusive `flock` plus the owner pid. A second `serve` fails with `daemon already running (pid N)` and touches nothing |
 | Mutation lock | `mutation.lock`: an exclusive per-profile `flock` shared by daemon calls and direct registry CLI mutations. It covers load, decision, external effects and save |
-| Stale socket | After a SIGKILL, the next `serve` removes the socket only if the recorded pid is dead and no listener answers a hello. A live pid, responsive socket, missing pid or non-socket file is never replaced |
+| Stale socket | After a SIGKILL, the next `serve` removes the socket only if the recorded pid is dead and dialing returns `ECONNREFUSED` or `ENOENT`. Any accepted connection, live pid, missing pid or non-socket file prevents takeover. If the recorded pid was reused, the error names the unlocked lock and socket for manual inspection and removal |
 | Peer | Only a Unix socket peer whose uid equals the daemon's (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS). Others get `PEER_REJECTED` before any hello |
 
 ## Frames

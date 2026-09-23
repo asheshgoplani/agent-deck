@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -95,16 +94,17 @@ func Acquire(p Paths) (*Owner, error) {
 			return fail(fmt.Errorf("socket exists without a recorded dead owner pid; refusing takeover"))
 		}
 		if err := syscall.Kill(pid, 0); err == nil || errors.Is(err, syscall.EPERM) {
-			return fail(&AlreadyRunningError{PID: pid})
+			return fail(fmt.Errorf("daemon lock %s is free but recorded pid %d is alive; inspect the owner and remove %s manually if stale", p.Lock, pid, p.Socket))
 		} else if !errors.Is(err, syscall.ESRCH) {
 			return fail(fmt.Errorf("check owner pid %d: %w", pid, err))
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		client, dialErr := Dial(ctx, p.Socket)
-		cancel()
+		client, dialErr := net.DialTimeout("unix", p.Socket, 2*time.Second)
 		if dialErr == nil {
 			_ = client.Close()
-			return fail(fmt.Errorf("socket still answers hello; refusing takeover"))
+			return fail(fmt.Errorf("socket %s accepts connections; refusing takeover", p.Socket))
+		}
+		if !errors.Is(dialErr, syscall.ECONNREFUSED) && !errors.Is(dialErr, syscall.ENOENT) {
+			return fail(fmt.Errorf("check stale socket %s: %w", p.Socket, dialErr))
 		}
 		if err := os.Remove(p.Socket); err != nil {
 			return fail(fmt.Errorf("remove stale socket: %w", err))
