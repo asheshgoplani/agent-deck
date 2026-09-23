@@ -248,21 +248,18 @@ func TestSessionSwitcher_ViewRendersTitlesAndFooter(t *testing.T) {
 }
 
 // TestSessionSwitcher_ViewUsesAutoNameDescription guards the bug where the
-// switcher showed an auto-named session's random handle even though the overview
-// had already swapped in Claude's task description. Both render paths now route
-// through sessionDisplayLabels, so the switcher must show the live pane title
-// (or, when there is no live title, the persisted description) in place of the
-// handle — and must NOT render the pane title a second time as a dim subtitle.
+// switcher and overview show the same auto-named session labels: generated
+// name first, then the live or saved task description.
 func TestSessionSwitcher_ViewUsesAutoNameDescription(t *testing.T) {
 	InitTheme("dark")
 
 	now := time.Now()
-	// Auto-named quick session: Title is the machine handle; the live Claude
+	// Auto-named quick session: Title is the generated name; the live Claude
 	// task description arrives via the subtitles map (the cleaned pane title).
 	live := &session.Instance{ID: "x", Title: "amber-fox", Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now}
 	live.SetAutoName(true)
 	// Auto-named session with no live pane title but a persisted description —
-	// the switcher should fall back to it, mirroring displaySessionTitle.
+	// the switcher should show it after the generated name.
 	persisted := &session.Instance{ID: "y", Title: "brave-otter", Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now.Add(-time.Minute)}
 	persisted.SetAutoName(true)
 	persisted.SetAutoNameDescription("review the migration")
@@ -275,19 +272,18 @@ func TestSessionSwitcher_ViewUsesAutoNameDescription(t *testing.T) {
 	if !strings.Contains(view, "fix the login bug") {
 		t.Errorf("switcher should show the live Claude task description, got:\n%s", view)
 	}
-	if strings.Contains(view, "amber-fox") {
-		t.Errorf("switcher should not show the random handle for an auto-named session, got:\n%s", view)
+	if !strings.Contains(view, "amber-fox") {
+		t.Errorf("switcher should show the generated name first, got:\n%s", view)
 	}
 	if !strings.Contains(view, "review the migration") {
 		t.Errorf("switcher should fall back to the persisted auto-name description, got:\n%s", view)
 	}
-	if strings.Contains(view, "brave-otter") {
-		t.Errorf("switcher should not show the handle when a persisted description exists, got:\n%s", view)
+	if !strings.Contains(view, "brave-otter") {
+		t.Errorf("switcher should show the generated name with its saved description, got:\n%s", view)
 	}
-	// The live title must appear exactly once (as the title), not also as a dim
-	// subtitle — an auto-named row promotes the pane title to the title.
+	// The live task description appears once as the dim suffix.
 	if n := strings.Count(view, "fix the login bug"); n != 1 {
-		t.Errorf("auto-named pane title should render once (as the title), got %d occurrences:\n%s", n, view)
+		t.Errorf("auto-named pane title should render once (as the subtitle), got %d occurrences:\n%s", n, view)
 	}
 }
 

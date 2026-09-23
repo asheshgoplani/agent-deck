@@ -5853,7 +5853,7 @@ type sessionRenderState struct {
 	account        string // Stored slot; empty means inherited, not a login identity.
 	accountDisplay accountPresentation
 	title          string // Instance.Title at snapshot time
-	autoName       bool   // session displays a captured/live task description
+	autoName       bool   // session may show a captured/live task description as a suffix
 	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
 	// archivedSuperseded mirrors session.VisibleInstances' exclusion: true
 	// for an archived cross-harness source still superseded by a "Restart
@@ -5863,15 +5863,6 @@ type sessionRenderState struct {
 	archivedSuperseded bool
 }
 
-// displaySessionTitle returns the label to render for a session row. For an
-// auto-named quick session (AutoName) it returns, in order of preference: the
-// live Claude task description (paneTitle), the last description we persisted,
-// then the session's own Title. Non-auto-named sessions always return Title
-// (the CLI handle or a user/Claude-chosen name).
-//
-// paneTitle must already be cleaned by cleanPaneTitle: an empty paneTitle means
-// idle/just-started. The persisted-description fallback keeps the meaningful
-// name visible on reopen before the session resumes and re-emits a live title.
 // shouldPersistAutoNameDesc decides whether the background status loop should
 // write a new task description for an auto-named session, given the live
 // (already-cleaned) pane title and the value last persisted for it. It returns
@@ -5887,18 +5878,8 @@ func shouldPersistAutoNameDesc(autoName bool, paneTitle, lastPersisted string) (
 	return paneTitle, true
 }
 
-func displaySessionTitle(inst *session.Instance, paneTitle string) string {
-	if inst.GetAutoName() {
-		// Prefer the live task description; fall back to the last one we
-		// persisted so the name still shows on reopen when the session is
-		// stopped/idle (no live pane title); finally fall back to the handle.
-		if paneTitle != "" {
-			return paneTitle
-		}
-		if desc := inst.GetAutoNameDescription(); desc != "" {
-			return desc
-		}
-	}
+// displaySessionTitle keeps the session name as the primary label.
+func displaySessionTitle(inst *session.Instance, _ string) string {
 	return inst.Title
 }
 
@@ -5907,44 +5888,32 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 // background UpdateStatus writer (#1753; see the field comments on
 // sessionRenderState). The overview row renderer must use this form.
 func displaySessionTitleFromState(state sessionRenderState) string {
-	if state.autoName {
-		if state.paneTitle != "" {
-			return state.paneTitle
-		}
-		if state.autoNameDesc != "" {
-			return state.autoNameDesc
-		}
-	}
 	return state.title
 }
 
-// sessionDisplayLabels returns the primary title and the optional dim secondary
-// subtitle to render for a session row, given its live pane title (already
-// cleaned by cleanPaneTitle). Both render paths — the overview
-// (renderSessionItem) and the session switcher (SessionSwitcher.View) — go
-// through this so the two cannot drift apart again: an auto-named session
-// promotes the live/persisted Claude task description to the primary title and
-// shows no subtitle (it would only duplicate the title); every other session
-// keeps its handle/name as the title and surfaces the pane title as the dim
-// subtitle. The subtitle is empty when there is nothing to show. Callers may
-// layer extra visibility policy on the subtitle — the overview, for instance,
-// only renders it for the selected row or when showPaneTitles is enabled.
+// sessionDisplayLabels keeps the session name first, with a useful pane or
+// saved task description as an optional dim suffix. Both overview and switcher
+// use this ordering.
 func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subtitle string) {
 	title = displaySessionTitle(inst, paneTitle)
-	if !inst.GetAutoName() {
-		subtitle = paneTitle
+	subtitle = paneTitle
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && subtitle == tmuxSess.Name {
+		subtitle = ""
+	}
+	if inst.GetAutoName() && subtitle == "" {
+		subtitle = cleanPaneTitle(inst.GetAutoNameDescription())
 	}
 	return title, subtitle
 }
 
 // sessionDisplayLabelsFromState is the lock-free form of sessionDisplayLabels,
-// reading everything from the render snapshot (#1753). Same policy: an
-// auto-named session promotes the task description to the title and shows no
-// subtitle; everything else keeps its handle and shows the pane title dim.
+// reading everything from the render snapshot (#1753). Auto-named sessions
+// show a live or saved task description after the name.
 func sessionDisplayLabelsFromState(state sessionRenderState) (title, subtitle string) {
 	title = displaySessionTitleFromState(state)
-	if !state.autoName {
-		subtitle = state.paneTitle
+	subtitle = state.paneTitle
+	if state.autoName && subtitle == "" {
+		subtitle = cleanPaneTitle(state.autoNameDesc)
 	}
 	return title, subtitle
 }
@@ -5963,7 +5932,10 @@ func cleanPaneTitle(title string) string {
 	})
 	cleaned = strings.TrimSpace(cleaned)
 	switch cleaned {
-	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+	case "", "Claude Code", "Gemini CLI", "Codex CLI", "bash", "zsh", "fish", "sh":
+		return ""
+	}
+	if host, err := os.Hostname(); err == nil && strings.EqualFold(cleaned, host) {
 		return ""
 	}
 	return cleaned
@@ -6067,6 +6039,9 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
 				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+				if state.paneTitle == tmuxSess.Name {
+					state.paneTitle = ""
+				}
 			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
 				if prevState, hadPrev := prev[inst.ID]; hadPrev {
 					state.paneTitle = prevState.paneTitle
@@ -21731,12 +21706,8 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Auto-named quick sessions display Claude's live task description (the
-	// tmux pane title) in place of the random handle. instState.paneTitle is
-	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
-	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
-	// trailing pane title for non-auto-named rows ("" when auto-named, since the
-	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
+	// The session name stays first. A useful pane or saved task description is
+	// the optional dim suffix, including for auto-named quick sessions.
 	// Snapshot form only here: the per-row Instance.mu reads the inst-based
 	// form does can block behind a mid-sweep UpdateStatus writer for seconds,
 	// scaling with visible rows (#1753 black-screen).
@@ -21829,9 +21800,7 @@ func (h *Home) renderSessionItem(
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
 	if (selected || h.showPaneTitles) && paneSubtitle != "" {
-		// paneSubtitle is non-empty only for non-auto-named rows (auto-named rows
-		// promote the pane title to displayTitle), so the auto-name guard that
-		// used to sit here is folded into the snapshot-based label helper.
+		// The snapshot label helper has already omitted generic pane titles.
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate

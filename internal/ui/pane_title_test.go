@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -23,6 +24,8 @@ func TestCleanPaneTitle(t *testing.T) {
 		{"multiple markers", "✳✻ Some task", "Some task"},
 		{"just markers", "✳✻✽", ""},
 		{"no markers", "Hello world", "Hello world"},
+		{"hostname", func() string { host, _ := os.Hostname(); return host }(), ""},
+		{"shell", "bash", ""},
 		{"hostname only", "29fa91017da8", "29fa91017da8"},
 		{"braille only", "⠐ Claude Code", ""},
 		{"whitespace after strip", "✳  Spaced task ", "Spaced task"},
