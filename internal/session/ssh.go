@@ -308,11 +308,12 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
-	return r.runExec(ctx, remoteCmd)
+	return r.runExec(ctx, remoteCmd, remoteVerbReadOnly(args))
 }
 
-// runExec runs one remote command over the shared ControlMaster and, if the
-// master has no channels left, retries once on a dedicated connection.
+// runExec runs one remote command over the shared ControlMaster and, when the
+// command is read-only and the master has no channels left, retries once on a
+// dedicated connection.
 //
 // sshd caps concurrent channels per connection at MaxSessions (default 10).
 // agent-deck funnels every remote command through one ControlMaster per host,
@@ -321,19 +322,24 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 // administratively prohibited") rather than a timeout, and the caller records
 // an unreachable/dead remote even though it is healthy (#2355).
 //
-// The retry is safe for mutating commands too: a channel-open failure means
-// the request never reached the remote, so nothing has run yet. Detection is
-// deliberately stderr-only — ssh reports channel-open failures on stderr,
-// while a remote command's own output lands on stdout — so a line the remote
-// program happened to print cannot trigger a re-run.
-func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string) ([]byte, error) {
+// Only read-only verbs are retried. A refusal is not proof that nothing ran:
+// OpenSSH can fall back to a direct connection within the same invocation, so a
+// mutating verb that ran and then exited nonzero would be executed twice. This
+// matches the read-only gate already used when a channel reply is lost
+// (errChannelInterrupted). The status poll's commands (list, costs summary,
+// group list) are all read-only, so this still covers the failure users see.
+func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string, readOnly bool) ([]byte, error) {
 	stdout, stderr, err := r.execSSH(ctx, r.sshBaseArgs(remoteCmd))
-	if err != nil && isSSHChannelExhaustion(string(stderr)) {
-		if out, retryStderr, retryErr := r.execSSH(ctx, dedicatedSSHArgs(r.Host, remoteCmd)); retryErr == nil {
+	if err != nil && readOnly && isSSHChannelExhaustion(string(stderr)) {
+		out, retryStderr, retryErr := r.execSSH(ctx, dedicatedSSHArgs(r.Host, remoteCmd))
+		if retryErr == nil {
 			r.logSSHStderr(ctx, retryStderr, false)
 			r.setLastStderr(retryStderr)
 			return out, nil
 		}
+		// The dedicated attempt is the one that matters: report its result,
+		// not the superseded shared-master failure it replaced.
+		stdout, stderr, err = out, retryStderr, retryErr
 	}
 	r.logSSHStderr(ctx, stderr, err != nil)
 	if err != nil {
