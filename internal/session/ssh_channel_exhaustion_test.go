@@ -15,9 +15,9 @@ func TestIsSSHChannelExhaustion(t *testing.T) {
 		want bool
 	}{
 		{"sshd no more sessions", "channel 0: open failed: no more sessions", true},
-		{"client refused", "mux_client_request_session: session open refused by peer", true},
-		{"administratively prohibited", "open failed: administratively prohibited: open failed", true},
-		{"plain open failed", "channel 1: open failed: connect failed", true},
+		{"mux client refused", "mux_client_request_session: session request failed: Session open refused by peer", true},
+		{"direct channel refused", "channel 1: open failed: connect failed: open failed", true},
+		{"forwarding denial is not session exhaustion", "administratively prohibited: port forwarding not permitted", false},
 		{"ordinary remote failure", "Error: path does not exist", false},
 		{"timeout", "ssh: connect to host example.com port 22: Connection timed out", false},
 		{"empty", "", false},

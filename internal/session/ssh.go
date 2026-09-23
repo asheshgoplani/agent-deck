@@ -396,13 +396,24 @@ func dedicatedSSHArgs(host, remoteCmd string) []string {
 }
 
 // isSSHChannelExhaustion reports whether ssh's stderr describes a refused
-// multiplexed channel rather than a failed remote command.
+// session channel rather than a failed remote command.
+//
+// sshd logs MaxSessions exhaustion server-side as "no more sessions"
+// (session.c) and never sends that text to the client. What the client prints:
+//   - over a ControlMaster, the master answers MUX_S_FAILURE with "Session open
+//     refused by peer" (mux.c), so stderr carries "session open refused";
+//   - on a direct channel, the server sends reason SSH2_OPEN_CONNECT_FAILED
+//     with the default message "open failed" (serverloop.c), so stderr carries
+//     "open failed".
+//
+// "administratively prohibited" is deliberately NOT matched: a refused session
+// channel does not use that reason (it is for forwarding denials), so matching
+// it would retry on unrelated refusals.
 func isSSHChannelExhaustion(stderr string) bool {
 	d := strings.ToLower(stderr)
 	return strings.Contains(d, "no more sessions") ||
 		strings.Contains(d, "open failed") ||
-		strings.Contains(d, "session open refused") ||
-		strings.Contains(d, "administratively prohibited")
+		strings.Contains(d, "session open refused")
 }
 
 // lastStderrBox is lastStderr's storage: a pointer field on SSHRunner so
