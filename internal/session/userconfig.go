@@ -302,6 +302,21 @@ type UserConfig struct {
 
 	// Core holds the one-core registry and daemon switches (docs/core-registry.md).
 	Core CoreSettings `toml:"core,omitempty"`
+
+	// Macapp holds the switches for the Mac app surface (docs/macapp-core.md).
+	Macapp MacappSettings `toml:"macapp,omitempty"`
+}
+
+// MacappSettings is the [macapp] section. Everything is off by default.
+type MacappSettings struct {
+	// Plugins enables the plugin-facing commands: `limits --json` and the
+	// macapp.* namespace of `events publish`.
+	Plugins bool `toml:"plugins,omitempty"`
+
+	// TranscriptEvents makes the notify daemon publish a session.transcript
+	// bus frame whenever a live session's native transcript grows, so a
+	// client never stats transcript files itself.
+	TranscriptEvents bool `toml:"transcript_events,omitempty"`
 }
 
 // CoreSettings is the [core] section.

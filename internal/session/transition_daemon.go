@@ -582,6 +582,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
 	d.journalStatusChanges(profile, byID, statuses, substates)
+	if cfg, _ := LoadUserConfig(); cfg != nil && cfg.Macapp.TranscriptEvents {
+		transcriptGrowth.publish(profile, instances)
+	}
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.

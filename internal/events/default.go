@@ -1,7 +1,6 @@
 package events
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
@@ -126,7 +125,7 @@ func publishTap(profile, kind, sessionID string, data any) {
 		warnDisabled("AGENTDECK_EVENTS_BUS disabled", nil)
 		return
 	}
-	raw, err := json.Marshal(data)
+	raw, err := marshalData(data)
 	if err != nil {
 		return
 	}

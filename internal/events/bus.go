@@ -337,7 +337,7 @@ func (b *Bus) Publish(kind, sessionID string, data any) {
 	if b == nil || !b.enabled || b.closed.Load() || b.failed.Load() {
 		return
 	}
-	raw, err := json.Marshal(data)
+	raw, err := marshalData(data)
 	if err != nil {
 		return
 	}

@@ -23,12 +23,28 @@ trailing spaces).
 
 | File | Publishes | Kind |
 |---|---|---|
-| `internal/session/event_writer.go` | No live bus tap. `session.status` is reserved. | — |
+| `internal/session/event_writer.go` | No live bus tap (the events/ file format is unchanged). | — |
+| `internal/statedb` `WriteStatus` via `internal/session/status_bus.go` | every status row transition, from whichever process owns the status (TUI poller, notify daemon) | `session.status` |
+| same | entering `running` / leaving `running` | `session.turn` |
+| `internal/session/transition_daemon.go` (only with `[macapp] transcript_events = true`) | a live session's native transcript grew | `session.transcript` |
+| `agent-deck events publish` (only with `[macapp] plugins = true`) | a client/plugin frame | `macapp.*` |
 | `internal/session/transition_notifier.go` | `NotifyTransition` | `session.transition` |
 | `internal/session/transition_notifier.go` | `NotifyFinished` | `session.finished` |
 | `internal/tmux/pipemanager.go` | tmux `%output` | `tmux.output` |
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |
 | `internal/watcher/engine.go` | `healthLoop` (health snapshot) | `watcher.health` |
+
+Frame data for the session kinds (`session_id` is the agent-deck session id):
+
+| Kind | `data` |
+|---|---|
+| `session.status` | `{from, to, tool, tmux_session, substate, changed_at}` (`changed_at` RFC 3339, the frame `ts` is the same instant in ms) |
+| `session.turn` | `{phase: "started"}` or `{phase: "ended", to, duration_ms}` (duration measured by the publishing process; omitted when it did not see the start) |
+| `session.transcript` | `{path, bytes_appended, size}` |
+| `tmux.output` | none: `session_id` is the tmux session name; the frame has no `data` key (never `"data": null`) |
+
+A producer that passes nil data publishes a frame without `data`; a stored
+`data: null` from an older writer is also rendered without it.
 
 The tmux producer calls `PublishDefault` into a bounded in-memory queue.
 Transitions call `PublishProfile` with the event's owning profile, including
@@ -95,8 +111,9 @@ CloseDefault() error                              // CLI/TUI shutdown
 
 | Command | Output |
 |---|---|
-| `agent-deck events follow --json [--after <cursor>]` | NDJSON frames, oldest first, streams live until killed. |
-| `agent-deck events stats --json` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap}`. |
+| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>]` | NDJSON frames, oldest first, streams live until killed. `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. |
+| `agent-deck events stats --json` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap, kinds: {kind: retained count}}`. |
+| `agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> \| --data-file <path\|->] [--json]` | Publishes one frame and waits (≤ 2 s) until it is committed; prints `{ok, kind, session_id, cursor, profile}`. Only the `macapp.*` namespace, only with `[macapp] plugins = true` (exit 2 otherwise). `--session` defaults to `$AGENTDECK_INSTANCE_ID`. |
 
 `cursor` and `dropped` reflect the profile across processes. `published`,
 `written`, `synced` and queue occupancy describe the process running the
