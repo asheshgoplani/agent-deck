@@ -354,8 +354,8 @@ func stepAttachShell(w *widthRun) error {
 		return err
 	}
 	if err := w.waitFor(func() (bool, error) {
-		pane, err := w.pane()
-		return err == nil && strings.Contains(pane, "0:sh*") && !strings.Contains(pane, "SESSIONS"), err
+		name, err := w.s.exec("tmux", "display-message", "-p", "-t", w.sd.shellLive.tmuxName, "#{window_name}")
+		return err == nil && strings.TrimSpace(name) == "sh", err
 	}, 5*time.Second); err != nil {
 		return err
 	}
