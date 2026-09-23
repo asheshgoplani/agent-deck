@@ -506,6 +506,7 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		if perr != nil {
 			return oldValue, nil, &MutationError{Field: field, Msg: fmt.Sprintf("invalid favorite %q — expected true or false", value)}
 		}
+		inst.favoriteCleared = inst.Favorite && !fav
 		inst.Favorite = fav
 
 	case FieldPin:

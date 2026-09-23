@@ -511,6 +511,9 @@ type Instance struct {
 	// true|false`, shown in list/show JSON. Persisted in the tool_data extras
 	// zone (favorite_persist.go).
 	Favorite bool `json:"favorite,omitempty"`
+	// favoriteCleared is set when `session set favorite false` clears a
+	// favourite, so the save writes an explicit false (favorite_persist.go).
+	favoriteCleared bool
 
 	// IsForkAwaitingStart signals that this instance was produced by a
 	// fork builder and must run a pre-built fork command verbatim on the
