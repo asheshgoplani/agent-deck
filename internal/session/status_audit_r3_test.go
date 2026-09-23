@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Status-detection audit, review round 3 (2026-09-23).
@@ -34,9 +35,6 @@ func TestAuditR3_PiDelegateTaskProseVsLiveSubagent(t *testing.T) {
 		t.Run(c.frame, func(t *testing.T) {
 			inst, cleanup := startPaneInstance(t, "pi", "r3-"+c.frame, piCorpusFrame(t, c.frame))
 			defer cleanup()
-			if got, err := inst.tmuxSession.GetStatus(); err != nil || got != c.wantTmux {
-				t.Fatalf("tmux GetStatus = %q (err %v), want %q", got, err, c.wantTmux)
-			}
 			storage, err := NewStorageWithProfile("_test-audit-r3-pi")
 			if err != nil {
 				t.Fatalf("storage: %v", err)
@@ -45,6 +43,18 @@ func TestAuditR3_PiDelegateTaskProseVsLiveSubagent(t *testing.T) {
 			fresh := persistAndReload(t, storage, inst, c.persisted)
 			if status, _ := cliPass(t, fresh); status != c.want {
 				t.Fatalf("fresh process = %q, want %q", status, c.want)
+			}
+
+			// The tmux layer alone, on another freshly loaded instance. The
+			// first reads can fall in the startup window ("starting").
+			tsess := persistAndReload(t, storage, inst, c.persisted).tmuxSession
+			got, err := tsess.GetStatus()
+			for i := 0; i < 20 && err == nil && got == "starting"; i++ {
+				time.Sleep(250 * time.Millisecond)
+				got, err = tsess.GetStatus()
+			}
+			if err != nil || got != c.wantTmux {
+				t.Fatalf("tmux GetStatus = %q (err %v), want %q", got, err, c.wantTmux)
 			}
 		})
 	}
