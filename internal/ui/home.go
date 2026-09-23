@@ -21734,6 +21734,24 @@ func (h *Home) renderSessionItem(
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
 		cellWidth(agentBadge) + cellWidth(timestampBadge)
+	// Keep a useful title before spending narrow-row space on a worktree badge.
+	if listWidth > 0 && listWidth < 40 && worktreeBadge != "" {
+		originalWidth := cellWidth(worktreeBadge)
+		badgeWidth := max(0, listWidth-(reserved-originalWidth)-minSessionTitleWidth-1)
+		if originalWidth > badgeWidth {
+			badge := ""
+			if badgeWidth >= 4 {
+				branch := strings.TrimSuffix(strings.TrimPrefix(stripAnsi(worktreeBadge), " ["), "]")
+				badge = " [" + cellTruncate(branch, badgeWidth-3, "…") + "]"
+			}
+			if selected {
+				worktreeBadge = SessionStatusSelStyle.Render(badge)
+			} else {
+				worktreeBadge = lipgloss.NewStyle().Foreground(ColorCyan).Render(badge)
+			}
+			reserved = reserved - originalWidth + cellWidth(badge)
+		}
+	}
 	// Reserve the title's floor before the viewers and account badges claim
 	// any of the remaining width, so a narrow column shrinks and then drops
 	// the badges instead of collapsing the title (#2201). The viewers badge
