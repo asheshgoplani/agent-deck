@@ -4152,7 +4152,9 @@ func (g *codexAcceptanceGuard) ResolveAccepted() error {
 // hydrateLegacyCodexIdentity repairs the narrow upgrade case where a live,
 // local Codex pane already owns an exact rollout but its database row predates
 // durable Codex identity tracking. The pane environment is the authority; disk
-// scans and terminal text are deliberately not identity sources here.
+// scans and terminal text are deliberately not identity sources here. Without
+// a pane identity, the one thread the pane's live Codex process holds open is
+// used instead: a fresh composer owns its thread before any rollout exists.
 func hydrateLegacyCodexIdentity(
 	inst *session.Instance,
 	peers []*session.Instance,
@@ -4170,6 +4172,11 @@ func hydrateLegacyCodexIdentity(
 	}
 
 	candidate := liveCodexSessionID(inst)
+	processOwned := false
+	if candidate == "" {
+		candidate = inst.LiveCodexThreadID()
+		processOwned = candidate != ""
+	}
 	if candidate == "" {
 		return fmt.Errorf("Codex session identity is unavailable")
 	}
@@ -4194,7 +4201,7 @@ func hydrateLegacyCodexIdentity(
 		restore()
 		return fmt.Errorf("live Codex session identity has no unique current rollout: %w", err)
 	}
-	if strings.TrimSpace(generation) == "" {
+	if strings.TrimSpace(generation) == "" && !processOwned {
 		restore()
 		return fmt.Errorf("live Codex session identity current turn generation is unavailable")
 	}
