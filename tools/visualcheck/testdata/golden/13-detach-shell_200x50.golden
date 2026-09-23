@@ -1,4 +1,4 @@
-⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error • ⚙ 16% │ ▪ 865.7G/926.4G                                                                           <version>
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                                                                                                      <version>
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
 SESSIONS                                                               │ PREVIEW
 ────────────────────────────────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -9,14 +9,14 @@ SESSIONS                                                               │ PREVI
    └─ ■ claude-stopped claude                                          │  shell   beta
     ▾ backend (3) ● 1                                                  │
      ├─ ✕ codex-idle codex                                             │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
-     ├─ ● claude-running claude                                        │ <hostname>:shell-live ashesh$  export AGENTDECK_INSTANCE_ID=<id>-<id> AGENTDECK_PROFILE=default AGENTDE...
-     └─ ✕ claude-error claude                                          │ /.local/share/agent-deck/runtime/identity/<id>-<id>/identity.md
-2·▾ beta (4) ◐ 1                                                       │ <hostname>:shell-live ashesh$ clear
-   ├─ ✕ gemini-idle gemini                                             │ <hostname>:shell-live ashesh$
+     ├─ ● claude-running claude                                        │ $
+     └─ ✕ claude-error claude                                          │
+2·▾ beta (4) ◐ 1                                                       │
+   ├─ ✕ gemini-idle gemini                                             │
    ├─ ✕ pi-idle pi                                                     │
    ├─ ◐ claude-i18n claude                                             │
-  ▶└─ ○ shell-live shell <hostname>                                │
-  ▾ remotes/lab (0) · unreachable: host down · poll <age>                │
+  ▶└─ ○ shell-live shell <id>                                  │
+  ▾ remotes/lab (0) · unreachable: host down · poll <age>               │
                                                                        │
                                                                        │
                                                                        │

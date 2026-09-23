@@ -7,8 +7,8 @@ import (
 )
 
 // waitFor polls fn every 100ms until it returns true or the deadline passes.
-// Every capture in this tool is gated on frame content, never a bare sleep,
-// per the PROMPT's determinism requirement.
+// Screen assertions use this content poll. Short sleeps elsewhere settle
+// navigation or record the redraw probe; they do not replace a predicate.
 func (s *suite) waitFor(timeout time.Duration, fn func() (bool, error)) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error

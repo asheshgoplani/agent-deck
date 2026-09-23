@@ -213,7 +213,7 @@ func (s *suite) seedStore() (*seed, error) {
 // filling in ss.tmuxName. For claude sessions the fixture fires its
 // SessionStart/Stop hooks synchronously before printing its prompt, so by
 // the time the pane exists the row is already past StatusStarting into
-// StatusWaiting — see README.md's note on why "starting" is advisory.
+// StatusWaiting — the brief's "starting" state is too brief to seed reliably.
 func (s *suite) startAndAwaitHook(ss *seededSession) error {
 	if _, err := s.cmd("session", "start", ss.id); err != nil {
 		return fmt.Errorf("start %s: %w", ss.title, err)

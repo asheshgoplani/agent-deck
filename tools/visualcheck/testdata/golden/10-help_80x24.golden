@@ -1,24 +1,23 @@
-│                                                                  │
-      │  Settings                                    [Esc] Close         │
-      │  ------------------------------------------------------------    │
-      │                                                                  │
-      │  THEME                                                           │
-      │    >Dark   Light   System                                        │
-      │                                                                  │
-      │  DEFAULT TOOL                                                    │
-      │     Claude   Gemini   OpenCode   Codex   Pi   Copilot   Crush    │
-      │  Muse   Cursor   Hermes   DeepSeek   Oh My Pi  >None             │
-      │    Pre-selected when creating new sessions                       │
-      │                                                                  │
-      │  CLAUDE                                                          │
-      │    [x] Dangerous mode - Skip permission prompts                  │
-      │    Config directory: ~/.claude (default)                         │
-      │                                                                  │
-      │  GEMINI                                                          │
-      │    [ ] YOLO mode - Auto-approve all actions                      │
-      │                                                                  │
-      │  CODEX                                                           │
-      │    [ ] YOLO mode - Bypass approvals and sandbox                  │
-      │    ▼ more below                                                  │
-      │                                                                  │
-      ╰──────────────────────────────────────────────────────────────────╯
+
+    ╭──────────────────────────────────────────────────────────────────────╮
+    │                                                                      │
+    │                                                                      │
+    │  KEYBOARD SHORTCUTS                                                  │
+    │                                                                      │
+    │  QUICK START                                                         │
+    │    Enter          Attach to selected session                         │
+    │    R              Restart selected session                           │
+    │    Ctrl+Q         Detach from session                                │
+    │    ?              Open this help                                     │
+    │                                                                      │
+    │  NAVIGATION                                                          │
+    │    j / Down       Move down                                          │
+    │    k / Up         Move up                                            │
+    │    Ctrl+u/d       Half page up/down                                  │
+    │    PgUp / PgDn    Half page up/down                                  │
+    │    Ctrl+f/b       Full page up/down                                  │
+    │  ▼ more below                                                        │
+    │                                                                      │
+    │  j/k scroll • any other key to close                                 │
+    │                                                                      │
+    ╰──────────────────────────────────────────────────────────────────────╯

@@ -1,35 +1,35 @@
-⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 3 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error • ⚙ 36% │ ▪ 865.7G/926.4G                                                                           <version>
-  All    ● 1   ◐ 3   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                                                                                                      <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
 SESSIONS                                                               │ PREVIEW
 ────────────────────────────────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-1·▾ alpha (8) ● 1 ◐ 2                                                  │ claude-waiting  ◐ waiting
+1·▾ alpha (8) ● 1 ◐ 1                                                  │ claude-waiting (fork)  ○ starting
    ├─ ■ opencode-idle opencode                                         │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude                                             │ ⏱ <age>
-  ▶├─ ◐ claude-waiting claude <hostname>                           │ 👁️ no viewers
+   ├─ ◐ claude-waiting claude                                          │ 👁️ no viewers
    ├─ ■ claude-stopped claude                                          │  claude   alpha
-   └─ ◐ claude-waiting (fork) claude [fork/claude-...]                 │ ───────────────────────────────────────────────────────── Claude ─────────────────────────────────────────────────────────
-    ▾ backend (3) ● 1                                                  │ Status:  ● Connected
-     ├─ ✕ codex-idle codex                                             │ Session: <uuid>
-     ├─ ● claude-running claude                                        │ Model:   tool default
-     └─ ✕ claude-error claude                                          │ Fork:    f quick fork, F fork with options
-2·▾ beta (4) ◐ 1                                                       │
-   ├─ ✕ gemini-idle gemini                                             │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
-   ├─ ✕ pi-idle pi                                                     │ Claude Code synthetic fixture
-   ├─ ◐ claude-i18n claude                                             │ ❯
-   └─ ○ shell-live shell                                               │
-  ▾ remotes/lab (0) · unreachable: host down · poll <age>                │
+  ▶└─ ○ claude-waiting (fork) claude [fork/claude-...]                 │ ──────────────────────────────────────────────────────── Worktree ────────────────────────────────────────────────────────
+    ▾ backend (3) ● 1                                                  │ Branch:  fork/claude-waiting
+     ├─ ✕ codex-idle codex                                             │ Repo:    /tmp/vc-<tmp>
+     ├─ ● claude-running claude                                        │ Path:    /tmp/vc-<tmp>
+     └─ ✕ claude-error claude                                          │ Status:  clean
+2·▾ beta (4) ◐ 1                                                       │ Setup:   b re-run setup script
+   ├─ ✕ gemini-idle gemini                                             │ Finish:  W merge + cleanup
+   ├─ ✕ pi-idle pi                                                     │ ───────────────────────────────────────────────────────── Claude ─────────────────────────────────────────────────────────
+   ├─ ◐ claude-i18n claude                                             │ Status:  ● Connected
+   └─ ○ shell-live shell                                               │ Session: <uuid>
+  ▾ remotes/lab (0) · unreachable: host down · poll <age>               │ Model:   tool default
                                                                        │
+                                                                       │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
                                                                        │
+                                                                       │                                                           ⣽  ⣽  ⣽
                                                                        │
+                                                                       │                                                  🚀 Launching Claude Code
                                                                        │
+                                                                       │                                                 Starting Claude session...
                                                                        │
+                                                                       │                                                            ●●○○
                                                                        │
-                                                                       │
-                                                                       │
-                                                                       │
-                                                                       │
-                                                                       │
-                                                                       │
+                                                                       │                                                        Loading... <age>
                                                                        │
                                                                        │
                                                                        │
@@ -47,4 +47,4 @@ SESSIONS                                                               │ PREVI
                                                                        │
                                                                        │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP  v  Both  s  Skills  H  Shell  c  Copy  V  Copy pane  x  Send │  r  Rename …        ↑↓ Nav │ q Quit
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  m  MCP  v  Both  s  Skills  H  Shell  c  Copy  V  Copy pane  x  Send │  r  Rename  M  Move …          ↑↓ Nav │ q Quit

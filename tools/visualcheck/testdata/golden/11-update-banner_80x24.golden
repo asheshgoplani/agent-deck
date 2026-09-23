@@ -1,11 +1,13 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+ ⬆ <version> installed, press ctrl+t to restart agent-deck
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
-1·▾ alpha (7) ● 1 ◐ 1        │ claude-i18n  ◐ waiting
+1·▾ alpha (7) ● 1 ◐ 1        │ claude-waiting  ◐ waiting
    ├─ ■ opencode-… opencode  │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude   │ ⏱ <age>
-   ├─ ◐ claude-wait… claude  │ 👁️ no viewers
-   └─ ■ claude-stop… claude  │  claude   beta
+  ▶├─ ◐ claude-wait… claude  │ 👁️ no viewers
+   └─ ■ claude-stop… claude  │  claude   alpha
     ▾ backend (3) ● 1        │ ────────────────── Claude ──────────────────
      ├─ ✕ codex-idle codex   │ Status:  ● Connected
      ├─ ● claude-ru… claude  │ Session: <uuid>
@@ -13,10 +15,10 @@ SESSIONS                     │ PREVIEW
 2·▾ beta (4) ◐ 1             │ Fork:    f quick fork, F fork with options
    ├─ ✕ gemini-idle gemini   │
    ├─ ✕ pi-idle pi           │ ────────────────── Output ──────────────────
-  ▶├─ ◐ claude-i18n claude   │ ⋮ 3 more lines above
-   └─ ○ shell-live shell     │ esc to interrupt
-  ▾ remotes/lab (0) · unrea… │ नमस्ते दुनिया 🚀🌟 यह परीक्षण है।
+   ├─ ◐ claude-i18n claude   │ Claude Code synthetic fixture
+   └─ ○ shell-live shell     │ ❯
+  ▾ remotes/lab (0) · unrea… │
                              │
-                             │ ❯
                              │
-⚠ Health: tmux calls exceed twice the session count
+────────────────────────────────────────────────────────────────────────────────
+⏎ Attach n/N New R Restart │           ↑↓ Nav / Search S Settings ? Help q Quit

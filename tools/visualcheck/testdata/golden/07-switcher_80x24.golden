@@ -1,24 +1,23 @@
-⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
 1·▾ alpha (7) ● 1 ◐ 1        │ claude-waiting  ◐ waiting
-   ├─ ■ opencode-… opencode  │ 📁 /tmp/vc-<tmp>
-   ├─ ✕ claude-idle claude   │ ⏱ <age>
-  ▶├─ ◐ claude-wait… claude  │ 👁️ no viewers
-   └─ ■ claude-stop… claude  │  claude   alpha
-    ▾ backend (3) ● 1        │ ────────────────── Claude ──────────────────
-     ├─ ✕ codex-idle codex   │ Status:  ● Connected
-     ├─ ● claude-ru… claude  │ Session: <uuid>
-     └─ ✕ claude-er… claude  │ Model:   tool default
-2·▾ beta (4) ◐ 1             │ Fork:    f quick fork, F fork with options
-   ├─ ✕ gemini-idle gemini   │
-   ├─ ✕ pi-idle pi           │ ────────────────── Output ──────────────────
-   ├─ ◐ claude-i18n claude   │ Claude Code synthetic fixture
-   └─ ○ shell-live shell     │ ❯
+   ├─ ■ opencode-… opencode  │ ╭─────────────────────────────────────────────╮
+   ├─ ✕ claude-idle claude   │ │                                             │
+  ▶├─ ◐ claude-wait… claude  │ │  Switch session                             │
+   └─ ■ claude-stop… claude  │ │                                             │
+    ▾ backend (3) ● 1        │ │  > ◐ claude-waiting (claude) <id>   │
+     ├─ ✕ codex-idle codex   │ │    ● claude-running (claude) <id>   │
+     ├─ ● claude-ru… claude  │ │    ◐ claude-i18n (claude) <id>      │
+     └─ ✕ claude-er… claude  │ │    ○ shell-live (shell) <id>        │
+2·▾ beta (4) ◐ 1             │ │                                             │
+   ├─ ✕ gemini-idle gemini   │ │  Ctrl+S next · Ctrl+A prev                  │
+   ├─ ✕ pi-idle pi           │ │  ↑/↓ browse · Enter attach · Esc close      │
+   ├─ ◐ claude-i18n claude   │ │                                             │
+   └─ ○ shell-live shell     │ ╰─────────────────────────────────────────────╯
   ▾ remotes/lab (0) · unrea… │
                              │
                              │
                              │
-────────────────────────────────────────────────────────────────────────────────
-⏎ Attach n/N New R Restart │           ↑↓ Nav / Search S Settings ? Help q Quit
+⚠ Health: tmux calls exceed twice the session count

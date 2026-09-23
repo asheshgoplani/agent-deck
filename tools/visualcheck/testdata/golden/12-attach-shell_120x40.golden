@@ -1,4 +1,4 @@
-<shell-prompt>$
+$
 
 
 
@@ -37,4 +37,4 @@
 
 
 
-⚡ [1] claude-waiting [2] claude-i18n0:bash*                                 ctrl+q detach │ 📁 shell-live | shell-live
+[agentdeck_shell-live_e62e44aa] 0:sh*                        ctrl+q detach · ctrl+s switch │ 📁 shell-live | shell-live

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -78,8 +79,71 @@ func runWidthIsolated(ctx context.Context, bin, updateBin string, spec widthSpec
 		if err := runStepWithRetry(w, step); err != nil {
 			return w.frames, fmt.Errorf("step %q at %s: %w", step.name, spec.name, err)
 		}
+		if step.name == "01-list" {
+			if err := w.probeRedraw(); err != nil {
+				return w.frames, fmt.Errorf("redraw probe at %s: %w", spec.name, err)
+			}
+		}
 	}
 	return w.frames, nil
+}
+
+// probeRedraw repeats the author's rapid onto/off-session navigation, then
+// records the immediate, settled and forced-repaint panes for inspection.
+// A duplicate waiting/stopped row after the settle is a persistent defect.
+func (w *widthRun) probeRedraw() error {
+	if err := w.send("Home", "Down", "Down", "Down", "Down"); err != nil {
+		return err
+	}
+	immediate, err := w.pane()
+	if err != nil {
+		return err
+	}
+	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.paneStyledStable()
+		if err != nil {
+			return false, err
+		}
+		on, found := cursorOnRow(pane, visibleRowName("claude-stopped", w.spec.width))
+		return found && on, nil
+	}, 5*time.Second); err != nil {
+		return err
+	}
+	time.Sleep(600 * time.Millisecond)
+	settled, err := w.pane()
+	if err != nil {
+		return err
+	}
+	if err := w.hardKick(); err != nil {
+		return err
+	}
+	repainted, err := w.pane()
+	if err != nil {
+		return err
+	}
+	_, source, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(source))), "visualcheck-artifacts", "redraw")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	for name, frame := range map[string]string{"immediate": immediate, "settled": settled, "repainted": repainted} {
+		path := filepath.Join(dir, w.spec.name+"-"+name+".txt")
+		if err := os.WriteFile(path, []byte(frame), 0644); err != nil {
+			return err
+		}
+	}
+	for _, title := range []string{"claude-waiting", "claude-stopped"} {
+		count := 0
+		for _, line := range listBodyLines(settled) {
+			if strings.Contains(sessionsColumn(line), visibleRowName(title, w.spec.width)) {
+				count++
+			}
+		}
+		if count != 1 {
+			return fmt.Errorf("%s has %d settled rows, want one", title, count)
+		}
+	}
+	return nil
 }
 
 // runStepWithRetry retries failed navigation or golden comparisons twice.
@@ -358,6 +422,9 @@ func visibleRowName(name string, width int) string {
 	// At 80 columns the left pane renders this title as "claude-wait…".
 	if width == 80 && name == "claude-waiting" {
 		return "claude-wait"
+	}
+	if width == 80 && name == "claude-stopped" {
+		return "claude-stop"
 	}
 	return name
 }

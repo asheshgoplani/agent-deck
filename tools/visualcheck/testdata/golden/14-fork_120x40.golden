@@ -1,0 +1,40 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                      <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+SESSIONS                                   │ PREVIEW
+────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
+1·▾ alpha (8) ● 1 ◐ 1                      │ claude-waiting (fork)  ○ starting
+   ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle claude                 │ ⏱ <age>
+   ├─ ◐ claude-waiting claude              │ 👁️ no viewers
+   ├─ ■ claude-stopped claude              │  claude   alpha
+  ▶└─ ○ claude-… claude [fork/claude-...]  │ ────────────────────────────── Worktree ──────────────────────────────
+    ▾ backend (3) ● 1                      │ Branch:  fork/claude-waiting
+     ├─ ✕ codex-idle codex                 │ Repo:    /tmp/vc-<tmp>
+     ├─ ● claude-running claude            │ Path:    /tmp/vc-<tmp>
+     └─ ✕ claude-error claude              │ Status:  clean
+2·▾ beta (4) ◐ 1                           │ Setup:   b re-run setup script
+   ├─ ✕ gemini-idle gemini                 │ Finish:  W merge + cleanup
+   ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Claude ───────────────────────────────
+   ├─ ◐ claude-i18n claude                 │ Status:  ● Connected
+   └─ ○ shell-live shell                   │ Session: <uuid>
+  ▾ remotes/lab (0) · unreachable: host d… │ Model:   tool default
+                                           │
+                                           │ ─────────────────────────────── Output ───────────────────────────────
+                                           │
+                                           │                                 ⣽  ⣽  ⣽
+                                           │
+                                           │                        🚀 Launching Claude Code
+                                           │
+                                           │                       Starting Claude session...
+                                           │
+                                           │                                  ●●○○
+                                           │
+                                           │                              Loading... <age>
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  m  MCP  v  Both …     ↑↓ Nav │ q Quit

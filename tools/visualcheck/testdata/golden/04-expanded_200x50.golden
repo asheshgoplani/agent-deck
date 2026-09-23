@@ -1,4 +1,4 @@
-⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error • ⚙ 26% │ ▪ 865.7G/926.4G                                                                           <version>
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                                                                                                     <version>
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
 SESSIONS                                                               │ PREVIEW
 ────────────────────────────────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ SESSIONS                                                               │ PREVI
    ├─ ✕ pi-idle pi                                                     │
    ├─ ◐ claude-i18n claude                                             │ Tab toggle • r rename • d delete • g subgroup
    └─ ○ shell-live shell                                               │
-  ▾ remotes/lab (0) · unreachable: host down · poll <age>                │
+  ▾ remotes/lab (0) · unreachable: host down · poll <age>               │
                                                                        │
                                                                        │
                                                                        │
