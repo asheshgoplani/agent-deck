@@ -229,7 +229,7 @@ func stepSettings(w *widthRun) error {
 		return err
 	}
 	w.capture("09-settings")
-	return closeScreen(w, "Settings")
+	return closeScreen(w, "THEME")
 }
 
 func stepHelp(w *widthRun) error {
