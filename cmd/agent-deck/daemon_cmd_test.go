@@ -174,6 +174,7 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 		{name: "group list, alpha running", a: step{argv("group", "list"), core.IDGroupList, core.GroupListIn{}, true}},
 		{name: "restart fresh session is skipped", a: step{argv("session", "restart", "alpha"), core.IDSessionRestart, core.SessionRestartIn{Session: "alpha"}, true}},
 		{name: "restart --force", a: step{argv("session", "restart", "alpha", "--force"), core.IDSessionRestart, core.SessionRestartIn{Session: "alpha", Force: true}, true}},
+		{name: "restart --all", a: step{argv("session", "restart", "--all"), core.IDSessionRestart, core.SessionRestartIn{All: true}, true}},
 		{
 			name:  "stop",
 			a:     step{argv("session", "stop", "alpha"), core.IDSessionStop, stop, true},
@@ -201,12 +202,21 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 
 	covered := map[string]bool{}
 	for _, p := range pairs {
+		before, _ := daemonStatus(t, home, env)
 		fromArgv := runArgv(p.a, false)
 		checkOK(p.name+" (argv)", fromArgv, p.a.ok)
 		for _, s := range p.setup {
 			checkOK(p.name+" setup "+strings.Join(s.argv, " "), runArgv(s, false), s.ok)
 		}
+		afterDirect, _ := daemonStatus(t, home, env)
+		if afterDirect.Status.Calls != before.Status.Calls {
+			t.Fatalf("%s: direct and setup steps reached daemon: calls %d -> %d", p.name, before.Status.Calls, afterDirect.Status.Calls)
+		}
 		fromDaemon := runArgv(p.a, true)
+		afterDaemon, _ := daemonStatus(t, home, env)
+		if afterDaemon.Status.Calls != afterDirect.Status.Calls+1 {
+			t.Fatalf("%s: daemon CLI did not make exactly one socket call: calls %d -> %d", p.name, afterDirect.Status.Calls, afterDaemon.Status.Calls)
+		}
 		checkOK(p.name+" (daemon CLI)", fromDaemon, p.a.ok)
 		a := canonicalEnvelope(t, fromArgv)
 		s := canonicalEnvelope(t, fromDaemon)
@@ -232,6 +242,47 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 	}
 	if len(cmds) != len(coreRegistry().Defs()) {
 		t.Errorf("socket catalog has %d commands, CLI registry %d", len(cmds), len(coreRegistry().Defs()))
+	}
+}
+
+func TestDaemonRestartAllReturnsCompletedResult(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+	home := shortTempDir(t, "adrall")
+	tmuxDir := shortTempDir(t, "adrallt")
+	env := []string{"TMUX_TMPDIR=" + tmuxDir}
+	titles := []string{"alpha", "beta", "gamma", "delta", "epsilon"}
+	t.Cleanup(func() {
+		for _, title := range titles {
+			runAgentDeckEnv(t, home, "", env, "session", "stop", title)
+		}
+		testutil.KillTmuxServersUnder(tmuxDir)
+	})
+	seedSessions(t, home, env, titles...)
+	for _, title := range titles {
+		if out, stderr, code := runAgentDeckEnv(t, home, "", env, "session", "start", title, "--json=envelope"); code != 0 {
+			t.Fatalf("start %s: exit %d: %s %s", title, code, out, stderr)
+		}
+	}
+	_, st := startDaemon(t, home, env)
+	writeCoreDaemonConfig(t, home)
+	out, stderr, code := runAgentDeckEnv(t, home, "", env, "session", "restart", "--all", "--json=envelope")
+	var result struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			All core.RestartAllOut `json:"all"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("restart --all: exit %d, %v: %s %s", code, err, out, stderr)
+	}
+	if code != 0 || !result.OK || result.Data.All.Total != len(titles) || result.Data.All.Restarted != len(titles) {
+		t.Fatalf("restart --all returned exit %d, result %+v: %s %s", code, result, out, stderr)
+	}
+	after, _ := daemonStatus(t, home, env)
+	if after.Status.Calls != st.Status.Calls+1 {
+		t.Fatalf("restart --all used %d socket calls, want 1", after.Status.Calls-st.Status.Calls)
 	}
 }
 
