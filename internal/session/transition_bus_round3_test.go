@@ -1,6 +1,7 @@
 package session
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -21,10 +22,24 @@ func TestTransitionBusUsesEventProfileAndStatusIsReserved(t *testing.T) {
 	if err := events.CloseDefault(); err != nil {
 		t.Fatal(err)
 	}
-	for _, profile := range []string{"alpha", "beta"} {
-		b := events.OpenProfile(profile)
+	for _, tc := range []struct{ profile, session string }{{"alpha", "a"}, {"beta", "b"}} {
+		b := events.OpenProfile(tc.profile)
 		if got := b.Stats().Cursor; got != 1 {
-			t.Errorf("%s cursor = %d, want one transition and no status tap", profile, got)
+			t.Errorf("%s cursor = %d, want one transition and no status tap", tc.profile, got)
+		}
+		line, err := os.ReadFile(filepath.Join(b.Stats().Dir, "active.ndjson"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(line) == 0 {
+			t.Fatalf("%s has no transition frame", tc.profile)
+		}
+		frame, err := events.ParseFrameLine(line[:len(line)-1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame.SessionID != tc.session {
+			t.Errorf("%s contains session %q, want %q", tc.profile, frame.SessionID, tc.session)
 		}
 		_ = b.Close()
 	}

@@ -121,3 +121,40 @@ func TestOutputBatchThroughput(t *testing.T) {
 		t.Fatalf("tap throughput %.0f frames/s below 20000", perSecond)
 	}
 }
+
+func TestDefaultOutputTapThroughput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	resetDefaultForTest()
+	t.Cleanup(resetDefaultForTest)
+	SetProfile("tap-bench")
+	t.Cleanup(func() { SetProfile("default") })
+	const frames = 2000
+	start := time.Now()
+	for i := 0; i < frames; i++ {
+		PublishDefault("tmux.output", "session", nil)
+	}
+	if err := CloseDefault(); err != nil {
+		t.Fatal(err)
+	}
+	perSecond := float64(frames) / time.Since(start).Seconds()
+	dir, err := busDirFor("tap-bench")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Cursor(); got != frames {
+		t.Errorf("persisted %d/%d tap frames", got, frames)
+	}
+	if got := b.Stats().Dropped; got != 0 {
+		t.Errorf("tap drops = %d", got)
+	}
+	_ = b.Close()
+	t.Logf("tmux.output default tap: %.0f frames/s", perSecond)
+	if perSecond < 20000 {
+		t.Fatalf("default tap throughput %.0f frames/s below 20000", perSecond)
+	}
+}
