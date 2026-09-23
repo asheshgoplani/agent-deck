@@ -553,12 +553,16 @@ func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 			}
 		}
 	}
-	if sync && b.activeFile != nil && b.synced.Load() != b.written.Load() {
+	rotate := b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames
+	if sync && b.activeFile != nil && (b.synced.Load() != b.written.Load() || rotate) {
 		if err := b.activeFile.Sync(); err != nil {
 			b.fail(fmt.Errorf("events: sync: %w", err))
 		} else {
 			b.synced.Store(b.written.Load())
 		}
+	}
+	if sync && !b.failed.Load() && rotate {
+		b.rotateLocked()
 	}
 	if err := b.persistDropsLocked(); err != nil {
 		b.fail(err)
@@ -595,9 +599,6 @@ func (b *Bus) appendFrameLocked(qf queuedFrame) error {
 	b.activeFrames++
 	b.written.Add(1)
 
-	if b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames {
-		b.rotateLocked()
-	}
 	return nil
 }
 
@@ -613,11 +614,6 @@ func (b *Bus) rotateLocked() {
 	if b.activeFrames == 0 {
 		return
 	}
-	if err := b.activeFile.Sync(); err != nil {
-		b.fail(err)
-		return
-	}
-	b.synced.Store(b.written.Load())
 	if err := b.activeFile.Close(); err != nil {
 		b.fail(err)
 		return
